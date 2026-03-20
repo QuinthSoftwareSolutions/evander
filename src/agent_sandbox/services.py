@@ -8,6 +8,15 @@ from .models import DiscordCommandEnvelope, DraftMessage, EmailMessage
 from .storage import JsonStore
 
 
+def _parse_snowflake(value: str, *, field_name: str) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"Invalid {field_name} {value!r}: expected a numeric Discord snowflake string."
+        ) from exc
+
+
 class EmailService:
     def __init__(
         self,
@@ -80,10 +89,15 @@ class StubDiscordService:
                     if key not in {"source", "guild_id", "channel_id", "author_id"}
                 },
             }
-        commands.sort(key=lambda item: item.created_at)
+        commands.sort(key=lambda item: _parse_snowflake(item.command_id, field_name="command_id"))
         if since_cursor is None:
             return commands
-        return [command for command in commands if command.command_id > since_cursor]
+        since_snowflake = _parse_snowflake(since_cursor, field_name="since_cursor")
+        return [
+            command
+            for command in commands
+            if _parse_snowflake(command.command_id, field_name="command_id") > since_snowflake
+        ]
 
     def post_status(self, message: str, channel_id: str, session_id: str) -> dict[str, Any]:
         return {
@@ -147,10 +161,18 @@ class DiscordBotApiService:
                     envelopes[envelope.command_id] = envelope
                     self.command_store.put(envelope.command_id, envelope)
 
-        commands = sorted(envelopes.values(), key=lambda item: item.created_at)
+        commands = sorted(
+            envelopes.values(),
+            key=lambda item: _parse_snowflake(item.command_id, field_name="command_id"),
+        )
         if since_cursor is None:
             return commands
-        return [command for command in commands if command.command_id > since_cursor]
+        since_snowflake = _parse_snowflake(since_cursor, field_name="since_cursor")
+        return [
+            command
+            for command in commands
+            if _parse_snowflake(command.command_id, field_name="command_id") > since_snowflake
+        ]
 
     def post_status(self, message: str, channel_id: str, session_id: str) -> dict[str, Any]:
         with httpx.Client(timeout=self.timeout_seconds) as client:
