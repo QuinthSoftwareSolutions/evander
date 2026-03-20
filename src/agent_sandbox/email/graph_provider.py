@@ -145,10 +145,34 @@ class GraphEmailProvider:
         )
 
     def _to_detail(self, *, mailbox_id: str, payload: dict[str, Any]) -> EmailMessageDetail:
-        summary = self._to_summary(mailbox_id=mailbox_id, folder="unknown", payload=payload)
+        summary = self._to_summary(
+            mailbox_id=mailbox_id,
+            folder=self._policy_folder_from_parent(payload.get("parentFolderId")),
+            payload=payload,
+        )
         body = payload.get("body") or {}
         return EmailMessageDetail(
             **summary.model_dump(),
             subject=str(payload.get("subject", "")),
             body_text=str(body.get("content", "")),
         )
+
+    def _policy_folder_from_parent(self, parent_folder_id: Any) -> str:
+        if not parent_folder_id:
+            return "unknown"
+        folder_id = str(parent_folder_id)
+        if not folder_id:
+            return "unknown"
+
+        for policy_folder, provider_folder in self.folder_mapping.items():
+            mapped_folder = str(provider_folder)
+            if mapped_folder == folder_id:
+                return policy_folder
+            if mapped_folder.casefold() == folder_id.casefold():
+                return policy_folder
+
+        for policy_folder in self.folder_mapping:
+            if policy_folder.casefold() == folder_id.casefold():
+                return policy_folder
+
+        return "unknown"

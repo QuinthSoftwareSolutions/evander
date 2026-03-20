@@ -81,3 +81,51 @@ def test_graph_summary_sets_conversation_metadata() -> None:
 
     assert summary.thread_id == "conversation-999"
     assert summary.metadata["graph_conversation_id"] == "conversation-999"
+
+
+def test_graph_detail_maps_parent_folder_to_policy_folder() -> None:
+    provider = GraphEmailProvider(
+        account_identifier="leader@example.com",
+        folder_mapping={"inbox": "AAMkAGInboxId", "drafts": "AAMkAGDraftsId"},
+        auth_secret_refs={"access_token": "GRAPH_ACCESS_TOKEN"},
+        timeout_seconds=5.0,
+    )
+    payload = {
+        "id": "graph-msg-2",
+        "conversationId": "conversation-1000",
+        "isRead": False,
+        "receivedDateTime": "2026-03-20T10:00:00Z",
+        "parentFolderId": "AAMkAGInboxId",
+        "from": {"emailAddress": {"address": "sender@example.com"}},
+        "toRecipients": [{"emailAddress": {"address": "person@example.com"}}],
+        "subject": "Hello",
+        "body": {"content": "Body"},
+    }
+
+    detail = provider._to_detail(mailbox_id="exec-graph", payload=payload)
+
+    assert detail.folder == "inbox"
+
+
+def test_graph_detail_maps_parent_folder_case_insensitively() -> None:
+    provider = GraphEmailProvider(
+        account_identifier="leader@example.com",
+        folder_mapping={"inbox": "Inbox", "drafts": "Drafts"},
+        auth_secret_refs={"access_token": "GRAPH_ACCESS_TOKEN"},
+        timeout_seconds=5.0,
+    )
+    payload = {
+        "id": "graph-msg-3",
+        "conversationId": "conversation-1001",
+        "isRead": False,
+        "receivedDateTime": "2026-03-20T10:00:00Z",
+        "parentFolderId": "inbox",
+        "from": {"emailAddress": {"address": "sender@example.com"}},
+        "toRecipients": [{"emailAddress": {"address": "person@example.com"}}],
+        "subject": "Hello",
+        "body": {"content": "Body"},
+    }
+
+    detail = provider._to_detail(mailbox_id="exec-graph", payload=payload)
+
+    assert detail.folder == "inbox"
