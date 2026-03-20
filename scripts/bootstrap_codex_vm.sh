@@ -1,8 +1,31 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+show_help() {
+  cat <<'EOF'
+Usage: bootstrap_codex_vm.sh <vm-name> [vm-user]
+
+Copy the host Codex binary into a guest VM and configure it to use the host
+OpenAI relay.
+
+Arguments:
+  vm-name   libvirt domain name.
+  vm-user   Guest user to configure. Default: agent
+
+Environment:
+  SSH_KEY_PATH    Private key matching the guest authorized key.
+  HOST_CODEX_ROOT Host Codex package root.
+  LLM_BASE_URL    Guest OpenAI-compatible base URL.
+EOF
+}
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  show_help
+  exit 0
+fi
+
 if [[ $# -lt 1 ]]; then
-  echo "usage: $0 <vm-name> [vm-user]" >&2
+  show_help >&2
   exit 1
 fi
 
@@ -38,15 +61,33 @@ if [[ ! -f "${SSH_KEY_PATH}" ]]; then
   exit 1
 fi
 
-VM_IP="$(
-  virsh domifaddr "${VM_NAME}" 2>/dev/null \
-    | awk '/ipv4/ {split($4, a, "/"); print a[1]; exit}'
-)"
+get_vm_ip() {
+  local ip
 
-if [[ -z "${VM_IP}" ]]; then
-  echo "Could not determine an IPv4 address for VM ${VM_NAME}" >&2
-  exit 1
-fi
+  ip="$(
+    virsh domifaddr "${VM_NAME}" 2>/dev/null \
+      | awk '/ipv4/ {split($4, a, "/"); print a[1]; exit}'
+  )"
+  if [[ -n "${ip}" ]]; then
+    printf '%s\n' "${ip}"
+    return 0
+  fi
+
+  ip="$(
+    sudo -n virsh domifaddr "${VM_NAME}" 2>/dev/null \
+      | awk '/ipv4/ {split($4, a, "/"); print a[1]; exit}'
+  )"
+  if [[ -n "${ip}" ]]; then
+    printf '%s\n' "${ip}"
+    return 0
+  fi
+
+  echo "Could not determine an IPv4 address for VM ${VM_NAME}." >&2
+  echo "Run this script with sudo, or grant the current user libvirt access." >&2
+  return 1
+}
+
+VM_IP="$(get_vm_ip)"
 
 echo "Bootstrapping Codex into ${VM_USER}@${VM_IP}"
 

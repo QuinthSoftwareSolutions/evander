@@ -1,8 +1,35 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+show_help() {
+  cat <<'EOF'
+Usage: launch_agent_vm.sh <vm-name> <session-id>
+
+Create an overlay disk and cloud-init seed, then boot an agent VM on the
+isolated libvirt network.
+
+Arguments:
+  vm-name     libvirt domain name.
+  session-id  Session manifest identifier embedded into guest config.
+
+Environment:
+  VM_STORAGE_DIR       Root directory for libvirt-accessible VM storage.
+  GATEWAY_URL          Host MCP gateway URL exposed to the guest.
+  SSH_PUBLIC_KEY_FILE  Public key injected into the guest.
+  LLM_BASE_URL         Host OpenAI-compatible base URL exposed to the guest.
+  RAM_MB               Guest memory in MB. Default: 4096
+  VCPUS                Guest vCPU count. Default: 4
+  DISK_SIZE_GB         Overlay virtual size in GB. Default: 20
+EOF
+}
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  show_help
+  exit 0
+fi
+
 if [[ $# -lt 2 ]]; then
-  echo "usage: $0 <vm-name> <session-id>" >&2
+  show_help >&2
   exit 1
 fi
 

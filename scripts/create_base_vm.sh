@@ -1,6 +1,23 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+show_help() {
+  cat <<'EOF'
+Usage: create_base_vm.sh [--help]
+
+Download the Ubuntu cloud image used as the read-only base for guest overlays.
+
+Environment:
+  VM_STORAGE_DIR  Root directory for libvirt-accessible VM storage.
+  DOWNLOAD_URL    Cloud image URL to download.
+EOF
+}
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  show_help
+  exit 0
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 VM_STORAGE_DIR="${VM_STORAGE_DIR:-/var/lib/libvirt/images/agent-sandbox}"

@@ -1,8 +1,28 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+show_help() {
+  cat <<'EOF'
+Usage: destroy_agent_vm.sh <vm-name>
+
+Destroy and undefine a libvirt VM, then remove its overlay disk and local
+runtime state.
+
+Arguments:
+  vm-name   libvirt domain name.
+
+Environment:
+  VM_STORAGE_DIR  Root directory for libvirt-accessible VM storage.
+EOF
+}
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  show_help
+  exit 0
+fi
+
 if [[ $# -lt 1 ]]; then
-  echo "usage: $0 <vm-name>" >&2
+  show_help >&2
   exit 1
 fi
 

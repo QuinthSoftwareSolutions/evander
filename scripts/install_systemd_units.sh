@@ -1,6 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+show_help() {
+  cat <<'EOF'
+Usage: install_systemd_units.sh [--help]
+
+Render and install the agent-sandbox systemd unit files, then enable them.
+
+Requirements:
+  Run this script with sudo.
+EOF
+}
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  show_help
+  exit 0
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 RUN_USER="${SUDO_USER:-$USER}"

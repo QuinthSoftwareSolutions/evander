@@ -86,6 +86,22 @@
 
    This copies the vendored Linux Codex binary from the host install into the guest user's `~/bin`, rewrites `~/.codex/config.toml` to use the host relay, ensures the placeholder API-key shell hook exists, and verifies `codex --version`.
 
+9. Optionally install the host `.NET` SDK into the VM:
+
+   ```bash
+   ./scripts/bootstrap_dotnet_vm.sh vm-real
+   ```
+
+   This copies the host `.NET` installation into the guest, appends `DOTNET_ROOT`, `DOTNET_CLI_HOME`, and `PATH` exports to the guest profile, and verifies `dotnet --info`.
+
+10. Optionally install Playwright into the VM for frontend debugging:
+
+   ```bash
+   ./scripts/bootstrap_playwright_vm.sh vm-real
+   ```
+
+   This copies a host-seeded Node runtime, Playwright packages, and browser cache into the guest and verifies that Playwright can resolve Chromium offline.
+
 ## Persistent Host Services
 
 Install the gateway and relay as systemd services:

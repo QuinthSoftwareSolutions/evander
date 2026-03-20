@@ -24,7 +24,9 @@ Install these packages on the Ubuntu host before using the scripts:
 7. Create a session manifest with `agent-sandbox-cli create-session`.
 8. Launch a VM with `sudo ./scripts/launch_agent_vm.sh`.
 9. Install the Codex binary into the guest with `./scripts/bootstrap_codex_vm.sh <vm-name>`.
-10. Optionally create a local bare Git remote with `./scripts/create_git_remote.sh <repo-name>` if the VM should push code back to the host.
+10. Optionally install the host `.NET` SDK into the guest with `./scripts/bootstrap_dotnet_vm.sh <vm-name>`.
+11. Optionally install Playwright into the guest with `./scripts/bootstrap_playwright_vm.sh <vm-name>` for rendered-DOM debugging.
+12. Optionally create a local bare Git remote with `./scripts/create_git_remote.sh <repo-name>` if the VM should push code back to the host.
 
 - The launch script resizes each overlay disk to `20G` by default.
 - Override per VM with `DISK_SIZE_GB=40 sudo ./scripts/launch_agent_vm.sh ...`.
@@ -45,6 +47,20 @@ Install these packages on the Ubuntu host before using the scripts:
 - The bootstrap script also overwrites `~/.codex/config.toml` with the relay-aware configuration and appends the placeholder-key shell hook if needed, so it corrects preexisting Codex state in the VM.
 - The bootstrap script repairs `/home/agent` ownership first, so it also works against VMs created before the home directory ownership fix.
 - New VMs pick this up automatically; existing VMs need to be recreated.
+
+## VM Playwright Bootstrap
+
+- `./scripts/bootstrap_playwright_vm.sh <vm-name>` copies a host-seeded Node runtime into `~/toolchains/node-v24.14.0`.
+- It copies `playwright` and `playwright-core` into `~/playwright-runtime/node_modules`.
+- It copies the host Playwright browser cache into `~/.cache/ms-playwright`.
+- It appends `PATH`, `PLAYWRIGHT_BROWSERS_PATH`, and `NODE_PATH` exports to `~/.profile`.
+- It verifies the guest can resolve the Chromium executable without guest internet access.
+
+## VM .NET Bootstrap
+
+- `./scripts/bootstrap_dotnet_vm.sh <vm-name>` copies the host `.NET` installation into `~/toolchains/dotnet`.
+- It appends `DOTNET_ROOT`, `DOTNET_CLI_HOME`, and `PATH` exports to `~/.profile`.
+- It verifies the guest can run `dotnet --info` without guest internet access.
 
 ## Host-Side LLM Access
 

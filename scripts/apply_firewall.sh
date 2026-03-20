@@ -1,6 +1,23 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+show_help() {
+  cat <<'EOF'
+Usage: apply_firewall.sh [--help]
+
+Apply the nftables forward policy for the agent sandbox network.
+
+Environment:
+  ALLOWED_TCP_PORTS  Space-separated host TCP ports reachable from guests.
+                     Default: "8000 11434"
+EOF
+}
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  show_help
+  exit 0
+fi
+
 TABLE="inet agent_sandbox"
 CHAIN="forward"
 BRIDGE_IF="virbr250"

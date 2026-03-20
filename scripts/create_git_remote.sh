@@ -1,8 +1,29 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+show_help() {
+  cat <<'EOF'
+Usage: create_git_remote.sh <repo-name> [branch-namespace]
+
+Create a bare Git remote for agent output on the host-only network.
+
+Arguments:
+  repo-name         Bare repository name. ".git" suffix is optional.
+  branch-namespace  Prefix used in the recommended push pattern.
+                    Default: agents
+
+Configuration:
+  Reads config/git-server.env when present.
+EOF
+}
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  show_help
+  exit 0
+fi
+
 if [[ $# -lt 1 ]]; then
-  echo "usage: $0 <repo-name> [branch-namespace]" >&2
+  show_help >&2
   exit 1
 fi
 
