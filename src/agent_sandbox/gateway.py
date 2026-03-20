@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from typing import Any
 
+import httpx
 from mcp.server.fastmcp import FastMCP
 
 from .config import GatewayConfig, load_config
@@ -40,7 +41,15 @@ def create_server(context: RuntimeContext) -> FastMCP:
             )
         )
 
-    def audit_failure(session_id: str | None, tool_name: ToolName, args: dict[str, Any], error: str) -> None:
+    def audit_failure(
+        session_id: str | None,
+        tool_name: ToolName,
+        args: dict[str, Any],
+        error: str,
+        *,
+        decision: str = "denied",
+        error_class: str = "policy_error",
+    ) -> None:
         vm_id = None
         if session_id:
             session = context.sessions.get(session_id)
@@ -51,9 +60,9 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 session_id=session_id,
                 vm_id=vm_id,
                 tool_name=tool_name.value,
-                decision="denied",
+                decision=decision,
                 args=_redact_args(context.config, args),
-                result={"error": error},
+                result={"error": error, "error_class": error_class},
             )
         )
 
@@ -92,6 +101,26 @@ def create_server(context: RuntimeContext) -> FastMCP:
         except PolicyError as exc:
             audit_failure(session_id, ToolName.DISCORD_GET_COMMANDS, args, str(exc))
             raise
+        except httpx.HTTPError as exc:
+            audit_failure(
+                session_id,
+                ToolName.DISCORD_GET_COMMANDS,
+                args,
+                str(exc),
+                decision="error",
+                error_class="adapter_http_error",
+            )
+            raise
+        except Exception as exc:
+            audit_failure(
+                session_id,
+                ToolName.DISCORD_GET_COMMANDS,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
 
     @server.tool()
     def discord_post_status(session_id: str, channel_id: str, message: str) -> dict[str, Any]:
@@ -104,6 +133,26 @@ def create_server(context: RuntimeContext) -> FastMCP:
             return result
         except PolicyError as exc:
             audit_failure(session_id, ToolName.DISCORD_POST_STATUS, args, str(exc))
+            raise
+        except httpx.HTTPError as exc:
+            audit_failure(
+                session_id,
+                ToolName.DISCORD_POST_STATUS,
+                args,
+                str(exc),
+                decision="error",
+                error_class="adapter_http_error",
+            )
+            raise
+        except Exception as exc:
+            audit_failure(
+                session_id,
+                ToolName.DISCORD_POST_STATUS,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
             raise
 
     @server.tool()
