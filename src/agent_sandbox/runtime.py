@@ -5,11 +5,10 @@ from dataclasses import dataclass
 
 from .audit import AuditLogger
 from .config import GatewayConfig
-from .models import ApprovalRequest, DraftMessage, EmailMessage, SessionManifest
+from .models import ApprovalRequest, DiscordCommandEnvelope, DraftMessage, EmailMessage, SessionManifest
 from .policy import PolicyEngine
 from .services import (
     DiscordBotApiService,
-    DiscordCommandEnvelope,
     DiscordService,
     EmailService,
     StubDiscordService,
