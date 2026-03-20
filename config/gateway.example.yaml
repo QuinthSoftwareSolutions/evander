@@ -29,3 +29,12 @@ nuget_azure_feed_base_url: "https://pkgs.dev.azure.com/example/example/_packagin
 nuget_azure_pat_env: "AZURE_ARTIFACTS_PAT"
 nuget_relay_timeout_seconds: 300.0
 default_session_ttl_seconds: 28800
+email_mailbox_allowlist:
+  - "default"
+email_folder_allowlist_by_mailbox:
+  default:
+    - "inbox"
+    - "drafts"
+email_draft_recipient_allowlist: []
+email_draft_domain_allowlist: []
+email_send_enabled: false

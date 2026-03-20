@@ -12,3 +12,12 @@ discord_command_store_path: "/home/jonathan/agent-sandbox/runtime/discord_comman
 bind_network_cidr: "192.168.250.0/24"
 gateway_url: "http://192.168.250.1:8000/mcp"
 default_session_ttl_seconds: 28800
+email_mailbox_allowlist:
+  - "default"
+email_folder_allowlist_by_mailbox:
+  default:
+    - "inbox"
+    - "drafts"
+email_draft_recipient_allowlist: []
+email_draft_domain_allowlist: []
+email_send_enabled: false

@@ -41,6 +41,13 @@ class GatewayConfig(BaseModel):
     nuget_azure_pat_env: str = "AZURE_ARTIFACTS_PAT"
     nuget_relay_timeout_seconds: float = 300.0
     default_session_ttl_seconds: int = 28800
+    email_mailbox_allowlist: list[str] = Field(default_factory=lambda: ["default"])
+    email_folder_allowlist_by_mailbox: dict[str, list[str]] = Field(
+        default_factory=lambda: {"default": ["inbox", "drafts"]}
+    )
+    email_draft_recipient_allowlist: list[str] = Field(default_factory=list)
+    email_draft_domain_allowlist: list[str] = Field(default_factory=list)
+    email_send_enabled: bool = False
     redacted_keys: set[str] = Field(
         default_factory=lambda: {"body", "body_text", "authorization", "token"}
     )

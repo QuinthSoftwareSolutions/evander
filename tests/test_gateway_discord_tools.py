@@ -170,7 +170,8 @@ def test_email_tools_require_and_return_mailbox_id(tmp_path: Path) -> None:
                 ToolName.EMAIL_GET_MESSAGE,
                 ToolName.EMAIL_CREATE_DRAFT,
             ],
-            email_folder_allowlist=["inbox"],
+            email_mailbox_allowlist=["primary"],
+            email_folder_allowlist_by_mailbox={"primary": ["inbox", "drafts"]},
             expires_at=datetime.now(UTC) + timedelta(hours=1),
         ),
     )

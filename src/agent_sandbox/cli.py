@@ -50,12 +50,18 @@ def create_session(
             ToolName.EMAIL_CREATE_DRAFT,
             ToolName.APPROVAL_SUBMIT,
             ToolName.APPROVAL_CHECK,
-            ToolName.EMAIL_SEND_APPROVED,
         ],
         discord_channel_allowlist=discord_channel or [],
         email_folder_allowlist=email_folder or [],
+        email_mailbox_allowlist=cfg.email_mailbox_allowlist,
+        email_folder_allowlist_by_mailbox=cfg.email_folder_allowlist_by_mailbox,
+        email_draft_recipient_allowlist=cfg.email_draft_recipient_allowlist,
+        email_draft_domain_allowlist=cfg.email_draft_domain_allowlist,
+        email_send_enabled=cfg.email_send_enabled,
         expires_at=datetime.now(UTC) + timedelta(hours=ttl_hours or 8),
     )
+    if manifest.email_send_enabled:
+        manifest.allowed_tools.append(ToolName.EMAIL_SEND_APPROVED)
     runtime.sessions.put(session_id, manifest)
     typer.echo(f"Created session manifest {session_id}")
 

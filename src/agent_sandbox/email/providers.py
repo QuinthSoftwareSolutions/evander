@@ -35,6 +35,7 @@ class EmailDraft(BaseModel):
     thread_or_message_id: str | None = None
     subject: str | None = None
     body: str
+    recipients: list[str]
     created_at: datetime
     metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -52,6 +53,7 @@ class EmailProvider(Protocol):
         thread_or_message_id: str | None,
         subject: str | None,
         body: str,
+        recipients: list[str],
     ) -> EmailDraft:
         ...
 
@@ -88,6 +90,7 @@ class JsonEmailProvider:
         thread_or_message_id: str | None,
         subject: str | None,
         body: str,
+        recipients: list[str],
     ) -> EmailDraft:
         now = datetime.now(UTC)
         draft = DraftMessage(
@@ -97,6 +100,7 @@ class JsonEmailProvider:
             thread_or_message_id=thread_or_message_id,
             subject=subject,
             body=body,
+            recipients=recipients,
             created_at=now,
         )
         self.draft_store.put(draft.draft_id, draft)
@@ -107,6 +111,7 @@ class JsonEmailProvider:
             thread_or_message_id=draft.thread_or_message_id,
             subject=draft.subject,
             body=draft.body,
+            recipients=draft.recipients,
             created_at=draft.created_at,
             metadata={},
         )

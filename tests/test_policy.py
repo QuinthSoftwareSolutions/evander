@@ -213,3 +213,46 @@ def test_require_discord_command_source_rejects_non_allowlisted_channel_and_auth
 
     with pytest.raises(PolicyError, match="source is not allowlisted"):
         engine.require_discord_command_source(session, command)
+
+
+def test_require_email_mailbox_and_folder_for_mailbox(tmp_path: Path) -> None:
+    engine = make_engine(tmp_path)
+    session = SessionManifest(
+        session_id="s1",
+        allowed_tools=[ToolName.EMAIL_LIST_UNREAD],
+        email_mailbox_allowlist=["primary"],
+        email_folder_allowlist_by_mailbox={"primary": ["inbox", "drafts"]},
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+
+    engine.require_email_mailbox(session, "primary")
+    engine.require_email_folder_for_mailbox(session, "primary", "inbox")
+    with pytest.raises(PolicyError, match="mailbox is not allowlisted"):
+        engine.require_email_mailbox(session, "secondary")
+    with pytest.raises(PolicyError, match="folder is not allowlisted"):
+        engine.require_email_folder_for_mailbox(session, "primary", "sent")
+
+
+def test_require_draft_recipients_enforces_address_and_domain_allowlists(tmp_path: Path) -> None:
+    engine = make_engine(tmp_path)
+    session = SessionManifest(
+        session_id="s1",
+        allowed_tools=[ToolName.EMAIL_CREATE_DRAFT],
+        email_draft_recipient_allowlist=["approved@example.com"],
+        email_draft_domain_allowlist=["example.com"],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+
+    engine.require_draft_recipients(session, ["approved@example.com"])
+    with pytest.raises(PolicyError, match="Draft recipients are not allowlisted"):
+        engine.require_draft_recipients(session, ["denied@example.com"])
+    with pytest.raises(PolicyError, match="Draft recipient domains are not allowlisted"):
+        engine.require_draft_recipients(
+            SessionManifest(
+                session_id="s2",
+                allowed_tools=[ToolName.EMAIL_CREATE_DRAFT],
+                email_draft_domain_allowlist=["example.com"],
+                expires_at=datetime.now(UTC) + timedelta(hours=1),
+            ),
+            ["person@other.com"],
+        )
