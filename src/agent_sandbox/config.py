@@ -26,6 +26,7 @@ class GatewayConfig(BaseModel):
     approval_store_path: Path = Path("/var/lib/agent-sandbox/approvals.json")
     draft_store_path: Path = Path("/var/lib/agent-sandbox/drafts.json")
     email_store_path: Path = Path("/var/lib/agent-sandbox/emails.json")
+    email_cursor_store_path: Path = Path("/var/lib/agent-sandbox/email_cursors.json")
     discord_command_store_path: Path = Path("/var/lib/agent-sandbox/discord_commands.json")
     discord_backend: Literal["stub", "bot_api"] = "stub"
     discord_bot_token_env: str = Field(default="DISCORD_BOT_TOKEN", min_length=1)
