@@ -107,14 +107,16 @@ def create_server(context: RuntimeContext) -> FastMCP:
             raise
 
     @server.tool()
-    def email_list_unread(session_id: str, folder: str, limit: int = 10) -> list[dict[str, Any]]:
-        args = {"session_id": session_id, "folder": folder, "limit": limit}
+    def email_list_unread(
+        session_id: str, mailbox_id: str, folder: str, limit: int = 10
+    ) -> list[dict[str, Any]]:
+        args = {"session_id": session_id, "mailbox_id": mailbox_id, "folder": folder, "limit": limit}
         try:
             session = context.policy.require_tool(session_id, ToolName.EMAIL_LIST_UNREAD)
             context.policy.require_email_folder(session, folder)
             messages = [
                 message.model_dump(mode="json")
-                for message in context.email_service.list_unread(folder=folder, limit=limit)
+                for message in context.email_service.list_unread(mailbox_id=mailbox_id, folder=folder, limit=limit)
             ]
             audit_success(session_id, ToolName.EMAIL_LIST_UNREAD, args, {"count": len(messages)})
             return messages
@@ -123,11 +125,11 @@ def create_server(context: RuntimeContext) -> FastMCP:
             raise
 
     @server.tool()
-    def email_get_message(session_id: str, message_id: str) -> dict[str, Any]:
-        args = {"session_id": session_id, "message_id": message_id}
+    def email_get_message(session_id: str, mailbox_id: str, message_id: str) -> dict[str, Any]:
+        args = {"session_id": session_id, "mailbox_id": mailbox_id, "message_id": message_id}
         try:
             session = context.policy.require_tool(session_id, ToolName.EMAIL_GET_MESSAGE)
-            message = context.email_service.get_message(message_id)
+            message = context.email_service.get_message(mailbox_id=mailbox_id, message_id=message_id)
             context.policy.require_email_folder(session, message.folder)
             result = message.model_dump(mode="json")
             audit_success(session_id, ToolName.EMAIL_GET_MESSAGE, args, {"message_id": message_id})
@@ -140,18 +142,20 @@ def create_server(context: RuntimeContext) -> FastMCP:
     def email_create_draft(
         session_id: str,
         body: str,
+        mailbox_id: str,
         thread_or_message_id: str | None = None,
         subject: str | None = None,
     ) -> dict[str, Any]:
         args = {
             "session_id": session_id,
+            "mailbox_id": mailbox_id,
             "thread_or_message_id": thread_or_message_id,
             "subject": subject,
             "body": body,
         }
         try:
             context.policy.require_tool(session_id, ToolName.EMAIL_CREATE_DRAFT)
-            draft = context.email_service.create_draft(thread_or_message_id, subject, body)
+            draft = context.email_service.create_draft(mailbox_id, thread_or_message_id, subject, body)
             result = draft.model_dump(mode="json")
             audit_success(session_id, ToolName.EMAIL_CREATE_DRAFT, args, {"draft_id": draft.draft_id})
             return result

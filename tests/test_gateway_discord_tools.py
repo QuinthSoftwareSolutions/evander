@@ -157,3 +157,64 @@ def test_discord_post_status_rejects_non_allowlisted_channel(tmp_path: Path) -> 
                 },
             )
         )
+
+
+def test_email_tools_require_and_return_mailbox_id(tmp_path: Path) -> None:
+    context = make_context(tmp_path)
+    context.sessions.put(
+        "session-1",
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[
+                ToolName.EMAIL_LIST_UNREAD,
+                ToolName.EMAIL_GET_MESSAGE,
+                ToolName.EMAIL_CREATE_DRAFT,
+            ],
+            email_folder_allowlist=["inbox"],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+
+    context.email_service.provider.email_store.put(
+        "msg-1",
+        context.email_service.provider.email_store.model(
+            message_id="msg-1",
+            mailbox_id="primary",
+            folder="inbox",
+            sender="from@example.com",
+            recipients=["to@example.com"],
+            subject="hello",
+            body_text="world",
+        ),
+    )
+
+    server = create_server(context)
+
+    listed = asyncio.run(
+        server.call_tool(
+            "email_list_unread",
+            {"session_id": "session-1", "mailbox_id": "primary", "folder": "inbox", "limit": 10},
+        )
+    )
+    assert listed[0]["mailbox_id"] == "primary"
+
+    fetched = asyncio.run(
+        server.call_tool(
+            "email_get_message",
+            {"session_id": "session-1", "mailbox_id": "primary", "message_id": "msg-1"},
+        )
+    )
+    assert fetched["mailbox_id"] == "primary"
+
+    draft = asyncio.run(
+        server.call_tool(
+            "email_create_draft",
+            {
+                "session_id": "session-1",
+                "mailbox_id": "primary",
+                "body": "draft body",
+                "subject": "Re: hello",
+            },
+        )
+    )
+    assert draft["mailbox_id"] == "primary"
