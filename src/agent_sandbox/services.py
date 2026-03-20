@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from typing import Any, Protocol
 
 import httpx
-from .models import DraftMessage, EmailMessage
+from .models import DiscordCommandEnvelope, DraftMessage, EmailMessage
 from .storage import JsonStore
 
 
@@ -68,6 +68,18 @@ class StubDiscordService:
 
     def get_commands(self, since_cursor: str | None = None) -> list[DiscordCommandEnvelope]:
         commands = list(self.command_store.read_all().values())
+        for command in commands:
+            command.metadata = {
+                "source": command.metadata.get("source", "stub"),
+                "guild_id": command.metadata.get("guild_id"),
+                "channel_id": command.metadata.get("channel_id", command.channel_id),
+                "author_id": command.metadata.get("author_id", command.author_id),
+                **{
+                    key: value
+                    for key, value in command.metadata.items()
+                    if key not in {"source", "guild_id", "channel_id", "author_id"}
+                },
+            }
         commands.sort(key=lambda item: item.created_at)
         if since_cursor is None:
             return commands
@@ -124,7 +136,13 @@ class DiscordBotApiService:
                         author_id=payload["author"]["id"],
                         channel_id=channel_id,
                         content=payload.get("content", ""),
-                        metadata={"source": "discord_bot_api", "message": payload},
+                        metadata={
+                            "source": "discord_bot_api",
+                            "guild_id": payload.get("guild_id"),
+                            "channel_id": channel_id,
+                            "author_id": payload["author"]["id"],
+                            "message": payload,
+                        },
                     )
                     envelopes[envelope.command_id] = envelope
                     self.command_store.put(envelope.command_id, envelope)
@@ -151,6 +169,9 @@ class DiscordBotApiService:
             content=payload.get("content", ""),
             metadata={
                 "source": "discord_bot_api_status",
+                "guild_id": payload.get("guild_id"),
+                "channel_id": channel_id,
+                "author_id": payload["author"]["id"],
                 "session_id": session_id,
                 "message": payload,
             },
@@ -162,15 +183,3 @@ class DiscordBotApiService:
             "session_id": session_id,
             "message_id": payload["id"],
         }
-
-
-from pydantic import BaseModel, Field  # noqa: E402
-
-
-class DiscordCommandEnvelope(BaseModel):
-    command_id: str
-    author_id: str
-    channel_id: str
-    content: str
-    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
-    metadata: dict[str, Any] = Field(default_factory=dict)

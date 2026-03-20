@@ -7,6 +7,7 @@ from .config import GatewayConfig
 from .models import (
     ApprovalRequest,
     ApprovalStatus,
+    DiscordCommandEnvelope,
     SessionManifest,
     ToolName,
     digest_payload,
@@ -46,6 +47,30 @@ class PolicyEngine:
     def require_discord_channel(self, session: SessionManifest, channel_id: str) -> None:
         if channel_id not in session.discord_channel_allowlist:
             raise PolicyError(f"Discord channel is not allowlisted for session {session.session_id}")
+
+    def require_discord_command_source(
+        self,
+        session: SessionManifest,
+        command: DiscordCommandEnvelope,
+    ) -> None:
+        source = str(command.metadata.get("source", ""))
+        if source != "discord_bot_api":
+            raise PolicyError(f"Discord command {command.command_id} has untrusted source {source!r}")
+
+        source_channel_id = str(command.metadata.get("channel_id", command.channel_id)).strip()
+        source_author_id = str(command.metadata.get("author_id", command.author_id)).strip()
+        if not source_channel_id or not source_author_id:
+            raise PolicyError(
+                f"Discord command {command.command_id} is missing required source metadata"
+            )
+
+        allowlisted_channel = source_channel_id in session.discord_channel_allowlist
+        allowlisted_operator = source_author_id in self.config.discord_operator_user_allowlist
+        if not (allowlisted_channel or allowlisted_operator):
+            raise PolicyError(
+                f"Discord command {command.command_id} source is not allowlisted for session "
+                f"{session.session_id}"
+            )
 
     def require_email_folder(self, session: SessionManifest, folder: str) -> None:
         if folder not in session.email_folder_allowlist:

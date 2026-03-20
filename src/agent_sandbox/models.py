@@ -76,6 +76,15 @@ class ApprovalRequest(BaseModel):
     decision_at: datetime | None = None
 
 
+class DiscordCommandEnvelope(BaseModel):
+    command_id: str
+    author_id: str
+    channel_id: str
+    content: str
+    created_at: datetime = Field(default_factory=utc_now)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class AuditEvent(BaseModel):
     event_type: str
     session_id: str | None = None
