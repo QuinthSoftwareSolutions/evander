@@ -9,6 +9,11 @@ approval_store_path: "/home/jonathan/agent-sandbox/runtime/approvals.json"
 draft_store_path: "/home/jonathan/agent-sandbox/runtime/drafts.json"
 email_store_path: "/home/jonathan/agent-sandbox/runtime/emails.json"
 discord_command_store_path: "/home/jonathan/agent-sandbox/runtime/discord_commands.json"
+discord_backend: "stub"
+discord_bot_token_env: "DISCORD_BOT_TOKEN"
+discord_api_base_url: "https://discord.com/api/v10"
+discord_poll_limit: 50
+discord_timeout_seconds: 15.0
 bind_network_cidr: "192.168.250.0/24"
 gateway_url: "http://192.168.250.1:8000/mcp"
 openai_relay_host: "0.0.0.0"
