@@ -69,6 +69,9 @@ def _build_discord_service(
             api_base_url=config.discord_api_base_url,
             poll_limit=config.discord_poll_limit,
             timeout_seconds=config.discord_timeout_seconds,
+            retry_count=config.discord_retry_count,
+            retry_base_backoff_seconds=config.discord_retry_base_backoff_seconds,
+            retry_max_backoff_seconds=config.discord_retry_max_backoff_seconds,
         )
     raise RuntimeError(
         f"Unsupported discord backend {config.discord_backend!r}. Expected one of: 'stub', 'bot_api'."

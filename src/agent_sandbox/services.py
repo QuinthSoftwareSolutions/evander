@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import random
+import time
 from datetime import UTC, datetime
 from typing import Any, Protocol
 
@@ -103,12 +105,22 @@ class DiscordBotApiService:
         api_base_url: str,
         poll_limit: int,
         timeout_seconds: float,
+        retry_count: int,
+        retry_base_backoff_seconds: float,
+        retry_max_backoff_seconds: float,
     ) -> None:
         self.command_store = command_store
         self.token = token
         self.api_base_url = api_base_url.rstrip("/")
         self.poll_limit = poll_limit
         self.timeout_seconds = timeout_seconds
+        self.retry_count = retry_count
+        self.retry_base_backoff_seconds = retry_base_backoff_seconds
+        self.retry_max_backoff_seconds = retry_max_backoff_seconds
+        self.max_total_retry_time_seconds = sum(
+            min(self.retry_max_backoff_seconds, self.retry_base_backoff_seconds * (2**attempt))
+            for attempt in range(self.retry_count)
+        )
 
     def _headers(self) -> dict[str, str]:
         return {
@@ -120,16 +132,68 @@ class DiscordBotApiService:
         channel_ids = {command.channel_id for command in self.command_store.read_all().values()}
         return sorted(channel_ids)
 
-    def get_commands(self, since_cursor: str | None = None) -> list[DiscordCommandEnvelope]:
-        envelopes: dict[str, DiscordCommandEnvelope] = dict(self.command_store.read_all())
-        with httpx.Client(timeout=self.timeout_seconds) as client:
-            for channel_id in self._known_channel_ids():
-                response = client.get(
-                    f"{self.api_base_url}/channels/{channel_id}/messages",
+    def _should_retry_http_status(self, status_code: int) -> bool:
+        return status_code == 429 or 500 <= status_code <= 599
+
+    def _request_with_retries(
+        self,
+        client: httpx.Client,
+        method: str,
+        url: str,
+        *,
+        params: dict[str, Any] | None = None,
+        json: dict[str, Any] | None = None,
+    ) -> httpx.Response:
+        start_time = time.monotonic()
+        attempt = 0
+        last_error: Exception | None = None
+        while True:
+            try:
+                response = client.request(
+                    method,
+                    url,
                     headers=self._headers(),
-                    params={"limit": self.poll_limit},
+                    params=params,
+                    json=json,
+                    timeout=self.timeout_seconds,
                 )
                 response.raise_for_status()
+                return response
+            except (httpx.TimeoutException, httpx.ConnectError) as exc:
+                last_error = exc
+                if attempt >= self.retry_count:
+                    raise
+            except httpx.HTTPStatusError as exc:
+                status_code = exc.response.status_code
+                if not self._should_retry_http_status(status_code) or attempt >= self.retry_count:
+                    raise
+                last_error = exc
+
+            planned_backoff = min(
+                self.retry_max_backoff_seconds,
+                self.retry_base_backoff_seconds * (2**attempt),
+            )
+            jittered_backoff = random.uniform(0.5 * planned_backoff, 1.5 * planned_backoff)
+            elapsed = time.monotonic() - start_time
+            remaining_budget = self.max_total_retry_time_seconds - elapsed
+            if remaining_budget <= 0:
+                if last_error is not None:
+                    raise last_error
+                raise TimeoutError("Retry budget exhausted before completing Discord API request")
+            sleep_for = min(jittered_backoff, remaining_budget)
+            time.sleep(sleep_for)
+            attempt += 1
+
+    def get_commands(self, since_cursor: str | None = None) -> list[DiscordCommandEnvelope]:
+        envelopes: dict[str, DiscordCommandEnvelope] = dict(self.command_store.read_all())
+        with httpx.Client(timeout=None) as client:
+            for channel_id in self._known_channel_ids():
+                response = self._request_with_retries(
+                    client,
+                    "GET",
+                    f"{self.api_base_url}/channels/{channel_id}/messages",
+                    params={"limit": self.poll_limit},
+                )
                 for payload in response.json():
                     envelope = DiscordCommandEnvelope(
                         command_id=payload["id"],
@@ -153,13 +217,13 @@ class DiscordBotApiService:
         return [command for command in commands if command.command_id > since_cursor]
 
     def post_status(self, message: str, channel_id: str, session_id: str) -> dict[str, Any]:
-        with httpx.Client(timeout=self.timeout_seconds) as client:
-            response = client.post(
+        with httpx.Client(timeout=None) as client:
+            response = self._request_with_retries(
+                client,
+                "POST",
                 f"{self.api_base_url}/channels/{channel_id}/messages",
-                headers=self._headers(),
                 json={"content": message},
             )
-            response.raise_for_status()
             payload = response.json()
 
         envelope = DiscordCommandEnvelope(
