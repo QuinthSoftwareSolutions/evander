@@ -7,6 +7,7 @@ from pathlib import Path
 import typer
 
 from .config import load_config
+from .email.providers import JsonEmailProvider, MultiMailboxEmailProvider
 from .models import ApprovalStatus, EmailMessage, SessionManifest, ToolName
 from .runtime import build_runtime
 
@@ -112,5 +113,19 @@ def seed_email(
         subject=subject,
         body_text=body_text,
     )
-    runtime.email_service.provider.email_store.put(message_id, message)
-    typer.echo(f"Seeded email {message_id}")
+    provider = runtime.email_service.provider
+    if isinstance(provider, JsonEmailProvider):
+        provider.email_store.put(message_id, message)
+        typer.echo(f"Seeded email {message_id}")
+        return
+
+    if isinstance(provider, MultiMailboxEmailProvider):
+        mailbox_provider = provider.providers_by_mailbox.get(mailbox_id)
+        if isinstance(mailbox_provider, JsonEmailProvider):
+            mailbox_provider.email_store.put(message_id, message)
+            typer.echo(f"Seeded email {message_id}")
+            return
+
+    raise typer.BadParameter(
+        f"mailbox {mailbox_id!r} is not configured with json_store provider and cannot be locally seeded"
+    )

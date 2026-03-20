@@ -38,3 +38,12 @@ email_folder_allowlist_by_mailbox:
 email_draft_recipient_allowlist: []
 email_draft_domain_allowlist: []
 email_send_enabled: false
+email_provider_timeout_seconds: 30.0
+email_mailboxes:
+  - mailbox_id: "default"
+    provider: "json_store"
+    account_identifier: "default"
+    auth_secret_refs: {}
+    folder_mapping:
+      inbox: "inbox"
+      drafts: "drafts"

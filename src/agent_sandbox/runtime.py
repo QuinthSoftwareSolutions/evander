@@ -4,8 +4,10 @@ import os
 from dataclasses import dataclass
 
 from .audit import AuditLogger
-from .config import GatewayConfig
-from .email.providers import JsonEmailProvider
+from .config import GatewayConfig, MailboxConfig
+from .email.gmail_provider import GmailEmailProvider
+from .email.graph_provider import GraphEmailProvider
+from .email.providers import JsonEmailProvider, MultiMailboxEmailProvider
 from .models import ApprovalRequest, DiscordCommandEnvelope, DraftMessage, EmailMessage, SessionManifest
 from .policy import PolicyEngine
 from .services import (
@@ -40,11 +42,49 @@ def build_runtime(config: GatewayConfig) -> RuntimeContext:
         config=config,
         audit=AuditLogger(config.audit_log_path),
         policy=PolicyEngine(config, sessions, approvals),
-        email_service=EmailService(JsonEmailProvider(emails, drafts)),
+        email_service=EmailService(_build_email_provider(config, emails, drafts)),
         discord_service=discord_service,
         sessions=sessions,
         approvals=approvals,
     )
+
+
+def _build_email_provider(
+    config: GatewayConfig,
+    emails: JsonStore[EmailMessage],
+    drafts: JsonStore[DraftMessage],
+) -> JsonEmailProvider | MultiMailboxEmailProvider:
+    mailbox_configs = config.email_mailboxes or [
+        MailboxConfig(mailbox_id="default", provider="json_store", account_identifier="default")
+    ]
+
+    if all(mailbox.provider == "json_store" for mailbox in mailbox_configs):
+        return JsonEmailProvider(emails, drafts)
+
+    providers_by_mailbox: dict[str, JsonEmailProvider | GmailEmailProvider | GraphEmailProvider] = {}
+    for mailbox in mailbox_configs:
+        if mailbox.provider == "json_store":
+            providers_by_mailbox[mailbox.mailbox_id] = JsonEmailProvider(emails, drafts)
+            continue
+        if mailbox.provider == "gmail":
+            providers_by_mailbox[mailbox.mailbox_id] = GmailEmailProvider(
+                account_identifier=mailbox.account_identifier,
+                folder_mapping=mailbox.folder_mapping,
+                auth_secret_refs=mailbox.auth_secret_refs,
+                timeout_seconds=config.email_provider_timeout_seconds,
+            )
+            continue
+        if mailbox.provider == "graph":
+            providers_by_mailbox[mailbox.mailbox_id] = GraphEmailProvider(
+                account_identifier=mailbox.account_identifier,
+                folder_mapping=mailbox.folder_mapping,
+                auth_secret_refs=mailbox.auth_secret_refs,
+                timeout_seconds=config.email_provider_timeout_seconds,
+            )
+            continue
+        raise RuntimeError(f"Unsupported email provider: {mailbox.provider!r}")
+
+    return MultiMailboxEmailProvider(providers_by_mailbox)
 
 
 def _build_discord_service(
