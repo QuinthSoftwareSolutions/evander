@@ -1,0 +1,130 @@
+# Agent Sandbox
+
+`agent-sandbox` is a host-side control plane for running autonomous AI agents inside disposable libvirt VMs while exposing only narrow, audited capabilities through MCP.
+
+## What This Scaffold Includes
+
+- A Python MCP gateway with policy-gated Discord and email tool surfaces
+- A host-side OpenAI relay that keeps the API key on the host and exposes an OpenAI-compatible endpoint to guests
+- File-backed session, approval, audit, and draft storage for local development
+- A small CLI for bootstrapping state and creating session manifests
+- Libvirt, cloud-init, and firewall scripts for an isolated VM network
+- Systemd service templates and an install script for persistent host services
+- Local bare Git remote tooling for getting code changes back out of VMs
+- Configuration templates and implementation notes for evolving the scaffold into a production setup
+
+## Core Security Model
+
+- Guests have no direct access to host secrets.
+- Guests reach only the MCP gateway over a private libvirt network.
+- Every tool call is checked against a session manifest.
+- Irreversible actions require a separate approval record and exact payload match.
+- State is append-only where possible and intentionally simple in v1.
+
+## Quick Start
+
+1. Install host dependencies and create a virtual environment:
+
+   ```bash
+   sudo apt install qemu-system-x86 libvirt-daemon-system libvirt-clients virtinst cloud-image-utils ovmf
+   uv venv
+   . .venv/bin/activate
+   uv pip install -e .
+   ```
+
+2. Copy the example configuration and adjust it:
+
+   ```bash
+   cp config/gateway.example.yaml config/gateway.yaml
+   ```
+
+3. Initialize runtime state:
+
+   ```bash
+   agent-sandbox-cli init-state --config config/gateway.yaml
+   ```
+
+4. Start the MCP gateway:
+
+   ```bash
+   agent-sandbox-gateway --config config/gateway.yaml
+   ```
+
+5. Create the libvirt network and firewall policy:
+
+   ```bash
+   sudo ./scripts/create_libvirt_network.sh
+   sudo ./scripts/apply_firewall.sh
+   ```
+
+   The default firewall policy allows host ports `22`, `8000`, and `11434` so VMs can use SSH for Git remotes, MCP on `8000`, and the OpenAI relay on `11434`.
+
+6. Start the host-side services:
+
+   ```bash
+   export OPENAI_API_KEY=...
+   agent-sandbox-gateway --config config/gateway.yaml
+   agent-sandbox-openai-relay --config config/gateway.yaml
+   ```
+
+7. Download the base image and launch VMs from a libvirt-accessible storage path:
+
+   ```bash
+   sudo ./scripts/create_base_vm.sh
+   sudo ./scripts/launch_agent_vm.sh vm-real real-session
+   ```
+
+   By default, the launch script injects your host `~/.ssh/id_ed25519.pub` key into the guest and exposes a host-side LLM base URL of `http://192.168.250.1:11434/v1`. Override with `SSH_PUBLIC_KEY_FILE=...` or `LLM_BASE_URL=...` if needed.
+   New VMs default to a `20G` virtual disk; override with `DISK_SIZE_GB=...` before launch if needed.
+   New VMs also receive `/home/agent/.codex/config.toml` and a shell profile hook so Codex defaults to the host relay without the deprecated `OPENAI_BASE_URL` warning.
+
+8. Install the Codex binary into the VM:
+
+   ```bash
+   ./scripts/bootstrap_codex_vm.sh vm-real
+   ```
+
+   This copies the vendored Linux Codex binary from the host install into the guest user's `~/bin`, rewrites `~/.codex/config.toml` to use the host relay, ensures the placeholder API-key shell hook exists, and verifies `codex --version`.
+
+## Persistent Host Services
+
+Install the gateway and relay as systemd services:
+
+```bash
+sudo ./scripts/install_systemd_units.sh
+$EDITOR config/firewall.env
+$EDITOR config/openai-relay.env
+sudo systemctl start agent-sandbox-firewall.service
+sudo systemctl start agent-sandbox-gateway.service
+sudo systemctl start agent-sandbox-openai-relay.service
+```
+
+The generated units run as your user where appropriate and read environment files from `config/`.
+
+## Local Git Remotes
+
+Use the included bare-repo helper when you want VMs to push code changes back to the host over the private network:
+
+```bash
+cp config/git-server.env.example config/git-server.env
+$EDITOR config/git-server.env
+./scripts/create_git_remote.sh sample-repo
+```
+
+See [git-remotes.md](/home/jonathan/agent-sandbox/docs/git-remotes.md) for the review flow and branch naming pattern.
+
+## Project Layout
+
+- `src/agent_sandbox/`: gateway, relay, policy, storage, and CLI code
+- `scripts/`: libvirt and firewall automation
+- `config/`: sample configuration and cloud-init template
+- `systemd/`: service templates for the host gateway, relay, and firewall policy
+- `docs/`: operating notes and next steps
+
+## Current Limitations
+
+- Discord and email providers are intentionally stubbed behind local JSON stores.
+- The gateway is ready for integration adapters, not production credentials by default.
+- Network/firewall scripts assume Ubuntu 24.04 and nftables-backed libvirt hosts.
+- VM disk and seed artifacts default to `/var/lib/libvirt/images/agent-sandbox`, so VM lifecycle scripts should be run with `sudo` unless you deliberately provision an alternate libvirt-accessible storage path.
+- Guests can reach only the specific host TCP ports you allow in `ALLOWED_TCP_PORTS`; the defaults are `22` for host SSH/Git, `8000` for MCP, and `11434` for the host-side OpenAI relay or another OpenAI-compatible LLM endpoint.

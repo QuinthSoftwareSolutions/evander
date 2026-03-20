@@ -1,0 +1,14 @@
+host: "0.0.0.0"
+port: 8000
+log_level: "INFO"
+approval_ttl_seconds: 3600
+runtime_dir: "/home/jonathan/agent-sandbox/runtime"
+audit_log_path: "/home/jonathan/agent-sandbox/runtime/audit.jsonl"
+session_store_path: "/home/jonathan/agent-sandbox/runtime/sessions.json"
+approval_store_path: "/home/jonathan/agent-sandbox/runtime/approvals.json"
+draft_store_path: "/home/jonathan/agent-sandbox/runtime/drafts.json"
+email_store_path: "/home/jonathan/agent-sandbox/runtime/emails.json"
+discord_command_store_path: "/home/jonathan/agent-sandbox/runtime/discord_commands.json"
+bind_network_cidr: "192.168.250.0/24"
+gateway_url: "http://192.168.250.1:8000/mcp"
+default_session_ttl_seconds: 28800

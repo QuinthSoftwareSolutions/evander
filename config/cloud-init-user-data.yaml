@@ -1,0 +1,53 @@
+#cloud-config
+package_update: true
+package_upgrade: false
+packages:
+  - qemu-guest-agent
+  - openssh-server
+  - curl
+  - ca-certificates
+ssh_pwauth: false
+disable_root: true
+users:
+  - name: agent
+    gecos: Agent User
+    groups: [sudo]
+    sudo: "ALL=(ALL) NOPASSWD:ALL"
+    shell: /bin/bash
+    lock_passwd: true
+    ssh_authorized_keys:
+      - __SSH_PUBLIC_KEY__
+runcmd:
+  - systemctl enable qemu-guest-agent
+  - systemctl start qemu-guest-agent
+  - systemctl enable ssh
+  - systemctl start ssh
+  - printf '%s\n' 'nameserver 9.9.9.9' > /etc/resolv.conf
+  - chown -R agent:agent /home/agent
+write_files:
+  - path: /etc/agent-sandbox/session.env
+    owner: root:root
+    permissions: "0600"
+    content: |
+      AGENT_SANDBOX_GATEWAY_URL=__GATEWAY_URL__
+      AGENT_SANDBOX_SESSION_ID=__SESSION_ID__
+      AGENT_SANDBOX_LLM_BASE_URL=__LLM_BASE_URL__
+      OPENAI_BASE_URL=__LLM_BASE_URL__
+  - path: /home/agent/.codex/config.toml
+    owner: agent:agent
+    permissions: "0600"
+    content: |
+      model = "gpt-5.2-codex"
+      model_provider = "openai"
+      openai_base_url = "__LLM_BASE_URL__"
+  - path: /home/agent/.profile
+    owner: agent:agent
+    permissions: "0644"
+    append: true
+    content: |
+      if [ -f /etc/agent-sandbox/session.env ]; then
+        set -a
+        . /etc/agent-sandbox/session.env
+        set +a
+      fi
+      export OPENAI_API_KEY="${OPENAI_API_KEY:-relay-placeholder}"

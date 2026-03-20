@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ $# -lt 1 ]]; then
+  echo "usage: $0 <vm-name> [vm-user]" >&2
+  exit 1
+fi
+
+VM_NAME="$1"
+VM_USER="${2:-agent}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+CALLER_USER="${SUDO_USER:-$USER}"
+CALLER_HOME="$(getent passwd "${CALLER_USER}" | cut -d: -f6)"
+SSH_KEY_PATH="${SSH_KEY_PATH:-${CALLER_HOME}/.ssh/id_ed25519}"
+if [[ ! -f "${SSH_KEY_PATH}" ]]; then
+  SSH_KEY_PATH="${CALLER_HOME}/.ssh/id_rsa"
+fi
+
+HOST_CODEX_ROOT="${HOST_CODEX_ROOT:-${CALLER_HOME}/.nvm/versions/node/v24.14.0/lib/node_modules/@openai/codex}"
+VENDOR_DIR="${HOST_CODEX_ROOT}/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl"
+LLM_BASE_URL="${LLM_BASE_URL:-http://192.168.250.1:11434/v1}"
+SSH_OPTS=(
+  -o StrictHostKeyChecking=no
+  -o UserKnownHostsFile=/dev/null
+  -i "${SSH_KEY_PATH}"
+)
+
+if [[ ! -d "${VENDOR_DIR}" ]]; then
+  echo "Missing Codex vendor directory: ${VENDOR_DIR}" >&2
+  echo "Set HOST_CODEX_ROOT if Codex is installed elsewhere on the host." >&2
+  exit 1
+fi
+
+if [[ ! -f "${SSH_KEY_PATH}" ]]; then
+  echo "Missing SSH private key: ${SSH_KEY_PATH}" >&2
+  echo "Set SSH_KEY_PATH to the private key that matches the VM's authorized key." >&2
+  exit 1
+fi
+
+VM_IP="$(
+  virsh domifaddr "${VM_NAME}" 2>/dev/null \
+    | awk '/ipv4/ {split($4, a, "/"); print a[1]; exit}'
+)"
+
+if [[ -z "${VM_IP}" ]]; then
+  echo "Could not determine an IPv4 address for VM ${VM_NAME}" >&2
+  exit 1
+fi
+
+echo "Bootstrapping Codex into ${VM_USER}@${VM_IP}"
+
+ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "
+  set -euo pipefail
+  sudo mkdir -p /home/${VM_USER}
+  sudo chown -R ${VM_USER}:${VM_USER} /home/${VM_USER}
+  mkdir -p ~/bin ~/codex-vendor
+"
+scp "${SSH_OPTS[@]}" -r "${VENDOR_DIR}/." "${VM_USER}@${VM_IP}:~/codex-vendor/"
+
+ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "VM_USER='${VM_USER}' LLM_BASE_URL='${LLM_BASE_URL}' bash -s" <<'EOF'
+set -euo pipefail
+cp ~/codex-vendor/codex/codex ~/bin/codex
+chmod +x ~/bin/codex
+mkdir -p ~/.codex
+cat > ~/.codex/config.toml <<CONFIG
+model = "gpt-5.2-codex"
+model_provider = "openai"
+openai_base_url = "${LLM_BASE_URL}"
+
+[projects."/home/${VM_USER}"]
+trust_level = "trusted"
+CONFIG
+if ! grep -q 'export PATH="$HOME/bin:$PATH"' ~/.profile 2>/dev/null; then
+  printf '\nexport PATH="$HOME/bin:$PATH"\n' >> ~/.profile
+fi
+if ! grep -q 'relay-placeholder' ~/.profile 2>/dev/null; then
+  cat >> ~/.profile <<PROFILE
+if [ -f /etc/agent-sandbox/session.env ]; then
+  set -a
+  . /etc/agent-sandbox/session.env
+  set +a
+fi
+export OPENAI_API_KEY="\${OPENAI_API_KEY:-relay-placeholder}"
+PROFILE
+fi
+export PATH="$HOME/bin:$HOME/codex-vendor/path:$PATH"
+export OPENAI_API_KEY="${OPENAI_API_KEY:-relay-placeholder}"
+codex --version
+EOF
+
+echo "Codex bootstrap complete for ${VM_NAME} (${VM_IP})"
