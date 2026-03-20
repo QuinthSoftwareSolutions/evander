@@ -25,6 +25,14 @@ class GatewayConfig(BaseModel):
     openai_api_base_url: str = "https://api.openai.com/v1"
     openai_api_key_env: str = "OPENAI_API_KEY"
     openai_relay_timeout_seconds: float = 300.0
+    nuget_relay_host: str = "0.0.0.0"
+    nuget_relay_port: int = 11666
+    nuget_public_feed_base_url: str = "https://api.nuget.org"
+    nuget_azure_feed_base_url: str = (
+        "https://pkgs.dev.azure.com/example/example/_packaging/example/nuget"
+    )
+    nuget_azure_pat_env: str = "AZURE_ARTIFACTS_PAT"
+    nuget_relay_timeout_seconds: float = 300.0
     default_session_ttl_seconds: int = 28800
     redacted_keys: set[str] = Field(
         default_factory=lambda: {"body", "body_text", "authorization", "token"}

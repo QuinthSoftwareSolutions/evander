@@ -5,6 +5,7 @@ SCRIPTS = [
     "apply_firewall.sh",
     "bootstrap_codex_vm.sh",
     "bootstrap_dotnet_vm.sh",
+    "bootstrap_nuget_vm.sh",
     "bootstrap_playwright_vm.sh",
     "create_base_vm.sh",
     "create_git_remote.sh",

@@ -25,8 +25,9 @@ Install these packages on the Ubuntu host before using the scripts:
 8. Launch a VM with `sudo ./scripts/launch_agent_vm.sh`.
 9. Install the Codex binary into the guest with `./scripts/bootstrap_codex_vm.sh <vm-name>`.
 10. Optionally install the host `.NET` SDK into the guest with `./scripts/bootstrap_dotnet_vm.sh <vm-name>`.
-11. Optionally install Playwright into the guest with `./scripts/bootstrap_playwright_vm.sh <vm-name>` for rendered-DOM debugging.
-12. Optionally create a local bare Git remote with `./scripts/create_git_remote.sh <repo-name>` if the VM should push code back to the host.
+11. Optionally install NuGet relay sources into the guest with `./scripts/bootstrap_nuget_vm.sh <vm-name>`.
+12. Optionally install Playwright into the guest with `./scripts/bootstrap_playwright_vm.sh <vm-name>` for rendered-DOM debugging.
+13. Optionally create a local bare Git remote with `./scripts/create_git_remote.sh <repo-name>` if the VM should push code back to the host.
 
 - The launch script resizes each overlay disk to `20G` by default.
 - Override per VM with `DISK_SIZE_GB=40 sudo ./scripts/launch_agent_vm.sh ...`.
@@ -62,19 +63,32 @@ Install these packages on the Ubuntu host before using the scripts:
 - It appends `DOTNET_ROOT`, `DOTNET_CLI_HOME`, and `PATH` exports to `~/.profile`.
 - It verifies the guest can run `dotnet --info` without guest internet access.
 
+## VM NuGet Bootstrap
+
+- `./scripts/bootstrap_nuget_vm.sh <vm-name>` writes `~/.nuget/NuGet/NuGet.Config`.
+- The generated config points to the host NuGet relay for both nuget.org and Azure Artifacts.
+- It runs `dotnet nuget list source` when `dotnet` is available in the guest.
+
 ## Host-Side LLM Access
 
 - The firewall allows only the host TCP ports listed in `ALLOWED_TCP_PORTS`.
-- Defaults: `22` for host SSH/Git, `8000` for the MCP gateway, and `11434` for the host-side OpenAI relay or a local OpenAI-compatible LLM endpoint such as Ollama.
+- Defaults: `22` for host SSH/Git, `8000` for the MCP gateway, `11434` for the host-side OpenAI relay or a local OpenAI-compatible LLM endpoint such as Ollama, and `11666` for the host-side NuGet relay.
 - Override when applying firewall rules, for example:
 
   ```bash
-  sudo ALLOWED_TCP_PORTS="22 8000 11434 4000" ./scripts/apply_firewall.sh
+  sudo ALLOWED_TCP_PORTS="22 8000 11434 11666 4000" ./scripts/apply_firewall.sh
   ```
 
 - The guest receives `AGENT_SANDBOX_LLM_BASE_URL` and `OPENAI_BASE_URL` in `/etc/agent-sandbox/session.env`.
 - The scaffold includes `agent-sandbox-openai-relay`, a host-side OpenAI-compatible proxy that reads the real API key only from the host environment and forwards guest requests to `https://api.openai.com/v1`.
 - For OpenAI/Codex-backed workflows while keeping guests off the public internet, run the relay on the host and leave `LLM_BASE_URL` at its default `http://192.168.250.1:11434/v1`.
+
+## Host-Side NuGet Access
+
+- The scaffold includes `agent-sandbox-nuget-relay`, a host-side relay that proxies `nuget.org` and private Azure Artifacts feeds.
+- The relay reads Azure feed credentials from host environment (`AZURE_ARTIFACTS_PAT`) and does not require guest-side private feed credentials.
+- Configure the relay environment in `config/nuget-relay.env`.
+- After installing units, run `./scripts/bootstrap_nuget_vm.sh <vm-name>` so guest restores target relay URLs on `http://192.168.250.1:11666`.
 
 ## Systemd Services
 
@@ -89,21 +103,26 @@ This creates:
 - `agent-sandbox-firewall.service`
 - `agent-sandbox-gateway.service`
 - `agent-sandbox-openai-relay.service`
+- `agent-sandbox-nuget-relay.service`
 
 Then:
 
 1. Copy `config/firewall.env.example` to `config/firewall.env` if needed.
 2. Copy `config/openai-relay.env.example` to `config/openai-relay.env` if needed.
-3. Set the real `OPENAI_API_KEY` in `config/openai-relay.env`.
-4. Start and inspect the services:
+3. Copy `config/nuget-relay.env.example` to `config/nuget-relay.env` if needed.
+4. Set the real `OPENAI_API_KEY` in `config/openai-relay.env`.
+5. Set `AZURE_ARTIFACTS_PAT` in `config/nuget-relay.env` when private feeds are required.
+6. Start and inspect the services:
 
 ```bash
 sudo systemctl start agent-sandbox-firewall.service
 sudo systemctl start agent-sandbox-gateway.service
 sudo systemctl start agent-sandbox-openai-relay.service
+sudo systemctl start agent-sandbox-nuget-relay.service
 sudo systemctl status agent-sandbox-firewall.service
 sudo systemctl status agent-sandbox-gateway.service
 sudo systemctl status agent-sandbox-openai-relay.service
+sudo systemctl status agent-sandbox-nuget-relay.service
 ```
 
 ## Local Git Remote Flow
