@@ -40,6 +40,10 @@ if [[ ! -f "${ROOT_DIR}/config/firewall.env" ]]; then
   cp "${ROOT_DIR}/config/firewall.env.example" "${ROOT_DIR}/config/firewall.env"
 fi
 
+if [[ ! -f "${ROOT_DIR}/config/nuget-relay.env" ]]; then
+  cp "${ROOT_DIR}/config/nuget-relay.env.example" "${ROOT_DIR}/config/nuget-relay.env"
+fi
+
 render_unit() {
   local template="$1"
   local target="$2"
@@ -61,22 +65,30 @@ render_unit \
   "${ROOT_DIR}/systemd/agent-sandbox-firewall.service.template" \
   "${SYSTEMD_DIR}/agent-sandbox-firewall.service"
 
+render_unit \
+  "${ROOT_DIR}/systemd/agent-sandbox-nuget-relay.service.template" \
+  "${SYSTEMD_DIR}/agent-sandbox-nuget-relay.service"
+
 systemctl daemon-reload
 systemctl enable agent-sandbox-gateway.service
 systemctl enable agent-sandbox-openai-relay.service
 systemctl enable agent-sandbox-firewall.service
+systemctl enable agent-sandbox-nuget-relay.service
 
 cat <<EOF
 Installed systemd units:
   agent-sandbox-gateway.service
   agent-sandbox-openai-relay.service
   agent-sandbox-firewall.service
+  agent-sandbox-nuget-relay.service
 
 Next steps:
   1. Edit ${ROOT_DIR}/config/openai-relay.env and set OPENAI_API_KEY.
-  2. Optionally edit ${ROOT_DIR}/config/firewall.env to change allowed host ports.
-  3. Start services:
+  2. Edit ${ROOT_DIR}/config/nuget-relay.env and set AZURE_ARTIFACTS_PAT if needed.
+  3. Optionally edit ${ROOT_DIR}/config/firewall.env to change allowed host ports.
+  4. Start services:
      sudo systemctl start agent-sandbox-firewall.service
      sudo systemctl start agent-sandbox-gateway.service
      sudo systemctl start agent-sandbox-openai-relay.service
+     sudo systemctl start agent-sandbox-nuget-relay.service
 EOF

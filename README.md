@@ -6,6 +6,7 @@
 
 - A Python MCP gateway with policy-gated Discord and email tool surfaces
 - A host-side OpenAI relay that keeps the API key on the host and exposes an OpenAI-compatible endpoint to guests
+- A host-side NuGet relay that proxies nuget.org and private Azure Artifacts feeds for guests
 - File-backed session, approval, audit, and draft storage for local development
 - A small CLI for bootstrapping state and creating session manifests
 - Libvirt, cloud-init, and firewall scripts for an isolated VM network
@@ -57,7 +58,7 @@
    sudo ./scripts/apply_firewall.sh
    ```
 
-   The default firewall policy allows host ports `22`, `8000`, and `11434` so VMs can use SSH for Git remotes, MCP on `8000`, and the OpenAI relay on `11434`.
+   The default firewall policy allows host ports `22`, `8000`, `11434`, and `11666` so VMs can use SSH for Git remotes, MCP on `8000`, the OpenAI relay on `11434`, and the NuGet relay on `11666`.
 
 6. Start the host-side services:
 
@@ -94,7 +95,15 @@
 
    This copies the host `.NET` installation into the guest, appends `DOTNET_ROOT`, `DOTNET_CLI_HOME`, and `PATH` exports to the guest profile, and verifies `dotnet --info`.
 
-10. Optionally install Playwright into the VM for frontend debugging:
+10. Optionally install host-relay NuGet sources into the VM:
+
+   ```bash
+   ./scripts/bootstrap_nuget_vm.sh vm-real
+   ```
+
+   This writes `~/.nuget/NuGet/NuGet.Config` in the guest so package restore can use host relay endpoints for nuget.org and Azure Artifacts.
+
+11. Optionally install Playwright into the VM for frontend debugging:
 
    ```bash
    ./scripts/bootstrap_playwright_vm.sh vm-real
@@ -104,15 +113,17 @@
 
 ## Persistent Host Services
 
-Install the gateway and relay as systemd services:
+Install the gateway and relay services:
 
 ```bash
 sudo ./scripts/install_systemd_units.sh
 $EDITOR config/firewall.env
 $EDITOR config/openai-relay.env
+$EDITOR config/nuget-relay.env
 sudo systemctl start agent-sandbox-firewall.service
 sudo systemctl start agent-sandbox-gateway.service
 sudo systemctl start agent-sandbox-openai-relay.service
+sudo systemctl start agent-sandbox-nuget-relay.service
 ```
 
 The generated units run as your user where appropriate and read environment files from `config/`.
@@ -143,4 +154,4 @@ See [git-remotes.md](/home/jonathan/agent-sandbox/docs/git-remotes.md) for the r
 - The gateway is ready for integration adapters, not production credentials by default.
 - Network/firewall scripts assume Ubuntu 24.04 and nftables-backed libvirt hosts.
 - VM disk and seed artifacts default to `/var/lib/libvirt/images/agent-sandbox`, so VM lifecycle scripts should be run with `sudo` unless you deliberately provision an alternate libvirt-accessible storage path.
-- Guests can reach only the specific host TCP ports you allow in `ALLOWED_TCP_PORTS`; the defaults are `22` for host SSH/Git, `8000` for MCP, and `11434` for the host-side OpenAI relay or another OpenAI-compatible LLM endpoint.
+- Guests can reach only the specific host TCP ports you allow in `ALLOWED_TCP_PORTS`; the defaults are `22` for host SSH/Git, `8000` for MCP, `11434` for the host-side OpenAI relay or another OpenAI-compatible LLM endpoint, and `11666` for the host-side NuGet relay.
