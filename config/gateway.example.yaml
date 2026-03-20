@@ -14,6 +14,7 @@ discord_bot_token_env: "DISCORD_BOT_TOKEN"
 discord_api_base_url: "https://discord.com/api/v10"
 discord_poll_limit: 50
 discord_timeout_seconds: 15.0
+discord_operator_user_allowlist: []
 bind_network_cidr: "192.168.250.0/24"
 gateway_url: "http://192.168.250.1:8000/mcp"
 openai_relay_host: "0.0.0.0"
