@@ -19,13 +19,19 @@ class EmailService:
         return self.provider.get_message(mailbox_id=mailbox_id, message_id=message_id)
 
     def create_draft(
-        self, mailbox_id: str, thread_or_message_id: str | None, subject: str | None, body: str
+        self,
+        mailbox_id: str,
+        thread_or_message_id: str | None,
+        subject: str | None,
+        body: str,
+        recipients: list[str],
     ) -> EmailDraft:
         return self.provider.create_draft(
             mailbox_id=mailbox_id,
             thread_or_message_id=thread_or_message_id,
             subject=subject,
             body=body,
+            recipients=recipients,
         )
 
     def send_from_draft(self, request_id: str, payload: dict[str, Any]) -> dict[str, Any]:

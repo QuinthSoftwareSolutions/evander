@@ -37,6 +37,11 @@ class SessionManifest(BaseModel):
     allowed_tools: list[ToolName]
     discord_channel_allowlist: list[str] = Field(default_factory=list)
     email_folder_allowlist: list[str] = Field(default_factory=list)
+    email_mailbox_allowlist: list[str] = Field(default_factory=list)
+    email_folder_allowlist_by_mailbox: dict[str, list[str]] = Field(default_factory=dict)
+    email_draft_recipient_allowlist: list[str] = Field(default_factory=list)
+    email_draft_domain_allowlist: list[str] = Field(default_factory=list)
+    email_send_enabled: bool = False
     quotas: dict[str, int] = Field(default_factory=dict)
     expires_at: datetime
     created_at: datetime = Field(default_factory=utc_now)
@@ -70,6 +75,7 @@ class DraftMessage(BaseModel):
     thread_or_message_id: str | None = None
     subject: str | None = None
     body: str
+    recipients: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=utc_now)
 
 
