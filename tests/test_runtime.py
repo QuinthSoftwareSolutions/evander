@@ -44,3 +44,19 @@ def test_build_runtime_uses_bot_api_discord_backend_when_token_is_present(
     runtime = build_runtime(config)
 
     assert isinstance(runtime.discord_service, DiscordBotApiService)
+
+
+def test_build_runtime_reads_bot_token_from_configured_env_var(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("DISCORD_BOT_TOKEN", raising=False)
+    monkeypatch.setenv("AGENT_SANDBOX_DISCORD_TOKEN", "token-value")
+    config = make_config(
+        tmp_path,
+        discord_backend="bot_api",
+        discord_bot_token_env="AGENT_SANDBOX_DISCORD_TOKEN",
+    )
+
+    runtime = build_runtime(config)
+
+    assert isinstance(runtime.discord_service, DiscordBotApiService)

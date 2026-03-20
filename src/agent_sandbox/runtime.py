@@ -53,11 +53,16 @@ def _build_discord_service(
     if config.discord_backend == "stub":
         return StubDiscordService(command_store)
     if config.discord_backend == "bot_api":
-        token = os.environ.get(config.discord_bot_token_env, "").strip()
+        env_var_name = config.discord_bot_token_env.strip()
+        if not env_var_name:
+            raise RuntimeError(
+                "discord backend 'bot_api' requires config.discord_bot_token_env to be set"
+            )
+        token = os.environ.get(env_var_name, "").strip()
         if not token:
             raise RuntimeError(
                 "discord backend 'bot_api' requires a bot token in environment variable "
-                f"{config.discord_bot_token_env!r}"
+                f"{env_var_name!r}"
             )
         return DiscordBotApiService(
             command_store,
