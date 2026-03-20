@@ -116,6 +116,28 @@ class DiscordBotApiService:
             "Content-Type": "application/json",
         }
 
+    @staticmethod
+    def _cursor_sort_value(command_id: str) -> tuple[int, int | str]:
+        if command_id.isdigit():
+            return (0, int(command_id))
+        return (1, command_id)
+
+    @classmethod
+    def _is_after_cursor(cls, command_id: str, since_cursor: str) -> bool:
+        if command_id.isdigit() and since_cursor.isdigit():
+            return int(command_id) > int(since_cursor)
+        return command_id > since_cursor
+
+    @classmethod
+    def _sorted_commands(
+        cls,
+        envelopes: dict[str, DiscordCommandEnvelope],
+    ) -> list[DiscordCommandEnvelope]:
+        return sorted(
+            envelopes.values(),
+            key=lambda item: (item.created_at, cls._cursor_sort_value(item.command_id)),
+        )
+
     def _known_channel_ids(self) -> list[str]:
         channel_ids = {command.channel_id for command in self.command_store.read_all().values()}
         return sorted(channel_ids)
@@ -147,10 +169,14 @@ class DiscordBotApiService:
                     envelopes[envelope.command_id] = envelope
                     self.command_store.put(envelope.command_id, envelope)
 
-        commands = sorted(envelopes.values(), key=lambda item: item.created_at)
+        commands = self._sorted_commands(envelopes)
         if since_cursor is None:
             return commands
-        return [command for command in commands if command.command_id > since_cursor]
+        return [
+            command
+            for command in commands
+            if self._is_after_cursor(command.command_id, since_cursor)
+        ]
 
     def post_status(self, message: str, channel_id: str, session_id: str) -> dict[str, Any]:
         with httpx.Client(timeout=self.timeout_seconds) as client:

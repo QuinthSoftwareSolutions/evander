@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime, timedelta
+from inspect import signature
 from pathlib import Path
 
 import pytest
@@ -157,3 +158,65 @@ def test_discord_post_status_rejects_non_allowlisted_channel(tmp_path: Path) -> 
                 },
             )
         )
+
+
+def test_discord_tool_contract_signatures_and_shapes_stable(tmp_path: Path) -> None:
+    context = make_context(tmp_path)
+    context.sessions.put(
+        "session-1",
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[ToolName.DISCORD_GET_COMMANDS, ToolName.DISCORD_POST_STATUS],
+            discord_channel_allowlist=["chan-allowlisted"],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    context.discord_service = FakeDiscordService(
+        commands=[
+            DiscordCommandEnvelope(
+                command_id="cmd-1",
+                author_id="user-1",
+                channel_id="chan-allowlisted",
+                content="!status",
+                metadata={
+                    "source": "discord_bot_api",
+                    "channel_id": "chan-allowlisted",
+                    "author_id": "user-1",
+                },
+            )
+        ]
+    )
+    server = create_server(context)
+
+    assert list(signature(FakeDiscordService.get_commands).parameters) == [
+        "self",
+        "since_cursor",
+    ]
+    assert signature(FakeDiscordService.get_commands).parameters["since_cursor"].default is None
+    assert list(signature(FakeDiscordService.post_status).parameters) == [
+        "self",
+        "message",
+        "channel_id",
+        "session_id",
+    ]
+
+    get_result = asyncio.run(
+        server.call_tool("discord_get_commands", {"session_id": "session-1", "since_cursor": None})
+    )
+    post_result = asyncio.run(
+        server.call_tool(
+            "discord_post_status",
+            {
+                "session_id": "session-1",
+                "channel_id": "chan-allowlisted",
+                "message": "ok",
+            },
+        )
+    )
+
+    assert isinstance(get_result, list)
+    assert get_result
+    assert {"command_id", "author_id", "channel_id", "content", "metadata"}.issubset(get_result[0])
+
+    assert set(post_result) == {"status", "message_id", "channel_id", "session_id"}
+    assert post_result["status"] == "posted"

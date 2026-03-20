@@ -213,3 +213,40 @@ def test_require_discord_command_source_rejects_non_allowlisted_channel_and_auth
 
     with pytest.raises(PolicyError, match="source is not allowlisted"):
         engine.require_discord_command_source(session, command)
+
+
+def test_require_discord_channel_rejects_unrestricted_target(tmp_path: Path) -> None:
+    engine = make_engine(tmp_path)
+    session = SessionManifest(
+        session_id="s1",
+        allowed_tools=[ToolName.DISCORD_POST_STATUS],
+        discord_channel_allowlist=["chan-control"],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+
+    with pytest.raises(PolicyError, match="not allowlisted"):
+        engine.require_discord_channel(session, "chan-unrestricted")
+
+
+def test_require_discord_command_source_rejects_unrestricted_polling_target(tmp_path: Path) -> None:
+    engine = make_engine(tmp_path)
+    session = SessionManifest(
+        session_id="s1",
+        allowed_tools=[ToolName.DISCORD_GET_COMMANDS],
+        discord_channel_allowlist=[],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    command = DiscordCommandEnvelope(
+        command_id="cmd1",
+        author_id="user-unknown",
+        channel_id="chan-unrestricted",
+        content="!run",
+        metadata={
+            "source": "discord_bot_api",
+            "channel_id": "chan-unrestricted",
+            "author_id": "user-unknown",
+        },
+    )
+
+    with pytest.raises(PolicyError, match="source is not allowlisted"):
+        engine.require_discord_command_source(session, command)
