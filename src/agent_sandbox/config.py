@@ -20,7 +20,7 @@ class GatewayConfig(BaseModel):
     email_store_path: Path = Path("/var/lib/agent-sandbox/emails.json")
     discord_command_store_path: Path = Path("/var/lib/agent-sandbox/discord_commands.json")
     discord_backend: Literal["stub", "bot_api"] = "stub"
-    discord_bot_token_env: str = "DISCORD_BOT_TOKEN"
+    discord_bot_token_env: str = Field(default="DISCORD_BOT_TOKEN", min_length=1)
     discord_api_base_url: str = "https://discord.com/api/v10"
     discord_poll_limit: int = Field(default=50, ge=1, le=100)
     discord_timeout_seconds: float = Field(default=15.0, gt=0)
