@@ -7,6 +7,14 @@ import yaml
 from pydantic import BaseModel, Field
 
 
+class MailboxConfig(BaseModel):
+    mailbox_id: str
+    provider: Literal["json_store", "gmail", "graph"] = "json_store"
+    account_identifier: str = "default"
+    auth_secret_refs: dict[str, str] = Field(default_factory=dict)
+    folder_mapping: dict[str, str] = Field(default_factory=lambda: {"inbox": "inbox", "drafts": "drafts"})
+
+
 class GatewayConfig(BaseModel):
     host: str = "0.0.0.0"
     port: int = 8000
@@ -48,6 +56,17 @@ class GatewayConfig(BaseModel):
     email_draft_recipient_allowlist: list[str] = Field(default_factory=list)
     email_draft_domain_allowlist: list[str] = Field(default_factory=list)
     email_send_enabled: bool = False
+    email_provider_timeout_seconds: float = Field(default=30.0, gt=0)
+    email_mailboxes: list[MailboxConfig] = Field(
+        default_factory=lambda: [
+            MailboxConfig(
+                mailbox_id="default",
+                provider="json_store",
+                account_identifier="default",
+                folder_mapping={"inbox": "inbox", "drafts": "drafts"},
+            )
+        ]
+    )
     redacted_keys: set[str] = Field(
         default_factory=lambda: {"body", "body_text", "authorization", "token"}
     )

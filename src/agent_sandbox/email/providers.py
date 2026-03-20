@@ -58,6 +58,44 @@ class EmailProvider(Protocol):
         ...
 
 
+class MultiMailboxEmailProvider:
+    """Dispatches email operations to a provider selected by mailbox_id."""
+
+    def __init__(self, providers_by_mailbox: dict[str, EmailProvider]) -> None:
+        self.providers_by_mailbox = providers_by_mailbox
+
+    def _provider_for_mailbox(self, mailbox_id: str) -> EmailProvider:
+        provider = self.providers_by_mailbox.get(mailbox_id)
+        if provider is None:
+            raise KeyError(f"Unknown mailbox id: {mailbox_id}")
+        return provider
+
+    def list_unread(self, mailbox_id: str, folder: str, limit: int) -> list[EmailMessageSummary]:
+        provider = self._provider_for_mailbox(mailbox_id)
+        return provider.list_unread(mailbox_id=mailbox_id, folder=folder, limit=limit)
+
+    def get_message(self, mailbox_id: str, message_id: str) -> EmailMessageDetail:
+        provider = self._provider_for_mailbox(mailbox_id)
+        return provider.get_message(mailbox_id=mailbox_id, message_id=message_id)
+
+    def create_draft(
+        self,
+        mailbox_id: str,
+        thread_or_message_id: str | None,
+        subject: str | None,
+        body: str,
+        recipients: list[str],
+    ) -> EmailDraft:
+        provider = self._provider_for_mailbox(mailbox_id)
+        return provider.create_draft(
+            mailbox_id=mailbox_id,
+            thread_or_message_id=thread_or_message_id,
+            subject=subject,
+            body=body,
+            recipients=recipients,
+        )
+
+
 class JsonEmailProvider:
     provider_name = "json_store"
 
