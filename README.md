@@ -164,6 +164,30 @@ See [git-remotes.md](/home/jonathan/agent-sandbox/docs/git-remotes.md) for the r
 
 - Operator user allowlist is configured globally on the host in `config/gateway.yaml` with
   `discord_operator_user_allowlist`.
+- In `bot_api` mode, polling targets come **only** from channel IDs already present in
+  `runtime/discord_commands.json` (the Discord command store). The adapter does not discover
+  channels from guild membership, does not enumerate channel history beyond configured per-channel
+  fetches, and does not poll arbitrary channels unless they are explicitly seeded in that store.
+- Source filtering for `discord_get_commands` is strict:
+  - Message source metadata must be `source == "discord_bot_api"`.
+  - A command is accepted when **either** its `channel_id` is in the session's
+    `discord_channel_allowlist` **or** its `author_id` is in global
+    `discord_operator_user_allowlist`.
+  - Commands that satisfy neither condition are denied and audited as denied tool attempts.
+  - For `discord_post_status`, only session allowlisted `channel_id` values are permitted;
+    operator user allowlists do not bypass post destination checks.
+- There is currently no built-in Discord retry/backoff loop in the `bot_api` adapter. HTTP
+  failures (timeouts, 4xx/5xx, transport errors) surface back to the MCP caller. Policy denials
+  are written to `audit_log_path` (default runtime path `runtime/audit.jsonl`).
+- Operator least-privilege checklist:
+  1. Keep the Discord bot token only on the host (environment or host env files), never in guest
+     cloud-init, manifests, or guest shell profiles.
+  2. Create per-session manifests with the minimum required `--discord-channel` entries.
+  3. Keep `discord_operator_user_allowlist` short and explicit (human operators only, no broad
+     role-style expansion).
+  4. Seed only intended control channels into the Discord command store; remove stale channels.
+  5. Periodically review denied Discord events in `runtime/audit.jsonl` to catch mis-scoped
+     channels/users.
 - Guests never need direct Discord credentials or internet access; Discord API access happens only
   in the host-side gateway process.
 

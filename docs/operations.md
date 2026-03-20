@@ -104,6 +104,34 @@ Install these packages on the Ubuntu host before using the scripts:
 
 - Use `discord_operator_user_allowlist` in `config/gateway.yaml` for trusted operator user IDs that
   can issue commands outside per-session channel allowlists.
+- `bot_api` polling scope is explicit and narrow:
+  - The gateway polls only channel IDs that already exist in `discord_command_store_path`
+    (default `runtime/discord_commands.json`).
+  - It does **not** auto-discover channels from guild membership.
+  - It does **not** treat prior Discord history as an open-ended source universe.
+  - Polling additional channels requires explicitly seeding those channel IDs into the command
+    store.
+- Allowlist precedence for `discord_get_commands`:
+  1. Command metadata must identify trusted adapter source (`source = discord_bot_api`).
+  2. If the command `channel_id` is in `session.discord_channel_allowlist`, allow it.
+  3. Otherwise, if `author_id` is in global `discord_operator_user_allowlist`, allow it.
+  4. Otherwise deny and audit as denied.
+- Posting precedence for `discord_post_status`:
+  - Destination `channel_id` must be in `session.discord_channel_allowlist`.
+  - `discord_operator_user_allowlist` does not override post destination checks.
+- Retry/backoff and failure handling:
+  - The Discord `bot_api` adapter currently has no internal retry or exponential backoff loop.
+  - Discord HTTP errors and timeouts bubble up to the tool caller.
+  - Policy denials are audited to `audit_log_path` (default `runtime/audit.jsonl`), including
+    per-command denied source metadata when filtering `discord_get_commands`.
+  - Successful command polls are also audited with `count` and `denied_count` summary fields.
+- Operator checklist (token + least privilege):
+  1. Keep the bot token only on host-side env variables/env files (`discord_bot_token_env`); never
+     place it in guest disks, cloud-init payloads, or session manifests.
+  2. Use per-session `--discord-channel` allowlists and avoid wildcard/shared catch-all channels.
+  3. Keep `discord_operator_user_allowlist` minimal and human-specific.
+  4. Seed only intended control channels in `discord_command_store_path`.
+  5. Review denied Discord entries in `runtime/audit.jsonl` during operations.
 - Guests should not have direct Discord internet access; only the host-side gateway talks to
   Discord APIs and enforces source/channel/operator policy checks.
 
