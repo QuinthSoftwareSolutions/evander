@@ -83,6 +83,30 @@ Install these packages on the Ubuntu host before using the scripts:
 - The scaffold includes `agent-sandbox-openai-relay`, a host-side OpenAI-compatible proxy that reads the real API key only from the host environment and forwards guest requests to `https://api.openai.com/v1`.
 - For OpenAI/Codex-backed workflows while keeping guests off the public internet, run the relay on the host and leave `LLM_BASE_URL` at its default `http://192.168.250.1:11434/v1`.
 
+## Host-Side Discord Access
+
+- Set `discord_backend: "bot_api"` in `config/gateway.yaml` to enable the provider-backed Discord adapter.
+- Set `discord_bot_token_env` in `config/gateway.yaml` (default `DISCORD_BOT_TOKEN`).
+- Export the matching host environment variable before launching `agent-sandbox-gateway`:
+
+  ```bash
+  export DISCORD_BOT_TOKEN=...
+  ```
+
+- Use per-session channel allowlists when creating session manifests:
+
+  ```bash
+  agent-sandbox-cli create-session \
+    real-session \
+    --config config/gateway.yaml \
+    --discord-channel 123456789012345678
+  ```
+
+- Use `discord_operator_user_allowlist` in `config/gateway.yaml` for trusted operator user IDs that
+  can issue commands outside per-session channel allowlists.
+- Guests should not have direct Discord internet access; only the host-side gateway talks to
+  Discord APIs and enforces source/channel/operator policy checks.
+
 ## Host-Side NuGet Access
 
 - The scaffold includes `agent-sandbox-nuget-relay`, a host-side relay that proxies `nuget.org` and private Azure Artifacts feeds.
@@ -157,5 +181,7 @@ Review those branches from the host and merge them into your trusted repository 
 - Destroy guests after each session.
 - Store provider credentials only on the host side.
 - Rotate Discord and email credentials independently from VM lifecycle.
+- Keep Discord bot tokens only in host environment files or shell context; do not write them into
+  guest images, cloud-init, or session manifests.
 - Review `runtime/audit.jsonl` as the source of truth for privileged activity.
 - Keep VM disks and seed ISOs out of home directories when using `qemu:///system`; the default scripts now place them under `/var/lib/libvirt/images/agent-sandbox`.
