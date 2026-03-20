@@ -24,6 +24,17 @@ def _summary(provider: str, mailbox_id: str, folder: str, message_id: str) -> Em
     )
 
 
+class _StubResponse:
+    def __init__(self, payload: dict) -> None:
+        self._payload = payload
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> dict:
+        return self._payload
+
+
 def test_cursor_store_update_is_durable(tmp_path) -> None:
     path = tmp_path / "cursors.json"
     store = DurableCursorStore(path)
@@ -109,3 +120,91 @@ def test_graph_list_unread_uses_delta_cursor_and_dedup(tmp_path, monkeypatch) ->
     cursor = store.get("mailbox-2", "inbox")
     assert cursor is not None
     assert cursor.primitive_cursor == "https://delta.example/2"
+
+
+def test_gmail_history_paginates_before_advancing_cursor(monkeypatch) -> None:
+    provider = GmailEmailProvider(
+        account_identifier="me",
+        folder_mapping={"inbox": "INBOX"},
+        auth_secret_refs={"access_token": "GMAIL_ACCESS_TOKEN"},
+        timeout_seconds=5.0,
+    )
+
+    class StubClient:
+        def get(self, _url: str, *, headers: dict[str, str], params: dict[str, object]) -> _StubResponse:
+            assert headers["Authorization"] == "Bearer test-token"
+            page_token = str(params.get("pageToken", ""))
+            if not page_token:
+                return _StubResponse(
+                    {
+                        "historyId": "101",
+                        "nextPageToken": "page-2",
+                        "history": [{"messagesAdded": [{"message": {"id": "m1"}}]}],
+                    }
+                )
+            assert page_token == "page-2"
+            return _StubResponse(
+                {
+                    "historyId": "103",
+                    "history": [{"messagesAdded": [{"message": {"id": "m2"}}]}],
+                }
+            )
+
+    monkeypatch.setenv("GMAIL_ACCESS_TOKEN", "test-token")
+    monkeypatch.setattr(
+        provider,
+        "_fetch_message",
+        lambda *_args, **kwargs: {"id": kwargs["message_id"], "labelIds": ["UNREAD"]},
+    )
+
+    messages, cursor = provider._list_from_history(
+        client=StubClient(),
+        label="INBOX",
+        history_id="100",
+        limit=10,
+    )
+
+    assert {message["id"] for message in messages} == {"m1", "m2"}
+    assert cursor == "103"
+
+
+def test_graph_delta_continues_to_delta_link_after_unread_cap(monkeypatch) -> None:
+    provider = GraphEmailProvider(
+        account_identifier="leader@example.com",
+        folder_mapping={"inbox": "Inbox"},
+        auth_secret_refs={"access_token": "GRAPH_ACCESS_TOKEN"},
+        timeout_seconds=5.0,
+    )
+
+    calls: list[str] = []
+
+    class StubClient:
+        def get(self, url: str, *, headers: dict[str, str]) -> _StubResponse:
+            calls.append(url)
+            assert headers["Authorization"] == "Bearer graph-token"
+            if url.endswith("/start"):
+                return _StubResponse(
+                    {
+                        "value": [{"id": "g1", "isRead": False}, {"id": "g2", "isRead": False}],
+                        "@odata.nextLink": "https://delta.example/page-2",
+                    }
+                )
+            if url.endswith("page-2"):
+                return _StubResponse(
+                    {
+                        "value": [{"id": "g3", "isRead": False}],
+                        "@odata.deltaLink": "https://delta.example/final",
+                    }
+                )
+            raise AssertionError(f"unexpected url: {url}")
+
+    monkeypatch.setenv("GRAPH_ACCESS_TOKEN", "graph-token")
+    unread, next_link = provider._list_from_delta_link(
+        client=StubClient(),
+        delta_link="https://delta.example/start",
+        limit=1,
+    )
+
+    assert [item["id"] for item in unread] == ["g1", "g2"]
+    assert next_link == "https://delta.example/final"
+    assert calls == ["https://delta.example/start", "https://delta.example/page-2"]

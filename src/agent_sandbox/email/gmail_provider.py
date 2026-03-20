@@ -169,18 +169,31 @@ class GmailEmailProvider:
         if label:
             params["labelId"] = label
 
-        response = client.get(self._url("history"), headers=self._headers(), params=params)
-        response.raise_for_status()
-        payload = response.json()
-        newest_history_id = str(payload.get("historyId", history_id))
+        newest_history_id: str | None = history_id
         message_ids: set[str] = set()
-        for entry in payload.get("history", []):
-            for section in ("messagesAdded", "labelsAdded"):
-                for item in entry.get(section, []):
-                    message = item.get("message", {})
-                    candidate = str(message.get("id", "")).strip()
-                    if candidate:
-                        message_ids.add(candidate)
+        page_token: str | None = None
+        while True:
+            request_params = dict(params)
+            if page_token:
+                request_params["pageToken"] = page_token
+
+            response = client.get(self._url("history"), headers=self._headers(), params=request_params)
+            response.raise_for_status()
+            payload = response.json()
+            payload_history_id = str(payload.get("historyId", "")).strip() or None
+            newest_history_id = self._max_history_id(newest_history_id, payload_history_id)
+            for entry in payload.get("history", []):
+                for section in ("messagesAdded", "labelsAdded"):
+                    for item in entry.get(section, []):
+                        message = item.get("message", {})
+                        candidate = str(message.get("id", "")).strip()
+                        if candidate:
+                            message_ids.add(candidate)
+
+            page_token = str(payload.get("nextPageToken", "")).strip() or None
+            if not page_token:
+                break
+
         messages = [
             self._fetch_message(client, message_id=message_id, format_name="metadata")
             for message_id in message_ids

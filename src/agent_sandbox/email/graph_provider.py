@@ -183,7 +183,8 @@ class GraphEmailProvider:
         unread: list[dict[str, Any]] = []
         current_url: str | None = delta_link
         next_delta_link: str | None = delta_link
-        while current_url and len(unread) < max(1, limit * 2):
+        max_unread = max(1, limit * 2)
+        while current_url:
             response = client.get(current_url, headers=self._headers())
             response.raise_for_status()
             payload = response.json()
@@ -192,7 +193,8 @@ class GraphEmailProvider:
                     continue
                 if bool(item.get("isRead", False)):
                     continue
-                unread.append(item)
+                if len(unread) < max_unread:
+                    unread.append(item)
             current_url = payload.get("@odata.nextLink")
             if payload.get("@odata.deltaLink"):
                 next_delta_link = str(payload["@odata.deltaLink"])
