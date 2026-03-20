@@ -86,6 +86,7 @@ def seed_email(
     sender: str,
     subject: str,
     body_text: str,
+    mailbox_id: Annotated[str, typer.Option("--mailbox-id", help="Mailbox identifier.")] = "default",
     recipient: Annotated[
         list[str],
         typer.Option("--recipient", help="Repeat for each recipient address."),
@@ -98,11 +99,12 @@ def seed_email(
     runtime = build_runtime(cfg)
     message = EmailMessage(
         message_id=message_id,
+        mailbox_id=mailbox_id,
         folder=folder,
         sender=sender,
         recipients=recipient,
         subject=subject,
         body_text=body_text,
     )
-    runtime.email_service.email_store.put(message_id, message)
+    runtime.email_service.provider.email_store.put(message_id, message)
     typer.echo(f"Seeded email {message_id}")

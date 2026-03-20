@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 from .audit import AuditLogger
 from .config import GatewayConfig
+from .email.providers import JsonEmailProvider
 from .models import ApprovalRequest, DiscordCommandEnvelope, DraftMessage, EmailMessage, SessionManifest
 from .policy import PolicyEngine
 from .services import (
@@ -39,7 +40,7 @@ def build_runtime(config: GatewayConfig) -> RuntimeContext:
         config=config,
         audit=AuditLogger(config.audit_log_path),
         policy=PolicyEngine(config, sessions, approvals),
-        email_service=EmailService(emails, drafts),
+        email_service=EmailService(JsonEmailProvider(emails, drafts)),
         discord_service=discord_service,
         sessions=sessions,
         approvals=approvals,
