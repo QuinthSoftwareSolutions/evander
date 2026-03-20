@@ -25,6 +25,8 @@ class GatewayConfig(BaseModel):
     discord_poll_limit: int = Field(default=50, ge=1, le=100)
     discord_timeout_seconds: float = Field(default=15.0, gt=0)
     discord_operator_user_allowlist: list[str] = Field(default_factory=list)
+    discord_operator_channel_allowlist: list[str] = Field(default_factory=list)
+    discord_poll_operator_dms: bool = False
     bind_network_cidr: str = "192.168.250.0/24"
     gateway_url: str = "http://192.168.250.1:8000/mcp"
     openai_relay_host: str = "0.0.0.0"
