@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_sandbox.config import GatewayConfig
+from agent_sandbox.config import GatewayConfig, MailboxConfig
 from agent_sandbox.runtime import build_runtime
 from agent_sandbox.services import DiscordBotApiService, StubDiscordService
 
@@ -60,3 +60,57 @@ def test_build_runtime_reads_bot_token_from_configured_env_var(
     runtime = build_runtime(config)
 
     assert isinstance(runtime.discord_service, DiscordBotApiService)
+
+
+@pytest.mark.parametrize("provider", ["gmail", "graph"])
+def test_build_runtime_requires_access_token_secret_ref_for_non_json_mailboxes(
+    tmp_path: Path, provider: str
+) -> None:
+    config = make_config(
+        tmp_path,
+        email_mailboxes=[MailboxConfig(mailbox_id="ops", provider=provider, auth_secret_refs={})],
+    )
+
+    with pytest.raises(RuntimeError, match="requires auth_secret_refs.access_token"):
+        build_runtime(config)
+
+
+@pytest.mark.parametrize("provider", ["gmail", "graph"])
+def test_build_runtime_requires_access_token_env_var_value_for_non_json_mailboxes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provider: str
+) -> None:
+    monkeypatch.delenv("OPS_TOKEN", raising=False)
+    config = make_config(
+        tmp_path,
+        email_mailboxes=[
+            MailboxConfig(
+                mailbox_id="ops",
+                provider=provider,
+                auth_secret_refs={"access_token": "OPS_TOKEN"},
+            )
+        ],
+    )
+
+    with pytest.raises(RuntimeError, match="requires a non-empty access token"):
+        build_runtime(config)
+
+
+@pytest.mark.parametrize("provider", ["gmail", "graph"])
+def test_build_runtime_accepts_access_token_env_var_for_non_json_mailboxes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provider: str
+) -> None:
+    monkeypatch.setenv("OPS_TOKEN", "abc123")
+    config = make_config(
+        tmp_path,
+        email_mailboxes=[
+            MailboxConfig(
+                mailbox_id="ops",
+                provider=provider,
+                auth_secret_refs={"access_token": "OPS_TOKEN"},
+            )
+        ],
+    )
+
+    runtime = build_runtime(config)
+
+    assert runtime.email_service is not None

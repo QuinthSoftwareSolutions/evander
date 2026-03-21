@@ -70,6 +70,7 @@ def _build_email_provider(
             providers_by_mailbox[mailbox.mailbox_id] = JsonEmailProvider(emails, drafts)
             continue
         if mailbox.provider == "gmail":
+            _validate_mailbox_access_token_env_var(mailbox)
             providers_by_mailbox[mailbox.mailbox_id] = GmailEmailProvider(
                 account_identifier=mailbox.account_identifier,
                 folder_mapping=mailbox.folder_mapping,
@@ -79,6 +80,7 @@ def _build_email_provider(
             )
             continue
         if mailbox.provider == "graph":
+            _validate_mailbox_access_token_env_var(mailbox)
             providers_by_mailbox[mailbox.mailbox_id] = GraphEmailProvider(
                 account_identifier=mailbox.account_identifier,
                 folder_mapping=mailbox.folder_mapping,
@@ -90,6 +92,22 @@ def _build_email_provider(
         raise RuntimeError(f"Unsupported email provider: {mailbox.provider!r}")
 
     return MultiMailboxEmailProvider(providers_by_mailbox)
+
+
+def _validate_mailbox_access_token_env_var(mailbox: MailboxConfig) -> None:
+    env_var_name = mailbox.auth_secret_refs.get("access_token", "").strip()
+    if not env_var_name:
+        raise RuntimeError(
+            f"email mailbox {mailbox.mailbox_id!r} using provider {mailbox.provider!r} "
+            "requires auth_secret_refs.access_token to be configured"
+        )
+
+    access_token = os.environ.get(env_var_name, "").strip()
+    if not access_token:
+        raise RuntimeError(
+            f"email mailbox {mailbox.mailbox_id!r} using provider {mailbox.provider!r} "
+            f"requires a non-empty access token in environment variable {env_var_name!r}"
+        )
 
 
 def _build_discord_service(
