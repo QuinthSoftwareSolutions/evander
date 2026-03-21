@@ -48,7 +48,7 @@ Install these packages on the Ubuntu host before using the scripts:
 - That config points Codex at the host relay via `openai_base_url`.
 - Cloud-init also appends a shell profile hook that loads `/etc/agent-sandbox/session.env` and exports `OPENAI_API_KEY=relay-placeholder` if no key is already set.
 - `./scripts/bootstrap_codex_vm.sh <vm-name>` copies the vendored Linux Codex binary from the host into `~/bin/codex` for the guest user and verifies it.
-- The bootstrap script also overwrites `~/.codex/config.toml` with the relay-aware configuration and appends the placeholder-key shell hook plus `~/bin` PATH entry to both `~/.profile` and `~/.bashrc`, so it corrects preexisting Codex state in the VM.
+- The bootstrap script also overwrites `~/.codex/config.toml` with the relay-aware configuration, `model = "gpt-5.4"`, `model_reasoning_effort = "high"`, and `personality = "pragmatic"`, then appends the placeholder-key shell hook plus `~/bin` PATH entry to both `~/.profile` and `~/.bashrc`, so it corrects preexisting Codex state in the VM.
 - The bootstrap script repairs `/home/agent` ownership first, so it also works against VMs created before the home directory ownership fix.
 - New VMs pick this up automatically; existing VMs need to be recreated.
 
@@ -302,14 +302,26 @@ sudo systemctl status agent-sandbox-nuget-relay.service
 For the common issue workflow, you can do the full host-side setup in one command:
 
 ```bash
-./scripts/setup_issue_vm.sh 14084 /path/to/project-or-solution.slnx
+./scripts/setup_issue_vm.sh /path/to/issue.yaml /path/to/project-or-solution.slnx
 ```
 
 That prewarms the shared NuGet cache, launches `vm-14084`, bootstraps Codex/.NET/NuGet, and
 configures the issue-numbered Git mirror and guest SSH path. It also clones the mirrored repo into
 the guest user's home directory using the source repo basename. The cloned repo gets a
-`git push-agent` alias, and the guest home gets a short `AGENTS.md` note describing the expected
-push pattern.
+`git push-agent` alias, the guest home gets a short `AGENTS.md` note describing the expected
+push pattern, the issue YAML is copied into the repo root as `AGENT_TASK.yaml`, and a background
+Codex run starts in the guest by default. The guest-side Codex PID and log live under
+`/home/agent/.agent-sandbox/`. Use `--dry-run` if you want the VM prepared without starting the
+agent process. The helper still accepts a raw issue number as the first argument for the older
+workflow, but YAML is the preferred input when you want the task definition to stay available on
+disk during long agent runs.
+
+To inspect or follow the guest agent from the host:
+
+```bash
+./scripts/check_issue_vm.sh 14084
+./scripts/tail_issue_vm_log.sh 14084
+```
 
 Create a host-local bare repository:
 
