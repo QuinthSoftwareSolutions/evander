@@ -7,6 +7,7 @@ from pathlib import Path
 import typer
 
 from .config import load_config
+from .email.providers import JsonEmailProvider, MultiMailboxEmailProvider
 from .models import ApprovalStatus, EmailMessage, SessionManifest, ToolName
 from .runtime import build_runtime
 
@@ -50,12 +51,18 @@ def create_session(
             ToolName.EMAIL_CREATE_DRAFT,
             ToolName.APPROVAL_SUBMIT,
             ToolName.APPROVAL_CHECK,
-            ToolName.EMAIL_SEND_APPROVED,
         ],
         discord_channel_allowlist=discord_channel or [],
         email_folder_allowlist=email_folder or [],
+        email_mailbox_allowlist=cfg.email_mailbox_allowlist,
+        email_folder_allowlist_by_mailbox=cfg.email_folder_allowlist_by_mailbox,
+        email_draft_recipient_allowlist=cfg.email_draft_recipient_allowlist,
+        email_draft_domain_allowlist=cfg.email_draft_domain_allowlist,
+        email_send_enabled=cfg.email_send_enabled,
         expires_at=datetime.now(UTC) + timedelta(hours=ttl_hours or 8),
     )
+    if manifest.email_send_enabled:
+        manifest.allowed_tools.append(ToolName.EMAIL_SEND_APPROVED)
     runtime.sessions.put(session_id, manifest)
     typer.echo(f"Created session manifest {session_id}")
 
@@ -86,6 +93,7 @@ def seed_email(
     sender: str,
     subject: str,
     body_text: str,
+    mailbox_id: Annotated[str, typer.Option("--mailbox-id", help="Mailbox identifier.")] = "default",
     recipient: Annotated[
         list[str],
         typer.Option("--recipient", help="Repeat for each recipient address."),
@@ -98,11 +106,26 @@ def seed_email(
     runtime = build_runtime(cfg)
     message = EmailMessage(
         message_id=message_id,
+        mailbox_id=mailbox_id,
         folder=folder,
         sender=sender,
         recipients=recipient,
         subject=subject,
         body_text=body_text,
     )
-    runtime.email_service.email_store.put(message_id, message)
-    typer.echo(f"Seeded email {message_id}")
+    provider = runtime.email_service.provider
+    if isinstance(provider, JsonEmailProvider):
+        provider.email_store.put(message_id, message)
+        typer.echo(f"Seeded email {message_id}")
+        return
+
+    if isinstance(provider, MultiMailboxEmailProvider):
+        mailbox_provider = provider.providers_by_mailbox.get(mailbox_id)
+        if isinstance(mailbox_provider, JsonEmailProvider):
+            mailbox_provider.email_store.put(message_id, message)
+            typer.echo(f"Seeded email {message_id}")
+            return
+
+    raise typer.BadParameter(
+        f"mailbox {mailbox_id!r} is not configured with json_store provider and cannot be locally seeded"
+    )

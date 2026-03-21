@@ -1,50 +1,50 @@
 from __future__ import annotations
 
+import random
+import time
 from datetime import UTC, datetime
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 import httpx
 from .models import DiscordCommandEnvelope, DraftMessage, EmailMessage
+from .email.providers import EmailDraft, EmailMessageDetail, EmailMessageSummary, EmailProvider
 from .storage import JsonStore
 
 
+def _parse_snowflake(value: str, *, field_name: str) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"Invalid {field_name} {value!r}: expected a numeric Discord snowflake string."
+        ) from exc
+
+
 class EmailService:
-    def __init__(
-        self,
-        email_store: JsonStore[EmailMessage],
-        draft_store: JsonStore[DraftMessage],
-    ) -> None:
-        self.email_store = email_store
-        self.draft_store = draft_store
+    def __init__(self, provider: EmailProvider) -> None:
+        self.provider = provider
 
-    def list_unread(self, folder: str, limit: int) -> list[EmailMessage]:
-        messages = [
-            message
-            for message in self.email_store.read_all().values()
-            if message.folder == folder and message.unread
-        ]
-        messages.sort(key=lambda item: item.received_at, reverse=True)
-        return messages[:limit]
+    def list_unread(self, mailbox_id: str, folder: str, limit: int) -> list[EmailMessageSummary]:
+        return self.provider.list_unread(mailbox_id=mailbox_id, folder=folder, limit=limit)
 
-    def get_message(self, message_id: str) -> EmailMessage:
-        message = self.email_store.get(message_id)
-        if message is None:
-            raise KeyError(f"Unknown message: {message_id}")
-        return message
+    def get_message(self, mailbox_id: str, message_id: str) -> EmailMessageDetail:
+        return self.provider.get_message(mailbox_id=mailbox_id, message_id=message_id)
 
     def create_draft(
-        self, thread_or_message_id: str | None, subject: str | None, body: str
-    ) -> DraftMessage:
-        now = datetime.now(UTC)
-        draft = DraftMessage(
-            draft_id=f"draft_{int(now.timestamp())}",
+        self,
+        mailbox_id: str,
+        thread_or_message_id: str | None,
+        subject: str | None,
+        body: str,
+        recipients: list[str],
+    ) -> EmailDraft:
+        return self.provider.create_draft(
+            mailbox_id=mailbox_id,
             thread_or_message_id=thread_or_message_id,
             subject=subject,
             body=body,
-            created_at=now,
+            recipients=recipients,
         )
-        self.draft_store.put(draft.draft_id, draft)
-        return draft
 
     def send_from_draft(self, request_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -55,11 +55,9 @@ class EmailService:
 
 
 class DiscordService(Protocol):
-    def get_commands(self, since_cursor: str | None = None) -> list["DiscordCommandEnvelope"]:
-        ...
+    def get_commands(self, since_cursor: str | None = None) -> list["DiscordCommandEnvelope"]: ...
 
-    def post_status(self, message: str, channel_id: str, session_id: str) -> dict[str, Any]:
-        ...
+    def post_status(self, message: str, channel_id: str, session_id: str) -> dict[str, Any]: ...
 
 
 class StubDiscordService:
@@ -80,10 +78,15 @@ class StubDiscordService:
                     if key not in {"source", "guild_id", "channel_id", "author_id"}
                 },
             }
-        commands.sort(key=lambda item: item.created_at)
+        commands.sort(key=lambda item: _parse_snowflake(item.command_id, field_name="command_id"))
         if since_cursor is None:
             return commands
-        return [command for command in commands if command.command_id > since_cursor]
+        since_snowflake = _parse_snowflake(since_cursor, field_name="since_cursor")
+        return [
+            command
+            for command in commands
+            if _parse_snowflake(command.command_id, field_name="command_id") > since_snowflake
+        ]
 
     def post_status(self, message: str, channel_id: str, session_id: str) -> dict[str, Any]:
         return {
@@ -103,12 +106,28 @@ class DiscordBotApiService:
         api_base_url: str,
         poll_limit: int,
         timeout_seconds: float,
+        retry_count: int,
+        retry_base_backoff_seconds: float,
+        retry_max_backoff_seconds: float,
+        allowed_channel_ids_provider: Callable[[], list[str]],
+        operator_user_ids_provider: Callable[[], list[str]] | None = None,
+        include_operator_dms: bool = False,
     ) -> None:
         self.command_store = command_store
         self.token = token
         self.api_base_url = api_base_url.rstrip("/")
         self.poll_limit = poll_limit
         self.timeout_seconds = timeout_seconds
+        self.retry_count = retry_count
+        self.retry_base_backoff_seconds = retry_base_backoff_seconds
+        self.retry_max_backoff_seconds = retry_max_backoff_seconds
+        self.max_total_retry_time_seconds = sum(
+            min(self.retry_max_backoff_seconds, self.retry_base_backoff_seconds * (2**attempt))
+            for attempt in range(self.retry_count)
+        )
+        self.allowed_channel_ids_provider = allowed_channel_ids_provider
+        self.operator_user_ids_provider = operator_user_ids_provider or (lambda: [])
+        self.include_operator_dms = include_operator_dms
 
     def _headers(self) -> dict[str, str]:
         return {
@@ -141,17 +160,109 @@ class DiscordBotApiService:
     def _known_channel_ids(self) -> list[str]:
         channel_ids = {command.channel_id for command in self.command_store.read_all().values()}
         return sorted(channel_ids)
+    def _allowed_channel_ids(self) -> list[str]:
+        return sorted(
+            {
+                channel_id.strip()
+                for channel_id in self.allowed_channel_ids_provider()
+                if channel_id.strip()
+            }
+        )
+
+    def _operator_user_ids(self) -> list[str]:
+        return sorted(
+            {user_id.strip() for user_id in self.operator_user_ids_provider() if user_id.strip()}
+        )
+
+    def _operator_dm_channel_ids(self, client: httpx.Client) -> list[str]:
+        if not self.include_operator_dms:
+            return []
+        operator_user_ids = set(self._operator_user_ids())
+        if not operator_user_ids:
+            return []
+        response = client.get(
+            f"{self.api_base_url}/users/@me/channels",
+            headers=self._headers(),
+            params={"limit": self.poll_limit},
+        )
+        response.raise_for_status()
+        dm_channel_ids: list[str] = []
+        for payload in response.json():
+            recipients = payload.get("recipients") or []
+            recipient_user_ids = {
+                str(recipient.get("id", "")).strip()
+                for recipient in recipients
+                if isinstance(recipient, dict)
+            }
+            if recipient_user_ids & operator_user_ids:
+                channel_id = str(payload.get("id", "")).strip()
+                if channel_id:
+                    dm_channel_ids.append(channel_id)
+        return sorted(set(dm_channel_ids))
+
+    def _should_retry_http_status(self, status_code: int) -> bool:
+        return status_code == 429 or 500 <= status_code <= 599
+
+    def _request_with_retries(
+        self,
+        client: httpx.Client,
+        method: str,
+        url: str,
+        *,
+        params: dict[str, Any] | None = None,
+        json: dict[str, Any] | None = None,
+    ) -> httpx.Response:
+        start_time = time.monotonic()
+        attempt = 0
+        last_error: Exception | None = None
+        while True:
+            try:
+                response = client.request(
+                    method,
+                    url,
+                    headers=self._headers(),
+                    params=params,
+                    json=json,
+                    timeout=self.timeout_seconds,
+                )
+                response.raise_for_status()
+                return response
+            except (httpx.TimeoutException, httpx.ConnectError) as exc:
+                last_error = exc
+                if attempt >= self.retry_count:
+                    raise
+            except httpx.HTTPStatusError as exc:
+                status_code = exc.response.status_code
+                if not self._should_retry_http_status(status_code) or attempt >= self.retry_count:
+                    raise
+                last_error = exc
+
+            planned_backoff = min(
+                self.retry_max_backoff_seconds,
+                self.retry_base_backoff_seconds * (2**attempt),
+            )
+            jittered_backoff = random.uniform(0.5 * planned_backoff, 1.5 * planned_backoff)
+            elapsed = time.monotonic() - start_time
+            remaining_budget = self.max_total_retry_time_seconds - elapsed
+            if remaining_budget <= 0:
+                if last_error is not None:
+                    raise last_error
+                raise TimeoutError("Retry budget exhausted before completing Discord API request")
+            sleep_for = min(jittered_backoff, remaining_budget)
+            time.sleep(sleep_for)
+            attempt += 1
 
     def get_commands(self, since_cursor: str | None = None) -> list[DiscordCommandEnvelope]:
         envelopes: dict[str, DiscordCommandEnvelope] = dict(self.command_store.read_all())
         with httpx.Client(timeout=self.timeout_seconds) as client:
-            for channel_id in self._known_channel_ids():
+            channel_ids = sorted(
+                set(self._allowed_channel_ids()) | set(self._operator_dm_channel_ids(client))
+            )
+            for channel_id in channel_ids:
                 response = client.get(
                     f"{self.api_base_url}/channels/{channel_id}/messages",
-                    headers=self._headers(),
                     params={"limit": self.poll_limit},
                 )
-                response.raise_for_status()
                 for payload in response.json():
                     envelope = DiscordCommandEnvelope(
                         command_id=payload["id"],
@@ -169,23 +280,27 @@ class DiscordBotApiService:
                     envelopes[envelope.command_id] = envelope
                     self.command_store.put(envelope.command_id, envelope)
 
-        commands = self._sorted_commands(envelopes)
+        commands = sorted(
+            envelopes.values(),
+            key=lambda item: _parse_snowflake(item.command_id, field_name="command_id"),
+        )
         if since_cursor is None:
             return commands
+        since_snowflake = _parse_snowflake(since_cursor, field_name="since_cursor")
         return [
             command
             for command in commands
-            if self._is_after_cursor(command.command_id, since_cursor)
+            if _parse_snowflake(command.command_id, field_name="command_id") > since_snowflake
         ]
 
     def post_status(self, message: str, channel_id: str, session_id: str) -> dict[str, Any]:
-        with httpx.Client(timeout=self.timeout_seconds) as client:
-            response = client.post(
+        with httpx.Client(timeout=None) as client:
+            response = self._request_with_retries(
+                client,
+                "POST",
                 f"{self.api_base_url}/channels/{channel_id}/messages",
-                headers=self._headers(),
                 json={"content": message},
             )
-            response.raise_for_status()
             payload = response.json()
 
         envelope = DiscordCommandEnvelope(
