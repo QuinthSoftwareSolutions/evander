@@ -30,4 +30,17 @@
 - Trust boundary: guests can call MCP tools only; host-side gateway is the only component that
   holds Discord credentials, calls Discord HTTPS APIs, and enforces channel/user allowlists before
   commands reach guest automation.
+- Discord ingestion boundary in `bot_api` mode:
+  - Poll targets are the channel IDs already present in the Discord command store
+    (`discord_command_store_path`), not all reachable guild channels.
+  - The gateway rejects command envelopes unless metadata marks them as
+    `source = discord_bot_api` with non-empty `channel_id` and `author_id`.
+  - Acceptance is `(session channel allowlist) OR (global operator user allowlist)`.
+  - Post destinations remain session-channel-allowlist only.
+  - There is no implicit "poll everywhere" or unrestricted history-derived source expansion.
+- Failure/audit model for Discord commands:
+  - Policy failures are logged as denied `tool_call` audit events in `audit_log_path`.
+  - `discord_get_commands` audits each denied envelope and records aggregate `denied_count`.
+  - Transport/API failures from Discord provider calls are returned to callers; no built-in retry
+    backoff loop is currently implemented in the adapter.
 - Add a separate admin channel for approving requests without granting the guest broader power.
