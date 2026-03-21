@@ -11,6 +11,7 @@ from agent_sandbox.ado_issue_worker import (
     ProcessedWorkItemStore,
     WorkerConfig,
     _build_setup_command,
+    gate_and_order_items,
     process_work_item,
 )
 
@@ -200,3 +201,193 @@ def test_process_work_item_passes_timeout(
 
     assert succeeded is True
     assert captured["timeout"] == worker_config.setup_timeout_seconds
+
+
+@pytest.mark.parametrize(
+    ("raw_tags", "expected_match"),
+    [
+        ("true-agent", True),
+        (" TRUE-AGENT ", True),
+        ("foo; true-agent ;bar", True),
+        ("foo;TrUe-AgEnT;bar", True),
+        ("agent-true", False),
+        ("", False),
+    ],
+)
+def test_gate_and_order_items_requires_true_agent_tag_with_case_and_spacing_variants(
+    worker_config: WorkerConfig,
+    raw_tags: str,
+    expected_match: bool,
+) -> None:
+    matched, skipped = gate_and_order_items(
+        [
+            {
+                "id": 101,
+                "url": "https://example/101",
+                "fields": {
+                    "System.Title": "Tag candidate",
+                    "System.Description": "desc",
+                    "System.Tags": raw_tags,
+                    "System.State": "Committed",
+                    "System.ChangedDate": "2026-03-21T00:00:00Z",
+                    "System.AreaPath": "Root",
+                    "System.IterationPath": "Team",
+                },
+            }
+        ],
+        worker_config,
+    )
+
+    if expected_match:
+        assert [item["id"] for item in matched] == [101]
+        assert skipped == 0
+    else:
+        assert matched == []
+        assert skipped == 1
+
+
+def test_gate_and_order_items_ignores_non_committed_states(worker_config: WorkerConfig) -> None:
+    matched, skipped = gate_and_order_items(
+        [
+            {
+                "id": 201,
+                "fields": {
+                    "System.Title": "todo",
+                    "System.Tags": "true-agent",
+                    "System.State": "New",
+                    "System.ChangedDate": "2026-03-21T00:00:00Z",
+                },
+            },
+            {
+                "id": 202,
+                "fields": {
+                    "System.Title": "active",
+                    "System.Tags": "true-agent",
+                    "System.State": "Active",
+                    "System.ChangedDate": "2026-03-21T00:00:01Z",
+                },
+            },
+            {
+                "id": 203,
+                "fields": {
+                    "System.Title": "resolved",
+                    "System.Tags": "true-agent",
+                    "System.State": "Resolved",
+                    "System.ChangedDate": "2026-03-21T00:00:02Z",
+                },
+            },
+        ],
+        worker_config,
+    )
+
+    assert matched == []
+    assert skipped == 3
+
+
+def test_process_work_item_skips_previously_processed_id_on_subsequent_attempt(
+    worker_config: WorkerConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = ProcessedWorkItemStore(worker_config.processed_store_path)
+    call_count = {"run": 0}
+
+    def successful_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        call_count["run"] += 1
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="ok", stderr="")
+
+    monkeypatch.setattr("agent_sandbox.ado_issue_worker.subprocess.run", successful_run)
+
+    item = {
+        "id": 301,
+        "title": "Process once",
+        "description": "Details",
+        "tags": ["true-agent"],
+        "state": "Committed",
+        "url": "https://example/301",
+        "updated_date": "2026-03-21T00:00:00Z",
+    }
+
+    first = process_work_item(item, config=worker_config, store=store)
+    second = process_work_item(item, config=worker_config, store=store)
+
+    assert first is True
+    assert second is False
+    assert call_count["run"] == 1
+
+
+def test_process_work_item_writes_yaml_with_required_issue_number_and_metadata(
+    worker_config: WorkerConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = ProcessedWorkItemStore(worker_config.processed_store_path)
+
+    def successful_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="ok", stderr="")
+
+    monkeypatch.setattr("agent_sandbox.ado_issue_worker.subprocess.run", successful_run)
+
+    item = {
+        "id": 401,
+        "title": "YAML metadata",
+        "description": "Contains details",
+        "tags": ["backend", "true-agent"],
+        "state": "Committed",
+        "url": "https://example/401",
+        "updated_date": "2026-03-21T00:00:00Z",
+    }
+
+    assert process_work_item(item, config=worker_config, store=store) is True
+
+    yaml_path = worker_config.yaml_output_dir / "work-item-401.yaml"
+    parsed = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
+    assert parsed["issue_number"] == 401
+    assert parsed["title"] == "YAML metadata"
+    assert parsed["description"] == "Contains details"
+    assert parsed["tags"] == ["backend", "true-agent"]
+    assert parsed["state"] == "Committed"
+    assert parsed["url"] == "https://example/401"
+    assert parsed["updated_date"] == "2026-03-21T00:00:00Z"
+    assert parsed["generated_at"]
+
+
+def test_setup_issue_vm_invocation_once_per_newly_eligible_item(
+    worker_config: WorkerConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = ProcessedWorkItemStore(worker_config.processed_store_path)
+    calls: list[list[str]] = []
+
+    def successful_run(cmd: list[str], *args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(cmd)
+        return subprocess.CompletedProcess(args=[cmd], returncode=0, stdout="ok", stderr="")
+
+    monkeypatch.setattr("agent_sandbox.ado_issue_worker.subprocess.run", successful_run)
+
+    eligible_items = [
+        {
+            "id": 501,
+            "title": "first",
+            "description": "",
+            "tags": ["true-agent"],
+            "state": "Committed",
+            "url": "https://example/501",
+            "updated_date": "2026-03-21T00:00:00Z",
+        },
+        {
+            "id": 502,
+            "title": "second",
+            "description": "",
+            "tags": ["true-agent"],
+            "state": "Committed",
+            "url": "https://example/502",
+            "updated_date": "2026-03-21T00:00:01Z",
+        },
+    ]
+
+    for item in eligible_items:
+        assert process_work_item(item, config=worker_config, store=store) is True
+        assert process_work_item(item, config=worker_config, store=store) is False
+
+    assert len(calls) == 2
+    called_yaml_paths = {Path(cmd[1]).name for cmd in calls}
+    assert called_yaml_paths == {"work-item-501.yaml", "work-item-502.yaml"}
