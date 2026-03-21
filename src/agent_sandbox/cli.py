@@ -2,18 +2,20 @@ from __future__ import annotations
 
 from typing import Annotated
 from datetime import UTC, datetime, timedelta
+from itertools import count
 from pathlib import Path
 
 import typer
 
 from .config import load_config
 from .email.providers import JsonEmailProvider, MultiMailboxEmailProvider
-from .models import ApprovalStatus, EmailMessage, SessionManifest, ToolName
+from .models import ApprovalStatus, DiscordCommandEnvelope, EmailMessage, SessionManifest, ToolName
 from .runtime import build_runtime
 
 app = typer.Typer(help="Utilities for the agent sandbox host control plane.")
 
 ConfigOption = Annotated[Path, typer.Option("--config", help="Path to the gateway YAML config.")]
+_discord_seed_sequence = count()
 
 
 @app.command("init-state")
@@ -128,4 +130,33 @@ def seed_email(
 
     raise typer.BadParameter(
         f"mailbox {mailbox_id!r} is not configured with json_store provider and cannot be locally seeded"
+    )
+
+
+@app.command("seed-discord-channel")
+def seed_discord_channel(
+    channel_id: str,
+    config: ConfigOption = Path("config/gateway.yaml"),
+) -> None:
+    cfg = load_config(config)
+    runtime = build_runtime(cfg)
+    now = datetime.now(UTC)
+    seed_cursor = str(int(now.timestamp() * 1_000_000) + next(_discord_seed_sequence))
+    envelope = DiscordCommandEnvelope(
+        command_id=seed_cursor,
+        author_id="discord-channel-seed",
+        channel_id=channel_id,
+        content="seed",
+        created_at=now,
+        metadata={
+            "source": "discord_channel_seed",
+            "channel_id": channel_id,
+            "author_id": "discord-channel-seed",
+            "seeded_at": now.isoformat(),
+        },
+    )
+    runtime.discord_service.command_store.put(seed_cursor, envelope)
+    typer.echo(
+        f"Seeded Discord channel {channel_id} with cursor {seed_cursor}. "
+        "Use that cursor as the initial since_cursor for smoke tests."
     )

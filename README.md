@@ -7,6 +7,7 @@
 - A Python MCP gateway with policy-gated Discord and email tool surfaces
 - A host-side OpenAI relay that keeps the API key on the host and exposes an OpenAI-compatible endpoint to guests
 - A host-side NuGet relay that proxies nuget.org and private Azure Artifacts feeds for guests
+- A host-side shared NuGet cache that can be mounted read-only into guests for faster cold restores
 - File-backed session, approval, audit, and draft storage for local development
 - A small CLI for bootstrapping state and creating session manifests
 - Libvirt, cloud-init, and firewall scripts for an isolated VM network
@@ -85,6 +86,7 @@
    ```
 
    By default, the launch script injects your host `~/.ssh/id_ed25519.pub` key into the guest and exposes a host-side LLM base URL of `http://192.168.250.1:11434/v1`. Override with `SSH_PUBLIC_KEY_FILE=...` or `LLM_BASE_URL=...` if needed.
+   It also creates a shared host NuGet cache under `/var/lib/libvirt/images/agent-sandbox/nuget-cache/global-packages` and mounts it read-only into the guest at `/opt/agent-sandbox/nuget-cache-ro` via `virtiofs`.
    New VMs default to a `20G` virtual disk; override with `DISK_SIZE_GB=...` before launch if needed.
    New VMs also receive `/home/agent/.codex/config.toml` and a shell profile hook so Codex defaults to the host relay without the deprecated `OPENAI_BASE_URL` warning.
 
@@ -110,9 +112,18 @@
    ./scripts/bootstrap_nuget_vm.sh vm-real
    ```
 
-   This writes `~/.nuget/NuGet/NuGet.Config` in the guest so package restore can use host relay endpoints for nuget.org and Azure Artifacts.
+   This writes `~/.nuget/NuGet/NuGet.Config` in the guest so package restore can use host relay endpoints for nuget.org and Azure Artifacts, while keeping guest-local writable caches under `~/.nuget` and using the shared host cache as a read-only fallback package folder.
 
-11. Optionally install Playwright into the VM for frontend debugging:
+11. Optionally prewarm the shared host NuGet cache from the host before launching or restoring in guests:
+
+   ```bash
+   ./scripts/prewarm_nuget_cache.sh /path/to/project-or-solution.slnx
+   ./scripts/inspect_nuget_cache.sh ExampleIndustry.Elastic.Linq 2026.3.6.1
+   ```
+
+   Prewarming fills the shared host cache explicitly through real host restores, and the inspect script shows cache size or whether a specific package/version is already present.
+
+12. Optionally install Playwright into the VM for frontend debugging:
 
    ```bash
    ./scripts/bootstrap_playwright_vm.sh vm-real
@@ -139,23 +150,53 @@ The generated units run as your user where appropriate and read environment file
 
 ## Local Git Remotes
 
+For the full issue-VM bring-up path in one command, use:
+
+```bash
+./scripts/setup_issue_vm.sh 14084 /path/to/project-or-solution.slnx
+```
+
+That now also clones the mirrored repo into the guest user's home directory using
+the host repo basename, for example `/home/agent/ExampleIndustryAPP`. It also writes a short
+`/home/agent/AGENTS.md` note and configures a repo-local `git push-agent` alias for the safe
+session-namespaced push pattern.
+
 Use the included bare-repo helper when you want VMs to push code changes back to the host over the private network:
 
 ```bash
 cp config/git-server.env.example config/git-server.env
 $EDITOR config/git-server.env
-./scripts/create_git_remote.sh sample-repo
+./scripts/setup_issue_git_vm.sh vm-real 14084
 ```
 
+If you want to mirror the default host repo into an issue-numbered bare remote first, use:
+
+```bash
+./scripts/mirror_issue_repo.sh 14084
+```
+
+`setup_issue_git_vm.sh` is the shortest path: it bootstraps the guest Git key and creates or
+refreshes the issue-numbered host mirror in one command. The lower-level
+`bootstrap_git_vm.sh` helper installs a dedicated guest SSH key and a restricted host
+`authorized_keys` entry so guests can push Git branches without needing your host password or
+general shell access.
+
 See [git-remotes.md](/home/jonathan/agent-sandbox/docs/git-remotes.md) for the review flow and branch naming pattern.
+The host-side safe promotion flow is:
+
+```bash
+./scripts/promote_agent_branch.sh /path/to/trusted-clone sample-repo agents/<session-id>/work
+./scripts/open_agent_pr.sh --create-pr --base main /path/to/trusted-clone review/<session-id>/work
+```
+
+That keeps the VM-facing bare remote as a quarantine intake only; reviewed changes reach `origin`
+only from a normal trusted clone on the host.
+See [live-smoke-tests.md](/home/jonathan/agent-sandbox/docs/live-smoke-tests.md) for the live Discord and provider-backed email verification workflow.
 
 ## Discord Adapter Configuration
 
 - Required host-side env var for Discord bot API mode: `DISCORD_BOT_TOKEN` (or the name in
   `discord_bot_token_env`).
-- Optional host-side env vars for other host services:
-  - `OPENAI_API_KEY` for the OpenAI relay.
-  - `AZURE_ARTIFACTS_PAT` for private Azure Artifacts feeds through the NuGet relay.
 - Session Discord channel allowlists are set when creating a session:
 
   ```bash
@@ -194,6 +235,35 @@ See [git-remotes.md](/home/jonathan/agent-sandbox/docs/git-remotes.md) for the r
      channels/users.
 - Guests never need direct Discord credentials or internet access; Discord API access happens only
   in the host-side gateway process.
+
+## Relay Environment Configuration
+
+- `OPENAI_API_KEY` is required on the host for `agent-sandbox-openai-relay`.
+- `AZURE_ARTIFACTS_PAT` is required on the host only when the NuGet relay must reach private
+  Azure Artifacts feeds.
+- Keep both values in host-only shell environment or systemd env files such as:
+  - `config/openai-relay.env`
+  - `config/nuget-relay.env`
+- Do not place either value in guest images, cloud-init, session manifests, or guest shell
+  profiles.
+
+### NuGet Relay Notes
+
+- The NuGet relay proxies both `nuget.org` and optional private Azure Artifacts feeds.
+- Guests should use the relay bootstrap script instead of private feed credentials:
+
+  ```bash
+  ./scripts/bootstrap_nuget_vm.sh vm-real
+  ```
+
+- That writes guest-side `NuGet.Config` entries pointing at the host relay on
+  `http://192.168.250.1:11666`.
+- The guest NuGet config also uses:
+  - a guest-local writable `global-packages` folder at `/home/agent/.nuget/packages-local`
+  - a guest-local writable HTTP cache at `/home/agent/.nuget/http-cache`
+  - a read-only fallback package folder at `/opt/agent-sandbox/nuget-cache-ro`
+- Prewarm the shared host cache explicitly with `./scripts/prewarm_nuget_cache.sh ...` when you
+  want faster first restores in disposable VMs.
 
 ## Email Provider Configuration (Host-Side Secrets Only)
 

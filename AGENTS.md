@@ -36,8 +36,11 @@ The security model is:
   - `scripts/create_base_vm.sh`
   - `scripts/launch_agent_vm.sh`
   - `scripts/destroy_agent_vm.sh`
+  - `scripts/setup_issue_vm.sh`
   - Default VM disk size is `20G`
   - VM disks live under `/var/lib/libvirt/images/agent-sandbox`, not under `/home/jonathan`
+  - `setup_issue_vm.sh` now clones the issue mirror into `/home/agent/<repo-name>` after guest bootstraps complete
+  - it also writes `/home/agent/AGENTS.md` and configures `git push-agent` in the cloned repo
 
 - Guest Codex bootstrap:
   - `scripts/bootstrap_codex_vm.sh`
@@ -58,7 +61,15 @@ The security model is:
 
 - Host-local Git remotes:
   - `scripts/create_git_remote.sh`
+  - `scripts/bootstrap_git_vm.sh`
+  - `scripts/setup_issue_git_vm.sh`
+  - `scripts/promote_agent_branch.sh`
+  - `scripts/open_agent_pr.sh`
+  - `scripts/git_ssh_command_wrapper.sh`
   - Docs: `docs/git-remotes.md`
+- Live smoke-test runbook:
+  - `docs/live-smoke-tests.md`
+  - Covers host-only then VM end-to-end Discord + read-only email validation
 
 ## Important Defaults
 
@@ -143,6 +154,12 @@ Inside VM:
 - Git clone from VM to host requires both:
   - host `openssh-server` running
   - firewall allowing port `22`
+- Guest Git push no longer needs the host password when `bootstrap_git_vm.sh` has installed the
+  restricted SSH key path correctly.
+- Safe Git promotion flow is:
+  - VM pushes to `refs/heads/agents/<session-id>/<topic>` in the bare repo
+  - host runs `promote_agent_branch.sh` into a trusted clone
+  - host runs `open_agent_pr.sh` only after review
 
 ## Files To Read First
 
@@ -150,6 +167,7 @@ Inside VM:
 - `docs/operations.md`
 - `docs/architecture.md`
 - `docs/git-remotes.md`
+- `docs/live-smoke-tests.md`
 
 ## Tests
 
@@ -166,6 +184,7 @@ At the time this note was written, the suite was green and included docs/regress
 - bootstrap scripts
 - firewall defaults
 - doc references
+- live smoke-test workflow
 
 ## Guidance For Future Changes
 
@@ -180,4 +199,3 @@ At the time this note was written, the suite was green and included docs/regress
   - systemd template
   - env example
   - firewall impact
-
