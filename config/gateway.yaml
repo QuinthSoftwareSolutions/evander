@@ -30,3 +30,9 @@ email_mailboxes:
     folder_mapping:
       inbox: "inbox"
       drafts: "drafts"
+nuget_relay_host: "0.0.0.0"
+nuget_relay_port: 11666
+nuget_public_feed_base_url: "https://api.nuget.org"
+nuget_azure_feed_base_url: "https://pkgs.dev.azure.com/exampleindustry/_packaging/ExampleIndustry_Nuget/nuget"
+nuget_azure_pat_env: "AZURE_ARTIFACTS_PAT"
+nuget_relay_timeout_seconds: 300.0

@@ -74,3 +74,31 @@ def test_create_session_disables_email_send_by_default(tmp_path: Path) -> None:
     manifest = sessions["session-1"]
     assert manifest["email_send_enabled"] is False
     assert "email_send_approved" not in manifest["allowed_tools"]
+
+
+def test_seed_discord_channel_creates_seed_entry_and_reports_cursor(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+
+    init_result = runner.invoke(app, ["init-state", "--config", str(config_path)])
+    assert init_result.exit_code == 0
+
+    result = runner.invoke(
+        app,
+        [
+            "seed-discord-channel",
+            "--config",
+            str(config_path),
+            "123456789012345678",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "123456789012345678" in result.stdout
+    assert "since_cursor" in result.stdout
+
+    payload = json.loads((tmp_path / "runtime" / "discord_commands.json").read_text(encoding="utf-8"))
+    assert len(payload) == 1
+    seeded = next(iter(payload.values()))
+    assert seeded["channel_id"] == "123456789012345678"
+    assert seeded["metadata"]["source"] == "discord_channel_seed"

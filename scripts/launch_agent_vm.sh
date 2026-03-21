@@ -17,6 +17,9 @@ Environment:
   GATEWAY_URL          Host MCP gateway URL exposed to the guest.
   SSH_PUBLIC_KEY_FILE  Public key injected into the guest.
   LLM_BASE_URL         Host OpenAI-compatible base URL exposed to the guest.
+  SHARED_NUGET_CACHE_DIR  Host read-only NuGet package cache directory mounted into the guest.
+  SHARED_NUGET_CACHE_TAG  Guest mount tag/path name for the shared NuGet cache. Default: agent-sandbox-nuget-cache
+  SHARED_NUGET_CACHE_MODE Filesystem sharing mode: auto, virtiofs, or 9p. Default: auto
   RAM_MB               Guest memory in MB. Default: 4096
   VCPUS                Guest vCPU count. Default: 4
   DISK_SIZE_GB         Overlay virtual size in GB. Default: 20
@@ -57,12 +60,20 @@ if [[ ! -f "${DEFAULT_SSH_KEY_FILE}" ]]; then
 fi
 SSH_PUBLIC_KEY_FILE="${SSH_PUBLIC_KEY_FILE:-${DEFAULT_SSH_KEY_FILE}}"
 LLM_BASE_URL="${LLM_BASE_URL:-http://192.168.250.1:11434/v1}"
+SHARED_NUGET_CACHE_DIR="${SHARED_NUGET_CACHE_DIR:-${VM_STORAGE_DIR}/nuget-cache/global-packages}"
+SHARED_NUGET_CACHE_TAG="${SHARED_NUGET_CACHE_TAG:-agent-sandbox-nuget-cache}"
+SHARED_NUGET_CACHE_MODE="${SHARED_NUGET_CACHE_MODE:-auto}"
+GUEST_NUGET_FALLBACK_PACKAGES="/opt/agent-sandbox/nuget-cache-ro"
+GUEST_NUGET_PACKAGES="/home/agent/.nuget/packages-local"
+GUEST_NUGET_HTTP_CACHE_PATH="/home/agent/.nuget/http-cache"
 RAM_MB="${RAM_MB:-4096}"
 VCPUS="${VCPUS:-4}"
 DISK_SIZE_GB="${DISK_SIZE_GB:-20}"
 
 mkdir -p "${VM_DIR}"
 mkdir -p "${STATE_DIR}"
+mkdir -p "${SHARED_NUGET_CACHE_DIR}"
+chmod 0755 "${SHARED_NUGET_CACHE_DIR}"
 
 if ! command -v virt-install >/dev/null 2>&1; then
   echo "virt-install is required" >&2
@@ -91,12 +102,65 @@ ESCAPED_SSH_PUBLIC_KEY="${SSH_PUBLIC_KEY//&/\\&}"
 ESCAPED_SSH_PUBLIC_KEY="${ESCAPED_SSH_PUBLIC_KEY//|/\\|}"
 ESCAPED_LLM_BASE_URL="${LLM_BASE_URL//&/\\&}"
 ESCAPED_LLM_BASE_URL="${ESCAPED_LLM_BASE_URL//|/\\|}"
+ESCAPED_NUGET_FALLBACK_PACKAGES="${GUEST_NUGET_FALLBACK_PACKAGES//&/\\&}"
+ESCAPED_NUGET_FALLBACK_PACKAGES="${ESCAPED_NUGET_FALLBACK_PACKAGES//|/\\|}"
+ESCAPED_NUGET_PACKAGES="${GUEST_NUGET_PACKAGES//&/\\&}"
+ESCAPED_NUGET_PACKAGES="${ESCAPED_NUGET_PACKAGES//|/\\|}"
+ESCAPED_NUGET_HTTP_CACHE_PATH="${GUEST_NUGET_HTTP_CACHE_PATH//&/\\&}"
+ESCAPED_NUGET_HTTP_CACHE_PATH="${ESCAPED_NUGET_HTTP_CACHE_PATH//|/\\|}"
+
+SHARED_FS_TYPE=""
+SHARED_FS_MOUNT_OPTIONS=""
+VIRT_INSTALL_FILESYSTEM_ARG=""
+VIRT_INSTALL_MEMORYBACKING_ARGS=()
+case "${SHARED_NUGET_CACHE_MODE}" in
+  auto)
+    if command -v virtiofsd >/dev/null 2>&1 || [[ -x /usr/libexec/virtiofsd ]] || [[ -x /usr/lib/qemu/virtiofsd ]]; then
+      SHARED_FS_TYPE="virtiofs"
+      SHARED_FS_MOUNT_OPTIONS="ro,nofail"
+      VIRT_INSTALL_FILESYSTEM_ARG="source=${SHARED_NUGET_CACHE_DIR},target=${SHARED_NUGET_CACHE_TAG},driver.type=virtiofs"
+      VIRT_INSTALL_MEMORYBACKING_ARGS=(--memorybacking access.mode=shared)
+    else
+      SHARED_FS_TYPE="9p"
+      SHARED_FS_MOUNT_OPTIONS="ro,trans=virtio,version=9p2000.L,nofail"
+      VIRT_INSTALL_FILESYSTEM_ARG="source=${SHARED_NUGET_CACHE_DIR},target=${SHARED_NUGET_CACHE_TAG},type=mount,accessmode=mapped"
+    fi
+    ;;
+  virtiofs)
+    SHARED_FS_TYPE="virtiofs"
+    SHARED_FS_MOUNT_OPTIONS="ro,nofail"
+    VIRT_INSTALL_FILESYSTEM_ARG="source=${SHARED_NUGET_CACHE_DIR},target=${SHARED_NUGET_CACHE_TAG},driver.type=virtiofs"
+    VIRT_INSTALL_MEMORYBACKING_ARGS=(--memorybacking access.mode=shared)
+    ;;
+  9p)
+    SHARED_FS_TYPE="9p"
+    SHARED_FS_MOUNT_OPTIONS="ro,trans=virtio,version=9p2000.L,nofail"
+    VIRT_INSTALL_FILESYSTEM_ARG="source=${SHARED_NUGET_CACHE_DIR},target=${SHARED_NUGET_CACHE_TAG},type=mount,accessmode=mapped"
+    ;;
+  *)
+    echo "Unsupported SHARED_NUGET_CACHE_MODE: ${SHARED_NUGET_CACHE_MODE}" >&2
+    exit 1
+    ;;
+esac
+
+ESCAPED_NUGET_CACHE_TAG="${SHARED_NUGET_CACHE_TAG//&/\\&}"
+ESCAPED_NUGET_CACHE_TAG="${ESCAPED_NUGET_CACHE_TAG//|/\\|}"
+ESCAPED_NUGET_CACHE_FS_TYPE="${SHARED_FS_TYPE//&/\\&}"
+ESCAPED_NUGET_CACHE_FS_TYPE="${ESCAPED_NUGET_CACHE_FS_TYPE//|/\\|}"
+ESCAPED_NUGET_CACHE_MOUNT_OPTIONS="${SHARED_FS_MOUNT_OPTIONS//&/\\&}"
+ESCAPED_NUGET_CACHE_MOUNT_OPTIONS="${ESCAPED_NUGET_CACHE_MOUNT_OPTIONS//|/\\|}"
 
 sed \
   -e "s|__GATEWAY_URL__|${GATEWAY_URL}|g" \
   -e "s|__SESSION_ID__|${SESSION_ID}|g" \
   -e "s|__SSH_PUBLIC_KEY__|${ESCAPED_SSH_PUBLIC_KEY}|g" \
   -e "s|__LLM_BASE_URL__|${ESCAPED_LLM_BASE_URL}|g" \
+  -e "s|__NUGET_FALLBACK_PACKAGES__|${ESCAPED_NUGET_FALLBACK_PACKAGES}|g" \
+  -e "s|__NUGET_PACKAGES__|${ESCAPED_NUGET_PACKAGES}|g" \
+  -e "s|__NUGET_HTTP_CACHE_PATH__|${ESCAPED_NUGET_HTTP_CACHE_PATH}|g" \
+  -e "s|__NUGET_CACHE_TAG__|${ESCAPED_NUGET_CACHE_TAG}|g" \
+  -e "s|__NUGET_CACHE_FS_TYPE__|${ESCAPED_NUGET_CACHE_FS_TYPE}|g" \
+  -e "s|__NUGET_CACHE_MOUNT_OPTIONS__|${ESCAPED_NUGET_CACHE_MOUNT_OPTIONS}|g" \
   "${USER_DATA_TEMPLATE}" > "${USER_DATA_RENDERED}"
 
 printf 'instance-id: %s\nlocal-hostname: %s\n' "${VM_NAME}" "${VM_NAME}" > "${META_DATA}"
@@ -108,12 +172,14 @@ cloud-localds "${SEED_IMAGE}" "${USER_DATA_RENDERED}" "${META_DATA}"
 virt-install \
   --name "${VM_NAME}" \
   --memory "${RAM_MB}" \
+  "${VIRT_INSTALL_MEMORYBACKING_ARGS[@]}" \
   --vcpus "${VCPUS}" \
   --import \
   --disk "path=${OVERLAY_IMAGE},format=qcow2,bus=virtio" \
   --disk "path=${SEED_IMAGE},device=cdrom" \
   --os-variant ubuntu24.04 \
   --network network=agent-sandbox,model=virtio \
+  --filesystem "${VIRT_INSTALL_FILESYSTEM_ARG}" \
   --graphics none \
   --noautoconsole \
   --rng /dev/urandom

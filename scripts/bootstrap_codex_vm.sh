@@ -95,6 +95,10 @@ ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "
   set -euo pipefail
   sudo mkdir -p /home/${VM_USER}
   sudo chown -R ${VM_USER}:${VM_USER} /home/${VM_USER}
+  if [ -f /etc/agent-sandbox/session.env ]; then
+    sudo chmod 755 /etc/agent-sandbox || true
+    sudo chmod 644 /etc/agent-sandbox/session.env
+  fi
   mkdir -p ~/bin ~/codex-vendor
 "
 scp "${SSH_OPTS[@]}" -r "${VENDOR_DIR}/." "${VM_USER}@${VM_IP}:~/codex-vendor/"
@@ -112,11 +116,14 @@ openai_base_url = "${LLM_BASE_URL}"
 [projects."/home/${VM_USER}"]
 trust_level = "trusted"
 CONFIG
-if ! grep -q 'export PATH="$HOME/bin:$PATH"' ~/.profile 2>/dev/null; then
-  printf '\nexport PATH="$HOME/bin:$PATH"\n' >> ~/.profile
-fi
-if ! grep -q 'relay-placeholder' ~/.profile 2>/dev/null; then
-  cat >> ~/.profile <<PROFILE
+
+append_shell_setup() {
+  local target="$1"
+  if ! grep -q 'export PATH="$HOME/bin:$PATH"' "${target}" 2>/dev/null; then
+    printf '\nexport PATH="$HOME/bin:$PATH"\n' >> "${target}"
+  fi
+  if ! grep -q 'relay-placeholder' "${target}" 2>/dev/null; then
+    cat >> "${target}" <<PROFILE
 if [ -f /etc/agent-sandbox/session.env ]; then
   set -a
   . /etc/agent-sandbox/session.env
@@ -124,7 +131,12 @@ if [ -f /etc/agent-sandbox/session.env ]; then
 fi
 export OPENAI_API_KEY="\${OPENAI_API_KEY:-relay-placeholder}"
 PROFILE
-fi
+  fi
+}
+
+append_shell_setup ~/.profile
+append_shell_setup ~/.bashrc
+
 export PATH="$HOME/bin:$HOME/codex-vendor/path:$PATH"
 export OPENAI_API_KEY="${OPENAI_API_KEY:-relay-placeholder}"
 codex --version

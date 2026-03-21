@@ -25,11 +25,14 @@ Install these packages on the Ubuntu host before using the scripts:
 8. Launch a VM with `sudo ./scripts/launch_agent_vm.sh`.
 9. Install the Codex binary into the guest with `./scripts/bootstrap_codex_vm.sh <vm-name>`.
 10. Optionally install the host `.NET` SDK into the guest with `./scripts/bootstrap_dotnet_vm.sh <vm-name>`.
-11. Optionally install NuGet relay sources into the guest with `./scripts/bootstrap_nuget_vm.sh <vm-name>`.
-12. Optionally install Playwright into the guest with `./scripts/bootstrap_playwright_vm.sh <vm-name>` for rendered-DOM debugging.
-13. Optionally create a local bare Git remote with `./scripts/create_git_remote.sh <repo-name>` if the VM should push code back to the host.
+11. Optionally prewarm the shared host NuGet cache with `./scripts/prewarm_nuget_cache.sh <path> [more paths...]`.
+12. Optionally install NuGet relay sources into the guest with `./scripts/bootstrap_nuget_vm.sh <vm-name>`.
+13. Optionally install Playwright into the guest with `./scripts/bootstrap_playwright_vm.sh <vm-name>` for rendered-DOM debugging.
+14. Optionally create a local bare Git remote with `./scripts/create_git_remote.sh <repo-name>` or mirror the default host repo with `./scripts/mirror_issue_repo.sh <issue-number>` if the VM should push code back to the host.
+15. Use [live-smoke-tests.md](/home/jonathan/agent-sandbox/docs/live-smoke-tests.md) when you want to verify live Discord and provider-backed email behavior against real credentials.
 
 - The launch script resizes each overlay disk to `20G` by default.
+- The launch script also exposes a read-only shared NuGet cache via `virtiofs` at `/opt/agent-sandbox/nuget-cache-ro` inside the guest.
 - Override per VM with `DISK_SIZE_GB=40 sudo ./scripts/launch_agent_vm.sh ...`.
 
 ## SSH Access
@@ -45,7 +48,7 @@ Install these packages on the Ubuntu host before using the scripts:
 - That config points Codex at the host relay via `openai_base_url`.
 - Cloud-init also appends a shell profile hook that loads `/etc/agent-sandbox/session.env` and exports `OPENAI_API_KEY=relay-placeholder` if no key is already set.
 - `./scripts/bootstrap_codex_vm.sh <vm-name>` copies the vendored Linux Codex binary from the host into `~/bin/codex` for the guest user and verifies it.
-- The bootstrap script also overwrites `~/.codex/config.toml` with the relay-aware configuration and appends the placeholder-key shell hook if needed, so it corrects preexisting Codex state in the VM.
+- The bootstrap script also overwrites `~/.codex/config.toml` with the relay-aware configuration and appends the placeholder-key shell hook plus `~/bin` PATH entry to both `~/.profile` and `~/.bashrc`, so it corrects preexisting Codex state in the VM.
 - The bootstrap script repairs `/home/agent` ownership first, so it also works against VMs created before the home directory ownership fix.
 - New VMs pick this up automatically; existing VMs need to be recreated.
 
@@ -67,7 +70,29 @@ Install these packages on the Ubuntu host before using the scripts:
 
 - `./scripts/bootstrap_nuget_vm.sh <vm-name>` writes `~/.nuget/NuGet/NuGet.Config`.
 - The generated config points to the host NuGet relay for both nuget.org and Azure Artifacts.
+- The generated config uses:
+  - guest-local writable `globalPackagesFolder` at `/home/agent/.nuget/packages-local`
+  - guest-local writable `httpCacheFolder` at `/home/agent/.nuget/http-cache`
+  - read-only `fallbackPackageFolders` at `/opt/agent-sandbox/nuget-cache-ro`
 - It runs `dotnet nuget list source` when `dotnet` is available in the guest.
+
+## Host Shared NuGet Cache
+
+- Default host cache path: `/var/lib/libvirt/images/agent-sandbox/nuget-cache/global-packages`
+- Guests see that cache read-only at `/opt/agent-sandbox/nuget-cache-ro` via `virtiofs`.
+- Guests still use guest-local writable caches for cache misses and new downloads.
+- Prewarm the shared cache explicitly from the host with:
+
+  ```bash
+  ./scripts/prewarm_nuget_cache.sh /path/to/project-or-solution.slnx
+  ```
+
+- Inspect the cache with:
+
+  ```bash
+  ./scripts/inspect_nuget_cache.sh
+  ./scripts/inspect_nuget_cache.sh ExampleIndustry.Elastic.Linq 2026.3.6.1
+  ```
 
 ## Host-Side LLM Access
 
@@ -111,6 +136,14 @@ Install these packages on the Ubuntu host before using the scripts:
   - It does **not** treat prior Discord history as an open-ended source universe.
   - Polling additional channels requires explicitly seeding those channel IDs into the command
     store.
+- Seed a dedicated test/control channel and get an initial cursor with:
+
+  ```bash
+  ./.venv/bin/agent-sandbox-cli seed-discord-channel 123456789012345678 --config config/gateway.yaml
+  ```
+
+  Use the printed cursor as the first `since_cursor` for `discord_get_commands` so the seed entry
+  stays out of the first live poll or smoke test result set.
 - Allowlist precedence for `discord_get_commands`:
   1. Command metadata must identify trusted adapter source (`source = discord_bot_api`).
   2. If the command `channel_id` is in `session.discord_channel_allowlist`, allow it.
@@ -266,12 +299,32 @@ sudo systemctl status agent-sandbox-nuget-relay.service
 
 ## Local Git Remote Flow
 
+For the common issue workflow, you can do the full host-side setup in one command:
+
+```bash
+./scripts/setup_issue_vm.sh 14084 /path/to/project-or-solution.slnx
+```
+
+That prewarms the shared NuGet cache, launches `vm-14084`, bootstraps Codex/.NET/NuGet, and
+configures the issue-numbered Git mirror and guest SSH path.
+
 Create a host-local bare repository:
 
 ```bash
 cp config/git-server.env.example config/git-server.env
 $EDITOR config/git-server.env
-./scripts/create_git_remote.sh sample-repo
+./scripts/setup_issue_git_vm.sh vm-real 14084
+```
+
+That one command bootstraps the guest SSH key path and creates or refreshes the
+issue-numbered bare mirror on the host. Use the lower-level
+`create_git_remote.sh` and `bootstrap_git_vm.sh` helpers directly only when you
+need a non-issue-specific repository layout.
+
+Or mirror the default host repo into an issue-numbered bare remote:
+
+```bash
+./scripts/mirror_issue_repo.sh 14084
 ```
 
 Make sure the host SSH service is installed and reachable from the VM network:
@@ -282,13 +335,44 @@ sudo systemctl enable --now ssh
 sudo ./scripts/apply_firewall.sh
 ```
 
+`bootstrap_git_vm.sh` creates a dedicated guest SSH key, installs a forced-command
+`authorized_keys` entry on the host, and configures the guest-side alias
+`agent-sandbox-git-host` so the VM does not need your host password.
+
 Then in the VM, add the printed SSH remote URL and push into a session-specific namespace such as:
 
 ```bash
 git push agent HEAD:refs/heads/agents/<session-id>/<branch-name>
 ```
 
-Review those branches from the host and merge them into your trusted repository workflow only after review.
+From the host, promote a specific quarantined agent branch into a trusted working clone:
+
+```bash
+./scripts/promote_agent_branch.sh /path/to/trusted-clone sample-repo agents/<session-id>/<branch-name>
+```
+
+That creates a local review branch like `review/<session-id>/<branch-name>` in the trusted clone
+without pushing anything to `origin`.
+
+After review and tests pass, push the reviewed branch to `origin` and optionally open the PR:
+
+```bash
+./scripts/open_agent_pr.sh /path/to/trusted-clone review/<session-id>/<branch-name>
+./scripts/open_agent_pr.sh --create-pr --base main /path/to/trusted-clone review/<session-id>/<branch-name>
+```
+
+This is the preferred flow: VM -> quarantine bare repo -> trusted host clone -> `origin`/PR.
+
+## Live Smoke Tests
+
+Use [live-smoke-tests.md](/home/jonathan/agent-sandbox/docs/live-smoke-tests.md) for the
+decision-complete runbook covering:
+
+- host gateway only verification
+- full guest-to-host verification
+- dedicated Discord test channels
+- one Gmail and one Graph mailbox
+- read-only email validation
 
 ## Operational Guardrails
 

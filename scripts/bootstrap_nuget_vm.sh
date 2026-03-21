@@ -14,6 +14,9 @@ Arguments:
 Environment:
   SSH_KEY_PATH           Private key matching the guest authorized key.
   NUGET_RELAY_BASE_URL   Host relay base URL. Default: http://192.168.250.1:11666
+  NUGET_FALLBACK_PACKAGES  Guest read-only fallback package folder. Default: /opt/agent-sandbox/nuget-cache-ro
+  NUGET_PACKAGES_DIR       Guest writable global-packages folder. Default: /home/agent/.nuget/packages-local
+  NUGET_HTTP_CACHE_DIR     Guest writable HTTP cache folder. Default: /home/agent/.nuget/http-cache
 USAGE
 }
 
@@ -36,6 +39,9 @@ if [[ ! -f "${SSH_KEY_PATH}" ]]; then
   SSH_KEY_PATH="${CALLER_HOME}/.ssh/id_rsa"
 fi
 NUGET_RELAY_BASE_URL="${NUGET_RELAY_BASE_URL:-http://192.168.250.1:11666}"
+NUGET_FALLBACK_PACKAGES="${NUGET_FALLBACK_PACKAGES:-/opt/agent-sandbox/nuget-cache-ro}"
+NUGET_PACKAGES_DIR="${NUGET_PACKAGES_DIR:-/home/agent/.nuget/packages-local}"
+NUGET_HTTP_CACHE_DIR="${NUGET_HTTP_CACHE_DIR:-/home/agent/.nuget/http-cache}"
 
 SSH_OPTS=(
   -o StrictHostKeyChecking=no
@@ -83,19 +89,37 @@ ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "bash -s" <<EOF_VM
 set -euo pipefail
 
 mkdir -p ~/.nuget/NuGet
+mkdir -p "${NUGET_PACKAGES_DIR}"
+mkdir -p "${NUGET_HTTP_CACHE_DIR}"
 cat > ~/.nuget/NuGet/NuGet.Config <<CONFIG
 <?xml version="1.0" encoding="utf-8"?>
 <configuration>
+  <config>
+    <add key="globalPackagesFolder" value="${NUGET_PACKAGES_DIR}" />
+    <add key="httpCacheFolder" value="${NUGET_HTTP_CACHE_DIR}" />
+  </config>
   <packageSources>
     <clear />
-    <add key="sandbox-nuget" value="${NUGET_RELAY_BASE_URL}/nuget/nuget-org/v3/index.json" />
-    <add key="sandbox-azure" value="${NUGET_RELAY_BASE_URL}/nuget/azure/v3/index.json" />
+    <add key="sandbox-nuget" value="${NUGET_RELAY_BASE_URL}/nuget/nuget-org/v3/index.json" allowInsecureConnections="true" />
+    <add key="sandbox-azure" value="${NUGET_RELAY_BASE_URL}/nuget/azure/v3/index.json" allowInsecureConnections="true" />
   </packageSources>
+  <fallbackPackageFolders>
+    <add key="shared-readonly" value="${NUGET_FALLBACK_PACKAGES}" />
+  </fallbackPackageFolders>
+  <packageSourceMapping>
+    <packageSource key="sandbox-azure">
+      <package pattern="ExampleIndustry.*" />
+      <package pattern="TrueMes.*" />
+    </packageSource>
+    <packageSource key="sandbox-nuget">
+      <package pattern="*" />
+    </packageSource>
+  </packageSourceMapping>
 </configuration>
 CONFIG
 
 if command -v dotnet >/dev/null 2>&1; then
-  dotnet nuget list source
+  dotnet nuget list source --configfile ~/.nuget/NuGet/NuGet.Config
 fi
 EOF_VM
 

@@ -22,7 +22,7 @@ TABLE="inet agent_sandbox"
 CHAIN="forward"
 BRIDGE_IF="virbr250"
 GATEWAY_IP="192.168.250.1"
-ALLOWED_TCP_PORTS="${ALLOWED_TCP_PORTS:-8000 11434}"
+ALLOWED_TCP_PORTS="${ALLOWED_TCP_PORTS:-22 8000 11434 11666}"
 
 if ! command -v nft >/dev/null 2>&1; then
   echo "nft is required" >&2

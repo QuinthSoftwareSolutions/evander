@@ -42,6 +42,7 @@ fi
 GIT_ROOT="${AGENT_SANDBOX_GIT_ROOT:-${ROOT_DIR}/git-remotes}"
 GIT_HOST="${AGENT_SANDBOX_GIT_HOST:-192.168.250.1}"
 GIT_USER="${AGENT_SANDBOX_GIT_USER:-${USER}}"
+GIT_SSH_ALIAS="${AGENT_SANDBOX_GIT_SSH_ALIAS:-agent-sandbox-git-host}"
 
 case "${REPO_NAME}" in
   *.git) REPO_DIR="${GIT_ROOT}/${REPO_NAME}" ;;
@@ -58,8 +59,11 @@ fi
 
 echo "Bare remote ready: ${REPO_DIR}"
 echo
+echo "Before first VM use:"
+echo "  ./scripts/bootstrap_git_vm.sh <vm-name>"
+echo
 echo "Add from VM:"
-echo "  git remote add agent ssh://${GIT_USER}@${GIT_HOST}${REPO_DIR}"
+echo "  git remote add agent ssh://${GIT_SSH_ALIAS}${REPO_DIR}"
 echo
 echo "Recommended push pattern:"
 echo "  git push agent HEAD:refs/heads/${BRANCH_NAMESPACE}/\${SESSION_ID:-manual}/\$(git rev-parse --abbrev-ref HEAD)"
