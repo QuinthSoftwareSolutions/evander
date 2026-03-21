@@ -24,6 +24,7 @@ class ToolName(str, Enum):
     EMAIL_SEND_APPROVED = "email_send_approved"
     HAS_PENDING_FEEDBACK = "has_pending_feedback"
     LIST_UNREAD_FEEDBACK = "list_unread_feedback"
+    POST_PR_FEEDBACK_REPLY = "post_pr_feedback_reply"
 
 
 class ApprovalStatus(str, Enum):
@@ -147,6 +148,30 @@ class ListUnreadFeedbackRequest(BaseModel):
 class ListUnreadFeedbackResponse(BaseModel):
     feedback: list[PrFeedbackItem] = Field(default_factory=list)
     next_cursor: str | None = None
+
+
+class PostPrFeedbackReplyRequest(BaseModel):
+    session_id: str = Field(min_length=1)
+    provider: str = Field(min_length=1)
+    repo: str = Field(min_length=1)
+    pr_id: str = Field(min_length=1)
+    body_text: str = Field(min_length=1)
+    thread_id: str | None = None
+    comment_id: str | None = None
+    idempotency_key: str | None = None
+    request_id: str | None = None
+
+
+class PostPrFeedbackReplyResponse(BaseModel):
+    status: str
+    provider: str
+    repo: str
+    pr_id: str
+    thread_id: str | None = None
+    comment_id: str | None = None
+    reply_id: str | None = None
+    reply_url: str | None = None
+    idempotency_key: str | None = None
 
 
 def digest_payload(payload: dict[str, Any]) -> str:

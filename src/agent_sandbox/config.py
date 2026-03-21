@@ -68,6 +68,11 @@ class GatewayConfig(BaseModel):
     email_draft_recipient_allowlist: list[str] = Field(default_factory=list)
     email_draft_domain_allowlist: list[str] = Field(default_factory=list)
     email_send_enabled: bool = False
+    pr_reply_require_approval: bool = False
+    github_token_env: str = "GITHUB_TOKEN"
+    azure_devops_pat_env: str = "AZURE_DEVOPS_PAT"
+    azure_devops_organization_url: str = "https://dev.azure.com"
+    azure_devops_project: str = "default"
     email_provider_timeout_seconds: float = Field(default=30.0, gt=0)
     email_mailboxes: list[MailboxConfig] = Field(
         default_factory=lambda: [

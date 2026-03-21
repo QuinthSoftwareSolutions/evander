@@ -20,10 +20,13 @@ from .email.graph_provider import GraphEmailProvider
 from .email.providers import JsonEmailProvider, MultiMailboxEmailProvider
 from .policy import PolicyEngine
 from .services import (
+    AzureDevOpsPrReplyProvider,
     DiscordBotApiService,
     DiscordService,
     EmailService,
+    GitHubPrReplyProvider,
     PrFeedbackService,
+    PrReplyService,
     StubDiscordService,
 )
 from .storage import JsonStore
@@ -37,6 +40,7 @@ class RuntimeContext:
     email_service: EmailService
     discord_service: DiscordService
     pr_feedback_service: PrFeedbackService
+    pr_reply_service: PrReplyService
     sessions: JsonStore[SessionManifest]
     approvals: JsonStore[ApprovalRequest]
 
@@ -57,6 +61,7 @@ def build_runtime(config: GatewayConfig) -> RuntimeContext:
         email_service=EmailService(_build_email_provider(config, emails, drafts, email_cursors)),
         discord_service=discord_service,
         pr_feedback_service=PrFeedbackService(config.runtime_dir / "pr-feedback-store.json"),
+        pr_reply_service=_build_pr_reply_service(config),
         sessions=sessions,
         approvals=approvals,
     )
@@ -157,6 +162,29 @@ def _build_discord_service(
         )
     raise RuntimeError(
         f"Unsupported discord backend {config.discord_backend!r}. Expected one of: 'stub', 'bot_api'."
+    )
+
+
+def _build_pr_reply_service(config: GatewayConfig) -> PrReplyService:
+    github_token = os.environ.get(config.github_token_env, "").strip()
+    azure_pat = os.environ.get(config.azure_devops_pat_env, "").strip()
+
+    providers = {}
+    if github_token:
+        providers["github"] = GitHubPrReplyProvider(
+            token=github_token,
+            timeout_seconds=config.email_provider_timeout_seconds,
+        )
+    if azure_pat:
+        providers["azure_devops"] = AzureDevOpsPrReplyProvider(
+            organization_url=config.azure_devops_organization_url,
+            project=config.azure_devops_project,
+            pat=azure_pat,
+            timeout_seconds=config.email_provider_timeout_seconds,
+        )
+    return PrReplyService(
+        providers=providers,
+        idempotency_store_path=config.runtime_dir / "pr-reply-idempotency.json",
     )
 
 

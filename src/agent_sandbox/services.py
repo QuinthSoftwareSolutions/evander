@@ -5,6 +5,7 @@ import random
 import time
 from datetime import UTC, datetime
 from pathlib import Path
+from threading import Lock
 from typing import Any, Callable, Protocol
 
 import httpx
@@ -14,6 +15,7 @@ from .models import (
     EmailMessage,
     HasPendingFeedbackResponse,
     ListUnreadFeedbackResponse,
+    PostPrFeedbackReplyResponse,
     PrFeedbackItem,
 )
 from .email.providers import EmailDraft, EmailMessageDetail, EmailMessageSummary, EmailProvider
@@ -394,3 +396,174 @@ class PrFeedbackService:
         if parsed.tzinfo is None:
             return parsed.replace(tzinfo=UTC)
         return parsed.astimezone(UTC)
+
+
+class PrReplyProvider(Protocol):
+    def post_reply(
+        self,
+        *,
+        repo: str,
+        pr_id: str,
+        thread_id: str | None,
+        comment_id: str | None,
+        body_text: str,
+    ) -> PostPrFeedbackReplyResponse: ...
+
+
+class GitHubPrReplyProvider:
+    def __init__(
+        self,
+        *,
+        token: str,
+        api_base_url: str = "https://api.github.com",
+        timeout_seconds: float = 30.0,
+    ) -> None:
+        self.token = token
+        self.api_base_url = api_base_url.rstrip("/")
+        self.timeout_seconds = timeout_seconds
+
+    def post_reply(
+        self,
+        *,
+        repo: str,
+        pr_id: str,
+        thread_id: str | None,
+        comment_id: str | None,
+        body_text: str,
+    ) -> PostPrFeedbackReplyResponse:
+        if not comment_id:
+            raise ValueError("GitHub reply posting requires comment_id")
+        with httpx.Client(timeout=self.timeout_seconds) as client:
+            response = client.post(
+                f"{self.api_base_url}/repos/{repo}/pulls/{pr_id}/comments/{comment_id}/replies",
+                headers={
+                    "Authorization": f"Bearer {self.token}",
+                    "Accept": "application/vnd.github+json",
+                    "X-GitHub-Api-Version": "2022-11-28",
+                },
+                json={"body": body_text},
+            )
+            response.raise_for_status()
+            payload = response.json()
+        return PostPrFeedbackReplyResponse(
+            status="posted",
+            provider="github",
+            repo=repo,
+            pr_id=pr_id,
+            thread_id=thread_id,
+            comment_id=comment_id,
+            reply_id=str(payload.get("id", "")) or None,
+            reply_url=payload.get("html_url") or payload.get("url"),
+        )
+
+
+class AzureDevOpsPrReplyProvider:
+    def __init__(
+        self,
+        *,
+        organization_url: str,
+        project: str,
+        pat: str,
+        timeout_seconds: float = 30.0,
+    ) -> None:
+        self.organization_url = organization_url.rstrip("/")
+        self.project = project
+        self.pat = pat
+        self.timeout_seconds = timeout_seconds
+
+    def post_reply(
+        self,
+        *,
+        repo: str,
+        pr_id: str,
+        thread_id: str | None,
+        comment_id: str | None,
+        body_text: str,
+    ) -> PostPrFeedbackReplyResponse:
+        if not thread_id:
+            raise ValueError("Azure DevOps reply posting requires thread_id")
+        if not comment_id:
+            raise ValueError("Azure DevOps reply posting requires comment_id")
+        with httpx.Client(timeout=self.timeout_seconds) as client:
+            response = client.post(
+                (
+                    f"{self.organization_url}/{self.project}/_apis/git/repositories/{repo}/"
+                    f"pullRequests/{pr_id}/threads/{thread_id}/comments"
+                ),
+                params={"api-version": "7.1"},
+                auth=("", self.pat),
+                json={"content": body_text, "parentCommentId": int(comment_id)},
+            )
+            response.raise_for_status()
+            payload = response.json()
+        return PostPrFeedbackReplyResponse(
+            status="posted",
+            provider="azure_devops",
+            repo=repo,
+            pr_id=pr_id,
+            thread_id=thread_id,
+            comment_id=comment_id,
+            reply_id=str(payload.get("id", "")) or None,
+            reply_url=payload.get("_links", {}).get("web", {}).get("href"),
+        )
+
+
+class PrReplyService:
+    def __init__(self, *, providers: dict[str, PrReplyProvider], idempotency_store_path: Path) -> None:
+        self.providers = providers
+        self.idempotency_store_path = idempotency_store_path
+        self._lock = Lock()
+        self.idempotency_store_path.parent.mkdir(parents=True, exist_ok=True)
+        if not self.idempotency_store_path.exists():
+            self._write_raw({})
+
+    def post_reply(
+        self,
+        *,
+        provider: str,
+        repo: str,
+        pr_id: str,
+        thread_id: str | None,
+        comment_id: str | None,
+        body_text: str,
+        idempotency_key: str | None = None,
+    ) -> PostPrFeedbackReplyResponse:
+        provider_name = provider.strip()
+        if provider_name not in self.providers:
+            raise ValueError(f"Unsupported PR feedback provider: {provider_name}")
+
+        normalized_key = idempotency_key.strip() if idempotency_key else None
+        cache_key = (
+            f"{provider_name}:{repo}:{pr_id}:{normalized_key}" if normalized_key else None
+        )
+        if cache_key:
+            with self._lock:
+                existing = self._read_raw().get(cache_key)
+            if isinstance(existing, dict):
+                cached = PostPrFeedbackReplyResponse.model_validate(existing)
+                return cached.model_copy(update={"status": "deduplicated"})
+
+        response = self.providers[provider_name].post_reply(
+            repo=repo,
+            pr_id=pr_id,
+            thread_id=thread_id,
+            comment_id=comment_id,
+            body_text=body_text,
+        )
+        response.idempotency_key = normalized_key
+        if cache_key:
+            with self._lock:
+                payload = self._read_raw()
+                payload[cache_key] = response.model_dump(mode="json")
+                self._write_raw(payload)
+        return response
+
+    def _read_raw(self) -> dict[str, Any]:
+        return json.loads(self.idempotency_store_path.read_text(encoding="utf-8"))
+
+    def _write_raw(self, payload: dict[str, Any]) -> None:
+        temp_path = self.idempotency_store_path.with_suffix(
+            f"{self.idempotency_store_path.suffix}.tmp"
+        )
+        temp_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+        temp_path.replace(self.idempotency_store_path)

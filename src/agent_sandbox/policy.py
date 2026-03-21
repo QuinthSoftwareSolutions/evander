@@ -69,6 +69,23 @@ class PolicyEngine:
             validated.append({"provider": provider, "repo": repo, "pr_id": pr_id})
         return validated
 
+    def require_pr_feedback_stream(
+        self,
+        session: SessionManifest,
+        *,
+        provider: str,
+        repo: str,
+        pr_id: str,
+    ) -> None:
+        streams = self.require_pr_feedback_streams(session)
+        allowed = {(stream["provider"], stream["repo"], stream["pr_id"]) for stream in streams}
+        key = (provider, repo, pr_id)
+        if key not in allowed:
+            raise PolicyError(
+                f"PR feedback stream {provider}:{repo}:{pr_id} is not allowlisted for session "
+                f"{session.session_id}"
+            )
+
     def require_discord_channel(self, session: SessionManifest, channel_id: str) -> None:
         if channel_id not in session.discord_channel_allowlist:
             raise PolicyError(f"Discord channel is not allowlisted for session {session.session_id}")

@@ -13,6 +13,7 @@ from .models import (
     DiscordCommandEnvelope,
     HasPendingFeedbackRequest,
     ListUnreadFeedbackRequest,
+    PostPrFeedbackReplyRequest,
     ToolName,
 )
 from .policy import PolicyError
@@ -179,6 +180,93 @@ def create_server(context: RuntimeContext) -> FastMCP:
             audit_failure(
                 session_id,
                 ToolName.LIST_UNREAD_FEEDBACK,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
+    def post_pr_feedback_reply(
+        session_id: str,
+        provider: str,
+        repo: str,
+        pr_id: str,
+        body_text: str,
+        thread_id: str | None = None,
+        comment_id: str | None = None,
+        idempotency_key: str | None = None,
+        request_id: str | None = None,
+    ) -> dict[str, Any]:
+        normalized_thread_id = thread_id.strip() if isinstance(thread_id, str) else None
+        normalized_comment_id = comment_id.strip() if isinstance(comment_id, str) else None
+        request = PostPrFeedbackReplyRequest(
+            session_id=session_id.strip(),
+            provider=provider.strip(),
+            repo=repo.strip(),
+            pr_id=pr_id.strip(),
+            body_text=body_text.strip(),
+            thread_id=normalized_thread_id,
+            comment_id=normalized_comment_id,
+            idempotency_key=idempotency_key.strip() if isinstance(idempotency_key, str) else None,
+            request_id=request_id.strip() if isinstance(request_id, str) else None,
+        )
+        args = request.model_dump(mode="json")
+        if not request.thread_id and not request.comment_id:
+            message = "Either thread_id or comment_id is required for post_pr_feedback_reply"
+            audit_failure(session_id, ToolName.POST_PR_FEEDBACK_REPLY, args, message)
+            raise PolicyError(message)
+        try:
+            session = context.policy.require_tool(session_id, ToolName.POST_PR_FEEDBACK_REPLY)
+            context.policy.require_pr_feedback_stream(
+                session,
+                provider=request.provider,
+                repo=request.repo,
+                pr_id=request.pr_id,
+            )
+            if context.config.pr_reply_require_approval:
+                if not request.request_id:
+                    raise PolicyError("request_id is required when pr_reply_require_approval is enabled")
+                context.policy.require_approved(request.request_id, payload=args)
+            result = context.pr_reply_service.post_reply(
+                provider=request.provider,
+                repo=request.repo,
+                pr_id=request.pr_id,
+                thread_id=request.thread_id,
+                comment_id=request.comment_id,
+                body_text=request.body_text,
+                idempotency_key=request.idempotency_key,
+            ).model_dump(mode="json")
+            audit_success(
+                session_id,
+                ToolName.POST_PR_FEEDBACK_REPLY,
+                args,
+                {
+                    "status": result.get("status"),
+                    "provider": result.get("provider"),
+                    "reply_id": result.get("reply_id"),
+                    "reply_url": result.get("reply_url"),
+                },
+            )
+            return result
+        except PolicyError as exc:
+            audit_failure(session_id, ToolName.POST_PR_FEEDBACK_REPLY, args, str(exc))
+            raise
+        except (httpx.HTTPError, ValueError) as exc:
+            audit_failure(
+                session_id,
+                ToolName.POST_PR_FEEDBACK_REPLY,
+                args,
+                str(exc),
+                decision="error",
+                error_class="adapter_http_error",
+            )
+            raise
+        except Exception as exc:
+            audit_failure(
+                session_id,
+                ToolName.POST_PR_FEEDBACK_REPLY,
                 args,
                 str(exc),
                 decision="error",
