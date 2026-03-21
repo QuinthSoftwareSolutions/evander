@@ -22,6 +22,9 @@ def test_bare_repo_flow_includes_hook_and_azure_support() -> None:
     assert "runtime/agent-events.log" in handle_push
     assert "extract_session_id()" in handle_push
     assert 'PR_ARGS+=(--session-id "${SESSION_ID}")' in handle_push
+    assert "AGENT_PR_NOTES" in handle_push
+    assert "refs/notes/agent-pr" in handle_push
+    assert '--body-file "${PR_BODY_FILE}"' in handle_push
     assert "AZURE_DEVOPS_PAT" in open_pr
     assert "ssh.dev.azure.com" in open_pr
     assert '"api-version": "7.1"' in open_pr or "?api-version=7.1" in open_pr

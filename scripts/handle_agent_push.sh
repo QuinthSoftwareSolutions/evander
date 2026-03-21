@@ -41,8 +41,11 @@ fi
 EVENT_LOG="${AGENT_SANDBOX_EVENT_LOG:-${ROOT_DIR}/runtime/agent-events.log}"
 NOTIFY_COMMAND="${AGENT_SANDBOX_NOTIFY_COMMAND:-}"
 AUTO_REMOTE_NAME="${AGENT_SANDBOX_AUTO_REMOTE_NAME:-agent-dropbox-auto}"
+PR_NOTES_REF="${AGENT_SANDBOX_PR_NOTES_REF:-refs/notes/agent-pr}"
+PR_BODY_DIR="${AGENT_SANDBOX_PR_BODY_DIR:-${ROOT_DIR}/runtime/pr-body}"
 
 mkdir -p "$(dirname "${EVENT_LOG}")"
+mkdir -p "${PR_BODY_DIR}"
 
 notify_event() {
   local title="$1"
@@ -146,12 +149,45 @@ while read -r old_sha new_sha ref_name; do
   ensure_remote "${TRUSTED_REPO_PATH}" "${AUTO_REMOTE_NAME}" "${BARE_REPO_PATH}"
   promote_branch "${TRUSTED_REPO_PATH}" "${AUTO_REMOTE_NAME}" "${AGENT_BRANCH}" "${REVIEW_BRANCH}"
 
+  # AGENT_PR_NOTES: fetch the dedicated notes ref before PR automation so
+  # host-side PR creation can consume agent-authored markdown summaries.
+  if ! git -C "${TRUSTED_REPO_PATH}" fetch "${AUTO_REMOTE_NAME}" \
+    "${PR_NOTES_REF}:${PR_NOTES_REF}" >/dev/null 2>&1; then
+    notify_event \
+      "AGENT_PR_NOTES fetch failed (non-fatal)" \
+      "repo=$(basename "${TRUSTED_REPO_PATH}") notes_ref=${PR_NOTES_REF} branch=${REVIEW_BRANCH} session_id=${SESSION_ID:-unknown}"
+  fi
+
+  PR_BODY_FILE=""
+  if RESOLVED_SHA="$(git -C "${TRUSTED_REPO_PATH}" rev-parse --verify "${new_sha}^{commit}" 2>/dev/null)"; then
+    # AGENT_PR_NOTES: read git notes for the pushed commit and persist to runtime
+    # for use as open_agent_pr.sh --body-file when the note is present.
+    if NOTE_CONTENT="$(git -C "${TRUSTED_REPO_PATH}" notes --ref=agent-pr show "${RESOLVED_SHA}" 2>/dev/null)"; then
+      if [[ -n "${NOTE_CONTENT}" ]]; then
+        SAFE_SESSION_ID="${SESSION_ID:-unknown}"
+        PR_BODY_FILE="${PR_BODY_DIR}/agent-note-${SAFE_SESSION_ID}-${RESOLVED_SHA}.md"
+        printf '%s\n' "${NOTE_CONTENT}" > "${PR_BODY_FILE}"
+      fi
+    else
+      notify_event \
+        "AGENT_PR_NOTES read failed (non-fatal)" \
+        "repo=$(basename "${TRUSTED_REPO_PATH}") sha=${RESOLVED_SHA} notes_ref=${PR_NOTES_REF} branch=${REVIEW_BRANCH} session_id=${SESSION_ID:-unknown}"
+    fi
+  else
+    notify_event \
+      "AGENT_PR_NOTES sha resolution failed (non-fatal)" \
+      "repo=$(basename "${TRUSTED_REPO_PATH}") new_sha=${new_sha} branch=${REVIEW_BRANCH} session_id=${SESSION_ID:-unknown}"
+  fi
+
   PR_ARGS=(--create-pr)
   if [[ -n "${BASE_BRANCH}" ]]; then
     PR_ARGS+=(--base "${BASE_BRANCH}")
   fi
   if [[ -n "${SESSION_ID}" ]]; then
     PR_ARGS+=(--session-id "${SESSION_ID}")
+  fi
+  if [[ -n "${PR_BODY_FILE}" ]]; then
+    PR_ARGS+=(--body-file "${PR_BODY_FILE}")
   fi
   PR_ARGS+=("${TRUSTED_REPO_PATH}" "${REVIEW_BRANCH}")
 
