@@ -43,21 +43,17 @@ if [[ ! -f "${SSH_PRIVATE_KEY_PATH}" ]]; then
 fi
 
 get_vm_ip() {
-  local ip
+  local ip domifaddr_output
 
-  ip="$(
-    virsh domifaddr "${VM_NAME}" 2>/dev/null \
-      | awk '/ipv4/ {split($4, a, "/"); print a[1]; exit}'
-  )"
+  domifaddr_output="$(virsh domifaddr "${VM_NAME}" 2>/dev/null || true)"
+  ip="$(awk '/ipv4/ {split($4, a, "/"); print a[1]; exit}' <<<"${domifaddr_output}")"
   if [[ -n "${ip}" ]]; then
     printf '%s\n' "${ip}"
     return 0
   fi
 
-  ip="$(
-    sudo -n virsh domifaddr "${VM_NAME}" 2>/dev/null \
-      | awk '/ipv4/ {split($4, a, "/"); print a[1]; exit}'
-  )"
+  domifaddr_output="$(sudo -n virsh domifaddr "${VM_NAME}" 2>/dev/null || true)"
+  ip="$(awk '/ipv4/ {split($4, a, "/"); print a[1]; exit}' <<<"${domifaddr_output}")"
   if [[ -n "${ip}" ]]; then
     printf '%s\n' "${ip}"
     return 0
@@ -71,13 +67,11 @@ if ! virsh dominfo "${VM_NAME}" >/dev/null 2>&1 && ! sudo -n virsh dominfo "${VM
   exit 1
 fi
 
-VM_STATE="$(
-  virsh dominfo "${VM_NAME}" 2>/dev/null | awk -F': *' '/^State:/ {print $2; exit}'
-)"
+DOMINFO_OUTPUT="$(virsh dominfo "${VM_NAME}" 2>/dev/null || true)"
+VM_STATE="$(awk -F': *' '/^State:/ {print $2; exit}' <<<"${DOMINFO_OUTPUT}")"
 if [[ -z "${VM_STATE}" ]]; then
-  VM_STATE="$(
-    sudo -n virsh dominfo "${VM_NAME}" 2>/dev/null | awk -F': *' '/^State:/ {print $2; exit}'
-  )"
+  DOMINFO_OUTPUT="$(sudo -n virsh dominfo "${VM_NAME}" 2>/dev/null || true)"
+  VM_STATE="$(awk -F': *' '/^State:/ {print $2; exit}' <<<"${DOMINFO_OUTPUT}")"
 fi
 
 VM_IP=""
