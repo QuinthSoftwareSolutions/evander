@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import httpx
 import pytest
 
@@ -110,3 +112,47 @@ def test_azure_reply_provider_posts_reply(monkeypatch: pytest.MonkeyPatch) -> No
     )
     assert result.reply_id == "301"
     assert result.reply_url == "https://ado.test/reply/301"
+
+
+def test_pr_reply_service_posts_successfully_and_deduplicates_retries(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    request_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal request_count
+        request_count += 1
+        assert request.url.path == "/repos/org/repo/pulls/17/comments/91/replies"
+        return httpx.Response(201, json={"id": 401, "html_url": "https://github.test/reply/401"})
+
+    patch_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    service = PrReplyService(
+        providers={
+            "github": GitHubPrReplyProvider(token="token-1", api_base_url="https://api.github.test")
+        },
+        idempotency_store_path=tmp_path / "pr-reply-idempotency.json",
+    )
+
+    first = service.post_reply(
+        provider="github",
+        repo="org/repo",
+        pr_id="17",
+        thread_id=None,
+        comment_id="91",
+        body_text="Applied in follow-up commit.",
+        idempotency_key="retry-safe-key",
+    )
+    second = service.post_reply(
+        provider="github",
+        repo="org/repo",
+        pr_id="17",
+        thread_id=None,
+        comment_id="91",
+        body_text="Applied in follow-up commit.",
+        idempotency_key="retry-safe-key",
+    )
+
+    assert first.status == "posted"
+    assert second.status == "deduplicated"
+    assert second.reply_id == "401"
+    assert request_count == 1

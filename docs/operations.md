@@ -199,8 +199,10 @@ without exposing provider credentials in the VM.
    - `has_pending_feedback(session_id)`
 2. Unread fetch when pending is true:
    - `list_unread_feedback(session_id, last_read_cursor)`
-3. Optional acknowledgment/update:
-   - `acknowledge_feedback(...)` or equivalent cursor/update call after successful local handling.
+3. Post threaded replies (when needed):
+   - `post_pr_feedback_reply(session_id, provider, repo, pr_id, body_text, thread_id/comment_id, idempotency_key)`
+4. Cursor advancement:
+   - advance `last_read_cursor` only after local handling and any provider reply posting have completed durably.
 
 ### Guest state model
 
@@ -245,17 +247,36 @@ without exposing provider credentials in the VM.
      instruction; if resume is disabled, it uses feedback-focused
      `codex exec`, then records PID
 
+Healthy heartbeat log examples:
+
+- idle/no feedback: `pending_feedback=false session_id=...`
+- busy safety skip: `skip reason=codex-active pid=...`
+- wake on new feedback: `pending_feedback=true session_id=...` followed by `codex_started pid=...`
+
 ### Failure handling
 
 - MCP unavailable/timeouts:
   - Keep cursor unchanged.
   - Log and retry on next loop (optionally with bounded backoff/jitter).
+- Provider API failures during `post_pr_feedback_reply`:
+  - Keep cursor unchanged for unhandled items.
+  - Retry with the same `idempotency_key` so duplicates are suppressed if the prior attempt actually succeeded upstream.
+  - Validate host-side provider credentials and endpoint reachability before replaying.
 - Stale cursor:
   - Detect host cursor error.
   - Reset/recover cursor using a host-supported baseline, then continue.
 - Partial fetch or partial local processing:
   - Treat as uncommitted.
   - Do not advance cursor; re-fetch on next loop.
+- Stale locks/PIDs:
+  - `heartbeat.lock`: usually transient; if lock is stuck and no service is active, remove it and rerun once.
+  - `codex-heartbeat.pid`: if PID does not exist or is not a Codex process, it is cleaned automatically and logged as `stale_pid`.
+
+### Audit and log file locations
+
+- Guest heartbeat files: `/home/agent/.agent-sandbox/heartbeat.log`, `/home/agent/.agent-sandbox/codex-heartbeat-run.log`.
+- Host feedback state: `runtime/pr-feedback-store.json` (ingested comments + cursors), `runtime/pr-reply-idempotency.json` (reply dedupe keys/results).
+- Host audit trail: `runtime/audit.jsonl` (tool calls and denials/errors).
 
 ### Security boundary reminder
 

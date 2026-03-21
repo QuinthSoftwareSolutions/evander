@@ -14,11 +14,14 @@ def test_guest_heartbeat_script_includes_lock_pid_and_cooldown_logic() -> None:
     assert "heartbeat.cooldown" in script
     assert "codex-heartbeat.pid" in script
     assert "codex-heartbeat-run.log" in script
+    assert "skip reason=codex-active" in script
     assert "codex exec resume" in script
     assert "HEARTBEAT_ENABLE_RESUME" in script
     assert 'HEARTBEAT_ENABLE_RESUME="${HEARTBEAT_ENABLE_RESUME:-1}"' in script
     assert 'nohup codex exec resume "${resume_args[@]}" "${prompt}"' in script
     assert "New human/provider feedback is pending" in script
+    assert "pending_feedback=true" in script
+    assert "start_or_resume_codex" in script
 
 
 def test_codex_bootstrap_deploys_guest_heartbeat_script() -> None:
