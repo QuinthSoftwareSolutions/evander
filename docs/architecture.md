@@ -20,6 +20,63 @@
 - Session manifests are the smallest useful policy primitive for v1.
 - Approval records let you keep autonomy for drafts and read operations while gating sends.
 
+## Guest-Driven Feedback Heartbeat (Design)
+
+This model keeps feedback delivery guest-initiated while preserving host-side policy and secret
+boundaries.
+
+### Poll cadence and latency target
+
+- Recommended steady-state cadence: every **2-5 minutes** per active session.
+- Expected operator-to-guest feedback visibility: typically within one poll interval
+  (**~2-5 minutes**), plus MCP round-trip time (normally seconds).
+- Faster cadences are possible but increase gateway/provider load; slower cadences reduce load but
+  increase human feedback latency.
+
+### Required MCP calls
+
+Per heartbeat loop, the guest performs:
+
+1. `has_pending_feedback(session_id)` as a lightweight check.
+2. If pending: `list_unread_feedback(session_id, cursor)` to fetch unread items since the guest's
+   last acknowledged cursor.
+3. Optional: an acknowledgment/update call (for example
+   `acknowledge_feedback(session_id, feedback_ids | cursor)`) after durable local processing.
+
+This sequence minimizes payload volume when there is no new feedback and supports explicit
+at-least-once processing semantics.
+
+### State model (unread cursor per session)
+
+- The guest keeps a durable `last_read_cursor` per `session_id` (for example on disk in
+  guest-local state).
+- `list_unread_feedback` returns:
+  - ordered feedback items after the provided cursor
+  - a `next_cursor` watermark
+- Cursor advancement rule:
+  - advance only after feedback is successfully persisted/processed
+  - optionally coupled with explicit host acknowledgment/update call
+- Sessions are isolated: cursor `A` for session `X` is never reused for session `Y`.
+
+### Failure behavior
+
+- **MCP/API unavailable:** keep current cursor, log failure, retry next cadence with bounded
+  backoff/jitter; do not skip forward.
+- **Stale/invalid cursor:** host returns cursor error; guest falls back to a safe recovery mode
+  (for example reset to latest checkpoint or request replay from a host-defined baseline), then
+  resumes normal polling.
+- **Partial fetch/processing failure:** treat batch as uncommitted; retain prior cursor and
+  re-fetch on next poll so unread entries are not lost.
+- **Duplicate delivery tolerance:** guest handlers should be idempotent by feedback ID because
+  at-least-once replay can occur during failures.
+
+### Security boundary
+
+- Provider credentials (Discord, email, OpenAI, etc.) remain **host-side only**.
+- Guest has access only to MCP tool interfaces over the private VM network.
+- The heartbeat loop therefore exchanges only policy-filtered feedback records and cursor metadata,
+  never upstream provider secrets.
+
 ## Planned Next Integrations
 
 - Discord integration now uses a provider-backed bot API adapter (`discord_backend: bot_api`) while

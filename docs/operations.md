@@ -183,6 +183,49 @@ Install these packages on the Ubuntu host before using the scripts:
 - Email is **read + draft only by default**. Keep `email_send_enabled: false` unless you are ready
   to enforce explicit approval checks for send.
 
+## Guest-Driven Feedback Heartbeat
+
+Use this run pattern when a guest should continuously pick up human/provider feedback through MCP
+without exposing provider credentials in the VM.
+
+### Polling objective
+
+- Target cadence: **2-5 minutes** per active session.
+- Expected feedback latency: usually one interval (**~2-5 minutes**) plus MCP request time.
+
+### Required MCP call sequence
+
+1. Lightweight pending check:
+   - `has_pending_feedback(session_id)`
+2. Unread fetch when pending is true:
+   - `list_unread_feedback(session_id, last_read_cursor)`
+3. Optional acknowledgment/update:
+   - `acknowledge_feedback(...)` or equivalent cursor/update call after successful local handling.
+
+### Guest state model
+
+- Persist `last_read_cursor` per `session_id` in guest-local durable state.
+- Never share cursors across sessions.
+- Advance cursor only after the fetched items are durably handled.
+- Keep handlers idempotent by feedback ID to tolerate retries/replays.
+
+### Failure handling
+
+- MCP unavailable/timeouts:
+  - Keep cursor unchanged.
+  - Log and retry on next loop (optionally with bounded backoff/jitter).
+- Stale cursor:
+  - Detect host cursor error.
+  - Reset/recover cursor using a host-supported baseline, then continue.
+- Partial fetch or partial local processing:
+  - Treat as uncommitted.
+  - Do not advance cursor; re-fetch on next loop.
+
+### Security boundary reminder
+
+- Guests call MCP only; they do not hold Discord, email, or OpenAI provider credentials.
+- Upstream provider access and secret material stay host-side in gateway/relay components.
+
 ### Gmail OAuth/token setup
 
 1. Create OAuth credentials in Google Cloud for Gmail API access.
