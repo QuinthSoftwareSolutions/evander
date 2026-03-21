@@ -42,7 +42,32 @@ class PolicyEngine:
         session = self.get_session(session_id)
         if tool_name not in session.allowed_tools:
             raise PolicyError(f"Tool {tool_name.value} is not allowed for session {session_id}")
+        if tool_name in {ToolName.HAS_PENDING_FEEDBACK, ToolName.LIST_UNREAD_FEEDBACK}:
+            self.require_pr_feedback_streams(session)
         return session
+
+    def require_pr_feedback_streams(self, session: SessionManifest) -> list[dict[str, str]]:
+        streams = session.metadata.get("pr_feedback_streams")
+        if not isinstance(streams, list) or not streams:
+            raise PolicyError(
+                f"Session {session.session_id} is missing metadata.pr_feedback_streams configuration"
+            )
+
+        validated: list[dict[str, str]] = []
+        for stream in streams:
+            if not isinstance(stream, dict):
+                raise PolicyError(
+                    f"Session {session.session_id} has invalid pr feedback stream configuration"
+                )
+            provider = str(stream.get("provider", "")).strip()
+            repo = str(stream.get("repo", "")).strip()
+            pr_id = str(stream.get("pr_id", "")).strip()
+            if not provider or not repo or not pr_id:
+                raise PolicyError(
+                    f"Session {session.session_id} has incomplete pr feedback stream metadata"
+                )
+            validated.append({"provider": provider, "repo": repo, "pr_id": pr_id})
+        return validated
 
     def require_discord_channel(self, session: SessionManifest, channel_id: str) -> None:
         if channel_id not in session.discord_channel_allowlist:

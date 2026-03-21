@@ -8,7 +8,13 @@ from mcp.server.fastmcp import FastMCP
 
 from .config import GatewayConfig, load_config
 from .email.http_utils import ProviderRequestError
-from .models import AuditEvent, DiscordCommandEnvelope, ToolName
+from .models import (
+    AuditEvent,
+    DiscordCommandEnvelope,
+    HasPendingFeedbackRequest,
+    ListUnreadFeedbackRequest,
+    ToolName,
+)
 from .policy import PolicyError
 from .runtime import RuntimeContext, build_runtime
 
@@ -122,6 +128,63 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 result={"error": error, "error_class": error_class},
             )
         )
+
+    @server.tool()
+    def has_pending_feedback(session_id: str) -> dict[str, Any]:
+        args = HasPendingFeedbackRequest(session_id=session_id).model_dump(mode="json")
+        try:
+            session = context.policy.require_tool(session_id, ToolName.HAS_PENDING_FEEDBACK)
+            streams = context.policy.require_pr_feedback_streams(session)
+            result = context.pr_feedback_service.has_pending_feedback(streams=streams).model_dump(mode="json")
+            audit_success(
+                session_id,
+                ToolName.HAS_PENDING_FEEDBACK,
+                args,
+                {"pending": result["pending"]},
+            )
+            return result
+        except PolicyError as exc:
+            audit_failure(session_id, ToolName.HAS_PENDING_FEEDBACK, args, str(exc))
+            raise
+        except Exception as exc:
+            audit_failure(
+                session_id,
+                ToolName.HAS_PENDING_FEEDBACK,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
+    def list_unread_feedback(session_id: str, cursor: str | None = None) -> dict[str, Any]:
+        args = ListUnreadFeedbackRequest(session_id=session_id, cursor=cursor).model_dump(mode="json")
+        try:
+            session = context.policy.require_tool(session_id, ToolName.LIST_UNREAD_FEEDBACK)
+            streams = context.policy.require_pr_feedback_streams(session)
+            response = context.pr_feedback_service.list_unread_feedback(streams=streams, cursor=cursor)
+            result = response.model_dump(mode="json")
+            audit_success(
+                session_id,
+                ToolName.LIST_UNREAD_FEEDBACK,
+                args,
+                {"count": len(response.feedback), "next_cursor": response.next_cursor},
+            )
+            return result
+        except PolicyError as exc:
+            audit_failure(session_id, ToolName.LIST_UNREAD_FEEDBACK, args, str(exc))
+            raise
+        except Exception as exc:
+            audit_failure(
+                session_id,
+                ToolName.LIST_UNREAD_FEEDBACK,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
 
     @server.tool()
     def discord_get_commands(session_id: str, since_cursor: str | None = None) -> dict[str, Any]:
