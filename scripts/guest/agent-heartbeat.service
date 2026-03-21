@@ -1,0 +1,14 @@
+[Unit]
+Description=Agent feedback heartbeat cycle
+Documentation=file:///home/agent/bin/agent-heartbeat-cycle
+After=default.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/agent-sandbox/session.env
+EnvironmentFile=-%h/.config/agent-sandbox/heartbeat.env
+ExecStart=%h/bin/agent-heartbeat-cycle
+WorkingDirectory=%h
+StandardOutput=journal
+StandardError=journal
+

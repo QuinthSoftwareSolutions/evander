@@ -213,12 +213,29 @@ without exposing provider credentials in the VM.
 
 - `bootstrap_codex_vm.sh` installs a one-shot guest helper script at
   `~/bin/agent-heartbeat-cycle`.
+- The same bootstrap also installs user units under `~/.config/systemd/user/`:
+  - `agent-heartbeat.service` (oneshot)
+  - `agent-heartbeat.timer` (`OnUnitActiveSec=3min`, `Persistent=true`)
+- `agent-heartbeat.service` reads environment from:
+  - `/etc/agent-sandbox/session.env` (if present)
+  - `~/.config/agent-sandbox/heartbeat.env` (optional user overrides)
+- The bootstrap attempts `systemctl --user daemon-reload` and
+  `systemctl --user enable --now agent-heartbeat.timer`. If user systemd is unavailable in the
+  current SSH session, run those commands manually inside the guest.
 - Runtime state and logs are stored under `/home/agent/.agent-sandbox/`:
   - `heartbeat.log`
   - `heartbeat.lock`
   - `heartbeat.cooldown`
   - `codex-heartbeat.pid`
   - `codex-heartbeat-run.log`
+- Inspect heartbeat status and logs from inside the guest:
+
+  ```bash
+  systemctl --user status agent-heartbeat.timer
+  systemctl --user status agent-heartbeat.service
+  journalctl --user -u agent-heartbeat.timer -n 50 --no-pager
+  journalctl --user -u agent-heartbeat.service -n 200 --no-pager
+  ```
 - Each run:
   1. acquires a non-blocking `flock` lock
   2. validates/cleans stale PID files and exits early if Codex is still active

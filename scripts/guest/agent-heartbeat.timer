@@ -1,0 +1,12 @@
+[Unit]
+Description=Run the agent feedback heartbeat periodically
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=3min
+Persistent=true
+Unit=agent-heartbeat.service
+
+[Install]
+WantedBy=timers.target
+
