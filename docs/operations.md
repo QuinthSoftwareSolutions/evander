@@ -83,6 +83,117 @@ Install these packages on the Ubuntu host before using the scripts:
 - The scaffold includes `agent-sandbox-openai-relay`, a host-side OpenAI-compatible proxy that reads the real API key only from the host environment and forwards guest requests to `https://api.openai.com/v1`.
 - For OpenAI/Codex-backed workflows while keeping guests off the public internet, run the relay on the host and leave `LLM_BASE_URL` at its default `http://192.168.250.1:11434/v1`.
 
+## Host-Side Discord Access
+
+- Set `discord_backend: "bot_api"` in `config/gateway.yaml` to enable the provider-backed Discord adapter.
+- Set `discord_bot_token_env` in `config/gateway.yaml` (default `DISCORD_BOT_TOKEN`).
+- Export the matching host environment variable before launching `agent-sandbox-gateway`:
+
+  ```bash
+  export DISCORD_BOT_TOKEN=...
+  ```
+
+- Use per-session channel allowlists when creating session manifests:
+
+  ```bash
+  agent-sandbox-cli create-session \
+    real-session \
+    --config config/gateway.yaml \
+    --discord-channel 123456789012345678
+  ```
+
+- Use `discord_operator_user_allowlist` in `config/gateway.yaml` for trusted operator user IDs that
+  can issue commands outside per-session channel allowlists.
+- Guests should not have direct Discord internet access; only the host-side gateway talks to
+  Discord APIs and enforces source/channel/operator policy checks.
+
+## Host-Side Email Access
+
+- Configure one or more `email_mailboxes` entries in `config/gateway.yaml` with:
+  - `mailbox_id`
+  - `provider` (`gmail` or `graph`)
+  - `account` (Gmail `me`) or `address` (Graph mailbox address)
+  - `auth_env_var_names` (env vars that hold OAuth access tokens)
+  - `folder_allowlist_defaults` (typically `inbox` and `drafts`)
+- Define `email_folder_allowlist_by_mailbox` for each mailbox so session policy is explicit.
+- Keep OAuth access tokens host-only (for example:
+  `GMAIL_OPS_ACCESS_TOKEN`, `GRAPH_EXEC_ACCESS_TOKEN`, `GRAPH_FINANCE_ACCESS_TOKEN`) and never
+  place those token values in guest images, cloud-init, or session manifests.
+- Email is **read + draft only by default**. Keep `email_send_enabled: false` unless you are ready
+  to enforce explicit approval checks for send.
+
+### Gmail OAuth/token setup
+
+1. Create OAuth credentials in Google Cloud for Gmail API access.
+2. Obtain/refresh an access token for the mailbox scopes you need.
+3. Export the token only in host-side environment context (for example a systemd env file):
+
+```bash
+export GMAIL_OPS_ACCESS_TOKEN=...
+```
+
+4. Reference that env var in mailbox config:
+
+```yaml
+email_mailboxes:
+  - mailbox_id: "ops-gmail"
+    provider: "gmail"
+    account: "me"
+    auth_env_var_names:
+      access_token: "GMAIL_OPS_ACCESS_TOKEN"
+    folder_allowlist_defaults: ["inbox", "drafts"]
+```
+
+### Microsoft Graph OAuth/token setup
+
+1. Register an application in Microsoft Entra ID and grant Microsoft Graph Mail permissions.
+2. Obtain an OAuth access token for the target mailbox.
+3. Export the token only on the host:
+
+```bash
+export GRAPH_EXEC_ACCESS_TOKEN=...
+export GRAPH_FINANCE_ACCESS_TOKEN=...
+```
+
+4. Reference that env var in mailbox config:
+
+```yaml
+email_folder_allowlist_by_mailbox:
+  ops-gmail: ["inbox", "drafts"]
+  exec-graph: ["inbox", "drafts"]
+  finance-graph: ["inbox", "drafts"]
+email_mailboxes:
+  - mailbox_id: "exec-graph"
+    provider: "graph"
+    address: "leader@example.com"
+    auth_env_var_names:
+      access_token: "GRAPH_EXEC_ACCESS_TOKEN"
+    folder_allowlist_defaults: ["inbox", "drafts"]
+  - mailbox_id: "finance-graph"
+    provider: "graph"
+    address: "finance@example.com"
+    auth_env_var_names:
+      access_token: "GRAPH_FINANCE_ACCESS_TOKEN"
+    folder_allowlist_defaults: ["inbox", "drafts"]
+```
+
+### Multi-mailbox session allowlist example
+
+```bash
+cat <<'YAML' >> config/gateway.yaml
+email_mailbox_allowlist:
+  - "ops-gmail"
+  - "exec-graph"
+  - "finance-graph"
+email_folder_allowlist_by_mailbox:
+  ops-gmail: ["inbox", "drafts"]
+  exec-graph: ["inbox", "drafts"]
+  finance-graph: ["inbox", "drafts"]
+YAML
+
+agent-sandbox-cli create-session real-session --config config/gateway.yaml
+```
+
 ## Host-Side NuGet Access
 
 - The scaffold includes `agent-sandbox-nuget-relay`, a host-side relay that proxies `nuget.org` and private Azure Artifacts feeds.
@@ -156,6 +267,11 @@ Review those branches from the host and merge them into your trusted repository 
 - Keep the base cloud image read-only and only boot guests from overlays.
 - Destroy guests after each session.
 - Store provider credentials only on the host side.
+- Keep email OAuth tokens in host env files/shell context only (for example,
+  `config/gateway.env` consumed by systemd); never embed them in guest images, cloud-init, or
+  session manifests.
 - Rotate Discord and email credentials independently from VM lifecycle.
+- Keep Discord bot tokens only in host environment files or shell context; do not write them into
+  guest images, cloud-init, or session manifests.
 - Review `runtime/audit.jsonl` as the source of truth for privileged activity.
 - Keep VM disks and seed ISOs out of home directories when using `qemu:///system`; the default scripts now place them under `/var/lib/libvirt/images/agent-sandbox`.

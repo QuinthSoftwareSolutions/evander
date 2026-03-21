@@ -11,11 +11,24 @@ from .policy import PolicyError
 from .runtime import RuntimeContext, build_runtime
 
 
+def _redact_nested_value(config: GatewayConfig, value: Any) -> Any:
+    if isinstance(value, dict):
+        redacted: dict[str, Any] = {}
+        for key, nested_value in value.items():
+            if key in config.redacted_keys:
+                redacted[key] = "<redacted>"
+                continue
+            redacted[key] = _redact_nested_value(config, nested_value)
+        return redacted
+
+    if isinstance(value, list):
+        return [_redact_nested_value(config, item) for item in value]
+
+    return value
+
+
 def _redact_args(config: GatewayConfig, args: dict[str, Any]) -> dict[str, Any]:
-    redacted: dict[str, Any] = {}
-    for key, value in args.items():
-        redacted[key] = "<redacted>" if key in config.redacted_keys else value
-    return redacted
+    return _redact_nested_value(config, args)
 
 
 def _filter_discord_commands_for_session(
@@ -51,6 +64,18 @@ def _filter_discord_commands_for_session(
 
 def create_server(context: RuntimeContext) -> FastMCP:
     server = FastMCP("Agent Sandbox Gateway", json_response=True)
+
+    def draft_recipients_from_payload(payload: dict[str, Any]) -> list[str]:
+        recipients: list[str] = []
+        for key in ("recipients", "to", "cc", "bcc"):
+            value = payload.get(key)
+            if value is None:
+                continue
+            if isinstance(value, str):
+                recipients.append(value)
+            elif isinstance(value, list):
+                recipients.extend([item for item in value if isinstance(item, str)])
+        return recipients
 
     def audit_success(
         session_id: str,
@@ -128,32 +153,36 @@ def create_server(context: RuntimeContext) -> FastMCP:
             raise
 
     @server.tool()
-    def email_list_unread(session_id: str, folder: str, limit: int = 10) -> list[dict[str, Any]]:
-        args = {"session_id": session_id, "folder": folder, "limit": limit}
+    def email_list_unread(
+        session_id: str, mailbox_id: str, folder: str, limit: int = 10
+    ) -> list[dict[str, Any]]:
+        args = {"session_id": session_id, "mailbox_id": mailbox_id, "folder": folder, "limit": limit}
         try:
             session = context.policy.require_tool(session_id, ToolName.EMAIL_LIST_UNREAD)
-            context.policy.require_email_folder(session, folder)
+            context.policy.require_email_mailbox(session, mailbox_id)
+            context.policy.require_email_folder_for_mailbox(session, mailbox_id, folder)
             messages = [
                 message.model_dump(mode="json")
-                for message in context.email_service.list_unread(folder=folder, limit=limit)
+                for message in context.email_service.list_unread(mailbox_id=mailbox_id, folder=folder, limit=limit)
             ]
             audit_success(session_id, ToolName.EMAIL_LIST_UNREAD, args, {"count": len(messages)})
             return messages
-        except PolicyError as exc:
+        except Exception as exc:
             audit_failure(session_id, ToolName.EMAIL_LIST_UNREAD, args, str(exc))
             raise
 
     @server.tool()
-    def email_get_message(session_id: str, message_id: str) -> dict[str, Any]:
-        args = {"session_id": session_id, "message_id": message_id}
+    def email_get_message(session_id: str, mailbox_id: str, message_id: str) -> dict[str, Any]:
+        args = {"session_id": session_id, "mailbox_id": mailbox_id, "message_id": message_id}
         try:
             session = context.policy.require_tool(session_id, ToolName.EMAIL_GET_MESSAGE)
-            message = context.email_service.get_message(message_id)
-            context.policy.require_email_folder(session, message.folder)
+            context.policy.require_email_mailbox(session, mailbox_id)
+            message = context.email_service.get_message(mailbox_id=mailbox_id, message_id=message_id)
+            context.policy.require_email_folder_for_mailbox(session, mailbox_id, message.folder)
             result = message.model_dump(mode="json")
             audit_success(session_id, ToolName.EMAIL_GET_MESSAGE, args, {"message_id": message_id})
             return result
-        except (KeyError, PolicyError) as exc:
+        except Exception as exc:
             audit_failure(session_id, ToolName.EMAIL_GET_MESSAGE, args, str(exc))
             raise
 
@@ -161,22 +190,32 @@ def create_server(context: RuntimeContext) -> FastMCP:
     def email_create_draft(
         session_id: str,
         body: str,
+        mailbox_id: str,
         thread_or_message_id: str | None = None,
         subject: str | None = None,
+        recipients: list[str] | None = None,
     ) -> dict[str, Any]:
         args = {
             "session_id": session_id,
+            "mailbox_id": mailbox_id,
             "thread_or_message_id": thread_or_message_id,
             "subject": subject,
+            "recipients": recipients,
             "body": body,
         }
         try:
-            context.policy.require_tool(session_id, ToolName.EMAIL_CREATE_DRAFT)
-            draft = context.email_service.create_draft(thread_or_message_id, subject, body)
+            session = context.policy.require_tool(session_id, ToolName.EMAIL_CREATE_DRAFT)
+            context.policy.require_email_mailbox(session, mailbox_id)
+            context.policy.require_email_folder_for_mailbox(session, mailbox_id, "drafts")
+            normalized_recipients = recipients or []
+            context.policy.require_draft_recipients(session, normalized_recipients)
+            draft = context.email_service.create_draft(
+                mailbox_id, thread_or_message_id, subject, body, normalized_recipients
+            )
             result = draft.model_dump(mode="json")
             audit_success(session_id, ToolName.EMAIL_CREATE_DRAFT, args, {"draft_id": draft.draft_id})
             return result
-        except PolicyError as exc:
+        except Exception as exc:
             audit_failure(session_id, ToolName.EMAIL_CREATE_DRAFT, args, str(exc))
             raise
 
@@ -222,7 +261,11 @@ def create_server(context: RuntimeContext) -> FastMCP:
     def email_send_approved(session_id: str, request_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         args = {"session_id": session_id, "request_id": request_id, "payload": payload}
         try:
-            context.policy.require_tool(session_id, ToolName.EMAIL_SEND_APPROVED)
+            session = context.policy.require_tool(session_id, ToolName.EMAIL_SEND_APPROVED)
+            context.policy.require_email_send_enabled(session)
+            context.policy.require_email_mailbox(session, str(payload.get("mailbox_id", "")))
+            recipients = draft_recipients_from_payload(payload)
+            context.policy.require_draft_recipients(session, recipients)
             approval = context.policy.require_approved(request_id, payload)
             if approval.session_id != session_id:
                 raise PolicyError(f"Approval request {request_id} does not belong to session {session_id}")

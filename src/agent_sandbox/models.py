@@ -37,6 +37,11 @@ class SessionManifest(BaseModel):
     allowed_tools: list[ToolName]
     discord_channel_allowlist: list[str] = Field(default_factory=list)
     email_folder_allowlist: list[str] = Field(default_factory=list)
+    email_mailbox_allowlist: list[str] = Field(default_factory=list)
+    email_folder_allowlist_by_mailbox: dict[str, list[str]] = Field(default_factory=dict)
+    email_draft_recipient_allowlist: list[str] = Field(default_factory=list)
+    email_draft_domain_allowlist: list[str] = Field(default_factory=list)
+    email_send_enabled: bool = False
     quotas: dict[str, int] = Field(default_factory=dict)
     expires_at: datetime
     created_at: datetime = Field(default_factory=utc_now)
@@ -45,21 +50,32 @@ class SessionManifest(BaseModel):
 
 class EmailMessage(BaseModel):
     message_id: str
+    mailbox_id: str = "default"
+    provider: str = "json_store"
     folder: str
+    thread_id: str | None = None
     sender: str
     recipients: list[str]
     subject: str
     body_text: str
+    body_snippet: str = ""
     unread: bool = True
     received_at: datetime = Field(default_factory=utc_now)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
+    def model_post_init(self, __context: Any) -> None:
+        if not self.body_snippet:
+            self.body_snippet = self.body_text[:160]
+
 
 class DraftMessage(BaseModel):
     draft_id: str
+    mailbox_id: str = "default"
+    provider: str = "json_store"
     thread_or_message_id: str | None = None
     subject: str | None = None
     body: str
+    recipients: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=utc_now)
 
 
