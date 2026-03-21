@@ -2,14 +2,19 @@ from __future__ import annotations
 
 import argparse
 import base64
+import json
 import logging
 import os
+import subprocess
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
+from threading import Lock
 from typing import Any
 
 import httpx
+import yaml
 
 
 @dataclass(frozen=True)
@@ -20,6 +25,14 @@ class WorkerConfig:
     poll_interval_seconds: float
     area_filters: tuple[str, ...]
     team_filters: tuple[str, ...]
+    runtime_dir: Path
+    yaml_output_dir: Path
+    processed_store_path: Path
+    setup_script_path: Path
+    project_or_solution: str
+    repo_path: str | None
+    session_id: str | None
+    vm_user: str | None
 
     @classmethod
     def load_from_env(cls) -> WorkerConfig:
@@ -37,6 +50,23 @@ class WorkerConfig:
         if poll_interval_seconds <= 0:
             raise ValueError("ADO_POLL_INTERVAL_SECONDS must be > 0.")
 
+        runtime_dir = Path(os.environ.get("ADO_RUNTIME_DIR", "runtime")).expanduser()
+        yaml_output_dir = Path(
+            os.environ.get("ADO_YAML_OUTPUT_DIR", str(runtime_dir / "ado-work-items"))
+        ).expanduser()
+        processed_store_path = Path(
+            os.environ.get("ADO_PROCESSED_STORE_PATH", str(runtime_dir / "ado-processed-work-items.json"))
+        ).expanduser()
+
+        project_or_solution = _require_env("ADO_PROJECT_OR_SOLUTION")
+        setup_script_path = Path(
+            os.environ.get("ADO_SETUP_ISSUE_VM_SCRIPT", "scripts/setup_issue_vm.sh")
+        ).expanduser()
+
+        repo_path = _optional_env("ADO_REPO_PATH")
+        session_id = _optional_env("ADO_SESSION_ID")
+        vm_user = _optional_env("ADO_VM_USER")
+
         return cls(
             organization_url=organization_url.rstrip("/"),
             project=project,
@@ -44,6 +74,14 @@ class WorkerConfig:
             poll_interval_seconds=poll_interval_seconds,
             area_filters=_csv_env("ADO_AREA_FILTERS"),
             team_filters=_csv_env("ADO_TEAM_FILTERS"),
+            runtime_dir=runtime_dir,
+            yaml_output_dir=yaml_output_dir,
+            processed_store_path=processed_store_path,
+            setup_script_path=setup_script_path,
+            project_or_solution=project_or_solution,
+            repo_path=repo_path,
+            session_id=session_id,
+            vm_user=vm_user,
         )
 
 
@@ -52,6 +90,11 @@ def _require_env(name: str) -> str:
     if not value:
         raise ValueError(f"Environment variable {name} is required.")
     return value
+
+
+def _optional_env(name: str) -> str | None:
+    value = os.environ.get(name, "").strip()
+    return value or None
 
 
 def _csv_env(name: str) -> tuple[str, ...]:
@@ -118,6 +161,54 @@ def _parse_ado_datetime(value: str | None) -> datetime:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
+
+
+class ProcessedWorkItemStore:
+    """Atomic JSON state keyed by Azure work item id."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self._lock = Lock()
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        if not self.path.exists():
+            self.path.write_text("{}", encoding="utf-8")
+
+    def is_processed(self, work_item_id: int) -> bool:
+        with self._lock:
+            payload = self._read_raw()
+            return str(work_item_id) in payload
+
+    def mark_processed(
+        self,
+        work_item_id: int,
+        yaml_path: Path,
+        script_exit_code: int,
+        output_snippet: str,
+    ) -> None:
+        with self._lock:
+            payload = self._read_raw()
+            payload[str(work_item_id)] = {
+                "processed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                "yaml_path": str(yaml_path),
+                "script_exit_code": script_exit_code,
+                "script_output_snippet": output_snippet,
+            }
+            self._atomic_write(payload)
+
+    def forget(self, work_item_id: int) -> bool:
+        with self._lock:
+            payload = self._read_raw()
+            existed = payload.pop(str(work_item_id), None) is not None
+            self._atomic_write(payload)
+            return existed
+
+    def _read_raw(self) -> dict[str, Any]:
+        return json.loads(self.path.read_text(encoding="utf-8"))
+
+    def _atomic_write(self, payload: dict[str, Any]) -> None:
+        tmp_path = self.path.with_suffix(f"{self.path.suffix}.tmp")
+        tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+        tmp_path.replace(self.path)
 
 
 def fetch_candidate_ids(client: httpx.Client, config: WorkerConfig, auth_header: str) -> list[int]:
@@ -229,16 +320,96 @@ def poll_once(client: httpx.Client, config: WorkerConfig, auth_header: str) -> l
     return matched_items
 
 
+def _build_issue_payload(work_item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "issue_number": work_item["id"],
+        "title": work_item.get("title", ""),
+        "description": work_item.get("description", ""),
+        "tags": work_item.get("tags", []),
+        "state": work_item.get("state", ""),
+        "url": work_item.get("url", ""),
+        "updated_date": work_item.get("updated_date", ""),
+        "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    }
+
+
+def _atomic_write_yaml(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(f"{path.suffix}.tmp")
+    tmp_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+    tmp_path.replace(path)
+
+
+def _build_setup_command(config: WorkerConfig, yaml_path: Path) -> list[str]:
+    cmd = [str(config.setup_script_path), str(yaml_path), config.project_or_solution]
+    if config.repo_path:
+        cmd.append(config.repo_path)
+    if config.session_id:
+        cmd.append(config.session_id)
+    if config.vm_user:
+        cmd.append(config.vm_user)
+    return cmd
+
+
+def _snippet(text: str, max_chars: int = 1000) -> str:
+    compact = " ".join(text.split())
+    return compact[:max_chars]
+
+
+def process_work_item(
+    work_item: dict[str, Any],
+    *,
+    config: WorkerConfig,
+    store: ProcessedWorkItemStore,
+) -> bool:
+    work_item_id = int(work_item["id"])
+    if store.is_processed(work_item_id):
+        logging.info("work_item=%s skipped=already_processed", work_item_id)
+        return False
+
+    yaml_path = config.yaml_output_dir / f"work-item-{work_item_id}.yaml"
+    _atomic_write_yaml(yaml_path, _build_issue_payload(work_item))
+
+    cmd = _build_setup_command(config, yaml_path)
+    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    output_snippet = _snippet((result.stdout or "") + "\n" + (result.stderr or ""))
+    if result.returncode != 0:
+        logging.warning("work_item=%s setup_issue_vm_failed exit_code=%d", work_item_id, result.returncode)
+        return False
+
+    store.mark_processed(
+        work_item_id=work_item_id,
+        yaml_path=yaml_path,
+        script_exit_code=result.returncode,
+        output_snippet=output_snippet,
+    )
+    logging.info("work_item=%s processed yaml=%s", work_item_id, yaml_path)
+    return True
+
+
+def fetch_work_item_by_id(
+    client: httpx.Client,
+    config: WorkerConfig,
+    auth_header: str,
+    work_item_id: int,
+) -> dict[str, Any] | None:
+    items = fetch_work_item_batch(client, config, auth_header, [work_item_id])
+    matched, _ = gate_and_order_items(items, config)
+    return matched[0] if matched else None
+
+
 def run_worker(config: WorkerConfig) -> None:
     pat = _require_env(config.pat_env_var_name)
     auth_header = _build_auth_header(pat)
+    store = ProcessedWorkItemStore(config.processed_store_path)
 
     timeout = httpx.Timeout(connect=5.0, write=10.0, read=20.0, pool=5.0)
     with httpx.Client(timeout=timeout) as client:
         while True:
             cycle_start = time.monotonic()
             try:
-                poll_once(client=client, config=config, auth_header=auth_header)
+                for item in poll_once(client=client, config=config, auth_header=auth_header):
+                    process_work_item(item, config=config, store=store)
             except httpx.HTTPError as exc:
                 logging.warning("cycle error=%s", exc.__class__.__name__)
             except Exception:  # pragma: no cover
@@ -252,6 +423,16 @@ def run_worker(config: WorkerConfig) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Poll Azure DevOps work items for true-agent candidates.")
     parser.add_argument("--log-level", default="INFO", help="Python logging level.")
+    parser.add_argument(
+        "--reprocess",
+        type=int,
+        help="Force reprocess a specific work item ID by forgetting previous state first.",
+    )
+    parser.add_argument(
+        "--forget",
+        type=int,
+        help="Forget a specific work item ID in the processed store, then exit.",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -260,6 +441,31 @@ def main() -> None:
     )
 
     config = WorkerConfig.load_from_env()
+    store = ProcessedWorkItemStore(config.processed_store_path)
+
+    if args.forget is not None:
+        removed = store.forget(args.forget)
+        logging.info("forget work_item=%s removed=%s", args.forget, removed)
+        return
+
+    if args.reprocess is not None:
+        store.forget(args.reprocess)
+        pat = _require_env(config.pat_env_var_name)
+        auth_header = _build_auth_header(pat)
+        timeout = httpx.Timeout(connect=5.0, write=10.0, read=20.0, pool=5.0)
+        with httpx.Client(timeout=timeout) as client:
+            item = fetch_work_item_by_id(
+                client=client,
+                config=config,
+                auth_header=auth_header,
+                work_item_id=args.reprocess,
+            )
+            if item is None:
+                logging.warning("reprocess work_item=%s not_found_or_not_eligible", args.reprocess)
+                return
+            process_work_item(item, config=config, store=store)
+        return
+
     run_worker(config)
 
 
