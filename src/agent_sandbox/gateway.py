@@ -6,7 +6,7 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 
 from .config import GatewayConfig, load_config
-from .models import AuditEvent, ToolName
+from .models import AuditEvent, DiscordCommandEnvelope, ToolName
 from .policy import PolicyError
 from .runtime import RuntimeContext, build_runtime
 
@@ -29,6 +29,37 @@ def _redact_nested_value(config: GatewayConfig, value: Any) -> Any:
 
 def _redact_args(config: GatewayConfig, args: dict[str, Any]) -> dict[str, Any]:
     return _redact_nested_value(config, args)
+
+
+def _filter_discord_commands_for_session(
+    context: RuntimeContext,
+    session_id: str,
+    session: Any,
+    raw_commands: list[DiscordCommandEnvelope],
+    args: dict[str, Any],
+    audit_failure_cb: Any,
+) -> tuple[list[dict[str, Any]], int, str | None]:
+    commands: list[dict[str, Any]] = []
+    denied_count = 0
+    next_cursor = raw_commands[-1].command_id if raw_commands else args.get("since_cursor")
+    for command in raw_commands:
+        try:
+            context.policy.require_discord_command_source(session, command)
+        except PolicyError as exc:
+            denied_count += 1
+            audit_failure_cb(
+                session_id,
+                ToolName.DISCORD_GET_COMMANDS,
+                {
+                    **args,
+                    "command_id": command.command_id,
+                    "source_metadata": command.metadata,
+                },
+                str(exc),
+            )
+            continue
+        commands.append(command.model_dump(mode="json"))
+    return commands, denied_count, next_cursor
 
 
 def create_server(context: RuntimeContext) -> FastMCP:
@@ -83,37 +114,27 @@ def create_server(context: RuntimeContext) -> FastMCP:
         )
 
     @server.tool()
-    def discord_get_commands(session_id: str, since_cursor: str | None = None) -> list[dict[str, Any]]:
+    def discord_get_commands(session_id: str, since_cursor: str | None = None) -> dict[str, Any]:
         args = {"session_id": session_id, "since_cursor": since_cursor}
         try:
             session = context.policy.require_tool(session_id, ToolName.DISCORD_GET_COMMANDS)
             raw_commands = context.discord_service.get_commands(since_cursor)
-            commands: list[dict[str, Any]] = []
-            denied_count = 0
-            for command in raw_commands:
-                try:
-                    context.policy.require_discord_command_source(session, command)
-                except PolicyError as exc:
-                    denied_count += 1
-                    audit_failure(
-                        session_id,
-                        ToolName.DISCORD_GET_COMMANDS,
-                        {
-                            **args,
-                            "command_id": command.command_id,
-                            "source_metadata": command.metadata,
-                        },
-                        str(exc),
-                    )
-                    continue
-                commands.append(command.model_dump(mode="json"))
+            commands, denied_count, next_cursor = _filter_discord_commands_for_session(
+                context,
+                session_id,
+                session,
+                raw_commands,
+                args,
+                audit_failure,
+            )
+            result = {"commands": commands, "next_cursor": next_cursor}
             audit_success(
                 session_id,
                 ToolName.DISCORD_GET_COMMANDS,
                 args,
-                {"count": len(commands), "denied_count": denied_count},
+                {"count": len(commands), "denied_count": denied_count, "next_cursor": next_cursor},
             )
-            return commands
+            return result
         except PolicyError as exc:
             audit_failure(session_id, ToolName.DISCORD_GET_COMMANDS, args, str(exc))
             raise

@@ -3,8 +3,8 @@ from __future__ import annotations
 from typing import Any, Protocol
 
 import httpx
+from .models import DiscordCommandEnvelope, DraftMessage, EmailMessage
 from .email.providers import EmailDraft, EmailMessageDetail, EmailMessageSummary, EmailProvider
-from .models import DiscordCommandEnvelope
 from .storage import JsonStore
 
 
