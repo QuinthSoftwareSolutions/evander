@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import httpx
+import pytest
+
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.email.gmail_provider import GmailEmailProvider
 from agent_sandbox.email.graph_provider import GraphEmailProvider
+from agent_sandbox.email.http_utils import ProviderRequestError
 
 
 def test_gateway_config_supports_provider_mailbox_entries() -> None:
@@ -129,3 +133,99 @@ def test_graph_detail_maps_parent_folder_case_insensitively() -> None:
     detail = provider._to_detail(mailbox_id="exec-graph", payload=payload)
 
     assert detail.folder == "inbox"
+
+
+def test_gmail_retries_transient_503_then_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
+    attempts = {"count": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts["count"] += 1
+        if "messages/msg-123" in str(request.url) and attempts["count"] == 1:
+            return httpx.Response(503, json={"error": "temporary"}, request=request)
+        return httpx.Response(
+            200,
+            json={
+                "id": "msg-123",
+                "threadId": "thread-123",
+                "labelIds": ["INBOX", "UNREAD"],
+                "internalDate": "1700000000000",
+                "snippet": "hello",
+                "payload": {"headers": [{"name": "From", "value": "sender@example.com"}]},
+            },
+            request=request,
+        )
+
+    transport = httpx.MockTransport(handler)
+    monkeypatch.setattr("agent_sandbox.email.http_utils.time.sleep", lambda _seconds: None)
+    monkeypatch.setenv("GMAIL_ACCESS_TOKEN", "token")
+    monkeypatch.setattr(
+        "agent_sandbox.email.gmail_provider.httpx.Client",
+        lambda timeout: httpx.Client(timeout=timeout, transport=transport),
+    )
+    provider = GmailEmailProvider(
+        account_identifier="me",
+        folder_mapping={"inbox": "INBOX", "drafts": "DRAFT"},
+        auth_secret_refs={"access_token": "GMAIL_ACCESS_TOKEN"},
+        timeout_seconds=5.0,
+    )
+
+    detail = provider.get_message(mailbox_id="ops-gmail", message_id="msg-123")
+
+    assert detail.message_id == "msg-123"
+    assert attempts["count"] == 2
+
+
+def test_graph_auth_error_fails_fast_without_retry(monkeypatch: pytest.MonkeyPatch) -> None:
+    attempts = {"count": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts["count"] += 1
+        return httpx.Response(401, json={"error": "unauthorized"}, request=request)
+
+    transport = httpx.MockTransport(handler)
+    monkeypatch.setenv("GRAPH_ACCESS_TOKEN", "token")
+    monkeypatch.setattr(
+        "agent_sandbox.email.graph_provider.httpx.Client",
+        lambda timeout: httpx.Client(timeout=timeout, transport=transport),
+    )
+    provider = GraphEmailProvider(
+        account_identifier="leader@example.com",
+        folder_mapping={"inbox": "Inbox", "drafts": "Drafts"},
+        auth_secret_refs={"access_token": "GRAPH_ACCESS_TOKEN"},
+        timeout_seconds=5.0,
+    )
+
+    with pytest.raises(ProviderRequestError, match="auth/permission"):
+        provider.get_message(mailbox_id="exec-graph", message_id="msg-auth")
+    assert attempts["count"] == 1
+
+
+def test_gmail_create_draft_post_does_not_retry_transient_503(monkeypatch: pytest.MonkeyPatch) -> None:
+    attempts = {"count": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts["count"] += 1
+        return httpx.Response(503, json={"error": "temporary"}, request=request)
+
+    transport = httpx.MockTransport(handler)
+    monkeypatch.setenv("GMAIL_ACCESS_TOKEN", "token")
+    monkeypatch.setattr(
+        "agent_sandbox.email.gmail_provider.httpx.Client",
+        lambda timeout: httpx.Client(timeout=timeout, transport=transport),
+    )
+    provider = GmailEmailProvider(
+        account_identifier="me",
+        folder_mapping={"inbox": "INBOX", "drafts": "DRAFT"},
+        auth_secret_refs={"access_token": "GMAIL_ACCESS_TOKEN"},
+        timeout_seconds=5.0,
+    )
+
+    with pytest.raises(ProviderRequestError, match="non-idempotent method"):
+        provider.create_draft(
+            mailbox_id="ops-gmail",
+            thread_or_message_id=None,
+            subject="Hello",
+            body="Body",
+            recipients=["person@example.com"],
+        )
+    assert attempts["count"] == 1

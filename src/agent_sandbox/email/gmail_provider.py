@@ -9,6 +9,7 @@ from typing import Any
 import httpx
 
 from .cursor_store import DurableCursorStore, EmailSyncCursor
+from .http_utils import ProviderRequestError, request_with_retries
 from .providers import EmailDraft, EmailMessageDetail, EmailMessageSummary
 
 
@@ -76,12 +77,15 @@ class GmailEmailProvider:
             payload["message"]["threadId"] = thread_or_message_id
 
         with httpx.Client(timeout=self.timeout_seconds) as client:
-            response = client.post(
-                self._url("drafts"),
+            response = request_with_retries(
+                client=client,
+                provider=self.provider_name,
+                operation="create_draft",
+                method="POST",
+                url=self._url("drafts"),
                 headers=self._headers(),
                 json=payload,
             )
-            response.raise_for_status()
             data = response.json()
 
         now = datetime.now(UTC)
@@ -124,12 +128,15 @@ class GmailEmailProvider:
         }
 
     def _fetch_message(self, client: httpx.Client, *, message_id: str, format_name: str) -> dict[str, Any]:
-        response = client.get(
-            self._url(f"messages/{message_id}"),
+        response = request_with_retries(
+            client=client,
+            provider=self.provider_name,
+            operation="fetch_message",
+            method="GET",
+            url=self._url(f"messages/{message_id}"),
             headers=self._headers(),
             params={"format": format_name},
         )
-        response.raise_for_status()
         return response.json()
 
     def _list_incremental(
@@ -148,8 +155,8 @@ class GmailEmailProvider:
                     history_id=cursor.primitive_cursor,
                     limit=limit,
                 )
-            except httpx.HTTPStatusError as exc:
-                if exc.response.status_code not in {400, 404}:
+            except ProviderRequestError as exc:
+                if exc.status_code not in {400, 404}:
                     raise
         return self._list_bounded_polling(client=client, label=label, limit=limit)
 
@@ -177,8 +184,15 @@ class GmailEmailProvider:
             if page_token:
                 request_params["pageToken"] = page_token
 
-            response = client.get(self._url("history"), headers=self._headers(), params=request_params)
-            response.raise_for_status()
+            response = request_with_retries(
+                client=client,
+                provider=self.provider_name,
+                operation="list_history",
+                method="GET",
+                url=self._url("history"),
+                headers=self._headers(),
+                params=request_params,
+            )
             payload = response.json()
             payload_history_id = str(payload.get("historyId", "")).strip() or None
             newest_history_id = self._max_history_id(newest_history_id, payload_history_id)
@@ -211,12 +225,15 @@ class GmailEmailProvider:
         query_parts = [f"newer_than:{self._fallback_lookback_days}d", "is:unread"]
         if label:
             query_parts.append(f"in:{label}")
-        response = client.get(
-            self._url("messages"),
+        response = request_with_retries(
+            client=client,
+            provider=self.provider_name,
+            operation="list_bounded_polling",
+            method="GET",
+            url=self._url("messages"),
             headers=self._headers(),
             params={"q": " ".join(query_parts), "maxResults": max(1, limit * 2)},
         )
-        response.raise_for_status()
         items = response.json().get("messages", [])
         messages: list[dict[str, Any]] = []
         highest_history_id: int | None = None

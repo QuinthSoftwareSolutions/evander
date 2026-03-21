@@ -7,6 +7,7 @@ from typing import Any
 import httpx
 
 from .cursor_store import DurableCursorStore, EmailSyncCursor
+from .http_utils import ProviderRequestError, request_with_retries
 from .providers import EmailDraft, EmailMessageDetail, EmailMessageSummary
 
 
@@ -50,12 +51,15 @@ class GraphEmailProvider:
 
     def get_message(self, mailbox_id: str, message_id: str) -> EmailMessageDetail:
         with httpx.Client(timeout=self.timeout_seconds) as client:
-            response = client.get(
-                self._url(f"messages/{message_id}"),
+            response = request_with_retries(
+                client=client,
+                provider=self.provider_name,
+                operation="get_message",
+                method="GET",
+                url=self._url(f"messages/{message_id}"),
                 headers=self._headers(),
                 params={"$select": "id,subject,body,from,toRecipients,isRead,receivedDateTime,conversationId,parentFolderId"},
             )
-            response.raise_for_status()
             payload = response.json()
 
         return self._to_detail(mailbox_id=mailbox_id, payload=payload)
@@ -80,12 +84,15 @@ class GraphEmailProvider:
             json_payload["conversationId"] = thread_or_message_id
 
         with httpx.Client(timeout=self.timeout_seconds) as client:
-            response = client.post(
-                self._url("messages"),
+            response = request_with_retries(
+                client=client,
+                provider=self.provider_name,
+                operation="create_draft",
+                method="POST",
+                url=self._url("messages"),
                 headers=self._headers(),
                 json=json_payload,
             )
-            response.raise_for_status()
             payload = response.json()
 
         now = datetime.now(UTC)
@@ -172,8 +179,8 @@ class GraphEmailProvider:
         if cursor and cursor.primitive_cursor:
             try:
                 return self._list_from_delta_link(client, cursor.primitive_cursor, limit)
-            except httpx.HTTPStatusError as exc:
-                if exc.response.status_code not in {400, 404, 410}:
+            except ProviderRequestError as exc:
+                if exc.status_code not in {400, 404, 410}:
                     raise
         return self._list_bounded_polling(client, graph_folder_id, limit)
 
@@ -185,8 +192,14 @@ class GraphEmailProvider:
         next_delta_link: str | None = delta_link
         max_unread = max(1, limit * 2)
         while current_url:
-            response = client.get(current_url, headers=self._headers())
-            response.raise_for_status()
+            response = request_with_retries(
+                client=client,
+                provider=self.provider_name,
+                operation="list_from_delta_link",
+                method="GET",
+                url=current_url,
+                headers=self._headers(),
+            )
             payload = response.json()
             for item in payload.get("value", []):
                 if item.get("@removed"):
@@ -204,8 +217,12 @@ class GraphEmailProvider:
         self, client: httpx.Client, graph_folder_id: str, limit: int
     ) -> tuple[list[dict[str, Any]], str | None]:
         since = (datetime.now(UTC) - timedelta(days=self._fallback_lookback_days)).isoformat().replace("+00:00", "Z")
-        response = client.get(
-            self._url(f"mailFolders/{graph_folder_id}/messages/delta"),
+        response = request_with_retries(
+            client=client,
+            provider=self.provider_name,
+            operation="list_bounded_polling",
+            method="GET",
+            url=self._url(f"mailFolders/{graph_folder_id}/messages/delta"),
             headers=self._headers(),
             params={
                 "$select": "id,subject,bodyPreview,from,toRecipients,isRead,receivedDateTime,conversationId,parentFolderId",
@@ -214,7 +231,6 @@ class GraphEmailProvider:
                 "$top": max(1, limit * 2),
             },
         )
-        response.raise_for_status()
         payload = response.json()
         unread = [item for item in payload.get("value", []) if not bool(item.get("isRead", False))]
         next_delta_link = payload.get("@odata.deltaLink") or payload.get("@odata.nextLink")
