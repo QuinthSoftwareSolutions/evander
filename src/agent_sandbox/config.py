@@ -85,6 +85,24 @@ class GatewayConfig(BaseModel):
     )
 
     @model_validator(mode="after")
+    def apply_runtime_path_defaults(self) -> GatewayConfig:
+        default_runtime_dir = Path("/var/lib/agent-sandbox")
+        default_paths = {
+            "session_store_path": default_runtime_dir / "sessions.json",
+            "approval_store_path": default_runtime_dir / "approvals.json",
+            "draft_store_path": default_runtime_dir / "drafts.json",
+            "email_store_path": default_runtime_dir / "emails.json",
+            "email_cursor_store_path": default_runtime_dir / "email_cursors.json",
+            "discord_command_store_path": default_runtime_dir / "discord_commands.json",
+        }
+        for field_name, default_path in default_paths.items():
+            if getattr(self, field_name) == default_path:
+                setattr(self, field_name, self.runtime_dir / default_path.name)
+        if self.audit_log_path == Path("/var/log/agent-sandbox/audit.jsonl"):
+            self.audit_log_path = self.runtime_dir / "audit.jsonl"
+        return self
+
+    @model_validator(mode="after")
     def apply_email_mailbox_defaults(self) -> GatewayConfig:
         mailbox_ids = [mailbox.mailbox_id for mailbox in self.email_mailboxes]
         duplicates = sorted(mailbox_id for mailbox_id, count in Counter(mailbox_ids).items() if count > 1)

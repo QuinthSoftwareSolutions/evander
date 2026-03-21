@@ -51,40 +51,52 @@ def request_with_retries(
 
     for attempt in range(1, max_attempts + 1):
         try:
-            response = client.request(
-                method_normalized,
-                url,
-                headers=headers,
-                params=params,
-                json=json,
-            )
-            last_status_code = response.status_code
-            if response.status_code in {401, 403}:
+            request_kwargs = {
+                key: value
+                for key, value in {
+                    "headers": headers,
+                    "params": params,
+                    "json": json,
+                }.items()
+                if value is not None
+            }
+            if hasattr(client, "request"):
+                response = client.request(
+                    method_normalized,
+                    url,
+                    **request_kwargs,
+                )
+            else:
+                request_method = getattr(client, method_normalized.lower())
+                response = request_method(url, **request_kwargs)
+            status_code = getattr(response, "status_code", 200)
+            last_status_code = status_code
+            if status_code in {401, 403}:
                 raise ProviderRequestError(
                     f"{provider}.{operation} failed without retry on auth/permission error: "
-                    f"{method_normalized} {url} status={response.status_code} attempt={attempt}/{max_attempts}",
-                    status_code=response.status_code,
+                    f"{method_normalized} {url} status={status_code} attempt={attempt}/{max_attempts}",
+                    status_code=status_code,
                     attempt=attempt,
                     max_attempts=max_attempts,
                 )
 
-            if response.status_code == 429 or response.status_code >= 500:
+            if status_code == 429 or status_code >= 500:
                 if method_is_retryable and attempt < max_attempts:
                     _sleep_with_jitter(attempt, base_backoff_seconds, max_backoff_seconds)
                     continue
                 if not method_is_retryable:
                     raise ProviderRequestError(
                         f"{provider}.{operation} failed without retry on transient HTTP error for non-idempotent "
-                        f"method: {method_normalized} {url} status={response.status_code} "
+                        f"method: {method_normalized} {url} status={status_code} "
                         f"attempt={attempt}/{max_attempts}",
-                        status_code=response.status_code,
+                        status_code=status_code,
                         attempt=attempt,
                         max_attempts=max_attempts,
                     )
                 raise ProviderRequestError(
                     f"{provider}.{operation} exhausted retries on transient HTTP error: "
-                    f"{method_normalized} {url} status={response.status_code} attempts={attempt}/{max_attempts}",
-                    status_code=response.status_code,
+                    f"{method_normalized} {url} status={status_code} attempts={attempt}/{max_attempts}",
+                    status_code=status_code,
                     attempt=attempt,
                     max_attempts=max_attempts,
                 )

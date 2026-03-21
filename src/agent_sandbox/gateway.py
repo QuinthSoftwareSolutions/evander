@@ -7,6 +7,7 @@ import httpx
 from mcp.server.fastmcp import FastMCP
 
 from .config import GatewayConfig, load_config
+from .email.http_utils import ProviderRequestError
 from .models import AuditEvent, DiscordCommandEnvelope, ToolName
 from .policy import PolicyError
 from .runtime import RuntimeContext, build_runtime
@@ -216,8 +217,28 @@ def create_server(context: RuntimeContext) -> FastMCP:
             ]
             audit_success(session_id, ToolName.EMAIL_LIST_UNREAD, args, {"count": len(messages)})
             return messages
-        except Exception as exc:
+        except PolicyError as exc:
             audit_failure(session_id, ToolName.EMAIL_LIST_UNREAD, args, str(exc))
+            raise
+        except (httpx.HTTPError, ProviderRequestError) as exc:
+            audit_failure(
+                session_id,
+                ToolName.EMAIL_LIST_UNREAD,
+                args,
+                str(exc),
+                decision="error",
+                error_class="adapter_http_error",
+            )
+            raise
+        except Exception as exc:
+            audit_failure(
+                session_id,
+                ToolName.EMAIL_LIST_UNREAD,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
             raise
 
     @server.tool()
@@ -231,8 +252,28 @@ def create_server(context: RuntimeContext) -> FastMCP:
             result = message.model_dump(mode="json")
             audit_success(session_id, ToolName.EMAIL_GET_MESSAGE, args, {"message_id": message_id})
             return result
-        except Exception as exc:
+        except PolicyError as exc:
             audit_failure(session_id, ToolName.EMAIL_GET_MESSAGE, args, str(exc))
+            raise
+        except (httpx.HTTPError, ProviderRequestError) as exc:
+            audit_failure(
+                session_id,
+                ToolName.EMAIL_GET_MESSAGE,
+                args,
+                str(exc),
+                decision="error",
+                error_class="adapter_http_error",
+            )
+            raise
+        except Exception as exc:
+            audit_failure(
+                session_id,
+                ToolName.EMAIL_GET_MESSAGE,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
             raise
 
     @server.tool()
@@ -264,8 +305,28 @@ def create_server(context: RuntimeContext) -> FastMCP:
             result = draft.model_dump(mode="json")
             audit_success(session_id, ToolName.EMAIL_CREATE_DRAFT, args, {"draft_id": draft.draft_id})
             return result
-        except Exception as exc:
+        except PolicyError as exc:
             audit_failure(session_id, ToolName.EMAIL_CREATE_DRAFT, args, str(exc))
+            raise
+        except (httpx.HTTPError, ProviderRequestError) as exc:
+            audit_failure(
+                session_id,
+                ToolName.EMAIL_CREATE_DRAFT,
+                args,
+                str(exc),
+                decision="error",
+                error_class="adapter_http_error",
+            )
+            raise
+        except Exception as exc:
+            audit_failure(
+                session_id,
+                ToolName.EMAIL_CREATE_DRAFT,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
             raise
 
     @server.tool()
