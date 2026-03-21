@@ -436,3 +436,102 @@ def test_email_provider_timeouts_are_audited(tmp_path: Path) -> None:
     assert event["tool_name"] == ToolName.EMAIL_LIST_UNREAD.value
     assert event["decision"] == "denied"
     assert event["result"] == {"error": "provider timed out"}
+
+
+def test_audit_success_recursively_redacts_nested_payload_fields(tmp_path: Path) -> None:
+    context = make_context(tmp_path)
+    context.sessions.put(
+        "session-1",
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[ToolName.APPROVAL_SUBMIT],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    server = create_server(context)
+
+    payload = {
+        "mailbox_id": "primary",
+        "body": "Top secret body",
+        "authorization": "Bearer secret",
+        "nested": {
+            "token": "nested-token",
+            "safe_key": "safe-value",
+            "body": "nested secret body",
+        },
+        "recipients": [
+            "safe@example.com",
+            {"email": "also-safe@example.com", "token": "recipient-token"},
+        ],
+        "actions": [
+            {"type": "notify", "payload": {"body": "action secret", "status": "ok"}},
+        ],
+    }
+
+    asyncio.run(
+        server.call_tool(
+            "approval_submit",
+            {
+                "session_id": "session-1",
+                "action_type": "email_send",
+                "payload": payload,
+                "human_summary": "send summary",
+            },
+        )
+    )
+
+    event = read_audit_events(context.config.audit_log_path)[-1]
+    assert event["decision"] == "allowed"
+    assert event["args"]["payload"]["mailbox_id"] == "primary"
+    assert event["args"]["payload"]["body"] == "<redacted>"
+    assert event["args"]["payload"]["authorization"] == "<redacted>"
+    assert event["args"]["payload"]["nested"]["token"] == "<redacted>"
+    assert event["args"]["payload"]["nested"]["body"] == "<redacted>"
+    assert event["args"]["payload"]["nested"]["safe_key"] == "safe-value"
+    assert event["args"]["payload"]["recipients"][0] == "safe@example.com"
+    assert event["args"]["payload"]["recipients"][1]["email"] == "also-safe@example.com"
+    assert event["args"]["payload"]["recipients"][1]["token"] == "<redacted>"
+    assert event["args"]["payload"]["actions"][0]["payload"]["body"] == "<redacted>"
+    assert event["args"]["payload"]["actions"][0]["payload"]["status"] == "ok"
+
+
+def test_audit_failure_recursively_redacts_nested_payload_fields(tmp_path: Path) -> None:
+    context = make_context(tmp_path)
+    context.sessions.put(
+        "session-1",
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    server = create_server(context)
+
+    with pytest.raises(PolicyError, match="is not allowed"):
+        asyncio.run(
+            server.call_tool(
+                "approval_submit",
+                {
+                    "session_id": "session-1",
+                    "action_type": "email_send",
+                    "payload": {
+                        "body": "Denied secret body",
+                        "authorization": "Bearer denied-secret",
+                        "nested": {"token": "denied-token", "safe": "visible"},
+                        "recipients": [
+                            {"email": "still-visible@example.com", "token": "recipient-token"}
+                        ],
+                    },
+                    "human_summary": "should fail",
+                },
+            )
+        )
+
+    event = read_audit_events(context.config.audit_log_path)[-1]
+    assert event["decision"] == "denied"
+    assert event["args"]["payload"]["body"] == "<redacted>"
+    assert event["args"]["payload"]["authorization"] == "<redacted>"
+    assert event["args"]["payload"]["nested"]["token"] == "<redacted>"
+    assert event["args"]["payload"]["nested"]["safe"] == "visible"
+    assert event["args"]["payload"]["recipients"][0]["email"] == "still-visible@example.com"
+    assert event["args"]["payload"]["recipients"][0]["token"] == "<redacted>"
