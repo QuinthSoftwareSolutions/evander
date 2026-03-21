@@ -3,7 +3,7 @@ set -euo pipefail
 
 show_help() {
   cat <<'EOF'
-Usage: setup_issue_vm.sh [--dry-run] <issue-number|issue-yaml> <project-or-solution> [repo-path] [session-id] [vm-user]
+Usage: setup_issue_vm.sh [--dry-run] <issue-number|issue-yaml> <project-or-solution> [repo-source] [session-id] [vm-user]
 
 Run the common issue-VM bring-up flow in one command:
   1. prewarm the shared NuGet cache on the host
@@ -21,7 +21,7 @@ Arguments:
                        reads the issue number from the file and copies the YAML into
                        the guest repo root as AGENT_TASK.yaml.
   project-or-solution  Host path used to prewarm the shared NuGet cache.
-  repo-path            Host repo to mirror for guest Git access.
+  repo-source          Host repo path or remote URL to mirror for guest Git access.
                        Default: /home/jonathan/Documents/Repos/ExampleIndustryAPP
   session-id           Session name passed to launch_agent_vm.sh. Default: agent-session
   vm-user              Guest user to configure. Default: agent
@@ -53,7 +53,7 @@ fi
 
 ISSUE_INPUT="$1"
 PREWARM_TARGET="$2"
-REPO_PATH="${3:-/home/jonathan/Documents/Repos/ExampleIndustryAPP}"
+REPO_SOURCE="${3:-/home/jonathan/Documents/Repos/ExampleIndustryAPP}"
 SESSION_ID="${4:-agent-session}"
 VM_USER="${5:-agent}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -62,7 +62,6 @@ CALLER_HOME="$(getent passwd "${CALLER_USER}" | cut -d: -f6)"
 SSH_PUBLIC_KEY_FILE="${SSH_PUBLIC_KEY_FILE:-${CALLER_HOME}/.ssh/id_ed25519.pub}"
 VM_IP_WAIT_TIMEOUT_SECONDS="${VM_IP_WAIT_TIMEOUT_SECONDS:-180}"
 VM_SSH_WAIT_TIMEOUT_SECONDS="${VM_SSH_WAIT_TIMEOUT_SECONDS:-180}"
-GUEST_REPO_NAME="$(basename "${REPO_PATH}")"
 SSH_PRIVATE_KEY_PATH="${SSH_PRIVATE_KEY_PATH:-${CALLER_HOME}/.ssh/id_ed25519}"
 ISSUE_FILE=""
 CODEX_MODEL="${CODEX_MODEL:-gpt-5.4}"
@@ -114,10 +113,9 @@ if [[ ! -e "${PREWARM_TARGET}" ]]; then
   exit 1
 fi
 
-if [[ ! -d "${REPO_PATH}" ]]; then
-  echo "Missing repo path: ${REPO_PATH}" >&2
-  exit 1
-fi
+eval "$("${SCRIPT_DIR}/resolve_repo_source.sh" --print-env "${REPO_SOURCE}")"
+
+GUEST_REPO_NAME="${GUEST_REPO_NAME_OVERRIDE:-${RESOLVED_REPO_NAME}}"
 
 if [[ ! -f "${SSH_PUBLIC_KEY_FILE}" ]]; then
   echo "Missing SSH public key: ${SSH_PUBLIC_KEY_FILE}" >&2
@@ -208,7 +206,7 @@ echo "Guest SSH is ready on ${VM_USER}@${VM_IP}"
 "${SCRIPT_DIR}/bootstrap_codex_vm.sh" "${VM_NAME}" "${VM_USER}"
 "${SCRIPT_DIR}/bootstrap_dotnet_vm.sh" "${VM_NAME}" "${VM_USER}"
 "${SCRIPT_DIR}/bootstrap_nuget_vm.sh" "${VM_NAME}" "${VM_USER}"
-"${SCRIPT_DIR}/setup_issue_git_vm.sh" "${VM_NAME}" "${ISSUE_NUMBER}" "${REPO_PATH}" "${VM_USER}"
+"${SCRIPT_DIR}/setup_issue_git_vm.sh" "${VM_NAME}" "${ISSUE_NUMBER}" "${RESOLVED_REPO_PATH}" "${VM_USER}"
 
 ssh \
   -o StrictHostKeyChecking=no \

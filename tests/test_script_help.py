@@ -22,6 +22,7 @@ SCRIPTS = [
     "handle_agent_push.sh",
     "mirror_issue_repo.sh",
     "prewarm_nuget_cache.sh",
+    "resolve_repo_source.sh",
     "setup_issue_git_vm.sh",
     "setup_issue_vm.sh",
     "tail_issue_vm_log.sh",
