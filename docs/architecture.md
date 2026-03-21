@@ -22,9 +22,11 @@
 
 ## Planned Next Integrations
 
-- Replace the stub email service with a provider-backed adapter that preserves the same tool contract.
 - Discord integration now uses a provider-backed bot API adapter (`discord_backend: bot_api`) while
   preserving the same MCP tool contract.
+- Email integration now uses provider-backed Gmail and Microsoft Graph adapters, with the JSON
+  store retained only as an optional development fallback while preserving the same MCP tool
+  contract.
 - Trust boundary: guests can call MCP tools only; host-side gateway is the only component that
   holds Discord credentials, calls Discord HTTPS APIs, and enforces channel/user allowlists before
   commands reach guest automation.

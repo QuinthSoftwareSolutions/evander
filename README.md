@@ -222,7 +222,7 @@ agent-sandbox-cli create-session real-session --config config/gateway.yaml
 
 ## Current Limitations
 
-- Email is still a stub provider behind a local JSON store.
+- Email supports provider-backed Gmail and Microsoft Graph adapters; the local JSON store is an optional fallback for development/testing only.
 - Discord has both `stub` and `bot_api` backends; production deployments should enforce strict
   channel and operator allowlists.
 - The gateway is ready for integration adapters, not production credentials by default.
