@@ -156,6 +156,11 @@ For the full issue-VM bring-up path in one command, use:
 ./scripts/setup_issue_vm.sh 14084 /path/to/project-or-solution.slnx
 ```
 
+That now also clones the mirrored repo into the guest user's home directory using
+the host repo basename, for example `/home/agent/ExampleIndustryAPP`. It also writes a short
+`/home/agent/AGENTS.md` note and configures a repo-local `git push-agent` alias for the safe
+session-namespaced push pattern.
+
 Use the included bare-repo helper when you want VMs to push code changes back to the host over the private network:
 
 ```bash

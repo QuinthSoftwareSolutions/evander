@@ -306,7 +306,10 @@ For the common issue workflow, you can do the full host-side setup in one comman
 ```
 
 That prewarms the shared NuGet cache, launches `vm-14084`, bootstraps Codex/.NET/NuGet, and
-configures the issue-numbered Git mirror and guest SSH path.
+configures the issue-numbered Git mirror and guest SSH path. It also clones the mirrored repo into
+the guest user's home directory using the source repo basename. The cloned repo gets a
+`git push-agent` alias, and the guest home gets a short `AGENTS.md` note describing the expected
+push pattern.
 
 Create a host-local bare repository:
 

@@ -39,6 +39,8 @@ The security model is:
   - `scripts/setup_issue_vm.sh`
   - Default VM disk size is `20G`
   - VM disks live under `/var/lib/libvirt/images/agent-sandbox`, not under `/home/jonathan`
+  - `setup_issue_vm.sh` now clones the issue mirror into `/home/agent/<repo-name>` after guest bootstraps complete
+  - it also writes `/home/agent/AGENTS.md` and configures `git push-agent` in the cloned repo
 
 - Guest Codex bootstrap:
   - `scripts/bootstrap_codex_vm.sh`
