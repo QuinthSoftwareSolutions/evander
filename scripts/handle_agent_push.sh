@@ -66,6 +66,16 @@ derive_review_branch() {
   fi
 }
 
+extract_session_id() {
+  local branch="$1"
+  if [[ "${branch}" == agents/*/* ]]; then
+    local remainder="${branch#agents/}"
+    printf '%s\n' "${remainder%%/*}"
+    return 0
+  fi
+  return 1
+}
+
 ensure_remote() {
   local host_repo_path="$1"
   local remote_name="$2"
@@ -131,6 +141,7 @@ while read -r old_sha new_sha ref_name; do
 
   AGENT_BRANCH="${ref_name#refs/heads/}"
   REVIEW_BRANCH="$(derive_review_branch "${AGENT_BRANCH}")"
+  SESSION_ID="$(extract_session_id "${AGENT_BRANCH}" || true)"
 
   ensure_remote "${TRUSTED_REPO_PATH}" "${AUTO_REMOTE_NAME}" "${BARE_REPO_PATH}"
   promote_branch "${TRUSTED_REPO_PATH}" "${AUTO_REMOTE_NAME}" "${AGENT_BRANCH}" "${REVIEW_BRANCH}"
@@ -139,15 +150,18 @@ while read -r old_sha new_sha ref_name; do
   if [[ -n "${BASE_BRANCH}" ]]; then
     PR_ARGS+=(--base "${BASE_BRANCH}")
   fi
+  if [[ -n "${SESSION_ID}" ]]; then
+    PR_ARGS+=(--session-id "${SESSION_ID}")
+  fi
   PR_ARGS+=("${TRUSTED_REPO_PATH}" "${REVIEW_BRANCH}")
 
   if PR_OUTPUT="$("${SCRIPT_DIR}/open_agent_pr.sh" "${PR_ARGS[@]}" 2>&1)"; then
     notify_event \
       "Agent branch promoted and PR prepared" \
-      "repo=$(basename "${TRUSTED_REPO_PATH}") branch=${REVIEW_BRANCH} ${PR_OUTPUT}"
+      "repo=$(basename "${TRUSTED_REPO_PATH}") branch=${REVIEW_BRANCH} session_id=${SESSION_ID:-unknown} ${PR_OUTPUT}"
   else
     notify_event \
       "Agent branch promoted but PR automation failed" \
-      "repo=$(basename "${TRUSTED_REPO_PATH}") branch=${REVIEW_BRANCH} error=${PR_OUTPUT}"
+      "repo=$(basename "${TRUSTED_REPO_PATH}") branch=${REVIEW_BRANCH} session_id=${SESSION_ID:-unknown} error=${PR_OUTPUT}"
   fi
 done
