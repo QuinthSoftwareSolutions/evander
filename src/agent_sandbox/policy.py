@@ -76,6 +76,56 @@ class PolicyEngine:
         if folder not in session.email_folder_allowlist:
             raise PolicyError(f"Email folder is not allowlisted for session {session.session_id}")
 
+    def require_email_mailbox(self, session: SessionManifest, mailbox_id: str) -> None:
+        if mailbox_id not in session.email_mailbox_allowlist:
+            raise PolicyError(f"Email mailbox is not allowlisted for session {session.session_id}")
+
+    def require_email_folder_for_mailbox(
+        self,
+        session: SessionManifest,
+        mailbox_id: str,
+        folder: str,
+    ) -> None:
+        mailbox_folders = session.email_folder_allowlist_by_mailbox.get(mailbox_id, [])
+        if folder in mailbox_folders:
+            return
+        # Backward compatibility for older manifests that only had global folder allowlists.
+        self.require_email_folder(session, folder)
+
+    def require_email_send_enabled(self, session: SessionManifest) -> None:
+        if not session.email_send_enabled:
+            raise PolicyError(f"Email send is disabled for session {session.session_id}")
+
+    def require_draft_recipients(self, session: SessionManifest, recipients: list[str]) -> None:
+        if not recipients:
+            return
+        normalized_recipients = [recipient.strip().lower() for recipient in recipients if recipient.strip()]
+        if not normalized_recipients:
+            return
+
+        if session.email_draft_recipient_allowlist:
+            allowlisted = {recipient.strip().lower() for recipient in session.email_draft_recipient_allowlist}
+            denied = [recipient for recipient in normalized_recipients if recipient not in allowlisted]
+            if denied:
+                raise PolicyError(
+                    f"Draft recipients are not allowlisted for session {session.session_id}: {', '.join(denied)}"
+                )
+
+        if session.email_draft_domain_allowlist:
+            allowlisted_domains = {
+                domain.strip().lower().lstrip("@") for domain in session.email_draft_domain_allowlist
+            }
+            denied_domains: list[str] = []
+            for recipient in normalized_recipients:
+                _, separator, domain = recipient.rpartition("@")
+                if not separator or domain not in allowlisted_domains:
+                    denied_domains.append(recipient)
+            if denied_domains:
+                raise PolicyError(
+                    f"Draft recipient domains are not allowlisted for session {session.session_id}: "
+                    f"{', '.join(denied_domains)}"
+                )
+
     def create_approval(
         self,
         session_id: str,
