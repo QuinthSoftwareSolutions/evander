@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from pathlib import Path
 from typing import Literal
 
@@ -80,8 +81,14 @@ class GatewayConfig(BaseModel):
 
     @model_validator(mode="after")
     def apply_email_mailbox_defaults(self) -> GatewayConfig:
+        mailbox_ids = [mailbox.mailbox_id for mailbox in self.email_mailboxes]
+        duplicates = sorted(mailbox_id for mailbox_id, count in Counter(mailbox_ids).items() if count > 1)
+        if duplicates:
+            duplicate_list = ", ".join(duplicates)
+            raise ValueError(f"Duplicate email mailbox IDs are not allowed: {duplicate_list}")
+
         if not self.email_mailbox_allowlist:
-            self.email_mailbox_allowlist = [mailbox.mailbox_id for mailbox in self.email_mailboxes]
+            self.email_mailbox_allowlist = mailbox_ids
 
         if not self.email_folder_allowlist_by_mailbox:
             self.email_folder_allowlist_by_mailbox = {
