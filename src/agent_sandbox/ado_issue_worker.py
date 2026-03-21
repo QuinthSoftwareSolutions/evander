@@ -540,6 +540,41 @@ def run_worker(config: WorkerConfig) -> None:
             time.sleep(sleep_seconds)
 
 
+def run_worker_command(*, log_level: str = "INFO", reprocess: int | None = None, forget: int | None = None) -> None:
+    logging.basicConfig(
+        level=getattr(logging, log_level.upper(), logging.INFO),
+        format="%(asctime)s %(levelname)s %(message)s",
+    )
+
+    config = WorkerConfig.load_from_env()
+    store = ProcessedWorkItemStore(config.processed_store_path)
+
+    if forget is not None:
+        removed = store.forget(forget)
+        logging.info("forget work_item=%s removed=%s", forget, removed)
+        return
+
+    if reprocess is not None:
+        store.forget(reprocess)
+        pat = _require_env(config.pat_env_var_name)
+        auth_header = _build_auth_header(pat)
+        timeout = httpx.Timeout(connect=5.0, write=10.0, read=20.0, pool=5.0)
+        with httpx.Client(timeout=timeout) as client:
+            item = fetch_work_item_by_id(
+                client=client,
+                config=config,
+                auth_header=auth_header,
+                work_item_id=reprocess,
+            )
+            if item is None:
+                logging.warning("reprocess work_item=%s not_found_or_not_eligible", reprocess)
+                return
+            process_work_item(item, config=config, store=store)
+        return
+
+    run_worker(config)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Poll Azure DevOps work items for true-agent candidates.")
     parser.add_argument("--log-level", default="INFO", help="Python logging level.")
@@ -555,38 +590,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    logging.basicConfig(
-        level=getattr(logging, args.log_level.upper(), logging.INFO),
-        format="%(asctime)s %(levelname)s %(message)s",
-    )
-
-    config = WorkerConfig.load_from_env()
-    store = ProcessedWorkItemStore(config.processed_store_path)
-
-    if args.forget is not None:
-        removed = store.forget(args.forget)
-        logging.info("forget work_item=%s removed=%s", args.forget, removed)
-        return
-
-    if args.reprocess is not None:
-        store.forget(args.reprocess)
-        pat = _require_env(config.pat_env_var_name)
-        auth_header = _build_auth_header(pat)
-        timeout = httpx.Timeout(connect=5.0, write=10.0, read=20.0, pool=5.0)
-        with httpx.Client(timeout=timeout) as client:
-            item = fetch_work_item_by_id(
-                client=client,
-                config=config,
-                auth_header=auth_header,
-                work_item_id=args.reprocess,
-            )
-            if item is None:
-                logging.warning("reprocess work_item=%s not_found_or_not_eligible", args.reprocess)
-                return
-            process_work_item(item, config=config, store=store)
-        return
-
-    run_worker(config)
+    run_worker_command(log_level=args.log_level, reprocess=args.reprocess, forget=args.forget)
 
 
 if __name__ == "__main__":

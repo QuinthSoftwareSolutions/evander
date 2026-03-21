@@ -7,6 +7,7 @@
 - A Python MCP gateway with policy-gated Discord and email tool surfaces
 - A host-side OpenAI relay that keeps the API key on the host and exposes an OpenAI-compatible endpoint to guests
 - A host-side NuGet relay that proxies nuget.org and private Azure Artifacts feeds for guests
+- A host-side Azure DevOps backlog worker that polls tagged work items and drives `setup_issue_vm.sh`
 - A host-side shared NuGet cache that can be mounted read-only into guests for faster cold restores
 - File-backed session, approval, audit, and draft storage for local development
 - A small CLI for bootstrapping state and creating session manifests
@@ -144,9 +145,33 @@ sudo systemctl start agent-sandbox-firewall.service
 sudo systemctl start agent-sandbox-gateway.service
 sudo systemctl start agent-sandbox-openai-relay.service
 sudo systemctl start agent-sandbox-nuget-relay.service
+sudo systemctl start agent-sandbox-ado-worker.service
 ```
 
 The generated units run as your user where appropriate and read environment files from `config/`.
+
+### Azure DevOps backlog worker
+
+For foreground/backfill operation, run:
+
+```bash
+cp config/ado-worker.env.example config/ado-worker.env
+set -a; source config/ado-worker.env; set +a
+export AZURE_DEVOPS_PAT=...
+agent-sandbox-cli poll-ado-backlog --log-level INFO
+```
+
+For one-off recovery actions:
+
+```bash
+# Forget prior state for an item so the next poll can process it again.
+agent-sandbox-cli poll-ado-backlog --forget 12345
+
+# Immediately reprocess one item now (fetch + setup path), then exit.
+agent-sandbox-cli poll-ado-backlog --reprocess 12345
+```
+
+The dedicated worker entry point is also available as `agent-sandbox-ado-worker` for systemd.
 
 ## Local Git Remotes
 
