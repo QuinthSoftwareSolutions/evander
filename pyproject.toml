@@ -28,6 +28,7 @@ dev = [
 agent-sandbox-gateway = "agent_sandbox.gateway:main"
 agent-sandbox-openai-relay = "agent_sandbox.openai_relay:main"
 agent-sandbox-nuget-relay = "agent_sandbox.nuget_relay:main"
+agent-sandbox-ado-worker = "agent_sandbox.ado_issue_worker:main"
 agent-sandbox-cli = "agent_sandbox.cli:app"
 
 [tool.setuptools]

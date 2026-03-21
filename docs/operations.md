@@ -262,6 +262,62 @@ agent-sandbox-cli create-session real-session --config config/gateway.yaml
 - Configure the relay environment in `config/nuget-relay.env`.
 - After installing units, run `./scripts/bootstrap_nuget_vm.sh <vm-name>` so guest restores target relay URLs on `http://192.168.250.1:11666`.
 
+## Host-Side Azure DevOps Backlog Worker
+
+- The scaffold includes `agent-sandbox-ado-worker` and the equivalent foreground CLI command
+  `agent-sandbox-cli poll-ado-backlog`.
+- The worker polls Azure DevOps work items in `Committed` state tagged `true-agent`, writes YAML
+  payloads under `ADO_YAML_OUTPUT_DIR`, and invokes `scripts/setup_issue_vm.sh`.
+- Configure environment in `config/ado-worker.env` (start from
+  `config/ado-worker.env.example`), then export the PAT value in the host shell/env-file named by
+  `ADO_PAT_ENV_VAR_NAME` (default `AZURE_DEVOPS_PAT`).
+
+Foreground runbook:
+
+```bash
+cp config/ado-worker.env.example config/ado-worker.env
+set -a; source config/ado-worker.env; set +a
+export AZURE_DEVOPS_PAT=...
+agent-sandbox-cli poll-ado-backlog --log-level INFO
+```
+
+Systemd runbook:
+
+1. Ensure `config/ado-worker.env` exists and is populated.
+2. Ensure the PAT variable named by `ADO_PAT_ENV_VAR_NAME` is available to the service user
+   (for example through the user shell profile or a drop-in env file).
+3. Start/inspect:
+
+```bash
+sudo systemctl start agent-sandbox-ado-worker.service
+sudo systemctl status agent-sandbox-ado-worker.service
+sudo journalctl -u agent-sandbox-ado-worker.service -f
+```
+
+Failure recovery:
+
+- Re-run a specific work item once:
+
+  ```bash
+  set -a; source config/ado-worker.env; set +a
+  export AZURE_DEVOPS_PAT=...
+  agent-sandbox-cli poll-ado-backlog --reprocess 12345
+  ```
+
+- Clear processed state for a specific work item so the next normal poll can pick it up again:
+
+  ```bash
+  set -a; source config/ado-worker.env; set +a
+  agent-sandbox-cli poll-ado-backlog --forget 12345
+  ```
+
+- If the service is crash-looping, validate config and PAT availability with a foreground run,
+  then restart the unit:
+
+  ```bash
+  sudo systemctl restart agent-sandbox-ado-worker.service
+  ```
+
 ## Systemd Services
 
 Install persistent host services with:
@@ -276,25 +332,31 @@ This creates:
 - `agent-sandbox-gateway.service`
 - `agent-sandbox-openai-relay.service`
 - `agent-sandbox-nuget-relay.service`
+- `agent-sandbox-ado-worker.service`
 
 Then:
 
 1. Copy `config/firewall.env.example` to `config/firewall.env` if needed.
 2. Copy `config/openai-relay.env.example` to `config/openai-relay.env` if needed.
 3. Copy `config/nuget-relay.env.example` to `config/nuget-relay.env` if needed.
-4. Set the real `OPENAI_API_KEY` in `config/openai-relay.env`.
-5. Set `AZURE_ARTIFACTS_PAT` in `config/nuget-relay.env` when private feeds are required.
-6. Start and inspect the services:
+4. Copy `config/ado-worker.env.example` to `config/ado-worker.env` if needed.
+5. Set the real `OPENAI_API_KEY` in `config/openai-relay.env`.
+6. Set `AZURE_ARTIFACTS_PAT` in `config/nuget-relay.env` when private feeds are required.
+7. Ensure the PAT variable named by `ADO_PAT_ENV_VAR_NAME` (default `AZURE_DEVOPS_PAT`) is
+   exported for the service user and `config/ado-worker.env` points at the right project/paths.
+8. Start and inspect the services:
 
 ```bash
 sudo systemctl start agent-sandbox-firewall.service
 sudo systemctl start agent-sandbox-gateway.service
 sudo systemctl start agent-sandbox-openai-relay.service
 sudo systemctl start agent-sandbox-nuget-relay.service
+sudo systemctl start agent-sandbox-ado-worker.service
 sudo systemctl status agent-sandbox-firewall.service
 sudo systemctl status agent-sandbox-gateway.service
 sudo systemctl status agent-sandbox-openai-relay.service
 sudo systemctl status agent-sandbox-nuget-relay.service
+sudo systemctl status agent-sandbox-ado-worker.service
 ```
 
 ## Local Git Remote Flow
