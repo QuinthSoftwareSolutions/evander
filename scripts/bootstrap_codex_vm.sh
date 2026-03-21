@@ -48,10 +48,16 @@ SSH_OPTS=(
   -o UserKnownHostsFile=/dev/null
   -i "${SSH_KEY_PATH}"
 )
+GUEST_HEARTBEAT_SCRIPT="${ROOT_DIR}/scripts/guest/heartbeat_cycle.sh"
 
 if [[ ! -d "${VENDOR_DIR}" ]]; then
   echo "Missing Codex vendor directory: ${VENDOR_DIR}" >&2
   echo "Set HOST_CODEX_ROOT if Codex is installed elsewhere on the host." >&2
+  exit 1
+fi
+
+if [[ ! -f "${GUEST_HEARTBEAT_SCRIPT}" ]]; then
+  echo "Missing guest heartbeat script: ${GUEST_HEARTBEAT_SCRIPT}" >&2
   exit 1
 fi
 
@@ -102,11 +108,13 @@ ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "
   mkdir -p ~/bin ~/codex-vendor
 "
 scp "${SSH_OPTS[@]}" -r "${VENDOR_DIR}/." "${VM_USER}@${VM_IP}:~/codex-vendor/"
+scp "${SSH_OPTS[@]}" "${GUEST_HEARTBEAT_SCRIPT}" "${VM_USER}@${VM_IP}:~/bin/agent-heartbeat-cycle"
 
 ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "VM_USER='${VM_USER}' LLM_BASE_URL='${LLM_BASE_URL}' bash -s" <<'EOF'
 set -euo pipefail
 cp ~/codex-vendor/codex/codex ~/bin/codex
 chmod +x ~/bin/codex
+chmod +x ~/bin/agent-heartbeat-cycle
 mkdir -p ~/.codex
 cat > ~/.codex/config.toml <<CONFIG
 model = "gpt-5.4"
