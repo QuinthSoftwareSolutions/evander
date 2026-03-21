@@ -2,8 +2,8 @@
 set -euo pipefail
 
 show_help() {
-  cat <<'EOF'
-Usage: mirror_issue_repo.sh <issue-number> [repo-path]
+  cat <<'USAGE'
+Usage: mirror_issue_repo.sh <issue-number> [repo-source]
 
 Create or refresh a host bare mirror for a repo using the issue-number naming
 convention:
@@ -12,8 +12,9 @@ convention:
 
 Arguments:
   issue-number  Issue identifier used to derive the repo/remote names.
-  repo-path     Working tree to mirror. Default: /home/jonathan/Documents/Repos/ExampleIndustryAPP
-EOF
+  repo-source   Working tree path or remote URL to mirror.
+                Default: /home/jonathan/Documents/Repos/ExampleIndustryAPP
+USAGE
 }
 
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
@@ -27,31 +28,28 @@ if [[ $# -lt 1 ]]; then
 fi
 
 ISSUE_NUMBER="$1"
-REPO_PATH="${2:-/home/jonathan/Documents/Repos/ExampleIndustryAPP}"
+REPO_SOURCE="${2:-/home/jonathan/Documents/Repos/ExampleIndustryAPP}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 BARE_REPO_NAME="${ISSUE_NUMBER}_repo"
 MIRROR_REMOTE_NAME="${ISSUE_NUMBER}-mirror"
 BARE_REPO_PATH="${ROOT_DIR}/git-remotes/${BARE_REPO_NAME}.git"
 
-if [[ ! -d "${REPO_PATH}" ]]; then
-  echo "Missing repo path: ${REPO_PATH}" >&2
-  exit 1
-fi
+RESOLVED_REPO_PATH="$(${SCRIPT_DIR}/resolve_repo_source.sh "${REPO_SOURCE}")"
 
 "${SCRIPT_DIR}/create_git_remote.sh" "${BARE_REPO_NAME}"
 
-if git -C "${REPO_PATH}" remote get-url "${MIRROR_REMOTE_NAME}" >/dev/null 2>&1; then
-  git -C "${REPO_PATH}" remote set-url "${MIRROR_REMOTE_NAME}" "${BARE_REPO_PATH}"
+if git -C "${RESOLVED_REPO_PATH}" remote get-url "${MIRROR_REMOTE_NAME}" >/dev/null 2>&1; then
+  git -C "${RESOLVED_REPO_PATH}" remote set-url "${MIRROR_REMOTE_NAME}" "${BARE_REPO_PATH}"
 else
-  git -C "${REPO_PATH}" remote add "${MIRROR_REMOTE_NAME}" "${BARE_REPO_PATH}"
+  git -C "${RESOLVED_REPO_PATH}" remote add "${MIRROR_REMOTE_NAME}" "${BARE_REPO_PATH}"
 fi
 
-git -C "${REPO_PATH}" push --mirror "${MIRROR_REMOTE_NAME}"
-git --git-dir="${BARE_REPO_PATH}" config agent-sandbox.trustedRepoPath "${REPO_PATH}"
+git -C "${RESOLVED_REPO_PATH}" push --mirror "${MIRROR_REMOTE_NAME}"
+git --git-dir="${BARE_REPO_PATH}" config agent-sandbox.trustedRepoPath "${RESOLVED_REPO_PATH}"
 
 DEFAULT_BASE_BRANCH="$(
-  git -C "${REPO_PATH}" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null \
+  git -C "${RESOLVED_REPO_PATH}" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null \
     | sed 's#^origin/##'
 )"
 if [[ -n "${DEFAULT_BASE_BRANCH}" ]]; then
@@ -60,6 +58,6 @@ fi
 
 echo
 echo "Host mirror ready:"
-echo "  repo:   ${REPO_PATH}"
+echo "  repo:   ${RESOLVED_REPO_PATH}"
 echo "  remote: ${MIRROR_REMOTE_NAME}"
 echo "  bare:   ${BARE_REPO_PATH}"
