@@ -1,12 +1,21 @@
 from __future__ import annotations
 
+import json
 import random
 import time
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, Callable, Protocol
 
 import httpx
-from .models import DiscordCommandEnvelope, DraftMessage, EmailMessage
+from .models import (
+    DiscordCommandEnvelope,
+    DraftMessage,
+    EmailMessage,
+    HasPendingFeedbackResponse,
+    ListUnreadFeedbackResponse,
+    PrFeedbackItem,
+)
 from .email.providers import EmailDraft, EmailMessageDetail, EmailMessageSummary, EmailProvider
 from .storage import JsonStore
 
@@ -326,3 +335,62 @@ class DiscordBotApiService:
             "session_id": session_id,
             "message_id": payload["id"],
         }
+
+
+class PrFeedbackService:
+    def __init__(self, store_path: Path) -> None:
+        self.store_path = store_path
+
+    def has_pending_feedback(
+        self,
+        *,
+        streams: list[dict[str, str]],
+        cursor: str | None = None,
+    ) -> HasPendingFeedbackResponse:
+        feedback = self.list_unread_feedback(streams=streams, cursor=cursor)
+        return HasPendingFeedbackResponse(
+            pending=bool(feedback.feedback),
+            next_cursor=feedback.next_cursor,
+        )
+
+    def list_unread_feedback(
+        self,
+        *,
+        streams: list[dict[str, str]],
+        cursor: str | None = None,
+    ) -> ListUnreadFeedbackResponse:
+        payload = self._read_store()
+        allowed_streams = {
+            (stream["provider"], stream["repo"], stream["pr_id"])
+            for stream in streams
+        }
+        items: list[PrFeedbackItem] = []
+        for raw_value in payload.get("feedback", {}).values():
+            if not isinstance(raw_value, dict):
+                continue
+            candidate = PrFeedbackItem.model_validate(raw_value)
+            key = (candidate.provider, candidate.repo, candidate.pr_id)
+            if key not in allowed_streams:
+                continue
+            if cursor and candidate.created_at <= self._parse_cursor(cursor):
+                continue
+            items.append(candidate)
+
+        items.sort(key=lambda item: item.created_at)
+        next_cursor = items[-1].created_at.isoformat().replace("+00:00", "Z") if items else cursor
+        return ListUnreadFeedbackResponse(feedback=items, next_cursor=next_cursor)
+
+    def _read_store(self) -> dict[str, Any]:
+        if not self.store_path.exists():
+            return {"feedback": {}}
+        return json.loads(self.store_path.read_text(encoding="utf-8"))
+
+    @staticmethod
+    def _parse_cursor(cursor: str) -> datetime:
+        normalized = cursor.strip()
+        if normalized.endswith("Z"):
+            normalized = normalized[:-1] + "+00:00"
+        parsed = datetime.fromisoformat(normalized)
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=UTC)
+        return parsed.astimezone(UTC)

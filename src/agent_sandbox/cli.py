@@ -54,6 +54,8 @@ def create_session(
             ToolName.EMAIL_CREATE_DRAFT,
             ToolName.APPROVAL_SUBMIT,
             ToolName.APPROVAL_CHECK,
+            ToolName.HAS_PENDING_FEEDBACK,
+            ToolName.LIST_UNREAD_FEEDBACK,
         ],
         discord_channel_allowlist=discord_channel or [],
         email_folder_allowlist=email_folder or [],

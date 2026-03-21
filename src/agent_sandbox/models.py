@@ -22,6 +22,8 @@ class ToolName(str, Enum):
     APPROVAL_SUBMIT = "approval_submit"
     APPROVAL_CHECK = "approval_check"
     EMAIL_SEND_APPROVED = "email_send_approved"
+    HAS_PENDING_FEEDBACK = "has_pending_feedback"
+    LIST_UNREAD_FEEDBACK = "list_unread_feedback"
 
 
 class ApprovalStatus(str, Enum):
@@ -110,6 +112,41 @@ class AuditEvent(BaseModel):
     args: dict[str, Any] = Field(default_factory=dict)
     result: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=utc_now)
+
+
+class PrFeedbackItem(BaseModel):
+    feedback_id: str
+    provider: str
+    repo: str
+    pr_id: str
+    thread_id: str | None = None
+    comment_id: str | None = None
+    author: str
+    body: str
+    file_path: str | None = None
+    line: int | None = None
+    created_at: datetime
+    in_reply_to: str | None = None
+    resolved: bool | None = None
+
+
+class HasPendingFeedbackRequest(BaseModel):
+    session_id: str
+
+
+class HasPendingFeedbackResponse(BaseModel):
+    pending: bool
+    next_cursor: str | None = None
+
+
+class ListUnreadFeedbackRequest(BaseModel):
+    session_id: str
+    cursor: str | None = None
+
+
+class ListUnreadFeedbackResponse(BaseModel):
+    feedback: list[PrFeedbackItem] = Field(default_factory=list)
+    next_cursor: str | None = None
 
 
 def digest_payload(payload: dict[str, Any]) -> str:

@@ -5,6 +5,7 @@ import json
 from datetime import UTC, datetime, timedelta
 from inspect import signature
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -548,6 +549,49 @@ class _RaisingEmailService:
         raise self.error
 
 
+class _FakePrFeedbackService:
+    def __init__(self) -> None:
+        self.last_streams: list[dict[str, str]] = []
+        self.last_cursor: str | None = None
+
+    def has_pending_feedback(
+        self, *, streams: list[dict[str, str]], cursor: str | None = None
+    ) -> SimpleNamespace:
+        self.last_streams = streams
+        self.last_cursor = cursor
+        return SimpleNamespace(
+            model_dump=lambda mode="json": {
+                "pending": True,
+                "next_cursor": "2026-01-01T00:00:00Z",
+            }
+        )
+
+    def list_unread_feedback(
+        self, *, streams: list[dict[str, str]], cursor: str | None = None
+    ) -> SimpleNamespace:
+        self.last_streams = streams
+        self.last_cursor = cursor
+        payload = {
+            "feedback": [
+                {
+                    "feedback_id": "github:review_comment:7",
+                    "provider": "github",
+                    "repo": "org/repo",
+                    "pr_id": "17",
+                    "author": "reviewer",
+                    "body": "Please rename this variable.",
+                    "created_at": "2026-01-01T00:00:00Z",
+                }
+            ],
+            "next_cursor": "2026-01-01T00:00:00Z",
+        }
+        return SimpleNamespace(
+            feedback=[payload["feedback"][0]],
+            next_cursor=payload["next_cursor"],
+            model_dump=lambda mode="json": payload,
+        )
+
+
 def test_email_provider_auth_failures_are_audited(tmp_path: Path) -> None:
     context = make_context(tmp_path)
     context.sessions.put(
@@ -711,3 +755,52 @@ def test_audit_failure_recursively_redacts_nested_payload_fields(tmp_path: Path)
     assert event["args"]["payload"]["nested"]["safe"] == "visible"
     assert event["args"]["payload"]["recipients"][0]["email"] == "still-visible@example.com"
     assert event["args"]["payload"]["recipients"][0]["token"] == "<redacted>"
+
+
+def test_has_pending_feedback_returns_minimal_heartbeat_payload(tmp_path: Path) -> None:
+    context = make_context(tmp_path)
+    context.sessions.put(
+        "session-1",
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[ToolName.HAS_PENDING_FEEDBACK],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={"pr_feedback_streams": [{"provider": "github", "repo": "org/repo", "pr_id": "17"}]},
+        ),
+    )
+    context.pr_feedback_service = _FakePrFeedbackService()
+    server = create_server(context)
+
+    result = call_tool(server, "has_pending_feedback", {"session_id": "session-1"})
+
+    assert result == {"pending": True, "next_cursor": "2026-01-01T00:00:00Z"}
+    event = read_audit_events(context.config.audit_log_path)[-1]
+    assert event["tool_name"] == ToolName.HAS_PENDING_FEEDBACK.value
+    assert event["result"] == {"pending": True}
+
+
+def test_list_unread_feedback_returns_items_and_audits_result_count(tmp_path: Path) -> None:
+    context = make_context(tmp_path)
+    context.sessions.put(
+        "session-1",
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[ToolName.LIST_UNREAD_FEEDBACK],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={"pr_feedback_streams": [{"provider": "github", "repo": "org/repo", "pr_id": "17"}]},
+        ),
+    )
+    context.pr_feedback_service = _FakePrFeedbackService()
+    server = create_server(context)
+
+    result = call_tool(
+        server,
+        "list_unread_feedback",
+        {"session_id": "session-1", "cursor": "2025-12-31T00:00:00Z"},
+    )
+
+    assert result["feedback"][0]["feedback_id"] == "github:review_comment:7"
+    assert result["next_cursor"] == "2026-01-01T00:00:00Z"
+    event = read_audit_events(context.config.audit_log_path)[-1]
+    assert event["tool_name"] == ToolName.LIST_UNREAD_FEEDBACK.value
+    assert event["result"] == {"count": 1, "next_cursor": "2026-01-01T00:00:00Z"}

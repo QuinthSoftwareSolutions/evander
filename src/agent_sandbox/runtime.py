@@ -23,6 +23,7 @@ from .services import (
     DiscordBotApiService,
     DiscordService,
     EmailService,
+    PrFeedbackService,
     StubDiscordService,
 )
 from .storage import JsonStore
@@ -35,6 +36,7 @@ class RuntimeContext:
     policy: PolicyEngine
     email_service: EmailService
     discord_service: DiscordService
+    pr_feedback_service: PrFeedbackService
     sessions: JsonStore[SessionManifest]
     approvals: JsonStore[ApprovalRequest]
 
@@ -54,6 +56,7 @@ def build_runtime(config: GatewayConfig) -> RuntimeContext:
         policy=PolicyEngine(config, sessions, approvals),
         email_service=EmailService(_build_email_provider(config, emails, drafts, email_cursors)),
         discord_service=discord_service,
+        pr_feedback_service=PrFeedbackService(config.runtime_dir / "pr-feedback-store.json"),
         sessions=sessions,
         approvals=approvals,
     )
