@@ -37,6 +37,8 @@ def test_git_remote_docs_and_script_are_present() -> None:
     assert "promote_agent_branch.sh" in ops
     assert "open_agent_pr.sh" in readme
     assert "open_agent_pr.sh" in ops
+    assert "post-receive" in git_docs
+    assert "AZURE_DEVOPS_PAT" in git_docs
     assert "refs/heads/agents/" in git_docs
     assert "review/" in git_docs
     assert "git init --bare" in script

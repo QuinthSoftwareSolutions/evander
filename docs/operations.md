@@ -336,6 +336,11 @@ issue-numbered bare mirror on the host. Use the lower-level
 `create_git_remote.sh` and `bootstrap_git_vm.sh` helpers directly only when you
 need a non-issue-specific repository layout.
 
+Issue mirrors now carry a `post-receive` hook. When the bare repo has a trusted clone mapping,
+guest pushes to `refs/heads/agents/...` can automatically promote the branch into the trusted clone,
+push the review branch to `origin`, create or reuse the upstream PR, and append an event to
+`runtime/agent-events.log`.
+
 Or mirror the default host repo into an issue-numbered bare remote:
 
 ```bash
@@ -377,6 +382,9 @@ After review and tests pass, push the reviewed branch to `origin` and optionally
 ```
 
 This is the preferred flow: VM -> quarantine bare repo -> trusted host clone -> `origin`/PR.
+
+For Azure DevOps origins, set `AZURE_DEVOPS_PAT` in `config/git-server.env` so the PR helper can
+create upstream PRs automatically against the Azure-hosted canonical repository.
 
 ## Live Smoke Tests
 

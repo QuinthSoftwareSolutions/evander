@@ -19,6 +19,7 @@ SCRIPTS = [
     "install_systemd_units.sh",
     "launch_agent_vm.sh",
     "git_ssh_command_wrapper.sh",
+    "handle_agent_push.sh",
     "mirror_issue_repo.sh",
     "prewarm_nuget_cache.sh",
     "setup_issue_git_vm.sh",

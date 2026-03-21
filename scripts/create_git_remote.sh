@@ -43,6 +43,7 @@ GIT_ROOT="${AGENT_SANDBOX_GIT_ROOT:-${ROOT_DIR}/git-remotes}"
 GIT_HOST="${AGENT_SANDBOX_GIT_HOST:-192.168.250.1}"
 GIT_USER="${AGENT_SANDBOX_GIT_USER:-${USER}}"
 GIT_SSH_ALIAS="${AGENT_SANDBOX_GIT_SSH_ALIAS:-agent-sandbox-git-host}"
+HOOK_SCRIPT="${ROOT_DIR}/scripts/handle_agent_push.sh"
 
 case "${REPO_NAME}" in
   *.git) REPO_DIR="${GIT_ROOT}/${REPO_NAME}" ;;
@@ -56,6 +57,13 @@ if [[ ! -d "${REPO_DIR}" ]]; then
   git --git-dir="${REPO_DIR}" config receive.denyCurrentBranch ignore
   git --git-dir="${REPO_DIR}" config gc.auto 0
 fi
+
+cat > "${REPO_DIR}/hooks/post-receive" <<HOOK
+#!/usr/bin/env bash
+set -euo pipefail
+"${HOOK_SCRIPT}" "${REPO_DIR}" || true
+HOOK
+chmod +x "${REPO_DIR}/hooks/post-receive"
 
 echo "Bare remote ready: ${REPO_DIR}"
 echo

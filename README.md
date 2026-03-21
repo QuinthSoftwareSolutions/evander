@@ -194,7 +194,9 @@ If you want to mirror the default host repo into an issue-numbered bare remote f
 refreshes the issue-numbered host mirror in one command. The lower-level
 `bootstrap_git_vm.sh` helper installs a dedicated guest SSH key and a restricted host
 `authorized_keys` entry so guests can push Git branches without needing your host password or
-general shell access.
+general shell access. Issue mirrors also carry a `post-receive` hook so host-side automation can
+promote pushed `agents/...` branches into the trusted clone, push the review branch to `origin`,
+and create the upstream PR automatically.
 
 See [git-remotes.md](/home/jonathan/agent-sandbox/docs/git-remotes.md) for the review flow and branch naming pattern.
 The host-side safe promotion flow is:
