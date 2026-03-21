@@ -17,6 +17,7 @@ Options:
   --create-pr         Open an upstream PR after pushing.
   --provider <name>   PR provider: auto, github, azure. Default: auto.
   --base <branch>     Base branch for the PR. Default: repository default branch.
+  --session-id <id>   Session id for mapping metadata. Defaults to branch-derived value.
   --title <title>     Explicit PR title.
   --body-file <path>  Read PR body from a file.
   --no-fill           Do not pass --fill to gh pr create.
@@ -40,6 +41,7 @@ TITLE=""
 BODY_FILE=""
 USE_FILL=1
 PROVIDER="auto"
+SESSION_ID=""
 POSITIONAL=()
 
 while [[ $# -gt 0 ]]; do
@@ -66,6 +68,14 @@ while [[ $# -gt 0 ]]; do
         exit 1
       fi
       BASE_BRANCH="$2"
+      shift 2
+      ;;
+    --session-id)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --session-id" >&2
+        exit 1
+      fi
+      SESSION_ID="$2"
       shift 2
       ;;
     --title)
@@ -137,6 +147,116 @@ if [[ -z "${LOCAL_BRANCH}" ]]; then
   exit 1
 fi
 
+derive_session_id() {
+  local branch="$1"
+  if [[ "${branch}" == agents/*/* || "${branch}" == review/*/* ]]; then
+    local remainder="${branch#*/}"
+    printf '%s\n' "${remainder%%/*}"
+    return 0
+  fi
+  return 1
+}
+
+infer_repo_slug() {
+  local origin_url="$1"
+  local provider="$2"
+  case "${provider}" in
+    github)
+      local trimmed="${origin_url%.git}"
+      trimmed="${trimmed#git@github.com:}"
+      trimmed="${trimmed#https://github.com/}"
+      printf '%s\n' "${trimmed}"
+      ;;
+    azure)
+      ORIGIN_URL="${origin_url}" python3 - <<'PY'
+import os
+import re
+import urllib.parse
+
+origin_url = os.environ["ORIGIN_URL"]
+ssh_match = re.match(r"^git@ssh\.dev\.azure\.com:v3/([^/]+)/([^/]+)/([^/]+)$", origin_url)
+https_match = re.match(
+    r"^https://(?:[^@/]+@)?dev\.azure\.com/([^/]+)/([^/]+)/_git/([^/]+)$",
+    origin_url,
+)
+vs_match = re.match(
+    r"^https://(?:[^@/]+@)?([^.]+)\.visualstudio\.com/([^/]+)/_git/([^/]+)$",
+    origin_url,
+)
+
+match = ssh_match or https_match or vs_match
+if not match:
+    print("", end="")
+else:
+    organization, project, repo = match.groups()
+    organization = urllib.parse.unquote(organization)
+    project = urllib.parse.unquote(project)
+    repo = urllib.parse.unquote(repo)
+    print(f"{organization}/{project}/{repo}", end="")
+PY
+      ;;
+    *)
+      printf '%s\n' ""
+      ;;
+  esac
+}
+
+write_pr_mapping() {
+  local map_path="$1"
+  local provider="$2"
+  local repo_slug="$3"
+  local pr_id="$4"
+  local pr_url="$5"
+  local origin_branch="$6"
+  local base_branch="$7"
+  local session_id="$8"
+  local local_branch="$9"
+
+  mkdir -p "$(dirname "${map_path}")"
+  MAP_PATH="${map_path}" \
+  PROVIDER="${provider}" \
+  REPO_SLUG="${repo_slug}" \
+  PR_ID="${pr_id}" \
+  PR_URL="${pr_url}" \
+  ORIGIN_BRANCH="${origin_branch}" \
+  BASE_BRANCH="${base_branch}" \
+  SESSION_ID="${session_id}" \
+  LOCAL_BRANCH="${local_branch}" \
+  python3 - <<'PY'
+import json
+import os
+from datetime import datetime, timezone
+from pathlib import Path
+
+path = Path(os.environ["MAP_PATH"])
+if path.exists():
+    payload = json.loads(path.read_text(encoding="utf-8"))
+else:
+    payload = {"version": 1, "entries": {}}
+
+entries = payload.setdefault("entries", {})
+timestamp = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+provider = os.environ["PROVIDER"]
+repo_slug = os.environ["REPO_SLUG"]
+pr_id = os.environ["PR_ID"]
+key = f"{provider}:{repo_slug}:{pr_id}"
+entries[key] = {
+    "provider": provider,
+    "repo": repo_slug,
+    "pr_id": pr_id,
+    "pr_url": os.environ["PR_URL"],
+    "origin_branch": os.environ["ORIGIN_BRANCH"],
+    "base_branch": os.environ["BASE_BRANCH"],
+    "session_id": os.environ["SESSION_ID"],
+    "local_branch": os.environ["LOCAL_BRANCH"],
+    "updated_at": timestamp,
+}
+payload["updated_at"] = timestamp
+path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+}
+
 if [[ -z "${ORIGIN_BRANCH}" ]]; then
   ORIGIN_BRANCH="${LOCAL_BRANCH}"
 fi
@@ -181,6 +301,7 @@ else
 fi
 
 ORIGIN_URL="$(git -C "${HOST_REPO_PATH}" remote get-url origin)"
+PR_MAP_PATH="${AGENT_SANDBOX_PR_MAP_PATH:-${ROOT_DIR}/runtime/pr-map.json}"
 
 if [[ "${PROVIDER}" == "auto" ]]; then
   case "${ORIGIN_URL}" in
@@ -193,6 +314,18 @@ if [[ "${PROVIDER}" == "auto" ]]; then
       ;;
   esac
 fi
+
+if [[ -z "${SESSION_ID}" ]]; then
+  SESSION_ID="$(derive_session_id "${ORIGIN_BRANCH}" || derive_session_id "${LOCAL_BRANCH}" || true)"
+fi
+
+REPO_SLUG="$(infer_repo_slug "${ORIGIN_URL}" "${PROVIDER}")"
+if [[ -z "${REPO_SLUG}" ]]; then
+  REPO_SLUG="$(basename "${HOST_REPO_PATH}")"
+fi
+
+PR_URL=""
+PR_ID=""
 
 case "${PROVIDER}" in
   github)
@@ -213,10 +346,14 @@ case "${PROVIDER}" in
       GH_ARGS+=(--fill)
     fi
 
-    (
+    PR_URL="$(
+      (
       cd "${HOST_REPO_PATH}"
       gh "${GH_ARGS[@]}"
-    )
+      )
+    )"
+    PR_URL="$(printf '%s\n' "${PR_URL}" | tail -n 1)"
+    PR_ID="$(printf '%s\n' "${PR_URL}" | sed -nE 's#.*/pull/([0-9]+)$#\1#p')"
     ;;
   azure)
     AZURE_DEVOPS_PAT_VALUE="${!AZURE_PAT_ENV:-}"
@@ -226,6 +363,7 @@ case "${PROVIDER}" in
       exit 1
     fi
 
+    AZURE_RESULT="$(
     ORIGIN_URL="${ORIGIN_URL}" \
     AZURE_DEVOPS_PAT_VALUE="${AZURE_DEVOPS_PAT_VALUE}" \
     BASE_BRANCH="${BASE_BRANCH}" \
@@ -298,7 +436,8 @@ with urllib.request.urlopen(existing_request) as response:
 if payload.get("count", 0):
     pr = payload["value"][0]
     web = pr.get("_links", {}).get("web", {}).get("href") or pr.get("url")
-    print(web)
+    pr_id = str(pr.get("pullRequestId", ""))
+    print(json.dumps({"pr_url": web, "pr_id": pr_id}, sort_keys=True))
     sys.exit(0)
 
 create_payload = json.dumps(
@@ -319,11 +458,73 @@ with urllib.request.urlopen(create_request) as response:
     pr = json.load(response)
 
 web = pr.get("_links", {}).get("web", {}).get("href") or pr.get("url")
-print(web)
+pr_id = str(pr.get("pullRequestId", ""))
+print(json.dumps({"pr_url": web, "pr_id": pr_id}, sort_keys=True))
 PY
+    )"
+    PR_URL="$(
+      AZURE_RESULT="${AZURE_RESULT}" python3 - <<'PY'
+import json
+import os
+payload = json.loads(os.environ["AZURE_RESULT"])
+print(payload.get("pr_url", ""), end="")
+PY
+    )"
+    PR_ID="$(
+      AZURE_RESULT="${AZURE_RESULT}" python3 - <<'PY'
+import json
+import os
+payload = json.loads(os.environ["AZURE_RESULT"])
+print(payload.get("pr_id", ""), end="")
+PY
+    )"
     ;;
   *)
     echo "Unsupported provider: ${PROVIDER}" >&2
     exit 1
     ;;
 esac
+
+if [[ -z "${PR_ID}" ]]; then
+  PR_ID="$(printf '%s\n' "${PR_URL}" | sed -nE 's#.*/pull/([0-9]+).*#\1#p')"
+fi
+
+if [[ -n "${PR_ID}" ]]; then
+  write_pr_mapping \
+    "${PR_MAP_PATH}" \
+    "${PROVIDER}" \
+    "${REPO_SLUG}" \
+    "${PR_ID}" \
+    "${PR_URL}" \
+    "${ORIGIN_BRANCH}" \
+    "${BASE_BRANCH}" \
+    "${SESSION_ID}" \
+    "${LOCAL_BRANCH}"
+fi
+
+RESULT_JSON="$(
+  PROVIDER="${PROVIDER}" \
+  PR_URL="${PR_URL}" \
+  PR_ID="${PR_ID}" \
+  ORIGIN_BRANCH="${ORIGIN_BRANCH}" \
+  BASE_BRANCH="${BASE_BRANCH}" \
+  SESSION_ID="${SESSION_ID}" \
+  python3 - <<'PY'
+import json
+import os
+print(
+    json.dumps(
+        {
+            "provider": os.environ["PROVIDER"],
+            "pr_url": os.environ["PR_URL"],
+            "pr_id": os.environ["PR_ID"],
+            "origin_branch": os.environ["ORIGIN_BRANCH"],
+            "base_branch": os.environ["BASE_BRANCH"],
+            "session_id": os.environ["SESSION_ID"],
+        },
+        sort_keys=True,
+    )
+)
+PY
+)"
+echo "AGENT_PR_RESULT ${RESULT_JSON}"
