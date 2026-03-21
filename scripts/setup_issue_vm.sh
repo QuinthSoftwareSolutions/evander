@@ -284,6 +284,38 @@ cat > "$HOME/AGENTS.md" <<AGENTS
 - The reason for \`--no-restore\` is to avoid accidentally triggering a slow restore with the wrong NuGet config.
 - If shell changes were just bootstrapped, run:
   \`. ~/.profile\`
+
+## PR Summary Requirement
+
+Agents must provide a markdown summary of changes and attach it to the tip commit
+with Git notes.
+
+- Required notes ref: \`agent-pr\`
+- The markdown summary must be attached via:
+  \`git notes --ref=agent-pr add -f -m "<markdown summary>"\`
+- The notes ref must be pushed together with the branch push.
+
+Copy/paste examples (replace placeholders):
+
+\`\`\`bash
+# Add or replace the markdown summary note on the current tip commit.
+git notes --ref=agent-pr add -f -m "<markdown summary in Markdown>"
+
+# Push the current branch and the notes ref together.
+git push agent \
+  HEAD:refs/heads/agents/\${SESSION_ID:-manual}/\$(git rev-parse --abbrev-ref HEAD) \
+  refs/notes/agent-pr
+\`\`\`
+
+### Troubleshooting
+
+- Note added but not pushed:
+  run the push command above and make sure \`refs/notes/agent-pr\` is included.
+- Wrong ref name:
+  use exactly \`--ref=agent-pr\` (this maps to \`refs/notes/agent-pr\`).
+- Note attached to the wrong commit:
+  checkout the correct tip commit and re-run
+  \`git notes --ref=agent-pr add -f -m "<markdown summary>"\`.
 AGENTS
 EOF
 
