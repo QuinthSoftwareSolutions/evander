@@ -215,6 +215,26 @@ If you want to mirror the default host repo into an issue-numbered bare remote f
 ./scripts/mirror_issue_repo.sh 14084
 ```
 
+You can choose freshness behavior explicitly:
+
+```bash
+# Local working tree source (default: no upstream fetch)
+./scripts/mirror_issue_repo.sh --sync-remote --remote-name origin 14084 /path/to/local/repo
+
+# Remote URL source (always refreshed in runtime/repo-cache before mirroring)
+./scripts/mirror_issue_repo.sh 14084 https://example.com/org/repo.git
+
+# Pinned mirror behavior
+./scripts/mirror_issue_repo.sh --branch main 14084 /path/to/local/repo
+./scripts/mirror_issue_repo.sh --refspec refs/heads/main:refs/heads/main 14084 /path/to/local/repo
+```
+
+When `--sync-remote` is active for a local source, the helper fetches
+`git fetch --prune <remote-name>` and checks whether the local default branch is behind the remote
+default branch. If so, it stops with a divergence message unless `--force-local` is supplied.
+Every mirror run logs the source mode (local vs remote), selected base branch, and source commit
+SHA for auditability.
+
 `setup_issue_git_vm.sh` is the shortest path: it bootstraps the guest Git key and creates or
 refreshes the issue-numbered host mirror in one command. The lower-level
 `bootstrap_git_vm.sh` helper installs a dedicated guest SSH key and a restricted host

@@ -40,11 +40,30 @@ naming convention, use:
 ./scripts/mirror_issue_repo.sh 14084
 ```
 
+Freshness controls:
+
+- local source path: defaults to no upstream fetch
+- remote URL source: always refreshes latest refs in `runtime/repo-cache` first
+- `--sync-remote`: fetch `--prune <remote-name>` for local source before mirroring
+- `--force-local`: continue even if local default branch is behind remote default branch
+- optional pinning: `--branch <name>` or `--refspec <src:dst>`
+
+Examples:
+
+```bash
+./scripts/mirror_issue_repo.sh --sync-remote --remote-name origin 14084 /path/to/local/repo
+./scripts/mirror_issue_repo.sh 14084 https://example.com/org/repo.git
+./scripts/mirror_issue_repo.sh --branch main 14084 /path/to/local/repo
+```
+
 If you want the shortest host-side setup path for an issue VM, combine both steps:
 
 ```bash
 ./scripts/setup_issue_git_vm.sh vm-real 14084
 ```
+
+`setup_issue_git_vm.sh` forwards the same freshness and pinning flags to
+`mirror_issue_repo.sh`, and `setup_issue_vm.sh` forwards them again for the full bring-up path.
 
 That bootstraps guest Git SSH and refreshes the `14084_repo.git` host mirror in one command.
 
@@ -54,12 +73,15 @@ That derives:
 - host working-tree remote: `14084-mirror`
 
 By default it mirrors `/home/jonathan/Documents/Repos/ExampleIndustryAPP`, but you can pass a second
-argument to target a different host repo.
+argument to target a different host repo path or remote URL.
 
 Each bare repo also gets a `post-receive` hook. Once the bare repo has been associated with a
 trusted host clone by `mirror_issue_repo.sh`, that hook can automatically promote guest-pushed
 `agents/...` branches, push a review branch to `origin`, create or reuse the upstream PR, and emit
 a host-side notification.
+
+Mirror runs emit an audit summary including source mode, effective default/base branch, and source
+commit SHA used for the mirror update.
 
 ## VM Workflow
 

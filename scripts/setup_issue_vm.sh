@@ -3,7 +3,7 @@ set -euo pipefail
 
 show_help() {
   cat <<'EOF'
-Usage: setup_issue_vm.sh [--dry-run] <issue-number|issue-yaml> <project-or-solution> [repo-source] [session-id] [vm-user]
+Usage: setup_issue_vm.sh [--dry-run] [mirror-options] <issue-number|issue-yaml> <project-or-solution> [repo-source] [session-id] [vm-user]
 
 Run the common issue-VM bring-up flow in one command:
   1. prewarm the shared NuGet cache on the host
@@ -32,6 +32,14 @@ Environment:
                               Default: 180
   VM_SSH_WAIT_TIMEOUT_SECONDS How long to wait for guest SSH to accept connections.
                               Default: 180
+
+Mirror options (forwarded to setup_issue_git_vm.sh and mirror_issue_repo.sh):
+  --sync-remote
+  --no-sync-remote
+  --remote-name NAME
+  --refspec SPEC
+  --branch NAME
+  --force-local
 EOF
 }
 
@@ -41,10 +49,39 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
 fi
 
 START_AGENT=1
-if [[ "${1:-}" == "--dry-run" ]]; then
-  START_AGENT=0
-  shift
-fi
+MIRROR_ARGS=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --dry-run)
+      START_AGENT=0
+      shift
+      ;;
+    --sync-remote|--no-sync-remote|--force-local)
+      MIRROR_ARGS+=("$1")
+      shift
+      ;;
+    --remote-name|--refspec|--branch)
+      if [[ -z "${2:-}" ]]; then
+        echo "Missing value for $1" >&2
+        exit 1
+      fi
+      MIRROR_ARGS+=("$1" "$2")
+      shift 2
+      ;;
+    --)
+      shift
+      break
+      ;;
+    -*)
+      echo "Unknown option: $1" >&2
+      show_help >&2
+      exit 1
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
 
 if [[ $# -lt 2 ]]; then
   show_help >&2
@@ -206,7 +243,7 @@ echo "Guest SSH is ready on ${VM_USER}@${VM_IP}"
 "${SCRIPT_DIR}/bootstrap_codex_vm.sh" "${VM_NAME}" "${VM_USER}"
 "${SCRIPT_DIR}/bootstrap_dotnet_vm.sh" "${VM_NAME}" "${VM_USER}"
 "${SCRIPT_DIR}/bootstrap_nuget_vm.sh" "${VM_NAME}" "${VM_USER}"
-"${SCRIPT_DIR}/setup_issue_git_vm.sh" "${VM_NAME}" "${ISSUE_NUMBER}" "${RESOLVED_REPO_PATH}" "${VM_USER}"
+"${SCRIPT_DIR}/setup_issue_git_vm.sh" "${MIRROR_ARGS[@]}" "${VM_NAME}" "${ISSUE_NUMBER}" "${REPO_SOURCE}" "${VM_USER}"
 
 ssh \
   -o StrictHostKeyChecking=no \
