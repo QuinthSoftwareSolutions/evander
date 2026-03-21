@@ -7,6 +7,7 @@ from pathlib import Path
 
 import typer
 
+from .ado_issue_worker import run_worker_command
 from .config import load_config
 from .email.providers import JsonEmailProvider, MultiMailboxEmailProvider
 from .models import ApprovalStatus, DiscordCommandEnvelope, EmailMessage, SessionManifest, ToolName
@@ -160,3 +161,21 @@ def seed_discord_channel(
         f"Seeded Discord channel {channel_id} with cursor {seed_cursor}. "
         "Use that cursor as the initial since_cursor for smoke tests."
     )
+
+
+@app.command("poll-ado-backlog")
+def poll_ado_backlog(
+    log_level: Annotated[str, typer.Option("--log-level", help="Python logging level.")] = "INFO",
+    reprocess: Annotated[
+        int | None,
+        typer.Option(
+            "--reprocess",
+            help="Force reprocess a specific work item ID by forgetting previous state first.",
+        ),
+    ] = None,
+    forget: Annotated[
+        int | None,
+        typer.Option("--forget", help="Forget a specific work item ID in the processed store, then exit."),
+    ] = None,
+) -> None:
+    run_worker_command(log_level=log_level, reprocess=reprocess, forget=forget)
