@@ -592,6 +592,47 @@ class _FakePrFeedbackService:
         )
 
 
+class _FakePrReplyService:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, str | None]] = []
+
+    def post_reply(
+        self,
+        *,
+        provider: str,
+        repo: str,
+        pr_id: str,
+        thread_id: str | None,
+        comment_id: str | None,
+        body_text: str,
+        idempotency_key: str | None = None,
+    ) -> SimpleNamespace:
+        self.calls.append(
+            {
+                "provider": provider,
+                "repo": repo,
+                "pr_id": pr_id,
+                "thread_id": thread_id,
+                "comment_id": comment_id,
+                "body_text": body_text,
+                "idempotency_key": idempotency_key,
+            }
+        )
+        return SimpleNamespace(
+            model_dump=lambda mode="json": {
+                "status": "posted",
+                "provider": provider,
+                "repo": repo,
+                "pr_id": pr_id,
+                "thread_id": thread_id,
+                "comment_id": comment_id,
+                "reply_id": "reply-1",
+                "reply_url": "https://example.test/replies/1",
+                "idempotency_key": idempotency_key,
+            }
+        )
+
+
 def test_email_provider_auth_failures_are_audited(tmp_path: Path) -> None:
     context = make_context(tmp_path)
     context.sessions.put(
@@ -804,3 +845,72 @@ def test_list_unread_feedback_returns_items_and_audits_result_count(tmp_path: Pa
     event = read_audit_events(context.config.audit_log_path)[-1]
     assert event["tool_name"] == ToolName.LIST_UNREAD_FEEDBACK.value
     assert event["result"] == {"count": 1, "next_cursor": "2026-01-01T00:00:00Z"}
+
+
+def test_post_pr_feedback_reply_calls_provider_and_audits_reply_identifiers(tmp_path: Path) -> None:
+    context = make_context(tmp_path)
+    context.sessions.put(
+        "session-1",
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[ToolName.POST_PR_FEEDBACK_REPLY],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={"pr_feedback_streams": [{"provider": "github", "repo": "org/repo", "pr_id": "17"}]},
+        ),
+    )
+    fake_service = _FakePrReplyService()
+    context.pr_reply_service = fake_service
+    server = create_server(context)
+
+    result = call_tool(
+        server,
+        "post_pr_feedback_reply",
+        {
+            "session_id": "session-1",
+            "provider": "github",
+            "repo": "org/repo",
+            "pr_id": "17",
+            "comment_id": "91",
+            "body_text": "Applied in the latest patch.",
+            "idempotency_key": "reply-key-1",
+        },
+    )
+
+    assert result["reply_id"] == "reply-1"
+    assert fake_service.calls[0]["comment_id"] == "91"
+    event = read_audit_events(context.config.audit_log_path)[-1]
+    assert event["tool_name"] == ToolName.POST_PR_FEEDBACK_REPLY.value
+    assert event["result"] == {
+        "status": "posted",
+        "provider": "github",
+        "reply_id": "reply-1",
+        "reply_url": "https://example.test/replies/1",
+    }
+
+
+def test_post_pr_feedback_reply_rejects_missing_target_identifiers(tmp_path: Path) -> None:
+    context = make_context(tmp_path)
+    context.sessions.put(
+        "session-1",
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[ToolName.POST_PR_FEEDBACK_REPLY],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={"pr_feedback_streams": [{"provider": "github", "repo": "org/repo", "pr_id": "17"}]},
+        ),
+    )
+    context.pr_reply_service = _FakePrReplyService()
+    server = create_server(context)
+
+    with pytest.raises(ToolError, match="Either thread_id or comment_id is required"):
+        call_tool(
+            server,
+            "post_pr_feedback_reply",
+            {
+                "session_id": "session-1",
+                "provider": "github",
+                "repo": "org/repo",
+                "pr_id": "17",
+                "body_text": "This should fail.",
+            },
+        )
