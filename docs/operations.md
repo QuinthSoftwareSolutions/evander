@@ -115,8 +115,10 @@ Install these packages on the Ubuntu host before using the scripts:
   - `account` (Gmail `me`) or `address` (Graph mailbox address)
   - `auth_env_var_names` (env vars that hold OAuth access tokens)
   - `folder_allowlist_defaults` (typically `inbox` and `drafts`)
-- Leave `email_mailbox_allowlist: []` and `email_folder_allowlist_by_mailbox: {}` to inherit
-  defaults from `email_mailboxes`.
+- Define `email_folder_allowlist_by_mailbox` for each mailbox so session policy is explicit.
+- Keep OAuth access tokens host-only (for example:
+  `GMAIL_OPS_ACCESS_TOKEN`, `GRAPH_EXEC_ACCESS_TOKEN`, `GRAPH_FINANCE_ACCESS_TOKEN`) and never
+  place those token values in guest images, cloud-init, or session manifests.
 - Email is **read + draft only by default**. Keep `email_send_enabled: false` unless you are ready
   to enforce explicit approval checks for send.
 
@@ -127,7 +129,7 @@ Install these packages on the Ubuntu host before using the scripts:
 3. Export the token only in host-side environment context (for example a systemd env file):
 
 ```bash
-export GMAIL_ACCESS_TOKEN=...
+export GMAIL_OPS_ACCESS_TOKEN=...
 ```
 
 4. Reference that env var in mailbox config:
@@ -138,7 +140,7 @@ email_mailboxes:
     provider: "gmail"
     account: "me"
     auth_env_var_names:
-      access_token: "GMAIL_ACCESS_TOKEN"
+      access_token: "GMAIL_OPS_ACCESS_TOKEN"
     folder_allowlist_defaults: ["inbox", "drafts"]
 ```
 
@@ -149,18 +151,29 @@ email_mailboxes:
 3. Export the token only on the host:
 
 ```bash
-export GRAPH_ACCESS_TOKEN=...
+export GRAPH_EXEC_ACCESS_TOKEN=...
+export GRAPH_FINANCE_ACCESS_TOKEN=...
 ```
 
 4. Reference that env var in mailbox config:
 
 ```yaml
+email_folder_allowlist_by_mailbox:
+  ops-gmail: ["inbox", "drafts"]
+  exec-graph: ["inbox", "drafts"]
+  finance-graph: ["inbox", "drafts"]
 email_mailboxes:
   - mailbox_id: "exec-graph"
     provider: "graph"
     address: "leader@example.com"
     auth_env_var_names:
-      access_token: "GRAPH_ACCESS_TOKEN"
+      access_token: "GRAPH_EXEC_ACCESS_TOKEN"
+    folder_allowlist_defaults: ["inbox", "drafts"]
+  - mailbox_id: "finance-graph"
+    provider: "graph"
+    address: "finance@example.com"
+    auth_env_var_names:
+      access_token: "GRAPH_FINANCE_ACCESS_TOKEN"
     folder_allowlist_defaults: ["inbox", "drafts"]
 ```
 
@@ -171,9 +184,11 @@ cat <<'YAML' >> config/gateway.yaml
 email_mailbox_allowlist:
   - "ops-gmail"
   - "exec-graph"
+  - "finance-graph"
 email_folder_allowlist_by_mailbox:
   ops-gmail: ["inbox", "drafts"]
   exec-graph: ["inbox", "drafts"]
+  finance-graph: ["inbox", "drafts"]
 YAML
 
 agent-sandbox-cli create-session real-session --config config/gateway.yaml

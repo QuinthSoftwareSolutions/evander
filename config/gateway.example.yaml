@@ -30,17 +30,26 @@ nuget_azure_pat_env: "AZURE_ARTIFACTS_PAT"
 nuget_relay_timeout_seconds: 300.0
 default_session_ttl_seconds: 28800
 email_mailbox_allowlist: []
-email_folder_allowlist_by_mailbox: {}
+email_folder_allowlist_by_mailbox:
+  ops-gmail:
+    - "inbox"
+    - "drafts"
+  exec-graph:
+    - "inbox"
+    - "drafts"
+  finance-graph:
+    - "inbox"
+    - "drafts"
 email_draft_recipient_allowlist: []
 email_draft_domain_allowlist: []
 email_send_enabled: false
 email_provider_timeout_seconds: 30.0
 email_mailboxes:
-  - mailbox_id: "default"
+  - mailbox_id: "ops-gmail"
     provider: "gmail"
     account: "me"
     auth_env_var_names:
-      access_token: "GMAIL_ACCESS_TOKEN"
+      access_token: "GMAIL_OPS_ACCESS_TOKEN"
     folder_allowlist_defaults:
       - "inbox"
       - "drafts"
@@ -51,7 +60,18 @@ email_mailboxes:
     provider: "graph"
     address: "leader@example.com"
     auth_env_var_names:
-      access_token: "GRAPH_ACCESS_TOKEN"
+      access_token: "GRAPH_EXEC_ACCESS_TOKEN"
+    folder_allowlist_defaults:
+      - "inbox"
+      - "drafts"
+    folder_mapping:
+      inbox: "Inbox"
+      drafts: "Drafts"
+  - mailbox_id: "finance-graph"
+    provider: "graph"
+    address: "finance@example.com"
+    auth_env_var_names:
+      access_token: "GRAPH_FINANCE_ACCESS_TOKEN"
     folder_allowlist_defaults:
       - "inbox"
       - "drafts"
