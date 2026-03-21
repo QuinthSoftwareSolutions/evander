@@ -47,7 +47,7 @@ Install these packages on the Ubuntu host before using the scripts:
 - Cloud-init writes `/home/agent/.codex/config.toml` for the `agent` user.
 - That config points Codex at the host relay via `openai_base_url`.
 - Cloud-init also appends a shell profile hook that loads `/etc/agent-sandbox/session.env` and exports `OPENAI_API_KEY=relay-placeholder` if no key is already set.
-- `./scripts/bootstrap_codex_vm.sh <vm-name>` copies the vendored Linux Codex binary from the host into `~/bin/codex` for the guest user and verifies it.
+- `./scripts/bootstrap_codex_vm.sh <vm-name>` copies the vendored Linux Codex binary from the host into `~/bin/codex` for the guest user, deploys `~/bin/agent-heartbeat-cycle`, and verifies Codex.
 - The bootstrap script also overwrites `~/.codex/config.toml` with the relay-aware configuration, `model = "gpt-5.4"`, `model_reasoning_effort = "high"`, and `personality = "pragmatic"`, then appends the placeholder-key shell hook plus `~/bin` PATH entry to both `~/.profile` and `~/.bashrc`, so it corrects preexisting Codex state in the VM.
 - The bootstrap script repairs `/home/agent` ownership first, so it also works against VMs created before the home directory ownership fix.
 - New VMs pick this up automatically; existing VMs need to be recreated.
@@ -208,6 +208,25 @@ without exposing provider credentials in the VM.
 - Never share cursors across sessions.
 - Advance cursor only after the fetched items are durably handled.
 - Keep handlers idempotent by feedback ID to tolerate retries/replays.
+
+### Guest heartbeat helper script
+
+- `bootstrap_codex_vm.sh` installs a one-shot guest helper script at
+  `~/bin/agent-heartbeat-cycle`.
+- Runtime state and logs are stored under `/home/agent/.agent-sandbox/`:
+  - `heartbeat.log`
+  - `heartbeat.lock`
+  - `heartbeat.cooldown`
+  - `codex-heartbeat.pid`
+  - `codex-heartbeat-run.log`
+- Each run:
+  1. acquires a non-blocking `flock` lock
+  2. validates/cleans stale PID files and exits early if Codex is still active
+  3. enforces cooldown checks to avoid wake storms
+  4. calls MCP `has_pending_feedback(session_id)`
+  5. prefers `codex exec resume` while still attaching a feedback-focused
+     instruction; if resume is disabled, it uses feedback-focused
+     `codex exec`, then records PID
 
 ### Failure handling
 
