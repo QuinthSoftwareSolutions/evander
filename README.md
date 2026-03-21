@@ -97,7 +97,7 @@
    ./scripts/bootstrap_codex_vm.sh vm-real
    ```
 
-   This copies the vendored Linux Codex binary from the host install into the guest user's `~/bin`, rewrites `~/.codex/config.toml` to use the host relay with `model = "gpt-5.4"`, `model_reasoning_effort = "high"`, and `personality = "pragmatic"`, ensures the placeholder API-key shell hook exists, and verifies `codex --version`.
+   This copies the vendored Linux Codex binary from the host install into the guest user's `~/bin`, rewrites `~/.codex/config.toml` to use the host relay with `model = "gpt-5.4"`, `model_reasoning_effort = "high"`, and `personality = "pragmatic"`, ensures the placeholder API-key shell hook exists, deploys `agent-heartbeat.service` and `agent-heartbeat.timer` to the guest user systemd directory, attempts to enable/start the timer, and verifies `codex --version`.
 
 9. Optionally install the host `.NET` SDK into the VM:
 
