@@ -106,10 +106,10 @@ class DiscordBotApiService:
         api_base_url: str,
         poll_limit: int,
         timeout_seconds: float,
-        retry_count: int,
-        retry_base_backoff_seconds: float,
-        retry_max_backoff_seconds: float,
-        allowed_channel_ids_provider: Callable[[], list[str]],
+        retry_count: int = 3,
+        retry_base_backoff_seconds: float = 0.5,
+        retry_max_backoff_seconds: float = 5.0,
+        allowed_channel_ids_provider: Callable[[], list[str]] = lambda: [],
         operator_user_ids_provider: Callable[[], list[str]] | None = None,
         include_operator_dms: bool = False,
     ) -> None:
@@ -180,12 +180,12 @@ class DiscordBotApiService:
         operator_user_ids = set(self._operator_user_ids())
         if not operator_user_ids:
             return []
-        response = client.get(
+        response = self._request_with_retries(
+            client,
+            "GET",
             f"{self.api_base_url}/users/@me/channels",
-            headers=self._headers(),
             params={"limit": self.poll_limit},
         )
-        response.raise_for_status()
         dm_channel_ids: list[str] = []
         for payload in response.json():
             recipients = payload.get("recipients") or []
@@ -259,7 +259,9 @@ class DiscordBotApiService:
                 set(self._allowed_channel_ids()) | set(self._operator_dm_channel_ids(client))
             )
             for channel_id in channel_ids:
-                response = client.get(
+                response = self._request_with_retries(
+                    client,
+                    "GET",
                     f"{self.api_base_url}/channels/{channel_id}/messages",
                     params={"limit": self.poll_limit},
                 )

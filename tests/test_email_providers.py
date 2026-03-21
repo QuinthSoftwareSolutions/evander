@@ -9,6 +9,18 @@ from agent_sandbox.email.graph_provider import GraphEmailProvider
 from agent_sandbox.email.http_utils import ProviderRequestError
 
 
+def patch_provider_client(
+    monkeypatch: pytest.MonkeyPatch,
+    target: str,
+    transport: httpx.BaseTransport,
+) -> None:
+    real_client = httpx.Client
+    monkeypatch.setattr(
+        target,
+        lambda timeout: real_client(timeout=timeout, transport=transport),
+    )
+
+
 def test_gateway_config_supports_provider_mailbox_entries() -> None:
     config = GatewayConfig.model_validate(
         {
@@ -158,10 +170,7 @@ def test_gmail_retries_transient_503_then_succeeds(monkeypatch: pytest.MonkeyPat
     transport = httpx.MockTransport(handler)
     monkeypatch.setattr("agent_sandbox.email.http_utils.time.sleep", lambda _seconds: None)
     monkeypatch.setenv("GMAIL_ACCESS_TOKEN", "token")
-    monkeypatch.setattr(
-        "agent_sandbox.email.gmail_provider.httpx.Client",
-        lambda timeout: httpx.Client(timeout=timeout, transport=transport),
-    )
+    patch_provider_client(monkeypatch, "agent_sandbox.email.gmail_provider.httpx.Client", transport)
     provider = GmailEmailProvider(
         account_identifier="me",
         folder_mapping={"inbox": "INBOX", "drafts": "DRAFT"},
@@ -184,10 +193,7 @@ def test_graph_auth_error_fails_fast_without_retry(monkeypatch: pytest.MonkeyPat
 
     transport = httpx.MockTransport(handler)
     monkeypatch.setenv("GRAPH_ACCESS_TOKEN", "token")
-    monkeypatch.setattr(
-        "agent_sandbox.email.graph_provider.httpx.Client",
-        lambda timeout: httpx.Client(timeout=timeout, transport=transport),
-    )
+    patch_provider_client(monkeypatch, "agent_sandbox.email.graph_provider.httpx.Client", transport)
     provider = GraphEmailProvider(
         account_identifier="leader@example.com",
         folder_mapping={"inbox": "Inbox", "drafts": "Drafts"},
@@ -209,10 +215,7 @@ def test_gmail_create_draft_post_does_not_retry_transient_503(monkeypatch: pytes
 
     transport = httpx.MockTransport(handler)
     monkeypatch.setenv("GMAIL_ACCESS_TOKEN", "token")
-    monkeypatch.setattr(
-        "agent_sandbox.email.gmail_provider.httpx.Client",
-        lambda timeout: httpx.Client(timeout=timeout, transport=transport),
-    )
+    patch_provider_client(monkeypatch, "agent_sandbox.email.gmail_provider.httpx.Client", transport)
     provider = GmailEmailProvider(
         account_identifier="me",
         folder_mapping={"inbox": "INBOX", "drafts": "DRAFT"},

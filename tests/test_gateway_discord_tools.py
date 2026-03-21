@@ -8,14 +8,14 @@ from pathlib import Path
 
 import httpx
 import pytest
+from mcp.server.fastmcp.exceptions import ToolError
 
 from agent_sandbox.config import GatewayConfig
+from agent_sandbox.email.http_utils import ProviderRequestError
+from agent_sandbox.email.providers import EmailDraft, EmailMessageDetail, EmailMessageSummary
 from agent_sandbox.gateway import create_server
 from agent_sandbox.models import (
     DiscordCommandEnvelope,
-    EmailDraft,
-    EmailMessageDetail,
-    EmailMessageSummary,
     SessionManifest,
     ToolName,
 )
@@ -54,10 +54,21 @@ def make_context(tmp_path: Path):
         discord_command_store_path=tmp_path / "discord.json",
     )
     return build_runtime(config)
-    
+
+
 def read_audit_events(path: Path) -> list[dict[str, object]]:
     lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
-    return [json.loads(line) for line in audit_log_path.read_text(encoding="utf-8").splitlines() if line]
+    return [json.loads(line) for line in lines]
+
+
+def call_tool(server, name: str, arguments: dict[str, object]):
+    result = asyncio.run(server.call_tool(name, arguments))
+    if isinstance(result, tuple) and len(result) == 2:
+        structured = result[1]
+        if isinstance(structured, dict) and set(structured) == {"result"}:
+            return structured["result"]
+        return structured
+    return result
 
 
 def test_discord_get_commands_passes_since_cursor_and_filters_unallowlisted_sources(
@@ -102,16 +113,15 @@ def test_discord_get_commands_passes_since_cursor_and_filters_unallowlisted_sour
     context.discord_service = fake_discord
     server = create_server(context)
 
-    result = asyncio.run(
-        server.call_tool(
-            "discord_get_commands",
-            {"session_id": "session-1", "since_cursor": "cursor-42"},
-        )
+    result = call_tool(
+        server,
+        "discord_get_commands",
+        {"session_id": "session-1", "since_cursor": "cursor-42"},
     )
 
     assert fake_discord.last_since_cursor == "cursor-42"
-    assert isinstance(result, list)
-    assert [entry["command_id"] for entry in result] == ["cmd-1"]
+    assert isinstance(result, dict)
+    assert [entry["command_id"] for entry in result["commands"]] == ["cmd-1"]
 
 
 def test_discord_post_status_posts_to_allowlisted_channel(tmp_path: Path) -> None:
@@ -129,15 +139,14 @@ def test_discord_post_status_posts_to_allowlisted_channel(tmp_path: Path) -> Non
     context.discord_service = fake_discord
     server = create_server(context)
 
-    result = asyncio.run(
-        server.call_tool(
-            "discord_post_status",
-            {
-                "session_id": "session-1",
-                "channel_id": "chan-allowlisted",
-                "message": "Host relay is healthy.",
-            },
-        )
+    result = call_tool(
+        server,
+        "discord_post_status",
+        {
+            "session_id": "session-1",
+            "channel_id": "chan-allowlisted",
+            "message": "Host relay is healthy.",
+        },
     )
 
     assert result["status"] == "posted"
@@ -160,7 +169,7 @@ def test_discord_post_status_rejects_non_allowlisted_channel(tmp_path: Path) -> 
     context.discord_service = FakeDiscordService(commands=[])
     server = create_server(context)
 
-    with pytest.raises(PolicyError, match="not allowlisted"):
+    with pytest.raises(ToolError, match="not allowlisted"):
         asyncio.run(
             server.call_tool(
                 "discord_post_status",
@@ -212,23 +221,20 @@ def test_discord_tool_contract_signatures_and_shapes_stable(tmp_path: Path) -> N
         "session_id",
     ]
 
-    get_result = asyncio.run(
-        server.call_tool("discord_get_commands", {"session_id": "session-1", "since_cursor": None})
-    )
-    post_result = asyncio.run(
-        server.call_tool(
-            "discord_post_status",
-            {
-                "session_id": "session-1",
-                "channel_id": "chan-allowlisted",
-                "message": "ok",
-            },
-        )
+    get_result = call_tool(server, "discord_get_commands", {"session_id": "session-1", "since_cursor": None})
+    post_result = call_tool(
+        server,
+        "discord_post_status",
+        {
+            "session_id": "session-1",
+            "channel_id": "chan-allowlisted",
+            "message": "ok",
+        },
     )
 
-    assert isinstance(get_result, list)
-    assert get_result
-    assert {"command_id", "author_id", "channel_id", "content", "metadata"}.issubset(get_result[0])
+    assert isinstance(get_result, dict)
+    assert get_result["commands"]
+    assert {"command_id", "author_id", "channel_id", "content", "metadata"}.issubset(get_result["commands"][0])
 
     assert set(post_result) == {"status", "message_id", "channel_id", "session_id"}
     assert post_result["status"] == "posted"
@@ -249,7 +255,7 @@ def test_discord_get_commands_audits_adapter_http_error(tmp_path: Path) -> None:
     context.discord_service = fake_discord
     server = create_server(context)
 
-    with pytest.raises(httpx.ReadTimeout, match="discord timeout"):
+    with pytest.raises(ToolError, match="discord timeout"):
         asyncio.run(
             server.call_tool(
                 "discord_get_commands",
@@ -283,7 +289,7 @@ def test_discord_post_status_audits_unexpected_adapter_error(tmp_path: Path) -> 
     context.discord_service = fake_discord
     server = create_server(context)
 
-    with pytest.raises(RuntimeError, match="discord adapter exploded"):
+    with pytest.raises(ToolError, match="discord adapter exploded"):
         asyncio.run(
             server.call_tool(
                 "discord_post_status",
@@ -331,9 +337,9 @@ def test_discord_get_commands_emits_denied_and_allowed_audit_events(tmp_path: Pa
         ]
     )
     server = create_server(context)
-    result = asyncio.run(server.call_tool("discord_get_commands", {"session_id": "session-1"}))
+    result = call_tool(server, "discord_get_commands", {"session_id": "session-1"})
 
-    assert result == []
+    assert result["commands"] == []
     events = read_audit_events(context.config.audit_log_path)
     decisions = [event["decision"] for event in events]
     assert decisions == ["denied", "allowed"]
@@ -370,32 +376,29 @@ def test_email_tools_require_and_return_mailbox_id(tmp_path: Path) -> None:
 
     server = create_server(context)
 
-    listed = asyncio.run(
-        server.call_tool(
-            "email_list_unread",
-            {"session_id": "session-1", "mailbox_id": "primary", "folder": "inbox", "limit": 10},
-        )
+    listed = call_tool(
+        server,
+        "email_list_unread",
+        {"session_id": "session-1", "mailbox_id": "primary", "folder": "inbox", "limit": 10},
     )
     assert listed[0]["mailbox_id"] == "primary"
 
-    fetched = asyncio.run(
-        server.call_tool(
-            "email_get_message",
-            {"session_id": "session-1", "mailbox_id": "primary", "message_id": "msg-1"},
-        )
+    fetched = call_tool(
+        server,
+        "email_get_message",
+        {"session_id": "session-1", "mailbox_id": "primary", "message_id": "msg-1"},
     )
     assert fetched["mailbox_id"] == "primary"
 
-    draft = asyncio.run(
-        server.call_tool(
-            "email_create_draft",
-            {
-                "session_id": "session-1",
-                "mailbox_id": "primary",
-                "body": "draft body",
-                "subject": "Re: hello",
-            },
-        )
+    draft = call_tool(
+        server,
+        "email_create_draft",
+        {
+            "session_id": "session-1",
+            "mailbox_id": "primary",
+            "body": "draft body",
+            "subject": "Re: hello",
+        },
     )
     assert draft["mailbox_id"] == "primary"
 
@@ -414,7 +417,7 @@ def test_email_tools_enforce_mailbox_and_folder_allowlists(tmp_path: Path) -> No
     )
     server = create_server(context)
 
-    with pytest.raises(PolicyError, match="mailbox is not allowlisted"):
+    with pytest.raises(ToolError, match="mailbox is not allowlisted"):
         asyncio.run(
             server.call_tool(
                 "email_list_unread",
@@ -422,7 +425,7 @@ def test_email_tools_enforce_mailbox_and_folder_allowlists(tmp_path: Path) -> No
             )
         )
 
-    with pytest.raises(PolicyError, match="folder is not allowlisted"):
+    with pytest.raises(ToolError, match="folder is not allowlisted"):
         asyncio.run(
             server.call_tool(
                 "email_list_unread",
@@ -446,7 +449,7 @@ def test_email_create_draft_enforces_recipient_allowlist(tmp_path: Path) -> None
     )
     server = create_server(context)
 
-    with pytest.raises(PolicyError, match="Draft recipients are not allowlisted"):
+    with pytest.raises(ToolError, match="Draft recipients are not allowlisted"):
         asyncio.run(
             server.call_tool(
                 "email_create_draft",
@@ -475,7 +478,7 @@ def test_email_send_approved_is_blocked_when_send_disabled(tmp_path: Path) -> No
     )
     server = create_server(context)
 
-    with pytest.raises(PolicyError, match="Email send is disabled"):
+    with pytest.raises(ToolError, match="Email send is disabled"):
         asyncio.run(
             server.call_tool(
                 "email_send_approved",
@@ -515,7 +518,7 @@ def test_email_get_message_prevents_cross_mailbox_access(tmp_path: Path) -> None
     )
     server = create_server(context)
 
-    with pytest.raises(KeyError, match="Unknown message for mailbox secondary"):
+    with pytest.raises(ToolError, match="Unknown message for mailbox secondary"):
         asyncio.run(
             server.call_tool(
                 "email_get_message",
@@ -557,10 +560,12 @@ def test_email_provider_auth_failures_are_audited(tmp_path: Path) -> None:
             expires_at=datetime.now(UTC) + timedelta(hours=1),
         ),
     )
-    context.email_service = _RaisingEmailService(RuntimeError("provider auth failed"))
+    context.email_service = _RaisingEmailService(
+        ProviderRequestError("provider auth failed", status_code=401, attempt=1, max_attempts=1)
+    )
     server = create_server(context)
 
-    with pytest.raises(RuntimeError, match="provider auth failed"):
+    with pytest.raises(ToolError, match="provider auth failed"):
         asyncio.run(
             server.call_tool(
                 "email_list_unread",
@@ -570,8 +575,11 @@ def test_email_provider_auth_failures_are_audited(tmp_path: Path) -> None:
 
     event = read_audit_events(context.config.audit_log_path)[-1]
     assert event["tool_name"] == ToolName.EMAIL_LIST_UNREAD.value
-    assert event["decision"] == "denied"
-    assert event["result"] == {"error": "provider auth failed"}
+    assert event["decision"] == "error"
+    assert event["result"] == {
+        "error": "provider auth failed",
+        "error_class": "adapter_http_error",
+    }
 
 
 def test_email_provider_timeouts_are_audited(tmp_path: Path) -> None:
@@ -589,7 +597,7 @@ def test_email_provider_timeouts_are_audited(tmp_path: Path) -> None:
     context.email_service = _RaisingEmailService(httpx.TimeoutException("provider timed out"))
     server = create_server(context)
 
-    with pytest.raises(httpx.TimeoutException, match="provider timed out"):
+    with pytest.raises(ToolError, match="provider timed out"):
         asyncio.run(
             server.call_tool(
                 "email_list_unread",
@@ -599,8 +607,11 @@ def test_email_provider_timeouts_are_audited(tmp_path: Path) -> None:
 
     event = read_audit_events(context.config.audit_log_path)[-1]
     assert event["tool_name"] == ToolName.EMAIL_LIST_UNREAD.value
-    assert event["decision"] == "denied"
-    assert event["result"] == {"error": "provider timed out"}
+    assert event["decision"] == "error"
+    assert event["result"] == {
+        "error": "provider timed out",
+        "error_class": "adapter_http_error",
+    }
 
 
 def test_audit_success_recursively_redacts_nested_payload_fields(tmp_path: Path) -> None:
@@ -672,7 +683,7 @@ def test_audit_failure_recursively_redacts_nested_payload_fields(tmp_path: Path)
     )
     server = create_server(context)
 
-    with pytest.raises(PolicyError, match="is not allowed"):
+    with pytest.raises(ToolError, match="is not allowed"):
         asyncio.run(
             server.call_tool(
                 "approval_submit",
