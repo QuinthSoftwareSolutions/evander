@@ -19,6 +19,9 @@ def make_service(tmp_path: Path, transport: httpx.BaseTransport) -> DiscordBotAp
         api_base_url="https://discord.test/api/v10",
         poll_limit=25,
         timeout_seconds=5.0,
+        retry_count=3,
+        retry_base_backoff_seconds=0.01,
+        retry_max_backoff_seconds=0.05,
         allowed_channel_ids_provider=lambda: ["chan-a"],
     )
 
@@ -81,6 +84,9 @@ def test_get_commands_polls_only_allowlisted_channels_and_filters_since_cursor(
         api_base_url="https://discord.test/api/v10",
         poll_limit=25,
         timeout_seconds=5.0,
+        retry_count=2,
+        retry_base_backoff_seconds=0.01,
+        retry_max_backoff_seconds=0.05,
         allowed_channel_ids_provider=lambda: ["chan-a", "chan-b"],
     )
 
@@ -244,12 +250,74 @@ def test_get_commands_raises_on_timeout(tmp_path: Path, monkeypatch: pytest.Monk
         api_base_url="https://discord.test/api/v10",
         poll_limit=25,
         timeout_seconds=5.0,
+        retry_count=2,
+        retry_base_backoff_seconds=0.01,
+        retry_max_backoff_seconds=0.05,
         allowed_channel_ids_provider=lambda: ["chan-a"],
     )
 
     with pytest.raises(httpx.ReadTimeout):
         service.get_commands()
 
+
+def test_post_status_retries_transient_5xx_then_succeeds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    attempt_count = {"value": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempt_count["value"] += 1
+        if attempt_count["value"] < 3:
+            return httpx.Response(503, json={"message": "temporarily unavailable"}, request=request)
+        return httpx.Response(
+            200,
+            json={
+                "id": "500",
+                "content": "ok",
+                "author": {"id": "bot-user"},
+            },
+            request=request,
+        )
+
+    transport = httpx.MockTransport(handler)
+    monkeypatch.setattr(
+        "agent_sandbox.services.httpx.Client",
+        lambda timeout: httpx.Client(timeout=timeout, transport=transport),
+    )
+    monkeypatch.setattr("agent_sandbox.services.time.sleep", lambda _: None)
+    monkeypatch.setattr("agent_sandbox.services.random.uniform", lambda low, high: low)
+
+    service = make_service(tmp_path, transport)
+    result = service.post_status("status", "chan-a", "session-1")
+
+    assert result["status"] == "posted"
+    assert result["message_id"] == "500"
+    assert attempt_count["value"] == 3
+
+
+def test_post_status_fails_fast_on_401_without_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(401, json={"message": "401: Unauthorized"}, request=request)
+      
+    transport = httpx.MockTransport(handler)
+    monkeypatch.setattr(
+        "agent_sandbox.services.httpx.Client",
+        lambda timeout: httpx.Client(timeout=timeout, transport=transport),
+    )
+    
+    monkeypatch.setattr("agent_sandbox.services.time.sleep", lambda _: None)
+
+    service = make_service(tmp_path, transport)
+
+    with pytest.raises(httpx.HTTPStatusError):
+        service.post_status("status", "chan-a", "session-1")
+
+    assert len(requests) == 1
 
 def test_get_commands_sorts_by_snowflake_not_lexicographic_or_created_at(tmp_path: Path) -> None:
     command_store = JsonStore(tmp_path / "discord.json", DiscordCommandEnvelope)
@@ -351,13 +419,13 @@ def test_get_commands_returns_deterministic_cross_channel_order_by_snowflake(
                 request=request,
             )
         raise AssertionError(f"Unexpected path: {request.url.path}")
-
+    
     transport = httpx.MockTransport(handler)
     monkeypatch.setattr(
         "agent_sandbox.services.httpx.Client",
         lambda timeout: httpx.Client(timeout=timeout, transport=transport),
     )
-
+    
     service = DiscordBotApiService(
         command_store,
         token="test-token",

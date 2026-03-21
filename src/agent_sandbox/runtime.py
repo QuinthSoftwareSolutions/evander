@@ -143,6 +143,9 @@ def _build_discord_service(
             api_base_url=config.discord_api_base_url,
             poll_limit=config.discord_poll_limit,
             timeout_seconds=config.discord_timeout_seconds,
+            retry_count=config.discord_retry_count,
+            retry_base_backoff_seconds=config.discord_retry_base_backoff_seconds,
+            retry_max_backoff_seconds=config.discord_retry_max_backoff_seconds,
             allowed_channel_ids_provider=lambda: _resolve_allowed_discord_channel_ids(
                 sessions, config
             ),
