@@ -133,7 +133,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
             ]
             audit_success(session_id, ToolName.EMAIL_LIST_UNREAD, args, {"count": len(messages)})
             return messages
-        except PolicyError as exc:
+        except Exception as exc:
             audit_failure(session_id, ToolName.EMAIL_LIST_UNREAD, args, str(exc))
             raise
 
@@ -148,7 +148,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
             result = message.model_dump(mode="json")
             audit_success(session_id, ToolName.EMAIL_GET_MESSAGE, args, {"message_id": message_id})
             return result
-        except (KeyError, PolicyError) as exc:
+        except Exception as exc:
             audit_failure(session_id, ToolName.EMAIL_GET_MESSAGE, args, str(exc))
             raise
 
@@ -181,7 +181,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
             result = draft.model_dump(mode="json")
             audit_success(session_id, ToolName.EMAIL_CREATE_DRAFT, args, {"draft_id": draft.draft_id})
             return result
-        except PolicyError as exc:
+        except Exception as exc:
             audit_failure(session_id, ToolName.EMAIL_CREATE_DRAFT, args, str(exc))
             raise
 

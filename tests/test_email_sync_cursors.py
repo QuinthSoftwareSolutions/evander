@@ -122,6 +122,94 @@ def test_graph_list_unread_uses_delta_cursor_and_dedup(tmp_path, monkeypatch) ->
     assert cursor.primitive_cursor == "https://delta.example/2"
 
 
+def test_gmail_duplicate_suppression_persists_across_provider_restarts(tmp_path, monkeypatch) -> None:
+    store = DurableCursorStore(tmp_path / "gmail-cursors.json")
+    provider = GmailEmailProvider(
+        account_identifier="me",
+        folder_mapping={"inbox": "INBOX"},
+        auth_secret_refs={"access_token": "GMAIL_ACCESS_TOKEN"},
+        timeout_seconds=5.0,
+        cursor_store=store,
+    )
+    monkeypatch.setattr(provider, "_list_incremental", lambda **_: ([{"id": "m1"}], "10"))
+    monkeypatch.setattr(
+        provider,
+        "_to_summary",
+        lambda **kwargs: _summary("gmail", kwargs["mailbox_id"], kwargs["folder"], kwargs["payload"]["id"]),
+    )
+
+    first_run = provider.list_unread("mailbox-1", "inbox", 10)
+    assert [item.message_id for item in first_run] == ["m1"]
+
+    restarted_provider = GmailEmailProvider(
+        account_identifier="me",
+        folder_mapping={"inbox": "INBOX"},
+        auth_secret_refs={"access_token": "GMAIL_ACCESS_TOKEN"},
+        timeout_seconds=5.0,
+        cursor_store=DurableCursorStore(tmp_path / "gmail-cursors.json"),
+    )
+    monkeypatch.setattr(restarted_provider, "_list_incremental", lambda **_: ([{"id": "m1"}], "9"))
+    monkeypatch.setattr(
+        restarted_provider,
+        "_to_summary",
+        lambda **kwargs: _summary("gmail", kwargs["mailbox_id"], kwargs["folder"], kwargs["payload"]["id"]),
+    )
+
+    second_run = restarted_provider.list_unread("mailbox-1", "inbox", 10)
+    assert second_run == []
+    cursor = DurableCursorStore(tmp_path / "gmail-cursors.json").get("mailbox-1", "inbox")
+    assert cursor is not None
+    assert cursor.primitive_cursor == "10"
+
+
+def test_graph_duplicate_suppression_persists_across_provider_restarts(tmp_path, monkeypatch) -> None:
+    store = DurableCursorStore(tmp_path / "graph-cursors.json")
+    provider = GraphEmailProvider(
+        account_identifier="leader@example.com",
+        folder_mapping={"inbox": "Inbox"},
+        auth_secret_refs={"access_token": "GRAPH_ACCESS_TOKEN"},
+        timeout_seconds=5.0,
+        cursor_store=store,
+    )
+    monkeypatch.setattr(
+        provider,
+        "_list_incremental",
+        lambda **_: ([{"id": "g1"}], "https://delta.example/1"),
+    )
+    monkeypatch.setattr(
+        provider,
+        "_to_summary",
+        lambda **kwargs: _summary("graph", kwargs["mailbox_id"], kwargs["folder"], kwargs["payload"]["id"]),
+    )
+
+    first_run = provider.list_unread("mailbox-2", "inbox", 10)
+    assert [item.message_id for item in first_run] == ["g1"]
+
+    restarted_provider = GraphEmailProvider(
+        account_identifier="leader@example.com",
+        folder_mapping={"inbox": "Inbox"},
+        auth_secret_refs={"access_token": "GRAPH_ACCESS_TOKEN"},
+        timeout_seconds=5.0,
+        cursor_store=DurableCursorStore(tmp_path / "graph-cursors.json"),
+    )
+    monkeypatch.setattr(
+        restarted_provider,
+        "_list_incremental",
+        lambda **_: ([{"id": "g1"}], "https://delta.example/2"),
+    )
+    monkeypatch.setattr(
+        restarted_provider,
+        "_to_summary",
+        lambda **kwargs: _summary("graph", kwargs["mailbox_id"], kwargs["folder"], kwargs["payload"]["id"]),
+    )
+
+    second_run = restarted_provider.list_unread("mailbox-2", "inbox", 10)
+    assert second_run == []
+    cursor = DurableCursorStore(tmp_path / "graph-cursors.json").get("mailbox-2", "inbox")
+    assert cursor is not None
+    assert cursor.primitive_cursor == "https://delta.example/2"
+
+
 def test_gmail_history_paginates_before_advancing_cursor(monkeypatch) -> None:
     provider = GmailEmailProvider(
         account_identifier="me",
