@@ -150,3 +150,36 @@ creates the PR there. The same helper still supports GitHub remotes through `gh`
 - `open_agent_pr.sh` never force-pushes; it only does a normal push to `origin`.
 - Use a separate dropbox bare repo for agent output if you do not want VMs pushing directly to your main internal remote.
 - MCP remains useful for notifications, approval gates, and branch metadata, but not for bulk source transfer.
+
+## Feedback + Reply Integration Checklist (with Git promotion)
+
+When combining Git push automation with PR feedback handling:
+
+### Setup steps
+
+1. Complete Git remote setup (`bootstrap_git_vm.sh` + mirror/setup issue helper).
+2. Ensure guest Codex heartbeat is installed (`bootstrap_codex_vm.sh`) so feedback wakeups run continuously.
+3. Ensure session policy allows feedback tools for the target provider/repo/PR stream.
+4. In agent logic, post replies with `post_pr_feedback_reply(..., idempotency_key=...)` before `git push-agent` when feedback requires code changes.
+
+### Expected timing behavior
+
+- Git push/promotion remains event-driven (on push hooks).
+- Feedback pickup is timer-driven (heartbeat every ~3 minutes), so comments may take one interval before code updates begin.
+- If Codex is already busy with a patch/test cycle, heartbeat skips and does not spawn a second Codex process.
+
+### Troubleshooting
+
+- **Stale guest PID/lock blocks feedback wakeups:** inspect `/home/agent/.agent-sandbox/heartbeat.log` and clear stale files only when no active Codex process exists.
+- **Provider reply API errors (GitHub/Azure DevOps):** keep the same `idempotency_key` on retry so successful-but-unconfirmed replies are deduped.
+- **Push worked but no host promotion/PR update:** inspect bare-repo hook output and `runtime/agent-events.log`.
+
+### Audit/log locations and healthy signals
+
+- Guest heartbeat logs: `/home/agent/.agent-sandbox/heartbeat.log`, `codex-heartbeat-run.log`.
+- Host Git automation log: `runtime/agent-events.log`.
+- Host feedback state: `runtime/pr-feedback-store.json`, `runtime/pr-reply-idempotency.json`.
+- Healthy pattern:
+  - feedback appears once in store,
+  - reply retries collapse to deduplicated result,
+  - resulting commit lands on `agents/<session-id>/<branch>` and is promoted to `review/<session-id>/<branch>`.

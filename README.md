@@ -289,6 +289,46 @@ See [live-smoke-tests.md](/home/jonathan/agent-sandbox/docs/live-smoke-tests.md)
 - Do not place either value in guest images, cloud-init, session manifests, or guest shell
   profiles.
 
+## PR Feedback Heartbeat and Reply Loop
+
+Use this when you want the guest to wake only for new review feedback and post threaded replies safely.
+
+### Setup steps
+
+1. Include PR feedback tools/stream metadata in the session manifest (same `session_id` the guest uses).
+2. Bootstrap Codex in the guest so `~/bin/agent-heartbeat-cycle`, `agent-heartbeat.service`, and
+   `agent-heartbeat.timer` are installed:
+   `./scripts/bootstrap_codex_vm.sh <vm-name>`.
+3. Confirm the timer is active in the guest:
+   `systemctl --user status agent-heartbeat.timer`.
+4. Use MCP calls from the agent in this order:
+   `has_pending_feedback` → `list_unread_feedback` → `post_pr_feedback_reply` (with an idempotency key).
+
+### Expected timing behavior
+
+- Timer cadence is every 3 minutes (`OnUnitActiveSec=3min`).
+- If Codex is already running (PID still active), the heartbeat logs `skip reason=codex-active` and does not start another run.
+- When idle and pending feedback exists, the heartbeat logs `pending_feedback=true` and starts `codex exec resume` (or `codex exec` fallback).
+- Cooldown (`heartbeat.cooldown`, default 120s) suppresses wake storms between runs.
+
+### Troubleshooting
+
+- **Stale lock/PID symptoms:** repeated no-op loops or no new wakeups.
+  - Check `/home/agent/.agent-sandbox/heartbeat.log` for `stale_pid` and `skip reason=lock-held`.
+  - Remove only obviously stale files: `codex-heartbeat.pid`, `heartbeat.lock`, then rerun once.
+- **Provider API failures while replying:** gateway tool errors from GitHub/Azure DevOps calls.
+  - Validate host tokens (`GITHUB_TOKEN`/configured env, `AZURE_DEVOPS_PAT`/configured env).
+  - Retry with the **same idempotency key** so `post_pr_feedback_reply` deduplicates safely.
+
+### Audit/log locations and healthy signals
+
+- Guest: `/home/agent/.agent-sandbox/heartbeat.log`, `codex-heartbeat-run.log`.
+- Host runtime: `runtime/pr-feedback-store.json`, `runtime/pr-reply-idempotency.json`, `runtime/audit.jsonl`.
+- Healthy pattern:
+  - heartbeat alternates between `pending_feedback=false` (quiet) and `pending_feedback=true` + `codex_started` (new feedback),
+  - audit shows allowed calls for `has_pending_feedback`, `list_unread_feedback`, and `post_pr_feedback_reply`,
+  - idempotent retry returns `status=deduplicated` instead of creating duplicate provider comments.
+
 ### NuGet Relay Notes
 
 - The NuGet relay proxies both `nuget.org` and optional private Azure Artifacts feeds.
