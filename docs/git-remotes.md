@@ -56,6 +56,11 @@ That derives:
 By default it mirrors `/home/jonathan/Documents/Repos/ExampleIndustryAPP`, but you can pass a second
 argument to target a different host repo.
 
+Each bare repo also gets a `post-receive` hook. Once the bare repo has been associated with a
+trusted host clone by `mirror_issue_repo.sh`, that hook can automatically promote guest-pushed
+`agents/...` branches, push a review branch to `origin`, create or reuse the upstream PR, and emit
+a host-side notification.
+
 ## VM Workflow
 
 Inside the VM:
@@ -114,6 +119,27 @@ This keeps the flow safe:
 - the host promotes a specific agent branch into a review branch
 - only the reviewed branch is pushed to `origin`
 - PR creation is optional and happens only from the trusted clone
+
+## Automatic Promotion and PR Creation
+
+For issue-specific mirrors created through `setup_issue_git_vm.sh` or `mirror_issue_repo.sh`,
+guest pushes to `refs/heads/agents/<session-id>/<branch>` can trigger host-side automation:
+
+- fetch that agent branch into the trusted clone
+- update or create `review/<session-id>/<branch>`
+- push the review branch to `origin`
+- create or reuse the upstream PR
+- append an event to `runtime/agent-events.log`
+- attempt a desktop notification with `notify-send`
+
+For Azure DevOps remotes, set a PAT in `config/git-server.env`:
+
+```bash
+AZURE_DEVOPS_PAT=...
+```
+
+`open_agent_pr.sh` detects Azure DevOps automatically from the trusted clone's `origin` URL and
+creates the PR there. The same helper still supports GitHub remotes through `gh`.
 
 ## Notes
 

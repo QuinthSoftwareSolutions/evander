@@ -109,8 +109,10 @@ cp ~/codex-vendor/codex/codex ~/bin/codex
 chmod +x ~/bin/codex
 mkdir -p ~/.codex
 cat > ~/.codex/config.toml <<CONFIG
-model = "gpt-5.2-codex"
+model = "gpt-5.4"
 model_provider = "openai"
+model_reasoning_effort = "high"
+personality = "pragmatic"
 openai_base_url = "${LLM_BASE_URL}"
 
 [projects."/home/${VM_USER}"]

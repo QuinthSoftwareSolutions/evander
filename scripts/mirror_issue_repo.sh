@@ -48,6 +48,15 @@ else
 fi
 
 git -C "${REPO_PATH}" push --mirror "${MIRROR_REMOTE_NAME}"
+git --git-dir="${BARE_REPO_PATH}" config agent-sandbox.trustedRepoPath "${REPO_PATH}"
+
+DEFAULT_BASE_BRANCH="$(
+  git -C "${REPO_PATH}" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null \
+    | sed 's#^origin/##'
+)"
+if [[ -n "${DEFAULT_BASE_BRANCH}" ]]; then
+  git --git-dir="${BARE_REPO_PATH}" config agent-sandbox.baseBranch "${DEFAULT_BASE_BRANCH}"
+fi
 
 echo
 echo "Host mirror ready:"

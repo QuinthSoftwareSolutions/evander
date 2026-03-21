@@ -8,6 +8,7 @@ SCRIPTS = [
     "bootstrap_git_vm.sh",
     "bootstrap_nuget_vm.sh",
     "bootstrap_playwright_vm.sh",
+    "check_issue_vm.sh",
     "create_base_vm.sh",
     "create_git_remote.sh",
     "create_libvirt_network.sh",
@@ -18,10 +19,12 @@ SCRIPTS = [
     "install_systemd_units.sh",
     "launch_agent_vm.sh",
     "git_ssh_command_wrapper.sh",
+    "handle_agent_push.sh",
     "mirror_issue_repo.sh",
     "prewarm_nuget_cache.sh",
     "setup_issue_git_vm.sh",
     "setup_issue_vm.sh",
+    "tail_issue_vm_log.sh",
 ]
 
 

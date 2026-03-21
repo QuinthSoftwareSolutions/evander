@@ -96,7 +96,7 @@
    ./scripts/bootstrap_codex_vm.sh vm-real
    ```
 
-   This copies the vendored Linux Codex binary from the host install into the guest user's `~/bin`, rewrites `~/.codex/config.toml` to use the host relay, ensures the placeholder API-key shell hook exists, and verifies `codex --version`.
+   This copies the vendored Linux Codex binary from the host install into the guest user's `~/bin`, rewrites `~/.codex/config.toml` to use the host relay with `model = "gpt-5.4"`, `model_reasoning_effort = "high"`, and `personality = "pragmatic"`, ensures the placeholder API-key shell hook exists, and verifies `codex --version`.
 
 9. Optionally install the host `.NET` SDK into the VM:
 
@@ -153,13 +153,28 @@ The generated units run as your user where appropriate and read environment file
 For the full issue-VM bring-up path in one command, use:
 
 ```bash
-./scripts/setup_issue_vm.sh 14084 /path/to/project-or-solution.slnx
+./scripts/setup_issue_vm.sh /path/to/issue.yaml /path/to/project-or-solution.slnx
 ```
 
 That now also clones the mirrored repo into the guest user's home directory using
 the host repo basename, for example `/home/agent/ExampleIndustryAPP`. It also writes a short
-`/home/agent/AGENTS.md` note and configures a repo-local `git push-agent` alias for the safe
-session-namespaced push pattern.
+`/home/agent/AGENTS.md` note, copies the issue YAML into the repo root as
+`AGENT_TASK.yaml`, configures a repo-local `git push-agent` alias for the safe
+session-namespaced push pattern, and starts a background Codex run inside the guest by
+default. The guest-side Codex log and PID file live under `/home/agent/.agent-sandbox/`.
+Use `--dry-run` if you want the VM prepared without starting the agent process. The
+helper still accepts a raw issue number as the first argument for the older workflow, but
+YAML is the preferred input for long-running agent sessions.
+
+For operator visibility from the host, use:
+
+```bash
+./scripts/check_issue_vm.sh 14084
+./scripts/tail_issue_vm_log.sh 14084
+```
+
+The first command shows the VM state, IP, guest Codex PID, and the last log lines. The
+second follows the guest Codex log live over SSH.
 
 Use the included bare-repo helper when you want VMs to push code changes back to the host over the private network:
 
@@ -179,7 +194,9 @@ If you want to mirror the default host repo into an issue-numbered bare remote f
 refreshes the issue-numbered host mirror in one command. The lower-level
 `bootstrap_git_vm.sh` helper installs a dedicated guest SSH key and a restricted host
 `authorized_keys` entry so guests can push Git branches without needing your host password or
-general shell access.
+general shell access. Issue mirrors also carry a `post-receive` hook so host-side automation can
+promote pushed `agents/...` branches into the trusted clone, push the review branch to `origin`,
+and create the upstream PR automatically.
 
 See [git-remotes.md](/home/jonathan/agent-sandbox/docs/git-remotes.md) for the review flow and branch naming pattern.
 The host-side safe promotion flow is:
