@@ -43,6 +43,10 @@
    `discord_bot_token_env` set to the host environment variable that holds your bot token
    (default: `DISCORD_BOT_TOKEN`).
 
+   For provider-backed email, define one or more `email_mailboxes` entries using:
+   `mailbox_id`, `provider` (`gmail` or `graph`), `account`/`address`, auth env var names,
+   and mailbox-level `folder_allowlist_defaults`.
+
 3. Initialize runtime state:
 
    ```bash
@@ -166,6 +170,47 @@ See [git-remotes.md](/home/jonathan/agent-sandbox/docs/git-remotes.md) for the r
   `discord_operator_user_allowlist`.
 - Guests never need direct Discord credentials or internet access; Discord API access happens only
   in the host-side gateway process.
+
+## Email Provider Configuration (Host-Side Secrets Only)
+
+- `email_mailboxes` supports multiple mailbox entries with explicit provider and auth env-var wiring.
+- Keep `email_mailbox_allowlist: []` and `email_folder_allowlist_by_mailbox: {}` to auto-populate
+  defaults from mailbox definitions.
+- Email actions are **read + draft only by default**; sending remains disabled unless
+  `email_send_enabled: true` and the approval flow is used.
+
+Example snippet:
+
+```yaml
+email_mailboxes:
+  - mailbox_id: "ops-gmail"
+    provider: "gmail"
+    account: "me"
+    auth_env_var_names:
+      access_token: "GMAIL_ACCESS_TOKEN"
+    folder_allowlist_defaults: ["inbox", "drafts"]
+  - mailbox_id: "exec-graph"
+    provider: "graph"
+    address: "leader@example.com"
+    auth_env_var_names:
+      access_token: "GRAPH_ACCESS_TOKEN"
+    folder_allowlist_defaults: ["inbox", "drafts"]
+```
+
+Session allowlist example with both mailboxes:
+
+```bash
+cat <<'YAML' >> config/gateway.yaml
+email_mailbox_allowlist:
+  - "ops-gmail"
+  - "exec-graph"
+email_folder_allowlist_by_mailbox:
+  ops-gmail: ["inbox", "drafts"]
+  exec-graph: ["inbox", "drafts"]
+YAML
+
+agent-sandbox-cli create-session real-session --config config/gateway.yaml
+```
 
 ## Project Layout
 
