@@ -11,11 +11,24 @@ from .policy import PolicyError
 from .runtime import RuntimeContext, build_runtime
 
 
+def _redact_nested_value(config: GatewayConfig, value: Any) -> Any:
+    if isinstance(value, dict):
+        redacted: dict[str, Any] = {}
+        for key, nested_value in value.items():
+            if key in config.redacted_keys:
+                redacted[key] = "<redacted>"
+                continue
+            redacted[key] = _redact_nested_value(config, nested_value)
+        return redacted
+
+    if isinstance(value, list):
+        return [_redact_nested_value(config, item) for item in value]
+
+    return value
+
+
 def _redact_args(config: GatewayConfig, args: dict[str, Any]) -> dict[str, Any]:
-    redacted: dict[str, Any] = {}
-    for key, value in args.items():
-        redacted[key] = "<redacted>" if key in config.redacted_keys else value
-    return redacted
+    return _redact_nested_value(config, args)
 
 
 def create_server(context: RuntimeContext) -> FastMCP:
