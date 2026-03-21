@@ -83,9 +83,11 @@ class GatewayConfig(BaseModel):
         if not self.email_mailbox_allowlist:
             self.email_mailbox_allowlist = [mailbox.mailbox_id for mailbox in self.email_mailboxes]
 
-        for mailbox in self.email_mailboxes:
-            if mailbox.mailbox_id not in self.email_folder_allowlist_by_mailbox:
-                self.email_folder_allowlist_by_mailbox[mailbox.mailbox_id] = mailbox.folder_allowlist_defaults
+        if not self.email_folder_allowlist_by_mailbox:
+            self.email_folder_allowlist_by_mailbox = {
+                mailbox.mailbox_id: mailbox.folder_allowlist_defaults
+                for mailbox in self.email_mailboxes
+            }
 
         return self
 
