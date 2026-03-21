@@ -497,6 +497,12 @@ That one command bootstraps the guest SSH key path and creates or refreshes the
 issue-numbered bare mirror on the host. Use the lower-level
 `create_git_remote.sh` and `bootstrap_git_vm.sh` helpers directly only when you
 need a non-issue-specific repository layout.
+Mirror freshness flags are accepted and forwarded through both setup helpers:
+
+```bash
+./scripts/setup_issue_git_vm.sh --sync-remote --remote-name origin vm-real 14084 /path/to/local/repo
+./scripts/setup_issue_vm.sh --sync-remote /path/to/issue.yaml /path/to/project.slnx /path/to/local/repo
+```
 
 Issue mirrors now carry a `post-receive` hook. When the bare repo has a trusted clone mapping,
 guest pushes to `refs/heads/agents/...` can automatically promote the branch into the trusted clone,
@@ -508,6 +514,24 @@ Or mirror the default host repo into an issue-numbered bare remote:
 ```bash
 ./scripts/mirror_issue_repo.sh 14084
 ```
+
+Freshness behavior for `mirror_issue_repo.sh`:
+
+- local repo source path: default is **no upstream fetch**
+- remote URL source: default is **always fetch latest refs** into cache before mirror update
+- `--sync-remote`: fetch `git fetch --prune <remote-name>` for local source and run divergence checks
+- `--force-local`: continue even when local default branch is behind upstream
+- optional pinning: `--branch <name>` or `--refspec <src:dst>`
+
+Examples:
+
+```bash
+./scripts/mirror_issue_repo.sh --sync-remote --remote-name origin 14084 /path/to/local/repo
+./scripts/mirror_issue_repo.sh 14084 https://example.com/org/repo.git
+./scripts/mirror_issue_repo.sh --branch main 14084 /path/to/local/repo
+```
+
+Each mirror run logs the source mode, selected base branch, and source commit SHA for auditing VM runs.
 
 Make sure the host SSH service is installed and reachable from the VM network:
 

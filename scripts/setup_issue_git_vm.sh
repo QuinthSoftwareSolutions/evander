@@ -3,10 +3,18 @@ set -euo pipefail
 
 show_help() {
   cat <<'EOF'
-Usage: setup_issue_git_vm.sh <vm-name> <issue-number> [repo-source] [vm-user]
+Usage: setup_issue_git_vm.sh [options] <vm-name> <issue-number> [repo-source] [vm-user]
 
 Bootstrap passwordless Git access for a guest VM and create or refresh the
 matching issue-numbered bare mirror on the host in one step.
+
+Options (forwarded to mirror_issue_repo.sh):
+  --sync-remote
+  --no-sync-remote
+  --remote-name NAME
+  --refspec SPEC
+  --branch NAME
+  --force-local
 
 Arguments:
   vm-name       libvirt domain name.
@@ -27,6 +35,41 @@ if [[ $# -lt 2 ]]; then
   exit 1
 fi
 
+MIRROR_ARGS=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --sync-remote|--no-sync-remote|--force-local)
+      MIRROR_ARGS+=("$1")
+      shift
+      ;;
+    --remote-name|--refspec|--branch)
+      if [[ -z "${2:-}" ]]; then
+        echo "Missing value for $1" >&2
+        exit 1
+      fi
+      MIRROR_ARGS+=("$1" "$2")
+      shift 2
+      ;;
+    --)
+      shift
+      break
+      ;;
+    -*)
+      echo "Unknown option: $1" >&2
+      show_help >&2
+      exit 1
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
+
+if [[ $# -lt 2 || $# -gt 4 ]]; then
+  show_help >&2
+  exit 1
+fi
+
 VM_NAME="$1"
 ISSUE_NUMBER="$2"
 REPO_SOURCE="${3:-/home/jonathan/Documents/Repos/ExampleIndustryAPP}"
@@ -35,9 +78,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 "${SCRIPT_DIR}/bootstrap_git_vm.sh" "${VM_NAME}" "${VM_USER}"
-RESOLVED_REPO_PATH="$("${SCRIPT_DIR}/resolve_repo_source.sh" "${REPO_SOURCE}")"
-
-"${SCRIPT_DIR}/mirror_issue_repo.sh" "${ISSUE_NUMBER}" "${RESOLVED_REPO_PATH}"
+"${SCRIPT_DIR}/mirror_issue_repo.sh" "${MIRROR_ARGS[@]}" "${ISSUE_NUMBER}" "${REPO_SOURCE}"
 
 echo
 echo "One-command Git setup complete."
