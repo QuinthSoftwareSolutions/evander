@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Any, Protocol
+from datetime import UTC, datetime
+from typing import Any, Callable, Protocol
 
 import httpx
 from .models import DiscordCommandEnvelope, DraftMessage, EmailMessage
@@ -52,11 +53,9 @@ class EmailService:
 
 
 class DiscordService(Protocol):
-    def get_commands(self, since_cursor: str | None = None) -> list["DiscordCommandEnvelope"]:
-        ...
+    def get_commands(self, since_cursor: str | None = None) -> list["DiscordCommandEnvelope"]: ...
 
-    def post_status(self, message: str, channel_id: str, session_id: str) -> dict[str, Any]:
-        ...
+    def post_status(self, message: str, channel_id: str, session_id: str) -> dict[str, Any]: ...
 
 
 class StubDiscordService:
@@ -105,12 +104,18 @@ class DiscordBotApiService:
         api_base_url: str,
         poll_limit: int,
         timeout_seconds: float,
+        allowed_channel_ids_provider: Callable[[], list[str]],
+        operator_user_ids_provider: Callable[[], list[str]] | None = None,
+        include_operator_dms: bool = False,
     ) -> None:
         self.command_store = command_store
         self.token = token
         self.api_base_url = api_base_url.rstrip("/")
         self.poll_limit = poll_limit
         self.timeout_seconds = timeout_seconds
+        self.allowed_channel_ids_provider = allowed_channel_ids_provider
+        self.operator_user_ids_provider = operator_user_ids_provider or (lambda: [])
+        self.include_operator_dms = include_operator_dms
 
     def _headers(self) -> dict[str, str]:
         return {
@@ -118,14 +123,53 @@ class DiscordBotApiService:
             "Content-Type": "application/json",
         }
 
-    def _known_channel_ids(self) -> list[str]:
-        channel_ids = {command.channel_id for command in self.command_store.read_all().values()}
-        return sorted(channel_ids)
+    def _allowed_channel_ids(self) -> list[str]:
+        return sorted(
+            {
+                channel_id.strip()
+                for channel_id in self.allowed_channel_ids_provider()
+                if channel_id.strip()
+            }
+        )
+
+    def _operator_user_ids(self) -> list[str]:
+        return sorted(
+            {user_id.strip() for user_id in self.operator_user_ids_provider() if user_id.strip()}
+        )
+
+    def _operator_dm_channel_ids(self, client: httpx.Client) -> list[str]:
+        if not self.include_operator_dms:
+            return []
+        operator_user_ids = set(self._operator_user_ids())
+        if not operator_user_ids:
+            return []
+        response = client.get(
+            f"{self.api_base_url}/users/@me/channels",
+            headers=self._headers(),
+            params={"limit": self.poll_limit},
+        )
+        response.raise_for_status()
+        dm_channel_ids: list[str] = []
+        for payload in response.json():
+            recipients = payload.get("recipients") or []
+            recipient_user_ids = {
+                str(recipient.get("id", "")).strip()
+                for recipient in recipients
+                if isinstance(recipient, dict)
+            }
+            if recipient_user_ids & operator_user_ids:
+                channel_id = str(payload.get("id", "")).strip()
+                if channel_id:
+                    dm_channel_ids.append(channel_id)
+        return sorted(set(dm_channel_ids))
 
     def get_commands(self, since_cursor: str | None = None) -> list[DiscordCommandEnvelope]:
         envelopes: dict[str, DiscordCommandEnvelope] = dict(self.command_store.read_all())
         with httpx.Client(timeout=self.timeout_seconds) as client:
-            for channel_id in self._known_channel_ids():
+            channel_ids = sorted(
+                set(self._allowed_channel_ids()) | set(self._operator_dm_channel_ids(client))
+            )
+            for channel_id in channel_ids:
                 response = client.get(
                     f"{self.api_base_url}/channels/{channel_id}/messages",
                     headers=self._headers(),
