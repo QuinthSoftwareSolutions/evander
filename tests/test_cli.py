@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from typer.testing import CliRunner
@@ -54,3 +55,22 @@ def test_seed_email_accepts_recipient_option_after_positionals(tmp_path: Path) -
     emails = (tmp_path / "runtime" / "emails.json").read_text(encoding="utf-8")
     assert "you@example.com" in emails
     assert "other@example.com" in emails
+
+
+def test_create_session_disables_email_send_by_default(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+
+    init_result = runner.invoke(app, ["init-state", "--config", str(config_path)])
+    assert init_result.exit_code == 0
+
+    result = runner.invoke(
+        app,
+        ["create-session", "--config", str(config_path), "session-1"],
+    )
+    assert result.exit_code == 0
+
+    sessions = json.loads((tmp_path / "runtime" / "sessions.json").read_text(encoding="utf-8"))
+    manifest = sessions["session-1"]
+    assert manifest["email_send_enabled"] is False
+    assert "email_send_approved" not in manifest["allowed_tools"]

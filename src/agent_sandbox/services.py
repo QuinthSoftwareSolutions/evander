@@ -1,50 +1,47 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from typing import Any, Protocol
 
 import httpx
 from .models import DiscordCommandEnvelope, DraftMessage, EmailMessage
+from .email.providers import EmailDraft, EmailMessageDetail, EmailMessageSummary, EmailProvider
 from .storage import JsonStore
 
 
+def _parse_snowflake(value: str, *, field_name: str) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"Invalid {field_name} {value!r}: expected a numeric Discord snowflake string."
+        ) from exc
+
+
 class EmailService:
-    def __init__(
-        self,
-        email_store: JsonStore[EmailMessage],
-        draft_store: JsonStore[DraftMessage],
-    ) -> None:
-        self.email_store = email_store
-        self.draft_store = draft_store
+    def __init__(self, provider: EmailProvider) -> None:
+        self.provider = provider
 
-    def list_unread(self, folder: str, limit: int) -> list[EmailMessage]:
-        messages = [
-            message
-            for message in self.email_store.read_all().values()
-            if message.folder == folder and message.unread
-        ]
-        messages.sort(key=lambda item: item.received_at, reverse=True)
-        return messages[:limit]
+    def list_unread(self, mailbox_id: str, folder: str, limit: int) -> list[EmailMessageSummary]:
+        return self.provider.list_unread(mailbox_id=mailbox_id, folder=folder, limit=limit)
 
-    def get_message(self, message_id: str) -> EmailMessage:
-        message = self.email_store.get(message_id)
-        if message is None:
-            raise KeyError(f"Unknown message: {message_id}")
-        return message
+    def get_message(self, mailbox_id: str, message_id: str) -> EmailMessageDetail:
+        return self.provider.get_message(mailbox_id=mailbox_id, message_id=message_id)
 
     def create_draft(
-        self, thread_or_message_id: str | None, subject: str | None, body: str
-    ) -> DraftMessage:
-        now = datetime.now(UTC)
-        draft = DraftMessage(
-            draft_id=f"draft_{int(now.timestamp())}",
+        self,
+        mailbox_id: str,
+        thread_or_message_id: str | None,
+        subject: str | None,
+        body: str,
+        recipients: list[str],
+    ) -> EmailDraft:
+        return self.provider.create_draft(
+            mailbox_id=mailbox_id,
             thread_or_message_id=thread_or_message_id,
             subject=subject,
             body=body,
-            created_at=now,
+            recipients=recipients,
         )
-        self.draft_store.put(draft.draft_id, draft)
-        return draft
 
     def send_from_draft(self, request_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -80,10 +77,15 @@ class StubDiscordService:
                     if key not in {"source", "guild_id", "channel_id", "author_id"}
                 },
             }
-        commands.sort(key=lambda item: item.created_at)
+        commands.sort(key=lambda item: _parse_snowflake(item.command_id, field_name="command_id"))
         if since_cursor is None:
             return commands
-        return [command for command in commands if command.command_id > since_cursor]
+        since_snowflake = _parse_snowflake(since_cursor, field_name="since_cursor")
+        return [
+            command
+            for command in commands
+            if _parse_snowflake(command.command_id, field_name="command_id") > since_snowflake
+        ]
 
     def post_status(self, message: str, channel_id: str, session_id: str) -> dict[str, Any]:
         return {
@@ -147,10 +149,18 @@ class DiscordBotApiService:
                     envelopes[envelope.command_id] = envelope
                     self.command_store.put(envelope.command_id, envelope)
 
-        commands = sorted(envelopes.values(), key=lambda item: item.created_at)
+        commands = sorted(
+            envelopes.values(),
+            key=lambda item: _parse_snowflake(item.command_id, field_name="command_id"),
+        )
         if since_cursor is None:
             return commands
-        return [command for command in commands if command.command_id > since_cursor]
+        since_snowflake = _parse_snowflake(since_cursor, field_name="since_cursor")
+        return [
+            command
+            for command in commands
+            if _parse_snowflake(command.command_id, field_name="command_id") > since_snowflake
+        ]
 
     def post_status(self, message: str, channel_id: str, session_id: str) -> dict[str, Any]:
         with httpx.Client(timeout=self.timeout_seconds) as client:
