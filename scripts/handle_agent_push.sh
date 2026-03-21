@@ -43,6 +43,8 @@ NOTIFY_COMMAND="${AGENT_SANDBOX_NOTIFY_COMMAND:-}"
 AUTO_REMOTE_NAME="${AGENT_SANDBOX_AUTO_REMOTE_NAME:-agent-dropbox-auto}"
 PR_NOTES_REF="${AGENT_SANDBOX_PR_NOTES_REF:-refs/notes/agent-pr}"
 PR_BODY_DIR="${AGENT_SANDBOX_PR_BODY_DIR:-${ROOT_DIR}/runtime/pr-body}"
+PR_FIXED_BODY_FILE="${AGENT_SANDBOX_PR_FIXED_BODY_FILE:-}"
+PR_BODY_MAX_BYTES="${AGENT_SANDBOX_PR_BODY_MAX_BYTES:-60000}"
 
 mkdir -p "$(dirname "${EVENT_LOG}")"
 mkdir -p "${PR_BODY_DIR}"
@@ -58,6 +60,82 @@ notify_event() {
     AGENT_NOTIFICATION_TITLE="${title}" AGENT_NOTIFICATION_BODY="${body}" \
       sh -lc "${NOTIFY_COMMAND}" >/dev/null 2>&1 || true
   fi
+}
+
+compose_pr_body_file() {
+  local fixed_body_file="$1"
+  local note_body_file="$2"
+  local composed_body_file=""
+
+  if [[ -n "${fixed_body_file}" && ! -f "${fixed_body_file}" ]]; then
+    notify_event \
+      "Configured PR fixed body file missing (non-fatal)" \
+      "path=${fixed_body_file}"
+    fixed_body_file=""
+  fi
+
+  if [[ -n "${fixed_body_file}" && -n "${note_body_file}" ]]; then
+    composed_body_file="$(mktemp "${PR_BODY_DIR}/composed-pr-body-XXXXXX.md")"
+    cat "${fixed_body_file}" > "${composed_body_file}"
+    printf '\n\n---\n\n## Agent Summary\n\n' >> "${composed_body_file}"
+    cat "${note_body_file}" >> "${composed_body_file}"
+    printf '%s\n' "${composed_body_file}"
+    return 0
+  fi
+
+  if [[ -n "${fixed_body_file}" ]]; then
+    printf '%s\n' "${fixed_body_file}"
+    return 0
+  fi
+
+  if [[ -n "${note_body_file}" ]]; then
+    printf '%s\n' "${note_body_file}"
+    return 0
+  fi
+
+  return 1
+}
+
+enforce_pr_body_size_limit() {
+  local body_file="$1"
+  local max_bytes="$2"
+
+  if [[ ! "${max_bytes}" =~ ^[0-9]+$ || "${max_bytes}" -le 0 ]]; then
+    notify_event \
+      "Invalid PR body max bytes; skipping size limit (non-fatal)" \
+      "max_bytes=${max_bytes} body_file=${body_file}"
+    return 0
+  fi
+
+  BODY_FILE_PATH="${body_file}" PR_BODY_MAX_BYTES_VALUE="${max_bytes}" python3 - <<'PY'
+import os
+from pathlib import Path
+
+path = Path(os.environ["BODY_FILE_PATH"])
+max_bytes = int(os.environ["PR_BODY_MAX_BYTES_VALUE"])
+content = path.read_bytes()
+if len(content) <= max_bytes:
+    raise SystemExit(0)
+
+notice = (
+    b"\n\n---\n\n"
+    + f"> \xe2\x9a\xa0\xef\xb8\x8f Truncated by handle_agent_push.sh after "
+      f"{max_bytes} bytes.\n".encode("utf-8")
+)
+if len(notice) >= max_bytes:
+    path.write_bytes(notice[:max_bytes])
+    raise SystemExit(0)
+
+keep = max_bytes - len(notice)
+truncated = content[:keep]
+while True:
+    try:
+        truncated.decode("utf-8")
+        break
+    except UnicodeDecodeError as exc:
+        truncated = truncated[:exc.start]
+path.write_bytes(truncated + notice)
+PY
 }
 
 derive_review_branch() {
@@ -158,15 +236,15 @@ while read -r old_sha new_sha ref_name; do
       "repo=$(basename "${TRUSTED_REPO_PATH}") notes_ref=${PR_NOTES_REF} branch=${REVIEW_BRANCH} session_id=${SESSION_ID:-unknown}"
   fi
 
-  PR_BODY_FILE=""
+  NOTE_BODY_FILE=""
   if RESOLVED_SHA="$(git -C "${TRUSTED_REPO_PATH}" rev-parse --verify "${new_sha}^{commit}" 2>/dev/null)"; then
     # AGENT_PR_NOTES: read git notes for the pushed commit and persist to runtime
     # for use as open_agent_pr.sh --body-file when the note is present.
     if NOTE_CONTENT="$(git -C "${TRUSTED_REPO_PATH}" notes --ref=agent-pr show "${RESOLVED_SHA}" 2>/dev/null)"; then
       if [[ -n "${NOTE_CONTENT}" ]]; then
         SAFE_SESSION_ID="${SESSION_ID:-unknown}"
-        PR_BODY_FILE="${PR_BODY_DIR}/agent-note-${SAFE_SESSION_ID}-${RESOLVED_SHA}.md"
-        printf '%s\n' "${NOTE_CONTENT}" > "${PR_BODY_FILE}"
+        NOTE_BODY_FILE="${PR_BODY_DIR}/agent-note-${SAFE_SESSION_ID}-${RESOLVED_SHA}.md"
+        printf '%s\n' "${NOTE_CONTENT}" > "${NOTE_BODY_FILE}"
       fi
     else
       notify_event \
@@ -177,6 +255,11 @@ while read -r old_sha new_sha ref_name; do
     notify_event \
       "AGENT_PR_NOTES sha resolution failed (non-fatal)" \
       "repo=$(basename "${TRUSTED_REPO_PATH}") new_sha=${new_sha} branch=${REVIEW_BRANCH} session_id=${SESSION_ID:-unknown}"
+  fi
+
+  PR_BODY_FILE="$(compose_pr_body_file "${PR_FIXED_BODY_FILE}" "${NOTE_BODY_FILE}" || true)"
+  if [[ -n "${PR_BODY_FILE}" ]]; then
+    enforce_pr_body_size_limit "${PR_BODY_FILE}" "${PR_BODY_MAX_BYTES}"
   fi
 
   PR_ARGS=(--create-pr)

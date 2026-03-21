@@ -24,6 +24,10 @@ def test_bare_repo_flow_includes_hook_and_azure_support() -> None:
     assert 'PR_ARGS+=(--session-id "${SESSION_ID}")' in handle_push
     assert "AGENT_PR_NOTES" in handle_push
     assert "refs/notes/agent-pr" in handle_push
+    assert "AGENT_SANDBOX_PR_FIXED_BODY_FILE" in handle_push
+    assert "AGENT_SANDBOX_PR_BODY_MAX_BYTES" in handle_push
+    assert "## Agent Summary" in handle_push
+    assert "compose_pr_body_file()" in handle_push
     assert '--body-file "${PR_BODY_FILE}"' in handle_push
     assert "AZURE_DEVOPS_PAT" in open_pr
     assert "ssh.dev.azure.com" in open_pr
