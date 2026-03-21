@@ -23,6 +23,8 @@ Arguments:
 Environment:
   VM_IP_WAIT_TIMEOUT_SECONDS  How long to wait for the guest to receive an IPv4 address.
                               Default: 180
+  VM_SSH_WAIT_TIMEOUT_SECONDS How long to wait for guest SSH to accept connections.
+                              Default: 180
 EOF
 }
 
@@ -47,6 +49,7 @@ CALLER_USER="${SUDO_USER:-$USER}"
 CALLER_HOME="$(getent passwd "${CALLER_USER}" | cut -d: -f6)"
 SSH_PUBLIC_KEY_FILE="${SSH_PUBLIC_KEY_FILE:-${CALLER_HOME}/.ssh/id_ed25519.pub}"
 VM_IP_WAIT_TIMEOUT_SECONDS="${VM_IP_WAIT_TIMEOUT_SECONDS:-180}"
+VM_SSH_WAIT_TIMEOUT_SECONDS="${VM_SSH_WAIT_TIMEOUT_SECONDS:-180}"
 GUEST_REPO_NAME="$(basename "${REPO_PATH}")"
 SSH_PRIVATE_KEY_PATH="${SSH_PRIVATE_KEY_PATH:-${CALLER_HOME}/.ssh/id_ed25519}"
 
@@ -127,10 +130,33 @@ wait_for_vm_ip() {
   return 1
 }
 
+wait_for_vm_ssh() {
+  local deadline
+  deadline=$((SECONDS + VM_SSH_WAIT_TIMEOUT_SECONDS))
+
+  while (( SECONDS < deadline )); do
+    if ssh \
+      -o StrictHostKeyChecking=no \
+      -o UserKnownHostsFile=/dev/null \
+      -o ConnectTimeout=5 \
+      -i "${SSH_PRIVATE_KEY_PATH}" \
+      "${VM_USER}@${VM_IP}" true >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 2
+  done
+
+  echo "Timed out waiting for SSH on ${VM_USER}@${VM_IP}." >&2
+  echo "Check guest boot progress with: sudo virsh console ${VM_NAME}" >&2
+  return 1
+}
+
 "${SCRIPT_DIR}/prewarm_nuget_cache.sh" "${PREWARM_TARGET}"
 sudo SSH_PUBLIC_KEY_FILE="${SSH_PUBLIC_KEY_FILE}" "${SCRIPT_DIR}/launch_agent_vm.sh" "${VM_NAME}" "${SESSION_ID}"
 VM_IP="$(wait_for_vm_ip)"
 echo "Guest IPv4 detected: ${VM_IP}"
+wait_for_vm_ssh
+echo "Guest SSH is ready on ${VM_USER}@${VM_IP}"
 "${SCRIPT_DIR}/bootstrap_codex_vm.sh" "${VM_NAME}" "${VM_USER}"
 "${SCRIPT_DIR}/bootstrap_dotnet_vm.sh" "${VM_NAME}" "${VM_USER}"
 "${SCRIPT_DIR}/bootstrap_nuget_vm.sh" "${VM_NAME}" "${VM_USER}"
