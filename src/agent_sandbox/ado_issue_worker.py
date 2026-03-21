@@ -7,9 +7,11 @@ import logging
 import os
 import subprocess
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from threading import BoundedSemaphore
 from threading import Lock
 from typing import Any
 
@@ -29,10 +31,15 @@ class WorkerConfig:
     yaml_output_dir: Path
     processed_store_path: Path
     setup_script_path: Path
-    project_or_solution: str
+    prewarm_target: str
     repo_path: str | None
     session_id: str | None
     vm_user: str | None
+    setup_timeout_seconds: float
+    setup_concurrency_limit: int
+    setup_lock_path: Path
+    fetch_retry_count: int
+    fetch_retry_backoff_seconds: float
 
     @classmethod
     def load_from_env(cls) -> WorkerConfig:
@@ -58,10 +65,17 @@ class WorkerConfig:
             os.environ.get("ADO_PROCESSED_STORE_PATH", str(runtime_dir / "ado-processed-work-items.json"))
         ).expanduser()
 
-        project_or_solution = _require_env("ADO_PROJECT_OR_SOLUTION")
+        prewarm_target = _optional_env("ADO_PREWARM_TARGET") or _require_env("ADO_PROJECT_OR_SOLUTION")
         setup_script_path = Path(
             os.environ.get("ADO_SETUP_ISSUE_VM_SCRIPT", "scripts/setup_issue_vm.sh")
         ).expanduser()
+        setup_timeout_seconds = _float_env("ADO_SETUP_TIMEOUT_SECONDS", 1800.0, minimum=1.0)
+        setup_concurrency_limit = _int_env("ADO_SETUP_CONCURRENCY_LIMIT", 1, minimum=1)
+        setup_lock_path = Path(
+            os.environ.get("ADO_SETUP_LOCK_PATH", str(runtime_dir / "setup-issue-vm.lock"))
+        ).expanduser()
+        fetch_retry_count = _int_env("ADO_FETCH_RETRY_COUNT", 2, minimum=0)
+        fetch_retry_backoff_seconds = _float_env("ADO_FETCH_RETRY_BACKOFF_SECONDS", 2.0, minimum=0.0)
 
         repo_path = _optional_env("ADO_REPO_PATH")
         session_id = _optional_env("ADO_SESSION_ID")
@@ -78,10 +92,15 @@ class WorkerConfig:
             yaml_output_dir=yaml_output_dir,
             processed_store_path=processed_store_path,
             setup_script_path=setup_script_path,
-            project_or_solution=project_or_solution,
+            prewarm_target=prewarm_target,
             repo_path=repo_path,
             session_id=session_id,
             vm_user=vm_user,
+            setup_timeout_seconds=setup_timeout_seconds,
+            setup_concurrency_limit=setup_concurrency_limit,
+            setup_lock_path=setup_lock_path,
+            fetch_retry_count=fetch_retry_count,
+            fetch_retry_backoff_seconds=fetch_retry_backoff_seconds,
         )
 
 
@@ -101,6 +120,28 @@ def _csv_env(name: str) -> tuple[str, ...]:
     raw = os.environ.get(name, "")
     values = [part.strip() for part in raw.split(",") if part.strip()]
     return tuple(values)
+
+
+def _float_env(name: str, default: float, *, minimum: float | None = None) -> float:
+    raw = os.environ.get(name, str(default))
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be numeric.") from exc
+    if minimum is not None and value < minimum:
+        raise ValueError(f"{name} must be >= {minimum}.")
+    return value
+
+
+def _int_env(name: str, default: int, *, minimum: int | None = None) -> int:
+    raw = os.environ.get(name, str(default))
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be an integer.") from exc
+    if minimum is not None and value < minimum:
+        raise ValueError(f"{name} must be >= {minimum}.")
+    return value
 
 
 def _escape_wiql_string(value: str) -> str:
@@ -341,7 +382,7 @@ def _atomic_write_yaml(path: Path, payload: dict[str, Any]) -> None:
 
 
 def _build_setup_command(config: WorkerConfig, yaml_path: Path) -> list[str]:
-    cmd = [str(config.setup_script_path), str(yaml_path), config.project_or_solution]
+    cmd = [str(config.setup_script_path), str(yaml_path), config.prewarm_target]
     if config.repo_path:
         cmd.append(config.repo_path)
     if config.session_id:
@@ -354,6 +395,41 @@ def _build_setup_command(config: WorkerConfig, yaml_path: Path) -> list[str]:
 def _snippet(text: str, max_chars: int = 1000) -> str:
     compact = " ".join(text.split())
     return compact[:max_chars]
+
+
+def _is_transient_fetch_error(exc: Exception) -> bool:
+    if isinstance(exc, (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError)):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError) and exc.response is not None:
+        return exc.response.status_code in {408, 429, 500, 502, 503, 504}
+    return False
+
+
+_SETUP_LIMITERS: dict[Path, BoundedSemaphore] = {}
+_SETUP_LIMITERS_LOCK = Lock()
+
+
+@contextmanager
+def _setup_slot(config: WorkerConfig) -> Any:
+    if config.setup_concurrency_limit <= 1:
+        config.setup_lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(config.setup_lock_path, "a+", encoding="utf-8") as lock_file:
+            import fcntl
+
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+        return
+
+    with _SETUP_LIMITERS_LOCK:
+        limiter = _SETUP_LIMITERS.get(config.setup_lock_path)
+        if limiter is None:
+            limiter = BoundedSemaphore(config.setup_concurrency_limit)
+            _SETUP_LIMITERS[config.setup_lock_path] = limiter
+    with limiter:
+        yield
 
 
 def process_work_item(
@@ -371,10 +447,35 @@ def process_work_item(
     _atomic_write_yaml(yaml_path, _build_issue_payload(work_item))
 
     cmd = _build_setup_command(config, yaml_path)
-    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    try:
+        with _setup_slot(config):
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=config.setup_timeout_seconds,
+            )
+    except subprocess.TimeoutExpired as exc:
+        combined = f"{(exc.stdout or '')}\n{(exc.stderr or '')}"
+        logging.error(
+            "work_item=%s setup_issue_vm_timeout timeout_seconds=%s cmd=%s output=%s",
+            work_item_id,
+            config.setup_timeout_seconds,
+            cmd,
+            _snippet(combined),
+        )
+        return False
+
     output_snippet = _snippet((result.stdout or "") + "\n" + (result.stderr or ""))
     if result.returncode != 0:
-        logging.warning("work_item=%s setup_issue_vm_failed exit_code=%d", work_item_id, result.returncode)
+        logging.error(
+            "work_item=%s setup_issue_vm_failed exit_code=%d cmd=%s output=%s",
+            work_item_id,
+            result.returncode,
+            cmd,
+            output_snippet,
+        )
         return False
 
     store.mark_processed(
@@ -408,7 +509,26 @@ def run_worker(config: WorkerConfig) -> None:
         while True:
             cycle_start = time.monotonic()
             try:
-                for item in poll_once(client=client, config=config, auth_header=auth_header):
+                attempts = 0
+                while True:
+                    try:
+                        items = poll_once(client=client, config=config, auth_header=auth_header)
+                        break
+                    except httpx.HTTPError as exc:
+                        attempts += 1
+                        if attempts > config.fetch_retry_count or not _is_transient_fetch_error(exc):
+                            raise
+                        sleep_seconds = config.fetch_retry_backoff_seconds * attempts
+                        logging.warning(
+                            "cycle transient_fetch_error=%s retry=%d/%d sleep=%.1fs",
+                            exc.__class__.__name__,
+                            attempts,
+                            config.fetch_retry_count,
+                            sleep_seconds,
+                        )
+                        time.sleep(sleep_seconds)
+
+                for item in items:
                     process_work_item(item, config=config, store=store)
             except httpx.HTTPError as exc:
                 logging.warning("cycle error=%s", exc.__class__.__name__)

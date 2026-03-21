@@ -7,7 +7,12 @@ from pathlib import Path
 import pytest
 import yaml
 
-from agent_sandbox.ado_issue_worker import ProcessedWorkItemStore, WorkerConfig, process_work_item
+from agent_sandbox.ado_issue_worker import (
+    ProcessedWorkItemStore,
+    WorkerConfig,
+    _build_setup_command,
+    process_work_item,
+)
 
 
 @pytest.fixture
@@ -23,10 +28,15 @@ def worker_config(tmp_path: Path) -> WorkerConfig:
         yaml_output_dir=tmp_path / "yaml",
         processed_store_path=tmp_path / "state" / "processed.json",
         setup_script_path=Path("scripts/setup_issue_vm.sh"),
-        project_or_solution="My.slnx",
+        prewarm_target="My.slnx",
         repo_path=None,
         session_id=None,
         vm_user=None,
+        setup_timeout_seconds=30.0,
+        setup_concurrency_limit=1,
+        setup_lock_path=tmp_path / "setup.lock",
+        fetch_retry_count=2,
+        fetch_retry_backoff_seconds=0.1,
     )
 
 
@@ -126,3 +136,67 @@ def test_process_work_item_marks_state_only_after_success(
     succeeded = process_work_item(item, config=worker_config, store=store)
     assert succeeded is True
     assert store.is_processed(789) is True
+
+
+def test_build_setup_command_includes_optional_arguments(tmp_path: Path) -> None:
+    config = WorkerConfig(
+        organization_url="https://dev.azure.com/example",
+        project="example",
+        pat_env_var_name="AZURE_DEVOPS_PAT",
+        poll_interval_seconds=30.0,
+        area_filters=(),
+        team_filters=(),
+        runtime_dir=tmp_path,
+        yaml_output_dir=tmp_path / "yaml",
+        processed_store_path=tmp_path / "state" / "processed.json",
+        setup_script_path=Path("scripts/setup_issue_vm.sh"),
+        prewarm_target="real-target",
+        repo_path="/tmp/repo",
+        session_id="sess-1",
+        vm_user="agent",
+        setup_timeout_seconds=30.0,
+        setup_concurrency_limit=1,
+        setup_lock_path=tmp_path / "setup.lock",
+        fetch_retry_count=2,
+        fetch_retry_backoff_seconds=0.1,
+    )
+    cmd = _build_setup_command(config, tmp_path / "work-item-10.yaml")
+    assert cmd == [
+        "scripts/setup_issue_vm.sh",
+        str(tmp_path / "work-item-10.yaml"),
+        "real-target",
+        "/tmp/repo",
+        "sess-1",
+        "agent",
+    ]
+
+
+def test_process_work_item_passes_timeout(
+    worker_config: WorkerConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = ProcessedWorkItemStore(worker_config.processed_store_path)
+    captured: dict[str, object] = {}
+
+    def successful_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        captured["timeout"] = kwargs.get("timeout")
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="ok", stderr="")
+
+    monkeypatch.setattr("agent_sandbox.ado_issue_worker.subprocess.run", successful_run)
+
+    succeeded = process_work_item(
+        {
+            "id": 1001,
+            "title": "Do thing",
+            "description": "Details",
+            "tags": ["true-agent"],
+            "state": "Committed",
+            "url": "https://example/1001",
+            "updated_date": "2026-03-21T00:00:00Z",
+        },
+        config=worker_config,
+        store=store,
+    )
+
+    assert succeeded is True
+    assert captured["timeout"] == worker_config.setup_timeout_seconds
