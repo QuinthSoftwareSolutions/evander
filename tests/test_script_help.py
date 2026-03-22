@@ -30,7 +30,7 @@ SCRIPTS = [
 
 
 def test_scripts_define_help_output() -> None:
-    scripts_dir = Path("/home/jonathan/agent-sandbox/scripts")
+    scripts_dir = Path(__file__).resolve().parents[1] / "scripts"
 
     for name in SCRIPTS:
         text = (scripts_dir / name).read_text(encoding="utf-8")

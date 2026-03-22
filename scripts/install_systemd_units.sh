@@ -2,20 +2,44 @@
 set -euo pipefail
 
 show_help() {
-  cat <<'EOF'
-Usage: install_systemd_units.sh [--help]
+  cat <<'EOH'
+Usage: install_systemd_units.sh [--preflight] [--help]
 
 Render and install the agent-sandbox systemd unit files, then enable them.
 
+Options:
+  --preflight  Run validation checks only (non-destructive).
+  -h, --help   Show this help text.
+
 Requirements:
-  Run this script with sudo.
-EOF
+  Run install mode with sudo.
+EOH
 }
+
+MODE="install"
 
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   show_help
   exit 0
 fi
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --preflight)
+      MODE="preflight"
+      shift
+      ;;
+    -h|--help)
+      show_help
+      exit 0
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      show_help >&2
+      exit 1
+      ;;
+  esac
+done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -23,29 +47,147 @@ RUN_USER="${SUDO_USER:-$USER}"
 PROJECT_DIR="${ROOT_DIR}"
 SYSTEMD_DIR="/etc/systemd/system"
 
+PASS_COUNT=0
+FAIL_COUNT=0
+HAS_CRITICAL_FAIL=0
+
+report_pass() {
+  local message="$1"
+  echo "[PASS] ${message}"
+  PASS_COUNT=$((PASS_COUNT + 1))
+}
+
+report_fail() {
+  local message="$1"
+  local hint="$2"
+  local severity="${3:-critical}"
+
+  echo "[FAIL] ${message}"
+  echo "       hint: ${hint}"
+  FAIL_COUNT=$((FAIL_COUNT + 1))
+  if [[ "${severity}" == "critical" ]]; then
+    HAS_CRITICAL_FAIL=1
+  fi
+}
+
+check_command() {
+  local binary="$1"
+  local required_hint="$2"
+  local severity="${3:-critical}"
+
+  if command -v "${binary}" >/dev/null 2>&1; then
+    report_pass "Found required binary '${binary}'."
+  else
+    report_fail "Missing binary '${binary}'." "${required_hint}" "${severity}"
+  fi
+}
+
+check_file() {
+  local file_path="$1"
+  local hint="$2"
+
+  if [[ -f "${file_path}" ]]; then
+    report_pass "Found config file ${file_path}."
+  else
+    report_fail "Missing config file ${file_path}." "${hint}" "critical"
+  fi
+}
+
+check_env_var_in_file() {
+  local file_path="$1"
+  local var_name="$2"
+  local hint="$3"
+  local severity="${4:-critical}"
+
+  if [[ ! -f "${file_path}" ]]; then
+    return
+  fi
+
+  local value
+  value="$(python3 - "$file_path" "$var_name" <<'PY'
+import re
+import sys
+
+file_path, var_name = sys.argv[1], sys.argv[2]
+pattern = re.compile(r"^\s*" + re.escape(var_name) + r"\s*=\s*(.*)$")
+
+with open(file_path, encoding="utf-8") as handle:
+    for raw in handle:
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        match = pattern.match(line)
+        if not match:
+            continue
+        value = match.group(1).strip()
+        if len(value) >= 2 and ((value[0] == value[-1]) and value[0] in {'"', "'"}):
+            value = value[1:-1]
+        print(value)
+        raise SystemExit(0)
+
+raise SystemExit(1)
+PY
+)" || true
+
+  if [[ -n "${value}" ]]; then
+    report_pass "${var_name} is set in ${file_path}."
+  else
+    report_fail "${var_name} is missing or empty in ${file_path}." "${hint}" "${severity}"
+  fi
+}
+
+run_preflight_checks() {
+  echo "Running install_systemd_units preflight checks..."
+
+  check_command "systemctl" "Install systemd (systemctl) before installing units."
+  check_command "python3" "Install Python 3 so the gateway/relay and env checks can run."
+  check_command "virsh" "Install libvirt-clients so VM lifecycle commands are available." "warning"
+
+  check_file "${ROOT_DIR}/config/gateway.env" "Copy config/gateway.env.example to config/gateway.env and update values."
+  check_file "${ROOT_DIR}/config/openai-relay.env" "Copy config/openai-relay.env.example to config/openai-relay.env and set OPENAI_API_KEY."
+  check_file "${ROOT_DIR}/config/firewall.env" "Copy config/firewall.env.example to config/firewall.env."
+  check_file "${ROOT_DIR}/config/nuget-relay.env" "Copy config/nuget-relay.env.example to config/nuget-relay.env."
+  check_file "${ROOT_DIR}/config/ado-worker.env" "Copy config/ado-worker.env.example to config/ado-worker.env and configure required values."
+
+  check_env_var_in_file "${ROOT_DIR}/config/gateway.env" "AGENT_SANDBOX_CONFIG" "Set AGENT_SANDBOX_CONFIG to your gateway config path."
+  check_env_var_in_file "${ROOT_DIR}/config/openai-relay.env" "AGENT_SANDBOX_CONFIG" "Set AGENT_SANDBOX_CONFIG to your gateway config path."
+  check_env_var_in_file "${ROOT_DIR}/config/openai-relay.env" "OPENAI_API_KEY" "Set OPENAI_API_KEY in config/openai-relay.env."
+  check_env_var_in_file "${ROOT_DIR}/config/firewall.env" "ALLOWED_TCP_PORTS" "Set ALLOWED_TCP_PORTS in config/firewall.env."
+  check_env_var_in_file "${ROOT_DIR}/config/ado-worker.env" "ADO_ORGANIZATION_URL" "Set ADO_ORGANIZATION_URL in config/ado-worker.env."
+  check_env_var_in_file "${ROOT_DIR}/config/ado-worker.env" "ADO_PROJECT" "Set ADO_PROJECT in config/ado-worker.env."
+  check_env_var_in_file "${ROOT_DIR}/config/ado-worker.env" "ADO_PAT_ENV_VAR_NAME" "Set ADO_PAT_ENV_VAR_NAME in config/ado-worker.env."
+  check_env_var_in_file "${ROOT_DIR}/config/ado-worker.env" "ADO_PROJECT_OR_SOLUTION" "Set ADO_PROJECT_OR_SOLUTION in config/ado-worker.env."
+
+  echo
+  echo "Preflight summary: ${PASS_COUNT} passed, ${FAIL_COUNT} failed."
+
+  if [[ "${HAS_CRITICAL_FAIL}" -ne 0 ]]; then
+    echo "Result: FAIL (critical checks failed)."
+    return 1
+  fi
+
+  if [[ "${FAIL_COUNT}" -ne 0 ]]; then
+    echo "Result: PASS with warnings (non-critical checks failed)."
+  else
+    echo "Result: PASS"
+  fi
+}
+
+if [[ "${MODE}" == "preflight" ]]; then
+  run_preflight_checks
+  exit $?
+fi
+
 if [[ "${EUID}" -ne 0 ]]; then
   echo "Run with sudo." >&2
   exit 1
 fi
 
-if [[ ! -f "${ROOT_DIR}/config/gateway.env" ]]; then
-  cp "${ROOT_DIR}/config/gateway.env.example" "${ROOT_DIR}/config/gateway.env"
-fi
+run_preflight_checks
 
-if [[ ! -f "${ROOT_DIR}/config/openai-relay.env" ]]; then
-  cp "${ROOT_DIR}/config/openai-relay.env.example" "${ROOT_DIR}/config/openai-relay.env"
-fi
-
-if [[ ! -f "${ROOT_DIR}/config/firewall.env" ]]; then
-  cp "${ROOT_DIR}/config/firewall.env.example" "${ROOT_DIR}/config/firewall.env"
-fi
-
-if [[ ! -f "${ROOT_DIR}/config/nuget-relay.env" ]]; then
-  cp "${ROOT_DIR}/config/nuget-relay.env.example" "${ROOT_DIR}/config/nuget-relay.env"
-fi
-
-if [[ ! -f "${ROOT_DIR}/config/ado-worker.env" ]]; then
-  cp "${ROOT_DIR}/config/ado-worker.env.example" "${ROOT_DIR}/config/ado-worker.env"
+if [[ "${HAS_CRITICAL_FAIL}" -ne 0 ]]; then
+  echo "Aborting install because preflight checks failed." >&2
+  exit 1
 fi
 
 render_unit() {
