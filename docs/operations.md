@@ -519,6 +519,10 @@ Codex run starts in the guest by default. The guest-side Codex PID and log live 
 agent process. The helper still accepts a raw issue number as the first argument for the older
 workflow, but YAML is the preferred input when you want the task definition to stay available on
 disk during long agent runs.
+After the initial guest `codex exec` run exits, setup triggers one
+`codex exec resume --last` verification pass. Customize that verification
+prompt with `AGENT_SANDBOX_CODEX_POST_EXEC_VERIFICATION_PROMPT` (for example
+in `config/git-server.env`) when you need different checklist wording.
 
 To inspect or follow the guest agent from the host:
 

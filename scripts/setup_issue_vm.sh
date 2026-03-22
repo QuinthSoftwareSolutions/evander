@@ -28,6 +28,10 @@ Arguments:
 
 Environment:
   CODEX_MODEL                 Codex model to run inside the guest. Default: gpt-5.4
+  AGENT_SANDBOX_CODEX_POST_EXEC_VERIFICATION_PROMPT
+                              Optional prompt used for one follow-up
+                              `codex exec resume --last` verification pass
+                              after the initial exec run exits.
   VM_WAIT_IP_TIMEOUT_SECONDS   How long to wait for the guest to receive an IPv4 address.
                                Default: 180
   VM_WAIT_SSH_TIMEOUT_SECONDS  How long to wait for guest SSH to accept connections.
@@ -120,6 +124,9 @@ VM_WAIT_SSH_TIMEOUT_SECONDS="${VM_WAIT_SSH_TIMEOUT_SECONDS:-180}"
 SSH_PRIVATE_KEY_PATH="${SSH_PRIVATE_KEY_PATH:-${CALLER_HOME}/.ssh/id_ed25519}"
 ISSUE_FILE=""
 CODEX_MODEL="${CODEX_MODEL:-gpt-5.4}"
+DEFAULT_POST_EXEC_VERIFICATION_PROMPT="Before concluding, verify whether you completed all required checklist items. Confirm (or explicitly list gaps for): (1) appropriate unit tests for your code changes, (2) documentation updates for behavioral or operational changes, and (3) a markdown PR summary note attached with 'git notes --ref=agent-pr'. If anything is missing, complete it now."
+POST_EXEC_VERIFICATION_PROMPT="${AGENT_SANDBOX_CODEX_POST_EXEC_VERIFICATION_PROMPT:-${DEFAULT_POST_EXEC_VERIFICATION_PROMPT}}"
+POST_EXEC_VERIFICATION_PROMPT_B64="$(printf '%s' "${POST_EXEC_VERIFICATION_PROMPT}" | python3 -c 'import base64,sys; print(base64.b64encode(sys.stdin.buffer.read()).decode())')"
 
 read_issue_number_from_yaml() {
   python3 - "$1" <<'PY'
@@ -320,7 +327,7 @@ if (( START_AGENT )); then
     -o UserKnownHostsFile=/dev/null \
     -i "${SSH_PRIVATE_KEY_PATH}" \
     "${VM_USER}@${VM_IP}" \
-    "GUEST_REPO_NAME='${GUEST_REPO_NAME}' CODEX_MODEL='${CODEX_MODEL}' bash -s" <<'EOF'
+    "GUEST_REPO_NAME='${GUEST_REPO_NAME}' CODEX_MODEL='${CODEX_MODEL}' POST_EXEC_VERIFICATION_PROMPT_B64='${POST_EXEC_VERIFICATION_PROMPT_B64}' bash -s" <<'EOF'
 set -euo pipefail
 . ~/.profile
 
@@ -328,6 +335,8 @@ TARGET_DIR="$HOME/${GUEST_REPO_NAME}"
 LOG_DIR="$HOME/.agent-sandbox"
 LOG_PATH="${LOG_DIR}/codex-${GUEST_REPO_NAME}.log"
 PID_PATH="${LOG_DIR}/codex-${GUEST_REPO_NAME}.pid"
+INITIAL_PROMPT="You have been issued the task described in ${TARGET_DIR}/AGENT_TASK.yaml. Read ${HOME}/AGENTS.md and ${TARGET_DIR}/AGENT_TASK.yaml before you begin. The repository is located at ${TARGET_DIR}. Do not ask for feedback or clarifications, but work until the task is completed or until you determine that it is impossible to complete. When restore is needed, use 'dotnet restore --configfile ~/.nuget/NuGet/NuGet.Config'. For build and test, prefer '--no-restore'. When you have finished, commit and push your work using 'git push-agent'."
+POST_EXEC_VERIFICATION_PROMPT="$(python3 -c 'import base64, os; print(base64.b64decode(os.environ[\"POST_EXEC_VERIFICATION_PROMPT_B64\"]).decode(\"utf-8\"))')"
 
 mkdir -p "${LOG_DIR}"
 
@@ -339,14 +348,23 @@ if [[ -f "${PID_PATH}" ]]; then
   fi
 fi
 
-nohup codex exec \
+nohup env \
+  CODEX_MODEL="${CODEX_MODEL}" \
+  TARGET_DIR="${TARGET_DIR}" \
+  INITIAL_PROMPT="${INITIAL_PROMPT}" \
+  POST_EXEC_VERIFICATION_PROMPT="${POST_EXEC_VERIFICATION_PROMPT}" \
+  bash -lc '
+codex exec \
   --model "${CODEX_MODEL}" \
   -s danger-full-access \
   --dangerously-bypass-approvals-and-sandbox \
   --skip-git-repo-check \
   -C "${TARGET_DIR}" \
-  "You have been issued the task described in ${TARGET_DIR}/AGENT_TASK.yaml. Read ${HOME}/AGENTS.md and ${TARGET_DIR}/AGENT_TASK.yaml before you begin. The repository is located at ${TARGET_DIR}. Do not ask for feedback or clarifications, but work until the task is completed or until you determine that it is impossible to complete. When restore is needed, use 'dotnet restore --configfile ~/.nuget/NuGet/NuGet.Config'. For build and test, prefer '--no-restore'. When you have finished, commit and push your work using 'git push-agent'." \
-  >"${LOG_PATH}" 2>&1 < /dev/null &
+  "${INITIAL_PROMPT}"
+exec_status=$?
+codex exec resume --last "${POST_EXEC_VERIFICATION_PROMPT}" || true
+exit "${exec_status}"
+' >"${LOG_PATH}" 2>&1 < /dev/null &
 
 AGENT_PID=$!
 echo "${AGENT_PID}" > "${PID_PATH}"
