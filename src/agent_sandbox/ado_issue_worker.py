@@ -40,6 +40,9 @@ class WorkerConfig:
     setup_lock_path: Path
     fetch_retry_count: int
     fetch_retry_backoff_seconds: float
+    include_comments: bool
+    comments_max_count: int
+    comment_text_max_chars: int
 
     @classmethod
     def load_from_env(cls) -> WorkerConfig:
@@ -76,6 +79,9 @@ class WorkerConfig:
         ).expanduser()
         fetch_retry_count = _int_env("ADO_FETCH_RETRY_COUNT", 2, minimum=0)
         fetch_retry_backoff_seconds = _float_env("ADO_FETCH_RETRY_BACKOFF_SECONDS", 2.0, minimum=0.0)
+        include_comments = _bool_env("ADO_INCLUDE_COMMENTS", True)
+        comments_max_count = _int_env("ADO_COMMENTS_MAX_COUNT", 20, minimum=1)
+        comment_text_max_chars = _int_env("ADO_COMMENT_TEXT_MAX_CHARS", 4000, minimum=1)
 
         repo_path = _optional_env("ADO_REPO_PATH")
         session_id = _optional_env("ADO_SESSION_ID")
@@ -101,6 +107,9 @@ class WorkerConfig:
             setup_lock_path=setup_lock_path,
             fetch_retry_count=fetch_retry_count,
             fetch_retry_backoff_seconds=fetch_retry_backoff_seconds,
+            include_comments=include_comments,
+            comments_max_count=comments_max_count,
+            comment_text_max_chars=comment_text_max_chars,
         )
 
 
@@ -142,6 +151,18 @@ def _int_env(name: str, default: int, *, minimum: int | None = None) -> int:
     if minimum is not None and value < minimum:
         raise ValueError(f"{name} must be >= {minimum}.")
     return value
+
+
+def _bool_env(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    normalized = raw.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"{name} must be a boolean value (true/false).")
 
 
 def _escape_wiql_string(value: str) -> str:
@@ -298,6 +319,56 @@ def fetch_work_item_batch(
     return response.json().get("value", [])
 
 
+def _normalize_comment_text(raw_text: Any, *, max_chars: int) -> str:
+    if raw_text is None:
+        return ""
+    text = str(raw_text).strip()
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars]
+
+
+def fetch_work_item_comments(
+    client: httpx.Client,
+    config: WorkerConfig,
+    auth_header: str,
+    work_item_id: int,
+) -> list[dict[str, str]]:
+    comments_url = (
+        f"{config.organization_url}/{config.project}/_apis/wit/workItems/{work_item_id}/comments"
+    )
+    response = client.get(
+        comments_url,
+        params={
+            "api-version": "7.1-preview.4",
+            "$top": str(config.comments_max_count),
+            "order": "asc",
+        },
+        headers={"Authorization": auth_header},
+    )
+    response.raise_for_status()
+    raw_comments = response.json().get("comments", [])
+
+    normalized: list[dict[str, str]] = []
+    for comment in raw_comments:
+        text = _normalize_comment_text(
+            comment.get("text", ""),
+            max_chars=config.comment_text_max_chars,
+        )
+        if not text:
+            continue
+        revised_by = comment.get("revisedBy", {})
+        normalized.append(
+            {
+                "text": text,
+                "author": str(revised_by.get("displayName", "")).strip(),
+                "created_date": str(comment.get("createdDate", "")),
+                "modified_date": str(comment.get("modifiedDate", "")),
+            }
+        )
+    return normalized
+
+
 def gate_and_order_items(items: list[dict[str, Any]], config: WorkerConfig) -> tuple[list[dict[str, Any]], int]:
     matched: list[dict[str, Any]] = []
     skipped = 0
@@ -351,6 +422,19 @@ def poll_once(client: httpx.Client, config: WorkerConfig, auth_header: str) -> l
         candidate_ids=candidate_ids,
     )
     matched_items, skipped_count = gate_and_order_items(fetched_items, config)
+    if config.include_comments:
+        for item in matched_items:
+            work_item_id = int(item["id"])
+            try:
+                item["comments"] = fetch_work_item_comments(
+                    client=client,
+                    config=config,
+                    auth_header=auth_header,
+                    work_item_id=work_item_id,
+                )
+            except httpx.HTTPError:
+                logging.warning("work_item=%s comments_fetch_failed", work_item_id)
+                item["comments"] = []
 
     logging.info(
         "cycle polled=%d matched=%d skipped=%d",
@@ -370,6 +454,7 @@ def _build_issue_payload(work_item: dict[str, Any]) -> dict[str, Any]:
         "state": work_item.get("state", ""),
         "url": work_item.get("url", ""),
         "updated_date": work_item.get("updated_date", ""),
+        "comments": work_item.get("comments", []),
         "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
     }
 
