@@ -295,8 +295,8 @@ See [git-remotes.md](/home/jonathan/agent-sandbox/docs/git-remotes.md) for the r
 The host-side safe promotion flow is:
 
 ```bash
-./scripts/promote_agent_branch.sh /path/to/trusted-clone sample-repo agents/<session-id>/work
-./scripts/open_agent_pr.sh --create-pr --base main /path/to/trusted-clone review/<session-id>/work
+./scripts/promote_agent_branch.sh /path/to/trusted-clone sample-repo agents/<session-id>/work-<agent-suffix>
+./scripts/open_agent_pr.sh --create-pr --base main /path/to/trusted-clone review/<session-id>/work-<agent-suffix>
 ```
 
 That keeps the VM-facing bare remote as a quarantine intake only; reviewed changes reach `origin`
