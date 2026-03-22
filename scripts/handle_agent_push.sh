@@ -67,6 +67,9 @@ compose_pr_body_file() {
   local note_body_file="$2"
   local composed_body_file=""
 
+  USED_FIXED_BODY=0
+  USED_AGENT_NOTE=0
+
   if [[ -n "${fixed_body_file}" && ! -f "${fixed_body_file}" ]]; then
     notify_event \
       "Configured PR fixed body file missing (non-fatal)" \
@@ -75,6 +78,8 @@ compose_pr_body_file() {
   fi
 
   if [[ -n "${fixed_body_file}" && -n "${note_body_file}" ]]; then
+    USED_FIXED_BODY=1
+    USED_AGENT_NOTE=1
     composed_body_file="$(mktemp "${PR_BODY_DIR}/composed-pr-body-XXXXXX.md")"
     cat "${fixed_body_file}" > "${composed_body_file}"
     printf '\n\n---\n\n## Agent Summary\n\n' >> "${composed_body_file}"
@@ -84,11 +89,13 @@ compose_pr_body_file() {
   fi
 
   if [[ -n "${fixed_body_file}" ]]; then
+    USED_FIXED_BODY=1
     printf '%s\n' "${fixed_body_file}"
     return 0
   fi
 
   if [[ -n "${note_body_file}" ]]; then
+    USED_AGENT_NOTE=1
     printf '%s\n' "${note_body_file}"
     return 0
   fi
@@ -258,7 +265,14 @@ while read -r old_sha new_sha ref_name; do
   fi
 
   PR_BODY_FILE="$(compose_pr_body_file "${PR_FIXED_BODY_FILE}" "${NOTE_BODY_FILE}" || true)"
+  BODY_TRUNCATED=0
   if [[ -n "${PR_BODY_FILE}" ]]; then
+    if [[ "${PR_BODY_MAX_BYTES}" =~ ^[0-9]+$ && "${PR_BODY_MAX_BYTES}" -gt 0 ]]; then
+      BODY_SIZE_BYTES="$(wc -c < "${PR_BODY_FILE}")"
+      if [[ "${BODY_SIZE_BYTES}" -gt "${PR_BODY_MAX_BYTES}" ]]; then
+        BODY_TRUNCATED=1
+      fi
+    fi
     enforce_pr_body_size_limit "${PR_BODY_FILE}" "${PR_BODY_MAX_BYTES}"
   fi
 
@@ -277,10 +291,10 @@ while read -r old_sha new_sha ref_name; do
   if PR_OUTPUT="$("${SCRIPT_DIR}/open_agent_pr.sh" "${PR_ARGS[@]}" 2>&1)"; then
     notify_event \
       "Agent branch promoted and PR prepared" \
-      "repo=$(basename "${TRUSTED_REPO_PATH}") branch=${REVIEW_BRANCH} session_id=${SESSION_ID:-unknown} ${PR_OUTPUT}"
+      "repo=$(basename "${TRUSTED_REPO_PATH}") branch=${REVIEW_BRANCH} session_id=${SESSION_ID:-unknown} used_fixed_body=${USED_FIXED_BODY} used_agent_note=${USED_AGENT_NOTE} body_truncated=${BODY_TRUNCATED} ${PR_OUTPUT}"
   else
     notify_event \
       "Agent branch promoted but PR automation failed" \
-      "repo=$(basename "${TRUSTED_REPO_PATH}") branch=${REVIEW_BRANCH} session_id=${SESSION_ID:-unknown} error=${PR_OUTPUT}"
+      "repo=$(basename "${TRUSTED_REPO_PATH}") branch=${REVIEW_BRANCH} session_id=${SESSION_ID:-unknown} used_fixed_body=${USED_FIXED_BODY} used_agent_note=${USED_AGENT_NOTE} body_truncated=${BODY_TRUNCATED} error=${PR_OUTPUT}"
   fi
 done
