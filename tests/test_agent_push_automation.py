@@ -34,3 +34,12 @@ def test_bare_repo_flow_includes_hook_and_azure_support() -> None:
     assert '"api-version": "7.1"' in open_pr or "?api-version=7.1" in open_pr
     assert "AGENT_PR_RESULT " in open_pr
     assert "runtime/pr-map.json" in open_pr
+
+
+def test_issue_vm_setup_configures_agent_remote_for_push_alias() -> None:
+    setup_issue_vm = Path("/home/jonathan/agent-sandbox/scripts/setup_issue_vm.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'git -C "${TARGET_DIR}" remote add agent "${REMOTE_URL}"' in setup_issue_vm
+    assert "git push agent HEAD:refs/heads/agents/" in setup_issue_vm
