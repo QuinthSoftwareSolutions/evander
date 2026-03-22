@@ -211,6 +211,11 @@ default. The guest-side Codex log and PID file live under `/home/agent/.agent-sa
 Use `--dry-run` if you want the VM prepared without starting the agent process. The
 helper still accepts a raw issue number as the first argument for the older workflow, but
 YAML is the preferred input for long-running agent sessions.
+After the initial `codex exec` run exits, the helper now performs one
+`codex exec resume --last` follow-up pass to verify checklist completion
+(tests, docs, and PR markdown note). Override that follow-up prompt text with
+`AGENT_SANDBOX_CODEX_POST_EXEC_VERIFICATION_PROMPT` (for example in
+`config/git-server.env`).
 
 For operator visibility from the host, use:
 
