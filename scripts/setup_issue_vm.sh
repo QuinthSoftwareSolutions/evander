@@ -112,8 +112,6 @@ DEFAULT_REPO_SOURCE="${AGENT_SANDBOX_DEFAULT_REPO_SOURCE:-${ROOT_DIR}}"
 REPO_SOURCE="${3:-${DEFAULT_REPO_SOURCE}}"
 GIT_REMOTE_ROOT="${AGENT_SANDBOX_GIT_ROOT:-${ROOT_DIR}/git-remotes}"
 GIT_SSH_ALIAS="${AGENT_SANDBOX_GIT_SSH_ALIAS:-agent-sandbox-git-host}"
-# shellcheck source=lib/vm_network.sh
-source "${SCRIPT_DIR}/lib/vm_network.sh"
 CALLER_USER="${SUDO_USER:-$USER}"
 CALLER_HOME="$(getent passwd "${CALLER_USER}" | cut -d: -f6)"
 SSH_PUBLIC_KEY_FILE="${SSH_PUBLIC_KEY_FILE:-${CALLER_HOME}/.ssh/id_ed25519.pub}"
@@ -199,6 +197,9 @@ if virsh dominfo "${VM_NAME}" >/dev/null 2>&1 || sudo -n virsh dominfo "${VM_NAM
   echo "Destroy it first with: sudo ./scripts/destroy_agent_vm.sh ${VM_NAME}" >&2
   exit 1
 fi
+
+# shellcheck source=lib/vm_network.sh
+source "${SCRIPT_DIR}/lib/vm_network.sh"
 
 "${SCRIPT_DIR}/prewarm_nuget_cache.sh" "${PREWARM_TARGET}"
 sudo SSH_PUBLIC_KEY_FILE="${SSH_PUBLIC_KEY_FILE}" "${SCRIPT_DIR}/launch_agent_vm.sh" "${VM_NAME}" "${SESSION_ID}"

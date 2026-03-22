@@ -11,6 +11,7 @@ from typing import Annotated
 
 import httpx
 import typer
+from pydantic import ValidationError
 
 from .ado_issue_worker import run_worker_command
 from .config import GatewayConfig, load_config
@@ -131,16 +132,14 @@ def status(config: ConfigOption = Path("config/gateway.yaml"), as_json: Annotate
     }
 
     cfg: GatewayConfig | None = None
-    runtime = None
     try:
         cfg = load_config(config)
-        runtime = build_runtime(cfg)
         report["config"] = {"loaded": True, "path": str(config), "error": None}
     except Exception as exc:
         report["overall"] = "degraded"
         report["config"] = {"loaded": False, "path": str(config), "error": str(exc)}
 
-    if cfg is not None and runtime is not None:
+    if cfg is not None:
         runtime_paths = [
             _path_status(cfg.runtime_dir, is_dir=True),
             _path_status(cfg.session_store_path),
@@ -181,19 +180,36 @@ def status(config: ConfigOption = Path("config/gateway.yaml"), as_json: Annotate
             if not endpoint.reachable:
                 report["overall"] = "degraded"
 
-        sessions = list(runtime.sessions.read_all().values())
-        now = datetime.now(UTC)
-        active = [session for session in sessions if session.expires_at > now]
-        expired = [session for session in sessions if session.expires_at <= now]
-        next_expiration = min((session.expires_at for session in active), default=None)
-        last_expiration = max((session.expires_at for session in sessions), default=None)
-        report["sessions"] = {
-            "total": len(sessions),
-            "active": len(active),
-            "expired": len(expired),
-            "next_expiration": next_expiration.isoformat() if next_expiration else None,
-            "last_expiration": last_expiration.isoformat() if last_expiration else None,
-        }
+        if cfg.session_store_path.exists():
+            try:
+                raw_sessions = json.loads(cfg.session_store_path.read_text(encoding="utf-8"))
+                sessions = [
+                    SessionManifest.model_validate(value)
+                    for value in raw_sessions.values()
+                ]
+            except (json.JSONDecodeError, ValidationError, OSError) as exc:
+                report["overall"] = "degraded"
+                report["sessions"] = {
+                    "total": 0,
+                    "active": 0,
+                    "expired": 0,
+                    "next_expiration": None,
+                    "last_expiration": None,
+                    "error": str(exc),
+                }
+            else:
+                now = datetime.now(UTC)
+                active = [session for session in sessions if session.expires_at > now]
+                expired = [session for session in sessions if session.expires_at <= now]
+                next_expiration = min((session.expires_at for session in active), default=None)
+                last_expiration = max((session.expires_at for session in sessions), default=None)
+                report["sessions"] = {
+                    "total": len(sessions),
+                    "active": len(active),
+                    "expired": len(expired),
+                    "next_expiration": next_expiration.isoformat() if next_expiration else None,
+                    "last_expiration": last_expiration.isoformat() if last_expiration else None,
+                }
 
     if as_json:
         typer.echo(json.dumps(report, indent=2, sort_keys=True))

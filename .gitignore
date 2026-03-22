@@ -5,3 +5,5 @@ runtime/
 *.pyc
 *.egg-info/
 git-remotes/
+config/git-server.env
+config/nuget-relay.env

@@ -69,6 +69,7 @@ compose_pr_body_file() {
 
   USED_FIXED_BODY=0
   USED_AGENT_NOTE=0
+  COMPOSED_PR_BODY_FILE=""
 
   if [[ -n "${fixed_body_file}" && ! -f "${fixed_body_file}" ]]; then
     notify_event \
@@ -84,19 +85,19 @@ compose_pr_body_file() {
     cat "${fixed_body_file}" > "${composed_body_file}"
     printf '\n\n---\n\n## Agent Summary\n\n' >> "${composed_body_file}"
     cat "${note_body_file}" >> "${composed_body_file}"
-    printf '%s\n' "${composed_body_file}"
+    COMPOSED_PR_BODY_FILE="${composed_body_file}"
     return 0
   fi
 
   if [[ -n "${fixed_body_file}" ]]; then
     USED_FIXED_BODY=1
-    printf '%s\n' "${fixed_body_file}"
+    COMPOSED_PR_BODY_FILE="${fixed_body_file}"
     return 0
   fi
 
   if [[ -n "${note_body_file}" ]]; then
     USED_AGENT_NOTE=1
-    printf '%s\n' "${note_body_file}"
+    COMPOSED_PR_BODY_FILE="${note_body_file}"
     return 0
   fi
 
@@ -264,7 +265,14 @@ while read -r old_sha new_sha ref_name; do
       "repo=$(basename "${TRUSTED_REPO_PATH}") new_sha=${new_sha} branch=${REVIEW_BRANCH} session_id=${SESSION_ID:-unknown}"
   fi
 
-  PR_BODY_FILE="$(compose_pr_body_file "${PR_FIXED_BODY_FILE}" "${NOTE_BODY_FILE}" || true)"
+  USED_FIXED_BODY=0
+  USED_AGENT_NOTE=0
+  COMPOSED_PR_BODY_FILE=""
+  if compose_pr_body_file "${PR_FIXED_BODY_FILE}" "${NOTE_BODY_FILE}"; then
+    PR_BODY_FILE="${COMPOSED_PR_BODY_FILE}"
+  else
+    PR_BODY_FILE=""
+  fi
   BODY_TRUNCATED=0
   if [[ -n "${PR_BODY_FILE}" ]]; then
     if [[ "${PR_BODY_MAX_BYTES}" =~ ^[0-9]+$ && "${PR_BODY_MAX_BYTES}" -gt 0 ]]; then
