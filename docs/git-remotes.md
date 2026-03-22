@@ -201,6 +201,14 @@ When combining Git push automation with PR feedback handling:
 - Guest heartbeat logs: `/home/agent/.agent-sandbox/heartbeat.log`, `codex-heartbeat-run.log`.
 - Host Git automation log: `runtime/agent-events.log`.
 - Host feedback state: `runtime/pr-feedback-store.json`, `runtime/pr-reply-idempotency.json`.
+- Auto-PR body composition flags are appended to each promotion event as key-value pairs:
+  - `used_fixed_body=0|1`
+  - `used_agent_note=0|1`
+  - `body_truncated=0|1`
+  - Example audit command:
+    ```bash
+    rg "Agent branch promoted.*used_fixed_body=.*used_agent_note=.*body_truncated=" runtime/agent-events.log
+    ```
 - Healthy pattern:
   - feedback appears once in store,
   - reply retries collapse to deduplicated result,
