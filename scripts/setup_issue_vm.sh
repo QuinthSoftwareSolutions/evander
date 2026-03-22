@@ -168,7 +168,11 @@ if [[ ! -e "${PREWARM_TARGET}" ]]; then
   exit 1
 fi
 
-eval "$("${SCRIPT_DIR}/resolve_repo_source.sh" --print-env "${REPO_SOURCE}")"
+if ! RESOLVED_ENV="$("${SCRIPT_DIR}/resolve_repo_source.sh" --print-env "${REPO_SOURCE}")"; then
+  echo "Failed to resolve repo source: ${REPO_SOURCE}" >&2
+  exit 1
+fi
+eval "${RESOLVED_ENV}"
 
 GUEST_REPO_NAME="${GUEST_REPO_NAME_OVERRIDE:-${RESOLVED_REPO_NAME}}"
 

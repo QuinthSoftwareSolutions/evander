@@ -73,6 +73,7 @@ infer_repo_name() {
     name="${trimmed##*/}"
   fi
 
+  name="${name##*/}"
   name="${name%.git}"
   if [[ -z "${name}" ]]; then
     echo "Could not infer repository name from source: ${source}" >&2
@@ -87,7 +88,15 @@ checkout_default_branch() {
   local worktree_path="$2"
   local default_branch
 
-  default_branch="$(git --git-dir="${bare_path}" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##' || true)"
+  default_branch="$(git --git-dir="${bare_path}" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+
+  if [[ -z "${default_branch}" ]]; then
+    default_branch="$(git --git-dir="${bare_path}" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##' || true)"
+  fi
+
+  if [[ -z "${default_branch}" ]]; then
+    default_branch="$(git --git-dir="${bare_path}" for-each-ref --format='%(refname:short)' refs/heads | head -n1)"
+  fi
 
   if [[ -z "${default_branch}" ]]; then
     default_branch="$(git --git-dir="${bare_path}" for-each-ref --format='%(refname:short)' refs/remotes/origin | sed -n 's#^origin/##p' | head -n1)"
@@ -98,6 +107,7 @@ checkout_default_branch() {
     exit 1
   fi
 
+  git -C "${worktree_path}" fetch --prune origin '+refs/heads/*:refs/remotes/origin/*' >/dev/null
   git -C "${worktree_path}" checkout -B "${default_branch}" "origin/${default_branch}" >/dev/null
   git -C "${worktree_path}" reset --hard "origin/${default_branch}" >/dev/null
   git -C "${worktree_path}" clean -fd >/dev/null
