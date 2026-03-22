@@ -4,6 +4,7 @@ import json
 import subprocess
 from pathlib import Path
 
+import httpx
 import pytest
 import yaml
 
@@ -11,7 +12,9 @@ from agent_sandbox.ado_issue_worker import (
     ProcessedWorkItemStore,
     WorkerConfig,
     _build_setup_command,
+    fetch_work_item_comments,
     gate_and_order_items,
+    poll_once,
     process_work_item,
 )
 
@@ -38,6 +41,9 @@ def worker_config(tmp_path: Path) -> WorkerConfig:
         setup_lock_path=tmp_path / "setup.lock",
         fetch_retry_count=2,
         fetch_retry_backoff_seconds=0.1,
+        include_comments=True,
+        comments_max_count=20,
+        comment_text_max_chars=4000,
     )
 
 
@@ -160,6 +166,9 @@ def test_build_setup_command_includes_optional_arguments(tmp_path: Path) -> None
         setup_lock_path=tmp_path / "setup.lock",
         fetch_retry_count=2,
         fetch_retry_backoff_seconds=0.1,
+        include_comments=True,
+        comments_max_count=20,
+        comment_text_max_chars=4000,
     )
     cmd = _build_setup_command(config, tmp_path / "work-item-10.yaml")
     assert cmd == [
@@ -394,3 +403,98 @@ def test_setup_issue_vm_invocation_once_per_newly_eligible_item(
     assert len(calls) == 2
     called_yaml_paths = {Path(cmd[4]).name for cmd in calls}
     assert called_yaml_paths == {"work-item-501.yaml", "work-item-502.yaml"}
+
+
+def test_fetch_work_item_comments_normalizes_and_truncates(
+    worker_config: WorkerConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    worker_config = WorkerConfig(
+        **{
+            **worker_config.__dict__,
+            "comment_text_max_chars": 5,
+            "comments_max_count": 3,
+        }
+    )
+
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return {
+                "comments": [
+                    {
+                        "text": "  abcdef  ",
+                        "createdDate": "2026-03-21T00:00:00Z",
+                        "modifiedDate": "2026-03-21T01:00:00Z",
+                        "revisedBy": {"displayName": "Ada"},
+                    },
+                    {"text": "   "},
+                    {"text": None},
+                ]
+            }
+
+    captured: dict[str, object] = {}
+
+    def fake_get(_self: object, url: str, **kwargs: object) -> FakeResponse:
+        captured["url"] = url
+        captured["params"] = kwargs.get("params")
+        return FakeResponse()
+
+    monkeypatch.setattr("httpx.Client.get", fake_get)
+    with httpx.Client() as client:
+        comments = fetch_work_item_comments(
+            client=client,
+            config=worker_config,
+            auth_header="Basic token",
+            work_item_id=77,
+        )
+
+    assert str(captured["url"]).endswith("/_apis/wit/workItems/77/comments")
+    assert captured["params"] == {"api-version": "7.1-preview.4", "$top": "3", "order": "asc"}
+    assert comments == [
+        {
+            "text": "abcde",
+            "author": "Ada",
+            "created_date": "2026-03-21T00:00:00Z",
+            "modified_date": "2026-03-21T01:00:00Z",
+        }
+    ]
+
+
+def test_poll_once_attaches_comments(
+    worker_config: WorkerConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "agent_sandbox.ado_issue_worker.fetch_candidate_ids",
+        lambda **kwargs: [10],
+    )
+    monkeypatch.setattr(
+        "agent_sandbox.ado_issue_worker.fetch_work_item_batch",
+        lambda **kwargs: [
+            {
+                "id": 10,
+                "url": "https://example/10",
+                "fields": {
+                    "System.Title": "Item 10",
+                    "System.Description": "desc",
+                    "System.Tags": "truman",
+                    "System.State": "Committed",
+                    "System.ChangedDate": "2026-03-21T00:00:00Z",
+                    "System.AreaPath": "Root",
+                    "System.IterationPath": "Team",
+                },
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        "agent_sandbox.ado_issue_worker.fetch_work_item_comments",
+        lambda **kwargs: [{"text": "Needs x", "author": "Ann", "created_date": "", "modified_date": ""}],
+    )
+
+    with httpx.Client() as client:
+        items = poll_once(client=client, config=worker_config, auth_header="Basic token")
+
+    assert len(items) == 1
+    assert items[0]["comments"] == [{"text": "Needs x", "author": "Ann", "created_date": "", "modified_date": ""}]
