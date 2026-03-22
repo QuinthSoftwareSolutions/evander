@@ -1,11 +1,24 @@
 from __future__ import annotations
 
 from collections import Counter
+from ipaddress import ip_network
 from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import AliasChoices, BaseModel, Field, model_validator
+from pydantic import (
+    AliasChoices,
+    AnyHttpUrl,
+    BaseModel,
+    Field,
+    IPvAnyNetwork,
+    TypeAdapter,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
+
+_HTTP_URL_ADAPTER = TypeAdapter(AnyHttpUrl)
 
 
 class MailboxConfig(BaseModel):
@@ -47,7 +60,7 @@ class GatewayConfig(BaseModel):
     discord_operator_user_allowlist: list[str] = Field(default_factory=list)
     discord_operator_channel_allowlist: list[str] = Field(default_factory=list)
     discord_poll_operator_dms: bool = False
-    bind_network_cidr: str = "192.168.250.0/24"
+    bind_network_cidr: IPvAnyNetwork = "192.168.250.0/24"
     gateway_url: str = "http://192.168.250.1:8000/mcp"
     openai_relay_host: str = "0.0.0.0"
     openai_relay_port: int = 11434
@@ -88,6 +101,56 @@ class GatewayConfig(BaseModel):
     redacted_keys: set[str] = Field(
         default_factory=lambda: {"body", "body_text", "authorization", "token"}
     )
+
+    @field_validator(
+        "gateway_url",
+        "discord_api_base_url",
+        "openai_api_base_url",
+        "nuget_public_feed_base_url",
+        "nuget_azure_feed_base_url",
+        mode="before",
+    )
+    @classmethod
+    def normalize_http_url_fields(cls, value: object, info) -> object:
+        if not isinstance(value, str):
+            return value
+        normalized = value.strip().rstrip("/")
+        if not normalized:
+            raise ValueError(f"{info.field_name} cannot be empty")
+        return normalized
+
+    @field_validator(
+        "gateway_url",
+        "discord_api_base_url",
+        "openai_api_base_url",
+        "nuget_public_feed_base_url",
+        "nuget_azure_feed_base_url",
+    )
+    @classmethod
+    def validate_http_url_fields(cls, value: str, info) -> str:
+        try:
+            _HTTP_URL_ADAPTER.validate_python(value)
+        except ValidationError as exc:
+            raise ValueError(
+                f"{info.field_name} must be a valid http(s) URL, got {value!r}"
+            ) from exc
+        return value
+
+    @field_validator("bind_network_cidr", mode="before")
+    @classmethod
+    def normalize_bind_network_cidr(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("bind_network_cidr cannot be empty")
+        try:
+            network = ip_network(normalized, strict=True)
+        except ValueError as exc:
+            raise ValueError(
+                "bind_network_cidr must be a valid CIDR network (for example: 192.168.250.0/24)"
+            ) from exc
+        return str(network)
 
     @model_validator(mode="after")
     def apply_runtime_path_defaults(self) -> GatewayConfig:

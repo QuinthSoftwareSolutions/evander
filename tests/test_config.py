@@ -72,3 +72,58 @@ def test_unique_email_mailbox_ids_pass_validation_with_alias_fields() -> None:
         {"access_token": "PRIMARY_TOKEN"},
         {"access_token": "SECONDARY_TOKEN"},
     ]
+
+
+@pytest.mark.parametrize(
+    ("field_name", "value"),
+    [
+        ("gateway_url", " https://example.test/mcp/ "),
+        ("discord_api_base_url", " https://discord.com/api/v10/ "),
+        ("openai_api_base_url", " https://api.openai.com/v1/ "),
+        ("nuget_public_feed_base_url", " https://api.nuget.org/ "),
+        (
+            "nuget_azure_feed_base_url",
+            " https://pkgs.dev.azure.com/example/example/_packaging/example/nuget/ ",
+        ),
+    ],
+)
+def test_http_url_fields_are_trimmed_and_trailing_slash_is_removed(
+    field_name: str, value: str
+) -> None:
+    config = GatewayConfig.model_validate({field_name: value})
+    assert getattr(config, field_name) == value.strip().rstrip("/")
+
+
+@pytest.mark.parametrize(
+    ("field_name", "value"),
+    [
+        ("gateway_url", "ftp://example.test/mcp"),
+        ("discord_api_base_url", "discord.com/api/v10"),
+        ("openai_api_base_url", "not-a-url"),
+        ("nuget_public_feed_base_url", "://missing-scheme"),
+        ("nuget_azure_feed_base_url", ""),
+    ],
+)
+def test_http_url_fields_reject_invalid_values_with_field_name(
+    field_name: str, value: str
+) -> None:
+    with pytest.raises(ValueError, match=field_name):
+        GatewayConfig.model_validate({field_name: value})
+
+
+def test_bind_network_cidr_trims_whitespace_and_normalizes() -> None:
+    config = GatewayConfig.model_validate({"bind_network_cidr": " 192.168.250.0/24 "})
+    assert str(config.bind_network_cidr) == "192.168.250.0/24"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "",
+        "not-a-cidr",
+        "192.168.250.1/24",
+    ],
+)
+def test_bind_network_cidr_rejects_invalid_values_with_clear_error(value: str) -> None:
+    with pytest.raises(ValueError, match="bind_network_cidr"):
+        GatewayConfig.model_validate({"bind_network_cidr": value})
