@@ -17,7 +17,7 @@ TARGET_DIR="${HEARTBEAT_TARGET_DIR:-${PWD}}"
 TASK_FILE="${HEARTBEAT_TASK_FILE:-${TARGET_DIR}/AGENT_TASK.yaml}"
 
 feedback_instruction() {
-  printf '%s' "New human/provider feedback is pending for session ${SESSION_ID}. Fetch unread feedback using MCP tools (list_unread_feedback with your latest cursor), apply requested updates in ${TARGET_DIR}, then continue/finish the task from ${TASK_FILE}. Keep feedback handling idempotent, and only advance cursor state after durable handling. When restore is needed, use 'dotnet restore --configfile ~/.nuget/NuGet/NuGet.Config'. For build and test, prefer '--no-restore'. Commit and push with 'git push-agent' when ready."
+  printf '%s' "New human/provider feedback is pending for session ${SESSION_ID}. Fetch unread feedback using MCP tools (list_unread_feedback with your latest cursor and limit=1), apply requested updates in ${TARGET_DIR}, then continue/finish the task from ${TASK_FILE}. Keep feedback handling idempotent, and only advance cursor state after durable handling. When restore is needed, use 'dotnet restore --configfile ~/.nuget/NuGet/NuGet.Config'. For build and test, prefer '--no-restore'. Commit and push with 'git push-agent' when ready."
 }
 
 mkdir -p "${STATE_DIR}"

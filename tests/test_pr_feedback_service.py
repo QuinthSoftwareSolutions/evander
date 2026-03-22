@@ -119,3 +119,18 @@ def test_cursor_advancement_prevents_reprocessing_old_comments(tmp_path: Path) -
     second_batch = service.list_unread_feedback(streams=stream, cursor=first_batch.next_cursor)
     assert second_batch.feedback == []
     assert second_batch.next_cursor == "2026-01-02T00:00:00Z"
+
+
+def test_list_unread_feedback_limit_returns_single_oldest_item(tmp_path: Path) -> None:
+    store_path = tmp_path / "pr-feedback-store.json"
+    _write_store(store_path)
+    service = PrFeedbackService(store_path)
+
+    response = service.list_unread_feedback(
+        streams=[{"provider": "github", "repo": "org/repo", "pr_id": "17"}],
+        cursor="2025-12-31T00:00:00Z",
+        limit=1,
+    )
+
+    assert [item.feedback_id for item in response.feedback] == ["github:review:1"]
+    assert response.next_cursor == "2026-01-01T00:00:00Z"

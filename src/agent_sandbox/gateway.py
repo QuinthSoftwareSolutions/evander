@@ -159,12 +159,16 @@ def create_server(context: RuntimeContext) -> FastMCP:
             raise
 
     @server.tool()
-    def list_unread_feedback(session_id: str, cursor: str | None = None) -> dict[str, Any]:
-        args = ListUnreadFeedbackRequest(session_id=session_id, cursor=cursor).model_dump(mode="json")
+    def list_unread_feedback(
+        session_id: str, cursor: str | None = None, limit: int | None = None
+    ) -> dict[str, Any]:
+        args = ListUnreadFeedbackRequest(session_id=session_id, cursor=cursor, limit=limit).model_dump(mode="json")
         try:
             session = context.policy.require_tool(session_id, ToolName.LIST_UNREAD_FEEDBACK)
             streams = context.policy.require_pr_feedback_streams(session)
-            response = context.pr_feedback_service.list_unread_feedback(streams=streams, cursor=cursor)
+            response = context.pr_feedback_service.list_unread_feedback(
+                streams=streams, cursor=cursor, limit=limit
+            )
             result = response.model_dump(mode="json")
             audit_success(
                 session_id,

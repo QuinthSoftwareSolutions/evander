@@ -553,6 +553,7 @@ class _FakePrFeedbackService:
     def __init__(self) -> None:
         self.last_streams: list[dict[str, str]] = []
         self.last_cursor: str | None = None
+        self.last_limit: int | None = None
 
     def has_pending_feedback(
         self, *, streams: list[dict[str, str]], cursor: str | None = None
@@ -567,10 +568,11 @@ class _FakePrFeedbackService:
         )
 
     def list_unread_feedback(
-        self, *, streams: list[dict[str, str]], cursor: str | None = None
+        self, *, streams: list[dict[str, str]], cursor: str | None = None, limit: int | None = None
     ) -> SimpleNamespace:
         self.last_streams = streams
         self.last_cursor = cursor
+        self.last_limit = limit
         payload = {
             "feedback": [
                 {
@@ -837,11 +839,12 @@ def test_list_unread_feedback_returns_items_and_audits_result_count(tmp_path: Pa
     result = call_tool(
         server,
         "list_unread_feedback",
-        {"session_id": "session-1", "cursor": "2025-12-31T00:00:00Z"},
+        {"session_id": "session-1", "cursor": "2025-12-31T00:00:00Z", "limit": 1},
     )
 
     assert result["feedback"][0]["feedback_id"] == "github:review_comment:7"
     assert result["next_cursor"] == "2026-01-01T00:00:00Z"
+    assert context.pr_feedback_service.last_limit == 1
     event = read_audit_events(context.config.audit_log_path)[-1]
     assert event["tool_name"] == ToolName.LIST_UNREAD_FEEDBACK.value
     assert event["result"] == {"count": 1, "next_cursor": "2026-01-01T00:00:00Z"}

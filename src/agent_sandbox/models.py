@@ -143,6 +143,7 @@ class HasPendingFeedbackResponse(BaseModel):
 class ListUnreadFeedbackRequest(BaseModel):
     session_id: str
     cursor: str | None = None
+    limit: int | None = Field(default=None, ge=1)
 
 
 class ListUnreadFeedbackResponse(BaseModel):
