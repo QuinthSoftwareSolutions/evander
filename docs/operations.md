@@ -35,6 +35,18 @@ Install these packages on the Ubuntu host before using the scripts:
 - The launch script also exposes a read-only shared NuGet cache via `virtiofs` at `/opt/agent-sandbox/nuget-cache-ro` inside the guest.
 - Override per VM with `DISK_SIZE_GB=40 sudo ./scripts/launch_agent_vm.sh ...`.
 
+## First Troubleshooting Step
+
+Before debugging individual scripts or services, run the consolidated host status command:
+
+- Human-readable summary:
+  - `agent-sandbox-cli status --config config/gateway.yaml`
+- Machine-readable output:
+  - `agent-sandbox-cli status --config config/gateway.yaml --json`
+
+The status output reports config load status, runtime store path permissions, key systemd unit states,
+gateway/relay endpoint reachability, and active/expired session summary.
+
 ## SSH Access
 
 - New VMs install `openssh-server`.
