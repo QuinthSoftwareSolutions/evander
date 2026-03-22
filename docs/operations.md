@@ -108,6 +108,17 @@ Install these packages on the Ubuntu host before using the scripts:
 - The scaffold includes `agent-sandbox-openai-relay`, a host-side OpenAI-compatible proxy that reads the real API key only from the host environment and forwards guest requests to `https://api.openai.com/v1`.
 - For OpenAI/Codex-backed workflows while keeping guests off the public internet, run the relay on the host and leave `LLM_BASE_URL` at its default `http://192.168.250.1:11434/v1`.
 
+### Relay streaming troubleshooting
+
+When diagnosing streamed `/v1/*` relay calls, inspect host relay logs for these structured events:
+
+- `relay_stream_request_start` with `method`, `path`, `upstream`, and stream counters (`stream_started`, `clean_end`, `transport_terminated_end`).
+- `relay_stream_upstream_response` with upstream `status_code` and `content_type`.
+- `relay_stream_completed` for clean ends, with per-request `chunks` and `bytes` totals plus global counters.
+- `relay_stream_transport_terminated` when `ReadError`/`RemoteProtocolError` is suppressed after partial or full delivery. This warning includes `exception_class`, `exception_message`, `chunks`, `bytes`, and global counters.
+
+A transport-terminated warning without client-visible failure can be expected for some upstream SSE responses that close abruptly after emitting the final event.
+
 ## Host-Side Discord Access
 
 - Set `discord_backend: "bot_api"` in `config/gateway.yaml` to enable the provider-backed Discord adapter.
