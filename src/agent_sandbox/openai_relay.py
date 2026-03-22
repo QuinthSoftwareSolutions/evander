@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 from collections.abc import AsyncIterator
 
@@ -12,6 +13,9 @@ from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
 from .config import GatewayConfig, load_config
+
+logger = logging.getLogger(__name__)
+
 
 HOP_BY_HOP_HEADERS = {
     "authorization",
@@ -33,6 +37,9 @@ class OpenAIRelay:
     def __init__(self, config: GatewayConfig, transport: httpx.AsyncBaseTransport | None = None) -> None:
         self.config = config
         self.transport = transport
+        self.stream_started_count = 0
+        self.stream_clean_end_count = 0
+        self.stream_transport_terminated_count = 0
 
     def create_app(self) -> Starlette:
         relay = self
@@ -109,6 +116,19 @@ class OpenAIRelay:
         headers: dict[str, str],
         request_body: bytes,
     ) -> StreamingResponse:
+        self.stream_started_count += 1
+        stream_id = self.stream_started_count
+        logger.info(
+            "relay_stream_request_start stream_id=%s method=%s path=%s upstream=%s stream_started=%s clean_end=%s transport_terminated_end=%s",
+            stream_id,
+            request.method,
+            request.url.path,
+            upstream_url,
+            self.stream_started_count,
+            self.stream_clean_end_count,
+            self.stream_transport_terminated_count,
+        )
+
         client = httpx.AsyncClient(
             timeout=self.config.openai_relay_timeout_seconds,
             transport=self.transport,
@@ -120,17 +140,49 @@ class OpenAIRelay:
             content=request_body,
         )
         upstream_response = await upstream_stream.__aenter__()
+        logger.info(
+            "relay_stream_upstream_response stream_id=%s status_code=%s content_type=%s",
+            stream_id,
+            upstream_response.status_code,
+            upstream_response.headers.get("content-type", ""),
+        )
 
         async def iterator() -> AsyncIterator[bytes]:
+            bytes_sent = 0
+            chunk_count = 0
             try:
                 try:
                     async for chunk in upstream_response.aiter_raw():
+                        chunk_count += 1
+                        bytes_sent += len(chunk)
                         yield chunk
-                except (httpx.ReadError, httpx.RemoteProtocolError):
+                except (httpx.ReadError, httpx.RemoteProtocolError) as exc:
                     # Some upstream streaming responses terminate with a transport-level
                     # read error after the final bytes have already been delivered.
                     # Treat that as end-of-stream instead of crashing the relay.
+                    self.stream_transport_terminated_count += 1
+                    logger.warning(
+                        "relay_stream_transport_terminated stream_id=%s exception_class=%s exception_message=%s chunks=%s bytes=%s stream_started=%s clean_end=%s transport_terminated_end=%s",
+                        stream_id,
+                        exc.__class__.__name__,
+                        str(exc),
+                        chunk_count,
+                        bytes_sent,
+                        self.stream_started_count,
+                        self.stream_clean_end_count,
+                        self.stream_transport_terminated_count,
+                    )
                     return
+                self.stream_clean_end_count += 1
+                logger.info(
+                    "relay_stream_completed stream_id=%s end_reason=clean chunks=%s bytes=%s stream_started=%s clean_end=%s transport_terminated_end=%s",
+                    stream_id,
+                    chunk_count,
+                    bytes_sent,
+                    self.stream_started_count,
+                    self.stream_clean_end_count,
+                    self.stream_transport_terminated_count,
+                )
             finally:
                 await upstream_stream.__aexit__(None, None, None)
                 await client.aclose()

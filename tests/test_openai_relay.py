@@ -6,7 +6,7 @@ import httpx
 from starlette.testclient import TestClient
 
 from agent_sandbox.config import GatewayConfig
-from agent_sandbox.openai_relay import create_app
+from agent_sandbox.openai_relay import OpenAIRelay, create_app
 
 
 def make_config(tmp_path: Path) -> GatewayConfig:
@@ -77,3 +77,93 @@ def test_relay_strips_content_encoding_from_response(tmp_path: Path) -> None:
 
     assert response.status_code == 200
     assert "content-encoding" not in response.headers
+
+
+class _ErrorAfterChunkStream(httpx.AsyncByteStream):
+    async def __aiter__(self):
+        yield b"data: first\n\n"
+        raise httpx.ReadError("peer closed stream")
+
+    async def aclose(self) -> None:
+        return None
+
+
+class _CleanStream(httpx.AsyncByteStream):
+    async def __aiter__(self):
+        yield b"data: first\n\n"
+        yield b"data: second\n\n"
+
+    async def aclose(self) -> None:
+        return None
+
+
+def test_relay_stream_transport_errors_are_suppressed_with_warning(
+    tmp_path: Path, caplog
+) -> None:
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            stream=_ErrorAfterChunkStream(),
+        )
+
+    transport = httpx.MockTransport(handler)
+    config = make_config(tmp_path)
+    relay = OpenAIRelay(config, transport=transport)
+    app = relay.create_app()
+    client = TestClient(app)
+    os.environ["OPENAI_API_KEY"] = "test-key"
+
+    caplog.set_level("INFO", logger="agent_sandbox.openai_relay")
+
+    with client.stream(
+        "POST",
+        "/v1/responses",
+        headers={"accept": "text/event-stream"},
+        json={"model": "gpt-5.2-codex", "input": "hello"},
+    ) as response:
+        body = b"".join(response.iter_bytes())
+
+    assert response.status_code == 200
+    assert b"data: first" in body
+    assert relay.stream_started_count == 1
+    assert relay.stream_clean_end_count == 0
+    assert relay.stream_transport_terminated_count == 1
+    assert "relay_stream_transport_terminated" in caplog.text
+    assert "exception_class=ReadError" in caplog.text
+
+
+def test_relay_stream_clean_end_logs_completion(tmp_path: Path, caplog) -> None:
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            stream=_CleanStream(),
+        )
+
+    transport = httpx.MockTransport(handler)
+    config = make_config(tmp_path)
+    relay = OpenAIRelay(config, transport=transport)
+    app = relay.create_app()
+    client = TestClient(app)
+    os.environ["OPENAI_API_KEY"] = "test-key"
+
+    caplog.set_level("INFO", logger="agent_sandbox.openai_relay")
+
+    with client.stream(
+        "POST",
+        "/v1/responses",
+        headers={"accept": "text/event-stream"},
+        json={"model": "gpt-5.2-codex", "input": "hello"},
+    ) as response:
+        body = b"".join(response.iter_bytes())
+
+    assert response.status_code == 200
+    assert b"data: first" in body
+    assert b"data: second" in body
+    assert relay.stream_started_count == 1
+    assert relay.stream_clean_end_count == 1
+    assert relay.stream_transport_terminated_count == 0
+    assert "relay_stream_request_start" in caplog.text
+    assert "relay_stream_upstream_response" in caplog.text
+    assert "relay_stream_completed" in caplog.text
