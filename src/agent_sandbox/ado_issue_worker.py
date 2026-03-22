@@ -152,7 +152,7 @@ def _build_wiql(config: WorkerConfig) -> str:
     clauses = [
         "[System.TeamProject] = @project",
         "[System.State] = 'Committed'",
-        "[System.Tags] CONTAINS 'true-agent'",
+        "[System.Tags] CONTAINS 'truman'",
     ]
 
     if config.area_filters:
@@ -307,7 +307,7 @@ def gate_and_order_items(items: list[dict[str, Any]], config: WorkerConfig) -> t
         state = str(fields.get("System.State", "")).strip()
         normalized_tags = _normalize_tags(fields.get("System.Tags"))
 
-        if state != "Committed" or "true-agent" not in normalized_tags:
+        if state != "Committed" or "truman" not in normalized_tags:
             skipped += 1
             continue
 
@@ -576,7 +576,7 @@ def run_worker_command(*, log_level: str = "INFO", reprocess: int | None = None,
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Poll Azure DevOps work items for true-agent candidates.")
+    parser = argparse.ArgumentParser(description="Poll Azure DevOps work items for truman-tagged candidates.")
     parser.add_argument("--log-level", default="INFO", help="Python logging level.")
     parser.add_argument(
         "--reprocess",

@@ -86,7 +86,7 @@ def test_process_work_item_skips_when_already_processed(
             "id": 456,
             "title": "Already handled",
             "description": "",
-            "tags": ["true-agent"],
+            "tags": ["truman"],
             "state": "Committed",
             "url": "",
             "updated_date": "2026-03-21T00:00:00Z",
@@ -114,7 +114,7 @@ def test_process_work_item_marks_state_only_after_success(
         "id": 789,
         "title": "Do thing",
         "description": "Details",
-        "tags": ["true-agent"],
+        "tags": ["truman"],
         "state": "Committed",
         "url": "https://example/789",
         "updated_date": "2026-03-21T00:00:00Z",
@@ -190,7 +190,7 @@ def test_process_work_item_passes_timeout(
             "id": 1001,
             "title": "Do thing",
             "description": "Details",
-            "tags": ["true-agent"],
+            "tags": ["truman"],
             "state": "Committed",
             "url": "https://example/1001",
             "updated_date": "2026-03-21T00:00:00Z",
@@ -206,15 +206,15 @@ def test_process_work_item_passes_timeout(
 @pytest.mark.parametrize(
     ("raw_tags", "expected_match"),
     [
-        ("true-agent", True),
-        (" TRUE-AGENT ", True),
-        ("foo; true-agent ;bar", True),
-        ("foo;TrUe-AgEnT;bar", True),
-        ("agent-true", False),
+        ("truman", True),
+        (" TRUMAN ", True),
+        ("foo; truman ;bar", True),
+        ("foo;TrUmAn;bar", True),
+        ("agent-truman", False),
         ("", False),
     ],
 )
-def test_gate_and_order_items_requires_true_agent_tag_with_case_and_spacing_variants(
+def test_gate_and_order_items_requires_truman_tag_with_case_and_spacing_variants(
     worker_config: WorkerConfig,
     raw_tags: str,
     expected_match: bool,
@@ -253,7 +253,7 @@ def test_gate_and_order_items_ignores_non_committed_states(worker_config: Worker
                 "id": 201,
                 "fields": {
                     "System.Title": "todo",
-                    "System.Tags": "true-agent",
+                    "System.Tags": "truman",
                     "System.State": "New",
                     "System.ChangedDate": "2026-03-21T00:00:00Z",
                 },
@@ -262,7 +262,7 @@ def test_gate_and_order_items_ignores_non_committed_states(worker_config: Worker
                 "id": 202,
                 "fields": {
                     "System.Title": "active",
-                    "System.Tags": "true-agent",
+                    "System.Tags": "truman",
                     "System.State": "Active",
                     "System.ChangedDate": "2026-03-21T00:00:01Z",
                 },
@@ -271,7 +271,7 @@ def test_gate_and_order_items_ignores_non_committed_states(worker_config: Worker
                 "id": 203,
                 "fields": {
                     "System.Title": "resolved",
-                    "System.Tags": "true-agent",
+                    "System.Tags": "truman",
                     "System.State": "Resolved",
                     "System.ChangedDate": "2026-03-21T00:00:02Z",
                 },
@@ -301,7 +301,7 @@ def test_process_work_item_skips_previously_processed_id_on_subsequent_attempt(
         "id": 301,
         "title": "Process once",
         "description": "Details",
-        "tags": ["true-agent"],
+        "tags": ["truman"],
         "state": "Committed",
         "url": "https://example/301",
         "updated_date": "2026-03-21T00:00:00Z",
@@ -330,7 +330,7 @@ def test_process_work_item_writes_yaml_with_required_issue_number_and_metadata(
         "id": 401,
         "title": "YAML metadata",
         "description": "Contains details",
-        "tags": ["backend", "true-agent"],
+        "tags": ["backend", "truman"],
         "state": "Committed",
         "url": "https://example/401",
         "updated_date": "2026-03-21T00:00:00Z",
@@ -343,7 +343,7 @@ def test_process_work_item_writes_yaml_with_required_issue_number_and_metadata(
     assert parsed["issue_number"] == 401
     assert parsed["title"] == "YAML metadata"
     assert parsed["description"] == "Contains details"
-    assert parsed["tags"] == ["backend", "true-agent"]
+    assert parsed["tags"] == ["backend", "truman"]
     assert parsed["state"] == "Committed"
     assert parsed["url"] == "https://example/401"
     assert parsed["updated_date"] == "2026-03-21T00:00:00Z"
@@ -368,7 +368,7 @@ def test_setup_issue_vm_invocation_once_per_newly_eligible_item(
             "id": 501,
             "title": "first",
             "description": "",
-            "tags": ["true-agent"],
+            "tags": ["truman"],
             "state": "Committed",
             "url": "https://example/501",
             "updated_date": "2026-03-21T00:00:00Z",
@@ -377,7 +377,7 @@ def test_setup_issue_vm_invocation_once_per_newly_eligible_item(
             "id": 502,
             "title": "second",
             "description": "",
-            "tags": ["true-agent"],
+            "tags": ["truman"],
             "state": "Committed",
             "url": "https://example/502",
             "updated_date": "2026-03-21T00:00:01Z",

@@ -16,7 +16,7 @@ def test_serialize_writes_expected_yaml_with_optional_fields(tmp_path: Path) -> 
                 project="sandbox-project",
                 work_item_url="https://dev.azure.com/example-org/sandbox-project/_workitems/edit/123",
             ),
-            tags=("true-agent", "backend"),
+            tags=("truman", "backend"),
             state="Committed",
             changed_date="2026-03-21T12:30:45Z",
         )
@@ -32,7 +32,7 @@ source:
   work_item_url: https://dev.azure.com/example-org/sandbox-project/_workitems/edit/123
 tags:
 - backend
-- true-agent
+- truman
 state: Committed
 changed_date: '2026-03-21T12:30:45+00:00'
 """
