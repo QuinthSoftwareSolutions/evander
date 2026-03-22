@@ -509,6 +509,41 @@ guest pushes to `refs/heads/agents/...` can automatically promote the branch int
 push the review branch to `origin`, create or reuse the upstream PR, and append an event to
 `runtime/agent-events.log`.
 
+### PR body boilerplate controls
+
+PR body composition for automated `open_agent_pr.sh --create-pr` runs is controlled by host env
+values loaded from `config/git-server.env`:
+
+- `AGENT_SANDBOX_PR_FIXED_BODY_FILE` (optional): absolute path to operator-maintained markdown
+  boilerplate that should always appear at the top of auto-created PR descriptions.
+- `AGENT_SANDBOX_PR_NOTES_REF` (optional, default `refs/notes/agent-pr`): notes ref used to read
+  agent summary markdown from the promoted commit.
+- `AGENT_SANDBOX_PR_BODY_MAX_BYTES` (optional, default `60000`): hard byte cap applied to the
+  composed PR body before creating/updating the PR.
+
+Expected resulting PR body shape when both fixed boilerplate and note summary are present:
+
+```markdown
+## Operator Checklist
+- [ ] Security review complete
+- [ ] Tests validated by human reviewer
+
+---
+
+## Agent Summary
+
+### What changed
+- ...
+```
+
+If the note is missing or unreadable, automation still proceeds:
+
+- with fixed boilerplate only when `AGENT_SANDBOX_PR_FIXED_BODY_FILE` is set
+- otherwise with the default PR body behavior from `open_agent_pr.sh`
+
+Security reminder: git note content is untrusted agent-authored text. Treat it as markdown only;
+never interpolate PR body text into shell commands.
+
 Or mirror the default host repo into an issue-numbered bare remote:
 
 ```bash

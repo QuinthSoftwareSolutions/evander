@@ -243,6 +243,27 @@ general shell access. Issue mirrors also carry a `post-receive` hook so host-sid
 promote pushed `agents/...` branches into the trusted clone, push the review branch to `origin`,
 and create the upstream PR automatically.
 
+For fixed PR boilerplate, set `AGENT_SANDBOX_PR_FIXED_BODY_FILE` in `config/git-server.env` to a
+host markdown file. Automation then assembles PR descriptions in this order: fixed boilerplate,
+`## Agent Summary` heading, then the git note content from `refs/notes/agent-pr`.
+
+Example assembled PR body:
+
+```markdown
+## Release Notes
+- reviewer-owned context
+
+---
+
+## Agent Summary
+
+- agent-authored markdown summary
+```
+
+If no note is available, automation still proceeds with fixed boilerplate only (when configured) or
+falls back to default PR body behavior. Treat note text as untrusted markdown content only, and do
+not interpolate it into shell commands.
+
 See [git-remotes.md](/home/jonathan/agent-sandbox/docs/git-remotes.md) for the review flow and branch naming pattern.
 The host-side safe promotion flow is:
 

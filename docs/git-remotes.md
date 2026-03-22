@@ -154,6 +154,31 @@ guest pushes to `refs/heads/agents/<session-id>/<branch>` can trigger host-side 
 - append an event to `runtime/agent-events.log`
 - attempt a desktop notification with `notify-send`
 
+### PR body assembly from Git notes
+
+Host-side PR automation reads agent-authored markdown summaries from the dedicated notes ref
+`refs/notes/agent-pr` (the short ref name is `agent-pr` in `git notes --ref=agent-pr ...` commands).
+The automation fetches that notes ref before it calls `open_agent_pr.sh`, then tries to read the
+note attached to the pushed commit SHA.
+
+When a PR body is assembled, merge order is deterministic:
+
+1. optional fixed operator-controlled body (configured by `AGENT_SANDBOX_PR_FIXED_BODY_FILE`)
+2. separator + heading (`---` and `## Agent Summary`)
+3. appended agent summary markdown from the commit note in `refs/notes/agent-pr`
+
+Fallback behavior when the note is missing:
+
+- If no note exists for the pushed commit, PR creation continues without the note content.
+- If a fixed body file is configured, that fixed body is used by itself.
+- If no fixed body is configured and no note is available, PR tooling falls back to its default body behavior.
+
+### Security / validation note
+
+Treat note content as **untrusted agent input**. The host flow passes it through as markdown text
+for PR descriptions only; operators should not shell-interpolate, eval, or execute note text.
+Keep usage to display/render contexts (for example, PR body markdown) rather than command contexts.
+
 For Azure DevOps remotes, set a PAT in `config/git-server.env`:
 
 ```bash
@@ -195,6 +220,18 @@ When combining Git push automation with PR feedback handling:
 - **Stale guest PID/lock blocks feedback wakeups:** inspect `/home/agent/.agent-sandbox/heartbeat.log` and clear stale files only when no active Codex process exists.
 - **Provider reply API errors (GitHub/Azure DevOps):** keep the same `idempotency_key` on retry so successful-but-unconfirmed replies are deduped.
 - **Push worked but no host promotion/PR update:** inspect bare-repo hook output and `runtime/agent-events.log`.
+- **`AGENT_PR_NOTES fetch failed (non-fatal)` in `runtime/agent-events.log`:**
+  host could not fetch `refs/notes/agent-pr` from the bare remote during promotion.
+  Verify the guest push included `refs/notes/agent-pr` and the trusted clone can fetch that ref.
+- **`AGENT_PR_NOTES read failed (non-fatal)` in `runtime/agent-events.log`:**
+  notes ref was present but reading the note for the promoted commit failed.
+  Re-attach the note on the exact tip commit with `git notes --ref=agent-pr add -f -m ...`, then push branch + notes ref again.
+- **`AGENT_PR_NOTES sha resolution failed (non-fatal)` in `runtime/agent-events.log`:**
+  promoted SHA could not be resolved to a commit in the trusted clone.
+  Check post-receive input/new SHA correctness and confirm the promote fetch succeeded for the pushed branch.
+- **`Configured PR fixed body file missing (non-fatal)` in `runtime/agent-events.log`:**
+  configured fixed boilerplate file path does not exist on the host.
+  Fix `AGENT_SANDBOX_PR_FIXED_BODY_FILE` or create the file, then push a new commit to retrigger automation.
 
 ### Audit/log locations and healthy signals
 
