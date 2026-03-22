@@ -22,7 +22,7 @@ Arguments:
                        the guest repo root as AGENT_TASK.yaml.
   project-or-solution  Host path used to prewarm the shared NuGet cache.
   repo-source          Host repo path or remote URL to mirror for guest Git access.
-                       Default: /home/jonathan/Documents/Repos/ExampleIndustryAPP
+                       Default: $AGENT_SANDBOX_DEFAULT_REPO_SOURCE or repo root
   session-id           Session name passed to launch_agent_vm.sh. Default: agent-session
   vm-user              Guest user to configure. Default: agent
 
@@ -32,6 +32,13 @@ Environment:
                               Default: 180
   VM_SSH_WAIT_TIMEOUT_SECONDS How long to wait for guest SSH to accept connections.
                               Default: 180
+  AGENT_SANDBOX_DEFAULT_REPO_SOURCE
+                              Default repo-source when argument is omitted.
+                              Default: repository root
+  AGENT_SANDBOX_GIT_ROOT      Host path containing issue bare remotes.
+                              Default: <repo-root>/git-remotes
+  AGENT_SANDBOX_GIT_SSH_ALIAS Host SSH alias used inside guest clone URL.
+                              Default: agent-sandbox-git-host
 
 Mirror options (forwarded to setup_issue_git_vm.sh and mirror_issue_repo.sh):
   --sync-remote
@@ -90,10 +97,22 @@ fi
 
 ISSUE_INPUT="$1"
 PREWARM_TARGET="$2"
-REPO_SOURCE="${3:-/home/jonathan/Documents/Repos/ExampleIndustryAPP}"
 SESSION_ID="${4:-agent-session}"
 VM_USER="${5:-agent}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+ENV_FILE="${ROOT_DIR}/config/git-server.env"
+if [[ -f "${ENV_FILE}" ]]; then
+  set -a
+  . "${ENV_FILE}"
+  set +a
+fi
+
+DEFAULT_REPO_SOURCE="${AGENT_SANDBOX_DEFAULT_REPO_SOURCE:-${ROOT_DIR}}"
+REPO_SOURCE="${3:-${DEFAULT_REPO_SOURCE}}"
+GIT_REMOTE_ROOT="${AGENT_SANDBOX_GIT_ROOT:-${ROOT_DIR}/git-remotes}"
+GIT_SSH_ALIAS="${AGENT_SANDBOX_GIT_SSH_ALIAS:-agent-sandbox-git-host}"
+
 CALLER_USER="${SUDO_USER:-$USER}"
 CALLER_HOME="$(getent passwd "${CALLER_USER}" | cut -d: -f6)"
 SSH_PUBLIC_KEY_FILE="${SSH_PUBLIC_KEY_FILE:-${CALLER_HOME}/.ssh/id_ed25519.pub}"
@@ -163,6 +182,14 @@ fi
 if [[ ! -f "${SSH_PRIVATE_KEY_PATH}" ]]; then
   echo "Missing SSH private key: ${SSH_PRIVATE_KEY_PATH}" >&2
   echo "Set SSH_PRIVATE_KEY_PATH to the private key that matches the VM's authorized key." >&2
+  exit 1
+fi
+
+REMOTE_URL="ssh://${GIT_SSH_ALIAS}${GIT_REMOTE_ROOT}/${ISSUE_NUMBER}_repo.git"
+
+if [[ ! -d "${GIT_REMOTE_ROOT}" ]]; then
+  echo "Configured AGENT_SANDBOX_GIT_ROOT does not exist: ${GIT_REMOTE_ROOT}" >&2
+  echo "Create it first or set AGENT_SANDBOX_GIT_ROOT to the host bare-remote root." >&2
   exit 1
 fi
 
@@ -250,12 +277,11 @@ ssh \
   -o UserKnownHostsFile=/dev/null \
   -i "${SSH_PRIVATE_KEY_PATH}" \
   "${VM_USER}@${VM_IP}" \
-  "GUEST_REPO_NAME='${GUEST_REPO_NAME}' ISSUE_NUMBER='${ISSUE_NUMBER}' SESSION_ID='${SESSION_ID}' bash -s" <<'EOF'
+  "GUEST_REPO_NAME='${GUEST_REPO_NAME}' ISSUE_NUMBER='${ISSUE_NUMBER}' SESSION_ID='${SESSION_ID}' REMOTE_URL='${REMOTE_URL}' bash -s" <<'EOF'
 set -euo pipefail
 . ~/.profile
 
 TARGET_DIR="$HOME/${GUEST_REPO_NAME}"
-REMOTE_URL="ssh://agent-sandbox-git-host/home/jonathan/agent-sandbox/git-remotes/${ISSUE_NUMBER}_repo.git"
 
 if [[ -e "${TARGET_DIR}" ]]; then
   echo "Guest repo path already exists: ${TARGET_DIR}" >&2
@@ -384,7 +410,7 @@ echo
 echo "Issue VM setup complete."
 echo "  vm:      ${VM_NAME}"
 echo "  session: ${SESSION_ID}"
-echo "  repo:    ssh://agent-sandbox-git-host/home/jonathan/agent-sandbox/git-remotes/${ISSUE_NUMBER}_repo.git"
+echo "  repo:    ${REMOTE_URL}"
 echo "  guest:   /home/${VM_USER}/${GUEST_REPO_NAME}"
 echo "  task:    /home/${VM_USER}/${GUEST_REPO_NAME}/AGENT_TASK.yaml"
 echo "  push:    git -C /home/${VM_USER}/${GUEST_REPO_NAME} push-agent"

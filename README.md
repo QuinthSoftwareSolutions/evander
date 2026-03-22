@@ -181,6 +181,19 @@ For the full issue-VM bring-up path in one command, use:
 ./scripts/setup_issue_vm.sh /path/to/issue.yaml /path/to/project-or-solution.slnx
 ```
 
+`setup_issue_vm.sh` now resolves host-dependent paths in this order:
+
+1. explicit `repo-source` argument (third positional argument)
+2. `AGENT_SANDBOX_DEFAULT_REPO_SOURCE`
+3. repo-relative fallback: the agent-sandbox repo root
+
+The guest clone URL is also derived from configurable Git-root settings:
+
+- `AGENT_SANDBOX_GIT_ROOT` (or `config/git-server.env`) selects the host bare-remote root
+  and must already exist before guest clone starts.
+- `AGENT_SANDBOX_GIT_SSH_ALIAS` controls the SSH alias used in the guest clone URL
+  (default: `agent-sandbox-git-host`).
+
 That now also clones the mirrored repo into the guest user's home directory using
 the host repo basename, for example `/home/agent/ExampleIndustryAPP`. It also writes a short
 `/home/agent/AGENTS.md` note, copies the issue YAML into the repo root as
