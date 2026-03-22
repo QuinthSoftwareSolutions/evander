@@ -420,11 +420,15 @@ Failure recovery:
 
 ## Systemd Services
 
-Install persistent host services with:
+Install persistent host services with a validation-first flow:
 
 ```bash
+./scripts/install_systemd_units.sh --preflight
 sudo ./scripts/install_systemd_units.sh
 ```
+
+Run `--preflight` before the first install (and before reruns) to verify required binaries,
+config files, and required env vars for enabled services without writing unit files.
 
 This creates:
 
@@ -434,17 +438,18 @@ This creates:
 - `agent-sandbox-nuget-relay.service`
 - `agent-sandbox-ado-worker.service`
 
-Then:
+Before running install mode, ensure preflight is clean (or only warning-only), then:
 
-1. Copy `config/firewall.env.example` to `config/firewall.env` if needed.
-2. Copy `config/openai-relay.env.example` to `config/openai-relay.env` if needed.
-3. Copy `config/nuget-relay.env.example` to `config/nuget-relay.env` if needed.
-4. Copy `config/ado-worker.env.example` to `config/ado-worker.env` if needed.
-5. Set the real `OPENAI_API_KEY` in `config/openai-relay.env`.
-6. Set `AZURE_ARTIFACTS_PAT` in `config/nuget-relay.env` when private feeds are required.
-7. Ensure the PAT variable named by `ADO_PAT_ENV_VAR_NAME` (default `AZURE_DEVOPS_PAT`) is
+1. Copy `config/gateway.env.example` to `config/gateway.env` if needed.
+2. Copy `config/firewall.env.example` to `config/firewall.env` if needed.
+3. Copy `config/openai-relay.env.example` to `config/openai-relay.env` if needed.
+4. Copy `config/nuget-relay.env.example` to `config/nuget-relay.env` if needed.
+5. Copy `config/ado-worker.env.example` to `config/ado-worker.env` if needed.
+6. Set the real `OPENAI_API_KEY` in `config/openai-relay.env`.
+7. Set `AZURE_ARTIFACTS_PAT` in `config/nuget-relay.env` when private feeds are required.
+8. Ensure the PAT variable named by `ADO_PAT_ENV_VAR_NAME` (default `AZURE_DEVOPS_PAT`) is
    exported for the service user and `config/ado-worker.env` points at the right project/paths.
-8. Start and inspect the services:
+9. Start and inspect the services:
 
 ```bash
 sudo systemctl start agent-sandbox-firewall.service

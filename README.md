@@ -137,10 +137,13 @@
 Install the gateway and relay services:
 
 ```bash
+./scripts/install_systemd_units.sh --preflight
 sudo ./scripts/install_systemd_units.sh
+$EDITOR config/gateway.env
 $EDITOR config/firewall.env
 $EDITOR config/openai-relay.env
 $EDITOR config/nuget-relay.env
+$EDITOR config/ado-worker.env
 sudo systemctl start agent-sandbox-firewall.service
 sudo systemctl start agent-sandbox-gateway.service
 sudo systemctl start agent-sandbox-openai-relay.service
