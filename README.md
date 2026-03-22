@@ -120,7 +120,15 @@
 
    This writes `~/.nuget/NuGet/NuGet.Config` in the guest so package restore can use host relay endpoints for nuget.org and Azure Artifacts, while keeping guest-local writable caches under `~/.nuget` and using the shared host cache as a read-only fallback package folder.
 
-11. Optionally prewarm the shared host NuGet cache from the host before launching or restoring in guests:
+11. Optionally install Microsoft SQL Server client tooling into the VM:
+
+   ```bash
+   ./scripts/bootstrap_mssql_vm.sh vm-real
+   ```
+
+   This copies host-installed SQL Server CLI tooling (`sqlcmd`) into the guest and appends its `bin` directory to the guest shell profile.
+
+12. Optionally prewarm the shared host NuGet cache from the host before launching or restoring in guests:
 
    ```bash
    ./scripts/prewarm_nuget_cache.sh /path/to/project-or-solution.slnx
@@ -129,7 +137,7 @@
 
    Prewarming fills the shared host cache explicitly through real host restores, and the inspect script shows cache size or whether a specific package/version is already present.
 
-12. Optionally install Playwright into the VM for frontend debugging:
+13. Optionally install Playwright into the VM for frontend debugging:
 
    ```bash
    ./scripts/bootstrap_playwright_vm.sh vm-real
@@ -180,13 +188,14 @@ agent-sandbox-cli poll-ado-backlog --reprocess 12345
 ```
 
 The dedicated worker entry point is also available as `agent-sandbox-ado-worker` for systemd.
+Backlog-worker VM setup calls pass `--dotnet --nuget --mssql` to `setup_issue_vm.sh` by default.
 
 ## Local Git Remotes
 
 For the full issue-VM bring-up path in one command, use:
 
 ```bash
-./scripts/setup_issue_vm.sh /path/to/issue.yaml /path/to/project-or-solution.slnx
+./scripts/setup_issue_vm.sh --dotnet --nuget --mssql /path/to/issue.yaml /path/to/project-or-solution.slnx
 ```
 
 `setup_issue_vm.sh` now resolves host-dependent paths in this order:
@@ -194,6 +203,12 @@ For the full issue-VM bring-up path in one command, use:
 1. explicit `repo-source` argument (third positional argument)
 2. `AGENT_SANDBOX_DEFAULT_REPO_SOURCE`
 3. repo-relative fallback: the agent-sandbox repo root
+
+Toolchain bootstraps are now opt-in:
+
+- `--dotnet` runs `bootstrap_dotnet_vm.sh`
+- `--nuget` runs `bootstrap_nuget_vm.sh` and host `prewarm_nuget_cache.sh` (requires `project-or-solution`)
+- `--mssql` runs `bootstrap_mssql_vm.sh`
 
 The guest clone URL is also derived from configurable Git-root settings:
 

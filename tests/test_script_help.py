@@ -6,6 +6,7 @@ SCRIPTS = [
     "bootstrap_codex_vm.sh",
     "bootstrap_dotnet_vm.sh",
     "bootstrap_git_vm.sh",
+    "bootstrap_mssql_vm.sh",
     "bootstrap_nuget_vm.sh",
     "bootstrap_playwright_vm.sh",
     "check_issue_vm.sh",

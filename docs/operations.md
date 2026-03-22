@@ -27,9 +27,10 @@ Install these packages on the Ubuntu host before using the scripts:
 10. Optionally install the host `.NET` SDK into the guest with `./scripts/bootstrap_dotnet_vm.sh <vm-name>`.
 11. Optionally prewarm the shared host NuGet cache with `./scripts/prewarm_nuget_cache.sh <path> [more paths...]`.
 12. Optionally install NuGet relay sources into the guest with `./scripts/bootstrap_nuget_vm.sh <vm-name>`.
-13. Optionally install Playwright into the guest with `./scripts/bootstrap_playwright_vm.sh <vm-name>` for rendered-DOM debugging.
-14. Optionally create a local bare Git remote with `./scripts/create_git_remote.sh <repo-name>` or mirror the default host repo with `./scripts/mirror_issue_repo.sh <issue-number>` if the VM should push code back to the host.
-15. Use [live-smoke-tests.md](/home/jonathan/agent-sandbox/docs/live-smoke-tests.md) when you want to verify live Discord and provider-backed email behavior against real credentials.
+13. Optionally install SQL Server client tooling into the guest with `./scripts/bootstrap_mssql_vm.sh <vm-name>`.
+14. Optionally install Playwright into the guest with `./scripts/bootstrap_playwright_vm.sh <vm-name>` for rendered-DOM debugging.
+15. Optionally create a local bare Git remote with `./scripts/create_git_remote.sh <repo-name>` or mirror the default host repo with `./scripts/mirror_issue_repo.sh <issue-number>` if the VM should push code back to the host.
+16. Use [live-smoke-tests.md](/home/jonathan/agent-sandbox/docs/live-smoke-tests.md) when you want to verify live Discord and provider-backed email behavior against real credentials.
 
 - The launch script resizes each overlay disk to `20G` by default.
 - The launch script also exposes a read-only shared NuGet cache via `virtiofs` at `/opt/agent-sandbox/nuget-cache-ro` inside the guest.
@@ -87,6 +88,12 @@ gateway/relay endpoint reachability, and active/expired session summary.
   - guest-local writable `httpCacheFolder` at `/home/agent/.nuget/http-cache`
   - read-only `fallbackPackageFolders` at `/opt/agent-sandbox/nuget-cache-ro`
 - It runs `dotnet nuget list source` when `dotnet` is available in the guest.
+
+## VM Microsoft SQL Server Bootstrap
+
+- `./scripts/bootstrap_mssql_vm.sh <vm-name>` copies host-installed SQL Server client tooling into `~/toolchains/mssql-tools`.
+- It appends that toolchain `bin` directory to `~/.profile` and `~/.bashrc`.
+- It verifies the guest can invoke `sqlcmd -?` without guest internet access.
 
 ## Host Shared NuGet Cache
 
@@ -391,6 +398,8 @@ agent-sandbox-cli create-session real-session --config config/gateway.yaml
   `agent-sandbox-cli poll-ado-backlog`.
 - The worker polls Azure DevOps work items in `Committed` state tagged `truman`, writes YAML
   payloads under `ADO_YAML_OUTPUT_DIR`, and invokes `scripts/setup_issue_vm.sh`.
+- Worker-triggered setup calls include `--dotnet --nuget --mssql` so those guest toolchains are
+  bootstrapped by default for backlog-driven issue VMs.
 - Configure environment in `config/ado-worker.env` (start from
   `config/ado-worker.env.example`), then export the PAT value in the host shell/env-file named by
   `ADO_PAT_ENV_VAR_NAME` (default `AZURE_DEVOPS_PAT`).
@@ -492,7 +501,7 @@ sudo systemctl status agent-sandbox-ado-worker.service
 For the common issue workflow, you can do the full host-side setup in one command:
 
 ```bash
-./scripts/setup_issue_vm.sh /path/to/issue.yaml /path/to/project-or-solution.slnx
+./scripts/setup_issue_vm.sh --dotnet --nuget --mssql /path/to/issue.yaml /path/to/project-or-solution.slnx
 ```
 
 `setup_issue_vm.sh` path defaults are configurable so host-specific `/home/...` paths are not
@@ -509,7 +518,7 @@ hard-coded:
 - clone URL SSH alias:
   - `AGENT_SANDBOX_GIT_SSH_ALIAS` (default `agent-sandbox-git-host`)
 
-That prewarms the shared NuGet cache, launches `vm-14084`, bootstraps Codex/.NET/NuGet, and
+That launches `vm-14084`, bootstraps Codex plus any requested optional toolchains, and
 configures the issue-numbered Git mirror and guest SSH path. It also clones the mirrored repo into
 the guest user's home directory using the source repo basename. The cloned repo gets a
 `git push-agent` alias, the guest home gets a short `AGENTS.md` note describing the expected
@@ -519,6 +528,12 @@ Codex run starts in the guest by default. The guest-side Codex PID and log live 
 agent process. The helper still accepts a raw issue number as the first argument for the older
 workflow, but YAML is the preferred input when you want the task definition to stay available on
 disk during long agent runs.
+Optional toolchain flags for `setup_issue_vm.sh`:
+
+- `--dotnet`: run `bootstrap_dotnet_vm.sh`
+- `--nuget`: run `bootstrap_nuget_vm.sh` and prewarm the shared NuGet cache on the host (requires `project-or-solution`)
+- `--mssql`: run `bootstrap_mssql_vm.sh`
+
 After the initial guest `codex exec` run exits, setup triggers one
 `codex exec resume --last` verification pass. Customize that verification
 prompt with `AGENT_SANDBOX_CODEX_POST_EXEC_VERIFICATION_PROMPT` (for example

@@ -164,6 +164,9 @@ def test_build_setup_command_includes_optional_arguments(tmp_path: Path) -> None
     cmd = _build_setup_command(config, tmp_path / "work-item-10.yaml")
     assert cmd == [
         "scripts/setup_issue_vm.sh",
+        "--dotnet",
+        "--nuget",
+        "--mssql",
         str(tmp_path / "work-item-10.yaml"),
         "real-target",
         "/tmp/repo",
@@ -389,5 +392,5 @@ def test_setup_issue_vm_invocation_once_per_newly_eligible_item(
         assert process_work_item(item, config=worker_config, store=store) is False
 
     assert len(calls) == 2
-    called_yaml_paths = {Path(cmd[1]).name for cmd in calls}
+    called_yaml_paths = {Path(cmd[4]).name for cmd in calls}
     assert called_yaml_paths == {"work-item-501.yaml", "work-item-502.yaml"}

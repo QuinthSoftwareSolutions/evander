@@ -382,7 +382,14 @@ def _atomic_write_yaml(path: Path, payload: dict[str, Any]) -> None:
 
 
 def _build_setup_command(config: WorkerConfig, yaml_path: Path) -> list[str]:
-    cmd = [str(config.setup_script_path), str(yaml_path), config.prewarm_target]
+    cmd = [
+        str(config.setup_script_path),
+        "--dotnet",
+        "--nuget",
+        "--mssql",
+        str(yaml_path),
+        config.prewarm_target,
+    ]
     if config.repo_path:
         cmd.append(config.repo_path)
     if config.session_id:
