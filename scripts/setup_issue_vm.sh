@@ -28,10 +28,10 @@ Arguments:
 
 Environment:
   CODEX_MODEL                 Codex model to run inside the guest. Default: gpt-5.4
-  VM_IP_WAIT_TIMEOUT_SECONDS  How long to wait for the guest to receive an IPv4 address.
-                              Default: 180
-  VM_SSH_WAIT_TIMEOUT_SECONDS How long to wait for guest SSH to accept connections.
-                              Default: 180
+  VM_WAIT_IP_TIMEOUT_SECONDS   How long to wait for the guest to receive an IPv4 address.
+                               Default: 180
+  VM_WAIT_SSH_TIMEOUT_SECONDS  How long to wait for guest SSH to accept connections.
+                               Default: 180
   AGENT_SANDBOX_DEFAULT_REPO_SOURCE
                               Default repo-source when argument is omitted.
                               Default: repository root
@@ -112,12 +112,13 @@ DEFAULT_REPO_SOURCE="${AGENT_SANDBOX_DEFAULT_REPO_SOURCE:-${ROOT_DIR}}"
 REPO_SOURCE="${3:-${DEFAULT_REPO_SOURCE}}"
 GIT_REMOTE_ROOT="${AGENT_SANDBOX_GIT_ROOT:-${ROOT_DIR}/git-remotes}"
 GIT_SSH_ALIAS="${AGENT_SANDBOX_GIT_SSH_ALIAS:-agent-sandbox-git-host}"
-
+# shellcheck source=lib/vm_network.sh
+source "${SCRIPT_DIR}/lib/vm_network.sh"
 CALLER_USER="${SUDO_USER:-$USER}"
 CALLER_HOME="$(getent passwd "${CALLER_USER}" | cut -d: -f6)"
 SSH_PUBLIC_KEY_FILE="${SSH_PUBLIC_KEY_FILE:-${CALLER_HOME}/.ssh/id_ed25519.pub}"
-VM_IP_WAIT_TIMEOUT_SECONDS="${VM_IP_WAIT_TIMEOUT_SECONDS:-180}"
-VM_SSH_WAIT_TIMEOUT_SECONDS="${VM_SSH_WAIT_TIMEOUT_SECONDS:-180}"
+VM_WAIT_IP_TIMEOUT_SECONDS="${VM_WAIT_IP_TIMEOUT_SECONDS:-180}"
+VM_WAIT_SSH_TIMEOUT_SECONDS="${VM_WAIT_SSH_TIMEOUT_SECONDS:-180}"
 SSH_PRIVATE_KEY_PATH="${SSH_PRIVATE_KEY_PATH:-${CALLER_HOME}/.ssh/id_ed25519}"
 ISSUE_FILE=""
 CODEX_MODEL="${CODEX_MODEL:-gpt-5.4}"
@@ -199,73 +200,11 @@ if virsh dominfo "${VM_NAME}" >/dev/null 2>&1 || sudo -n virsh dominfo "${VM_NAM
   exit 1
 fi
 
-get_vm_ip() {
-  local ip
-
-  ip="$(
-    virsh domifaddr "${VM_NAME}" 2>/dev/null \
-      | awk '/ipv4/ {split($4, a, "/"); print a[1]; exit}'
-  )"
-  if [[ -n "${ip}" ]]; then
-    printf '%s\n' "${ip}"
-    return 0
-  fi
-
-  ip="$(
-    sudo -n virsh domifaddr "${VM_NAME}" 2>/dev/null \
-      | awk '/ipv4/ {split($4, a, "/"); print a[1]; exit}'
-  )"
-  if [[ -n "${ip}" ]]; then
-    printf '%s\n' "${ip}"
-    return 0
-  fi
-
-  return 1
-}
-
-wait_for_vm_ip() {
-  local deadline now ip
-  deadline=$((SECONDS + VM_IP_WAIT_TIMEOUT_SECONDS))
-
-  while (( SECONDS < deadline )); do
-    if ip="$(get_vm_ip)"; then
-      printf '%s\n' "${ip}"
-      return 0
-    fi
-    sleep 2
-  done
-
-  echo "Timed out waiting for ${VM_NAME} to receive an IPv4 address." >&2
-  echo "Check guest boot progress with: sudo virsh console ${VM_NAME}" >&2
-  return 1
-}
-
-wait_for_vm_ssh() {
-  local deadline
-  deadline=$((SECONDS + VM_SSH_WAIT_TIMEOUT_SECONDS))
-
-  while (( SECONDS < deadline )); do
-    if ssh \
-      -o StrictHostKeyChecking=no \
-      -o UserKnownHostsFile=/dev/null \
-      -o ConnectTimeout=5 \
-      -i "${SSH_PRIVATE_KEY_PATH}" \
-      "${VM_USER}@${VM_IP}" true >/dev/null 2>&1; then
-      return 0
-    fi
-    sleep 2
-  done
-
-  echo "Timed out waiting for SSH on ${VM_USER}@${VM_IP}." >&2
-  echo "Check guest boot progress with: sudo virsh console ${VM_NAME}" >&2
-  return 1
-}
-
 "${SCRIPT_DIR}/prewarm_nuget_cache.sh" "${PREWARM_TARGET}"
 sudo SSH_PUBLIC_KEY_FILE="${SSH_PUBLIC_KEY_FILE}" "${SCRIPT_DIR}/launch_agent_vm.sh" "${VM_NAME}" "${SESSION_ID}"
-VM_IP="$(wait_for_vm_ip)"
+VM_IP="$(vm_network_wait_for_ip "${VM_NAME}" "${VM_WAIT_IP_TIMEOUT_SECONDS}")"
 echo "Guest IPv4 detected: ${VM_IP}"
-wait_for_vm_ssh
+vm_network_wait_for_ssh "${VM_NAME}" "${VM_IP}" "${VM_USER}" "${SSH_PRIVATE_KEY_PATH}" "${VM_WAIT_SSH_TIMEOUT_SECONDS}"
 echo "Guest SSH is ready on ${VM_USER}@${VM_IP}"
 "${SCRIPT_DIR}/bootstrap_codex_vm.sh" "${VM_NAME}" "${VM_USER}"
 "${SCRIPT_DIR}/bootstrap_dotnet_vm.sh" "${VM_NAME}" "${VM_USER}"

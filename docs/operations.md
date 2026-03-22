@@ -527,6 +527,12 @@ To inspect or follow the guest agent from the host:
 ./scripts/tail_issue_vm_log.sh 14084
 ```
 
+Both helpers share the same timeout environment variables (defaults shown):
+
+- `VM_WAIT_IP_TIMEOUT_SECONDS` (default `180`)
+- `VM_WAIT_SSH_TIMEOUT_SECONDS` (default `180`)
+
+
 Create a host-local bare repository:
 
 ```bash
