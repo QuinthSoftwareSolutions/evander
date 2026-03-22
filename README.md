@@ -49,6 +49,11 @@
    `mailbox_id`, `provider` (`gmail` or `graph`), `account`/`address`, auth env var names,
    and mailbox-level `folder_allowlist_defaults`.
 
+   URL config fields (for example `gateway_url`, `openai_api_base_url`, and NuGet feed base URLs)
+   must be valid `http://` or `https://` URLs; surrounding whitespace and trailing `/` are
+   normalized automatically. `bind_network_cidr` must be a true network CIDR such as
+   `192.168.250.0/24` (not a host address like `192.168.250.1/24`).
+
 3. Initialize runtime state:
 
    ```bash
