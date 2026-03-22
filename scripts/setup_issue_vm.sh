@@ -3,12 +3,12 @@ set -euo pipefail
 
 show_help() {
   cat <<'EOF'
-Usage: setup_issue_vm.sh [--dry-run] [mirror-options] <issue-number|issue-yaml> <project-or-solution> [repo-source] [session-id] [vm-user]
+Usage: setup_issue_vm.sh [--dry-run] [--dotnet] [--nuget] [--mssql] [mirror-options] <issue-number|issue-yaml> [project-or-solution] [repo-source] [session-id] [vm-user]
 
 Run the common issue-VM bring-up flow in one command:
-  1. prewarm the shared NuGet cache on the host
+  1. optionally prewarm the shared NuGet cache on the host
   2. launch the issue VM
-  3. bootstrap Codex, .NET, and NuGet in the guest
+  3. bootstrap Codex and selected optional guest toolchains
   4. configure passwordless Git access and create the issue mirror
   5. clone the mirrored repo into the guest user's home directory
   6. write a task file into the repo root for long-running agent sessions
@@ -20,7 +20,8 @@ Arguments:
                        file containing the issue metadata. In YAML mode, the script
                        reads the issue number from the file and copies the YAML into
                        the guest repo root as AGENT_TASK.yaml.
-  project-or-solution  Host path used to prewarm the shared NuGet cache.
+  project-or-solution  Host path used to prewarm the shared NuGet cache when --nuget
+                       is requested.
   repo-source          Host repo path or remote URL to mirror for guest Git access.
                        Default: $AGENT_SANDBOX_DEFAULT_REPO_SOURCE or repo root
   session-id           Session name passed to launch_agent_vm.sh. Default: agent-session
@@ -51,6 +52,11 @@ Mirror options (forwarded to setup_issue_git_vm.sh and mirror_issue_repo.sh):
   --refspec SPEC
   --branch NAME
   --force-local
+
+Optional guest toolchains:
+  --dotnet            Bootstrap the host .NET SDK into the guest.
+  --nuget             Bootstrap NuGet relay configuration (requires project-or-solution).
+  --mssql             Bootstrap Microsoft SQL Server client tooling into the guest.
 EOF
 }
 
@@ -60,11 +66,26 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
 fi
 
 START_AGENT=1
+BOOTSTRAP_DOTNET=0
+BOOTSTRAP_NUGET=0
+BOOTSTRAP_MSSQL=0
 MIRROR_ARGS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --dry-run)
       START_AGENT=0
+      shift
+      ;;
+    --dotnet)
+      BOOTSTRAP_DOTNET=1
+      shift
+      ;;
+    --nuget)
+      BOOTSTRAP_NUGET=1
+      shift
+      ;;
+    --mssql)
+      BOOTSTRAP_MSSQL=1
       shift
       ;;
     --sync-remote|--no-sync-remote|--force-local)
@@ -94,13 +115,14 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ $# -lt 2 ]]; then
+if [[ $# -lt 1 ]]; then
   show_help >&2
   exit 1
 fi
 
 ISSUE_INPUT="$1"
-PREWARM_TARGET="$2"
+PREWARM_TARGET="${2:-}"
+REPO_SOURCE_ARG="${3:-}"
 SESSION_ID="${4:-agent-session}"
 VM_USER="${5:-agent}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -113,7 +135,7 @@ if [[ -f "${ENV_FILE}" ]]; then
 fi
 
 DEFAULT_REPO_SOURCE="${AGENT_SANDBOX_DEFAULT_REPO_SOURCE:-${ROOT_DIR}}"
-REPO_SOURCE="${3:-${DEFAULT_REPO_SOURCE}}"
+REPO_SOURCE="${REPO_SOURCE_ARG:-${DEFAULT_REPO_SOURCE}}"
 GIT_REMOTE_ROOT="${AGENT_SANDBOX_GIT_ROOT:-${ROOT_DIR}/git-remotes}"
 GIT_SSH_ALIAS="${AGENT_SANDBOX_GIT_SSH_ALIAS:-agent-sandbox-git-host}"
 CALLER_USER="${SUDO_USER:-$USER}"
@@ -170,9 +192,15 @@ if [[ ! -f "${SSH_PRIVATE_KEY_PATH}" ]]; then
   SSH_PRIVATE_KEY_PATH="${CALLER_HOME}/.ssh/id_rsa"
 fi
 
-if [[ ! -e "${PREWARM_TARGET}" ]]; then
-  echo "Missing project or solution path: ${PREWARM_TARGET}" >&2
-  exit 1
+if (( BOOTSTRAP_NUGET )); then
+  if [[ -z "${PREWARM_TARGET}" ]]; then
+    echo "Missing project or solution path: project-or-solution is required with --nuget" >&2
+    exit 1
+  fi
+  if [[ ! -e "${PREWARM_TARGET}" ]]; then
+    echo "Missing project or solution path: ${PREWARM_TARGET}" >&2
+    exit 1
+  fi
 fi
 
 if ! RESOLVED_ENV="$("${SCRIPT_DIR}/resolve_repo_source.sh" --print-env "${REPO_SOURCE}")"; then
@@ -212,15 +240,24 @@ fi
 # shellcheck source=lib/vm_network.sh
 source "${SCRIPT_DIR}/lib/vm_network.sh"
 
-"${SCRIPT_DIR}/prewarm_nuget_cache.sh" "${PREWARM_TARGET}"
+if (( BOOTSTRAP_NUGET )); then
+  "${SCRIPT_DIR}/prewarm_nuget_cache.sh" "${PREWARM_TARGET}"
+fi
 sudo SSH_PUBLIC_KEY_FILE="${SSH_PUBLIC_KEY_FILE}" "${SCRIPT_DIR}/launch_agent_vm.sh" "${VM_NAME}" "${SESSION_ID}"
 VM_IP="$(vm_network_wait_for_ip "${VM_NAME}" "${VM_WAIT_IP_TIMEOUT_SECONDS}")"
 echo "Guest IPv4 detected: ${VM_IP}"
 vm_network_wait_for_ssh "${VM_NAME}" "${VM_IP}" "${VM_USER}" "${SSH_PRIVATE_KEY_PATH}" "${VM_WAIT_SSH_TIMEOUT_SECONDS}"
 echo "Guest SSH is ready on ${VM_USER}@${VM_IP}"
 "${SCRIPT_DIR}/bootstrap_codex_vm.sh" "${VM_NAME}" "${VM_USER}"
-"${SCRIPT_DIR}/bootstrap_dotnet_vm.sh" "${VM_NAME}" "${VM_USER}"
-"${SCRIPT_DIR}/bootstrap_nuget_vm.sh" "${VM_NAME}" "${VM_USER}"
+if (( BOOTSTRAP_DOTNET )); then
+  "${SCRIPT_DIR}/bootstrap_dotnet_vm.sh" "${VM_NAME}" "${VM_USER}"
+fi
+if (( BOOTSTRAP_NUGET )); then
+  "${SCRIPT_DIR}/bootstrap_nuget_vm.sh" "${VM_NAME}" "${VM_USER}"
+fi
+if (( BOOTSTRAP_MSSQL )); then
+  "${SCRIPT_DIR}/bootstrap_mssql_vm.sh" "${VM_NAME}" "${VM_USER}"
+fi
 "${SCRIPT_DIR}/setup_issue_git_vm.sh" "${MIRROR_ARGS[@]}" "${VM_NAME}" "${ISSUE_NUMBER}" "${REPO_SOURCE}" "${VM_USER}"
 
 ssh \
@@ -228,11 +265,24 @@ ssh \
   -o UserKnownHostsFile=/dev/null \
   -i "${SSH_PRIVATE_KEY_PATH}" \
   "${VM_USER}@${VM_IP}" \
-  "GUEST_REPO_NAME='${GUEST_REPO_NAME}' ISSUE_NUMBER='${ISSUE_NUMBER}' SESSION_ID='${SESSION_ID}' REMOTE_URL='${REMOTE_URL}' AGENT_BRANCH_SUFFIX='${VM_NAME}' bash -s" <<'EOF'
+  "GUEST_REPO_NAME='${GUEST_REPO_NAME}' ISSUE_NUMBER='${ISSUE_NUMBER}' SESSION_ID='${SESSION_ID}' REMOTE_URL='${REMOTE_URL}' AGENT_BRANCH_SUFFIX='${VM_NAME}' BOOTSTRAP_DOTNET='${BOOTSTRAP_DOTNET}' BOOTSTRAP_NUGET='${BOOTSTRAP_NUGET}' bash -s" <<'EOF'
 set -euo pipefail
 . ~/.profile
 
 TARGET_DIR="$HOME/${GUEST_REPO_NAME}"
+RESTORE_INSTRUCTION=""
+if [[ "${BOOTSTRAP_DOTNET:-0}" == "1" && "${BOOTSTRAP_NUGET:-0}" == "1" ]]; then
+  RESTORE_INSTRUCTION=$(cat <<'TXT'
+- For restore, always use:
+  `dotnet restore --configfile ~/.nuget/NuGet/NuGet.Config`
+- Do not rely on a repo-local `NuGet.Config` for restore inside the guest.
+- For build and test, prefer:
+  `dotnet build --no-restore`
+  `dotnet test --no-restore`
+- The reason for `--no-restore` is to avoid accidentally triggering a slow restore with the wrong NuGet config.
+TXT
+)
+fi
 
 if [[ -e "${TARGET_DIR}" ]]; then
   echo "Guest repo path already exists: ${TARGET_DIR}" >&2
@@ -256,13 +306,7 @@ cat > "$HOME/AGENTS.md" <<AGENTS
 - Equivalent explicit push pattern:
   \`git push agent HEAD:refs/heads/agents/\${SESSION_ID:-manual}/\$(git rev-parse --abbrev-ref HEAD)-\${AGENT_BRANCH_SUFFIX:-\${HOSTNAME:-agent}}\`
 - Branch suffix defaults to \`${AGENT_BRANCH_SUFFIX}\` (set to the VM name by setup); fallback is \`${HOSTNAME}\`.
-- For restore, always use:
-  \`dotnet restore --configfile ~/.nuget/NuGet/NuGet.Config\`
-- Do not rely on a repo-local \`NuGet.Config\` for restore inside the guest.
-- For build and test, prefer:
-  \`dotnet build --no-restore\`
-  \`dotnet test --no-restore\`
-- The reason for \`--no-restore\` is to avoid accidentally triggering a slow restore with the wrong NuGet config.
+${RESTORE_INSTRUCTION}
 - If shell changes were just bootstrapped, run:
   \`. ~/.profile\`
 
@@ -327,7 +371,7 @@ if (( START_AGENT )); then
     -o UserKnownHostsFile=/dev/null \
     -i "${SSH_PRIVATE_KEY_PATH}" \
     "${VM_USER}@${VM_IP}" \
-    "GUEST_REPO_NAME='${GUEST_REPO_NAME}' CODEX_MODEL='${CODEX_MODEL}' POST_EXEC_VERIFICATION_PROMPT_B64='${POST_EXEC_VERIFICATION_PROMPT_B64}' bash -s" <<'EOF'
+    "GUEST_REPO_NAME='${GUEST_REPO_NAME}' CODEX_MODEL='${CODEX_MODEL}' POST_EXEC_VERIFICATION_PROMPT_B64='${POST_EXEC_VERIFICATION_PROMPT_B64}' BOOTSTRAP_DOTNET='${BOOTSTRAP_DOTNET}' BOOTSTRAP_NUGET='${BOOTSTRAP_NUGET}' bash -s" <<'EOF'
 set -euo pipefail
 . ~/.profile
 
@@ -335,7 +379,11 @@ TARGET_DIR="$HOME/${GUEST_REPO_NAME}"
 LOG_DIR="$HOME/.agent-sandbox"
 LOG_PATH="${LOG_DIR}/codex-${GUEST_REPO_NAME}.log"
 PID_PATH="${LOG_DIR}/codex-${GUEST_REPO_NAME}.pid"
-INITIAL_PROMPT="You have been issued the task described in ${TARGET_DIR}/AGENT_TASK.yaml. Read ${HOME}/AGENTS.md and ${TARGET_DIR}/AGENT_TASK.yaml before you begin. The repository is located at ${TARGET_DIR}. Do not ask for feedback or clarifications, but work until the task is completed or until you determine that it is impossible to complete. When restore is needed, use 'dotnet restore --configfile ~/.nuget/NuGet/NuGet.Config'. For build and test, prefer '--no-restore'. When you have finished, commit and push your work using 'git push-agent'."
+INITIAL_PROMPT="You have been issued the task described in ${TARGET_DIR}/AGENT_TASK.yaml. Read ${HOME}/AGENTS.md and ${TARGET_DIR}/AGENT_TASK.yaml before you begin. The repository is located at ${TARGET_DIR}. Do not ask for feedback or clarifications, but work until the task is completed or until you determine that it is impossible to complete."
+if [[ "${BOOTSTRAP_DOTNET:-0}" == "1" && "${BOOTSTRAP_NUGET:-0}" == "1" ]]; then
+  INITIAL_PROMPT="${INITIAL_PROMPT} When restore is needed, use 'dotnet restore --configfile ~/.nuget/NuGet/NuGet.Config'. For build and test, prefer '--no-restore'."
+fi
+INITIAL_PROMPT="${INITIAL_PROMPT} When you have finished, commit and push your work using 'git push-agent'."
 POST_EXEC_VERIFICATION_PROMPT="$(python3 -c 'import base64, os; print(base64.b64decode(os.environ[\"POST_EXEC_VERIFICATION_PROMPT_B64\"]).decode(\"utf-8\"))')"
 
 mkdir -p "${LOG_DIR}"
@@ -379,6 +427,9 @@ echo "  session: ${SESSION_ID}"
 echo "  repo:    ${REMOTE_URL}"
 echo "  guest:   /home/${VM_USER}/${GUEST_REPO_NAME}"
 echo "  task:    /home/${VM_USER}/${GUEST_REPO_NAME}/AGENT_TASK.yaml"
+echo "  dotnet:  $([[ ${BOOTSTRAP_DOTNET} -eq 1 ]] && echo enabled || echo disabled)"
+echo "  nuget:   $([[ ${BOOTSTRAP_NUGET} -eq 1 ]] && echo enabled || echo disabled)"
+echo "  mssql:   $([[ ${BOOTSTRAP_MSSQL} -eq 1 ]] && echo enabled || echo disabled)"
 echo "  push:    git -C /home/${VM_USER}/${GUEST_REPO_NAME} push-agent"
 if (( START_AGENT )); then
   echo "  agent:   started"
