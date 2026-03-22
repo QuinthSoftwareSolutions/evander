@@ -631,23 +631,23 @@ sudo ./scripts/apply_firewall.sh
 Then in the VM, add the printed SSH remote URL and push into a session-specific namespace such as:
 
 ```bash
-git push agent HEAD:refs/heads/agents/<session-id>/<branch-name>
+git push agent HEAD:refs/heads/agents/<session-id>/<branch-name>-<agent-suffix>
 ```
 
 From the host, promote a specific quarantined agent branch into a trusted working clone:
 
 ```bash
-./scripts/promote_agent_branch.sh /path/to/trusted-clone sample-repo agents/<session-id>/<branch-name>
+./scripts/promote_agent_branch.sh /path/to/trusted-clone sample-repo agents/<session-id>/<branch-name>-<agent-suffix>
 ```
 
-That creates a local review branch like `review/<session-id>/<branch-name>` in the trusted clone
+That creates a local review branch like `review/<session-id>/<branch-name>-<agent-suffix>` in the trusted clone
 without pushing anything to `origin`.
 
 After review and tests pass, push the reviewed branch to `origin` and optionally open the PR:
 
 ```bash
-./scripts/open_agent_pr.sh /path/to/trusted-clone review/<session-id>/<branch-name>
-./scripts/open_agent_pr.sh --create-pr --base main /path/to/trusted-clone review/<session-id>/<branch-name>
+./scripts/open_agent_pr.sh /path/to/trusted-clone review/<session-id>/<branch-name>-<agent-suffix>
+./scripts/open_agent_pr.sh --create-pr --base main /path/to/trusted-clone review/<session-id>/<branch-name>-<agent-suffix>
 ```
 
 This is the preferred flow: VM -> quarantine bare repo -> trusted host clone -> `origin`/PR.

@@ -221,7 +221,7 @@ ssh \
   -o UserKnownHostsFile=/dev/null \
   -i "${SSH_PRIVATE_KEY_PATH}" \
   "${VM_USER}@${VM_IP}" \
-  "GUEST_REPO_NAME='${GUEST_REPO_NAME}' ISSUE_NUMBER='${ISSUE_NUMBER}' SESSION_ID='${SESSION_ID}' REMOTE_URL='${REMOTE_URL}' bash -s" <<'EOF'
+  "GUEST_REPO_NAME='${GUEST_REPO_NAME}' ISSUE_NUMBER='${ISSUE_NUMBER}' SESSION_ID='${SESSION_ID}' REMOTE_URL='${REMOTE_URL}' AGENT_BRANCH_SUFFIX='${VM_NAME}' bash -s" <<'EOF'
 set -euo pipefail
 . ~/.profile
 
@@ -236,7 +236,7 @@ git clone "${REMOTE_URL}" "${TARGET_DIR}"
 git -C "${TARGET_DIR}" remote add agent "${REMOTE_URL}"
 git -C "${TARGET_DIR}" config user.name "Truman Bot"
 git -C "${TARGET_DIR}" config user.email "truman@quinth.se"
-git -C "${TARGET_DIR}" config alias.push-agent '!f(){ git push agent HEAD:refs/heads/agents/${SESSION_ID:-manual}/$(git rev-parse --abbrev-ref HEAD); }; f'
+git -C "${TARGET_DIR}" config alias.push-agent '!f(){ branch=$(git rev-parse --abbrev-ref HEAD); suffix=$(printf "%s" "${AGENT_BRANCH_SUFFIX:-${HOSTNAME:-agent}}" | tr "[:upper:]" "[:lower:]" | tr -cs "a-z0-9._-" "-" | sed "s/^-*//;s/-*$//"); suffix=${suffix:-agent}; git push agent HEAD:refs/heads/agents/${SESSION_ID:-manual}/${branch}-${suffix}; }; f'
 
 cat > "$HOME/AGENTS.md" <<AGENTS
 # Guest Notes
@@ -247,7 +247,8 @@ cat > "$HOME/AGENTS.md" <<AGENTS
 - Recommended push command from inside the repo:
   \`git push-agent\`
 - Equivalent explicit push pattern:
-  \`git push agent HEAD:refs/heads/agents/\${SESSION_ID:-manual}/\$(git rev-parse --abbrev-ref HEAD)\`
+  \`git push agent HEAD:refs/heads/agents/\${SESSION_ID:-manual}/\$(git rev-parse --abbrev-ref HEAD)-\${AGENT_BRANCH_SUFFIX:-\${HOSTNAME:-agent}}\`
+- Branch suffix defaults to \`${AGENT_BRANCH_SUFFIX}\` (set to the VM name by setup); fallback is \`${HOSTNAME}\`.
 - For restore, always use:
   \`dotnet restore --configfile ~/.nuget/NuGet/NuGet.Config\`
 - Do not rely on a repo-local \`NuGet.Config\` for restore inside the guest.
@@ -276,7 +277,7 @@ git notes --ref=agent-pr add -f -m "<markdown summary in Markdown>"
 
 # Push the current branch and the notes ref together.
 git push agent \
-  HEAD:refs/heads/agents/\${SESSION_ID:-manual}/\$(git rev-parse --abbrev-ref HEAD) \
+  HEAD:refs/heads/agents/\${SESSION_ID:-manual}/\$(git rev-parse --abbrev-ref HEAD)-\${AGENT_BRANCH_SUFFIX:-\${HOSTNAME:-agent}} \
   refs/notes/agent-pr
 \`\`\`
 

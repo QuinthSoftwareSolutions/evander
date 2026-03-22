@@ -93,7 +93,7 @@ cd sample-repo
 git remote add agent ssh://agent-sandbox-git-host/home/jonathan/agent-sandbox/git-remotes/sample-repo.git
 git checkout -b work
 # agent edits, commits, tests
-git push agent HEAD:refs/heads/agents/<session-id>/work
+git push agent HEAD:refs/heads/agents/<session-id>/work-<agent-suffix>
 ```
 
 For an issue-specific mirrored repo, the guest clone typically looks like:
@@ -104,18 +104,18 @@ git clone ssh://agent-sandbox-git-host/home/jonathan/agent-sandbox/git-remotes/1
 
 Recommended branch namespace:
 
-- `agents/<session-id>/<branch-name>`
+- `agents/<session-id>/<branch-name>-<agent-suffix>`
 
 ## Review Flow
 
 On the host:
 
 ```bash
-./scripts/promote_agent_branch.sh /path/to/trusted-clone sample-repo agents/<session-id>/work
+./scripts/promote_agent_branch.sh /path/to/trusted-clone sample-repo agents/<session-id>/work-<agent-suffix>
 ```
 
-That fetches `refs/heads/agents/<session-id>/work` from the quarantine bare repo into the
-trusted working clone, creates a local review branch like `review/<session-id>/work`, and leaves
+That fetches `refs/heads/agents/<session-id>/work-<agent-suffix>` from the quarantine bare repo into the
+trusted working clone, creates a local review branch like `review/<session-id>/work-<agent-suffix>`, and leaves
 `origin` untouched until you decide the change is acceptable.
 
 Then review and validate in the trusted clone:
