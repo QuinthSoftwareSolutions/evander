@@ -61,7 +61,19 @@ fi
 cat > "${REPO_DIR}/hooks/post-receive" <<HOOK
 #!/usr/bin/env bash
 set -euo pipefail
-"${HOOK_SCRIPT}" "${REPO_DIR}" || true
+LOG_DIR="${ROOT_DIR}/runtime/hook-logs"
+LOG_FILE="\${LOG_DIR}/$(basename "${REPO_DIR}").post-receive.log"
+mkdir -p "\${LOG_DIR}"
+{
+  printf '=== %s post-receive start ===\n' "\$(date -Iseconds)"
+  if "${HOOK_SCRIPT}" "${REPO_DIR}"; then
+    status=0
+  else
+    status=\$?
+  fi
+  printf '=== %s post-receive exit=%s ===\n' "\$(date -Iseconds)" "\${status}"
+  exit "\${status}"
+} >> "\${LOG_FILE}" 2>&1 || true
 HOOK
 chmod +x "${REPO_DIR}/hooks/post-receive"
 

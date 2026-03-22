@@ -202,13 +202,107 @@ promote_branch() {
   fi
 }
 
+process_agent_branch() {
+  local agent_branch="$1"
+  local new_sha="$2"
+  local review_branch
+  local session_id
+  local note_body_file
+  local resolved_sha
+  local pr_body_file
+  local body_truncated
+  local body_size_bytes
+  local pr_output
+
+  review_branch="$(derive_review_branch "${agent_branch}")"
+  session_id="$(extract_session_id "${agent_branch}" || true)"
+
+  ensure_remote "${TRUSTED_REPO_PATH}" "${AUTO_REMOTE_NAME}" "${BARE_REPO_PATH}"
+  promote_branch "${TRUSTED_REPO_PATH}" "${AUTO_REMOTE_NAME}" "${agent_branch}" "${review_branch}"
+
+  if ! git -C "${TRUSTED_REPO_PATH}" fetch "${AUTO_REMOTE_NAME}" \
+    "${PR_NOTES_REF}:${PR_NOTES_REF}" >/dev/null 2>&1; then
+    notify_event \
+      "AGENT_PR_NOTES fetch failed (non-fatal)" \
+      "repo=$(basename "${TRUSTED_REPO_PATH}") notes_ref=${PR_NOTES_REF} branch=${review_branch} session_id=${session_id:-unknown}"
+  fi
+
+  note_body_file=""
+  if resolved_sha="$(git -C "${TRUSTED_REPO_PATH}" rev-parse --verify "${new_sha}^{commit}" 2>/dev/null)"; then
+    if NOTE_CONTENT="$(git -C "${TRUSTED_REPO_PATH}" notes --ref=agent-pr show "${resolved_sha}" 2>/dev/null)"; then
+      if [[ -n "${NOTE_CONTENT}" ]]; then
+        SAFE_SESSION_ID="${session_id:-unknown}"
+        note_body_file="${PR_BODY_DIR}/agent-note-${SAFE_SESSION_ID}-${resolved_sha}.md"
+        printf '%s\n' "${NOTE_CONTENT}" > "${note_body_file}"
+      fi
+    else
+      notify_event \
+        "AGENT_PR_NOTES read failed (non-fatal)" \
+        "repo=$(basename "${TRUSTED_REPO_PATH}") sha=${resolved_sha} notes_ref=${PR_NOTES_REF} branch=${review_branch} session_id=${session_id:-unknown}"
+    fi
+  else
+    notify_event \
+      "AGENT_PR_NOTES sha resolution failed (non-fatal)" \
+      "repo=$(basename "${TRUSTED_REPO_PATH}") new_sha=${new_sha} branch=${review_branch} session_id=${session_id:-unknown}"
+  fi
+
+  USED_FIXED_BODY=0
+  USED_AGENT_NOTE=0
+  COMPOSED_PR_BODY_FILE=""
+  if compose_pr_body_file "${PR_FIXED_BODY_FILE}" "${note_body_file}"; then
+    pr_body_file="${COMPOSED_PR_BODY_FILE}"
+  else
+    pr_body_file=""
+  fi
+  body_truncated=0
+  if [[ -n "${pr_body_file}" ]]; then
+    if [[ "${PR_BODY_MAX_BYTES}" =~ ^[0-9]+$ && "${PR_BODY_MAX_BYTES}" -gt 0 ]]; then
+      body_size_bytes="$(wc -c < "${pr_body_file}")"
+      if [[ "${body_size_bytes}" -gt "${PR_BODY_MAX_BYTES}" ]]; then
+        body_truncated=1
+      fi
+    fi
+    enforce_pr_body_size_limit "${pr_body_file}" "${PR_BODY_MAX_BYTES}"
+  fi
+
+  PR_ARGS=(--create-pr)
+  if [[ -n "${BASE_BRANCH}" ]]; then
+    PR_ARGS+=(--base "${BASE_BRANCH}")
+  fi
+  if [[ -n "${session_id}" ]]; then
+    PR_ARGS+=(--session-id "${session_id}")
+  fi
+  if [[ -n "${pr_body_file}" ]]; then
+    PR_ARGS+=(--body-file "${pr_body_file}")
+  fi
+  PR_ARGS+=("${TRUSTED_REPO_PATH}" "${review_branch}")
+
+  if pr_output="$(AGENT_SANDBOX_CANONICAL_ORIGIN_URL="${CANONICAL_ORIGIN_URL}" "${SCRIPT_DIR}/open_agent_pr.sh" "${PR_ARGS[@]}" 2>&1)"; then
+    notify_event \
+      "Agent branch promoted and PR prepared" \
+      "repo=$(basename "${TRUSTED_REPO_PATH}") branch=${review_branch} session_id=${session_id:-unknown} used_fixed_body=${USED_FIXED_BODY} used_agent_note=${USED_AGENT_NOTE} body_truncated=${body_truncated} ${pr_output}"
+  else
+    notify_event \
+      "Agent branch promoted but PR automation failed" \
+      "repo=$(basename "${TRUSTED_REPO_PATH}") branch=${review_branch} session_id=${session_id:-unknown} used_fixed_body=${USED_FIXED_BODY} used_agent_note=${USED_AGENT_NOTE} body_truncated=${body_truncated} error=${pr_output}"
+  fi
+}
+
 if [[ ! -d "${BARE_REPO_PATH}" ]]; then
   echo "Bare repo not found: ${BARE_REPO_PATH}" >&2
   exit 1
 fi
 
+# Git hook processes inherit repo-local environment such as GIT_DIR=., which
+# breaks subsequent git commands aimed at the trusted worktree unless we clear
+# it first.
+while IFS= read -r git_env_var; do
+  unset "${git_env_var}"
+done < <(git --git-dir="${BARE_REPO_PATH}" rev-parse --local-env-vars)
+
 TRUSTED_REPO_PATH="$(git --git-dir="${BARE_REPO_PATH}" config --get agent-sandbox.trustedRepoPath || true)"
 BASE_BRANCH="$(git --git-dir="${BARE_REPO_PATH}" config --get agent-sandbox.baseBranch || true)"
+CANONICAL_ORIGIN_URL="$(git --git-dir="${BARE_REPO_PATH}" config --get agent-sandbox.canonicalOriginUrl || true)"
 
 if [[ -z "${TRUSTED_REPO_PATH}" || ! -d "${TRUSTED_REPO_PATH}/.git" ]]; then
   notify_event \
@@ -217,8 +311,20 @@ if [[ -z "${TRUSTED_REPO_PATH}" || ! -d "${TRUSTED_REPO_PATH}/.git" ]]; then
   exit 0
 fi
 
+UPDATES_FILE="$(mktemp)"
+cat > "${UPDATES_FILE}"
+trap 'rm -f "${UPDATES_FILE}"' EXIT
+
+HAS_AGENT_BRANCH_UPDATES=0
+HAS_AGENT_NOTES_UPDATE=0
+
 while read -r old_sha new_sha ref_name; do
   [[ -n "${ref_name}" ]] || continue
+
+  if [[ "${ref_name}" == refs/notes/agent-pr ]]; then
+    HAS_AGENT_NOTES_UPDATE=1
+    continue
+  fi
 
   if [[ "${ref_name}" != refs/heads/agents/* ]]; then
     continue
@@ -228,81 +334,16 @@ while read -r old_sha new_sha ref_name; do
     continue
   fi
 
-  AGENT_BRANCH="${ref_name#refs/heads/}"
-  REVIEW_BRANCH="$(derive_review_branch "${AGENT_BRANCH}")"
-  SESSION_ID="$(extract_session_id "${AGENT_BRANCH}" || true)"
+  HAS_AGENT_BRANCH_UPDATES=1
+  process_agent_branch "${ref_name#refs/heads/}" "${new_sha}"
+done < "${UPDATES_FILE}"
 
-  ensure_remote "${TRUSTED_REPO_PATH}" "${AUTO_REMOTE_NAME}" "${BARE_REPO_PATH}"
-  promote_branch "${TRUSTED_REPO_PATH}" "${AUTO_REMOTE_NAME}" "${AGENT_BRANCH}" "${REVIEW_BRANCH}"
-
-  # AGENT_PR_NOTES: fetch the dedicated notes ref before PR automation so
-  # host-side PR creation can consume agent-authored markdown summaries.
-  if ! git -C "${TRUSTED_REPO_PATH}" fetch "${AUTO_REMOTE_NAME}" \
-    "${PR_NOTES_REF}:${PR_NOTES_REF}" >/dev/null 2>&1; then
-    notify_event \
-      "AGENT_PR_NOTES fetch failed (non-fatal)" \
-      "repo=$(basename "${TRUSTED_REPO_PATH}") notes_ref=${PR_NOTES_REF} branch=${REVIEW_BRANCH} session_id=${SESSION_ID:-unknown}"
-  fi
-
-  NOTE_BODY_FILE=""
-  if RESOLVED_SHA="$(git -C "${TRUSTED_REPO_PATH}" rev-parse --verify "${new_sha}^{commit}" 2>/dev/null)"; then
-    # AGENT_PR_NOTES: read git notes for the pushed commit and persist to runtime
-    # for use as open_agent_pr.sh --body-file when the note is present.
-    if NOTE_CONTENT="$(git -C "${TRUSTED_REPO_PATH}" notes --ref=agent-pr show "${RESOLVED_SHA}" 2>/dev/null)"; then
-      if [[ -n "${NOTE_CONTENT}" ]]; then
-        SAFE_SESSION_ID="${SESSION_ID:-unknown}"
-        NOTE_BODY_FILE="${PR_BODY_DIR}/agent-note-${SAFE_SESSION_ID}-${RESOLVED_SHA}.md"
-        printf '%s\n' "${NOTE_CONTENT}" > "${NOTE_BODY_FILE}"
-      fi
-    else
-      notify_event \
-        "AGENT_PR_NOTES read failed (non-fatal)" \
-        "repo=$(basename "${TRUSTED_REPO_PATH}") sha=${RESOLVED_SHA} notes_ref=${PR_NOTES_REF} branch=${REVIEW_BRANCH} session_id=${SESSION_ID:-unknown}"
-    fi
-  else
-    notify_event \
-      "AGENT_PR_NOTES sha resolution failed (non-fatal)" \
-      "repo=$(basename "${TRUSTED_REPO_PATH}") new_sha=${new_sha} branch=${REVIEW_BRANCH} session_id=${SESSION_ID:-unknown}"
-  fi
-
-  USED_FIXED_BODY=0
-  USED_AGENT_NOTE=0
-  COMPOSED_PR_BODY_FILE=""
-  if compose_pr_body_file "${PR_FIXED_BODY_FILE}" "${NOTE_BODY_FILE}"; then
-    PR_BODY_FILE="${COMPOSED_PR_BODY_FILE}"
-  else
-    PR_BODY_FILE=""
-  fi
-  BODY_TRUNCATED=0
-  if [[ -n "${PR_BODY_FILE}" ]]; then
-    if [[ "${PR_BODY_MAX_BYTES}" =~ ^[0-9]+$ && "${PR_BODY_MAX_BYTES}" -gt 0 ]]; then
-      BODY_SIZE_BYTES="$(wc -c < "${PR_BODY_FILE}")"
-      if [[ "${BODY_SIZE_BYTES}" -gt "${PR_BODY_MAX_BYTES}" ]]; then
-        BODY_TRUNCATED=1
-      fi
-    fi
-    enforce_pr_body_size_limit "${PR_BODY_FILE}" "${PR_BODY_MAX_BYTES}"
-  fi
-
-  PR_ARGS=(--create-pr)
-  if [[ -n "${BASE_BRANCH}" ]]; then
-    PR_ARGS+=(--base "${BASE_BRANCH}")
-  fi
-  if [[ -n "${SESSION_ID}" ]]; then
-    PR_ARGS+=(--session-id "${SESSION_ID}")
-  fi
-  if [[ -n "${PR_BODY_FILE}" ]]; then
-    PR_ARGS+=(--body-file "${PR_BODY_FILE}")
-  fi
-  PR_ARGS+=("${TRUSTED_REPO_PATH}" "${REVIEW_BRANCH}")
-
-  if PR_OUTPUT="$("${SCRIPT_DIR}/open_agent_pr.sh" "${PR_ARGS[@]}" 2>&1)"; then
-    notify_event \
-      "Agent branch promoted and PR prepared" \
-      "repo=$(basename "${TRUSTED_REPO_PATH}") branch=${REVIEW_BRANCH} session_id=${SESSION_ID:-unknown} used_fixed_body=${USED_FIXED_BODY} used_agent_note=${USED_AGENT_NOTE} body_truncated=${BODY_TRUNCATED} ${PR_OUTPUT}"
-  else
-    notify_event \
-      "Agent branch promoted but PR automation failed" \
-      "repo=$(basename "${TRUSTED_REPO_PATH}") branch=${REVIEW_BRANCH} session_id=${SESSION_ID:-unknown} used_fixed_body=${USED_FIXED_BODY} used_agent_note=${USED_AGENT_NOTE} body_truncated=${BODY_TRUNCATED} error=${PR_OUTPUT}"
-  fi
-done
+if (( HAS_AGENT_BRANCH_UPDATES == 0 )) && (( HAS_AGENT_NOTES_UPDATE == 1 )); then
+  while read -r agent_branch current_sha; do
+    [[ -n "${agent_branch}" && -n "${current_sha}" ]] || continue
+    process_agent_branch "${agent_branch}" "${current_sha}"
+  done < <(
+    git --git-dir="${BARE_REPO_PATH}" for-each-ref \
+      --format='%(refname:lstrip=2) %(objectname)' refs/heads/agents
+  )
+fi

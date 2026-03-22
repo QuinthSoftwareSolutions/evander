@@ -234,6 +234,8 @@ fi
 
 git clone "${REMOTE_URL}" "${TARGET_DIR}"
 git -C "${TARGET_DIR}" remote add agent "${REMOTE_URL}"
+git -C "${TARGET_DIR}" config user.name "Truman Bot"
+git -C "${TARGET_DIR}" config user.email "truman@quinth.se"
 git -C "${TARGET_DIR}" config alias.push-agent '!f(){ git push agent HEAD:refs/heads/agents/${SESSION_ID:-manual}/$(git rev-parse --abbrev-ref HEAD); }; f'
 
 cat > "$HOME/AGENTS.md" <<AGENTS

@@ -157,6 +157,73 @@ derive_session_id() {
   return 1
 }
 
+infer_provider_from_url() {
+  local origin_url="$1"
+  case "${origin_url}" in
+    git@github.com:*|https://github.com/*)
+      printf 'github\n'
+      ;;
+    git@ssh.dev.azure.com:*|https://dev.azure.com/*|https://*.visualstudio.com/*)
+      printf 'azure\n'
+      ;;
+    *)
+      printf '\n'
+      ;;
+  esac
+}
+
+ensure_remote_url() {
+  local repo_path="$1"
+  local remote_name="$2"
+  local remote_url="$3"
+
+  if git -C "${repo_path}" remote get-url "${remote_name}" >/dev/null 2>&1; then
+    local current_url
+    current_url="$(git -C "${repo_path}" remote get-url "${remote_name}")"
+    if [[ "${current_url}" != "${remote_url}" ]]; then
+      git -C "${repo_path}" remote set-url "${remote_name}" "${remote_url}"
+    fi
+  else
+    git -C "${repo_path}" remote add "${remote_name}" "${remote_url}"
+  fi
+}
+
+azure_https_origin_url() {
+  local origin_url="$1"
+  ORIGIN_URL_INPUT="${origin_url}" python3 - <<'PY'
+import os
+import re
+import urllib.parse
+
+origin_url = os.environ["ORIGIN_URL_INPUT"]
+ssh_match = re.match(r"^git@ssh\.dev\.azure\.com:v3/([^/]+)/([^/]+)/([^/]+)$", origin_url)
+https_match = re.match(
+    r"^https://(?:[^@/]+@)?dev\.azure\.com/([^/]+)/([^/]+)/_git/([^/]+)$",
+    origin_url,
+)
+vs_match = re.match(
+    r"^https://(?:[^@/]+@)?([^.]+)\.visualstudio\.com/([^/]+)/_git/([^/]+)$",
+    origin_url,
+)
+
+match = ssh_match or https_match or vs_match
+if not match:
+    print("", end="")
+else:
+    organization, project, repo = match.groups()
+    organization = urllib.parse.unquote(organization)
+    project = urllib.parse.unquote(project)
+    repo = urllib.parse.unquote(repo)
+    print(
+        "https://dev.azure.com/"
+        f"{urllib.parse.quote(organization, safe='')}/"
+        f"{urllib.parse.quote(project, safe='')}/_git/"
+        f"{urllib.parse.quote(repo, safe='')}",
+        end="",
+    )
+PY
+}
+
 infer_repo_slug() {
   local origin_url="$1"
   local provider="$2"
@@ -262,9 +329,48 @@ if [[ -z "${ORIGIN_BRANCH}" ]]; then
 fi
 
 git -C "${HOST_REPO_PATH}" rev-parse --verify "${LOCAL_BRANCH}^{commit}" >/dev/null
-git -C "${HOST_REPO_PATH}" push origin "${LOCAL_BRANCH}:refs/heads/${ORIGIN_BRANCH}"
+PR_REMOTE_NAME="origin"
+ORIGIN_URL="${AGENT_SANDBOX_CANONICAL_ORIGIN_URL:-}"
+if [[ -n "${ORIGIN_URL}" ]]; then
+  PR_REMOTE_NAME="agent-sandbox-pr-origin"
+else
+  ORIGIN_URL="$(git -C "${HOST_REPO_PATH}" remote get-url origin)"
+fi
+PUSH_PROVIDER="${PROVIDER}"
+if [[ "${PUSH_PROVIDER}" == "auto" ]]; then
+  PUSH_PROVIDER="$(infer_provider_from_url "${ORIGIN_URL}")"
+fi
 
-echo "Pushed ${LOCAL_BRANCH} to origin/${ORIGIN_BRANCH}"
+PUSH_REMOTE_URL="${ORIGIN_URL}"
+AZURE_PAT_ENV_VALUE=""
+if [[ "${PUSH_PROVIDER}" == "azure" ]]; then
+  AZURE_PAT_ENV_VALUE="${!AZURE_PAT_ENV:-}"
+  if [[ -n "${AZURE_PAT_ENV_VALUE}" ]]; then
+    HTTPS_ORIGIN_URL="$(azure_https_origin_url "${ORIGIN_URL}")"
+    if [[ -n "${HTTPS_ORIGIN_URL}" ]]; then
+      PUSH_REMOTE_URL="${HTTPS_ORIGIN_URL}"
+    fi
+  fi
+fi
+
+if [[ "${PR_REMOTE_NAME}" != "origin" ]]; then
+  ensure_remote_url "${HOST_REPO_PATH}" "${PR_REMOTE_NAME}" "${PUSH_REMOTE_URL}"
+fi
+
+PUSH_ARGS=()
+if [[ "${ORIGIN_BRANCH}" == review/* ]]; then
+  PUSH_ARGS+=(--force-with-lease)
+fi
+
+if [[ "${PUSH_PROVIDER}" == "azure" && -n "${AZURE_PAT_ENV_VALUE}" ]]; then
+  AZURE_AUTH_HEADER="Authorization: Basic $(printf ':%s' "${AZURE_PAT_ENV_VALUE}" | base64 | tr -d '\n')"
+  git -C "${HOST_REPO_PATH}" -c http.extraHeader="${AZURE_AUTH_HEADER}" \
+    push "${PUSH_ARGS[@]}" "${PR_REMOTE_NAME}" "${LOCAL_BRANCH}:refs/heads/${ORIGIN_BRANCH}"
+else
+  git -C "${HOST_REPO_PATH}" push "${PUSH_ARGS[@]}" "${PR_REMOTE_NAME}" "${LOCAL_BRANCH}:refs/heads/${ORIGIN_BRANCH}"
+fi
+
+echo "Pushed ${LOCAL_BRANCH} to ${PR_REMOTE_NAME}/${ORIGIN_BRANCH}"
 
 if [[ "${CREATE_PR}" -eq 0 ]]; then
   echo
@@ -279,13 +385,13 @@ fi
 
 if [[ -z "${BASE_BRANCH}" ]]; then
   BASE_BRANCH="$(
-    git -C "${HOST_REPO_PATH}" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null \
-      | sed 's#^origin/##'
+    git -C "${HOST_REPO_PATH}" symbolic-ref --quiet --short "refs/remotes/${PR_REMOTE_NAME}/HEAD" 2>/dev/null \
+      | sed "s#^${PR_REMOTE_NAME}/##"
   )"
 fi
 
 if [[ -z "${BASE_BRANCH}" ]]; then
-  echo "Could not determine origin default branch. Pass --base explicitly." >&2
+  echo "Could not determine ${PR_REMOTE_NAME} default branch. Pass --base explicitly." >&2
   exit 1
 fi
 
@@ -300,19 +406,15 @@ else
   BODY_CONTENT="Automated review branch promotion for ${ORIGIN_BRANCH}."
 fi
 
-ORIGIN_URL="$(git -C "${HOST_REPO_PATH}" remote get-url origin)"
 PR_MAP_PATH="${AGENT_SANDBOX_PR_MAP_PATH:-${ROOT_DIR}/runtime/pr-map.json}"
 
 if [[ "${PROVIDER}" == "auto" ]]; then
-  case "${ORIGIN_URL}" in
-    git@github.com:*|https://github.com/*) PROVIDER="github" ;;
-    git@ssh.dev.azure.com:*|https://dev.azure.com/*|https://*.visualstudio.com/*) PROVIDER="azure" ;;
-    *)
-      echo "Could not infer PR provider from origin URL: ${ORIGIN_URL}" >&2
-      echo "Pass --provider explicitly." >&2
-      exit 1
-      ;;
-  esac
+  PROVIDER="$(infer_provider_from_url "${ORIGIN_URL}")"
+  if [[ -z "${PROVIDER}" ]]; then
+    echo "Could not infer PR provider from origin URL: ${ORIGIN_URL}" >&2
+    echo "Pass --provider explicitly." >&2
+    exit 1
+  fi
 fi
 
 if [[ -z "${SESSION_ID}" ]]; then

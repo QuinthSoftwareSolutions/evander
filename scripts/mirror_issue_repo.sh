@@ -180,12 +180,23 @@ fi
 "${SCRIPT_DIR}/create_git_remote.sh" "${BARE_REPO_NAME}"
 git --git-dir="${BARE_REPO_PATH}" config agent-sandbox.trustedRepoPath "${RESOLVED_REPO_PATH}"
 
+CANONICAL_ORIGIN_URL=""
+if [[ "${SOURCE_MODE}" == "remote" ]]; then
+  CANONICAL_ORIGIN_URL="${REPO_SOURCE}"
+elif git -C "${RESOLVED_REPO_PATH}" remote get-url "${REMOTE_NAME}" >/dev/null 2>&1; then
+  CANONICAL_ORIGIN_URL="$(git -C "${RESOLVED_REPO_PATH}" remote get-url "${REMOTE_NAME}")"
+fi
+if [[ -n "${CANONICAL_ORIGIN_URL}" ]]; then
+  git --git-dir="${BARE_REPO_PATH}" config agent-sandbox.canonicalOriginUrl "${CANONICAL_ORIGIN_URL}"
+fi
+
 DEFAULT_BASE_BRANCH="$(
   git -C "${RESOLVED_REPO_PATH}" symbolic-ref --quiet --short "refs/remotes/${REMOTE_NAME}/HEAD" 2>/dev/null \
     | sed "s#^${REMOTE_NAME}/##"
 )"
 if [[ -n "${DEFAULT_BASE_BRANCH}" ]]; then
   git --git-dir="${BARE_REPO_PATH}" config agent-sandbox.baseBranch "${DEFAULT_BASE_BRANCH}"
+  git --git-dir="${BARE_REPO_PATH}" symbolic-ref HEAD "refs/heads/${DEFAULT_BASE_BRANCH}"
 fi
 
 if git -C "${RESOLVED_REPO_PATH}" remote get-url "${MIRROR_REMOTE_NAME}" >/dev/null 2>&1; then
