@@ -354,6 +354,10 @@ Use this when you want the guest to wake only for new review feedback and post t
 
 ### Troubleshooting
 
+- **Run consolidated status first:** start with a host snapshot before debugging individual services.
+  - Human-readable: `agent-sandbox-cli status --config config/gateway.yaml`
+  - Machine-readable: `agent-sandbox-cli status --config config/gateway.yaml --json`
+  - The command summarizes config loading, runtime path permissions, key systemd units, gateway/relay reachability, and session expiration health.
 - **Stale lock/PID symptoms:** repeated no-op loops or no new wakeups.
   - Check `/home/agent/.agent-sandbox/heartbeat.log` for `stale_pid` and `skip reason=lock-held`.
   - Remove only obviously stale files: `codex-heartbeat.pid`, `heartbeat.lock`, then rerun once.
