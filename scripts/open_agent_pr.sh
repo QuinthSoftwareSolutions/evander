@@ -537,6 +537,21 @@ with urllib.request.urlopen(existing_request) as response:
 
 if payload.get("count", 0):
     pr = payload["value"][0]
+    pr_id = str(pr.get("pullRequestId", ""))
+    update_payload = json.dumps(
+        {
+            "title": title,
+            "description": body,
+        }
+    ).encode("utf-8")
+    update_request = urllib.request.Request(
+        f"{base_url}/{urllib.parse.quote(pr_id)}?api-version=7.1",
+        headers=headers,
+        data=update_payload,
+        method="PATCH",
+    )
+    with urllib.request.urlopen(update_request) as response:
+        pr = json.load(response)
     web = pr.get("_links", {}).get("web", {}).get("href") or pr.get("url")
     pr_id = str(pr.get("pullRequestId", ""))
     print(json.dumps({"pr_url": web, "pr_id": pr_id}, sort_keys=True))
