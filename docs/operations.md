@@ -467,6 +467,20 @@ For the common issue workflow, you can do the full host-side setup in one comman
 ./scripts/setup_issue_vm.sh /path/to/issue.yaml /path/to/project-or-solution.slnx
 ```
 
+`setup_issue_vm.sh` path defaults are configurable so host-specific `/home/...` paths are not
+hard-coded:
+
+- repo source precedence:
+  1. explicit third positional argument
+  2. `AGENT_SANDBOX_DEFAULT_REPO_SOURCE`
+  3. repo-relative fallback (`<agent-sandbox-repo-root>`)
+- guest clone remote root:
+  - `AGENT_SANDBOX_GIT_ROOT` (from env or `config/git-server.env`) plus
+    `/${ISSUE_NUMBER}_repo.git`
+  - `AGENT_SANDBOX_GIT_ROOT` must exist on the host before guest clone starts
+- clone URL SSH alias:
+  - `AGENT_SANDBOX_GIT_SSH_ALIAS` (default `agent-sandbox-git-host`)
+
 That prewarms the shared NuGet cache, launches `vm-14084`, bootstraps Codex/.NET/NuGet, and
 configures the issue-numbered Git mirror and guest SSH path. It also clones the mirrored repo into
 the guest user's home directory using the source repo basename. The cloned repo gets a
