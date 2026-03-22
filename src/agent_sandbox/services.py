@@ -360,6 +360,7 @@ class PrFeedbackService:
         *,
         streams: list[dict[str, str]],
         cursor: str | None = None,
+        limit: int | None = None,
     ) -> ListUnreadFeedbackResponse:
         payload = self._read_store()
         allowed_streams = {
@@ -379,6 +380,8 @@ class PrFeedbackService:
             items.append(candidate)
 
         items.sort(key=lambda item: item.created_at)
+        if limit is not None:
+            items = items[:limit]
         next_cursor = items[-1].created_at.isoformat().replace("+00:00", "Z") if items else cursor
         return ListUnreadFeedbackResponse(feedback=items, next_cursor=next_cursor)
 
