@@ -198,6 +198,12 @@ For operator visibility from the host, use:
 ./scripts/tail_issue_vm_log.sh 14084
 ```
 
+Both helpers share the same timeout environment variables (defaults shown):
+
+- `VM_WAIT_IP_TIMEOUT_SECONDS` (default `180`)
+- `VM_WAIT_SSH_TIMEOUT_SECONDS` (default `180`)
+
+
 The first command shows the VM state, IP, guest Codex PID, and the last log lines. The
 second follows the guest Codex log live over SSH.
 

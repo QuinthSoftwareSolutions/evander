@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+
+vm_network_resolve_ip() {
+  local vm_name="$1"
+  local ip
+
+  ip="$(
+    virsh domifaddr "${vm_name}" 2>/dev/null \
+      | awk '/ipv4/ {split($4, a, "/"); print a[1]; exit}'
+  )"
+  if [[ -n "${ip}" ]]; then
+    printf '%s\n' "${ip}"
+    return 0
+  fi
+
+  ip="$(
+    sudo -n virsh domifaddr "${vm_name}" 2>/dev/null \
+      | awk '/ipv4/ {split($4, a, "/"); print a[1]; exit}'
+  )"
+  if [[ -n "${ip}" ]]; then
+    printf '%s\n' "${ip}"
+    return 0
+  fi
+
+  return 1
+}
+
+vm_network_wait_for_ip() {
+  local vm_name="$1"
+  local timeout_seconds="$2"
+  local deadline ip
+
+  deadline=$((SECONDS + timeout_seconds))
+
+  while (( SECONDS < deadline )); do
+    if ip="$(vm_network_resolve_ip "${vm_name}")"; then
+      printf '%s\n' "${ip}"
+      return 0
+    fi
+    sleep 2
+  done
+
+  echo "Timed out waiting for VM '${vm_name}' to receive an IPv4 address after ${timeout_seconds}s." >&2
+  echo "Check guest boot progress with: sudo virsh console ${vm_name}" >&2
+  return 1
+}
+
+vm_network_wait_for_ssh() {
+  local vm_name="$1"
+  local vm_ip="$2"
+  local vm_user="$3"
+  local ssh_private_key_path="$4"
+  local timeout_seconds="$5"
+  local deadline
+
+  deadline=$((SECONDS + timeout_seconds))
+
+  while (( SECONDS < deadline )); do
+    if ssh \
+      -o StrictHostKeyChecking=no \
+      -o UserKnownHostsFile=/dev/null \
+      -o ConnectTimeout=5 \
+      -i "${ssh_private_key_path}" \
+      "${vm_user}@${vm_ip}" true >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 2
+  done
+
+  echo "Timed out waiting for SSH on '${vm_user}@${vm_ip}' after ${timeout_seconds}s (VM '${vm_name}')." >&2
+  echo "Check guest boot progress with: sudo virsh console ${vm_name}" >&2
+  return 1
+}

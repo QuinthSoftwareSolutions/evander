@@ -11,6 +11,12 @@ Arguments:
   issue-number  Issue identifier used to derive the VM name.
   repo-name     Repo basename used by setup_issue_vm.sh. Default: ExampleIndustryAPP
   vm-user       Guest user to inspect. Default: agent
+
+Environment:
+  VM_WAIT_IP_TIMEOUT_SECONDS   How long to wait for the guest to receive an IPv4 address.
+                               Default: 180
+  VM_WAIT_SSH_TIMEOUT_SECONDS  How long to wait for guest SSH to accept connections.
+                               Default: 180
 EOF
 }
 
@@ -28,9 +34,14 @@ ISSUE_NUMBER="$1"
 REPO_NAME="${2:-ExampleIndustryAPP}"
 VM_USER="${3:-agent}"
 VM_NAME="vm-${ISSUE_NUMBER}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/vm_network.sh
+source "${SCRIPT_DIR}/lib/vm_network.sh"
 CALLER_USER="${SUDO_USER:-$USER}"
 CALLER_HOME="$(getent passwd "${CALLER_USER}" | cut -d: -f6)"
 SSH_PRIVATE_KEY_PATH="${SSH_PRIVATE_KEY_PATH:-${CALLER_HOME}/.ssh/id_ed25519}"
+VM_WAIT_IP_TIMEOUT_SECONDS="${VM_WAIT_IP_TIMEOUT_SECONDS:-180}"
+VM_WAIT_SSH_TIMEOUT_SECONDS="${VM_WAIT_SSH_TIMEOUT_SECONDS:-180}"
 
 if [[ ! -f "${SSH_PRIVATE_KEY_PATH}" ]]; then
   SSH_PRIVATE_KEY_PATH="${CALLER_HOME}/.ssh/id_rsa"
@@ -41,26 +52,6 @@ if [[ ! -f "${SSH_PRIVATE_KEY_PATH}" ]]; then
   echo "Set SSH_PRIVATE_KEY_PATH to the private key that matches the VM's authorized key." >&2
   exit 1
 fi
-
-get_vm_ip() {
-  local ip domifaddr_output
-
-  domifaddr_output="$(virsh domifaddr "${VM_NAME}" 2>/dev/null || true)"
-  ip="$(awk '/ipv4/ {split($4, a, "/"); print a[1]; exit}' <<<"${domifaddr_output}")"
-  if [[ -n "${ip}" ]]; then
-    printf '%s\n' "${ip}"
-    return 0
-  fi
-
-  domifaddr_output="$(sudo -n virsh domifaddr "${VM_NAME}" 2>/dev/null || true)"
-  ip="$(awk '/ipv4/ {split($4, a, "/"); print a[1]; exit}' <<<"${domifaddr_output}")"
-  if [[ -n "${ip}" ]]; then
-    printf '%s\n' "${ip}"
-    return 0
-  fi
-
-  return 1
-}
 
 if ! virsh dominfo "${VM_NAME}" >/dev/null 2>&1 && ! sudo -n virsh dominfo "${VM_NAME}" >/dev/null 2>&1; then
   echo "VM not found: ${VM_NAME}" >&2
@@ -75,8 +66,10 @@ if [[ -z "${VM_STATE}" ]]; then
 fi
 
 VM_IP=""
-if get_vm_ip >/dev/null 2>&1; then
-  VM_IP="$(get_vm_ip)"
+if VM_IP="$(vm_network_wait_for_ip "${VM_NAME}" "${VM_WAIT_IP_TIMEOUT_SECONDS}" 2>/dev/null)"; then
+  :
+else
+  VM_IP=""
 fi
 
 echo "vm:    ${VM_NAME}"
@@ -85,6 +78,11 @@ echo "ip:    ${VM_IP:-unavailable}"
 
 if [[ -z "${VM_IP}" ]]; then
   echo "agent: unavailable (no guest IP yet)"
+  exit 0
+fi
+
+if ! vm_network_wait_for_ssh "${VM_NAME}" "${VM_IP}" "${VM_USER}" "${SSH_PRIVATE_KEY_PATH}" "${VM_WAIT_SSH_TIMEOUT_SECONDS}" >/dev/null 2>&1; then
+  echo "agent: unavailable (guest SSH not ready)"
   exit 0
 fi
 
