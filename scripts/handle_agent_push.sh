@@ -42,6 +42,7 @@ EVENT_LOG="${AGENT_SANDBOX_EVENT_LOG:-${ROOT_DIR}/runtime/agent-events.log}"
 NOTIFY_COMMAND="${AGENT_SANDBOX_NOTIFY_COMMAND:-}"
 AUTO_REMOTE_NAME="${AGENT_SANDBOX_AUTO_REMOTE_NAME:-agent-dropbox-auto}"
 PR_NOTES_REF="${AGENT_SANDBOX_PR_NOTES_REF:-refs/notes/agent-pr}"
+LOCAL_PR_NOTES_REF=""
 PR_BODY_DIR="${AGENT_SANDBOX_PR_BODY_DIR:-${ROOT_DIR}/runtime/pr-body}"
 PR_FIXED_BODY_FILE="${AGENT_SANDBOX_PR_FIXED_BODY_FILE:-}"
 PR_BODY_MAX_BYTES="${AGENT_SANDBOX_PR_BODY_MAX_BYTES:-60000}"
@@ -165,6 +166,20 @@ extract_session_id() {
   return 1
 }
 
+derive_local_notes_ref() {
+  local bare_repo_path="$1"
+  local repo_name
+  repo_name="$(basename "${bare_repo_path}")"
+  repo_name="${repo_name%.git}"
+  repo_name="$(printf '%s' "${repo_name}" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9._-' '-')"
+  repo_name="${repo_name#-}"
+  repo_name="${repo_name%-}"
+  if [[ -z "${repo_name}" ]]; then
+    repo_name="bare-repo"
+  fi
+  printf 'refs/notes/agent-pr-cache/%s\n' "${repo_name}"
+}
+
 ensure_remote() {
   local host_repo_path="$1"
   local remote_name="$2"
@@ -221,15 +236,15 @@ process_agent_branch() {
   promote_branch "${TRUSTED_REPO_PATH}" "${AUTO_REMOTE_NAME}" "${agent_branch}" "${review_branch}"
 
   if ! git -C "${TRUSTED_REPO_PATH}" fetch "${AUTO_REMOTE_NAME}" \
-    "${PR_NOTES_REF}:${PR_NOTES_REF}" >/dev/null 2>&1; then
+    "${PR_NOTES_REF}:${LOCAL_PR_NOTES_REF}" >/dev/null 2>&1; then
     notify_event \
       "AGENT_PR_NOTES fetch failed (non-fatal)" \
-      "repo=$(basename "${TRUSTED_REPO_PATH}") notes_ref=${PR_NOTES_REF} branch=${review_branch} session_id=${session_id:-unknown}"
+      "repo=$(basename "${TRUSTED_REPO_PATH}") notes_ref=${PR_NOTES_REF} local_notes_ref=${LOCAL_PR_NOTES_REF} branch=${review_branch} session_id=${session_id:-unknown}"
   fi
 
   note_body_file=""
   if resolved_sha="$(git -C "${TRUSTED_REPO_PATH}" rev-parse --verify "${new_sha}^{commit}" 2>/dev/null)"; then
-    if NOTE_CONTENT="$(git -C "${TRUSTED_REPO_PATH}" notes --ref=agent-pr show "${resolved_sha}" 2>/dev/null)"; then
+    if NOTE_CONTENT="$(git -C "${TRUSTED_REPO_PATH}" notes --ref="${LOCAL_PR_NOTES_REF}" show "${resolved_sha}" 2>/dev/null)"; then
       if [[ -n "${NOTE_CONTENT}" ]]; then
         SAFE_SESSION_ID="${session_id:-unknown}"
         note_body_file="${PR_BODY_DIR}/agent-note-${SAFE_SESSION_ID}-${resolved_sha}.md"
@@ -238,7 +253,7 @@ process_agent_branch() {
     else
       notify_event \
         "AGENT_PR_NOTES read failed (non-fatal)" \
-        "repo=$(basename "${TRUSTED_REPO_PATH}") sha=${resolved_sha} notes_ref=${PR_NOTES_REF} branch=${review_branch} session_id=${session_id:-unknown}"
+        "repo=$(basename "${TRUSTED_REPO_PATH}") sha=${resolved_sha} notes_ref=${PR_NOTES_REF} local_notes_ref=${LOCAL_PR_NOTES_REF} branch=${review_branch} session_id=${session_id:-unknown}"
     fi
   else
     notify_event \
@@ -303,6 +318,7 @@ done < <(git --git-dir="${BARE_REPO_PATH}" rev-parse --local-env-vars)
 TRUSTED_REPO_PATH="$(git --git-dir="${BARE_REPO_PATH}" config --get agent-sandbox.trustedRepoPath || true)"
 BASE_BRANCH="$(git --git-dir="${BARE_REPO_PATH}" config --get agent-sandbox.baseBranch || true)"
 CANONICAL_ORIGIN_URL="$(git --git-dir="${BARE_REPO_PATH}" config --get agent-sandbox.canonicalOriginUrl || true)"
+LOCAL_PR_NOTES_REF="$(derive_local_notes_ref "${BARE_REPO_PATH}")"
 
 if [[ -z "${TRUSTED_REPO_PATH}" || ! -d "${TRUSTED_REPO_PATH}/.git" ]]; then
   notify_event \
