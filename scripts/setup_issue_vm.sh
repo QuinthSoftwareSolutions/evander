@@ -1,5 +1,22 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
+
+CURRENT_STEP="startup"
+
+log_step() {
+  CURRENT_STEP="$1"
+  echo "==> ${CURRENT_STEP}"
+}
+
+on_error() {
+  local exit_code="$?"
+  local line_no="${1:-?}"
+  echo "ERROR: setup_issue_vm.sh failed at step '${CURRENT_STEP}' (line ${line_no})" >&2
+  echo "COMMAND: ${BASH_COMMAND}" >&2
+  exit "${exit_code}"
+}
+
+trap 'on_error ${LINENO}' ERR
 
 show_help() {
   cat <<'EOF'
@@ -26,7 +43,8 @@ Arguments:
                        argument is treated as repo-source instead.
   repo-source          Host repo path or remote URL to mirror for guest Git access.
                        Default: $AGENT_SANDBOX_DEFAULT_REPO_SOURCE or repo root
-  session-id           Session name passed to launch_agent_vm.sh. Default: agent-session
+  session-id           Session name passed to launch_agent_vm.sh. Default:
+                       issue-<issue-number>-<utc timestamp>-<pid>
   vm-user              Guest user to configure. Default: agent
 
 Environment:
@@ -168,6 +186,11 @@ sys.exit(1)
 PY
 }
 
+default_session_id() {
+  local issue_number="$1"
+  printf 'issue-%s-%s-%s\n' "${issue_number}" "$(date -u +%Y%m%dT%H%M%SZ)" "$$"
+}
+
 if [[ -f "${ISSUE_INPUT}" ]]; then
   ISSUE_FILE="$(readlink -f "${ISSUE_INPUT}")"
   if ! ISSUE_NUMBER="$(read_issue_number_from_yaml "${ISSUE_FILE}")"; then
@@ -192,13 +215,17 @@ fi
 if (( BOOTSTRAP_NUGET )); then
   PREWARM_TARGET="${2:-}"
   REPO_SOURCE_ARG="${3:-}"
-  SESSION_ID="${4:-agent-session}"
+  SESSION_ID="${4:-}"
   VM_USER="${5:-agent}"
 else
   PREWARM_TARGET=""
   REPO_SOURCE_ARG="${2:-}"
-  SESSION_ID="${3:-agent-session}"
+  SESSION_ID="${3:-}"
   VM_USER="${4:-agent}"
+fi
+
+if [[ -z "${SESSION_ID}" ]]; then
+  SESSION_ID="$(default_session_id "${ISSUE_NUMBER}")"
 fi
 
 REPO_SOURCE="${REPO_SOURCE_ARG:-${DEFAULT_REPO_SOURCE}}"
@@ -252,25 +279,35 @@ fi
 source "${SCRIPT_DIR}/lib/vm_network.sh"
 
 if (( BOOTSTRAP_NUGET )); then
+  log_step "prewarm_nuget_cache"
   "${SCRIPT_DIR}/prewarm_nuget_cache.sh" "${PREWARM_TARGET}"
 fi
+log_step "launch_vm"
 sudo SSH_PUBLIC_KEY_FILE="${SSH_PUBLIC_KEY_FILE}" "${SCRIPT_DIR}/launch_agent_vm.sh" "${VM_NAME}" "${SESSION_ID}"
+log_step "wait_for_ip"
 VM_IP="$(vm_network_wait_for_ip "${VM_NAME}" "${VM_WAIT_IP_TIMEOUT_SECONDS}")"
 echo "Guest IPv4 detected: ${VM_IP}"
+log_step "wait_for_ssh"
 vm_network_wait_for_ssh "${VM_NAME}" "${VM_IP}" "${VM_USER}" "${SSH_PRIVATE_KEY_PATH}" "${VM_WAIT_SSH_TIMEOUT_SECONDS}"
 echo "Guest SSH is ready on ${VM_USER}@${VM_IP}"
+log_step "bootstrap_codex"
 "${SCRIPT_DIR}/bootstrap_codex_vm.sh" "${VM_NAME}" "${VM_USER}"
 if (( BOOTSTRAP_DOTNET )); then
+  log_step "bootstrap_dotnet"
   "${SCRIPT_DIR}/bootstrap_dotnet_vm.sh" "${VM_NAME}" "${VM_USER}"
 fi
 if (( BOOTSTRAP_NUGET )); then
+  log_step "bootstrap_nuget"
   "${SCRIPT_DIR}/bootstrap_nuget_vm.sh" "${VM_NAME}" "${VM_USER}"
 fi
 if (( BOOTSTRAP_MSSQL )); then
+  log_step "bootstrap_mssql"
   "${SCRIPT_DIR}/bootstrap_mssql_vm.sh" "${VM_NAME}" "${VM_USER}"
 fi
+log_step "setup_issue_git_vm"
 "${SCRIPT_DIR}/setup_issue_git_vm.sh" "${MIRROR_ARGS[@]}" "${VM_NAME}" "${ISSUE_NUMBER}" "${REPO_SOURCE}" "${VM_USER}"
 
+log_step "guest_repo_clone_and_config"
 ssh \
   -o StrictHostKeyChecking=no \
   -o UserKnownHostsFile=/dev/null \
@@ -304,7 +341,7 @@ git clone "${REMOTE_URL}" "${TARGET_DIR}"
 git -C "${TARGET_DIR}" remote add agent "${REMOTE_URL}"
 git -C "${TARGET_DIR}" config user.name "Truman Bot"
 git -C "${TARGET_DIR}" config user.email "truman@quinth.se"
-git -C "${TARGET_DIR}" config alias.push-agent '!f(){ branch=$(git rev-parse --abbrev-ref HEAD); suffix=$(printf "%s" "${AGENT_BRANCH_SUFFIX:-${HOSTNAME:-agent}}" | tr "[:upper:]" "[:lower:]" | tr -cs "a-z0-9._-" "-" | sed "s/^-*//;s/-*$//"); suffix=${suffix:-agent}; git push agent HEAD:refs/heads/agents/${SESSION_ID:-manual}/${branch}-${suffix}; }; f'
+git -C "${TARGET_DIR}" config alias.push-agent '!f(){ session_id=${SESSION_ID:-}; if [[ -z "${session_id}" ]]; then echo "SESSION_ID is not set; refusing ambiguous agent push." >&2; return 1; fi; suffix_source=${AGENT_BRANCH_SUFFIX:-${HOSTNAME:-}}; suffix=$(printf "%s" "${suffix_source}" | tr "[:upper:]" "[:lower:]" | tr -cs "a-z0-9._-" "-" | sed "s/^-*//;s/-*$//"); if [[ -z "${suffix}" ]]; then echo "AGENT_BRANCH_SUFFIX/HOSTNAME is empty; refusing ambiguous agent push." >&2; return 1; fi; branch=$(git rev-parse --abbrev-ref HEAD); git push agent HEAD:refs/heads/agents/${session_id}/${branch}-${suffix}; }; f'
 
 cat > "$HOME/AGENTS.md" <<AGENTS
 # Guest Notes
@@ -315,8 +352,9 @@ cat > "$HOME/AGENTS.md" <<AGENTS
 - Recommended push command from inside the repo:
   \`git push-agent\`
 - Equivalent explicit push pattern:
-  \`git push agent HEAD:refs/heads/agents/\${SESSION_ID:-manual}/\$(git rev-parse --abbrev-ref HEAD)-\${AGENT_BRANCH_SUFFIX:-\${HOSTNAME:-agent}}\`
+  \`git push agent HEAD:refs/heads/agents/\${SESSION_ID}/\$(git rev-parse --abbrev-ref HEAD)-\${AGENT_BRANCH_SUFFIX:-\${HOSTNAME}}\`
 - Branch suffix defaults to \`${AGENT_BRANCH_SUFFIX}\` (set to the VM name by setup); fallback is \`${HOSTNAME}\`.
+- `push-agent` refuses to run when `SESSION_ID` is missing or the suffix resolves empty, because that would cause branch collisions.
 ${RESTORE_INSTRUCTION}
 - If shell changes were just bootstrapped, run:
   \`. ~/.profile\`
@@ -339,7 +377,7 @@ git notes --ref=agent-pr add -f -m "<markdown summary in Markdown>"
 
 # Push the current branch and the notes ref together.
 git push agent \
-  HEAD:refs/heads/agents/\${SESSION_ID:-manual}/\$(git rev-parse --abbrev-ref HEAD)-\${AGENT_BRANCH_SUFFIX:-\${HOSTNAME:-agent}} \
+  HEAD:refs/heads/agents/\${SESSION_ID}/\$(git rev-parse --abbrev-ref HEAD)-\${AGENT_BRANCH_SUFFIX:-\${HOSTNAME}} \
   refs/notes/agent-pr
 \`\`\`
 
@@ -356,6 +394,7 @@ AGENTS
 EOF
 
 if [[ -n "${ISSUE_FILE}" ]]; then
+  log_step "copy_issue_file"
   scp \
     -o StrictHostKeyChecking=no \
     -o UserKnownHostsFile=/dev/null \
@@ -363,6 +402,7 @@ if [[ -n "${ISSUE_FILE}" ]]; then
     "${ISSUE_FILE}" \
     "${VM_USER}@${VM_IP}:/home/${VM_USER}/${GUEST_REPO_NAME}/AGENT_TASK.yaml" >/dev/null
 else
+  log_step "write_default_issue_file"
   ssh \
     -o StrictHostKeyChecking=no \
     -o UserKnownHostsFile=/dev/null \
@@ -377,6 +417,7 @@ EOF
 fi
 
 if (( START_AGENT )); then
+  log_step "start_agent"
   ssh \
     -o StrictHostKeyChecking=no \
     -o UserKnownHostsFile=/dev/null \
@@ -395,7 +436,7 @@ if [[ "${BOOTSTRAP_DOTNET:-0}" == "1" && "${BOOTSTRAP_NUGET:-0}" == "1" ]]; then
   INITIAL_PROMPT="${INITIAL_PROMPT} When restore is needed, use 'dotnet restore --configfile ~/.nuget/NuGet/NuGet.Config'. For build and test, prefer '--no-restore'."
 fi
 INITIAL_PROMPT="${INITIAL_PROMPT} When you have finished, commit and push your work using 'git push-agent'."
-POST_EXEC_VERIFICATION_PROMPT="$(python3 -c 'import base64, os; print(base64.b64decode(os.environ[\"POST_EXEC_VERIFICATION_PROMPT_B64\"]).decode(\"utf-8\"))')"
+POST_EXEC_VERIFICATION_PROMPT="$(python3 -c 'import base64, os; print(base64.b64decode(os.environ["POST_EXEC_VERIFICATION_PROMPT_B64"]).decode("utf-8"))')"
 
 mkdir -p "${LOG_DIR}"
 
@@ -421,7 +462,7 @@ codex exec \
   -C "${TARGET_DIR}" \
   "${INITIAL_PROMPT}"
 exec_status=$?
-codex exec resume --last "${POST_EXEC_VERIFICATION_PROMPT}" || true
+codex exec resume --last --skip-git-repo-check "${POST_EXEC_VERIFICATION_PROMPT}" || true
 exit "${exec_status}"
 ' >"${LOG_PATH}" 2>&1 < /dev/null &
 
@@ -431,6 +472,7 @@ printf 'pid=%s\nlog=%s\n' "${AGENT_PID}" "${LOG_PATH}"
 EOF
 fi
 
+log_step "complete"
 echo
 echo "Issue VM setup complete."
 echo "  vm:      ${VM_NAME}"

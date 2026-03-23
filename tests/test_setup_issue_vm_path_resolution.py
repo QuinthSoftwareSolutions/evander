@@ -72,7 +72,7 @@ def _base_env(tmp_path: Path, fake_bin: Path) -> dict[str, str]:
 
 def _run_setup(setup_script: Path, env: dict[str, str], prewarm_target: Path, *extra_args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [str(setup_script), "14084", str(prewarm_target), *extra_args],
+        [str(setup_script), "--nuget", "14084", str(prewarm_target), *extra_args],
         text=True,
         capture_output=True,
         env=env,
@@ -172,3 +172,13 @@ def test_setup_issue_vm_reads_git_root_from_config_file(tmp_path: Path) -> None:
 
     assert result.returncode == 1
     assert "VM already exists: vm-14084" in result.stderr
+
+
+def test_setup_issue_vm_default_session_id_includes_issue_number() -> None:
+    setup_issue_vm = Path("/home/jonathan/agent-sandbox/scripts/setup_issue_vm.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert "default_session_id()" in setup_issue_vm
+    assert "issue-%s-%s-%s" in setup_issue_vm
+    assert 'SESSION_ID="$(default_session_id "${ISSUE_NUMBER}")"' in setup_issue_vm

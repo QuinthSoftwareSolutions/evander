@@ -206,6 +206,10 @@ For the full issue-VM bring-up path in one command, use:
 2. `AGENT_SANDBOX_DEFAULT_REPO_SOURCE`
 3. repo-relative fallback: the agent-sandbox repo root
 
+When `session-id` is omitted, `setup_issue_vm.sh` now generates one automatically in the form
+`issue-<issue-number>-<utc timestamp>-<pid>`. That keeps review branches distinct across multiple
+agents or reruns for the same issue.
+
 Toolchain bootstraps are now opt-in:
 
 - `--dotnet` runs `bootstrap_dotnet_vm.sh`

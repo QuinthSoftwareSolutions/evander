@@ -21,14 +21,14 @@ def test_bare_repo_flow_includes_hook_and_azure_support() -> None:
     assert "agent-sandbox.baseBranch" in mirror_issue
     assert "runtime/agent-events.log" in handle_push
     assert "extract_session_id()" in handle_push
-    assert 'PR_ARGS+=(--session-id "${SESSION_ID}")' in handle_push
+    assert 'PR_ARGS+=(--session-id "${session_id}")' in handle_push
     assert "AGENT_PR_NOTES" in handle_push
     assert "refs/notes/agent-pr" in handle_push
     assert "AGENT_SANDBOX_PR_FIXED_BODY_FILE" in handle_push
     assert "AGENT_SANDBOX_PR_BODY_MAX_BYTES" in handle_push
     assert "## Agent Summary" in handle_push
     assert "compose_pr_body_file()" in handle_push
-    assert '--body-file "${PR_BODY_FILE}"' in handle_push
+    assert '--body-file "${pr_body_file}"' in handle_push
     assert "AZURE_DEVOPS_PAT" in open_pr
     assert "ssh.dev.azure.com" in open_pr
     assert '"api-version": "7.1"' in open_pr or "?api-version=7.1" in open_pr
@@ -43,3 +43,7 @@ def test_issue_vm_setup_configures_agent_remote_for_push_alias() -> None:
 
     assert 'git -C "${TARGET_DIR}" remote add agent "${REMOTE_URL}"' in setup_issue_vm
     assert "git push agent HEAD:refs/heads/agents/" in setup_issue_vm
+    assert "SESSION_ID is not set; refusing ambiguous agent push." in setup_issue_vm
+    assert "AGENT_BRANCH_SUFFIX/HOSTNAME is empty; refusing ambiguous agent push." in setup_issue_vm
+    assert 'HEAD:refs/heads/agents/${session_id}/${branch}-${suffix}' in setup_issue_vm
+    assert 'HEAD:refs/heads/agents/\\${SESSION_ID}/\\$(git rev-parse --abbrev-ref HEAD)-\\${AGENT_BRANCH_SUFFIX:-\\${HOSTNAME}}' in setup_issue_vm
