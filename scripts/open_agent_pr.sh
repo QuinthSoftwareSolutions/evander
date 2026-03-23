@@ -38,6 +38,7 @@ fi
 CREATE_PR=0
 BASE_BRANCH=""
 TITLE=""
+TITLE_EXPLICIT=0
 BODY_FILE=""
 USE_FILL=1
 PROVIDER="auto"
@@ -84,6 +85,7 @@ while [[ $# -gt 0 ]]; do
         exit 1
       fi
       TITLE="$2"
+      TITLE_EXPLICIT=1
       shift 2
       ;;
     --body-file)
@@ -490,6 +492,7 @@ case "${PROVIDER}" in
     BASE_BRANCH="${BASE_BRANCH}" \
     ORIGIN_BRANCH="${ORIGIN_BRANCH}" \
     TITLE="${TITLE}" \
+    TITLE_EXPLICIT="${TITLE_EXPLICIT}" \
     BODY_CONTENT="${BODY_CONTENT}" \
     python3 - <<'PY'
 import base64
@@ -504,6 +507,7 @@ origin_url = os.environ["ORIGIN_URL"]
 base_branch = os.environ["BASE_BRANCH"]
 origin_branch = os.environ["ORIGIN_BRANCH"]
 title = os.environ["TITLE"]
+title_explicit = os.environ.get("TITLE_EXPLICIT", "0") == "1"
 body = os.environ["BODY_CONTENT"]
 pat = os.environ["AZURE_DEVOPS_PAT_VALUE"]
 
@@ -557,12 +561,10 @@ with urllib.request.urlopen(existing_request) as response:
 if payload.get("count", 0):
     pr = payload["value"][0]
     pr_id = str(pr.get("pullRequestId", ""))
-    update_payload = json.dumps(
-        {
-            "title": title,
-            "description": body,
-        }
-    ).encode("utf-8")
+    update_doc = {"description": body}
+    if title_explicit:
+        update_doc["title"] = title
+    update_payload = json.dumps(update_doc).encode("utf-8")
     update_request = urllib.request.Request(
         f"{base_url}/{urllib.parse.quote(pr_id)}?api-version=7.1",
         headers=headers,

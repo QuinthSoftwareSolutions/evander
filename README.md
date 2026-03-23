@@ -95,6 +95,7 @@
    It also creates a shared host NuGet cache under `/var/lib/libvirt/images/agent-sandbox/nuget-cache/global-packages` and mounts it read-only into the guest at `/opt/agent-sandbox/nuget-cache-ro` via `virtiofs`.
    New VMs default to a `20G` virtual disk; override with `DISK_SIZE_GB=...` before launch if needed.
    New VMs also receive `/home/agent/.codex/config.toml` and a shell profile hook so Codex defaults to the host relay without the deprecated `OPENAI_BASE_URL` warning.
+   To see all currently running VMs together with live guest agent status, run `./scripts/list_running_vms.sh`.
 
 8. Install the Codex binary into the VM:
 
