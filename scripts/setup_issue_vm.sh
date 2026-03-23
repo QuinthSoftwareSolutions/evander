@@ -462,7 +462,12 @@ codex exec \
   -C "${TARGET_DIR}" \
   "${INITIAL_PROMPT}"
 exec_status=$?
-codex exec resume --last --skip-git-repo-check "${POST_EXEC_VERIFICATION_PROMPT}" || true
+codex exec resume \
+  --last \
+  --model "${CODEX_MODEL}" \
+  --dangerously-bypass-approvals-and-sandbox \
+  --skip-git-repo-check \
+  "${POST_EXEC_VERIFICATION_PROMPT}" || true
 exit "${exec_status}"
 ' >"${LOG_PATH}" 2>&1 < /dev/null &
 
