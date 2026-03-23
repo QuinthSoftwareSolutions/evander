@@ -42,7 +42,11 @@ def test_issue_vm_setup_configures_agent_remote_for_push_alias() -> None:
     )
 
     assert 'git -C "${TARGET_DIR}" remote add agent "${REMOTE_URL}"' in setup_issue_vm
-    assert 'install -m 0755 "${ROOT_DIR}/scripts/guest/agent_pr_note.sh"' in setup_issue_vm
+    assert 'AGENT_PR_NOTE_HELPER_B64="$(' in setup_issue_vm
+    assert "base64.b64encode(Path(sys.argv[1]).read_bytes()).decode()" in setup_issue_vm
+    assert 'AGENT_PR_NOTE_HELPER_B64=\'${AGENT_PR_NOTE_HELPER_B64}\'' in setup_issue_vm
+    assert 'python3 - "${TARGET_DIR}/.agent-sandbox/bin/agent-pr-note" "${AGENT_PR_NOTE_HELPER_B64}"' in setup_issue_vm
+    assert "target_path.write_bytes(base64.b64decode(sys.argv[2]))" in setup_issue_vm
     assert 'config alias.agent-pr-note' in setup_issue_vm
     assert '"${repo_root}/.agent-sandbox/bin/agent-pr-note" ensure-head' in setup_issue_vm
     assert "git push agent HEAD:refs/heads/agents/" in setup_issue_vm

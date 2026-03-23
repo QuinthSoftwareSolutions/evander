@@ -202,6 +202,15 @@ CODEX_MODEL="${CODEX_MODEL:-gpt-5.4}"
 DEFAULT_POST_EXEC_VERIFICATION_PROMPT="Before concluding, verify whether you completed all required checklist items. Confirm (or explicitly list gaps for): (1) appropriate unit tests for your code changes, (2) documentation updates for behavioral or operational changes, and (3) a markdown PR summary maintained with 'git agent-pr-note'. If anything is missing, complete it now. If you make any changes during this checklist pass, push them before concluding. A successful 'git push-agent' refreshes and pushes refs/notes/agent-pr together with your latest work."
 POST_EXEC_VERIFICATION_PROMPT="${AGENT_SANDBOX_CODEX_POST_EXEC_VERIFICATION_PROMPT:-${DEFAULT_POST_EXEC_VERIFICATION_PROMPT}}"
 POST_EXEC_VERIFICATION_PROMPT_B64="$(printf '%s' "${POST_EXEC_VERIFICATION_PROMPT}" | python3 -c 'import base64,sys; print(base64.b64encode(sys.stdin.buffer.read()).decode())')"
+AGENT_PR_NOTE_HELPER_B64="$(
+  python3 - "${ROOT_DIR}/scripts/guest/agent_pr_note.sh" <<'PY'
+import base64
+import sys
+from pathlib import Path
+
+print(base64.b64encode(Path(sys.argv[1]).read_bytes()).decode())
+PY
+)"
 
 read_issue_number_from_yaml() {
   python3 - "$1" <<'PY'
@@ -412,7 +421,7 @@ ssh \
   -o UserKnownHostsFile=/dev/null \
   -i "${SSH_PRIVATE_KEY_PATH}" \
   "${VM_USER}@${VM_IP}" \
-  "GUEST_REPO_NAME='${GUEST_REPO_NAME}' ISSUE_NUMBER='${ISSUE_NUMBER}' SESSION_ID='${SESSION_ID}' REMOTE_URL='${REMOTE_URL}' AGENT_BRANCH_SUFFIX='${VM_NAME}' BOOTSTRAP_DOTNET='${BOOTSTRAP_DOTNET}' BOOTSTRAP_NUGET='${BOOTSTRAP_NUGET}' BOOTSTRAP_BROWSER_TESTS='${BOOTSTRAP_BROWSER_TESTS}' BROWSER_TESTS_INSTALL_ROOTS_JSON='${BROWSER_TESTS_INSTALL_ROOTS_JSON}' bash -s" <<'EOF'
+  "GUEST_REPO_NAME='${GUEST_REPO_NAME}' ISSUE_NUMBER='${ISSUE_NUMBER}' SESSION_ID='${SESSION_ID}' REMOTE_URL='${REMOTE_URL}' AGENT_BRANCH_SUFFIX='${VM_NAME}' BOOTSTRAP_DOTNET='${BOOTSTRAP_DOTNET}' BOOTSTRAP_NUGET='${BOOTSTRAP_NUGET}' BOOTSTRAP_BROWSER_TESTS='${BOOTSTRAP_BROWSER_TESTS}' BROWSER_TESTS_INSTALL_ROOTS_JSON='${BROWSER_TESTS_INSTALL_ROOTS_JSON}' AGENT_PR_NOTE_HELPER_B64='${AGENT_PR_NOTE_HELPER_B64}' bash -s" <<'EOF'
 set -euo pipefail
 . ~/.profile
 
@@ -441,7 +450,16 @@ git -C "${TARGET_DIR}" remote add agent "${REMOTE_URL}"
 git -C "${TARGET_DIR}" config user.name "Truman Bot"
 git -C "${TARGET_DIR}" config user.email "truman@quinth.se"
 install -d -m 0755 "${TARGET_DIR}/.agent-sandbox/bin"
-install -m 0755 "${ROOT_DIR}/scripts/guest/agent_pr_note.sh" "${TARGET_DIR}/.agent-sandbox/bin/agent-pr-note"
+python3 - "${TARGET_DIR}/.agent-sandbox/bin/agent-pr-note" "${AGENT_PR_NOTE_HELPER_B64}" <<'PY'
+import base64
+import os
+import sys
+from pathlib import Path
+
+target_path = Path(sys.argv[1])
+target_path.write_bytes(base64.b64decode(sys.argv[2]))
+os.chmod(target_path, 0o755)
+PY
 git -C "${TARGET_DIR}" config alias.agent-pr-note '!f(){ repo_root=$(git rev-parse --show-toplevel); "${repo_root}/.agent-sandbox/bin/agent-pr-note" "$@"; }; f'
 git -C "${TARGET_DIR}" config alias.push-agent '!f(){ session_id=${SESSION_ID:-}; if [[ -z "${session_id}" ]]; then echo "SESSION_ID is not set; refusing ambiguous agent push." >&2; return 1; fi; suffix_source=${AGENT_BRANCH_SUFFIX:-${HOSTNAME:-}}; suffix=$(printf "%s" "${suffix_source}" | tr "[:upper:]" "[:lower:]" | tr -cs "a-z0-9._-" "-" | sed "s/^-*//;s/-*$//"); if [[ -z "${suffix}" ]]; then echo "AGENT_BRANCH_SUFFIX/HOSTNAME is empty; refusing ambiguous agent push." >&2; return 1; fi; repo_root=$(git rev-parse --show-toplevel); "${repo_root}/.agent-sandbox/bin/agent-pr-note" ensure-head; branch=$(git rev-parse --abbrev-ref HEAD); git push agent HEAD:refs/heads/agents/${session_id}/${branch}-${suffix} refs/notes/agent-pr; }; f'
 
