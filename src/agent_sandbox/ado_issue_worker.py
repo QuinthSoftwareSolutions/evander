@@ -45,6 +45,9 @@ class WorkerConfig:
     bootstrap_nuget: bool
     bootstrap_mssql: bool
     bootstrap_playwright: bool
+    bootstrap_browser_tests: bool
+    browser_test_host_checkout: str | None
+    browser_test_install_roots: tuple[str, ...]
     include_comments: bool
     comments_max_count: int
     comment_text_max_chars: int
@@ -91,6 +94,13 @@ class WorkerConfig:
         bootstrap_nuget = _bool_env("ADO_BOOTSTRAP_NUGET", True)
         bootstrap_mssql = _bool_env("ADO_BOOTSTRAP_MSSQL", True)
         bootstrap_playwright = _bool_env("ADO_BOOTSTRAP_PLAYWRIGHT", False)
+        bootstrap_browser_tests = _bool_env("ADO_BOOTSTRAP_BROWSER_TESTS", False)
+        browser_test_host_checkout = _optional_env("ADO_BROWSER_TEST_HOST_CHECKOUT")
+        browser_test_install_roots = _csv_env("ADO_BROWSER_TEST_INSTALL_ROOTS")
+        if bootstrap_browser_tests and not browser_test_install_roots:
+            raise ValueError(
+                "ADO_BROWSER_TEST_INSTALL_ROOTS is required when ADO_BOOTSTRAP_BROWSER_TESTS is true."
+            )
         include_comments = _bool_env("ADO_INCLUDE_COMMENTS", True)
         comments_max_count = _int_env("ADO_COMMENTS_MAX_COUNT", 20, minimum=1)
         comment_text_max_chars = _int_env("ADO_COMMENT_TEXT_MAX_CHARS", 4000, minimum=1)
@@ -124,6 +134,9 @@ class WorkerConfig:
             bootstrap_nuget=bootstrap_nuget,
             bootstrap_mssql=bootstrap_mssql,
             bootstrap_playwright=bootstrap_playwright,
+            bootstrap_browser_tests=bootstrap_browser_tests,
+            browser_test_host_checkout=browser_test_host_checkout,
+            browser_test_install_roots=browser_test_install_roots,
             include_comments=include_comments,
             comments_max_count=comments_max_count,
             comment_text_max_chars=comment_text_max_chars,
@@ -577,6 +590,12 @@ def _build_setup_command(config: WorkerConfig, yaml_path: Path) -> list[str]:
         cmd.append("--mssql")
     if config.bootstrap_playwright:
         cmd.append("--playwright")
+    if config.bootstrap_browser_tests:
+        cmd.append("--browser-tests")
+        if config.browser_test_host_checkout:
+            cmd.extend(["--browser-tests-host-checkout", config.browser_test_host_checkout])
+        for install_root in config.browser_test_install_roots:
+            cmd.extend(["--browser-tests-install-root", install_root])
     cmd.append(str(yaml_path))
     if config.bootstrap_nuget:
         cmd.append(config.prewarm_target)

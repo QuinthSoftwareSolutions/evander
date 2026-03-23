@@ -159,7 +159,12 @@ guest pushes to `refs/heads/agents/<session-id>/<branch>` can trigger host-side 
 Host-side PR automation reads agent-authored markdown summaries from the dedicated notes ref
 `refs/notes/agent-pr` (the short ref name is `agent-pr` in `git notes --ref=agent-pr ...` commands).
 The automation fetches that notes ref before it calls `open_agent_pr.sh`, then tries to read the
-note attached to the pushed commit SHA.
+note attached to the pushed commit SHA only.
+
+Guest VMs should treat that tip note as the canonical full PR summary snapshot for the current
+branch, not as a per-commit delta log. `setup_issue_vm.sh` installs a `git agent-pr-note` helper
+that keeps a branch-local aggregate cache, rewrites the full note onto each new `HEAD`, and lets
+agents append later updates without losing earlier summary content.
 
 When a PR body is assembled, merge order is deterministic:
 
@@ -194,7 +199,8 @@ creates the PR there. The same helper still supports GitHub remotes through `gh`
 - `bootstrap_git_vm.sh` avoids giving guests your host password and restricts the installed SSH key
   to Git transport commands only.
 - `promote_agent_branch.sh` intentionally refuses to overwrite an existing local review branch.
-- `open_agent_pr.sh` never force-pushes; it only does a normal push to `origin`.
+- `open_agent_pr.sh` uses a normal push for non-review branches.
+- For `review/*` branches it uses `--force-with-lease` after first refreshing the exact remote-tracking ref on the push remote, so reused review branches stay safe without stale-lease failures.
 - Use a separate dropbox bare repo for agent output if you do not want VMs pushing directly to your main internal remote.
 - MCP remains useful for notifications, approval gates, and branch metadata, but not for bulk source transfer.
 
@@ -225,7 +231,8 @@ When combining Git push automation with PR feedback handling:
   Verify the guest push included `refs/notes/agent-pr` and the trusted clone can fetch that ref.
 - **`AGENT_PR_NOTES read failed (non-fatal)` in `runtime/agent-events.log`:**
   notes ref was present but reading the note for the promoted commit failed.
-  Re-attach the note on the exact tip commit with `git notes --ref=agent-pr add -f -m ...`, then push branch + notes ref again.
+  Re-attach the cached summary to the exact tip commit with `git agent-pr-note ensure-head`, then
+  push again with `git push-agent`.
 - **`AGENT_PR_NOTES sha resolution failed (non-fatal)` in `runtime/agent-events.log`:**
   promoted SHA could not be resolved to a commit in the trusted clone.
   Check post-receive input/new SHA correctness and confirm the promote fetch succeeded for the pushed branch.

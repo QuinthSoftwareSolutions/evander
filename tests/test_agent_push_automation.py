@@ -42,8 +42,24 @@ def test_issue_vm_setup_configures_agent_remote_for_push_alias() -> None:
     )
 
     assert 'git -C "${TARGET_DIR}" remote add agent "${REMOTE_URL}"' in setup_issue_vm
+    assert 'install -m 0755 "${ROOT_DIR}/scripts/guest/agent_pr_note.sh"' in setup_issue_vm
+    assert 'config alias.agent-pr-note' in setup_issue_vm
+    assert '"${repo_root}/.agent-sandbox/bin/agent-pr-note" ensure-head' in setup_issue_vm
     assert "git push agent HEAD:refs/heads/agents/" in setup_issue_vm
+    assert "refs/notes/agent-pr" in setup_issue_vm
     assert "SESSION_ID is not set; refusing ambiguous agent push." in setup_issue_vm
     assert "AGENT_BRANCH_SUFFIX/HOSTNAME is empty; refusing ambiguous agent push." in setup_issue_vm
     assert 'HEAD:refs/heads/agents/${session_id}/${branch}-${suffix}' in setup_issue_vm
-    assert 'HEAD:refs/heads/agents/\\${SESSION_ID}/\\$(git rev-parse --abbrev-ref HEAD)-\\${AGENT_BRANCH_SUFFIX:-\\${HOSTNAME}}' in setup_issue_vm
+    assert 'HEAD:refs/heads/agents/\\${SESSION_ID}/\\$(git rev-parse --abbrev-ref HEAD)-\\${AGENT_BRANCH_SUFFIX:-\\${HOSTNAME}} refs/notes/agent-pr' in setup_issue_vm
+
+
+def test_guest_agent_pr_note_helper_supports_additive_updates() -> None:
+    helper = Path("/home/jonathan/agent-sandbox/scripts/guest/agent_pr_note.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert "append (-m TEXT | -F FILE)" in helper
+    assert "ensure-head" in helper
+    assert "agent-sandbox/agent-pr-cache" in helper
+    assert "git notes --ref=agent-pr add -f -F" in helper
+    assert "Run 'git agent-pr-note set -m" in helper

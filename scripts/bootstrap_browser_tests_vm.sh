@@ -1,0 +1,214 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+show_help() {
+  cat <<'EOF'
+Usage: bootstrap_browser_tests_vm.sh [--vm-user USER] <vm-name> <host-checkout-root> <install-root> [install-root ...]
+
+Copy a host-seeded Node runtime plus one or more frontend install roots into a
+guest VM so builds can run offline from the guest clone.
+
+Arguments:
+  vm-name             libvirt domain name.
+  host-checkout-root  Host repo checkout that owns the frontend install roots.
+  install-root        One or more install roots inside the host checkout. Each
+                      must contain package.json and node_modules.
+  --vm-user USER      Guest user to configure. Default: agent
+
+Environment:
+  SSH_KEY_PATH        Private key matching the guest authorized key.
+  HOST_NODE_ROOT      Host Node runtime to copy.
+EOF
+}
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  show_help
+  exit 0
+fi
+
+VM_USER="agent"
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --vm-user)
+      if [[ -z "${2:-}" ]]; then
+        echo "Missing value for $1" >&2
+        exit 1
+      fi
+      VM_USER="$2"
+      shift 2
+      ;;
+    --)
+      shift
+      break
+      ;;
+    -*)
+      echo "Unknown option: $1" >&2
+      show_help >&2
+      exit 1
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
+
+if [[ $# -lt 3 ]]; then
+  show_help >&2
+  exit 1
+fi
+
+VM_NAME="$1"
+shift
+HOST_CHECKOUT_ROOT="$1"
+shift
+INSTALL_ROOTS=("$@")
+
+if [[ ${#INSTALL_ROOTS[@]} -lt 1 ]]; then
+  echo "At least one install-root is required." >&2
+  exit 1
+fi
+
+CALLER_USER="${SUDO_USER:-$USER}"
+CALLER_HOME="$(getent passwd "${CALLER_USER}" | cut -d: -f6)"
+SSH_KEY_PATH="${SSH_KEY_PATH:-${CALLER_HOME}/.ssh/id_ed25519}"
+if [[ ! -f "${SSH_KEY_PATH}" ]]; then
+  SSH_KEY_PATH="${CALLER_HOME}/.ssh/id_rsa"
+fi
+
+HOST_NODE_ROOT="${HOST_NODE_ROOT:-${CALLER_HOME}/.nvm/versions/node/v24.14.0}"
+SSH_OPTS=(
+  -o StrictHostKeyChecking=no
+  -o UserKnownHostsFile=/dev/null
+  -i "${SSH_KEY_PATH}"
+)
+
+if [[ ! -d "${HOST_NODE_ROOT}" ]]; then
+  echo "Missing host Node runtime: ${HOST_NODE_ROOT}" >&2
+  exit 1
+fi
+
+if [[ ! -d "${HOST_CHECKOUT_ROOT}" ]]; then
+  echo "Missing host checkout root: ${HOST_CHECKOUT_ROOT}" >&2
+  exit 1
+fi
+
+HOST_CHECKOUT_ROOT="$(readlink -f "${HOST_CHECKOUT_ROOT}")"
+
+INSTALL_ROOTS_JSON="$(
+  python3 - "${HOST_CHECKOUT_ROOT}" "${INSTALL_ROOTS[@]}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+checkout = Path(sys.argv[1]).resolve()
+payload = []
+for raw in sys.argv[2:]:
+    root = Path(raw).resolve()
+    try:
+        relative = root.relative_to(checkout)
+    except ValueError:
+        print(f"Install root must be inside host checkout: {raw}", file=sys.stderr)
+        sys.exit(1)
+    if not (root / "package.json").is_file():
+        print(f"Missing package.json under install root: {root}", file=sys.stderr)
+        sys.exit(1)
+    if not (root / "node_modules").is_dir():
+        print(f"Missing node_modules under install root: {root}", file=sys.stderr)
+        sys.exit(1)
+    payload.append(
+        {
+            "absolute": str(root),
+            "relative": relative.as_posix(),
+        }
+    )
+print(json.dumps(payload))
+PY
+)"
+
+get_vm_ip() {
+  local ip
+
+  ip="$(
+    virsh domifaddr "${VM_NAME}" 2>/dev/null \
+      | awk '/ipv4/ {split($4, a, "/"); print a[1]; exit}'
+  )"
+  if [[ -n "${ip}" ]]; then
+    printf '%s\n' "${ip}"
+    return 0
+  fi
+
+  ip="$(
+    sudo -n virsh domifaddr "${VM_NAME}" 2>/dev/null \
+      | awk '/ipv4/ {split($4, a, "/"); print a[1]; exit}'
+  )"
+  if [[ -n "${ip}" ]]; then
+    printf '%s\n' "${ip}"
+    return 0
+  fi
+
+  echo "Could not determine an IPv4 address for VM ${VM_NAME}." >&2
+  echo "Run this script with sudo, or grant the current user libvirt access." >&2
+  return 1
+}
+
+VM_IP="$(get_vm_ip)"
+
+echo "Bootstrapping frontend install roots into ${VM_USER}@${VM_IP}"
+
+ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "
+  set -euo pipefail
+  sudo mkdir -p /home/${VM_USER}
+  sudo chown -R ${VM_USER}:${VM_USER} /home/${VM_USER}
+  mkdir -p ~/toolchains ~/browser-test-runtime/install-roots ~/.cache
+  rm -rf ~/browser-test-runtime/install-roots/*
+  rm -rf ~/toolchains/node-v24.14.0
+  mkdir -p ~/toolchains/node-v24.14.0
+"
+
+tar -C "${HOST_NODE_ROOT}" -cf - . \
+  | ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "tar -C \"\$HOME/toolchains/node-v24.14.0\" -xf -"
+
+while IFS= read -r entry; do
+  root_abs="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["absolute"])' "${entry}")"
+  root_rel="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["relative"])' "${entry}")"
+  ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "mkdir -p \"\$HOME/browser-test-runtime/install-roots/${root_rel}\""
+  tar -C "${root_abs}" -cf - \
+    package.json \
+    node_modules \
+    package-lock.json \
+    npm-shrinkwrap.json \
+    pnpm-lock.yaml \
+    yarn.lock \
+    .yarnrc.yml \
+    .npmrc \
+    angular.json \
+    workspace.json \
+    nx.json \
+    --ignore-failed-read \
+    | ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "tar -C \"\$HOME/browser-test-runtime/install-roots/${root_rel}\" -xf -"
+done < <(python3 -c 'import json,sys; [print(json.dumps(item)) for item in json.loads(sys.argv[1])]' "${INSTALL_ROOTS_JSON}")
+
+ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "bash -s" <<'EOF'
+set -euo pipefail
+
+if ! grep -q 'toolchains/node-v24.14.0/bin' ~/.profile 2>/dev/null; then
+  cat >> ~/.profile <<PROFILE
+export PATH="$HOME/toolchains/node-v24.14.0/bin:$PATH"
+PROFILE
+fi
+
+if ! grep -q 'toolchains/node-v24.14.0/bin' ~/.bashrc 2>/dev/null; then
+  cat >> ~/.bashrc <<BASHRC
+export PATH="$HOME/toolchains/node-v24.14.0/bin:$PATH"
+BASHRC
+fi
+
+export PATH="$HOME/toolchains/node-v24.14.0/bin:$PATH"
+
+node --version
+npm --version
+npx --version
+test -d "$HOME/browser-test-runtime/install-roots"
+EOF
+
+echo "Browser-test bootstrap complete for ${VM_NAME} (${VM_IP})"

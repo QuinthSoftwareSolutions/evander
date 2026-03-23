@@ -110,7 +110,7 @@
    ./scripts/bootstrap_dotnet_vm.sh vm-real
    ```
 
-   This copies the host `.NET` installation into the guest, appends `DOTNET_ROOT`, `DOTNET_CLI_HOME`, and `PATH` exports to the guest profile, and verifies `dotnet --info`.
+   This copies the host `.NET` installation into the guest, seeds host dotnet tool state into `~/.dotnet`, appends `DOTNET_ROOT`, `DOTNET_CLI_HOME`, and tool-aware `PATH` exports to the guest profile, and verifies `dotnet --info`. When host-seeded Entity Framework tooling is available, the bootstrap also exposes `dotnet-ef` in the guest so agents can generate migrations offline.
 
 10. Optionally install host-relay NuGet sources into the VM:
 
@@ -144,6 +144,14 @@
    ```
 
    This copies a host-seeded Node runtime, Playwright packages, and browser cache into the guest and verifies that Playwright can resolve Chromium offline.
+
+14. Optionally install a repo-specific browser-test runtime into the VM for frontend unit tests:
+
+   ```bash
+   ./scripts/bootstrap_browser_tests_vm.sh vm-real /path/to/repo /path/to/repo/Src/Clients
+   ```
+
+   This copies a host-seeded Node runtime plus one or more frontend install roots from a host checkout into the guest. It is intended to make Angular and other frontend builds work offline from the guest clone, and each selected install root must already contain `package.json` and `node_modules`.
 
 ## Persistent Host Services
 
@@ -191,17 +199,20 @@ agent-sandbox-cli poll-ado-backlog --reprocess 12345
 ```
 
 The dedicated worker entry point is also available as `agent-sandbox-ado-worker` for systemd.
-Backlog-worker VM setup calls can opt into `--dotnet`, `--nuget`, `--mssql`, and `--playwright`
-via `ADO_BOOTSTRAP_DOTNET`, `ADO_BOOTSTRAP_NUGET`, `ADO_BOOTSTRAP_MSSQL`, and
-`ADO_BOOTSTRAP_PLAYWRIGHT`. The first three default to `true`; `ADO_BOOTSTRAP_PLAYWRIGHT`
-defaults to `false` because it depends on host-seeded Node and Playwright artifacts.
+Backlog-worker VM setup calls can opt into `--dotnet`, `--nuget`, `--mssql`, `--playwright`,
+and `--browser-tests` via `ADO_BOOTSTRAP_DOTNET`, `ADO_BOOTSTRAP_NUGET`,
+`ADO_BOOTSTRAP_MSSQL`, `ADO_BOOTSTRAP_PLAYWRIGHT`, and `ADO_BOOTSTRAP_BROWSER_TESTS`.
+The first three default to `true`; the frontend-oriented toggles default to `false` because
+they depend on host-seeded Node artifacts. `ADO_BOOTSTRAP_BROWSER_TESTS` requires
+`ADO_BROWSER_TEST_INSTALL_ROOTS`, and can optionally use `ADO_BROWSER_TEST_HOST_CHECKOUT`
+when the mirrored repo source is remote.
 
 ## Local Git Remotes
 
 For the full issue-VM bring-up path in one command, use:
 
 ```bash
-./scripts/setup_issue_vm.sh --dotnet --nuget --mssql --playwright /path/to/issue.yaml /path/to/project-or-solution.slnx
+./scripts/setup_issue_vm.sh --dotnet --nuget --mssql --playwright --browser-tests --browser-tests-install-root /path/to/repo/Src/Clients /path/to/issue.yaml /path/to/project-or-solution.slnx
 ```
 
 `setup_issue_vm.sh` now resolves host-dependent paths in this order:
@@ -220,6 +231,15 @@ Toolchain bootstraps are now opt-in:
 - `--nuget` runs `bootstrap_nuget_vm.sh` and host `prewarm_nuget_cache.sh` (requires `project-or-solution`)
 - `--mssql` runs `bootstrap_mssql_vm.sh`
 - `--playwright` runs `bootstrap_playwright_vm.sh`, which also provides `node`, `npm`, and `npx`
+- `--browser-tests` runs `bootstrap_browser_tests_vm.sh`
+- `--browser-tests-install-root PATH` selects one frontend install root and may be repeated
+- `--browser-tests-host-checkout PATH` overrides the host checkout used for frontend snapshots when `repo-source` is remote
+
+When `--browser-tests` is enabled, each install root must live under the selected host checkout and
+already contain `package.json` plus `node_modules`. For local repo sources, `setup_issue_vm.sh`
+uses the resolved local repo checkout by default. For remote repo sources, pass
+`--browser-tests-host-checkout` so the helper can snapshot dependencies from a host checkout and
+restore them into the matching relative paths inside the guest clone.
 
 The guest clone URL is also derived from configurable Git-root settings:
 
@@ -304,6 +324,11 @@ and create the upstream PR automatically.
 For fixed PR boilerplate, set `AGENT_SANDBOX_PR_FIXED_BODY_FILE` in `config/git-server.env` to a
 host markdown file. Automation then assembles PR descriptions in this order: fixed boilerplate,
 `## Agent Summary` heading, then the git note content from `refs/notes/agent-pr`.
+
+Guest issue VMs install a `git agent-pr-note` helper so agents can maintain that note as an
+additive branch summary instead of overwriting it with per-commit deltas. `git push-agent`
+refreshes the cached summary onto the current `HEAD` and pushes `refs/notes/agent-pr`
+automatically.
 
 Example assembled PR body:
 

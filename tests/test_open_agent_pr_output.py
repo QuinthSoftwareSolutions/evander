@@ -88,3 +88,82 @@ esac
     assert entry["origin_branch"] == "review/session-123/work"
     assert entry["base_branch"] == "main"
     assert entry["session_id"] == "session-123"
+
+
+def test_open_agent_pr_refreshes_review_branch_before_force_with_lease_push(tmp_path: Path) -> None:
+    script = Path(__file__).resolve().parents[1] / "scripts/open_agent_pr.sh"
+    host_repo = tmp_path / "repo"
+    host_repo.mkdir()
+    (host_repo / ".git").mkdir()
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    git_log = tmp_path / "git.log"
+
+    (fake_bin / "git").write_text(
+        f"""#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> "{git_log}"
+args=("$@")
+if [[ "${{args[0]}}" == "-C" ]]; then
+  args=("${{args[@]:2}}")
+fi
+if [[ "${{args[0]}}" == "-c" ]]; then
+  args=("${{args[@]:2}}")
+fi
+case "${{args[0]:-}}" in
+  rev-parse)
+    ;;
+  remote)
+    echo "https://github.com/example/repo.git"
+    ;;
+  ls-remote)
+    echo "abc123\trefs/heads/review/session-123/work"
+    ;;
+  fetch)
+    ;;
+  push)
+    ;;
+  symbolic-ref)
+    echo "origin/main"
+    ;;
+  log)
+    echo "Automated PR title"
+    ;;
+  gh)
+    ;;
+  *)
+    echo "unexpected git invocation: $*" >&2
+    exit 1
+    ;;
+esac
+""",
+        encoding="utf-8",
+    )
+    (fake_bin / "gh").write_text(
+        "#!/usr/bin/env bash\nset -euo pipefail\necho \"https://github.com/example/repo/pull/42\"\n",
+        encoding="utf-8",
+    )
+    os.chmod(fake_bin / "git", 0o755)
+    os.chmod(fake_bin / "gh", 0o755)
+
+    env = os.environ.copy()
+    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+    env["AGENT_SANDBOX_PR_MAP_PATH"] = str(tmp_path / "runtime" / "pr-map.json")
+
+    subprocess.run(
+        [str(script), "--create-pr", str(host_repo), "review/session-123/work"],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    commands = git_log.read_text(encoding="utf-8").splitlines()
+    fetch_index = next(
+        i
+        for i, command in enumerate(commands)
+        if "fetch origin refs/heads/review/session-123/work:refs/remotes/origin/review/session-123/work" in command
+    )
+    push_index = next(i for i, command in enumerate(commands) if "push --force-with-lease origin" in command)
+    assert fetch_index < push_index

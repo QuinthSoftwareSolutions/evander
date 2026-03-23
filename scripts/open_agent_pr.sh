@@ -188,6 +188,28 @@ ensure_remote_url() {
   fi
 }
 
+git_with_push_auth() {
+  local repo_path="$1"
+  shift
+
+  if [[ "${PUSH_PROVIDER}" == "azure" && -n "${AZURE_PAT_ENV_VALUE}" ]]; then
+    git -C "${repo_path}" -c http.extraHeader="${AZURE_AUTH_HEADER}" "$@"
+  else
+    git -C "${repo_path}" "$@"
+  fi
+}
+
+refresh_review_branch_tracking_ref() {
+  local repo_path="$1"
+  local remote_name="$2"
+  local branch_name="$3"
+
+  if git_with_push_auth "${repo_path}" ls-remote --exit-code "${remote_name}" "refs/heads/${branch_name}" >/dev/null 2>&1; then
+    git_with_push_auth "${repo_path}" fetch "${remote_name}" \
+      "refs/heads/${branch_name}:refs/remotes/${remote_name}/${branch_name}" >/dev/null
+  fi
+}
+
 azure_https_origin_url() {
   local origin_url="$1"
   ORIGIN_URL_INPUT="${origin_url}" python3 - <<'PY'
@@ -343,6 +365,7 @@ fi
 
 PUSH_REMOTE_URL="${ORIGIN_URL}"
 AZURE_PAT_ENV_VALUE=""
+AZURE_AUTH_HEADER=""
 if [[ "${PUSH_PROVIDER}" == "azure" ]]; then
   AZURE_PAT_ENV_VALUE="${!AZURE_PAT_ENV:-}"
   if [[ -n "${AZURE_PAT_ENV_VALUE}" ]]; then
@@ -350,6 +373,7 @@ if [[ "${PUSH_PROVIDER}" == "azure" ]]; then
     if [[ -n "${HTTPS_ORIGIN_URL}" ]]; then
       PUSH_REMOTE_URL="${HTTPS_ORIGIN_URL}"
     fi
+    AZURE_AUTH_HEADER="Authorization: Basic $(printf ':%s' "${AZURE_PAT_ENV_VALUE}" | base64 | tr -d '\n')"
   fi
 fi
 
@@ -359,16 +383,11 @@ fi
 
 PUSH_ARGS=()
 if [[ "${ORIGIN_BRANCH}" == review/* ]]; then
+  refresh_review_branch_tracking_ref "${HOST_REPO_PATH}" "${PR_REMOTE_NAME}" "${ORIGIN_BRANCH}"
   PUSH_ARGS+=(--force-with-lease)
 fi
 
-if [[ "${PUSH_PROVIDER}" == "azure" && -n "${AZURE_PAT_ENV_VALUE}" ]]; then
-  AZURE_AUTH_HEADER="Authorization: Basic $(printf ':%s' "${AZURE_PAT_ENV_VALUE}" | base64 | tr -d '\n')"
-  git -C "${HOST_REPO_PATH}" -c http.extraHeader="${AZURE_AUTH_HEADER}" \
-    push "${PUSH_ARGS[@]}" "${PR_REMOTE_NAME}" "${LOCAL_BRANCH}:refs/heads/${ORIGIN_BRANCH}"
-else
-  git -C "${HOST_REPO_PATH}" push "${PUSH_ARGS[@]}" "${PR_REMOTE_NAME}" "${LOCAL_BRANCH}:refs/heads/${ORIGIN_BRANCH}"
-fi
+git_with_push_auth "${HOST_REPO_PATH}" push "${PUSH_ARGS[@]}" "${PR_REMOTE_NAME}" "${LOCAL_BRANCH}:refs/heads/${ORIGIN_BRANCH}"
 
 echo "Pushed ${LOCAL_BRANCH} to ${PR_REMOTE_NAME}/${ORIGIN_BRANCH}"
 

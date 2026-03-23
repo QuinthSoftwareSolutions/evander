@@ -73,11 +73,21 @@ gateway/relay endpoint reachability, and active/expired session summary.
 - It appends `PATH`, `PLAYWRIGHT_BROWSERS_PATH`, and `NODE_PATH` exports to `~/.profile`.
 - It verifies the guest can resolve the Chromium executable without guest internet access.
 
+## VM Browser-Test Bootstrap
+
+- `./scripts/bootstrap_browser_tests_vm.sh <vm-name> <host-checkout-root> <install-root> [install-root ...]` copies a host-seeded Node runtime into `~/toolchains/node-v24.14.0`.
+- It snapshots each selected install root under `~/browser-test-runtime/install-roots/<relative-path>`.
+- Each install root must already contain `package.json` and `node_modules` on the host.
+- `setup_issue_vm.sh` restores those snapshots into the matching relative paths inside the guest clone so Angular builds can use the copied dependency trees offline.
+- It appends the Node `PATH` export to `~/.profile` and `~/.bashrc`.
+
 ## VM .NET Bootstrap
 
 - `./scripts/bootstrap_dotnet_vm.sh <vm-name>` copies the host `.NET` installation into `~/toolchains/dotnet`.
-- It appends `DOTNET_ROOT`, `DOTNET_CLI_HOME`, and `PATH` exports to `~/.profile`.
+- It seeds host dotnet tool state into `~/.dotnet` and copies any resolver-cache-backed tool payloads from the host NuGet cache into `~/.nuget/packages`.
+- It appends `DOTNET_ROOT`, `DOTNET_CLI_HOME`, and a tool-aware `PATH` to `~/.profile` and `~/.bashrc`.
 - It verifies the guest can run `dotnet --info` without guest internet access.
+- When the host has Entity Framework tooling cached, it also exposes `dotnet-ef` in the guest and verifies `dotnet-ef --version`.
 
 ## VM NuGet Bootstrap
 
@@ -399,10 +409,12 @@ agent-sandbox-cli create-session real-session --config config/gateway.yaml
 - The worker polls Azure DevOps work items in `Committed` state tagged `truman`, writes YAML
   payloads under `ADO_YAML_OUTPUT_DIR`, and invokes `scripts/setup_issue_vm.sh`.
 - Worker-triggered setup calls honor `ADO_BOOTSTRAP_DOTNET`, `ADO_BOOTSTRAP_NUGET`,
-  `ADO_BOOTSTRAP_MSSQL`, and `ADO_BOOTSTRAP_PLAYWRIGHT` to decide which guest toolchains are
-  bootstrapped for backlog-driven issue VMs. The first three default to `true`;
-  `ADO_BOOTSTRAP_PLAYWRIGHT` defaults to `false` because it requires host-seeded Node and
-  Playwright artifacts.
+  `ADO_BOOTSTRAP_MSSQL`, `ADO_BOOTSTRAP_PLAYWRIGHT`, and `ADO_BOOTSTRAP_BROWSER_TESTS` to
+  decide which guest toolchains are bootstrapped for backlog-driven issue VMs. The first three
+  default to `true`; the frontend-oriented toggles default to `false` because they require
+  host-seeded Node artifacts. `ADO_BOOTSTRAP_BROWSER_TESTS` requires
+  `ADO_BROWSER_TEST_INSTALL_ROOTS` and can optionally use `ADO_BROWSER_TEST_HOST_CHECKOUT`
+  when the mirrored repo source is remote.
 - Configure environment in `config/ado-worker.env` (start from
   `config/ado-worker.env.example`), then export the PAT value in the host shell/env-file named by
   `ADO_PAT_ENV_VAR_NAME` (default `AZURE_DEVOPS_PAT`).
@@ -511,7 +523,7 @@ sudo systemctl status agent-sandbox-ado-worker.service
 For the common issue workflow, you can do the full host-side setup in one command:
 
 ```bash
-./scripts/setup_issue_vm.sh --dotnet --nuget --mssql --playwright /path/to/issue.yaml /path/to/project-or-solution.slnx
+./scripts/setup_issue_vm.sh --dotnet --nuget --mssql --playwright --browser-tests --browser-tests-install-root /path/to/repo/Src/Clients /path/to/issue.yaml /path/to/project-or-solution.slnx
 ```
 
 `setup_issue_vm.sh` path defaults are configurable so host-specific `/home/...` paths are not
@@ -544,6 +556,15 @@ Optional toolchain flags for `setup_issue_vm.sh`:
 - `--nuget`: run `bootstrap_nuget_vm.sh` and prewarm the shared NuGet cache on the host (requires `project-or-solution`)
 - `--mssql`: run `bootstrap_mssql_vm.sh`
 - `--playwright`: run `bootstrap_playwright_vm.sh`, which also provides `node`, `npm`, and `npx`
+- `--browser-tests`: run `bootstrap_browser_tests_vm.sh`
+- `--browser-tests-install-root PATH`: select one frontend install root and repeat as needed
+- `--browser-tests-host-checkout PATH`: override the host checkout used for frontend snapshots when `repo-source` is remote
+
+When `--browser-tests` is enabled, each install root must be inside the selected host checkout and
+already contain `package.json` plus `node_modules`. For local repo sources, `setup_issue_vm.sh`
+uses the resolved local checkout automatically. For remote repo sources, pass
+`--browser-tests-host-checkout` so the helper can snapshot dependencies from a host checkout and
+restore them into the matching relative paths inside the guest clone.
 
 After the initial guest `codex exec` run exits, setup triggers one
 `codex exec resume --last` verification pass. Customize that verification
@@ -598,6 +619,10 @@ values loaded from `config/git-server.env`:
   agent summary markdown from the promoted commit.
 - `AGENT_SANDBOX_PR_BODY_MAX_BYTES` (optional, default `60000`): hard byte cap applied to the
   composed PR body before creating/updating the PR.
+
+On guest issue VMs, prefer `git agent-pr-note set` / `git agent-pr-note append` instead of raw
+`git notes add -f`. The helper keeps an additive branch-local summary cache and `git push-agent`
+reattaches that full summary to the current `HEAD` before it pushes `refs/notes/agent-pr`.
 
 Expected resulting PR body shape when both fixed boilerplate and note summary are present:
 
