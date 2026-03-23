@@ -13,6 +13,7 @@ from agent_sandbox.ado_issue_worker import (
     WorkerConfig,
     _build_setup_command,
     _is_vm_already_exists_output,
+    fetch_work_item_batch,
     fetch_work_item_comments,
     filter_unprocessed_work_items,
     format_work_item_listing,
@@ -594,6 +595,35 @@ def test_gate_and_order_items_ignores_non_committed_states(worker_config: Worker
     assert skipped == 3
 
 
+def test_gate_and_order_items_appends_acceptance_criteria_to_description(
+    worker_config: WorkerConfig,
+) -> None:
+    matched, skipped = gate_and_order_items(
+        [
+            {
+                "id": 204,
+                "url": "https://example/204",
+                "fields": {
+                    "System.Title": "criteria",
+                    "System.Description": "Implement the change",
+                    "Microsoft.VSTS.Common.AcceptanceCriteria": "It passes validation",
+                    "System.Tags": "truman",
+                    "System.State": "Committed",
+                    "System.ChangedDate": "2026-03-21T00:00:03Z",
+                    "System.AreaPath": "Root",
+                    "System.IterationPath": "Team",
+                },
+            }
+        ],
+        worker_config,
+    )
+
+    assert skipped == 0
+    assert matched[0]["description"] == (
+        "Implement the change\n\nAcceptance Criteria\n\nIt passes validation"
+    )
+
+
 def test_process_work_item_skips_previously_processed_id_on_subsequent_attempt(
     worker_config: WorkerConfig,
     monkeypatch: pytest.MonkeyPatch,
@@ -658,6 +688,34 @@ def test_process_work_item_writes_yaml_with_required_issue_number_and_metadata(
     assert parsed["url"] == "https://example/401"
     assert parsed["updated_date"] == "2026-03-21T00:00:00Z"
     assert parsed["generated_at"]
+
+
+def test_process_work_item_writes_yaml_with_acceptance_criteria_appended_to_description(
+    worker_config: WorkerConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = ProcessedWorkItemStore(worker_config.processed_store_path)
+
+    def successful_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="ok", stderr="")
+
+    monkeypatch.setattr("agent_sandbox.ado_issue_worker.subprocess.run", successful_run)
+
+    item = {
+        "id": 402,
+        "title": "YAML acceptance criteria",
+        "description": "Contains details\n\nAcceptance Criteria\n\nMeets the acceptance bar",
+        "tags": ["backend", "truman"],
+        "state": "Committed",
+        "url": "https://example/402",
+        "updated_date": "2026-03-21T00:00:00Z",
+    }
+
+    assert process_work_item(item, config=worker_config, store=store) is True
+
+    yaml_path = worker_config.yaml_output_dir / "work-item-402.yaml"
+    parsed = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
+    assert parsed["description"] == "Contains details\n\nAcceptance Criteria\n\nMeets the acceptance bar"
 
 
 def test_setup_issue_vm_invocation_once_per_newly_eligible_item(
@@ -758,6 +816,40 @@ def test_fetch_work_item_comments_normalizes_and_truncates(
             "modified_date": "2026-03-21T01:00:00Z",
         }
     ]
+
+
+def test_fetch_work_item_batch_requests_acceptance_criteria_field(
+    worker_config: WorkerConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return {"value": []}
+
+    captured: dict[str, object] = {}
+
+    def fake_post(_self: object, url: str, **kwargs: object) -> FakeResponse:
+        captured["url"] = url
+        captured["params"] = kwargs.get("params")
+        captured["json"] = kwargs.get("json")
+        return FakeResponse()
+
+    monkeypatch.setattr("httpx.Client.post", fake_post)
+    with httpx.Client() as client:
+        items = fetch_work_item_batch(
+            client=client,
+            config=worker_config,
+            auth_header="Basic token",
+            candidate_ids=[77],
+        )
+
+    assert items == []
+    assert str(captured["url"]).endswith("/_apis/wit/workitemsbatch")
+    assert captured["params"] == {"api-version": "7.1"}
+    assert "Microsoft.VSTS.Common.AcceptanceCriteria" in captured["json"]["fields"]
 
 
 def test_poll_once_attaches_comments(

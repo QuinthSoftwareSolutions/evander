@@ -238,6 +238,16 @@ def _normalize_tags(raw_tags: str | None) -> set[str]:
     return {tag.strip().lower() for tag in raw_tags.split(";") if tag.strip()}
 
 
+def _combine_description_and_acceptance_criteria(description: str, acceptance_criteria: str) -> str:
+    description = description.strip()
+    acceptance_criteria = acceptance_criteria.strip()
+    if not acceptance_criteria:
+        return description
+    if not description:
+        return f"Acceptance Criteria\n\n{acceptance_criteria}"
+    return f"{description}\n\nAcceptance Criteria\n\n{acceptance_criteria}"
+
+
 def _parse_ado_datetime(value: str | None) -> datetime:
     if not value:
         return datetime.min.replace(tzinfo=timezone.utc)
@@ -336,6 +346,7 @@ def fetch_work_item_batch(
                 "System.Id",
                 "System.Title",
                 "System.Description",
+                "Microsoft.VSTS.Common.AcceptanceCriteria",
                 "System.Tags",
                 "System.State",
                 "System.ChangedDate",
@@ -480,7 +491,10 @@ def gate_and_order_items(items: list[dict[str, Any]], config: WorkerConfig) -> t
             {
                 "id": work_item_id,
                 "title": str(fields.get("System.Title", "")).strip(),
-                "description": str(fields.get("System.Description", "") or ""),
+                "description": _combine_description_and_acceptance_criteria(
+                    str(fields.get("System.Description", "") or ""),
+                    str(fields.get("Microsoft.VSTS.Common.AcceptanceCriteria", "") or ""),
+                ),
                 "tags": sorted(normalized_tags),
                 "state": state,
                 "url": item.get("url", ""),
