@@ -7,11 +7,33 @@ def test_mssql_bootstrap_docs_and_script_are_present() -> None:
     script = Path("/home/jonathan/agent-sandbox/scripts/bootstrap_mssql_vm.sh").read_text(
         encoding="utf-8"
     )
+    tools_script = Path(
+        "/home/jonathan/agent-sandbox/scripts/bootstrap_mssql_tools_vm.sh"
+    ).read_text(encoding="utf-8")
+    server_script = Path(
+        "/home/jonathan/agent-sandbox/scripts/bootstrap_mssql_server_vm.sh"
+    ).read_text(encoding="utf-8")
 
     assert "bootstrap_mssql_vm.sh" in readme
     assert "bootstrap_mssql_vm.sh" in ops
-
-    assert 'HOST_MSSQL_TOOLS_ROOT="${HOST_MSSQL_TOOLS_ROOT:-/opt/mssql-tools18}"' in script
-    assert 'Expected sqlcmd launcher missing at $HOME/toolchains/mssql-tools/bin/sqlcmd' in script
-    assert 'PATH="$HOME/toolchains/mssql-tools/bin:$PATH"' in script
-    assert "sqlcmd -? >/dev/null" in script
+    assert "guest-local Microsoft SQL Server" in readme
+    assert "guest-local Microsoft SQL Server" in ops
+    assert "--init-root PATH" in script
+    assert "MSSQL_SA_PASSWORD" in script
+    assert "bootstrap_mssql_tools_vm.sh" in script
+    assert "bootstrap_mssql_server_vm.sh" in script
+    assert 'HOST_MSSQL_TOOLS_ROOT="${HOST_MSSQL_TOOLS_ROOT:-/opt/mssql-tools18}"' in tools_script
+    assert 'HOST_MSSQL_ODBC_ROOT="${HOST_MSSQL_ODBC_ROOT:-/opt/microsoft/msodbcsql18}"' in tools_script
+    assert 'Expected sqlcmd launcher missing at $HOME/toolchains/mssql-tools/bin/sqlcmd' in tools_script
+    assert 'Expected ODBC driver registration missing at $HOME/toolchains/mssql-tools/etc/odbcinst.ini' in tools_script
+    assert 'ODBCSYSINI="$HOME/toolchains/mssql-tools/etc"' in tools_script
+    assert 'PATH="$HOME/toolchains/mssql-tools/bin:$PATH"' in tools_script
+    assert "sqlcmd -? >/dev/null" in tools_script
+    assert 'HOST_MSSQL_SERVER_ROOT="${HOST_MSSQL_SERVER_ROOT:-/opt/mssql}"' in server_script
+    assert 'HOST_MSSQL_SERVICE_FILE="${HOST_MSSQL_SERVICE_FILE:-/usr/lib/systemd/system/mssql-server.service}"' in server_script
+    assert 'export LD_LIBRARY_PATH="/opt/mssql/lib:/opt/mssql-host-libs:${LD_LIBRARY_PATH:-}"' in server_script
+    assert '/opt/mssql/bin/mssql-conf -n setup' in server_script
+    assert '/opt/mssql/bin/mssql-conf -n set-sa-password' in server_script
+    assert 'reset_only=1' in server_script
+    assert 'systemctl restart mssql-server' in server_script
+    assert 'sqlcmd -S localhost,1433' in script

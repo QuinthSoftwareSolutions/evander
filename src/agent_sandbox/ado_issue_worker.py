@@ -44,10 +44,12 @@ class WorkerConfig:
     bootstrap_dotnet: bool
     bootstrap_nuget: bool
     bootstrap_mssql: bool
+    mssql_sa_password: str | None
+    mssql_init_root: str | None
     bootstrap_playwright: bool
-    bootstrap_browser_tests: bool
-    browser_test_host_checkout: str | None
-    browser_test_install_roots: tuple[str, ...]
+    bootstrap_frontend_deps: bool
+    frontend_host_checkout: str | None
+    frontend_install_roots: tuple[str, ...]
     include_comments: bool
     comments_max_count: int
     comment_text_max_chars: int
@@ -93,13 +95,17 @@ class WorkerConfig:
         bootstrap_dotnet = _bool_env("ADO_BOOTSTRAP_DOTNET", True)
         bootstrap_nuget = _bool_env("ADO_BOOTSTRAP_NUGET", True)
         bootstrap_mssql = _bool_env("ADO_BOOTSTRAP_MSSQL", True)
+        mssql_sa_password = _optional_env("ADO_MSSQL_SA_PASSWORD")
+        mssql_init_root = _optional_env("ADO_MSSQL_INIT_ROOT")
+        if bootstrap_mssql and not mssql_sa_password:
+            raise ValueError("ADO_MSSQL_SA_PASSWORD is required when ADO_BOOTSTRAP_MSSQL is true.")
         bootstrap_playwright = _bool_env("ADO_BOOTSTRAP_PLAYWRIGHT", False)
-        bootstrap_browser_tests = _bool_env("ADO_BOOTSTRAP_BROWSER_TESTS", False)
-        browser_test_host_checkout = _optional_env("ADO_BROWSER_TEST_HOST_CHECKOUT")
-        browser_test_install_roots = _csv_env("ADO_BROWSER_TEST_INSTALL_ROOTS")
-        if bootstrap_browser_tests and not browser_test_install_roots:
+        bootstrap_frontend_deps = _bool_env("ADO_BOOTSTRAP_FRONTEND_DEPS", False)
+        frontend_host_checkout = _optional_env("ADO_FRONTEND_HOST_CHECKOUT")
+        frontend_install_roots = _csv_env("ADO_FRONTEND_INSTALL_ROOTS")
+        if bootstrap_frontend_deps and not frontend_install_roots:
             raise ValueError(
-                "ADO_BROWSER_TEST_INSTALL_ROOTS is required when ADO_BOOTSTRAP_BROWSER_TESTS is true."
+                "ADO_FRONTEND_INSTALL_ROOTS is required when ADO_BOOTSTRAP_FRONTEND_DEPS is true."
             )
         include_comments = _bool_env("ADO_INCLUDE_COMMENTS", True)
         comments_max_count = _int_env("ADO_COMMENTS_MAX_COUNT", 20, minimum=1)
@@ -133,10 +139,12 @@ class WorkerConfig:
             bootstrap_dotnet=bootstrap_dotnet,
             bootstrap_nuget=bootstrap_nuget,
             bootstrap_mssql=bootstrap_mssql,
+            mssql_sa_password=mssql_sa_password,
+            mssql_init_root=mssql_init_root,
             bootstrap_playwright=bootstrap_playwright,
-            bootstrap_browser_tests=bootstrap_browser_tests,
-            browser_test_host_checkout=browser_test_host_checkout,
-            browser_test_install_roots=browser_test_install_roots,
+            bootstrap_frontend_deps=bootstrap_frontend_deps,
+            frontend_host_checkout=frontend_host_checkout,
+            frontend_install_roots=frontend_install_roots,
             include_comments=include_comments,
             comments_max_count=comments_max_count,
             comment_text_max_chars=comment_text_max_chars,
@@ -602,14 +610,16 @@ def _build_setup_command(config: WorkerConfig, yaml_path: Path) -> list[str]:
         cmd.append("--nuget")
     if config.bootstrap_mssql:
         cmd.append("--mssql")
+        if config.mssql_init_root:
+            cmd.extend(["--mssql-init-root", config.mssql_init_root])
     if config.bootstrap_playwright:
         cmd.append("--playwright")
-    if config.bootstrap_browser_tests:
-        cmd.append("--browser-tests")
-        if config.browser_test_host_checkout:
-            cmd.extend(["--browser-tests-host-checkout", config.browser_test_host_checkout])
-        for install_root in config.browser_test_install_roots:
-            cmd.extend(["--browser-tests-install-root", install_root])
+    if config.bootstrap_frontend_deps:
+        cmd.append("--frontend-deps")
+        if config.frontend_host_checkout:
+            cmd.extend(["--frontend-host-checkout", config.frontend_host_checkout])
+        for install_root in config.frontend_install_roots:
+            cmd.extend(["--frontend-install-root", install_root])
     cmd.append(str(yaml_path))
     if config.bootstrap_nuget:
         cmd.append(config.prewarm_target)
@@ -684,6 +694,9 @@ def process_work_item(
     _atomic_write_yaml(yaml_path, _build_issue_payload(work_item))
 
     cmd = _build_setup_command(config, yaml_path)
+    run_env = os.environ.copy()
+    if config.bootstrap_mssql and config.mssql_sa_password:
+        run_env["MSSQL_SA_PASSWORD"] = config.mssql_sa_password
     try:
         with _setup_slot(config):
             result = subprocess.run(
@@ -692,6 +705,7 @@ def process_work_item(
                 text=True,
                 check=False,
                 timeout=config.setup_timeout_seconds,
+                env=run_env,
             )
     except subprocess.TimeoutExpired as exc:
         combined = f"{(exc.stdout or '')}\n{(exc.stderr or '')}"

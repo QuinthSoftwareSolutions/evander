@@ -3,7 +3,7 @@ set -euo pipefail
 
 show_help() {
   cat <<'EOF'
-Usage: bootstrap_browser_tests_vm.sh [--vm-user USER] <vm-name> <host-checkout-root> <install-root> [install-root ...]
+Usage: bootstrap_frontend_deps_vm.sh [--vm-user USER] <vm-name> <host-checkout-root> <install-root> [install-root ...]
 
 Copy a host-seeded Node runtime plus one or more frontend install roots into a
 guest VM so builds can run offline from the guest clone.
@@ -153,14 +153,14 @@ get_vm_ip() {
 
 VM_IP="$(get_vm_ip)"
 
-echo "Bootstrapping frontend install roots into ${VM_USER}@${VM_IP}"
+echo "Bootstrapping frontend dependencies into ${VM_USER}@${VM_IP}"
 
 ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "
   set -euo pipefail
   sudo mkdir -p /home/${VM_USER}
   sudo chown -R ${VM_USER}:${VM_USER} /home/${VM_USER}
-  mkdir -p ~/toolchains ~/browser-test-runtime/install-roots ~/.cache
-  rm -rf ~/browser-test-runtime/install-roots/*
+  mkdir -p ~/toolchains ~/frontend-deps-runtime/install-roots ~/.cache
+  rm -rf ~/frontend-deps-runtime/install-roots/*
   rm -rf ~/toolchains/node-v24.14.0
   mkdir -p ~/toolchains/node-v24.14.0
 "
@@ -171,7 +171,7 @@ tar -C "${HOST_NODE_ROOT}" -cf - . \
 while IFS= read -r entry; do
   root_abs="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["absolute"])' "${entry}")"
   root_rel="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["relative"])' "${entry}")"
-  ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "mkdir -p \"\$HOME/browser-test-runtime/install-roots/${root_rel}\""
+  ssh -n "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "mkdir -p \"\$HOME/frontend-deps-runtime/install-roots/${root_rel}\""
   tar -C "${root_abs}" -cf - \
     package.json \
     node_modules \
@@ -185,7 +185,7 @@ while IFS= read -r entry; do
     workspace.json \
     nx.json \
     --ignore-failed-read \
-    | ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "tar -C \"\$HOME/browser-test-runtime/install-roots/${root_rel}\" -xf -"
+    | ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "tar -C \"\$HOME/frontend-deps-runtime/install-roots/${root_rel}\" -xf -"
 done < <(python3 -c 'import json,sys; [print(json.dumps(item)) for item in json.loads(sys.argv[1])]' "${INSTALL_ROOTS_JSON}")
 
 ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "bash -s" <<'EOF'
@@ -208,7 +208,7 @@ export PATH="$HOME/toolchains/node-v24.14.0/bin:$PATH"
 node --version
 npm --version
 npx --version
-test -d "$HOME/browser-test-runtime/install-roots"
+test -d "$HOME/frontend-deps-runtime/install-roots"
 EOF
 
-echo "Browser-test bootstrap complete for ${VM_NAME} (${VM_IP})"
+echo "Frontend dependency bootstrap complete for ${VM_NAME} (${VM_IP})"

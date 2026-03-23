@@ -20,7 +20,7 @@ trap 'on_error ${LINENO}' ERR
 
 show_help() {
   cat <<'EOF'
-Usage: setup_issue_vm.sh [--dry-run] [--dotnet] [--nuget] [--mssql] [--playwright] [--browser-tests --browser-tests-host-checkout PATH --browser-tests-install-root PATH ...] [mirror-options] <issue-number|issue-yaml> [project-or-solution-if-nuget] [repo-source] [session-id] [vm-user]
+Usage: setup_issue_vm.sh [--dry-run] [--dotnet] [--nuget] [--mssql [--mssql-init-root PATH]] [--playwright] [--frontend-deps --frontend-host-checkout PATH --frontend-install-root PATH ...] [mirror-options] <issue-number|issue-yaml> [project-or-solution-if-nuget] [repo-source] [session-id] [vm-user]
 
 Run the common issue-VM bring-up flow in one command:
   1. optionally prewarm the shared NuGet cache on the host
@@ -64,9 +64,14 @@ Environment:
                               Default: <repo-root>/git-remotes
   AGENT_SANDBOX_GIT_SSH_ALIAS Host SSH alias used inside guest clone URL.
                               Default: agent-sandbox-git-host
-  AGENT_SANDBOX_BROWSER_TESTS_HOST_CHECKOUT
-                              Default host checkout used for browser-test snapshots
+  AGENT_SANDBOX_FRONTEND_HOST_CHECKOUT
+                              Default host checkout used for frontend dependency snapshots
                               when the repo-source is remote.
+  AGENT_SANDBOX_MSSQL_INIT_ROOT
+                              Default host directory copied into /var/opt/mssql/init
+                              when --mssql is enabled. If present, init.sql is executed.
+  MSSQL_SA_PASSWORD          Required SA password used to initialize the guest-local
+                              SQL Server instance when --mssql is enabled.
 
 Mirror options (forwarded to setup_issue_git_vm.sh and mirror_issue_repo.sh):
   --sync-remote
@@ -79,13 +84,16 @@ Mirror options (forwarded to setup_issue_git_vm.sh and mirror_issue_repo.sh):
 Optional guest toolchains:
   --dotnet            Bootstrap the host .NET SDK into the guest.
   --nuget             Bootstrap NuGet relay configuration (requires project-or-solution).
-  --mssql             Bootstrap Microsoft SQL Server client tooling into the guest.
+  --mssql             Bootstrap a guest-local Microsoft SQL Server instance into the guest.
+  --mssql-init-root PATH
+                      Host directory copied into /var/opt/mssql/init. If present,
+                      init.sql from that directory is executed after SQL Server starts.
   --playwright        Bootstrap the host-seeded Node + Playwright runtime into the guest.
-  --browser-tests     Bootstrap host-seeded frontend install roots into the guest.
-  --browser-tests-host-checkout PATH
+  --frontend-deps     Bootstrap host-seeded frontend install roots into the guest.
+  --frontend-host-checkout PATH
                       Host repo checkout that owns the install roots. Optional for
                       local repo-source; required for remote repo-source.
-  --browser-tests-install-root PATH
+  --frontend-install-root PATH
                       Install root inside the host checkout. Repeat for multiple roots.
 EOF
 }
@@ -100,9 +108,10 @@ BOOTSTRAP_DOTNET=0
 BOOTSTRAP_NUGET=0
 BOOTSTRAP_MSSQL=0
 BOOTSTRAP_PLAYWRIGHT=0
-BOOTSTRAP_BROWSER_TESTS=0
-BROWSER_TESTS_HOST_CHECKOUT="${AGENT_SANDBOX_BROWSER_TESTS_HOST_CHECKOUT:-}"
-BROWSER_TESTS_INSTALL_ROOTS=()
+BOOTSTRAP_FRONTEND_DEPS=0
+MSSQL_INIT_ROOT="${AGENT_SANDBOX_MSSQL_INIT_ROOT:-}"
+FRONTEND_HOST_CHECKOUT="${AGENT_SANDBOX_FRONTEND_HOST_CHECKOUT:-}"
+FRONTEND_INSTALL_ROOTS=()
 MIRROR_ARGS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -122,28 +131,36 @@ while [[ $# -gt 0 ]]; do
       BOOTSTRAP_MSSQL=1
       shift
       ;;
+    --mssql-init-root)
+      if [[ -z "${2:-}" ]]; then
+        echo "Missing value for $1" >&2
+        exit 1
+      fi
+      MSSQL_INIT_ROOT="$2"
+      shift 2
+      ;;
     --playwright)
       BOOTSTRAP_PLAYWRIGHT=1
       shift
       ;;
-    --browser-tests)
-      BOOTSTRAP_BROWSER_TESTS=1
+    --frontend-deps)
+      BOOTSTRAP_FRONTEND_DEPS=1
       shift
       ;;
-    --browser-tests-host-checkout)
+    --frontend-host-checkout)
       if [[ -z "${2:-}" ]]; then
         echo "Missing value for $1" >&2
         exit 1
       fi
-      BROWSER_TESTS_HOST_CHECKOUT="$2"
+      FRONTEND_HOST_CHECKOUT="$2"
       shift 2
       ;;
-    --browser-tests-install-root)
+    --frontend-install-root)
       if [[ -z "${2:-}" ]]; then
         echo "Missing value for $1" >&2
         exit 1
       fi
-      BROWSER_TESTS_INSTALL_ROOTS+=("$2")
+      FRONTEND_INSTALL_ROOTS+=("$2")
       shift 2
       ;;
     --sync-remote|--no-sync-remote|--force-local)
@@ -288,9 +305,20 @@ if (( BOOTSTRAP_NUGET )); then
   fi
 fi
 
-if (( BOOTSTRAP_BROWSER_TESTS )); then
-  if [[ ${#BROWSER_TESTS_INSTALL_ROOTS[@]} -eq 0 ]]; then
-    echo "Missing browser test install roots: at least one --browser-tests-install-root is required with --browser-tests" >&2
+if (( BOOTSTRAP_FRONTEND_DEPS )); then
+  if [[ ${#FRONTEND_INSTALL_ROOTS[@]} -eq 0 ]]; then
+    echo "Missing frontend install roots: at least one --frontend-install-root is required with --frontend-deps" >&2
+    exit 1
+  fi
+fi
+
+if (( BOOTSTRAP_MSSQL )); then
+  if [[ -z "${MSSQL_SA_PASSWORD:-}" ]]; then
+    echo "MSSQL_SA_PASSWORD is required when --mssql is enabled." >&2
+    exit 1
+  fi
+  if [[ -n "${MSSQL_INIT_ROOT}" && ! -d "${MSSQL_INIT_ROOT}" ]]; then
+    echo "Missing MSSQL init root: ${MSSQL_INIT_ROOT}" >&2
     exit 1
   fi
 fi
@@ -302,27 +330,27 @@ fi
 eval "${RESOLVED_ENV}"
 
 GUEST_REPO_NAME="${GUEST_REPO_NAME_OVERRIDE:-${RESOLVED_REPO_NAME}}"
-BROWSER_TESTS_CHECKOUT_ROOT=""
-BROWSER_TESTS_INSTALL_ROOTS_JSON="[]"
+FRONTEND_CHECKOUT_ROOT=""
+FRONTEND_INSTALL_ROOTS_JSON="[]"
 
-if (( BOOTSTRAP_BROWSER_TESTS )); then
-  if [[ -n "${BROWSER_TESTS_HOST_CHECKOUT}" ]]; then
-    BROWSER_TESTS_CHECKOUT_ROOT="${BROWSER_TESTS_HOST_CHECKOUT}"
+if (( BOOTSTRAP_FRONTEND_DEPS )); then
+  if [[ -n "${FRONTEND_HOST_CHECKOUT}" ]]; then
+    FRONTEND_CHECKOUT_ROOT="${FRONTEND_HOST_CHECKOUT}"
   elif [[ "${RESOLVED_REPO_TYPE}" == "local" ]]; then
-    BROWSER_TESTS_CHECKOUT_ROOT="${RESOLVED_REPO_SOURCE}"
+    FRONTEND_CHECKOUT_ROOT="${RESOLVED_REPO_SOURCE}"
   else
-    echo "--browser-tests requires --browser-tests-host-checkout when repo-source is remote." >&2
+    echo "--frontend-deps requires --frontend-host-checkout when repo-source is remote." >&2
     exit 1
   fi
-  if ! BROWSER_TESTS_INSTALL_ROOTS_JSON="$(
-    python3 - "${BROWSER_TESTS_CHECKOUT_ROOT}" "${BROWSER_TESTS_INSTALL_ROOTS[@]}" <<'PY'
+  if ! FRONTEND_INSTALL_ROOTS_JSON="$(
+    python3 - "${FRONTEND_CHECKOUT_ROOT}" "${FRONTEND_INSTALL_ROOTS[@]}" <<'PY'
 import json
 import sys
 from pathlib import Path
 
 checkout_root = Path(sys.argv[1]).resolve()
 if not checkout_root.is_dir():
-    print(f"Missing browser test host checkout: {checkout_root}", file=sys.stderr)
+    print(f"Missing frontend host checkout: {checkout_root}", file=sys.stderr)
     sys.exit(1)
 
 payload = []
@@ -331,20 +359,20 @@ for raw in sys.argv[2:]:
     try:
         relative = root.relative_to(checkout_root)
     except ValueError:
-        print(f"Browser test install root must be inside host checkout: {root}", file=sys.stderr)
+        print(f"Frontend install root must be inside host checkout: {root}", file=sys.stderr)
         sys.exit(1)
     if not (root / "package.json").is_file():
-        print(f"Missing package.json under browser test install root: {root}", file=sys.stderr)
+        print(f"Missing package.json under frontend install root: {root}", file=sys.stderr)
         sys.exit(1)
     if not (root / "node_modules").is_dir():
-        print(f"Missing node_modules under browser test install root: {root}", file=sys.stderr)
+        print(f"Missing node_modules under frontend install root: {root}", file=sys.stderr)
         sys.exit(1)
     payload.append(relative.as_posix())
 
 print(json.dumps(payload))
 PY
   )"; then
-    echo "Invalid browser test install roots for checkout: ${BROWSER_TESTS_CHECKOUT_ROOT}" >&2
+    echo "Invalid frontend install roots for checkout: ${FRONTEND_CHECKOUT_ROOT}" >&2
     exit 1
   fi
 fi
@@ -402,15 +430,17 @@ if (( BOOTSTRAP_NUGET )); then
 fi
 if (( BOOTSTRAP_MSSQL )); then
   log_step "bootstrap_mssql"
-  "${SCRIPT_DIR}/bootstrap_mssql_vm.sh" "${VM_NAME}" "${VM_USER}"
+  MSSQL_SA_PASSWORD="${MSSQL_SA_PASSWORD}" \
+    MSSQL_INIT_ROOT="${MSSQL_INIT_ROOT}" \
+    "${SCRIPT_DIR}/bootstrap_mssql_vm.sh" "${VM_NAME}" "${VM_USER}"
 fi
 if (( BOOTSTRAP_PLAYWRIGHT )); then
   log_step "bootstrap_playwright"
   "${SCRIPT_DIR}/bootstrap_playwright_vm.sh" "${VM_NAME}" "${VM_USER}"
 fi
-if (( BOOTSTRAP_BROWSER_TESTS )); then
-  log_step "bootstrap_browser_tests"
-  "${SCRIPT_DIR}/bootstrap_browser_tests_vm.sh" --vm-user "${VM_USER}" "${VM_NAME}" "${BROWSER_TESTS_CHECKOUT_ROOT}" "${BROWSER_TESTS_INSTALL_ROOTS[@]}"
+if (( BOOTSTRAP_FRONTEND_DEPS )); then
+  log_step "bootstrap_frontend_deps"
+  "${SCRIPT_DIR}/bootstrap_frontend_deps_vm.sh" --vm-user "${VM_USER}" "${VM_NAME}" "${FRONTEND_CHECKOUT_ROOT}" "${FRONTEND_INSTALL_ROOTS[@]}"
 fi
 log_step "setup_issue_git_vm"
 "${SCRIPT_DIR}/setup_issue_git_vm.sh" "${MIRROR_ARGS[@]}" "${VM_NAME}" "${ISSUE_NUMBER}" "${REPO_SOURCE}" "${VM_USER}"
@@ -421,7 +451,7 @@ ssh \
   -o UserKnownHostsFile=/dev/null \
   -i "${SSH_PRIVATE_KEY_PATH}" \
   "${VM_USER}@${VM_IP}" \
-  "GUEST_REPO_NAME='${GUEST_REPO_NAME}' ISSUE_NUMBER='${ISSUE_NUMBER}' SESSION_ID='${SESSION_ID}' REMOTE_URL='${REMOTE_URL}' AGENT_BRANCH_SUFFIX='${VM_NAME}' BOOTSTRAP_DOTNET='${BOOTSTRAP_DOTNET}' BOOTSTRAP_NUGET='${BOOTSTRAP_NUGET}' BOOTSTRAP_BROWSER_TESTS='${BOOTSTRAP_BROWSER_TESTS}' BROWSER_TESTS_INSTALL_ROOTS_JSON='${BROWSER_TESTS_INSTALL_ROOTS_JSON}' AGENT_PR_NOTE_HELPER_B64='${AGENT_PR_NOTE_HELPER_B64}' bash -s" <<'EOF'
+  "GUEST_REPO_NAME='${GUEST_REPO_NAME}' ISSUE_NUMBER='${ISSUE_NUMBER}' SESSION_ID='${SESSION_ID}' REMOTE_URL='${REMOTE_URL}' AGENT_BRANCH_SUFFIX='${VM_NAME}' BOOTSTRAP_DOTNET='${BOOTSTRAP_DOTNET}' BOOTSTRAP_NUGET='${BOOTSTRAP_NUGET}' BOOTSTRAP_FRONTEND_DEPS='${BOOTSTRAP_FRONTEND_DEPS}' FRONTEND_INSTALL_ROOTS_JSON='${FRONTEND_INSTALL_ROOTS_JSON}' AGENT_PR_NOTE_HELPER_B64='${AGENT_PR_NOTE_HELPER_B64}' bash -s" <<'EOF'
 set -euo pipefail
 . ~/.profile
 
@@ -463,8 +493,8 @@ PY
 git -C "${TARGET_DIR}" config alias.agent-pr-note '!f(){ repo_root=$(git rev-parse --show-toplevel); "${repo_root}/.agent-sandbox/bin/agent-pr-note" "$@"; }; f'
 git -C "${TARGET_DIR}" config alias.push-agent '!f(){ session_id=${SESSION_ID:-}; if [[ -z "${session_id}" ]]; then echo "SESSION_ID is not set; refusing ambiguous agent push." >&2; return 1; fi; suffix_source=${AGENT_BRANCH_SUFFIX:-${HOSTNAME:-}}; suffix=$(printf "%s" "${suffix_source}" | tr "[:upper:]" "[:lower:]" | tr -cs "a-z0-9._-" "-" | sed "s/^-*//;s/-*$//"); if [[ -z "${suffix}" ]]; then echo "AGENT_BRANCH_SUFFIX/HOSTNAME is empty; refusing ambiguous agent push." >&2; return 1; fi; repo_root=$(git rev-parse --show-toplevel); "${repo_root}/.agent-sandbox/bin/agent-pr-note" ensure-head; branch=$(git rev-parse --abbrev-ref HEAD); git push agent HEAD:refs/heads/agents/${session_id}/${branch}-${suffix} refs/notes/agent-pr; }; f'
 
-if [[ "${BOOTSTRAP_BROWSER_TESTS:-0}" == "1" ]]; then
-  python3 - "$TARGET_DIR" "${BROWSER_TESTS_INSTALL_ROOTS_JSON:-[]}" <<'PY'
+if [[ "${BOOTSTRAP_FRONTEND_DEPS:-0}" == "1" ]]; then
+  python3 - "$TARGET_DIR" "${FRONTEND_INSTALL_ROOTS_JSON:-[]}" <<'PY'
 import json
 import os
 import shutil
@@ -474,18 +504,18 @@ from pathlib import Path
 target_dir = Path(sys.argv[1])
 install_roots = json.loads(sys.argv[2])
 home = Path.home()
-snapshot_root = home / "browser-test-runtime" / "install-roots"
+snapshot_root = home / "frontend-deps-runtime" / "install-roots"
 
 if not install_roots:
-    raise SystemExit("Missing browser test install-root mapping inside guest bootstrap flow.")
+    raise SystemExit("Missing frontend install-root mapping inside guest bootstrap flow.")
 
 for relative in install_roots:
     source_root = snapshot_root / relative
     dest_root = target_dir / relative
     if not dest_root.exists():
-        raise SystemExit(f"Expected browser test install root missing in guest clone: {dest_root}")
+        raise SystemExit(f"Expected frontend install root missing in guest clone: {dest_root}")
     if not source_root.exists():
-        raise SystemExit(f"Expected browser test snapshot missing in guest runtime: {source_root}")
+        raise SystemExit(f"Expected frontend dependency snapshot missing in guest runtime: {source_root}")
     for child_name in (
         "node_modules",
         "package.json",
@@ -664,8 +694,11 @@ echo "  task:    /home/${VM_USER}/${GUEST_REPO_NAME}/AGENT_TASK.yaml"
 echo "  dotnet:  $([[ ${BOOTSTRAP_DOTNET} -eq 1 ]] && echo enabled || echo disabled)"
 echo "  nuget:   $([[ ${BOOTSTRAP_NUGET} -eq 1 ]] && echo enabled || echo disabled)"
 echo "  mssql:   $([[ ${BOOTSTRAP_MSSQL} -eq 1 ]] && echo enabled || echo disabled)"
+if (( BOOTSTRAP_MSSQL )) && [[ -n "${MSSQL_INIT_ROOT}" ]]; then
+  echo "  mssql init root: ${MSSQL_INIT_ROOT}"
+fi
 echo "  playwright: $([[ ${BOOTSTRAP_PLAYWRIGHT} -eq 1 ]] && echo enabled || echo disabled)"
-echo "  browser tests: $([[ ${BOOTSTRAP_BROWSER_TESTS} -eq 1 ]] && echo enabled || echo disabled)"
+echo "  frontend deps: $([[ ${BOOTSTRAP_FRONTEND_DEPS} -eq 1 ]] && echo enabled || echo disabled)"
 echo "  push:    git -C /home/${VM_USER}/${GUEST_REPO_NAME} push-agent"
 if (( START_AGENT )); then
   echo "  agent:   started"

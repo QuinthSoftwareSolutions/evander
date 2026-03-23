@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
@@ -104,6 +105,133 @@ def _check_health_endpoint(name: str, url: str) -> EndpointStatus:
 def _format_rows(rows: list[tuple[str, str]]) -> str:
     key_width = max(len(key) for key, _ in rows)
     return "\n".join(f"{key:<{key_width}}  {value}" for key, value in rows)
+
+
+def _default_issue_session_id(issue_number: str) -> str:
+    return f"issue-{issue_number}-{datetime.now(UTC):%Y%m%dT%H%M%SZ}-{os.getpid()}"
+
+
+def _resolve_vm_name(target: str) -> str:
+    normalized = target.strip()
+    if normalized.isdigit():
+        return f"vm-{normalized}"
+    return normalized
+
+
+def _resolve_issue_number_or_raise(target: str) -> str:
+    normalized = target.strip()
+    if normalized.isdigit():
+        return normalized
+    if normalized.startswith("vm-") and normalized[3:].isdigit():
+        return normalized[3:]
+    raise typer.BadParameter(
+        f"Could not resolve issue number from target {target!r}. "
+        "Pass an issue number or vm-<issue-number>."
+    )
+
+
+def _read_issue_number_from_yaml(issue_path: Path) -> str:
+    text = issue_path.read_text(encoding="utf-8")
+    patterns = [
+        r"(?m)^\s*issue_number\s*:\s*[\"']?([0-9]+)[\"']?\s*$",
+        r"(?m)^\s*number\s*:\s*[\"']?([0-9]+)[\"']?\s*$",
+        r"(?m)^\s*id\s*:\s*[\"']?([0-9]+)[\"']?\s*$",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            return match.group(1)
+    raise typer.BadParameter(
+        f"Could not read issue number from YAML file: {issue_path}. "
+        "Expected one of: issue_number:, number:, or id:."
+    )
+
+
+def _resolve_issue_number(issue_input: str) -> str:
+    candidate = Path(issue_input)
+    if candidate.is_file():
+        return _read_issue_number_from_yaml(candidate)
+    return issue_input
+
+
+def _parse_pr_feedback_streams(values: list[str]) -> list[dict[str, str]]:
+    streams: list[dict[str, str]] = []
+    for raw in values:
+        provider, separator, remainder = raw.partition(":")
+        repo, separator2, pr_id = remainder.rpartition(":")
+        provider = provider.strip()
+        repo = repo.strip()
+        pr_id = pr_id.strip()
+        if not separator or not separator2 or not provider or not repo or not pr_id:
+            raise typer.BadParameter(
+                f"Invalid --pr-feedback-stream value {raw!r}. Expected provider:repo:pr_id."
+            )
+        streams.append({"provider": provider, "repo": repo, "pr_id": pr_id})
+    return streams
+
+
+def _build_issue_session_manifest(
+    *,
+    cfg: GatewayConfig,
+    session_id: str,
+    vm_id: str,
+    ttl_hours: int | None,
+    discord_channels: list[str],
+    email_mailboxes: list[str],
+    email_folders: list[str],
+) -> SessionManifest:
+    allowed_tools: list[ToolName] = [
+        ToolName.APPROVAL_SUBMIT,
+        ToolName.APPROVAL_CHECK,
+    ]
+
+    if discord_channels:
+        allowed_tools.extend(
+            [
+                ToolName.DISCORD_GET_COMMANDS,
+                ToolName.DISCORD_POST_STATUS,
+            ]
+        )
+
+    email_requested = bool(email_mailboxes or email_folders)
+    resolved_email_mailboxes = email_mailboxes or (cfg.email_mailbox_allowlist if email_requested else [])
+    resolved_email_folders = email_folders or (
+        sorted(
+            {
+                folder
+                for folders in cfg.email_folder_allowlist_by_mailbox.values()
+                for folder in folders
+            }
+        )
+        if email_requested
+        else []
+    )
+    if email_requested:
+        allowed_tools.extend(
+            [
+                ToolName.EMAIL_LIST_UNREAD,
+                ToolName.EMAIL_GET_MESSAGE,
+                ToolName.EMAIL_CREATE_DRAFT,
+            ]
+        )
+        if cfg.email_send_enabled:
+            allowed_tools.append(ToolName.EMAIL_SEND_APPROVED)
+
+    unique_tools = list(dict.fromkeys(allowed_tools))
+    return SessionManifest(
+        session_id=session_id,
+        vm_id=vm_id,
+        allowed_tools=unique_tools,
+        discord_channel_allowlist=discord_channels,
+        email_folder_allowlist=resolved_email_folders,
+        email_mailbox_allowlist=resolved_email_mailboxes,
+        email_folder_allowlist_by_mailbox=cfg.email_folder_allowlist_by_mailbox,
+        email_draft_recipient_allowlist=cfg.email_draft_recipient_allowlist,
+        email_draft_domain_allowlist=cfg.email_draft_domain_allowlist,
+        email_send_enabled=cfg.email_send_enabled,
+        expires_at=datetime.now(UTC) + timedelta(hours=ttl_hours or 8),
+        metadata={},
+    )
 
 
 @app.command("init-state")
@@ -313,6 +441,268 @@ def create_session(
         manifest.allowed_tools.append(ToolName.EMAIL_SEND_APPROVED)
     runtime.sessions.put(session_id, manifest)
     typer.echo(f"Created session manifest {session_id}")
+
+
+@app.command("prune-sessions")
+def prune_sessions(
+    config: ConfigOption = Path("config/gateway.yaml"),
+    expired_only: Annotated[
+        bool,
+        typer.Option(
+            "--expired-only/--all",
+            help="Delete only expired session manifests, or all session manifests.",
+        ),
+    ] = True,
+) -> None:
+    cfg = load_config(config)
+    runtime = build_runtime(cfg)
+    sessions = runtime.sessions.read_all()
+    now = datetime.now(UTC)
+
+    if expired_only:
+        keys_to_delete = [
+            session_id
+            for session_id, session in sessions.items()
+            if session.expires_at <= now
+        ]
+    else:
+        keys_to_delete = list(sessions.keys())
+
+    for session_id in keys_to_delete:
+        runtime.sessions.delete(session_id)
+
+    mode = "expired" if expired_only else "all"
+    typer.echo(f"Pruned {len(keys_to_delete)} {mode} session(s)")
+
+
+@app.command("list-vms")
+def list_vms(
+    vm_user: Annotated[str, typer.Option("--vm-user", help="Guest user to inspect over SSH.")] = "agent",
+) -> None:
+    script_path = Path(__file__).resolve().parents[2] / "scripts" / "list_running_vms.sh"
+    subprocess.run([str(script_path), vm_user], check=True)
+
+
+@app.command("ssh")
+def ssh(
+    target: str,
+    vm_user: Annotated[str, typer.Option("--vm-user", help="Guest user to connect as.")] = "agent",
+) -> None:
+    vm_name = _resolve_vm_name(target)
+    script_path = Path(__file__).resolve().parents[2] / "scripts" / "ssh.sh"
+    subprocess.run([str(script_path), vm_name, vm_user], check=True)
+
+
+@app.command("logs")
+def logs(
+    target: str,
+    repo_name: Annotated[
+        str | None,
+        typer.Option("--repo-name", help="Repo basename used to select the guest Codex log."),
+    ] = None,
+    vm_user: Annotated[str, typer.Option("--vm-user", help="Guest user to inspect over SSH.")] = "agent",
+) -> None:
+    issue_number = _resolve_issue_number_or_raise(target)
+    script_path = Path(__file__).resolve().parents[2] / "scripts" / "tail_issue_vm_log.sh"
+    cmd = [str(script_path), issue_number]
+    if repo_name is not None:
+        cmd.append(repo_name)
+    cmd.append(vm_user)
+    subprocess.run(cmd, check=True)
+
+
+@app.command("resume-agent")
+def resume_agent(
+    target: str,
+    message: Annotated[
+        str,
+        typer.Option("--message", help="Prompt passed to codex exec resume --last."),
+    ],
+    vm_user: Annotated[str, typer.Option("--vm-user", help="Guest user to connect as.")] = "agent",
+) -> None:
+    issue_number = _resolve_issue_number_or_raise(target)
+    script_path = Path(__file__).resolve().parents[2] / "scripts" / "resume_issue_agent.sh"
+    subprocess.run([str(script_path), message, issue_number, vm_user], check=True)
+
+
+@app.command("create-issue-vm")
+def create_issue_vm(
+    issue: str,
+    config: ConfigOption = Path("config/gateway.yaml"),
+    session_id: Annotated[
+        str | None,
+        typer.Option("--session-id", help="Session identifier to create and pass into the VM setup flow."),
+    ] = None,
+    repo_source: Annotated[
+        str | None,
+        typer.Option(
+            "--repo-source",
+            help="Host repo path or remote URL to mirror for guest Git access.",
+        ),
+    ] = None,
+    vm_user: Annotated[str, typer.Option("--vm-user", help="Guest user to configure.")] = "agent",
+    ttl_hours: Annotated[int | None, typer.Option("--ttl-hours", help="Session time to live in hours.")] = None,
+    discord_channel: Annotated[
+        list[str],
+        typer.Option("--discord-channel", help="Allowlisted Discord control channel."),
+    ] = [],
+    email_mailbox: Annotated[
+        list[str],
+        typer.Option("--email-mailbox", help="Allowlisted mailbox id. Repeat for multiple mailboxes."),
+    ] = [],
+    email_folder: Annotated[
+        list[str],
+        typer.Option("--email-folder", help="Allowlisted email folder. Repeat for multiple folders."),
+    ] = [],
+    dotnet: Annotated[bool, typer.Option("--dotnet", help="Bootstrap the host .NET SDK into the guest.")] = False,
+    nuget: Annotated[
+        str | None,
+        typer.Option(
+            "--nuget",
+            help="Project or solution path used to prewarm the shared NuGet cache and bootstrap NuGet relay config.",
+        ),
+    ] = None,
+    mssql: Annotated[
+        bool, typer.Option("--mssql", help="Provision a guest-local Microsoft SQL Server instance.")
+    ] = False,
+    mssql_init_root: Annotated[
+        str | None,
+        typer.Option(
+            "--mssql-init-root",
+            help="Host directory copied into /var/opt/mssql/init. If present, init.sql is executed.",
+        ),
+    ] = None,
+    playwright: Annotated[
+        bool, typer.Option("--playwright", help="Bootstrap the host-seeded Playwright runtime into the guest.")
+    ] = False,
+    frontend_deps: Annotated[
+        bool,
+        typer.Option(
+            "--frontend-deps",
+            help="Bootstrap host-seeded frontend install roots into the guest.",
+        ),
+    ] = False,
+    frontend_host_checkout: Annotated[
+        str | None,
+        typer.Option(
+            "--frontend-host-checkout",
+            help="Host checkout root for frontend install roots.",
+        ),
+    ] = None,
+    frontend_install_root: Annotated[
+        list[str],
+        typer.Option(
+            "--frontend-install-root",
+            help="Install root inside the host checkout. Repeat for multiple roots.",
+        ),
+    ] = [],
+    start_agent: Annotated[
+        bool,
+        typer.Option("--start-agent/--no-start-agent", help="Start the guest Codex run after setup."),
+    ] = True,
+) -> None:
+    issue_number = _resolve_issue_number(issue)
+    resolved_session_id = session_id or _default_issue_session_id(issue_number)
+    resolved_vm_name = f"vm-{issue_number}"
+
+    cfg = load_config(config)
+    runtime = build_runtime(cfg)
+    if runtime.sessions.get(resolved_session_id) is not None:
+        raise typer.BadParameter(f"Session already exists: {resolved_session_id}")
+    if mssql and not os.environ.get("MSSQL_SA_PASSWORD", "").strip():
+        raise typer.BadParameter("MSSQL_SA_PASSWORD must be set in the environment when --mssql is used.")
+    if mssql_init_root is not None and not mssql:
+        raise typer.BadParameter("--mssql-init-root requires --mssql.")
+
+    manifest = _build_issue_session_manifest(
+        cfg=cfg,
+        session_id=resolved_session_id,
+        vm_id=resolved_vm_name,
+        ttl_hours=ttl_hours,
+        discord_channels=discord_channel,
+        email_mailboxes=email_mailbox,
+        email_folders=email_folder,
+    )
+    runtime.sessions.put(resolved_session_id, manifest)
+
+    setup_script = Path(__file__).resolve().parents[2] / "scripts" / "setup_issue_vm.sh"
+    cmd = [str(setup_script)]
+    if not start_agent:
+        cmd.append("--dry-run")
+    if dotnet:
+        cmd.append("--dotnet")
+    if nuget is not None:
+        cmd.append("--nuget")
+    if mssql:
+        cmd.append("--mssql")
+    if mssql_init_root is not None:
+        cmd.extend(["--mssql-init-root", mssql_init_root])
+    if playwright:
+        cmd.append("--playwright")
+    if frontend_deps:
+        cmd.append("--frontend-deps")
+    if frontend_host_checkout is not None:
+        cmd.extend(["--frontend-host-checkout", frontend_host_checkout])
+    for install_root in frontend_install_root:
+        cmd.extend(["--frontend-install-root", install_root])
+
+    cmd.append(issue)
+    if nuget is not None:
+        cmd.append(nuget)
+    if repo_source is not None:
+        cmd.append(repo_source)
+    cmd.extend([resolved_session_id, vm_user])
+
+    subprocess.run(cmd, check=True)
+    typer.echo(
+        f"Created issue VM session {resolved_session_id} for issue {issue_number} "
+        f"using VM {resolved_vm_name}"
+    )
+
+
+@app.command("attach-pr-feedback")
+def attach_pr_feedback(
+    session_id: str,
+    provider: Annotated[str, typer.Option("--provider", help="Feedback provider name.")] ,
+    repo: Annotated[str, typer.Option("--repo", help="Provider repository identifier.")] ,
+    pr_id: Annotated[str, typer.Option("--pr-id", help="Pull request identifier.")] ,
+    config: ConfigOption = Path("config/gateway.yaml"),
+) -> None:
+    cfg = load_config(config)
+    runtime = build_runtime(cfg)
+    manifest = runtime.sessions.get(session_id)
+    if manifest is None:
+        raise typer.BadParameter(f"Unknown session: {session_id}")
+
+    stream = {
+        "provider": provider.strip(),
+        "repo": repo.strip(),
+        "pr_id": pr_id.strip(),
+    }
+    if not all(stream.values()):
+        raise typer.BadParameter("--provider, --repo, and --pr-id must all be non-empty.")
+
+    existing_streams = manifest.metadata.get("pr_feedback_streams")
+    if not isinstance(existing_streams, list):
+        existing_streams = []
+
+    if stream not in existing_streams:
+        existing_streams.append(stream)
+    manifest.metadata["pr_feedback_streams"] = existing_streams
+
+    for tool in (
+        ToolName.HAS_PENDING_FEEDBACK,
+        ToolName.LIST_UNREAD_FEEDBACK,
+        ToolName.POST_PR_FEEDBACK_REPLY,
+    ):
+        if tool not in manifest.allowed_tools:
+            manifest.allowed_tools.append(tool)
+
+    runtime.sessions.put(session_id, manifest)
+    typer.echo(
+        f"Attached PR feedback stream {stream['provider']}:{stream['repo']}:{stream['pr_id']} "
+        f"to session {session_id}"
+    )
 
 
 @app.command("approve")

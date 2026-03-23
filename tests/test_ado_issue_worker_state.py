@@ -52,10 +52,12 @@ def worker_config(tmp_path: Path) -> WorkerConfig:
         bootstrap_dotnet=True,
         bootstrap_nuget=True,
         bootstrap_mssql=True,
+        mssql_sa_password="SecretPassw0rd!",
+        mssql_init_root=None,
         bootstrap_playwright=True,
-        bootstrap_browser_tests=False,
-        browser_test_host_checkout=None,
-        browser_test_install_roots=(),
+        bootstrap_frontend_deps=False,
+        frontend_host_checkout=None,
+        frontend_install_roots=(),
         include_comments=True,
         comments_max_count=20,
         comment_text_max_chars=4000,
@@ -408,10 +410,12 @@ def test_build_setup_command_includes_optional_arguments(tmp_path: Path) -> None
         bootstrap_dotnet=True,
         bootstrap_nuget=True,
         bootstrap_mssql=True,
+        mssql_sa_password="SecretPassw0rd!",
+        mssql_init_root="/tmp/mssql-init",
         bootstrap_playwright=True,
-        bootstrap_browser_tests=True,
-        browser_test_host_checkout="/tmp/repo",
-        browser_test_install_roots=("/tmp/repo/Src/Clients", "/tmp/repo/Src/Clients/AdminClient"),
+        bootstrap_frontend_deps=True,
+        frontend_host_checkout="/tmp/repo",
+        frontend_install_roots=("/tmp/repo/Src/Clients", "/tmp/repo/Src/Clients/AdminClient"),
         include_comments=True,
         comments_max_count=20,
         comment_text_max_chars=4000,
@@ -422,13 +426,15 @@ def test_build_setup_command_includes_optional_arguments(tmp_path: Path) -> None
         "--dotnet",
         "--nuget",
         "--mssql",
+        "--mssql-init-root",
+        "/tmp/mssql-init",
         "--playwright",
-        "--browser-tests",
-        "--browser-tests-host-checkout",
+        "--frontend-deps",
+        "--frontend-host-checkout",
         "/tmp/repo",
-        "--browser-tests-install-root",
+        "--frontend-install-root",
         "/tmp/repo/Src/Clients",
-        "--browser-tests-install-root",
+        "--frontend-install-root",
         "/tmp/repo/Src/Clients/AdminClient",
         str(tmp_path / "work-item-10.yaml"),
         "real-target",
@@ -463,10 +469,12 @@ def test_build_setup_command_omits_disabled_bootstraps_and_nuget_prewarm_target(
         bootstrap_dotnet=False,
         bootstrap_nuget=False,
         bootstrap_mssql=True,
+        mssql_sa_password="SecretPassw0rd!",
+        mssql_init_root=None,
         bootstrap_playwright=False,
-        bootstrap_browser_tests=False,
-        browser_test_host_checkout=None,
-        browser_test_install_roots=(),
+        bootstrap_frontend_deps=False,
+        frontend_host_checkout=None,
+        frontend_install_roots=(),
         include_comments=True,
         comments_max_count=20,
         comment_text_max_chars=4000,
@@ -492,6 +500,7 @@ def test_process_work_item_passes_timeout(
 
     def successful_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
         captured["timeout"] = kwargs.get("timeout")
+        captured["env"] = kwargs.get("env")
         return subprocess.CompletedProcess(args=args, returncode=0, stdout="ok", stderr="")
 
     monkeypatch.setattr("agent_sandbox.ado_issue_worker.subprocess.run", successful_run)
@@ -511,6 +520,8 @@ def test_process_work_item_passes_timeout(
     )
 
     assert succeeded is True
+    assert isinstance(captured["env"], dict)
+    assert captured["env"]["MSSQL_SA_PASSWORD"] == "SecretPassw0rd!"
     assert captured["timeout"] == worker_config.setup_timeout_seconds
 
 

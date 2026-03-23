@@ -91,6 +91,26 @@ set -euo pipefail
 mkdir -p ~/.nuget/NuGet
 mkdir -p "${NUGET_PACKAGES_DIR}"
 mkdir -p "${NUGET_HTTP_CACHE_DIR}"
+sudo mkdir -p "${NUGET_FALLBACK_PACKAGES}"
+
+if ! mountpoint -q "${NUGET_FALLBACK_PACKAGES}"; then
+  sudo mount "${NUGET_FALLBACK_PACKAGES}" >/dev/null 2>&1 || true
+fi
+
+if ! mountpoint -q "${NUGET_FALLBACK_PACKAGES}"; then
+  for _ in {1..10}; do
+    sleep 1
+    sudo mount "${NUGET_FALLBACK_PACKAGES}" >/dev/null 2>&1 || true
+    if mountpoint -q "${NUGET_FALLBACK_PACKAGES}"; then
+      break
+    fi
+  done
+fi
+
+if ! mountpoint -q "${NUGET_FALLBACK_PACKAGES}"; then
+  echo "Warning: shared NuGet fallback folder is not mounted at ${NUGET_FALLBACK_PACKAGES}; restores will use relay sources only." >&2
+fi
+
 cat > ~/.nuget/NuGet/NuGet.Config <<CONFIG
 <?xml version="1.0" encoding="utf-8"?>
 <configuration>
@@ -106,15 +126,6 @@ cat > ~/.nuget/NuGet/NuGet.Config <<CONFIG
   <fallbackPackageFolders>
     <add key="shared-readonly" value="${NUGET_FALLBACK_PACKAGES}" />
   </fallbackPackageFolders>
-  <packageSourceMapping>
-    <packageSource key="sandbox-azure">
-      <package pattern="ExampleIndustry.*" />
-      <package pattern="TrueMes.*" />
-    </packageSource>
-    <packageSource key="sandbox-nuget">
-      <package pattern="*" />
-    </packageSource>
-  </packageSourceMapping>
 </configuration>
 CONFIG
 

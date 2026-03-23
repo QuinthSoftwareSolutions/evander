@@ -15,7 +15,7 @@ Arguments:
 
 Options:
   --create-pr         Open an upstream PR after pushing.
-  --provider <name>   PR provider: auto, github, azure. Default: auto.
+  --provider <name>   PR provider: auto, github, azure_devops. Default: auto.
   --base <branch>     Base branch for the PR. Default: repository default branch.
   --session-id <id>   Session id for mapping metadata. Defaults to branch-derived value.
   --title <title>     Explicit PR title.
@@ -27,6 +27,8 @@ Configuration:
   Reads config/git-server.env when present.
   Azure DevOps PR creation requires AZURE_DEVOPS_PAT (or the value configured in
   AGENT_SANDBOX_AZURE_DEVOPS_PAT_ENV).
+  If a PR is created and a session id is available, the script also attaches the
+  PR feedback stream to that session through agent-sandbox-cli.
 EOF
 }
 
@@ -166,7 +168,7 @@ infer_provider_from_url() {
       printf 'github\n'
       ;;
     git@ssh.dev.azure.com:*|https://dev.azure.com/*|https://*.visualstudio.com/*)
-      printf 'azure\n'
+      printf 'azure_devops\n'
       ;;
     *)
       printf '\n'
@@ -194,7 +196,7 @@ git_with_push_auth() {
   local repo_path="$1"
   shift
 
-  if [[ "${PUSH_PROVIDER}" == "azure" && -n "${AZURE_PAT_ENV_VALUE}" ]]; then
+  if [[ "${PUSH_PROVIDER}" == "azure_devops" && -n "${AZURE_PAT_ENV_VALUE}" ]]; then
     git -C "${repo_path}" -c http.extraHeader="${AZURE_AUTH_HEADER}" "$@"
   else
     git -C "${repo_path}" "$@"
@@ -258,7 +260,7 @@ infer_repo_slug() {
       trimmed="${trimmed#https://github.com/}"
       printf '%s\n' "${trimmed}"
       ;;
-    azure)
+    azure_devops)
       ORIGIN_URL="${origin_url}" python3 - <<'PY'
 import os
 import re
@@ -290,6 +292,33 @@ PY
       printf '%s\n' ""
       ;;
   esac
+}
+
+attach_pr_feedback_stream() {
+  local cli_path="${AGENT_SANDBOX_CLI_BIN:-}"
+  local session_id="$1"
+  local provider="$2"
+  local repo_slug="$3"
+  local pr_id="$4"
+
+  if [[ -z "${session_id}" || -z "${provider}" || -z "${repo_slug}" || -z "${pr_id}" ]]; then
+    return 0
+  fi
+
+  if [[ -z "${cli_path}" ]]; then
+    if [[ -x "${ROOT_DIR}/.venv/bin/agent-sandbox-cli" ]]; then
+      cli_path="${ROOT_DIR}/.venv/bin/agent-sandbox-cli"
+    else
+      cli_path="agent-sandbox-cli"
+    fi
+  fi
+
+  "${cli_path}" attach-pr-feedback \
+    --config "${ROOT_DIR}/config/gateway.yaml" \
+    --provider "${provider}" \
+    --repo "${repo_slug}" \
+    --pr-id "${pr_id}" \
+    "${session_id}"
 }
 
 write_pr_mapping() {
@@ -368,7 +397,7 @@ fi
 PUSH_REMOTE_URL="${ORIGIN_URL}"
 AZURE_PAT_ENV_VALUE=""
 AZURE_AUTH_HEADER=""
-if [[ "${PUSH_PROVIDER}" == "azure" ]]; then
+if [[ "${PUSH_PROVIDER}" == "azure_devops" ]]; then
   AZURE_PAT_ENV_VALUE="${!AZURE_PAT_ENV:-}"
   if [[ -n "${AZURE_PAT_ENV_VALUE}" ]]; then
     HTTPS_ORIGIN_URL="$(azure_https_origin_url "${ORIGIN_URL}")"
@@ -478,10 +507,10 @@ case "${PROVIDER}" in
     PR_URL="$(printf '%s\n' "${PR_URL}" | tail -n 1)"
     PR_ID="$(printf '%s\n' "${PR_URL}" | sed -nE 's#.*/pull/([0-9]+)$#\1#p')"
     ;;
-  azure)
+  azure_devops)
     AZURE_DEVOPS_PAT_VALUE="${!AZURE_PAT_ENV:-}"
     if [[ -z "${AZURE_DEVOPS_PAT_VALUE}" ]]; then
-      echo "Azure DevOps PAT is required for --provider azure." >&2
+      echo "Azure DevOps PAT is required for --provider azure_devops." >&2
       echo "Set ${AZURE_PAT_ENV} in the environment or config/git-server.env." >&2
       exit 1
     fi
@@ -638,6 +667,10 @@ if [[ -n "${PR_ID}" ]]; then
     "${BASE_BRANCH}" \
     "${SESSION_ID}" \
     "${LOCAL_BRANCH}"
+
+  if [[ -n "${SESSION_ID}" ]]; then
+    attach_pr_feedback_stream "${SESSION_ID}" "${PROVIDER}" "${REPO_SLUG}" "${PR_ID}"
+  fi
 fi
 
 RESULT_JSON="$(

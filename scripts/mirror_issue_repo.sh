@@ -23,7 +23,7 @@ Options:
 Arguments:
   issue-number  Issue identifier used to derive the repo/remote names.
   repo-source   Working tree path or remote URL to mirror.
-                Default: /home/jonathan/Documents/Repos/ExampleIndustryAPP
+                Default: $AGENT_SANDBOX_DEFAULT_REPO_SOURCE
 USAGE
 }
 
@@ -116,7 +116,11 @@ if [[ $# -lt 1 || $# -gt 2 ]]; then
 fi
 
 ISSUE_NUMBER="$1"
-REPO_SOURCE="${2:-/home/jonathan/Documents/Repos/ExampleIndustryAPP}"
+REPO_SOURCE="${2:-${AGENT_SANDBOX_DEFAULT_REPO_SOURCE:-}}"
+if [[ -z "${REPO_SOURCE}" ]]; then
+  echo "Missing repo-source: pass [repo-source] or set AGENT_SANDBOX_DEFAULT_REPO_SOURCE." >&2
+  exit 1
+fi
 SOURCE_MODE="local"
 if is_remote_source "${REPO_SOURCE}"; then
   SOURCE_MODE="remote"

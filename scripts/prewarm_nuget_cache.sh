@@ -58,15 +58,6 @@ if [[ ! -f "${NUGET_CONFIG_FILE}" ]]; then
     <add key="sandbox-nuget" value="http://127.0.0.1:11666/nuget/nuget-org/v3/index.json" allowInsecureConnections="true" />
     <add key="sandbox-azure" value="http://127.0.0.1:11666/nuget/azure/v3/index.json" allowInsecureConnections="true" />
   </packageSources>
-  <packageSourceMapping>
-    <packageSource key="sandbox-azure">
-      <package pattern="ExampleIndustry.*" />
-      <package pattern="TrueMes.*" />
-    </packageSource>
-    <packageSource key="sandbox-nuget">
-      <package pattern="*" />
-    </packageSource>
-  </packageSourceMapping>
 </configuration>
 CONFIG
 fi

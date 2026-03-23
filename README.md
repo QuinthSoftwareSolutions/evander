@@ -95,7 +95,7 @@
    It also creates a shared host NuGet cache under `/var/lib/libvirt/images/agent-sandbox/nuget-cache/global-packages` and mounts it read-only into the guest at `/opt/agent-sandbox/nuget-cache-ro` via `virtiofs`.
    New VMs default to a `20G` virtual disk; override with `DISK_SIZE_GB=...` before launch if needed.
    New VMs also receive `/home/agent/.codex/config.toml` and a shell profile hook so Codex defaults to the host relay without the deprecated `OPENAI_BASE_URL` warning.
-   To see all currently running VMs together with live guest agent status, run `./scripts/list_running_vms.sh`.
+   To see all currently running VMs together with live guest agent status, run `agent-sandbox-cli list-vms`.
 
 8. Install the Codex binary into the VM:
 
@@ -121,19 +121,19 @@
 
    This writes `~/.nuget/NuGet/NuGet.Config` in the guest so package restore can use host relay endpoints for nuget.org and Azure Artifacts, while keeping guest-local writable caches under `~/.nuget` and using the shared host cache as a read-only fallback package folder.
 
-11. Optionally install Microsoft SQL Server client tooling into the VM:
+11. Optionally provision a guest-local Microsoft SQL Server instance into the VM:
 
    ```bash
-   ./scripts/bootstrap_mssql_vm.sh vm-real
+   MSSQL_SA_PASSWORD='your-strong-password' ./scripts/bootstrap_mssql_vm.sh vm-real
    ```
 
-   This copies host-installed SQL Server CLI tooling (`sqlcmd`) into the guest and appends its `bin` directory to the guest shell profile.
+   This bootstraps host-installed SQL Server tooling plus the database engine into the guest, starts a local `mssql-server` service listening on `localhost:1433`, and verifies `sqlcmd` can query the guest-local instance. If you also need schema or data initialization, pass `--init-root /path/to/mssql-init`, where `init.sql` can run arbitrary setup or restore commands against the local instance.
 
 12. Optionally prewarm the shared host NuGet cache from the host before launching or restoring in guests:
 
    ```bash
    ./scripts/prewarm_nuget_cache.sh /path/to/project-or-solution.slnx
-   ./scripts/inspect_nuget_cache.sh ExampleIndustry.Elastic.Linq 2026.3.6.1
+   ./scripts/inspect_nuget_cache.sh Acme.Product.Core 2026.3.6.1
    ```
 
    Prewarming fills the shared host cache explicitly through real host restores, and the inspect script shows cache size or whether a specific package/version is already present.
@@ -149,7 +149,7 @@
 14. Optionally install a repo-specific browser-test runtime into the VM for frontend unit tests:
 
    ```bash
-   ./scripts/bootstrap_browser_tests_vm.sh vm-real /path/to/repo /path/to/repo/Src/Clients
+   ./scripts/bootstrap_frontend_deps_vm.sh vm-real /path/to/repo /path/to/repo/Src/Clients
    ```
 
    This copies a host-seeded Node runtime plus one or more frontend install roots from a host checkout into the guest. It is intended to make Angular and other frontend builds work offline from the guest clone, and each selected install root must already contain `package.json` and `node_modules`.
@@ -201,11 +201,12 @@ agent-sandbox-cli poll-ado-backlog --reprocess 12345
 
 The dedicated worker entry point is also available as `agent-sandbox-ado-worker` for systemd.
 Backlog-worker VM setup calls can opt into `--dotnet`, `--nuget`, `--mssql`, `--playwright`,
-and `--browser-tests` via `ADO_BOOTSTRAP_DOTNET`, `ADO_BOOTSTRAP_NUGET`,
-`ADO_BOOTSTRAP_MSSQL`, `ADO_BOOTSTRAP_PLAYWRIGHT`, and `ADO_BOOTSTRAP_BROWSER_TESTS`.
+and `--frontend-deps` via `ADO_BOOTSTRAP_DOTNET`, `ADO_BOOTSTRAP_NUGET`,
+`ADO_BOOTSTRAP_MSSQL`, `ADO_BOOTSTRAP_PLAYWRIGHT`, and `ADO_BOOTSTRAP_FRONTEND_DEPS`.
 The first three default to `true`; the frontend-oriented toggles default to `false` because
-they depend on host-seeded Node artifacts. `ADO_BOOTSTRAP_BROWSER_TESTS` requires
-`ADO_BROWSER_TEST_INSTALL_ROOTS`, and can optionally use `ADO_BROWSER_TEST_HOST_CHECKOUT`
+they depend on host-seeded artifacts. `ADO_BOOTSTRAP_MSSQL` also requires
+`ADO_MSSQL_SA_PASSWORD`, and can optionally use `ADO_MSSQL_INIT_ROOT`. `ADO_BOOTSTRAP_FRONTEND_DEPS`
+requires `ADO_FRONTEND_INSTALL_ROOTS`, and can optionally use `ADO_FRONTEND_HOST_CHECKOUT`
 when the mirrored repo source is remote.
 
 ## Local Git Remotes
@@ -213,7 +214,7 @@ when the mirrored repo source is remote.
 For the full issue-VM bring-up path in one command, use:
 
 ```bash
-./scripts/setup_issue_vm.sh --dotnet --nuget --mssql --playwright --browser-tests --browser-tests-install-root /path/to/repo/Src/Clients /path/to/issue.yaml /path/to/project-or-solution.slnx
+MSSQL_SA_PASSWORD='your-strong-password' ./scripts/setup_issue_vm.sh --dotnet --nuget --mssql --mssql-init-root /path/to/mssql-init --playwright --frontend-deps --frontend-install-root /path/to/repo/Src/Clients /path/to/issue.yaml /path/to/project-or-solution.slnx
 ```
 
 `setup_issue_vm.sh` now resolves host-dependent paths in this order:
@@ -230,16 +231,17 @@ Toolchain bootstraps are now opt-in:
 
 - `--dotnet` runs `bootstrap_dotnet_vm.sh`
 - `--nuget` runs `bootstrap_nuget_vm.sh` and host `prewarm_nuget_cache.sh` (requires `project-or-solution`)
-- `--mssql` runs `bootstrap_mssql_vm.sh`
+- `--mssql` runs `bootstrap_mssql_vm.sh` and requires `MSSQL_SA_PASSWORD` in the environment
+- `--mssql-init-root PATH` copies a host init bundle into `/var/opt/mssql/init` and executes `init.sql`
 - `--playwright` runs `bootstrap_playwright_vm.sh`, which also provides `node`, `npm`, and `npx`
-- `--browser-tests` runs `bootstrap_browser_tests_vm.sh`
-- `--browser-tests-install-root PATH` selects one frontend install root and may be repeated
-- `--browser-tests-host-checkout PATH` overrides the host checkout used for frontend snapshots when `repo-source` is remote
+- `--frontend-deps` runs `bootstrap_frontend_deps_vm.sh`
+- `--frontend-install-root PATH` selects one frontend install root and may be repeated
+- `--frontend-host-checkout PATH` overrides the host checkout used for frontend snapshots when `repo-source` is remote
 
-When `--browser-tests` is enabled, each install root must live under the selected host checkout and
+When `--frontend-deps` is enabled, each install root must live under the selected host checkout and
 already contain `package.json` plus `node_modules`. For local repo sources, `setup_issue_vm.sh`
 uses the resolved local repo checkout by default. For remote repo sources, pass
-`--browser-tests-host-checkout` so the helper can snapshot dependencies from a host checkout and
+`--frontend-host-checkout` so the helper can snapshot dependencies from a host checkout and
 restore them into the matching relative paths inside the guest clone.
 
 The guest clone URL is also derived from configurable Git-root settings:
@@ -250,12 +252,13 @@ The guest clone URL is also derived from configurable Git-root settings:
   (default: `agent-sandbox-git-host`).
 
 That now also clones the mirrored repo into the guest user's home directory using
-the host repo basename, for example `/home/agent/ExampleIndustryAPP`. It also writes a short
+the host repo basename, for example `/home/agent/AcmePlatform`. It also writes a short
 `/home/agent/AGENTS.md` note, copies the issue YAML into the repo root as
 `AGENT_TASK.yaml`, configures a repo-local `git push-agent` alias for the safe
 session-namespaced push pattern, and starts a background Codex run inside the guest by
 default. The guest-side Codex log and PID file live under `/home/agent/.agent-sandbox/`.
-Use `--dry-run` if you want the VM prepared without starting the agent process. The
+Use `--no-start-agent` with `agent-sandbox-cli create-issue-vm` or `--dry-run` with
+`setup_issue_vm.sh` if you want the VM prepared without starting the agent process. The
 helper still accepts a raw issue number as the first argument for the older workflow, but
 YAML is the preferred input for long-running agent sessions.
 After the initial `codex exec` run exits, the helper now performs one
@@ -267,18 +270,20 @@ After the initial `codex exec` run exits, the helper now performs one
 For operator visibility from the host, use:
 
 ```bash
-./scripts/check_issue_vm.sh 14084
-./scripts/tail_issue_vm_log.sh 14084
+agent-sandbox-cli list-vms
+agent-sandbox-cli logs 14084
 ```
 
-Both helpers share the same timeout environment variables (defaults shown):
+For a lower-level point-in-time VM inspection, `./scripts/check_issue_vm.sh 14084`
+is still available.
+
+The script and CLI wrappers share the same timeout environment variables (defaults shown):
 
 - `VM_WAIT_IP_TIMEOUT_SECONDS` (default `180`)
 - `VM_WAIT_SSH_TIMEOUT_SECONDS` (default `180`)
 
-
-The first command shows the VM state, IP, guest Codex PID, and the last log lines. The
-second follows the guest Codex log live over SSH.
+`list-vms` shows running VMs together with live guest agent status. `logs`
+follows the guest Codex log live over SSH.
 
 Use the included bare-repo helper when you want VMs to push code changes back to the host over the private network:
 

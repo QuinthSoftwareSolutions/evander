@@ -14,6 +14,7 @@ def test_open_agent_pr_emits_structured_output_and_writes_mapping(tmp_path: Path
 
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
+    attach_log = tmp_path / "attach.log"
 
     (fake_bin / "git").write_text(
         """#!/usr/bin/env bash
@@ -51,13 +52,22 @@ esac
         "#!/usr/bin/env bash\nset -euo pipefail\necho \"https://github.com/example/repo/pull/42\"\n",
         encoding="utf-8",
     )
+    (fake_bin / "agent-sandbox-cli").write_text(
+        f"""#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> "{attach_log}"
+""",
+        encoding="utf-8",
+    )
     os.chmod(fake_bin / "git", 0o755)
     os.chmod(fake_bin / "gh", 0o755)
+    os.chmod(fake_bin / "agent-sandbox-cli", 0o755)
 
     pr_map = tmp_path / "runtime" / "pr-map.json"
     env = os.environ.copy()
     env["PATH"] = f"{fake_bin}:{env['PATH']}"
     env["AGENT_SANDBOX_PR_MAP_PATH"] = str(pr_map)
+    env["AGENT_SANDBOX_CLI_BIN"] = str(fake_bin / "agent-sandbox-cli")
 
     result = subprocess.run(
         [str(script), "--create-pr", str(host_repo), "review/session-123/work"],
@@ -88,6 +98,12 @@ esac
     assert entry["origin_branch"] == "review/session-123/work"
     assert entry["base_branch"] == "main"
     assert entry["session_id"] == "session-123"
+    attach_args = attach_log.read_text(encoding="utf-8").strip()
+    assert "attach-pr-feedback" in attach_args
+    assert "--provider github" in attach_args
+    assert "--repo example/repo" in attach_args
+    assert "--pr-id 42" in attach_args
+    assert "session-123" in attach_args
 
 
 def test_open_agent_pr_refreshes_review_branch_before_force_with_lease_push(tmp_path: Path) -> None:
@@ -99,6 +115,7 @@ def test_open_agent_pr_refreshes_review_branch_before_force_with_lease_push(tmp_
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     git_log = tmp_path / "git.log"
+    attach_log = tmp_path / "attach.log"
 
     (fake_bin / "git").write_text(
         f"""#!/usr/bin/env bash
@@ -144,12 +161,21 @@ esac
         "#!/usr/bin/env bash\nset -euo pipefail\necho \"https://github.com/example/repo/pull/42\"\n",
         encoding="utf-8",
     )
+    (fake_bin / "agent-sandbox-cli").write_text(
+        f"""#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> "{attach_log}"
+""",
+        encoding="utf-8",
+    )
     os.chmod(fake_bin / "git", 0o755)
     os.chmod(fake_bin / "gh", 0o755)
+    os.chmod(fake_bin / "agent-sandbox-cli", 0o755)
 
     env = os.environ.copy()
     env["PATH"] = f"{fake_bin}:{env['PATH']}"
     env["AGENT_SANDBOX_PR_MAP_PATH"] = str(tmp_path / "runtime" / "pr-map.json")
+    env["AGENT_SANDBOX_CLI_BIN"] = str(fake_bin / "agent-sandbox-cli")
 
     subprocess.run(
         [str(script), "--create-pr", str(host_repo), "review/session-123/work"],
@@ -178,6 +204,7 @@ def test_open_agent_pr_preserves_existing_azure_pr_title_by_default(tmp_path: Pa
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     python_log = tmp_path / "python.log"
+    attach_log = tmp_path / "attach.log"
 
     (fake_bin / "git").write_text(
         """#!/usr/bin/env bash
@@ -257,16 +284,25 @@ exit 1
 """,
         encoding="utf-8",
     )
+    (fake_bin / "agent-sandbox-cli").write_text(
+        f"""#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> "{attach_log}"
+""",
+        encoding="utf-8",
+    )
     os.chmod(fake_bin / "git", 0o755)
     os.chmod(fake_bin / "python3", 0o755)
+    os.chmod(fake_bin / "agent-sandbox-cli", 0o755)
 
     env = os.environ.copy()
     env["PATH"] = f"{fake_bin}:{env['PATH']}"
     env["AGENT_SANDBOX_PR_MAP_PATH"] = str(tmp_path / "runtime" / "pr-map.json")
+    env["AGENT_SANDBOX_CLI_BIN"] = str(fake_bin / "agent-sandbox-cli")
     env["AZURE_DEVOPS_PAT"] = "test-pat"
 
     result = subprocess.run(
-        [str(script), "--create-pr", "--provider", "azure", str(host_repo), "review/session-123/work"],
+        [str(script), "--create-pr", "--provider", "azure_devops", str(host_repo), "review/session-123/work"],
         check=True,
         capture_output=True,
         text=True,
@@ -275,6 +311,14 @@ exit 1
 
     lines = [line for line in result.stdout.splitlines() if line.startswith("AGENT_PR_RESULT ")]
     assert lines, result.stdout
+    payload = json.loads(lines[-1].split(" ", 1)[1])
+    assert payload["provider"] == "azure_devops"
     logged = python_log.read_text(encoding="utf-8")
     assert "TITLE=Latest commit title" in logged
     assert "TITLE_EXPLICIT=0" in logged
+    attach_args = attach_log.read_text(encoding="utf-8").strip()
+    assert "attach-pr-feedback" in attach_args
+    assert "--provider azure_devops" in attach_args
+    assert "--repo example-org/example-project/example-repo" in attach_args
+    assert "--pr-id 42" in attach_args
+    assert "session-123" in attach_args

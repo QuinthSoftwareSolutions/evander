@@ -3,22 +3,24 @@ set -euo pipefail
 
 show_help() {
   cat <<'USAGE'
-Usage: bootstrap_mssql_vm.sh <vm-name> [vm-user]
+Usage: bootstrap_mssql_vm.sh [--init-root PATH] [--pid EDITION] <vm-name> [vm-user]
 
-Copy host-installed Microsoft SQL Server client tooling into a guest VM and
-configure the guest shell to use it offline.
+Provision a guest-local Microsoft SQL Server instance inside a VM using
+host-installed SQL Server artifacts, then optionally apply an init bundle.
 
 Arguments:
-  vm-name   libvirt domain name.
-  vm-user   Guest user to configure. Default: agent
+  vm-name        libvirt domain name.
+  vm-user        Guest user to configure. Default: agent
+
+Options:
+  --init-root PATH  Host directory copied into /var/opt/mssql/init inside the guest.
+                    If present, init.sql from that directory is executed after the
+                    local SQL Server instance is available.
+  --pid EDITION     MSSQL edition passed to mssql-conf setup. Default: Developer
 
 Environment:
-  SSH_KEY_PATH           Private key matching the guest authorized key.
-  HOST_MSSQL_TOOLS_ROOT  Host SQL Server client tooling root.
-                         Default: /opt/mssql-tools18
-  HOST_MSSQL_RUNTIME_LIBS
-                         Space-delimited host library paths required by sqlcmd.
-                         Default: libodbc.so.2, libodbcinst.so.2, libltdl.so.7
+  MSSQL_SA_PASSWORD  Required SA password used to initialize or reset the guest instance.
+  SSH_KEY_PATH       Private key matching the guest authorized key.
 USAGE
 }
 
@@ -27,6 +29,42 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   exit 0
 fi
 
+INIT_ROOT="${MSSQL_INIT_ROOT:-}"
+MSSQL_PID="${MSSQL_PID:-Developer}"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --init-root)
+      if [[ -z "${2:-}" ]]; then
+        echo "Missing value for $1" >&2
+        exit 1
+      fi
+      INIT_ROOT="$2"
+      shift 2
+      ;;
+    --pid)
+      if [[ -z "${2:-}" ]]; then
+        echo "Missing value for $1" >&2
+        exit 1
+      fi
+      MSSQL_PID="$2"
+      shift 2
+      ;;
+    --)
+      shift
+      break
+      ;;
+    -*)
+      echo "Unknown option: $1" >&2
+      show_help >&2
+      exit 1
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
+
 if [[ $# -lt 1 ]]; then
   show_help >&2
   exit 1
@@ -34,43 +72,36 @@ fi
 
 VM_NAME="$1"
 VM_USER="${2:-agent}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+MSSQL_SA_PASSWORD="${MSSQL_SA_PASSWORD:-}"
+if [[ -z "${MSSQL_SA_PASSWORD}" ]]; then
+  echo "MSSQL_SA_PASSWORD is required to provision a guest-local SQL Server instance." >&2
+  exit 1
+fi
+
+if [[ -n "${INIT_ROOT}" ]]; then
+  if [[ ! -d "${INIT_ROOT}" ]]; then
+    echo "Missing MSSQL init root: ${INIT_ROOT}" >&2
+    exit 1
+  fi
+  if [[ ! -f "${INIT_ROOT}/init.sql" ]]; then
+    echo "Missing init.sql under MSSQL init root: ${INIT_ROOT}" >&2
+    exit 1
+  fi
+fi
+
 CALLER_USER="${SUDO_USER:-$USER}"
 CALLER_HOME="$(getent passwd "${CALLER_USER}" | cut -d: -f6)"
 SSH_KEY_PATH="${SSH_KEY_PATH:-${CALLER_HOME}/.ssh/id_ed25519}"
 if [[ ! -f "${SSH_KEY_PATH}" ]]; then
   SSH_KEY_PATH="${CALLER_HOME}/.ssh/id_rsa"
 fi
-
-HOST_MSSQL_TOOLS_ROOT="${HOST_MSSQL_TOOLS_ROOT:-/opt/mssql-tools18}"
-HOST_MSSQL_RUNTIME_LIBS=(${HOST_MSSQL_RUNTIME_LIBS:-/lib/x86_64-linux-gnu/libodbc.so.2 /lib/x86_64-linux-gnu/libodbcinst.so.2 /lib/x86_64-linux-gnu/libltdl.so.7})
 SSH_OPTS=(
   -o StrictHostKeyChecking=no
   -o UserKnownHostsFile=/dev/null
   -i "${SSH_KEY_PATH}"
 )
-
-if [[ ! -d "${HOST_MSSQL_TOOLS_ROOT}" ]]; then
-  echo "Missing host SQL Server tooling root: ${HOST_MSSQL_TOOLS_ROOT}" >&2
-  exit 1
-fi
-
-if [[ ! -x "${HOST_MSSQL_TOOLS_ROOT}/bin/sqlcmd" ]]; then
-  echo "Missing sqlcmd launcher under ${HOST_MSSQL_TOOLS_ROOT}/bin" >&2
-  exit 1
-fi
-
-for runtime_lib in "${HOST_MSSQL_RUNTIME_LIBS[@]}"; do
-  if [[ ! -e "${runtime_lib}" ]]; then
-    echo "Missing required SQL Server runtime library: ${runtime_lib}" >&2
-    exit 1
-  fi
-done
-
-if [[ ! -f "${SSH_KEY_PATH}" ]]; then
-  echo "Missing SSH private key: ${SSH_KEY_PATH}" >&2
-  echo "Set SSH_KEY_PATH to the private key that matches the VM's authorized key." >&2
-  exit 1
-fi
 
 get_vm_ip() {
   local ip
@@ -100,66 +131,53 @@ get_vm_ip() {
 
 VM_IP="$(get_vm_ip)"
 
-echo "Bootstrapping SQL Server client tooling into ${VM_USER}@${VM_IP}"
+"${SCRIPT_DIR}/bootstrap_mssql_tools_vm.sh" "${VM_NAME}" "${VM_USER}"
+MSSQL_SA_PASSWORD="${MSSQL_SA_PASSWORD}" MSSQL_PID="${MSSQL_PID}" \
+  "${SCRIPT_DIR}/bootstrap_mssql_server_vm.sh" "${VM_NAME}" "${VM_USER}"
 
-ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "
-  set -euo pipefail
-  sudo mkdir -p /home/${VM_USER}
-  sudo chown -R ${VM_USER}:${VM_USER} /home/${VM_USER}
-  mkdir -p ~/toolchains/mssql-tools
-  rm -rf ~/toolchains/mssql-tools/*
-  mkdir -p ~/toolchains/mssql-tools/lib
-"
+if [[ -n "${INIT_ROOT}" ]]; then
+  echo "Applying MSSQL init bundle from ${INIT_ROOT} into ${VM_USER}@${VM_IP}"
+  ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "sudo bash -s" <<'EOF_VM'
+set -euo pipefail
+install -d -o mssql -g mssql -m 0770 /var/opt/mssql/init
+rm -rf /var/opt/mssql/init/*
+EOF_VM
+  tar -C "${INIT_ROOT}" -cf - . \
+    | ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "sudo tar -C /var/opt/mssql/init -xf -"
+  ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "sudo bash -s" <<'EOF_VM'
+set -euo pipefail
+chown -R mssql:mssql /var/opt/mssql/init
+chmod -R u+rwX,go+rX /var/opt/mssql/init
+EOF_VM
+fi
 
-tar -C "${HOST_MSSQL_TOOLS_ROOT}" -cf - . \
-  | ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "tar -C ~/toolchains/mssql-tools -xf -"
+SA_PASSWORD_B64="$(printf '%s' "${MSSQL_SA_PASSWORD}" | base64 -w0)"
+ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "SA_PASSWORD_B64='${SA_PASSWORD_B64}' APPLY_INIT='$([[ -n "${INIT_ROOT}" ]] && echo 1 || echo 0)' bash -s" <<'EOF_VM'
+set -euo pipefail
+sa_password="$(
+  python3 - <<'PY'
+import base64
+import os
 
-for runtime_lib in "${HOST_MSSQL_RUNTIME_LIBS[@]}"; do
-  runtime_name="$(basename "${runtime_lib}")"
-  cat "${runtime_lib}" \
-    | ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "cat > ~/toolchains/mssql-tools/lib/${runtime_name}"
+print(base64.b64decode(os.environ["SA_PASSWORD_B64"]).decode("utf-8"))
+PY
+)"
+
+export PATH="$HOME/toolchains/mssql-tools/bin:$PATH"
+export LD_LIBRARY_PATH="$HOME/toolchains/mssql-tools/lib:${LD_LIBRARY_PATH:-}"
+
+for _ in $(seq 1 60); do
+  if sqlcmd -S localhost,1433 -U sa -P "${sa_password}" -C -Q "SELECT 1" >/dev/null 2>&1; then
+    break
+  fi
+  sleep 2
 done
 
-ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "bash -s" <<'EOF_VM'
-set -euo pipefail
+sqlcmd -S localhost,1433 -U sa -P "${sa_password}" -C -Q "SELECT 1" >/dev/null
 
-if [[ ! -x "$HOME/toolchains/mssql-tools/bin/sqlcmd" ]]; then
-  echo "Expected sqlcmd launcher missing at $HOME/toolchains/mssql-tools/bin/sqlcmd" >&2
-  exit 1
+if [[ "${APPLY_INIT}" == "1" ]]; then
+  sqlcmd -S localhost,1433 -U sa -P "${sa_password}" -C -i /var/opt/mssql/init/init.sql
 fi
-
-if [[ ! -f "$HOME/toolchains/mssql-tools/lib/libodbc.so.2" ]]; then
-  echo "Expected libodbc runtime missing at $HOME/toolchains/mssql-tools/lib/libodbc.so.2" >&2
-  exit 1
-fi
-
-if ! grep -q 'PATH="$HOME/toolchains/mssql-tools/bin:$PATH"' ~/.profile 2>/dev/null; then
-  cat >> ~/.profile <<PROFILE
-export PATH="$HOME/toolchains/mssql-tools/bin:$PATH"
-PROFILE
-fi
-
-if ! grep -q 'LD_LIBRARY_PATH="$HOME/toolchains/mssql-tools/lib:${LD_LIBRARY_PATH:-}"' ~/.profile 2>/dev/null; then
-  cat >> ~/.profile <<PROFILE
-export LD_LIBRARY_PATH="$HOME/toolchains/mssql-tools/lib:${LD_LIBRARY_PATH:-}"
-PROFILE
-fi
-
-if ! grep -q 'PATH="$HOME/toolchains/mssql-tools/bin:$PATH"' ~/.bashrc 2>/dev/null; then
-  cat >> ~/.bashrc <<BASHRC
-export PATH="$HOME/toolchains/mssql-tools/bin:$PATH"
-BASHRC
-fi
-
-if ! grep -q 'LD_LIBRARY_PATH="$HOME/toolchains/mssql-tools/lib:${LD_LIBRARY_PATH:-}"' ~/.bashrc 2>/dev/null; then
-  cat >> ~/.bashrc <<BASHRC
-export LD_LIBRARY_PATH="$HOME/toolchains/mssql-tools/lib:${LD_LIBRARY_PATH:-}"
-BASHRC
-fi
-
-export PATH="$HOME/toolchains/mssql-tools/bin:$PATH"
-export LD_LIBRARY_PATH="$HOME/toolchains/mssql-tools/lib:${LD_LIBRARY_PATH:-}"
-sqlcmd -? >/dev/null
 EOF_VM
 
 echo "SQL Server bootstrap complete for ${VM_NAME} (${VM_IP})"

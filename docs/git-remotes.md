@@ -72,8 +72,8 @@ That derives:
 - bare repo: `14084_repo.git`
 - host working-tree remote: `14084-mirror`
 
-By default it mirrors `/home/jonathan/Documents/Repos/ExampleIndustryAPP`, but you can pass a second
-argument to target a different host repo path or remote URL.
+It uses the explicit second argument when provided, otherwise
+`AGENT_SANDBOX_DEFAULT_REPO_SOURCE`. Pass a repo path or remote URL that should be mirrored.
 
 Each bare repo also gets a `post-receive` hook. Once the bare repo has been associated with a
 trusted host clone by `mirror_issue_repo.sh`, that hook can automatically promote guest-pushed
@@ -191,7 +191,8 @@ AZURE_DEVOPS_PAT=...
 ```
 
 `open_agent_pr.sh` detects Azure DevOps automatically from the trusted clone's `origin` URL and
-creates the PR there. The same helper still supports GitHub remotes through `gh`.
+creates the PR there. Pass `--provider azure_devops` if you need to override provider detection
+explicitly. The same helper still supports GitHub remotes through `gh`.
 
 ## Notes
 

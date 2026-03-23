@@ -23,10 +23,12 @@ def test_git_remote_docs_and_script_are_present() -> None:
     assert "bootstrap_git_vm.sh" in ops
     assert "setup_issue_vm.sh" in readme
     assert "setup_issue_vm.sh" in ops
+    assert "agent-sandbox-cli list-vms" in readme
+    assert "agent-sandbox-cli list-vms" in ops
+    assert "agent-sandbox-cli logs" in readme
+    assert "agent-sandbox-cli logs" in ops
     assert "check_issue_vm.sh" in readme
     assert "check_issue_vm.sh" in ops
-    assert "tail_issue_vm_log.sh" in readme
-    assert "tail_issue_vm_log.sh" in ops
     assert "AGENT_TASK.yaml" in readme
     assert "AGENT_TASK.yaml" in ops
     assert "--dry-run" in readme

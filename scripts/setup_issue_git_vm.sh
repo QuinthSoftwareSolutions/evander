@@ -20,7 +20,7 @@ Arguments:
   vm-name       libvirt domain name.
   issue-number  Issue identifier used to derive the repo/remote names.
   repo-source   Working tree path or remote URL to mirror.
-                Default: /home/jonathan/Documents/Repos/ExampleIndustryAPP
+                Default: $AGENT_SANDBOX_DEFAULT_REPO_SOURCE
   vm-user       Guest user to configure. Default: agent
 EOF
 }
@@ -72,7 +72,11 @@ fi
 
 VM_NAME="$1"
 ISSUE_NUMBER="$2"
-REPO_SOURCE="${3:-/home/jonathan/Documents/Repos/ExampleIndustryAPP}"
+REPO_SOURCE="${3:-${AGENT_SANDBOX_DEFAULT_REPO_SOURCE:-}}"
+if [[ -z "${REPO_SOURCE}" ]]; then
+  echo "Missing repo-source: pass [repo-source] or set AGENT_SANDBOX_DEFAULT_REPO_SOURCE." >&2
+  exit 1
+fi
 VM_USER="${4:-agent}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"

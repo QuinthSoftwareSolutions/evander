@@ -13,9 +13,11 @@ def _write_executable(path: Path, content: str) -> None:
 def _prepare_sandbox(tmp_path: Path) -> tuple[Path, Path, Path]:
     root = tmp_path / "sandbox"
     scripts_dir = root / "scripts"
+    guest_scripts_dir = scripts_dir / "guest"
     config_dir = root / "config"
     fake_bin = tmp_path / "bin"
     scripts_dir.mkdir(parents=True)
+    guest_scripts_dir.mkdir(parents=True)
     config_dir.mkdir(parents=True)
     fake_bin.mkdir(parents=True)
 
@@ -23,6 +25,13 @@ def _prepare_sandbox(tmp_path: Path) -> tuple[Path, Path, Path]:
     setup_script = scripts_dir / "setup_issue_vm.sh"
     setup_script.write_text(source_script.read_text(encoding="utf-8"), encoding="utf-8")
     os.chmod(setup_script, 0o755)
+
+    source_agent_pr_note = (
+        Path(__file__).resolve().parents[1] / "scripts" / "guest" / "agent_pr_note.sh"
+    )
+    target_agent_pr_note = guest_scripts_dir / "agent_pr_note.sh"
+    target_agent_pr_note.write_text(source_agent_pr_note.read_text(encoding="utf-8"), encoding="utf-8")
+    os.chmod(target_agent_pr_note, 0o755)
 
     _write_executable(
         scripts_dir / "resolve_repo_source.sh",

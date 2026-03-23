@@ -1,4 +1,5 @@
 import json
+import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -77,6 +78,495 @@ def test_create_session_disables_email_send_by_default(tmp_path: Path) -> None:
     manifest = sessions["session-1"]
     assert manifest["email_send_enabled"] is False
     assert "email_send_approved" not in manifest["allowed_tools"]
+
+
+def test_create_issue_vm_creates_manifest_before_invoking_setup_script(tmp_path: Path, monkeypatch) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+    captured_cmd: list[str] = []
+
+    init_result = runner.invoke(app, ["init-state", "--config", str(config_path)])
+    assert init_result.exit_code == 0
+
+    def fake_run(cmd: list[str], check: bool) -> subprocess.CompletedProcess[str]:
+        nonlocal captured_cmd
+        captured_cmd = cmd
+        sessions = json.loads((tmp_path / "runtime" / "sessions.json").read_text(encoding="utf-8"))
+        assert "issue-1234-session" in sessions
+        assert sessions["issue-1234-session"]["vm_id"] == "vm-1234"
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr("agent_sandbox.cli.subprocess.run", fake_run)
+
+    result = runner.invoke(
+        app,
+        [
+            "create-issue-vm",
+            "--config",
+            str(config_path),
+            "--session-id",
+            "issue-1234-session",
+            "1234",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured_cmd[-3:] == ["1234", "issue-1234-session", "agent"]
+
+
+def test_create_issue_vm_persists_expected_manifest_shape(tmp_path: Path, monkeypatch) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+
+    init_result = runner.invoke(app, ["init-state", "--config", str(config_path)])
+    assert init_result.exit_code == 0
+
+    monkeypatch.setattr(
+        "agent_sandbox.cli.subprocess.run",
+        lambda cmd, check: subprocess.CompletedProcess(cmd, 0),
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "create-issue-vm",
+            "--config",
+            str(config_path),
+            "--session-id",
+            "issue-14084-session",
+            "--discord-channel",
+            "123456789012345678",
+            "--email-mailbox",
+            "default",
+            "--email-folder",
+            "inbox",
+            "14084",
+        ],
+    )
+
+    assert result.exit_code == 0
+    sessions = json.loads((tmp_path / "runtime" / "sessions.json").read_text(encoding="utf-8"))
+    manifest = sessions["issue-14084-session"]
+    assert manifest["vm_id"] == "vm-14084"
+    assert manifest["discord_channel_allowlist"] == ["123456789012345678"]
+    assert manifest["email_mailbox_allowlist"] == ["default"]
+    assert manifest["email_folder_allowlist"] == ["inbox"]
+    assert set(manifest["allowed_tools"]) == {
+        "approval_submit",
+        "approval_check",
+        "discord_get_commands",
+        "discord_post_status",
+        "email_list_unread",
+        "email_get_message",
+        "email_create_draft",
+    }
+    assert manifest["metadata"] == {}
+
+
+def test_create_issue_vm_builds_setup_issue_vm_command_correctly(tmp_path: Path, monkeypatch) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+    captured_cmd: list[str] = []
+
+    init_result = runner.invoke(app, ["init-state", "--config", str(config_path)])
+    assert init_result.exit_code == 0
+
+    def fake_run(cmd: list[str], check: bool) -> subprocess.CompletedProcess[str]:
+        nonlocal captured_cmd
+        captured_cmd = cmd
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr("agent_sandbox.cli.subprocess.run", fake_run)
+
+    with monkeypatch.context() as m:
+        m.setenv("MSSQL_SA_PASSWORD", "SecretPassw0rd!")
+        result = runner.invoke(
+            app,
+            [
+                "create-issue-vm",
+                "--config",
+                str(config_path),
+                "--session-id",
+                "session-14084",
+                "--no-start-agent",
+                "--dotnet",
+                "--nuget",
+                "/tmp/project.slnx",
+                "--mssql",
+                "--mssql-init-root",
+                "/tmp/mssql-init",
+                "--playwright",
+                "--repo-source",
+                "/src/repo",
+                "14084",
+            ],
+        )
+
+    assert result.exit_code == 0
+    assert captured_cmd[0].endswith("/scripts/setup_issue_vm.sh")
+    assert captured_cmd[1:7] == [
+        "--dry-run",
+        "--dotnet",
+        "--nuget",
+        "--mssql",
+        "--mssql-init-root",
+        "/tmp/mssql-init",
+    ]
+    assert "--playwright" in captured_cmd
+    assert captured_cmd[-5:] == [
+        "14084",
+        "/tmp/project.slnx",
+        "/src/repo",
+        "session-14084",
+        "agent",
+    ]
+
+
+def test_create_issue_vm_requires_mssql_password_env(tmp_path: Path, monkeypatch) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+
+    init_result = runner.invoke(app, ["init-state", "--config", str(config_path)])
+    assert init_result.exit_code == 0
+
+    monkeypatch.delenv("MSSQL_SA_PASSWORD", raising=False)
+    result = runner.invoke(
+        app,
+        [
+            "create-issue-vm",
+            "--config",
+            str(config_path),
+            "--mssql",
+            "14084",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "MSSQL_SA_PASSWORD must be set in the environment" in result.output
+
+
+def test_create_issue_vm_rejects_mssql_init_root_without_mssql(tmp_path: Path, monkeypatch) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+
+    init_result = runner.invoke(app, ["init-state", "--config", str(config_path)])
+    assert init_result.exit_code == 0
+
+    monkeypatch.setattr(
+        "agent_sandbox.cli.subprocess.run",
+        lambda cmd, check: subprocess.CompletedProcess(cmd, 0),
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "create-issue-vm",
+            "--config",
+            str(config_path),
+            "--mssql-init-root",
+            "/tmp/mssql-init",
+            "14084",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "--mssql-init-root requires --mssql" in result.output
+
+
+def test_create_issue_vm_rejects_existing_session_id_without_running_setup(tmp_path: Path, monkeypatch) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+    run_called = False
+
+    init_result = runner.invoke(app, ["init-state", "--config", str(config_path)])
+    assert init_result.exit_code == 0
+
+    create_result = runner.invoke(app, ["create-session", "--config", str(config_path), "session-1"])
+    assert create_result.exit_code == 0
+
+    def fake_run(cmd: list[str], check: bool) -> subprocess.CompletedProcess[str]:
+        nonlocal run_called
+        run_called = True
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr("agent_sandbox.cli.subprocess.run", fake_run)
+
+    result = runner.invoke(
+        app,
+        [
+            "create-issue-vm",
+            "--config",
+            str(config_path),
+            "--session-id",
+            "session-1",
+            "14084",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "Session already exists: session-1" in result.output
+    assert run_called is False
+
+
+def test_create_issue_vm_does_not_grant_unrequested_tool_families(tmp_path: Path, monkeypatch) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+
+    init_result = runner.invoke(app, ["init-state", "--config", str(config_path)])
+    assert init_result.exit_code == 0
+
+    monkeypatch.setattr(
+        "agent_sandbox.cli.subprocess.run",
+        lambda cmd, check: subprocess.CompletedProcess(cmd, 0),
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "create-issue-vm",
+            "--config",
+            str(config_path),
+            "--session-id",
+            "issue-200-minimal",
+            "200",
+        ],
+    )
+
+    assert result.exit_code == 0
+    sessions = json.loads((tmp_path / "runtime" / "sessions.json").read_text(encoding="utf-8"))
+    manifest = sessions["issue-200-minimal"]
+    assert manifest["allowed_tools"] == ["approval_submit", "approval_check"]
+    assert manifest["email_mailbox_allowlist"] == []
+    assert manifest["email_folder_allowlist"] == []
+    assert manifest["metadata"] == {}
+
+
+def test_attach_pr_feedback_updates_existing_session(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+
+    init_result = runner.invoke(app, ["init-state", "--config", str(config_path)])
+    assert init_result.exit_code == 0
+
+    create_result = runner.invoke(app, ["create-session", "--config", str(config_path), "session-1"])
+    assert create_result.exit_code == 0
+
+    result = runner.invoke(
+        app,
+        [
+            "attach-pr-feedback",
+            "--config",
+            str(config_path),
+            "--provider",
+            "github",
+            "--repo",
+            "owner/repo",
+            "--pr-id",
+            "17",
+            "session-1",
+        ],
+    )
+
+    assert result.exit_code == 0
+    sessions = json.loads((tmp_path / "runtime" / "sessions.json").read_text(encoding="utf-8"))
+    manifest = sessions["session-1"]
+    assert manifest["metadata"]["pr_feedback_streams"] == [
+        {"provider": "github", "repo": "owner/repo", "pr_id": "17"}
+    ]
+    assert "has_pending_feedback" in manifest["allowed_tools"]
+    assert "list_unread_feedback" in manifest["allowed_tools"]
+    assert "post_pr_feedback_reply" in manifest["allowed_tools"]
+
+
+def test_attach_pr_feedback_rejects_unknown_session(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+
+    init_result = runner.invoke(app, ["init-state", "--config", str(config_path)])
+    assert init_result.exit_code == 0
+
+    result = runner.invoke(
+        app,
+        [
+            "attach-pr-feedback",
+            "--config",
+            str(config_path),
+            "--provider",
+            "github",
+            "--repo",
+            "owner/repo",
+            "--pr-id",
+            "17",
+            "missing-session",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "Unknown session: missing-session" in result.output
+
+
+def test_prune_sessions_removes_only_expired_by_default(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+
+    init_result = runner.invoke(app, ["init-state", "--config", str(config_path)])
+    assert init_result.exit_code == 0
+
+    sessions_path = tmp_path / "runtime" / "sessions.json"
+    sessions_path.write_text(
+        json.dumps(
+            {
+                "active-session": {
+                    "session_id": "active-session",
+                    "vm_id": "vm-active",
+                    "allowed_tools": ["approval_submit"],
+                    "discord_channel_allowlist": [],
+                    "email_folder_allowlist": [],
+                    "email_mailbox_allowlist": [],
+                    "email_folder_allowlist_by_mailbox": {},
+                    "email_draft_recipient_allowlist": [],
+                    "email_draft_domain_allowlist": [],
+                    "email_send_enabled": False,
+                    "quotas": {},
+                    "expires_at": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
+                    "created_at": datetime.now(UTC).isoformat(),
+                    "metadata": {},
+                },
+                "expired-session": {
+                    "session_id": "expired-session",
+                    "vm_id": "vm-expired",
+                    "allowed_tools": ["approval_submit"],
+                    "discord_channel_allowlist": [],
+                    "email_folder_allowlist": [],
+                    "email_mailbox_allowlist": [],
+                    "email_folder_allowlist_by_mailbox": {},
+                    "email_draft_recipient_allowlist": [],
+                    "email_draft_domain_allowlist": [],
+                    "email_send_enabled": False,
+                    "quotas": {},
+                    "expires_at": (datetime.now(UTC) - timedelta(hours=1)).isoformat(),
+                    "created_at": datetime.now(UTC).isoformat(),
+                    "metadata": {},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(app, ["prune-sessions", "--config", str(config_path)])
+
+    assert result.exit_code == 0
+    assert "Pruned 1 expired session(s)" in result.stdout
+    sessions = json.loads(sessions_path.read_text(encoding="utf-8"))
+    assert set(sessions) == {"active-session"}
+
+
+def test_prune_sessions_all_removes_every_session(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+
+    init_result = runner.invoke(app, ["init-state", "--config", str(config_path)])
+    assert init_result.exit_code == 0
+
+    create_a = runner.invoke(app, ["create-session", "--config", str(config_path), "session-a"])
+    create_b = runner.invoke(app, ["create-session", "--config", str(config_path), "session-b"])
+    assert create_a.exit_code == 0
+    assert create_b.exit_code == 0
+
+    result = runner.invoke(app, ["prune-sessions", "--config", str(config_path), "--all"])
+
+    assert result.exit_code == 0
+    assert "Pruned 2 all session(s)" in result.stdout
+    sessions = json.loads((tmp_path / "runtime" / "sessions.json").read_text(encoding="utf-8"))
+    assert sessions == {}
+
+
+def test_list_vms_invokes_script_with_selected_vm_user(tmp_path: Path, monkeypatch) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+    captured_cmd: list[str] = []
+
+    init_result = runner.invoke(app, ["init-state", "--config", str(config_path)])
+    assert init_result.exit_code == 0
+
+    def fake_run(cmd: list[str], check: bool) -> subprocess.CompletedProcess[str]:
+        nonlocal captured_cmd
+        captured_cmd = cmd
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr("agent_sandbox.cli.subprocess.run", fake_run)
+
+    result = runner.invoke(app, ["list-vms", "--vm-user", "root"])
+
+    assert result.exit_code == 0
+    assert captured_cmd[0].endswith("/scripts/list_running_vms.sh")
+    assert captured_cmd[1:] == ["root"]
+
+
+def test_ssh_resolves_issue_number_to_vm_name(tmp_path: Path, monkeypatch) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+    captured_cmd: list[str] = []
+
+    init_result = runner.invoke(app, ["init-state", "--config", str(config_path)])
+    assert init_result.exit_code == 0
+
+    def fake_run(cmd: list[str], check: bool) -> subprocess.CompletedProcess[str]:
+        nonlocal captured_cmd
+        captured_cmd = cmd
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr("agent_sandbox.cli.subprocess.run", fake_run)
+
+    result = runner.invoke(app, ["ssh", "12305"])
+
+    assert result.exit_code == 0
+    assert captured_cmd[0].endswith("/scripts/ssh.sh")
+    assert captured_cmd[1:] == ["vm-12305", "agent"]
+
+
+def test_logs_invokes_script_with_issue_number_and_repo_name(tmp_path: Path, monkeypatch) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+    captured_cmd: list[str] = []
+
+    init_result = runner.invoke(app, ["init-state", "--config", str(config_path)])
+    assert init_result.exit_code == 0
+
+    def fake_run(cmd: list[str], check: bool) -> subprocess.CompletedProcess[str]:
+        nonlocal captured_cmd
+        captured_cmd = cmd
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr("agent_sandbox.cli.subprocess.run", fake_run)
+
+    result = runner.invoke(app, ["logs", "vm-12305", "--repo-name", "AdminClient"])
+
+    assert result.exit_code == 0
+    assert captured_cmd[0].endswith("/scripts/tail_issue_vm_log.sh")
+    assert captured_cmd[1:] == ["12305", "AdminClient", "agent"]
+
+
+def test_resume_agent_invokes_script_with_message_and_issue_number(tmp_path: Path, monkeypatch) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+    captured_cmd: list[str] = []
+
+    init_result = runner.invoke(app, ["init-state", "--config", str(config_path)])
+    assert init_result.exit_code == 0
+
+    def fake_run(cmd: list[str], check: bool) -> subprocess.CompletedProcess[str]:
+        nonlocal captured_cmd
+        captured_cmd = cmd
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr("agent_sandbox.cli.subprocess.run", fake_run)
+
+    result = runner.invoke(app, ["resume-agent", "12305", "--message", "Continue from the failing restore"])
+
+    assert result.exit_code == 0
+    assert captured_cmd[0].endswith("/scripts/resume_issue_agent.sh")
+    assert captured_cmd[1:] == ["Continue from the failing restore", "12305", "agent"]
 
 
 def test_seed_discord_channel_creates_seed_entry_and_reports_cursor(tmp_path: Path) -> None:
