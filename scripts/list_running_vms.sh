@@ -66,8 +66,10 @@ list_running_vm_names() {
 dominfo_field() {
   local vm_name="$1"
   local field_name="$2"
+  local dominfo_output
 
-  virsh_try dominfo "${vm_name}" | awk -F': *' -v field="${field_name}" '$1 == field {print $2; exit}'
+  dominfo_output="$(virsh_try dominfo "${vm_name}")"
+  awk -F': *' -v field="${field_name}" '$1 == field {print $2; exit}' <<<"${dominfo_output}"
 }
 
 agent_status_for_vm() {
@@ -92,12 +94,22 @@ LOG_DIR="${HOME}/.agent-sandbox"
 is_active_codex_pid() {
   local pid_path="$1"
   local pid
+  local cmdline
 
   [[ -f "${pid_path}" ]] || return 1
   pid="$(tr -d '[:space:]' <"${pid_path}" || true)"
   [[ -n "${pid}" && "${pid}" =~ ^[0-9]+$ ]] || return 1
   kill -0 "${pid}" >/dev/null 2>&1 || return 1
-  ps -p "${pid}" -o args= 2>/dev/null | grep -qE 'codex( |$)'
+  cmdline="$(ps -p "${pid}" -o args= 2>/dev/null || true)"
+  [[ -n "${cmdline}" ]] || return 1
+  case "${cmdline}" in
+    codex|*/codex|*" codex"|*" codex "*|*"/codex "*)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
 }
 
 if [[ ! -d "${LOG_DIR}" ]]; then

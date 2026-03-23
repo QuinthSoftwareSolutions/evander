@@ -100,7 +100,7 @@ if [[ -z "${RESOLVED_REPO_NAME}" ]]; then
 
   if [[ ${#candidates[@]} -eq 0 ]]; then
     echo "No guest Codex logs or pid files found under ${LOG_DIR}" >&2
-    exit 1
+    exit 0
   fi
 
   mapfile -t unique_candidates < <(printf '%s\n' "${candidates[@]}" | sort -u)
@@ -113,5 +113,11 @@ if [[ -z "${RESOLVED_REPO_NAME}" ]]; then
   RESOLVED_REPO_NAME="${unique_candidates[0]}"
 fi
 
-tail -f "${LOG_DIR}/codex-${RESOLVED_REPO_NAME}.log"
+LOG_PATH="${LOG_DIR}/codex-${RESOLVED_REPO_NAME}.log"
+if [[ ! -f "${LOG_PATH}" ]]; then
+  echo "No guest Codex log found at ${LOG_PATH}" >&2
+  exit 0
+fi
+
+tail -f "${LOG_PATH}"
 EOF

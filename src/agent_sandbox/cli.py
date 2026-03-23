@@ -507,7 +507,9 @@ def logs(
     cmd = [str(script_path), issue_number]
     if repo_name is not None:
         cmd.append(repo_name)
-    cmd.append(vm_user)
+        cmd.append(vm_user)
+    elif vm_user != "agent":
+        cmd.extend(["", vm_user])
     subprocess.run(cmd, check=True)
 
 
