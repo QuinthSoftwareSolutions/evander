@@ -32,3 +32,17 @@ def test_timeout_env_names_are_documented_consistently() -> None:
         assert 'VM_WAIT_IP_TIMEOUT_SECONDS' in text
         assert 'VM_WAIT_SSH_TIMEOUT_SECONDS' in text
         assert 'default `180`' in text
+
+
+def test_issue_vm_helpers_auto_detect_repo_name_when_omitted() -> None:
+    tail_script = Path('/home/jonathan/agent-sandbox/scripts/tail_issue_vm_log.sh').read_text(encoding='utf-8')
+    check_script = Path('/home/jonathan/agent-sandbox/scripts/check_issue_vm.sh').read_text(encoding='utf-8')
+
+    for text in (tail_script, check_script):
+        assert 'Repo basename used by setup_issue_vm.sh. Default: auto-detect' in text
+        assert 'sort -u' in text
+        assert 'codex-*.pid' in text
+        assert 'codex-*.log' in text
+
+    assert 'Multiple guest Codex logs found under' in tail_script
+    assert 'pass an explicit repo-name' in check_script

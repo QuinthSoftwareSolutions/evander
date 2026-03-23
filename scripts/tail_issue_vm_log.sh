@@ -9,7 +9,7 @@ Follow the background guest Codex log for an issue VM from the host.
 
 Arguments:
   issue-number  Issue identifier used to derive the VM name.
-  repo-name     Repo basename used by setup_issue_vm.sh. Default: ExampleIndustryAPP
+  repo-name     Repo basename used by setup_issue_vm.sh. Default: auto-detect
   vm-user       Guest user to inspect. Default: agent
 EOF
 }
@@ -25,7 +25,7 @@ if [[ $# -lt 1 ]]; then
 fi
 
 ISSUE_NUMBER="$1"
-REPO_NAME="${2:-ExampleIndustryAPP}"
+REPO_NAME="${2:-}"
 VM_USER="${3:-agent}"
 VM_NAME="vm-${ISSUE_NUMBER}"
 CALLER_USER="${SUDO_USER:-$USER}"
@@ -76,4 +76,42 @@ ssh \
   -o UserKnownHostsFile=/dev/null \
   -i "${SSH_PRIVATE_KEY_PATH}" \
   "${VM_USER}@${VM_IP}" \
-  "tail -f '$HOME/.agent-sandbox/codex-${REPO_NAME}.log'"
+  "REPO_NAME='${REPO_NAME}' bash -s" <<'EOF'
+set -euo pipefail
+
+LOG_DIR="$HOME/.agent-sandbox"
+RESOLVED_REPO_NAME="${REPO_NAME:-}"
+
+if [[ -z "${RESOLVED_REPO_NAME}" ]]; then
+  shopt -s nullglob
+  candidates=()
+
+  for path in "${LOG_DIR}"/codex-*.pid "${LOG_DIR}"/codex-*.log; do
+    name="$(basename "${path}")"
+    name="${name#codex-}"
+    name="${name%.pid}"
+    name="${name%.log}"
+    if [[ -n "${name}" ]]; then
+      candidates+=("${name}")
+    fi
+  done
+
+  shopt -u nullglob
+
+  if [[ ${#candidates[@]} -eq 0 ]]; then
+    echo "No guest Codex logs or pid files found under ${LOG_DIR}" >&2
+    exit 1
+  fi
+
+  mapfile -t unique_candidates < <(printf '%s\n' "${candidates[@]}" | sort -u)
+  if [[ ${#unique_candidates[@]} -ne 1 ]]; then
+    printf 'Multiple guest Codex logs found under %s; pass an explicit repo-name. Candidates:\n' "${LOG_DIR}" >&2
+    printf '  %s\n' "${unique_candidates[@]}" >&2
+    exit 1
+  fi
+
+  RESOLVED_REPO_NAME="${unique_candidates[0]}"
+fi
+
+tail -f "${LOG_DIR}/codex-${RESOLVED_REPO_NAME}.log"
+EOF
