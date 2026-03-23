@@ -44,6 +44,7 @@ class WorkerConfig:
     bootstrap_dotnet: bool
     bootstrap_nuget: bool
     bootstrap_mssql: bool
+    bootstrap_playwright: bool
     include_comments: bool
     comments_max_count: int
     comment_text_max_chars: int
@@ -89,6 +90,7 @@ class WorkerConfig:
         bootstrap_dotnet = _bool_env("ADO_BOOTSTRAP_DOTNET", True)
         bootstrap_nuget = _bool_env("ADO_BOOTSTRAP_NUGET", True)
         bootstrap_mssql = _bool_env("ADO_BOOTSTRAP_MSSQL", True)
+        bootstrap_playwright = _bool_env("ADO_BOOTSTRAP_PLAYWRIGHT", False)
         include_comments = _bool_env("ADO_INCLUDE_COMMENTS", True)
         comments_max_count = _int_env("ADO_COMMENTS_MAX_COUNT", 20, minimum=1)
         comment_text_max_chars = _int_env("ADO_COMMENT_TEXT_MAX_CHARS", 4000, minimum=1)
@@ -121,6 +123,7 @@ class WorkerConfig:
             bootstrap_dotnet=bootstrap_dotnet,
             bootstrap_nuget=bootstrap_nuget,
             bootstrap_mssql=bootstrap_mssql,
+            bootstrap_playwright=bootstrap_playwright,
             include_comments=include_comments,
             comments_max_count=comments_max_count,
             comment_text_max_chars=comment_text_max_chars,
@@ -502,6 +505,34 @@ def poll_once(client: httpx.Client, config: WorkerConfig, auth_header: str) -> l
     return matched_items
 
 
+def filter_unprocessed_work_items(
+    items: list[dict[str, Any]],
+    store: ProcessedWorkItemStore,
+) -> list[dict[str, Any]]:
+    return [item for item in items if not store.is_processed(int(item["id"]))]
+
+
+def format_work_item_listing(work_item: dict[str, Any]) -> str:
+    return "\t".join(
+        [
+            str(work_item["id"]),
+            work_item.get("updated_date", ""),
+            work_item.get("state", ""),
+            work_item.get("title", ""),
+        ]
+    )
+
+
+def list_unprocessed_work_items(
+    client: httpx.Client,
+    config: WorkerConfig,
+    auth_header: str,
+    store: ProcessedWorkItemStore,
+) -> list[dict[str, Any]]:
+    items = poll_once(client=client, config=config, auth_header=auth_header)
+    return filter_unprocessed_work_items(items, store)
+
+
 def _build_issue_payload(work_item: dict[str, Any]) -> dict[str, Any]:
     return {
         "issue_number": work_item["id"],
@@ -544,6 +575,8 @@ def _build_setup_command(config: WorkerConfig, yaml_path: Path) -> list[str]:
         cmd.append("--nuget")
     if config.bootstrap_mssql:
         cmd.append("--mssql")
+    if config.bootstrap_playwright:
+        cmd.append("--playwright")
     cmd.append(str(yaml_path))
     if config.bootstrap_nuget:
         cmd.append(config.prewarm_target)
@@ -758,7 +791,13 @@ def run_worker(config: WorkerConfig) -> None:
             time.sleep(sleep_seconds)
 
 
-def run_worker_command(*, log_level: str = "INFO", reprocess: int | None = None, forget: int | None = None) -> None:
+def run_worker_command(
+    *,
+    log_level: str = "INFO",
+    reprocess: int | None = None,
+    forget: int | None = None,
+    list_unprocessed: bool = False,
+) -> None:
     logging.basicConfig(
         level=getattr(logging, log_level.upper(), logging.INFO),
         format="%(asctime)s %(levelname)s %(message)s",
@@ -790,6 +829,21 @@ def run_worker_command(*, log_level: str = "INFO", reprocess: int | None = None,
             process_work_item(item, config=config, store=store, client=client, auth_header=auth_header)
         return
 
+    if list_unprocessed:
+        pat = _require_env(config.pat_env_var_name)
+        auth_header = _build_auth_header(pat)
+        timeout = httpx.Timeout(connect=5.0, write=10.0, read=20.0, pool=5.0)
+        with httpx.Client(timeout=timeout) as client:
+            items = list_unprocessed_work_items(
+                client=client,
+                config=config,
+                auth_header=auth_header,
+                store=store,
+            )
+        for item in items:
+            print(format_work_item_listing(item))
+        return
+
     run_worker(config)
 
 
@@ -806,9 +860,19 @@ def main() -> None:
         type=int,
         help="Forget a specific work item ID in the processed store, then exit.",
     )
+    parser.add_argument(
+        "--list-unprocessed",
+        action="store_true",
+        help="List eligible work items that match the worker query but are not yet in the processed store.",
+    )
     args = parser.parse_args()
 
-    run_worker_command(log_level=args.log_level, reprocess=args.reprocess, forget=args.forget)
+    run_worker_command(
+        log_level=args.log_level,
+        reprocess=args.reprocess,
+        forget=args.forget,
+        list_unprocessed=args.list_unprocessed,
+    )
 
 
 if __name__ == "__main__":

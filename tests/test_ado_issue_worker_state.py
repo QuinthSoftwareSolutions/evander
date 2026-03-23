@@ -14,9 +14,13 @@ from agent_sandbox.ado_issue_worker import (
     _build_setup_command,
     _is_vm_already_exists_output,
     fetch_work_item_comments,
+    filter_unprocessed_work_items,
+    format_work_item_listing,
     gate_and_order_items,
+    list_unprocessed_work_items,
     poll_once,
     process_work_item,
+    run_worker_command,
     update_work_item_state,
 )
 
@@ -47,6 +51,7 @@ def worker_config(tmp_path: Path) -> WorkerConfig:
         bootstrap_dotnet=True,
         bootstrap_nuget=True,
         bootstrap_mssql=True,
+        bootstrap_playwright=True,
         include_comments=True,
         comments_max_count=20,
         comment_text_max_chars=4000,
@@ -399,6 +404,7 @@ def test_build_setup_command_includes_optional_arguments(tmp_path: Path) -> None
         bootstrap_dotnet=True,
         bootstrap_nuget=True,
         bootstrap_mssql=True,
+        bootstrap_playwright=True,
         include_comments=True,
         comments_max_count=20,
         comment_text_max_chars=4000,
@@ -409,6 +415,7 @@ def test_build_setup_command_includes_optional_arguments(tmp_path: Path) -> None
         "--dotnet",
         "--nuget",
         "--mssql",
+        "--playwright",
         str(tmp_path / "work-item-10.yaml"),
         "real-target",
         "/tmp/repo",
@@ -442,6 +449,7 @@ def test_build_setup_command_omits_disabled_bootstraps_and_nuget_prewarm_target(
         bootstrap_dotnet=False,
         bootstrap_nuget=False,
         bootstrap_mssql=True,
+        bootstrap_playwright=False,
         include_comments=True,
         comments_max_count=20,
         comment_text_max_chars=4000,
@@ -675,7 +683,7 @@ def test_setup_issue_vm_invocation_once_per_newly_eligible_item(
         assert process_work_item(item, config=worker_config, store=store) is False
 
     assert len(calls) == 2
-    called_yaml_paths = {Path(cmd[4]).name for cmd in calls}
+    called_yaml_paths = {Path(next(arg for arg in cmd if arg.endswith(".yaml"))).name for cmd in calls}
     assert called_yaml_paths == {"work-item-501.yaml", "work-item-502.yaml"}
 
 
@@ -813,3 +821,90 @@ def test_fetch_work_item_by_id_attaches_comments(
 
     assert item is not None
     assert item["comments"] == [{"text": "Needs x", "author": "Ann", "created_date": "", "modified_date": ""}]
+
+
+def test_filter_unprocessed_work_items_excludes_processed(worker_config: WorkerConfig) -> None:
+    store = ProcessedWorkItemStore(worker_config.processed_store_path)
+    store.mark_processed(
+        work_item_id=10,
+        yaml_path=worker_config.yaml_output_dir / "work-item-10.yaml",
+        script_exit_code=0,
+        output_snippet="done",
+    )
+    items = [
+        {"id": 10, "title": "Picked up"},
+        {"id": 11, "title": "Still pending"},
+    ]
+
+    filtered = filter_unprocessed_work_items(items, store)
+
+    assert filtered == [{"id": 11, "title": "Still pending"}]
+
+
+def test_list_unprocessed_work_items_filters_processed(
+    worker_config: WorkerConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = ProcessedWorkItemStore(worker_config.processed_store_path)
+    store.mark_processed(
+        work_item_id=10,
+        yaml_path=worker_config.yaml_output_dir / "work-item-10.yaml",
+        script_exit_code=0,
+        output_snippet="done",
+    )
+    monkeypatch.setattr(
+        "agent_sandbox.ado_issue_worker.poll_once",
+        lambda **kwargs: [
+            {"id": 10, "title": "Picked up", "state": "Committed", "updated_date": "2026-03-21T00:00:00Z"},
+            {"id": 11, "title": "Still pending", "state": "Committed", "updated_date": "2026-03-21T00:01:00Z"},
+        ],
+    )
+
+    with httpx.Client() as client:
+        items = list_unprocessed_work_items(
+            client=client,
+            config=worker_config,
+            auth_header="Basic token",
+            store=store,
+        )
+
+    assert items == [
+        {"id": 11, "title": "Still pending", "state": "Committed", "updated_date": "2026-03-21T00:01:00Z"}
+    ]
+
+
+def test_format_work_item_listing_uses_tab_separated_fields() -> None:
+    line = format_work_item_listing(
+        {
+            "id": 42,
+            "updated_date": "2026-03-21T00:01:00Z",
+            "state": "Committed",
+            "title": "Still pending",
+        }
+    )
+
+    assert line == "42\t2026-03-21T00:01:00Z\tCommitted\tStill pending"
+
+
+def test_run_worker_command_lists_unprocessed_items(
+    worker_config: WorkerConfig,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr("agent_sandbox.ado_issue_worker.WorkerConfig.load_from_env", lambda: worker_config)
+    monkeypatch.setattr("agent_sandbox.ado_issue_worker._require_env", lambda _name: "pat")
+    monkeypatch.setattr(
+        "agent_sandbox.ado_issue_worker.list_unprocessed_work_items",
+        lambda **kwargs: [
+            {
+                "id": 42,
+                "updated_date": "2026-03-21T00:01:00Z",
+                "state": "Committed",
+                "title": "Still pending",
+            }
+        ],
+    )
+
+    run_worker_command(list_unprocessed=True)
+
+    assert capsys.readouterr().out == "42\t2026-03-21T00:01:00Z\tCommitted\tStill pending\n"

@@ -398,9 +398,11 @@ agent-sandbox-cli create-session real-session --config config/gateway.yaml
   `agent-sandbox-cli poll-ado-backlog`.
 - The worker polls Azure DevOps work items in `Committed` state tagged `truman`, writes YAML
   payloads under `ADO_YAML_OUTPUT_DIR`, and invokes `scripts/setup_issue_vm.sh`.
-- Worker-triggered setup calls honor `ADO_BOOTSTRAP_DOTNET`, `ADO_BOOTSTRAP_NUGET`, and
-  `ADO_BOOTSTRAP_MSSQL` (all default `true`) to decide which guest toolchains are bootstrapped
-  for backlog-driven issue VMs.
+- Worker-triggered setup calls honor `ADO_BOOTSTRAP_DOTNET`, `ADO_BOOTSTRAP_NUGET`,
+  `ADO_BOOTSTRAP_MSSQL`, and `ADO_BOOTSTRAP_PLAYWRIGHT` to decide which guest toolchains are
+  bootstrapped for backlog-driven issue VMs. The first three default to `true`;
+  `ADO_BOOTSTRAP_PLAYWRIGHT` defaults to `false` because it requires host-seeded Node and
+  Playwright artifacts.
 - Configure environment in `config/ado-worker.env` (start from
   `config/ado-worker.env.example`), then export the PAT value in the host shell/env-file named by
   `ADO_PAT_ENV_VAR_NAME` (default `AZURE_DEVOPS_PAT`).
@@ -442,6 +444,13 @@ Failure recovery:
   ```bash
   set -a; source config/ado-worker.env; set +a
   agent-sandbox-cli poll-ado-backlog --forget 12345
+  ```
+
+- List work items that match the worker query but are not yet in the processed store:
+
+  ```bash
+  export AZURE_DEVOPS_PAT=...
+  ./scripts/list_unassigned_ado_work_items.sh
   ```
 
 - If the service is crash-looping, validate config and PAT availability with a foreground run,
@@ -502,7 +511,7 @@ sudo systemctl status agent-sandbox-ado-worker.service
 For the common issue workflow, you can do the full host-side setup in one command:
 
 ```bash
-./scripts/setup_issue_vm.sh --dotnet --nuget --mssql /path/to/issue.yaml /path/to/project-or-solution.slnx
+./scripts/setup_issue_vm.sh --dotnet --nuget --mssql --playwright /path/to/issue.yaml /path/to/project-or-solution.slnx
 ```
 
 `setup_issue_vm.sh` path defaults are configurable so host-specific `/home/...` paths are not
@@ -534,6 +543,7 @@ Optional toolchain flags for `setup_issue_vm.sh`:
 - `--dotnet`: run `bootstrap_dotnet_vm.sh`
 - `--nuget`: run `bootstrap_nuget_vm.sh` and prewarm the shared NuGet cache on the host (requires `project-or-solution`)
 - `--mssql`: run `bootstrap_mssql_vm.sh`
+- `--playwright`: run `bootstrap_playwright_vm.sh`, which also provides `node`, `npm`, and `npx`
 
 After the initial guest `codex exec` run exits, setup triggers one
 `codex exec resume --last` verification pass. Customize that verification

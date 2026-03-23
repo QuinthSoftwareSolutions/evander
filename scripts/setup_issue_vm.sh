@@ -20,7 +20,7 @@ trap 'on_error ${LINENO}' ERR
 
 show_help() {
   cat <<'EOF'
-Usage: setup_issue_vm.sh [--dry-run] [--dotnet] [--nuget] [--mssql] [mirror-options] <issue-number|issue-yaml> [project-or-solution-if-nuget] [repo-source] [session-id] [vm-user]
+Usage: setup_issue_vm.sh [--dry-run] [--dotnet] [--nuget] [--mssql] [--playwright] [mirror-options] <issue-number|issue-yaml> [project-or-solution-if-nuget] [repo-source] [session-id] [vm-user]
 
 Run the common issue-VM bring-up flow in one command:
   1. optionally prewarm the shared NuGet cache on the host
@@ -77,6 +77,7 @@ Optional guest toolchains:
   --dotnet            Bootstrap the host .NET SDK into the guest.
   --nuget             Bootstrap NuGet relay configuration (requires project-or-solution).
   --mssql             Bootstrap Microsoft SQL Server client tooling into the guest.
+  --playwright        Bootstrap the host-seeded Node + Playwright runtime into the guest.
 EOF
 }
 
@@ -89,6 +90,7 @@ START_AGENT=1
 BOOTSTRAP_DOTNET=0
 BOOTSTRAP_NUGET=0
 BOOTSTRAP_MSSQL=0
+BOOTSTRAP_PLAYWRIGHT=0
 MIRROR_ARGS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -106,6 +108,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --mssql)
       BOOTSTRAP_MSSQL=1
+      shift
+      ;;
+    --playwright)
+      BOOTSTRAP_PLAYWRIGHT=1
       shift
       ;;
     --sync-remote|--no-sync-remote|--force-local)
@@ -304,6 +310,10 @@ if (( BOOTSTRAP_MSSQL )); then
   log_step "bootstrap_mssql"
   "${SCRIPT_DIR}/bootstrap_mssql_vm.sh" "${VM_NAME}" "${VM_USER}"
 fi
+if (( BOOTSTRAP_PLAYWRIGHT )); then
+  log_step "bootstrap_playwright"
+  "${SCRIPT_DIR}/bootstrap_playwright_vm.sh" "${VM_NAME}" "${VM_USER}"
+fi
 log_step "setup_issue_git_vm"
 "${SCRIPT_DIR}/setup_issue_git_vm.sh" "${MIRROR_ARGS[@]}" "${VM_NAME}" "${ISSUE_NUMBER}" "${REPO_SOURCE}" "${VM_USER}"
 
@@ -488,6 +498,7 @@ echo "  task:    /home/${VM_USER}/${GUEST_REPO_NAME}/AGENT_TASK.yaml"
 echo "  dotnet:  $([[ ${BOOTSTRAP_DOTNET} -eq 1 ]] && echo enabled || echo disabled)"
 echo "  nuget:   $([[ ${BOOTSTRAP_NUGET} -eq 1 ]] && echo enabled || echo disabled)"
 echo "  mssql:   $([[ ${BOOTSTRAP_MSSQL} -eq 1 ]] && echo enabled || echo disabled)"
+echo "  playwright: $([[ ${BOOTSTRAP_PLAYWRIGHT} -eq 1 ]] && echo enabled || echo disabled)"
 echo "  push:    git -C /home/${VM_USER}/${GUEST_REPO_NAME} push-agent"
 if (( START_AGENT )); then
   echo "  agent:   started"

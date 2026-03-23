@@ -185,19 +185,23 @@ agent-sandbox-cli poll-ado-backlog --forget 12345
 
 # Immediately reprocess one item now (fetch + setup path), then exit.
 agent-sandbox-cli poll-ado-backlog --reprocess 12345
+
+# List matching work items that have not yet been picked up by agents.
+./scripts/list_unassigned_ado_work_items.sh
 ```
 
 The dedicated worker entry point is also available as `agent-sandbox-ado-worker` for systemd.
-Backlog-worker VM setup calls can opt into `--dotnet`, `--nuget`, and `--mssql` via
-`ADO_BOOTSTRAP_DOTNET`, `ADO_BOOTSTRAP_NUGET`, and `ADO_BOOTSTRAP_MSSQL`
-(all default to `true`).
+Backlog-worker VM setup calls can opt into `--dotnet`, `--nuget`, `--mssql`, and `--playwright`
+via `ADO_BOOTSTRAP_DOTNET`, `ADO_BOOTSTRAP_NUGET`, `ADO_BOOTSTRAP_MSSQL`, and
+`ADO_BOOTSTRAP_PLAYWRIGHT`. The first three default to `true`; `ADO_BOOTSTRAP_PLAYWRIGHT`
+defaults to `false` because it depends on host-seeded Node and Playwright artifacts.
 
 ## Local Git Remotes
 
 For the full issue-VM bring-up path in one command, use:
 
 ```bash
-./scripts/setup_issue_vm.sh --dotnet --nuget --mssql /path/to/issue.yaml /path/to/project-or-solution.slnx
+./scripts/setup_issue_vm.sh --dotnet --nuget --mssql --playwright /path/to/issue.yaml /path/to/project-or-solution.slnx
 ```
 
 `setup_issue_vm.sh` now resolves host-dependent paths in this order:
@@ -215,6 +219,7 @@ Toolchain bootstraps are now opt-in:
 - `--dotnet` runs `bootstrap_dotnet_vm.sh`
 - `--nuget` runs `bootstrap_nuget_vm.sh` and host `prewarm_nuget_cache.sh` (requires `project-or-solution`)
 - `--mssql` runs `bootstrap_mssql_vm.sh`
+- `--playwright` runs `bootstrap_playwright_vm.sh`, which also provides `node`, `npm`, and `npx`
 
 The guest clone URL is also derived from configurable Git-root settings:
 
