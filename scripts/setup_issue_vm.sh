@@ -3,7 +3,7 @@ set -euo pipefail
 
 show_help() {
   cat <<'EOF'
-Usage: setup_issue_vm.sh [--dry-run] [--dotnet] [--nuget] [--mssql] [mirror-options] <issue-number|issue-yaml> [project-or-solution] [repo-source] [session-id] [vm-user]
+Usage: setup_issue_vm.sh [--dry-run] [--dotnet] [--nuget] [--mssql] [mirror-options] <issue-number|issue-yaml> [project-or-solution-if-nuget] [repo-source] [session-id] [vm-user]
 
 Run the common issue-VM bring-up flow in one command:
   1. optionally prewarm the shared NuGet cache on the host
@@ -20,8 +20,10 @@ Arguments:
                        file containing the issue metadata. In YAML mode, the script
                        reads the issue number from the file and copies the YAML into
                        the guest repo root as AGENT_TASK.yaml.
-  project-or-solution  Host path used to prewarm the shared NuGet cache when --nuget
-                       is requested.
+  project-or-solution-if-nuget
+                       Host path used to prewarm the shared NuGet cache when --nuget
+                       is requested. When --nuget is omitted, the next positional
+                       argument is treated as repo-source instead.
   repo-source          Host repo path or remote URL to mirror for guest Git access.
                        Default: $AGENT_SANDBOX_DEFAULT_REPO_SOURCE or repo root
   session-id           Session name passed to launch_agent_vm.sh. Default: agent-session
@@ -121,10 +123,6 @@ if [[ $# -lt 1 ]]; then
 fi
 
 ISSUE_INPUT="$1"
-PREWARM_TARGET="${2:-}"
-REPO_SOURCE_ARG="${3:-}"
-SESSION_ID="${4:-agent-session}"
-VM_USER="${5:-agent}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 ENV_FILE="${ROOT_DIR}/config/git-server.env"
@@ -135,7 +133,6 @@ if [[ -f "${ENV_FILE}" ]]; then
 fi
 
 DEFAULT_REPO_SOURCE="${AGENT_SANDBOX_DEFAULT_REPO_SOURCE:-${ROOT_DIR}}"
-REPO_SOURCE="${REPO_SOURCE_ARG:-${DEFAULT_REPO_SOURCE}}"
 GIT_REMOTE_ROOT="${AGENT_SANDBOX_GIT_ROOT:-${ROOT_DIR}/git-remotes}"
 GIT_SSH_ALIAS="${AGENT_SANDBOX_GIT_SSH_ALIAS:-agent-sandbox-git-host}"
 CALLER_USER="${SUDO_USER:-$USER}"
@@ -191,6 +188,20 @@ fi
 if [[ ! -f "${SSH_PRIVATE_KEY_PATH}" ]]; then
   SSH_PRIVATE_KEY_PATH="${CALLER_HOME}/.ssh/id_rsa"
 fi
+
+if (( BOOTSTRAP_NUGET )); then
+  PREWARM_TARGET="${2:-}"
+  REPO_SOURCE_ARG="${3:-}"
+  SESSION_ID="${4:-agent-session}"
+  VM_USER="${5:-agent}"
+else
+  PREWARM_TARGET=""
+  REPO_SOURCE_ARG="${2:-}"
+  SESSION_ID="${3:-agent-session}"
+  VM_USER="${4:-agent}"
+fi
+
+REPO_SOURCE="${REPO_SOURCE_ARG:-${DEFAULT_REPO_SOURCE}}"
 
 if (( BOOTSTRAP_NUGET )); then
   if [[ -z "${PREWARM_TARGET}" ]]; then

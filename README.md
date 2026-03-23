@@ -188,7 +188,9 @@ agent-sandbox-cli poll-ado-backlog --reprocess 12345
 ```
 
 The dedicated worker entry point is also available as `agent-sandbox-ado-worker` for systemd.
-Backlog-worker VM setup calls pass `--dotnet --nuget --mssql` to `setup_issue_vm.sh` by default.
+Backlog-worker VM setup calls can opt into `--dotnet`, `--nuget`, and `--mssql` via
+`ADO_BOOTSTRAP_DOTNET`, `ADO_BOOTSTRAP_NUGET`, and `ADO_BOOTSTRAP_MSSQL`
+(all default to `true`).
 
 ## Local Git Remotes
 

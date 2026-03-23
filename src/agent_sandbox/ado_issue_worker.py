@@ -40,6 +40,9 @@ class WorkerConfig:
     setup_lock_path: Path
     fetch_retry_count: int
     fetch_retry_backoff_seconds: float
+    bootstrap_dotnet: bool
+    bootstrap_nuget: bool
+    bootstrap_mssql: bool
     include_comments: bool
     comments_max_count: int
     comment_text_max_chars: int
@@ -79,6 +82,9 @@ class WorkerConfig:
         ).expanduser()
         fetch_retry_count = _int_env("ADO_FETCH_RETRY_COUNT", 2, minimum=0)
         fetch_retry_backoff_seconds = _float_env("ADO_FETCH_RETRY_BACKOFF_SECONDS", 2.0, minimum=0.0)
+        bootstrap_dotnet = _bool_env("ADO_BOOTSTRAP_DOTNET", True)
+        bootstrap_nuget = _bool_env("ADO_BOOTSTRAP_NUGET", True)
+        bootstrap_mssql = _bool_env("ADO_BOOTSTRAP_MSSQL", True)
         include_comments = _bool_env("ADO_INCLUDE_COMMENTS", True)
         comments_max_count = _int_env("ADO_COMMENTS_MAX_COUNT", 20, minimum=1)
         comment_text_max_chars = _int_env("ADO_COMMENT_TEXT_MAX_CHARS", 4000, minimum=1)
@@ -107,6 +113,9 @@ class WorkerConfig:
             setup_lock_path=setup_lock_path,
             fetch_retry_count=fetch_retry_count,
             fetch_retry_backoff_seconds=fetch_retry_backoff_seconds,
+            bootstrap_dotnet=bootstrap_dotnet,
+            bootstrap_nuget=bootstrap_nuget,
+            bootstrap_mssql=bootstrap_mssql,
             include_comments=include_comments,
             comments_max_count=comments_max_count,
             comment_text_max_chars=comment_text_max_chars,
@@ -369,6 +378,29 @@ def fetch_work_item_comments(
     return normalized
 
 
+def _attach_comments_to_item(
+    *,
+    client: httpx.Client,
+    config: WorkerConfig,
+    auth_header: str,
+    item: dict[str, Any],
+) -> None:
+    if not config.include_comments:
+        return
+
+    work_item_id = int(item["id"])
+    try:
+        item["comments"] = fetch_work_item_comments(
+            client=client,
+            config=config,
+            auth_header=auth_header,
+            work_item_id=work_item_id,
+        )
+    except httpx.HTTPError:
+        logging.warning("work_item=%s comments_fetch_failed", work_item_id)
+        item["comments"] = []
+
+
 def gate_and_order_items(items: list[dict[str, Any]], config: WorkerConfig) -> tuple[list[dict[str, Any]], int]:
     matched: list[dict[str, Any]] = []
     skipped = 0
@@ -422,19 +454,13 @@ def poll_once(client: httpx.Client, config: WorkerConfig, auth_header: str) -> l
         candidate_ids=candidate_ids,
     )
     matched_items, skipped_count = gate_and_order_items(fetched_items, config)
-    if config.include_comments:
-        for item in matched_items:
-            work_item_id = int(item["id"])
-            try:
-                item["comments"] = fetch_work_item_comments(
-                    client=client,
-                    config=config,
-                    auth_header=auth_header,
-                    work_item_id=work_item_id,
-                )
-            except httpx.HTTPError:
-                logging.warning("work_item=%s comments_fetch_failed", work_item_id)
-                item["comments"] = []
+    for item in matched_items:
+        _attach_comments_to_item(
+            client=client,
+            config=config,
+            auth_header=auth_header,
+            item=item,
+        )
 
     logging.info(
         "cycle polled=%d matched=%d skipped=%d",
@@ -467,14 +493,16 @@ def _atomic_write_yaml(path: Path, payload: dict[str, Any]) -> None:
 
 
 def _build_setup_command(config: WorkerConfig, yaml_path: Path) -> list[str]:
-    cmd = [
-        str(config.setup_script_path),
-        "--dotnet",
-        "--nuget",
-        "--mssql",
-        str(yaml_path),
-        config.prewarm_target,
-    ]
+    cmd = [str(config.setup_script_path)]
+    if config.bootstrap_dotnet:
+        cmd.append("--dotnet")
+    if config.bootstrap_nuget:
+        cmd.append("--nuget")
+    if config.bootstrap_mssql:
+        cmd.append("--mssql")
+    cmd.append(str(yaml_path))
+    if config.bootstrap_nuget:
+        cmd.append(config.prewarm_target)
     if config.repo_path:
         cmd.append(config.repo_path)
     if config.session_id:
@@ -588,7 +616,16 @@ def fetch_work_item_by_id(
 ) -> dict[str, Any] | None:
     items = fetch_work_item_batch(client, config, auth_header, [work_item_id])
     matched, _ = gate_and_order_items(items, config)
-    return matched[0] if matched else None
+    if not matched:
+        return None
+    item = matched[0]
+    _attach_comments_to_item(
+        client=client,
+        config=config,
+        auth_header=auth_header,
+        item=item,
+    )
+    return item
 
 
 def run_worker(config: WorkerConfig) -> None:

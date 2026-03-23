@@ -398,8 +398,9 @@ agent-sandbox-cli create-session real-session --config config/gateway.yaml
   `agent-sandbox-cli poll-ado-backlog`.
 - The worker polls Azure DevOps work items in `Committed` state tagged `truman`, writes YAML
   payloads under `ADO_YAML_OUTPUT_DIR`, and invokes `scripts/setup_issue_vm.sh`.
-- Worker-triggered setup calls include `--dotnet --nuget --mssql` so those guest toolchains are
-  bootstrapped by default for backlog-driven issue VMs.
+- Worker-triggered setup calls honor `ADO_BOOTSTRAP_DOTNET`, `ADO_BOOTSTRAP_NUGET`, and
+  `ADO_BOOTSTRAP_MSSQL` (all default `true`) to decide which guest toolchains are bootstrapped
+  for backlog-driven issue VMs.
 - Configure environment in `config/ado-worker.env` (start from
   `config/ado-worker.env.example`), then export the PAT value in the host shell/env-file named by
   `ADO_PAT_ENV_VAR_NAME` (default `AZURE_DEVOPS_PAT`).

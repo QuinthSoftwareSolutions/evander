@@ -15,3 +15,13 @@ def test_setup_issue_vm_supports_opt_in_bootstraps() -> None:
     assert '"${SCRIPT_DIR}/bootstrap_dotnet_vm.sh"' in setup_issue_vm
     assert '"${SCRIPT_DIR}/bootstrap_nuget_vm.sh"' in setup_issue_vm
     assert '"${SCRIPT_DIR}/bootstrap_mssql_vm.sh"' in setup_issue_vm
+
+
+def test_setup_issue_vm_reinterprets_positionals_when_nuget_is_disabled() -> None:
+    setup_issue_vm = Path("/home/jonathan/agent-sandbox/scripts/setup_issue_vm.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'if (( BOOTSTRAP_NUGET )); then' in setup_issue_vm
+    assert 'PREWARM_TARGET="${2:-}"' in setup_issue_vm
+    assert 'REPO_SOURCE_ARG="${2:-}"' in setup_issue_vm

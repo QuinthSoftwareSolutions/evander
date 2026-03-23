@@ -41,6 +41,9 @@ def worker_config(tmp_path: Path) -> WorkerConfig:
         setup_lock_path=tmp_path / "setup.lock",
         fetch_retry_count=2,
         fetch_retry_backoff_seconds=0.1,
+        bootstrap_dotnet=True,
+        bootstrap_nuget=True,
+        bootstrap_mssql=True,
         include_comments=True,
         comments_max_count=20,
         comment_text_max_chars=4000,
@@ -166,6 +169,9 @@ def test_build_setup_command_includes_optional_arguments(tmp_path: Path) -> None
         setup_lock_path=tmp_path / "setup.lock",
         fetch_retry_count=2,
         fetch_retry_backoff_seconds=0.1,
+        bootstrap_dotnet=True,
+        bootstrap_nuget=True,
+        bootstrap_mssql=True,
         include_comments=True,
         comments_max_count=20,
         comment_text_max_chars=4000,
@@ -178,6 +184,46 @@ def test_build_setup_command_includes_optional_arguments(tmp_path: Path) -> None
         "--mssql",
         str(tmp_path / "work-item-10.yaml"),
         "real-target",
+        "/tmp/repo",
+        "sess-1",
+        "agent",
+    ]
+
+
+def test_build_setup_command_omits_disabled_bootstraps_and_nuget_prewarm_target(tmp_path: Path) -> None:
+    config = WorkerConfig(
+        organization_url="https://dev.azure.com/example",
+        project="example",
+        pat_env_var_name="AZURE_DEVOPS_PAT",
+        poll_interval_seconds=30.0,
+        area_filters=(),
+        team_filters=(),
+        runtime_dir=tmp_path,
+        yaml_output_dir=tmp_path / "yaml",
+        processed_store_path=tmp_path / "state" / "processed.json",
+        setup_script_path=Path("scripts/setup_issue_vm.sh"),
+        prewarm_target="real-target",
+        repo_path="/tmp/repo",
+        session_id="sess-1",
+        vm_user="agent",
+        setup_timeout_seconds=30.0,
+        setup_concurrency_limit=1,
+        setup_lock_path=tmp_path / "setup.lock",
+        fetch_retry_count=2,
+        fetch_retry_backoff_seconds=0.1,
+        bootstrap_dotnet=False,
+        bootstrap_nuget=False,
+        bootstrap_mssql=True,
+        include_comments=True,
+        comments_max_count=20,
+        comment_text_max_chars=4000,
+    )
+
+    cmd = _build_setup_command(config, tmp_path / "work-item-10.yaml")
+    assert cmd == [
+        "scripts/setup_issue_vm.sh",
+        "--mssql",
+        str(tmp_path / "work-item-10.yaml"),
         "/tmp/repo",
         "sess-1",
         "agent",
@@ -498,3 +544,44 @@ def test_poll_once_attaches_comments(
 
     assert len(items) == 1
     assert items[0]["comments"] == [{"text": "Needs x", "author": "Ann", "created_date": "", "modified_date": ""}]
+
+
+def test_fetch_work_item_by_id_attaches_comments(
+    worker_config: WorkerConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "agent_sandbox.ado_issue_worker.fetch_work_item_batch",
+        lambda *args, **kwargs: [
+            {
+                "id": 10,
+                "url": "https://example/10",
+                "fields": {
+                    "System.Title": "Item 10",
+                    "System.Description": "desc",
+                    "System.Tags": "truman",
+                    "System.State": "Committed",
+                    "System.ChangedDate": "2026-03-21T00:00:00Z",
+                    "System.AreaPath": "Root",
+                    "System.IterationPath": "Team",
+                },
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        "agent_sandbox.ado_issue_worker.fetch_work_item_comments",
+        lambda **kwargs: [{"text": "Needs x", "author": "Ann", "created_date": "", "modified_date": ""}],
+    )
+
+    from agent_sandbox.ado_issue_worker import fetch_work_item_by_id
+
+    with httpx.Client() as client:
+        item = fetch_work_item_by_id(
+            client=client,
+            config=worker_config,
+            auth_header="Basic token",
+            work_item_id=10,
+        )
+
+    assert item is not None
+    assert item["comments"] == [{"text": "Needs x", "author": "Ann", "created_date": "", "modified_date": ""}]
