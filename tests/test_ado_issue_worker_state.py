@@ -12,10 +12,12 @@ from agent_sandbox.ado_issue_worker import (
     ProcessedWorkItemStore,
     WorkerConfig,
     _build_setup_command,
+    _is_vm_already_exists_output,
     fetch_work_item_comments,
     gate_and_order_items,
     poll_once,
     process_work_item,
+    update_work_item_state,
 )
 
 
@@ -30,6 +32,7 @@ def worker_config(tmp_path: Path) -> WorkerConfig:
         team_filters=(),
         runtime_dir=tmp_path,
         yaml_output_dir=tmp_path / "yaml",
+        setup_log_dir=tmp_path / "setup-logs",
         processed_store_path=tmp_path / "state" / "processed.json",
         setup_script_path=Path("scripts/setup_issue_vm.sh"),
         prewarm_target="My.slnx",
@@ -146,6 +149,229 @@ def test_process_work_item_marks_state_only_after_success(
     succeeded = process_work_item(item, config=worker_config, store=store)
     assert succeeded is True
     assert store.is_processed(789) is True
+    log_text = (worker_config.setup_log_dir / "work-item-789.log").read_text(encoding="utf-8")
+    assert "===== " in log_text
+    assert log_text.endswith("ok\n")
+
+
+def test_update_work_item_state_uses_json_patch(worker_config: WorkerConfig, monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+    def fake_patch(_self: object, url: str, **kwargs: object) -> FakeResponse:
+        captured["url"] = url
+        captured["params"] = kwargs.get("params")
+        captured["headers"] = kwargs.get("headers")
+        captured["json"] = kwargs.get("json")
+        return FakeResponse()
+
+    monkeypatch.setattr("httpx.Client.patch", fake_patch)
+    with httpx.Client() as client:
+        update_work_item_state(
+            client=client,
+            config=worker_config,
+            auth_header="Basic token",
+            work_item_id=14084,
+            state="In Progress",
+        )
+
+    assert str(captured["url"]).endswith("/_apis/wit/workitems/14084")
+    assert captured["params"] == {"api-version": "7.1"}
+    assert captured["headers"] == {
+        "Authorization": "Basic token",
+        "Content-Type": "application/json-patch+json",
+    }
+    assert captured["json"] == [
+        {
+            "op": "add",
+            "path": "/fields/System.State",
+            "value": "In Progress",
+        }
+    ]
+
+
+def test_process_work_item_updates_state_after_success(
+    worker_config: WorkerConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = ProcessedWorkItemStore(worker_config.processed_store_path)
+    state_updates: list[tuple[int, str]] = []
+
+    def successful_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="ok", stderr="")
+
+    def fake_update_work_item_state(
+        *,
+        client: httpx.Client,
+        config: WorkerConfig,
+        auth_header: str,
+        work_item_id: int,
+        state: str,
+    ) -> None:
+        state_updates.append((work_item_id, state))
+
+    monkeypatch.setattr("agent_sandbox.ado_issue_worker.subprocess.run", successful_run)
+    monkeypatch.setattr("agent_sandbox.ado_issue_worker.update_work_item_state", fake_update_work_item_state)
+
+    item = {
+        "id": 790,
+        "title": "Do thing",
+        "description": "Details",
+        "tags": ["truman"],
+        "state": "Committed",
+        "url": "https://example/790",
+        "updated_date": "2026-03-21T00:00:00Z",
+    }
+
+    with httpx.Client() as client:
+        succeeded = process_work_item(
+            item,
+            config=worker_config,
+            store=store,
+            client=client,
+            auth_header="Basic token",
+        )
+
+    assert succeeded is True
+    assert store.is_processed(790) is True
+    assert state_updates == [(790, "In Progress")]
+
+
+def test_process_work_item_does_not_update_state_when_setup_fails(
+    worker_config: WorkerConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = ProcessedWorkItemStore(worker_config.processed_store_path)
+    state_updates: list[tuple[int, str]] = []
+
+    def failing_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(args=args, returncode=12, stdout="nope", stderr="bad")
+
+    def fake_update_work_item_state(
+        *,
+        client: httpx.Client,
+        config: WorkerConfig,
+        auth_header: str,
+        work_item_id: int,
+        state: str,
+    ) -> None:
+        state_updates.append((work_item_id, state))
+
+    monkeypatch.setattr("agent_sandbox.ado_issue_worker.subprocess.run", failing_run)
+    monkeypatch.setattr("agent_sandbox.ado_issue_worker.update_work_item_state", fake_update_work_item_state)
+
+    item = {
+        "id": 791,
+        "title": "Do thing",
+        "description": "Details",
+        "tags": ["truman"],
+        "state": "Committed",
+        "url": "https://example/791",
+        "updated_date": "2026-03-21T00:00:00Z",
+    }
+
+    with httpx.Client() as client:
+        succeeded = process_work_item(
+            item,
+            config=worker_config,
+            store=store,
+            client=client,
+            auth_header="Basic token",
+        )
+
+    assert succeeded is False
+    assert store.is_processed(791) is False
+    assert state_updates == []
+    log_text = (worker_config.setup_log_dir / "work-item-791.log").read_text(encoding="utf-8")
+    assert "===== " in log_text
+    assert log_text.endswith("nope\nbad\n")
+
+
+def test_process_work_item_writes_full_setup_log_on_failure(
+    worker_config: WorkerConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = ProcessedWorkItemStore(worker_config.processed_store_path)
+
+    def failing_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(args=args, returncode=7, stdout="hello", stderr="goodbye")
+
+    monkeypatch.setattr("agent_sandbox.ado_issue_worker.subprocess.run", failing_run)
+
+    item = {
+        "id": 792,
+        "title": "Failing setup",
+        "description": "Details",
+        "tags": ["truman"],
+        "state": "Committed",
+        "url": "https://example/792",
+        "updated_date": "2026-03-21T00:00:00Z",
+    }
+
+    assert process_work_item(item, config=worker_config, store=store) is False
+    log_text = (worker_config.setup_log_dir / "work-item-792.log").read_text(encoding="utf-8")
+    assert "===== " in log_text
+    assert log_text.endswith("hello\ngoodbye\n")
+
+
+def test_is_vm_already_exists_output_detects_expected_marker() -> None:
+    assert _is_vm_already_exists_output("VM already exists: vm-14084") is True
+    assert _is_vm_already_exists_output("some other failure") is False
+
+
+def test_process_work_item_treats_existing_vm_as_success(
+    worker_config: WorkerConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = ProcessedWorkItemStore(worker_config.processed_store_path)
+    state_updates: list[tuple[int, str]] = []
+
+    def already_exists_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            args=args,
+            returncode=1,
+            stdout="VM already exists: vm-14084\nDestroy it first with: sudo ./scripts/destroy_agent_vm.sh vm-14084\n",
+            stderr="",
+        )
+
+    def fake_update_work_item_state(
+        *,
+        client: httpx.Client,
+        config: WorkerConfig,
+        auth_header: str,
+        work_item_id: int,
+        state: str,
+    ) -> None:
+        state_updates.append((work_item_id, state))
+
+    monkeypatch.setattr("agent_sandbox.ado_issue_worker.subprocess.run", already_exists_run)
+    monkeypatch.setattr("agent_sandbox.ado_issue_worker.update_work_item_state", fake_update_work_item_state)
+
+    item = {
+        "id": 793,
+        "title": "Existing VM",
+        "description": "Details",
+        "tags": ["truman"],
+        "state": "Committed",
+        "url": "https://example/793",
+        "updated_date": "2026-03-21T00:00:00Z",
+    }
+
+    with httpx.Client() as client:
+        succeeded = process_work_item(
+            item,
+            config=worker_config,
+            store=store,
+            client=client,
+            auth_header="Basic token",
+        )
+
+    assert succeeded is True
+    assert store.is_processed(793) is True
+    assert state_updates == [(793, "In Progress")]
 
 
 def test_build_setup_command_includes_optional_arguments(tmp_path: Path) -> None:
@@ -158,6 +384,7 @@ def test_build_setup_command_includes_optional_arguments(tmp_path: Path) -> None
         team_filters=(),
         runtime_dir=tmp_path,
         yaml_output_dir=tmp_path / "yaml",
+        setup_log_dir=tmp_path / "setup-logs",
         processed_store_path=tmp_path / "state" / "processed.json",
         setup_script_path=Path("scripts/setup_issue_vm.sh"),
         prewarm_target="real-target",
@@ -200,6 +427,7 @@ def test_build_setup_command_omits_disabled_bootstraps_and_nuget_prewarm_target(
         team_filters=(),
         runtime_dir=tmp_path,
         yaml_output_dir=tmp_path / "yaml",
+        setup_log_dir=tmp_path / "setup-logs",
         processed_store_path=tmp_path / "state" / "processed.json",
         setup_script_path=Path("scripts/setup_issue_vm.sh"),
         prewarm_target="real-target",

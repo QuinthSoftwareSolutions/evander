@@ -16,6 +16,9 @@ Environment:
   SSH_KEY_PATH           Private key matching the guest authorized key.
   HOST_MSSQL_TOOLS_ROOT  Host SQL Server client tooling root.
                          Default: /opt/mssql-tools18
+  HOST_MSSQL_RUNTIME_LIBS
+                         Space-delimited host library paths required by sqlcmd.
+                         Default: libodbc.so.2, libodbcinst.so.2, libltdl.so.7
 USAGE
 }
 
@@ -39,6 +42,7 @@ if [[ ! -f "${SSH_KEY_PATH}" ]]; then
 fi
 
 HOST_MSSQL_TOOLS_ROOT="${HOST_MSSQL_TOOLS_ROOT:-/opt/mssql-tools18}"
+HOST_MSSQL_RUNTIME_LIBS=(${HOST_MSSQL_RUNTIME_LIBS:-/lib/x86_64-linux-gnu/libodbc.so.2 /lib/x86_64-linux-gnu/libodbcinst.so.2 /lib/x86_64-linux-gnu/libltdl.so.7})
 SSH_OPTS=(
   -o StrictHostKeyChecking=no
   -o UserKnownHostsFile=/dev/null
@@ -54,6 +58,13 @@ if [[ ! -x "${HOST_MSSQL_TOOLS_ROOT}/bin/sqlcmd" ]]; then
   echo "Missing sqlcmd launcher under ${HOST_MSSQL_TOOLS_ROOT}/bin" >&2
   exit 1
 fi
+
+for runtime_lib in "${HOST_MSSQL_RUNTIME_LIBS[@]}"; do
+  if [[ ! -e "${runtime_lib}" ]]; then
+    echo "Missing required SQL Server runtime library: ${runtime_lib}" >&2
+    exit 1
+  fi
+done
 
 if [[ ! -f "${SSH_KEY_PATH}" ]]; then
   echo "Missing SSH private key: ${SSH_KEY_PATH}" >&2
@@ -97,10 +108,17 @@ ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "
   sudo chown -R ${VM_USER}:${VM_USER} /home/${VM_USER}
   mkdir -p ~/toolchains/mssql-tools
   rm -rf ~/toolchains/mssql-tools/*
+  mkdir -p ~/toolchains/mssql-tools/lib
 "
 
 tar -C "${HOST_MSSQL_TOOLS_ROOT}" -cf - . \
   | ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "tar -C ~/toolchains/mssql-tools -xf -"
+
+for runtime_lib in "${HOST_MSSQL_RUNTIME_LIBS[@]}"; do
+  runtime_name="$(basename "${runtime_lib}")"
+  cat "${runtime_lib}" \
+    | ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "cat > ~/toolchains/mssql-tools/lib/${runtime_name}"
+done
 
 ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "bash -s" <<'EOF_VM'
 set -euo pipefail
@@ -110,9 +128,20 @@ if [[ ! -x "$HOME/toolchains/mssql-tools/bin/sqlcmd" ]]; then
   exit 1
 fi
 
+if [[ ! -f "$HOME/toolchains/mssql-tools/lib/libodbc.so.2" ]]; then
+  echo "Expected libodbc runtime missing at $HOME/toolchains/mssql-tools/lib/libodbc.so.2" >&2
+  exit 1
+fi
+
 if ! grep -q 'PATH="$HOME/toolchains/mssql-tools/bin:$PATH"' ~/.profile 2>/dev/null; then
   cat >> ~/.profile <<PROFILE
 export PATH="$HOME/toolchains/mssql-tools/bin:$PATH"
+PROFILE
+fi
+
+if ! grep -q 'LD_LIBRARY_PATH="$HOME/toolchains/mssql-tools/lib:${LD_LIBRARY_PATH:-}"' ~/.profile 2>/dev/null; then
+  cat >> ~/.profile <<PROFILE
+export LD_LIBRARY_PATH="$HOME/toolchains/mssql-tools/lib:${LD_LIBRARY_PATH:-}"
 PROFILE
 fi
 
@@ -122,7 +151,14 @@ export PATH="$HOME/toolchains/mssql-tools/bin:$PATH"
 BASHRC
 fi
 
+if ! grep -q 'LD_LIBRARY_PATH="$HOME/toolchains/mssql-tools/lib:${LD_LIBRARY_PATH:-}"' ~/.bashrc 2>/dev/null; then
+  cat >> ~/.bashrc <<BASHRC
+export LD_LIBRARY_PATH="$HOME/toolchains/mssql-tools/lib:${LD_LIBRARY_PATH:-}"
+BASHRC
+fi
+
 export PATH="$HOME/toolchains/mssql-tools/bin:$PATH"
+export LD_LIBRARY_PATH="$HOME/toolchains/mssql-tools/lib:${LD_LIBRARY_PATH:-}"
 sqlcmd -? >/dev/null
 EOF_VM
 

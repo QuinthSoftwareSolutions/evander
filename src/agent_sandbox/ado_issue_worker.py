@@ -29,6 +29,7 @@ class WorkerConfig:
     team_filters: tuple[str, ...]
     runtime_dir: Path
     yaml_output_dir: Path
+    setup_log_dir: Path
     processed_store_path: Path
     setup_script_path: Path
     prewarm_target: str
@@ -67,6 +68,9 @@ class WorkerConfig:
         yaml_output_dir = Path(
             os.environ.get("ADO_YAML_OUTPUT_DIR", str(runtime_dir / "ado-work-items"))
         ).expanduser()
+        setup_log_dir = Path(
+            os.environ.get("ADO_SETUP_LOG_DIR", str(runtime_dir / "setup-logs"))
+        ).expanduser()
         processed_store_path = Path(
             os.environ.get("ADO_PROCESSED_STORE_PATH", str(runtime_dir / "ado-processed-work-items.json"))
         ).expanduser()
@@ -102,6 +106,7 @@ class WorkerConfig:
             team_filters=_csv_env("ADO_TEAM_FILTERS"),
             runtime_dir=runtime_dir,
             yaml_output_dir=yaml_output_dir,
+            setup_log_dir=setup_log_dir,
             processed_store_path=processed_store_path,
             setup_script_path=setup_script_path,
             prewarm_target=prewarm_target,
@@ -328,6 +333,32 @@ def fetch_work_item_batch(
     return response.json().get("value", [])
 
 
+def update_work_item_state(
+    client: httpx.Client,
+    config: WorkerConfig,
+    auth_header: str,
+    work_item_id: int,
+    state: str,
+) -> None:
+    work_item_url = f"{config.organization_url}/{config.project}/_apis/wit/workitems/{work_item_id}"
+    response = client.patch(
+        work_item_url,
+        params={"api-version": "7.1"},
+        headers={
+            "Authorization": auth_header,
+            "Content-Type": "application/json-patch+json",
+        },
+        json=[
+            {
+                "op": "add",
+                "path": "/fields/System.State",
+                "value": state,
+            }
+        ],
+    )
+    response.raise_for_status()
+
+
 def _normalize_comment_text(raw_text: Any, *, max_chars: int) -> str:
     if raw_text is None:
         return ""
@@ -492,6 +523,19 @@ def _atomic_write_yaml(path: Path, payload: dict[str, Any]) -> None:
     tmp_path.replace(path)
 
 
+def _write_setup_log(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    header = f"===== {timestamp} =====\n"
+    with path.open("a", encoding="utf-8") as handle:
+        if handle.tell() > 0:
+            handle.write("\n")
+        handle.write(header)
+        handle.write(content)
+        if not content.endswith("\n"):
+            handle.write("\n")
+
+
 def _build_setup_command(config: WorkerConfig, yaml_path: Path) -> list[str]:
     cmd = [str(config.setup_script_path)]
     if config.bootstrap_dotnet:
@@ -515,6 +559,10 @@ def _build_setup_command(config: WorkerConfig, yaml_path: Path) -> list[str]:
 def _snippet(text: str, max_chars: int = 1000) -> str:
     compact = " ".join(text.split())
     return compact[:max_chars]
+
+
+def _is_vm_already_exists_output(output: str) -> bool:
+    return "VM already exists:" in output
 
 
 def _is_transient_fetch_error(exc: Exception) -> bool:
@@ -557,6 +605,8 @@ def process_work_item(
     *,
     config: WorkerConfig,
     store: ProcessedWorkItemStore,
+    client: httpx.Client | None = None,
+    auth_header: str | None = None,
 ) -> bool:
     work_item_id = int(work_item["id"])
     if store.is_processed(work_item_id):
@@ -564,6 +614,7 @@ def process_work_item(
         return False
 
     yaml_path = config.yaml_output_dir / f"work-item-{work_item_id}.yaml"
+    setup_log_path = config.setup_log_dir / f"work-item-{work_item_id}.log"
     _atomic_write_yaml(yaml_path, _build_issue_payload(work_item))
 
     cmd = _build_setup_command(config, yaml_path)
@@ -578,25 +629,39 @@ def process_work_item(
             )
     except subprocess.TimeoutExpired as exc:
         combined = f"{(exc.stdout or '')}\n{(exc.stderr or '')}"
+        _write_setup_log(setup_log_path, combined)
         logging.error(
-            "work_item=%s setup_issue_vm_timeout timeout_seconds=%s cmd=%s output=%s",
+            "work_item=%s setup_issue_vm_timeout timeout_seconds=%s cmd=%s output=%s log=%s",
             work_item_id,
             config.setup_timeout_seconds,
             cmd,
             _snippet(combined),
+            setup_log_path,
         )
         return False
 
-    output_snippet = _snippet((result.stdout or "") + "\n" + (result.stderr or ""))
+    combined_output = (result.stdout or "") + "\n" + (result.stderr or "")
+    _write_setup_log(setup_log_path, combined_output)
+    output_snippet = _snippet(combined_output)
     if result.returncode != 0:
-        logging.error(
-            "work_item=%s setup_issue_vm_failed exit_code=%d cmd=%s output=%s",
-            work_item_id,
-            result.returncode,
-            cmd,
-            output_snippet,
-        )
-        return False
+        if _is_vm_already_exists_output(combined_output):
+            logging.warning(
+                "work_item=%s setup_issue_vm_already_exists treating_as_success cmd=%s output=%s log=%s",
+                work_item_id,
+                cmd,
+                output_snippet,
+                setup_log_path,
+            )
+        else:
+            logging.error(
+                "work_item=%s setup_issue_vm_failed exit_code=%d cmd=%s output=%s log=%s",
+                work_item_id,
+                result.returncode,
+                cmd,
+                output_snippet,
+                setup_log_path,
+            )
+            return False
 
     store.mark_processed(
         work_item_id=work_item_id,
@@ -604,6 +669,24 @@ def process_work_item(
         script_exit_code=result.returncode,
         output_snippet=output_snippet,
     )
+    if client is not None and auth_header:
+        try:
+            update_work_item_state(
+                client=client,
+                config=config,
+                auth_header=auth_header,
+                work_item_id=work_item_id,
+                state="In Progress",
+            )
+        except httpx.HTTPError as exc:
+            logging.warning(
+                "work_item=%s state_update_failed target_state=%s error=%s",
+                work_item_id,
+                "In Progress",
+                exc.__class__.__name__,
+            )
+        else:
+            logging.info("work_item=%s state_updated=%s", work_item_id, "In Progress")
     logging.info("work_item=%s processed yaml=%s", work_item_id, yaml_path)
     return True
 
@@ -658,7 +741,13 @@ def run_worker(config: WorkerConfig) -> None:
                         time.sleep(sleep_seconds)
 
                 for item in items:
-                    process_work_item(item, config=config, store=store)
+                    process_work_item(
+                        item,
+                        config=config,
+                        store=store,
+                        client=client,
+                        auth_header=auth_header,
+                    )
             except httpx.HTTPError as exc:
                 logging.warning("cycle error=%s", exc.__class__.__name__)
             except Exception:  # pragma: no cover
@@ -698,7 +787,7 @@ def run_worker_command(*, log_level: str = "INFO", reprocess: int | None = None,
             if item is None:
                 logging.warning("reprocess work_item=%s not_found_or_not_eligible", reprocess)
                 return
-            process_work_item(item, config=config, store=store)
+            process_work_item(item, config=config, store=store, client=client, auth_header=auth_header)
         return
 
     run_worker(config)
