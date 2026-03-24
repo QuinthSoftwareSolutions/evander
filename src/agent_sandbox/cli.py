@@ -1011,7 +1011,7 @@ def host_heartbeat(
     cfg = load_config(config)
     worker = build_host_heartbeat_worker(cfg)
     if run_once:
-        result = worker.run_once()
+        result = worker.run_once_with_lock()
         typer.echo(
             f"Host heartbeat cycle complete streams={result.streams_polled} "
             f"discovered={result.discovered_feedback} sleep_seconds={result.next_sleep_seconds:.3f}"

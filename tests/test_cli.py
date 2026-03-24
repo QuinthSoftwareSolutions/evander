@@ -733,10 +733,15 @@ def test_status_human_output_reports_degraded_state(tmp_path: Path, monkeypatch)
 def test_host_heartbeat_once_runs_single_cycle(tmp_path: Path, monkeypatch) -> None:
     config_path = write_config(tmp_path)
     runner = CliRunner()
+    calls: list[str] = []
 
     class _FakeWorker:
-        def run_once(self):
+        def run_once_with_lock(self):
+            calls.append("run_once_with_lock")
             return SimpleNamespace(streams_polled=3, discovered_feedback=1, next_sleep_seconds=31.5)
+
+        def run_once(self):
+            raise AssertionError("run_once should not be called directly in --once mode")
 
         def run_forever(self) -> None:
             raise AssertionError("run_forever should not be called in --once mode")
@@ -749,5 +754,6 @@ def test_host_heartbeat_once_runs_single_cycle(tmp_path: Path, monkeypatch) -> N
     )
 
     assert result.exit_code == 0
+    assert calls == ["run_once_with_lock"]
     assert "streams=3" in result.output
     assert "discovered=1" in result.output

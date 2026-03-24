@@ -219,6 +219,28 @@ def test_single_instance_lock_rejects_second_holder(tmp_path) -> None:
             assert "already running" in str(exc)
 
 
+def test_run_once_with_lock_rejects_when_lock_held(tmp_path, monkeypatch) -> None:
+    worker = HostHeartbeatWorker(
+        config=SimpleNamespace(
+            host_heartbeat_lock_path=tmp_path / "host-heartbeat.lock",
+        ),
+        runtime=SimpleNamespace(),
+        feedback_worker=SimpleNamespace(),
+        adapters={},
+    )
+    monkeypatch.setattr(
+        "agent_sandbox.host_heartbeat_worker.HostHeartbeatWorker.run_once",
+        lambda self: SimpleNamespace(streams_polled=0, discovered_feedback=0, next_sleep_seconds=0.0),
+    )
+
+    with _single_instance_lock(worker.config.host_heartbeat_lock_path):
+        try:
+            worker.run_once_with_lock()
+            raise AssertionError("run_once_with_lock should fail when lock is already held")
+        except RuntimeError as exc:
+            assert "already running" in str(exc)
+
+
 def test_busy_check_reports_busy_on_zero_exit(tmp_path) -> None:
     script = tmp_path / "check_session_vm_busy.sh"
     script.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
