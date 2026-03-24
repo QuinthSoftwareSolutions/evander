@@ -36,7 +36,7 @@ exit 1
         """#!/usr/bin/env bash
 set -euo pipefail
 cat >&2 <<'EOF'
-No guest Codex logs or pid files found under /home/agent/.agent-sandbox
+No guest agent logs or pid files found under /home/agent/.agent-sandbox
 EOF
 exit 0
 """,
@@ -56,7 +56,7 @@ exit 0
     )
 
     assert result.stdout == ""
-    assert "No guest Codex logs or pid files found under" in result.stderr
+    assert "No guest agent logs or pid files found under" in result.stderr
 
 
 def test_tail_issue_vm_log_rejects_non_positive_line_count(tmp_path: Path) -> None:

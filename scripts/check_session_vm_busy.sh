@@ -5,7 +5,7 @@ show_help() {
   cat <<'USAGE'
 Usage: check_session_vm_busy.sh <session-id> <vm-name> [vm-user]
 
-Inspect a session VM and report whether a Codex process is active.
+Inspect a session VM and report whether an agent process is active.
 
 Arguments:
   session-id  Session identifier for logging context.
@@ -17,8 +17,8 @@ Environment:
                                            Default: ~/.ssh/id_ed25519, then ~/.ssh/id_rsa
   VM_AGENT_BUSY_CONNECT_TIMEOUT_SECONDS    SSH connect timeout in seconds.
                                            Default: 5
-  VM_CODEX_STATE_MAX_AGE_SECONDS           Maximum age for a running state file before
-                                           a secondary Codex liveness check is required.
+  VM_AGENT_STATE_MAX_AGE_SECONDS           Maximum age for a running state file before
+                                           a secondary agent liveness check is required.
                                            Default: 600
 USAGE
 }
@@ -37,8 +37,8 @@ SESSION_ID="$1"
 VM_NAME="$2"
 VM_USER="${3:-agent}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=lib/codex_status.sh
-source "${SCRIPT_DIR}/lib/codex_status.sh"
+# shellcheck source=lib/agent_status.sh
+source "${SCRIPT_DIR}/lib/agent_status.sh"
 
 CALLER_USER="${SUDO_USER:-${USER:-}}"
 CALLER_HOME="${HOME:-}"
@@ -58,9 +58,9 @@ if [[ ! -f "${SSH_PRIVATE_KEY_PATH}" ]]; then
   exit 2
 fi
 
-status="$(vm_codex_status_for_vm "${VM_NAME}" "${VM_USER}" "${SSH_PRIVATE_KEY_PATH}" "${VM_AGENT_BUSY_CONNECT_TIMEOUT_SECONDS}")"
+status="$(vm_agent_status_for_vm "${VM_NAME}" "${VM_USER}" "${SSH_PRIVATE_KEY_PATH}" "${VM_AGENT_BUSY_CONNECT_TIMEOUT_SECONDS}")"
 
-if vm_codex_is_busy_status "${status}"; then
+if vm_agent_is_busy_status "${status}"; then
   printf 'status=busy reason=agent-busy session=%s vm=%s detail=%q\n' "${SESSION_ID}" "${VM_NAME}" "${status}"
   exit 0
 fi

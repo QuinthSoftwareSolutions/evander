@@ -15,16 +15,16 @@ Usage:
   resume_issue_agent.sh <prompt> <issue-number> [vm-user] [--observe [lines]]
   resume_issue_agent.sh --prompt <prompt> (--issue-number <number> | --vm-name <name>) [options]
 
-SSH into a VM and request a guest Codex resume command from the guest user's home
+SSH into a VM and request a guest agent resume command from the guest user's home
 directory.
 
 Arguments (legacy positional mode):
-  prompt        Prompt passed to `codex exec resume --last`.
+  prompt        Prompt passed to `agent_runner_resume_last`.
   issue-number  Issue identifier used to derive the VM name.
   vm-user       Guest user to connect as. Default: agent
 
 Options:
-  --prompt TEXT               Prompt passed to `codex exec resume --last`.
+  --prompt TEXT               Prompt passed to `agent_runner_resume_last`.
   --issue-number NUMBER       Issue identifier used to derive VM name (`vm-<issue-number>`).
   --vm-name NAME              Explicit libvirt domain name.
   --session-id ID             Session identifier for host-worker logs/state.
@@ -42,7 +42,8 @@ Environment:
   VM_WAIT_SSH_TIMEOUT_SECONDS  How long to wait for guest SSH to accept connections. Default: 180
   RESUME_COMMAND_TIMEOUT_SECONDS
                                End-to-end timeout for worker-mode resume command. Default: 900
-  CODEX_MODEL                  Model passed to `codex exec resume`. Default: gpt-5.4
+  AGENT_PROVIDER               Agent runner provider. Default: codex
+  AGENT_MODEL                  Model passed to `agent_runner_resume_last`. Default: gpt-5.4
 USAGE
 }
 
@@ -247,6 +248,8 @@ parse_args() {
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/vm_network.sh
 source "${SCRIPT_DIR}/lib/vm_network.sh"
+AGENT_RUNNER_LIB_B64="$(base64 -w0 "${SCRIPT_DIR}/lib/agent_runner.sh")"
+AGENT_RUNNER_CODEX_LIB_B64="$(base64 -w0 "${SCRIPT_DIR}/lib/agent_runner_codex.sh")"
 
 if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
   show_help
@@ -258,7 +261,8 @@ if ! parse_args "$@"; then
   exit "${EXIT_USAGE}"
 fi
 
-CODEX_MODEL="${CODEX_MODEL:-gpt-5.4}"
+AGENT_PROVIDER="${AGENT_PROVIDER:-codex}"
+AGENT_MODEL="${AGENT_MODEL:-gpt-5.4}"
 VM_WAIT_IP_TIMEOUT_SECONDS="${VM_WAIT_IP_TIMEOUT_SECONDS:-180}"
 VM_WAIT_SSH_TIMEOUT_SECONDS="${VM_WAIT_SSH_TIMEOUT_SECONDS:-180}"
 RESUME_COMMAND_TIMEOUT_SECONDS="${RESUME_COMMAND_TIMEOUT_SECONDS:-900}"
@@ -308,11 +312,18 @@ if (( WORKER_MODE )); then
   timeout --foreground "${RESUME_COMMAND_TIMEOUT_SECONDS}s" \
     ssh "${SSH_FLAGS[@]}" \
     "${VM_USER}@${VM_IP}" \
-    "PROMPT_B64='${PROMPT_B64}' CODEX_MODEL='${CODEX_MODEL}' bash -s" <<'REMOTE'
+    "PROMPT_B64='${PROMPT_B64}' AGENT_PROVIDER='${AGENT_PROVIDER}' AGENT_MODEL='${AGENT_MODEL}' AGENT_RUNNER_LIB_B64='${AGENT_RUNNER_LIB_B64}' AGENT_RUNNER_CODEX_LIB_B64='${AGENT_RUNNER_CODEX_LIB_B64}' bash -s" <<'REMOTE'
 set -euo pipefail
 
 cd "${HOME}"
 . "${HOME}/.profile" >/dev/null 2>&1 || true
+
+AGENT_RUNNER_TMP_DIR="$(mktemp -d)"
+trap 'rm -rf "${AGENT_RUNNER_TMP_DIR}"' EXIT
+printf '%s' "${AGENT_RUNNER_LIB_B64}" | base64 -d > "${AGENT_RUNNER_TMP_DIR}/agent_runner.sh"
+printf '%s' "${AGENT_RUNNER_CODEX_LIB_B64}" | base64 -d > "${AGENT_RUNNER_TMP_DIR}/agent_runner_codex.sh"
+# shellcheck source=/dev/null
+source "${AGENT_RUNNER_TMP_DIR}/agent_runner.sh"
 
 LOG_DIR="${HOME}/.agent-sandbox"
 STATE_PATH="${LOG_DIR}/codex-resume-last.state"
@@ -349,11 +360,10 @@ on_exit() {
 write_state "running" "resume"
 trap on_exit EXIT
 
-codex exec resume \
+agent_runner_resume_last \
   --dangerously-bypass-approvals-and-sandbox \
   --skip-git-repo-check \
-  --model "${CODEX_MODEL}" \
-  --last \
+  --model "${AGENT_MODEL}" \
   "${PROMPT}"
 REMOTE
   resume_exit_code="$?"
@@ -376,11 +386,18 @@ fi
 resume_output="$(
   ssh "${SSH_FLAGS[@]}" \
     "${VM_USER}@${VM_IP}" \
-    "PROMPT_B64='${PROMPT_B64}' CODEX_MODEL='${CODEX_MODEL}' bash -s" <<'REMOTE'
+    "PROMPT_B64='${PROMPT_B64}' AGENT_PROVIDER='${AGENT_PROVIDER}' AGENT_MODEL='${AGENT_MODEL}' AGENT_RUNNER_LIB_B64='${AGENT_RUNNER_LIB_B64}' AGENT_RUNNER_CODEX_LIB_B64='${AGENT_RUNNER_CODEX_LIB_B64}' bash -s" <<'REMOTE'
 set -euo pipefail
 
 cd "${HOME}"
 . "${HOME}/.profile" >/dev/null 2>&1 || true
+
+AGENT_RUNNER_TMP_DIR="$(mktemp -d)"
+trap 'rm -rf "${AGENT_RUNNER_TMP_DIR}"' EXIT
+printf '%s' "${AGENT_RUNNER_LIB_B64}" | base64 -d > "${AGENT_RUNNER_TMP_DIR}/agent_runner.sh"
+printf '%s' "${AGENT_RUNNER_CODEX_LIB_B64}" | base64 -d > "${AGENT_RUNNER_TMP_DIR}/agent_runner_codex.sh"
+# shellcheck source=/dev/null
+source "${AGENT_RUNNER_TMP_DIR}/agent_runner.sh"
 
 LOG_DIR="${HOME}/.agent-sandbox"
 RUN_LOG_FILE="${LOG_DIR}/codex-heartbeat-run.log"
@@ -400,11 +417,10 @@ fi
 
 printf '%s\n' "--last" >"${RESUME_HINT_FILE}"
 
-nohup codex exec resume \
-  --last \
+nohup agent_runner_resume_last \
   --dangerously-bypass-approvals-and-sandbox \
   --skip-git-repo-check \
-  --model "${CODEX_MODEL}" \
+  --model "${AGENT_MODEL}" \
   "${PROMPT}" \
   >>"${RUN_LOG_FILE}" 2>&1 < /dev/null &
 

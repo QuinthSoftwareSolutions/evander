@@ -15,7 +15,7 @@ Arguments:
 Environment:
   SSH_KEY_PATH    Private key matching the guest authorized key.
   HOST_CODEX_ROOT Host Codex package root.
-  LLM_BASE_URL    Guest OpenAI-compatible base URL.
+  LLM_BASE_URL    Guest OpenAI-compatible base URL. Overrides ~/.agent/config.env when set.
   ENABLE_GUEST_HEARTBEAT Legacy toggle for guest heartbeat timer install (0/1, default: 0).
 EOF
 }
@@ -43,7 +43,7 @@ fi
 
 HOST_CODEX_ROOT="${HOST_CODEX_ROOT:-${CALLER_HOME}/.nvm/versions/node/v24.14.0/lib/node_modules/@openai/codex}"
 VENDOR_DIR="${HOST_CODEX_ROOT}/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl"
-LLM_BASE_URL="${LLM_BASE_URL:-http://192.168.250.1:11434/v1}"
+LLM_BASE_URL="${LLM_BASE_URL:-}"
 ENABLE_GUEST_HEARTBEAT="${ENABLE_GUEST_HEARTBEAT:-0}"
 SSH_OPTS=(
   -o StrictHostKeyChecking=no
@@ -110,12 +110,17 @@ set -euo pipefail
 cp ~/codex-vendor/codex/codex ~/bin/codex
 chmod +x ~/bin/codex
 mkdir -p ~/.codex
+if [ -f ~/.agent/config.env ]; then
+  # shellcheck disable=SC1091
+  . ~/.agent/config.env
+fi
+CODEX_LLM_BASE_URL="${LLM_BASE_URL:-${AGENT_SANDBOX_LLM_BASE_URL:-http://192.168.250.1:11434/v1}}"
 cat > ~/.codex/config.toml <<CONFIG
 model = "gpt-5.4"
 model_provider = "openai"
 model_reasoning_effort = "high"
 personality = "pragmatic"
-openai_base_url = "${LLM_BASE_URL}"
+openai_base_url = "${CODEX_LLM_BASE_URL}"
 
 [projects."/home/${VM_USER}"]
 trust_level = "trusted"

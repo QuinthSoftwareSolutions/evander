@@ -5,7 +5,7 @@ show_help() {
   cat <<'EOF'
 Usage: list_running_vms.sh [vm-user]
 
-List currently running libvirt VMs and show whether a guest Codex agent is
+List currently running libvirt VMs and show whether a guest agent is
 currently running inside each VM.
 
 Arguments:
@@ -33,8 +33,8 @@ VM_USER="${1:-agent}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/vm_network.sh
 source "${SCRIPT_DIR}/lib/vm_network.sh"
-# shellcheck source=lib/codex_status.sh
-source "${SCRIPT_DIR}/lib/codex_status.sh"
+# shellcheck source=lib/agent_status.sh
+source "${SCRIPT_DIR}/lib/agent_status.sh"
 
 CALLER_USER="${SUDO_USER:-${USER:-}}"
 CALLER_HOME="${HOME:-}"
@@ -82,7 +82,7 @@ agent_status_for_vm() {
     return 0
   fi
 
-  vm_codex_status_from_ssh \
+  vm_agent_status_from_ssh \
     "${VM_USER}" \
     "${vm_ip}" \
     "${SSH_PRIVATE_KEY_PATH}" \

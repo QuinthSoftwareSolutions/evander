@@ -48,10 +48,11 @@ Arguments:
   vm-user              Guest user to configure. Default: agent
 
 Environment:
-  CODEX_MODEL                 Codex model to run inside the guest. Default: gpt-5.4
-  AGENT_SANDBOX_CODEX_POST_EXEC_VERIFICATION_PROMPT
+  AGENT_PROVIDER              Agent runner provider. Default: codex
+  AGENT_MODEL                 Model to run inside the guest. Default: gpt-5.4
+  AGENT_POST_EXEC_VERIFICATION_PROMPT
                               Optional prompt used for one follow-up
-                              `codex exec resume --last` verification pass
+                              `agent_runner_resume_last` verification pass
                               after the initial exec run exits.
   VM_WAIT_IP_TIMEOUT_SECONDS   How long to wait for the guest to receive an IPv4 address.
                                Default: 180
@@ -215,10 +216,13 @@ VM_WAIT_IP_TIMEOUT_SECONDS="${VM_WAIT_IP_TIMEOUT_SECONDS:-180}"
 VM_WAIT_SSH_TIMEOUT_SECONDS="${VM_WAIT_SSH_TIMEOUT_SECONDS:-180}"
 SSH_PRIVATE_KEY_PATH="${SSH_PRIVATE_KEY_PATH:-${CALLER_HOME}/.ssh/id_ed25519}"
 ISSUE_FILE=""
-CODEX_MODEL="${CODEX_MODEL:-gpt-5.4}"
+AGENT_PROVIDER="${AGENT_PROVIDER:-codex}"
+AGENT_MODEL="${AGENT_MODEL:-gpt-5.4}"
 DEFAULT_POST_EXEC_VERIFICATION_PROMPT="Before concluding, verify whether you completed all required checklist items. Confirm (or explicitly list gaps for): (1) appropriate unit tests for your code changes, (2) documentation updates for behavioral or operational changes, and (3) a markdown PR summary maintained with 'git agent-pr-note'. If anything is missing, complete it now. If you make any changes during this checklist pass, push them before concluding. A successful 'git push-agent' refreshes and pushes refs/notes/agent-pr together with your latest work."
-POST_EXEC_VERIFICATION_PROMPT="${AGENT_SANDBOX_CODEX_POST_EXEC_VERIFICATION_PROMPT:-${DEFAULT_POST_EXEC_VERIFICATION_PROMPT}}"
+POST_EXEC_VERIFICATION_PROMPT="${AGENT_POST_EXEC_VERIFICATION_PROMPT:-${DEFAULT_POST_EXEC_VERIFICATION_PROMPT}}"
 POST_EXEC_VERIFICATION_PROMPT_B64="$(printf '%s' "${POST_EXEC_VERIFICATION_PROMPT}" | python3 -c 'import base64,sys; print(base64.b64encode(sys.stdin.buffer.read()).decode())')"
+AGENT_RUNNER_LIB_B64="$(base64 -w0 "${SCRIPT_DIR}/lib/agent_runner.sh")"
+AGENT_RUNNER_CODEX_LIB_B64="$(base64 -w0 "${SCRIPT_DIR}/lib/agent_runner_codex.sh")"
 AGENT_PR_NOTE_HELPER_B64="$(
   python3 - "${ROOT_DIR}/scripts/guest/agent_pr_note.sh" <<'PY'
 import base64
@@ -629,15 +633,21 @@ if (( START_AGENT )); then
     -o UserKnownHostsFile=/dev/null \
     -i "${SSH_PRIVATE_KEY_PATH}" \
     "${VM_USER}@${VM_IP}" \
-    "GUEST_REPO_NAME='${GUEST_REPO_NAME}' CODEX_MODEL='${CODEX_MODEL}' POST_EXEC_VERIFICATION_PROMPT_B64='${POST_EXEC_VERIFICATION_PROMPT_B64}' BOOTSTRAP_DOTNET='${BOOTSTRAP_DOTNET}' BOOTSTRAP_NUGET='${BOOTSTRAP_NUGET}' bash -s" <<'EOF'
+    "GUEST_REPO_NAME='${GUEST_REPO_NAME}' AGENT_PROVIDER='${AGENT_PROVIDER}' AGENT_MODEL='${AGENT_MODEL}' POST_EXEC_VERIFICATION_PROMPT_B64='${POST_EXEC_VERIFICATION_PROMPT_B64}' AGENT_RUNNER_LIB_B64='${AGENT_RUNNER_LIB_B64}' AGENT_RUNNER_CODEX_LIB_B64='${AGENT_RUNNER_CODEX_LIB_B64}' BOOTSTRAP_DOTNET='${BOOTSTRAP_DOTNET}' BOOTSTRAP_NUGET='${BOOTSTRAP_NUGET}' bash -s" <<'EOF'
 set -euo pipefail
 . ~/.profile
+AGENT_RUNNER_TMP_DIR="$(mktemp -d)"
+trap 'rm -rf "${AGENT_RUNNER_TMP_DIR}"' EXIT
+printf '%s' "${AGENT_RUNNER_LIB_B64}" | base64 -d > "${AGENT_RUNNER_TMP_DIR}/agent_runner.sh"
+printf '%s' "${AGENT_RUNNER_CODEX_LIB_B64}" | base64 -d > "${AGENT_RUNNER_TMP_DIR}/agent_runner_codex.sh"
+# shellcheck source=/dev/null
+source "${AGENT_RUNNER_TMP_DIR}/agent_runner.sh"
 
 TARGET_DIR="$HOME/${GUEST_REPO_NAME}"
 LOG_DIR="$HOME/.agent-sandbox"
-LOG_PATH="${LOG_DIR}/codex-${GUEST_REPO_NAME}.log"
-PID_PATH="${LOG_DIR}/codex-${GUEST_REPO_NAME}.pid"
-STATE_PATH="${LOG_DIR}/codex-${GUEST_REPO_NAME}.state"
+LOG_PATH="${LOG_DIR}/agent-${GUEST_REPO_NAME}.log"
+PID_PATH="${LOG_DIR}/agent-${GUEST_REPO_NAME}.pid"
+STATE_PATH="${LOG_DIR}/agent-${GUEST_REPO_NAME}.state"
 INITIAL_PROMPT="You have been issued the task described in ${TARGET_DIR}/AGENT_TASK.yaml. Read ${HOME}/AGENTS.md and ${TARGET_DIR}/AGENT_TASK.yaml before you begin. The repository is located at ${TARGET_DIR}. Do not ask for feedback or clarifications, but work until the task is completed or until you determine that it is impossible to complete."
 if [[ "${BOOTSTRAP_DOTNET:-0}" == "1" && "${BOOTSTRAP_NUGET:-0}" == "1" ]]; then
   INITIAL_PROMPT="${INITIAL_PROMPT} When restore is needed, use 'dotnet restore --configfile ~/.nuget/NuGet/NuGet.Config'. For build and test, prefer '--no-restore'."
@@ -656,7 +666,8 @@ if [[ -f "${PID_PATH}" ]]; then
 fi
 
 nohup env \
-  CODEX_MODEL="${CODEX_MODEL}" \
+  AGENT_PROVIDER="${AGENT_PROVIDER}" \
+  AGENT_MODEL="${AGENT_MODEL}" \
   TARGET_DIR="${TARGET_DIR}" \
   GUEST_REPO_NAME="${GUEST_REPO_NAME}" \
   INITIAL_PROMPT="${INITIAL_PROMPT}" \
@@ -693,8 +704,8 @@ on_exit() {
 write_state "running" "initial"
 trap on_exit EXIT
 
-codex exec \
-  --model "${CODEX_MODEL}" \
+agent_runner_exec \
+  --model "${AGENT_MODEL}" \
   -s danger-full-access \
   --dangerously-bypass-approvals-and-sandbox \
   --skip-git-repo-check \
@@ -702,9 +713,8 @@ codex exec \
   "${INITIAL_PROMPT}"
 exec_status=$?
 write_state "running" "post_exec" "${exec_status}"
-codex exec resume \
-  --last \
-  --model "${CODEX_MODEL}" \
+agent_runner_resume_last \
+  --model "${AGENT_MODEL}" \
   --dangerously-bypass-approvals-and-sandbox \
   --skip-git-repo-check \
   "${POST_EXEC_VERIFICATION_PROMPT}" || true
@@ -736,8 +746,8 @@ echo "  frontend deps: $([[ ${BOOTSTRAP_FRONTEND_DEPS} -eq 1 ]] && echo enabled 
 echo "  push:    git -C /home/${VM_USER}/${GUEST_REPO_NAME} push-agent"
 if (( START_AGENT )); then
   echo "  agent:   started"
-  echo "  log:     /home/${VM_USER}/.agent-sandbox/codex-${GUEST_REPO_NAME}.log"
-  echo "  pid:     /home/${VM_USER}/.agent-sandbox/codex-${GUEST_REPO_NAME}.pid"
+  echo "  log:     /home/${VM_USER}/.agent-sandbox/agent-${GUEST_REPO_NAME}.log"
+  echo "  pid:     /home/${VM_USER}/.agent-sandbox/agent-${GUEST_REPO_NAME}.pid"
 else
   echo "  agent:   not started (--dry-run)"
 fi
