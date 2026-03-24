@@ -41,3 +41,7 @@ nuget_public_feed_base_url: "https://api.nuget.org"
 nuget_azure_feed_base_url: "https://pkgs.dev.azure.com/exampleindustry/_packaging/ExampleIndustry_Nuget/nuget"
 nuget_azure_pat_env: "AZURE_ARTIFACTS_PAT"
 nuget_relay_timeout_seconds: 300.0
+github_token_env: "GITHUB_TOKEN"
+azure_devops_pat_env: "AZURE_DEVOPS_PAT"
+azure_devops_organization_url: "https://dev.azure.com/exampleindustry"
+azure_devops_project: "Example Industry APP"
