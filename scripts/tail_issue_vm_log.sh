@@ -33,6 +33,8 @@ VM_NAME="vm-${ISSUE_NUMBER}"
 CALLER_USER="${SUDO_USER:-$USER}"
 CALLER_HOME="$(getent passwd "${CALLER_USER}" | cut -d: -f6)"
 SSH_PRIVATE_KEY_PATH="${SSH_PRIVATE_KEY_PATH:-${CALLER_HOME}/.ssh/id_ed25519}"
+printf -v REPO_NAME_SSH %q "${REPO_NAME}"
+printf -v TAIL_LINES_SSH %q "${TAIL_LINES}"
 
 if ! [[ "${TAIL_LINES}" =~ ^[1-9][0-9]*$ ]]; then
   echo "lines must be a positive integer: ${TAIL_LINES}" >&2
@@ -83,7 +85,7 @@ ssh \
   -o UserKnownHostsFile=/dev/null \
   -i "${SSH_PRIVATE_KEY_PATH}" \
   "${VM_USER}@${VM_IP}" \
-  "REPO_NAME='${REPO_NAME}' bash -s" <<'EOF'
+  "REPO_NAME=${REPO_NAME_SSH} TAIL_LINES=${TAIL_LINES_SSH} bash -s" <<'EOF'
 set -euo pipefail
 
 LOG_DIR="$HOME/.agent-sandbox"
