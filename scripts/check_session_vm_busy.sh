@@ -17,6 +17,9 @@ Environment:
                                            Default: ~/.ssh/id_ed25519, then ~/.ssh/id_rsa
   VM_AGENT_BUSY_CONNECT_TIMEOUT_SECONDS    SSH connect timeout in seconds.
                                            Default: 5
+  VM_CODEX_STATE_MAX_AGE_SECONDS           Maximum age for a running state file before
+                                           a secondary Codex liveness check is required.
+                                           Default: 600
 USAGE
 }
 

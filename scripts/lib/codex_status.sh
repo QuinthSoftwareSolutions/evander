@@ -5,6 +5,9 @@ vm_codex_status_from_ssh() {
   local vm_ip="$2"
   local ssh_private_key_path="$3"
   local connect_timeout_seconds="$4"
+  local state_max_age_seconds
+
+  state_max_age_seconds="${VM_CODEX_STATE_MAX_AGE_SECONDS:-600}"
 
   if ! ssh \
     -o StrictHostKeyChecking=no \
@@ -12,10 +15,45 @@ vm_codex_status_from_ssh() {
     -o ConnectTimeout="${connect_timeout_seconds}" \
     -i "${ssh_private_key_path}" \
     "${vm_user}@${vm_ip}" \
-    "bash -s" <<'REMOTE_EOF'
+    "VM_CODEX_STATE_MAX_AGE_SECONDS='${state_max_age_seconds}' bash -s" <<'REMOTE_EOF'
 set -euo pipefail
 
 LOG_DIR="${HOME}/.agent-sandbox"
+VM_CODEX_STATE_MAX_AGE_SECONDS="${VM_CODEX_STATE_MAX_AGE_SECONDS:-600}"
+
+is_active_codex_pid() {
+  local pid="$1"
+  local cmdline
+
+  [[ -n "${pid}" && "${pid}" =~ ^[0-9]+$ ]] || return 1
+  kill -0 "${pid}" >/dev/null 2>&1 || return 1
+  cmdline="$(ps -p "${pid}" -o args= 2>/dev/null || true)"
+  [[ -n "${cmdline}" ]] || return 1
+  case "${cmdline}" in
+    codex|*/codex|*" codex"|*" codex "*|*"/codex "*)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+iso_to_epoch() {
+  local raw="$1"
+
+  [[ -n "${raw}" ]] || return 1
+  date -u -d "${raw}" +%s 2>/dev/null
+}
+
+state_is_fresh() {
+  local updated_at="$1"
+  local updated_at_epoch now
+
+  updated_at_epoch="$(iso_to_epoch "${updated_at}")" || return 1
+  now="$(date -u +%s)"
+  (( now - updated_at_epoch <= VM_CODEX_STATE_MAX_AGE_SECONDS ))
+}
 
 if [[ ! -d "${LOG_DIR}" ]]; then
   printf '%s\n' "not started"
@@ -34,6 +72,12 @@ shopt -s nullglob
 for state_path in "${LOG_DIR}"/codex-*.state; do
   status="$(read_state_value "${state_path}" "status")"
   [[ "${status}" == "running" ]] || continue
+
+  updated_at="$(read_state_value "${state_path}" "updated_at")"
+  pid="$(read_state_value "${state_path}" "pid")"
+  if ! state_is_fresh "${updated_at}" && ! is_active_codex_pid "${pid}"; then
+    continue
+  fi
 
   name="$(basename "${state_path}")"
   name="${name#codex-}"
