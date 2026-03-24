@@ -135,6 +135,14 @@ if [[ -f "${ENV_FILE}" ]]; then
   set +a
 fi
 
+if [[ -z "${HOME:-}" ]]; then
+  CURRENT_USER="$(id -un)"
+  HOME_FROM_PASSWD="$(getent passwd "${CURRENT_USER}" | cut -d: -f6)"
+  if [[ -n "${HOME_FROM_PASSWD}" ]]; then
+    export HOME="${HOME_FROM_PASSWD}"
+  fi
+fi
+
 AZURE_PAT_ENV="${AGENT_SANDBOX_AZURE_DEVOPS_PAT_ENV:-AZURE_DEVOPS_PAT}"
 
 if [[ ! -d "${HOST_REPO_PATH}/.git" ]]; then
@@ -198,6 +206,8 @@ git_with_push_auth() {
 
   if [[ "${PUSH_PROVIDER}" == "azure_devops" && -n "${AZURE_PAT_ENV_VALUE}" ]]; then
     git -C "${repo_path}" -c http.extraHeader="${AZURE_AUTH_HEADER}" "$@"
+  elif [[ "${PUSH_PROVIDER}" == "github" && "${USE_GH_GIT_CREDENTIAL_HELPER:-0}" == "1" ]]; then
+    git -C "${repo_path}" -c credential.https://github.com.helper='!/usr/bin/gh auth git-credential' "$@"
   else
     git -C "${repo_path}" "$@"
   fi
@@ -248,6 +258,29 @@ else:
         end="",
     )
 PY
+}
+
+github_https_origin_url() {
+  local origin_url="$1"
+  ORIGIN_URL_INPUT="${origin_url}" python3 - <<'PY'
+import os
+import re
+
+origin_url = os.environ["ORIGIN_URL_INPUT"]
+ssh_match = re.match(r"^git@github\.com:([^/]+/[^/]+?)(?:\.git)?$", origin_url)
+https_match = re.match(r"^https://github\.com/([^/]+/[^/]+?)(?:\.git)?$", origin_url)
+
+match = ssh_match or https_match
+if not match:
+    print("", end="")
+else:
+    print(f"https://github.com/{match.group(1)}.git", end="")
+PY
+}
+
+github_auth_available() {
+  command -v gh >/dev/null 2>&1 || return 1
+  gh auth status >/dev/null 2>&1
 }
 
 infer_repo_slug() {
@@ -397,6 +430,7 @@ fi
 PUSH_REMOTE_URL="${ORIGIN_URL}"
 AZURE_PAT_ENV_VALUE=""
 AZURE_AUTH_HEADER=""
+USE_GH_GIT_CREDENTIAL_HELPER=0
 if [[ "${PUSH_PROVIDER}" == "azure_devops" ]]; then
   AZURE_PAT_ENV_VALUE="${!AZURE_PAT_ENV:-}"
   if [[ -n "${AZURE_PAT_ENV_VALUE}" ]]; then
@@ -405,6 +439,14 @@ if [[ "${PUSH_PROVIDER}" == "azure_devops" ]]; then
       PUSH_REMOTE_URL="${HTTPS_ORIGIN_URL}"
     fi
     AZURE_AUTH_HEADER="Authorization: Basic $(printf ':%s' "${AZURE_PAT_ENV_VALUE}" | base64 | tr -d '\n')"
+  fi
+elif [[ "${PUSH_PROVIDER}" == "github" ]]; then
+  if github_auth_available; then
+    HTTPS_ORIGIN_URL="$(github_https_origin_url "${ORIGIN_URL}")"
+    if [[ -n "${HTTPS_ORIGIN_URL}" ]]; then
+      PUSH_REMOTE_URL="${HTTPS_ORIGIN_URL}"
+      USE_GH_GIT_CREDENTIAL_HELPER=1
+    fi
   fi
 fi
 
