@@ -176,6 +176,9 @@ sudo systemctl start agent-sandbox-host-heartbeat.service
 ```
 
 The generated units run as your user where appropriate and read environment files from `config/`.
+For private PR feedback polling, `config/host-heartbeat.env` must export `GITHUB_TOKEN` and/or
+`AZURE_DEVOPS_PAT` as needed, and `config/gateway.yaml` must set the correct
+`azure_devops_organization_url` and `azure_devops_project`.
 
 ### Azure DevOps backlog worker
 

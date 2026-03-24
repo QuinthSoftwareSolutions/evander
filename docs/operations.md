@@ -482,7 +482,10 @@ Before running install mode, ensure preflight is clean (or only warning-only), t
 8. Set `AZURE_ARTIFACTS_PAT` in `config/nuget-relay.env` when private feeds are required.
 9. Ensure the PAT variable named by `ADO_PAT_ENV_VAR_NAME` (default `AZURE_DEVOPS_PAT`) is
    exported for the service user and `config/ado-worker.env` points at the right project/paths.
-10. Review cadence/lock settings in `config/host-heartbeat.env` and then start and inspect services:
+10. For private PR feedback polling, set `GITHUB_TOKEN` and/or `AZURE_DEVOPS_PAT` in
+    `config/host-heartbeat.env` and ensure `config/gateway.yaml` sets the correct
+    `azure_devops_organization_url` and `azure_devops_project`.
+11. Review cadence/lock settings in `config/host-heartbeat.env` and then start and inspect services:
 
 ```bash
 sudo systemctl start agent-sandbox-firewall.service
