@@ -22,6 +22,11 @@ email_draft_recipient_allowlist: []
 email_draft_domain_allowlist: []
 email_send_enabled: false
 email_provider_timeout_seconds: 30.0
+host_heartbeat_poll_interval_seconds: 30.0
+host_heartbeat_jitter_seconds: 5.0
+host_heartbeat_cooldown_seconds: 60.0
+host_heartbeat_http_timeout_seconds: 30.0
+host_heartbeat_lock_path: "/home/jonathan/agent-sandbox/runtime/host-heartbeat.lock"
 email_mailboxes:
   - mailbox_id: "default"
     provider: "json_store"

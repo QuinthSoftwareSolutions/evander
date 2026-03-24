@@ -148,6 +148,7 @@ run_preflight_checks() {
   check_file "${ROOT_DIR}/config/firewall.env" "Copy config/firewall.env.example to config/firewall.env."
   check_file "${ROOT_DIR}/config/nuget-relay.env" "Copy config/nuget-relay.env.example to config/nuget-relay.env."
   check_file "${ROOT_DIR}/config/ado-worker.env" "Copy config/ado-worker.env.example to config/ado-worker.env and configure required values."
+  check_file "${ROOT_DIR}/config/host-heartbeat.env" "Copy config/host-heartbeat.env.example to config/host-heartbeat.env."
 
   check_env_var_in_file "${ROOT_DIR}/config/gateway.env" "AGENT_SANDBOX_CONFIG" "Set AGENT_SANDBOX_CONFIG to your gateway config path."
   check_env_var_in_file "${ROOT_DIR}/config/openai-relay.env" "AGENT_SANDBOX_CONFIG" "Set AGENT_SANDBOX_CONFIG to your gateway config path."
@@ -157,6 +158,7 @@ run_preflight_checks() {
   check_env_var_in_file "${ROOT_DIR}/config/ado-worker.env" "ADO_PROJECT" "Set ADO_PROJECT in config/ado-worker.env."
   check_env_var_in_file "${ROOT_DIR}/config/ado-worker.env" "ADO_PAT_ENV_VAR_NAME" "Set ADO_PAT_ENV_VAR_NAME in config/ado-worker.env."
   check_env_var_in_file "${ROOT_DIR}/config/ado-worker.env" "ADO_PROJECT_OR_SOLUTION" "Set ADO_PROJECT_OR_SOLUTION in config/ado-worker.env."
+  check_env_var_in_file "${ROOT_DIR}/config/host-heartbeat.env" "AGENT_SANDBOX_CONFIG" "Set AGENT_SANDBOX_CONFIG to your gateway config path."
 
   echo
   echo "Preflight summary: ${PASS_COUNT} passed, ${FAIL_COUNT} failed."
@@ -219,12 +221,17 @@ render_unit \
   "${ROOT_DIR}/systemd/agent-sandbox-ado-worker.service.template" \
   "${SYSTEMD_DIR}/agent-sandbox-ado-worker.service"
 
+render_unit \
+  "${ROOT_DIR}/systemd/agent-sandbox-host-heartbeat.service.template" \
+  "${SYSTEMD_DIR}/agent-sandbox-host-heartbeat.service"
+
 systemctl daemon-reload
 systemctl enable agent-sandbox-gateway.service
 systemctl enable agent-sandbox-openai-relay.service
 systemctl enable agent-sandbox-firewall.service
 systemctl enable agent-sandbox-nuget-relay.service
 systemctl enable agent-sandbox-ado-worker.service
+systemctl enable agent-sandbox-host-heartbeat.service
 
 cat <<EOF
 Installed systemd units:
@@ -233,6 +240,7 @@ Installed systemd units:
   agent-sandbox-firewall.service
   agent-sandbox-nuget-relay.service
   agent-sandbox-ado-worker.service
+  agent-sandbox-host-heartbeat.service
 
 Next steps:
   1. Edit ${ROOT_DIR}/config/openai-relay.env and set OPENAI_API_KEY.
@@ -245,4 +253,5 @@ Next steps:
      sudo systemctl start agent-sandbox-openai-relay.service
      sudo systemctl start agent-sandbox-nuget-relay.service
      sudo systemctl start agent-sandbox-ado-worker.service
+     sudo systemctl start agent-sandbox-host-heartbeat.service
 EOF

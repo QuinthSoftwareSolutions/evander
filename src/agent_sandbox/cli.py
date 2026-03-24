@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import subprocess
@@ -16,6 +17,7 @@ from pydantic import ValidationError
 
 from .ado_issue_worker import run_worker_command
 from .config import GatewayConfig, load_config
+from .host_heartbeat_worker import build_host_heartbeat_worker
 from .email.providers import JsonEmailProvider, MultiMailboxEmailProvider
 from .models import ApprovalStatus, DiscordCommandEnvelope, EmailMessage, SessionManifest, ToolName
 from .runtime import build_runtime
@@ -798,6 +800,38 @@ def seed_discord_channel(
         f"Seeded Discord channel {channel_id} with cursor {seed_cursor}. "
         "Use that cursor as the initial since_cursor for smoke tests."
     )
+
+
+
+
+@app.command("host-heartbeat")
+def host_heartbeat(
+    config: ConfigOption = Path("config/gateway.yaml"),
+    run_once: Annotated[
+        bool,
+        typer.Option("--once", help="Run a single heartbeat cycle and exit."),
+    ] = False,
+    log_level: Annotated[str, typer.Option("--log-level", help="Python logging level.")] = "INFO",
+) -> None:
+    logging_level = getattr(logging, log_level.upper(), None)
+    if not isinstance(logging_level, int):
+        raise typer.BadParameter(f"Invalid --log-level value: {log_level}")
+    logging.basicConfig(
+        level=logging_level,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+
+    cfg = load_config(config)
+    worker = build_host_heartbeat_worker(cfg)
+    if run_once:
+        result = worker.run_once()
+        typer.echo(
+            f"Host heartbeat cycle complete streams={result.streams_polled} "
+            f"discovered={result.discovered_feedback} sleep_seconds={result.next_sleep_seconds:.3f}"
+        )
+        return
+
+    worker.run_forever()
 
 
 @app.command("poll-ado-backlog")

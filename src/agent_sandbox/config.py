@@ -87,6 +87,11 @@ class GatewayConfig(BaseModel):
     azure_devops_organization_url: str = "https://dev.azure.com"
     azure_devops_project: str = "default"
     email_provider_timeout_seconds: float = Field(default=30.0, gt=0)
+    host_heartbeat_poll_interval_seconds: float = Field(default=30.0, gt=0)
+    host_heartbeat_jitter_seconds: float = Field(default=5.0, ge=0)
+    host_heartbeat_cooldown_seconds: float = Field(default=60.0, ge=0)
+    host_heartbeat_http_timeout_seconds: float = Field(default=30.0, gt=0)
+    host_heartbeat_lock_path: Path = Path("/var/lib/agent-sandbox/host-heartbeat.lock")
     email_mailboxes: list[MailboxConfig] = Field(
         default_factory=lambda: [
             MailboxConfig(
@@ -156,6 +161,7 @@ class GatewayConfig(BaseModel):
     def apply_runtime_path_defaults(self) -> GatewayConfig:
         default_runtime_dir = Path("/var/lib/agent-sandbox")
         default_paths = {
+            "host_heartbeat_lock_path": default_runtime_dir / "host-heartbeat.lock",
             "session_store_path": default_runtime_dir / "sessions.json",
             "approval_store_path": default_runtime_dir / "approvals.json",
             "draft_store_path": default_runtime_dir / "drafts.json",
