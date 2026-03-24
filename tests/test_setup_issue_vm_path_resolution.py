@@ -13,10 +13,12 @@ def _write_executable(path: Path, content: str) -> None:
 def _prepare_sandbox(tmp_path: Path) -> tuple[Path, Path, Path]:
     root = tmp_path / "sandbox"
     scripts_dir = root / "scripts"
+    lib_dir = scripts_dir / "lib"
     guest_scripts_dir = scripts_dir / "guest"
     config_dir = root / "config"
     fake_bin = tmp_path / "bin"
     scripts_dir.mkdir(parents=True)
+    lib_dir.mkdir(parents=True)
     guest_scripts_dir.mkdir(parents=True)
     config_dir.mkdir(parents=True)
     fake_bin.mkdir(parents=True)
@@ -32,6 +34,16 @@ def _prepare_sandbox(tmp_path: Path) -> tuple[Path, Path, Path]:
     target_agent_pr_note = guest_scripts_dir / "agent_pr_note.sh"
     target_agent_pr_note.write_text(source_agent_pr_note.read_text(encoding="utf-8"), encoding="utf-8")
     os.chmod(target_agent_pr_note, 0o755)
+
+    source_runner_lib = Path(__file__).resolve().parents[1] / "scripts" / "lib" / "agent_runner.sh"
+    source_runner_codex_lib = (
+        Path(__file__).resolve().parents[1] / "scripts" / "lib" / "agent_runner_codex.sh"
+    )
+    (lib_dir / "agent_runner.sh").write_text(source_runner_lib.read_text(encoding="utf-8"), encoding="utf-8")
+    (lib_dir / "agent_runner_codex.sh").write_text(
+        source_runner_codex_lib.read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
 
     _write_executable(
         scripts_dir / "resolve_repo_source.sh",
