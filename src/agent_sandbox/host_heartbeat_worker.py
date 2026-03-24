@@ -130,7 +130,7 @@ class HostHeartbeatWorker:
                 )
                 discovered_feedback += len(discovered)
                 if discovered:
-                    self._record_busy_skips(bindings)
+                    self._wake_bindings(bindings)
 
         next_sleep_seconds = _compute_next_sleep_seconds(
             poll_interval_seconds=self.config.host_heartbeat_poll_interval_seconds,
@@ -144,7 +144,7 @@ class HostHeartbeatWorker:
             next_sleep_seconds=next_sleep_seconds,
         )
 
-    def _record_busy_skips(self, bindings: list[StreamSessionBinding]) -> None:
+    def _wake_bindings(self, bindings: list[StreamSessionBinding]) -> None:
         for binding in bindings:
             if _is_session_in_cooldown(
                 path=self.config.host_heartbeat_session_cooldown_path,
@@ -173,6 +173,82 @@ class HostHeartbeatWorker:
                     binding.session_id,
                     binding.vm_id,
                 )
+                continue
+            self._resume_binding(binding)
+            _set_session_cooldown(
+                path=self.config.host_heartbeat_session_cooldown_path,
+                session_id=binding.session_id,
+                cooldown_seconds=self.config.host_heartbeat_cooldown_seconds,
+            )
+
+    def _resume_binding(self, binding: StreamSessionBinding) -> None:
+        if not binding.vm_id:
+            return
+        script_path = self.config.host_resume_script_path
+        if not script_path.exists():
+            logger.warning(
+                "Resume script missing path=%s session_id=%s vm_id=%s",
+                script_path,
+                binding.session_id,
+                binding.vm_id,
+            )
+            return
+        cmd = [
+            str(script_path),
+            "--prompt",
+            self.config.host_heartbeat_resume_prompt,
+            "--vm-name",
+            binding.vm_id,
+            "--session-id",
+            binding.session_id,
+            "--vm-user",
+            self.config.host_heartbeat_vm_user,
+            "--worker-mode",
+            "--host-state-file",
+            str(self.config.host_heartbeat_wake_state_path),
+        ]
+        try:
+            completed = subprocess.run(
+                cmd,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=self.config.host_heartbeat_resume_timeout_seconds,
+            )
+        except OSError:
+            logger.warning(
+                "Resume script invocation failed path=%s session_id=%s vm_id=%s",
+                script_path,
+                binding.session_id,
+                binding.vm_id,
+                exc_info=True,
+            )
+            return
+        except subprocess.TimeoutExpired:
+            logger.warning(
+                "Resume script timed out path=%s session_id=%s vm_id=%s timeout_seconds=%.3f",
+                script_path,
+                binding.session_id,
+                binding.vm_id,
+                self.config.host_heartbeat_resume_timeout_seconds,
+            )
+            return
+
+        if completed.returncode == 0:
+            logger.info(
+                "Host heartbeat wake dispatched session_id=%s vm_id=%s",
+                binding.session_id,
+                binding.vm_id,
+            )
+            return
+        logger.warning(
+            "Host heartbeat wake failed session_id=%s vm_id=%s exit_code=%s stdout=%s stderr=%s",
+            binding.session_id,
+            binding.vm_id,
+            completed.returncode,
+            (completed.stdout or "").strip(),
+            (completed.stderr or "").strip(),
+        )
 
     def _collect_stream_mappings(self) -> dict[FeedbackStream, list[StreamSessionBinding]]:
         now = datetime.now(timezone.utc)
