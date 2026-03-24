@@ -34,16 +34,20 @@ guest_ssh_prepare_known_host() {
   local known_hosts_path
   local scan_timeout_seconds
   local scan_output
+  local found_existing=1
+  local scanned_host
+  local key_type
+  local key_value
 
   known_hosts_path="$(guest_ssh_known_hosts_path "${caller_home}")"
   guest_ssh_ensure_known_hosts_file "${caller_home}"
 
-  if ssh-keygen -F "${vm_name}" -f "${known_hosts_path}" >/dev/null 2>&1; then
-    return 0
+  if ! ssh-keygen -F "${vm_name}" -f "${known_hosts_path}" >/dev/null 2>&1; then
+    found_existing=0
   fi
 
   if ! command -v ssh-keyscan >/dev/null 2>&1; then
-    return 1
+    return "${found_existing}"
   fi
 
   scan_timeout_seconds="${AGENT_SANDBOX_GUEST_KEYSCAN_TIMEOUT_SECONDS:-5}"
@@ -52,10 +56,25 @@ guest_ssh_prepare_known_host() {
       | sed "s/^[^ ,][^ ]*/${vm_name}/"
   )"
   if [[ -z "${scan_output}" ]]; then
-    return 1
+    return "${found_existing}"
   fi
 
-  printf '%s\n' "${scan_output}" >> "${known_hosts_path}"
+  while read -r scanned_host key_type key_value; do
+    [[ -n "${scanned_host}" && -n "${key_type}" && -n "${key_value}" ]] || continue
+    if awk -v host="${scanned_host}" -v wanted_type="${key_type}" '
+      $1 == host && $2 == wanted_type { found = 1; exit }
+      END { exit(found ? 0 : 1) }
+    ' "${known_hosts_path}" >/dev/null 2>&1; then
+      continue
+    fi
+    printf '%s %s %s\n' "${scanned_host}" "${key_type}" "${key_value}" >> "${known_hosts_path}"
+    found_existing=0
+  done <<< "${scan_output}"
+
+  if ssh-keygen -F "${vm_name}" -f "${known_hosts_path}" >/dev/null 2>&1; then
+    return 0
+  fi
+  return 1
 }
 
 guest_ssh_options() {
