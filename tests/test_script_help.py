@@ -30,6 +30,7 @@ SCRIPTS = [
     "prewarm_nuget_cache.sh",
     "resume_issue_agent.sh",
     "resolve_repo_source.sh",
+    "set_issue_agent_state.sh",
     "setup_issue_git_vm.sh",
     "setup_issue_vm.sh",
     "tail_issue_vm_log.sh",

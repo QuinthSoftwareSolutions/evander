@@ -95,6 +95,7 @@
    It also creates a shared host NuGet cache under `/var/lib/libvirt/images/agent-sandbox/nuget-cache/global-packages` and mounts it read-only into the guest at `/opt/agent-sandbox/nuget-cache-ro` via `virtiofs`.
    New VMs default to a `20G` virtual disk; override with `DISK_SIZE_GB=...` before launch if needed.
    New VMs receive provider-neutral baseline config (`/etc/agent-sandbox/session.env` and `/home/agent/.agent/config.env`) plus a shell profile hook; Codex-specific config is written later by `bootstrap_codex_vm.sh`.
+   Host-side guest SSH commands cache guest host keys in `~/.ssh/agent-sandbox-known_hosts` keyed by VM name, so repeated `list-vms`, bootstrap, and `agent-sandbox-cli ssh` calls stay quiet while preserving normal SSH host-key warnings.
    To see all currently running VMs together with live guest agent status, run `agent-sandbox-cli list-vms`.
 
 8. (Optional) Bootstrap a provider runtime inside the VM:

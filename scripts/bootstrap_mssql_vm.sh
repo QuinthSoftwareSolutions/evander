@@ -73,6 +73,8 @@ fi
 VM_NAME="$1"
 VM_USER="${2:-agent}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/guest_ssh.sh
+source "${SCRIPT_DIR}/lib/guest_ssh.sh"
 
 MSSQL_SA_PASSWORD="${MSSQL_SA_PASSWORD:-}"
 if [[ -z "${MSSQL_SA_PASSWORD}" ]]; then
@@ -98,8 +100,6 @@ if [[ ! -f "${SSH_KEY_PATH}" ]]; then
   SSH_KEY_PATH="${CALLER_HOME}/.ssh/id_rsa"
 fi
 SSH_OPTS=(
-  -o StrictHostKeyChecking=no
-  -o UserKnownHostsFile=/dev/null
   -i "${SSH_KEY_PATH}"
 )
 
@@ -130,6 +130,7 @@ get_vm_ip() {
 }
 
 VM_IP="$(get_vm_ip)"
+mapfile -t SSH_OPTS < <(guest_ssh_options "${VM_NAME}" "${VM_IP}" "${SSH_KEY_PATH}" "${CALLER_HOME}")
 
 "${SCRIPT_DIR}/bootstrap_mssql_tools_vm.sh" "${VM_NAME}" "${VM_USER}"
 MSSQL_SA_PASSWORD="${MSSQL_SA_PASSWORD}" MSSQL_PID="${MSSQL_PID}" \

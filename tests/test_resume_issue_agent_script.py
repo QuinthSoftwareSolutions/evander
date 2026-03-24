@@ -15,6 +15,7 @@ def _prepare_script(tmp_path: Path) -> tuple[Path, Path]:
     root = Path(__file__).resolve().parents[1]
     source_script = root / "scripts" / "resume_issue_agent.sh"
     source_lib = root / "scripts" / "lib" / "vm_network.sh"
+    source_guest_ssh_lib = root / "scripts" / "lib" / "guest_ssh.sh"
     source_runner_lib = root / "scripts" / "lib" / "agent_runner.sh"
     source_runner_codex_lib = root / "scripts" / "lib" / "agent_runner_codex.sh"
     source_state_lib = root / "scripts" / "lib" / "agent_state.sh"
@@ -31,6 +32,8 @@ def _prepare_script(tmp_path: Path) -> tuple[Path, Path]:
 
     lib_path = lib_dir / "vm_network.sh"
     lib_path.write_text(source_lib.read_text(encoding="utf-8"), encoding="utf-8")
+    guest_ssh_lib_path = lib_dir / "guest_ssh.sh"
+    guest_ssh_lib_path.write_text(source_guest_ssh_lib.read_text(encoding="utf-8"), encoding="utf-8")
     runner_lib_path = lib_dir / "agent_runner.sh"
     runner_lib_path.write_text(source_runner_lib.read_text(encoding="utf-8"), encoding="utf-8")
     runner_codex_lib_path = lib_dir / "agent_runner_codex.sh"
@@ -40,6 +43,14 @@ def _prepare_script(tmp_path: Path) -> tuple[Path, Path]:
 
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
+    _write_executable(
+        fake_bin / "ssh-keyscan",
+        """#!/usr/bin/env bash
+set -euo pipefail
+host="${@: -1}"
+printf '%s %s %s\\n' "${host}" "ssh-ed25519" "AAAA-test-host-key"
+""",
+    )
     return script_path, fake_bin
 
 
@@ -242,6 +253,7 @@ def test_resume_issue_agent_tracks_explicit_state_lifecycle() -> None:
 
     assert 'STATE_PATH="${LOG_DIR}/codex-resume-last.state"' in script_text
     assert 'AGENT_STATE_REPO_NAME="resume-last"' in script_text
+    assert 'ensure_agent_enabled' in script_text
     assert 'write_state "running" "resume"' in script_text
     assert 'trap on_exit_write_idle EXIT' in script_text
     assert 'AGENT_STATE_LIB_B64' in script_text

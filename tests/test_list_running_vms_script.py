@@ -15,6 +15,7 @@ def _prepare_script(tmp_path: Path) -> tuple[Path, Path]:
     source_script = root / "scripts" / "list_running_vms.sh"
     source_lib = root / "scripts" / "lib" / "vm_network.sh"
     source_agent_lib = root / "scripts" / "lib" / "agent_status.sh"
+    source_guest_ssh_lib = root / "scripts" / "lib" / "guest_ssh.sh"
 
     sandbox_root = tmp_path / "sandbox"
     scripts_dir = sandbox_root / "scripts"
@@ -30,9 +31,19 @@ def _prepare_script(tmp_path: Path) -> tuple[Path, Path]:
     lib_path.write_text(source_lib.read_text(encoding="utf-8"), encoding="utf-8")
     agent_lib_path = lib_dir / "agent_status.sh"
     agent_lib_path.write_text(source_agent_lib.read_text(encoding="utf-8"), encoding="utf-8")
+    guest_ssh_lib_path = lib_dir / "guest_ssh.sh"
+    guest_ssh_lib_path.write_text(source_guest_ssh_lib.read_text(encoding="utf-8"), encoding="utf-8")
 
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
+    _write_executable(
+        fake_bin / "ssh-keyscan",
+        """#!/usr/bin/env bash
+set -euo pipefail
+host="${@: -1}"
+printf '%s %s %s\\n' "${host}" "ssh-ed25519" "AAAA-test-host-key"
+""",
+    )
     return script_path, fake_bin
 
 
@@ -277,3 +288,68 @@ esac
     assert "unavailable" in lines[2]
     assert lines[2].endswith("inactive VM")
     assert ssh_calls.read_text(encoding="utf-8").splitlines() == ["called"]
+
+
+def test_list_running_vms_uses_vm_alias_known_hosts_file(tmp_path: Path) -> None:
+    script_path, fake_bin = _prepare_script(tmp_path)
+    private_key = tmp_path / "id_ed25519"
+    private_key.write_text("PRIVATE\n", encoding="utf-8")
+    ssh_log = tmp_path / "ssh.log"
+
+    _write_executable(
+        fake_bin / "virsh",
+        """#!/usr/bin/env bash
+set -euo pipefail
+cmd="${1:-}"
+shift || true
+
+case "${cmd}" in
+  list)
+    printf 'vm-clean\\n'
+    ;;
+  dominfo)
+    [[ "${1:-}" == "vm-clean" ]] || exit 1
+    cat <<'EOF'
+Id:             11
+Name:           vm-clean
+State:          running
+EOF
+    ;;
+  domifaddr)
+    [[ "${1:-}" == "vm-clean" ]] || exit 1
+    printf 'vnet0 52:54:00:00:00:04 ipv4 192.168.122.14/24\\n'
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+""",
+    )
+
+    _write_executable(
+        fake_bin / "ssh",
+        f"""#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> "{ssh_log}"
+printf '%s\\n' 'idle'
+""",
+    )
+
+    env = os.environ.copy()
+    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+    env["SSH_PRIVATE_KEY_PATH"] = str(private_key)
+    env["USER"] = env.get("USER", "root")
+
+    result = subprocess.run(
+        [str(script_path)],
+        text=True,
+        capture_output=True,
+        env=env,
+        check=True,
+    )
+
+    assert result.stderr == ""
+    ssh_args = ssh_log.read_text(encoding="utf-8").strip()
+    assert "-o StrictHostKeyChecking=yes" in ssh_args
+    assert "-o HostKeyAlias=vm-clean" in ssh_args
+    assert "agent-sandbox-known_hosts" in ssh_args

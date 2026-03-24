@@ -975,6 +975,33 @@ def test_list_vms_all_invokes_script_with_all_flag(tmp_path: Path, monkeypatch) 
     assert captured_cmd[1:] == ["--all", "root"]
 
 
+def test_list_vms_omit_state_invokes_script_with_omit_state_flag(tmp_path: Path, monkeypatch) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+    captured_cmd: list[str] = []
+
+    init_result = runner.invoke(app, ["init-state", "--config", str(config_path)])
+    assert init_result.exit_code == 0
+
+    def fake_run(
+        cmd: list[str],
+        check: bool,
+        capture_output: bool,
+        text: bool,
+    ) -> subprocess.CompletedProcess[str]:
+        nonlocal captured_cmd
+        captured_cmd = cmd
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("agent_sandbox.cli.subprocess.run", fake_run)
+
+    result = runner.invoke(app, ["list-vms", "--omit-state", "--vm-user", "root"])
+
+    assert result.exit_code == 0
+    assert captured_cmd[0].endswith("/scripts/list_running_vms.sh")
+    assert captured_cmd[1:] == ["--omit-state", "root"]
+
+
 def test_ssh_resolves_issue_number_to_vm_name(tmp_path: Path, monkeypatch) -> None:
     config_path = write_config(tmp_path)
     runner = CliRunner()
@@ -1000,6 +1027,60 @@ def test_ssh_resolves_issue_number_to_vm_name(tmp_path: Path, monkeypatch) -> No
     assert result.exit_code == 0
     assert captured_cmd[0].endswith("/scripts/ssh.sh")
     assert captured_cmd[1:] == ["vm-12305", "agent"]
+
+
+def test_disable_agent_invokes_state_script(tmp_path: Path, monkeypatch) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+    captured_cmd: list[str] = []
+
+    init_result = runner.invoke(app, ["init-state", "--config", str(config_path)])
+    assert init_result.exit_code == 0
+
+    def fake_run(
+        cmd: list[str],
+        check: bool,
+        capture_output: bool,
+        text: bool,
+    ) -> subprocess.CompletedProcess[str]:
+        nonlocal captured_cmd
+        captured_cmd = cmd
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("agent_sandbox.cli.subprocess.run", fake_run)
+
+    result = runner.invoke(app, ["disable-agent", "12305", "--vm-user", "root"])
+
+    assert result.exit_code == 0
+    assert captured_cmd[0].endswith("/scripts/set_issue_agent_state.sh")
+    assert captured_cmd[1:] == ["disable", "12305", "root"]
+
+
+def test_enable_agent_invokes_state_script(tmp_path: Path, monkeypatch) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+    captured_cmd: list[str] = []
+
+    init_result = runner.invoke(app, ["init-state", "--config", str(config_path)])
+    assert init_result.exit_code == 0
+
+    def fake_run(
+        cmd: list[str],
+        check: bool,
+        capture_output: bool,
+        text: bool,
+    ) -> subprocess.CompletedProcess[str]:
+        nonlocal captured_cmd
+        captured_cmd = cmd
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("agent_sandbox.cli.subprocess.run", fake_run)
+
+    result = runner.invoke(app, ["enable-agent", "vm-12305"])
+
+    assert result.exit_code == 0
+    assert captured_cmd[0].endswith("/scripts/set_issue_agent_state.sh")
+    assert captured_cmd[1:] == ["enable", "12305", "agent"]
 
 
 def test_logs_invokes_script_with_issue_number_and_repo_name(tmp_path: Path, monkeypatch) -> None:

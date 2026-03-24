@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 
+# shellcheck source=lib/guest_ssh.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/guest_ssh.sh"
+
 vm_network_domain_state() {
   local vm_name="$1"
   local state
@@ -100,15 +103,24 @@ vm_network_wait_for_ssh() {
   local ssh_private_key_path="$4"
   local timeout_seconds="$5"
   local deadline
+  local caller_user
+  local caller_home
+  local -a ssh_opts
+
+  caller_user="${SUDO_USER:-${USER:-}}"
+  caller_home="${HOME:-}"
+  if [[ -n "${caller_user}" ]]; then
+    caller_home="$(getent passwd "${caller_user}" | cut -d: -f6 || printf '%s\n' "${caller_home}")"
+  fi
+
+  mapfile -t ssh_opts < <(guest_ssh_options "${vm_name}" "${vm_ip}" "${ssh_private_key_path}" "${caller_home}")
+  ssh_opts+=(-o ConnectTimeout=5)
 
   deadline=$((SECONDS + timeout_seconds))
 
   while (( SECONDS < deadline )); do
     if ssh \
-      -o StrictHostKeyChecking=no \
-      -o UserKnownHostsFile=/dev/null \
-      -o ConnectTimeout=5 \
-      -i "${ssh_private_key_path}" \
+      "${ssh_opts[@]}" \
       "${vm_user}@${vm_ip}" true >/dev/null 2>&1; then
       return 0
     fi

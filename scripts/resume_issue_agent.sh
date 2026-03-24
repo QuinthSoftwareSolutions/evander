@@ -301,12 +301,8 @@ if ! vm_network_wait_for_ssh "${VM_NAME}" "${VM_IP}" "${VM_USER}" "${SSH_PRIVATE
 fi
 
 PROMPT_B64="$(printf '%s' "${PROMPT}" | base64 -w0)"
-SSH_FLAGS=(
-  -o StrictHostKeyChecking=no
-  -o UserKnownHostsFile=/dev/null
-  -o ConnectTimeout=5
-  -i "${SSH_PRIVATE_KEY_PATH}"
-)
+mapfile -t SSH_FLAGS < <(guest_ssh_options "${VM_NAME}" "${VM_IP}" "${SSH_PRIVATE_KEY_PATH}" "${caller_home}")
+SSH_FLAGS+=(-o ConnectTimeout=5)
 
 if (( WORKER_MODE )); then
   set +e
@@ -333,6 +329,8 @@ STATE_PATH="${LOG_DIR}/codex-resume-last.state"
 AGENT_STATE_REPO_NAME="resume-last"
 PROMPT="$(python3 -c 'import base64, os; print(base64.b64decode(os.environ["PROMPT_B64"]).decode("utf-8"))')"
 mkdir -p "${LOG_DIR}"
+
+ensure_agent_enabled
 
 write_state "running" "resume"
 trap on_exit_write_idle EXIT
@@ -363,7 +361,7 @@ fi
 resume_output="$(
   ssh "${SSH_FLAGS[@]}" \
     "${VM_USER}@${VM_IP}" \
-    "PROMPT_B64='${PROMPT_B64}' AGENT_PROVIDER='${AGENT_PROVIDER}' AGENT_MODEL='${AGENT_MODEL}' AGENT_RUNNER_LIB_B64='${AGENT_RUNNER_LIB_B64}' AGENT_RUNNER_CODEX_LIB_B64='${AGENT_RUNNER_CODEX_LIB_B64}' bash -s" <<'REMOTE'
+    "PROMPT_B64='${PROMPT_B64}' AGENT_PROVIDER='${AGENT_PROVIDER}' AGENT_MODEL='${AGENT_MODEL}' AGENT_RUNNER_LIB_B64='${AGENT_RUNNER_LIB_B64}' AGENT_RUNNER_CODEX_LIB_B64='${AGENT_RUNNER_CODEX_LIB_B64}' AGENT_STATE_LIB_B64='${AGENT_STATE_LIB_B64}' bash -s" <<'REMOTE'
 set -euo pipefail
 
 cd "${HOME}"
@@ -373,16 +371,22 @@ AGENT_RUNNER_TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "${AGENT_RUNNER_TMP_DIR}"' EXIT
 printf '%s' "${AGENT_RUNNER_LIB_B64}" | base64 -d > "${AGENT_RUNNER_TMP_DIR}/agent_runner.sh"
 printf '%s' "${AGENT_RUNNER_CODEX_LIB_B64}" | base64 -d > "${AGENT_RUNNER_TMP_DIR}/agent_runner_codex.sh"
+printf '%s' "${AGENT_STATE_LIB_B64}" | base64 -d > "${AGENT_RUNNER_TMP_DIR}/agent_state.sh"
 # shellcheck source=/dev/null
 source "${AGENT_RUNNER_TMP_DIR}/agent_runner.sh"
+source "${AGENT_RUNNER_TMP_DIR}/agent_state.sh"
 
 LOG_DIR="${HOME}/.agent-sandbox"
 RUN_LOG_FILE="${LOG_DIR}/codex-heartbeat-run.log"
 RESUME_HINT_FILE="${LOG_DIR}/resume-args.txt"
 PID_FILE="${LOG_DIR}/codex-heartbeat.pid"
+STATE_PATH="${LOG_DIR}/codex-resume-last.state"
+AGENT_STATE_REPO_NAME="resume-last"
 PROMPT="$(python3 -c 'import base64, os; print(base64.b64decode(os.environ["PROMPT_B64"]).decode("utf-8"))')"
 
 mkdir -p "${LOG_DIR}"
+
+ensure_agent_enabled
 
 if [[ -f "${PID_FILE}" ]]; then
   EXISTING_PID="$(cat "${PID_FILE}")"

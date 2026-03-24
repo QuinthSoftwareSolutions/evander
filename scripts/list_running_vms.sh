@@ -5,14 +5,16 @@ show_help() {
   cat <<'EOF'
 Usage: list_running_vms.sh [--all] [vm-user]
 
-List currently running libvirt VMs and show whether a guest agent is
-currently running inside each VM.
+List currently running libvirt VMs and show the current guest agent state
+inside each VM.
 
 Arguments:
   vm-user  Guest user to inspect over SSH. Default: agent
 
 Options:
   --all    Include inactive libvirt VMs in the output.
+  --omit-state
+           Skip SSH guest state inspection for faster output.
 
 Environment:
   SSH_PRIVATE_KEY_PATH                  Private key for guest SSH access.
@@ -28,11 +30,16 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
 fi
 
 INCLUDE_ALL=0
+OMIT_STATE=0
 POSITIONAL_ARGS=()
 while [[ $# -gt 0 ]]; do
   case "${1}" in
     --all)
       INCLUDE_ALL=1
+      shift
+      ;;
+    --omit-state)
+      OMIT_STATE=1
       shift
       ;;
     --)
@@ -113,7 +120,13 @@ dominfo_field() {
 }
 
 agent_status_for_vm() {
-  local vm_ip="$1"
+  local vm_name="$1"
+  local vm_ip="$2"
+
+  if (( OMIT_STATE )); then
+    printf '%s\n' "omitted"
+    return 0
+  fi
 
   if (( ! have_ssh_key )); then
     printf '%s\n' "unknown (missing SSH key)"
@@ -122,6 +135,7 @@ agent_status_for_vm() {
 
   vm_agent_status_from_ssh \
     "${VM_USER}" \
+    "${vm_name}" \
     "${vm_ip}" \
     "${SSH_PRIVATE_KEY_PATH}" \
     "${VM_AGENT_LIST_CONNECT_TIMEOUT_SECONDS}"
@@ -146,7 +160,7 @@ for vm_name in "${vms[@]}"; do
     vm_ip="unavailable"
     agent_status="unknown (no IP)"
   else
-    agent_status="$(agent_status_for_vm "${vm_ip}")"
+    agent_status="$(agent_status_for_vm "${vm_name}" "${vm_ip}")"
   fi
 
   printf '%-4s %-24s %-10s %-15s %s\n' \

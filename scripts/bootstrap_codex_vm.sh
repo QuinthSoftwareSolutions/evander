@@ -34,6 +34,8 @@ VM_NAME="$1"
 VM_USER="${2:-agent}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+# shellcheck source=lib/guest_ssh.sh
+source "${SCRIPT_DIR}/lib/guest_ssh.sh"
 CALLER_USER="${SUDO_USER:-$USER}"
 CALLER_HOME="$(getent passwd "${CALLER_USER}" | cut -d: -f6)"
 SSH_KEY_PATH="${SSH_KEY_PATH:-${CALLER_HOME}/.ssh/id_ed25519}"
@@ -46,8 +48,6 @@ VENDOR_DIR="${HOST_CODEX_ROOT}/node_modules/@openai/codex-linux-x64/vendor/x86_6
 LLM_BASE_URL="${LLM_BASE_URL:-}"
 ENABLE_GUEST_HEARTBEAT="${ENABLE_GUEST_HEARTBEAT:-0}"
 SSH_OPTS=(
-  -o StrictHostKeyChecking=no
-  -o UserKnownHostsFile=/dev/null
   -i "${SSH_KEY_PATH}"
 )
 LEGACY_HEARTBEAT_DIR="${ROOT_DIR}/scripts/guest"
@@ -90,6 +90,7 @@ get_vm_ip() {
 }
 
 VM_IP="$(get_vm_ip)"
+mapfile -t SSH_OPTS < <(guest_ssh_options "${VM_NAME}" "${VM_IP}" "${SSH_KEY_PATH}" "${CALLER_HOME}")
 
 echo "Bootstrapping Codex into ${VM_USER}@${VM_IP}"
 

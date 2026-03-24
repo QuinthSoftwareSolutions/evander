@@ -423,6 +423,7 @@ echo "Guest IPv4 detected: ${VM_IP}"
 log_step "wait_for_ssh"
 vm_network_wait_for_ssh "${VM_NAME}" "${VM_IP}" "${VM_USER}" "${SSH_PRIVATE_KEY_PATH}" "${VM_WAIT_SSH_TIMEOUT_SECONDS}"
 echo "Guest SSH is ready on ${VM_USER}@${VM_IP}"
+mapfile -t SSH_OPTS < <(guest_ssh_options "${VM_NAME}" "${VM_IP}" "${SSH_PRIVATE_KEY_PATH}" "${CALLER_HOME}")
 log_step "bootstrap_codex"
 "${SCRIPT_DIR}/bootstrap_codex_vm.sh" "${VM_NAME}" "${VM_USER}"
 if (( BOOTSTRAP_DOTNET )); then
@@ -452,9 +453,7 @@ log_step "setup_issue_git_vm"
 
 log_step "guest_repo_clone_and_config"
 ssh \
-  -o StrictHostKeyChecking=no \
-  -o UserKnownHostsFile=/dev/null \
-  -i "${SSH_PRIVATE_KEY_PATH}" \
+  "${SSH_OPTS[@]}" \
   "${VM_USER}@${VM_IP}" \
   "GUEST_REPO_NAME='${GUEST_REPO_NAME}' ISSUE_NUMBER='${ISSUE_NUMBER}' SESSION_ID='${SESSION_ID}' REMOTE_URL='${REMOTE_URL}' AGENT_BRANCH_SUFFIX='${VM_NAME}' BOOTSTRAP_DOTNET='${BOOTSTRAP_DOTNET}' BOOTSTRAP_NUGET='${BOOTSTRAP_NUGET}' BOOTSTRAP_FRONTEND_DEPS='${BOOTSTRAP_FRONTEND_DEPS}' FRONTEND_INSTALL_ROOTS_JSON='${FRONTEND_INSTALL_ROOTS_JSON}' AGENT_PR_NOTE_HELPER_B64='${AGENT_PR_NOTE_HELPER_B64}' bash -s" <<'EOF'
 set -euo pipefail
@@ -607,17 +606,13 @@ EOF
 if [[ -n "${ISSUE_FILE}" ]]; then
   log_step "copy_issue_file"
   scp \
-    -o StrictHostKeyChecking=no \
-    -o UserKnownHostsFile=/dev/null \
-    -i "${SSH_PRIVATE_KEY_PATH}" \
+    "${SSH_OPTS[@]}" \
     "${ISSUE_FILE}" \
     "${VM_USER}@${VM_IP}:/home/${VM_USER}/${GUEST_REPO_NAME}/AGENT_TASK.yaml" >/dev/null
 else
   log_step "write_default_issue_file"
   ssh \
-    -o StrictHostKeyChecking=no \
-    -o UserKnownHostsFile=/dev/null \
-    -i "${SSH_PRIVATE_KEY_PATH}" \
+    "${SSH_OPTS[@]}" \
     "${VM_USER}@${VM_IP}" \
     "cat > /home/${VM_USER}/${GUEST_REPO_NAME}/AGENT_TASK.yaml" <<EOF
 issue_number: ${ISSUE_NUMBER}
@@ -630,9 +625,7 @@ fi
 if (( START_AGENT )); then
   log_step "start_agent"
   ssh \
-    -o StrictHostKeyChecking=no \
-    -o UserKnownHostsFile=/dev/null \
-    -i "${SSH_PRIVATE_KEY_PATH}" \
+    "${SSH_OPTS[@]}" \
     "${VM_USER}@${VM_IP}" \
     "GUEST_REPO_NAME='${GUEST_REPO_NAME}' AGENT_PROVIDER='${AGENT_PROVIDER}' AGENT_MODEL='${AGENT_MODEL}' POST_EXEC_VERIFICATION_PROMPT_B64='${POST_EXEC_VERIFICATION_PROMPT_B64}' AGENT_RUNNER_LIB_B64='${AGENT_RUNNER_LIB_B64}' AGENT_RUNNER_CODEX_LIB_B64='${AGENT_RUNNER_CODEX_LIB_B64}' AGENT_STATE_LIB_B64='${AGENT_STATE_LIB_B64}' BOOTSTRAP_DOTNET='${BOOTSTRAP_DOTNET}' BOOTSTRAP_NUGET='${BOOTSTRAP_NUGET}' bash -s" <<'EOF'
 set -euo pipefail
@@ -651,6 +644,8 @@ printf '%s' "${AGENT_STATE_LIB_B64}" | base64 -d > "${LOG_DIR}/lib/agent_state.s
 LOG_PATH="${LOG_DIR}/agent-${GUEST_REPO_NAME}.log"
 PID_PATH="${LOG_DIR}/agent-${GUEST_REPO_NAME}.pid"
 STATE_PATH="${LOG_DIR}/agent-${GUEST_REPO_NAME}.state"
+# shellcheck source=/dev/null
+source "${LOG_DIR}/lib/agent_state.sh"
 INITIAL_PROMPT="You have been issued the task described in ${TARGET_DIR}/AGENT_TASK.yaml. Read ${HOME}/AGENTS.md and ${TARGET_DIR}/AGENT_TASK.yaml before you begin. The repository is located at ${TARGET_DIR}. Do not ask for feedback or clarifications, but work until the task is completed or until you determine that it is impossible to complete."
 if [[ "${BOOTSTRAP_DOTNET:-0}" == "1" && "${BOOTSTRAP_NUGET:-0}" == "1" ]]; then
   INITIAL_PROMPT="${INITIAL_PROMPT} When restore is needed, use 'dotnet restore --configfile ~/.nuget/NuGet/NuGet.Config'. For build and test, prefer '--no-restore'."
@@ -668,6 +663,8 @@ if [[ -f "${PID_PATH}" ]]; then
   fi
 fi
 
+ensure_agent_enabled
+
 nohup env \
   AGENT_PROVIDER="${AGENT_PROVIDER}" \
   AGENT_MODEL="${AGENT_MODEL}" \
@@ -679,6 +676,8 @@ nohup env \
   AGENT_STATE_REPO_NAME="${GUEST_REPO_NAME}" \
   bash -lc '
 . "$HOME/.agent-sandbox/lib/agent_state.sh"
+
+ensure_agent_enabled
 
 write_state "running" "initial"
 trap on_exit_write_idle EXIT

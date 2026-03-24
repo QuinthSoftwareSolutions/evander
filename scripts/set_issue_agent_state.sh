@@ -1,0 +1,214 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+EXIT_USAGE=10
+EXIT_MISSING_SSH_KEY=11
+EXIT_VM_NOT_FOUND=12
+EXIT_VM_WAIT_IP_TIMEOUT=14
+EXIT_VM_WAIT_SSH_TIMEOUT=15
+
+show_help() {
+  cat <<'USAGE'
+Usage:
+  set_issue_agent_state.sh <enable|disable> <issue-number> [vm-user]
+  set_issue_agent_state.sh --state <enable|disable> (--issue-number <number> | --vm-name <name>) [options]
+
+Set the guest agent control state for a VM. `disable` marks the agent unavailable
+and stops any tracked guest agent processes. `enable` clears the disabled control
+state back to `idle`.
+
+Arguments (legacy positional mode):
+  enable|disable  Desired control action.
+  issue-number    Issue identifier used to derive the VM name.
+  vm-user         Guest user to connect as. Default: agent
+
+Options:
+  --state ACTION        Desired action: enable or disable.
+  --issue-number NUM    Issue identifier used to derive VM name (`vm-<issue-number>`).
+  --vm-name NAME        Explicit libvirt domain name.
+  --vm-user USER        Guest user to connect as. Default: agent
+  -h, --help            Show this help text.
+
+Environment:
+  SSH_PRIVATE_KEY_PATH         Private key for guest SSH access.
+                               Default: ~/.ssh/id_ed25519, then ~/.ssh/id_rsa
+  VM_WAIT_IP_TIMEOUT_SECONDS   How long to wait for guest IPv4 address. Default: 180
+  VM_WAIT_SSH_TIMEOUT_SECONDS  How long to wait for guest SSH to accept connections. Default: 180
+USAGE
+}
+
+resolve_private_key_path() {
+  local caller_user caller_home
+
+  caller_user="${SUDO_USER:-${USER:-}}"
+  caller_home="${HOME:-}"
+  if [[ -n "${caller_user}" ]]; then
+    caller_home="$(getent passwd "${caller_user}" | cut -d: -f6 || printf '%s\n' "${caller_home}")"
+  fi
+
+  SSH_PRIVATE_KEY_PATH="${SSH_PRIVATE_KEY_PATH:-${caller_home}/.ssh/id_ed25519}"
+  if [[ ! -f "${SSH_PRIVATE_KEY_PATH}" ]]; then
+    SSH_PRIVATE_KEY_PATH="${caller_home}/.ssh/id_rsa"
+  fi
+
+  [[ -f "${SSH_PRIVATE_KEY_PATH}" ]]
+}
+
+parse_args() {
+  DESIRED_ACTION=""
+  ISSUE_NUMBER=""
+  VM_NAME=""
+  VM_USER="agent"
+
+  if [[ $# -eq 0 ]]; then
+    return 1
+  fi
+
+  if [[ "$1" != --* ]]; then
+    if [[ $# -lt 2 || $# -gt 3 ]]; then
+      return 1
+    fi
+    DESIRED_ACTION="$1"
+    ISSUE_NUMBER="$2"
+    VM_NAME="vm-${ISSUE_NUMBER}"
+    if [[ $# -eq 3 ]]; then
+      VM_USER="$3"
+    fi
+  else
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --state)
+          DESIRED_ACTION="${2:-}"
+          shift 2
+          ;;
+        --issue-number)
+          ISSUE_NUMBER="${2:-}"
+          VM_NAME="vm-${ISSUE_NUMBER}"
+          shift 2
+          ;;
+        --vm-name)
+          VM_NAME="${2:-}"
+          shift 2
+          ;;
+        --vm-user)
+          VM_USER="${2:-}"
+          shift 2
+          ;;
+        -h|--help)
+          show_help
+          exit 0
+          ;;
+        *)
+          return 1
+          ;;
+      esac
+    done
+  fi
+
+  [[ "${DESIRED_ACTION}" == "enable" || "${DESIRED_ACTION}" == "disable" ]] || return 1
+  [[ -n "${VM_NAME}" ]] || return 1
+}
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/vm_network.sh
+source "${SCRIPT_DIR}/lib/vm_network.sh"
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  show_help
+  exit 0
+fi
+
+if ! parse_args "$@"; then
+  show_help >&2
+  exit "${EXIT_USAGE}"
+fi
+
+if ! resolve_private_key_path; then
+  echo "Missing SSH private key for guest access." >&2
+  exit "${EXIT_MISSING_SSH_KEY}"
+fi
+
+VM_WAIT_IP_TIMEOUT_SECONDS="${VM_WAIT_IP_TIMEOUT_SECONDS:-180}"
+VM_WAIT_SSH_TIMEOUT_SECONDS="${VM_WAIT_SSH_TIMEOUT_SECONDS:-180}"
+
+if ! sudo -n virsh dominfo "${VM_NAME}" >/dev/null 2>&1 && ! virsh dominfo "${VM_NAME}" >/dev/null 2>&1; then
+  echo "VM not found: ${VM_NAME}" >&2
+  exit "${EXIT_VM_NOT_FOUND}"
+fi
+
+if ! vm_network_wait_for_ip "${VM_NAME}" "${VM_WAIT_IP_TIMEOUT_SECONDS}" >/dev/null; then
+  echo "Timed out waiting for IP on ${VM_NAME} after ${VM_WAIT_IP_TIMEOUT_SECONDS}s." >&2
+  exit "${EXIT_VM_WAIT_IP_TIMEOUT}"
+fi
+VM_IP="$(vm_network_resolve_ip "${VM_NAME}")"
+
+mapfile -t SSH_FLAGS < <(guest_ssh_options "${VM_NAME}" "${VM_IP}" "${SSH_PRIVATE_KEY_PATH}" "${CALLER_HOME}")
+SSH_FLAGS+=(-o ConnectTimeout=5)
+
+if ! timeout --foreground "${VM_WAIT_SSH_TIMEOUT_SECONDS}s" \
+  ssh "${SSH_FLAGS[@]}" "${VM_USER}@${VM_IP}" true >/dev/null 2>&1; then
+  echo "Timed out waiting for SSH on ${VM_NAME} after ${VM_WAIT_SSH_TIMEOUT_SECONDS}s." >&2
+  exit "${EXIT_VM_WAIT_SSH_TIMEOUT}"
+fi
+
+REMOTE_STATUS="idle"
+REMOTE_PHASE="operator-enable"
+if [[ "${DESIRED_ACTION}" == "disable" ]]; then
+  REMOTE_STATUS="disabled"
+  REMOTE_PHASE="operator-disable"
+fi
+
+ssh "${SSH_FLAGS[@]}" \
+  "${VM_USER}@${VM_IP}" \
+  "REMOTE_STATUS='${REMOTE_STATUS}' REMOTE_PHASE='${REMOTE_PHASE}' bash -s" <<'REMOTE'
+set -euo pipefail
+
+LOG_DIR="${HOME}/.agent-sandbox"
+CONTROL_STATE_PATH="${LOG_DIR}/agent-control.state"
+
+write_control_state() {
+  local status="$1"
+  local phase="$2"
+  local now tmp_path
+
+  now="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  tmp_path="${CONTROL_STATE_PATH}.tmp"
+  {
+    printf "status=%s\n" "${status}"
+    printf "phase=%s\n" "${phase}"
+    printf "repo=%s\n" "control"
+    printf "pid=%s\n" "$$"
+    printf "updated_at=%s\n" "${now}"
+  } > "${tmp_path}"
+  mv "${tmp_path}" "${CONTROL_STATE_PATH}"
+}
+
+terminate_pid_file() {
+  local pid_file="$1"
+  local pid
+
+  [[ -f "${pid_file}" ]] || return 0
+  pid="$(cat "${pid_file}" 2>/dev/null || true)"
+  if [[ "${pid}" =~ ^[0-9]+$ ]] && kill -0 "${pid}" >/dev/null 2>&1; then
+    kill "${pid}" >/dev/null 2>&1 || true
+    sleep 1
+    if kill -0 "${pid}" >/dev/null 2>&1; then
+      kill -9 "${pid}" >/dev/null 2>&1 || true
+    fi
+  fi
+  rm -f "${pid_file}"
+}
+
+mkdir -p "${LOG_DIR}"
+write_control_state "${REMOTE_STATUS}" "${REMOTE_PHASE}"
+
+if [[ "${REMOTE_STATUS}" == "disabled" ]]; then
+  shopt -s nullglob
+  for pid_file in "${LOG_DIR}"/agent-*.pid "${LOG_DIR}/codex-heartbeat.pid"; do
+    terminate_pid_file "${pid_file}"
+  done
+  shopt -u nullglob
+fi
+
+printf 'state=%s path=%s\n' "${REMOTE_STATUS}" "${CONTROL_STATE_PATH}"
+REMOTE

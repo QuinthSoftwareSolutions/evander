@@ -12,6 +12,7 @@ from agent_sandbox.host_heartbeat_worker import (
     FeedbackStream,
     HostHeartbeatWorker,
     _is_agent_busy,
+    _probe_agent_dispatch_state,
     _is_session_in_cooldown,
     _compute_next_sleep_seconds,
     _set_session_cooldown,
@@ -249,6 +250,14 @@ def test_busy_check_reports_busy_on_zero_exit(tmp_path) -> None:
     assert _is_agent_busy(session_id="session-1", vm_id="vm-1", script_path=script) is True
 
 
+def test_busy_check_reports_unavailable_on_disabled_exit(tmp_path) -> None:
+    script = tmp_path / "check_session_vm_busy.sh"
+    script.write_text("#!/usr/bin/env bash\nexit 3\n", encoding="utf-8")
+    script.chmod(0o755)
+
+    assert _probe_agent_dispatch_state(session_id="session-1", vm_id="vm-1", script_path=script) == "unavailable"
+
+
 def test_session_cooldown_state_is_persisted(tmp_path, monkeypatch) -> None:
     cooldown_path = tmp_path / "cooldowns.json"
     monkeypatch.setattr("agent_sandbox.host_heartbeat_worker.time.time", lambda: 1000.0)
@@ -336,7 +345,7 @@ def test_wake_bindings_skips_resume_when_busy(tmp_path, monkeypatch) -> None:
     def _fake_run(cmd, check, capture_output, text, timeout):  # noqa: ANN001
         raise AssertionError(f"resume should not run, got {cmd!r}")
 
-    monkeypatch.setattr("agent_sandbox.host_heartbeat_worker._is_agent_busy", lambda **kwargs: True)
+    monkeypatch.setattr("agent_sandbox.host_heartbeat_worker._probe_agent_dispatch_state", lambda **kwargs: "busy")
     monkeypatch.setattr("agent_sandbox.host_heartbeat_worker.subprocess.run", _fake_run)
 
     runtime = SimpleNamespace(sessions=SimpleNamespace(read_all=lambda: sessions))
@@ -369,6 +378,62 @@ def test_wake_bindings_skips_resume_when_busy(tmp_path, monkeypatch) -> None:
 
     payload = json.loads(cooldown_path.read_text(encoding="utf-8"))
     assert "active-a" in payload
+
+
+def test_wake_bindings_skips_resume_when_agent_unavailable(tmp_path, monkeypatch) -> None:
+    now = datetime.now(UTC)
+    sessions = {
+        "active-a": _build_manifest(
+            "active-a",
+            expires_at=now + timedelta(hours=2),
+            metadata={"pr_feedback_streams": [{"provider": "github", "repo": "org/repo", "pr_id": "17"}]},
+        ),
+    }
+
+    class _FeedbackWorker:
+        def poll_once(self, **kwargs):  # noqa: ANN003
+            return [object()]
+
+    def _fake_run(cmd, check, capture_output, text, timeout):  # noqa: ANN001
+        raise AssertionError(f"resume should not run, got {cmd!r}")
+
+    audit = _CapturingAudit()
+    monkeypatch.setattr(
+        "agent_sandbox.host_heartbeat_worker._probe_agent_dispatch_state",
+        lambda **kwargs: "unavailable",
+    )
+    monkeypatch.setattr("agent_sandbox.host_heartbeat_worker.subprocess.run", _fake_run)
+
+    runtime = SimpleNamespace(sessions=SimpleNamespace(read_all=lambda: sessions), audit=audit)
+    resume_script = tmp_path / "resume_issue_agent.sh"
+    resume_script.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    resume_script.chmod(0o755)
+    cooldown_path = tmp_path / "cooldowns.json"
+    worker = HostHeartbeatWorker(
+        config=SimpleNamespace(
+            host_heartbeat_http_timeout_seconds=0.1,
+            host_heartbeat_poll_interval_seconds=30.0,
+            host_heartbeat_jitter_seconds=0.0,
+            host_heartbeat_cooldown_seconds=10.0,
+            host_heartbeat_stream_conflict_policy="fanout",
+            host_heartbeat_session_cooldown_path=cooldown_path,
+            host_busy_check_script_path=tmp_path / "check_busy.sh",
+            host_resume_script_path=resume_script,
+            host_heartbeat_resume_prompt="wake up now",
+            host_heartbeat_vm_user="agent",
+            host_heartbeat_wake_state_path=tmp_path / "wake-state.json",
+            host_heartbeat_resume_timeout_seconds=12.0,
+            pr_map_path=tmp_path / "missing-pr-map.json",
+        ),
+        runtime=runtime,
+        feedback_worker=_FeedbackWorker(),
+        adapters={"github": object()},
+    )
+
+    worker.run_once()
+
+    assert not cooldown_path.exists()
+    assert any(event.get("reason") == "agent-unavailable" for event in audit.events)
 
 
 def test_run_once_continues_when_one_stream_poll_fails(tmp_path) -> None:

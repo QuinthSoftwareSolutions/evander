@@ -54,6 +54,7 @@ gateway/relay endpoint reachability, and active/expired session summary.
 - The launch script injects the caller's `~/.ssh/id_ed25519.pub` by default, falling back to `~/.ssh/id_rsa.pub`.
 - Override the key with `SSH_PUBLIC_KEY_FILE=/path/to/key.pub`.
 - After boot, find the guest IP with `virsh domifaddr <vm-name>` and connect with `ssh agent@<vm-ip>`.
+- Host-side guest SSH commands store guest host keys in `~/.ssh/agent-sandbox-known_hosts` keyed by VM name. `destroy_agent_vm.sh` removes the stale alias for a destroyed VM so a replacement VM can be learned cleanly.
 - To list all currently running VMs with live guest agent status from the host, run `agent-sandbox-cli list-vms`.
 
 ## VM Agent Runtime Baseline

@@ -15,6 +15,7 @@ def _prepare_script(tmp_path: Path) -> tuple[Path, Path]:
     source_script = root / "scripts" / "check_session_vm_busy.sh"
     source_vm_lib = root / "scripts" / "lib" / "vm_network.sh"
     source_agent_lib = root / "scripts" / "lib" / "agent_status.sh"
+    source_guest_ssh_lib = root / "scripts" / "lib" / "guest_ssh.sh"
 
     sandbox_root = tmp_path / "sandbox"
     scripts_dir = sandbox_root / "scripts"
@@ -28,9 +29,18 @@ def _prepare_script(tmp_path: Path) -> tuple[Path, Path]:
 
     (lib_dir / "vm_network.sh").write_text(source_vm_lib.read_text(encoding="utf-8"), encoding="utf-8")
     (lib_dir / "agent_status.sh").write_text(source_agent_lib.read_text(encoding="utf-8"), encoding="utf-8")
+    (lib_dir / "guest_ssh.sh").write_text(source_guest_ssh_lib.read_text(encoding="utf-8"), encoding="utf-8")
 
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
+    _write_executable(
+        fake_bin / "ssh-keyscan",
+        """#!/usr/bin/env bash
+set -euo pipefail
+host="${@: -1}"
+printf '%s %s %s\\n' "${host}" "ssh-ed25519" "AAAA-test-host-key"
+""",
+    )
     return script_path, fake_bin
 
 
@@ -77,3 +87,46 @@ printf '%s\\n' 'running (repo-one)'
     assert "reason=agent-busy" in result.stdout
     assert "session=session-1" in result.stdout
     assert "vm=vm-1" in result.stdout
+
+
+def test_check_session_vm_busy_reports_disabled_as_unavailable(tmp_path: Path) -> None:
+    script_path, fake_bin = _prepare_script(tmp_path)
+    private_key = tmp_path / "id_ed25519"
+    private_key.write_text("PRIVATE\n", encoding="utf-8")
+
+    _write_executable(
+        fake_bin / "virsh",
+        """#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "domifaddr" ]]; then
+  printf 'vnet0 52:54:00:00:00:01 ipv4 192.168.122.11/24\\n'
+  exit 0
+fi
+exit 1
+""",
+    )
+
+    _write_executable(
+        fake_bin / "ssh",
+        """#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' 'disabled'
+""",
+    )
+
+    env = os.environ.copy()
+    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+    env["SSH_PRIVATE_KEY_PATH"] = str(private_key)
+    env["USER"] = env.get("USER", "root")
+
+    result = subprocess.run(
+        [str(script_path), "session-1", "vm-1"],
+        text=True,
+        capture_output=True,
+        env=env,
+        check=False,
+    )
+
+    assert result.returncode == 3
+    assert "status=unavailable" in result.stdout
+    assert "reason=agent-disabled" in result.stdout

@@ -86,11 +86,11 @@ if ! vm_network_wait_for_ssh "${VM_NAME}" "${VM_IP}" "${VM_USER}" "${SSH_PRIVATE
   exit 0
 fi
 
+mapfile -t SSH_OPTS < <(guest_ssh_options "${VM_NAME}" "${VM_IP}" "${SSH_PRIVATE_KEY_PATH}" "${CALLER_HOME}")
+SSH_OPTS+=(-o ConnectTimeout=5)
+
 ssh \
-  -o StrictHostKeyChecking=no \
-  -o UserKnownHostsFile=/dev/null \
-  -o ConnectTimeout=5 \
-  -i "${SSH_PRIVATE_KEY_PATH}" \
+  "${SSH_OPTS[@]}" \
   "${VM_USER}@${VM_IP}" \
   "REPO_NAME='${REPO_NAME}' bash -s" <<'EOF'
 set -euo pipefail

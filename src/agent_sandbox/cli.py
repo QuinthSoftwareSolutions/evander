@@ -1056,11 +1056,20 @@ def list_vms(
         bool,
         typer.Option("--all", help="Include inactive libvirt VMs in the output."),
     ] = False,
+    omit_state: Annotated[
+        bool,
+        typer.Option(
+            "--omit-state",
+            help="Skip SSH guest state inspection for faster VM listings.",
+        ),
+    ] = False,
 ) -> None:
     script_path = Path(__file__).resolve().parents[2] / "scripts" / "list_running_vms.sh"
     cmd = [str(script_path)]
     if all_vms:
         cmd.append("--all")
+    if omit_state:
+        cmd.append("--omit-state")
     cmd.append(vm_user)
     _run_subprocess_compat(cmd, check=True, capture_output=False, text=False)
 
@@ -1100,6 +1109,33 @@ def logs(
     elif vm_user != "agent":
         cmd.extend(["", vm_user])
     _run_subprocess_compat(cmd, check=True, capture_output=False, text=False)
+
+
+def _set_agent_control_state(target: str, *, action: str, vm_user: str) -> None:
+    issue_number = _resolve_issue_number_or_raise(target)
+    script_path = Path(__file__).resolve().parents[2] / "scripts" / "set_issue_agent_state.sh"
+    _run_subprocess_compat(
+        [str(script_path), action, issue_number, vm_user],
+        check=True,
+        capture_output=False,
+        text=False,
+    )
+
+
+@app.command("disable-agent")
+def disable_agent(
+    target: str,
+    vm_user: Annotated[str, typer.Option("--vm-user", help="Guest user to connect as.")] = "agent",
+) -> None:
+    _set_agent_control_state(target, action="disable", vm_user=vm_user)
+
+
+@app.command("enable-agent")
+def enable_agent(
+    target: str,
+    vm_user: Annotated[str, typer.Option("--vm-user", help="Guest user to connect as.")] = "agent",
+) -> None:
+    _set_agent_control_state(target, action="enable", vm_user=vm_user)
 
 
 @app.command("resume-agent")

@@ -29,12 +29,21 @@ fi
 VM_NAME="$1"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+# shellcheck source=lib/guest_ssh.sh
+source "${SCRIPT_DIR}/lib/guest_ssh.sh"
 VM_STORAGE_DIR="${VM_STORAGE_DIR:-/var/lib/libvirt/images/agent-sandbox}"
 VM_DIR="${VM_STORAGE_DIR}/vms/${VM_NAME}"
 STATE_DIR="${ROOT_DIR}/runtime/vms/${VM_NAME}"
+CALLER_USER="${SUDO_USER:-${USER:-}}"
+CALLER_HOME="${HOME:-}"
+
+if [[ -n "${CALLER_USER}" ]]; then
+  CALLER_HOME="$(getent passwd "${CALLER_USER}" | cut -d: -f6 || printf '%s\n' "${CALLER_HOME}")"
+fi
 
 virsh destroy "${VM_NAME}" >/dev/null 2>&1 || true
 virsh undefine "${VM_NAME}" --nvram >/dev/null 2>&1 || virsh undefine "${VM_NAME}" >/dev/null 2>&1 || true
+guest_ssh_remove_known_host "${VM_NAME}" "${CALLER_HOME}"
 rm -rf "${VM_DIR}"
 rm -rf "${STATE_DIR}"
 

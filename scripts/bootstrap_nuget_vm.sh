@@ -32,6 +32,8 @@ fi
 
 VM_NAME="$1"
 VM_USER="${2:-agent}"
+# shellcheck source=lib/guest_ssh.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/guest_ssh.sh"
 CALLER_USER="${SUDO_USER:-$USER}"
 CALLER_HOME="$(getent passwd "${CALLER_USER}" | cut -d: -f6)"
 SSH_KEY_PATH="${SSH_KEY_PATH:-${CALLER_HOME}/.ssh/id_ed25519}"
@@ -44,8 +46,6 @@ NUGET_PACKAGES_DIR="${NUGET_PACKAGES_DIR:-/home/agent/.nuget/packages-local}"
 NUGET_HTTP_CACHE_DIR="${NUGET_HTTP_CACHE_DIR:-/home/agent/.nuget/http-cache}"
 
 SSH_OPTS=(
-  -o StrictHostKeyChecking=no
-  -o UserKnownHostsFile=/dev/null
   -i "${SSH_KEY_PATH}"
 )
 
@@ -82,6 +82,7 @@ get_vm_ip() {
 }
 
 VM_IP="$(get_vm_ip)"
+mapfile -t SSH_OPTS < <(guest_ssh_options "${VM_NAME}" "${VM_IP}" "${SSH_KEY_PATH}" "${CALLER_HOME}")
 
 echo "Bootstrapping NuGet config into ${VM_USER}@${VM_IP}"
 
