@@ -41,13 +41,12 @@ write_files:
       AGENT_SANDBOX_NUGET_FALLBACK_PACKAGES=__NUGET_FALLBACK_PACKAGES__
       NUGET_PACKAGES=__NUGET_PACKAGES__
       NUGET_HTTP_CACHE_PATH=__NUGET_HTTP_CACHE_PATH__
-  - path: /home/agent/.codex/config.toml
+  - path: /home/agent/.agent/config.env
     owner: agent:agent
     permissions: "0600"
     content: |
-      model = "gpt-5.2-codex"
-      model_provider = "openai"
-      openai_base_url = "__LLM_BASE_URL__"
+      AGENT_SANDBOX_PROVIDER_CONFIG_VERSION=1
+      AGENT_SANDBOX_LLM_BASE_URL=__LLM_BASE_URL__
   - path: /home/agent/.profile
     owner: agent:agent
     permissions: "0644"
