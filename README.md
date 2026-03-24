@@ -97,11 +97,15 @@
    New VMs receive provider-neutral baseline config (`/etc/agent-sandbox/session.env` and `/home/agent/.agent/config.env`) plus a shell profile hook; Codex-specific config is written later by `bootstrap_codex_vm.sh`.
    To see all currently running VMs together with live guest agent status, run `agent-sandbox-cli list-vms`.
 
-8. Install the Codex binary into the VM:
+8. (Optional) Bootstrap a provider runtime inside the VM:
 
    ```bash
    ./scripts/bootstrap_codex_vm.sh vm-real
    ```
+
+   By default, orchestration uses provider-neutral agent run state under `/home/agent/.agent-sandbox` (`agent-*.state`, `agent-*.pid`, `agent-*.log`).
+
+   ### Codex provider bootstrap
 
    This copies the vendored Linux Codex binary from the host install into the guest user's `~/bin`, writes `~/.codex/config.toml` to use the host relay with `model = "gpt-5.4"`, `model_reasoning_effort = "high"`, and `personality = "pragmatic"`, preferring `LLM_BASE_URL` and otherwise falling back to `~/.agent/config.env`, ensures the placeholder API-key shell hook exists, and verifies `codex --version`.
 
@@ -260,14 +264,14 @@ That now also clones the mirrored repo into the guest user's home directory usin
 the host repo basename, for example `/home/agent/AcmePlatform`. It also writes a short
 `/home/agent/AGENTS.md` note, copies the issue YAML into the repo root as
 `AGENT_TASK.yaml`, configures a repo-local `git push-agent` alias for the safe
-session-namespaced push pattern, and starts a background Codex run inside the guest by
-default. The guest-side Codex log and PID file live under `/home/agent/.agent-sandbox/`.
+session-namespaced push pattern, and starts a background agent run inside the guest by
+default. The guest-side agent log, PID, and state files live under `/home/agent/.agent-sandbox/`.
 Use `--no-start-agent` with `agent-sandbox-cli create-issue-vm` or `--dry-run` with
 `setup_issue_vm.sh` if you want the VM prepared without starting the agent process. The
 helper still accepts a raw issue number as the first argument for the older workflow, but
 YAML is the preferred input for long-running agent sessions.
-After the initial `codex exec` run exits, the helper now performs one
-`codex exec resume --last` follow-up pass to verify checklist completion
+After the initial provider command run exits, the helper now performs one
+provider-specific follow-up verification pass to verify checklist completion
 (tests, docs, and PR markdown note). Override that follow-up prompt text with
 `AGENT_SANDBOX_CODEX_POST_EXEC_VERIFICATION_PROMPT` (for example in
 `config/git-server.env`).
@@ -288,7 +292,7 @@ The script and CLI wrappers share the same timeout environment variables (defaul
 - `VM_WAIT_SSH_TIMEOUT_SECONDS` (default `180`)
 
 `list-vms` shows running VMs together with live guest agent status. `logs`
-prints the requested number of recent lines first, then follows the guest Codex
+prints the requested number of recent lines first, then follows the guest agent
 log live over SSH.
 
 Use the included bare-repo helper when you want VMs to push code changes back to the host over the private network:

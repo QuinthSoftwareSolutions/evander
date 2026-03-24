@@ -145,6 +145,7 @@ cd /home/jonathan/agent-sandbox
 sudo ./scripts/destroy_agent_vm.sh vm-smoke-live
 sudo ./scripts/launch_agent_vm.sh vm-smoke-live smoke-live
 ./scripts/bootstrap_codex_vm.sh vm-smoke-live
+# (Codex provider bootstrap; generic smoke checks still rely on provider-neutral agent run/log/state wiring.)
 ```
 
 Find the VM IP and connect:
