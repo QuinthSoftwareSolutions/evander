@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -76,6 +77,94 @@ def test_collect_streams_dedupes_and_skips_expired_or_invalid() -> None:
         FeedbackStream(provider="azure_devops", repo="repo-a", pr_id="99"),
         FeedbackStream(provider="github", repo="org/repo", pr_id="17"),
     ]
+
+
+def test_collect_stream_mappings_falls_back_to_pr_map_when_manifest_missing(tmp_path) -> None:
+    now = datetime.now(UTC)
+    sessions = {
+        "active-a": _build_manifest(
+            "active-a",
+            expires_at=now + timedelta(hours=2),
+            metadata={"pr_feedback_streams": []},
+        ),
+    }
+    pr_map_path = tmp_path / "runtime" / "pr-map.json"
+    pr_map_path.parent.mkdir(parents=True, exist_ok=True)
+    pr_map_path.write_text(
+        json.dumps(
+            {
+                "entries": {
+                    "github:org/repo:88": {
+                        "provider": "github",
+                        "repo": "org/repo",
+                        "pr_id": "88",
+                        "session_id": "active-a",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    runtime = SimpleNamespace(sessions=SimpleNamespace(read_all=lambda: sessions))
+    worker = HostHeartbeatWorker(
+        config=SimpleNamespace(pr_map_path=pr_map_path),
+        runtime=runtime,
+        feedback_worker=_DummyFeedbackWorker(),
+        adapters={"github": object()},
+    )
+
+    mappings = worker._collect_stream_mappings()
+
+    stream = FeedbackStream(provider="github", repo="org/repo", pr_id="88")
+    assert stream in mappings
+    assert mappings[stream][0].session_id == "active-a"
+    assert mappings[stream][0].vm_id == "vm-1"
+    assert mappings[stream][0].source == "pr_map"
+
+
+def test_run_once_rejects_conflicting_stream_when_policy_is_reject(tmp_path) -> None:
+    now = datetime.now(UTC)
+    sessions = {
+        "active-a": _build_manifest(
+            "active-a",
+            expires_at=now + timedelta(hours=2),
+            metadata={"pr_feedback_streams": [{"provider": "github", "repo": "org/repo", "pr_id": "17"}]},
+        ),
+        "active-b": _build_manifest(
+            "active-b",
+            expires_at=now + timedelta(hours=2),
+            metadata={"pr_feedback_streams": [{"provider": "github", "repo": "org/repo", "pr_id": "17"}]},
+        ),
+    }
+
+    class TrackingFeedbackWorker:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def poll_once(self, **kwargs):  # noqa: ANN003
+            self.calls += 1
+            return []
+
+    feedback_worker = TrackingFeedbackWorker()
+    runtime = SimpleNamespace(sessions=SimpleNamespace(read_all=lambda: sessions))
+    worker = HostHeartbeatWorker(
+        config=SimpleNamespace(
+            host_heartbeat_http_timeout_seconds=0.1,
+            host_heartbeat_poll_interval_seconds=30.0,
+            host_heartbeat_jitter_seconds=0.0,
+            host_heartbeat_cooldown_seconds=10.0,
+            host_heartbeat_stream_conflict_policy="reject",
+            pr_map_path=tmp_path / "missing-pr-map.json",
+        ),
+        runtime=runtime,
+        feedback_worker=feedback_worker,
+        adapters={"github": object()},
+    )
+
+    result = worker.run_once()
+
+    assert result.streams_polled == 0
+    assert feedback_worker.calls == 0
 
 
 def test_compute_next_sleep_applies_jitter_and_feedback_cooldown(monkeypatch) -> None:
