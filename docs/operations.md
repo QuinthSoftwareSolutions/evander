@@ -48,6 +48,35 @@ Before debugging individual scripts or services, run the consolidated host statu
 The status output reports config load status, runtime store path permissions, key systemd unit states,
 gateway/relay endpoint reachability, and active/expired session summary.
 
+## Desktop Operator Console
+
+For a host-local desktop GUI on Ubuntu, install the optional desktop extra:
+
+```bash
+uv pip install -e '.[desktop]'
+```
+
+Then launch:
+
+```bash
+agent-sandbox-admin
+```
+
+The console is intentionally single-user and localhost-oriented. It uses the same host-side
+orchestration layer as the CLI and surfaces:
+
+- all active and inactive VMs
+- VM power state and guest agent state separately
+- one-click `Start`, `Shutdown`, `Enable`, `Disable`, and `Resume`
+- local issue creation plus issue-VM startup
+
+For machine-readable scripting that matches the GUI data model, use:
+
+```bash
+agent-sandbox-cli list-vms --all --json
+agent-sandbox-cli list-local-issues --json
+```
+
 ## SSH Access
 
 - New VMs install `openssh-server`.

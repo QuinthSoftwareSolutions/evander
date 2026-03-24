@@ -7,6 +7,7 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 from agent_sandbox.cli import EndpointStatus, UnitStatus, app
+from agent_sandbox.models import LocalIssueRecord, VmActionResult, VmSummary
 
 UTC = timezone.utc
 
@@ -1000,6 +1001,116 @@ def test_list_vms_omit_state_invokes_script_with_omit_state_flag(tmp_path: Path,
     assert result.exit_code == 0
     assert captured_cmd[0].endswith("/scripts/list_running_vms.sh")
     assert captured_cmd[1:] == ["--omit-state", "root"]
+
+
+def test_list_vms_json_uses_admin_service(tmp_path: Path, monkeypatch) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+
+    init_result = runner.invoke(app, ["init-state", "--config", str(config_path)])
+    assert init_result.exit_code == 0
+
+    class FakeAdminService:
+        def __init__(self, config):
+            self.config = config
+
+        def list_vms(self, *, include_inactive: bool, omit_state: bool, vm_user: str):
+            assert include_inactive is True
+            assert omit_state is False
+            assert vm_user == "agent"
+            return [
+                VmSummary(
+                    vm_name="vm-12305",
+                    issue_number="12305",
+                    session_ids=["issue-12305-a"],
+                    libvirt_state="running",
+                    ip_address="192.168.122.15",
+                    agent_state="idle",
+                    agent_repo_names=[],
+                )
+            ]
+
+    monkeypatch.setattr("agent_sandbox.cli.AdminService", FakeAdminService)
+
+    result = runner.invoke(app, ["list-vms", "--config", str(config_path), "--all", "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload[0]["vm_name"] == "vm-12305"
+    assert payload[0]["agent_state"] == "idle"
+
+
+def test_start_vm_reports_failure_exit_code(tmp_path: Path, monkeypatch) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+
+    init_result = runner.invoke(app, ["init-state", "--config", str(config_path)])
+    assert init_result.exit_code == 0
+
+    class FakeAdminService:
+        def __init__(self, config):
+            self.config = config
+
+        def start_vm(self, target: str):
+            assert target == "vm-12305"
+            return VmActionResult(
+                success=False,
+                vm_name="vm-12305",
+                action="start",
+                message="VM not found: vm-12305",
+            )
+
+    monkeypatch.setattr("agent_sandbox.cli.AdminService", FakeAdminService)
+
+    result = runner.invoke(app, ["start-vm", "--config", str(config_path), "vm-12305"])
+
+    assert result.exit_code == 1
+    assert "VM not found: vm-12305" in result.stdout
+
+
+def test_create_local_issue_uses_admin_service(tmp_path: Path, monkeypatch) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+
+    init_result = runner.invoke(app, ["init-state", "--config", str(config_path)])
+    assert init_result.exit_code == 0
+
+    class FakeAdminService:
+        def __init__(self, config):
+            self.config = config
+
+        def create_local_issue(self, *, title: str, body: str, repo_source: str | None, yaml_path: str | None):
+            assert title == "Build GUI"
+            assert body == "Need a desktop console"
+            assert repo_source == "/src/repo"
+            assert yaml_path is None
+            return LocalIssueRecord(
+                issue_number="77",
+                title=title,
+                body=body,
+                yaml_path="/tmp/runtime/issues/77.yaml",
+                repo_source=repo_source,
+            )
+
+    monkeypatch.setattr("agent_sandbox.cli.AdminService", FakeAdminService)
+
+    result = runner.invoke(
+        app,
+        [
+            "create-local-issue",
+            "--config",
+            str(config_path),
+            "--title",
+            "Build GUI",
+            "--body",
+            "Need a desktop console",
+            "--repo-source",
+            "/src/repo",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "Created local issue 77" in result.stdout
 
 
 def test_ssh_resolves_issue_number_to_vm_name(tmp_path: Path, monkeypatch) -> None:

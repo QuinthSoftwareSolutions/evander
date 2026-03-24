@@ -219,6 +219,35 @@ they depend on host-seeded artifacts. `ADO_BOOTSTRAP_MSSQL` also requires
 requires `ADO_FRONTEND_INSTALL_ROOTS`, and can optionally use `ADO_FRONTEND_HOST_CHECKOUT`
 when the mirrored repo source is remote.
 
+## Desktop Admin Console
+
+Install the optional desktop dependency set when you want a local Ubuntu operator GUI:
+
+```bash
+uv pip install -e '.[desktop]'
+```
+
+The desktop console is intended for a single operator on the host machine. It shows all
+libvirt guests, separates VM power state from guest agent state, and exposes one-click
+`Start`, `Shutdown`, `Enable`, `Disable`, and `Resume` actions together with local issue
+creation and issue-VM startup.
+
+Run it with:
+
+```bash
+agent-sandbox-admin
+```
+
+The CLI also exposes machine-readable and GUI-supporting surfaces:
+
+```bash
+agent-sandbox-cli list-vms --all --json
+agent-sandbox-cli start-vm vm-14084
+agent-sandbox-cli shutdown-vm vm-14084
+agent-sandbox-cli create-local-issue --title "Fix failing restore" --body "Investigate restore timeout"
+agent-sandbox-cli list-local-issues --json
+```
+
 ## Local Git Remotes
 
 For the full issue-VM bring-up path in one command, use:

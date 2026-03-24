@@ -17,6 +17,7 @@ import httpx
 import typer
 from pydantic import ValidationError
 
+from .admin_service import AdminService
 from .audit import AuditEventType
 from .ado_issue_worker import run_worker_command
 from .config import GatewayConfig, load_config
@@ -1063,7 +1064,21 @@ def list_vms(
             help="Skip SSH guest state inspection for faster VM listings.",
         ),
     ] = False,
+    as_json: Annotated[
+        bool,
+        typer.Option("--json", help="Emit machine-readable VM summaries."),
+    ] = False,
+    config: ConfigOption = Path("config/gateway.yaml"),
 ) -> None:
+    if as_json:
+        service = AdminService(config)
+        payload = [
+            summary.model_dump(mode="json")
+            for summary in service.list_vms(include_inactive=all_vms, omit_state=omit_state, vm_user=vm_user)
+        ]
+        typer.echo(json.dumps(payload, indent=2, sort_keys=True))
+        return
+
     script_path = Path(__file__).resolve().parents[2] / "scripts" / "list_running_vms.sh"
     cmd = [str(script_path)]
     if all_vms:
@@ -1072,6 +1087,84 @@ def list_vms(
         cmd.append("--omit-state")
     cmd.append(vm_user)
     _run_subprocess_compat(cmd, check=True, capture_output=False, text=False)
+
+
+def _echo_action_result_or_exit(result) -> None:
+    typer.echo(result.message)
+    if not result.success:
+        raise typer.Exit(code=1)
+
+
+@app.command("start-vm")
+def start_vm(
+    target: str,
+    config: ConfigOption = Path("config/gateway.yaml"),
+) -> None:
+    service = AdminService(config)
+    _echo_action_result_or_exit(service.start_vm(target))
+
+
+@app.command("shutdown-vm")
+def shutdown_vm(
+    target: str,
+    config: ConfigOption = Path("config/gateway.yaml"),
+    timeout_seconds: Annotated[
+        int,
+        typer.Option("--timeout-seconds", min=1, help="How long to wait for graceful shutdown."),
+    ] = 60,
+) -> None:
+    service = AdminService(config)
+    _echo_action_result_or_exit(service.shutdown_vm(target, timeout_seconds=timeout_seconds))
+
+
+@app.command("create-local-issue")
+def create_local_issue(
+    config: ConfigOption = Path("config/gateway.yaml"),
+    title: Annotated[
+        str,
+        typer.Option("--title", help="Local issue title."),
+    ] = "",
+    body: Annotated[
+        str,
+        typer.Option("--body", help="Local issue body/description."),
+    ] = "",
+    repo_source: Annotated[
+        str | None,
+        typer.Option("--repo-source", help="Default repo source used when starting a VM for this local issue."),
+    ] = None,
+    yaml_path: Annotated[
+        Path | None,
+        typer.Option("--yaml-path", help="Import an existing issue YAML file instead of creating one from title/body."),
+    ] = None,
+) -> None:
+    service = AdminService(config)
+    issue = service.create_local_issue(
+        title=title,
+        body=body,
+        repo_source=repo_source,
+        yaml_path=str(yaml_path) if yaml_path is not None else None,
+    )
+    typer.echo(f"Created local issue {issue.issue_number} ({issue.title}) at {issue.yaml_path}")
+
+
+@app.command("list-local-issues")
+def list_local_issues(
+    config: ConfigOption = Path("config/gateway.yaml"),
+    as_json: Annotated[
+        bool,
+        typer.Option("--json", help="Emit machine-readable local issue records."),
+    ] = False,
+) -> None:
+    service = AdminService(config)
+    issues = service.list_local_issues()
+    if as_json:
+        typer.echo(json.dumps([issue.model_dump(mode="json") for issue in issues], indent=2, sort_keys=True))
+        return
+    if not issues:
+        return
+    typer.echo(f"{'Issue':<8} {'Title':<32} YAML")
+    for issue in issues:
+        typer.echo(f"{issue.issue_number:<8} {issue.title[:32]:<32} {issue.yaml_path}")
 
 
 @app.command("ssh")
