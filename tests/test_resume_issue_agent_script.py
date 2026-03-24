@@ -17,6 +17,7 @@ def _prepare_script(tmp_path: Path) -> tuple[Path, Path]:
     source_lib = root / "scripts" / "lib" / "vm_network.sh"
     source_runner_lib = root / "scripts" / "lib" / "agent_runner.sh"
     source_runner_codex_lib = root / "scripts" / "lib" / "agent_runner_codex.sh"
+    source_state_lib = root / "scripts" / "lib" / "agent_state.sh"
 
     sandbox_root = tmp_path / "sandbox"
     scripts_dir = sandbox_root / "scripts"
@@ -34,6 +35,8 @@ def _prepare_script(tmp_path: Path) -> tuple[Path, Path]:
     runner_lib_path.write_text(source_runner_lib.read_text(encoding="utf-8"), encoding="utf-8")
     runner_codex_lib_path = lib_dir / "agent_runner_codex.sh"
     runner_codex_lib_path.write_text(source_runner_codex_lib.read_text(encoding="utf-8"), encoding="utf-8")
+    state_lib_path = lib_dir / "agent_state.sh"
+    state_lib_path.write_text(source_state_lib.read_text(encoding="utf-8"), encoding="utf-8")
 
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
@@ -238,8 +241,10 @@ def test_resume_issue_agent_tracks_explicit_state_lifecycle() -> None:
     )
 
     assert 'STATE_PATH="${LOG_DIR}/codex-resume-last.state"' in script_text
+    assert 'AGENT_STATE_REPO_NAME="resume-last"' in script_text
     assert 'write_state "running" "resume"' in script_text
-    assert 'write_state "idle" "complete" "${exit_code}"' in script_text
+    assert 'trap on_exit_write_idle EXIT' in script_text
+    assert 'AGENT_STATE_LIB_B64' in script_text
     assert 'last_attempt_at' in script_text
     assert '--worker-mode' in script_text
 

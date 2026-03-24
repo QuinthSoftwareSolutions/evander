@@ -39,9 +39,14 @@ def _prepare_sandbox(tmp_path: Path) -> tuple[Path, Path, Path]:
     source_runner_codex_lib = (
         Path(__file__).resolve().parents[1] / "scripts" / "lib" / "agent_runner_codex.sh"
     )
+    source_state_lib = Path(__file__).resolve().parents[1] / "scripts" / "lib" / "agent_state.sh"
     (lib_dir / "agent_runner.sh").write_text(source_runner_lib.read_text(encoding="utf-8"), encoding="utf-8")
     (lib_dir / "agent_runner_codex.sh").write_text(
         source_runner_codex_lib.read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    (lib_dir / "agent_state.sh").write_text(
+        source_state_lib.read_text(encoding="utf-8"),
         encoding="utf-8",
     )
 

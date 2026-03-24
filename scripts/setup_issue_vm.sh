@@ -223,6 +223,7 @@ POST_EXEC_VERIFICATION_PROMPT="${AGENT_POST_EXEC_VERIFICATION_PROMPT:-${DEFAULT_
 POST_EXEC_VERIFICATION_PROMPT_B64="$(printf '%s' "${POST_EXEC_VERIFICATION_PROMPT}" | python3 -c 'import base64,sys; print(base64.b64encode(sys.stdin.buffer.read()).decode())')"
 AGENT_RUNNER_LIB_B64="$(base64 -w0 "${SCRIPT_DIR}/lib/agent_runner.sh")"
 AGENT_RUNNER_CODEX_LIB_B64="$(base64 -w0 "${SCRIPT_DIR}/lib/agent_runner_codex.sh")"
+AGENT_STATE_LIB_B64="$(base64 -w0 "${SCRIPT_DIR}/lib/agent_state.sh")"
 AGENT_PR_NOTE_HELPER_B64="$(
   python3 - "${ROOT_DIR}/scripts/guest/agent_pr_note.sh" <<'PY'
 import base64
@@ -633,7 +634,7 @@ if (( START_AGENT )); then
     -o UserKnownHostsFile=/dev/null \
     -i "${SSH_PRIVATE_KEY_PATH}" \
     "${VM_USER}@${VM_IP}" \
-    "GUEST_REPO_NAME='${GUEST_REPO_NAME}' AGENT_PROVIDER='${AGENT_PROVIDER}' AGENT_MODEL='${AGENT_MODEL}' POST_EXEC_VERIFICATION_PROMPT_B64='${POST_EXEC_VERIFICATION_PROMPT_B64}' AGENT_RUNNER_LIB_B64='${AGENT_RUNNER_LIB_B64}' AGENT_RUNNER_CODEX_LIB_B64='${AGENT_RUNNER_CODEX_LIB_B64}' BOOTSTRAP_DOTNET='${BOOTSTRAP_DOTNET}' BOOTSTRAP_NUGET='${BOOTSTRAP_NUGET}' bash -s" <<'EOF'
+    "GUEST_REPO_NAME='${GUEST_REPO_NAME}' AGENT_PROVIDER='${AGENT_PROVIDER}' AGENT_MODEL='${AGENT_MODEL}' POST_EXEC_VERIFICATION_PROMPT_B64='${POST_EXEC_VERIFICATION_PROMPT_B64}' AGENT_RUNNER_LIB_B64='${AGENT_RUNNER_LIB_B64}' AGENT_RUNNER_CODEX_LIB_B64='${AGENT_RUNNER_CODEX_LIB_B64}' AGENT_STATE_LIB_B64='${AGENT_STATE_LIB_B64}' BOOTSTRAP_DOTNET='${BOOTSTRAP_DOTNET}' BOOTSTRAP_NUGET='${BOOTSTRAP_NUGET}' bash -s" <<'EOF'
 set -euo pipefail
 . ~/.profile
 AGENT_RUNNER_TMP_DIR="$(mktemp -d)"
@@ -645,6 +646,8 @@ source "${AGENT_RUNNER_TMP_DIR}/agent_runner.sh"
 
 TARGET_DIR="$HOME/${GUEST_REPO_NAME}"
 LOG_DIR="$HOME/.agent-sandbox"
+mkdir -p "${LOG_DIR}/lib"
+printf '%s' "${AGENT_STATE_LIB_B64}" | base64 -d > "${LOG_DIR}/lib/agent_state.sh"
 LOG_PATH="${LOG_DIR}/agent-${GUEST_REPO_NAME}.log"
 PID_PATH="${LOG_DIR}/agent-${GUEST_REPO_NAME}.pid"
 STATE_PATH="${LOG_DIR}/agent-${GUEST_REPO_NAME}.state"
@@ -673,36 +676,12 @@ nohup env \
   INITIAL_PROMPT="${INITIAL_PROMPT}" \
   POST_EXEC_VERIFICATION_PROMPT="${POST_EXEC_VERIFICATION_PROMPT}" \
   STATE_PATH="${STATE_PATH}" \
+  AGENT_STATE_REPO_NAME="${GUEST_REPO_NAME}" \
   bash -lc '
-write_state() {
-  local status="$1"
-  local phase="$2"
-  local exit_code="${3:-}"
-  local now
-  local tmp_path
-
-  now="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-  tmp_path="${STATE_PATH}.tmp"
-  {
-    printf "status=%s\n" "${status}"
-    printf "phase=%s\n" "${phase}"
-    printf "repo=%s\n" "${GUEST_REPO_NAME}"
-    printf "pid=%s\n" "$$"
-    printf "updated_at=%s\n" "${now}"
-    if [[ -n "${exit_code}" ]]; then
-      printf "exit_code=%s\n" "${exit_code}"
-    fi
-  } > "${tmp_path}"
-  mv "${tmp_path}" "${STATE_PATH}"
-}
-
-on_exit() {
-  local exit_code="$?"
-  write_state "idle" "complete" "${exit_code}"
-}
+. "$HOME/.agent-sandbox/lib/agent_state.sh"
 
 write_state "running" "initial"
-trap on_exit EXIT
+trap on_exit_write_idle EXIT
 
 agent_runner_exec \
   --model "${AGENT_MODEL}" \

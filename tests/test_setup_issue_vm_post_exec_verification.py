@@ -9,6 +9,7 @@ def test_setup_issue_vm_runs_single_post_exec_resume_verification() -> None:
     assert "AGENT_POST_EXEC_VERIFICATION_PROMPT" in setup_issue_vm
     assert "AGENT_RUNNER_LIB_B64" in setup_issue_vm
     assert "AGENT_RUNNER_CODEX_LIB_B64" in setup_issue_vm
+    assert 'AGENT_STATE_LIB_B64' in setup_issue_vm
     assert 'AGENT_RUNNER_TMP_DIR="$(mktemp -d)"' in setup_issue_vm
     assert 'source "${AGENT_RUNNER_TMP_DIR}/agent_runner.sh"' in setup_issue_vm
     assert "agent_runner_resume_last \\" in setup_issue_vm
@@ -17,4 +18,5 @@ def test_setup_issue_vm_runs_single_post_exec_resume_verification() -> None:
     assert 'STATE_PATH="${LOG_DIR}/agent-${GUEST_REPO_NAME}.state"' in setup_issue_vm
     assert 'write_state "running" "initial"' in setup_issue_vm
     assert 'write_state "running" "post_exec" "${exec_status}"' in setup_issue_vm
-    assert 'write_state "idle" "complete" "${exit_code}"' in setup_issue_vm
+    assert 'trap on_exit_write_idle EXIT' in setup_issue_vm
+    assert 'AGENT_STATE_REPO_NAME="${GUEST_REPO_NAME}"' in setup_issue_vm
