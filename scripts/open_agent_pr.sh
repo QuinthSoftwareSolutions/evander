@@ -213,7 +213,7 @@ git_with_push_auth() {
   fi
 }
 
-refresh_review_branch_tracking_ref() {
+refresh_remote_branch_tracking_ref() {
   local repo_path="$1"
   local remote_name="$2"
   local branch_name="$3"
@@ -456,7 +456,7 @@ fi
 
 PUSH_ARGS=()
 if [[ "${ORIGIN_BRANCH}" == review/* ]]; then
-  refresh_review_branch_tracking_ref "${HOST_REPO_PATH}" "${PR_REMOTE_NAME}" "${ORIGIN_BRANCH}"
+  refresh_remote_branch_tracking_ref "${HOST_REPO_PATH}" "${PR_REMOTE_NAME}" "${ORIGIN_BRANCH}"
   PUSH_ARGS+=(--force-with-lease)
 fi
 
@@ -526,6 +526,10 @@ case "${PROVIDER}" in
     if ! command -v gh >/dev/null 2>&1; then
       echo "GitHub CLI (gh) is required for --provider github." >&2
       exit 1
+    fi
+
+    if [[ -z "${BODY_FILE}" && "${USE_FILL}" -eq 1 ]]; then
+      refresh_remote_branch_tracking_ref "${HOST_REPO_PATH}" "${PR_REMOTE_NAME}" "${BASE_BRANCH}"
     fi
 
     GH_ARGS=(pr create --repo "${ORIGIN_URL}" --base "${BASE_BRANCH}" --head "${ORIGIN_BRANCH}")
