@@ -180,7 +180,13 @@ def test_worker_logs_audit_for_new_feedback(tmp_path: Path) -> None:
         audit_logger=audit,
     )
 
-    first = worker.poll_once(client=object(), provider="github", repo="org/repo", pr_id="77")
+    first = worker.poll_once(
+        client=object(),
+        provider="github",
+        repo="org/repo",
+        pr_id="77",
+        stream_bindings=[{"session_id": "session-123", "vm_id": "vm-9", "source": "session_manifest"}],
+    )
     second = worker.poll_once(client=object(), provider="github", repo="org/repo", pr_id="77")
 
     assert len(first) == 1
@@ -190,3 +196,6 @@ def test_worker_logs_audit_for_new_feedback(tmp_path: Path) -> None:
     assert len(lines) == 1
     payload = json.loads(lines[0])
     assert payload["event_type"] == "pr_feedback_discovered"
+    assert payload["args"]["stream_bindings"] == [
+        {"session_id": "session-123", "source": "session_manifest", "vm_id": "vm-9"}
+    ]

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import fcntl
+import json
 import logging
 import os
 import random
@@ -30,6 +31,13 @@ class FeedbackStream:
     provider: str
     repo: str
     pr_id: str
+
+
+@dataclass(frozen=True)
+class StreamSessionBinding:
+    session_id: str
+    vm_id: str | None
+    source: str
 
 
 @dataclass(frozen=True)
@@ -73,12 +81,28 @@ class HostHeartbeatWorker:
                 time.sleep(result.next_sleep_seconds)
 
     def run_once(self) -> HeartbeatCycleResult:
-        streams = self._collect_streams()
+        stream_mappings = self._collect_stream_mappings()
+        streams = sorted(
+            stream_mappings.keys(),
+            key=lambda stream: (stream.provider, stream.repo, stream.pr_id),
+        )
         discovered_feedback = 0
         streams_polled = 0
 
         with httpx.Client(timeout=self.config.host_heartbeat_http_timeout_seconds) as client:
             for stream in streams:
+                bindings = stream_mappings.get(stream, [])
+                if len(bindings) > 1:
+                    logger.warning(
+                        "PR feedback stream matched multiple sessions policy=%s provider=%s repo=%s pr=%s session_ids=%s",
+                        self.config.host_heartbeat_stream_conflict_policy,
+                        stream.provider,
+                        stream.repo,
+                        stream.pr_id,
+                        [binding.session_id for binding in bindings],
+                    )
+                    if self.config.host_heartbeat_stream_conflict_policy == "reject":
+                        continue
                 adapter = self.adapters.get(stream.provider)
                 if adapter is None:
                     logger.warning(
@@ -94,6 +118,14 @@ class HostHeartbeatWorker:
                     provider=stream.provider,
                     repo=stream.repo,
                     pr_id=stream.pr_id,
+                    stream_bindings=[
+                        {
+                            "session_id": binding.session_id,
+                            "vm_id": binding.vm_id,
+                            "source": binding.source,
+                        }
+                        for binding in bindings
+                    ],
                 )
                 discovered_feedback += len(discovered)
 
@@ -109,11 +141,12 @@ class HostHeartbeatWorker:
             next_sleep_seconds=next_sleep_seconds,
         )
 
-    def _collect_streams(self) -> list[FeedbackStream]:
+    def _collect_stream_mappings(self) -> dict[FeedbackStream, list[StreamSessionBinding]]:
         now = datetime.now(timezone.utc)
-        deduped: dict[tuple[str, str, str], FeedbackStream] = {}
+        sessions_by_id = self.runtime.sessions.read_all()
+        stream_index: dict[tuple[str, str, str], list[StreamSessionBinding]] = {}
 
-        for session in self.runtime.sessions.read_all().values():
+        for session in sessions_by_id.values():
             if session.expires_at <= now:
                 continue
             raw_streams = session.metadata.get("pr_feedback_streams")
@@ -128,10 +161,43 @@ class HostHeartbeatWorker:
                         raw_stream,
                     )
                     continue
-                deduped[(parsed.provider, parsed.repo, parsed.pr_id)] = parsed
+                key = (parsed.provider, parsed.repo, parsed.pr_id)
+                stream_index.setdefault(key, []).append(
+                    StreamSessionBinding(
+                        session_id=session.session_id,
+                        vm_id=session.vm_id,
+                        source="session_manifest",
+                    )
+                )
 
+        for key, raw_entry in _load_pr_map_entries(self.config.pr_map_path).items():
+            if key in stream_index:
+                continue
+            session_id = str(raw_entry.get("session_id", "")).strip()
+            if not session_id:
+                continue
+            session = sessions_by_id.get(session_id)
+            vm_id = session.vm_id if session is not None else None
+            stream_index[key] = [
+                StreamSessionBinding(
+                    session_id=session_id,
+                    vm_id=vm_id,
+                    source="pr_map",
+                )
+            ]
+
+        mapped: dict[FeedbackStream, list[StreamSessionBinding]] = {}
+        for (provider, repo, pr_id), bindings in stream_index.items():
+            stream = FeedbackStream(provider=provider, repo=repo, pr_id=pr_id)
+            deduped_bindings = {
+                (binding.session_id, binding.vm_id, binding.source): binding for binding in bindings
+            }
+            mapped[stream] = list(deduped_bindings.values())
+        return mapped
+
+    def _collect_streams(self) -> list[FeedbackStream]:
         return sorted(
-            deduped.values(),
+            self._collect_stream_mappings().keys(),
             key=lambda stream: (stream.provider, stream.repo, stream.pr_id),
         )
 
@@ -190,6 +256,31 @@ def _parse_stream(raw_stream: Any) -> FeedbackStream | None:
     if not provider or not repo or not pr_id:
         return None
     return FeedbackStream(provider=provider, repo=repo, pr_id=pr_id)
+
+
+def _load_pr_map_entries(path: Path) -> dict[tuple[str, str, str], dict[str, Any]]:
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        logger.warning("Unable to read PR map path=%s", path, exc_info=True)
+        return {}
+    raw_entries = payload.get("entries")
+    if not isinstance(raw_entries, dict):
+        return {}
+
+    entries: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for raw_entry in raw_entries.values():
+        if not isinstance(raw_entry, dict):
+            continue
+        provider = str(raw_entry.get("provider", "")).strip()
+        repo = str(raw_entry.get("repo", "")).strip()
+        pr_id = str(raw_entry.get("pr_id", "")).strip()
+        if not provider or not repo or not pr_id:
+            continue
+        entries[(provider, repo, pr_id)] = raw_entry
+    return entries
 
 
 def build_host_heartbeat_worker(config: GatewayConfig) -> HostHeartbeatWorker:

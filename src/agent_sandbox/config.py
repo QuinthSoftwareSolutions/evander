@@ -92,6 +92,8 @@ class GatewayConfig(BaseModel):
     host_heartbeat_cooldown_seconds: float = Field(default=60.0, ge=0)
     host_heartbeat_http_timeout_seconds: float = Field(default=30.0, gt=0)
     host_heartbeat_lock_path: Path = Path("/var/lib/agent-sandbox/host-heartbeat.lock")
+    host_heartbeat_stream_conflict_policy: Literal["fanout", "reject"] = "fanout"
+    pr_map_path: Path = Path("/var/lib/agent-sandbox/pr-map.json")
     email_mailboxes: list[MailboxConfig] = Field(
         default_factory=lambda: [
             MailboxConfig(
@@ -168,6 +170,7 @@ class GatewayConfig(BaseModel):
             "email_store_path": default_runtime_dir / "emails.json",
             "email_cursor_store_path": default_runtime_dir / "email_cursors.json",
             "discord_command_store_path": default_runtime_dir / "discord_commands.json",
+            "pr_map_path": default_runtime_dir / "pr-map.json",
         }
         for field_name, default_path in default_paths.items():
             if getattr(self, field_name) == default_path:

@@ -325,6 +325,7 @@ class PullRequestFeedbackWorker:
         provider: str,
         repo: str,
         pr_id: str,
+        stream_bindings: list[dict[str, str | None]] | None = None,
     ) -> list[FeedbackEnvelope]:
         adapter = self.adapters[provider]
         stream_key = f"{provider}:{repo}:{pr_id}"
@@ -336,23 +337,33 @@ class PullRequestFeedbackWorker:
             if not self.store.add_feedback_if_new(envelope):
                 continue
             discovered.append(envelope)
-            self._log_discovery(envelope)
+            self._log_discovery(envelope, stream_bindings=stream_bindings)
 
         self.store.set_cursor(stream_key, result.next_cursor)
         return discovered
 
-    def _log_discovery(self, envelope: FeedbackEnvelope) -> None:
+    def _log_discovery(
+        self,
+        envelope: FeedbackEnvelope,
+        *,
+        stream_bindings: list[dict[str, str | None]] | None = None,
+    ) -> None:
+        bindings = stream_bindings or []
         logger.info(
-            "Discovered new PR feedback provider=%s repo=%s pr=%s feedback_id=%s",
+            "Discovered new PR feedback provider=%s repo=%s pr=%s feedback_id=%s stream_bindings=%s",
             envelope.provider,
             envelope.repo,
             envelope.pr_id,
             envelope.feedback_id,
+            bindings,
         )
         self.audit_logger.log(
             AuditEvent(
                 event_type="pr_feedback_discovered",
-                args={"feedback": envelope.model_dump(mode="json")},
+                args={
+                    "feedback": envelope.model_dump(mode="json"),
+                    "stream_bindings": bindings,
+                },
             )
         )
 
