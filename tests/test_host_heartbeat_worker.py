@@ -6,6 +6,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
+import httpx
+
 from agent_sandbox.host_heartbeat_worker import (
     FeedbackStream,
     HostHeartbeatWorker,
@@ -27,6 +29,15 @@ class _DummyFeedbackWorker:
 
 class _DummyAudit:
     def log_decision(self, **kwargs):  # noqa: ANN003
+        return None
+
+
+class _CapturingAudit:
+    def __init__(self) -> None:
+        self.events: list[dict] = []
+
+    def log_decision(self, **kwargs):  # noqa: ANN003
+        self.events.append(kwargs)
         return None
 
 
@@ -336,3 +347,54 @@ def test_wake_bindings_skips_resume_when_busy(tmp_path, monkeypatch) -> None:
 
     payload = json.loads(cooldown_path.read_text(encoding="utf-8"))
     assert "active-a" in payload
+
+
+def test_run_once_continues_when_one_stream_poll_fails(tmp_path) -> None:
+    now = datetime.now(UTC)
+    sessions = {
+        "session-a": _build_manifest(
+            "session-a",
+            expires_at=now + timedelta(hours=2),
+            metadata={"pr_feedback_streams": [{"provider": "github", "repo": "org/repo-a", "pr_id": "17"}]},
+        ),
+        "session-b": _build_manifest(
+            "session-b",
+            expires_at=now + timedelta(hours=2),
+            metadata={"pr_feedback_streams": [{"provider": "github", "repo": "org/repo-b", "pr_id": "18"}]},
+        ),
+    }
+
+    class _FlakyFeedbackWorker:
+        def poll_once(self, **kwargs):  # noqa: ANN003
+            if kwargs["repo"] == "org/repo-a":
+                raise httpx.ConnectError("provider unavailable")
+            return [object()]
+
+    audit = _CapturingAudit()
+    runtime = SimpleNamespace(sessions=SimpleNamespace(read_all=lambda: sessions), audit=audit)
+    worker = HostHeartbeatWorker(
+        config=SimpleNamespace(
+            host_heartbeat_http_timeout_seconds=0.1,
+            host_heartbeat_poll_interval_seconds=30.0,
+            host_heartbeat_jitter_seconds=0.0,
+            host_heartbeat_cooldown_seconds=10.0,
+            host_heartbeat_stream_conflict_policy="fanout",
+            host_heartbeat_session_cooldown_path=tmp_path / "cooldowns.json",
+            host_busy_check_script_path=tmp_path / "check_busy.sh",
+            host_resume_script_path=tmp_path / "resume.sh",
+            host_heartbeat_resume_prompt="wake up now",
+            host_heartbeat_vm_user="agent",
+            host_heartbeat_wake_state_path=tmp_path / "wake-state.json",
+            host_heartbeat_resume_timeout_seconds=12.0,
+            pr_map_path=tmp_path / "missing-pr-map.json",
+        ),
+        runtime=runtime,
+        feedback_worker=_FlakyFeedbackWorker(),
+        adapters={"github": object()},
+    )
+
+    result = worker.run_once()
+
+    assert result.streams_polled == 2
+    assert result.discovered_feedback == 1
+    assert any(event.get("reason") == "cycle-finished" for event in audit.events)

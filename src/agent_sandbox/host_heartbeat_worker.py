@@ -115,20 +115,30 @@ class HostHeartbeatWorker:
                     )
                     continue
                 streams_polled += 1
-                discovered = self.feedback_worker.poll_once(
-                    client=client,
-                    provider=stream.provider,
-                    repo=stream.repo,
-                    pr_id=stream.pr_id,
-                    stream_bindings=[
-                        {
-                            "session_id": binding.session_id,
-                            "vm_id": binding.vm_id,
-                            "source": binding.source,
-                        }
-                        for binding in bindings
-                    ],
-                )
+                try:
+                    discovered = self.feedback_worker.poll_once(
+                        client=client,
+                        provider=stream.provider,
+                        repo=stream.repo,
+                        pr_id=stream.pr_id,
+                        stream_bindings=[
+                            {
+                                "session_id": binding.session_id,
+                                "vm_id": binding.vm_id,
+                                "source": binding.source,
+                            }
+                            for binding in bindings
+                        ],
+                    )
+                except Exception:
+                    logger.warning(
+                        "Host heartbeat stream poll failed provider=%s repo=%s pr=%s",
+                        stream.provider,
+                        stream.repo,
+                        stream.pr_id,
+                        exc_info=True,
+                    )
+                    continue
                 discovered_feedback += len(discovered)
                 if discovered:
                     self._record_busy_skips(stream=stream, bindings=bindings)
