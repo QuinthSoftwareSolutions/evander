@@ -127,3 +127,18 @@ def test_bind_network_cidr_trims_whitespace_and_normalizes() -> None:
 def test_bind_network_cidr_rejects_invalid_values_with_clear_error(value: str) -> None:
     with pytest.raises(ValueError, match="bind_network_cidr"):
         GatewayConfig.model_validate({"bind_network_cidr": value})
+
+
+def test_host_heartbeat_lock_path_follows_runtime_dir_default() -> None:
+    config = GatewayConfig.model_validate({"runtime_dir": "/tmp/agent-sandbox-runtime"})
+    assert str(config.host_heartbeat_lock_path) == "/tmp/agent-sandbox-runtime/host-heartbeat.lock"
+
+
+def test_host_heartbeat_wake_state_path_follows_runtime_dir_default() -> None:
+    config = GatewayConfig.model_validate({"runtime_dir": "/tmp/agent-sandbox-runtime"})
+    assert str(config.host_heartbeat_wake_state_path) == "/tmp/agent-sandbox-runtime/host-heartbeat-wake-state.json"
+
+
+def test_host_heartbeat_poll_interval_must_be_positive() -> None:
+    with pytest.raises(ValueError, match="host_heartbeat_poll_interval_seconds"):
+        GatewayConfig.model_validate({"host_heartbeat_poll_interval_seconds": 0})

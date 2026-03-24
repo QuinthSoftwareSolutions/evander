@@ -14,6 +14,7 @@ def _prepare_script(tmp_path: Path) -> tuple[Path, Path]:
     root = Path(__file__).resolve().parents[1]
     source_script = root / "scripts" / "list_running_vms.sh"
     source_lib = root / "scripts" / "lib" / "vm_network.sh"
+    source_codex_lib = root / "scripts" / "lib" / "codex_status.sh"
 
     sandbox_root = tmp_path / "sandbox"
     scripts_dir = sandbox_root / "scripts"
@@ -27,6 +28,8 @@ def _prepare_script(tmp_path: Path) -> tuple[Path, Path]:
 
     lib_path = lib_dir / "vm_network.sh"
     lib_path.write_text(source_lib.read_text(encoding="utf-8"), encoding="utf-8")
+    codex_lib_path = lib_dir / "codex_status.sh"
+    codex_lib_path.write_text(source_codex_lib.read_text(encoding="utf-8"), encoding="utf-8")
 
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
@@ -108,7 +111,7 @@ target="${@: -2:1}"
 
 case "${target}" in
   agent@192.168.122.11)
-    printf '%s\\n' 'running (heartbeat, repo-one)'
+    printf '%s\\n' 'running (repo-one)'
     ;;
   agent@192.168.122.12)
     printf '%s\\n' 'idle'
@@ -137,7 +140,7 @@ esac
     assert lines[0].split() == ["ID", "Name", "State", "IP", "Agent"]
     assert "7    vm-active" in lines[1]
     assert "192.168.122.11" in lines[1]
-    assert lines[1].endswith("running (heartbeat, repo-one)")
+    assert lines[1].endswith("running (repo-one)")
     assert "8    vm-idle" in lines[2]
     assert "192.168.122.12" in lines[2]
     assert lines[2].endswith("idle")

@@ -213,19 +213,23 @@ When combining Git push automation with PR feedback handling:
 ### Setup steps
 
 1. Complete Git remote setup (`bootstrap_git_vm.sh` + mirror/setup issue helper).
-2. Ensure guest Codex heartbeat is installed (`bootstrap_codex_vm.sh`) so feedback wakeups run continuously.
+2. Ensure the host heartbeat worker service is running so feedback polling runs continuously (`sudo systemctl status agent-sandbox-host-heartbeat.service`).
 3. Ensure session policy allows feedback tools for the target provider/repo/PR stream.
 4. In agent logic, post replies with `post_pr_feedback_reply(..., idempotency_key=...)` before `git push-agent` when feedback requires code changes.
 
 ### Expected timing behavior
 
 - Git push/promotion remains event-driven (on push hooks).
-- Feedback pickup is timer-driven (heartbeat every ~3 minutes), so comments may take one interval before code updates begin.
-- If Codex is already busy with a patch/test cycle, heartbeat skips and does not spawn a second Codex process.
+- Feedback pickup is host-worker-driven based on configured poll interval/jitter/cooldown, so comments may take up to one poll interval before updates begin.
+- The host worker only updates feedback state; guest execution remains explicit and idempotent via MCP tool flow.
+- `bootstrap_codex_vm.sh` defaults `ENABLE_GUEST_HEARTBEAT=0`, so new guests should not run the
+  deprecated `agent-heartbeat.timer`.
+- Migration note for older guests: disable the legacy timer with
+  `systemctl --user disable --now agent-heartbeat.timer || true` to prevent double wakes.
 
 ### Troubleshooting
 
-- **Stale guest PID/lock blocks feedback wakeups:** inspect `/home/agent/.agent-sandbox/heartbeat.log` and clear stale files only when no active Codex process exists.
+- **Host heartbeat lock contention:** inspect host service status and lock path if `host-heartbeat` exits immediately.
 - **Provider reply API errors (GitHub/Azure DevOps):** keep the same `idempotency_key` on retry so successful-but-unconfirmed replies are deduped.
 - **Push worked but no host promotion/PR update:** inspect bare-repo hook output and `runtime/agent-events.log`.
 - **`AGENT_PR_NOTES fetch failed (non-fatal)` in `runtime/agent-events.log`:**
@@ -244,7 +248,6 @@ When combining Git push automation with PR feedback handling:
 
 ### Audit/log locations and healthy signals
 
-- Guest heartbeat logs: `/home/agent/.agent-sandbox/heartbeat.log`, `codex-heartbeat-run.log`.
 - Host Git automation log: `runtime/agent-events.log`.
 - Host feedback state: `runtime/pr-feedback-store.json`, `runtime/pr-reply-idempotency.json`.
 - Auto-PR body composition flags are appended to each promotion event as key-value pairs:

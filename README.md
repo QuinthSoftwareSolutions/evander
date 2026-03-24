@@ -103,7 +103,7 @@
    ./scripts/bootstrap_codex_vm.sh vm-real
    ```
 
-   This copies the vendored Linux Codex binary from the host install into the guest user's `~/bin`, rewrites `~/.codex/config.toml` to use the host relay with `model = "gpt-5.4"`, `model_reasoning_effort = "high"`, and `personality = "pragmatic"`, ensures the placeholder API-key shell hook exists, deploys `agent-heartbeat.service` and `agent-heartbeat.timer` to the guest user systemd directory, attempts to enable/start the timer, and verifies `codex --version`.
+   This copies the vendored Linux Codex binary from the host install into the guest user's `~/bin`, rewrites `~/.codex/config.toml` to use the host relay with `model = "gpt-5.4"`, `model_reasoning_effort = "high"`, and `personality = "pragmatic"`, ensures the placeholder API-key shell hook exists, and verifies `codex --version`.
 
 9. Optionally install the host `.NET` SDK into the VM:
 
@@ -166,11 +166,13 @@ $EDITOR config/firewall.env
 $EDITOR config/openai-relay.env
 $EDITOR config/nuget-relay.env
 $EDITOR config/ado-worker.env
+$EDITOR config/host-heartbeat.env
 sudo systemctl start agent-sandbox-firewall.service
 sudo systemctl start agent-sandbox-gateway.service
 sudo systemctl start agent-sandbox-openai-relay.service
 sudo systemctl start agent-sandbox-nuget-relay.service
 sudo systemctl start agent-sandbox-ado-worker.service
+sudo systemctl start agent-sandbox-host-heartbeat.service
 ```
 
 The generated units run as your user where appropriate and read environment files from `config/`.
@@ -427,20 +429,28 @@ Use this when you want the guest to wake only for new review feedback and post t
 ### Setup steps
 
 1. Include PR feedback tools/stream metadata in the session manifest (same `session_id` the guest uses).
-2. Bootstrap Codex in the guest so `~/bin/agent-heartbeat-cycle`, `agent-heartbeat.service`, and
-   `agent-heartbeat.timer` are installed:
-   `./scripts/bootstrap_codex_vm.sh <vm-name>`.
-3. Confirm the timer is active in the guest:
-   `systemctl --user status agent-heartbeat.timer`.
+2. Bootstrap Codex in the guest (`./scripts/bootstrap_codex_vm.sh <vm-name>`).
+3. Run the host heartbeat worker service:
+   `sudo systemctl start agent-sandbox-host-heartbeat.service`.
+   Common lifecycle commands:
+   - start: `sudo systemctl start agent-sandbox-host-heartbeat.service`
+   - stop: `sudo systemctl stop agent-sandbox-host-heartbeat.service`
+   - status: `sudo systemctl status agent-sandbox-host-heartbeat.service`
 4. Use MCP calls from the agent in this order:
    `has_pending_feedback` → `list_unread_feedback` → `post_pr_feedback_reply` (with an idempotency key).
 
 ### Expected timing behavior
 
-- Timer cadence is every 3 minutes (`OnUnitActiveSec=3min`).
-- If Codex is already running (PID still active), the heartbeat logs `skip reason=codex-active` and does not start another run.
-- When idle and pending feedback exists, the heartbeat logs `pending_feedback=true` and starts `codex exec resume` (or `codex exec` fallback).
-- Cooldown (`heartbeat.cooldown`, default 120s) suppresses wake storms between runs.
+- Host heartbeat cadence is controlled by gateway config:
+  `host_heartbeat_poll_interval_seconds`, `host_heartbeat_jitter_seconds`,
+  and `host_heartbeat_cooldown_seconds`.
+- Feedback polling happens once on the host and updates the shared host feedback store.
+- Guests consume pending feedback via MCP tools and no longer run a guest-local heartbeat timer.
+- `scripts/bootstrap_codex_vm.sh` defaults to `ENABLE_GUEST_HEARTBEAT=0` and does not install the
+  legacy `agent-heartbeat.timer` unless you explicitly set `ENABLE_GUEST_HEARTBEAT=1`
+  (deprecated compatibility path).
+- Migration note for existing VMs: disable any previously enabled guest timer to avoid double wakeups:
+  `systemctl --user disable --now agent-heartbeat.timer || true`.
 
 ### Troubleshooting
 
@@ -448,19 +458,18 @@ Use this when you want the guest to wake only for new review feedback and post t
   - Human-readable: `agent-sandbox-cli status --config config/gateway.yaml`
   - Machine-readable: `agent-sandbox-cli status --config config/gateway.yaml --json`
   - The command summarizes config loading, runtime path permissions, key systemd units, gateway/relay reachability, and session expiration health.
-- **Stale lock/PID symptoms:** repeated no-op loops or no new wakeups.
-  - Check `/home/agent/.agent-sandbox/heartbeat.log` for `stale_pid` and `skip reason=lock-held`.
-  - Remove only obviously stale files: `codex-heartbeat.pid`, `heartbeat.lock`, then rerun once.
+- **Host heartbeat lock contention:** worker exits because another instance is running.
+  - Check the configured lock path (`host_heartbeat_lock_path`) and active systemd processes before restarting.
 - **Provider API failures while replying:** gateway tool errors from GitHub/Azure DevOps calls.
   - Validate host tokens (`GITHUB_TOKEN`/configured env, `AZURE_DEVOPS_PAT`/configured env).
   - Retry with the **same idempotency key** so `post_pr_feedback_reply` deduplicates safely.
 
 ### Audit/log locations and healthy signals
 
-- Guest: `/home/agent/.agent-sandbox/heartbeat.log`, `codex-heartbeat-run.log`.
+- Host heartbeat service logs: `journalctl -u agent-sandbox-host-heartbeat.service`.
 - Host runtime: `runtime/pr-feedback-store.json`, `runtime/pr-reply-idempotency.json`, `runtime/audit.jsonl`.
 - Healthy pattern:
-  - heartbeat alternates between `pending_feedback=false` (quiet) and `pending_feedback=true` + `codex_started` (new feedback),
+  - host worker alternates between quiet polls and discovered feedback events,
   - audit shows allowed calls for `has_pending_feedback`, `list_unread_feedback`, and `post_pr_feedback_reply`,
   - idempotent retry returns `status=deduplicated` instead of creating duplicate provider comments.
 

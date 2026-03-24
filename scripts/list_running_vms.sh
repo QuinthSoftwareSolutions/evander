@@ -33,6 +33,8 @@ VM_USER="${1:-agent}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/vm_network.sh
 source "${SCRIPT_DIR}/lib/vm_network.sh"
+# shellcheck source=lib/codex_status.sh
+source "${SCRIPT_DIR}/lib/codex_status.sh"
 
 CALLER_USER="${SUDO_USER:-${USER:-}}"
 CALLER_HOME="${HOME:-}"
@@ -80,74 +82,11 @@ agent_status_for_vm() {
     return 0
   fi
 
-  if ! ssh \
-    -o StrictHostKeyChecking=no \
-    -o UserKnownHostsFile=/dev/null \
-    -o ConnectTimeout="${VM_AGENT_LIST_CONNECT_TIMEOUT_SECONDS}" \
-    -i "${SSH_PRIVATE_KEY_PATH}" \
-    "${VM_USER}@${vm_ip}" \
-    "bash -s" <<'EOF'
-set -euo pipefail
-
-LOG_DIR="${HOME}/.agent-sandbox"
-
-is_active_codex_pid() {
-  local pid_path="$1"
-  local pid
-  local cmdline
-
-  [[ -f "${pid_path}" ]] || return 1
-  pid="$(tr -d '[:space:]' <"${pid_path}" || true)"
-  [[ -n "${pid}" && "${pid}" =~ ^[0-9]+$ ]] || return 1
-  kill -0 "${pid}" >/dev/null 2>&1 || return 1
-  cmdline="$(ps -p "${pid}" -o args= 2>/dev/null || true)"
-  [[ -n "${cmdline}" ]] || return 1
-  case "${cmdline}" in
-    codex|*/codex|*" codex"|*" codex "*|*"/codex "*)
-      return 0
-      ;;
-    *)
-      return 1
-      ;;
-  esac
-}
-
-if [[ ! -d "${LOG_DIR}" ]]; then
-  printf '%s\n' "not started"
-  exit 0
-fi
-
-active_entries=()
-
-if is_active_codex_pid "${LOG_DIR}/codex-heartbeat.pid"; then
-  active_entries+=("heartbeat")
-fi
-
-shopt -s nullglob
-for pid_path in "${LOG_DIR}"/codex-*.pid; do
-  name="$(basename "${pid_path}")"
-  name="${name#codex-}"
-  name="${name%.pid}"
-  if [[ "${name}" == "heartbeat" ]]; then
-    continue
-  fi
-  if is_active_codex_pid "${pid_path}"; then
-    active_entries+=("${name}")
-  fi
-done
-shopt -u nullglob
-
-if [[ ${#active_entries[@]} -eq 0 ]]; then
-  printf '%s\n' "idle"
-  exit 0
-fi
-
-printf 'running (%s)\n' "$(IFS=', '; echo "${active_entries[*]}")"
-EOF
-  then
-    printf '%s\n' "unknown (SSH failed)"
-    return 0
-  fi
+  vm_codex_status_from_ssh \
+    "${VM_USER}" \
+    "${vm_ip}" \
+    "${SSH_PRIVATE_KEY_PATH}" \
+    "${VM_AGENT_LIST_CONNECT_TIMEOUT_SECONDS}"
 }
 
 printf '%-4s %-24s %-10s %-15s %s\n' "ID" "Name" "State" "IP" "Agent"

@@ -20,9 +20,9 @@
 - Session manifests are the smallest useful policy primitive for v1.
 - Approval records let you keep autonomy for drafts and read operations while gating sends.
 
-## Guest-Driven Feedback Heartbeat (Design)
+## Host-Driven Feedback Heartbeat (Design)
 
-This model keeps feedback delivery guest-initiated while preserving host-side policy and secret
+This model keeps feedback polling on the host while preserving host-side policy and secret
 boundaries.
 
 ### Poll cadence and latency target
@@ -35,21 +35,15 @@ boundaries.
 
 ### Required MCP calls
 
-Per heartbeat loop, the guest performs:
+Per heartbeat loop, the host worker performs provider polling for streams allowlisted in active session manifests and updates the shared feedback store.
 
-1. `has_pending_feedback(session_id)` as a lightweight check.
-2. If pending: `list_unread_feedback(session_id, cursor)` to fetch unread items since the guest's
-   last acknowledged cursor.
-3. Optional: an acknowledgment/update call (for example
-   `acknowledge_feedback(session_id, feedback_ids | cursor)`) after durable local processing.
+Guests continue to use MCP tools (`has_pending_feedback`, `list_unread_feedback`, `post_pr_feedback_reply`) for consumption and reply actions.
 
-This sequence minimizes payload volume when there is no new feedback and supports explicit
-at-least-once processing semantics.
+This sequence minimizes payload volume when there is no new feedback and supports explicit at-least-once processing semantics.
 
 ### State model (unread cursor per session)
 
-- The guest keeps a durable `last_read_cursor` per `session_id` (for example on disk in
-  guest-local state).
+- The host keeps provider cursors per feedback stream in host runtime state.
 - `list_unread_feedback` returns:
   - ordered feedback items after the provided cursor
   - a `next_cursor` watermark
@@ -60,8 +54,7 @@ at-least-once processing semantics.
 
 ### Failure behavior
 
-- **MCP/API unavailable:** keep current cursor, log failure, retry next cadence with bounded
-  backoff/jitter; do not skip forward.
+- **Provider API unavailable:** keep current cursor, log failure, retry next cadence with bounded backoff/jitter; do not skip forward.
 - **Stale/invalid cursor:** host returns cursor error; guest falls back to a safe recovery mode
   (for example reset to latest checkpoint or request replay from a host-defined baseline), then
   resumes normal polling.
@@ -74,8 +67,7 @@ at-least-once processing semantics.
 
 - Provider credentials (Discord, email, OpenAI, etc.) remain **host-side only**.
 - Guest has access only to MCP tool interfaces over the private VM network.
-- The heartbeat loop therefore exchanges only policy-filtered feedback records and cursor metadata,
-  never upstream provider secrets.
+- The host heartbeat loop exchanges only policy-filtered feedback records and cursor metadata, never upstream provider secrets.
 
 ## Planned Next Integrations
 

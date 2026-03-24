@@ -1,5 +1,6 @@
 import json
 import subprocess
+from types import SimpleNamespace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -171,10 +172,15 @@ def test_create_issue_vm_builds_setup_issue_vm_command_correctly(tmp_path: Path,
     init_result = runner.invoke(app, ["init-state", "--config", str(config_path)])
     assert init_result.exit_code == 0
 
-    def fake_run(cmd: list[str], check: bool) -> subprocess.CompletedProcess[str]:
+    def fake_run(
+        cmd: list[str],
+        check: bool,
+        capture_output: bool,
+        text: bool,
+    ) -> subprocess.CompletedProcess[str]:
         nonlocal captured_cmd
         captured_cmd = cmd
-        return subprocess.CompletedProcess(cmd, 0)
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     monkeypatch.setattr("agent_sandbox.cli.subprocess.run", fake_run)
 
@@ -489,10 +495,15 @@ def test_list_vms_invokes_script_with_selected_vm_user(tmp_path: Path, monkeypat
     init_result = runner.invoke(app, ["init-state", "--config", str(config_path)])
     assert init_result.exit_code == 0
 
-    def fake_run(cmd: list[str], check: bool) -> subprocess.CompletedProcess[str]:
+    def fake_run(
+        cmd: list[str],
+        check: bool,
+        capture_output: bool,
+        text: bool,
+    ) -> subprocess.CompletedProcess[str]:
         nonlocal captured_cmd
         captured_cmd = cmd
-        return subprocess.CompletedProcess(cmd, 0)
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     monkeypatch.setattr("agent_sandbox.cli.subprocess.run", fake_run)
 
@@ -511,10 +522,15 @@ def test_ssh_resolves_issue_number_to_vm_name(tmp_path: Path, monkeypatch) -> No
     init_result = runner.invoke(app, ["init-state", "--config", str(config_path)])
     assert init_result.exit_code == 0
 
-    def fake_run(cmd: list[str], check: bool) -> subprocess.CompletedProcess[str]:
+    def fake_run(
+        cmd: list[str],
+        check: bool,
+        capture_output: bool,
+        text: bool,
+    ) -> subprocess.CompletedProcess[str]:
         nonlocal captured_cmd
         captured_cmd = cmd
-        return subprocess.CompletedProcess(cmd, 0)
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     monkeypatch.setattr("agent_sandbox.cli.subprocess.run", fake_run)
 
@@ -599,14 +615,29 @@ def test_resume_agent_invokes_script_with_message_and_issue_number(tmp_path: Pat
     init_result = runner.invoke(app, ["init-state", "--config", str(config_path)])
     assert init_result.exit_code == 0
 
-    def fake_run(cmd: list[str], check: bool) -> subprocess.CompletedProcess[str]:
+    def fake_run(
+        cmd: list[str],
+        check: bool,
+        capture_output: bool,
+        text: bool,
+    ) -> subprocess.CompletedProcess[str]:
         nonlocal captured_cmd
         captured_cmd = cmd
-        return subprocess.CompletedProcess(cmd, 0)
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     monkeypatch.setattr("agent_sandbox.cli.subprocess.run", fake_run)
 
-    result = runner.invoke(app, ["resume-agent", "12305", "--message", "Continue from the failing restore"])
+    result = runner.invoke(
+        app,
+        [
+            "resume-agent",
+            "12305",
+            "--config",
+            str(config_path),
+            "--message",
+            "Continue from the failing restore",
+        ],
+    )
 
     assert result.exit_code == 0
     assert captured_cmd[0].endswith("/scripts/resume_issue_agent.sh")
@@ -754,3 +785,32 @@ def test_status_human_output_reports_degraded_state(tmp_path: Path, monkeypatch)
     assert "emails.json: degraded" in result.stdout
     assert "inactive (available)" in result.stdout
     assert "openai_relay: degraded" in result.stdout
+
+
+def test_host_heartbeat_once_runs_single_cycle(tmp_path: Path, monkeypatch) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+    calls: list[str] = []
+
+    class _FakeWorker:
+        def run_once_with_lock(self):
+            calls.append("run_once_with_lock")
+            return SimpleNamespace(streams_polled=3, discovered_feedback=1, next_sleep_seconds=31.5)
+
+        def run_once(self):
+            raise AssertionError("run_once should not be called directly in --once mode")
+
+        def run_forever(self) -> None:
+            raise AssertionError("run_forever should not be called in --once mode")
+
+    monkeypatch.setattr("agent_sandbox.cli.build_host_heartbeat_worker", lambda cfg: _FakeWorker())
+
+    result = runner.invoke(
+        app,
+        ["host-heartbeat", "--config", str(config_path), "--once", "--log-level", "DEBUG"],
+    )
+
+    assert result.exit_code == 0
+    assert calls == ["run_once_with_lock"]
+    assert "streams=3" in result.output
+    assert "discovered=1" in result.output

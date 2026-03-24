@@ -637,6 +637,7 @@ TARGET_DIR="$HOME/${GUEST_REPO_NAME}"
 LOG_DIR="$HOME/.agent-sandbox"
 LOG_PATH="${LOG_DIR}/codex-${GUEST_REPO_NAME}.log"
 PID_PATH="${LOG_DIR}/codex-${GUEST_REPO_NAME}.pid"
+STATE_PATH="${LOG_DIR}/codex-${GUEST_REPO_NAME}.state"
 INITIAL_PROMPT="You have been issued the task described in ${TARGET_DIR}/AGENT_TASK.yaml. Read ${HOME}/AGENTS.md and ${TARGET_DIR}/AGENT_TASK.yaml before you begin. The repository is located at ${TARGET_DIR}. Do not ask for feedback or clarifications, but work until the task is completed or until you determine that it is impossible to complete."
 if [[ "${BOOTSTRAP_DOTNET:-0}" == "1" && "${BOOTSTRAP_NUGET:-0}" == "1" ]]; then
   INITIAL_PROMPT="${INITIAL_PROMPT} When restore is needed, use 'dotnet restore --configfile ~/.nuget/NuGet/NuGet.Config'. For build and test, prefer '--no-restore'."
@@ -657,9 +658,41 @@ fi
 nohup env \
   CODEX_MODEL="${CODEX_MODEL}" \
   TARGET_DIR="${TARGET_DIR}" \
+  GUEST_REPO_NAME="${GUEST_REPO_NAME}" \
   INITIAL_PROMPT="${INITIAL_PROMPT}" \
   POST_EXEC_VERIFICATION_PROMPT="${POST_EXEC_VERIFICATION_PROMPT}" \
+  STATE_PATH="${STATE_PATH}" \
   bash -lc '
+write_state() {
+  local status="$1"
+  local phase="$2"
+  local exit_code="${3:-}"
+  local now
+  local tmp_path
+
+  now="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  tmp_path="${STATE_PATH}.tmp"
+  {
+    printf "status=%s\n" "${status}"
+    printf "phase=%s\n" "${phase}"
+    printf "repo=%s\n" "${GUEST_REPO_NAME}"
+    printf "pid=%s\n" "$$"
+    printf "updated_at=%s\n" "${now}"
+    if [[ -n "${exit_code}" ]]; then
+      printf "exit_code=%s\n" "${exit_code}"
+    fi
+  } > "${tmp_path}"
+  mv "${tmp_path}" "${STATE_PATH}"
+}
+
+on_exit() {
+  local exit_code="$?"
+  write_state "idle" "complete" "${exit_code}"
+}
+
+write_state "running" "initial"
+trap on_exit EXIT
+
 codex exec \
   --model "${CODEX_MODEL}" \
   -s danger-full-access \
@@ -668,6 +701,7 @@ codex exec \
   -C "${TARGET_DIR}" \
   "${INITIAL_PROMPT}"
 exec_status=$?
+write_state "running" "post_exec" "${exec_status}"
 codex exec resume \
   --last \
   --model "${CODEX_MODEL}" \

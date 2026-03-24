@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import subprocess
@@ -14,8 +15,10 @@ import httpx
 import typer
 from pydantic import ValidationError
 
+from .audit import AuditEventType
 from .ado_issue_worker import run_worker_command
 from .config import GatewayConfig, load_config
+from .host_heartbeat_worker import build_host_heartbeat_worker
 from .email.providers import JsonEmailProvider, MultiMailboxEmailProvider
 from .models import ApprovalStatus, DiscordCommandEnvelope, EmailMessage, SessionManifest, ToolName
 from .runtime import build_runtime
@@ -51,6 +54,23 @@ class UnitStatus:
     state: str
     available: bool
     detail: str | None
+
+
+@dataclass(slots=True)
+class HeartbeatSummary:
+    healthy: bool
+    reason: str
+    last_cycle_at: str | None
+    last_cycle_streams_polled: int | None
+    last_cycle_discovered_feedback: int | None
+    last_cycle_next_sleep_seconds: float | None
+    last_busy_skip_at: str | None
+    last_busy_skip_reason: str | None
+    last_feedback_detected_at: str | None
+    last_resume_outcome: str | None
+    last_resume_reason: str | None
+    last_vm_start_outcome: str | None
+    last_vm_start_reason: str | None
 
 
 def _path_status(path: Path, *, is_dir: bool = False) -> PathStatus:
@@ -105,6 +125,80 @@ def _check_health_endpoint(name: str, url: str) -> EndpointStatus:
 def _format_rows(rows: list[tuple[str, str]]) -> str:
     key_width = max(len(key) for key, _ in rows)
     return "\n".join(f"{key:<{key_width}}  {value}" for key, value in rows)
+
+
+def _load_heartbeat_summary(audit_log_path: Path, *, max_events: int = 400) -> HeartbeatSummary:
+    summary = HeartbeatSummary(
+        healthy=False,
+        reason="no-heartbeat-events",
+        last_cycle_at=None,
+        last_cycle_streams_polled=None,
+        last_cycle_discovered_feedback=None,
+        last_cycle_next_sleep_seconds=None,
+        last_busy_skip_at=None,
+        last_busy_skip_reason=None,
+        last_feedback_detected_at=None,
+        last_resume_outcome=None,
+        last_resume_reason=None,
+        last_vm_start_outcome=None,
+        last_vm_start_reason=None,
+    )
+    if not audit_log_path.exists():
+        summary.reason = "missing-audit-log"
+        return summary
+
+    try:
+        lines = audit_log_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        summary.reason = "audit-log-unreadable"
+        return summary
+
+    for raw in reversed(lines[-max_events:]):
+        try:
+            event = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        event_type = str(event.get("event_type", ""))
+        created_at = event.get("created_at")
+        reason = event.get("reason")
+        decision = event.get("decision")
+        result = event.get("result")
+        if event_type == AuditEventType.HOST_HEARTBEAT_CYCLE_COMPLETED and summary.last_cycle_at is None:
+            summary.last_cycle_at = str(created_at) if created_at else None
+            if isinstance(result, dict):
+                streams_polled = result.get("streams_polled")
+                discovered_feedback = result.get("discovered_feedback")
+                next_sleep_seconds = result.get("next_sleep_seconds")
+                summary.last_cycle_streams_polled = int(streams_polled) if isinstance(streams_polled, int) else None
+                summary.last_cycle_discovered_feedback = (
+                    int(discovered_feedback) if isinstance(discovered_feedback, int) else None
+                )
+                summary.last_cycle_next_sleep_seconds = (
+                    float(next_sleep_seconds) if isinstance(next_sleep_seconds, (int, float)) else None
+                )
+            summary.reason = str(reason or decision or "cycle-seen")
+            summary.healthy = True
+        elif event_type == AuditEventType.BUSY_SKIP and summary.last_busy_skip_at is None:
+            summary.last_busy_skip_at = str(created_at) if created_at else None
+            summary.last_busy_skip_reason = str(reason) if reason else None
+        elif event_type == AuditEventType.FEEDBACK_DETECTED and summary.last_feedback_detected_at is None:
+            summary.last_feedback_detected_at = str(created_at) if created_at else None
+        elif event_type in {
+            AuditEventType.RESUME_ATTEMPTED,
+            AuditEventType.RESUME_SUCCEEDED,
+            AuditEventType.RESUME_FAILED,
+        } and summary.last_resume_outcome is None:
+            summary.last_resume_outcome = event_type
+            summary.last_resume_reason = str(reason) if reason else None
+        elif event_type in {
+            AuditEventType.VM_START_ATTEMPTED,
+            AuditEventType.VM_START_SUCCEEDED,
+            AuditEventType.VM_START_FAILED,
+        } and summary.last_vm_start_outcome is None:
+            summary.last_vm_start_outcome = event_type
+            summary.last_vm_start_reason = str(reason) if reason else None
+
+    return summary
 
 
 def _default_issue_session_id(issue_number: str) -> str:
@@ -250,6 +344,7 @@ def status(config: ConfigOption = Path("config/gateway.yaml"), as_json: Annotate
         "runtime_paths": [],
         "systemd_units": [],
         "health": [],
+        "host_heartbeat": {},
         "sessions": {
             "total": 0,
             "active": 0,
@@ -288,6 +383,7 @@ def status(config: ConfigOption = Path("config/gateway.yaml"), as_json: Annotate
             "agent-sandbox-firewall.service",
             "agent-sandbox-gateway.service",
             "agent-sandbox-openai-relay.service",
+            "agent-sandbox-host-heartbeat.service",
         ]
         unit_statuses = [_get_systemd_unit_state(unit) for unit in units]
         report["systemd_units"] = [asdict(unit_status) for unit_status in unit_statuses]
@@ -307,6 +403,14 @@ def status(config: ConfigOption = Path("config/gateway.yaml"), as_json: Annotate
         for endpoint in health_results:
             if not endpoint.reachable:
                 report["overall"] = "degraded"
+
+        heartbeat_summary = _load_heartbeat_summary(cfg.audit_log_path)
+        report["host_heartbeat"] = asdict(heartbeat_summary)
+        if not heartbeat_summary.healthy and heartbeat_summary.reason not in {
+            "no-heartbeat-events",
+            "missing-audit-log",
+        }:
+            report["overall"] = "degraded"
 
         if cfg.session_store_path.exists():
             try:
@@ -380,6 +484,29 @@ def status(config: ConfigOption = Path("config/gateway.yaml"), as_json: Annotate
             typer.echo(f"- {endpoint['name']}: {status} (url={endpoint['url']} status_code={status_code})")
             if endpoint["error"]:
                 typer.echo(f"  error: {endpoint['error']}")
+
+    if report["host_heartbeat"]:
+        heartbeat = report["host_heartbeat"]
+        typer.echo("\nHost heartbeat")
+        typer.echo(
+            _format_rows(
+                [
+                    ("Healthy", "yes" if heartbeat["healthy"] else "no"),
+                    ("Reason", str(heartbeat["reason"])),
+                    ("Last cycle", str(heartbeat["last_cycle_at"] or "n/a")),
+                    ("Streams polled", str(heartbeat["last_cycle_streams_polled"] or "n/a")),
+                    ("Feedback discovered", str(heartbeat["last_cycle_discovered_feedback"] or "n/a")),
+                    ("Next sleep seconds", str(heartbeat["last_cycle_next_sleep_seconds"] or "n/a")),
+                    ("Last busy skip", str(heartbeat["last_busy_skip_at"] or "n/a")),
+                    ("Busy skip reason", str(heartbeat["last_busy_skip_reason"] or "n/a")),
+                    ("Last feedback detected", str(heartbeat["last_feedback_detected_at"] or "n/a")),
+                    ("Last resume outcome", str(heartbeat["last_resume_outcome"] or "n/a")),
+                    ("Last resume reason", str(heartbeat["last_resume_reason"] or "n/a")),
+                    ("Last vm start outcome", str(heartbeat["last_vm_start_outcome"] or "n/a")),
+                    ("Last vm start reason", str(heartbeat["last_vm_start_reason"] or "n/a")),
+                ]
+            )
+        )
 
     session_summary = report["sessions"]
     typer.echo("\nSessions")
@@ -524,6 +651,7 @@ def resume_agent(
         str,
         typer.Option("--message", help="Prompt passed to codex exec resume --last."),
     ],
+    config: ConfigOption = Path("config/gateway.yaml"),
     observe: Annotated[
         bool,
         typer.Option(
@@ -538,11 +666,76 @@ def resume_agent(
     vm_user: Annotated[str, typer.Option("--vm-user", help="Guest user to connect as.")] = "agent",
 ) -> None:
     issue_number = _resolve_issue_number_or_raise(target)
+    vm_name = f"vm-{issue_number}"
+    cfg = load_config(config)
+    runtime = build_runtime(cfg)
     script_path = Path(__file__).resolve().parents[2] / "scripts" / "resume_issue_agent.sh"
     cmd = [str(script_path), message, issue_number, vm_user]
     if observe:
         cmd.extend(["--observe", str(lines)])
-    subprocess.run(cmd, check=True)
+
+    runtime.audit.log_decision(
+        event_type=AuditEventType.VM_START_ATTEMPTED,
+        session_id=target,
+        vm_id=vm_name,
+        decision="attempted",
+        reason="resume-agent-command",
+    )
+    runtime.audit.log_decision(
+        event_type=AuditEventType.RESUME_ATTEMPTED,
+        session_id=target,
+        vm_id=vm_name,
+        decision="attempted",
+        reason="resume-agent-command",
+    )
+    if observe:
+        completed = subprocess.run(cmd, check=False)
+    else:
+        completed = subprocess.run(
+            cmd,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    if completed.returncode == 0:
+        runtime.audit.log_decision(
+            event_type=AuditEventType.VM_START_SUCCEEDED,
+            session_id=target,
+            vm_id=vm_name,
+            decision="succeeded",
+            reason="resume-script-success",
+        )
+        runtime.audit.log_decision(
+            event_type=AuditEventType.RESUME_SUCCEEDED,
+            session_id=target,
+            vm_id=vm_name,
+            decision="succeeded",
+            reason="resume-script-success",
+        )
+        return
+
+    reason = f"resume-script-exit-{completed.returncode}"
+    runtime.audit.log_decision(
+        event_type=AuditEventType.VM_START_FAILED,
+        session_id=target,
+        vm_id=vm_name,
+        decision="failed",
+        reason=reason,
+        args={"stderr": (completed.stderr or "").strip()},
+    )
+    runtime.audit.log_decision(
+        event_type=AuditEventType.RESUME_FAILED,
+        session_id=target,
+        vm_id=vm_name,
+        decision="failed",
+        reason=reason,
+        args={"stderr": (completed.stderr or "").strip()},
+    )
+    if getattr(completed, "stdout", ""):
+        typer.echo(completed.stdout, nl=False)
+    if getattr(completed, "stderr", ""):
+        typer.echo(completed.stderr, err=True, nl=False)
+    raise typer.Exit(code=completed.returncode)
 
 
 @app.command("create-issue-vm")
@@ -816,6 +1009,38 @@ def seed_discord_channel(
         f"Seeded Discord channel {channel_id} with cursor {seed_cursor}. "
         "Use that cursor as the initial since_cursor for smoke tests."
     )
+
+
+
+
+@app.command("host-heartbeat")
+def host_heartbeat(
+    config: ConfigOption = Path("config/gateway.yaml"),
+    run_once: Annotated[
+        bool,
+        typer.Option("--once", help="Run a single heartbeat cycle and exit."),
+    ] = False,
+    log_level: Annotated[str, typer.Option("--log-level", help="Python logging level.")] = "INFO",
+) -> None:
+    logging_level = getattr(logging, log_level.upper(), None)
+    if not isinstance(logging_level, int):
+        raise typer.BadParameter(f"Invalid --log-level value: {log_level}")
+    logging.basicConfig(
+        level=logging_level,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+
+    cfg = load_config(config)
+    worker = build_host_heartbeat_worker(cfg)
+    if run_once:
+        result = worker.run_once_with_lock()
+        typer.echo(
+            f"Host heartbeat cycle complete streams={result.streams_polled} "
+            f"discovered={result.discovered_feedback} sleep_seconds={result.next_sleep_seconds:.3f}"
+        )
+        return
+
+    worker.run_forever()
 
 
 @app.command("poll-ado-backlog")

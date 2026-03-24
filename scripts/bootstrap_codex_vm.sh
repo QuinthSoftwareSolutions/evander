@@ -16,6 +16,7 @@ Environment:
   SSH_KEY_PATH    Private key matching the guest authorized key.
   HOST_CODEX_ROOT Host Codex package root.
   LLM_BASE_URL    Guest OpenAI-compatible base URL.
+  ENABLE_GUEST_HEARTBEAT Legacy toggle for guest heartbeat timer install (0/1, default: 0).
 EOF
 }
 
@@ -43,33 +44,16 @@ fi
 HOST_CODEX_ROOT="${HOST_CODEX_ROOT:-${CALLER_HOME}/.nvm/versions/node/v24.14.0/lib/node_modules/@openai/codex}"
 VENDOR_DIR="${HOST_CODEX_ROOT}/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl"
 LLM_BASE_URL="${LLM_BASE_URL:-http://192.168.250.1:11434/v1}"
+ENABLE_GUEST_HEARTBEAT="${ENABLE_GUEST_HEARTBEAT:-0}"
 SSH_OPTS=(
   -o StrictHostKeyChecking=no
   -o UserKnownHostsFile=/dev/null
   -i "${SSH_KEY_PATH}"
 )
-GUEST_HEARTBEAT_SCRIPT="${ROOT_DIR}/scripts/guest/heartbeat_cycle.sh"
-GUEST_HEARTBEAT_SERVICE="${ROOT_DIR}/scripts/guest/agent-heartbeat.service"
-GUEST_HEARTBEAT_TIMER="${ROOT_DIR}/scripts/guest/agent-heartbeat.timer"
-
+LEGACY_HEARTBEAT_DIR="${ROOT_DIR}/scripts/guest"
 if [[ ! -d "${VENDOR_DIR}" ]]; then
   echo "Missing Codex vendor directory: ${VENDOR_DIR}" >&2
   echo "Set HOST_CODEX_ROOT if Codex is installed elsewhere on the host." >&2
-  exit 1
-fi
-
-if [[ ! -f "${GUEST_HEARTBEAT_SCRIPT}" ]]; then
-  echo "Missing guest heartbeat script: ${GUEST_HEARTBEAT_SCRIPT}" >&2
-  exit 1
-fi
-
-if [[ ! -f "${GUEST_HEARTBEAT_SERVICE}" ]]; then
-  echo "Missing guest heartbeat service unit: ${GUEST_HEARTBEAT_SERVICE}" >&2
-  exit 1
-fi
-
-if [[ ! -f "${GUEST_HEARTBEAT_TIMER}" ]]; then
-  echo "Missing guest heartbeat timer unit: ${GUEST_HEARTBEAT_TIMER}" >&2
   exit 1
 fi
 
@@ -120,15 +104,11 @@ ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "
   mkdir -p ~/bin ~/codex-vendor ~/.config/systemd/user ~/.config/agent-sandbox
 "
 scp "${SSH_OPTS[@]}" -r "${VENDOR_DIR}/." "${VM_USER}@${VM_IP}:~/codex-vendor/"
-scp "${SSH_OPTS[@]}" "${GUEST_HEARTBEAT_SCRIPT}" "${VM_USER}@${VM_IP}:~/bin/agent-heartbeat-cycle"
-scp "${SSH_OPTS[@]}" "${GUEST_HEARTBEAT_SERVICE}" "${VM_USER}@${VM_IP}:~/.config/systemd/user/agent-heartbeat.service"
-scp "${SSH_OPTS[@]}" "${GUEST_HEARTBEAT_TIMER}" "${VM_USER}@${VM_IP}:~/.config/systemd/user/agent-heartbeat.timer"
 
 ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "VM_USER='${VM_USER}' LLM_BASE_URL='${LLM_BASE_URL}' bash -s" <<'EOF'
 set -euo pipefail
 cp ~/codex-vendor/codex/codex ~/bin/codex
 chmod +x ~/bin/codex
-chmod +x ~/bin/agent-heartbeat-cycle
 mkdir -p ~/.codex
 cat > ~/.codex/config.toml <<CONFIG
 model = "gpt-5.4"
@@ -165,21 +145,29 @@ export PATH="$HOME/bin:$HOME/codex-vendor/path:$PATH"
 export OPENAI_API_KEY="${OPENAI_API_KEY:-relay-placeholder}"
 codex --version
 
-if systemctl --user daemon-reload; then
-  if systemctl --user enable --now agent-heartbeat.timer; then
-    systemctl --user status agent-heartbeat.timer --no-pager || true
-  else
-    echo "Warning: failed to enable/start agent-heartbeat.timer with systemctl --user." >&2
-    echo "Run manually inside the VM once a user systemd session is active:" >&2
-    echo "  systemctl --user daemon-reload" >&2
-    echo "  systemctl --user enable --now agent-heartbeat.timer" >&2
-  fi
-else
-  echo "Warning: systemctl --user unavailable in this SSH session." >&2
-  echo "Run manually inside the VM:" >&2
-  echo "  systemctl --user daemon-reload" >&2
-  echo "  systemctl --user enable --now agent-heartbeat.timer" >&2
-fi
+echo "Host heartbeat worker is now responsible for feedback wakeups."
 EOF
+
+if [[ "${ENABLE_GUEST_HEARTBEAT}" == "1" ]]; then
+  echo "ENABLE_GUEST_HEARTBEAT=1 set; attempting legacy guest heartbeat install (deprecated)."
+  if [[ -f "${LEGACY_HEARTBEAT_DIR}/heartbeat_cycle.sh" \
+    && -f "${LEGACY_HEARTBEAT_DIR}/agent-heartbeat.service" \
+    && -f "${LEGACY_HEARTBEAT_DIR}/agent-heartbeat.timer" ]]; then
+    scp "${SSH_OPTS[@]}" \
+      "${LEGACY_HEARTBEAT_DIR}/heartbeat_cycle.sh" \
+      "${LEGACY_HEARTBEAT_DIR}/agent-heartbeat.service" \
+      "${LEGACY_HEARTBEAT_DIR}/agent-heartbeat.timer" \
+      "${VM_USER}@${VM_IP}:~/.config/systemd/user/"
+
+    ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" '
+      set -euo pipefail
+      chmod +x ~/.config/systemd/user/heartbeat_cycle.sh
+      systemctl --user daemon-reload
+      systemctl --user enable --now agent-heartbeat.timer
+    '
+  else
+    echo "Warning: legacy heartbeat assets are not present on host; skipping guest timer setup." >&2
+  fi
+fi
 
 echo "Codex bootstrap complete for ${VM_NAME} (${VM_IP})"

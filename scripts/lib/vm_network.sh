@@ -1,5 +1,53 @@
 #!/usr/bin/env bash
 
+vm_network_domain_state() {
+  local vm_name="$1"
+  local state
+
+  state="$(
+    virsh dominfo "${vm_name}" 2>/dev/null \
+      | awk -F': *' '/^State:/ {print $2; exit}'
+  )"
+  if [[ -n "${state}" ]]; then
+    printf '%s\n' "${state}"
+    return 0
+  fi
+
+  state="$(
+    sudo -n virsh dominfo "${vm_name}" 2>/dev/null \
+      | awk -F': *' '/^State:/ {print $2; exit}'
+  )"
+  if [[ -n "${state}" ]]; then
+    printf '%s\n' "${state}"
+    return 0
+  fi
+
+  return 1
+}
+
+vm_network_vm_exists() {
+  local vm_name="$1"
+
+  if vm_network_domain_state "${vm_name}" >/dev/null 2>&1; then
+    return 0
+  fi
+  return 1
+}
+
+vm_network_start() {
+  local vm_name="$1"
+
+  if virsh start "${vm_name}" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  if sudo -n virsh start "${vm_name}" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  return 1
+}
+
 vm_network_resolve_ip() {
   local vm_name="$1"
   local ip

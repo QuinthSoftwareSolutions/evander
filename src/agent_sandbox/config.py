@@ -87,6 +87,22 @@ class GatewayConfig(BaseModel):
     azure_devops_organization_url: str = "https://dev.azure.com"
     azure_devops_project: str = "default"
     email_provider_timeout_seconds: float = Field(default=30.0, gt=0)
+    host_heartbeat_poll_interval_seconds: float = Field(default=30.0, gt=0)
+    host_heartbeat_jitter_seconds: float = Field(default=5.0, ge=0)
+    host_heartbeat_cooldown_seconds: float = Field(default=60.0, ge=0)
+    host_heartbeat_http_timeout_seconds: float = Field(default=30.0, gt=0)
+    host_heartbeat_lock_path: Path = Path("/var/lib/agent-sandbox/host-heartbeat.lock")
+    host_heartbeat_session_cooldown_path: Path = Path(
+        "/var/lib/agent-sandbox/host-heartbeat-session-cooldown.json"
+    )
+    host_busy_check_script_path: Path = Path("scripts/check_session_vm_busy.sh")
+    host_resume_script_path: Path = Path("scripts/resume_issue_agent.sh")
+    host_heartbeat_wake_state_path: Path = Path("/var/lib/agent-sandbox/host-heartbeat-wake-state.json")
+    host_heartbeat_resume_prompt: str = "Resume and address newly received PR feedback."
+    host_heartbeat_vm_user: str = "agent"
+    host_heartbeat_resume_timeout_seconds: float = Field(default=1200.0, gt=0)
+    host_heartbeat_stream_conflict_policy: Literal["fanout", "reject"] = "fanout"
+    pr_map_path: Path = Path("/var/lib/agent-sandbox/pr-map.json")
     email_mailboxes: list[MailboxConfig] = Field(
         default_factory=lambda: [
             MailboxConfig(
@@ -156,12 +172,17 @@ class GatewayConfig(BaseModel):
     def apply_runtime_path_defaults(self) -> GatewayConfig:
         default_runtime_dir = Path("/var/lib/agent-sandbox")
         default_paths = {
+            "host_heartbeat_lock_path": default_runtime_dir / "host-heartbeat.lock",
+            "host_heartbeat_session_cooldown_path": default_runtime_dir
+            / "host-heartbeat-session-cooldown.json",
+            "host_heartbeat_wake_state_path": default_runtime_dir / "host-heartbeat-wake-state.json",
             "session_store_path": default_runtime_dir / "sessions.json",
             "approval_store_path": default_runtime_dir / "approvals.json",
             "draft_store_path": default_runtime_dir / "drafts.json",
             "email_store_path": default_runtime_dir / "emails.json",
             "email_cursor_store_path": default_runtime_dir / "email_cursors.json",
             "discord_command_store_path": default_runtime_dir / "discord_commands.json",
+            "pr_map_path": default_runtime_dir / "pr-map.json",
         }
         for field_name, default_path in default_paths.items():
             if getattr(self, field_name) == default_path:

@@ -11,8 +11,7 @@ from typing import Any, Protocol
 import httpx
 from pydantic import BaseModel
 
-from .audit import AuditLogger
-from .models import AuditEvent
+from .audit import AuditEventType, AuditLogger
 
 
 logger = logging.getLogger(__name__)
@@ -325,6 +324,7 @@ class PullRequestFeedbackWorker:
         provider: str,
         repo: str,
         pr_id: str,
+        stream_bindings: list[dict[str, str | None]] | None = None,
     ) -> list[FeedbackEnvelope]:
         adapter = self.adapters[provider]
         stream_key = f"{provider}:{repo}:{pr_id}"
@@ -336,24 +336,39 @@ class PullRequestFeedbackWorker:
             if not self.store.add_feedback_if_new(envelope):
                 continue
             discovered.append(envelope)
-            self._log_discovery(envelope)
+            self._log_discovery(envelope, stream_bindings=stream_bindings)
 
         self.store.set_cursor(stream_key, result.next_cursor)
         return discovered
 
-    def _log_discovery(self, envelope: FeedbackEnvelope) -> None:
+    def _log_discovery(
+        self,
+        envelope: FeedbackEnvelope,
+        *,
+        stream_bindings: list[dict[str, str | None]] | None = None,
+    ) -> None:
+        bindings = stream_bindings or []
         logger.info(
-            "Discovered new PR feedback provider=%s repo=%s pr=%s feedback_id=%s",
+            "Discovered new PR feedback provider=%s repo=%s pr=%s feedback_id=%s stream_bindings=%s",
             envelope.provider,
             envelope.repo,
             envelope.pr_id,
             envelope.feedback_id,
+            bindings,
         )
-        self.audit_logger.log(
-            AuditEvent(
-                event_type="pr_feedback_discovered",
-                args={"feedback": envelope.model_dump(mode="json")},
-            )
+        self.audit_logger.log_decision(
+            event_type=AuditEventType.FEEDBACK_DETECTED,
+            session_id=bindings[0]["session_id"] if bindings else None,
+            vm_id=bindings[0]["vm_id"] if bindings else None,
+            provider=envelope.provider,
+            repo=envelope.repo,
+            pr_id=envelope.pr_id,
+            decision="detected",
+            reason="new-feedback",
+            args={
+                "feedback": envelope.model_dump(mode="json"),
+                "stream_bindings": bindings,
+            },
         )
 
 
