@@ -82,6 +82,10 @@ class HostHeartbeatWorker:
                 )
                 time.sleep(result.next_sleep_seconds)
 
+    def run_once_with_lock(self) -> HeartbeatCycleResult:
+        with _single_instance_lock(self.config.host_heartbeat_lock_path):
+            return self.run_once()
+
     def run_once(self) -> HeartbeatCycleResult:
         stream_mappings = self._collect_stream_mappings()
         streams = sorted(
