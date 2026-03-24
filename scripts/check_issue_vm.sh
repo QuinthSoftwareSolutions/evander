@@ -5,7 +5,7 @@ show_help() {
   cat <<'EOF'
 Usage: check_issue_vm.sh <issue-number> [repo-name] [vm-user]
 
-Show the current status of the issue VM and the background guest Codex run.
+Show the current status of the issue VM and the background guest agent run.
 
 Arguments:
   issue-number  Issue identifier used to derive the VM name.
@@ -102,9 +102,9 @@ if [[ -z "${RESOLVED_REPO_NAME}" ]]; then
   shopt -s nullglob
   candidates=()
 
-  for path in "${LOG_DIR}"/codex-*.pid "${LOG_DIR}"/codex-*.log; do
+  for path in "${LOG_DIR}"/agent-*.pid "${LOG_DIR}"/agent-*.log; do
     name="$(basename "${path}")"
-    name="${name#codex-}"
+    name="${name#agent-}"
     name="${name%.pid}"
     name="${name%.log}"
     if [[ -n "${name}" ]]; then
@@ -116,7 +116,7 @@ if [[ -z "${RESOLVED_REPO_NAME}" ]]; then
 
   if [[ ${#candidates[@]} -eq 0 ]]; then
     echo "agent: not started"
-    echo "repo:  unknown (no guest Codex logs or pid files found)"
+    echo "repo:  unknown (no guest agent logs or pid files found)"
     exit 0
   fi
 
@@ -132,8 +132,8 @@ if [[ -z "${RESOLVED_REPO_NAME}" ]]; then
   RESOLVED_REPO_NAME="${unique_candidates[0]}"
 fi
 
-LOG_PATH="${LOG_DIR}/codex-${RESOLVED_REPO_NAME}.log"
-PID_PATH="${LOG_DIR}/codex-${RESOLVED_REPO_NAME}.pid"
+LOG_PATH="${LOG_DIR}/agent-${RESOLVED_REPO_NAME}.log"
+PID_PATH="${LOG_DIR}/agent-${RESOLVED_REPO_NAME}.pid"
 echo "repo:  ${RESOLVED_REPO_NAME}"
 
 if [[ ! -f "${PID_PATH}" ]]; then
