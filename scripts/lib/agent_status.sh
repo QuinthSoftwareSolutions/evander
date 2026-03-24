@@ -23,9 +23,17 @@ VM_AGENT_STATE_MAX_AGE_SECONDS="${VM_AGENT_STATE_MAX_AGE_SECONDS:-600}"
 
 is_active_agent_pid() {
   local pid="$1"
+  local cmdline_path="/proc/${pid}/cmdline"
+  local cmdline=""
 
   [[ -n "${pid}" && "${pid}" =~ ^[0-9]+$ ]] || return 1
-  kill -0 "${pid}" >/dev/null 2>&1
+  kill -0 "${pid}" >/dev/null 2>&1 || return 1
+  [[ -r "${cmdline_path}" ]] || return 1
+
+  cmdline="$(tr '\000' ' ' < "${cmdline_path}" 2>/dev/null || true)"
+  [[ -n "${cmdline}" ]] || return 1
+
+  [[ "${cmdline}" == *"agent_runner_exec"* || "${cmdline}" == *"agent_runner_resume_last"* ]]
 }
 
 iso_to_epoch() {
