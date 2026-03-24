@@ -221,6 +221,10 @@ When combining Git push automation with PR feedback handling:
 - Git push/promotion remains event-driven (on push hooks).
 - Feedback pickup is host-worker-driven based on configured poll interval/jitter/cooldown, so comments may take up to one poll interval before updates begin.
 - The host worker only updates feedback state; guest execution remains explicit and idempotent via MCP tool flow.
+- `bootstrap_codex_vm.sh` defaults `ENABLE_GUEST_HEARTBEAT=0`, so new guests should not run the
+  deprecated `agent-heartbeat.timer`.
+- Migration note for older guests: disable the legacy timer with
+  `systemctl --user disable --now agent-heartbeat.timer || true` to prevent double wakes.
 
 ### Troubleshooting
 

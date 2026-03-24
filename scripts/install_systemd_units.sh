@@ -159,6 +159,14 @@ run_preflight_checks() {
   check_env_var_in_file "${ROOT_DIR}/config/ado-worker.env" "ADO_PAT_ENV_VAR_NAME" "Set ADO_PAT_ENV_VAR_NAME in config/ado-worker.env."
   check_env_var_in_file "${ROOT_DIR}/config/ado-worker.env" "ADO_PROJECT_OR_SOLUTION" "Set ADO_PROJECT_OR_SOLUTION in config/ado-worker.env."
   check_env_var_in_file "${ROOT_DIR}/config/host-heartbeat.env" "AGENT_SANDBOX_CONFIG" "Set AGENT_SANDBOX_CONFIG to your gateway config path."
+  check_env_var_in_file "${ROOT_DIR}/config/host-heartbeat.env" "HOST_HEARTBEAT_LOG_LEVEL" "Set HOST_HEARTBEAT_LOG_LEVEL in config/host-heartbeat.env."
+  check_env_var_in_file "${ROOT_DIR}/config/host-heartbeat.env" "HOST_HEARTBEAT_POLL_INTERVAL_SECONDS" "Set HOST_HEARTBEAT_POLL_INTERVAL_SECONDS in config/host-heartbeat.env."
+  check_env_var_in_file "${ROOT_DIR}/config/host-heartbeat.env" "HOST_HEARTBEAT_JITTER_SECONDS" "Set HOST_HEARTBEAT_JITTER_SECONDS in config/host-heartbeat.env."
+  check_env_var_in_file "${ROOT_DIR}/config/host-heartbeat.env" "HOST_HEARTBEAT_COOLDOWN_SECONDS" "Set HOST_HEARTBEAT_COOLDOWN_SECONDS in config/host-heartbeat.env."
+  check_env_var_in_file "${ROOT_DIR}/config/host-heartbeat.env" "HOST_HEARTBEAT_HTTP_TIMEOUT_SECONDS" "Set HOST_HEARTBEAT_HTTP_TIMEOUT_SECONDS in config/host-heartbeat.env."
+  check_env_var_in_file "${ROOT_DIR}/config/host-heartbeat.env" "HOST_HEARTBEAT_LOCK_PATH" "Set HOST_HEARTBEAT_LOCK_PATH in config/host-heartbeat.env."
+  check_env_var_in_file "${ROOT_DIR}/config/host-heartbeat.env" "HOST_HEARTBEAT_SESSION_COOLDOWN_PATH" "Set HOST_HEARTBEAT_SESSION_COOLDOWN_PATH in config/host-heartbeat.env."
+  check_env_var_in_file "${ROOT_DIR}/config/host-heartbeat.env" "HOST_HEARTBEAT_STREAM_CONFLICT_POLICY" "Set HOST_HEARTBEAT_STREAM_CONFLICT_POLICY in config/host-heartbeat.env."
 
   echo
   echo "Preflight summary: ${PASS_COUNT} passed, ${FAIL_COUNT} failed."
@@ -246,8 +254,9 @@ Next steps:
   1. Edit ${ROOT_DIR}/config/openai-relay.env and set OPENAI_API_KEY.
   2. Edit ${ROOT_DIR}/config/nuget-relay.env and set AZURE_ARTIFACTS_PAT if needed.
   3. Edit ${ROOT_DIR}/config/ado-worker.env and ensure ${ADO_PAT_ENV_VAR_NAME:-AZURE_DEVOPS_PAT} is exported.
-  4. Optionally edit ${ROOT_DIR}/config/firewall.env to change allowed host ports.
-  5. Start services:
+  4. Edit ${ROOT_DIR}/config/host-heartbeat.env for heartbeat cadence/lock settings.
+  5. Optionally edit ${ROOT_DIR}/config/firewall.env to change allowed host ports.
+  6. Start services:
      sudo systemctl start agent-sandbox-firewall.service
      sudo systemctl start agent-sandbox-gateway.service
      sudo systemctl start agent-sandbox-openai-relay.service

@@ -14,6 +14,7 @@ from typing import Any
 
 import httpx
 
+from .audit import AuditEventType
 from .config import GatewayConfig
 from .pr_feedback_worker import (
     AzureDevOpsFeedbackAdapter,
@@ -130,7 +131,7 @@ class HostHeartbeatWorker:
                 )
                 discovered_feedback += len(discovered)
                 if discovered:
-                    self._wake_bindings(bindings)
+                    self._record_busy_skips(stream=stream, bindings=bindings)
 
         next_sleep_seconds = _compute_next_sleep_seconds(
             poll_interval_seconds=self.config.host_heartbeat_poll_interval_seconds,
@@ -138,18 +139,39 @@ class HostHeartbeatWorker:
             cooldown_seconds=self.config.host_heartbeat_cooldown_seconds,
             discovered_feedback=discovered_feedback,
         )
+        self.runtime.audit.log_decision(
+            event_type=AuditEventType.HOST_HEARTBEAT_CYCLE_COMPLETED,
+            decision="completed",
+            reason="cycle-finished",
+            result={
+                "streams_polled": streams_polled,
+                "discovered_feedback": discovered_feedback,
+                "next_sleep_seconds": next_sleep_seconds,
+            },
+        )
         return HeartbeatCycleResult(
             discovered_feedback=discovered_feedback,
             streams_polled=streams_polled,
             next_sleep_seconds=next_sleep_seconds,
         )
 
-    def _wake_bindings(self, bindings: list[StreamSessionBinding]) -> None:
+    def _record_busy_skips(self, *, stream: FeedbackStream, bindings: list[StreamSessionBinding]) -> None:
         for binding in bindings:
             if _is_session_in_cooldown(
                 path=self.config.host_heartbeat_session_cooldown_path,
                 session_id=binding.session_id,
             ):
+                self.runtime.audit.log_decision(
+                    event_type=AuditEventType.BUSY_SKIP,
+                    session_id=binding.session_id,
+                    vm_id=binding.vm_id,
+                    provider=stream.provider,
+                    repo=stream.repo,
+                    pr_id=stream.pr_id,
+                    decision="skipped",
+                    reason="session-cooldown",
+                    args={"source": binding.source},
+                )
                 logger.info(
                     "Host heartbeat skip reason=session-cooldown session_id=%s vm_id=%s",
                     binding.session_id,
@@ -167,6 +189,17 @@ class HostHeartbeatWorker:
                     path=self.config.host_heartbeat_session_cooldown_path,
                     session_id=binding.session_id,
                     cooldown_seconds=self.config.host_heartbeat_cooldown_seconds,
+                )
+                self.runtime.audit.log_decision(
+                    event_type=AuditEventType.BUSY_SKIP,
+                    session_id=binding.session_id,
+                    vm_id=binding.vm_id,
+                    provider=stream.provider,
+                    repo=stream.repo,
+                    pr_id=stream.pr_id,
+                    decision="skipped",
+                    reason="agent-busy",
+                    args={"source": binding.source},
                 )
                 logger.info(
                     "Host heartbeat skip reason=agent-busy session_id=%s vm_id=%s",
@@ -271,12 +304,22 @@ class HostHeartbeatWorker:
                     )
                     continue
                 key = (parsed.provider, parsed.repo, parsed.pr_id)
-                stream_index.setdefault(key, []).append(
-                    StreamSessionBinding(
-                        session_id=session.session_id,
-                        vm_id=session.vm_id,
-                        source="session_manifest",
-                    )
+                binding = StreamSessionBinding(
+                    session_id=session.session_id,
+                    vm_id=session.vm_id,
+                    source="session_manifest",
+                )
+                stream_index.setdefault(key, []).append(binding)
+                self.runtime.audit.log_decision(
+                    event_type=AuditEventType.MAPPING_RESOLVED,
+                    session_id=binding.session_id,
+                    vm_id=binding.vm_id,
+                    provider=parsed.provider,
+                    repo=parsed.repo,
+                    pr_id=parsed.pr_id,
+                    decision="resolved",
+                    reason="session-manifest",
+                    args={"source": binding.source},
                 )
 
         for key, raw_entry in _load_pr_map_entries(self.config.pr_map_path).items():
@@ -287,13 +330,23 @@ class HostHeartbeatWorker:
                 continue
             session = sessions_by_id.get(session_id)
             vm_id = session.vm_id if session is not None else None
-            stream_index[key] = [
-                StreamSessionBinding(
-                    session_id=session_id,
-                    vm_id=vm_id,
-                    source="pr_map",
-                )
-            ]
+            binding = StreamSessionBinding(
+                session_id=session_id,
+                vm_id=vm_id,
+                source="pr_map",
+            )
+            stream_index[key] = [binding]
+            self.runtime.audit.log_decision(
+                event_type=AuditEventType.MAPPING_RESOLVED,
+                session_id=binding.session_id,
+                vm_id=binding.vm_id,
+                provider=key[0],
+                repo=key[1],
+                pr_id=key[2],
+                decision="resolved",
+                reason="pr-map",
+                args={"source": binding.source},
+            )
 
         mapped: dict[FeedbackStream, list[StreamSessionBinding]] = {}
         for (provider, repo, pr_id), bindings in stream_index.items():

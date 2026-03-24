@@ -166,11 +166,13 @@ $EDITOR config/firewall.env
 $EDITOR config/openai-relay.env
 $EDITOR config/nuget-relay.env
 $EDITOR config/ado-worker.env
+$EDITOR config/host-heartbeat.env
 sudo systemctl start agent-sandbox-firewall.service
 sudo systemctl start agent-sandbox-gateway.service
 sudo systemctl start agent-sandbox-openai-relay.service
 sudo systemctl start agent-sandbox-nuget-relay.service
 sudo systemctl start agent-sandbox-ado-worker.service
+sudo systemctl start agent-sandbox-host-heartbeat.service
 ```
 
 The generated units run as your user where appropriate and read environment files from `config/`.
@@ -429,6 +431,10 @@ Use this when you want the guest to wake only for new review feedback and post t
 2. Bootstrap Codex in the guest (`./scripts/bootstrap_codex_vm.sh <vm-name>`).
 3. Run the host heartbeat worker service:
    `sudo systemctl start agent-sandbox-host-heartbeat.service`.
+   Common lifecycle commands:
+   - start: `sudo systemctl start agent-sandbox-host-heartbeat.service`
+   - stop: `sudo systemctl stop agent-sandbox-host-heartbeat.service`
+   - status: `sudo systemctl status agent-sandbox-host-heartbeat.service`
 4. Use MCP calls from the agent in this order:
    `has_pending_feedback` → `list_unread_feedback` → `post_pr_feedback_reply` (with an idempotency key).
 
@@ -439,6 +445,11 @@ Use this when you want the guest to wake only for new review feedback and post t
   and `host_heartbeat_cooldown_seconds`.
 - Feedback polling happens once on the host and updates the shared host feedback store.
 - Guests consume pending feedback via MCP tools and no longer run a guest-local heartbeat timer.
+- `scripts/bootstrap_codex_vm.sh` defaults to `ENABLE_GUEST_HEARTBEAT=0` and does not install the
+  legacy `agent-heartbeat.timer` unless you explicitly set `ENABLE_GUEST_HEARTBEAT=1`
+  (deprecated compatibility path).
+- Migration note for existing VMs: disable any previously enabled guest timer to avoid double wakeups:
+  `systemctl --user disable --now agent-heartbeat.timer || true`.
 
 ### Troubleshooting
 
