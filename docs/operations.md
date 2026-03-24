@@ -226,7 +226,7 @@ A transport-terminated warning without client-visible failure can be expected fo
 - Email is **read + draft only by default**. Keep `email_send_enabled: false` unless you are ready
   to enforce explicit approval checks for send.
 
-## Guest-Driven Feedback Heartbeat
+## Feedback Heartbeat (Host Worker + Guest MCP Loop)
 
 Use this run pattern when a guest should continuously pick up human/provider feedback through MCP
 without exposing provider credentials in the VM.
@@ -264,6 +264,8 @@ without exposing provider credentials in the VM.
   - `host_heartbeat_lock_path` (single-instance lock file)
 - The host worker reads session manifests through runtime state and writes provider feedback/cursors to `runtime/pr-feedback-store.json`.
 - Guests no longer run `agent-heartbeat.service` or `agent-heartbeat.timer`.
+- `scripts/bootstrap_codex_vm.sh` now defaults `ENABLE_GUEST_HEARTBEAT=0` and skips legacy guest timer install unless explicitly overridden with `ENABLE_GUEST_HEARTBEAT=1` (deprecated compatibility mode).
+- Migration note for existing VMs: run `systemctl --user disable --now agent-heartbeat.timer || true` to avoid double wake behavior when the host worker is enabled.
 
 ### Failure handling
 

@@ -16,6 +16,7 @@ Environment:
   SSH_KEY_PATH    Private key matching the guest authorized key.
   HOST_CODEX_ROOT Host Codex package root.
   LLM_BASE_URL    Guest OpenAI-compatible base URL.
+  ENABLE_GUEST_HEARTBEAT Legacy toggle for guest heartbeat timer install (0/1, default: 0).
 EOF
 }
 
@@ -43,11 +44,13 @@ fi
 HOST_CODEX_ROOT="${HOST_CODEX_ROOT:-${CALLER_HOME}/.nvm/versions/node/v24.14.0/lib/node_modules/@openai/codex}"
 VENDOR_DIR="${HOST_CODEX_ROOT}/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl"
 LLM_BASE_URL="${LLM_BASE_URL:-http://192.168.250.1:11434/v1}"
+ENABLE_GUEST_HEARTBEAT="${ENABLE_GUEST_HEARTBEAT:-0}"
 SSH_OPTS=(
   -o StrictHostKeyChecking=no
   -o UserKnownHostsFile=/dev/null
   -i "${SSH_KEY_PATH}"
 )
+LEGACY_HEARTBEAT_DIR="${ROOT_DIR}/scripts/guest"
 if [[ ! -d "${VENDOR_DIR}" ]]; then
   echo "Missing Codex vendor directory: ${VENDOR_DIR}" >&2
   echo "Set HOST_CODEX_ROOT if Codex is installed elsewhere on the host." >&2
@@ -144,5 +147,27 @@ codex --version
 
 echo "Host heartbeat worker is now responsible for feedback wakeups."
 EOF
+
+if [[ "${ENABLE_GUEST_HEARTBEAT}" == "1" ]]; then
+  echo "ENABLE_GUEST_HEARTBEAT=1 set; attempting legacy guest heartbeat install (deprecated)."
+  if [[ -f "${LEGACY_HEARTBEAT_DIR}/heartbeat_cycle.sh" \
+    && -f "${LEGACY_HEARTBEAT_DIR}/agent-heartbeat.service" \
+    && -f "${LEGACY_HEARTBEAT_DIR}/agent-heartbeat.timer" ]]; then
+    scp "${SSH_OPTS[@]}" \
+      "${LEGACY_HEARTBEAT_DIR}/heartbeat_cycle.sh" \
+      "${LEGACY_HEARTBEAT_DIR}/agent-heartbeat.service" \
+      "${LEGACY_HEARTBEAT_DIR}/agent-heartbeat.timer" \
+      "${VM_USER}@${VM_IP}:~/.config/systemd/user/"
+
+    ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" '
+      set -euo pipefail
+      chmod +x ~/.config/systemd/user/heartbeat_cycle.sh
+      systemctl --user daemon-reload
+      systemctl --user enable --now agent-heartbeat.timer
+    '
+  else
+    echo "Warning: legacy heartbeat assets are not present on host; skipping guest timer setup." >&2
+  fi
+fi
 
 echo "Codex bootstrap complete for ${VM_NAME} (${VM_IP})"
