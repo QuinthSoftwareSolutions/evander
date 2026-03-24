@@ -172,10 +172,15 @@ def test_create_issue_vm_builds_setup_issue_vm_command_correctly(tmp_path: Path,
     init_result = runner.invoke(app, ["init-state", "--config", str(config_path)])
     assert init_result.exit_code == 0
 
-    def fake_run(cmd: list[str], check: bool) -> subprocess.CompletedProcess[str]:
+    def fake_run(
+        cmd: list[str],
+        check: bool,
+        capture_output: bool,
+        text: bool,
+    ) -> subprocess.CompletedProcess[str]:
         nonlocal captured_cmd
         captured_cmd = cmd
-        return subprocess.CompletedProcess(cmd, 0)
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     monkeypatch.setattr("agent_sandbox.cli.subprocess.run", fake_run)
 
@@ -490,10 +495,15 @@ def test_list_vms_invokes_script_with_selected_vm_user(tmp_path: Path, monkeypat
     init_result = runner.invoke(app, ["init-state", "--config", str(config_path)])
     assert init_result.exit_code == 0
 
-    def fake_run(cmd: list[str], check: bool) -> subprocess.CompletedProcess[str]:
+    def fake_run(
+        cmd: list[str],
+        check: bool,
+        capture_output: bool,
+        text: bool,
+    ) -> subprocess.CompletedProcess[str]:
         nonlocal captured_cmd
         captured_cmd = cmd
-        return subprocess.CompletedProcess(cmd, 0)
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     monkeypatch.setattr("agent_sandbox.cli.subprocess.run", fake_run)
 
@@ -512,10 +522,15 @@ def test_ssh_resolves_issue_number_to_vm_name(tmp_path: Path, monkeypatch) -> No
     init_result = runner.invoke(app, ["init-state", "--config", str(config_path)])
     assert init_result.exit_code == 0
 
-    def fake_run(cmd: list[str], check: bool) -> subprocess.CompletedProcess[str]:
+    def fake_run(
+        cmd: list[str],
+        check: bool,
+        capture_output: bool,
+        text: bool,
+    ) -> subprocess.CompletedProcess[str]:
         nonlocal captured_cmd
         captured_cmd = cmd
-        return subprocess.CompletedProcess(cmd, 0)
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     monkeypatch.setattr("agent_sandbox.cli.subprocess.run", fake_run)
 
@@ -578,14 +593,29 @@ def test_resume_agent_invokes_script_with_message_and_issue_number(tmp_path: Pat
     init_result = runner.invoke(app, ["init-state", "--config", str(config_path)])
     assert init_result.exit_code == 0
 
-    def fake_run(cmd: list[str], check: bool) -> subprocess.CompletedProcess[str]:
+    def fake_run(
+        cmd: list[str],
+        check: bool,
+        capture_output: bool,
+        text: bool,
+    ) -> subprocess.CompletedProcess[str]:
         nonlocal captured_cmd
         captured_cmd = cmd
-        return subprocess.CompletedProcess(cmd, 0)
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     monkeypatch.setattr("agent_sandbox.cli.subprocess.run", fake_run)
 
-    result = runner.invoke(app, ["resume-agent", "12305", "--message", "Continue from the failing restore"])
+    result = runner.invoke(
+        app,
+        [
+            "resume-agent",
+            "12305",
+            "--config",
+            str(config_path),
+            "--message",
+            "Continue from the failing restore",
+        ],
+    )
 
     assert result.exit_code == 0
     assert captured_cmd[0].endswith("/scripts/resume_issue_agent.sh")

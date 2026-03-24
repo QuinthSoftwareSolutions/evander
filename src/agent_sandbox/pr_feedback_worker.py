@@ -11,8 +11,7 @@ from typing import Any, Protocol
 import httpx
 from pydantic import BaseModel
 
-from .audit import AuditLogger
-from .models import AuditEvent
+from .audit import AuditEventType, AuditLogger
 
 
 logger = logging.getLogger(__name__)
@@ -357,14 +356,19 @@ class PullRequestFeedbackWorker:
             envelope.feedback_id,
             bindings,
         )
-        self.audit_logger.log(
-            AuditEvent(
-                event_type="pr_feedback_discovered",
-                args={
-                    "feedback": envelope.model_dump(mode="json"),
-                    "stream_bindings": bindings,
-                },
-            )
+        self.audit_logger.log_decision(
+            event_type=AuditEventType.FEEDBACK_DETECTED,
+            session_id=bindings[0]["session_id"] if bindings else None,
+            vm_id=bindings[0]["vm_id"] if bindings else None,
+            provider=envelope.provider,
+            repo=envelope.repo,
+            pr_id=envelope.pr_id,
+            decision="detected",
+            reason="new-feedback",
+            args={
+                "feedback": envelope.model_dump(mode="json"),
+                "stream_bindings": bindings,
+            },
         )
 
 
