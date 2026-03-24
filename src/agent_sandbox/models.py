@@ -108,8 +108,12 @@ class AuditEvent(BaseModel):
     event_type: str
     session_id: str | None = None
     vm_id: str | None = None
+    provider: str | None = None
+    repo: str | None = None
+    pr_id: str | None = None
     tool_name: str | None = None
     decision: str | None = None
+    reason: str | None = None
     args: dict[str, Any] = Field(default_factory=dict)
     result: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=utc_now)

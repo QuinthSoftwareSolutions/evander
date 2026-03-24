@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from types import SimpleNamespace
 
 from agent_sandbox.host_heartbeat_worker import (
@@ -21,6 +22,11 @@ UTC = timezone.utc
 class _DummyFeedbackWorker:
     def poll_once(self, **kwargs):  # noqa: ANN003
         return []
+
+
+class _DummyAudit:
+    def log_decision(self, **kwargs):  # noqa: ANN003
+        return None
 
 
 def _build_manifest(session_id: str, *, expires_at: datetime, metadata: dict) -> SessionManifest:
@@ -66,9 +72,9 @@ def test_collect_streams_dedupes_and_skips_expired_or_invalid() -> None:
             },
         ),
     }
-    runtime = SimpleNamespace(sessions=SimpleNamespace(read_all=lambda: sessions))
+    runtime = SimpleNamespace(sessions=SimpleNamespace(read_all=lambda: sessions), audit=_DummyAudit())
     worker = HostHeartbeatWorker(
-        config=SimpleNamespace(),
+        config=SimpleNamespace(pr_map_path=Path("missing-pr-map.json")),
         runtime=runtime,
         feedback_worker=_DummyFeedbackWorker(),
         adapters={"github": object(), "azure_devops": object()},
@@ -108,7 +114,7 @@ def test_collect_stream_mappings_falls_back_to_pr_map_when_manifest_missing(tmp_
         ),
         encoding="utf-8",
     )
-    runtime = SimpleNamespace(sessions=SimpleNamespace(read_all=lambda: sessions))
+    runtime = SimpleNamespace(sessions=SimpleNamespace(read_all=lambda: sessions), audit=_DummyAudit())
     worker = HostHeartbeatWorker(
         config=SimpleNamespace(pr_map_path=pr_map_path),
         runtime=runtime,
@@ -149,7 +155,7 @@ def test_run_once_rejects_conflicting_stream_when_policy_is_reject(tmp_path) -> 
             return []
 
     feedback_worker = TrackingFeedbackWorker()
-    runtime = SimpleNamespace(sessions=SimpleNamespace(read_all=lambda: sessions))
+    runtime = SimpleNamespace(sessions=SimpleNamespace(read_all=lambda: sessions), audit=_DummyAudit())
     worker = HostHeartbeatWorker(
         config=SimpleNamespace(
             host_heartbeat_http_timeout_seconds=0.1,
