@@ -524,11 +524,25 @@ def resume_agent(
         str,
         typer.Option("--message", help="Prompt passed to codex exec resume --last."),
     ],
+    observe: Annotated[
+        bool,
+        typer.Option(
+            "--observe",
+            help="Tail the guest Codex log after resuming the agent instead of returning immediately.",
+        ),
+    ] = False,
+    lines: Annotated[
+        int,
+        typer.Option("--lines", min=1, help="Number of log lines to print before following when observing."),
+    ] = 10,
     vm_user: Annotated[str, typer.Option("--vm-user", help="Guest user to connect as.")] = "agent",
 ) -> None:
     issue_number = _resolve_issue_number_or_raise(target)
     script_path = Path(__file__).resolve().parents[2] / "scripts" / "resume_issue_agent.sh"
-    subprocess.run([str(script_path), message, issue_number, vm_user], check=True)
+    cmd = [str(script_path), message, issue_number, vm_user]
+    if observe:
+        cmd.extend(["--observe", str(lines)])
+    subprocess.run(cmd, check=True)
 
 
 @app.command("create-issue-vm")

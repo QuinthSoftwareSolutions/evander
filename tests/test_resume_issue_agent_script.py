@@ -89,6 +89,7 @@ if [[ "${{@: -1}}" == "true" ]]; then
   exit 0
 fi
 cat > /dev/null
+printf 'resumed pid=321 log=/home/agent/.agent-sandbox/codex-heartbeat-run.log\\n'
 exit 0
 """,
     )
@@ -106,14 +107,90 @@ exit 0
         check=True,
     )
 
-    assert result.stdout == ""
+    assert result.stdout == (
+        "Agent resumed for vm-14084 "
+        "(resumed pid=321 log=/home/agent/.agent-sandbox/codex-heartbeat-run.log).\n"
+    )
     ssh_calls = ssh_log.read_text(encoding="utf-8").splitlines()
     assert any("agent@192.168.122.11 true" in call for call in ssh_calls)
     run_call = next(call for call in ssh_calls if "PROMPT_B64=" in call)
-    assert "-t" in run_call
     assert "agent@192.168.122.11" in run_call
     assert "CODEX_MODEL='gpt-5.4'" in run_call
     assert "bash -s" in run_call
+
+
+def test_resume_issue_agent_observe_tails_resume_log_after_resuming(tmp_path: Path) -> None:
+    script_path, fake_bin = _prepare_script(tmp_path)
+    private_key = tmp_path / "id_ed25519"
+    private_key.write_text("PRIVATE\n", encoding="utf-8")
+    ssh_log = tmp_path / "ssh.log"
+    tail_log = tmp_path / "tail-ssh.log"
+    _write_fake_sudo(fake_bin / "sudo")
+
+    _write_executable(
+        fake_bin / "virsh",
+        """#!/usr/bin/env bash
+set -euo pipefail
+cmd="${1:-}"
+shift || true
+
+case "${cmd}" in
+  dominfo)
+    [[ "${1:-}" == "vm-14084" ]] || exit 1
+    cat <<'EOF'
+Id:             7
+Name:           vm-14084
+State:          running
+EOF
+    ;;
+  domifaddr)
+    [[ "${1:-}" == "vm-14084" ]] || exit 1
+    printf 'vnet0 52:54:00:00:00:01 ipv4 192.168.122.11/24\\n'
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+""",
+    )
+
+    _write_executable(
+        fake_bin / "ssh",
+        f"""#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> "{ssh_log}"
+printf '%s\\n' "$*" >> "{tail_log}"
+if [[ "${{@: -1}}" == "true" ]]; then
+  exit 0
+fi
+if [[ "$*" == *"PROMPT_B64="* ]]; then
+  cat > /dev/null
+  printf 'resumed pid=321 log=/home/agent/.agent-sandbox/codex-heartbeat-run.log\\n'
+  exit 0
+fi
+cat > /dev/null
+""",
+    )
+
+    env = os.environ.copy()
+    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+    env["SSH_PRIVATE_KEY_PATH"] = str(private_key)
+    env["USER"] = env.get("USER", "root")
+
+    result = subprocess.run(
+        [str(script_path), "Resume work now", "14084", "agent", "--observe", "25"],
+        text=True,
+        capture_output=True,
+        env=env,
+        check=True,
+    )
+
+    assert result.stdout == ""
+    tail_calls = tail_log.read_text(encoding="utf-8").splitlines()
+    assert any("PROMPT_B64=" in call for call in tail_calls)
+    assert any("LINES='25' bash -s" in call for call in tail_calls)
+    ssh_calls = ssh_log.read_text(encoding="utf-8").splitlines()
+    assert any("agent@192.168.122.11 true" in call for call in ssh_calls)
 
 
 def test_resume_issue_agent_reports_missing_vm(tmp_path: Path) -> None:
