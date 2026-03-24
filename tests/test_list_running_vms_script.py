@@ -108,7 +108,7 @@ target="${@: -2:1}"
 
 case "${target}" in
   agent@192.168.122.11)
-    printf '%s\\n' 'running (heartbeat, repo-one)'
+    printf '%s\\n' 'running (repo-one)'
     ;;
   agent@192.168.122.12)
     printf '%s\\n' 'idle'
@@ -137,7 +137,7 @@ esac
     assert lines[0].split() == ["ID", "Name", "State", "IP", "Agent"]
     assert "7    vm-active" in lines[1]
     assert "192.168.122.11" in lines[1]
-    assert lines[1].endswith("running (heartbeat, repo-one)")
+    assert lines[1].endswith("running (repo-one)")
     assert "8    vm-idle" in lines[2]
     assert "192.168.122.12" in lines[2]
     assert lines[2].endswith("idle")

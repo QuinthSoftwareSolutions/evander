@@ -61,7 +61,7 @@ gateway/relay endpoint reachability, and active/expired session summary.
 - Cloud-init writes `/home/agent/.codex/config.toml` for the `agent` user.
 - That config points Codex at the host relay via `openai_base_url`.
 - Cloud-init also appends a shell profile hook that loads `/etc/agent-sandbox/session.env` and exports `OPENAI_API_KEY=relay-placeholder` if no key is already set.
-- `./scripts/bootstrap_codex_vm.sh <vm-name>` copies the vendored Linux Codex binary from the host into `~/bin/codex` for the guest user, deploys `~/bin/agent-heartbeat-cycle`, and verifies Codex.
+- `./scripts/bootstrap_codex_vm.sh <vm-name>` copies the vendored Linux Codex binary from the host into `~/bin/codex` for the guest user and verifies Codex.
 - The bootstrap script also overwrites `~/.codex/config.toml` with the relay-aware configuration, `model = "gpt-5.4"`, `model_reasoning_effort = "high"`, and `personality = "pragmatic"`, then appends the placeholder-key shell hook plus `~/bin` PATH entry to both `~/.profile` and `~/.bashrc`, so it corrects preexisting Codex state in the VM.
 - The bootstrap script repairs `/home/agent` ownership first, so it also works against VMs created before the home directory ownership fix.
 - New VMs pick this up automatically; existing VMs need to be recreated.
@@ -254,47 +254,16 @@ without exposing provider credentials in the VM.
 - Advance cursor only after the fetched items are durably handled.
 - Keep handlers idempotent by feedback ID to tolerate retries/replays.
 
-### Guest heartbeat helper script
+### Host heartbeat worker
 
-- `bootstrap_codex_vm.sh` installs a one-shot guest helper script at
-  `~/bin/agent-heartbeat-cycle`.
-- The same bootstrap also installs user units under `~/.config/systemd/user/`:
-  - `agent-heartbeat.service` (oneshot)
-  - `agent-heartbeat.timer` (`OnUnitActiveSec=3min`, `Persistent=true`)
-- `agent-heartbeat.service` reads environment from:
-  - `/etc/agent-sandbox/session.env` (if present)
-  - `~/.config/agent-sandbox/heartbeat.env` (optional user overrides)
-- The bootstrap attempts `systemctl --user daemon-reload` and
-  `systemctl --user enable --now agent-heartbeat.timer`. If user systemd is unavailable in the
-  current SSH session, run those commands manually inside the guest.
-- Runtime state and logs are stored under `/home/agent/.agent-sandbox/`:
-  - `heartbeat.log`
-  - `heartbeat.lock`
-  - `heartbeat.cooldown`
-  - `codex-heartbeat.pid`
-  - `codex-heartbeat-run.log`
-- Inspect heartbeat status and logs from inside the guest:
-
-  ```bash
-  systemctl --user status agent-heartbeat.timer
-  systemctl --user status agent-heartbeat.service
-  journalctl --user -u agent-heartbeat.timer -n 50 --no-pager
-  journalctl --user -u agent-heartbeat.service -n 200 --no-pager
-  ```
-- Each run:
-  1. acquires a non-blocking `flock` lock
-  2. validates/cleans stale PID files and exits early if Codex is still active
-  3. enforces cooldown checks to avoid wake storms
-  4. calls MCP `has_pending_feedback(session_id)`
-  5. prefers `codex exec resume` while still attaching a feedback-focused
-     instruction; if resume is disabled, it uses feedback-focused
-     `codex exec`, then records PID
-
-Healthy heartbeat log examples:
-
-- idle/no feedback: `pending_feedback=false session_id=...`
-- busy safety skip: `skip reason=codex-active pid=...`
-- wake on new feedback: `pending_feedback=true session_id=...` followed by `codex_started pid=...`
+- Feedback polling now runs on the host via `agent-sandbox-cli host-heartbeat` (typically managed by `agent-sandbox-host-heartbeat.service`).
+- Cadence is controlled by gateway config:
+  - `host_heartbeat_poll_interval_seconds`
+  - `host_heartbeat_jitter_seconds`
+  - `host_heartbeat_cooldown_seconds`
+  - `host_heartbeat_lock_path` (single-instance lock file)
+- The host worker reads session manifests through runtime state and writes provider feedback/cursors to `runtime/pr-feedback-store.json`.
+- Guests no longer run `agent-heartbeat.service` or `agent-heartbeat.timer`.
 
 ### Failure handling
 
@@ -311,13 +280,12 @@ Healthy heartbeat log examples:
 - Partial fetch or partial local processing:
   - Treat as uncommitted.
   - Do not advance cursor; re-fetch on next loop.
-- Stale locks/PIDs:
-  - `heartbeat.lock`: usually transient; if lock is stuck and no service is active, remove it and rerun once.
-  - `codex-heartbeat.pid`: if PID does not exist or is not a Codex process, it is cleaned automatically and logged as `stale_pid`.
+- Stale host lock:
+  - `host_heartbeat_lock_path` is enforced as single-instance protection.
+  - If lock contention persists unexpectedly, inspect the host worker process/service before removing the lock file.
 
 ### Audit and log file locations
 
-- Guest heartbeat files: `/home/agent/.agent-sandbox/heartbeat.log`, `/home/agent/.agent-sandbox/codex-heartbeat-run.log`.
 - Host feedback state: `runtime/pr-feedback-store.json` (ingested comments + cursors), `runtime/pr-reply-idempotency.json` (reply dedupe keys/results).
 - Host audit trail: `runtime/audit.jsonl` (tool calls and denials/errors).
 

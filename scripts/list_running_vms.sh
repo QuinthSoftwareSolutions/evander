@@ -119,18 +119,11 @@ fi
 
 active_entries=()
 
-if is_active_codex_pid "${LOG_DIR}/codex-heartbeat.pid"; then
-  active_entries+=("heartbeat")
-fi
-
 shopt -s nullglob
 for pid_path in "${LOG_DIR}"/codex-*.pid; do
   name="$(basename "${pid_path}")"
   name="${name#codex-}"
   name="${name%.pid}"
-  if [[ "${name}" == "heartbeat" ]]; then
-    continue
-  fi
   if is_active_codex_pid "${pid_path}"; then
     active_entries+=("${name}")
   fi
