@@ -560,7 +560,7 @@ def test_logs_invokes_script_with_issue_number_and_repo_name(tmp_path: Path, mon
 
     assert result.exit_code == 0
     assert captured_cmd[0].endswith("/scripts/tail_issue_vm_log.sh")
-    assert captured_cmd[1:] == ["12305", "AdminClient", "agent"]
+    assert captured_cmd[1:] == ["12305", "10", "AdminClient", "agent"]
 
 
 def test_logs_omits_repo_name_positional_when_not_provided(tmp_path: Path, monkeypatch) -> None:
@@ -582,7 +582,29 @@ def test_logs_omits_repo_name_positional_when_not_provided(tmp_path: Path, monke
 
     assert result.exit_code == 0
     assert captured_cmd[0].endswith("/scripts/tail_issue_vm_log.sh")
-    assert captured_cmd[1:] == ["12305"]
+    assert captured_cmd[1:] == ["12305", "10"]
+
+
+def test_logs_accepts_custom_initial_tail_line_count(tmp_path: Path, monkeypatch) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+    captured_cmd: list[str] = []
+
+    init_result = runner.invoke(app, ["init-state", "--config", str(config_path)])
+    assert init_result.exit_code == 0
+
+    def fake_run(cmd: list[str], check: bool) -> subprocess.CompletedProcess[str]:
+        nonlocal captured_cmd
+        captured_cmd = cmd
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr("agent_sandbox.cli.subprocess.run", fake_run)
+
+    result = runner.invoke(app, ["logs", "12305", "--lines", "25", "--vm-user", "debugger"])
+
+    assert result.exit_code == 0
+    assert captured_cmd[0].endswith("/scripts/tail_issue_vm_log.sh")
+    assert captured_cmd[1:] == ["12305", "25", "", "debugger"]
 
 
 def test_resume_agent_invokes_script_with_message_and_issue_number(tmp_path: Path, monkeypatch) -> None:
@@ -620,6 +642,41 @@ def test_resume_agent_invokes_script_with_message_and_issue_number(tmp_path: Pat
     assert result.exit_code == 0
     assert captured_cmd[0].endswith("/scripts/resume_issue_agent.sh")
     assert captured_cmd[1:] == ["Continue from the failing restore", "12305", "agent"]
+
+
+def test_resume_agent_observe_invokes_script_with_tail_options(tmp_path: Path, monkeypatch) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+    captured_cmd: list[str] = []
+
+    init_result = runner.invoke(app, ["init-state", "--config", str(config_path)])
+    assert init_result.exit_code == 0
+
+    def fake_run(cmd: list[str], check: bool) -> subprocess.CompletedProcess[str]:
+        nonlocal captured_cmd
+        captured_cmd = cmd
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr("agent_sandbox.cli.subprocess.run", fake_run)
+
+    result = runner.invoke(
+        app,
+        [
+            "resume-agent",
+            "12305",
+            "--message",
+            "Continue from the failing restore",
+            "--observe",
+            "--lines",
+            "25",
+            "--vm-user",
+            "debugger",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured_cmd[0].endswith("/scripts/resume_issue_agent.sh")
+    assert captured_cmd[1:] == ["Continue from the failing restore", "12305", "debugger", "--observe", "25"]
 
 
 def test_seed_discord_channel_creates_seed_entry_and_reports_cursor(tmp_path: Path) -> None:

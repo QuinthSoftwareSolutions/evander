@@ -12,10 +12,11 @@ EXIT_RESUME_FAILED=16
 show_help() {
   cat <<'USAGE'
 Usage:
-  resume_issue_agent.sh <prompt> <issue-number> [vm-user]
-  resume_issue_agent.sh --prompt <prompt> --vm-name <vm-name> --session-id <session-id> [options]
+  resume_issue_agent.sh <prompt> <issue-number> [vm-user] [--observe [lines]]
+  resume_issue_agent.sh --prompt <prompt> (--issue-number <number> | --vm-name <name>) [options]
 
-SSH into a VM and run a guest Codex resume command from the guest user's home directory.
+SSH into a VM and request a guest Codex resume command from the guest user's home
+directory.
 
 Arguments (legacy positional mode):
   prompt        Prompt passed to `codex exec resume --last`.
@@ -28,8 +29,10 @@ Options:
   --vm-name NAME              Explicit libvirt domain name.
   --session-id ID             Session identifier for host-worker logs/state.
   --vm-user USER              Guest user to connect as. Default: agent
-  --worker-mode               Disable TTY allocation and run non-interactive SSH mode.
+  --worker-mode               Disable TTY allocation and run non-interactive worker mode.
   --host-state-file PATH      Host JSON state file that stores wake attempt diagnostics.
+  --observe [LINES]           Tail the guest Codex log after resuming instead of returning
+                              immediately. Default lines: 10
   -h, --help                  Show this help text.
 
 Environment:
@@ -38,7 +41,7 @@ Environment:
   VM_WAIT_IP_TIMEOUT_SECONDS   How long to wait for guest IPv4 address. Default: 180
   VM_WAIT_SSH_TIMEOUT_SECONDS  How long to wait for guest SSH to accept connections. Default: 180
   RESUME_COMMAND_TIMEOUT_SECONDS
-                               End-to-end timeout for resume SSH command. Default: 900
+                               End-to-end timeout for worker-mode resume command. Default: 900
   CODEX_MODEL                  Model passed to `codex exec resume`. Default: gpt-5.4
 USAGE
 }
@@ -129,6 +132,22 @@ resolve_private_key_path() {
   return 0
 }
 
+parse_observe_args() {
+  if [[ $# -eq 0 ]]; then
+    return 0
+  fi
+  if [[ "${1:-}" != "--observe" ]]; then
+    return 1
+  fi
+  OBSERVE=1
+  shift
+  if [[ $# -gt 0 ]]; then
+    OBSERVE_LINES="$1"
+    shift
+  fi
+  [[ $# -eq 0 ]]
+}
+
 parse_args() {
   PROMPT=""
   ISSUE_NUMBER=""
@@ -137,71 +156,91 @@ parse_args() {
   VM_USER="agent"
   WORKER_MODE=0
   HOST_STATE_FILE=""
+  OBSERVE=0
+  OBSERVE_LINES=10
 
   if [[ $# -eq 0 ]]; then
     return 1
   fi
 
   if [[ "$1" != --* ]]; then
-    if [[ $# -lt 2 || $# -gt 3 ]]; then
+    if [[ $# -lt 2 ]]; then
       return 1
     fi
     PROMPT="$1"
     ISSUE_NUMBER="$2"
-    VM_USER="${3:-agent}"
+    shift 2
+    if [[ $# -gt 0 && "${1:-}" != "--observe" ]]; then
+      VM_USER="$1"
+      shift
+    fi
     VM_NAME="vm-${ISSUE_NUMBER}"
-    return 0
-  fi
-
-  while [[ $# -gt 0 ]]; do
-    case "$1" in
-      --prompt)
-        PROMPT="${2:-}"
-        shift 2
-        ;;
-      --issue-number)
-        ISSUE_NUMBER="${2:-}"
-        shift 2
-        ;;
-      --vm-name)
-        VM_NAME="${2:-}"
-        shift 2
-        ;;
-      --session-id)
-        SESSION_ID="${2:-}"
-        shift 2
-        ;;
-      --vm-user)
-        VM_USER="${2:-}"
-        shift 2
-        ;;
-      --worker-mode)
-        WORKER_MODE=1
-        shift
-        ;;
-      --host-state-file)
-        HOST_STATE_FILE="${2:-}"
-        shift 2
-        ;;
-      -h|--help)
-        show_help
-        exit 0
-        ;;
-      *)
-        echo "Unknown argument: $1" >&2
-        return 1
-        ;;
-    esac
-  done
-
-  if [[ -z "${VM_NAME}" && -n "${ISSUE_NUMBER}" ]]; then
-    VM_NAME="vm-${ISSUE_NUMBER}"
+    parse_observe_args "$@" || return 1
+  else
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --prompt)
+          PROMPT="${2:-}"
+          shift 2
+          ;;
+        --issue-number)
+          ISSUE_NUMBER="${2:-}"
+          shift 2
+          ;;
+        --vm-name)
+          VM_NAME="${2:-}"
+          shift 2
+          ;;
+        --session-id)
+          SESSION_ID="${2:-}"
+          shift 2
+          ;;
+        --vm-user)
+          VM_USER="${2:-}"
+          shift 2
+          ;;
+        --worker-mode)
+          WORKER_MODE=1
+          shift
+          ;;
+        --host-state-file)
+          HOST_STATE_FILE="${2:-}"
+          shift 2
+          ;;
+        --observe)
+          OBSERVE=1
+          shift
+          if [[ $# -gt 0 && "${1:-}" != --* ]]; then
+            OBSERVE_LINES="$1"
+            shift
+          fi
+          ;;
+        -h|--help)
+          show_help
+          exit 0
+          ;;
+        *)
+          echo "Unknown argument: $1" >&2
+          return 1
+          ;;
+      esac
+    done
+    if [[ -z "${VM_NAME}" && -n "${ISSUE_NUMBER}" ]]; then
+      VM_NAME="vm-${ISSUE_NUMBER}"
+    fi
   fi
 
   if [[ -z "${PROMPT}" || -z "${VM_NAME}" ]]; then
     return 1
   fi
-
+  if ! [[ "${OBSERVE_LINES}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "lines must be a positive integer: ${OBSERVE_LINES}" >&2
+    return 1
+  fi
+  if (( WORKER_MODE )) && (( OBSERVE )); then
+    echo "--observe is not supported with --worker-mode" >&2
+    return 1
+  fi
   return 0
 }
 
@@ -258,16 +297,13 @@ SSH_FLAGS=(
   -o ConnectTimeout=5
   -i "${SSH_PRIVATE_KEY_PATH}"
 )
-if (( WORKER_MODE == 0 )); then
-  SSH_FLAGS=(-t "${SSH_FLAGS[@]}")
-fi
 
-set +e
-
-timeout --foreground "${RESUME_COMMAND_TIMEOUT_SECONDS}s" \
-  ssh "${SSH_FLAGS[@]}" \
-  "${VM_USER}@${VM_IP}" \
-  "PROMPT_B64='${PROMPT_B64}' CODEX_MODEL='${CODEX_MODEL}' bash -s" <<'REMOTE'
+if (( WORKER_MODE )); then
+  set +e
+  timeout --foreground "${RESUME_COMMAND_TIMEOUT_SECONDS}s" \
+    ssh "${SSH_FLAGS[@]}" \
+    "${VM_USER}@${VM_IP}" \
+    "PROMPT_B64='${PROMPT_B64}' CODEX_MODEL='${CODEX_MODEL}' bash -s" <<'REMOTE'
 set -euo pipefail
 
 cd "${HOME}"
@@ -315,21 +351,80 @@ codex exec resume \
   --last \
   "${PROMPT}"
 REMOTE
+  resume_exit_code="$?"
+  set -e
 
-resume_exit_code="$?"
-set -e
-
-if [[ "${resume_exit_code}" -eq 0 ]]; then
-  write_host_state_attempt "${HOST_STATE_FILE}" "${SESSION_ID}" "ok" ""
-  exit 0
-fi
-
-if [[ "${resume_exit_code}" -eq 124 ]]; then
-  write_host_state_attempt "${HOST_STATE_FILE}" "${SESSION_ID}" "error" "resume-timeout"
-  echo "Resume command timed out after ${RESUME_COMMAND_TIMEOUT_SECONDS}s for ${VM_NAME}." >&2
+  if [[ "${resume_exit_code}" -eq 0 ]]; then
+    write_host_state_attempt "${HOST_STATE_FILE}" "${SESSION_ID}" "ok" ""
+    exit 0
+  fi
+  if [[ "${resume_exit_code}" -eq 124 ]]; then
+    write_host_state_attempt "${HOST_STATE_FILE}" "${SESSION_ID}" "error" "resume-timeout"
+    echo "Resume command timed out after ${RESUME_COMMAND_TIMEOUT_SECONDS}s for ${VM_NAME}." >&2
+    exit "${EXIT_RESUME_FAILED}"
+  fi
+  write_host_state_attempt "${HOST_STATE_FILE}" "${SESSION_ID}" "error" "resume-exit-${resume_exit_code}"
+  echo "Resume command failed for ${VM_NAME} with exit code ${resume_exit_code}." >&2
   exit "${EXIT_RESUME_FAILED}"
 fi
 
-write_host_state_attempt "${HOST_STATE_FILE}" "${SESSION_ID}" "error" "resume-exit-${resume_exit_code}"
-echo "Resume command failed for ${VM_NAME} with exit code ${resume_exit_code}." >&2
-exit "${EXIT_RESUME_FAILED}"
+resume_output="$(
+  ssh "${SSH_FLAGS[@]}" \
+    "${VM_USER}@${VM_IP}" \
+    "PROMPT_B64='${PROMPT_B64}' CODEX_MODEL='${CODEX_MODEL}' bash -s" <<'REMOTE'
+set -euo pipefail
+
+cd "${HOME}"
+. "${HOME}/.profile" >/dev/null 2>&1 || true
+
+LOG_DIR="${HOME}/.agent-sandbox"
+RUN_LOG_FILE="${LOG_DIR}/codex-heartbeat-run.log"
+RESUME_HINT_FILE="${LOG_DIR}/resume-args.txt"
+PID_FILE="${LOG_DIR}/codex-heartbeat.pid"
+PROMPT="$(python3 -c 'import base64, os; print(base64.b64decode(os.environ["PROMPT_B64"]).decode("utf-8"))')"
+
+mkdir -p "${LOG_DIR}"
+
+if [[ -f "${PID_FILE}" ]]; then
+  EXISTING_PID="$(cat "${PID_FILE}")"
+  if [[ -n "${EXISTING_PID}" ]] && kill -0 "${EXISTING_PID}" >/dev/null 2>&1; then
+    echo "Codex already running in guest with PID ${EXISTING_PID}" >&2
+    exit 1
+  fi
+fi
+
+printf '%s\n' "--last" >"${RESUME_HINT_FILE}"
+
+nohup codex exec resume \
+  --last \
+  --dangerously-bypass-approvals-and-sandbox \
+  --skip-git-repo-check \
+  --model "${CODEX_MODEL}" \
+  "${PROMPT}" \
+  >>"${RUN_LOG_FILE}" 2>&1 < /dev/null &
+
+AGENT_PID=$!
+printf '%s\n' "${AGENT_PID}" >"${PID_FILE}"
+printf 'resumed pid=%s log=%s\n' "${AGENT_PID}" "${RUN_LOG_FILE}"
+REMOTE
+)"
+
+if (( OBSERVE )); then
+  exec ssh "${SSH_FLAGS[@]}" \
+    "${VM_USER}@${VM_IP}" \
+    "LINES='${OBSERVE_LINES}' bash -s" <<'REMOTE'
+set -euo pipefail
+LOG_PATH="${HOME}/.agent-sandbox/codex-heartbeat-run.log"
+if [[ ! -f "${LOG_PATH}" ]]; then
+  echo "No guest Codex resume log found at ${LOG_PATH}" >&2
+  exit 0
+fi
+tail -n "${LINES}" -f "${LOG_PATH}"
+REMOTE
+fi
+
+printf 'Agent resumed for %s' "${VM_NAME}"
+if [[ -n "${resume_output}" ]]; then
+  printf ' (%s)' "${resume_output}"
+fi
+printf '.\n'

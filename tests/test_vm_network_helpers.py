@@ -44,5 +44,6 @@ def test_issue_vm_helpers_auto_detect_repo_name_when_omitted() -> None:
         assert 'codex-*.pid' in text
         assert 'codex-*.log' in text
 
+    assert 'Number of log lines to print before following. Default: 10' in tail_script
     assert 'Multiple guest Codex logs found under' in tail_script
     assert 'pass an explicit repo-name' in check_script

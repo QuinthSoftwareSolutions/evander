@@ -23,6 +23,9 @@ args=("$@")
 if [[ "${args[0]}" == "-C" ]]; then
   args=("${args[@]:2}")
 fi
+while [[ "${args[0]:-}" == "-c" ]]; do
+  args=("${args[@]:2}")
+done
 case "${args[0]:-}" in
   branch)
     echo "review/session-123/work"
@@ -176,9 +179,10 @@ printf '%s\\n' "$*" >> "{attach_log}"
     env["PATH"] = f"{fake_bin}:{env['PATH']}"
     env["AGENT_SANDBOX_PR_MAP_PATH"] = str(tmp_path / "runtime" / "pr-map.json")
     env["AGENT_SANDBOX_CLI_BIN"] = str(fake_bin / "agent-sandbox-cli")
+    env["AGENT_SANDBOX_CANONICAL_ORIGIN_URL"] = "git@github.com:example/repo.git"
 
     subprocess.run(
-        [str(script), "--create-pr", str(host_repo), "review/session-123/work"],
+        [str(script), "--create-pr", "--base", "main", str(host_repo), "review/session-123/work"],
         check=True,
         capture_output=True,
         text=True,
@@ -189,10 +193,207 @@ printf '%s\\n' "$*" >> "{attach_log}"
     fetch_index = next(
         i
         for i, command in enumerate(commands)
-        if "fetch origin refs/heads/review/session-123/work:refs/remotes/origin/review/session-123/work" in command
+        if "fetch agent-sandbox-pr-origin refs/heads/review/session-123/work:refs/remotes/agent-sandbox-pr-origin/review/session-123/work"
+        in command
     )
-    push_index = next(i for i, command in enumerate(commands) if "push --force-with-lease origin" in command)
+    push_index = next(
+        i for i, command in enumerate(commands) if "push --force-with-lease agent-sandbox-pr-origin" in command
+    )
     assert fetch_index < push_index
+
+
+def test_open_agent_pr_uses_https_with_gh_credentials_for_github_pushes(tmp_path: Path) -> None:
+    script = Path(__file__).resolve().parents[1] / "scripts/open_agent_pr.sh"
+    host_repo = tmp_path / "repo"
+    host_repo.mkdir()
+    (host_repo / ".git").mkdir()
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    git_log = tmp_path / "git.log"
+
+    (fake_bin / "git").write_text(
+        f"""#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> "{git_log}"
+args=("$@")
+if [[ "${{args[0]}}" == "-C" ]]; then
+  args=("${{args[@]:2}}")
+fi
+while [[ "${{args[0]:-}}" == "-c" ]]; do
+  args=("${{args[@]:2}}")
+done
+case "${{args[0]:-}}" in
+  branch)
+    echo "review/session-123/work"
+    ;;
+  rev-parse)
+    ;;
+  push)
+    ;;
+  symbolic-ref)
+    echo "origin/main"
+    ;;
+  log)
+    echo "Automated PR title"
+    ;;
+  remote)
+    echo "git@github.com:example/repo.git"
+    ;;
+  *)
+    echo "unexpected git invocation: $*" >&2
+    exit 1
+    ;;
+esac
+""",
+        encoding="utf-8",
+    )
+    (fake_bin / "gh").write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "auth" && "${2:-}" == "status" ]]; then
+  exit 0
+fi
+echo "https://github.com/example/repo/pull/42"
+""",
+        encoding="utf-8",
+    )
+    (fake_bin / "agent-sandbox-cli").write_text(
+        "#!/usr/bin/env bash\nset -euo pipefail\n",
+        encoding="utf-8",
+    )
+    os.chmod(fake_bin / "git", 0o755)
+    os.chmod(fake_bin / "gh", 0o755)
+    os.chmod(fake_bin / "agent-sandbox-cli", 0o755)
+
+    env = os.environ.copy()
+    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+    env["AGENT_SANDBOX_PR_MAP_PATH"] = str(tmp_path / "runtime" / "pr-map.json")
+    env["AGENT_SANDBOX_CLI_BIN"] = str(fake_bin / "agent-sandbox-cli")
+    env["AGENT_SANDBOX_CANONICAL_ORIGIN_URL"] = "git@github.com:example/repo.git"
+
+    subprocess.run(
+        [str(script), "--create-pr", "--base", "main", str(host_repo), "review/session-123/work"],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    commands = git_log.read_text(encoding="utf-8").splitlines()
+    assert any(
+        "agent-sandbox-pr-origin https://github.com/example/repo.git" in command
+        and ("remote add " in command or "remote set-url " in command)
+        for command in commands
+    )
+    assert any(
+        "credential.https://github.com.helper=!/usr/bin/gh auth git-credential push"
+        in command
+        for command in commands
+    )
+
+
+def test_open_agent_pr_fetches_base_branch_before_github_fill_on_canonical_remote(tmp_path: Path) -> None:
+    script = Path(__file__).resolve().parents[1] / "scripts/open_agent_pr.sh"
+    host_repo = tmp_path / "repo"
+    host_repo.mkdir()
+    (host_repo / ".git").mkdir()
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    git_log = tmp_path / "git.log"
+    gh_log = tmp_path / "gh.log"
+
+    (fake_bin / "git").write_text(
+        f"""#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> "{git_log}"
+args=("$@")
+if [[ "${{args[0]}}" == "-C" ]]; then
+  args=("${{args[@]:2}}")
+fi
+while [[ "${{args[0]:-}}" == "-c" ]]; do
+  args=("${{args[@]:2}}")
+done
+case "${{args[0]:-}}" in
+  rev-parse)
+    ;;
+  remote)
+    echo "git@github.com:example/repo.git"
+    ;;
+  ls-remote)
+    branch_ref="${{args[-1]}}"
+    if [[ "${{branch_ref}}" == "refs/heads/review/session-123/work" || "${{branch_ref}}" == "refs/heads/main" ]]; then
+      echo "abc123\t${{branch_ref}}"
+    fi
+    ;;
+  fetch)
+    ;;
+  push)
+    ;;
+  symbolic-ref)
+    echo "origin/main"
+    ;;
+  log)
+    echo "Automated PR title"
+    ;;
+  *)
+    echo "unexpected git invocation: $*" >&2
+    exit 1
+    ;;
+esac
+""",
+        encoding="utf-8",
+    )
+    (fake_bin / "gh").write_text(
+        f"""#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> "{gh_log}"
+echo "https://github.com/example/repo/pull/42"
+""",
+        encoding="utf-8",
+    )
+    (fake_bin / "agent-sandbox-cli").write_text(
+        "#!/usr/bin/env bash\nset -euo pipefail\n",
+        encoding="utf-8",
+    )
+    os.chmod(fake_bin / "git", 0o755)
+    os.chmod(fake_bin / "gh", 0o755)
+    os.chmod(fake_bin / "agent-sandbox-cli", 0o755)
+
+    env = os.environ.copy()
+    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+    env["AGENT_SANDBOX_PR_MAP_PATH"] = str(tmp_path / "runtime" / "pr-map.json")
+    env["AGENT_SANDBOX_CLI_BIN"] = str(fake_bin / "agent-sandbox-cli")
+    env["AGENT_SANDBOX_CANONICAL_ORIGIN_URL"] = "git@github.com:example/repo.git"
+
+    subprocess.run(
+        [str(script), "--create-pr", "--base", "main", str(host_repo), "review/session-123/work"],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    commands = git_log.read_text(encoding="utf-8").splitlines()
+    base_fetch_index = next(
+        i
+        for i, command in enumerate(commands)
+        if "fetch agent-sandbox-pr-origin refs/heads/main:refs/remotes/agent-sandbox-pr-origin/main" in command
+    )
+    review_fetch_index = next(
+        i
+        for i, command in enumerate(commands)
+        if "fetch agent-sandbox-pr-origin refs/heads/review/session-123/work:refs/remotes/agent-sandbox-pr-origin/review/session-123/work"
+        in command
+    )
+    assert review_fetch_index < base_fetch_index
+
+    gh_commands = gh_log.read_text(encoding="utf-8").splitlines()
+    assert any(
+        command.startswith("pr create --repo git@github.com:example/repo.git --base main --head review/session-123/work --title Automated PR title --fill")
+        for command in gh_commands
+    )
 
 
 def test_open_agent_pr_preserves_existing_azure_pr_title_by_default(tmp_path: Path) -> None:

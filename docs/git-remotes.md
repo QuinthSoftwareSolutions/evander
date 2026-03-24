@@ -202,6 +202,7 @@ explicitly. The same helper still supports GitHub remotes through `gh`.
 - `promote_agent_branch.sh` intentionally refuses to overwrite an existing local review branch.
 - `open_agent_pr.sh` uses a normal push for non-review branches.
 - For `review/*` branches it uses `--force-with-lease` after first refreshing the exact remote-tracking ref on the push remote, so reused review branches stay safe without stale-lease failures.
+- For GitHub canonical remotes, automated `open_agent_pr.sh --create-pr` runs prefer HTTPS plus `gh auth git-credential` when `gh auth status` succeeds. This is more reliable for post-receive hooks than SSH because hook environments are often non-interactive and may not inherit a usable `ssh-agent` socket or your full SSH config.
 - Use a separate dropbox bare repo for agent output if you do not want VMs pushing directly to your main internal remote.
 - MCP remains useful for notifications, approval gates, and branch metadata, but not for bulk source transfer.
 

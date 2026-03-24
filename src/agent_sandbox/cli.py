@@ -627,11 +627,15 @@ def logs(
         str | None,
         typer.Option("--repo-name", help="Repo basename used to select the guest Codex log."),
     ] = None,
+    lines: Annotated[
+        int,
+        typer.Option("--lines", min=1, help="Number of log lines to print before following the log."),
+    ] = 10,
     vm_user: Annotated[str, typer.Option("--vm-user", help="Guest user to inspect over SSH.")] = "agent",
 ) -> None:
     issue_number = _resolve_issue_number_or_raise(target)
     script_path = Path(__file__).resolve().parents[2] / "scripts" / "tail_issue_vm_log.sh"
-    cmd = [str(script_path), issue_number]
+    cmd = [str(script_path), issue_number, str(lines)]
     if repo_name is not None:
         cmd.append(repo_name)
         cmd.append(vm_user)
@@ -648,6 +652,17 @@ def resume_agent(
         typer.Option("--message", help="Prompt passed to codex exec resume --last."),
     ],
     config: ConfigOption = Path("config/gateway.yaml"),
+    observe: Annotated[
+        bool,
+        typer.Option(
+            "--observe",
+            help="Tail the guest Codex log after resuming the agent instead of returning immediately.",
+        ),
+    ] = False,
+    lines: Annotated[
+        int,
+        typer.Option("--lines", min=1, help="Number of log lines to print before following when observing."),
+    ] = 10,
     vm_user: Annotated[str, typer.Option("--vm-user", help="Guest user to connect as.")] = "agent",
 ) -> None:
     issue_number = _resolve_issue_number_or_raise(target)
@@ -655,6 +670,10 @@ def resume_agent(
     cfg = load_config(config)
     runtime = build_runtime(cfg)
     script_path = Path(__file__).resolve().parents[2] / "scripts" / "resume_issue_agent.sh"
+    cmd = [str(script_path), message, issue_number, vm_user]
+    if observe:
+        cmd.extend(["--observe", str(lines)])
+
     runtime.audit.log_decision(
         event_type=AuditEventType.VM_START_ATTEMPTED,
         session_id=target,
@@ -669,12 +688,15 @@ def resume_agent(
         decision="attempted",
         reason="resume-agent-command",
     )
-    completed = subprocess.run(
-        [str(script_path), message, issue_number, vm_user],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
+    if observe:
+        completed = subprocess.run(cmd, check=False)
+    else:
+        completed = subprocess.run(
+            cmd,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
     if completed.returncode == 0:
         runtime.audit.log_decision(
             event_type=AuditEventType.VM_START_SUCCEEDED,
@@ -699,7 +721,7 @@ def resume_agent(
         vm_id=vm_name,
         decision="failed",
         reason=reason,
-        args={"stderr": completed.stderr.strip()},
+        args={"stderr": (completed.stderr or "").strip()},
     )
     runtime.audit.log_decision(
         event_type=AuditEventType.RESUME_FAILED,
@@ -707,11 +729,11 @@ def resume_agent(
         vm_id=vm_name,
         decision="failed",
         reason=reason,
-        args={"stderr": completed.stderr.strip()},
+        args={"stderr": (completed.stderr or "").strip()},
     )
-    if completed.stdout:
+    if getattr(completed, "stdout", ""):
         typer.echo(completed.stdout, nl=False)
-    if completed.stderr:
+    if getattr(completed, "stderr", ""):
         typer.echo(completed.stderr, err=True, nl=False)
     raise typer.Exit(code=completed.returncode)
 

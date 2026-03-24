@@ -558,7 +558,7 @@ To inspect or follow the guest agent from the host:
 
 ```bash
 agent-sandbox-cli list-vms
-agent-sandbox-cli logs 14084
+agent-sandbox-cli logs 14084 --lines 50
 ```
 
 For a lower-level point-in-time VM inspection, `./scripts/check_issue_vm.sh 14084`
