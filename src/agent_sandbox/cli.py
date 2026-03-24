@@ -500,11 +500,15 @@ def logs(
         str | None,
         typer.Option("--repo-name", help="Repo basename used to select the guest Codex log."),
     ] = None,
+    lines: Annotated[
+        int,
+        typer.Option("--lines", min=1, help="Number of log lines to print before following the log."),
+    ] = 10,
     vm_user: Annotated[str, typer.Option("--vm-user", help="Guest user to inspect over SSH.")] = "agent",
 ) -> None:
     issue_number = _resolve_issue_number_or_raise(target)
     script_path = Path(__file__).resolve().parents[2] / "scripts" / "tail_issue_vm_log.sh"
-    cmd = [str(script_path), issue_number]
+    cmd = [str(script_path), issue_number, str(lines)]
     if repo_name is not None:
         cmd.append(repo_name)
         cmd.append(vm_user)

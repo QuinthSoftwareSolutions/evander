@@ -57,3 +57,26 @@ exit 0
 
     assert result.stdout == ""
     assert "No guest Codex logs or pid files found under" in result.stderr
+
+
+def test_tail_issue_vm_log_rejects_non_positive_line_count(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    script_path = root / "scripts" / "tail_issue_vm_log.sh"
+    private_key = tmp_path / "id_ed25519"
+    private_key.write_text("PRIVATE\n", encoding="utf-8")
+
+    env = os.environ.copy()
+    env["SSH_PRIVATE_KEY_PATH"] = str(private_key)
+    env["USER"] = env.get("USER", "root")
+
+    result = subprocess.run(
+        [str(script_path), "12305", "0"],
+        text=True,
+        capture_output=True,
+        env=env,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert "lines must be a positive integer: 0" in result.stderr

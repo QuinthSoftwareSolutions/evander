@@ -3,12 +3,13 @@ set -euo pipefail
 
 show_help() {
   cat <<'EOF'
-Usage: tail_issue_vm_log.sh <issue-number> [repo-name] [vm-user]
+Usage: tail_issue_vm_log.sh <issue-number> [lines] [repo-name] [vm-user]
 
 Follow the background guest Codex log for an issue VM from the host.
 
 Arguments:
   issue-number  Issue identifier used to derive the VM name.
+  lines         Number of log lines to print before following. Default: 10
   repo-name     Repo basename used by setup_issue_vm.sh. Default: auto-detect
   vm-user       Guest user to inspect. Default: agent
 EOF
@@ -25,12 +26,18 @@ if [[ $# -lt 1 ]]; then
 fi
 
 ISSUE_NUMBER="$1"
-REPO_NAME="${2:-}"
-VM_USER="${3:-agent}"
+TAIL_LINES="${2:-10}"
+REPO_NAME="${3:-}"
+VM_USER="${4:-agent}"
 VM_NAME="vm-${ISSUE_NUMBER}"
 CALLER_USER="${SUDO_USER:-$USER}"
 CALLER_HOME="$(getent passwd "${CALLER_USER}" | cut -d: -f6)"
 SSH_PRIVATE_KEY_PATH="${SSH_PRIVATE_KEY_PATH:-${CALLER_HOME}/.ssh/id_ed25519}"
+
+if ! [[ "${TAIL_LINES}" =~ ^[1-9][0-9]*$ ]]; then
+  echo "lines must be a positive integer: ${TAIL_LINES}" >&2
+  exit 1
+fi
 
 if [[ ! -f "${SSH_PRIVATE_KEY_PATH}" ]]; then
   SSH_PRIVATE_KEY_PATH="${CALLER_HOME}/.ssh/id_rsa"
@@ -119,5 +126,5 @@ if [[ ! -f "${LOG_PATH}" ]]; then
   exit 0
 fi
 
-tail -f "${LOG_PATH}"
+tail -n "${TAIL_LINES}" -f "${LOG_PATH}"
 EOF
