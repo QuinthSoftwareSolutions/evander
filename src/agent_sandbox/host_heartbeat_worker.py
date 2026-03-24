@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import random
+import subprocess
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -128,6 +129,8 @@ class HostHeartbeatWorker:
                     ],
                 )
                 discovered_feedback += len(discovered)
+                if discovered:
+                    self._record_busy_skips(bindings)
 
         next_sleep_seconds = _compute_next_sleep_seconds(
             poll_interval_seconds=self.config.host_heartbeat_poll_interval_seconds,
@@ -140,6 +143,36 @@ class HostHeartbeatWorker:
             streams_polled=streams_polled,
             next_sleep_seconds=next_sleep_seconds,
         )
+
+    def _record_busy_skips(self, bindings: list[StreamSessionBinding]) -> None:
+        for binding in bindings:
+            if _is_session_in_cooldown(
+                path=self.config.host_heartbeat_session_cooldown_path,
+                session_id=binding.session_id,
+            ):
+                logger.info(
+                    "Host heartbeat skip reason=session-cooldown session_id=%s vm_id=%s",
+                    binding.session_id,
+                    binding.vm_id,
+                )
+                continue
+            if not binding.vm_id:
+                continue
+            if _is_agent_busy(
+                session_id=binding.session_id,
+                vm_id=binding.vm_id,
+                script_path=self.config.host_busy_check_script_path,
+            ):
+                _set_session_cooldown(
+                    path=self.config.host_heartbeat_session_cooldown_path,
+                    session_id=binding.session_id,
+                    cooldown_seconds=self.config.host_heartbeat_cooldown_seconds,
+                )
+                logger.info(
+                    "Host heartbeat skip reason=agent-busy session_id=%s vm_id=%s",
+                    binding.session_id,
+                    binding.vm_id,
+                )
 
     def _collect_stream_mappings(self) -> dict[FeedbackStream, list[StreamSessionBinding]]:
         now = datetime.now(timezone.utc)
@@ -281,6 +314,97 @@ def _load_pr_map_entries(path: Path) -> dict[tuple[str, str, str], dict[str, Any
             continue
         entries[(provider, repo, pr_id)] = raw_entry
     return entries
+
+
+def _is_agent_busy(*, session_id: str, vm_id: str, script_path: Path) -> bool:
+    if not script_path.exists():
+        logger.warning(
+            "Busy check script missing path=%s session_id=%s vm_id=%s",
+            script_path,
+            session_id,
+            vm_id,
+        )
+        return False
+    try:
+        completed = subprocess.run(
+            [str(script_path), session_id, vm_id],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        logger.warning(
+            "Busy check script invocation failed path=%s session_id=%s vm_id=%s",
+            script_path,
+            session_id,
+            vm_id,
+            exc_info=True,
+        )
+        return False
+
+    output = (completed.stdout or "").strip()
+    if completed.returncode == 0:
+        logger.info(
+            "Busy check status=busy session_id=%s vm_id=%s output=%s",
+            session_id,
+            vm_id,
+            output,
+        )
+        return True
+    if completed.returncode == 1:
+        return False
+    logger.warning(
+        "Busy check status=unknown session_id=%s vm_id=%s exit_code=%s output=%s",
+        session_id,
+        vm_id,
+        completed.returncode,
+        output,
+    )
+    return False
+
+
+def _is_session_in_cooldown(*, path: Path, session_id: str) -> bool:
+    state = _load_cooldown_state(path)
+    now = time.time()
+    expires_at = float(state.get(session_id, 0.0))
+    if expires_at <= now:
+        if session_id in state:
+            state.pop(session_id, None)
+            _save_cooldown_state(path, state)
+        return False
+    return True
+
+
+def _set_session_cooldown(*, path: Path, session_id: str, cooldown_seconds: float) -> None:
+    state = _load_cooldown_state(path)
+    state[session_id] = max(0.0, time.time() + cooldown_seconds)
+    _save_cooldown_state(path, state)
+
+
+def _load_cooldown_state(path: Path) -> dict[str, float]:
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        logger.warning("Unable to read host heartbeat cooldown state path=%s", path, exc_info=True)
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    state: dict[str, float] = {}
+    for session_id, raw_expires_at in payload.items():
+        try:
+            state[str(session_id)] = float(raw_expires_at)
+        except (TypeError, ValueError):
+            continue
+    return state
+
+
+def _save_cooldown_state(path: Path, state: dict[str, float]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(f"{path.suffix}.tmp")
+    tmp_path.write_text(json.dumps(state, indent=2, sort_keys=True), encoding="utf-8")
+    tmp_path.replace(path)
 
 
 def build_host_heartbeat_worker(config: GatewayConfig) -> HostHeartbeatWorker:

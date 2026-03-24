@@ -7,7 +7,10 @@ from types import SimpleNamespace
 from agent_sandbox.host_heartbeat_worker import (
     FeedbackStream,
     HostHeartbeatWorker,
+    _is_agent_busy,
+    _is_session_in_cooldown,
     _compute_next_sleep_seconds,
+    _set_session_cooldown,
     _single_instance_lock,
 )
 from agent_sandbox.models import SessionManifest, ToolName
@@ -196,3 +199,22 @@ def test_single_instance_lock_rejects_second_holder(tmp_path) -> None:
                 raise AssertionError("second lock acquisition should fail")
         except RuntimeError as exc:
             assert "already running" in str(exc)
+
+
+def test_busy_check_reports_busy_on_zero_exit(tmp_path) -> None:
+    script = tmp_path / "check_session_vm_busy.sh"
+    script.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    script.chmod(0o755)
+
+    assert _is_agent_busy(session_id="session-1", vm_id="vm-1", script_path=script) is True
+
+
+def test_session_cooldown_state_is_persisted(tmp_path, monkeypatch) -> None:
+    cooldown_path = tmp_path / "cooldowns.json"
+    monkeypatch.setattr("agent_sandbox.host_heartbeat_worker.time.time", lambda: 1000.0)
+
+    _set_session_cooldown(path=cooldown_path, session_id="session-1", cooldown_seconds=30.0)
+    assert _is_session_in_cooldown(path=cooldown_path, session_id="session-1") is True
+
+    monkeypatch.setattr("agent_sandbox.host_heartbeat_worker.time.time", lambda: 1035.0)
+    assert _is_session_in_cooldown(path=cooldown_path, session_id="session-1") is False

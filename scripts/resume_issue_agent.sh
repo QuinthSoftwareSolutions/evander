@@ -87,9 +87,42 @@ set -euo pipefail
 cd "${HOME}"
 . "${HOME}/.profile" >/dev/null 2>&1 || true
 
+LOG_DIR="${HOME}/.agent-sandbox"
+STATE_PATH="${LOG_DIR}/codex-resume-last.state"
 PROMPT="$(python3 -c 'import base64, os; print(base64.b64decode(os.environ["PROMPT_B64"]).decode("utf-8"))')"
+mkdir -p "${LOG_DIR}"
 
-exec codex exec resume \
+write_state() {
+  local status="$1"
+  local phase="$2"
+  local exit_code="${3:-}"
+  local now
+  local tmp_path
+
+  now="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  tmp_path="${STATE_PATH}.tmp"
+  {
+    printf "status=%s\n" "${status}"
+    printf "phase=%s\n" "${phase}"
+    printf "repo=%s\n" "resume-last"
+    printf "pid=%s\n" "$$"
+    printf "updated_at=%s\n" "${now}"
+    if [[ -n "${exit_code}" ]]; then
+      printf "exit_code=%s\n" "${exit_code}"
+    fi
+  } > "${tmp_path}"
+  mv "${tmp_path}" "${STATE_PATH}"
+}
+
+on_exit() {
+  local exit_code="$?"
+  write_state "idle" "complete" "${exit_code}"
+}
+
+write_state "running" "resume"
+trap on_exit EXIT
+
+codex exec resume \
   --dangerously-bypass-approvals-and-sandbox \
   --skip-git-repo-check \
   --model "${CODEX_MODEL}" \
