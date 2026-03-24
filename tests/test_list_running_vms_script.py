@@ -176,3 +176,104 @@ exit 1
     )
 
     assert result.stdout.strip() == "ID   Name                     State      IP              Agent"
+
+
+def test_list_running_vms_all_includes_inactive_vms_without_ssh(tmp_path: Path) -> None:
+    script_path, fake_bin = _prepare_script(tmp_path)
+    private_key = tmp_path / "id_ed25519"
+    private_key.write_text("PRIVATE\n", encoding="utf-8")
+    ssh_calls = tmp_path / "ssh_calls"
+
+    _write_executable(
+        fake_bin / "virsh",
+        """#!/usr/bin/env bash
+set -euo pipefail
+cmd="${1:-}"
+shift || true
+
+case "${cmd}" in
+  list)
+    if [[ "${1:-}" == "--all" ]]; then
+      printf 'vm-active\\nvm-stopped\\n'
+      exit 0
+    fi
+    printf 'vm-active\\n'
+    ;;
+  dominfo)
+    case "${1:-}" in
+      vm-active)
+        cat <<'EOF'
+Id:             7
+Name:           vm-active
+State:          running
+EOF
+        ;;
+      vm-stopped)
+        cat <<'EOF'
+Id:             -
+Name:           vm-stopped
+State:          shut off
+EOF
+        ;;
+      *)
+        exit 1
+        ;;
+    esac
+    ;;
+  domifaddr)
+    case "${1:-}" in
+      vm-active)
+        printf 'vnet0 52:54:00:00:00:01 ipv4 192.168.122.11/24\\n'
+        ;;
+      *)
+        exit 1
+        ;;
+    esac
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+""",
+    )
+
+    _write_executable(
+        fake_bin / "ssh",
+        f"""#!/usr/bin/env bash
+set -euo pipefail
+printf 'called\\n' >> "{ssh_calls}"
+target="${{@: -2:1}}"
+
+case "${{target}}" in
+  agent@192.168.122.11)
+    printf '%s\\n' 'running (repo-one)'
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+""",
+    )
+
+    env = os.environ.copy()
+    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+    env["SSH_PRIVATE_KEY_PATH"] = str(private_key)
+    env["USER"] = env.get("USER", "root")
+
+    result = subprocess.run(
+        [str(script_path), "--all"],
+        text=True,
+        capture_output=True,
+        env=env,
+        check=True,
+    )
+
+    lines = result.stdout.strip().splitlines()
+    assert len(lines) == 3
+    assert "7    vm-active" in lines[1]
+    assert lines[1].endswith("running (repo-one)")
+    assert "-    vm-stopped" in lines[2]
+    assert "shut off" in lines[2]
+    assert "unavailable" in lines[2]
+    assert lines[2].endswith("inactive VM")
+    assert ssh_calls.read_text(encoding="utf-8").splitlines() == ["called"]

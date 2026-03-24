@@ -3,13 +3,16 @@ set -euo pipefail
 
 show_help() {
   cat <<'EOF'
-Usage: list_running_vms.sh [vm-user]
+Usage: list_running_vms.sh [--all] [vm-user]
 
 List currently running libvirt VMs and show whether a guest agent is
 currently running inside each VM.
 
 Arguments:
   vm-user  Guest user to inspect over SSH. Default: agent
+
+Options:
+  --all    Include inactive libvirt VMs in the output.
 
 Environment:
   SSH_PRIVATE_KEY_PATH                  Private key for guest SSH access.
@@ -24,12 +27,38 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   exit 0
 fi
 
-if [[ $# -gt 1 ]]; then
+INCLUDE_ALL=0
+POSITIONAL_ARGS=()
+while [[ $# -gt 0 ]]; do
+  case "${1}" in
+    --all)
+      INCLUDE_ALL=1
+      shift
+      ;;
+    --)
+      shift
+      while [[ $# -gt 0 ]]; do
+        POSITIONAL_ARGS+=("${1}")
+        shift
+      done
+      ;;
+    -*)
+      show_help >&2
+      exit 1
+      ;;
+    *)
+      POSITIONAL_ARGS+=("${1}")
+      shift
+      ;;
+  esac
+done
+
+if [[ ${#POSITIONAL_ARGS[@]} -gt 1 ]]; then
   show_help >&2
   exit 1
 fi
 
-VM_USER="${1:-agent}"
+VM_USER="${POSITIONAL_ARGS[0]:-agent}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/vm_network.sh
 source "${SCRIPT_DIR}/lib/vm_network.sh"
@@ -65,6 +94,15 @@ list_running_vm_names() {
   virsh_try list --state-running --name | awk 'NF > 0'
 }
 
+list_vm_names() {
+  if (( INCLUDE_ALL )); then
+    virsh_try list --all --name | awk 'NF > 0'
+    return 0
+  fi
+
+  list_running_vm_names
+}
+
 dominfo_field() {
   local vm_name="$1"
   local field_name="$2"
@@ -91,17 +129,20 @@ agent_status_for_vm() {
 
 printf '%-4s %-24s %-10s %-15s %s\n' "ID" "Name" "State" "IP" "Agent"
 
-mapfile -t running_vms < <(list_running_vm_names)
+mapfile -t vms < <(list_vm_names)
 
-if [[ ${#running_vms[@]} -eq 0 ]]; then
+if [[ ${#vms[@]} -eq 0 ]]; then
   exit 0
 fi
 
-for vm_name in "${running_vms[@]}"; do
+for vm_name in "${vms[@]}"; do
   vm_id="$(dominfo_field "${vm_name}" "Id")"
   vm_state="$(dominfo_field "${vm_name}" "State")"
 
-  if ! vm_ip="$(vm_network_resolve_ip "${vm_name}" 2>/dev/null)"; then
+  if [[ "${vm_state}" != "running" ]]; then
+    vm_ip="unavailable"
+    agent_status="inactive VM"
+  elif ! vm_ip="$(vm_network_resolve_ip "${vm_name}" 2>/dev/null)"; then
     vm_ip="unavailable"
     agent_status="unknown (no IP)"
   else

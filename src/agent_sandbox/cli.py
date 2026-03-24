@@ -1052,9 +1052,17 @@ def prune_orphaned_issue_state(
 @app.command("list-vms")
 def list_vms(
     vm_user: Annotated[str, typer.Option("--vm-user", help="Guest user to inspect over SSH.")] = "agent",
+    all_vms: Annotated[
+        bool,
+        typer.Option("--all", help="Include inactive libvirt VMs in the output."),
+    ] = False,
 ) -> None:
     script_path = Path(__file__).resolve().parents[2] / "scripts" / "list_running_vms.sh"
-    _run_subprocess_compat([str(script_path), vm_user], check=True, capture_output=False, text=False)
+    cmd = [str(script_path)]
+    if all_vms:
+        cmd.append("--all")
+    cmd.append(vm_user)
+    _run_subprocess_compat(cmd, check=True, capture_output=False, text=False)
 
 
 @app.command("ssh")

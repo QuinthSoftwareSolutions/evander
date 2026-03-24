@@ -280,6 +280,7 @@ For operator visibility from the host, use:
 
 ```bash
 agent-sandbox-cli list-vms
+agent-sandbox-cli list-vms --all
 agent-sandbox-cli logs 14084 --lines 50
 ```
 
@@ -291,9 +292,9 @@ The script and CLI wrappers share the same timeout environment variables (defaul
 - `VM_WAIT_IP_TIMEOUT_SECONDS` (default `180`)
 - `VM_WAIT_SSH_TIMEOUT_SECONDS` (default `180`)
 
-`list-vms` shows running VMs together with live guest agent status. `logs`
-prints the requested number of recent lines first, then follows the guest agent
-log live over SSH.
+`list-vms` shows running VMs together with live guest agent status by default.
+Pass `--all` to include inactive VMs as well. `logs` prints the requested
+number of recent lines first, then follows the guest agent log live over SSH.
 
 Use the included bare-repo helper when you want VMs to push code changes back to the host over the private network:
 

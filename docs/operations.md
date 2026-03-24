@@ -564,6 +564,7 @@ To inspect or follow the guest agent from the host:
 
 ```bash
 agent-sandbox-cli list-vms
+agent-sandbox-cli list-vms --all
 agent-sandbox-cli logs 14084 --lines 50
 ```
 

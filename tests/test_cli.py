@@ -948,6 +948,33 @@ def test_list_vms_invokes_script_with_selected_vm_user(tmp_path: Path, monkeypat
     assert captured_cmd[1:] == ["root"]
 
 
+def test_list_vms_all_invokes_script_with_all_flag(tmp_path: Path, monkeypatch) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+    captured_cmd: list[str] = []
+
+    init_result = runner.invoke(app, ["init-state", "--config", str(config_path)])
+    assert init_result.exit_code == 0
+
+    def fake_run(
+        cmd: list[str],
+        check: bool,
+        capture_output: bool,
+        text: bool,
+    ) -> subprocess.CompletedProcess[str]:
+        nonlocal captured_cmd
+        captured_cmd = cmd
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("agent_sandbox.cli.subprocess.run", fake_run)
+
+    result = runner.invoke(app, ["list-vms", "--all", "--vm-user", "root"])
+
+    assert result.exit_code == 0
+    assert captured_cmd[0].endswith("/scripts/list_running_vms.sh")
+    assert captured_cmd[1:] == ["--all", "root"]
+
+
 def test_ssh_resolves_issue_number_to_vm_name(tmp_path: Path, monkeypatch) -> None:
     config_path = write_config(tmp_path)
     runner = CliRunner()
