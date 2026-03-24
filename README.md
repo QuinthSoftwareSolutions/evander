@@ -273,7 +273,7 @@ YAML is the preferred input for long-running agent sessions.
 After the initial provider command run exits, the helper now performs one
 provider-specific follow-up verification pass to verify checklist completion
 (tests, docs, and PR markdown note). Override that follow-up prompt text with
-`AGENT_SANDBOX_CODEX_POST_EXEC_VERIFICATION_PROMPT` (for example in
+`AGENT_POST_EXEC_VERIFICATION_PROMPT` (for example in
 `config/git-server.env`).
 
 For operator visibility from the host, use:

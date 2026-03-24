@@ -557,7 +557,7 @@ restore them into the matching relative paths inside the guest clone.
 
 After the initial guest provider command run exits, setup triggers one
 provider-specific verification pass. Customize that verification
-prompt with `AGENT_SANDBOX_CODEX_POST_EXEC_VERIFICATION_PROMPT` (for example
+prompt with `AGENT_POST_EXEC_VERIFICATION_PROMPT` (for example
 in `config/git-server.env`) when you need different checklist wording.
 
 To inspect or follow the guest agent from the host:
