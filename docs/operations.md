@@ -199,8 +199,10 @@ A transport-terminated warning without client-visible failure can be expected fo
   - Destination `channel_id` must be in `session.discord_channel_allowlist`.
   - `discord_operator_user_allowlist` does not override post destination checks.
 - Retry/backoff and failure handling:
-  - The Discord `bot_api` adapter currently has no internal retry or exponential backoff loop.
-  - Discord HTTP errors and timeouts bubble up to the tool caller.
+  - The Discord `bot_api` adapter retries transient failures with exponential backoff and jitter.
+  - Retries apply to connection/time-out failures plus HTTP `429` and `5xx` responses.
+  - Non-retryable Discord HTTP errors still bubble up to the tool caller immediately.
+  - Retryable failures bubble up to the tool caller only after the retry budget is exhausted.
   - Policy denials are audited to `audit_log_path` (default `runtime/audit.jsonl`), including
     per-command denied source metadata when filtering `discord_get_commands`.
   - Successful command polls are also audited with `count` and `denied_count` summary fields.
