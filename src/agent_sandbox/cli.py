@@ -1072,7 +1072,10 @@ def logs(
     target: str,
     repo_name: Annotated[
         str | None,
-        typer.Option("--repo-name", help="Repo basename used to select the guest Codex log."),
+        typer.Option(
+            "--repo-name",
+            help="Repo basename used to select the guest agent log.",
+        ),
     ] = None,
     lines: Annotated[
         int,
@@ -1096,14 +1099,17 @@ def resume_agent(
     target: str,
     message: Annotated[
         str,
-        typer.Option("--message", help="Prompt passed to codex exec resume --last."),
+        typer.Option(
+            "--message",
+            help="Prompt passed to the agent resume command.",
+        ),
     ],
     config: ConfigOption = Path("config/gateway.yaml"),
     observe: Annotated[
         bool,
         typer.Option(
             "--observe",
-            help="Tail the guest Codex log after resuming the agent instead of returning immediately.",
+            help="Tail the guest agent log after resuming the agent instead of returning immediately.",
         ),
     ] = False,
     lines: Annotated[
@@ -1258,7 +1264,10 @@ def create_issue_vm(
     ] = [],
     start_agent: Annotated[
         bool,
-        typer.Option("--start-agent/--no-start-agent", help="Start the guest Codex run after setup."),
+        typer.Option(
+            "--start-agent/--no-start-agent",
+            help="Start the guest agent run after setup.",
+        ),
     ] = True,
 ) -> None:
     issue_number = _resolve_issue_number(issue)
