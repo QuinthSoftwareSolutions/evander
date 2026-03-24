@@ -7,3 +7,4 @@ runtime/
 git-remotes/
 config/git-server.env
 config/nuget-relay.env
+config/host-heartbeat.env
