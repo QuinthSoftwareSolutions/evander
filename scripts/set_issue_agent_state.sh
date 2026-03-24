@@ -38,17 +38,17 @@ USAGE
 }
 
 resolve_private_key_path() {
-  local caller_user caller_home
+  local caller_user
 
   caller_user="${SUDO_USER:-${USER:-}}"
-  caller_home="${HOME:-}"
+  CALLER_HOME="${HOME:-}"
   if [[ -n "${caller_user}" ]]; then
-    caller_home="$(getent passwd "${caller_user}" | cut -d: -f6 || printf '%s\n' "${caller_home}")"
+    CALLER_HOME="$(getent passwd "${caller_user}" | cut -d: -f6 || printf '%s\n' "${CALLER_HOME}")"
   fi
 
-  SSH_PRIVATE_KEY_PATH="${SSH_PRIVATE_KEY_PATH:-${caller_home}/.ssh/id_ed25519}"
+  SSH_PRIVATE_KEY_PATH="${SSH_PRIVATE_KEY_PATH:-${CALLER_HOME}/.ssh/id_ed25519}"
   if [[ ! -f "${SSH_PRIVATE_KEY_PATH}" ]]; then
-    SSH_PRIVATE_KEY_PATH="${caller_home}/.ssh/id_rsa"
+    SSH_PRIVATE_KEY_PATH="${CALLER_HOME}/.ssh/id_rsa"
   fi
 
   [[ -f "${SSH_PRIVATE_KEY_PATH}" ]]

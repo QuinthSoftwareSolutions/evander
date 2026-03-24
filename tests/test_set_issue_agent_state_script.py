@@ -116,9 +116,11 @@ printf 'state=disabled path=/home/agent/.agent-sandbox/agent-control.state\\n'
     )
 
     assert result.stdout.strip() == "state=disabled path=/home/agent/.agent-sandbox/agent-control.state"
+    assert "CALLER_HOME: unbound variable" not in result.stderr
     ssh_calls = ssh_log.read_text(encoding="utf-8").splitlines()
     assert any("agent@192.168.122.11 true" in call for call in ssh_calls)
     assert any("REMOTE_STATUS='disabled' REMOTE_PHASE='operator-disable' bash -s" in call for call in ssh_calls)
+    assert any("UserKnownHostsFile=" in call for call in ssh_calls)
 
     remote_script = ssh_stdin.read_text(encoding="utf-8")
     assert 'CONTROL_STATE_PATH="${LOG_DIR}/agent-control.state"' in remote_script
