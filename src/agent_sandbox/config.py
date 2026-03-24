@@ -96,6 +96,11 @@ class GatewayConfig(BaseModel):
         "/var/lib/agent-sandbox/host-heartbeat-session-cooldown.json"
     )
     host_busy_check_script_path: Path = Path("scripts/check_session_vm_busy.sh")
+    host_resume_script_path: Path = Path("scripts/resume_issue_agent.sh")
+    host_heartbeat_wake_state_path: Path = Path("/var/lib/agent-sandbox/host-heartbeat-wake-state.json")
+    host_heartbeat_resume_prompt: str = "Resume and address newly received PR feedback."
+    host_heartbeat_vm_user: str = "agent"
+    host_heartbeat_resume_timeout_seconds: float = Field(default=1200.0, gt=0)
     host_heartbeat_stream_conflict_policy: Literal["fanout", "reject"] = "fanout"
     pr_map_path: Path = Path("/var/lib/agent-sandbox/pr-map.json")
     email_mailboxes: list[MailboxConfig] = Field(
@@ -170,6 +175,7 @@ class GatewayConfig(BaseModel):
             "host_heartbeat_lock_path": default_runtime_dir / "host-heartbeat.lock",
             "host_heartbeat_session_cooldown_path": default_runtime_dir
             / "host-heartbeat-session-cooldown.json",
+            "host_heartbeat_wake_state_path": default_runtime_dir / "host-heartbeat-wake-state.json",
             "session_store_path": default_runtime_dir / "sessions.json",
             "approval_store_path": default_runtime_dir / "approvals.json",
             "draft_store_path": default_runtime_dir / "drafts.json",
