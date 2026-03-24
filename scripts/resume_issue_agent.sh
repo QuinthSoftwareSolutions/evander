@@ -248,6 +248,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/vm_network.sh
 source "${SCRIPT_DIR}/lib/vm_network.sh"
 
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+  show_help
+  exit 0
+fi
+
 if ! parse_args "$@"; then
   show_help >&2
   exit "${EXIT_USAGE}"

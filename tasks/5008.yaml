@@ -1,0 +1,38 @@
+issue_number: 13301
+title: Deviation Set step does not work with inputs
+description: ''
+tags:
+- truman
+state: Committed
+url: https://dev.azure.com/exampleindustry/_apis/wit/workItems/13301
+updated_date: '2026-03-23T12:08:01.407Z'
+comments:
+- text: <div>I've given this some thought and I'm a little uncertain how to proceed.
+    <a href="#" data-vss-mention="version:2.0,4f3f3e7c-a453-6ea8-b168-ba558f8b38bc">@Joakim
+    Svensson</a>&nbsp;in the scenario you describe, it makes a lot of sense to use
+    the codes instead of the IDs, but what about when a deviation is explicitly selected
+    in the GUI instead of used as an input? Then altering a Deviation Code or Deviation
+    Subcode's code would break the step. Should we add extra fields to the step so
+    that one can either select code/subcode Ids or provide string codes for configuration?</div>
+  author: ''
+  created_date: '2026-01-29T13:44:27.807Z'
+  modified_date: '2026-01-29T13:44:27.807Z'
+- text: <div><a href="#" data-vss-mention="version:2.0,24df1579-1799-645b-a070-d8a29d3f6b42">@Jonathan
+    Quinth</a>&nbsp;</div><div><br></div><div>Well, as for changing codes/subcodes
+    (or deleting them), thats a preperation thing, and people need to know what they
+    are doing.</div><div><br></div><div>As for code/subcode selection on the step,
+    yea extra fields is probably the best way forward.</div><div><br></div><div>Perhaps&nbsp;
+    a checkbox that lets the user select a &quot;mode&quot; for this. &quot;Manual
+    selection&quot; or something.</div><div>The default is checked, the behavior is
+    the same as current, where you use dropdown to select, and Input's set Id's.</div><div><br></div><div><i>Note</i><b>:</b></div><div><i>The
+    common case (that I have right now anyway), you will probably never select the
+    Code dynamically, only the subcode, since we will mostly setup one one deviation
+    code-list per machine/station.</i></div><div><br></div><div>If in unchecked, these
+    are not dropdowns but regular text inputs. You either manually type in the code/subcode,
+    or inputs set strings for code/subcode.</div><div><br></div><div>Ex:</div><div><br></div><div><img
+    src="https://dev.azure.com/exampleindustry/70a1569b-16ac-476e-a6b5-44830b54dcc7/_apis/wit/attachments/6b19852e-280c-410b-be45-e8c53e937a17?fileName=image.png"
+    alt=Image><br></div><div><br></div>
+  author: ''
+  created_date: '2026-01-30T08:06:05.183Z'
+  modified_date: '2026-01-30T08:06:05.183Z'
+generated_at: '2026-03-23T12:18:58.658289Z'

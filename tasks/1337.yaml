@@ -1,0 +1,3 @@
+issue_number: 1337
+name: Use Hyperion for Akka serialization instead of Newtonsoft
+description: We need to replace all usage of Newtonsoft for Akka Serialization with Hyperion instead. However, it is important that properties sent over Akka now with [JsonIgnore] will continue to be omitted when sent via Hyperion. Try to find a good solution for this. Make sure changes are well tested and well documented.

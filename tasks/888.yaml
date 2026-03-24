@@ -1,0 +1,3 @@
+issue_number: 888
+name: Make it possible to edit users in web UI
+description: Users currently have to be added manually to a users.csv file. This is tedious, and difficult for non-technical users. It should be possible to fully configure a user from the web client. 

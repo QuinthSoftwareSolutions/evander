@@ -63,6 +63,15 @@ class HostHeartbeatWorker:
         self.feedback_worker = feedback_worker
         self.adapters = adapters
 
+    def _log_audit_decision(self, **kwargs: Any) -> None:
+        audit = getattr(self.runtime, "audit", None)
+        if audit is None:
+            return
+        log_decision = getattr(audit, "log_decision", None)
+        if log_decision is None:
+            return
+        log_decision(**kwargs)
+
     def run_forever(self) -> None:
         with _single_instance_lock(self.config.host_heartbeat_lock_path):
             logger.info(
@@ -153,7 +162,7 @@ class HostHeartbeatWorker:
             cooldown_seconds=self.config.host_heartbeat_cooldown_seconds,
             discovered_feedback=discovered_feedback,
         )
-        self.runtime.audit.log_decision(
+        self._log_audit_decision(
             event_type=AuditEventType.HOST_HEARTBEAT_CYCLE_COMPLETED,
             decision="completed",
             reason="cycle-finished",
@@ -175,7 +184,7 @@ class HostHeartbeatWorker:
                 path=self.config.host_heartbeat_session_cooldown_path,
                 session_id=binding.session_id,
             ):
-                self.runtime.audit.log_decision(
+                self._log_audit_decision(
                     event_type=AuditEventType.BUSY_SKIP,
                     session_id=binding.session_id,
                     vm_id=binding.vm_id,
@@ -204,7 +213,7 @@ class HostHeartbeatWorker:
                     session_id=binding.session_id,
                     cooldown_seconds=self.config.host_heartbeat_cooldown_seconds,
                 )
-                self.runtime.audit.log_decision(
+                self._log_audit_decision(
                     event_type=AuditEventType.BUSY_SKIP,
                     session_id=binding.session_id,
                     vm_id=binding.vm_id,
@@ -324,7 +333,7 @@ class HostHeartbeatWorker:
                     source="session_manifest",
                 )
                 stream_index.setdefault(key, []).append(binding)
-                self.runtime.audit.log_decision(
+                self._log_audit_decision(
                     event_type=AuditEventType.MAPPING_RESOLVED,
                     session_id=binding.session_id,
                     vm_id=binding.vm_id,
@@ -350,7 +359,7 @@ class HostHeartbeatWorker:
                 source="pr_map",
             )
             stream_index[key] = [binding]
-            self.runtime.audit.log_decision(
+            self._log_audit_decision(
                 event_type=AuditEventType.MAPPING_RESOLVED,
                 session_id=binding.session_id,
                 vm_id=binding.vm_id,

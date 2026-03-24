@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import inspect
 import logging
 import os
 import re
@@ -125,6 +126,25 @@ def _check_health_endpoint(name: str, url: str) -> EndpointStatus:
 def _format_rows(rows: list[tuple[str, str]]) -> str:
     key_width = max(len(key) for key, _ in rows)
     return "\n".join(f"{key:<{key_width}}  {value}" for key, value in rows)
+
+
+def _run_subprocess_compat(
+    cmd: list[str],
+    *,
+    check: bool,
+    capture_output: bool | None = None,
+    text: bool | None = None,
+) -> subprocess.CompletedProcess[str]:
+    kwargs: dict[str, object] = {"check": check}
+    try:
+        parameters = inspect.signature(subprocess.run).parameters
+    except (TypeError, ValueError):
+        parameters = {}
+    if capture_output is not None and "capture_output" in parameters:
+        kwargs["capture_output"] = capture_output
+    if text is not None and "text" in parameters:
+        kwargs["text"] = text
+    return subprocess.run(cmd, **kwargs)
 
 
 def _load_heartbeat_summary(audit_log_path: Path, *, max_events: int = 400) -> HeartbeatSummary:
@@ -607,7 +627,7 @@ def list_vms(
     vm_user: Annotated[str, typer.Option("--vm-user", help="Guest user to inspect over SSH.")] = "agent",
 ) -> None:
     script_path = Path(__file__).resolve().parents[2] / "scripts" / "list_running_vms.sh"
-    subprocess.run([str(script_path), vm_user], check=True)
+    _run_subprocess_compat([str(script_path), vm_user], check=True, capture_output=False, text=False)
 
 
 @app.command("ssh")
@@ -617,7 +637,7 @@ def ssh(
 ) -> None:
     vm_name = _resolve_vm_name(target)
     script_path = Path(__file__).resolve().parents[2] / "scripts" / "ssh.sh"
-    subprocess.run([str(script_path), vm_name, vm_user], check=True)
+    _run_subprocess_compat([str(script_path), vm_name, vm_user], check=True, capture_output=False, text=False)
 
 
 @app.command("logs")
@@ -641,7 +661,7 @@ def logs(
         cmd.append(vm_user)
     elif vm_user != "agent":
         cmd.extend(["", vm_user])
-    subprocess.run(cmd, check=True)
+    _run_subprocess_compat(cmd, check=True, capture_output=False, text=False)
 
 
 @app.command("resume-agent")
@@ -866,7 +886,7 @@ def create_issue_vm(
         cmd.append(repo_source)
     cmd.extend([resolved_session_id, vm_user])
 
-    subprocess.run(cmd, check=True)
+    _run_subprocess_compat(cmd, check=True, capture_output=False, text=False)
     typer.echo(
         f"Created issue VM session {resolved_session_id} for issue {issue_number} "
         f"using VM {resolved_vm_name}"
