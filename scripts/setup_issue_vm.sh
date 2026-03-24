@@ -48,10 +48,11 @@ Arguments:
   vm-user              Guest user to configure. Default: agent
 
 Environment:
-  CODEX_MODEL                 Codex model to run inside the guest. Default: gpt-5.4
-  AGENT_SANDBOX_CODEX_POST_EXEC_VERIFICATION_PROMPT
+  AGENT_PROVIDER              Agent runner provider. Default: codex
+  AGENT_MODEL                 Model to run inside the guest. Default: gpt-5.4
+  AGENT_POST_EXEC_VERIFICATION_PROMPT
                               Optional prompt used for one follow-up
-                              `codex exec resume --last` verification pass
+                              `agent_runner_resume_last` verification pass
                               after the initial exec run exits.
   VM_WAIT_IP_TIMEOUT_SECONDS   How long to wait for the guest to receive an IPv4 address.
                                Default: 180
@@ -215,9 +216,10 @@ VM_WAIT_IP_TIMEOUT_SECONDS="${VM_WAIT_IP_TIMEOUT_SECONDS:-180}"
 VM_WAIT_SSH_TIMEOUT_SECONDS="${VM_WAIT_SSH_TIMEOUT_SECONDS:-180}"
 SSH_PRIVATE_KEY_PATH="${SSH_PRIVATE_KEY_PATH:-${CALLER_HOME}/.ssh/id_ed25519}"
 ISSUE_FILE=""
-CODEX_MODEL="${CODEX_MODEL:-gpt-5.4}"
+AGENT_PROVIDER="${AGENT_PROVIDER:-codex}"
+AGENT_MODEL="${AGENT_MODEL:-${CODEX_MODEL:-gpt-5.4}}"
 DEFAULT_POST_EXEC_VERIFICATION_PROMPT="Before concluding, verify whether you completed all required checklist items. Confirm (or explicitly list gaps for): (1) appropriate unit tests for your code changes, (2) documentation updates for behavioral or operational changes, and (3) a markdown PR summary maintained with 'git agent-pr-note'. If anything is missing, complete it now. If you make any changes during this checklist pass, push them before concluding. A successful 'git push-agent' refreshes and pushes refs/notes/agent-pr together with your latest work."
-POST_EXEC_VERIFICATION_PROMPT="${AGENT_SANDBOX_CODEX_POST_EXEC_VERIFICATION_PROMPT:-${DEFAULT_POST_EXEC_VERIFICATION_PROMPT}}"
+POST_EXEC_VERIFICATION_PROMPT="${AGENT_POST_EXEC_VERIFICATION_PROMPT:-${AGENT_SANDBOX_CODEX_POST_EXEC_VERIFICATION_PROMPT:-${DEFAULT_POST_EXEC_VERIFICATION_PROMPT}}}"
 POST_EXEC_VERIFICATION_PROMPT_B64="$(printf '%s' "${POST_EXEC_VERIFICATION_PROMPT}" | python3 -c 'import base64,sys; print(base64.b64encode(sys.stdin.buffer.read()).decode())')"
 AGENT_PR_NOTE_HELPER_B64="$(
   python3 - "${ROOT_DIR}/scripts/guest/agent_pr_note.sh" <<'PY'
@@ -629,9 +631,11 @@ if (( START_AGENT )); then
     -o UserKnownHostsFile=/dev/null \
     -i "${SSH_PRIVATE_KEY_PATH}" \
     "${VM_USER}@${VM_IP}" \
-    "GUEST_REPO_NAME='${GUEST_REPO_NAME}' CODEX_MODEL='${CODEX_MODEL}' POST_EXEC_VERIFICATION_PROMPT_B64='${POST_EXEC_VERIFICATION_PROMPT_B64}' BOOTSTRAP_DOTNET='${BOOTSTRAP_DOTNET}' BOOTSTRAP_NUGET='${BOOTSTRAP_NUGET}' bash -s" <<'EOF'
+    "GUEST_REPO_NAME='${GUEST_REPO_NAME}' AGENT_PROVIDER='${AGENT_PROVIDER}' AGENT_MODEL='${AGENT_MODEL}' POST_EXEC_VERIFICATION_PROMPT_B64='${POST_EXEC_VERIFICATION_PROMPT_B64}' BOOTSTRAP_DOTNET='${BOOTSTRAP_DOTNET}' BOOTSTRAP_NUGET='${BOOTSTRAP_NUGET}' bash -s" <<'EOF'
 set -euo pipefail
 . ~/.profile
+# shellcheck source=scripts/lib/agent_runner.sh
+source "${HOME}/${GUEST_REPO_NAME}/scripts/lib/agent_runner.sh"
 
 TARGET_DIR="$HOME/${GUEST_REPO_NAME}"
 LOG_DIR="$HOME/.agent-sandbox"
@@ -656,7 +660,8 @@ if [[ -f "${PID_PATH}" ]]; then
 fi
 
 nohup env \
-  CODEX_MODEL="${CODEX_MODEL}" \
+  AGENT_PROVIDER="${AGENT_PROVIDER}" \
+  AGENT_MODEL="${AGENT_MODEL}" \
   TARGET_DIR="${TARGET_DIR}" \
   GUEST_REPO_NAME="${GUEST_REPO_NAME}" \
   INITIAL_PROMPT="${INITIAL_PROMPT}" \
@@ -693,8 +698,8 @@ on_exit() {
 write_state "running" "initial"
 trap on_exit EXIT
 
-codex exec \
-  --model "${CODEX_MODEL}" \
+agent_runner_exec \
+  --model "${AGENT_MODEL}" \
   -s danger-full-access \
   --dangerously-bypass-approvals-and-sandbox \
   --skip-git-repo-check \
@@ -702,9 +707,8 @@ codex exec \
   "${INITIAL_PROMPT}"
 exec_status=$?
 write_state "running" "post_exec" "${exec_status}"
-codex exec resume \
-  --last \
-  --model "${CODEX_MODEL}" \
+agent_runner_resume_last \
+  --model "${AGENT_MODEL}" \
   --dangerously-bypass-approvals-and-sandbox \
   --skip-git-repo-check \
   "${POST_EXEC_VERIFICATION_PROMPT}" || true
