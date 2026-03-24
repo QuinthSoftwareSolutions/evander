@@ -146,3 +146,13 @@ exit 1
     assert result.returncode == 1
     assert result.stdout == ""
     assert result.stderr.strip() == "VM not found: vm-14084"
+
+
+def test_resume_issue_agent_tracks_explicit_state_lifecycle() -> None:
+    script_text = (Path(__file__).resolve().parents[1] / "scripts" / "resume_issue_agent.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'STATE_PATH="${LOG_DIR}/codex-resume-last.state"' in script_text
+    assert 'write_state "running" "resume"' in script_text
+    assert 'write_state "idle" "complete" "${exit_code}"' in script_text

@@ -23,6 +23,7 @@ SCRIPTS = [
     "install_systemd_units.sh",
     "launch_agent_vm.sh",
     "list_running_vms.sh",
+    "check_session_vm_busy.sh",
     "git_ssh_command_wrapper.sh",
     "handle_agent_push.sh",
     "mirror_issue_repo.sh",
