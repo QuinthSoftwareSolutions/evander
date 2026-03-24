@@ -17,27 +17,6 @@ set -euo pipefail
 
 LOG_DIR="${HOME}/.agent-sandbox"
 
-is_active_codex_pid() {
-  local pid_path="$1"
-  local pid
-  local cmdline
-
-  [[ -f "${pid_path}" ]] || return 1
-  pid="$(tr -d '[:space:]' <"${pid_path}" || true)"
-  [[ -n "${pid}" && "${pid}" =~ ^[0-9]+$ ]] || return 1
-  kill -0 "${pid}" >/dev/null 2>&1 || return 1
-  cmdline="$(ps -p "${pid}" -o args= 2>/dev/null || true)"
-  [[ -n "${cmdline}" ]] || return 1
-  case "${cmdline}" in
-    codex|*/codex|*" codex"|*" codex "*|*"/codex "*)
-      return 0
-      ;;
-    *)
-      return 1
-      ;;
-  esac
-}
-
 if [[ ! -d "${LOG_DIR}" ]]; then
   printf '%s\n' "not started"
   exit 0
@@ -56,13 +35,10 @@ for state_path in "${LOG_DIR}"/codex-*.state; do
   status="$(read_state_value "${state_path}" "status")"
   [[ "${status}" == "running" ]] || continue
 
-  pid="$(read_state_value "${state_path}" "pid")"
-  if [[ -n "${pid}" && "${pid}" =~ ^[0-9]+$ ]] && kill -0 "${pid}" >/dev/null 2>&1; then
-    name="$(basename "${state_path}")"
-    name="${name#codex-}"
-    name="${name%.state}"
-    active_entries+=("${name}")
-  fi
+  name="$(basename "${state_path}")"
+  name="${name#codex-}"
+  name="${name%.state}"
+  active_entries+=("${name}")
 done
 shopt -u nullglob
 
@@ -70,18 +46,6 @@ if [[ ${#active_entries[@]} -gt 0 ]]; then
   printf 'running (%s)\n' "$(IFS=', '; echo "${active_entries[*]}")"
   exit 0
 fi
-
-# Back-compat fallback for sessions that still publish PID files but not state.
-shopt -s nullglob
-for pid_path in "${LOG_DIR}"/codex-*.pid; do
-  name="$(basename "${pid_path}")"
-  name="${name#codex-}"
-  name="${name%.pid}"
-  if is_active_codex_pid "${pid_path}"; then
-    active_entries+=("${name}")
-  fi
-done
-shopt -u nullglob
 
 if [[ ${#active_entries[@]} -eq 0 ]]; then
   printf '%s\n' "idle"
