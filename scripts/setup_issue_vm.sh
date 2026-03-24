@@ -639,9 +639,9 @@ source "${HOME}/${GUEST_REPO_NAME}/scripts/lib/agent_runner.sh"
 
 TARGET_DIR="$HOME/${GUEST_REPO_NAME}"
 LOG_DIR="$HOME/.agent-sandbox"
-LOG_PATH="${LOG_DIR}/codex-${GUEST_REPO_NAME}.log"
-PID_PATH="${LOG_DIR}/codex-${GUEST_REPO_NAME}.pid"
-STATE_PATH="${LOG_DIR}/codex-${GUEST_REPO_NAME}.state"
+LOG_PATH="${LOG_DIR}/agent-${GUEST_REPO_NAME}.log"
+PID_PATH="${LOG_DIR}/agent-${GUEST_REPO_NAME}.pid"
+STATE_PATH="${LOG_DIR}/agent-${GUEST_REPO_NAME}.state"
 INITIAL_PROMPT="You have been issued the task described in ${TARGET_DIR}/AGENT_TASK.yaml. Read ${HOME}/AGENTS.md and ${TARGET_DIR}/AGENT_TASK.yaml before you begin. The repository is located at ${TARGET_DIR}. Do not ask for feedback or clarifications, but work until the task is completed or until you determine that it is impossible to complete."
 if [[ "${BOOTSTRAP_DOTNET:-0}" == "1" && "${BOOTSTRAP_NUGET:-0}" == "1" ]]; then
   INITIAL_PROMPT="${INITIAL_PROMPT} When restore is needed, use 'dotnet restore --configfile ~/.nuget/NuGet/NuGet.Config'. For build and test, prefer '--no-restore'."
@@ -740,8 +740,8 @@ echo "  frontend deps: $([[ ${BOOTSTRAP_FRONTEND_DEPS} -eq 1 ]] && echo enabled 
 echo "  push:    git -C /home/${VM_USER}/${GUEST_REPO_NAME} push-agent"
 if (( START_AGENT )); then
   echo "  agent:   started"
-  echo "  log:     /home/${VM_USER}/.agent-sandbox/codex-${GUEST_REPO_NAME}.log"
-  echo "  pid:     /home/${VM_USER}/.agent-sandbox/codex-${GUEST_REPO_NAME}.pid"
+  echo "  log:     /home/${VM_USER}/.agent-sandbox/agent-${GUEST_REPO_NAME}.log"
+  echo "  pid:     /home/${VM_USER}/.agent-sandbox/agent-${GUEST_REPO_NAME}.pid"
 else
   echo "  agent:   not started (--dry-run)"
 fi
