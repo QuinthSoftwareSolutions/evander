@@ -23,7 +23,7 @@ Install these packages on the Ubuntu host before using the scripts:
 6. Download the Ubuntu cloud image with `sudo ./scripts/create_base_vm.sh`.
 7. Create a session manifest with `agent-sandbox-cli create-session`.
 8. Launch a VM with `sudo ./scripts/launch_agent_vm.sh`.
-9. Install the Codex binary into the guest with `./scripts/bootstrap_codex_vm.sh <vm-name>`.
+9. Optionally bootstrap a provider runtime in the guest (for Codex, use `./scripts/bootstrap_codex_vm.sh <vm-name>`).
 10. Optionally install the host `.NET` SDK into the guest with `./scripts/bootstrap_dotnet_vm.sh <vm-name>`.
 11. Optionally prewarm the shared host NuGet cache with `./scripts/prewarm_nuget_cache.sh <path> [more paths...]`.
 12. Optionally install NuGet relay sources into the guest with `./scripts/bootstrap_nuget_vm.sh <vm-name>`.
@@ -56,14 +56,18 @@ gateway/relay endpoint reachability, and active/expired session summary.
 - After boot, find the guest IP with `virsh domifaddr <vm-name>` and connect with `ssh agent@<vm-ip>`.
 - To list all currently running VMs with live guest agent status from the host, run `agent-sandbox-cli list-vms`.
 
-## VM Codex Configuration
+## VM Agent Runtime Baseline
 
 - Cloud-init writes provider-neutral baseline config files: `/etc/agent-sandbox/session.env` and `/home/agent/.agent/config.env`.
 - Cloud-init also appends a shell profile hook that loads `/etc/agent-sandbox/session.env` and exports `OPENAI_API_KEY=relay-placeholder` if no key is already set.
+- Generic orchestration status is provider-neutral and read from `/home/agent/.agent-sandbox/agent-*.state`, with companion `agent-*.pid` and `agent-*.log` files.
+- New VMs pick this up automatically; existing VMs need to be recreated if they predate baseline config changes.
+
+### Codex provider bootstrap
+
 - `./scripts/bootstrap_codex_vm.sh <vm-name>` copies the vendored Linux Codex binary from the host into `~/bin/codex` for the guest user and verifies Codex.
 - The bootstrap script writes `~/.codex/config.toml` with the relay-aware configuration, `model = "gpt-5.4"`, `model_reasoning_effort = "high"`, and `personality = "pragmatic"`, preferring explicit `LLM_BASE_URL` and otherwise reading `AGENT_SANDBOX_LLM_BASE_URL` from `~/.agent/config.env`; it then appends the placeholder-key shell hook plus `~/bin` PATH entry to both `~/.profile` and `~/.bashrc`.
 - The bootstrap script repairs `/home/agent` ownership first, so it also works against VMs created before the home directory ownership fix.
-- New VMs pick this up automatically; existing VMs need to be recreated.
 
 ## VM Playwright Bootstrap
 
@@ -523,12 +527,12 @@ hard-coded:
 - clone URL SSH alias:
   - `AGENT_SANDBOX_GIT_SSH_ALIAS` (default `agent-sandbox-git-host`)
 
-That launches `vm-14084`, bootstraps Codex plus any requested optional toolchains, and
+That launches `vm-14084`, bootstraps provider runtime tooling plus any requested optional toolchains, and
 configures the issue-numbered Git mirror and guest SSH path. It also clones the mirrored repo into
 the guest user's home directory using the source repo basename. The cloned repo gets a
 `git push-agent` alias, the guest home gets a short `AGENTS.md` note describing the expected
 push pattern, the issue YAML is copied into the repo root as `AGENT_TASK.yaml`, and a background
-Codex run starts in the guest by default. The guest-side Codex PID and log live under
+agent run starts in the guest by default. The guest-side agent PID, state, and log live under
 `/home/agent/.agent-sandbox/`. Use `--no-start-agent` with `agent-sandbox-cli create-issue-vm`
 or `--dry-run` with `setup_issue_vm.sh` if you want the VM prepared without starting the agent
 process. The helper still accepts a raw issue number as the first argument for the older
@@ -551,8 +555,8 @@ uses the resolved local checkout automatically. For remote repo sources, pass
 `--frontend-host-checkout` so the helper can snapshot dependencies from a host checkout and
 restore them into the matching relative paths inside the guest clone.
 
-After the initial guest `codex exec` run exits, setup triggers one
-`codex exec resume --last` verification pass. Customize that verification
+After the initial guest provider command run exits, setup triggers one
+provider-specific verification pass. Customize that verification
 prompt with `AGENT_SANDBOX_CODEX_POST_EXEC_VERIFICATION_PROMPT` (for example
 in `config/git-server.env`) when you need different checklist wording.
 
