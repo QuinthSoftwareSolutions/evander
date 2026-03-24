@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -147,6 +148,55 @@ def test_ado_mapping_thread_edge_cases() -> None:
     assert envelope.in_reply_to is None
     assert envelope.file_path == "/src/app.py"
     assert envelope.line == 12
+
+
+def test_github_adapter_sends_auth_headers_when_token_configured() -> None:
+    adapter = GitHubFeedbackAdapter(token="gh-test-token")
+    captured_headers: list[dict[str, str] | None] = []
+
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> list[dict[str, object]]:
+            return []
+
+    class FakeClient:
+        def get(self, *args: object, **kwargs: object) -> FakeResponse:
+            captured_headers.append(kwargs.get("headers"))
+            return FakeResponse()
+
+    result = adapter.poll(client=FakeClient(), repo="org/repo", pr_id="101", cursor=None)
+
+    assert result.feedback == []
+    assert captured_headers
+    assert all(headers is not None for headers in captured_headers)
+    assert all(headers["Authorization"] == "Bearer gh-test-token" for headers in captured_headers if headers)
+    assert all(headers["Accept"] == "application/vnd.github+json" for headers in captured_headers if headers)
+
+
+def test_ado_adapter_sends_basic_auth_header_when_pat_configured() -> None:
+    adapter = AzureDevOpsFeedbackAdapter("https://dev.azure.com/example", "proj", pat="ado-test-pat")
+    captured_headers: list[dict[str, str] | None] = []
+
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return {"value": []}
+
+    class FakeClient:
+        def get(self, *args: object, **kwargs: object) -> FakeResponse:
+            captured_headers.append(kwargs.get("headers"))
+            return FakeResponse()
+
+    result = adapter.poll(client=FakeClient(), repo="repo-1", pr_id="101", cursor=None)
+
+    assert result.feedback == []
+    assert captured_headers == [
+        {"Authorization": f"Basic {base64.b64encode(b':ado-test-pat').decode('ascii')}"}
+    ]
 
 
 def test_worker_logs_audit_for_new_feedback(tmp_path: Path) -> None:

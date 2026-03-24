@@ -561,11 +561,14 @@ def _save_cooldown_state(path: Path, state: dict[str, float]) -> None:
 
 def build_host_heartbeat_worker(config: GatewayConfig) -> HostHeartbeatWorker:
     runtime = build_runtime(config)
+    github_token = os.environ.get(config.github_token_env, "").strip()
+    azure_pat = os.environ.get(config.azure_devops_pat_env, "").strip()
     adapters: dict[str, FeedbackProviderAdapter] = {
-        "github": GitHubFeedbackAdapter(),
+        "github": GitHubFeedbackAdapter(token=github_token),
         "azure_devops": AzureDevOpsFeedbackAdapter(
             organization_url=config.azure_devops_organization_url,
             project=config.azure_devops_project,
+            pat=azure_pat,
         ),
     }
     feedback_worker = build_pr_feedback_worker(config.runtime_dir, adapters=adapters)

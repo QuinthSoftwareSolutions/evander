@@ -5,6 +5,7 @@ import inspect
 import logging
 import os
 import re
+import shutil
 import subprocess
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
@@ -225,6 +226,10 @@ def _default_issue_session_id(issue_number: str) -> str:
     return f"issue-{issue_number}-{datetime.now(UTC):%Y%m%dT%H%M%SZ}-{os.getpid()}"
 
 
+def _issue_session_id_prefix(issue_number: str) -> str:
+    return f"issue-{issue_number}-"
+
+
 def _resolve_vm_name(target: str) -> str:
     normalized = target.strip()
     if normalized.isdigit():
@@ -266,6 +271,295 @@ def _resolve_issue_number(issue_input: str) -> str:
     if candidate.is_file():
         return _read_issue_number_from_yaml(candidate)
     return issue_input
+
+
+def _extract_issue_number(value: str | None) -> str | None:
+    if not value:
+        return None
+    normalized = value.strip()
+    if normalized.isdigit():
+        return normalized
+    if normalized.startswith("vm-") and normalized[3:].isdigit():
+        return normalized[3:]
+    match = re.match(r"^issue-([0-9]+)(?:-|$)", normalized)
+    if match:
+        return match.group(1)
+    return None
+
+
+def _load_optional_env_file(path: Path) -> dict[str, str]:
+    if not path.exists():
+        return {}
+    values: dict[str, str] = {}
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if not key:
+            continue
+        values[key] = value.strip().strip('"').strip("'")
+    return values
+
+
+def _resolve_git_root(root_dir: Path) -> Path:
+    env_value = os.environ.get("AGENT_SANDBOX_GIT_ROOT", "").strip()
+    if env_value:
+        return Path(env_value)
+    env_file_values = _load_optional_env_file(root_dir / "config" / "git-server.env")
+    configured = env_file_values.get("AGENT_SANDBOX_GIT_ROOT", "").strip()
+    if configured:
+        return Path(configured)
+    return root_dir / "git-remotes"
+
+
+def _matching_issue_session_ids(issue_number: str, sessions: dict[str, SessionManifest]) -> set[str]:
+    vm_name = f"vm-{issue_number}"
+    prefix = _issue_session_id_prefix(issue_number)
+    matches: set[str] = set()
+    for session_id, session in sessions.items():
+        if session.vm_id == vm_name or session_id == issue_number or session_id.startswith(prefix):
+            matches.add(session_id)
+    return matches
+
+
+def _session_streams_for_session_ids(
+    sessions: dict[str, SessionManifest],
+    *,
+    session_ids: set[str],
+) -> set[tuple[str, str, str]]:
+    streams: set[tuple[str, str, str]] = set()
+    for session_id in session_ids:
+        session = sessions.get(session_id)
+        if session is None:
+            continue
+        raw_streams = session.metadata.get("pr_feedback_streams")
+        if not isinstance(raw_streams, list):
+            continue
+        for raw_stream in raw_streams:
+            if not isinstance(raw_stream, dict):
+                continue
+            provider = str(raw_stream.get("provider", "")).strip()
+            repo = str(raw_stream.get("repo", "")).strip()
+            pr_id = str(raw_stream.get("pr_id", "")).strip()
+            if provider and repo and pr_id:
+                streams.add((provider, repo, pr_id))
+    return streams
+
+
+def _prune_pr_map(path: Path, *, session_ids: set[str]) -> tuple[int, set[tuple[str, str, str]]]:
+    if not path.exists():
+        return 0, set()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return 0, set()
+    entries = payload.get("entries")
+    if not isinstance(entries, dict):
+        return 0, set()
+
+    removed_streams: set[tuple[str, str, str]] = set()
+    kept_entries: dict[str, object] = {}
+    removed_count = 0
+    for entry_key, raw_entry in entries.items():
+        if not isinstance(raw_entry, dict):
+            kept_entries[entry_key] = raw_entry
+            continue
+        session_id = str(raw_entry.get("session_id", "")).strip()
+        if session_id in session_ids:
+            provider = str(raw_entry.get("provider", "")).strip()
+            repo = str(raw_entry.get("repo", "")).strip()
+            pr_id = str(raw_entry.get("pr_id", "")).strip()
+            if provider and repo and pr_id:
+                removed_streams.add((provider, repo, pr_id))
+            removed_count += 1
+            continue
+        kept_entries[entry_key] = raw_entry
+
+    if removed_count:
+        payload["entries"] = kept_entries
+        path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    return removed_count, removed_streams
+
+
+def _prune_pr_map_for_issue_numbers(
+    path: Path,
+    *,
+    issue_numbers: set[str],
+) -> tuple[int, set[tuple[str, str, str]]]:
+    if not path.exists() or not issue_numbers:
+        return 0, set()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return 0, set()
+    entries = payload.get("entries")
+    if not isinstance(entries, dict):
+        return 0, set()
+
+    removed_streams: set[tuple[str, str, str]] = set()
+    kept_entries: dict[str, object] = {}
+    removed_count = 0
+    for entry_key, raw_entry in entries.items():
+        if not isinstance(raw_entry, dict):
+            kept_entries[entry_key] = raw_entry
+            continue
+        session_issue_number = _extract_issue_number(str(raw_entry.get("session_id", "")).strip())
+        if session_issue_number in issue_numbers:
+            provider = str(raw_entry.get("provider", "")).strip()
+            repo = str(raw_entry.get("repo", "")).strip()
+            pr_id = str(raw_entry.get("pr_id", "")).strip()
+            if provider and repo and pr_id:
+                removed_streams.add((provider, repo, pr_id))
+            removed_count += 1
+            continue
+        kept_entries[entry_key] = raw_entry
+
+    if removed_count:
+        payload["entries"] = kept_entries
+        path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    return removed_count, removed_streams
+
+
+def _prune_pr_feedback_store(path: Path, *, streams: set[tuple[str, str, str]]) -> tuple[int, int]:
+    if not path.exists() or not streams:
+        return 0, 0
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return 0, 0
+
+    removed_cursor_count = 0
+    cursors = payload.get("cursors")
+    if isinstance(cursors, dict):
+        for provider, repo, pr_id in streams:
+            stream_key = f"{provider}:{repo}:{pr_id}"
+            if stream_key in cursors:
+                cursors.pop(stream_key, None)
+                removed_cursor_count += 1
+
+    removed_feedback_count = 0
+    feedback = payload.get("feedback")
+    if isinstance(feedback, dict):
+        kept_feedback: dict[str, object] = {}
+        for feedback_id, raw_feedback in feedback.items():
+            if not isinstance(raw_feedback, dict):
+                kept_feedback[feedback_id] = raw_feedback
+                continue
+            key = (
+                str(raw_feedback.get("provider", "")).strip(),
+                str(raw_feedback.get("repo", "")).strip(),
+                str(raw_feedback.get("pr_id", "")).strip(),
+            )
+            if key in streams:
+                removed_feedback_count += 1
+                continue
+            kept_feedback[feedback_id] = raw_feedback
+        payload["feedback"] = kept_feedback
+
+    if removed_cursor_count or removed_feedback_count:
+        path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    return removed_cursor_count, removed_feedback_count
+
+
+def _prune_approvals_for_sessions(runtime: object, *, session_ids: set[str]) -> int:
+    approvals_store = getattr(runtime, "approvals", None)
+    if approvals_store is None or not session_ids:
+        return 0
+    approvals = approvals_store.read_all()
+    removed_count = 0
+    remaining = {}
+    for request_id, approval in approvals.items():
+        if approval.session_id in session_ids:
+            removed_count += 1
+            continue
+        remaining[request_id] = approval
+    if removed_count:
+        approvals_store.write_all(remaining)
+    return removed_count
+
+
+def _remove_issue_bare_repo(issue_number: str, *, root_dir: Path, runtime_dir: Path) -> tuple[bool, str | None]:
+    git_root = _resolve_git_root(root_dir)
+    bare_repo_path = git_root / f"{issue_number}_repo.git"
+    hook_log_paths = [
+        root_dir / "runtime" / "hook-logs" / f"{bare_repo_path.name}.post-receive.log",
+        runtime_dir / "hook-logs" / f"{bare_repo_path.name}.post-receive.log",
+    ]
+    trusted_repo_path: str | None = None
+    if bare_repo_path.exists():
+        try:
+            config_result = subprocess.run(
+                ["git", f"--git-dir={bare_repo_path}", "config", "--get", "agent-sandbox.trustedRepoPath"],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        except OSError:
+            config_result = None
+        if config_result is not None and config_result.returncode == 0:
+            trusted_repo_path = (config_result.stdout or "").strip() or None
+        shutil.rmtree(bare_repo_path, ignore_errors=True)
+    for hook_log_path in hook_log_paths:
+        if hook_log_path.exists():
+            hook_log_path.unlink()
+    if trusted_repo_path:
+        mirror_remote_name = f"{issue_number}-mirror"
+        try:
+            subprocess.run(
+                ["git", "-C", trusted_repo_path, "remote", "remove", mirror_remote_name],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        except OSError:
+            pass
+    return bare_repo_path.exists() is False, str(bare_repo_path) if bare_repo_path.exists() else str(bare_repo_path)
+
+
+def _list_existing_issue_vm_names() -> set[str]:
+    completed = subprocess.run(
+        ["virsh", "list", "--all", "--name"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0:
+        raise typer.Exit(code=completed.returncode or 1)
+    return {line.strip() for line in (completed.stdout or "").splitlines() if line.strip()}
+
+
+def _issue_numbers_from_pr_map(path: Path) -> set[str]:
+    if not path.exists():
+        return set()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return set()
+    entries = payload.get("entries")
+    if not isinstance(entries, dict):
+        return set()
+    issue_numbers: set[str] = set()
+    for raw_entry in entries.values():
+        if not isinstance(raw_entry, dict):
+            continue
+        issue_number = _extract_issue_number(str(raw_entry.get("session_id", "")).strip())
+        if issue_number is not None:
+            issue_numbers.add(issue_number)
+    return issue_numbers
+
+
+def _issue_numbers_from_bare_repos(root_dir: Path) -> set[str]:
+    git_root = _resolve_git_root(root_dir)
+    if not git_root.exists():
+        return set()
+    issue_numbers: set[str] = set()
+    for bare_repo in git_root.glob("*_repo.git"):
+        issue_number = _extract_issue_number(bare_repo.name.removesuffix("_repo.git"))
+        if issue_number is not None:
+            issue_numbers.add(issue_number)
+    return issue_numbers
 
 
 def _parse_pr_feedback_streams(values: list[str]) -> list[dict[str, str]]:
@@ -620,6 +914,139 @@ def prune_sessions(
 
     mode = "expired" if expired_only else "all"
     typer.echo(f"Pruned {len(keys_to_delete)} {mode} session(s)")
+
+
+@app.command("destroy-issue-vm")
+def destroy_issue_vm(
+    target: str,
+    config: ConfigOption = Path("config/gateway.yaml"),
+) -> None:
+    issue_number = _resolve_issue_number_or_raise(target)
+    vm_name = f"vm-{issue_number}"
+    cfg = load_config(config)
+    runtime = build_runtime(cfg)
+
+    sessions = runtime.sessions.read_all()
+    session_ids = _matching_issue_session_ids(issue_number, sessions)
+    if session_ids:
+        remaining_sessions = {
+            session_id: manifest for session_id, manifest in sessions.items() if session_id not in session_ids
+        }
+        runtime.sessions.write_all(remaining_sessions)
+    removed_approvals = _prune_approvals_for_sessions(runtime, session_ids=session_ids)
+
+    removed_pr_map_entries, removed_streams = _prune_pr_map(cfg.pr_map_path, session_ids=session_ids)
+    removed_cursors, removed_feedback = _prune_pr_feedback_store(
+        cfg.runtime_dir / "pr-feedback-store.json",
+        streams=removed_streams,
+    )
+
+    root_dir = Path(__file__).resolve().parents[2]
+    bare_repo_removed, bare_repo_path = _remove_issue_bare_repo(
+        issue_number,
+        root_dir=root_dir,
+        runtime_dir=cfg.runtime_dir,
+    )
+
+    destroy_script = root_dir / "scripts" / "destroy_agent_vm.sh"
+    _run_subprocess_compat([str(destroy_script), vm_name], check=True, capture_output=False, text=False)
+
+    typer.echo(
+        f"Destroyed issue VM {vm_name}; "
+        f"removed_sessions={len(session_ids)} "
+        f"removed_pr_map_entries={removed_pr_map_entries} "
+        f"removed_approvals={removed_approvals} "
+        f"removed_feedback_cursors={removed_cursors} "
+        f"removed_feedback_items={removed_feedback} "
+        f"bare_repo_removed={bare_repo_removed} "
+        f"bare_repo_path={bare_repo_path}"
+    )
+
+
+@app.command("prune-orphaned-issue-state")
+def prune_orphaned_issue_state(
+    config: ConfigOption = Path("config/gateway.yaml"),
+) -> None:
+    cfg = load_config(config)
+    runtime = build_runtime(cfg)
+    live_vm_names = _list_existing_issue_vm_names()
+    live_issue_numbers = {
+        issue_number
+        for issue_number in (_extract_issue_number(vm_name) for vm_name in live_vm_names)
+        if issue_number is not None
+    }
+    root_dir = Path(__file__).resolve().parents[2]
+
+    sessions = runtime.sessions.read_all()
+    orphan_session_ids = {
+        session_id
+        for session_id, session in sessions.items()
+        if (
+            (issue_number := (_extract_issue_number(session.vm_id) or _extract_issue_number(session_id))) is not None
+            and f"vm-{issue_number}" not in live_vm_names
+        )
+    }
+    orphan_issue_numbers = {
+        issue_number
+        for issue_number in (
+            (_extract_issue_number(sessions[session_id].vm_id) or _extract_issue_number(session_id))
+            for session_id in orphan_session_ids
+        )
+        if issue_number is not None
+    }
+    orphan_issue_numbers.update(
+        issue_number
+        for issue_number in _issue_numbers_from_pr_map(cfg.pr_map_path)
+        if issue_number not in live_issue_numbers
+    )
+    orphan_issue_numbers.update(
+        issue_number
+        for issue_number in _issue_numbers_from_bare_repos(root_dir)
+        if issue_number not in live_issue_numbers
+    )
+
+    session_streams = _session_streams_for_session_ids(sessions, session_ids=orphan_session_ids)
+    if orphan_session_ids:
+        runtime.sessions.write_all(
+            {session_id: manifest for session_id, manifest in sessions.items() if session_id not in orphan_session_ids}
+        )
+    removed_approvals = _prune_approvals_for_sessions(runtime, session_ids=orphan_session_ids)
+
+    removed_pr_map_entries_a, removed_pr_map_streams_a = _prune_pr_map(
+        cfg.pr_map_path,
+        session_ids=orphan_session_ids,
+    )
+    removed_pr_map_entries_b, removed_pr_map_streams_b = _prune_pr_map_for_issue_numbers(
+        cfg.pr_map_path,
+        issue_numbers=orphan_issue_numbers,
+    )
+    removed_streams = session_streams | removed_pr_map_streams_a | removed_pr_map_streams_b
+    removed_cursors, removed_feedback = _prune_pr_feedback_store(
+        cfg.runtime_dir / "pr-feedback-store.json",
+        streams=removed_streams,
+    )
+
+    removed_bare_repo_count = 0
+    for issue_number in sorted(orphan_issue_numbers):
+        if issue_number in live_issue_numbers:
+            continue
+        bare_repo_removed, _ = _remove_issue_bare_repo(
+            issue_number,
+            root_dir=root_dir,
+            runtime_dir=cfg.runtime_dir,
+        )
+        if bare_repo_removed:
+            removed_bare_repo_count += 1
+
+    typer.echo(
+        f"Pruned orphaned issue state "
+        f"removed_sessions={len(orphan_session_ids)} "
+        f"removed_approvals={removed_approvals} "
+        f"removed_pr_map_entries={removed_pr_map_entries_a + removed_pr_map_entries_b} "
+        f"removed_feedback_cursors={removed_cursors} "
+        f"removed_feedback_items={removed_feedback} "
+        f"removed_bare_repos={removed_bare_repo_count}"
+    )
 
 
 @app.command("list-vms")

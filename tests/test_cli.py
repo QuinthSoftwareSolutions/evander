@@ -487,6 +487,440 @@ def test_prune_sessions_all_removes_every_session(tmp_path: Path) -> None:
     assert sessions == {}
 
 
+def test_destroy_issue_vm_cleans_issue_state_and_bare_repo(tmp_path: Path, monkeypatch) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+    runtime_dir = tmp_path / "runtime"
+    git_root = tmp_path / "git-remotes"
+    bare_repo = git_root / "1234_repo.git"
+    trusted_repo = tmp_path / "trusted-repo"
+    hook_log = runtime_dir / "hook-logs" / "1234_repo.git.post-receive.log"
+    captured_cmds: list[list[str]] = []
+
+    init_result = runner.invoke(app, ["init-state", "--config", str(config_path)])
+    assert init_result.exit_code == 0
+
+    sessions_path = runtime_dir / "sessions.json"
+    sessions_path.write_text(
+        json.dumps(
+            {
+                "issue-1234-a": {
+                    "session_id": "issue-1234-a",
+                    "vm_id": "vm-1234",
+                    "allowed_tools": ["approval_check"],
+                    "discord_channel_allowlist": [],
+                    "email_folder_allowlist": [],
+                    "email_mailbox_allowlist": [],
+                    "email_folder_allowlist_by_mailbox": {},
+                    "email_draft_recipient_allowlist": [],
+                    "email_draft_domain_allowlist": [],
+                    "email_send_enabled": False,
+                    "quotas": {},
+                    "expires_at": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
+                    "created_at": datetime.now(UTC).isoformat(),
+                    "metadata": {},
+                },
+                "issue-1234-b": {
+                    "session_id": "issue-1234-b",
+                    "vm_id": "vm-1234",
+                    "allowed_tools": ["approval_check"],
+                    "discord_channel_allowlist": [],
+                    "email_folder_allowlist": [],
+                    "email_mailbox_allowlist": [],
+                    "email_folder_allowlist_by_mailbox": {},
+                    "email_draft_recipient_allowlist": [],
+                    "email_draft_domain_allowlist": [],
+                    "email_send_enabled": False,
+                    "quotas": {},
+                    "expires_at": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
+                    "created_at": datetime.now(UTC).isoformat(),
+                    "metadata": {},
+                },
+                "keep-me": {
+                    "session_id": "keep-me",
+                    "vm_id": "vm-9999",
+                    "allowed_tools": ["approval_check"],
+                    "discord_channel_allowlist": [],
+                    "email_folder_allowlist": [],
+                    "email_mailbox_allowlist": [],
+                    "email_folder_allowlist_by_mailbox": {},
+                    "email_draft_recipient_allowlist": [],
+                    "email_draft_domain_allowlist": [],
+                    "email_send_enabled": False,
+                    "quotas": {},
+                    "expires_at": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
+                    "created_at": datetime.now(UTC).isoformat(),
+                    "metadata": {},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    (runtime_dir / "approvals.json").write_text(
+        json.dumps(
+            {
+                "approval-1": {
+                    "request_id": "approval-1",
+                    "session_id": "issue-1234-a",
+                    "action_type": "send",
+                    "payload_digest": "abc",
+                    "human_summary": "test",
+                    "status": "pending",
+                    "created_at": datetime.now(UTC).isoformat(),
+                    "expires_at": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
+                },
+                "approval-2": {
+                    "request_id": "approval-2",
+                    "session_id": "keep-me",
+                    "action_type": "send",
+                    "payload_digest": "def",
+                    "human_summary": "keep",
+                    "status": "pending",
+                    "created_at": datetime.now(UTC).isoformat(),
+                    "expires_at": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    (runtime_dir / "pr-map.json").write_text(
+        json.dumps(
+            {
+                "entries": {
+                    "github:org/repo:1": {
+                        "provider": "github",
+                        "repo": "org/repo",
+                        "pr_id": "1",
+                        "session_id": "issue-1234-a",
+                    },
+                    "github:org/repo:2": {
+                        "provider": "github",
+                        "repo": "org/repo",
+                        "pr_id": "2",
+                        "session_id": "keep-me",
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    (runtime_dir / "pr-feedback-store.json").write_text(
+        json.dumps(
+            {
+                "cursors": {
+                    "github:org/repo:1": "2026-03-24T00:00:00Z",
+                    "github:org/repo:2": "2026-03-24T00:00:00Z",
+                },
+                "feedback": {
+                    "github:issue_comment:1": {
+                        "feedback_id": "github:issue_comment:1",
+                        "provider": "github",
+                        "repo": "org/repo",
+                        "pr_id": "1",
+                        "author": "octocat",
+                        "body": "cleanup me",
+                        "created_at": "2026-03-24T00:00:00Z",
+                    },
+                    "github:issue_comment:2": {
+                        "feedback_id": "github:issue_comment:2",
+                        "provider": "github",
+                        "repo": "org/repo",
+                        "pr_id": "2",
+                        "author": "octocat",
+                        "body": "keep me",
+                        "created_at": "2026-03-24T00:00:00Z",
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    bare_repo.mkdir(parents=True)
+    trusted_repo.mkdir(parents=True)
+    hook_log.parent.mkdir(parents=True, exist_ok=True)
+    hook_log.write_text("hook log", encoding="utf-8")
+
+    monkeypatch.setenv("AGENT_SANDBOX_GIT_ROOT", str(git_root))
+
+    def fake_run(
+        cmd: list[str],
+        check: bool,
+        capture_output: bool | None = None,
+        text: bool | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        captured_cmds.append(cmd)
+        if len(cmd) >= 4 and cmd[0] == "git" and cmd[2] == "config":
+            return subprocess.CompletedProcess(cmd, 0, stdout=str(trusted_repo), stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("agent_sandbox.cli.subprocess.run", fake_run)
+
+    result = runner.invoke(app, ["destroy-issue-vm", "--config", str(config_path), "1234"])
+
+    assert result.exit_code == 0
+    assert "Destroyed issue VM vm-1234" in result.stdout
+    assert not bare_repo.exists()
+    assert not hook_log.exists()
+
+    sessions = json.loads(sessions_path.read_text(encoding="utf-8"))
+    assert set(sessions) == {"keep-me"}
+
+    approvals = json.loads((runtime_dir / "approvals.json").read_text(encoding="utf-8"))
+    assert set(approvals) == {"approval-2"}
+
+    pr_map = json.loads((runtime_dir / "pr-map.json").read_text(encoding="utf-8"))
+    assert set(pr_map["entries"]) == {"github:org/repo:2"}
+
+    feedback_store = json.loads((runtime_dir / "pr-feedback-store.json").read_text(encoding="utf-8"))
+    assert set(feedback_store["cursors"]) == {"github:org/repo:2"}
+    assert set(feedback_store["feedback"]) == {"github:issue_comment:2"}
+
+    assert any(cmd[0].endswith("/scripts/destroy_agent_vm.sh") and cmd[1] == "vm-1234" for cmd in captured_cmds)
+    assert any(cmd[:5] == ["git", "-C", str(trusted_repo), "remote", "remove"] and cmd[5] == "1234-mirror" for cmd in captured_cmds)
+
+
+def test_destroy_issue_vm_accepts_vm_name_target(tmp_path: Path, monkeypatch) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+    captured_cmd: list[str] = []
+
+    init_result = runner.invoke(app, ["init-state", "--config", str(config_path)])
+    assert init_result.exit_code == 0
+
+    def fake_run(
+        cmd: list[str],
+        check: bool,
+        capture_output: bool | None = None,
+        text: bool | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        nonlocal captured_cmd
+        captured_cmd = cmd
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("agent_sandbox.cli.subprocess.run", fake_run)
+
+    result = runner.invoke(app, ["destroy-issue-vm", "--config", str(config_path), "vm-1234"])
+
+    assert result.exit_code == 0
+    assert captured_cmd[0].endswith("/scripts/destroy_agent_vm.sh")
+    assert captured_cmd[1:] == ["vm-1234"]
+
+
+def test_prune_orphaned_issue_state_removes_state_for_missing_issue_vms(tmp_path: Path, monkeypatch) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+    runtime_dir = tmp_path / "runtime"
+    git_root = tmp_path / "git-remotes"
+    trusted_repo = tmp_path / "trusted-repo"
+    captured_cmds: list[list[str]] = []
+
+    init_result = runner.invoke(app, ["init-state", "--config", str(config_path)])
+    assert init_result.exit_code == 0
+
+    (runtime_dir / "sessions.json").write_text(
+        json.dumps(
+            {
+                "issue-12305-a": {
+                    "session_id": "issue-12305-a",
+                    "vm_id": "vm-12305",
+                    "allowed_tools": ["approval_check"],
+                    "discord_channel_allowlist": [],
+                    "email_folder_allowlist": [],
+                    "email_mailbox_allowlist": [],
+                    "email_folder_allowlist_by_mailbox": {},
+                    "email_draft_recipient_allowlist": [],
+                    "email_draft_domain_allowlist": [],
+                    "email_send_enabled": False,
+                    "quotas": {},
+                    "expires_at": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
+                    "created_at": datetime.now(UTC).isoformat(),
+                    "metadata": {
+                        "pr_feedback_streams": [
+                            {"provider": "github", "repo": "org/repo", "pr_id": "1"}
+                        ]
+                    },
+                },
+                "issue-14084-a": {
+                    "session_id": "issue-14084-a",
+                    "vm_id": "vm-14084",
+                    "allowed_tools": ["approval_check"],
+                    "discord_channel_allowlist": [],
+                    "email_folder_allowlist": [],
+                    "email_mailbox_allowlist": [],
+                    "email_folder_allowlist_by_mailbox": {},
+                    "email_draft_recipient_allowlist": [],
+                    "email_draft_domain_allowlist": [],
+                    "email_send_enabled": False,
+                    "quotas": {},
+                    "expires_at": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
+                    "created_at": datetime.now(UTC).isoformat(),
+                    "metadata": {
+                        "pr_feedback_streams": [
+                            {"provider": "github", "repo": "org/live", "pr_id": "2"}
+                        ]
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    (runtime_dir / "approvals.json").write_text(
+        json.dumps(
+            {
+                "approval-stale": {
+                    "request_id": "approval-stale",
+                    "session_id": "issue-12305-a",
+                    "action_type": "send",
+                    "payload_digest": "abc",
+                    "human_summary": "stale",
+                    "status": "pending",
+                    "created_at": datetime.now(UTC).isoformat(),
+                    "expires_at": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
+                },
+                "approval-live": {
+                    "request_id": "approval-live",
+                    "session_id": "issue-14084-a",
+                    "action_type": "send",
+                    "payload_digest": "def",
+                    "human_summary": "live",
+                    "status": "pending",
+                    "created_at": datetime.now(UTC).isoformat(),
+                    "expires_at": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    (runtime_dir / "pr-map.json").write_text(
+        json.dumps(
+            {
+                "entries": {
+                    "github:org/repo:1": {
+                        "provider": "github",
+                        "repo": "org/repo",
+                        "pr_id": "1",
+                        "session_id": "issue-12305-a",
+                    },
+                    "azure_devops:org/repo:9": {
+                        "provider": "azure_devops",
+                        "repo": "org/repo",
+                        "pr_id": "9",
+                        "session_id": "issue-13301-xyz",
+                    },
+                    "github:org/live:2": {
+                        "provider": "github",
+                        "repo": "org/live",
+                        "pr_id": "2",
+                        "session_id": "issue-14084-a",
+                    },
+                    "github:org/manual:3": {
+                        "provider": "github",
+                        "repo": "org/manual",
+                        "pr_id": "3",
+                        "session_id": "manual",
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    (runtime_dir / "pr-feedback-store.json").write_text(
+        json.dumps(
+            {
+                "cursors": {
+                    "github:org/repo:1": "2026-03-24T00:00:00Z",
+                    "azure_devops:org/repo:9": "2026-03-24T00:00:00Z",
+                    "github:org/live:2": "2026-03-24T00:00:00Z",
+                },
+                "feedback": {
+                    "github:issue_comment:1": {
+                        "feedback_id": "github:issue_comment:1",
+                        "provider": "github",
+                        "repo": "org/repo",
+                        "pr_id": "1",
+                        "author": "octocat",
+                        "body": "stale",
+                        "created_at": "2026-03-24T00:00:00Z",
+                    },
+                    "azure_devops:thread_comment:9": {
+                        "feedback_id": "azure_devops:thread_comment:9",
+                        "provider": "azure_devops",
+                        "repo": "org/repo",
+                        "pr_id": "9",
+                        "author": "octocat",
+                        "body": "stale map",
+                        "created_at": "2026-03-24T00:00:00Z",
+                    },
+                    "github:issue_comment:2": {
+                        "feedback_id": "github:issue_comment:2",
+                        "provider": "github",
+                        "repo": "org/live",
+                        "pr_id": "2",
+                        "author": "octocat",
+                        "body": "live",
+                        "created_at": "2026-03-24T00:00:00Z",
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    stale_bare_repo = git_root / "12305_repo.git"
+    stale_bare_repo.mkdir(parents=True)
+    (git_root / "13301_repo.git").mkdir(parents=True)
+    (git_root / "14084_repo.git").mkdir(parents=True)
+    trusted_repo.mkdir(parents=True)
+    monkeypatch.setenv("AGENT_SANDBOX_GIT_ROOT", str(git_root))
+
+    def fake_run(
+        cmd: list[str],
+        check: bool,
+        capture_output: bool | None = None,
+        text: bool | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        captured_cmds.append(cmd)
+        if cmd[:4] == ["virsh", "list", "--all", "--name"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout="vm-14084\nvm-13928\n", stderr="")
+        if len(cmd) >= 4 and cmd[0] == "git" and cmd[2] == "config":
+            return subprocess.CompletedProcess(cmd, 0, stdout=str(trusted_repo), stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("agent_sandbox.cli.subprocess.run", fake_run)
+
+    result = runner.invoke(app, ["prune-orphaned-issue-state", "--config", str(config_path)])
+
+    assert result.exit_code == 0
+    assert "removed_sessions=1" in result.stdout
+    assert "removed_pr_map_entries=2" in result.stdout
+    assert "removed_bare_repos=2" in result.stdout
+
+    sessions = json.loads((runtime_dir / "sessions.json").read_text(encoding="utf-8"))
+    assert set(sessions) == {"issue-14084-a"}
+
+    approvals = json.loads((runtime_dir / "approvals.json").read_text(encoding="utf-8"))
+    assert set(approvals) == {"approval-live"}
+
+    pr_map = json.loads((runtime_dir / "pr-map.json").read_text(encoding="utf-8"))
+    assert set(pr_map["entries"]) == {"github:org/live:2", "github:org/manual:3"}
+
+    feedback_store = json.loads((runtime_dir / "pr-feedback-store.json").read_text(encoding="utf-8"))
+    assert set(feedback_store["cursors"]) == {"github:org/live:2"}
+    assert set(feedback_store["feedback"]) == {"github:issue_comment:2"}
+
+    assert not (git_root / "12305_repo.git").exists()
+    assert not (git_root / "13301_repo.git").exists()
+    assert (git_root / "14084_repo.git").exists()
+    assert any(cmd[:5] == ["git", "-C", str(trusted_repo), "remote", "remove"] and cmd[5] == "12305-mirror" for cmd in captured_cmds)
+
+
 def test_list_vms_invokes_script_with_selected_vm_user(tmp_path: Path, monkeypatch) -> None:
     config_path = write_config(tmp_path)
     runner = CliRunner()

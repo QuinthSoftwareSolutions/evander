@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import logging
 from dataclasses import dataclass
@@ -100,8 +101,17 @@ class FeedbackProviderAdapter(Protocol):
 class GitHubFeedbackAdapter:
     provider_name = "github"
 
-    def __init__(self, api_base_url: str = "https://api.github.com") -> None:
+    def __init__(self, api_base_url: str = "https://api.github.com", token: str | None = None) -> None:
         self.api_base_url = api_base_url.rstrip("/")
+        self.token = token.strip() if token else None
+
+    def _headers(self) -> dict[str, str]:
+        if not self.token:
+            return {}
+        return {
+            "Authorization": f"Bearer {self.token}",
+            "Accept": "application/vnd.github+json",
+        }
 
     def poll(
         self,
@@ -131,7 +141,7 @@ class GitHubFeedbackAdapter:
         params: dict[str, str] = {"sort": "updated", "direction": "asc", "per_page": "100"}
         if cursor:
             params["since"] = cursor
-        response = client.get(url, params=params)
+        response = client.get(url, params=params, headers=self._headers())
         response.raise_for_status()
         payload = response.json()
         return payload if isinstance(payload, list) else []
@@ -143,14 +153,14 @@ class GitHubFeedbackAdapter:
         params: dict[str, str] = {"sort": "updated", "direction": "asc", "per_page": "100"}
         if cursor:
             params["since"] = cursor
-        response = client.get(url, params=params)
+        response = client.get(url, params=params, headers=self._headers())
         response.raise_for_status()
         payload = response.json()
         return payload if isinstance(payload, list) else []
 
     def _get_reviews(self, client: httpx.Client, repo: str, pr_id: str) -> list[dict[str, Any]]:
         url = f"{self.api_base_url}/repos/{repo}/pulls/{pr_id}/reviews"
-        response = client.get(url, params={"per_page": "100"})
+        response = client.get(url, params={"per_page": "100"}, headers=self._headers())
         response.raise_for_status()
         payload = response.json()
         return payload if isinstance(payload, list) else []
@@ -240,9 +250,16 @@ class GitHubFeedbackAdapter:
 class AzureDevOpsFeedbackAdapter:
     provider_name = "azure_devops"
 
-    def __init__(self, organization_url: str, project: str) -> None:
+    def __init__(self, organization_url: str, project: str, pat: str | None = None) -> None:
         self.organization_url = organization_url.rstrip("/")
         self.project = project
+        self.pat = pat.strip() if pat else None
+
+    def _headers(self) -> dict[str, str]:
+        if not self.pat:
+            return {}
+        token = base64.b64encode(f":{self.pat}".encode("utf-8")).decode("ascii")
+        return {"Authorization": f"Basic {token}"}
 
     def poll(
         self,
@@ -256,7 +273,7 @@ class AzureDevOpsFeedbackAdapter:
             f"{self.organization_url}/{self.project}/_apis/git/repositories/{repo}/"
             f"pullRequests/{pr_id}/threads"
         )
-        response = client.get(url, params={"api-version": "7.1"})
+        response = client.get(url, params={"api-version": "7.1"}, headers=self._headers())
         response.raise_for_status()
         payload = response.json()
         threads = payload.get("value", []) if isinstance(payload, dict) else []
