@@ -277,6 +277,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self._active_workers: set[_ActionWorker] = set()
         self._vm_summaries = []
         self._issue_records = []
+        self._worker_summaries = []
         self.setWindowTitle("Agent Sandbox Admin")
         self.resize(1360, 820)
 
@@ -303,11 +304,24 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self.issue_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.issue_table.itemSelectionChanged.connect(self._on_issue_selection_changed)
 
+        self.worker_table = QTableWidget(0, 8)
+        self.worker_table.setHorizontalHeaderLabels(
+            ["Worker", "Unit", "State", "Substate", "Result", "PID", "Enabled", "Detail"]
+        )
+        self.worker_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.worker_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.worker_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.worker_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.worker_table.itemSelectionChanged.connect(self._on_worker_selection_changed)
+
         self.log_view = QTextEdit()
         self.log_view.setReadOnly(True)
         self.agent_log_view = QTextEdit()
         self.agent_log_view.setReadOnly(True)
         self.agent_log_view.setPlaceholderText("Select an issue VM to see its agent log.")
+        self.worker_log_view = QTextEdit()
+        self.worker_log_view.setReadOnly(True)
+        self.worker_log_view.setPlaceholderText("Select a background worker to see its logs.")
 
         vm_page = QWidget()
         vm_layout = QVBoxLayout(vm_page)
@@ -396,19 +410,52 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         issue_layout.addLayout(issue_toolbar)
         issue_layout.addWidget(self.issue_table)
 
+        worker_page = QWidget()
+        worker_layout = QVBoxLayout(worker_page)
+        worker_toolbar = QHBoxLayout()
+        refresh_workers_button = QPushButton("Refresh")
+        _set_standard_icon(refresh_workers_button, "SP_BrowserReload")
+        refresh_workers_button.clicked.connect(self.refresh_workers)
+        worker_toolbar.addWidget(refresh_workers_button)
+        worker_toolbar.addStretch(1)
+        self.worker_selection_hint = QLabel("No worker selected")
+        worker_toolbar.addWidget(self.worker_selection_hint)
+        self.worker_action_bar = QHBoxLayout()
+        self.worker_action_bar.setSpacing(6)
+        self.start_worker_button = QPushButton("Start")
+        _set_standard_icon(self.start_worker_button, "SP_MediaPlay")
+        self.start_worker_button.clicked.connect(self.handle_start_selected_worker)
+        self.stop_worker_button = QPushButton("Stop")
+        _set_standard_icon(self.stop_worker_button, "SP_MediaStop")
+        self.stop_worker_button.clicked.connect(self.handle_stop_selected_worker)
+        self.worker_action_bar.addWidget(self.start_worker_button)
+        self.worker_action_bar.addWidget(self.stop_worker_button)
+        worker_toolbar.addLayout(self.worker_action_bar)
+        worker_layout.addLayout(worker_toolbar)
+        worker_splitter = QSplitter(Qt.Orientation.Vertical)
+        worker_splitter.addWidget(self.worker_table)
+        worker_splitter.addWidget(self.worker_log_view)
+        worker_splitter.setStretchFactor(0, 1)
+        worker_splitter.setStretchFactor(1, 1)
+        worker_layout.addWidget(worker_splitter)
+
         self.tabs.addTab(vm_page, "VMs")
         self.tabs.addTab(issue_page, "Issues")
+        self.tabs.addTab(worker_page, "Workers")
 
         self.refresh_timer = QTimer(self)
         self.refresh_timer.setInterval(5000)
         self.refresh_timer.timeout.connect(self.refresh_vms)
         self.refresh_timer.timeout.connect(self.refresh_issues)
+        self.refresh_timer.timeout.connect(self.refresh_workers)
         self.refresh_timer.start()
 
         self.refresh_vms()
         self.refresh_issues()
+        self.refresh_workers()
         self.update_vm_action_bar()
         self.update_issue_action_bar()
+        self.update_worker_action_bar()
         self._update_vm_splitter_layout()
 
     def append_log(self, message: str) -> None:
@@ -438,6 +485,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             on_success(result)
         self.refresh_vms()
         self.refresh_issues()
+        self.refresh_workers()
 
     def _handle_action_failure(self, label: str, error: str, worker: _ActionWorker) -> None:
         self._discard_worker(worker)
@@ -654,6 +702,40 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
                 self.issue_table.setCurrentCell(-1, -1)
         self.update_issue_action_bar()
 
+    def refresh_workers(self) -> None:
+        previously_selected_worker = None
+        current_worker = self.selected_worker_summary()
+        if current_worker is not None:
+            previously_selected_worker = current_worker.worker_id
+        try:
+            workers = self.service.list_background_workers()
+        except Exception as exc:
+            self.append_log(f"Refresh workers failed: {exc}")
+            return
+        self._worker_summaries = workers
+        self.worker_table.clearSelection()
+        self.worker_table.setRowCount(len(workers))
+        for row, worker in enumerate(workers):
+            self.worker_table.setItem(row, 0, QTableWidgetItem(worker.name))
+            self.worker_table.setItem(row, 1, QTableWidgetItem(worker.unit))
+            self.worker_table.setItem(row, 2, QTableWidgetItem(worker.active_state))
+            self.worker_table.setItem(row, 3, QTableWidgetItem(worker.sub_state or ""))
+            self.worker_table.setItem(row, 4, QTableWidgetItem(worker.result or ""))
+            self.worker_table.setItem(row, 5, QTableWidgetItem(str(worker.main_pid or "")))
+            self.worker_table.setItem(row, 6, QTableWidgetItem(worker.unit_file_state or ""))
+            self.worker_table.setItem(row, 7, QTableWidgetItem(worker.detail or ""))
+        if previously_selected_worker:
+            restored = False
+            for row, worker in enumerate(workers):
+                if worker.worker_id == previously_selected_worker:
+                    self.worker_table.selectRow(row)
+                    restored = True
+                    break
+            if not restored:
+                self.worker_table.setCurrentCell(-1, -1)
+        self.update_worker_action_bar()
+        self.refresh_selected_worker_log()
+
     def show_new_issue_dialog(self) -> None:
         dialog = IssueDialog(self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
@@ -725,6 +807,58 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         if issue is None:
             return
         self.confirm_delete_issue(issue.issue_number)
+
+    def selected_worker_summary(self):
+        row = self.worker_table.currentRow()
+        if row < 0 or row >= len(self._worker_summaries):
+            return None
+        return self._worker_summaries[row]
+
+    def update_worker_selection_hint(self) -> None:
+        worker = self.selected_worker_summary()
+        if worker is None:
+            self.worker_selection_hint.setText("No worker selected")
+            self.start_worker_button.hide()
+            self.stop_worker_button.hide()
+            return
+        self.worker_selection_hint.setText(f"Selected: {worker.name}")
+        self.start_worker_button.setVisible(not worker.running)
+        self.stop_worker_button.setVisible(worker.running)
+
+    def refresh_selected_worker_log(self) -> None:
+        worker = self.selected_worker_summary()
+        if worker is None:
+            self.worker_log_view.setPlainText("No worker selected.")
+            return
+        text = self.service.get_background_worker_log_snapshot(worker.worker_id, lines=200)
+        self.worker_log_view.setPlainText(text)
+
+    def _on_worker_selection_changed(self) -> None:
+        self.update_worker_action_bar()
+        self.refresh_selected_worker_log()
+
+    def update_worker_action_bar(self) -> None:
+        self.update_worker_selection_hint()
+
+    def handle_start_selected_worker(self) -> None:
+        worker = self.selected_worker_summary()
+        if worker is None:
+            return
+        self.run_action(
+            f"Start worker {worker.name}",
+            self.service.start_background_worker,
+            worker.worker_id,
+        )
+
+    def handle_stop_selected_worker(self) -> None:
+        worker = self.selected_worker_summary()
+        if worker is None:
+            return
+        self.run_action(
+            f"Stop worker {worker.name}",
+            self.service.stop_background_worker,
+            worker.worker_id,
+        )
 
 
 def main() -> None:

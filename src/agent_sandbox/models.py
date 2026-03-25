@@ -69,6 +69,29 @@ class VmActionResult(BaseModel):
     message: str
 
 
+class WorkerSummary(BaseModel):
+    worker_id: str
+    name: str
+    unit: str
+    active_state: str
+    sub_state: str | None = None
+    result: str | None = None
+    unit_file_state: str | None = None
+    description: str | None = None
+    main_pid: int | None = None
+    running: bool = False
+    failed: bool = False
+    detail: str | None = None
+
+
+class WorkerActionResult(BaseModel):
+    success: bool
+    worker_id: str
+    unit: str
+    action: str
+    message: str
+
+
 class LocalIssueRecord(BaseModel):
     issue_number: str
     title: str

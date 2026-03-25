@@ -11,9 +11,22 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from .config import GatewayConfig, load_config
-from .models import LocalIssueRecord, SessionManifest, ToolName, VmActionResult, VmSummary
+from .models import (
+    LocalIssueRecord,
+    SessionManifest,
+    ToolName,
+    VmActionResult,
+    VmSummary,
+    WorkerActionResult,
+    WorkerSummary,
+)
 from .runtime import RuntimeContext, build_runtime
 from .storage import JsonStore
+
+_WORKER_DEFINITIONS: tuple[tuple[str, str, str], ...] = (
+    ("ado", "ADO Worker", "agent-sandbox-ado-worker.service"),
+    ("host-heartbeat", "Host Heartbeat Worker", "agent-sandbox-host-heartbeat.service"),
+)
 
 
 def _utc_now() -> datetime:
@@ -319,6 +332,85 @@ def _run_virsh(args: list[str]) -> subprocess.CompletedProcess[str]:
     return last_result
 
 
+def _run_system_service_command(args: list[str]) -> subprocess.CompletedProcess[str]:
+    commands = [args, ["sudo", "-n", *args]]
+    last_result: subprocess.CompletedProcess[str] | None = None
+    for cmd in commands:
+        try:
+            result = _run_subprocess(cmd)
+        except OSError:
+            continue
+        last_result = result
+        if result.returncode == 0:
+            return result
+    if last_result is None:
+        raise RuntimeError(f"Unable to execute command: {' '.join(args)}")
+    return last_result
+
+
+def _systemctl_show(unit: str) -> dict[str, str]:
+    properties = [
+        "LoadState",
+        "ActiveState",
+        "SubState",
+        "Result",
+        "MainPID",
+        "ExecMainStatus",
+        "ExecMainCode",
+        "UnitFileState",
+        "Description",
+    ]
+    result = _run_system_service_command(["systemctl", "show", "--no-pager", f"--property={','.join(properties)}", unit])
+    if result.returncode != 0:
+        stderr = (result.stderr or "").strip()
+        stdout = (result.stdout or "").strip()
+        detail = stderr or stdout or f"systemctl show failed for {unit}"
+        raise RuntimeError(detail)
+
+    payload: dict[str, str] = {}
+    for line in (result.stdout or "").splitlines():
+        key, _, value = line.partition("=")
+        if key:
+            payload[key] = value
+    return payload
+
+
+def _journalctl_tail(unit: str, *, lines: int) -> str:
+    result = _run_system_service_command(
+        ["journalctl", "--no-pager", "--output=short-iso", "-u", unit, "-n", str(lines)]
+    )
+    output = (result.stdout or "").strip()
+    error = (result.stderr or "").strip()
+    if result.returncode != 0 and error:
+        return f"Worker log unavailable: {error}"
+    return output or error or "No journal entries found."
+
+
+def _worker_definition(worker_id: str) -> tuple[str, str, str] | None:
+    normalized = worker_id.strip()
+    return next((entry for entry in _WORKER_DEFINITIONS if entry[0] == normalized), None)
+
+
+def _run_systemd_control(action: str, unit: str) -> subprocess.CompletedProcess[str]:
+    commands = [
+        ["systemctl", action, unit],
+        ["sudo", "-n", "systemctl", action, unit],
+        ["pkexec", "systemctl", action, unit],
+    ]
+    last_result: subprocess.CompletedProcess[str] | None = None
+    for cmd in commands:
+        try:
+            result = _run_subprocess(cmd)
+        except OSError:
+            continue
+        last_result = result
+        if result.returncode == 0:
+            return result
+    if last_result is None:
+        raise RuntimeError("Neither systemctl, sudo, nor pkexec was available.")
+    return last_result
+
+
 def _virsh_lines(args: list[str]) -> list[str]:
     result = _run_virsh(args)
     if result.returncode != 0:
@@ -588,6 +680,109 @@ class AdminService:
                 )
             )
         return summaries
+
+    def list_background_workers(self) -> list[WorkerSummary]:
+        summaries: list[WorkerSummary] = []
+        for worker_id, name, unit in _WORKER_DEFINITIONS:
+            try:
+                payload = _systemctl_show(unit)
+            except RuntimeError as exc:
+                summaries.append(
+                    WorkerSummary(
+                        worker_id=worker_id,
+                        name=name,
+                        unit=unit,
+                        active_state="unavailable",
+                        running=False,
+                        failed=False,
+                        detail=str(exc),
+                    )
+                )
+                continue
+
+            active_state = payload.get("ActiveState", "") or "unknown"
+            sub_state = payload.get("SubState", "") or None
+            result = payload.get("Result", "") or None
+            unit_file_state = payload.get("UnitFileState", "") or None
+            description = payload.get("Description", "") or None
+            main_pid_raw = payload.get("MainPID", "").strip()
+            main_pid = int(main_pid_raw) if main_pid_raw.isdigit() and int(main_pid_raw) > 0 else None
+            detail_parts = []
+            if payload.get("LoadState", "").strip():
+                detail_parts.append(f"load={payload['LoadState'].strip()}")
+            exec_code = payload.get("ExecMainCode", "").strip()
+            exec_status = payload.get("ExecMainStatus", "").strip()
+            if exec_code or exec_status:
+                detail_parts.append(f"exec={exec_code or '?'}:{exec_status or '?'}")
+
+            summaries.append(
+                WorkerSummary(
+                    worker_id=worker_id,
+                    name=name,
+                    unit=unit,
+                    active_state=active_state,
+                    sub_state=sub_state,
+                    result=result,
+                    unit_file_state=unit_file_state,
+                    description=description,
+                    main_pid=main_pid,
+                    running=active_state == "active",
+                    failed=active_state == "failed" or result == "failed",
+                    detail=", ".join(detail_parts) or None,
+                )
+            )
+
+        return summaries
+
+    def get_background_worker_log_snapshot(self, worker_id: str, *, lines: int = 200) -> str:
+        worker = _worker_definition(worker_id)
+        if worker is None:
+            return f"Worker log unavailable: unknown worker '{worker_id}'."
+        _, name, unit = worker
+        text = _journalctl_tail(unit, lines=lines)
+        return f"Worker: {name}\nUnit: {unit}\n\n{text}".strip()
+
+    def start_background_worker(self, worker_id: str) -> WorkerActionResult:
+        worker = _worker_definition(worker_id)
+        if worker is None:
+            return WorkerActionResult(
+                success=False,
+                worker_id=worker_id,
+                unit="",
+                action="start",
+                message=f"Unknown worker: {worker_id}",
+            )
+        resolved_worker_id, name, unit = worker
+        completed = _run_systemd_control("start", unit)
+        message = (completed.stdout or completed.stderr or "").strip() or f"Started {name}"
+        return WorkerActionResult(
+            success=completed.returncode == 0,
+            worker_id=resolved_worker_id,
+            unit=unit,
+            action="start",
+            message=message,
+        )
+
+    def stop_background_worker(self, worker_id: str) -> WorkerActionResult:
+        worker = _worker_definition(worker_id)
+        if worker is None:
+            return WorkerActionResult(
+                success=False,
+                worker_id=worker_id,
+                unit="",
+                action="stop",
+                message=f"Unknown worker: {worker_id}",
+            )
+        resolved_worker_id, name, unit = worker
+        completed = _run_systemd_control("stop", unit)
+        message = (completed.stdout or completed.stderr or "").strip() or f"Stopped {name}"
+        return WorkerActionResult(
+            success=completed.returncode == 0,
+            worker_id=resolved_worker_id,
+            unit=unit,
+            action="stop",
+            message=message,
+        )
 
     def get_agent_log_snapshot(
         self,
