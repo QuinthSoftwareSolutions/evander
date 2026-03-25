@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from threading import Lock
 from typing import Any, Callable, Protocol
+from urllib.parse import unquote
 
 import httpx
 from .models import (
@@ -18,6 +19,7 @@ from .models import (
     PostPrFeedbackReplyResponse,
     PrFeedbackItem,
 )
+from .pr_feedback_worker import PrFeedbackStore, _stream_key
 from .email.providers import EmailDraft, EmailMessageDetail, EmailMessageSummary, EmailProvider
 from .storage import JsonStore
 
@@ -342,14 +344,16 @@ class DiscordBotApiService:
 class PrFeedbackService:
     def __init__(self, store_path: Path) -> None:
         self.store_path = store_path
+        self.store = PrFeedbackStore(store_path)
 
     def has_pending_feedback(
         self,
         *,
         streams: list[dict[str, str]],
+        session_id: str | None = None,
         cursor: str | None = None,
     ) -> HasPendingFeedbackResponse:
-        feedback = self.list_unread_feedback(streams=streams, cursor=cursor)
+        feedback = self.list_unread_feedback(streams=streams, session_id=session_id, cursor=cursor)
         return HasPendingFeedbackResponse(
             pending=bool(feedback.feedback),
             next_cursor=feedback.next_cursor,
@@ -359,12 +363,21 @@ class PrFeedbackService:
         self,
         *,
         streams: list[dict[str, str]],
+        session_id: str | None = None,
         cursor: str | None = None,
         limit: int | None = None,
     ) -> ListUnreadFeedbackResponse:
         payload = self._read_store()
         allowed_streams = {
             (stream["provider"], stream["repo"], stream["pr_id"])
+            for stream in streams
+        }
+        stream_cursors = {
+            (stream["provider"], stream["repo"], stream["pr_id"]): self._effective_cursor(
+                session_id=session_id,
+                stream=stream,
+                explicit_cursor=cursor,
+            )
             for stream in streams
         }
         items: list[PrFeedbackItem] = []
@@ -375,20 +388,64 @@ class PrFeedbackService:
             key = (candidate.provider, candidate.repo, candidate.pr_id)
             if key not in allowed_streams:
                 continue
-            if cursor and candidate.created_at <= self._parse_cursor(cursor):
+            effective_cursor = stream_cursors.get(key)
+            if effective_cursor and candidate.created_at <= self._parse_cursor(effective_cursor):
                 continue
             items.append(candidate)
 
         items.sort(key=lambda item: item.created_at)
         if limit is not None:
             items = items[:limit]
-        next_cursor = items[-1].created_at.isoformat().replace("+00:00", "Z") if items else cursor
+        next_cursor = (
+            items[-1].created_at.isoformat().replace("+00:00", "Z")
+            if items
+            else self._max_cursors(stream_cursors.values())
+        )
+        if session_id is not None:
+            for stream in streams:
+                self.store.advance_session_cursor(
+                    session_id,
+                    _stream_key(stream["provider"], stream["repo"], stream["pr_id"]),
+                    next_cursor if next_cursor is not None else cursor,
+                )
         return ListUnreadFeedbackResponse(feedback=items, next_cursor=next_cursor)
 
     def _read_store(self) -> dict[str, Any]:
         if not self.store_path.exists():
             return {"feedback": {}}
         return json.loads(self.store_path.read_text(encoding="utf-8"))
+
+    def _effective_cursor(
+        self,
+        *,
+        session_id: str | None,
+        stream: dict[str, str],
+        explicit_cursor: str | None,
+    ) -> str | None:
+        if session_id is None:
+            return explicit_cursor
+        return self._max_cursor(
+            self.store.get_session_cursor(
+                session_id,
+                _stream_key(stream["provider"], stream["repo"], stream["pr_id"]),
+            ),
+            explicit_cursor,
+        )
+
+    def _max_cursor(self, first: str | None, second: str | None) -> str | None:
+        if first is None:
+            return second
+        if second is None:
+            return first
+        if self._parse_cursor(first) >= self._parse_cursor(second):
+            return first
+        return second
+
+    def _max_cursors(self, cursors: Any) -> str | None:
+        maximum: str | None = None
+        for cursor in cursors:
+            maximum = self._max_cursor(maximum, cursor)
+        return maximum
 
     @staticmethod
     def _parse_cursor(cursor: str) -> datetime:
@@ -487,10 +544,11 @@ class AzureDevOpsPrReplyProvider:
             raise ValueError("Azure DevOps reply posting requires thread_id")
         if not comment_id:
             raise ValueError("Azure DevOps reply posting requires comment_id")
+        repo_identifier = _normalize_azure_devops_repo_identifier(repo)
         with httpx.Client(timeout=self.timeout_seconds) as client:
             response = client.post(
                 (
-                    f"{self.organization_url}/{self.project}/_apis/git/repositories/{repo}/"
+                    f"{self.organization_url}/{self.project}/_apis/git/repositories/{repo_identifier}/"
                     f"pullRequests/{pr_id}/threads/{thread_id}/comments"
                 ),
                 params={"api-version": "7.1"},
@@ -509,6 +567,21 @@ class AzureDevOpsPrReplyProvider:
             reply_id=str(payload.get("id", "")) or None,
             reply_url=payload.get("_links", {}).get("web", {}).get("href"),
         )
+
+
+def _normalize_azure_devops_repo_identifier(repo: str) -> str:
+    normalized = unquote(repo.strip())
+    if not normalized:
+        return normalized
+    if "/_git/" in normalized:
+        return normalized.split("/_git/", 1)[1].split("/", 1)[0]
+    if "/_apis/git/repositories/" in normalized:
+        return normalized.split("/_apis/git/repositories/", 1)[1].split("/", 1)[0]
+    if "ssh.dev.azure.com:v3/" in normalized:
+        return normalized.split("ssh.dev.azure.com:v3/", 1)[1].rsplit("/", 1)[-1]
+    if normalized.count("/") >= 2:
+        return normalized.rsplit("/", 1)[-1]
+    return normalized
 
 
 class PrReplyService:

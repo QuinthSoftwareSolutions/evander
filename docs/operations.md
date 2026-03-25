@@ -97,7 +97,7 @@ agent-sandbox-cli list-local-issues --json
 ### Codex provider bootstrap
 
 - `./scripts/bootstrap_codex_vm.sh <vm-name>` copies the vendored Linux Codex binary from the host into `~/bin/codex` for the guest user and verifies Codex.
-- The bootstrap script writes `~/.codex/config.toml` with the relay-aware configuration, `model = "gpt-5.4"`, `model_reasoning_effort = "high"`, and `personality = "pragmatic"`, preferring explicit `LLM_BASE_URL` and otherwise reading `AGENT_SANDBOX_LLM_BASE_URL` from `~/.agent/config.env`; it then appends the placeholder-key shell hook plus `~/bin` PATH entry to both `~/.profile` and `~/.bashrc`.
+- The bootstrap script writes `~/.codex/config.toml` with the relay-aware configuration, `model = "gpt-5.4"`, `model_reasoning_effort = "high"`, and `personality = "pragmatic"`, preferring explicit `LLM_BASE_URL` and otherwise reading `AGENT_SANDBOX_LLM_BASE_URL` from `~/.agent/config.env`; it also registers the host MCP gateway as `[mcp_servers.agent_sandbox]` using `AGENT_SANDBOX_GATEWAY_URL` and, when the host session manifest is available, mirrors that session's `allowed_tools` into `enabled_tools` so Codex only discovers the MCP tools that session may use. It then appends the placeholder-key shell hook plus `~/bin` PATH entry to both `~/.profile` and `~/.bashrc`.
 - The bootstrap script repairs `/home/agent` ownership first, so it also works against VMs created before the home directory ownership fix.
 
 ## VM Python Bootstrap
@@ -431,7 +431,8 @@ agent-sandbox-cli create-session real-session --config config/gateway.yaml
   `ADO_BOOTSTRAP_MSSQL`, `ADO_BOOTSTRAP_PLAYWRIGHT`, and `ADO_BOOTSTRAP_FRONTEND_DEPS` to
   decide which guest toolchains are bootstrapped for backlog-driven issue VMs. The first three
   default to `true`; the frontend-oriented toggles default to `false` because they require
-  host-seeded Node artifacts. `ADO_BOOTSTRAP_FRONTEND_DEPS` requires
+  host-seeded Node artifacts. `ADO_BOOTSTRAP_MSSQL` requires `ADO_MSSQL_SA_PASSWORD`
+  (or legacy `MSSQL_SA_PASSWORD`). `ADO_BOOTSTRAP_FRONTEND_DEPS` requires
   `ADO_FRONTEND_INSTALL_ROOTS` and can optionally use `ADO_FRONTEND_HOST_CHECKOUT`
   when the mirrored repo source is remote.
 - Configure environment in `config/ado-worker.env` (start from

@@ -108,7 +108,7 @@
 
    ### Codex provider bootstrap
 
-   This copies the vendored Linux Codex binary from the host install into the guest user's `~/bin`, writes `~/.codex/config.toml` to use the host relay with `model = "gpt-5.4"`, `model_reasoning_effort = "high"`, and `personality = "pragmatic"`, preferring `LLM_BASE_URL` and otherwise falling back to `~/.agent/config.env`, ensures the placeholder API-key shell hook exists, and verifies `codex --version`.
+   This copies the vendored Linux Codex binary from the host install into the guest user's `~/bin`, writes `~/.codex/config.toml` to use the host relay with `model = "gpt-5.4"`, `model_reasoning_effort = "high"`, and `personality = "pragmatic"`, registers the host MCP gateway as `agent_sandbox`, mirrors the session manifest's `allowed_tools` into `enabled_tools` when available, prefers `LLM_BASE_URL` and otherwise falls back to `~/.agent/config.env`, ensures the placeholder API-key shell hook exists, and verifies `codex --version`.
 
 9. Optionally install the host `.NET` SDK into the VM:
 
@@ -223,7 +223,8 @@ and `--frontend-deps` via `ADO_BOOTSTRAP_DOTNET`, `ADO_BOOTSTRAP_NUGET`,
 `ADO_BOOTSTRAP_MSSQL`, `ADO_BOOTSTRAP_PLAYWRIGHT`, and `ADO_BOOTSTRAP_FRONTEND_DEPS`.
 The first three default to `true`; the frontend-oriented toggles default to `false` because
 they depend on host-seeded artifacts. `ADO_BOOTSTRAP_MSSQL` also requires
-`ADO_MSSQL_SA_PASSWORD`, and can optionally use `ADO_MSSQL_INIT_ROOT`. `ADO_BOOTSTRAP_FRONTEND_DEPS`
+`ADO_MSSQL_SA_PASSWORD` (or legacy `MSSQL_SA_PASSWORD`), and can optionally use
+`ADO_MSSQL_INIT_ROOT`. `ADO_BOOTSTRAP_FRONTEND_DEPS`
 requires `ADO_FRONTEND_INSTALL_ROOTS`, and can optionally use `ADO_FRONTEND_HOST_CHECKOUT`
 when the mirrored repo source is remote.
 

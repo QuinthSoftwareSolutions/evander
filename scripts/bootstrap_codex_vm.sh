@@ -47,6 +47,7 @@ HOST_CODEX_ROOT="${HOST_CODEX_ROOT:-${CALLER_HOME}/.nvm/versions/node/v24.14.0/l
 VENDOR_DIR="${HOST_CODEX_ROOT}/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl"
 LLM_BASE_URL="${LLM_BASE_URL:-}"
 ENABLE_GUEST_HEARTBEAT="${ENABLE_GUEST_HEARTBEAT:-0}"
+AGENT_SANDBOX_CONFIG="${AGENT_SANDBOX_CONFIG:-${ROOT_DIR}/config/gateway.yaml}"
 SSH_OPTS=(
   -i "${SSH_KEY_PATH}"
 )
@@ -92,6 +93,64 @@ get_vm_ip() {
 VM_IP="$(get_vm_ip)"
 mapfile -t SSH_OPTS < <(guest_ssh_options "${VM_NAME}" "${VM_IP}" "${SSH_KEY_PATH}" "${CALLER_HOME}")
 
+get_guest_session_id() {
+  ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" '
+    set -euo pipefail
+    if [[ -f /etc/agent-sandbox/session.env ]]; then
+      # shellcheck disable=SC1091
+      . /etc/agent-sandbox/session.env
+      printf "%s\n" "${AGENT_SANDBOX_SESSION_ID:-}"
+    fi
+  '
+}
+
+load_enabled_tools_toml() {
+  local session_id="$1"
+  local host_python="${ROOT_DIR}/.venv/bin/python"
+
+  if [[ -z "${session_id}" || ! -x "${host_python}" || ! -f "${AGENT_SANDBOX_CONFIG}" ]]; then
+    return 0
+  fi
+
+  "${host_python}" - "${ROOT_DIR}" "${AGENT_SANDBOX_CONFIG}" "${session_id}" <<'PY'
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+root_dir = Path(sys.argv[1])
+config_path = Path(sys.argv[2])
+session_id = sys.argv[3]
+
+sys.path.insert(0, str(root_dir / "src"))
+
+from agent_sandbox.config import load_config  # noqa: E402
+
+cfg = load_config(config_path)
+if not cfg.session_store_path.exists():
+    raise SystemExit(0)
+
+payload = json.loads(cfg.session_store_path.read_text(encoding="utf-8"))
+session = payload.get(session_id)
+if not isinstance(session, dict):
+    raise SystemExit(0)
+
+allowed_tools = session.get("allowed_tools")
+if not isinstance(allowed_tools, list):
+    raise SystemExit(0)
+
+normalized_tools = [str(tool).strip() for tool in allowed_tools if str(tool).strip()]
+if not normalized_tools:
+    raise SystemExit(0)
+
+print(json.dumps(normalized_tools))
+PY
+}
+
+GUEST_SESSION_ID="$(get_guest_session_id)"
+CODEX_ENABLED_TOOLS_JSON="$(load_enabled_tools_toml "${GUEST_SESSION_ID}")"
+
 echo "Bootstrapping Codex into ${VM_USER}@${VM_IP}"
 
 ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "
@@ -106,7 +165,8 @@ ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "
 "
 scp "${SSH_OPTS[@]}" -r "${VENDOR_DIR}/." "${VM_USER}@${VM_IP}:~/codex-vendor/"
 
-ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "VM_USER='${VM_USER}' LLM_BASE_URL='${LLM_BASE_URL}' bash -s" <<'EOF'
+ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" \
+  "VM_USER='${VM_USER}' LLM_BASE_URL='${LLM_BASE_URL}' CODEX_ENABLED_TOOLS_JSON='${CODEX_ENABLED_TOOLS_JSON}' bash -s" <<'EOF'
 set -euo pipefail
 cp ~/codex-vendor/codex/codex ~/bin/codex
 chmod +x ~/bin/codex
@@ -116,12 +176,23 @@ if [ -f ~/.agent/config.env ]; then
   . ~/.agent/config.env
 fi
 CODEX_LLM_BASE_URL="${LLM_BASE_URL:-${AGENT_SANDBOX_LLM_BASE_URL:-http://192.168.250.1:11434/v1}}"
+CODEX_GATEWAY_URL="${AGENT_SANDBOX_GATEWAY_URL:-http://192.168.250.1:8000/mcp}"
 cat > ~/.codex/config.toml <<CONFIG
 model = "gpt-5.4"
 model_provider = "openai"
 model_reasoning_effort = "high"
 personality = "pragmatic"
 openai_base_url = "${CODEX_LLM_BASE_URL}"
+
+[mcp_servers.agent_sandbox]
+url = "${CODEX_GATEWAY_URL}"
+CONFIG
+if [[ -n "${CODEX_ENABLED_TOOLS_JSON:-}" ]]; then
+  CODEX_ENABLED_TOOLS_TOML="$(python3 -c 'import json, os; print(json.dumps(json.loads(os.environ["CODEX_ENABLED_TOOLS_JSON"])))')"
+  printf 'enabled_tools = %s\n' "${CODEX_ENABLED_TOOLS_TOML}" >> ~/.codex/config.toml
+fi
+cat >> ~/.codex/config.toml <<CONFIG
+enabled = true
 
 [projects."/home/${VM_USER}"]
 trust_level = "trusted"

@@ -136,7 +136,10 @@ def create_server(context: RuntimeContext) -> FastMCP:
         try:
             session = context.policy.require_tool(session_id, ToolName.HAS_PENDING_FEEDBACK)
             streams = context.policy.require_pr_feedback_streams(session)
-            result = context.pr_feedback_service.has_pending_feedback(streams=streams).model_dump(mode="json")
+            result = context.pr_feedback_service.has_pending_feedback(
+                streams=streams,
+                session_id=session_id,
+            ).model_dump(mode="json")
             audit_success(
                 session_id,
                 ToolName.HAS_PENDING_FEEDBACK,
@@ -167,7 +170,10 @@ def create_server(context: RuntimeContext) -> FastMCP:
             session = context.policy.require_tool(session_id, ToolName.LIST_UNREAD_FEEDBACK)
             streams = context.policy.require_pr_feedback_streams(session)
             response = context.pr_feedback_service.list_unread_feedback(
-                streams=streams, cursor=cursor, limit=limit
+                streams=streams,
+                session_id=session_id,
+                cursor=cursor,
+                limit=limit,
             )
             result = response.model_dump(mode="json")
             audit_success(

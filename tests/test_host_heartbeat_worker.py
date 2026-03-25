@@ -24,6 +24,8 @@ UTC = timezone.utc
 
 
 class _DummyFeedbackWorker:
+    store = SimpleNamespace(has_unread_feedback=lambda **kwargs: False)
+
     def poll_once(self, **kwargs):  # noqa: ANN003
         return []
 
@@ -280,6 +282,8 @@ def test_wake_bindings_invokes_resume_script_when_idle(tmp_path, monkeypatch) ->
     }
 
     class _FeedbackWorker:
+        store = SimpleNamespace(has_unread_feedback=lambda **kwargs: True)
+
         def poll_once(self, **kwargs):  # noqa: ANN003
             return [object()]
 
@@ -289,7 +293,7 @@ def test_wake_bindings_invokes_resume_script_when_idle(tmp_path, monkeypatch) ->
         captured.append(cmd)
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
-    monkeypatch.setattr("agent_sandbox.host_heartbeat_worker._is_agent_busy", lambda **kwargs: False)
+    monkeypatch.setattr("agent_sandbox.host_heartbeat_worker._probe_agent_dispatch_state", lambda **kwargs: "idle")
     monkeypatch.setattr("agent_sandbox.host_heartbeat_worker.subprocess.run", _fake_run)
 
     runtime = SimpleNamespace(sessions=SimpleNamespace(read_all=lambda: sessions))
@@ -339,6 +343,8 @@ def test_wake_bindings_skips_resume_when_busy(tmp_path, monkeypatch) -> None:
     }
 
     class _FeedbackWorker:
+        store = SimpleNamespace(has_unread_feedback=lambda **kwargs: True)
+
         def poll_once(self, **kwargs):  # noqa: ANN003
             return [object()]
 
@@ -391,6 +397,8 @@ def test_wake_bindings_skips_resume_when_agent_unavailable(tmp_path, monkeypatch
     }
 
     class _FeedbackWorker:
+        store = SimpleNamespace(has_unread_feedback=lambda **kwargs: True)
+
         def poll_once(self, **kwargs):  # noqa: ANN003
             return [object()]
 
@@ -452,6 +460,8 @@ def test_run_once_continues_when_one_stream_poll_fails(tmp_path) -> None:
     }
 
     class _FlakyFeedbackWorker:
+        store = SimpleNamespace(has_unread_feedback=lambda **kwargs: False)
+
         def poll_once(self, **kwargs):  # noqa: ANN003
             if kwargs["repo"] == "org/repo-a":
                 raise httpx.ConnectError("provider unavailable")
@@ -485,3 +495,58 @@ def test_run_once_continues_when_one_stream_poll_fails(tmp_path) -> None:
     assert result.streams_polled == 2
     assert result.discovered_feedback == 1
     assert any(event.get("reason") == "cycle-finished" for event in audit.events)
+
+
+def test_wake_bindings_invokes_resume_script_for_persisted_unread_feedback(tmp_path, monkeypatch) -> None:
+    now = datetime.now(UTC)
+    sessions = {
+        "active-a": _build_manifest(
+            "active-a",
+            expires_at=now + timedelta(hours=2),
+            metadata={"pr_feedback_streams": [{"provider": "github", "repo": "org/repo", "pr_id": "17"}]},
+        ),
+    }
+
+    class _FeedbackWorker:
+        store = SimpleNamespace(has_unread_feedback=lambda **kwargs: True)
+
+        def poll_once(self, **kwargs):  # noqa: ANN003
+            return []
+
+    captured: list[list[str]] = []
+
+    def _fake_run(cmd, check, capture_output, text, timeout):  # noqa: ANN001
+        captured.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("agent_sandbox.host_heartbeat_worker._probe_agent_dispatch_state", lambda **kwargs: "idle")
+    monkeypatch.setattr("agent_sandbox.host_heartbeat_worker.subprocess.run", _fake_run)
+
+    runtime = SimpleNamespace(sessions=SimpleNamespace(read_all=lambda: sessions))
+    resume_script = tmp_path / "resume_issue_agent.sh"
+    resume_script.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    resume_script.chmod(0o755)
+    worker = HostHeartbeatWorker(
+        config=SimpleNamespace(
+            host_heartbeat_http_timeout_seconds=0.1,
+            host_heartbeat_poll_interval_seconds=30.0,
+            host_heartbeat_jitter_seconds=0.0,
+            host_heartbeat_cooldown_seconds=10.0,
+            host_heartbeat_stream_conflict_policy="fanout",
+            host_heartbeat_session_cooldown_path=tmp_path / "cooldowns.json",
+            host_busy_check_script_path=tmp_path / "check_busy.sh",
+            host_resume_script_path=resume_script,
+            host_heartbeat_resume_prompt="wake up now",
+            host_heartbeat_vm_user="agent",
+            host_heartbeat_wake_state_path=tmp_path / "wake-state.json",
+            host_heartbeat_resume_timeout_seconds=12.0,
+            pr_map_path=tmp_path / "missing-pr-map.json",
+        ),
+        runtime=runtime,
+        feedback_worker=_FeedbackWorker(),
+        adapters={"github": object()},
+    )
+
+    worker.run_once()
+
+    assert len(captured) == 1

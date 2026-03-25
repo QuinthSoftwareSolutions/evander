@@ -62,6 +62,20 @@ def test_has_pending_feedback_returns_minimal_heartbeat_shape(tmp_path: Path) ->
     assert response.next_cursor == "2026-01-02T00:00:00Z"
 
 
+def test_has_pending_feedback_uses_persisted_session_read_cursor(tmp_path: Path) -> None:
+    store_path = tmp_path / "pr-feedback-store.json"
+    _write_store(store_path)
+    service = PrFeedbackService(store_path)
+    stream = [{"provider": "github", "repo": "org/repo", "pr_id": "17"}]
+
+    first = service.list_unread_feedback(streams=stream, session_id="session-1")
+    assert [item.feedback_id for item in first.feedback] == ["github:review:1", "github:review:2"]
+
+    second = service.has_pending_feedback(streams=stream, session_id="session-1")
+    assert second.pending is False
+    assert second.next_cursor == first.next_cursor
+
+
 def test_list_unread_feedback_returns_full_records_for_allowed_streams(tmp_path: Path) -> None:
     store_path = tmp_path / "pr-feedback-store.json"
     _write_store(store_path)
@@ -75,6 +89,27 @@ def test_list_unread_feedback_returns_full_records_for_allowed_streams(tmp_path:
     assert [item.feedback_id for item in response.feedback] == ["github:review:2"]
     assert response.feedback[0].body == "Please add tests"
     assert response.next_cursor == "2026-01-02T00:00:00Z"
+
+
+def test_list_unread_feedback_persists_session_cursor(tmp_path: Path) -> None:
+    store_path = tmp_path / "pr-feedback-store.json"
+    _write_store(store_path)
+    service = PrFeedbackService(store_path)
+    stream = [{"provider": "github", "repo": "org/repo", "pr_id": "17"}]
+
+    first = service.list_unread_feedback(
+        streams=stream,
+        session_id="session-1",
+        limit=1,
+    )
+    assert [item.feedback_id for item in first.feedback] == ["github:review:1"]
+
+    second = service.list_unread_feedback(
+        streams=stream,
+        session_id="session-1",
+        limit=1,
+    )
+    assert [item.feedback_id for item in second.feedback] == ["github:review:2"]
 
 
 def test_new_comment_ingestion_is_visible_to_pending_feedback_check(tmp_path: Path) -> None:

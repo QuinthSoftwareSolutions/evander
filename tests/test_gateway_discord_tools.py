@@ -554,11 +554,13 @@ class _FakePrFeedbackService:
         self.last_streams: list[dict[str, str]] = []
         self.last_cursor: str | None = None
         self.last_limit: int | None = None
+        self.last_session_id: str | None = None
 
     def has_pending_feedback(
-        self, *, streams: list[dict[str, str]], cursor: str | None = None
+        self, *, streams: list[dict[str, str]], session_id: str | None = None, cursor: str | None = None
     ) -> SimpleNamespace:
         self.last_streams = streams
+        self.last_session_id = session_id
         self.last_cursor = cursor
         return SimpleNamespace(
             model_dump=lambda mode="json": {
@@ -568,9 +570,15 @@ class _FakePrFeedbackService:
         )
 
     def list_unread_feedback(
-        self, *, streams: list[dict[str, str]], cursor: str | None = None, limit: int | None = None
+        self,
+        *,
+        streams: list[dict[str, str]],
+        session_id: str | None = None,
+        cursor: str | None = None,
+        limit: int | None = None,
     ) -> SimpleNamespace:
         self.last_streams = streams
+        self.last_session_id = session_id
         self.last_cursor = cursor
         self.last_limit = limit
         payload = {

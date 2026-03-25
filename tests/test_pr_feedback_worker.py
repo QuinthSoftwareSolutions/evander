@@ -48,6 +48,52 @@ def test_pr_feedback_store_persists_and_resumes_cursors(tmp_path: Path) -> None:
     assert reloaded.get_cursor(stream_key) == cursor
 
 
+def test_pr_feedback_store_persists_session_read_cursors(tmp_path: Path) -> None:
+    path = tmp_path / "runtime" / "pr-feedback-store.json"
+    store = PrFeedbackStore(path)
+    stream_key = "github:org/repo:123"
+
+    store.advance_session_cursor("session-1", stream_key, "2026-03-21T00:00:00Z")
+    store.advance_session_cursor("session-1", stream_key, "2026-03-20T00:00:00Z")
+
+    reloaded = PrFeedbackStore(path)
+    assert reloaded.get_session_cursor("session-1", stream_key) == "2026-03-21T00:00:00Z"
+
+
+def test_pr_feedback_store_reports_unread_feedback_per_session(tmp_path: Path) -> None:
+    store = PrFeedbackStore(tmp_path / "runtime" / "pr-feedback-store.json")
+    envelope = FeedbackEnvelope(
+        feedback_id="github:issue_comment:1",
+        provider="github",
+        repo="org/repo",
+        pr_id="123",
+        thread_id="issue_comment:1",
+        comment_id="1",
+        author="octocat",
+        body="Needs tests",
+        created_at=datetime(2026, 3, 21, tzinfo=timezone.utc),
+    )
+
+    assert store.add_feedback_if_new(envelope) is True
+    assert (
+        store.has_unread_feedback(
+            session_id="session-1",
+            streams=[{"provider": "github", "repo": "org/repo", "pr_id": "123"}],
+        )
+        is True
+    )
+
+    store.advance_session_cursor("session-1", "github:org/repo:123", "2026-03-21T00:00:00Z")
+
+    assert (
+        store.has_unread_feedback(
+            session_id="session-1",
+            streams=[{"provider": "github", "repo": "org/repo", "pr_id": "123"}],
+        )
+        is False
+    )
+
+
 def test_github_mapping_review_comment_edge_cases() -> None:
     comments = [
         {
@@ -196,6 +242,34 @@ def test_ado_adapter_sends_basic_auth_header_when_pat_configured() -> None:
     assert result.feedback == []
     assert captured_headers == [
         {"Authorization": f"Basic {base64.b64encode(b':ado-test-pat').decode('ascii')}"}
+    ]
+
+
+def test_ado_adapter_normalizes_composite_repo_identifier() -> None:
+    adapter = AzureDevOpsFeedbackAdapter("https://dev.azure.com/example", "proj", pat="ado-test-pat")
+    captured_urls: list[str] = []
+
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return {"value": []}
+
+    class FakeClient:
+        def get(self, url: str, *args: object, **kwargs: object) -> FakeResponse:
+            captured_urls.append(url)
+            return FakeResponse()
+
+    adapter.poll(
+        client=FakeClient(),
+        repo="example-org/example project/example-repo",
+        pr_id="101",
+        cursor=None,
+    )
+
+    assert captured_urls == [
+        "https://dev.azure.com/example/proj/_apis/git/repositories/example-repo/pullRequests/101/threads"
     ]
 
 

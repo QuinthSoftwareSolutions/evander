@@ -153,7 +153,7 @@ class HostHeartbeatWorker:
                     )
                     continue
                 discovered_feedback += len(discovered)
-                if discovered:
+                if discovered or self._stream_has_unread_bindings(stream=stream, bindings=bindings):
                     self._record_busy_skips(stream=stream, bindings=bindings)
 
         next_sleep_seconds = _compute_next_sleep_seconds(
@@ -180,6 +180,8 @@ class HostHeartbeatWorker:
 
     def _record_busy_skips(self, *, stream: FeedbackStream, bindings: list[StreamSessionBinding]) -> None:
         for binding in bindings:
+            if not self._binding_has_unread_feedback(binding=binding, stream=stream):
+                continue
             if _is_session_in_cooldown(
                 path=self.config.host_heartbeat_session_cooldown_path,
                 session_id=binding.session_id,
@@ -255,6 +257,26 @@ class HostHeartbeatWorker:
                 session_id=binding.session_id,
                 cooldown_seconds=self.config.host_heartbeat_cooldown_seconds,
             )
+
+    def _stream_has_unread_bindings(self, *, stream: FeedbackStream, bindings: list[StreamSessionBinding]) -> bool:
+        for binding in bindings:
+            if self._binding_has_unread_feedback(binding=binding, stream=stream):
+                return True
+        return False
+
+    def _binding_has_unread_feedback(self, *, binding: StreamSessionBinding, stream: FeedbackStream) -> bool:
+        store = getattr(self.feedback_worker, "store", None)
+        if store is None:
+            return False
+        has_unread_feedback = getattr(store, "has_unread_feedback", None)
+        if has_unread_feedback is None:
+            return False
+        return bool(
+            has_unread_feedback(
+                session_id=binding.session_id,
+                streams=[{"provider": stream.provider, "repo": stream.repo, "pr_id": stream.pr_id}],
+            )
+        )
 
     def _resume_binding(self, binding: StreamSessionBinding) -> None:
         if not binding.vm_id:
