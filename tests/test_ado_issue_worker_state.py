@@ -525,6 +525,36 @@ def test_process_work_item_passes_timeout(
     assert captured["timeout"] == worker_config.setup_timeout_seconds
 
 
+def test_worker_config_load_from_env_accepts_legacy_mssql_password_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ADO_ORGANIZATION_URL", "https://dev.azure.com/example")
+    monkeypatch.setenv("ADO_PROJECT", "example")
+    monkeypatch.setenv("ADO_PROJECT_OR_SOLUTION", "/tmp/Example.slnx")
+    monkeypatch.setenv("ADO_BOOTSTRAP_MSSQL", "true")
+    monkeypatch.delenv("ADO_MSSQL_SA_PASSWORD", raising=False)
+    monkeypatch.setenv("MSSQL_SA_PASSWORD", "SecretPassw0rd!")
+
+    config = WorkerConfig.load_from_env()
+
+    assert config.bootstrap_mssql is True
+    assert config.mssql_sa_password == "SecretPassw0rd!"
+
+
+def test_worker_config_load_from_env_requires_any_mssql_password_when_bootstrap_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ADO_ORGANIZATION_URL", "https://dev.azure.com/example")
+    monkeypatch.setenv("ADO_PROJECT", "example")
+    monkeypatch.setenv("ADO_PROJECT_OR_SOLUTION", "/tmp/Example.slnx")
+    monkeypatch.setenv("ADO_BOOTSTRAP_MSSQL", "true")
+    monkeypatch.delenv("ADO_MSSQL_SA_PASSWORD", raising=False)
+    monkeypatch.delenv("MSSQL_SA_PASSWORD", raising=False)
+
+    with pytest.raises(ValueError, match="ADO_MSSQL_SA_PASSWORD or MSSQL_SA_PASSWORD is required"):
+        WorkerConfig.load_from_env()
+
+
 @pytest.mark.parametrize(
     ("raw_tags", "expected_match"),
     [

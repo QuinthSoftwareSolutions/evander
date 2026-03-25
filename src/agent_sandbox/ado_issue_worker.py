@@ -95,10 +95,12 @@ class WorkerConfig:
         bootstrap_dotnet = _bool_env("ADO_BOOTSTRAP_DOTNET", True)
         bootstrap_nuget = _bool_env("ADO_BOOTSTRAP_NUGET", True)
         bootstrap_mssql = _bool_env("ADO_BOOTSTRAP_MSSQL", True)
-        mssql_sa_password = _optional_env("ADO_MSSQL_SA_PASSWORD")
+        mssql_sa_password = _optional_env_first("ADO_MSSQL_SA_PASSWORD", "MSSQL_SA_PASSWORD")
         mssql_init_root = _optional_env("ADO_MSSQL_INIT_ROOT")
         if bootstrap_mssql and not mssql_sa_password:
-            raise ValueError("ADO_MSSQL_SA_PASSWORD is required when ADO_BOOTSTRAP_MSSQL is true.")
+            raise ValueError(
+                "ADO_MSSQL_SA_PASSWORD or MSSQL_SA_PASSWORD is required when ADO_BOOTSTRAP_MSSQL is true."
+            )
         bootstrap_playwright = _bool_env("ADO_BOOTSTRAP_PLAYWRIGHT", False)
         bootstrap_frontend_deps = _bool_env("ADO_BOOTSTRAP_FRONTEND_DEPS", False)
         frontend_host_checkout = _optional_env("ADO_FRONTEND_HOST_CHECKOUT")
@@ -161,6 +163,14 @@ def _require_env(name: str) -> str:
 def _optional_env(name: str) -> str | None:
     value = os.environ.get(name, "").strip()
     return value or None
+
+
+def _optional_env_first(*names: str) -> str | None:
+    for name in names:
+        value = _optional_env(name)
+        if value:
+            return value
+    return None
 
 
 def _csv_env(name: str) -> tuple[str, ...]:
