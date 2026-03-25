@@ -63,6 +63,33 @@ def test_seed_email_accepts_recipient_option_after_positionals(tmp_path: Path) -
     assert "other@example.com" in emails
 
 
+def test_help_groups_commands_by_panel_then_alphabetically() -> None:
+    runner = CliRunner()
+
+    result = runner.invoke(app, ["--help"])
+
+    assert result.exit_code == 0
+    output = result.output
+    panel_order = [
+        "Health and State",
+        "Sessions and Feedback",
+        "Issue Lifecycle",
+        "VM Operations",
+        "Seeding and Fixtures",
+        "Background Workers",
+    ]
+    panel_positions = [output.index(panel) for panel in panel_order]
+    assert panel_positions == sorted(panel_positions)
+
+    assert output.index("approve") < output.index("attach-pr-feedback") < output.index("create-session") < output.index("prune-sessions")
+    assert output.index("create-issue-vm") < output.index("create-local-issue") < output.index("destroy-issue-vm") < output.index("list-local-issues") < output.index("prune-orphaned-issue-state")
+    assert output.index("disable-agent") < output.index("enable-agent") < output.index("list-vms") < output.index("logs") < output.index("resume-agent") < output.index("shutdown-vm") < output.index("ssh") < output.index("start-vm")
+    assert output.index("seed-discord-channel") < output.index("seed-email")
+    assert "init-state                  Create runtime state files." in output
+    assert "create-issue-vm             Create and bootstrap an issue VM." in output
+    assert "host-heartbeat              Run the host heartbeat worker." in output
+
+
 def test_create_session_disables_email_send_by_default(tmp_path: Path) -> None:
     config_path = write_config(tmp_path)
     runner = CliRunner()
@@ -196,6 +223,7 @@ def test_create_issue_vm_builds_setup_issue_vm_command_correctly(tmp_path: Path,
                 "--session-id",
                 "session-14084",
                 "--no-start-agent",
+                "--python",
                 "--dotnet",
                 "--nuget",
                 "/tmp/project.slnx",
@@ -213,12 +241,13 @@ def test_create_issue_vm_builds_setup_issue_vm_command_correctly(tmp_path: Path,
     assert captured_cmd[0].endswith("/scripts/setup_issue_vm.sh")
     assert captured_cmd[1:7] == [
         "--dry-run",
+        "--python",
         "--dotnet",
         "--nuget",
         "--mssql",
         "--mssql-init-root",
-        "/tmp/mssql-init",
     ]
+    assert captured_cmd[7] == "/tmp/mssql-init"
     assert "--playwright" in captured_cmd
     assert captured_cmd[-5:] == [
         "14084",

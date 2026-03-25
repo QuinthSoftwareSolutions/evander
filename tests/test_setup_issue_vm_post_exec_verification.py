@@ -12,6 +12,9 @@ def test_setup_issue_vm_runs_single_post_exec_resume_verification() -> None:
     assert 'AGENT_STATE_LIB_B64' in setup_issue_vm
     assert 'AGENT_RUNNER_TMP_DIR="$(mktemp -d)"' in setup_issue_vm
     assert 'source "${AGENT_RUNNER_TMP_DIR}/agent_runner.sh"' in setup_issue_vm
+    assert 'printf \'%s\' "${AGENT_RUNNER_LIB_B64}" | base64 -d > "${LOG_DIR}/lib/agent_runner.sh"' in setup_issue_vm
+    assert 'printf \'%s\' "${AGENT_RUNNER_CODEX_LIB_B64}" | base64 -d > "${LOG_DIR}/lib/agent_runner_codex.sh"' in setup_issue_vm
+    assert '. "$HOME/.agent-sandbox/lib/agent_runner.sh"' in setup_issue_vm
     assert "agent_runner_resume_last \\" in setup_issue_vm
     assert '--model "${AGENT_MODEL}" \\' in setup_issue_vm
     assert '--dangerously-bypass-approvals-and-sandbox \\' in setup_issue_vm

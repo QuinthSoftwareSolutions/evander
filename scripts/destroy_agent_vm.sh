@@ -41,10 +41,22 @@ if [[ -n "${CALLER_USER}" ]]; then
   CALLER_HOME="$(getent passwd "${CALLER_USER}" | cut -d: -f6 || printf '%s\n' "${CALLER_HOME}")"
 fi
 
+rm_tree() {
+  local path="$1"
+
+  if [[ ! -e "${path}" ]]; then
+    return 0
+  fi
+  if rm -rf "${path}" >/dev/null 2>&1; then
+    return 0
+  fi
+  sudo -n rm -rf "${path}"
+}
+
 virsh destroy "${VM_NAME}" >/dev/null 2>&1 || true
 virsh undefine "${VM_NAME}" --nvram >/dev/null 2>&1 || virsh undefine "${VM_NAME}" >/dev/null 2>&1 || true
 guest_ssh_remove_known_host "${VM_NAME}" "${CALLER_HOME}"
-rm -rf "${VM_DIR}"
-rm -rf "${STATE_DIR}"
+rm_tree "${VM_DIR}"
+rm_tree "${STATE_DIR}"
 
 echo "Destroyed VM ${VM_NAME}"

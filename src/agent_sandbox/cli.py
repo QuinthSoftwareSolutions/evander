@@ -16,6 +16,7 @@ from typing import Annotated
 import httpx
 import typer
 from pydantic import ValidationError
+from typer.core import TyperGroup
 
 from .admin_service import AdminService
 from .audit import AuditEventType
@@ -26,7 +27,28 @@ from .email.providers import JsonEmailProvider, MultiMailboxEmailProvider
 from .models import ApprovalStatus, DiscordCommandEnvelope, EmailMessage, SessionManifest, ToolName
 from .runtime import build_runtime
 
-app = typer.Typer(help="Utilities for the agent sandbox host control plane.")
+_COMMAND_PANELS = {
+    "Health and State": 0,
+    "Sessions and Feedback": 1,
+    "Issue Lifecycle": 2,
+    "VM Operations": 3,
+    "Seeding and Fixtures": 4,
+    "Background Workers": 5,
+}
+
+
+class GroupedHelpTyperGroup(TyperGroup):
+    def list_commands(self, ctx) -> list[str]:
+        def command_sort_key(name: str) -> tuple[int, str]:
+            command = self.commands[name]
+            panel = getattr(command, "rich_help_panel", None)
+            panel_rank = _COMMAND_PANELS.get(panel or "", len(_COMMAND_PANELS))
+            return (panel_rank, name.casefold())
+
+        return sorted(self.commands, key=command_sort_key)
+
+
+app = typer.Typer(help="Utilities for the agent sandbox host control plane.", cls=GroupedHelpTyperGroup)
 
 ConfigOption = Annotated[Path, typer.Option("--config", help="Path to the gateway YAML config.")]
 _discord_seed_sequence = count()
@@ -643,14 +665,22 @@ def _build_issue_session_manifest(
     )
 
 
-@app.command("init-state")
+@app.command(
+    "init-state",
+    rich_help_panel="Health and State",
+    short_help="Create runtime state files.",
+)
 def init_state(config: ConfigOption = Path("config/gateway.yaml")) -> None:
     cfg = load_config(config)
     build_runtime(cfg)
     typer.echo(f"Initialized runtime state under {cfg.runtime_dir}")
 
 
-@app.command("status")
+@app.command(
+    "status",
+    rich_help_panel="Health and State",
+    short_help="Show host and runtime health.",
+)
 def status(config: ConfigOption = Path("config/gateway.yaml"), as_json: Annotated[bool, typer.Option("--json")] = False) -> None:
     report: dict[str, object] = {
         "generated_at": datetime.now(UTC).isoformat(),
@@ -838,7 +868,11 @@ def status(config: ConfigOption = Path("config/gateway.yaml"), as_json: Annotate
     )
 
 
-@app.command("create-session")
+@app.command(
+    "create-session",
+    rich_help_panel="Sessions and Feedback",
+    short_help="Create a session manifest.",
+)
 def create_session(
     session_id: str,
     config: ConfigOption = Path("config/gateway.yaml"),
@@ -885,7 +919,11 @@ def create_session(
     typer.echo(f"Created session manifest {session_id}")
 
 
-@app.command("prune-sessions")
+@app.command(
+    "prune-sessions",
+    rich_help_panel="Sessions and Feedback",
+    short_help="Delete expired or all sessions.",
+)
 def prune_sessions(
     config: ConfigOption = Path("config/gateway.yaml"),
     expired_only: Annotated[
@@ -917,7 +955,11 @@ def prune_sessions(
     typer.echo(f"Pruned {len(keys_to_delete)} {mode} session(s)")
 
 
-@app.command("destroy-issue-vm")
+@app.command(
+    "destroy-issue-vm",
+    rich_help_panel="Issue Lifecycle",
+    short_help="Destroy an issue VM and state.",
+)
 def destroy_issue_vm(
     target: str,
     config: ConfigOption = Path("config/gateway.yaml"),
@@ -964,7 +1006,11 @@ def destroy_issue_vm(
     )
 
 
-@app.command("prune-orphaned-issue-state")
+@app.command(
+    "prune-orphaned-issue-state",
+    rich_help_panel="Issue Lifecycle",
+    short_help="Remove issue state for missing VMs.",
+)
 def prune_orphaned_issue_state(
     config: ConfigOption = Path("config/gateway.yaml"),
 ) -> None:
@@ -1050,7 +1096,11 @@ def prune_orphaned_issue_state(
     )
 
 
-@app.command("list-vms")
+@app.command(
+    "list-vms",
+    rich_help_panel="VM Operations",
+    short_help="List known VMs.",
+)
 def list_vms(
     vm_user: Annotated[str, typer.Option("--vm-user", help="Guest user to inspect over SSH.")] = "agent",
     all_vms: Annotated[
@@ -1095,7 +1145,11 @@ def _echo_action_result_or_exit(result) -> None:
         raise typer.Exit(code=1)
 
 
-@app.command("start-vm")
+@app.command(
+    "start-vm",
+    rich_help_panel="VM Operations",
+    short_help="Start a VM.",
+)
 def start_vm(
     target: str,
     config: ConfigOption = Path("config/gateway.yaml"),
@@ -1104,7 +1158,11 @@ def start_vm(
     _echo_action_result_or_exit(service.start_vm(target))
 
 
-@app.command("shutdown-vm")
+@app.command(
+    "shutdown-vm",
+    rich_help_panel="VM Operations",
+    short_help="Gracefully stop a VM.",
+)
 def shutdown_vm(
     target: str,
     config: ConfigOption = Path("config/gateway.yaml"),
@@ -1117,7 +1175,11 @@ def shutdown_vm(
     _echo_action_result_or_exit(service.shutdown_vm(target, timeout_seconds=timeout_seconds))
 
 
-@app.command("create-local-issue")
+@app.command(
+    "create-local-issue",
+    rich_help_panel="Issue Lifecycle",
+    short_help="Create a local issue record.",
+)
 def create_local_issue(
     config: ConfigOption = Path("config/gateway.yaml"),
     title: Annotated[
@@ -1147,7 +1209,11 @@ def create_local_issue(
     typer.echo(f"Created local issue {issue.issue_number} ({issue.title}) at {issue.yaml_path}")
 
 
-@app.command("list-local-issues")
+@app.command(
+    "list-local-issues",
+    rich_help_panel="Issue Lifecycle",
+    short_help="List local issue records.",
+)
 def list_local_issues(
     config: ConfigOption = Path("config/gateway.yaml"),
     as_json: Annotated[
@@ -1167,7 +1233,11 @@ def list_local_issues(
         typer.echo(f"{issue.issue_number:<8} {issue.title[:32]:<32} {issue.yaml_path}")
 
 
-@app.command("ssh")
+@app.command(
+    "ssh",
+    rich_help_panel="VM Operations",
+    short_help="Open an SSH session.",
+)
 def ssh(
     target: str,
     vm_user: Annotated[str, typer.Option("--vm-user", help="Guest user to connect as.")] = "agent",
@@ -1177,7 +1247,11 @@ def ssh(
     _run_subprocess_compat([str(script_path), vm_name, vm_user], check=True, capture_output=False, text=False)
 
 
-@app.command("logs")
+@app.command(
+    "logs",
+    rich_help_panel="VM Operations",
+    short_help="Tail guest agent logs.",
+)
 def logs(
     target: str,
     repo_name: Annotated[
@@ -1215,7 +1289,11 @@ def _set_agent_control_state(target: str, *, action: str, vm_user: str) -> None:
     )
 
 
-@app.command("disable-agent")
+@app.command(
+    "disable-agent",
+    rich_help_panel="VM Operations",
+    short_help="Pause the guest agent.",
+)
 def disable_agent(
     target: str,
     vm_user: Annotated[str, typer.Option("--vm-user", help="Guest user to connect as.")] = "agent",
@@ -1223,7 +1301,11 @@ def disable_agent(
     _set_agent_control_state(target, action="disable", vm_user=vm_user)
 
 
-@app.command("enable-agent")
+@app.command(
+    "enable-agent",
+    rich_help_panel="VM Operations",
+    short_help="Allow the guest agent to run.",
+)
 def enable_agent(
     target: str,
     vm_user: Annotated[str, typer.Option("--vm-user", help="Guest user to connect as.")] = "agent",
@@ -1231,7 +1313,11 @@ def enable_agent(
     _set_agent_control_state(target, action="enable", vm_user=vm_user)
 
 
-@app.command("resume-agent")
+@app.command(
+    "resume-agent",
+    rich_help_panel="VM Operations",
+    short_help="Resume an agent with a prompt.",
+)
 def resume_agent(
     target: str,
     message: Annotated[
@@ -1328,7 +1414,11 @@ def resume_agent(
     raise typer.Exit(code=completed.returncode)
 
 
-@app.command("create-issue-vm")
+@app.command(
+    "create-issue-vm",
+    rich_help_panel="Issue Lifecycle",
+    short_help="Create and bootstrap an issue VM.",
+)
 def create_issue_vm(
     issue: str,
     config: ConfigOption = Path("config/gateway.yaml"),
@@ -1357,6 +1447,9 @@ def create_issue_vm(
         list[str],
         typer.Option("--email-folder", help="Allowlisted email folder. Repeat for multiple folders."),
     ] = [],
+    python: Annotated[
+        bool, typer.Option("--python", help="Bootstrap a guest-local Python virtualenv for Python-first repos.")
+    ] = False,
     dotnet: Annotated[bool, typer.Option("--dotnet", help="Bootstrap the host .NET SDK into the guest.")] = False,
     nuget: Annotated[
         str | None,
@@ -1435,6 +1528,8 @@ def create_issue_vm(
     cmd = [str(setup_script)]
     if not start_agent:
         cmd.append("--dry-run")
+    if python:
+        cmd.append("--python")
     if dotnet:
         cmd.append("--dotnet")
     if nuget is not None:
@@ -1466,7 +1561,11 @@ def create_issue_vm(
     )
 
 
-@app.command("attach-pr-feedback")
+@app.command(
+    "attach-pr-feedback",
+    rich_help_panel="Sessions and Feedback",
+    short_help="Bind a PR feedback stream.",
+)
 def attach_pr_feedback(
     session_id: str,
     provider: Annotated[str, typer.Option("--provider", help="Feedback provider name.")] ,
@@ -1511,7 +1610,11 @@ def attach_pr_feedback(
     )
 
 
-@app.command("approve")
+@app.command(
+    "approve",
+    rich_help_panel="Sessions and Feedback",
+    short_help="Approve or deny a request.",
+)
 def approve(
     request_id: str,
     approver: str,
@@ -1530,7 +1633,11 @@ def approve(
     typer.echo(f"Updated approval {request_id} to {request.status.value}")
 
 
-@app.command("seed-email")
+@app.command(
+    "seed-email",
+    rich_help_panel="Seeding and Fixtures",
+    short_help="Insert a test email.",
+)
 def seed_email(
     message_id: str,
     folder: str,
@@ -1575,7 +1682,11 @@ def seed_email(
     )
 
 
-@app.command("seed-discord-channel")
+@app.command(
+    "seed-discord-channel",
+    rich_help_panel="Seeding and Fixtures",
+    short_help="Insert a test Discord cursor.",
+)
 def seed_discord_channel(
     channel_id: str,
     config: ConfigOption = Path("config/gateway.yaml"),
@@ -1606,7 +1717,11 @@ def seed_discord_channel(
 
 
 
-@app.command("host-heartbeat")
+@app.command(
+    "host-heartbeat",
+    rich_help_panel="Background Workers",
+    short_help="Run the host heartbeat worker.",
+)
 def host_heartbeat(
     config: ConfigOption = Path("config/gateway.yaml"),
     run_once: Annotated[
@@ -1636,7 +1751,11 @@ def host_heartbeat(
     worker.run_forever()
 
 
-@app.command("poll-ado-backlog")
+@app.command(
+    "poll-ado-backlog",
+    rich_help_panel="Background Workers",
+    short_help="Poll Azure DevOps backlog.",
+)
 def poll_ado_backlog(
     log_level: Annotated[str, typer.Option("--log-level", help="Python logging level.")] = "INFO",
     reprocess: Annotated[
@@ -1664,3 +1783,7 @@ def poll_ado_backlog(
         forget=forget,
         list_unprocessed=list_unprocessed,
     )
+
+
+if __name__ == "__main__":
+    app()

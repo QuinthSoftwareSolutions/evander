@@ -257,6 +257,10 @@ def test_resume_issue_agent_tracks_explicit_state_lifecycle() -> None:
     assert 'write_state "running" "resume"' in script_text
     assert 'trap on_exit_write_idle EXIT' in script_text
     assert 'AGENT_STATE_LIB_B64' in script_text
+    assert 'printf \'%s\' "${AGENT_RUNNER_LIB_B64}" | base64 -d > "${LOG_DIR}/lib/agent_runner.sh"' in script_text
+    assert 'printf \'%s\' "${AGENT_RUNNER_CODEX_LIB_B64}" | base64 -d > "${LOG_DIR}/lib/agent_runner_codex.sh"' in script_text
+    assert 'nohup env \\' in script_text
+    assert '. "$HOME/.agent-sandbox/lib/agent_runner.sh"' in script_text
     assert 'last_attempt_at' in script_text
     assert '--worker-mode' in script_text
 

@@ -24,13 +24,14 @@ Install these packages on the Ubuntu host before using the scripts:
 7. Create a session manifest with `agent-sandbox-cli create-session`.
 8. Launch a VM with `sudo ./scripts/launch_agent_vm.sh`.
 9. Optionally bootstrap a provider runtime in the guest (for Codex, use `./scripts/bootstrap_codex_vm.sh <vm-name>`).
-10. Optionally install the host `.NET` SDK into the guest with `./scripts/bootstrap_dotnet_vm.sh <vm-name>`.
-11. Optionally prewarm the shared host NuGet cache with `./scripts/prewarm_nuget_cache.sh <path> [more paths...]`.
-12. Optionally install NuGet relay sources into the guest with `./scripts/bootstrap_nuget_vm.sh <vm-name>`.
-13. Optionally provision a guest-local Microsoft SQL Server instance into the guest with `MSSQL_SA_PASSWORD=... ./scripts/bootstrap_mssql_vm.sh <vm-name>`.
-14. Optionally install Playwright into the guest with `./scripts/bootstrap_playwright_vm.sh <vm-name>` for rendered-DOM debugging.
-15. Optionally create a local bare Git remote with `./scripts/create_git_remote.sh <repo-name>` or mirror the default host repo with `./scripts/mirror_issue_repo.sh <issue-number>` if the VM should push code back to the host.
-16. Use [live-smoke-tests.md](/home/jonathan/agent-sandbox/docs/live-smoke-tests.md) when you want to verify live Discord and provider-backed email behavior against real credentials.
+10. Optionally bootstrap a Python repo into a guest-local virtualenv with `./scripts/bootstrap_python_vm.sh <vm-name> <host-checkout-root> <guest-repo-root>`.
+11. Optionally install the host `.NET` SDK into the guest with `./scripts/bootstrap_dotnet_vm.sh <vm-name>`.
+12. Optionally prewarm the shared host NuGet cache with `./scripts/prewarm_nuget_cache.sh <path> [more paths...]`.
+13. Optionally install NuGet relay sources into the guest with `./scripts/bootstrap_nuget_vm.sh <vm-name>`.
+14. Optionally provision a guest-local Microsoft SQL Server instance into the guest with `MSSQL_SA_PASSWORD=... ./scripts/bootstrap_mssql_vm.sh <vm-name>`.
+15. Optionally install Playwright into the guest with `./scripts/bootstrap_playwright_vm.sh <vm-name>` for rendered-DOM debugging.
+16. Optionally create a local bare Git remote with `./scripts/create_git_remote.sh <repo-name>` or mirror the default host repo with `./scripts/mirror_issue_repo.sh <issue-number>` if the VM should push code back to the host.
+17. Use [live-smoke-tests.md](/home/jonathan/agent-sandbox/docs/live-smoke-tests.md) when you want to verify live Discord and provider-backed email behavior against real credentials.
 
 - The launch script resizes each overlay disk to `20G` by default.
 - The launch script also exposes a read-only shared NuGet cache via `virtiofs` at `/opt/agent-sandbox/nuget-cache-ro` inside the guest.
@@ -98,6 +99,12 @@ agent-sandbox-cli list-local-issues --json
 - `./scripts/bootstrap_codex_vm.sh <vm-name>` copies the vendored Linux Codex binary from the host into `~/bin/codex` for the guest user and verifies Codex.
 - The bootstrap script writes `~/.codex/config.toml` with the relay-aware configuration, `model = "gpt-5.4"`, `model_reasoning_effort = "high"`, and `personality = "pragmatic"`, preferring explicit `LLM_BASE_URL` and otherwise reading `AGENT_SANDBOX_LLM_BASE_URL` from `~/.agent/config.env`; it then appends the placeholder-key shell hook plus `~/bin` PATH entry to both `~/.profile` and `~/.bashrc`.
 - The bootstrap script repairs `/home/agent` ownership first, so it also works against VMs created before the home directory ownership fix.
+
+## VM Python Bootstrap
+
+- `./scripts/bootstrap_python_vm.sh <vm-name> <host-checkout-root> <guest-repo-root>` builds a temporary host wheelhouse from the repo's `pyproject.toml`, copies it into the guest, creates a repo-local `.venv`, and installs the repo with dev dependencies offline.
+- The bootstrap validates that the guest Python interpreter satisfies the repo's `requires-python` lower bound before it creates the virtualenv.
+- The guest install path uses `pip install --no-index --find-links ... --no-build-isolation -e ".[dev]"` so later guest edits still run against the cloned checkout rather than a prebuilt wheel.
 
 ## VM Playwright Bootstrap
 
@@ -542,7 +549,7 @@ sudo systemctl status agent-sandbox-host-heartbeat.service
 For the common issue workflow, you can do the full host-side setup in one command:
 
 ```bash
-MSSQL_SA_PASSWORD='your-strong-password' ./scripts/setup_issue_vm.sh --dotnet --nuget --mssql --mssql-init-root /path/to/mssql-init --playwright --frontend-deps --frontend-install-root /path/to/repo/Src/Clients /path/to/issue.yaml /path/to/project-or-solution.slnx
+MSSQL_SA_PASSWORD='your-strong-password' ./scripts/setup_issue_vm.sh --python --dotnet --nuget --mssql --mssql-init-root /path/to/mssql-init --playwright --frontend-deps --frontend-install-root /path/to/repo/Src/Clients /path/to/issue.yaml /path/to/project-or-solution.slnx
 ```
 
 `setup_issue_vm.sh` path defaults are configurable so host-specific `/home/...` paths are not
@@ -572,6 +579,7 @@ workflow, but YAML is the preferred input when you want the task definition to s
 disk during long agent runs.
 Optional toolchain flags for `setup_issue_vm.sh`:
 
+- `--python`: run `bootstrap_python_vm.sh` and create a repo-local `.venv` from a host-built wheelhouse
 - `--dotnet`: run `bootstrap_dotnet_vm.sh`
 - `--nuget`: run `bootstrap_nuget_vm.sh` and prewarm the shared NuGet cache on the host (requires `project-or-solution`)
 - `--mssql`: run `bootstrap_mssql_vm.sh` and require `MSSQL_SA_PASSWORD` in the environment
@@ -586,6 +594,11 @@ already contain `package.json` plus `node_modules`. For local repo sources, `set
 uses the resolved local checkout automatically. For remote repo sources, pass
 `--frontend-host-checkout` so the helper can snapshot dependencies from a host checkout and
 restore them into the matching relative paths inside the guest clone.
+
+When `--python` is enabled, the guest clone also gets a repo-local `.venv`. Activate it with
+`. .venv/bin/activate`, then run `python -m pytest -q` and `python -m ruff check` from inside
+the guest clone. These checks validate the repo contents in-guest, but they do not replace
+host-side libvirt, firewall, or systemd verification for this scaffold.
 
 After the initial guest provider command run exits, setup triggers one
 provider-specific verification pass. Customize that verification

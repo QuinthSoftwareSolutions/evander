@@ -12,3 +12,4 @@ def test_cloud_init_contains_provider_neutral_session_and_profile_exports() -> N
     assert 'AGENT_SANDBOX_LLM_BASE_URL=__LLM_BASE_URL__' in template
     assert "/home/agent/.codex/config.toml" not in template
     assert 'OPENAI_API_KEY="${OPENAI_API_KEY:-relay-placeholder}"' in template
+    assert "  - git" in template

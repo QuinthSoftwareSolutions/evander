@@ -384,7 +384,10 @@ STATE_PATH="${LOG_DIR}/codex-resume-last.state"
 AGENT_STATE_REPO_NAME="resume-last"
 PROMPT="$(python3 -c 'import base64, os; print(base64.b64decode(os.environ["PROMPT_B64"]).decode("utf-8"))')"
 
-mkdir -p "${LOG_DIR}"
+mkdir -p "${LOG_DIR}/lib"
+printf '%s' "${AGENT_RUNNER_LIB_B64}" | base64 -d > "${LOG_DIR}/lib/agent_runner.sh"
+printf '%s' "${AGENT_RUNNER_CODEX_LIB_B64}" | base64 -d > "${LOG_DIR}/lib/agent_runner_codex.sh"
+printf '%s' "${AGENT_STATE_LIB_B64}" | base64 -d > "${LOG_DIR}/lib/agent_state.sh"
 
 ensure_agent_enabled
 
@@ -398,12 +401,21 @@ fi
 
 printf '%s\n' "--last" >"${RESUME_HINT_FILE}"
 
-nohup agent_runner_resume_last \
+nohup env \
+  AGENT_PROVIDER="${AGENT_PROVIDER}" \
+  AGENT_MODEL="${AGENT_MODEL}" \
+  PROMPT="${PROMPT}" \
+  RUN_LOG_FILE="${RUN_LOG_FILE}" \
+  bash -lc '
+. "$HOME/.agent-sandbox/lib/agent_runner.sh"
+. "$HOME/.agent-sandbox/lib/agent_state.sh"
+
+agent_runner_resume_last \
   --dangerously-bypass-approvals-and-sandbox \
   --skip-git-repo-check \
   --model "${AGENT_MODEL}" \
-  "${PROMPT}" \
-  >>"${RUN_LOG_FILE}" 2>&1 < /dev/null &
+  "${PROMPT}"
+' >>"${RUN_LOG_FILE}" 2>&1 < /dev/null &
 
 AGENT_PID=$!
 printf '%s\n' "${AGENT_PID}" >"${PID_FILE}"

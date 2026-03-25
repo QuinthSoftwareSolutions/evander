@@ -20,7 +20,7 @@ trap 'on_error ${LINENO}' ERR
 
 show_help() {
   cat <<'EOF'
-Usage: setup_issue_vm.sh [--dry-run] [--dotnet] [--nuget] [--mssql [--mssql-init-root PATH]] [--playwright] [--frontend-deps --frontend-host-checkout PATH --frontend-install-root PATH ...] [mirror-options] <issue-number|issue-yaml> [project-or-solution-if-nuget] [repo-source] [session-id] [vm-user]
+Usage: setup_issue_vm.sh [--dry-run] [--python] [--dotnet] [--nuget] [--mssql [--mssql-init-root PATH]] [--playwright] [--frontend-deps --frontend-host-checkout PATH --frontend-install-root PATH ...] [mirror-options] <issue-number|issue-yaml> [project-or-solution-if-nuget] [repo-source] [session-id] [vm-user]
 
 Run the common issue-VM bring-up flow in one command:
   1. optionally prewarm the shared NuGet cache on the host
@@ -83,6 +83,7 @@ Mirror options (forwarded to setup_issue_git_vm.sh and mirror_issue_repo.sh):
   --force-local
 
 Optional guest toolchains:
+  --python            Bootstrap a guest-local Python virtualenv for Python-first repos.
   --dotnet            Bootstrap the host .NET SDK into the guest.
   --nuget             Bootstrap NuGet relay configuration (requires project-or-solution).
   --mssql             Bootstrap a guest-local Microsoft SQL Server instance into the guest.
@@ -105,6 +106,7 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
 fi
 
 START_AGENT=1
+BOOTSTRAP_PYTHON=0
 BOOTSTRAP_DOTNET=0
 BOOTSTRAP_NUGET=0
 BOOTSTRAP_MSSQL=0
@@ -118,6 +120,10 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --dry-run)
       START_AGENT=0
+      shift
+      ;;
+    --python)
+      BOOTSTRAP_PYTHON=1
       shift
       ;;
     --dotnet)
@@ -455,12 +461,26 @@ log_step "guest_repo_clone_and_config"
 ssh \
   "${SSH_OPTS[@]}" \
   "${VM_USER}@${VM_IP}" \
-  "GUEST_REPO_NAME='${GUEST_REPO_NAME}' ISSUE_NUMBER='${ISSUE_NUMBER}' SESSION_ID='${SESSION_ID}' REMOTE_URL='${REMOTE_URL}' AGENT_BRANCH_SUFFIX='${VM_NAME}' BOOTSTRAP_DOTNET='${BOOTSTRAP_DOTNET}' BOOTSTRAP_NUGET='${BOOTSTRAP_NUGET}' BOOTSTRAP_FRONTEND_DEPS='${BOOTSTRAP_FRONTEND_DEPS}' FRONTEND_INSTALL_ROOTS_JSON='${FRONTEND_INSTALL_ROOTS_JSON}' AGENT_PR_NOTE_HELPER_B64='${AGENT_PR_NOTE_HELPER_B64}' bash -s" <<'EOF'
+  "GUEST_REPO_NAME='${GUEST_REPO_NAME}' ISSUE_NUMBER='${ISSUE_NUMBER}' SESSION_ID='${SESSION_ID}' REMOTE_URL='${REMOTE_URL}' AGENT_BRANCH_SUFFIX='${VM_NAME}' BOOTSTRAP_PYTHON='${BOOTSTRAP_PYTHON}' BOOTSTRAP_DOTNET='${BOOTSTRAP_DOTNET}' BOOTSTRAP_NUGET='${BOOTSTRAP_NUGET}' BOOTSTRAP_FRONTEND_DEPS='${BOOTSTRAP_FRONTEND_DEPS}' FRONTEND_INSTALL_ROOTS_JSON='${FRONTEND_INSTALL_ROOTS_JSON}' AGENT_PR_NOTE_HELPER_B64='${AGENT_PR_NOTE_HELPER_B64}' bash -s" <<'EOF'
 set -euo pipefail
 . ~/.profile
 
 TARGET_DIR="$HOME/${GUEST_REPO_NAME}"
+PYTHON_INSTRUCTION=""
 RESTORE_INSTRUCTION=""
+if [[ "${BOOTSTRAP_PYTHON:-0}" == "1" ]]; then
+  PYTHON_INSTRUCTION=$(cat <<'TXT'
+- For Python work, use the repo-local virtualenv:
+  `. .venv/bin/activate`
+- For tests, prefer:
+  `python -m pytest -q`
+- For lint, prefer:
+  `python -m ruff check`
+- Treat in-guest Python checks as repo validation only; host-only libvirt, firewall,
+  and systemd integration still needs host-side verification after promotion.
+TXT
+)
+fi
 if [[ "${BOOTSTRAP_DOTNET:-0}" == "1" && "${BOOTSTRAP_NUGET:-0}" == "1" ]]; then
   RESTORE_INSTRUCTION=$(cat <<'TXT'
 - For restore, always use:
@@ -564,6 +584,7 @@ cat > "$HOME/AGENTS.md" <<AGENTS
 - Branch suffix defaults to \`${AGENT_BRANCH_SUFFIX}\` (set to the VM name by setup); fallback is \`${HOSTNAME}\`.
 - `push-agent` refuses to run when `SESSION_ID` is missing or the suffix resolves empty, because that would cause branch collisions.
 - `push-agent` also refreshes the current branch's cached PR summary onto \`HEAD\` and pushes \`refs/notes/agent-pr\` automatically.
+${PYTHON_INSTRUCTION}
 ${RESTORE_INSTRUCTION}
 - If shell changes were just bootstrapped, run:
   \`. ~/.profile\`
@@ -603,6 +624,11 @@ git push-agent
 AGENTS
 EOF
 
+if (( BOOTSTRAP_PYTHON )); then
+  log_step "bootstrap_python"
+  "${SCRIPT_DIR}/bootstrap_python_vm.sh" --vm-user "${VM_USER}" "${VM_NAME}" "${RESOLVED_REPO_PATH}" "/home/${VM_USER}/${GUEST_REPO_NAME}"
+fi
+
 if [[ -n "${ISSUE_FILE}" ]]; then
   log_step "copy_issue_file"
   scp \
@@ -627,7 +653,7 @@ if (( START_AGENT )); then
   ssh \
     "${SSH_OPTS[@]}" \
     "${VM_USER}@${VM_IP}" \
-    "GUEST_REPO_NAME='${GUEST_REPO_NAME}' AGENT_PROVIDER='${AGENT_PROVIDER}' AGENT_MODEL='${AGENT_MODEL}' POST_EXEC_VERIFICATION_PROMPT_B64='${POST_EXEC_VERIFICATION_PROMPT_B64}' AGENT_RUNNER_LIB_B64='${AGENT_RUNNER_LIB_B64}' AGENT_RUNNER_CODEX_LIB_B64='${AGENT_RUNNER_CODEX_LIB_B64}' AGENT_STATE_LIB_B64='${AGENT_STATE_LIB_B64}' BOOTSTRAP_DOTNET='${BOOTSTRAP_DOTNET}' BOOTSTRAP_NUGET='${BOOTSTRAP_NUGET}' bash -s" <<'EOF'
+    "GUEST_REPO_NAME='${GUEST_REPO_NAME}' AGENT_PROVIDER='${AGENT_PROVIDER}' AGENT_MODEL='${AGENT_MODEL}' POST_EXEC_VERIFICATION_PROMPT_B64='${POST_EXEC_VERIFICATION_PROMPT_B64}' AGENT_RUNNER_LIB_B64='${AGENT_RUNNER_LIB_B64}' AGENT_RUNNER_CODEX_LIB_B64='${AGENT_RUNNER_CODEX_LIB_B64}' AGENT_STATE_LIB_B64='${AGENT_STATE_LIB_B64}' BOOTSTRAP_PYTHON='${BOOTSTRAP_PYTHON}' BOOTSTRAP_DOTNET='${BOOTSTRAP_DOTNET}' BOOTSTRAP_NUGET='${BOOTSTRAP_NUGET}' bash -s" <<'EOF'
 set -euo pipefail
 . ~/.profile
 AGENT_RUNNER_TMP_DIR="$(mktemp -d)"
@@ -640,6 +666,8 @@ source "${AGENT_RUNNER_TMP_DIR}/agent_runner.sh"
 TARGET_DIR="$HOME/${GUEST_REPO_NAME}"
 LOG_DIR="$HOME/.agent-sandbox"
 mkdir -p "${LOG_DIR}/lib"
+printf '%s' "${AGENT_RUNNER_LIB_B64}" | base64 -d > "${LOG_DIR}/lib/agent_runner.sh"
+printf '%s' "${AGENT_RUNNER_CODEX_LIB_B64}" | base64 -d > "${LOG_DIR}/lib/agent_runner_codex.sh"
 printf '%s' "${AGENT_STATE_LIB_B64}" | base64 -d > "${LOG_DIR}/lib/agent_state.sh"
 LOG_PATH="${LOG_DIR}/agent-${GUEST_REPO_NAME}.log"
 PID_PATH="${LOG_DIR}/agent-${GUEST_REPO_NAME}.pid"
@@ -647,6 +675,9 @@ STATE_PATH="${LOG_DIR}/agent-${GUEST_REPO_NAME}.state"
 # shellcheck source=/dev/null
 source "${LOG_DIR}/lib/agent_state.sh"
 INITIAL_PROMPT="You have been issued the task described in ${TARGET_DIR}/AGENT_TASK.yaml. Read ${HOME}/AGENTS.md and ${TARGET_DIR}/AGENT_TASK.yaml before you begin. The repository is located at ${TARGET_DIR}. Do not ask for feedback or clarifications, but work until the task is completed or until you determine that it is impossible to complete."
+if [[ "${BOOTSTRAP_PYTHON:-0}" == "1" ]]; then
+  INITIAL_PROMPT="${INITIAL_PROMPT} Use the repo-local virtualenv at ${TARGET_DIR}/.venv for Python work. Run tests with 'python -m pytest -q' from an activated venv and lint with 'python -m ruff check'. Guest validation does not replace host-side libvirt, firewall, or systemd verification."
+fi
 if [[ "${BOOTSTRAP_DOTNET:-0}" == "1" && "${BOOTSTRAP_NUGET:-0}" == "1" ]]; then
   INITIAL_PROMPT="${INITIAL_PROMPT} When restore is needed, use 'dotnet restore --configfile ~/.nuget/NuGet/NuGet.Config'. For build and test, prefer '--no-restore'."
 fi
@@ -675,6 +706,7 @@ nohup env \
   STATE_PATH="${STATE_PATH}" \
   AGENT_STATE_REPO_NAME="${GUEST_REPO_NAME}" \
   bash -lc '
+. "$HOME/.agent-sandbox/lib/agent_runner.sh"
 . "$HOME/.agent-sandbox/lib/agent_state.sh"
 
 ensure_agent_enabled
@@ -713,6 +745,7 @@ echo "  session: ${SESSION_ID}"
 echo "  repo:    ${REMOTE_URL}"
 echo "  guest:   /home/${VM_USER}/${GUEST_REPO_NAME}"
 echo "  task:    /home/${VM_USER}/${GUEST_REPO_NAME}/AGENT_TASK.yaml"
+echo "  python:  $([[ ${BOOTSTRAP_PYTHON} -eq 1 ]] && echo enabled || echo disabled)"
 echo "  dotnet:  $([[ ${BOOTSTRAP_DOTNET} -eq 1 ]] && echo enabled || echo disabled)"
 echo "  nuget:   $([[ ${BOOTSTRAP_NUGET} -eq 1 ]] && echo enabled || echo disabled)"
 echo "  mssql:   $([[ ${BOOTSTRAP_MSSQL} -eq 1 ]] && echo enabled || echo disabled)"

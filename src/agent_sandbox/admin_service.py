@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
+import sys
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -61,6 +63,177 @@ def _resolve_vm_name(target: str) -> str:
     if normalized.isdigit():
         return f"vm-{normalized}"
     return normalized
+
+
+def _issue_session_id_prefix(issue_number: str) -> str:
+    return f"issue-{issue_number}-"
+
+
+def _load_optional_env_file(path: Path) -> dict[str, str]:
+    if not path.exists():
+        return {}
+    values: dict[str, str] = {}
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if not key:
+            continue
+        values[key] = value.strip().strip('"').strip("'")
+    return values
+
+
+def _resolve_git_root(root_dir: Path) -> Path:
+    env_value = os.environ.get("AGENT_SANDBOX_GIT_ROOT", "").strip()
+    if env_value:
+        return Path(env_value)
+    env_file_values = _load_optional_env_file(root_dir / "config" / "git-server.env")
+    configured = env_file_values.get("AGENT_SANDBOX_GIT_ROOT", "").strip()
+    if configured:
+        return Path(configured)
+    return root_dir / "git-remotes"
+
+
+def _matching_issue_session_ids(issue_number: str, sessions: dict[str, SessionManifest]) -> set[str]:
+    vm_name = f"vm-{issue_number}"
+    prefix = _issue_session_id_prefix(issue_number)
+    matches: set[str] = set()
+    for session_id, session in sessions.items():
+        if session.vm_id == vm_name or session_id == issue_number or session_id.startswith(prefix):
+            matches.add(session_id)
+    return matches
+
+
+def _prune_pr_map(path: Path, *, session_ids: set[str]) -> tuple[int, set[tuple[str, str, str]]]:
+    if not path.exists():
+        return 0, set()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return 0, set()
+    entries = payload.get("entries")
+    if not isinstance(entries, dict):
+        return 0, set()
+
+    removed_streams: set[tuple[str, str, str]] = set()
+    kept_entries: dict[str, object] = {}
+    removed_count = 0
+    for entry_key, raw_entry in entries.items():
+        if not isinstance(raw_entry, dict):
+            kept_entries[entry_key] = raw_entry
+            continue
+        session_id = str(raw_entry.get("session_id", "")).strip()
+        if session_id in session_ids:
+            provider = str(raw_entry.get("provider", "")).strip()
+            repo = str(raw_entry.get("repo", "")).strip()
+            pr_id = str(raw_entry.get("pr_id", "")).strip()
+            if provider and repo and pr_id:
+                removed_streams.add((provider, repo, pr_id))
+            removed_count += 1
+            continue
+        kept_entries[entry_key] = raw_entry
+
+    if removed_count:
+        payload["entries"] = kept_entries
+        path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    return removed_count, removed_streams
+
+
+def _prune_pr_feedback_store(path: Path, *, streams: set[tuple[str, str, str]]) -> tuple[int, int]:
+    if not path.exists() or not streams:
+        return 0, 0
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return 0, 0
+
+    removed_cursor_count = 0
+    cursors = payload.get("cursors")
+    if isinstance(cursors, dict):
+        for provider, repo, pr_id in streams:
+            stream_key = f"{provider}:{repo}:{pr_id}"
+            if stream_key in cursors:
+                cursors.pop(stream_key, None)
+                removed_cursor_count += 1
+
+    removed_feedback_count = 0
+    feedback = payload.get("feedback")
+    if isinstance(feedback, dict):
+        kept_feedback: dict[str, object] = {}
+        for feedback_id, raw_feedback in feedback.items():
+            if not isinstance(raw_feedback, dict):
+                kept_feedback[feedback_id] = raw_feedback
+                continue
+            key = (
+                str(raw_feedback.get("provider", "")).strip(),
+                str(raw_feedback.get("repo", "")).strip(),
+                str(raw_feedback.get("pr_id", "")).strip(),
+            )
+            if key in streams:
+                removed_feedback_count += 1
+                continue
+            kept_feedback[feedback_id] = raw_feedback
+        payload["feedback"] = kept_feedback
+
+    if removed_cursor_count or removed_feedback_count:
+        path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    return removed_cursor_count, removed_feedback_count
+
+
+def _prune_approvals_for_sessions(runtime: RuntimeContext, *, session_ids: set[str]) -> int:
+    if not session_ids:
+        return 0
+    approvals = runtime.approvals.read_all()
+    removed_count = 0
+    remaining = {}
+    for request_id, approval in approvals.items():
+        if approval.session_id in session_ids:
+            removed_count += 1
+            continue
+        remaining[request_id] = approval
+    if removed_count:
+        runtime.approvals.write_all(remaining)
+    return removed_count
+
+
+def _remove_issue_bare_repo(issue_number: str, *, root_dir: Path, runtime_dir: Path) -> tuple[bool, str | None]:
+    git_root = _resolve_git_root(root_dir)
+    bare_repo_path = git_root / f"{issue_number}_repo.git"
+    hook_log_paths = [
+        root_dir / "runtime" / "hook-logs" / f"{bare_repo_path.name}.post-receive.log",
+        runtime_dir / "hook-logs" / f"{bare_repo_path.name}.post-receive.log",
+    ]
+    trusted_repo_path: str | None = None
+    if bare_repo_path.exists():
+        try:
+            config_result = subprocess.run(
+                ["git", f"--git-dir={bare_repo_path}", "config", "--get", "agent-sandbox.trustedRepoPath"],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        except OSError:
+            config_result = None
+        if config_result is not None and config_result.returncode == 0:
+            trusted_repo_path = (config_result.stdout or "").strip() or None
+        shutil.rmtree(bare_repo_path, ignore_errors=True)
+    for hook_log_path in hook_log_paths:
+        if hook_log_path.exists():
+            hook_log_path.unlink()
+    if trusted_repo_path:
+        mirror_remote_name = f"{issue_number}-mirror"
+        try:
+            subprocess.run(
+                ["git", "-C", trusted_repo_path, "remote", "remove", mirror_remote_name],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        except OSError:
+            pass
+    return bare_repo_path.exists() is False, str(bare_repo_path) if bare_repo_path.exists() else str(bare_repo_path)
 
 
 def _caller_home() -> Path:
@@ -416,6 +589,98 @@ class AdminService:
             )
         return summaries
 
+    def get_agent_log_snapshot(
+        self,
+        target: str,
+        *,
+        lines: int = 50,
+        repo_name: str | None = None,
+        vm_user: str = "agent",
+    ) -> str:
+        issue_number = _extract_issue_number(target) or target
+        if not issue_number:
+            return "Agent log unavailable: no issue number for selected VM."
+        vm_name = f"vm-{issue_number}"
+        vm_state = _dominfo_field(vm_name, "State")
+        if vm_state != "running":
+            return f"Agent log unavailable: {vm_name} is not running."
+        vm_ip = _resolve_vm_ip(vm_name)
+        if not vm_ip:
+            return f"Agent log unavailable: could not determine IP for {vm_name}."
+        ssh_private_key_path = _resolve_private_key_path()
+        if ssh_private_key_path is None:
+            return "Agent log unavailable: missing SSH private key for guest access."
+
+        remote_script = r"""
+set -euo pipefail
+
+LOG_DIR="$HOME/.agent-sandbox"
+RESOLVED_REPO_NAME="${REPO_NAME:-}"
+TAIL_LINES="${TAIL_LINES:-50}"
+
+if [[ -z "${RESOLVED_REPO_NAME}" ]]; then
+  shopt -s nullglob
+  candidates=()
+  for path in "${LOG_DIR}"/agent-*.pid "${LOG_DIR}"/agent-*.log; do
+    name="$(basename "${path}")"
+    name="${name#agent-}"
+    name="${name%.pid}"
+    name="${name%.log}"
+    if [[ -n "${name}" ]]; then
+      candidates+=("${name}")
+    fi
+  done
+  shopt -u nullglob
+
+  if [[ ${#candidates[@]} -eq 0 ]]; then
+    echo "No guest agent logs or pid files found under ${LOG_DIR}"
+    exit 0
+  fi
+
+  mapfile -t unique_candidates < <(printf '%s\n' "${candidates[@]}" | sort -u)
+  if [[ ${#unique_candidates[@]} -ne 1 ]]; then
+    echo "Multiple guest agent logs found under ${LOG_DIR}; pass an explicit repo name."
+    printf 'Candidates:\n'
+    printf '  %s\n' "${unique_candidates[@]}"
+    exit 0
+  fi
+
+  RESOLVED_REPO_NAME="${unique_candidates[0]}"
+fi
+
+LOG_PATH="${LOG_DIR}/agent-${RESOLVED_REPO_NAME}.log"
+if [[ ! -f "${LOG_PATH}" ]]; then
+  echo "No guest agent log found at ${LOG_PATH}"
+  exit 0
+fi
+
+echo "Repo: ${RESOLVED_REPO_NAME}"
+echo "Log: ${LOG_PATH}"
+echo
+tail -n "${TAIL_LINES}" "${LOG_PATH}"
+"""
+        result = _run_subprocess(
+            [
+                "ssh",
+                *_ssh_options(vm_name, vm_ip, ssh_private_key_path),
+                f"{vm_user}@{vm_ip}",
+                "env",
+                f"REPO_NAME={repo_name or ''}",
+                f"TAIL_LINES={lines}",
+                "bash",
+                "-s",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=20.0,
+            input=remote_script,
+        )
+        output = (result.stdout or "").strip()
+        error = (result.stderr or "").strip()
+        if result.returncode != 0 and error:
+            return f"Agent log unavailable: {error}"
+        return output or error or "Agent log is empty."
+
     def start_vm(self, target: str) -> VmActionResult:
         vm_name = _resolve_vm_name(target)
         current_state = _dominfo_field(vm_name, "State")
@@ -552,6 +817,7 @@ class AdminService:
         discord_channels: list[str] | None = None,
         email_mailboxes: list[str] | None = None,
         email_folders: list[str] | None = None,
+        python: bool = False,
         dotnet: bool = False,
         nuget: str | None = None,
         mssql: bool = False,
@@ -595,6 +861,8 @@ class AdminService:
         cmd = [str(setup_script)]
         if not start_agent:
             cmd.append("--dry-run")
+        if python:
+            cmd.append("--python")
         if dotnet:
             cmd.append("--dotnet")
         if nuget is not None:
@@ -637,8 +905,15 @@ class AdminService:
         self,
         issue_number: str,
         *,
+        repo_source: str | None = None,
         vm_user: str = "agent",
         start_agent: bool = True,
+        python: bool = False,
+        dotnet: bool = False,
+        nuget: str | None = None,
+        mssql: bool = False,
+        mssql_init_root: str | None = None,
+        playwright: bool = False,
     ) -> VmActionResult:
         issue = self.local_issue_store.get(issue_number)
         if issue is None:
@@ -650,7 +925,108 @@ class AdminService:
             )
         return self.create_issue_vm(
             issue=issue.yaml_path,
-            repo_source=issue.repo_source,
+            repo_source=repo_source or issue.repo_source,
             vm_user=vm_user,
             start_agent=start_agent,
+            python=python,
+            dotnet=dotnet,
+            nuget=nuget,
+            mssql=mssql,
+            mssql_init_root=mssql_init_root,
+            playwright=playwright,
+        )
+
+    def destroy_issue_vm(self, target: str) -> VmActionResult:
+        issue_number = _extract_issue_number(target) or target
+        vm_name = f"vm-{issue_number}" if issue_number else target
+        root_dir = Path(__file__).resolve().parents[2]
+        destroy_script = root_dir / "scripts" / "destroy_agent_vm.sh"
+
+        completed = _run_subprocess(
+            ["pkexec", str(destroy_script), vm_name],
+            capture_output=True,
+            text=True,
+        )
+        message = (completed.stdout or completed.stderr or "").strip()
+        if completed.returncode != 0:
+            return VmActionResult(
+                success=False,
+                vm_name=vm_name,
+                action="destroy_issue_vm",
+                message=message or f"destroy-issue-vm exited with code {completed.returncode}",
+            )
+
+        sessions = self.runtime.sessions.read_all()
+        session_ids = _matching_issue_session_ids(issue_number, sessions)
+        if session_ids:
+            remaining_sessions = {
+                session_id: manifest for session_id, manifest in sessions.items() if session_id not in session_ids
+            }
+            self.runtime.sessions.write_all(remaining_sessions)
+        removed_approvals = _prune_approvals_for_sessions(self.runtime, session_ids=session_ids)
+        removed_pr_map_entries, removed_streams = _prune_pr_map(self.config.pr_map_path, session_ids=session_ids)
+        removed_cursors, removed_feedback = _prune_pr_feedback_store(
+            self.config.runtime_dir / "pr-feedback-store.json",
+            streams=removed_streams,
+        )
+        bare_repo_removed, bare_repo_path = _remove_issue_bare_repo(
+            issue_number,
+            root_dir=root_dir,
+            runtime_dir=self.config.runtime_dir,
+        )
+        summary = (
+            f"Destroyed issue VM {vm_name}; "
+            f"removed_sessions={len(session_ids)} "
+            f"removed_pr_map_entries={removed_pr_map_entries} "
+            f"removed_approvals={removed_approvals} "
+            f"removed_feedback_cursors={removed_cursors} "
+            f"removed_feedback_items={removed_feedback} "
+            f"bare_repo_removed={bare_repo_removed} "
+            f"bare_repo_path={bare_repo_path}"
+        )
+        if message:
+            summary = f"{message}\n{summary}"
+        return VmActionResult(
+            success=True,
+            vm_name=vm_name,
+            action="destroy_issue_vm",
+            message=summary,
+        )
+
+    def delete_local_issue(self, issue_number: str) -> VmActionResult:
+        issue = self.local_issue_store.get(issue_number)
+        if issue is None:
+            return VmActionResult(
+                success=False,
+                vm_name=f"vm-{issue_number}",
+                action="delete_local_issue",
+                message=f"Unknown local issue: {issue_number}",
+            )
+
+        vm_name = f"vm-{issue_number}"
+        existing_vm_state = _dominfo_field(vm_name, "State")
+        sessions = self.runtime.sessions.read_all()
+        has_session = any(
+            session_id == issue_number
+            or session_id.startswith(f"issue-{issue_number}-")
+            or session.vm_id == vm_name
+            for session_id, session in sessions.items()
+        )
+        if existing_vm_state is not None or has_session:
+            return VmActionResult(
+                success=False,
+                vm_name=vm_name,
+                action="delete_local_issue",
+                message=f"Destroy {vm_name} before deleting local issue {issue_number}.",
+            )
+
+        self.local_issue_store.delete(issue_number)
+        yaml_path = Path(issue.yaml_path)
+        if yaml_path.exists():
+            yaml_path.unlink()
+        return VmActionResult(
+            success=True,
+            vm_name=vm_name,
+            action="delete_local_issue",
+            message=f"Deleted local issue {issue_number}",
         )

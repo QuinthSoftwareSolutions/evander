@@ -118,7 +118,15 @@
 
    This copies the host `.NET` installation into the guest, seeds host dotnet tool state into `~/.dotnet`, appends `DOTNET_ROOT`, `DOTNET_CLI_HOME`, and tool-aware `PATH` exports to the guest profile, and verifies `dotnet --info`. When host-seeded Entity Framework tooling is available, the bootstrap also exposes `dotnet-ef` in the guest so agents can generate migrations offline.
 
-10. Optionally install host-relay NuGet sources into the VM:
+10. Optionally bootstrap a Python repo into a guest-local virtualenv:
+
+   ```bash
+   ./scripts/bootstrap_python_vm.sh vm-real /path/to/repo /home/agent/$(basename /path/to/repo)
+   ```
+
+   This builds a temporary host wheelhouse from the repo's `pyproject.toml`, copies it into the guest, creates a repo-local `.venv`, and installs the repo with dev dependencies offline.
+
+11. Optionally install host-relay NuGet sources into the VM:
 
    ```bash
    ./scripts/bootstrap_nuget_vm.sh vm-real
@@ -126,7 +134,7 @@
 
    This writes `~/.nuget/NuGet/NuGet.Config` in the guest so package restore can use host relay endpoints for nuget.org and Azure Artifacts, while keeping guest-local writable caches under `~/.nuget` and using the shared host cache as a read-only fallback package folder.
 
-11. Optionally provision a guest-local Microsoft SQL Server instance into the VM:
+12. Optionally provision a guest-local Microsoft SQL Server instance into the VM:
 
    ```bash
    MSSQL_SA_PASSWORD='your-strong-password' ./scripts/bootstrap_mssql_vm.sh vm-real
@@ -134,7 +142,7 @@
 
    This bootstraps host-installed SQL Server tooling plus the database engine into the guest, starts a local `mssql-server` service listening on `localhost:1433`, and verifies `sqlcmd` can query the guest-local instance. If you also need schema or data initialization, pass `--init-root /path/to/mssql-init`, where `init.sql` can run arbitrary setup or restore commands against the local instance.
 
-12. Optionally prewarm the shared host NuGet cache from the host before launching or restoring in guests:
+13. Optionally prewarm the shared host NuGet cache from the host before launching or restoring in guests:
 
    ```bash
    ./scripts/prewarm_nuget_cache.sh /path/to/project-or-solution.slnx
@@ -143,7 +151,7 @@
 
    Prewarming fills the shared host cache explicitly through real host restores, and the inspect script shows cache size or whether a specific package/version is already present.
 
-13. Optionally install Playwright into the VM for frontend debugging:
+14. Optionally install Playwright into the VM for frontend debugging:
 
    ```bash
    ./scripts/bootstrap_playwright_vm.sh vm-real
@@ -151,7 +159,7 @@
 
    This copies a host-seeded Node runtime, Playwright packages, and browser cache into the guest and verifies that Playwright can resolve Chromium offline.
 
-14. Optionally install a repo-specific browser-test runtime into the VM for frontend unit tests:
+15. Optionally install a repo-specific browser-test runtime into the VM for frontend unit tests:
 
    ```bash
    ./scripts/bootstrap_frontend_deps_vm.sh vm-real /path/to/repo /path/to/repo/Src/Clients
@@ -253,7 +261,7 @@ agent-sandbox-cli list-local-issues --json
 For the full issue-VM bring-up path in one command, use:
 
 ```bash
-MSSQL_SA_PASSWORD='your-strong-password' ./scripts/setup_issue_vm.sh --dotnet --nuget --mssql --mssql-init-root /path/to/mssql-init --playwright --frontend-deps --frontend-install-root /path/to/repo/Src/Clients /path/to/issue.yaml /path/to/project-or-solution.slnx
+MSSQL_SA_PASSWORD='your-strong-password' ./scripts/setup_issue_vm.sh --python --dotnet --nuget --mssql --mssql-init-root /path/to/mssql-init --playwright --frontend-deps --frontend-install-root /path/to/repo/Src/Clients /path/to/issue.yaml /path/to/project-or-solution.slnx
 ```
 
 `setup_issue_vm.sh` now resolves host-dependent paths in this order:
@@ -268,6 +276,7 @@ agents or reruns for the same issue.
 
 Toolchain bootstraps are now opt-in:
 
+- `--python` runs `bootstrap_python_vm.sh` and creates a repo-local `.venv` from a host-built wheelhouse
 - `--dotnet` runs `bootstrap_dotnet_vm.sh`
 - `--nuget` runs `bootstrap_nuget_vm.sh` and host `prewarm_nuget_cache.sh` (requires `project-or-solution`)
 - `--mssql` runs `bootstrap_mssql_vm.sh` and requires `MSSQL_SA_PASSWORD` in the environment
@@ -300,6 +309,9 @@ Use `--no-start-agent` with `agent-sandbox-cli create-issue-vm` or `--dry-run` w
 `setup_issue_vm.sh` if you want the VM prepared without starting the agent process. The
 helper still accepts a raw issue number as the first argument for the older workflow, but
 YAML is the preferred input for long-running agent sessions.
+When `--python` is enabled, the guest repo also gets a repo-local `.venv`. Activate it with
+`. .venv/bin/activate`, then run `python -m pytest -q` and `python -m ruff check` from inside
+the guest clone.
 After the initial provider command run exits, the helper now performs one
 provider-specific follow-up verification pass to verify checklist completion
 (tests, docs, and PR markdown note). Override that follow-up prompt text with
