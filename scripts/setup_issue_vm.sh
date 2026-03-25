@@ -639,7 +639,7 @@ PID_PATH="${LOG_DIR}/agent-${GUEST_REPO_NAME}.pid"
 STATE_PATH="${LOG_DIR}/agent-${GUEST_REPO_NAME}.state"
 # shellcheck source=/dev/null
 source "${LOG_DIR}/lib/agent_state.sh"
-INITIAL_PROMPT="You have been issued the task described in ${TARGET_DIR}/AGENT_TASK.yaml. Read ${HOME}/AGENTS.md and ${TARGET_DIR}/AGENT_TASK.yaml before you begin. The repository is located at ${TARGET_DIR}. Do not ask for feedback or clarifications, but work until the task is completed or until you determine that it is impossible to complete."
+INITIAL_PROMPT="You have been issued the task described in ${TARGET_DIR}/AGENT_TASK.yaml. Read ${HOME}/AGENTS.md and ${TARGET_DIR}/AGENT_TASK.yaml before you begin. The repository is located at ${TARGET_DIR}. Do not ask for feedback or clarifications at this time, but work until the task is completed or until you determine that it is impossible to complete."
 if [[ "${BOOTSTRAP_PYTHON:-0}" == "1" ]]; then
   INITIAL_PROMPT="${INITIAL_PROMPT} Use the repo-local virtualenv at ${TARGET_DIR}/.venv for Python work. Run tests with 'python -m pytest -q' from an activated venv and lint with 'python -m ruff check'. Guest validation does not replace host-side libvirt, firewall, or systemd verification."
 fi
