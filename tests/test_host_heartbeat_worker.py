@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import httpx
 
+from agent_sandbox.agent_control import AgentControlStore
 from agent_sandbox.host_heartbeat_worker import (
     FeedbackStream,
     HostHeartbeatWorker,
@@ -442,6 +443,62 @@ def test_wake_bindings_skips_resume_when_agent_unavailable(tmp_path, monkeypatch
 
     assert not cooldown_path.exists()
     assert any(event.get("reason") == "agent-unavailable" for event in audit.events)
+
+
+def test_wake_bindings_skips_resume_when_agent_disabled_in_host_store(tmp_path, monkeypatch) -> None:
+    now = datetime.now(UTC)
+    sessions = {
+        "active-a": _build_manifest(
+            "active-a",
+            expires_at=now + timedelta(hours=2),
+            metadata={"pr_feedback_streams": [{"provider": "github", "repo": "org/repo", "pr_id": "17"}]},
+        ),
+    }
+
+    class _FeedbackWorker:
+        store = SimpleNamespace(has_unread_feedback=lambda **kwargs: True)
+
+        def poll_once(self, **kwargs):  # noqa: ANN003
+            return [object()]
+
+    def _fake_run(cmd, check, capture_output, text, timeout):  # noqa: ANN001
+        raise AssertionError(f"resume should not run, got {cmd!r}")
+
+    audit = _CapturingAudit()
+    monkeypatch.setattr(
+        "agent_sandbox.host_heartbeat_worker._probe_agent_dispatch_state",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("busy probe should not run")),
+    )
+    monkeypatch.setattr("agent_sandbox.host_heartbeat_worker.subprocess.run", _fake_run)
+
+    runtime = SimpleNamespace(sessions=SimpleNamespace(read_all=lambda: sessions), audit=audit)
+    control_store = AgentControlStore(tmp_path / "host-agent-control-state.json")
+    control_store.set_status(vm_name="vm-1", status="disabled", phase="operator-disable")
+    worker = HostHeartbeatWorker(
+        config=SimpleNamespace(
+            host_heartbeat_http_timeout_seconds=0.1,
+            host_heartbeat_poll_interval_seconds=30.0,
+            host_heartbeat_jitter_seconds=0.0,
+            host_heartbeat_cooldown_seconds=10.0,
+            host_heartbeat_stream_conflict_policy="fanout",
+            host_heartbeat_session_cooldown_path=tmp_path / "cooldowns.json",
+            host_busy_check_script_path=tmp_path / "check_busy.sh",
+            host_resume_script_path=tmp_path / "resume_issue_agent.sh",
+            host_heartbeat_resume_prompt="wake up now",
+            host_heartbeat_vm_user="agent",
+            host_heartbeat_wake_state_path=tmp_path / "wake-state.json",
+            host_heartbeat_resume_timeout_seconds=12.0,
+            pr_map_path=tmp_path / "missing-pr-map.json",
+        ),
+        runtime=runtime,
+        feedback_worker=_FeedbackWorker(),
+        adapters={"github": object()},
+        agent_control_store=control_store,
+    )
+
+    worker.run_once()
+
+    assert any(event.get("reason") == "agent-disabled" for event in audit.events)
 
 
 def test_run_once_continues_when_one_stream_poll_fails(tmp_path) -> None:

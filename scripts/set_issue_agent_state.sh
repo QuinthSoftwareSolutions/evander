@@ -27,6 +27,7 @@ Options:
   --issue-number NUM    Issue identifier used to derive VM name (`vm-<issue-number>`).
   --vm-name NAME        Explicit libvirt domain name.
   --vm-user USER        Guest user to connect as. Default: agent
+  --host-state-path P   Host JSON file used to persist agent control state by VM.
   -h, --help            Show this help text.
 
 Environment:
@@ -59,21 +60,35 @@ parse_args() {
   ISSUE_NUMBER=""
   VM_NAME=""
   VM_USER="agent"
+  HOST_STATE_PATH=""
 
   if [[ $# -eq 0 ]]; then
     return 1
   fi
 
   if [[ "$1" != --* ]]; then
-    if [[ $# -lt 2 || $# -gt 3 ]]; then
+    if [[ $# -lt 2 ]]; then
       return 1
     fi
     DESIRED_ACTION="$1"
     ISSUE_NUMBER="$2"
     VM_NAME="vm-${ISSUE_NUMBER}"
-    if [[ $# -eq 3 ]]; then
-      VM_USER="$3"
+    shift 2
+    if [[ $# -gt 0 && "${1:-}" != --* ]]; then
+      VM_USER="$1"
+      shift
     fi
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --host-state-path)
+          HOST_STATE_PATH="${2:-}"
+          shift 2
+          ;;
+        *)
+          return 1
+          ;;
+      esac
+    done
   else
     while [[ $# -gt 0 ]]; do
       case "$1" in
@@ -94,6 +109,10 @@ parse_args() {
           VM_USER="${2:-}"
           shift 2
           ;;
+        --host-state-path)
+          HOST_STATE_PATH="${2:-}"
+          shift 2
+          ;;
         -h|--help)
           show_help
           exit 0
@@ -112,6 +131,57 @@ parse_args() {
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/vm_network.sh
 source "${SCRIPT_DIR}/lib/vm_network.sh"
+
+write_host_control_state() {
+  local path="$1"
+  local vm_name="$2"
+  local status="$3"
+  local phase="$4"
+
+  [[ -n "${path}" ]] || return 0
+
+  python3 - "${path}" "${vm_name}" "${status}" "${phase}" <<'PY'
+import json
+import os
+import sys
+import tempfile
+import fcntl
+from datetime import datetime, timezone
+
+path, vm_name, status, phase = sys.argv[1:5]
+os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+lock_path = f"{path}.lock" if os.path.splitext(path)[1] else f"{path}.lock"
+lock_fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o644)
+try:
+    fcntl.flock(lock_fd, fcntl.LOCK_EX)
+    payload = {}
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except (OSError, json.JSONDecodeError):
+            payload = {}
+
+    if not isinstance(payload, dict):
+        payload = {}
+
+    payload[vm_name] = {
+        "vm_name": vm_name,
+        "status": status,
+        "phase": phase,
+        "updated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    }
+
+    fd, tmp_path = tempfile.mkstemp(prefix="agent-control-", suffix=".tmp", dir=os.path.dirname(path) or ".")
+    os.close(fd)
+    with open(tmp_path, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2, sort_keys=True)
+    os.replace(tmp_path, path)
+finally:
+    fcntl.flock(lock_fd, fcntl.LOCK_UN)
+    os.close(lock_fd)
+PY
+}
 
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   show_help
@@ -136,6 +206,21 @@ if ! sudo -n virsh dominfo "${VM_NAME}" >/dev/null 2>&1 && ! virsh dominfo "${VM
   exit "${EXIT_VM_NOT_FOUND}"
 fi
 
+REMOTE_STATUS="idle"
+REMOTE_PHASE="operator-enable"
+if [[ "${DESIRED_ACTION}" == "disable" ]]; then
+  REMOTE_STATUS="disabled"
+  REMOTE_PHASE="operator-disable"
+fi
+
+write_host_control_state "${HOST_STATE_PATH}" "${VM_NAME}" "${REMOTE_STATUS}" "${REMOTE_PHASE}"
+
+VM_STATE="$(vm_network_domain_state "${VM_NAME}")"
+if [[ "${VM_STATE}" != "running" ]]; then
+  printf 'state=%s path=%s guest_sync=skipped vm_state=%s\n' "${REMOTE_STATUS}" "${HOST_STATE_PATH:-<unset>}" "${VM_STATE}"
+  exit 0
+fi
+
 if ! vm_network_wait_for_ip "${VM_NAME}" "${VM_WAIT_IP_TIMEOUT_SECONDS}" >/dev/null; then
   echo "Timed out waiting for IP on ${VM_NAME} after ${VM_WAIT_IP_TIMEOUT_SECONDS}s." >&2
   exit "${EXIT_VM_WAIT_IP_TIMEOUT}"
@@ -149,13 +234,6 @@ if ! timeout --foreground "${VM_WAIT_SSH_TIMEOUT_SECONDS}s" \
   ssh "${SSH_FLAGS[@]}" "${VM_USER}@${VM_IP}" true >/dev/null 2>&1; then
   echo "Timed out waiting for SSH on ${VM_NAME} after ${VM_WAIT_SSH_TIMEOUT_SECONDS}s." >&2
   exit "${EXIT_VM_WAIT_SSH_TIMEOUT}"
-fi
-
-REMOTE_STATUS="idle"
-REMOTE_PHASE="operator-enable"
-if [[ "${DESIRED_ACTION}" == "disable" ]]; then
-  REMOTE_STATUS="disabled"
-  REMOTE_PHASE="operator-disable"
 fi
 
 ssh "${SSH_FLAGS[@]}" \

@@ -21,6 +21,24 @@ agent_control_state_path() {
   printf '%s\n' "${state_dir}/agent-control.state"
 }
 
+write_agent_control_state() {
+  local status="$1"
+  local phase="$2"
+  local control_path now tmp_path
+
+  control_path="$(agent_control_state_path)"
+  now="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  tmp_path="${control_path}.tmp"
+  {
+    printf "status=%s\n" "${status}"
+    printf "phase=%s\n" "${phase}"
+    printf "repo=%s\n" "control"
+    printf "pid=%s\n" "$$"
+    printf "updated_at=%s\n" "${now}"
+  } > "${tmp_path}"
+  mv "${tmp_path}" "${control_path}"
+}
+
 agent_is_disabled() {
   local control_path status
 

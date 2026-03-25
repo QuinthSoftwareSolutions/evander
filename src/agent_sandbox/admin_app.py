@@ -269,6 +269,27 @@ def _set_standard_icon(widget, icon_name: str) -> None:
     widget.setIcon(style.standardIcon(icon_enum))
 
 
+def _set_text_preserving_scroll(text_edit, text: str) -> None:
+    scroll_bar = text_edit.verticalScrollBar()
+    if scroll_bar is None:
+        text_edit.setPlainText(text)
+        return
+
+    previous_value = scroll_bar.value()
+    previous_maximum = scroll_bar.maximum()
+    was_at_bottom = previous_maximum <= 0 or previous_value >= previous_maximum
+
+    text_edit.setPlainText(text)
+
+    updated_scroll_bar = text_edit.verticalScrollBar()
+    if updated_scroll_bar is None:
+        return
+    if was_at_bottom:
+        updated_scroll_bar.setValue(updated_scroll_bar.maximum())
+        return
+    updated_scroll_bar.setValue(min(previous_value, updated_scroll_bar.maximum()))
+
+
 class MainWindow(QMainWindow):  # type: ignore[misc]
     def __init__(self, service: AdminService) -> None:
         super().__init__()
@@ -554,9 +575,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self.start_vm_button.setVisible(summary.libvirt_state != "running")
         self.shutdown_vm_button.setVisible(summary.libvirt_state == "running")
         self.enable_agent_button.setVisible(bool(summary.issue_number) and summary.agent_state == "disabled")
-        self.disable_agent_button.setVisible(
-            bool(summary.issue_number) and summary.libvirt_state == "running" and summary.agent_state != "disabled"
-        )
+        self.disable_agent_button.setVisible(bool(summary.issue_number) and summary.agent_state != "disabled")
         self.resume_agent_button.setVisible(bool(summary.issue_number) and summary.agent_state != "disabled")
         self.destroy_vm_button.setVisible(bool(summary.issue_number))
 
@@ -586,13 +605,13 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
     def refresh_selected_agent_log(self) -> None:
         summary = self.selected_vm_summary()
         if summary is None:
-            self.agent_log_view.setPlainText("No VM selected.")
+            _set_text_preserving_scroll(self.agent_log_view, "No VM selected.")
             return
         if not summary.issue_number:
-            self.agent_log_view.setPlainText("Agent log unavailable for VMs without an issue number.")
+            _set_text_preserving_scroll(self.agent_log_view, "Agent log unavailable for VMs without an issue number.")
             return
         text = self.service.get_agent_log_snapshot(summary.issue_number, lines=50)
-        self.agent_log_view.setPlainText(text)
+        _set_text_preserving_scroll(self.agent_log_view, text)
 
     def handle_start_selected_vm(self) -> None:
         summary = self.selected_vm_summary()
@@ -828,10 +847,10 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
     def refresh_selected_worker_log(self) -> None:
         worker = self.selected_worker_summary()
         if worker is None:
-            self.worker_log_view.setPlainText("No worker selected.")
+            _set_text_preserving_scroll(self.worker_log_view, "No worker selected.")
             return
         text = self.service.get_background_worker_log_snapshot(worker.worker_id, lines=200)
-        self.worker_log_view.setPlainText(text)
+        _set_text_preserving_scroll(self.worker_log_view, text)
 
     def _on_worker_selection_changed(self) -> None:
         self.update_worker_action_bar()

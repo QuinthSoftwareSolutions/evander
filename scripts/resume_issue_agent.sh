@@ -31,6 +31,7 @@ Options:
   --vm-user USER              Guest user to connect as. Default: agent
   --worker-mode               Disable TTY allocation and run non-interactive worker mode.
   --host-state-file PATH      Host JSON state file that stores wake attempt diagnostics.
+  --host-control-state-path P Host JSON file that stores durable agent control state by VM.
   --observe [LINES]           Tail the guest Codex log after resuming instead of returning
                               immediately. Default lines: 10
   -h, --help                  Show this help text.
@@ -113,6 +114,38 @@ os.replace(tmp_path, path)
 PY
 }
 
+read_host_control_state_status() {
+  local host_control_state_path="$1"
+  local vm_name="$2"
+
+  [[ -n "${host_control_state_path}" ]] || return 0
+
+  python3 - "${host_control_state_path}" "${vm_name}" <<'PY'
+import json
+import os
+import sys
+
+path = sys.argv[1]
+vm_name = sys.argv[2]
+
+if not os.path.exists(path):
+    raise SystemExit(0)
+try:
+    with open(path, "r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+except (OSError, json.JSONDecodeError):
+    raise SystemExit(0)
+if not isinstance(payload, dict):
+    raise SystemExit(0)
+entry = payload.get(vm_name)
+if not isinstance(entry, dict):
+    raise SystemExit(0)
+status = str(entry.get("status", "")).strip()
+if status:
+    print(status)
+PY
+}
+
 resolve_private_key_path() {
   local caller_user caller_home
 
@@ -157,6 +190,7 @@ parse_args() {
   VM_USER="agent"
   WORKER_MODE=0
   HOST_STATE_FILE=""
+  HOST_CONTROL_STATE_PATH=""
   OBSERVE=0
   OBSERVE_LINES=10
 
@@ -171,12 +205,30 @@ parse_args() {
     PROMPT="$1"
     ISSUE_NUMBER="$2"
     shift 2
-    if [[ $# -gt 0 && "${1:-}" != "--observe" ]]; then
+    if [[ $# -gt 0 && "${1:-}" != "--observe" && "${1:-}" != "--host-control-state-path" ]]; then
       VM_USER="$1"
       shift
     fi
     VM_NAME="vm-${ISSUE_NUMBER}"
-    parse_observe_args "$@" || return 1
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --observe)
+          OBSERVE=1
+          shift
+          if [[ $# -gt 0 && "${1:-}" != --* ]]; then
+            OBSERVE_LINES="$1"
+            shift
+          fi
+          ;;
+        --host-control-state-path)
+          HOST_CONTROL_STATE_PATH="${2:-}"
+          shift 2
+          ;;
+        *)
+          return 1
+          ;;
+      esac
+    done
   else
     while [[ $# -gt 0 ]]; do
       case "$1" in
@@ -206,6 +258,10 @@ parse_args() {
           ;;
         --host-state-file)
           HOST_STATE_FILE="${2:-}"
+          shift 2
+          ;;
+        --host-control-state-path)
+          HOST_CONTROL_STATE_PATH="${2:-}"
           shift 2
           ;;
         --observe)
@@ -281,6 +337,13 @@ if ! vm_network_vm_exists "${VM_NAME}"; then
   exit "${EXIT_VM_NOT_FOUND}"
 fi
 
+HOST_CONTROL_STATUS="$(read_host_control_state_status "${HOST_CONTROL_STATE_PATH}" "${VM_NAME}" || true)"
+if [[ "${HOST_CONTROL_STATUS}" == "disabled" ]]; then
+  echo "Agent is disabled for ${VM_NAME}." >&2
+  write_host_state_attempt "${HOST_STATE_FILE}" "${SESSION_ID}" "error" "agent-disabled"
+  exit "${EXIT_RESUME_FAILED}"
+fi
+
 VM_STATE="$(vm_network_domain_state "${VM_NAME}")"
 if [[ "${VM_STATE}" != "running" ]]; then
   if ! vm_network_start "${VM_NAME}"; then
@@ -309,7 +372,7 @@ if (( WORKER_MODE )); then
   timeout --foreground "${RESUME_COMMAND_TIMEOUT_SECONDS}s" \
     ssh "${SSH_FLAGS[@]}" \
     "${VM_USER}@${VM_IP}" \
-    "PROMPT_B64='${PROMPT_B64}' AGENT_PROVIDER='${AGENT_PROVIDER}' AGENT_MODEL='${AGENT_MODEL}' AGENT_RUNNER_LIB_B64='${AGENT_RUNNER_LIB_B64}' AGENT_RUNNER_CODEX_LIB_B64='${AGENT_RUNNER_CODEX_LIB_B64}' AGENT_STATE_LIB_B64='${AGENT_STATE_LIB_B64}' bash -s" <<'REMOTE'
+    "PROMPT_B64='${PROMPT_B64}' AGENT_PROVIDER='${AGENT_PROVIDER}' AGENT_MODEL='${AGENT_MODEL}' HOST_CONTROL_STATUS='${HOST_CONTROL_STATUS}' AGENT_RUNNER_LIB_B64='${AGENT_RUNNER_LIB_B64}' AGENT_RUNNER_CODEX_LIB_B64='${AGENT_RUNNER_CODEX_LIB_B64}' AGENT_STATE_LIB_B64='${AGENT_STATE_LIB_B64}' bash -s" <<'REMOTE'
 set -euo pipefail
 
 cd "${HOME}"
@@ -329,6 +392,10 @@ STATE_PATH="${LOG_DIR}/codex-resume-last.state"
 AGENT_STATE_REPO_NAME="resume-last"
 PROMPT="$(python3 -c 'import base64, os; print(base64.b64decode(os.environ["PROMPT_B64"]).decode("utf-8"))')"
 mkdir -p "${LOG_DIR}"
+
+if [[ -n "${HOST_CONTROL_STATUS}" ]]; then
+  write_agent_control_state "${HOST_CONTROL_STATUS}" "host-sync"
+fi
 
 ensure_agent_enabled
 
@@ -361,7 +428,7 @@ fi
 resume_output="$(
   ssh "${SSH_FLAGS[@]}" \
     "${VM_USER}@${VM_IP}" \
-    "PROMPT_B64='${PROMPT_B64}' AGENT_PROVIDER='${AGENT_PROVIDER}' AGENT_MODEL='${AGENT_MODEL}' AGENT_RUNNER_LIB_B64='${AGENT_RUNNER_LIB_B64}' AGENT_RUNNER_CODEX_LIB_B64='${AGENT_RUNNER_CODEX_LIB_B64}' AGENT_STATE_LIB_B64='${AGENT_STATE_LIB_B64}' bash -s" <<'REMOTE'
+    "PROMPT_B64='${PROMPT_B64}' AGENT_PROVIDER='${AGENT_PROVIDER}' AGENT_MODEL='${AGENT_MODEL}' HOST_CONTROL_STATUS='${HOST_CONTROL_STATUS}' AGENT_RUNNER_LIB_B64='${AGENT_RUNNER_LIB_B64}' AGENT_RUNNER_CODEX_LIB_B64='${AGENT_RUNNER_CODEX_LIB_B64}' AGENT_STATE_LIB_B64='${AGENT_STATE_LIB_B64}' bash -s" <<'REMOTE'
 set -euo pipefail
 
 cd "${HOME}"
@@ -388,6 +455,10 @@ mkdir -p "${LOG_DIR}/lib"
 printf '%s' "${AGENT_RUNNER_LIB_B64}" | base64 -d > "${LOG_DIR}/lib/agent_runner.sh"
 printf '%s' "${AGENT_RUNNER_CODEX_LIB_B64}" | base64 -d > "${LOG_DIR}/lib/agent_runner_codex.sh"
 printf '%s' "${AGENT_STATE_LIB_B64}" | base64 -d > "${LOG_DIR}/lib/agent_state.sh"
+
+if [[ -n "${HOST_CONTROL_STATUS}" ]]; then
+  write_agent_control_state "${HOST_CONTROL_STATUS}" "host-sync"
+fi
 
 ensure_agent_enabled
 

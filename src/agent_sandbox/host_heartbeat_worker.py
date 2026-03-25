@@ -14,6 +14,7 @@ from typing import Any
 
 import httpx
 
+from .agent_control import AgentControlStore
 from .audit import AuditEventType
 from .config import GatewayConfig
 from .pr_feedback_worker import (
@@ -57,11 +58,13 @@ class HostHeartbeatWorker:
         runtime: RuntimeContext,
         feedback_worker: PullRequestFeedbackWorker,
         adapters: dict[str, FeedbackProviderAdapter],
+        agent_control_store: AgentControlStore | None = None,
     ) -> None:
         self.config = config
         self.runtime = runtime
         self.feedback_worker = feedback_worker
         self.adapters = adapters
+        self.agent_control_store = agent_control_store
 
     def _log_audit_decision(self, **kwargs: Any) -> None:
         audit = getattr(self.runtime, "audit", None)
@@ -182,6 +185,24 @@ class HostHeartbeatWorker:
         for binding in bindings:
             if not self._binding_has_unread_feedback(binding=binding, stream=stream):
                 continue
+            if self._binding_is_host_disabled(binding):
+                self._log_audit_decision(
+                    event_type=AuditEventType.BUSY_SKIP,
+                    session_id=binding.session_id,
+                    vm_id=binding.vm_id,
+                    provider=stream.provider,
+                    repo=stream.repo,
+                    pr_id=stream.pr_id,
+                    decision="skipped",
+                    reason="agent-disabled",
+                    args={"source": binding.source},
+                )
+                logger.info(
+                    "Host heartbeat skip reason=agent-disabled session_id=%s vm_id=%s",
+                    binding.session_id,
+                    binding.vm_id,
+                )
+                continue
             if _is_session_in_cooldown(
                 path=self.config.host_heartbeat_session_cooldown_path,
                 session_id=binding.session_id,
@@ -258,6 +279,11 @@ class HostHeartbeatWorker:
                 cooldown_seconds=self.config.host_heartbeat_cooldown_seconds,
             )
 
+    def _binding_is_host_disabled(self, binding: StreamSessionBinding) -> bool:
+        if self.agent_control_store is None or not binding.vm_id:
+            return False
+        return self.agent_control_store.is_disabled(binding.vm_id)
+
     def _stream_has_unread_bindings(self, *, stream: FeedbackStream, bindings: list[StreamSessionBinding]) -> bool:
         for binding in bindings:
             if self._binding_has_unread_feedback(binding=binding, stream=stream):
@@ -304,6 +330,9 @@ class HostHeartbeatWorker:
             "--host-state-file",
             str(self.config.host_heartbeat_wake_state_path),
         ]
+        host_control_state_path = getattr(self.config, "host_agent_control_state_path", None)
+        if host_control_state_path is not None:
+            cmd.extend(["--host-control-state-path", str(host_control_state_path)])
         try:
             completed = subprocess.run(
                 cmd,
@@ -630,4 +659,5 @@ def build_host_heartbeat_worker(config: GatewayConfig) -> HostHeartbeatWorker:
         runtime=runtime,
         feedback_worker=feedback_worker,
         adapters=adapters,
+        agent_control_store=AgentControlStore(config.host_agent_control_state_path),
     )

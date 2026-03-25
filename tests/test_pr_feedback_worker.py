@@ -94,6 +94,50 @@ def test_pr_feedback_store_reports_unread_feedback_per_session(tmp_path: Path) -
     )
 
 
+def test_pr_feedback_store_compacts_old_feedback_once_stream_cursor_has_advanced(tmp_path: Path) -> None:
+    path = tmp_path / "runtime" / "pr-feedback-store.json"
+    store = PrFeedbackStore(path)
+    old_envelope = FeedbackEnvelope(
+        feedback_id="github:issue_comment:1",
+        provider="github",
+        repo="org/repo",
+        pr_id="123",
+        thread_id="issue_comment:1",
+        comment_id="1",
+        author="octocat",
+        body="Old feedback",
+        created_at=datetime(2000, 1, 1, tzinfo=timezone.utc),
+    )
+
+    assert store.add_feedback_if_new(old_envelope) is True
+    store.set_cursor("github:org/repo:123", "2099-01-01T00:00:00Z")
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["feedback"] == {}
+
+
+def test_pr_feedback_store_keeps_recent_feedback_even_when_stream_cursor_has_advanced(tmp_path: Path) -> None:
+    path = tmp_path / "runtime" / "pr-feedback-store.json"
+    store = PrFeedbackStore(path)
+    recent_envelope = FeedbackEnvelope(
+        feedback_id="github:issue_comment:1",
+        provider="github",
+        repo="org/repo",
+        pr_id="123",
+        thread_id="issue_comment:1",
+        comment_id="1",
+        author="octocat",
+        body="Recent feedback",
+        created_at=datetime(2099, 1, 1, tzinfo=timezone.utc),
+    )
+
+    assert store.add_feedback_if_new(recent_envelope) is True
+    store.set_cursor("github:org/repo:123", "2099-01-02T00:00:00Z")
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert list(payload["feedback"]) == ["github:issue_comment:1"]
+
+
 def test_github_mapping_review_comment_edge_cases() -> None:
     comments = [
         {
@@ -194,6 +238,127 @@ def test_ado_mapping_thread_edge_cases() -> None:
     assert envelope.in_reply_to is None
     assert envelope.file_path == "/src/app.py"
     assert envelope.line == 12
+
+
+def test_ado_mapping_skips_system_review_state_change_comments_and_advances_cursor() -> None:
+    adapter = AzureDevOpsFeedbackAdapter("https://dev.azure.com/example", "proj")
+
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return {
+                "value": [
+                    {
+                        "id": 29766,
+                        "status": "active",
+                        "comments": [
+                            {
+                                "id": 1,
+                                "author": {"displayName": "Microsoft.VisualStudio.Services.TFS"},
+                                "content": "Kamil Niescieronek declined to review",
+                                "publishedDate": "2026-03-24T15:21:52.040000Z",
+                                "isDeleted": False,
+                            }
+                        ],
+                    }
+                ]
+            }
+
+    class FakeClient:
+        def get(self, *args: object, **kwargs: object) -> FakeResponse:
+            return FakeResponse()
+
+    result = adapter.poll(
+        client=FakeClient(),
+        repo="exampleindustry/Example Industry APP/ExampleIndustryAPP",
+        pr_id="5822",
+        cursor=None,
+    )
+
+    assert result.feedback == []
+    assert result.next_cursor == "2026-03-24T15:21:52.040000Z"
+
+
+def test_ado_mapping_skips_reviewer_membership_and_vote_events() -> None:
+    adapter = AzureDevOpsFeedbackAdapter("https://dev.azure.com/example", "proj")
+
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return {
+                "value": [
+                    {
+                        "id": 29683,
+                        "status": "active",
+                        "comments": [
+                            {
+                                "id": 1,
+                                "author": {"displayName": "Microsoft.VisualStudio.Services.TFS"},
+                                "content": "Kamil Niescieronek joined as a reviewer",
+                                "publishedDate": "2026-03-24T09:01:41.927000Z",
+                                "isDeleted": False,
+                            }
+                        ],
+                    },
+                    {
+                        "id": 29685,
+                        "status": "active",
+                        "comments": [
+                            {
+                                "id": 1,
+                                "author": {"displayName": "Microsoft.VisualStudio.Services.TFS"},
+                                "content": "Kamil Niescieronek added Jonathan Quinth as a reviewer",
+                                "publishedDate": "2026-03-24T09:01:54.303000Z",
+                                "isDeleted": False,
+                            }
+                        ],
+                    },
+                    {
+                        "id": 29690,
+                        "status": "active",
+                        "comments": [
+                            {
+                                "id": 1,
+                                "author": {"displayName": "Microsoft.VisualStudio.Services.TFS"},
+                                "content": "Kamil Niescieronek is changed to be a required reviewer",
+                                "publishedDate": "2026-03-24T10:07:32.147000Z",
+                                "isDeleted": False,
+                            }
+                        ],
+                    },
+                    {
+                        "id": 29746,
+                        "status": "active",
+                        "comments": [
+                            {
+                                "id": 1,
+                                "author": {"displayName": "Kamil Niescieronek"},
+                                "content": "Kamil Niescieronek voted 5",
+                                "publishedDate": "2026-03-24T14:03:03.637000Z",
+                                "isDeleted": False,
+                            }
+                        ],
+                    },
+                ]
+            }
+
+    class FakeClient:
+        def get(self, *args: object, **kwargs: object) -> FakeResponse:
+            return FakeResponse()
+
+    result = adapter.poll(
+        client=FakeClient(),
+        repo="exampleindustry/Example Industry APP/ExampleIndustryAPP",
+        pr_id="5822",
+        cursor=None,
+    )
+
+    assert result.feedback == []
+    assert result.next_cursor == "2026-03-24T14:03:03.637000Z"
 
 
 def test_github_adapter_sends_auth_headers_when_token_configured() -> None:

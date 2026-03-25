@@ -3,8 +3,9 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import re
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Lock
 from typing import Any, Protocol
@@ -17,6 +18,8 @@ from .audit import AuditEventType, AuditLogger
 
 
 logger = logging.getLogger(__name__)
+
+_FEEDBACK_RETENTION = timedelta(days=90)
 
 
 class FeedbackEnvelope(BaseModel):
@@ -65,6 +68,7 @@ class PrFeedbackStore:
                 cursors.pop(stream_key, None)
             else:
                 cursors[stream_key] = cursor
+            self._compact_feedback(payload)
             self._atomic_write(payload)
 
     def add_feedback_if_new(self, envelope: FeedbackEnvelope) -> bool:
@@ -74,6 +78,7 @@ class PrFeedbackStore:
             if envelope.feedback_id in stored_feedback:
                 return False
             stored_feedback[envelope.feedback_id] = envelope.model_dump(mode="json")
+            self._compact_feedback(payload)
             self._atomic_write(payload)
             return True
 
@@ -114,6 +119,7 @@ class PrFeedbackStore:
                 current_reads[stream_key] = next_cursor
             if not current_reads:
                 session_reads.pop(session_id, None)
+            self._compact_feedback(payload)
             self._atomic_write(payload)
             return next_cursor
 
@@ -174,6 +180,34 @@ class PrFeedbackStore:
 
     def _read_raw(self) -> dict[str, Any]:
         return json.loads(self.path.read_text(encoding="utf-8"))
+
+    def _compact_feedback(self, payload: dict[str, Any]) -> None:
+        feedback = payload.get("feedback")
+        cursors = payload.get("cursors")
+        if not isinstance(feedback, dict) or not isinstance(cursors, dict):
+            return
+
+        cutoff = datetime.now(timezone.utc) - _FEEDBACK_RETENTION
+        compacted: dict[str, Any] = {}
+        changed = False
+        for feedback_id, raw_value in feedback.items():
+            if not isinstance(raw_value, dict):
+                compacted[feedback_id] = raw_value
+                continue
+            provider = str(raw_value.get("provider", "")).strip()
+            repo = str(raw_value.get("repo", "")).strip()
+            pr_id = str(raw_value.get("pr_id", "")).strip()
+            if not provider or not repo or not pr_id:
+                compacted[feedback_id] = raw_value
+                continue
+            created_at = _parse_dt(raw_value.get("created_at"))
+            stream_cursor = cursors.get(_stream_key(provider, repo, pr_id))
+            if created_at < cutoff and stream_cursor is not None and created_at <= _parse_dt(stream_cursor):
+                changed = True
+                continue
+            compacted[feedback_id] = raw_value
+        if changed:
+            payload["feedback"] = compacted
 
     def _atomic_write(self, payload: dict[str, Any]) -> None:
         tmp_path = self.path.with_suffix(f"{self.path.suffix}.tmp")
@@ -381,6 +415,7 @@ class AzureDevOpsFeedbackAdapter:
         cursor_dt = _parse_dt(cursor) if cursor else None
 
         feedback: list[FeedbackEnvelope] = []
+        seen_timestamps: list[str] = []
         for thread in threads:
             thread_id = str(thread.get("id"))
             resolved = _ado_thread_resolved(thread.get("status"))
@@ -393,6 +428,7 @@ class AzureDevOpsFeedbackAdapter:
                 created_at = _parse_dt(comment.get("publishedDate") or comment.get("lastUpdatedDate"))
                 if cursor_dt and created_at <= cursor_dt:
                     continue
+                seen_timestamps.append(created_at.isoformat())
                 comment_id = str(comment.get("id"))
                 parent_comment_id = comment.get("parentCommentId")
                 in_reply_to = (
@@ -400,6 +436,15 @@ class AzureDevOpsFeedbackAdapter:
                     if isinstance(parent_comment_id, int) and parent_comment_id > 0
                     else None
                 )
+                author = (comment.get("author", {}).get("displayName") or "unknown").strip()
+                body = (comment.get("content") or "").strip()
+                if _ado_should_skip_comment(
+                    author=author,
+                    body=body,
+                    comment_type=comment.get("commentType"),
+                    file_path=file_path,
+                ):
+                    continue
                 feedback.append(
                     FeedbackEnvelope(
                         feedback_id=f"azure_devops:thread_comment:{thread_id}:{comment_id}",
@@ -408,8 +453,8 @@ class AzureDevOpsFeedbackAdapter:
                         pr_id=str(pr_id),
                         thread_id=thread_id,
                         comment_id=comment_id,
-                        author=(comment.get("author", {}).get("displayName") or "unknown").strip(),
-                        body=(comment.get("content") or "").strip(),
+                        author=author,
+                        body=body,
                         file_path=file_path,
                         line=line,
                         created_at=created_at,
@@ -419,8 +464,44 @@ class AzureDevOpsFeedbackAdapter:
                 )
 
         ordered = sorted(feedback, key=lambda item: item.created_at)
-        next_cursor = _latest_cursor([cursor, *[item.created_at.isoformat() for item in ordered]])
+        next_cursor = _latest_cursor([cursor, *seen_timestamps])
         return ProviderPollResult(feedback=ordered, next_cursor=next_cursor)
+
+
+_ADO_SYSTEM_STATE_CHANGE_PATTERNS = (
+    re.compile(r"^.+ voted -?\d+$"),
+    re.compile(r"^.+ approved the changes$"),
+    re.compile(r"^.+ approved with suggestions$"),
+    re.compile(r"^.+ waiting for author$"),
+    re.compile(r"^.+ declined to review$"),
+    re.compile(r"^.+ reset all code reviewer votes$"),
+    re.compile(r"^.+ rejected this pull request$"),
+    re.compile(r"^.+ updated the pull request status to .+$"),
+    re.compile(r"^the reference refs/heads/.+ was updated\.$"),
+    re.compile(r"^.+ joined as a reviewer$"),
+    re.compile(r"^.+ added .+ as a reviewer$"),
+    re.compile(r"^.+ is changed to be a required reviewer$"),
+    re.compile(r"^.+ is no longer a required reviewer$"),
+    re.compile(r"^.+ removed .+ as a reviewer$"),
+)
+
+
+def _ado_should_skip_comment(
+    *,
+    author: str,
+    body: str,
+    comment_type: object,
+    file_path: str | None,
+) -> bool:
+    comment_type_value = str(comment_type or "").strip().lower()
+    if comment_type_value == "system":
+        return True
+    if file_path:
+        return False
+    normalized_body = body.strip().casefold()
+    if not normalized_body:
+        return False
+    return any(pattern.fullmatch(normalized_body) for pattern in _ADO_SYSTEM_STATE_CHANGE_PATTERNS)
 
 
 class PullRequestFeedbackWorker:

@@ -169,3 +169,51 @@ def test_list_unread_feedback_limit_returns_single_oldest_item(tmp_path: Path) -
 
     assert [item.feedback_id for item in response.feedback] == ["github:review:1"]
     assert response.next_cursor == "2026-01-01T00:00:00Z"
+
+
+def test_list_unread_feedback_skips_ignored_feedback_ids(tmp_path: Path) -> None:
+    store_path = tmp_path / "pr-feedback-store.json"
+    ignored_path = tmp_path / "ignored-feedback-ids.json"
+    _write_store(store_path)
+    ignored_path.write_text(
+        json.dumps({"feedback_ids": ["github:review:2"]}),
+        encoding="utf-8",
+    )
+    service = PrFeedbackService(store_path, ignored_feedback_store_path=ignored_path)
+
+    response = service.list_unread_feedback(
+        streams=[{"provider": "github", "repo": "org/repo", "pr_id": "17"}],
+        cursor="2025-12-31T00:00:00Z",
+    )
+
+    assert [item.feedback_id for item in response.feedback] == ["github:review:1"]
+    assert response.next_cursor == "2026-01-01T00:00:00Z"
+
+
+def test_list_unread_feedback_prunes_expired_ignored_feedback_ids(tmp_path: Path) -> None:
+    store_path = tmp_path / "pr-feedback-store.json"
+    ignored_path = tmp_path / "ignored-feedback-ids.json"
+    _write_store(store_path)
+    ignored_path.write_text(
+        json.dumps(
+            {
+                "feedback_ids": [
+                    {"feedback_id": "github:review:1", "ignored_at": "2025-01-01T00:00:00Z"},
+                    {"feedback_id": "github:review:2", "ignored_at": "2099-01-01T00:00:00Z"},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    service = PrFeedbackService(store_path, ignored_feedback_store_path=ignored_path)
+
+    response = service.list_unread_feedback(
+        streams=[{"provider": "github", "repo": "org/repo", "pr_id": "17"}],
+        cursor="2025-12-31T00:00:00Z",
+    )
+
+    assert [item.feedback_id for item in response.feedback] == ["github:review:1"]
+    payload = json.loads(ignored_path.read_text(encoding="utf-8"))
+    assert payload["feedback_ids"] == [
+        {"feedback_id": "github:review:2", "ignored_at": "2099-01-01T00:00:00Z"}
+    ]

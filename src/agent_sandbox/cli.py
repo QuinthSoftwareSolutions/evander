@@ -1278,11 +1278,19 @@ def logs(
     _run_subprocess_compat(cmd, check=True, capture_output=False, text=False)
 
 
-def _set_agent_control_state(target: str, *, action: str, vm_user: str) -> None:
+def _set_agent_control_state(target: str, *, action: str, vm_user: str, config: Path) -> None:
     issue_number = _resolve_issue_number_or_raise(target)
+    cfg = load_config(config)
     script_path = Path(__file__).resolve().parents[2] / "scripts" / "set_issue_agent_state.sh"
     _run_subprocess_compat(
-        [str(script_path), action, issue_number, vm_user],
+        [
+            str(script_path),
+            action,
+            issue_number,
+            vm_user,
+            "--host-state-path",
+            str(cfg.host_agent_control_state_path),
+        ],
         check=True,
         capture_output=False,
         text=False,
@@ -1296,9 +1304,10 @@ def _set_agent_control_state(target: str, *, action: str, vm_user: str) -> None:
 )
 def disable_agent(
     target: str,
+    config: ConfigOption = Path("config/gateway.yaml"),
     vm_user: Annotated[str, typer.Option("--vm-user", help="Guest user to connect as.")] = "agent",
 ) -> None:
-    _set_agent_control_state(target, action="disable", vm_user=vm_user)
+    _set_agent_control_state(target, action="disable", vm_user=vm_user, config=config)
 
 
 @app.command(
@@ -1308,9 +1317,10 @@ def disable_agent(
 )
 def enable_agent(
     target: str,
+    config: ConfigOption = Path("config/gateway.yaml"),
     vm_user: Annotated[str, typer.Option("--vm-user", help="Guest user to connect as.")] = "agent",
 ) -> None:
-    _set_agent_control_state(target, action="enable", vm_user=vm_user)
+    _set_agent_control_state(target, action="enable", vm_user=vm_user, config=config)
 
 
 @app.command(
@@ -1346,7 +1356,14 @@ def resume_agent(
     cfg = load_config(config)
     runtime = build_runtime(cfg)
     script_path = Path(__file__).resolve().parents[2] / "scripts" / "resume_issue_agent.sh"
-    cmd = [str(script_path), message, issue_number, vm_user]
+    cmd = [
+        str(script_path),
+        message,
+        issue_number,
+        vm_user,
+        "--host-control-state-path",
+        str(cfg.host_agent_control_state_path),
+    ]
     if observe:
         cmd.extend(["--observe", str(lines)])
 

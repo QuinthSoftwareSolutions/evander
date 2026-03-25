@@ -263,6 +263,7 @@ def test_resume_issue_agent_tracks_explicit_state_lifecycle() -> None:
     assert '. "$HOME/.agent-sandbox/lib/agent_runner.sh"' in script_text
     assert 'last_attempt_at' in script_text
     assert '--worker-mode' in script_text
+    assert 'write_agent_control_state "${HOST_CONTROL_STATUS}" "host-sync"' in script_text
 
 
 def test_resume_issue_agent_worker_mode_starts_vm_and_skips_tty(tmp_path: Path) -> None:
@@ -355,3 +356,70 @@ exit 0
     session_state = state_payload["sessions"]["session-14084"]
     assert session_state["outcome"] == "ok"
     assert "last_attempt_at" in session_state
+
+
+def test_resume_issue_agent_refuses_host_disabled_agent(tmp_path: Path) -> None:
+    script_path, fake_bin = _prepare_script(tmp_path)
+    private_key = tmp_path / "id_ed25519"
+    private_key.write_text("PRIVATE\n", encoding="utf-8")
+    host_control_state_path = tmp_path / "host-agent-control-state.json"
+    host_control_state_path.write_text(
+        json.dumps(
+            {
+                "vm-14084": {
+                    "vm_name": "vm-14084",
+                    "status": "disabled",
+                    "phase": "operator-disable",
+                    "updated_at": "2026-03-25T00:00:00Z",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    _write_fake_sudo(fake_bin / "sudo")
+
+    _write_executable(
+        fake_bin / "virsh",
+        """#!/usr/bin/env bash
+set -euo pipefail
+cmd="${1:-}"
+shift || true
+
+case "${cmd}" in
+  dominfo)
+    [[ "${1:-}" == "vm-14084" ]] || exit 1
+    cat <<'EOF'
+Id:             -
+Name:           vm-14084
+State:          shut off
+EOF
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+""",
+    )
+
+    env = os.environ.copy()
+    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+    env["SSH_PRIVATE_KEY_PATH"] = str(private_key)
+    env["USER"] = env.get("USER", "root")
+
+    result = subprocess.run(
+        [
+            str(script_path),
+            "Resume work now",
+            "14084",
+            "agent",
+            "--host-control-state-path",
+            str(host_control_state_path),
+        ],
+        text=True,
+        capture_output=True,
+        env=env,
+        check=False,
+    )
+
+    assert result.returncode == 16
+    assert result.stderr.strip() == "Agent is disabled for vm-14084."

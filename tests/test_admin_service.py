@@ -87,6 +87,18 @@ def test_list_vms_collects_session_and_agent_state(tmp_path: Path, monkeypatch) 
     assert summaries[1].agent_state == "inactive_vm"
 
 
+def test_list_vms_marks_inactive_vm_disabled_from_host_control_state(tmp_path: Path, monkeypatch) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.agent_control_store.set_status(vm_name="vm-999", status="disabled", phase="operator-disable")
+
+    monkeypatch.setattr("agent_sandbox.admin_service._virsh_lines", lambda args: ["vm-999"])
+    monkeypatch.setattr("agent_sandbox.admin_service._dominfo_field", lambda vm_name, field_name: "shut off")
+
+    summaries = service.list_vms(include_inactive=True)
+
+    assert summaries[0].agent_state == "disabled"
+
+
 def test_list_background_workers_reads_systemd_state(tmp_path: Path, monkeypatch) -> None:
     service = AdminService(write_config(tmp_path))
 

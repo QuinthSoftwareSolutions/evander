@@ -10,6 +10,7 @@ import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from .agent_control import AgentControlStore
 from .config import GatewayConfig, load_config
 from .models import (
     LocalIssueRecord,
@@ -636,6 +637,7 @@ class AdminService:
         self.config_path = Path(config_path)
         self.config = load_config(self.config_path)
         self.runtime = build_runtime(self.config)
+        self.agent_control_store = AgentControlStore(self.config.host_agent_control_state_path)
         self.local_issue_store = JsonStore(self.config.runtime_dir / "local-issues.json", LocalIssueRecord)
         self.local_issue_counter_path = self.config.runtime_dir / "local-issue-counter.txt"
         self.local_issue_yaml_dir = self.config.runtime_dir / "issues"
@@ -656,13 +658,17 @@ class AdminService:
         summaries: list[VmSummary] = []
         for vm_name in vm_names:
             libvirt_state = _dominfo_field(vm_name, "State") or "unknown"
+            host_control_status = self.agent_control_store.status_for_vm(vm_name)
             ip_address = _resolve_vm_ip(vm_name) if libvirt_state == "running" else None
             if libvirt_state != "running":
-                agent_state = "inactive_vm"
+                agent_state = "disabled" if host_control_status == "disabled" else "inactive_vm"
                 repo_names: list[str] = []
                 updated_at = None
             elif omit_state or not ip_address:
-                agent_state = "unknown" if not ip_address else "omitted"
+                if host_control_status == "disabled":
+                    agent_state = "disabled"
+                else:
+                    agent_state = "unknown" if not ip_address else "omitted"
                 repo_names = []
                 updated_at = None
             else:
@@ -929,15 +935,24 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
 
     def enable_agent(self, target: str, *, vm_user: str = "agent") -> VmActionResult:
         issue_number = _extract_issue_number(target) or target
-        return self._run_script("set_issue_agent_state.sh", ["enable", issue_number, vm_user])
+        return self._run_script(
+            "set_issue_agent_state.sh",
+            ["enable", issue_number, vm_user, "--host-state-path", str(self.config.host_agent_control_state_path)],
+        )
 
     def disable_agent(self, target: str, *, vm_user: str = "agent") -> VmActionResult:
         issue_number = _extract_issue_number(target) or target
-        return self._run_script("set_issue_agent_state.sh", ["disable", issue_number, vm_user])
+        return self._run_script(
+            "set_issue_agent_state.sh",
+            ["disable", issue_number, vm_user, "--host-state-path", str(self.config.host_agent_control_state_path)],
+        )
 
     def resume_agent(self, target: str, prompt: str, *, vm_user: str = "agent") -> VmActionResult:
         issue_number = _extract_issue_number(target) or target
-        return self._run_script("resume_issue_agent.sh", [prompt, issue_number, vm_user])
+        return self._run_script(
+            "resume_issue_agent.sh",
+            [prompt, issue_number, vm_user, "--host-control-state-path", str(self.config.host_agent_control_state_path)],
+        )
 
     def list_local_issues(self) -> list[LocalIssueRecord]:
         return sorted(self.local_issue_store.read_all().values(), key=lambda issue: issue.issue_number)

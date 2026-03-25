@@ -60,7 +60,10 @@ def build_runtime(config: GatewayConfig) -> RuntimeContext:
         policy=PolicyEngine(config, sessions, approvals),
         email_service=EmailService(_build_email_provider(config, emails, drafts, email_cursors)),
         discord_service=discord_service,
-        pr_feedback_service=PrFeedbackService(config.runtime_dir / "pr-feedback-store.json"),
+        pr_feedback_service=PrFeedbackService(
+            config.runtime_dir / "pr-feedback-store.json",
+            ignored_feedback_store_path=config.runtime_dir / "ignored-feedback-ids.json",
+        ),
         pr_reply_service=_build_pr_reply_service(config),
         sessions=sessions,
         approvals=approvals,
@@ -185,6 +188,7 @@ def _build_pr_reply_service(config: GatewayConfig) -> PrReplyService:
     return PrReplyService(
         providers=providers,
         idempotency_store_path=config.runtime_dir / "pr-reply-idempotency.json",
+        ignored_feedback_store_path=config.runtime_dir / "ignored-feedback-ids.json",
     )
 
 

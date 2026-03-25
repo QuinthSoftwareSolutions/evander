@@ -308,6 +308,7 @@ without exposing provider credentials in the VM.
   - `host_heartbeat_jitter_seconds`
   - `host_heartbeat_cooldown_seconds`
   - `host_heartbeat_lock_path` (single-instance lock file)
+- Agent control state is mirrored on the host in `runtime/host-agent-control-state.json`; the host heartbeat worker checks that file before probing or resuming a session so disabled agents stay ignored even when their VMs are powered off.
 - The host worker reads session manifests through runtime state and writes provider feedback/cursors to `runtime/pr-feedback-store.json`.
 - Guests no longer run `agent-heartbeat.service` or `agent-heartbeat.timer`.
 - `scripts/bootstrap_codex_vm.sh` now defaults `ENABLE_GUEST_HEARTBEAT=0` and skips legacy guest timer install unless explicitly overridden with `ENABLE_GUEST_HEARTBEAT=1` (deprecated compatibility mode).
@@ -334,7 +335,7 @@ without exposing provider credentials in the VM.
 
 ### Audit and log file locations
 
-- Host feedback state: `runtime/pr-feedback-store.json` (ingested comments + cursors), `runtime/pr-reply-idempotency.json` (reply dedupe keys/results).
+- Host feedback state: `runtime/pr-feedback-store.json` (ingested comments + cursors), `runtime/pr-reply-idempotency.json` (reply dedupe keys/results), `runtime/host-agent-control-state.json` (durable enabled/disabled state by VM).
 - Host audit trail: `runtime/audit.jsonl` (tool calls and denials/errors).
 
 ### Security boundary reminder

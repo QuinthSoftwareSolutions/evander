@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import httpx
@@ -69,6 +70,81 @@ def test_pr_reply_service_idempotency_reuses_first_response(tmp_path: Path) -> N
     assert provider.calls == 1
 
 
+def test_pr_reply_service_records_ignored_feedback_id_for_github_reply(tmp_path: Path) -> None:
+    class StubProvider:
+        def post_reply(self, **_: object):
+            from agent_sandbox.models import PostPrFeedbackReplyResponse
+
+            return PostPrFeedbackReplyResponse(
+                status="posted",
+                provider="github",
+                repo="org/repo",
+                pr_id="17",
+                comment_id="7",
+                reply_id="reply-1",
+                reply_url="https://example.test/reply/1",
+            )
+
+    ignored_path = tmp_path / "ignored-feedback-ids.json"
+    service = PrReplyService(
+        providers={"github": StubProvider()},
+        idempotency_store_path=tmp_path / "idempotency.json",
+        ignored_feedback_store_path=ignored_path,
+    )
+
+    service.post_reply(
+        provider="github",
+        repo="org/repo",
+        pr_id="17",
+        thread_id=None,
+        comment_id="7",
+        body_text="done",
+    )
+
+    payload = json.loads(ignored_path.read_text(encoding="utf-8"))
+    assert len(payload["feedback_ids"]) == 1
+    assert payload["feedback_ids"][0]["feedback_id"] == "github:review_comment:reply-1"
+    assert payload["feedback_ids"][0]["ignored_at"].endswith("Z")
+
+
+def test_pr_reply_service_records_ignored_feedback_id_for_azure_reply(tmp_path: Path) -> None:
+    class StubProvider:
+        def post_reply(self, **_: object):
+            from agent_sandbox.models import PostPrFeedbackReplyResponse
+
+            return PostPrFeedbackReplyResponse(
+                status="posted",
+                provider="azure_devops",
+                repo="repo-1",
+                pr_id="17",
+                thread_id="44",
+                comment_id="10",
+                reply_id="301",
+                reply_url="https://example.test/reply/301",
+            )
+
+    ignored_path = tmp_path / "ignored-feedback-ids.json"
+    service = PrReplyService(
+        providers={"azure_devops": StubProvider()},
+        idempotency_store_path=tmp_path / "idempotency.json",
+        ignored_feedback_store_path=ignored_path,
+    )
+
+    service.post_reply(
+        provider="azure_devops",
+        repo="repo-1",
+        pr_id="17",
+        thread_id="44",
+        comment_id="10",
+        body_text="done",
+    )
+
+    payload = json.loads(ignored_path.read_text(encoding="utf-8"))
+    assert len(payload["feedback_ids"]) == 1
+    assert payload["feedback_ids"][0]["feedback_id"] == "azure_devops:thread_comment:44:301"
+    assert payload["feedback_ids"][0]["ignored_at"].endswith("Z")
+
+
 def test_github_reply_provider_posts_reply(monkeypatch: pytest.MonkeyPatch) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/repos/org/repo/pulls/17/comments/91/replies"
@@ -112,6 +188,30 @@ def test_azure_reply_provider_posts_reply(monkeypatch: pytest.MonkeyPatch) -> No
     )
     assert result.reply_id == "301"
     assert result.reply_url == "https://ado.test/reply/301"
+
+
+def test_azure_reply_provider_normalizes_composite_repo_identifier(monkeypatch: pytest.MonkeyPatch) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path.endswith("/repositories/example-repo/pullRequests/17/threads/44/comments")
+        return httpx.Response(
+            201,
+            json={"id": 302, "_links": {"web": {"href": "https://ado.test/reply/302"}}},
+        )
+
+    patch_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    provider = AzureDevOpsPrReplyProvider(
+        organization_url="https://dev.azure.com/example",
+        project="proj",
+        pat="secret",
+    )
+    result = provider.post_reply(
+        repo="example-org/example project/example-repo",
+        pr_id="17",
+        thread_id="44",
+        comment_id="10",
+        body_text="Handled.",
+    )
+    assert result.reply_id == "302"
 
 
 def test_pr_reply_service_posts_successfully_and_deduplicates_retries(

@@ -1193,7 +1193,9 @@ def test_disable_agent_invokes_state_script(tmp_path: Path, monkeypatch) -> None
 
     assert result.exit_code == 0
     assert captured_cmd[0].endswith("/scripts/set_issue_agent_state.sh")
-    assert captured_cmd[1:] == ["disable", "12305", "root"]
+    assert captured_cmd[1:4] == ["disable", "12305", "root"]
+    assert captured_cmd[4] == "--host-state-path"
+    assert captured_cmd[5].endswith("/runtime/host-agent-control-state.json")
 
 
 def test_enable_agent_invokes_state_script(tmp_path: Path, monkeypatch) -> None:
@@ -1220,7 +1222,9 @@ def test_enable_agent_invokes_state_script(tmp_path: Path, monkeypatch) -> None:
 
     assert result.exit_code == 0
     assert captured_cmd[0].endswith("/scripts/set_issue_agent_state.sh")
-    assert captured_cmd[1:] == ["enable", "12305", "agent"]
+    assert captured_cmd[1:4] == ["enable", "12305", "agent"]
+    assert captured_cmd[4] == "--host-state-path"
+    assert captured_cmd[5].endswith("/runtime/host-agent-control-state.json")
 
 
 def test_logs_invokes_script_with_issue_number_and_repo_name(tmp_path: Path, monkeypatch) -> None:
@@ -1323,7 +1327,9 @@ def test_resume_agent_invokes_script_with_message_and_issue_number(tmp_path: Pat
 
     assert result.exit_code == 0
     assert captured_cmd[0].endswith("/scripts/resume_issue_agent.sh")
-    assert captured_cmd[1:] == ["Continue from the failing restore", "12305", "agent"]
+    assert captured_cmd[1:4] == ["Continue from the failing restore", "12305", "agent"]
+    assert captured_cmd[4] == "--host-control-state-path"
+    assert captured_cmd[5].endswith("/runtime/host-agent-control-state.json")
 
 
 def test_resume_agent_observe_invokes_script_with_tail_options(tmp_path: Path, monkeypatch) -> None:
@@ -1358,7 +1364,10 @@ def test_resume_agent_observe_invokes_script_with_tail_options(tmp_path: Path, m
 
     assert result.exit_code == 0
     assert captured_cmd[0].endswith("/scripts/resume_issue_agent.sh")
-    assert captured_cmd[1:] == ["Continue from the failing restore", "12305", "debugger", "--observe", "25"]
+    assert captured_cmd[1:4] == ["Continue from the failing restore", "12305", "debugger"]
+    assert captured_cmd[4] == "--host-control-state-path"
+    assert captured_cmd[5].endswith("/runtime/host-agent-control-state.json")
+    assert captured_cmd[6:] == ["--observe", "25"]
 
 
 def test_seed_discord_channel_creates_seed_entry_and_reports_cursor(tmp_path: Path) -> None:
