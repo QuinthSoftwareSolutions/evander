@@ -53,15 +53,15 @@ if [[ ! -f "${SSH_PRIVATE_KEY_PATH}" ]]; then
   exit 1
 fi
 
-if ! virsh dominfo "${VM_NAME}" >/dev/null 2>&1 && ! sudo -n virsh dominfo "${VM_NAME}" >/dev/null 2>&1; then
+if ! sudo -n virsh dominfo "${VM_NAME}" >/dev/null 2>&1 && ! virsh dominfo "${VM_NAME}" >/dev/null 2>&1; then
   echo "VM not found: ${VM_NAME}" >&2
   exit 1
 fi
 
-DOMINFO_OUTPUT="$(virsh dominfo "${VM_NAME}" 2>/dev/null || true)"
+DOMINFO_OUTPUT="$(sudo -n virsh dominfo "${VM_NAME}" 2>/dev/null || true)"
 VM_STATE="$(awk -F': *' '/^State:/ {print $2; exit}' <<<"${DOMINFO_OUTPUT}")"
 if [[ -z "${VM_STATE}" ]]; then
-  DOMINFO_OUTPUT="$(sudo -n virsh dominfo "${VM_NAME}" 2>/dev/null || true)"
+  DOMINFO_OUTPUT="$(virsh dominfo "${VM_NAME}" 2>/dev/null || true)"
   VM_STATE="$(awk -F': *' '/^State:/ {print $2; exit}' <<<"${DOMINFO_OUTPUT}")"
 fi
 

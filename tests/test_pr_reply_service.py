@@ -25,9 +25,11 @@ def test_pr_reply_service_idempotency_reuses_first_response(tmp_path: Path) -> N
     class StubProvider:
         def __init__(self) -> None:
             self.calls = 0
+            self.body_texts: list[str] = []
 
-        def post_reply(self, **_: object):
+        def post_reply(self, **kwargs: object):
             self.calls += 1
+            self.body_texts.append(str(kwargs["body_text"]))
             from agent_sandbox.models import PostPrFeedbackReplyResponse
 
             return PostPrFeedbackReplyResponse(
@@ -68,6 +70,44 @@ def test_pr_reply_service_idempotency_reuses_first_response(tmp_path: Path) -> N
     assert first.status == "posted"
     assert second.status == "deduplicated"
     assert provider.calls == 1
+    assert provider.body_texts == ["[Truman] done"]
+
+
+def test_pr_reply_service_prefixes_feedback_replies_once(tmp_path: Path) -> None:
+    class StubProvider:
+        def __init__(self) -> None:
+            self.body_text: str | None = None
+
+        def post_reply(self, **kwargs: object):
+            self.body_text = str(kwargs["body_text"])
+            from agent_sandbox.models import PostPrFeedbackReplyResponse
+
+            return PostPrFeedbackReplyResponse(
+                status="posted",
+                provider="github",
+                repo="org/repo",
+                pr_id="17",
+                comment_id="7",
+                reply_id="reply-1",
+                reply_url="https://example.test/reply/1",
+            )
+
+    provider = StubProvider()
+    service = PrReplyService(
+        providers={"github": provider},
+        idempotency_store_path=tmp_path / "idempotency.json",
+    )
+
+    service.post_reply(
+        provider="github",
+        repo="org/repo",
+        pr_id="17",
+        thread_id=None,
+        comment_id="7",
+        body_text="[Truman] done",
+    )
+
+    assert provider.body_text == "[Truman] done"
 
 
 def test_pr_reply_service_records_ignored_feedback_id_for_github_reply(tmp_path: Path) -> None:
@@ -143,6 +183,46 @@ def test_pr_reply_service_records_ignored_feedback_id_for_azure_reply(tmp_path: 
     assert len(payload["feedback_ids"]) == 1
     assert payload["feedback_ids"][0]["feedback_id"] == "azure_devops:thread_comment:44:301"
     assert payload["feedback_ids"][0]["ignored_at"].endswith("Z")
+
+
+def test_pr_reply_service_normalizes_azure_devops_provider_alias(tmp_path: Path) -> None:
+    class StubProvider:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def post_reply(self, **kwargs: object):
+            self.calls.append(kwargs)
+            from agent_sandbox.models import PostPrFeedbackReplyResponse
+
+            return PostPrFeedbackReplyResponse(
+                status="posted",
+                provider="azure_devops",
+                repo="repo-1",
+                pr_id="17",
+                thread_id="44",
+                comment_id="10",
+                reply_id="301",
+                reply_url="https://example.test/reply/301",
+            )
+
+    provider = StubProvider()
+    service = PrReplyService(
+        providers={"azure_devops": provider},
+        idempotency_store_path=tmp_path / "idempotency.json",
+    )
+
+    result = service.post_reply(
+        provider="azure-devops",
+        repo="repo-1",
+        pr_id="17",
+        thread_id="44",
+        comment_id="10",
+        body_text="done",
+    )
+
+    assert result.provider == "azure_devops"
+    assert len(provider.calls) == 1
+    assert provider.calls[0]["repo"] == "repo-1"
 
 
 def test_github_reply_provider_posts_reply(monkeypatch: pytest.MonkeyPatch) -> None:

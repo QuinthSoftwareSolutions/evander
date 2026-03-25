@@ -219,6 +219,12 @@ def test_handle_agent_push_body_file_cases(tmp_path: Path) -> None:
     assert note_only_path is not None
     assert Path(note_only_path).read_text(encoding="utf-8") == f"{note}\n"
 
+
+def test_handle_agent_push_force_fetches_agent_pr_notes(tmp_path: Path) -> None:
+    _, _, _ = _run_handle_push(tmp_path / "force_fetch", note_content="Agent note", fixed_body=None)
+    git_log = (tmp_path / "force_fetch" / "git.log").read_text(encoding="utf-8")
+    assert "+refs/notes/agent-pr:refs/notes/agent-pr-cache/" in git_log
+
     _, args_log, _ = _run_handle_push(tmp_path / "neither", note_content=None, fixed_body=None)
     assert _extract_body_file_path(args_log) is None
 

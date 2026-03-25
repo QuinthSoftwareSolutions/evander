@@ -156,6 +156,17 @@ def test_discord_post_status_posts_to_allowlisted_channel(tmp_path: Path) -> Non
     ]
 
 
+def test_create_server_uses_configured_host_and_port(tmp_path: Path) -> None:
+    context = make_context(tmp_path)
+    context.config.host = "0.0.0.0"
+    context.config.port = 8000
+
+    server = create_server(context)
+
+    assert server.settings.host == "0.0.0.0"
+    assert server.settings.port == 8000
+
+
 def test_discord_post_status_rejects_non_allowlisted_channel(tmp_path: Path) -> None:
     context = make_context(tmp_path)
     context.sessions.put(
@@ -889,6 +900,7 @@ def test_post_pr_feedback_reply_calls_provider_and_audits_reply_identifiers(tmp_
 
     assert result["reply_id"] == "reply-1"
     assert fake_service.calls[0]["comment_id"] == "91"
+    assert fake_service.calls[0]["body_text"] == "Applied in the latest patch."
     event = read_audit_events(context.config.audit_log_path)[-1]
     assert event["tool_name"] == ToolName.POST_PR_FEEDBACK_REPLY.value
     assert event["result"] == {
@@ -897,6 +909,50 @@ def test_post_pr_feedback_reply_calls_provider_and_audits_reply_identifiers(tmp_
         "reply_id": "reply-1",
         "reply_url": "https://example.test/replies/1",
     }
+
+
+def test_post_pr_feedback_reply_normalizes_azure_devops_provider_alias(tmp_path: Path) -> None:
+    context = make_context(tmp_path)
+    context.sessions.put(
+        "session-1",
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[ToolName.POST_PR_FEEDBACK_REPLY],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={
+                "pr_feedback_streams": [
+                    {
+                        "provider": "azure_devops",
+                        "repo": "exampleindustry/Example Industry APP/ExampleIndustryAPP",
+                        "pr_id": "5857",
+                    }
+                ]
+            },
+        ),
+    )
+    fake_service = _FakePrReplyService()
+    context.pr_reply_service = fake_service
+    server = create_server(context)
+
+    result = call_tool(
+        server,
+        "post_pr_feedback_reply",
+        {
+            "session_id": "session-1",
+            "provider": "azure-devops",
+            "repo": "exampleindustry/Example Industry APP/ExampleIndustryAPP",
+            "pr_id": "5857",
+            "thread_id": "29797",
+            "comment_id": "1",
+            "body_text": "Applied in the latest patch.",
+        },
+    )
+
+    assert result["provider"] == "azure_devops"
+    assert fake_service.calls[0]["provider"] == "azure_devops"
+    event = read_audit_events(context.config.audit_log_path)[-1]
+    assert event["args"]["provider"] == "azure_devops"
+    assert event["result"]["provider"] == "azure_devops"
 
 
 def test_post_pr_feedback_reply_rejects_missing_target_identifiers(tmp_path: Path) -> None:

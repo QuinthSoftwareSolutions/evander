@@ -91,10 +91,10 @@ if [[ ! -f "${SSH_PRIVATE_KEY_PATH}" ]]; then
 fi
 
 virsh_try() {
-  if virsh "$@" 2>/dev/null; then
+  if sudo -n virsh "$@" 2>/dev/null; then
     return 0
   fi
-  sudo -n virsh "$@" 2>/dev/null
+  virsh "$@" 2>/dev/null
 }
 
 list_running_vm_names() {

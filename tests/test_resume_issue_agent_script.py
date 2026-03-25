@@ -110,7 +110,7 @@ if [[ "${{@: -1}}" == "true" ]]; then
   exit 0
 fi
 cat > /dev/null
-printf 'resumed pid=321 log=/home/agent/.agent-sandbox/codex-heartbeat-run.log\\n'
+printf 'resumed pid=321 log=/home/agent/.agent-sandbox/agent-ExampleIndustryAPP.log\\n'
 exit 0
 """,
     )
@@ -130,7 +130,7 @@ exit 0
 
     assert result.stdout == (
         "Agent resumed for vm-14084 "
-        "(resumed pid=321 log=/home/agent/.agent-sandbox/codex-heartbeat-run.log).\n"
+        "(resumed pid=321 log=/home/agent/.agent-sandbox/agent-ExampleIndustryAPP.log).\n"
     )
     ssh_calls = ssh_log.read_text(encoding="utf-8").splitlines()
     assert any("agent@192.168.122.11 true" in call for call in ssh_calls)
@@ -186,7 +186,7 @@ if [[ "${{@: -1}}" == "true" ]]; then
 fi
 if [[ "$*" == *"PROMPT_B64="* ]]; then
   cat > /dev/null
-  printf 'resumed pid=321 log=/home/agent/.agent-sandbox/codex-heartbeat-run.log\\n'
+  printf 'resumed pid=321 log=/home/agent/.agent-sandbox/agent-ExampleIndustryAPP.log\\n'
   exit 0
 fi
 cat > /dev/null
@@ -251,8 +251,10 @@ def test_resume_issue_agent_tracks_explicit_state_lifecycle() -> None:
         encoding="utf-8"
     )
 
-    assert 'STATE_PATH="${LOG_DIR}/codex-resume-last.state"' in script_text
-    assert 'AGENT_STATE_REPO_NAME="resume-last"' in script_text
+    assert 'resolve_primary_agent_paths() {' in script_text
+    assert 'RUN_LOG_FILE="${LOG_DIR}/agent-${RESOLVED_REPO_NAME}.log"' in script_text
+    assert 'PID_FILE="${LOG_DIR}/agent-${RESOLVED_REPO_NAME}.pid"' in script_text
+    assert 'STATE_PATH="${LOG_DIR}/agent-${RESOLVED_REPO_NAME}.state"' in script_text
     assert 'ensure_agent_enabled' in script_text
     assert 'write_state "running" "resume"' in script_text
     assert 'trap on_exit_write_idle EXIT' in script_text
@@ -268,7 +270,10 @@ def test_resume_issue_agent_tracks_explicit_state_lifecycle() -> None:
 
 def test_resume_issue_agent_worker_mode_starts_vm_and_skips_tty(tmp_path: Path) -> None:
     script_path, fake_bin = _prepare_script(tmp_path)
-    private_key = tmp_path / "id_ed25519"
+    caller_home = tmp_path / "caller-home"
+    ssh_dir = caller_home / ".ssh"
+    ssh_dir.mkdir(parents=True)
+    private_key = ssh_dir / "id_ed25519"
     private_key.write_text("PRIVATE\n", encoding="utf-8")
     ssh_log = tmp_path / "ssh.log"
     virsh_log = tmp_path / "virsh.log"
@@ -321,8 +326,9 @@ exit 0
 
     env = os.environ.copy()
     env["PATH"] = f"{fake_bin}:{env['PATH']}"
-    env["SSH_PRIVATE_KEY_PATH"] = str(private_key)
-    env["USER"] = env.get("USER", "root")
+    env["HOME"] = str(caller_home)
+    env["USER"] = ""
+    env["SUDO_USER"] = ""
 
     result = subprocess.run(
         [
@@ -348,6 +354,9 @@ exit 0
     run_call = next(call for call in ssh_calls if "PROMPT_B64=" in call)
     assert " -t " not in f" {run_call} "
     assert "agent@192.168.122.44" in run_call
+    assert f"UserKnownHostsFile={caller_home}/.ssh/agent-sandbox-known_hosts" in run_call
+    assert "SESSION_ID='session-14084'" in run_call
+    assert "AGENT_BRANCH_SUFFIX='vm-14084'" in run_call
 
     virsh_calls = virsh_log.read_text(encoding="utf-8")
     assert "start vm-14084" in virsh_calls

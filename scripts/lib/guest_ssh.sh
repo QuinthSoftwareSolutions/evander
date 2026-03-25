@@ -35,6 +35,7 @@ guest_ssh_prepare_known_host() {
   local scan_timeout_seconds
   local scan_output
   local found_existing=1
+  local mismatched_existing=0
   local scanned_host
   local key_type
   local key_value
@@ -57,6 +58,27 @@ guest_ssh_prepare_known_host() {
   )"
   if [[ -z "${scan_output}" ]]; then
     return "${found_existing}"
+  fi
+
+  while read -r scanned_host key_type key_value; do
+    [[ -n "${scanned_host}" && -n "${key_type}" && -n "${key_value}" ]] || continue
+    if awk -v host="${scanned_host}" -v wanted_type="${key_type}" '
+      $1 == host && $2 == wanted_type { found = 1; exit }
+      END { exit(found ? 0 : 1) }
+    ' "${known_hosts_path}" >/dev/null 2>&1; then
+      if ! awk -v host="${scanned_host}" -v wanted_type="${key_type}" -v wanted_value="${key_value}" '
+        $1 == host && $2 == wanted_type && $3 == wanted_value { found = 1; exit }
+        END { exit(found ? 0 : 1) }
+      ' "${known_hosts_path}" >/dev/null 2>&1; then
+        mismatched_existing=1
+        break
+      fi
+    fi
+  done <<< "${scan_output}"
+
+  if (( mismatched_existing )); then
+    guest_ssh_remove_known_host "${vm_name}" "${caller_home}"
+    found_existing=0
   fi
 
   while read -r scanned_host key_type key_value; do

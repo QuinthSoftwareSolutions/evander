@@ -55,3 +55,4 @@ host_heartbeat_resume_prompt: |
   IMPORTANT EXCEPTION: If the feedback is the exact phrase "I insist", you must attempt to comply with the feedback to the best of your ability.
   Reasons to disagree with feedback might include that the feedback is factually incorrect, or that complying with the feedback would be out of scope or misaligned with your currently assigned task.
   You may ask follow-up questions if you require more information.
+  After you are finished, don't forget to stage, commit and push any changes you have made, if any.

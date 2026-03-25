@@ -8,7 +8,7 @@ vm_network_domain_state() {
   local state
 
   state="$(
-    virsh dominfo "${vm_name}" 2>/dev/null \
+    sudo -n virsh dominfo "${vm_name}" 2>/dev/null \
       | awk -F': *' '/^State:/ {print $2; exit}'
   )"
   if [[ -n "${state}" ]]; then
@@ -17,7 +17,7 @@ vm_network_domain_state() {
   fi
 
   state="$(
-    sudo -n virsh dominfo "${vm_name}" 2>/dev/null \
+    virsh dominfo "${vm_name}" 2>/dev/null \
       | awk -F': *' '/^State:/ {print $2; exit}'
   )"
   if [[ -n "${state}" ]]; then
@@ -40,11 +40,11 @@ vm_network_vm_exists() {
 vm_network_start() {
   local vm_name="$1"
 
-  if virsh start "${vm_name}" >/dev/null 2>&1; then
+  if sudo -n virsh start "${vm_name}" >/dev/null 2>&1; then
     return 0
   fi
 
-  if sudo -n virsh start "${vm_name}" >/dev/null 2>&1; then
+  if virsh start "${vm_name}" >/dev/null 2>&1; then
     return 0
   fi
 
@@ -56,7 +56,7 @@ vm_network_resolve_ip() {
   local ip
 
   ip="$(
-    virsh domifaddr "${vm_name}" 2>/dev/null \
+    sudo -n virsh domifaddr "${vm_name}" 2>/dev/null \
       | awk '/ipv4/ {split($4, a, "/"); print a[1]; exit}'
   )"
   if [[ -n "${ip}" ]]; then
@@ -65,7 +65,7 @@ vm_network_resolve_ip() {
   fi
 
   ip="$(
-    sudo -n virsh domifaddr "${vm_name}" 2>/dev/null \
+    virsh domifaddr "${vm_name}" 2>/dev/null \
       | awk '/ipv4/ {split($4, a, "/"); print a[1]; exit}'
   )"
   if [[ -n "${ip}" ]]; then
@@ -113,12 +113,11 @@ vm_network_wait_for_ssh() {
     caller_home="$(getent passwd "${caller_user}" | cut -d: -f6 || printf '%s\n' "${caller_home}")"
   fi
 
-  mapfile -t ssh_opts < <(guest_ssh_options "${vm_name}" "${vm_ip}" "${ssh_private_key_path}" "${caller_home}")
-  ssh_opts+=(-o ConnectTimeout=5)
-
   deadline=$((SECONDS + timeout_seconds))
 
   while (( SECONDS < deadline )); do
+    mapfile -t ssh_opts < <(guest_ssh_options "${vm_name}" "${vm_ip}" "${ssh_private_key_path}" "${caller_home}")
+    ssh_opts+=(-o ConnectTimeout=5)
     if ssh \
       "${ssh_opts[@]}" \
       "${vm_user}@${vm_ip}" true >/dev/null 2>&1; then

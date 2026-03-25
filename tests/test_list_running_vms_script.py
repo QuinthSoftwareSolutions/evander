@@ -431,3 +431,81 @@ printf '%s\\n' 'idle'
     known_hosts_text = known_hosts_path.read_text(encoding="utf-8")
     assert "vm-partial ssh-rsa AAAA-existing-rsa" in known_hosts_text
     assert "vm-partial ssh-ed25519 AAAA-added-ed25519" in known_hosts_text
+
+
+def test_list_running_vms_replaces_changed_host_key_for_existing_vm_alias(tmp_path: Path) -> None:
+    script_path, fake_bin = _prepare_script(tmp_path)
+    private_key = tmp_path / "id_ed25519"
+    private_key.write_text("PRIVATE\n", encoding="utf-8")
+    home_dir = tmp_path / "home"
+    ssh_dir = home_dir / ".ssh"
+    ssh_dir.mkdir(parents=True)
+    known_hosts_path = ssh_dir / "agent-sandbox-known_hosts"
+    known_hosts_path.write_text("vm-14357 ssh-ed25519 AAAA-old-ed25519\n", encoding="utf-8")
+
+    _write_executable(
+        fake_bin / "virsh",
+        """#!/usr/bin/env bash
+set -euo pipefail
+cmd="${1:-}"
+shift || true
+
+case "${cmd}" in
+  list)
+    printf 'vm-14357\n'
+    ;;
+  dominfo)
+    [[ "${1:-}" == "vm-14357" ]] || exit 1
+    cat <<'EOF'
+Id:             13
+Name:           vm-14357
+State:          running
+EOF
+    ;;
+  domifaddr)
+    [[ "${1:-}" == "vm-14357" ]] || exit 1
+    printf 'vnet0 52:54:00:00:00:06 ipv4 192.168.122.16/24\n'
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+""",
+    )
+
+    _write_executable(
+        fake_bin / "ssh-keyscan",
+        """#!/usr/bin/env bash
+set -euo pipefail
+host="${@: -1}"
+printf '%s %s %s\n' "${host}" "ssh-ed25519" "AAAA-new-ed25519"
+""",
+    )
+
+    _write_executable(
+        fake_bin / "ssh",
+        """#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' 'idle'
+""",
+    )
+
+    env = os.environ.copy()
+    env["AGENT_SANDBOX_GUEST_KNOWN_HOSTS_FILE"] = str(known_hosts_path)
+    env["HOME"] = str(home_dir)
+    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+    env["SSH_PRIVATE_KEY_PATH"] = str(private_key)
+    env["USER"] = env.get("USER", "root")
+
+    result = subprocess.run(
+        [str(script_path)],
+        text=True,
+        capture_output=True,
+        env=env,
+        check=True,
+    )
+
+    assert result.stderr == ""
+    known_hosts_text = known_hosts_path.read_text(encoding="utf-8")
+    assert "vm-14357 ssh-ed25519 AAAA-new-ed25519" in known_hosts_text
+    assert "AAAA-old-ed25519" not in known_hosts_text

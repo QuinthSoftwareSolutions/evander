@@ -7,7 +7,6 @@ def test_bootstrap_script_enforces_codex_config_and_placeholder_key() -> None:
     )
 
     assert "sudo -n virsh domifaddr" in script
-    assert 'printf "%s\\n" "${AGENT_SANDBOX_SESSION_ID:-}"' in script
     assert 'AGENT_SANDBOX_CONFIG="${AGENT_SANDBOX_CONFIG:-${ROOT_DIR}/config/gateway.yaml}"' in script
     assert 'cat > ~/.codex/config.toml <<CONFIG' in script
     assert 'model = "gpt-5.4"' in script
@@ -18,8 +17,8 @@ def test_bootstrap_script_enforces_codex_config_and_placeholder_key() -> None:
     assert 'openai_base_url = "${CODEX_LLM_BASE_URL}"' in script
     assert "[mcp_servers.agent_sandbox]" in script
     assert 'url = "${CODEX_GATEWAY_URL}"' in script
-    assert 'CODEX_ENABLED_TOOLS_JSON="$(load_enabled_tools_toml "${GUEST_SESSION_ID}")"' in script
-    assert 'enabled_tools = %s\\n' in script
+    assert 'enabled_tools = %s\\n' not in script
+    assert 'load_enabled_tools_toml' not in script
     assert 'enabled = true' in script
     assert 'if [ -f ~/.agent/config.env ]; then' in script
     assert 'export OPENAI_API_KEY="${OPENAI_API_KEY:-relay-placeholder}"' in script

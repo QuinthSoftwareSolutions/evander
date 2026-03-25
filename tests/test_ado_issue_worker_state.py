@@ -28,6 +28,21 @@ from agent_sandbox.ado_issue_worker import (
 
 @pytest.fixture
 def worker_config(tmp_path: Path) -> WorkerConfig:
+    gateway_config_path = tmp_path / "gateway.yaml"
+    gateway_config_path.write_text(
+        json.dumps(
+            {
+                "runtime_dir": str(tmp_path),
+                "session_store_path": str(tmp_path / "sessions.json"),
+                "approval_store_path": str(tmp_path / "approvals.json"),
+                "draft_store_path": str(tmp_path / "drafts.json"),
+                "email_store_path": str(tmp_path / "emails.json"),
+                "discord_command_store_path": str(tmp_path / "discord_commands.json"),
+                "audit_log_path": str(tmp_path / "audit.jsonl"),
+            }
+        ),
+        encoding="utf-8",
+    )
     return WorkerConfig(
         organization_url="https://dev.azure.com/example",
         project="example",
@@ -61,6 +76,8 @@ def worker_config(tmp_path: Path) -> WorkerConfig:
         include_comments=True,
         comments_max_count=20,
         comment_text_max_chars=4000,
+        gateway_config_path=gateway_config_path,
+        session_ttl_hours=8,
     )
 
 
@@ -163,6 +180,45 @@ def test_process_work_item_marks_state_only_after_success(
     log_text = (worker_config.setup_log_dir / "work-item-789.log").read_text(encoding="utf-8")
     assert "===== " in log_text
     assert log_text.endswith("ok\n")
+
+
+def test_process_work_item_creates_session_manifest_before_setup(
+    worker_config: WorkerConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = ProcessedWorkItemStore(worker_config.processed_store_path)
+    captured: dict[str, object] = {}
+
+    def successful_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        cmd = args[0]
+        assert isinstance(cmd, list)
+        session_id = next(
+            part for part in cmd if isinstance(part, str) and part.startswith("issue-14084-")
+        )
+        payload = json.loads((worker_config.runtime_dir / "sessions.json").read_text(encoding="utf-8"))
+        manifest = payload[session_id]
+        captured["session_id"] = session_id
+        captured["manifest"] = manifest
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="ok", stderr="")
+
+    monkeypatch.setattr("agent_sandbox.ado_issue_worker.subprocess.run", successful_run)
+
+    item = {
+        "id": 14084,
+        "title": "Do thing",
+        "description": "Details",
+        "tags": ["truman"],
+        "state": "Committed",
+        "url": "https://example/14084",
+        "updated_date": "2026-03-21T00:00:00Z",
+    }
+
+    succeeded = process_work_item(item, config=worker_config, store=store)
+
+    assert succeeded is True
+    assert store.is_processed(14084) is True
+    assert captured["manifest"]["session_id"] == captured["session_id"]
+    assert captured["manifest"]["vm_id"] == "vm-14084"
 
 
 def test_update_work_item_state_uses_json_patch(worker_config: WorkerConfig, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -386,6 +442,7 @@ def test_process_work_item_treats_existing_vm_as_success(
 
 
 def test_build_setup_command_includes_optional_arguments(tmp_path: Path) -> None:
+    gateway_config_path = tmp_path / "gateway.yaml"
     config = WorkerConfig(
         organization_url="https://dev.azure.com/example",
         project="example",
@@ -419,8 +476,10 @@ def test_build_setup_command_includes_optional_arguments(tmp_path: Path) -> None
         include_comments=True,
         comments_max_count=20,
         comment_text_max_chars=4000,
+        gateway_config_path=gateway_config_path,
+        session_ttl_hours=8,
     )
-    cmd = _build_setup_command(config, tmp_path / "work-item-10.yaml")
+    cmd = _build_setup_command(config, tmp_path / "work-item-10.yaml", session_id="sess-1")
     assert cmd == [
         "scripts/setup_issue_vm.sh",
         "--dotnet",
@@ -445,6 +504,7 @@ def test_build_setup_command_includes_optional_arguments(tmp_path: Path) -> None
 
 
 def test_build_setup_command_omits_disabled_bootstraps_and_nuget_prewarm_target(tmp_path: Path) -> None:
+    gateway_config_path = tmp_path / "gateway.yaml"
     config = WorkerConfig(
         organization_url="https://dev.azure.com/example",
         project="example",
@@ -478,9 +538,11 @@ def test_build_setup_command_omits_disabled_bootstraps_and_nuget_prewarm_target(
         include_comments=True,
         comments_max_count=20,
         comment_text_max_chars=4000,
+        gateway_config_path=gateway_config_path,
+        session_ttl_hours=8,
     )
 
-    cmd = _build_setup_command(config, tmp_path / "work-item-10.yaml")
+    cmd = _build_setup_command(config, tmp_path / "work-item-10.yaml", session_id="sess-1")
     assert cmd == [
         "scripts/setup_issue_vm.sh",
         "--mssql",

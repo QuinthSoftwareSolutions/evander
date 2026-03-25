@@ -53,8 +53,12 @@ rm_tree() {
   sudo -n rm -rf "${path}"
 }
 
-virsh destroy "${VM_NAME}" >/dev/null 2>&1 || true
-virsh undefine "${VM_NAME}" --nvram >/dev/null 2>&1 || virsh undefine "${VM_NAME}" >/dev/null 2>&1 || true
+sudo -n virsh destroy "${VM_NAME}" >/dev/null 2>&1 || virsh destroy "${VM_NAME}" >/dev/null 2>&1 || true
+sudo -n virsh undefine "${VM_NAME}" --nvram >/dev/null 2>&1 \
+  || sudo -n virsh undefine "${VM_NAME}" >/dev/null 2>&1 \
+  || virsh undefine "${VM_NAME}" --nvram >/dev/null 2>&1 \
+  || virsh undefine "${VM_NAME}" >/dev/null 2>&1 \
+  || true
 guest_ssh_remove_known_host "${VM_NAME}" "${CALLER_HOME}"
 rm_tree "${VM_DIR}"
 rm_tree "${STATE_DIR}"

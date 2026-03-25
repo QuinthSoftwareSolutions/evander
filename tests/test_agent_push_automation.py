@@ -51,12 +51,18 @@ def test_issue_vm_setup_configures_agent_remote_for_push_alias() -> None:
     assert 'python3 - "${TARGET_DIR}/.agent-sandbox/bin/agent-pr-note" "${AGENT_PR_NOTE_HELPER_B64}"' in setup_issue_vm
     assert "target_path.write_bytes(base64.b64decode(sys.argv[2]))" in setup_issue_vm
     assert 'config alias.agent-pr-note' in setup_issue_vm
+    assert 'config agent-sandbox.sessionId "${SESSION_ID}"' in setup_issue_vm
+    assert 'config agent-sandbox.branchSuffix "${AGENT_BRANCH_SUFFIX}"' in setup_issue_vm
     assert '"${repo_root}/.agent-sandbox/bin/agent-pr-note" ensure-head' in setup_issue_vm
     assert "templates/guest-AGENTS.md.tmpl" in setup_issue_vm
     assert "git push agent HEAD:refs/heads/agents/" in guest_agents_template
     assert "refs/notes/agent-pr" in guest_agents_template
     assert "SESSION_ID is not set; refusing ambiguous agent push." in setup_issue_vm
     assert "AGENT_BRANCH_SUFFIX/HOSTNAME is empty; refusing ambiguous agent push." in setup_issue_vm
+    assert 'session_id=${SESSION_ID:-$(git config --get agent-sandbox.sessionId || true)}' in setup_issue_vm
+    assert 'suffix_source=${AGENT_BRANCH_SUFFIX:-$(git config --get agent-sandbox.branchSuffix || true)}' in setup_issue_vm
+    assert 'if [ -z "${session_id}" ]; then' in setup_issue_vm
+    assert 'if [ -z "${suffix}" ]; then' in setup_issue_vm
     assert 'HEAD:refs/heads/agents/${session_id}/${branch}-${suffix}' in setup_issue_vm
     assert 'HEAD:refs/heads/agents/${SESSION_ID}/$(git rev-parse --abbrev-ref HEAD)-${AGENT_BRANCH_SUFFIX:-${HOSTNAME}} refs/notes/agent-pr' in guest_agents_template
 

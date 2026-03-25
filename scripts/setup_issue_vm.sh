@@ -408,7 +408,7 @@ if [[ ! -d "${GIT_REMOTE_ROOT}" ]]; then
   exit 1
 fi
 
-if virsh dominfo "${VM_NAME}" >/dev/null 2>&1 || sudo -n virsh dominfo "${VM_NAME}" >/dev/null 2>&1; then
+if sudo -n virsh dominfo "${VM_NAME}" >/dev/null 2>&1 || virsh dominfo "${VM_NAME}" >/dev/null 2>&1; then
   echo "VM already exists: ${VM_NAME}" >&2
   echo "Destroy it first with: sudo ./scripts/destroy_agent_vm.sh ${VM_NAME}" >&2
   exit 1
@@ -458,17 +458,10 @@ log_step "setup_issue_git_vm"
 "${SCRIPT_DIR}/setup_issue_git_vm.sh" "${MIRROR_ARGS[@]}" "${VM_NAME}" "${ISSUE_NUMBER}" "${REPO_SOURCE}" "${VM_USER}"
 
 log_step "guest_repo_clone_and_config"
-ssh \
-  "${SSH_OPTS[@]}" \
-  "${VM_USER}@${VM_IP}" \
-  "GUEST_REPO_NAME='${GUEST_REPO_NAME}' ISSUE_NUMBER='${ISSUE_NUMBER}' SESSION_ID='${SESSION_ID}' REMOTE_URL='${REMOTE_URL}' AGENT_BRANCH_SUFFIX='${VM_NAME}' BOOTSTRAP_PYTHON='${BOOTSTRAP_PYTHON}' BOOTSTRAP_DOTNET='${BOOTSTRAP_DOTNET}' BOOTSTRAP_NUGET='${BOOTSTRAP_NUGET}' BOOTSTRAP_FRONTEND_DEPS='${BOOTSTRAP_FRONTEND_DEPS}' FRONTEND_INSTALL_ROOTS_JSON='${FRONTEND_INSTALL_ROOTS_JSON}' AGENT_PR_NOTE_HELPER_B64='${AGENT_PR_NOTE_HELPER_B64}' bash -s" <<'EOF'
-set -euo pipefail
-. ~/.profile
-
-TARGET_DIR="$HOME/${GUEST_REPO_NAME}"
+TARGET_DIR="/home/${VM_USER}/${GUEST_REPO_NAME}"
 PYTHON_INSTRUCTION=""
 RESTORE_INSTRUCTION=""
-if [[ "${BOOTSTRAP_PYTHON:-0}" == "1" ]]; then
+if (( BOOTSTRAP_PYTHON )); then
   PYTHON_INSTRUCTION=$(cat <<'TXT'
 - For Python work, use the repo-local virtualenv:
   `. .venv/bin/activate`
@@ -481,7 +474,7 @@ if [[ "${BOOTSTRAP_PYTHON:-0}" == "1" ]]; then
 TXT
 )
 fi
-if [[ "${BOOTSTRAP_DOTNET:-0}" == "1" && "${BOOTSTRAP_NUGET:-0}" == "1" ]]; then
+if (( BOOTSTRAP_DOTNET )) && (( BOOTSTRAP_NUGET )); then
   RESTORE_INSTRUCTION=$(cat <<'TXT'
 - For restore, always use:
   `dotnet restore --configfile ~/.nuget/NuGet/NuGet.Config`
@@ -494,6 +487,15 @@ TXT
 )
 fi
 
+ssh \
+  "${SSH_OPTS[@]}" \
+  "${VM_USER}@${VM_IP}" \
+  "GUEST_REPO_NAME='${GUEST_REPO_NAME}' ISSUE_NUMBER='${ISSUE_NUMBER}' SESSION_ID='${SESSION_ID}' REMOTE_URL='${REMOTE_URL}' AGENT_BRANCH_SUFFIX='${VM_NAME}' BOOTSTRAP_FRONTEND_DEPS='${BOOTSTRAP_FRONTEND_DEPS}' FRONTEND_INSTALL_ROOTS_JSON='${FRONTEND_INSTALL_ROOTS_JSON}' AGENT_PR_NOTE_HELPER_B64='${AGENT_PR_NOTE_HELPER_B64}' bash -s" <<'EOF'
+set -euo pipefail
+. ~/.profile
+
+TARGET_DIR="$HOME/${GUEST_REPO_NAME}"
+
 if [[ -e "${TARGET_DIR}" ]]; then
   echo "Guest repo path already exists: ${TARGET_DIR}" >&2
   exit 1
@@ -503,6 +505,8 @@ git clone "${REMOTE_URL}" "${TARGET_DIR}"
 git -C "${TARGET_DIR}" remote add agent "${REMOTE_URL}"
 git -C "${TARGET_DIR}" config user.name "Truman Bot"
 git -C "${TARGET_DIR}" config user.email "truman@quinth.se"
+git -C "${TARGET_DIR}" config agent-sandbox.sessionId "${SESSION_ID}"
+git -C "${TARGET_DIR}" config agent-sandbox.branchSuffix "${AGENT_BRANCH_SUFFIX}"
 install -d -m 0755 "${TARGET_DIR}/.agent-sandbox/bin"
 python3 - "${TARGET_DIR}/.agent-sandbox/bin/agent-pr-note" "${AGENT_PR_NOTE_HELPER_B64}" <<'PY'
 import base64
@@ -515,7 +519,7 @@ target_path.write_bytes(base64.b64decode(sys.argv[2]))
 os.chmod(target_path, 0o755)
 PY
 git -C "${TARGET_DIR}" config alias.agent-pr-note '!f(){ repo_root=$(git rev-parse --show-toplevel); "${repo_root}/.agent-sandbox/bin/agent-pr-note" "$@"; }; f'
-git -C "${TARGET_DIR}" config alias.push-agent '!f(){ session_id=${SESSION_ID:-}; if [[ -z "${session_id}" ]]; then echo "SESSION_ID is not set; refusing ambiguous agent push." >&2; return 1; fi; suffix_source=${AGENT_BRANCH_SUFFIX:-${HOSTNAME:-}}; suffix=$(printf "%s" "${suffix_source}" | tr "[:upper:]" "[:lower:]" | tr -cs "a-z0-9._-" "-" | sed "s/^-*//;s/-*$//"); if [[ -z "${suffix}" ]]; then echo "AGENT_BRANCH_SUFFIX/HOSTNAME is empty; refusing ambiguous agent push." >&2; return 1; fi; repo_root=$(git rev-parse --show-toplevel); "${repo_root}/.agent-sandbox/bin/agent-pr-note" ensure-head; branch=$(git rev-parse --abbrev-ref HEAD); git push agent HEAD:refs/heads/agents/${session_id}/${branch}-${suffix} refs/notes/agent-pr; }; f'
+git -C "${TARGET_DIR}" config alias.push-agent '!f(){ session_id=${SESSION_ID:-$(git config --get agent-sandbox.sessionId || true)}; if [ -z "${session_id}" ]; then echo "SESSION_ID is not set; refusing ambiguous agent push." >&2; return 1; fi; suffix_source=${AGENT_BRANCH_SUFFIX:-$(git config --get agent-sandbox.branchSuffix || true)}; if [ -z "${suffix_source}" ]; then suffix_source=${HOSTNAME:-}; fi; suffix=$(printf "%s" "${suffix_source}" | tr "[:upper:]" "[:lower:]" | tr -cs "a-z0-9._-" "-" | sed "s/^-*//;s/-*$//"); if [ -z "${suffix}" ]; then echo "AGENT_BRANCH_SUFFIX/HOSTNAME is empty; refusing ambiguous agent push." >&2; return 1; fi; repo_root=$(git rev-parse --show-toplevel); "${repo_root}/.agent-sandbox/bin/agent-pr-note" ensure-head; branch=$(git rev-parse --abbrev-ref HEAD); git push agent HEAD:refs/heads/agents/${session_id}/${branch}-${suffix} refs/notes/agent-pr; }; f'
 
 if [[ "${BOOTSTRAP_FRONTEND_DEPS:-0}" == "1" ]]; then
   python3 - "$TARGET_DIR" "${FRONTEND_INSTALL_ROOTS_JSON:-[]}" <<'PY'
@@ -568,26 +572,7 @@ for relative in install_roots:
             shutil.copy2(source_child, dest_child)
 PY
 fi
-
-python3 - "${SCRIPT_DIR}/../templates/guest-AGENTS.md.tmpl" <<'PY' | ssh \
-  "${SSH_OPTS[@]}" \
-  "${VM_USER}@${VM_IP}" \
-  "cat > \$HOME/AGENTS.md"
-from pathlib import Path
-import sys
-
-template_path = Path(sys.argv[1]).resolve()
-text = template_path.read_text(encoding="utf-8")
-replacements = {
-    "__TARGET_DIR__": """${TARGET_DIR}""",
-    "__REMOTE_URL__": """${REMOTE_URL}""",
-    "__PYTHON_INSTRUCTION__": """${PYTHON_INSTRUCTION}""",
-    "__RESTORE_INSTRUCTION__": """${RESTORE_INSTRUCTION}""",
-}
-for placeholder, value in replacements.items():
-    text = text.replace(placeholder, value)
-print(text, end="")
-PY
+EOF
 
 if (( BOOTSTRAP_PYTHON )); then
   log_step "bootstrap_python"
@@ -605,20 +590,40 @@ else
   ssh \
     "${SSH_OPTS[@]}" \
     "${VM_USER}@${VM_IP}" \
-    "cat > /home/${VM_USER}/${GUEST_REPO_NAME}/AGENT_TASK.yaml" <<EOF
+    "cat > /home/${VM_USER}/${GUEST_REPO_NAME}/AGENT_TASK.yaml" <<'GUEST_TASK_EOF'
 issue_number: ${ISSUE_NUMBER}
 name: "Not provided"
 description: |
   No issue metadata file was provided during VM setup.
-EOF
+GUEST_TASK_EOF
 fi
+
+python3 - "${SCRIPT_DIR}/../templates/guest-AGENTS.md.tmpl" "${TARGET_DIR}" "${REMOTE_URL}" "${PYTHON_INSTRUCTION}" "${RESTORE_INSTRUCTION}" <<'PY' | ssh \
+  "${SSH_OPTS[@]}" \
+  "${VM_USER}@${VM_IP}" \
+  "cat > \$HOME/AGENTS.md"
+from pathlib import Path
+import sys
+
+template_path = Path(sys.argv[1]).resolve()
+text = template_path.read_text(encoding="utf-8")
+replacements = {
+    "__TARGET_DIR__": sys.argv[2],
+    "__REMOTE_URL__": sys.argv[3],
+    "__PYTHON_INSTRUCTION__": sys.argv[4],
+    "__RESTORE_INSTRUCTION__": sys.argv[5],
+}
+for placeholder, value in replacements.items():
+    text = text.replace(placeholder, value)
+print(text, end="")
+PY
 
 if (( START_AGENT )); then
   log_step "start_agent"
   ssh \
     "${SSH_OPTS[@]}" \
     "${VM_USER}@${VM_IP}" \
-    "GUEST_REPO_NAME='${GUEST_REPO_NAME}' AGENT_PROVIDER='${AGENT_PROVIDER}' AGENT_MODEL='${AGENT_MODEL}' POST_EXEC_VERIFICATION_PROMPT_B64='${POST_EXEC_VERIFICATION_PROMPT_B64}' AGENT_RUNNER_LIB_B64='${AGENT_RUNNER_LIB_B64}' AGENT_RUNNER_CODEX_LIB_B64='${AGENT_RUNNER_CODEX_LIB_B64}' AGENT_STATE_LIB_B64='${AGENT_STATE_LIB_B64}' BOOTSTRAP_PYTHON='${BOOTSTRAP_PYTHON}' BOOTSTRAP_DOTNET='${BOOTSTRAP_DOTNET}' BOOTSTRAP_NUGET='${BOOTSTRAP_NUGET}' bash -s" <<'EOF'
+    "GUEST_REPO_NAME='${GUEST_REPO_NAME}' AGENT_PROVIDER='${AGENT_PROVIDER}' AGENT_MODEL='${AGENT_MODEL}' POST_EXEC_VERIFICATION_PROMPT_B64='${POST_EXEC_VERIFICATION_PROMPT_B64}' AGENT_RUNNER_LIB_B64='${AGENT_RUNNER_LIB_B64}' AGENT_RUNNER_CODEX_LIB_B64='${AGENT_RUNNER_CODEX_LIB_B64}' AGENT_STATE_LIB_B64='${AGENT_STATE_LIB_B64}' BOOTSTRAP_PYTHON='${BOOTSTRAP_PYTHON}' BOOTSTRAP_DOTNET='${BOOTSTRAP_DOTNET}' BOOTSTRAP_NUGET='${BOOTSTRAP_NUGET}' bash -s" <<'START_AGENT_EOF'
 set -euo pipefail
 . ~/.profile
 AGENT_RUNNER_TMP_DIR="$(mktemp -d)"
@@ -699,7 +704,7 @@ exit "${exec_status}"
 AGENT_PID=$!
 echo "${AGENT_PID}" > "${PID_PATH}"
 printf 'pid=%s\nlog=%s\n' "${AGENT_PID}" "${LOG_PATH}"
-EOF
+START_AGENT_EOF
 fi
 
 log_step "complete"

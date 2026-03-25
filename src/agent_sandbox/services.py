@@ -600,6 +600,13 @@ def _normalize_azure_devops_repo_identifier(repo: str) -> str:
     return normalized
 
 
+def normalize_pr_feedback_provider(provider: str) -> str:
+    normalized = provider.strip()
+    if normalized in {"azure_devops", "azure-devops"}:
+        return "azure_devops"
+    return normalized
+
+
 class PrReplyService:
     def __init__(
         self,
@@ -627,9 +634,12 @@ class PrReplyService:
         body_text: str,
         idempotency_key: str | None = None,
     ) -> PostPrFeedbackReplyResponse:
-        provider_name = provider.strip()
+        provider_name = normalize_pr_feedback_provider(provider)
         if provider_name not in self.providers:
-            raise ValueError(f"Unsupported PR feedback provider: {provider_name}")
+            raise ValueError(
+                f"PR feedback provider {provider_name!r} is not configured for this gateway instance"
+            )
+        prefixed_body_text = _prefix_feedback_reply(body_text)
 
         normalized_key = idempotency_key.strip() if idempotency_key else None
         cache_key = (
@@ -647,7 +657,7 @@ class PrReplyService:
             pr_id=pr_id,
             thread_id=thread_id,
             comment_id=comment_id,
-            body_text=body_text,
+            body_text=prefixed_body_text,
         )
         response.idempotency_key = normalized_key
         self._record_ignored_feedback_id(response)
@@ -703,6 +713,14 @@ def _feedback_id_for_reply_response(response: PostPrFeedbackReplyResponse) -> st
     if response.provider == "azure_devops" and response.thread_id:
         return f"azure_devops:thread_comment:{response.thread_id}:{response.reply_id}"
     return None
+
+
+def _prefix_feedback_reply(body_text: str) -> str:
+    normalized = body_text.strip()
+    prefix = "[Truman] "
+    if normalized.startswith(prefix):
+        return normalized
+    return f"{prefix}{normalized}"
 
 
 def _normalize_ignored_feedback_payload(payload: dict[str, Any]) -> tuple[dict[str, Any], set[str], bool]:
