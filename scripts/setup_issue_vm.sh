@@ -569,60 +569,25 @@ for relative in install_roots:
 PY
 fi
 
-cat > "$HOME/AGENTS.md" <<AGENTS
-# Guest Notes
+python3 - "${SCRIPT_DIR}/../templates/guest-AGENTS.md.tmpl" <<'PY' | ssh \
+  "${SSH_OPTS[@]}" \
+  "${VM_USER}@${VM_IP}" \
+  "cat > \$HOME/AGENTS.md"
+from pathlib import Path
+import sys
 
-- Primary repo path: ${TARGET_DIR}
-- Task file in repo root: ${TARGET_DIR}/AGENT_TASK.yaml
-- Guest Git remote: ${REMOTE_URL}
-- Recommended push command from inside the repo:
-  \`git push-agent\`
-- PR note helper from inside the repo:
-  \`git agent-pr-note\`
-- Equivalent explicit push pattern:
-  \`git push agent HEAD:refs/heads/agents/\${SESSION_ID}/\$(git rev-parse --abbrev-ref HEAD)-\${AGENT_BRANCH_SUFFIX:-\${HOSTNAME}} refs/notes/agent-pr\`
-- Branch suffix defaults to \`${AGENT_BRANCH_SUFFIX}\` (set to the VM name by setup); fallback is \`${HOSTNAME}\`.
-- `push-agent` refuses to run when `SESSION_ID` is missing or the suffix resolves empty, because that would cause branch collisions.
-- `push-agent` also refreshes the current branch's cached PR summary onto \`HEAD\` and pushes \`refs/notes/agent-pr\` automatically.
-${PYTHON_INSTRUCTION}
-${RESTORE_INSTRUCTION}
-- If shell changes were just bootstrapped, run:
-  \`. ~/.profile\`
-
-## PR Summary Requirement
-
-Agents must provide a markdown summary of changes and attach it to the tip commit
-with Git notes.
-
-- Required notes ref: \`agent-pr\`
-- Use \`git agent-pr-note set\` to create or replace the full PR summary snapshot for the current branch.
-- Use \`git agent-pr-note append\` for follow-up commits so the summary stays additive.
-- \`git push-agent\` reattaches the cached summary to the current \`HEAD\` and pushes the notes ref automatically.
-
-Copy/paste examples (replace placeholders):
-
-\`\`\`bash
-# Create the initial full PR summary for this branch.
-git agent-pr-note set -m "<markdown summary in Markdown>"
-
-# Append a later update without losing the earlier summary.
-git agent-pr-note append -m "<follow-up markdown update>"
-
-# Push the current branch and refreshed notes ref together.
-git push-agent
-\`\`\`
-
-### Troubleshooting
-
-- Summary missing on the latest commit:
-  run \`git agent-pr-note ensure-head\` or just \`git push-agent\` from the branch tip.
-- Wrong ref name:
-  use exactly \`--ref=agent-pr\` (this maps to \`refs/notes/agent-pr\`).
-- Note attached to the wrong commit:
-  checkout the correct tip commit and re-run
-  \`git agent-pr-note ensure-head\`.
-AGENTS
-EOF
+template_path = Path(sys.argv[1]).resolve()
+text = template_path.read_text(encoding="utf-8")
+replacements = {
+    "__TARGET_DIR__": """${TARGET_DIR}""",
+    "__REMOTE_URL__": """${REMOTE_URL}""",
+    "__PYTHON_INSTRUCTION__": """${PYTHON_INSTRUCTION}""",
+    "__RESTORE_INSTRUCTION__": """${RESTORE_INSTRUCTION}""",
+}
+for placeholder, value in replacements.items():
+    text = text.replace(placeholder, value)
+print(text, end="")
+PY
 
 if (( BOOTSTRAP_PYTHON )); then
   log_step "bootstrap_python"
