@@ -284,6 +284,7 @@ without exposing provider credentials in the VM.
    - `has_pending_feedback(session_id)`
 2. Unread fetch when pending is true:
    - `list_unread_feedback(session_id, last_read_cursor, limit)` (set `limit=1` for strict one-comment handling)
+   - `list_all_feedback(session_id, limit)` when you need full PR comment history, including already-read items
 3. Post threaded replies (when needed):
    - `post_pr_feedback_reply(session_id, provider, repo, pr_id, body_text, thread_id/comment_id, idempotency_key)`
 4. Cursor advancement:

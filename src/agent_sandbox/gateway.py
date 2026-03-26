@@ -205,6 +205,35 @@ def create_server(context: RuntimeContext) -> FastMCP:
             raise
 
     @server.tool()
+    def list_all_feedback(session_id: str, limit: int | None = None) -> dict[str, Any]:
+        args = {"session_id": session_id, "limit": limit}
+        try:
+            session = context.policy.require_tool(session_id, ToolName.LIST_ALL_FEEDBACK)
+            streams = context.policy.require_pr_feedback_streams(session)
+            response = context.pr_feedback_service.list_all_feedback(streams=streams, limit=limit)
+            result = response.model_dump(mode="json")
+            audit_success(
+                session_id,
+                ToolName.LIST_ALL_FEEDBACK,
+                args,
+                {"count": len(response.feedback), "next_cursor": response.next_cursor},
+            )
+            return result
+        except PolicyError as exc:
+            audit_failure(session_id, ToolName.LIST_ALL_FEEDBACK, args, str(exc))
+            raise
+        except Exception as exc:
+            audit_failure(
+                session_id,
+                ToolName.LIST_ALL_FEEDBACK,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
     def post_pr_feedback_reply(
         session_id: str,
         provider: str,

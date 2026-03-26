@@ -42,7 +42,11 @@ class PolicyEngine:
         session = self.get_session(session_id)
         if tool_name not in session.allowed_tools:
             raise PolicyError(f"Tool {tool_name.value} is not allowed for session {session_id}")
-        if tool_name in {ToolName.HAS_PENDING_FEEDBACK, ToolName.LIST_UNREAD_FEEDBACK}:
+        if tool_name in {
+            ToolName.HAS_PENDING_FEEDBACK,
+            ToolName.LIST_UNREAD_FEEDBACK,
+            ToolName.LIST_ALL_FEEDBACK,
+        }:
             self.require_pr_feedback_streams(session)
         return session
 

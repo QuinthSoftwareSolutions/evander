@@ -217,3 +217,17 @@ def test_list_unread_feedback_prunes_expired_ignored_feedback_ids(tmp_path: Path
     assert payload["feedback_ids"] == [
         {"feedback_id": "github:review:2", "ignored_at": "2099-01-01T00:00:00Z"}
     ]
+
+
+def test_list_all_feedback_includes_items_regardless_of_read_cursor(tmp_path: Path) -> None:
+    store_path = tmp_path / "pr-feedback-store.json"
+    _write_store(store_path)
+    service = PrFeedbackService(store_path)
+
+    response = service.list_all_feedback(
+        streams=[{"provider": "github", "repo": "org/repo", "pr_id": "17"}],
+        limit=10,
+    )
+
+    assert [item.feedback_id for item in response.feedback] == ["github:review:1", "github:review:2"]
+    assert response.next_cursor == "2026-01-02T00:00:00Z"

@@ -612,6 +612,41 @@ class _FakePrFeedbackService:
             model_dump=lambda mode="json": payload,
         )
 
+    def list_all_feedback(
+        self, *, streams: list[dict[str, str]], limit: int | None = None
+    ) -> SimpleNamespace:
+        self.last_streams = streams
+        self.last_cursor = None
+        self.last_limit = limit
+        payload = {
+            "feedback": [
+                {
+                    "feedback_id": "github:review_comment:1",
+                    "provider": "github",
+                    "repo": "org/repo",
+                    "pr_id": "17",
+                    "author": "reviewer",
+                    "body": "Older comment",
+                    "created_at": "2025-12-31T00:00:00Z",
+                },
+                {
+                    "feedback_id": "github:review_comment:7",
+                    "provider": "github",
+                    "repo": "org/repo",
+                    "pr_id": "17",
+                    "author": "reviewer",
+                    "body": "Please rename this variable.",
+                    "created_at": "2026-01-01T00:00:00Z",
+                },
+            ],
+            "next_cursor": "2026-01-01T00:00:00Z",
+        }
+        return SimpleNamespace(
+            feedback=payload["feedback"],
+            next_cursor=payload["next_cursor"],
+            model_dump=lambda mode="json": payload,
+        )
+
 
 class _FakePrReplyService:
     def __init__(self) -> None:
@@ -867,6 +902,37 @@ def test_list_unread_feedback_returns_items_and_audits_result_count(tmp_path: Pa
     event = read_audit_events(context.config.audit_log_path)[-1]
     assert event["tool_name"] == ToolName.LIST_UNREAD_FEEDBACK.value
     assert event["result"] == {"count": 1, "next_cursor": "2026-01-01T00:00:00Z"}
+
+
+def test_list_all_feedback_returns_history_including_already_read_items(tmp_path: Path) -> None:
+    context = make_context(tmp_path)
+    context.sessions.put(
+        "session-1",
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[ToolName.LIST_ALL_FEEDBACK],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={"pr_feedback_streams": [{"provider": "github", "repo": "org/repo", "pr_id": "17"}]},
+        ),
+    )
+    context.pr_feedback_service = _FakePrFeedbackService()
+    server = create_server(context)
+
+    result = call_tool(
+        server,
+        "list_all_feedback",
+        {"session_id": "session-1", "limit": 2},
+    )
+
+    assert [item["feedback_id"] for item in result["feedback"]] == [
+        "github:review_comment:1",
+        "github:review_comment:7",
+    ]
+    assert context.pr_feedback_service.last_cursor is None
+    assert context.pr_feedback_service.last_limit == 2
+    event = read_audit_events(context.config.audit_log_path)[-1]
+    assert event["tool_name"] == ToolName.LIST_ALL_FEEDBACK.value
+    assert event["result"] == {"count": 2, "next_cursor": "2026-01-01T00:00:00Z"}
 
 
 def test_post_pr_feedback_reply_calls_provider_and_audits_reply_identifiers(tmp_path: Path) -> None:
