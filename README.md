@@ -454,11 +454,13 @@ Use this when you want the guest to wake only for new review feedback and post t
   `host_heartbeat_poll_interval_seconds`, `host_heartbeat_jitter_seconds`,
   and `host_heartbeat_cooldown_seconds`.
 - Feedback polling happens once on the host and updates the shared host feedback store.
-- Guests consume pending feedback via MCP tools and no longer run a guest-local heartbeat timer.
-- `scripts/bootstrap_codex_vm.sh` defaults to `ENABLE_GUEST_HEARTBEAT=0` and does not install the
-  legacy `agent-heartbeat.timer` unless you explicitly set `ENABLE_GUEST_HEARTBEAT=1`
-  (deprecated compatibility path).
-- Migration note for existing VMs: disable any previously enabled guest timer to avoid double wakeups:
+- Guests consume pending feedback via MCP tools by default.
+- `scripts/bootstrap_codex_vm.sh` defaults to `ENABLE_GUEST_HEARTBEAT=0`, which keeps
+  `agent-heartbeat.timer` disabled for new guests.
+- Set `ENABLE_GUEST_HEARTBEAT=1` to install and enable an optional guest-local resume timer.
+  The timer uses the same `codex exec resume --last` path as the host resume flow and accepts
+  `GUEST_HEARTBEAT_PROMPT` to override the resume prompt per agent.
+- Migration note for existing VMs: disable any previously enabled guest timer if you want host-only wakeups:
   `systemctl --user disable --now agent-heartbeat.timer || true`.
 
 ### Troubleshooting

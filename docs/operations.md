@@ -271,9 +271,11 @@ without exposing provider credentials in the VM.
   - `host_heartbeat_cooldown_seconds`
   - `host_heartbeat_lock_path` (single-instance lock file)
 - The host worker reads session manifests through runtime state and writes provider feedback/cursors to `runtime/pr-feedback-store.json`.
-- Guests no longer run `agent-heartbeat.service` or `agent-heartbeat.timer`.
-- `scripts/bootstrap_codex_vm.sh` now defaults `ENABLE_GUEST_HEARTBEAT=0` and skips legacy guest timer install unless explicitly overridden with `ENABLE_GUEST_HEARTBEAT=1` (deprecated compatibility mode).
-- Migration note for existing VMs: run `systemctl --user disable --now agent-heartbeat.timer || true` to avoid double wake behavior when the host worker is enabled.
+- Guests no longer run `agent-heartbeat.service` or `agent-heartbeat.timer` by default.
+- `scripts/bootstrap_codex_vm.sh` defaults `ENABLE_GUEST_HEARTBEAT=0`, which disables the guest timer on bootstrap.
+- Set `ENABLE_GUEST_HEARTBEAT=1` to install and enable `agent-heartbeat.timer` inside the guest.
+  The timer resumes via `codex exec resume --last` and accepts `GUEST_HEARTBEAT_PROMPT` to override the guest wake prompt.
+- Migration note for existing VMs: run `systemctl --user disable --now agent-heartbeat.timer || true` to keep host-only wake behavior.
 
 ### Failure handling
 
