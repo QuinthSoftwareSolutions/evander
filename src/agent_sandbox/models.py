@@ -4,9 +4,10 @@ import json
 from datetime import UTC, datetime
 from enum import Enum
 from hashlib import sha256
+from pathlib import PurePosixPath
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 def utc_now() -> datetime:
@@ -38,6 +39,7 @@ class ApprovalStatus(str, Enum):
 class SessionManifest(BaseModel):
     session_id: str
     vm_id: str | None = None
+    directory_path: str = "root"
     allowed_tools: list[ToolName]
     discord_channel_allowlist: list[str] = Field(default_factory=list)
     email_folder_allowlist: list[str] = Field(default_factory=list)
@@ -50,6 +52,60 @@ class SessionManifest(BaseModel):
     expires_at: datetime
     created_at: datetime = Field(default_factory=utc_now)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("directory_path")
+    @classmethod
+    def validate_directory_path(cls, value: str) -> str:
+        return DirectoryPath(segments=value).as_posix()
+
+
+class DirectoryPath(BaseModel):
+    segments: tuple[str, ...] = ("root",)
+
+    @field_validator("segments", mode="before")
+    @classmethod
+    def normalize_segments(cls, value: object) -> tuple[str, ...]:
+        if isinstance(value, str):
+            pieces = tuple(part for part in PurePosixPath(value.strip()).parts if part not in {"", "."})
+            return pieces
+        if isinstance(value, (list, tuple)):
+            return tuple(str(part).strip() for part in value)
+        return ("root",)
+
+    @field_validator("segments")
+    @classmethod
+    def validate_segments(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if not value:
+            raise ValueError("directory path must include at least one segment")
+        if value[0] != "root":
+            raise ValueError("directory path must begin with 'root'")
+        for segment in value:
+            if not segment or "/" in segment or segment in {".", ".."}:
+                raise ValueError(f"invalid directory path segment: {segment!r}")
+        return value
+
+    def as_posix(self) -> str:
+        return "/".join(self.segments)
+
+
+class Directory(BaseModel):
+    id: str
+    name: str
+    parent_id: str | None = None
+    created_at: datetime = Field(default_factory=utc_now)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("directory name cannot be empty")
+        if "/" in normalized:
+            raise ValueError("directory name cannot contain '/'")
+        if normalized in {".", ".."}:
+            raise ValueError("directory name cannot be '.' or '..'")
+        return normalized
 
 
 class EmailMessage(BaseModel):

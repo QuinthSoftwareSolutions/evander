@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from dataclasses import dataclass
 
 from .audit import AuditLogger
+from .directories import DirectoryStore
 from .models import (
     ApprovalRequest,
     DiscordCommandEnvelope,
@@ -43,6 +44,7 @@ class RuntimeContext:
     pr_reply_service: PrReplyService
     sessions: JsonStore[SessionManifest]
     approvals: JsonStore[ApprovalRequest]
+    directories: DirectoryStore
 
 
 def build_runtime(config: GatewayConfig) -> RuntimeContext:
@@ -51,6 +53,8 @@ def build_runtime(config: GatewayConfig) -> RuntimeContext:
     drafts = JsonStore(config.draft_store_path, DraftMessage)
     emails = JsonStore(config.email_store_path, EmailMessage)
     email_cursors = DurableCursorStore(config.email_cursor_store_path)
+    directories = DirectoryStore(config.directories_store_path)
+    directories.ensure_root()
     discord_commands = JsonStore(config.discord_command_store_path, DiscordCommandEnvelope)
     discord_service = _build_discord_service(config, discord_commands, sessions)
 
@@ -64,6 +68,7 @@ def build_runtime(config: GatewayConfig) -> RuntimeContext:
         pr_reply_service=_build_pr_reply_service(config),
         sessions=sessions,
         approvals=approvals,
+        directories=directories,
     )
 
 

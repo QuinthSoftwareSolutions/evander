@@ -629,6 +629,7 @@ def _build_issue_session_manifest(
     return SessionManifest(
         session_id=session_id,
         vm_id=vm_id,
+        directory_path="root",
         allowed_tools=unique_tools,
         discord_channel_allowlist=discord_channels,
         email_folder_allowlist=resolved_email_folders,
@@ -645,7 +646,8 @@ def _build_issue_session_manifest(
 @app.command("init-state")
 def init_state(config: ConfigOption = Path("config/gateway.yaml")) -> None:
     cfg = load_config(config)
-    build_runtime(cfg)
+    runtime = build_runtime(cfg)
+    runtime.directories.ensure_root()
     typer.echo(f"Initialized runtime state under {cfg.runtime_dir}")
 
 
@@ -685,6 +687,7 @@ def status(config: ConfigOption = Path("config/gateway.yaml"), as_json: Annotate
             _path_status(cfg.email_store_path),
             _path_status(cfg.email_cursor_store_path),
             _path_status(cfg.discord_command_store_path),
+            _path_status(cfg.directories_store_path),
             _path_status(cfg.audit_log_path),
         ]
         report["runtime_paths"] = [asdict(path_status) for path_status in runtime_paths]
@@ -857,6 +860,7 @@ def create_session(
     manifest = SessionManifest(
         session_id=session_id,
         vm_id=vm_id,
+        directory_path="root",
         allowed_tools=[
             ToolName.DISCORD_GET_COMMANDS,
             ToolName.DISCORD_POST_STATUS,

@@ -62,6 +62,25 @@ def test_seed_email_accepts_recipient_option_after_positionals(tmp_path: Path) -
     assert "other@example.com" in emails
 
 
+def test_init_state_creates_directories_store_with_root(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+
+    result = runner.invoke(app, ["init-state", "--config", str(config_path)])
+    assert result.exit_code == 0
+
+    directories_payload = json.loads((tmp_path / "runtime" / "directories.json").read_text(encoding="utf-8"))
+    assert directories_payload == {
+        "root": {
+            "id": "root",
+            "name": "root",
+            "parent_id": None,
+            "created_at": directories_payload["root"]["created_at"],
+            "metadata": {},
+        }
+    }
+
+
 def test_create_session_disables_email_send_by_default(tmp_path: Path) -> None:
     config_path = write_config(tmp_path)
     runner = CliRunner()
