@@ -445,6 +445,7 @@ Use this when you want the guest to wake only for new review feedback and post t
    - status: `sudo systemctl status agent-sandbox-host-heartbeat.service`
 4. Use MCP calls from the agent in this order:
    `has_pending_feedback` → `list_unread_feedback` → `post_pr_feedback_reply` (with an idempotency key).
+   For full thread history (including already-consumed items), call `list_all_feedback`.
 
 ### Expected timing behavior
 
@@ -477,7 +478,7 @@ Use this when you want the guest to wake only for new review feedback and post t
 - Host runtime: `runtime/pr-feedback-store.json`, `runtime/pr-reply-idempotency.json`, `runtime/audit.jsonl`.
 - Healthy pattern:
   - host worker alternates between quiet polls and discovered feedback events,
-  - audit shows allowed calls for `has_pending_feedback`, `list_unread_feedback`, and `post_pr_feedback_reply`,
+  - audit shows allowed calls for `has_pending_feedback`, `list_unread_feedback`, `list_all_feedback`, and `post_pr_feedback_reply`,
   - idempotent retry returns `status=deduplicated` instead of creating duplicate provider comments.
 
 ### NuGet Relay Notes

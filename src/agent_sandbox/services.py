@@ -362,6 +362,23 @@ class PrFeedbackService:
         cursor: str | None = None,
         limit: int | None = None,
     ) -> ListUnreadFeedbackResponse:
+        return self._list_feedback(streams=streams, cursor=cursor, limit=limit)
+
+    def list_all_feedback(
+        self,
+        *,
+        streams: list[dict[str, str]],
+        limit: int | None = None,
+    ) -> ListUnreadFeedbackResponse:
+        return self._list_feedback(streams=streams, cursor=None, limit=limit)
+
+    def _list_feedback(
+        self,
+        *,
+        streams: list[dict[str, str]],
+        cursor: str | None,
+        limit: int | None,
+    ) -> ListUnreadFeedbackResponse:
         payload = self._read_store()
         allowed_streams = {
             (stream["provider"], stream["repo"], stream["pr_id"])

@@ -867,6 +867,7 @@ def create_session(
             ToolName.APPROVAL_CHECK,
             ToolName.HAS_PENDING_FEEDBACK,
             ToolName.LIST_UNREAD_FEEDBACK,
+            ToolName.LIST_ALL_FEEDBACK,
             ToolName.POST_PR_FEEDBACK_REPLY,
         ],
         discord_channel_allowlist=discord_channel or [],
@@ -1362,6 +1363,7 @@ def attach_pr_feedback(
     for tool in (
         ToolName.HAS_PENDING_FEEDBACK,
         ToolName.LIST_UNREAD_FEEDBACK,
+        ToolName.LIST_ALL_FEEDBACK,
         ToolName.POST_PR_FEEDBACK_REPLY,
     ):
         if tool not in manifest.allowed_tools:
