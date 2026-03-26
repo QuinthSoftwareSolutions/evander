@@ -20,7 +20,7 @@ trap 'on_error ${LINENO}' ERR
 
 show_help() {
   cat <<'EOF'
-Usage: setup_issue_vm.sh [--dry-run] [--dotnet] [--nuget] [--mssql [--mssql-init-root PATH]] [--playwright] [--frontend-deps --frontend-host-checkout PATH --frontend-install-root PATH ...] [mirror-options] <issue-number|issue-yaml> [project-or-solution-if-nuget] [repo-source] [session-id] [vm-user]
+Usage: setup_issue_vm.sh [--dry-run] [--python] [--dotnet] [--nuget] [--mssql [--mssql-init-root PATH]] [--playwright] [--frontend-deps --frontend-host-checkout PATH --frontend-install-root PATH ...] [mirror-options] <issue-number|issue-yaml> [project-or-solution-if-nuget] [repo-source] [session-id] [vm-user]
 
 Run the common issue-VM bring-up flow in one command:
   1. optionally prewarm the shared NuGet cache on the host
@@ -83,6 +83,7 @@ Mirror options (forwarded to setup_issue_git_vm.sh and mirror_issue_repo.sh):
   --force-local
 
 Optional guest toolchains:
+  --python            Bootstrap a guest-local Python virtualenv for Python-first repos.
   --dotnet            Bootstrap the host .NET SDK into the guest.
   --nuget             Bootstrap NuGet relay configuration (requires project-or-solution).
   --mssql             Bootstrap a guest-local Microsoft SQL Server instance into the guest.
@@ -105,6 +106,7 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
 fi
 
 START_AGENT=1
+BOOTSTRAP_PYTHON=0
 BOOTSTRAP_DOTNET=0
 BOOTSTRAP_NUGET=0
 BOOTSTRAP_MSSQL=0
@@ -118,6 +120,10 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --dry-run)
       START_AGENT=0
+      shift
+      ;;
+    --python)
+      BOOTSTRAP_PYTHON=1
       shift
       ;;
     --dotnet)
@@ -223,6 +229,7 @@ POST_EXEC_VERIFICATION_PROMPT="${AGENT_POST_EXEC_VERIFICATION_PROMPT:-${DEFAULT_
 POST_EXEC_VERIFICATION_PROMPT_B64="$(printf '%s' "${POST_EXEC_VERIFICATION_PROMPT}" | python3 -c 'import base64,sys; print(base64.b64encode(sys.stdin.buffer.read()).decode())')"
 AGENT_RUNNER_LIB_B64="$(base64 -w0 "${SCRIPT_DIR}/lib/agent_runner.sh")"
 AGENT_RUNNER_CODEX_LIB_B64="$(base64 -w0 "${SCRIPT_DIR}/lib/agent_runner_codex.sh")"
+AGENT_STATE_LIB_B64="$(base64 -w0 "${SCRIPT_DIR}/lib/agent_state.sh")"
 AGENT_PR_NOTE_HELPER_B64="$(
   python3 - "${ROOT_DIR}/scripts/guest/agent_pr_note.sh" <<'PY'
 import base64
@@ -401,7 +408,7 @@ if [[ ! -d "${GIT_REMOTE_ROOT}" ]]; then
   exit 1
 fi
 
-if virsh dominfo "${VM_NAME}" >/dev/null 2>&1 || sudo -n virsh dominfo "${VM_NAME}" >/dev/null 2>&1; then
+if sudo -n virsh dominfo "${VM_NAME}" >/dev/null 2>&1 || virsh dominfo "${VM_NAME}" >/dev/null 2>&1; then
   echo "VM already exists: ${VM_NAME}" >&2
   echo "Destroy it first with: sudo ./scripts/destroy_agent_vm.sh ${VM_NAME}" >&2
   exit 1
@@ -422,6 +429,7 @@ echo "Guest IPv4 detected: ${VM_IP}"
 log_step "wait_for_ssh"
 vm_network_wait_for_ssh "${VM_NAME}" "${VM_IP}" "${VM_USER}" "${SSH_PRIVATE_KEY_PATH}" "${VM_WAIT_SSH_TIMEOUT_SECONDS}"
 echo "Guest SSH is ready on ${VM_USER}@${VM_IP}"
+mapfile -t SSH_OPTS < <(guest_ssh_options "${VM_NAME}" "${VM_IP}" "${SSH_PRIVATE_KEY_PATH}" "${CALLER_HOME}")
 log_step "bootstrap_codex"
 "${SCRIPT_DIR}/bootstrap_codex_vm.sh" "${VM_NAME}" "${VM_USER}"
 if (( BOOTSTRAP_DOTNET )); then
@@ -450,18 +458,23 @@ log_step "setup_issue_git_vm"
 "${SCRIPT_DIR}/setup_issue_git_vm.sh" "${MIRROR_ARGS[@]}" "${VM_NAME}" "${ISSUE_NUMBER}" "${REPO_SOURCE}" "${VM_USER}"
 
 log_step "guest_repo_clone_and_config"
-ssh \
-  -o StrictHostKeyChecking=no \
-  -o UserKnownHostsFile=/dev/null \
-  -i "${SSH_PRIVATE_KEY_PATH}" \
-  "${VM_USER}@${VM_IP}" \
-  "GUEST_REPO_NAME='${GUEST_REPO_NAME}' ISSUE_NUMBER='${ISSUE_NUMBER}' SESSION_ID='${SESSION_ID}' REMOTE_URL='${REMOTE_URL}' AGENT_BRANCH_SUFFIX='${VM_NAME}' BOOTSTRAP_DOTNET='${BOOTSTRAP_DOTNET}' BOOTSTRAP_NUGET='${BOOTSTRAP_NUGET}' BOOTSTRAP_FRONTEND_DEPS='${BOOTSTRAP_FRONTEND_DEPS}' FRONTEND_INSTALL_ROOTS_JSON='${FRONTEND_INSTALL_ROOTS_JSON}' AGENT_PR_NOTE_HELPER_B64='${AGENT_PR_NOTE_HELPER_B64}' bash -s" <<'EOF'
-set -euo pipefail
-. ~/.profile
-
-TARGET_DIR="$HOME/${GUEST_REPO_NAME}"
+TARGET_DIR="/home/${VM_USER}/${GUEST_REPO_NAME}"
+PYTHON_INSTRUCTION=""
 RESTORE_INSTRUCTION=""
-if [[ "${BOOTSTRAP_DOTNET:-0}" == "1" && "${BOOTSTRAP_NUGET:-0}" == "1" ]]; then
+if (( BOOTSTRAP_PYTHON )); then
+  PYTHON_INSTRUCTION=$(cat <<'TXT'
+- For Python work, use the repo-local virtualenv:
+  `. .venv/bin/activate`
+- For tests, prefer:
+  `python -m pytest -q`
+- For lint, prefer:
+  `python -m ruff check`
+- Treat in-guest Python checks as repo validation only; host-only libvirt, firewall,
+  and systemd integration still needs host-side verification after promotion.
+TXT
+)
+fi
+if (( BOOTSTRAP_DOTNET )) && (( BOOTSTRAP_NUGET )); then
   RESTORE_INSTRUCTION=$(cat <<'TXT'
 - For restore, always use:
   `dotnet restore --configfile ~/.nuget/NuGet/NuGet.Config`
@@ -474,6 +487,15 @@ TXT
 )
 fi
 
+ssh \
+  "${SSH_OPTS[@]}" \
+  "${VM_USER}@${VM_IP}" \
+  "GUEST_REPO_NAME='${GUEST_REPO_NAME}' ISSUE_NUMBER='${ISSUE_NUMBER}' SESSION_ID='${SESSION_ID}' REMOTE_URL='${REMOTE_URL}' AGENT_BRANCH_SUFFIX='${VM_NAME}' BOOTSTRAP_FRONTEND_DEPS='${BOOTSTRAP_FRONTEND_DEPS}' FRONTEND_INSTALL_ROOTS_JSON='${FRONTEND_INSTALL_ROOTS_JSON}' AGENT_PR_NOTE_HELPER_B64='${AGENT_PR_NOTE_HELPER_B64}' bash -s" <<'EOF'
+set -euo pipefail
+. ~/.profile
+
+TARGET_DIR="$HOME/${GUEST_REPO_NAME}"
+
 if [[ -e "${TARGET_DIR}" ]]; then
   echo "Guest repo path already exists: ${TARGET_DIR}" >&2
   exit 1
@@ -483,6 +505,8 @@ git clone "${REMOTE_URL}" "${TARGET_DIR}"
 git -C "${TARGET_DIR}" remote add agent "${REMOTE_URL}"
 git -C "${TARGET_DIR}" config user.name "Truman Bot"
 git -C "${TARGET_DIR}" config user.email "truman@quinth.se"
+git -C "${TARGET_DIR}" config agent-sandbox.sessionId "${SESSION_ID}"
+git -C "${TARGET_DIR}" config agent-sandbox.branchSuffix "${AGENT_BRANCH_SUFFIX}"
 install -d -m 0755 "${TARGET_DIR}/.agent-sandbox/bin"
 python3 - "${TARGET_DIR}/.agent-sandbox/bin/agent-pr-note" "${AGENT_PR_NOTE_HELPER_B64}" <<'PY'
 import base64
@@ -495,7 +519,7 @@ target_path.write_bytes(base64.b64decode(sys.argv[2]))
 os.chmod(target_path, 0o755)
 PY
 git -C "${TARGET_DIR}" config alias.agent-pr-note '!f(){ repo_root=$(git rev-parse --show-toplevel); "${repo_root}/.agent-sandbox/bin/agent-pr-note" "$@"; }; f'
-git -C "${TARGET_DIR}" config alias.push-agent '!f(){ session_id=${SESSION_ID:-}; if [[ -z "${session_id}" ]]; then echo "SESSION_ID is not set; refusing ambiguous agent push." >&2; return 1; fi; suffix_source=${AGENT_BRANCH_SUFFIX:-${HOSTNAME:-}}; suffix=$(printf "%s" "${suffix_source}" | tr "[:upper:]" "[:lower:]" | tr -cs "a-z0-9._-" "-" | sed "s/^-*//;s/-*$//"); if [[ -z "${suffix}" ]]; then echo "AGENT_BRANCH_SUFFIX/HOSTNAME is empty; refusing ambiguous agent push." >&2; return 1; fi; repo_root=$(git rev-parse --show-toplevel); "${repo_root}/.agent-sandbox/bin/agent-pr-note" ensure-head; branch=$(git rev-parse --abbrev-ref HEAD); git push agent HEAD:refs/heads/agents/${session_id}/${branch}-${suffix} refs/notes/agent-pr; }; f'
+git -C "${TARGET_DIR}" config alias.push-agent '!f(){ session_id=${SESSION_ID:-$(git config --get agent-sandbox.sessionId || true)}; if [ -z "${session_id}" ]; then echo "SESSION_ID is not set; refusing ambiguous agent push." >&2; return 1; fi; suffix_source=${AGENT_BRANCH_SUFFIX:-$(git config --get agent-sandbox.branchSuffix || true)}; if [ -z "${suffix_source}" ]; then suffix_source=${HOSTNAME:-}; fi; suffix=$(printf "%s" "${suffix_source}" | tr "[:upper:]" "[:lower:]" | tr -cs "a-z0-9._-" "-" | sed "s/^-*//;s/-*$//"); if [ -z "${suffix}" ]; then echo "AGENT_BRANCH_SUFFIX/HOSTNAME is empty; refusing ambiguous agent push." >&2; return 1; fi; repo_root=$(git rev-parse --show-toplevel); "${repo_root}/.agent-sandbox/bin/agent-pr-note" ensure-head; branch=$(git rev-parse --abbrev-ref HEAD); git push agent HEAD:refs/heads/agents/${session_id}/${branch}-${suffix} refs/notes/agent-pr; }; f'
 
 if [[ "${BOOTSTRAP_FRONTEND_DEPS:-0}" == "1" ]]; then
   python3 - "$TARGET_DIR" "${FRONTEND_INSTALL_ROOTS_JSON:-[]}" <<'PY'
@@ -548,92 +572,58 @@ for relative in install_roots:
             shutil.copy2(source_child, dest_child)
 PY
 fi
-
-cat > "$HOME/AGENTS.md" <<AGENTS
-# Guest Notes
-
-- Primary repo path: ${TARGET_DIR}
-- Task file in repo root: ${TARGET_DIR}/AGENT_TASK.yaml
-- Guest Git remote: ${REMOTE_URL}
-- Recommended push command from inside the repo:
-  \`git push-agent\`
-- PR note helper from inside the repo:
-  \`git agent-pr-note\`
-- Equivalent explicit push pattern:
-  \`git push agent HEAD:refs/heads/agents/\${SESSION_ID}/\$(git rev-parse --abbrev-ref HEAD)-\${AGENT_BRANCH_SUFFIX:-\${HOSTNAME}} refs/notes/agent-pr\`
-- Branch suffix defaults to \`${AGENT_BRANCH_SUFFIX}\` (set to the VM name by setup); fallback is \`${HOSTNAME}\`.
-- `push-agent` refuses to run when `SESSION_ID` is missing or the suffix resolves empty, because that would cause branch collisions.
-- `push-agent` also refreshes the current branch's cached PR summary onto \`HEAD\` and pushes \`refs/notes/agent-pr\` automatically.
-${RESTORE_INSTRUCTION}
-- If shell changes were just bootstrapped, run:
-  \`. ~/.profile\`
-
-## PR Summary Requirement
-
-Agents must provide a markdown summary of changes and attach it to the tip commit
-with Git notes.
-
-- Required notes ref: \`agent-pr\`
-- Use \`git agent-pr-note set\` to create or replace the full PR summary snapshot for the current branch.
-- Use \`git agent-pr-note append\` for follow-up commits so the summary stays additive.
-- \`git push-agent\` reattaches the cached summary to the current \`HEAD\` and pushes the notes ref automatically.
-
-Copy/paste examples (replace placeholders):
-
-\`\`\`bash
-# Create the initial full PR summary for this branch.
-git agent-pr-note set -m "<markdown summary in Markdown>"
-
-# Append a later update without losing the earlier summary.
-git agent-pr-note append -m "<follow-up markdown update>"
-
-# Push the current branch and refreshed notes ref together.
-git push-agent
-\`\`\`
-
-### Troubleshooting
-
-- Summary missing on the latest commit:
-  run \`git agent-pr-note ensure-head\` or just \`git push-agent\` from the branch tip.
-- Wrong ref name:
-  use exactly \`--ref=agent-pr\` (this maps to \`refs/notes/agent-pr\`).
-- Note attached to the wrong commit:
-  checkout the correct tip commit and re-run
-  \`git agent-pr-note ensure-head\`.
-AGENTS
 EOF
+
+if (( BOOTSTRAP_PYTHON )); then
+  log_step "bootstrap_python"
+  "${SCRIPT_DIR}/bootstrap_python_vm.sh" --vm-user "${VM_USER}" "${VM_NAME}" "${RESOLVED_REPO_PATH}" "/home/${VM_USER}/${GUEST_REPO_NAME}"
+fi
 
 if [[ -n "${ISSUE_FILE}" ]]; then
   log_step "copy_issue_file"
   scp \
-    -o StrictHostKeyChecking=no \
-    -o UserKnownHostsFile=/dev/null \
-    -i "${SSH_PRIVATE_KEY_PATH}" \
+    "${SSH_OPTS[@]}" \
     "${ISSUE_FILE}" \
     "${VM_USER}@${VM_IP}:/home/${VM_USER}/${GUEST_REPO_NAME}/AGENT_TASK.yaml" >/dev/null
 else
   log_step "write_default_issue_file"
   ssh \
-    -o StrictHostKeyChecking=no \
-    -o UserKnownHostsFile=/dev/null \
-    -i "${SSH_PRIVATE_KEY_PATH}" \
+    "${SSH_OPTS[@]}" \
     "${VM_USER}@${VM_IP}" \
-    "cat > /home/${VM_USER}/${GUEST_REPO_NAME}/AGENT_TASK.yaml" <<EOF
+    "cat > /home/${VM_USER}/${GUEST_REPO_NAME}/AGENT_TASK.yaml" <<'GUEST_TASK_EOF'
 issue_number: ${ISSUE_NUMBER}
 name: "Not provided"
 description: |
   No issue metadata file was provided during VM setup.
-EOF
+GUEST_TASK_EOF
 fi
+
+python3 - "${SCRIPT_DIR}/../templates/guest-AGENTS.md.tmpl" "${TARGET_DIR}" "${REMOTE_URL}" "${PYTHON_INSTRUCTION}" "${RESTORE_INSTRUCTION}" <<'PY' | ssh \
+  "${SSH_OPTS[@]}" \
+  "${VM_USER}@${VM_IP}" \
+  "cat > \$HOME/AGENTS.md"
+from pathlib import Path
+import sys
+
+template_path = Path(sys.argv[1]).resolve()
+text = template_path.read_text(encoding="utf-8")
+replacements = {
+    "__TARGET_DIR__": sys.argv[2],
+    "__REMOTE_URL__": sys.argv[3],
+    "__PYTHON_INSTRUCTION__": sys.argv[4],
+    "__RESTORE_INSTRUCTION__": sys.argv[5],
+}
+for placeholder, value in replacements.items():
+    text = text.replace(placeholder, value)
+print(text, end="")
+PY
 
 if (( START_AGENT )); then
   log_step "start_agent"
   ssh \
-    -o StrictHostKeyChecking=no \
-    -o UserKnownHostsFile=/dev/null \
-    -i "${SSH_PRIVATE_KEY_PATH}" \
+    "${SSH_OPTS[@]}" \
     "${VM_USER}@${VM_IP}" \
-    "GUEST_REPO_NAME='${GUEST_REPO_NAME}' AGENT_PROVIDER='${AGENT_PROVIDER}' AGENT_MODEL='${AGENT_MODEL}' POST_EXEC_VERIFICATION_PROMPT_B64='${POST_EXEC_VERIFICATION_PROMPT_B64}' AGENT_RUNNER_LIB_B64='${AGENT_RUNNER_LIB_B64}' AGENT_RUNNER_CODEX_LIB_B64='${AGENT_RUNNER_CODEX_LIB_B64}' BOOTSTRAP_DOTNET='${BOOTSTRAP_DOTNET}' BOOTSTRAP_NUGET='${BOOTSTRAP_NUGET}' bash -s" <<'EOF'
+    "GUEST_REPO_NAME='${GUEST_REPO_NAME}' AGENT_PROVIDER='${AGENT_PROVIDER}' AGENT_MODEL='${AGENT_MODEL}' POST_EXEC_VERIFICATION_PROMPT_B64='${POST_EXEC_VERIFICATION_PROMPT_B64}' AGENT_RUNNER_LIB_B64='${AGENT_RUNNER_LIB_B64}' AGENT_RUNNER_CODEX_LIB_B64='${AGENT_RUNNER_CODEX_LIB_B64}' AGENT_STATE_LIB_B64='${AGENT_STATE_LIB_B64}' BOOTSTRAP_PYTHON='${BOOTSTRAP_PYTHON}' BOOTSTRAP_DOTNET='${BOOTSTRAP_DOTNET}' BOOTSTRAP_NUGET='${BOOTSTRAP_NUGET}' bash -s" <<'START_AGENT_EOF'
 set -euo pipefail
 . ~/.profile
 AGENT_RUNNER_TMP_DIR="$(mktemp -d)"
@@ -645,10 +635,19 @@ source "${AGENT_RUNNER_TMP_DIR}/agent_runner.sh"
 
 TARGET_DIR="$HOME/${GUEST_REPO_NAME}"
 LOG_DIR="$HOME/.agent-sandbox"
+mkdir -p "${LOG_DIR}/lib"
+printf '%s' "${AGENT_RUNNER_LIB_B64}" | base64 -d > "${LOG_DIR}/lib/agent_runner.sh"
+printf '%s' "${AGENT_RUNNER_CODEX_LIB_B64}" | base64 -d > "${LOG_DIR}/lib/agent_runner_codex.sh"
+printf '%s' "${AGENT_STATE_LIB_B64}" | base64 -d > "${LOG_DIR}/lib/agent_state.sh"
 LOG_PATH="${LOG_DIR}/agent-${GUEST_REPO_NAME}.log"
 PID_PATH="${LOG_DIR}/agent-${GUEST_REPO_NAME}.pid"
 STATE_PATH="${LOG_DIR}/agent-${GUEST_REPO_NAME}.state"
-INITIAL_PROMPT="You have been issued the task described in ${TARGET_DIR}/AGENT_TASK.yaml. Read ${HOME}/AGENTS.md and ${TARGET_DIR}/AGENT_TASK.yaml before you begin. The repository is located at ${TARGET_DIR}. Do not ask for feedback or clarifications, but work until the task is completed or until you determine that it is impossible to complete."
+# shellcheck source=/dev/null
+source "${LOG_DIR}/lib/agent_state.sh"
+INITIAL_PROMPT="You have been issued the task described in ${TARGET_DIR}/AGENT_TASK.yaml. Read ${HOME}/AGENTS.md and ${TARGET_DIR}/AGENT_TASK.yaml before you begin. The repository is located at ${TARGET_DIR}. Do not ask for feedback or clarifications at this time, but work until the task is completed or until you determine that it is impossible to complete."
+if [[ "${BOOTSTRAP_PYTHON:-0}" == "1" ]]; then
+  INITIAL_PROMPT="${INITIAL_PROMPT} Use the repo-local virtualenv at ${TARGET_DIR}/.venv for Python work. Run tests with 'python -m pytest -q' from an activated venv and lint with 'python -m ruff check'. Guest validation does not replace host-side libvirt, firewall, or systemd verification."
+fi
 if [[ "${BOOTSTRAP_DOTNET:-0}" == "1" && "${BOOTSTRAP_NUGET:-0}" == "1" ]]; then
   INITIAL_PROMPT="${INITIAL_PROMPT} When restore is needed, use 'dotnet restore --configfile ~/.nuget/NuGet/NuGet.Config'. For build and test, prefer '--no-restore'."
 fi
@@ -665,6 +664,8 @@ if [[ -f "${PID_PATH}" ]]; then
   fi
 fi
 
+ensure_agent_enabled
+
 nohup env \
   AGENT_PROVIDER="${AGENT_PROVIDER}" \
   AGENT_MODEL="${AGENT_MODEL}" \
@@ -673,36 +674,15 @@ nohup env \
   INITIAL_PROMPT="${INITIAL_PROMPT}" \
   POST_EXEC_VERIFICATION_PROMPT="${POST_EXEC_VERIFICATION_PROMPT}" \
   STATE_PATH="${STATE_PATH}" \
+  AGENT_STATE_REPO_NAME="${GUEST_REPO_NAME}" \
   bash -lc '
-write_state() {
-  local status="$1"
-  local phase="$2"
-  local exit_code="${3:-}"
-  local now
-  local tmp_path
+. "$HOME/.agent-sandbox/lib/agent_runner.sh"
+. "$HOME/.agent-sandbox/lib/agent_state.sh"
 
-  now="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-  tmp_path="${STATE_PATH}.tmp"
-  {
-    printf "status=%s\n" "${status}"
-    printf "phase=%s\n" "${phase}"
-    printf "repo=%s\n" "${GUEST_REPO_NAME}"
-    printf "pid=%s\n" "$$"
-    printf "updated_at=%s\n" "${now}"
-    if [[ -n "${exit_code}" ]]; then
-      printf "exit_code=%s\n" "${exit_code}"
-    fi
-  } > "${tmp_path}"
-  mv "${tmp_path}" "${STATE_PATH}"
-}
-
-on_exit() {
-  local exit_code="$?"
-  write_state "idle" "complete" "${exit_code}"
-}
+ensure_agent_enabled
 
 write_state "running" "initial"
-trap on_exit EXIT
+trap on_exit_write_idle EXIT
 
 agent_runner_exec \
   --model "${AGENT_MODEL}" \
@@ -724,7 +704,7 @@ exit "${exec_status}"
 AGENT_PID=$!
 echo "${AGENT_PID}" > "${PID_PATH}"
 printf 'pid=%s\nlog=%s\n' "${AGENT_PID}" "${LOG_PATH}"
-EOF
+START_AGENT_EOF
 fi
 
 log_step "complete"
@@ -735,6 +715,7 @@ echo "  session: ${SESSION_ID}"
 echo "  repo:    ${REMOTE_URL}"
 echo "  guest:   /home/${VM_USER}/${GUEST_REPO_NAME}"
 echo "  task:    /home/${VM_USER}/${GUEST_REPO_NAME}/AGENT_TASK.yaml"
+echo "  python:  $([[ ${BOOTSTRAP_PYTHON} -eq 1 ]] && echo enabled || echo disabled)"
 echo "  dotnet:  $([[ ${BOOTSTRAP_DOTNET} -eq 1 ]] && echo enabled || echo disabled)"
 echo "  nuget:   $([[ ${BOOTSTRAP_NUGET} -eq 1 ]] && echo enabled || echo disabled)"
 echo "  mssql:   $([[ ${BOOTSTRAP_MSSQL} -eq 1 ]] && echo enabled || echo disabled)"

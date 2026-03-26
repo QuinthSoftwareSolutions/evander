@@ -32,6 +32,8 @@ VM_USER="${4:-agent}"
 VM_NAME="vm-${ISSUE_NUMBER}"
 CALLER_USER="${SUDO_USER:-$USER}"
 CALLER_HOME="$(getent passwd "${CALLER_USER}" | cut -d: -f6)"
+# shellcheck source=lib/guest_ssh.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/guest_ssh.sh"
 SSH_PRIVATE_KEY_PATH="${SSH_PRIVATE_KEY_PATH:-${CALLER_HOME}/.ssh/id_ed25519}"
 printf -v REPO_NAME_SSH %q "${REPO_NAME}"
 printf -v TAIL_LINES_SSH %q "${TAIL_LINES}"
@@ -55,7 +57,7 @@ get_vm_ip() {
   local ip
 
   ip="$(
-    virsh domifaddr "${VM_NAME}" 2>/dev/null \
+    sudo -n virsh domifaddr "${VM_NAME}" 2>/dev/null \
       | awk '/ipv4/ {split($4, a, "/"); print a[1]; exit}'
   )"
   if [[ -n "${ip}" ]]; then
@@ -64,7 +66,7 @@ get_vm_ip() {
   fi
 
   ip="$(
-    sudo -n virsh domifaddr "${VM_NAME}" 2>/dev/null \
+    virsh domifaddr "${VM_NAME}" 2>/dev/null \
       | awk '/ipv4/ {split($4, a, "/"); print a[1]; exit}'
   )"
   if [[ -n "${ip}" ]]; then
@@ -80,10 +82,10 @@ if ! VM_IP="$(get_vm_ip)"; then
   exit 1
 fi
 
+mapfile -t SSH_OPTS < <(guest_ssh_options "${VM_NAME}" "${VM_IP}" "${SSH_PRIVATE_KEY_PATH}" "${CALLER_HOME}")
+
 ssh \
-  -o StrictHostKeyChecking=no \
-  -o UserKnownHostsFile=/dev/null \
-  -i "${SSH_PRIVATE_KEY_PATH}" \
+  "${SSH_OPTS[@]}" \
   "${VM_USER}@${VM_IP}" \
   "REPO_NAME=${REPO_NAME_SSH} TAIL_LINES=${TAIL_LINES_SSH} bash -s" <<'EOF'
 set -euo pipefail

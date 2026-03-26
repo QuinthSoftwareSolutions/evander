@@ -36,6 +36,8 @@ fi
 
 VM_NAME="$1"
 VM_USER="${2:-agent}"
+# shellcheck source=lib/guest_ssh.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/guest_ssh.sh"
 CALLER_USER="${SUDO_USER:-$USER}"
 CALLER_HOME="$(getent passwd "${CALLER_USER}" | cut -d: -f6)"
 SSH_KEY_PATH="${SSH_KEY_PATH:-${CALLER_HOME}/.ssh/id_ed25519}"
@@ -47,8 +49,6 @@ HOST_MSSQL_TOOLS_ROOT="${HOST_MSSQL_TOOLS_ROOT:-/opt/mssql-tools18}"
 HOST_MSSQL_ODBC_ROOT="${HOST_MSSQL_ODBC_ROOT:-/opt/microsoft/msodbcsql18}"
 HOST_MSSQL_RUNTIME_LIBS=(${HOST_MSSQL_RUNTIME_LIBS:-/lib/x86_64-linux-gnu/libodbc.so.2 /lib/x86_64-linux-gnu/libodbcinst.so.2 /lib/x86_64-linux-gnu/libltdl.so.7})
 SSH_OPTS=(
-  -o StrictHostKeyChecking=no
-  -o UserKnownHostsFile=/dev/null
   -i "${SSH_KEY_PATH}"
 )
 
@@ -94,7 +94,7 @@ get_vm_ip() {
   local ip
 
   ip="$(
-    virsh domifaddr "${VM_NAME}" 2>/dev/null \
+    sudo -n virsh domifaddr "${VM_NAME}" 2>/dev/null \
       | awk '/ipv4/ {split($4, a, "/"); print a[1]; exit}'
   )"
   if [[ -n "${ip}" ]]; then
@@ -103,7 +103,7 @@ get_vm_ip() {
   fi
 
   ip="$(
-    sudo -n virsh domifaddr "${VM_NAME}" 2>/dev/null \
+    virsh domifaddr "${VM_NAME}" 2>/dev/null \
       | awk '/ipv4/ {split($4, a, "/"); print a[1]; exit}'
   )"
   if [[ -n "${ip}" ]]; then
@@ -117,6 +117,7 @@ get_vm_ip() {
 }
 
 VM_IP="$(get_vm_ip)"
+mapfile -t SSH_OPTS < <(guest_ssh_options "${VM_NAME}" "${VM_IP}" "${SSH_KEY_PATH}" "${CALLER_HOME}")
 
 echo "Bootstrapping SQL Server client tooling into ${VM_USER}@${VM_IP}"
 

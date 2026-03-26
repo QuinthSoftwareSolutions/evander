@@ -3,10 +3,11 @@ from __future__ import annotations
 import json
 import random
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Lock
 from typing import Any, Callable, Protocol
+from urllib.parse import unquote
 
 import httpx
 from .models import (
@@ -18,8 +19,11 @@ from .models import (
     PostPrFeedbackReplyResponse,
     PrFeedbackItem,
 )
+from .pr_feedback_worker import PrFeedbackStore, _stream_key
 from .email.providers import EmailDraft, EmailMessageDetail, EmailMessageSummary, EmailProvider
 from .storage import JsonStore
+
+_IGNORED_FEEDBACK_RETENTION = timedelta(days=90)
 
 
 def _parse_snowflake(value: str, *, field_name: str) -> int:
@@ -340,16 +344,19 @@ class DiscordBotApiService:
 
 
 class PrFeedbackService:
-    def __init__(self, store_path: Path) -> None:
+    def __init__(self, store_path: Path, *, ignored_feedback_store_path: Path | None = None) -> None:
         self.store_path = store_path
+        self.store = PrFeedbackStore(store_path)
+        self.ignored_feedback_store_path = ignored_feedback_store_path
 
     def has_pending_feedback(
         self,
         *,
         streams: list[dict[str, str]],
+        session_id: str | None = None,
         cursor: str | None = None,
     ) -> HasPendingFeedbackResponse:
-        feedback = self.list_unread_feedback(streams=streams, cursor=cursor)
+        feedback = self.list_unread_feedback(streams=streams, session_id=session_id, cursor=cursor)
         return HasPendingFeedbackResponse(
             pending=bool(feedback.feedback),
             next_cursor=feedback.next_cursor,
@@ -359,10 +366,16 @@ class PrFeedbackService:
         self,
         *,
         streams: list[dict[str, str]],
+        session_id: str | None = None,
         cursor: str | None = None,
         limit: int | None = None,
     ) -> ListUnreadFeedbackResponse:
-        return self._list_feedback(streams=streams, cursor=cursor, limit=limit)
+        return self._list_feedback(
+            streams=streams,
+            session_id=session_id,
+            cursor=cursor,
+            limit=limit,
+        )
 
     def list_all_feedback(
         self,
@@ -370,12 +383,18 @@ class PrFeedbackService:
         streams: list[dict[str, str]],
         limit: int | None = None,
     ) -> ListUnreadFeedbackResponse:
-        return self._list_feedback(streams=streams, cursor=None, limit=limit)
+        return self._list_feedback(
+            streams=streams,
+            session_id=None,
+            cursor=None,
+            limit=limit,
+        )
 
     def _list_feedback(
         self,
         *,
         streams: list[dict[str, str]],
+        session_id: str | None,
         cursor: str | None,
         limit: int | None,
     ) -> ListUnreadFeedbackResponse:
@@ -384,28 +403,93 @@ class PrFeedbackService:
             (stream["provider"], stream["repo"], stream["pr_id"])
             for stream in streams
         }
+        stream_cursors = {
+            (stream["provider"], stream["repo"], stream["pr_id"]): self._effective_cursor(
+                session_id=session_id,
+                stream=stream,
+                explicit_cursor=cursor,
+            )
+            for stream in streams
+        }
         items: list[PrFeedbackItem] = []
+        ignored_feedback_ids = self._read_ignored_feedback_ids()
         for raw_value in payload.get("feedback", {}).values():
             if not isinstance(raw_value, dict):
                 continue
             candidate = PrFeedbackItem.model_validate(raw_value)
+            if candidate.feedback_id in ignored_feedback_ids:
+                continue
             key = (candidate.provider, candidate.repo, candidate.pr_id)
             if key not in allowed_streams:
                 continue
-            if cursor and candidate.created_at <= self._parse_cursor(cursor):
+            effective_cursor = stream_cursors.get(key)
+            if effective_cursor and candidate.created_at <= self._parse_cursor(effective_cursor):
                 continue
             items.append(candidate)
 
         items.sort(key=lambda item: item.created_at)
         if limit is not None:
             items = items[:limit]
-        next_cursor = items[-1].created_at.isoformat().replace("+00:00", "Z") if items else cursor
+        next_cursor = (
+            items[-1].created_at.isoformat().replace("+00:00", "Z")
+            if items
+            else self._max_cursors(stream_cursors.values())
+        )
+        if session_id is not None:
+            for stream in streams:
+                self.store.advance_session_cursor(
+                    session_id,
+                    _stream_key(stream["provider"], stream["repo"], stream["pr_id"]),
+                    next_cursor if next_cursor is not None else cursor,
+                )
         return ListUnreadFeedbackResponse(feedback=items, next_cursor=next_cursor)
 
     def _read_store(self) -> dict[str, Any]:
         if not self.store_path.exists():
             return {"feedback": {}}
         return json.loads(self.store_path.read_text(encoding="utf-8"))
+
+    def _read_ignored_feedback_ids(self) -> set[str]:
+        path = self.ignored_feedback_store_path
+        if path is None or not path.exists():
+            return set()
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        pruned_payload, feedback_ids, changed = _normalize_ignored_feedback_payload(payload)
+        if changed:
+            _write_json_atomic(path, pruned_payload)
+        return feedback_ids
+
+    def _effective_cursor(
+        self,
+        *,
+        session_id: str | None,
+        stream: dict[str, str],
+        explicit_cursor: str | None,
+    ) -> str | None:
+        if session_id is None:
+            return explicit_cursor
+        return self._max_cursor(
+            self.store.get_session_cursor(
+                session_id,
+                _stream_key(stream["provider"], stream["repo"], stream["pr_id"]),
+            ),
+            explicit_cursor,
+        )
+
+    def _max_cursor(self, first: str | None, second: str | None) -> str | None:
+        if first is None:
+            return second
+        if second is None:
+            return first
+        if self._parse_cursor(first) >= self._parse_cursor(second):
+            return first
+        return second
+
+    def _max_cursors(self, cursors: Any) -> str | None:
+        maximum: str | None = None
+        for cursor in cursors:
+            maximum = self._max_cursor(maximum, cursor)
+        return maximum
 
     @staticmethod
     def _parse_cursor(cursor: str) -> datetime:
@@ -504,10 +588,11 @@ class AzureDevOpsPrReplyProvider:
             raise ValueError("Azure DevOps reply posting requires thread_id")
         if not comment_id:
             raise ValueError("Azure DevOps reply posting requires comment_id")
+        repo_identifier = _normalize_azure_devops_repo_identifier(repo)
         with httpx.Client(timeout=self.timeout_seconds) as client:
             response = client.post(
                 (
-                    f"{self.organization_url}/{self.project}/_apis/git/repositories/{repo}/"
+                    f"{self.organization_url}/{self.project}/_apis/git/repositories/{repo_identifier}/"
                     f"pullRequests/{pr_id}/threads/{thread_id}/comments"
                 ),
                 params={"api-version": "7.1"},
@@ -528,10 +613,39 @@ class AzureDevOpsPrReplyProvider:
         )
 
 
+def _normalize_azure_devops_repo_identifier(repo: str) -> str:
+    normalized = unquote(repo.strip())
+    if not normalized:
+        return normalized
+    if "/_git/" in normalized:
+        return normalized.split("/_git/", 1)[1].split("/", 1)[0]
+    if "/_apis/git/repositories/" in normalized:
+        return normalized.split("/_apis/git/repositories/", 1)[1].split("/", 1)[0]
+    if "ssh.dev.azure.com:v3/" in normalized:
+        return normalized.split("ssh.dev.azure.com:v3/", 1)[1].rsplit("/", 1)[-1]
+    if normalized.count("/") >= 2:
+        return normalized.rsplit("/", 1)[-1]
+    return normalized
+
+
+def normalize_pr_feedback_provider(provider: str) -> str:
+    normalized = provider.strip()
+    if normalized in {"azure_devops", "azure-devops"}:
+        return "azure_devops"
+    return normalized
+
+
 class PrReplyService:
-    def __init__(self, *, providers: dict[str, PrReplyProvider], idempotency_store_path: Path) -> None:
+    def __init__(
+        self,
+        *,
+        providers: dict[str, PrReplyProvider],
+        idempotency_store_path: Path,
+        ignored_feedback_store_path: Path | None = None,
+    ) -> None:
         self.providers = providers
         self.idempotency_store_path = idempotency_store_path
+        self.ignored_feedback_store_path = ignored_feedback_store_path
         self._lock = Lock()
         self.idempotency_store_path.parent.mkdir(parents=True, exist_ok=True)
         if not self.idempotency_store_path.exists():
@@ -548,9 +662,12 @@ class PrReplyService:
         body_text: str,
         idempotency_key: str | None = None,
     ) -> PostPrFeedbackReplyResponse:
-        provider_name = provider.strip()
+        provider_name = normalize_pr_feedback_provider(provider)
         if provider_name not in self.providers:
-            raise ValueError(f"Unsupported PR feedback provider: {provider_name}")
+            raise ValueError(
+                f"PR feedback provider {provider_name!r} is not configured for this gateway instance"
+            )
+        prefixed_body_text = _prefix_feedback_reply(body_text)
 
         normalized_key = idempotency_key.strip() if idempotency_key else None
         cache_key = (
@@ -568,15 +685,42 @@ class PrReplyService:
             pr_id=pr_id,
             thread_id=thread_id,
             comment_id=comment_id,
-            body_text=body_text,
+            body_text=prefixed_body_text,
         )
         response.idempotency_key = normalized_key
+        self._record_ignored_feedback_id(response)
         if cache_key:
             with self._lock:
                 payload = self._read_raw()
                 payload[cache_key] = response.model_dump(mode="json")
                 self._write_raw(payload)
         return response
+
+    def _record_ignored_feedback_id(self, response: PostPrFeedbackReplyResponse) -> None:
+        feedback_id = _feedback_id_for_reply_response(response)
+        if feedback_id is None or self.ignored_feedback_store_path is None:
+            return
+
+        path = self.ignored_feedback_store_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with self._lock:
+            if path.exists():
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            else:
+                payload = {}
+            normalized_payload, feedback_ids, _ = _normalize_ignored_feedback_payload(payload)
+            if feedback_id in feedback_ids:
+                return
+            entries = normalized_payload.get("feedback_ids", [])
+            entries.append(
+                {
+                    "feedback_id": feedback_id,
+                    "ignored_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+                }
+            )
+            normalized_payload["feedback_ids"] = entries
+            final_payload, _, _ = _normalize_ignored_feedback_payload(normalized_payload)
+            _write_json_atomic(path, final_payload)
 
     def _read_raw(self) -> dict[str, Any]:
         return json.loads(self.idempotency_store_path.read_text(encoding="utf-8"))
@@ -587,3 +731,73 @@ class PrReplyService:
         )
         temp_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
         temp_path.replace(self.idempotency_store_path)
+
+
+def _feedback_id_for_reply_response(response: PostPrFeedbackReplyResponse) -> str | None:
+    if not response.reply_id:
+        return None
+    if response.provider == "github":
+        return f"github:review_comment:{response.reply_id}"
+    if response.provider == "azure_devops" and response.thread_id:
+        return f"azure_devops:thread_comment:{response.thread_id}:{response.reply_id}"
+    return None
+
+
+def _prefix_feedback_reply(body_text: str) -> str:
+    normalized = body_text.strip()
+    prefix = "[Truman] "
+    if normalized.startswith(prefix):
+        return normalized
+    return f"{prefix}{normalized}"
+
+
+def _normalize_ignored_feedback_payload(payload: dict[str, Any]) -> tuple[dict[str, Any], set[str], bool]:
+    now = datetime.now(UTC)
+    cutoff = now - _IGNORED_FEEDBACK_RETENTION
+    raw_entries = payload.get("feedback_ids", [])
+    normalized_entries: list[dict[str, str]] = []
+    feedback_ids: set[str] = set()
+
+    if isinstance(raw_entries, list):
+        for raw_entry in raw_entries:
+            if isinstance(raw_entry, str):
+                feedback_id = raw_entry.strip()
+                if not feedback_id:
+                    continue
+                normalized_entries.append({"feedback_id": feedback_id, "ignored_at": now.isoformat().replace("+00:00", "Z")})
+                feedback_ids.add(feedback_id)
+                continue
+            if not isinstance(raw_entry, dict):
+                continue
+            feedback_id = str(raw_entry.get("feedback_id", "")).strip()
+            if not feedback_id:
+                continue
+            ignored_at = str(raw_entry.get("ignored_at", "")).strip()
+            if ignored_at:
+                try:
+                    ignored_at_dt = PrFeedbackService._parse_cursor(ignored_at)
+                except ValueError:
+                    ignored_at_dt = now
+            else:
+                ignored_at_dt = now
+            if ignored_at_dt < cutoff:
+                continue
+            if feedback_id in feedback_ids:
+                continue
+            normalized_entries.append(
+                {
+                    "feedback_id": feedback_id,
+                    "ignored_at": ignored_at_dt.isoformat().replace("+00:00", "Z"),
+                }
+            )
+            feedback_ids.add(feedback_id)
+
+    normalized_payload = {"feedback_ids": normalized_entries}
+    changed = normalized_payload != payload
+    return normalized_payload, feedback_ids, changed
+
+
+def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+    temp_path = path.with_suffix(f"{path.suffix}.tmp")
+    temp_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    temp_path.replace(path)

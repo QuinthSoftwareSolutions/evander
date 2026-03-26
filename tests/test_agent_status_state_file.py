@@ -8,6 +8,9 @@ def test_agent_status_uses_explicit_state_file_only() -> None:
 
     assert 'for state_path in "${LOG_DIR}"/agent-*.state; do' in script
     assert 'status="$(read_state_value "${state_path}" "status")"' in script
+    assert 'CONTROL_STATE_PATH="${LOG_DIR}/agent-control.state"' in script
+    assert 'if [[ "${control_status}" == "disabled" ]]; then' in script
+    assert 'printf \'%s\\n\' "disabled"' in script
     assert '[[ "${status}" == "running" ]]' in script
     assert 'updated_at="$(read_state_value "${state_path}" "updated_at")"' in script
     assert 'if ! state_is_fresh "${updated_at}" && ! is_active_agent_pid "${pid}"; then' in script

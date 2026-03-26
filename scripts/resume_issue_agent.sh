@@ -31,6 +31,7 @@ Options:
   --vm-user USER              Guest user to connect as. Default: agent
   --worker-mode               Disable TTY allocation and run non-interactive worker mode.
   --host-state-file PATH      Host JSON state file that stores wake attempt diagnostics.
+  --host-control-state-path P Host JSON file that stores durable agent control state by VM.
   --observe [LINES]           Tail the guest Codex log after resuming instead of returning
                               immediately. Default lines: 10
   -h, --help                  Show this help text.
@@ -113,18 +114,50 @@ os.replace(tmp_path, path)
 PY
 }
 
+read_host_control_state_status() {
+  local host_control_state_path="$1"
+  local vm_name="$2"
+
+  [[ -n "${host_control_state_path}" ]] || return 0
+
+  python3 - "${host_control_state_path}" "${vm_name}" <<'PY'
+import json
+import os
+import sys
+
+path = sys.argv[1]
+vm_name = sys.argv[2]
+
+if not os.path.exists(path):
+    raise SystemExit(0)
+try:
+    with open(path, "r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+except (OSError, json.JSONDecodeError):
+    raise SystemExit(0)
+if not isinstance(payload, dict):
+    raise SystemExit(0)
+entry = payload.get(vm_name)
+if not isinstance(entry, dict):
+    raise SystemExit(0)
+status = str(entry.get("status", "")).strip()
+if status:
+    print(status)
+PY
+}
+
 resolve_private_key_path() {
-  local caller_user caller_home
+  local caller_user
 
   caller_user="${SUDO_USER:-${USER:-}}"
-  caller_home="${HOME:-}"
+  CALLER_HOME="${CALLER_HOME:-${HOME:-}}"
   if [[ -n "${caller_user}" ]]; then
-    caller_home="$(getent passwd "${caller_user}" | cut -d: -f6 || printf '%s\n' "${caller_home}")"
+    CALLER_HOME="$(getent passwd "${caller_user}" | cut -d: -f6 || printf '%s\n' "${CALLER_HOME}")"
   fi
 
-  SSH_PRIVATE_KEY_PATH="${SSH_PRIVATE_KEY_PATH:-${caller_home}/.ssh/id_ed25519}"
+  SSH_PRIVATE_KEY_PATH="${SSH_PRIVATE_KEY_PATH:-${CALLER_HOME}/.ssh/id_ed25519}"
   if [[ ! -f "${SSH_PRIVATE_KEY_PATH}" ]]; then
-    SSH_PRIVATE_KEY_PATH="${caller_home}/.ssh/id_rsa"
+    SSH_PRIVATE_KEY_PATH="${CALLER_HOME}/.ssh/id_rsa"
   fi
 
   if [[ ! -f "${SSH_PRIVATE_KEY_PATH}" ]]; then
@@ -157,6 +190,7 @@ parse_args() {
   VM_USER="agent"
   WORKER_MODE=0
   HOST_STATE_FILE=""
+  HOST_CONTROL_STATE_PATH=""
   OBSERVE=0
   OBSERVE_LINES=10
 
@@ -171,12 +205,30 @@ parse_args() {
     PROMPT="$1"
     ISSUE_NUMBER="$2"
     shift 2
-    if [[ $# -gt 0 && "${1:-}" != "--observe" ]]; then
+    if [[ $# -gt 0 && "${1:-}" != "--observe" && "${1:-}" != "--host-control-state-path" ]]; then
       VM_USER="$1"
       shift
     fi
     VM_NAME="vm-${ISSUE_NUMBER}"
-    parse_observe_args "$@" || return 1
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --observe)
+          OBSERVE=1
+          shift
+          if [[ $# -gt 0 && "${1:-}" != --* ]]; then
+            OBSERVE_LINES="$1"
+            shift
+          fi
+          ;;
+        --host-control-state-path)
+          HOST_CONTROL_STATE_PATH="${2:-}"
+          shift 2
+          ;;
+        *)
+          return 1
+          ;;
+      esac
+    done
   else
     while [[ $# -gt 0 ]]; do
       case "$1" in
@@ -206,6 +258,10 @@ parse_args() {
           ;;
         --host-state-file)
           HOST_STATE_FILE="${2:-}"
+          shift 2
+          ;;
+        --host-control-state-path)
+          HOST_CONTROL_STATE_PATH="${2:-}"
           shift 2
           ;;
         --observe)
@@ -250,6 +306,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/lib/vm_network.sh"
 AGENT_RUNNER_LIB_B64="$(base64 -w0 "${SCRIPT_DIR}/lib/agent_runner.sh")"
 AGENT_RUNNER_CODEX_LIB_B64="$(base64 -w0 "${SCRIPT_DIR}/lib/agent_runner_codex.sh")"
+AGENT_STATE_LIB_B64="$(base64 -w0 "${SCRIPT_DIR}/lib/agent_state.sh")"
 
 if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
   show_help
@@ -280,6 +337,13 @@ if ! vm_network_vm_exists "${VM_NAME}"; then
   exit "${EXIT_VM_NOT_FOUND}"
 fi
 
+HOST_CONTROL_STATUS="$(read_host_control_state_status "${HOST_CONTROL_STATE_PATH}" "${VM_NAME}" || true)"
+if [[ "${HOST_CONTROL_STATUS}" == "disabled" ]]; then
+  echo "Agent is disabled for ${VM_NAME}." >&2
+  write_host_state_attempt "${HOST_STATE_FILE}" "${SESSION_ID}" "error" "agent-disabled"
+  exit "${EXIT_RESUME_FAILED}"
+fi
+
 VM_STATE="$(vm_network_domain_state "${VM_NAME}")"
 if [[ "${VM_STATE}" != "running" ]]; then
   if ! vm_network_start "${VM_NAME}"; then
@@ -300,35 +364,194 @@ if ! vm_network_wait_for_ssh "${VM_NAME}" "${VM_IP}" "${VM_USER}" "${SSH_PRIVATE
 fi
 
 PROMPT_B64="$(printf '%s' "${PROMPT}" | base64 -w0)"
-SSH_FLAGS=(
-  -o StrictHostKeyChecking=no
-  -o UserKnownHostsFile=/dev/null
-  -o ConnectTimeout=5
-  -i "${SSH_PRIVATE_KEY_PATH}"
-)
+mapfile -t SSH_FLAGS < <(guest_ssh_options "${VM_NAME}" "${VM_IP}" "${SSH_PRIVATE_KEY_PATH}" "${CALLER_HOME:-${HOME:-}}")
+SSH_FLAGS+=(-o ConnectTimeout=5)
 
 if (( WORKER_MODE )); then
   set +e
   timeout --foreground "${RESUME_COMMAND_TIMEOUT_SECONDS}s" \
     ssh "${SSH_FLAGS[@]}" \
     "${VM_USER}@${VM_IP}" \
-    "PROMPT_B64='${PROMPT_B64}' AGENT_PROVIDER='${AGENT_PROVIDER}' AGENT_MODEL='${AGENT_MODEL}' AGENT_RUNNER_LIB_B64='${AGENT_RUNNER_LIB_B64}' AGENT_RUNNER_CODEX_LIB_B64='${AGENT_RUNNER_CODEX_LIB_B64}' bash -s" <<'REMOTE'
+    "PROMPT_B64='${PROMPT_B64}' SESSION_ID='${SESSION_ID}' AGENT_BRANCH_SUFFIX='${VM_NAME}' AGENT_PROVIDER='${AGENT_PROVIDER}' AGENT_MODEL='${AGENT_MODEL}' HOST_CONTROL_STATUS='${HOST_CONTROL_STATUS}' AGENT_RUNNER_LIB_B64='${AGENT_RUNNER_LIB_B64}' AGENT_RUNNER_CODEX_LIB_B64='${AGENT_RUNNER_CODEX_LIB_B64}' AGENT_STATE_LIB_B64='${AGENT_STATE_LIB_B64}' bash -s" <<'REMOTE'
 set -euo pipefail
 
 cd "${HOME}"
 . "${HOME}/.profile" >/dev/null 2>&1 || true
 
+resolve_primary_agent_paths() {
+  local log_dir="$1"
+  local resolved_repo_name="${GUEST_REPO_NAME:-}"
+  local candidate_names=()
+  local path
+  local name
+
+  if [[ -n "${resolved_repo_name}" ]]; then
+    printf '%s\n' "${resolved_repo_name}"
+    return 0
+  fi
+
+  shopt -s nullglob
+  for path in "${log_dir}"/agent-*.pid "${log_dir}"/agent-*.log "${log_dir}"/agent-*.state; do
+    name="$(basename "${path}")"
+    name="${name#agent-}"
+    name="${name%.pid}"
+    name="${name%.log}"
+    name="${name%.state}"
+    if [[ -n "${name}" ]]; then
+      candidate_names+=("${name}")
+    fi
+  done
+  shopt -u nullglob
+
+  if [[ ${#candidate_names[@]} -eq 0 ]]; then
+    return 1
+  fi
+
+  mapfile -t candidate_names < <(printf '%s\n' "${candidate_names[@]}" | sort -u)
+  if [[ ${#candidate_names[@]} -ne 1 ]]; then
+    return 1
+  fi
+
+  printf '%s\n' "${candidate_names[0]}"
+}
+
 AGENT_RUNNER_TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "${AGENT_RUNNER_TMP_DIR}"' EXIT
 printf '%s' "${AGENT_RUNNER_LIB_B64}" | base64 -d > "${AGENT_RUNNER_TMP_DIR}/agent_runner.sh"
 printf '%s' "${AGENT_RUNNER_CODEX_LIB_B64}" | base64 -d > "${AGENT_RUNNER_TMP_DIR}/agent_runner_codex.sh"
+printf '%s' "${AGENT_STATE_LIB_B64}" | base64 -d > "${AGENT_RUNNER_TMP_DIR}/agent_state.sh"
 # shellcheck source=/dev/null
 source "${AGENT_RUNNER_TMP_DIR}/agent_runner.sh"
+source "${AGENT_RUNNER_TMP_DIR}/agent_state.sh"
 
 LOG_DIR="${HOME}/.agent-sandbox"
-STATE_PATH="${LOG_DIR}/codex-resume-last.state"
+RESOLVED_REPO_NAME="$(resolve_primary_agent_paths "${LOG_DIR}" || true)"
+if [[ -n "${RESOLVED_REPO_NAME}" ]]; then
+  RUN_LOG_FILE="${LOG_DIR}/agent-${RESOLVED_REPO_NAME}.log"
+  STATE_PATH="${LOG_DIR}/agent-${RESOLVED_REPO_NAME}.state"
+  AGENT_STATE_REPO_NAME="${RESOLVED_REPO_NAME}"
+else
+  RUN_LOG_FILE="${LOG_DIR}/codex-heartbeat-run.log"
+  STATE_PATH="${LOG_DIR}/codex-resume-last.state"
+  AGENT_STATE_REPO_NAME="resume-last"
+fi
 PROMPT="$(python3 -c 'import base64, os; print(base64.b64decode(os.environ["PROMPT_B64"]).decode("utf-8"))')"
 mkdir -p "${LOG_DIR}"
+
+if [[ -n "${HOST_CONTROL_STATUS}" ]]; then
+  write_agent_control_state "${HOST_CONTROL_STATUS}" "host-sync"
+fi
+
+ensure_agent_enabled
+
+write_state "running" "resume"
+trap on_exit_write_idle EXIT
+
+agent_runner_resume_last \
+  --dangerously-bypass-approvals-and-sandbox \
+  --skip-git-repo-check \
+  --model "${AGENT_MODEL}" \
+  "${PROMPT}" \
+  2>&1 | tee -a "${RUN_LOG_FILE}"
+REMOTE
+  resume_exit_code="$?"
+  set -e
+
+  if [[ "${resume_exit_code}" -eq 0 ]]; then
+    write_host_state_attempt "${HOST_STATE_FILE}" "${SESSION_ID}" "ok" ""
+    exit 0
+  fi
+  if [[ "${resume_exit_code}" -eq 124 ]]; then
+    write_host_state_attempt "${HOST_STATE_FILE}" "${SESSION_ID}" "error" "resume-timeout"
+    echo "Resume command timed out after ${RESUME_COMMAND_TIMEOUT_SECONDS}s for ${VM_NAME}." >&2
+    exit "${EXIT_RESUME_FAILED}"
+  fi
+  write_host_state_attempt "${HOST_STATE_FILE}" "${SESSION_ID}" "error" "resume-exit-${resume_exit_code}"
+  echo "Resume command failed for ${VM_NAME} with exit code ${resume_exit_code}." >&2
+  exit "${EXIT_RESUME_FAILED}"
+fi
+
+resume_output="$(
+  ssh "${SSH_FLAGS[@]}" \
+    "${VM_USER}@${VM_IP}" \
+    "PROMPT_B64='${PROMPT_B64}' SESSION_ID='${SESSION_ID}' AGENT_BRANCH_SUFFIX='${VM_NAME}' AGENT_PROVIDER='${AGENT_PROVIDER}' AGENT_MODEL='${AGENT_MODEL}' HOST_CONTROL_STATUS='${HOST_CONTROL_STATUS}' AGENT_RUNNER_LIB_B64='${AGENT_RUNNER_LIB_B64}' AGENT_RUNNER_CODEX_LIB_B64='${AGENT_RUNNER_CODEX_LIB_B64}' AGENT_STATE_LIB_B64='${AGENT_STATE_LIB_B64}' bash -s" <<'REMOTE'
+set -euo pipefail
+
+cd "${HOME}"
+. "${HOME}/.profile" >/dev/null 2>&1 || true
+
+resolve_primary_agent_paths() {
+  local log_dir="$1"
+  local resolved_repo_name="${GUEST_REPO_NAME:-}"
+  local candidate_names=()
+  local path
+  local name
+
+  if [[ -n "${resolved_repo_name}" ]]; then
+    printf '%s\n' "${resolved_repo_name}"
+    return 0
+  fi
+
+  shopt -s nullglob
+  for path in "${log_dir}"/agent-*.pid "${log_dir}"/agent-*.log "${log_dir}"/agent-*.state; do
+    name="$(basename "${path}")"
+    name="${name#agent-}"
+    name="${name%.pid}"
+    name="${name%.log}"
+    name="${name%.state}"
+    if [[ -n "${name}" ]]; then
+      candidate_names+=("${name}")
+    fi
+  done
+  shopt -u nullglob
+
+  if [[ ${#candidate_names[@]} -eq 0 ]]; then
+    return 1
+  fi
+
+  mapfile -t candidate_names < <(printf '%s\n' "${candidate_names[@]}" | sort -u)
+  if [[ ${#candidate_names[@]} -ne 1 ]]; then
+    return 1
+  fi
+
+  printf '%s\n' "${candidate_names[0]}"
+}
+
+AGENT_RUNNER_TMP_DIR="$(mktemp -d)"
+trap 'rm -rf "${AGENT_RUNNER_TMP_DIR}"' EXIT
+printf '%s' "${AGENT_RUNNER_LIB_B64}" | base64 -d > "${AGENT_RUNNER_TMP_DIR}/agent_runner.sh"
+printf '%s' "${AGENT_RUNNER_CODEX_LIB_B64}" | base64 -d > "${AGENT_RUNNER_TMP_DIR}/agent_runner_codex.sh"
+printf '%s' "${AGENT_STATE_LIB_B64}" | base64 -d > "${AGENT_RUNNER_TMP_DIR}/agent_state.sh"
+# shellcheck source=/dev/null
+source "${AGENT_RUNNER_TMP_DIR}/agent_runner.sh"
+source "${AGENT_RUNNER_TMP_DIR}/agent_state.sh"
+
+LOG_DIR="${HOME}/.agent-sandbox"
+RESOLVED_REPO_NAME="$(resolve_primary_agent_paths "${LOG_DIR}" || true)"
+if [[ -n "${RESOLVED_REPO_NAME}" ]]; then
+  RUN_LOG_FILE="${LOG_DIR}/agent-${RESOLVED_REPO_NAME}.log"
+  PID_FILE="${LOG_DIR}/agent-${RESOLVED_REPO_NAME}.pid"
+  STATE_PATH="${LOG_DIR}/agent-${RESOLVED_REPO_NAME}.state"
+  AGENT_STATE_REPO_NAME="${RESOLVED_REPO_NAME}"
+else
+  RUN_LOG_FILE="${LOG_DIR}/codex-heartbeat-run.log"
+  PID_FILE="${LOG_DIR}/codex-heartbeat.pid"
+  STATE_PATH="${LOG_DIR}/codex-resume-last.state"
+  AGENT_STATE_REPO_NAME="resume-last"
+fi
+RESUME_HINT_FILE="${LOG_DIR}/resume-args.txt"
+PROMPT="$(python3 -c 'import base64, os; print(base64.b64decode(os.environ["PROMPT_B64"]).decode("utf-8"))')"
+
+mkdir -p "${LOG_DIR}/lib"
+printf '%s' "${AGENT_RUNNER_LIB_B64}" | base64 -d > "${LOG_DIR}/lib/agent_runner.sh"
+printf '%s' "${AGENT_RUNNER_CODEX_LIB_B64}" | base64 -d > "${LOG_DIR}/lib/agent_runner_codex.sh"
+printf '%s' "${AGENT_STATE_LIB_B64}" | base64 -d > "${LOG_DIR}/lib/agent_state.sh"
+
+if [[ -n "${HOST_CONTROL_STATUS}" ]]; then
+  write_agent_control_state "${HOST_CONTROL_STATUS}" "host-sync"
+fi
+
+ensure_agent_enabled
 
 write_state() {
   local status="$1"
@@ -352,61 +575,6 @@ write_state() {
   mv "${tmp_path}" "${STATE_PATH}"
 }
 
-on_exit() {
-  local exit_code="$?"
-  write_state "idle" "complete" "${exit_code}"
-}
-
-write_state "running" "resume"
-trap on_exit EXIT
-
-agent_runner_resume_last \
-  --dangerously-bypass-approvals-and-sandbox \
-  --skip-git-repo-check \
-  --model "${AGENT_MODEL}" \
-  "${PROMPT}"
-REMOTE
-  resume_exit_code="$?"
-  set -e
-
-  if [[ "${resume_exit_code}" -eq 0 ]]; then
-    write_host_state_attempt "${HOST_STATE_FILE}" "${SESSION_ID}" "ok" ""
-    exit 0
-  fi
-  if [[ "${resume_exit_code}" -eq 124 ]]; then
-    write_host_state_attempt "${HOST_STATE_FILE}" "${SESSION_ID}" "error" "resume-timeout"
-    echo "Resume command timed out after ${RESUME_COMMAND_TIMEOUT_SECONDS}s for ${VM_NAME}." >&2
-    exit "${EXIT_RESUME_FAILED}"
-  fi
-  write_host_state_attempt "${HOST_STATE_FILE}" "${SESSION_ID}" "error" "resume-exit-${resume_exit_code}"
-  echo "Resume command failed for ${VM_NAME} with exit code ${resume_exit_code}." >&2
-  exit "${EXIT_RESUME_FAILED}"
-fi
-
-resume_output="$(
-  ssh "${SSH_FLAGS[@]}" \
-    "${VM_USER}@${VM_IP}" \
-    "PROMPT_B64='${PROMPT_B64}' AGENT_PROVIDER='${AGENT_PROVIDER}' AGENT_MODEL='${AGENT_MODEL}' AGENT_RUNNER_LIB_B64='${AGENT_RUNNER_LIB_B64}' AGENT_RUNNER_CODEX_LIB_B64='${AGENT_RUNNER_CODEX_LIB_B64}' bash -s" <<'REMOTE'
-set -euo pipefail
-
-cd "${HOME}"
-. "${HOME}/.profile" >/dev/null 2>&1 || true
-
-AGENT_RUNNER_TMP_DIR="$(mktemp -d)"
-trap 'rm -rf "${AGENT_RUNNER_TMP_DIR}"' EXIT
-printf '%s' "${AGENT_RUNNER_LIB_B64}" | base64 -d > "${AGENT_RUNNER_TMP_DIR}/agent_runner.sh"
-printf '%s' "${AGENT_RUNNER_CODEX_LIB_B64}" | base64 -d > "${AGENT_RUNNER_TMP_DIR}/agent_runner_codex.sh"
-# shellcheck source=/dev/null
-source "${AGENT_RUNNER_TMP_DIR}/agent_runner.sh"
-
-LOG_DIR="${HOME}/.agent-sandbox"
-RUN_LOG_FILE="${LOG_DIR}/codex-heartbeat-run.log"
-RESUME_HINT_FILE="${LOG_DIR}/resume-args.txt"
-PID_FILE="${LOG_DIR}/codex-heartbeat.pid"
-PROMPT="$(python3 -c 'import base64, os; print(base64.b64decode(os.environ["PROMPT_B64"]).decode("utf-8"))')"
-
-mkdir -p "${LOG_DIR}"
-
 if [[ -f "${PID_FILE}" ]]; then
   EXISTING_PID="$(cat "${PID_FILE}")"
   if [[ -n "${EXISTING_PID}" ]] && kill -0 "${EXISTING_PID}" >/dev/null 2>&1; then
@@ -417,12 +585,31 @@ fi
 
 printf '%s\n' "--last" >"${RESUME_HINT_FILE}"
 
-nohup agent_runner_resume_last \
+nohup env \
+  SESSION_ID="${SESSION_ID}" \
+  AGENT_BRANCH_SUFFIX="${AGENT_BRANCH_SUFFIX}" \
+  AGENT_PROVIDER="${AGENT_PROVIDER}" \
+  AGENT_MODEL="${AGENT_MODEL}" \
+  PROMPT="${PROMPT}" \
+  RUN_LOG_FILE="${RUN_LOG_FILE}" \
+  STATE_PATH="${STATE_PATH}" \
+  AGENT_STATE_REPO_NAME="${AGENT_STATE_REPO_NAME}" \
+  bash -lc '
+set -euo pipefail
+. "$HOME/.agent-sandbox/lib/agent_runner.sh"
+. "$HOME/.agent-sandbox/lib/agent_state.sh"
+
+ensure_agent_enabled
+
+write_state "running" "resume"
+trap on_exit_write_idle EXIT
+
+agent_runner_resume_last \
   --dangerously-bypass-approvals-and-sandbox \
   --skip-git-repo-check \
   --model "${AGENT_MODEL}" \
-  "${PROMPT}" \
-  >>"${RUN_LOG_FILE}" 2>&1 < /dev/null &
+  "${PROMPT}"
+' >>"${RUN_LOG_FILE}" 2>&1 < /dev/null &
 
 AGENT_PID=$!
 printf '%s\n' "${AGENT_PID}" >"${PID_FILE}"
@@ -435,7 +622,46 @@ if (( OBSERVE )); then
     "${VM_USER}@${VM_IP}" \
     "LINES='${OBSERVE_LINES}' bash -s" <<'REMOTE'
 set -euo pipefail
-LOG_PATH="${HOME}/.agent-sandbox/codex-heartbeat-run.log"
+
+resolve_primary_agent_paths() {
+  local log_dir="$1"
+  local candidate_names=()
+  local path
+  local name
+
+  shopt -s nullglob
+  for path in "${log_dir}"/agent-*.pid "${log_dir}"/agent-*.log "${log_dir}"/agent-*.state; do
+    name="$(basename "${path}")"
+    name="${name#agent-}"
+    name="${name%.pid}"
+    name="${name%.log}"
+    name="${name%.state}"
+    if [[ -n "${name}" ]]; then
+      candidate_names+=("${name}")
+    fi
+  done
+  shopt -u nullglob
+
+  if [[ ${#candidate_names[@]} -eq 0 ]]; then
+    return 1
+  fi
+
+  mapfile -t candidate_names < <(printf '%s\n' "${candidate_names[@]}" | sort -u)
+  if [[ ${#candidate_names[@]} -ne 1 ]]; then
+    return 1
+  fi
+
+  printf '%s\n' "${candidate_names[0]}"
+}
+
+LOG_DIR="${HOME}/.agent-sandbox"
+RESOLVED_REPO_NAME="$(resolve_primary_agent_paths "${LOG_DIR}" || true)"
+if [[ -n "${RESOLVED_REPO_NAME}" ]]; then
+  LOG_PATH="${LOG_DIR}/agent-${RESOLVED_REPO_NAME}.log"
+else
+  LOG_PATH="${LOG_DIR}/codex-heartbeat-run.log"
+fi
+
 if [[ ! -f "${LOG_PATH}" ]]; then
   echo "No guest Codex resume log found at ${LOG_PATH}" >&2
   exit 0

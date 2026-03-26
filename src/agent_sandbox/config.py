@@ -96,6 +96,7 @@ class GatewayConfig(BaseModel):
     host_heartbeat_session_cooldown_path: Path = Path(
         "/var/lib/agent-sandbox/host-heartbeat-session-cooldown.json"
     )
+    host_agent_control_state_path: Path = Path("/var/lib/agent-sandbox/host-agent-control-state.json")
     host_busy_check_script_path: Path = Path("scripts/check_session_vm_busy.sh")
     host_resume_script_path: Path = Path("scripts/resume_issue_agent.sh")
     host_heartbeat_wake_state_path: Path = Path("/var/lib/agent-sandbox/host-heartbeat-wake-state.json")
@@ -176,6 +177,7 @@ class GatewayConfig(BaseModel):
             "host_heartbeat_lock_path": default_runtime_dir / "host-heartbeat.lock",
             "host_heartbeat_session_cooldown_path": default_runtime_dir
             / "host-heartbeat-session-cooldown.json",
+            "host_agent_control_state_path": default_runtime_dir / "host-agent-control-state.json",
             "host_heartbeat_wake_state_path": default_runtime_dir / "host-heartbeat-wake-state.json",
             "session_store_path": default_runtime_dir / "sessions.json",
             "approval_store_path": default_runtime_dir / "approvals.json",

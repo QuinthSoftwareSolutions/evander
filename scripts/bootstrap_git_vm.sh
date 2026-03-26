@@ -36,6 +36,8 @@ VM_NAME="$1"
 VM_USER="${2:-agent}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+# shellcheck source=lib/guest_ssh.sh
+source "${SCRIPT_DIR}/lib/guest_ssh.sh"
 ENV_FILE="${ROOT_DIR}/config/git-server.env"
 CALLER_USER="${SUDO_USER:-$USER}"
 CALLER_HOME="$(getent passwd "${CALLER_USER}" | cut -d: -f6)"
@@ -59,8 +61,6 @@ GIT_ALLOWED_FROM="${AGENT_SANDBOX_GIT_ALLOWED_FROM:-192.168.250.0/24}"
 WRAPPER_PATH="${ROOT_DIR}/scripts/git_ssh_command_wrapper.sh"
 AUTHORIZED_KEYS_PATH="${CALLER_HOME}/.ssh/authorized_keys"
 SSH_OPTS=(
-  -o StrictHostKeyChecking=no
-  -o UserKnownHostsFile=/dev/null
   -i "${SSH_KEY_PATH}"
 )
 
@@ -79,7 +79,7 @@ get_vm_ip() {
   local ip
 
   ip="$(
-    virsh domifaddr "${VM_NAME}" 2>/dev/null \
+    sudo -n virsh domifaddr "${VM_NAME}" 2>/dev/null \
       | awk '/ipv4/ {split($4, a, "/"); print a[1]; exit}'
   )"
   if [[ -n "${ip}" ]]; then
@@ -88,7 +88,7 @@ get_vm_ip() {
   fi
 
   ip="$(
-    sudo -n virsh domifaddr "${VM_NAME}" 2>/dev/null \
+    virsh domifaddr "${VM_NAME}" 2>/dev/null \
       | awk '/ipv4/ {split($4, a, "/"); print a[1]; exit}'
   )"
   if [[ -n "${ip}" ]]; then
@@ -102,6 +102,7 @@ get_vm_ip() {
 }
 
 VM_IP="$(get_vm_ip)"
+mapfile -t SSH_OPTS < <(guest_ssh_options "${VM_NAME}" "${VM_IP}" "${SSH_KEY_PATH}" "${CALLER_HOME}")
 
 echo "Bootstrapping Git SSH into ${VM_USER}@${VM_IP}"
 

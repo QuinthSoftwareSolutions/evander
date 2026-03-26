@@ -39,9 +39,14 @@ def _prepare_sandbox(tmp_path: Path) -> tuple[Path, Path, Path]:
     source_runner_codex_lib = (
         Path(__file__).resolve().parents[1] / "scripts" / "lib" / "agent_runner_codex.sh"
     )
+    source_state_lib = Path(__file__).resolve().parents[1] / "scripts" / "lib" / "agent_state.sh"
     (lib_dir / "agent_runner.sh").write_text(source_runner_lib.read_text(encoding="utf-8"), encoding="utf-8")
     (lib_dir / "agent_runner_codex.sh").write_text(
         source_runner_codex_lib.read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    (lib_dir / "agent_state.sh").write_text(
+        source_state_lib.read_text(encoding="utf-8"),
         encoding="utf-8",
     )
 
@@ -203,3 +208,50 @@ def test_setup_issue_vm_default_session_id_includes_issue_number() -> None:
     assert "default_session_id()" in setup_issue_vm
     assert "issue-%s-%s-%s" in setup_issue_vm
     assert 'SESSION_ID="$(default_session_id "${ISSUE_NUMBER}")"' in setup_issue_vm
+
+
+def test_setup_issue_vm_prefers_sudo_virsh_probe_before_plain_virsh(tmp_path: Path) -> None:
+    _, setup_script, fake_bin = _prepare_sandbox(tmp_path)
+    prewarm_target = tmp_path / "project.slnx"
+    prewarm_target.write_text("", encoding="utf-8")
+
+    git_root = tmp_path / "git-remotes"
+    git_root.mkdir()
+
+    sudo_log = tmp_path / "sudo.log"
+    virsh_log = tmp_path / "virsh.log"
+
+    _write_executable(
+        fake_bin / "sudo",
+        f"""#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> "{sudo_log}"
+if [[ "${{1:-}}" == "-n" ]]; then
+  shift
+fi
+export FAKE_FROM_SUDO=1
+exec "$@"
+""",
+    )
+
+    _write_executable(
+        fake_bin / "virsh",
+        f"""#!/usr/bin/env bash
+set -euo pipefail
+printf '%s %s\\n' "${{FAKE_FROM_SUDO:-0}}" "$*" >> "{virsh_log}"
+if [[ "${{1:-}}" == "dominfo" && "${{FAKE_FROM_SUDO:-0}}" == "1" ]]; then
+  exit 0
+fi
+exit 97
+""",
+    )
+
+    env = _base_env(tmp_path, fake_bin)
+    env["AGENT_SANDBOX_GIT_ROOT"] = str(git_root)
+
+    result = _run_setup(setup_script, env, prewarm_target)
+
+    assert result.returncode == 1
+    assert "VM already exists: vm-14084" in result.stderr
+    assert sudo_log.read_text(encoding="utf-8").splitlines() == ["-n virsh dominfo vm-14084"]
+    assert virsh_log.read_text(encoding="utf-8").splitlines() == ["1 dominfo vm-14084"]

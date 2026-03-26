@@ -53,15 +53,15 @@ if [[ ! -f "${SSH_PRIVATE_KEY_PATH}" ]]; then
   exit 1
 fi
 
-if ! virsh dominfo "${VM_NAME}" >/dev/null 2>&1 && ! sudo -n virsh dominfo "${VM_NAME}" >/dev/null 2>&1; then
+if ! sudo -n virsh dominfo "${VM_NAME}" >/dev/null 2>&1 && ! virsh dominfo "${VM_NAME}" >/dev/null 2>&1; then
   echo "VM not found: ${VM_NAME}" >&2
   exit 1
 fi
 
-DOMINFO_OUTPUT="$(virsh dominfo "${VM_NAME}" 2>/dev/null || true)"
+DOMINFO_OUTPUT="$(sudo -n virsh dominfo "${VM_NAME}" 2>/dev/null || true)"
 VM_STATE="$(awk -F': *' '/^State:/ {print $2; exit}' <<<"${DOMINFO_OUTPUT}")"
 if [[ -z "${VM_STATE}" ]]; then
-  DOMINFO_OUTPUT="$(sudo -n virsh dominfo "${VM_NAME}" 2>/dev/null || true)"
+  DOMINFO_OUTPUT="$(virsh dominfo "${VM_NAME}" 2>/dev/null || true)"
   VM_STATE="$(awk -F': *' '/^State:/ {print $2; exit}' <<<"${DOMINFO_OUTPUT}")"
 fi
 
@@ -86,11 +86,11 @@ if ! vm_network_wait_for_ssh "${VM_NAME}" "${VM_IP}" "${VM_USER}" "${SSH_PRIVATE
   exit 0
 fi
 
+mapfile -t SSH_OPTS < <(guest_ssh_options "${VM_NAME}" "${VM_IP}" "${SSH_PRIVATE_KEY_PATH}" "${CALLER_HOME}")
+SSH_OPTS+=(-o ConnectTimeout=5)
+
 ssh \
-  -o StrictHostKeyChecking=no \
-  -o UserKnownHostsFile=/dev/null \
-  -o ConnectTimeout=5 \
-  -i "${SSH_PRIVATE_KEY_PATH}" \
+  "${SSH_OPTS[@]}" \
   "${VM_USER}@${VM_IP}" \
   "REPO_NAME='${REPO_NAME}' bash -s" <<'EOF'
 set -euo pipefail

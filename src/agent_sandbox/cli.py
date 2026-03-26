@@ -16,7 +16,9 @@ from typing import Annotated
 import httpx
 import typer
 from pydantic import ValidationError
+from typer.core import TyperGroup
 
+from .admin_service import AdminService
 from .audit import AuditEventType
 from .ado_issue_worker import run_worker_command
 from .config import GatewayConfig, load_config
@@ -25,7 +27,28 @@ from .email.providers import JsonEmailProvider, MultiMailboxEmailProvider
 from .models import ApprovalStatus, DiscordCommandEnvelope, EmailMessage, SessionManifest, ToolName
 from .runtime import build_runtime
 
-app = typer.Typer(help="Utilities for the agent sandbox host control plane.")
+_COMMAND_PANELS = {
+    "Health and State": 0,
+    "Sessions and Feedback": 1,
+    "Issue Lifecycle": 2,
+    "VM Operations": 3,
+    "Seeding and Fixtures": 4,
+    "Background Workers": 5,
+}
+
+
+class GroupedHelpTyperGroup(TyperGroup):
+    def list_commands(self, ctx) -> list[str]:
+        def command_sort_key(name: str) -> tuple[int, str]:
+            command = self.commands[name]
+            panel = getattr(command, "rich_help_panel", None)
+            panel_rank = _COMMAND_PANELS.get(panel or "", len(_COMMAND_PANELS))
+            return (panel_rank, name.casefold())
+
+        return sorted(self.commands, key=command_sort_key)
+
+
+app = typer.Typer(help="Utilities for the agent sandbox host control plane.", cls=GroupedHelpTyperGroup)
 
 ConfigOption = Annotated[Path, typer.Option("--config", help="Path to the gateway YAML config.")]
 _discord_seed_sequence = count()
@@ -322,6 +345,64 @@ def _matching_issue_session_ids(issue_number: str, sessions: dict[str, SessionMa
         if session.vm_id == vm_name or session_id == issue_number or session_id.startswith(prefix):
             matches.add(session_id)
     return matches
+
+
+def _parse_session_extension(value: str | None) -> timedelta:
+    raw_value = (value or "1d").strip().lower()
+    match = re.fullmatch(r"(\d+)([hd])", raw_value)
+    if match is None:
+        raise typer.BadParameter("Extension must use the format <number><h|d>, for example 8h or 2d.")
+
+    amount = int(match.group(1))
+    unit = match.group(2)
+    if unit == "h":
+        return timedelta(hours=amount)
+    return timedelta(days=amount)
+
+
+def _default_session_ttl(cfg: GatewayConfig) -> timedelta:
+    return timedelta(seconds=cfg.default_session_ttl_seconds)
+
+
+def _resolve_session_ttl(cfg: GatewayConfig, ttl_hours: int | None) -> timedelta:
+    if ttl_hours is not None:
+        return timedelta(hours=ttl_hours)
+    return _default_session_ttl(cfg)
+
+
+def _resolve_session_target(target: str, sessions: dict[str, SessionManifest]) -> tuple[str, SessionManifest]:
+    normalized = target.strip()
+    if not normalized:
+        raise typer.BadParameter("Target must be a non-empty issue number, vm name, or session id.")
+
+    direct_match = sessions.get(normalized)
+    if direct_match is not None:
+        return normalized, direct_match
+
+    matching_ids: set[str] = set()
+    issue_number = _extract_issue_number(normalized)
+    if issue_number is not None:
+        matching_ids.update(_matching_issue_session_ids(issue_number, sessions))
+    if normalized.startswith("vm-"):
+        matching_ids.update(
+            session_id
+            for session_id, session in sessions.items()
+            if session.vm_id == normalized
+        )
+
+    if not matching_ids:
+        raise typer.BadParameter(f"Unknown session target: {target}")
+
+    resolved_session_id = max(
+        matching_ids,
+        key=lambda session_id: _session_sort_key((session_id, sessions[session_id])),
+    )
+    return resolved_session_id, sessions[resolved_session_id]
+
+
+def _session_sort_key(item: tuple[str, SessionManifest]) -> tuple[datetime, datetime, str]:
+    session_id, manifest = item
+    return (manifest.created_at, manifest.expires_at, session_id)
 
 
 def _session_streams_for_session_ids(
@@ -638,12 +719,16 @@ def _build_issue_session_manifest(
         email_draft_recipient_allowlist=cfg.email_draft_recipient_allowlist,
         email_draft_domain_allowlist=cfg.email_draft_domain_allowlist,
         email_send_enabled=cfg.email_send_enabled,
-        expires_at=datetime.now(UTC) + timedelta(hours=ttl_hours or 8),
+        expires_at=datetime.now(UTC) + _resolve_session_ttl(cfg, ttl_hours),
         metadata={},
     )
 
 
-@app.command("init-state")
+@app.command(
+    "init-state",
+    rich_help_panel="Health and State",
+    short_help="Create runtime state files.",
+)
 def init_state(config: ConfigOption = Path("config/gateway.yaml")) -> None:
     cfg = load_config(config)
     runtime = build_runtime(cfg)
@@ -651,7 +736,11 @@ def init_state(config: ConfigOption = Path("config/gateway.yaml")) -> None:
     typer.echo(f"Initialized runtime state under {cfg.runtime_dir}")
 
 
-@app.command("status")
+@app.command(
+    "status",
+    rich_help_panel="Health and State",
+    short_help="Show host and runtime health.",
+)
 def status(config: ConfigOption = Path("config/gateway.yaml"), as_json: Annotated[bool, typer.Option("--json")] = False) -> None:
     report: dict[str, object] = {
         "generated_at": datetime.now(UTC).isoformat(),
@@ -840,7 +929,11 @@ def status(config: ConfigOption = Path("config/gateway.yaml"), as_json: Annotate
     )
 
 
-@app.command("create-session")
+@app.command(
+    "create-session",
+    rich_help_panel="Sessions and Feedback",
+    short_help="Create a session manifest.",
+)
 def create_session(
     session_id: str,
     config: ConfigOption = Path("config/gateway.yaml"),
@@ -881,7 +974,7 @@ def create_session(
         email_draft_recipient_allowlist=cfg.email_draft_recipient_allowlist,
         email_draft_domain_allowlist=cfg.email_draft_domain_allowlist,
         email_send_enabled=cfg.email_send_enabled,
-        expires_at=datetime.now(UTC) + timedelta(hours=ttl_hours or 8),
+        expires_at=datetime.now(UTC) + _resolve_session_ttl(cfg, ttl_hours),
     )
     if manifest.email_send_enabled:
         manifest.allowed_tools.append(ToolName.EMAIL_SEND_APPROVED)
@@ -889,7 +982,11 @@ def create_session(
     typer.echo(f"Created session manifest {session_id}")
 
 
-@app.command("prune-sessions")
+@app.command(
+    "prune-sessions",
+    rich_help_panel="Sessions and Feedback",
+    short_help="Delete expired or all sessions.",
+)
 def prune_sessions(
     config: ConfigOption = Path("config/gateway.yaml"),
     expired_only: Annotated[
@@ -921,7 +1018,153 @@ def prune_sessions(
     typer.echo(f"Pruned {len(keys_to_delete)} {mode} session(s)")
 
 
-@app.command("destroy-issue-vm")
+@app.command(
+    "list-sessions",
+    rich_help_panel="Sessions and Feedback",
+    short_help="List active, expired, or all session manifests.",
+)
+def list_sessions(
+    config: ConfigOption = Path("config/gateway.yaml"),
+    all_sessions: Annotated[
+        bool,
+        typer.Option("--all", help="Show both active and expired sessions."),
+    ] = False,
+    expired_only: Annotated[
+        bool,
+        typer.Option("--expired-only", help="Show only expired sessions."),
+    ] = False,
+) -> None:
+    if all_sessions and expired_only:
+        raise typer.BadParameter("--all and --expired-only cannot be used together.")
+
+    cfg = load_config(config)
+    runtime = build_runtime(cfg)
+    sessions = runtime.sessions.read_all()
+    now = datetime.now(UTC)
+
+    selected: list[tuple[str, SessionManifest]] = []
+    for item in sorted(sessions.items(), key=_session_sort_key):
+        _, manifest = item
+        is_expired = manifest.expires_at <= now
+        if expired_only:
+            if is_expired:
+                selected.append(item)
+        elif all_sessions:
+            selected.append(item)
+        elif not is_expired:
+            selected.append(item)
+
+    if not selected:
+        typer.echo("No sessions found.")
+        return
+
+    for session_id, manifest in selected:
+        status = "expired" if manifest.expires_at <= now else "active"
+        typer.echo(
+            f"{session_id}\tstatus={status}\tvm_id={manifest.vm_id or '-'}\t"
+            f"created_at={manifest.created_at.isoformat()}\texpires_at={manifest.expires_at.isoformat()}"
+        )
+
+
+@app.command(
+    "renew-session",
+    rich_help_panel="Sessions and Feedback",
+    short_help="Extend or reissue a session manifest.",
+)
+def renew_session(
+    target: str,
+    extension: Annotated[
+        str,
+        typer.Option(
+            "--extend-by",
+            help="Duration to set from now, in <number><h|d> form.",
+        ),
+    ] = "1d",
+    config: ConfigOption = Path("config/gateway.yaml"),
+) -> None:
+    cfg = load_config(config)
+    runtime = build_runtime(cfg)
+    sessions = runtime.sessions.read_all()
+    session_id, manifest = _resolve_session_target(target, sessions)
+    duration = _parse_session_extension(extension)
+    base_time = datetime.now(UTC)
+    previous_expires_at = manifest.expires_at
+    manifest.expires_at = base_time + duration
+    runtime.sessions.put(session_id, manifest)
+    typer.echo(
+        f"Renewed session {session_id} "
+        f"(previous_expires_at={previous_expires_at.isoformat()} "
+        f"new_expires_at={manifest.expires_at.isoformat()})"
+    )
+
+
+@app.command(
+    "revoke-session",
+    rich_help_panel="Sessions and Feedback",
+    short_help="Expire a session immediately.",
+)
+def revoke_session(
+    target: str,
+    config: ConfigOption = Path("config/gateway.yaml"),
+) -> None:
+    cfg = load_config(config)
+    runtime = build_runtime(cfg)
+    sessions = runtime.sessions.read_all()
+    session_id, manifest = _resolve_session_target(target, sessions)
+    previous_expires_at = manifest.expires_at
+    manifest.expires_at = datetime.now(UTC)
+    runtime.sessions.put(session_id, manifest)
+    typer.echo(
+        f"Revoked session {session_id} "
+        f"(previous_expires_at={previous_expires_at.isoformat()} "
+        f"new_expires_at={manifest.expires_at.isoformat()})"
+    )
+
+
+@app.command(
+    "delete-session",
+    rich_help_panel="Sessions and Feedback",
+    short_help="Delete a session manifest.",
+)
+def delete_session(
+    target: str,
+    config: ConfigOption = Path("config/gateway.yaml"),
+) -> None:
+    cfg = load_config(config)
+    runtime = build_runtime(cfg)
+    sessions = runtime.sessions.read_all()
+    session_id, _ = _resolve_session_target(target, sessions)
+    runtime.sessions.delete(session_id)
+    typer.echo(f"Deleted session {session_id}")
+
+
+@app.command(
+    "delete-expired-sessions",
+    rich_help_panel="Sessions and Feedback",
+    short_help="Delete all expired session manifests.",
+)
+def delete_expired_sessions(
+    config: ConfigOption = Path("config/gateway.yaml"),
+) -> None:
+    cfg = load_config(config)
+    runtime = build_runtime(cfg)
+    sessions = runtime.sessions.read_all()
+    now = datetime.now(UTC)
+    expired_session_ids = [
+        session_id
+        for session_id, session in sessions.items()
+        if session.expires_at <= now
+    ]
+    for session_id in expired_session_ids:
+        runtime.sessions.delete(session_id)
+    typer.echo(f"Deleted {len(expired_session_ids)} expired session(s)")
+
+
+@app.command(
+    "destroy-issue-vm",
+    rich_help_panel="Issue Lifecycle",
+    short_help="Destroy an issue VM and state.",
+)
 def destroy_issue_vm(
     target: str,
     config: ConfigOption = Path("config/gateway.yaml"),
@@ -968,7 +1211,11 @@ def destroy_issue_vm(
     )
 
 
-@app.command("prune-orphaned-issue-state")
+@app.command(
+    "prune-orphaned-issue-state",
+    rich_help_panel="Issue Lifecycle",
+    short_help="Remove issue state for missing VMs.",
+)
 def prune_orphaned_issue_state(
     config: ConfigOption = Path("config/gateway.yaml"),
 ) -> None:
@@ -1054,15 +1301,148 @@ def prune_orphaned_issue_state(
     )
 
 
-@app.command("list-vms")
+@app.command(
+    "list-vms",
+    rich_help_panel="VM Operations",
+    short_help="List known VMs.",
+)
 def list_vms(
     vm_user: Annotated[str, typer.Option("--vm-user", help="Guest user to inspect over SSH.")] = "agent",
+    all_vms: Annotated[
+        bool,
+        typer.Option("--all", help="Include inactive libvirt VMs in the output."),
+    ] = False,
+    omit_state: Annotated[
+        bool,
+        typer.Option(
+            "--omit-state",
+            help="Skip SSH guest state inspection for faster VM listings.",
+        ),
+    ] = False,
+    as_json: Annotated[
+        bool,
+        typer.Option("--json", help="Emit machine-readable VM summaries."),
+    ] = False,
+    config: ConfigOption = Path("config/gateway.yaml"),
 ) -> None:
+    if as_json:
+        service = AdminService(config)
+        payload = [
+            summary.model_dump(mode="json")
+            for summary in service.list_vms(include_inactive=all_vms, omit_state=omit_state, vm_user=vm_user)
+        ]
+        typer.echo(json.dumps(payload, indent=2, sort_keys=True))
+        return
+
     script_path = Path(__file__).resolve().parents[2] / "scripts" / "list_running_vms.sh"
-    _run_subprocess_compat([str(script_path), vm_user], check=True, capture_output=False, text=False)
+    cmd = [str(script_path)]
+    if all_vms:
+        cmd.append("--all")
+    if omit_state:
+        cmd.append("--omit-state")
+    cmd.append(vm_user)
+    _run_subprocess_compat(cmd, check=True, capture_output=False, text=False)
 
 
-@app.command("ssh")
+def _echo_action_result_or_exit(result) -> None:
+    typer.echo(result.message)
+    if not result.success:
+        raise typer.Exit(code=1)
+
+
+@app.command(
+    "start-vm",
+    rich_help_panel="VM Operations",
+    short_help="Start a VM.",
+)
+def start_vm(
+    target: str,
+    config: ConfigOption = Path("config/gateway.yaml"),
+) -> None:
+    service = AdminService(config)
+    _echo_action_result_or_exit(service.start_vm(target))
+
+
+@app.command(
+    "shutdown-vm",
+    rich_help_panel="VM Operations",
+    short_help="Gracefully stop a VM.",
+)
+def shutdown_vm(
+    target: str,
+    config: ConfigOption = Path("config/gateway.yaml"),
+    timeout_seconds: Annotated[
+        int,
+        typer.Option("--timeout-seconds", min=1, help="How long to wait for graceful shutdown."),
+    ] = 60,
+) -> None:
+    service = AdminService(config)
+    _echo_action_result_or_exit(service.shutdown_vm(target, timeout_seconds=timeout_seconds))
+
+
+@app.command(
+    "create-local-issue",
+    rich_help_panel="Issue Lifecycle",
+    short_help="Create a local issue record.",
+)
+def create_local_issue(
+    config: ConfigOption = Path("config/gateway.yaml"),
+    title: Annotated[
+        str,
+        typer.Option("--title", help="Local issue title."),
+    ] = "",
+    body: Annotated[
+        str,
+        typer.Option("--body", help="Local issue body/description."),
+    ] = "",
+    repo_source: Annotated[
+        str | None,
+        typer.Option("--repo-source", help="Default repo source used when starting a VM for this local issue."),
+    ] = None,
+    yaml_path: Annotated[
+        Path | None,
+        typer.Option("--yaml-path", help="Import an existing issue YAML file instead of creating one from title/body."),
+    ] = None,
+) -> None:
+    service = AdminService(config)
+    issue = service.create_local_issue(
+        title=title,
+        body=body,
+        repo_source=repo_source,
+        yaml_path=str(yaml_path) if yaml_path is not None else None,
+    )
+    typer.echo(f"Created local issue {issue.issue_number} ({issue.title}) at {issue.yaml_path}")
+
+
+@app.command(
+    "list-local-issues",
+    rich_help_panel="Issue Lifecycle",
+    short_help="List local issue records.",
+)
+def list_local_issues(
+    config: ConfigOption = Path("config/gateway.yaml"),
+    as_json: Annotated[
+        bool,
+        typer.Option("--json", help="Emit machine-readable local issue records."),
+    ] = False,
+) -> None:
+    service = AdminService(config)
+    issues = service.list_local_issues()
+    if as_json:
+        typer.echo(json.dumps([issue.model_dump(mode="json") for issue in issues], indent=2, sort_keys=True))
+        return
+    if not issues:
+        return
+    typer.echo(f"{'Issue':<8} {'Title':<32} YAML")
+    for issue in issues:
+        typer.echo(f"{issue.issue_number:<8} {issue.title[:32]:<32} {issue.yaml_path}")
+
+
+@app.command(
+    "ssh",
+    rich_help_panel="VM Operations",
+    short_help="Open an SSH session.",
+)
 def ssh(
     target: str,
     vm_user: Annotated[str, typer.Option("--vm-user", help="Guest user to connect as.")] = "agent",
@@ -1072,7 +1452,11 @@ def ssh(
     _run_subprocess_compat([str(script_path), vm_name, vm_user], check=True, capture_output=False, text=False)
 
 
-@app.command("logs")
+@app.command(
+    "logs",
+    rich_help_panel="VM Operations",
+    short_help="Tail guest agent logs.",
+)
 def logs(
     target: str,
     repo_name: Annotated[
@@ -1099,7 +1483,56 @@ def logs(
     _run_subprocess_compat(cmd, check=True, capture_output=False, text=False)
 
 
-@app.command("resume-agent")
+def _set_agent_control_state(target: str, *, action: str, vm_user: str, config: Path) -> None:
+    issue_number = _resolve_issue_number_or_raise(target)
+    cfg = load_config(config)
+    script_path = Path(__file__).resolve().parents[2] / "scripts" / "set_issue_agent_state.sh"
+    _run_subprocess_compat(
+        [
+            str(script_path),
+            action,
+            issue_number,
+            vm_user,
+            "--host-state-path",
+            str(cfg.host_agent_control_state_path),
+        ],
+        check=True,
+        capture_output=False,
+        text=False,
+    )
+
+
+@app.command(
+    "disable-agent",
+    rich_help_panel="VM Operations",
+    short_help="Pause the guest agent.",
+)
+def disable_agent(
+    target: str,
+    config: ConfigOption = Path("config/gateway.yaml"),
+    vm_user: Annotated[str, typer.Option("--vm-user", help="Guest user to connect as.")] = "agent",
+) -> None:
+    _set_agent_control_state(target, action="disable", vm_user=vm_user, config=config)
+
+
+@app.command(
+    "enable-agent",
+    rich_help_panel="VM Operations",
+    short_help="Allow the guest agent to run.",
+)
+def enable_agent(
+    target: str,
+    config: ConfigOption = Path("config/gateway.yaml"),
+    vm_user: Annotated[str, typer.Option("--vm-user", help="Guest user to connect as.")] = "agent",
+) -> None:
+    _set_agent_control_state(target, action="enable", vm_user=vm_user, config=config)
+
+
+@app.command(
+    "resume-agent",
+    rich_help_panel="VM Operations",
+    short_help="Resume an agent with a prompt.",
+)
 def resume_agent(
     target: str,
     message: Annotated[
@@ -1128,7 +1561,14 @@ def resume_agent(
     cfg = load_config(config)
     runtime = build_runtime(cfg)
     script_path = Path(__file__).resolve().parents[2] / "scripts" / "resume_issue_agent.sh"
-    cmd = [str(script_path), message, issue_number, vm_user]
+    cmd = [
+        str(script_path),
+        message,
+        issue_number,
+        vm_user,
+        "--host-control-state-path",
+        str(cfg.host_agent_control_state_path),
+    ]
     if observe:
         cmd.extend(["--observe", str(lines)])
 
@@ -1196,7 +1636,11 @@ def resume_agent(
     raise typer.Exit(code=completed.returncode)
 
 
-@app.command("create-issue-vm")
+@app.command(
+    "create-issue-vm",
+    rich_help_panel="Issue Lifecycle",
+    short_help="Create and bootstrap an issue VM.",
+)
 def create_issue_vm(
     issue: str,
     config: ConfigOption = Path("config/gateway.yaml"),
@@ -1225,6 +1669,9 @@ def create_issue_vm(
         list[str],
         typer.Option("--email-folder", help="Allowlisted email folder. Repeat for multiple folders."),
     ] = [],
+    python: Annotated[
+        bool, typer.Option("--python", help="Bootstrap a guest-local Python virtualenv for Python-first repos.")
+    ] = False,
     dotnet: Annotated[bool, typer.Option("--dotnet", help="Bootstrap the host .NET SDK into the guest.")] = False,
     nuget: Annotated[
         str | None,
@@ -1303,6 +1750,8 @@ def create_issue_vm(
     cmd = [str(setup_script)]
     if not start_agent:
         cmd.append("--dry-run")
+    if python:
+        cmd.append("--python")
     if dotnet:
         cmd.append("--dotnet")
     if nuget is not None:
@@ -1334,7 +1783,57 @@ def create_issue_vm(
     )
 
 
-@app.command("attach-pr-feedback")
+@app.command(
+    "add-tool-permission",
+    rich_help_panel="Sessions and Feedback",
+    short_help="Add an allowed tool to a session manifest.",
+)
+def add_tool_permission(
+    target: str,
+    tool: ToolName,
+    config: ConfigOption = Path("config/gateway.yaml"),
+) -> None:
+    cfg = load_config(config)
+    runtime = build_runtime(cfg)
+    sessions = runtime.sessions.read_all()
+    session_id, manifest = _resolve_session_target(target, sessions)
+    if tool in manifest.allowed_tools:
+        typer.echo(f"Tool permission {tool.value} already present on session {session_id}")
+        return
+
+    manifest.allowed_tools.append(tool)
+    runtime.sessions.put(session_id, manifest)
+    typer.echo(f"Added tool permission {tool.value} to session {session_id}")
+
+
+@app.command(
+    "revoke-tool-permission",
+    rich_help_panel="Sessions and Feedback",
+    short_help="Remove an allowed tool from a session manifest.",
+)
+def revoke_tool_permission(
+    target: str,
+    tool: ToolName,
+    config: ConfigOption = Path("config/gateway.yaml"),
+) -> None:
+    cfg = load_config(config)
+    runtime = build_runtime(cfg)
+    sessions = runtime.sessions.read_all()
+    session_id, manifest = _resolve_session_target(target, sessions)
+    if tool not in manifest.allowed_tools:
+        typer.echo(f"Tool permission {tool.value} not present on session {session_id}")
+        return
+
+    manifest.allowed_tools.remove(tool)
+    runtime.sessions.put(session_id, manifest)
+    typer.echo(f"Revoked tool permission {tool.value} from session {session_id}")
+
+
+@app.command(
+    "attach-pr-feedback",
+    rich_help_panel="Sessions and Feedback",
+    short_help="Bind a PR feedback stream.",
+)
 def attach_pr_feedback(
     session_id: str,
     provider: Annotated[str, typer.Option("--provider", help="Feedback provider name.")] ,
@@ -1380,7 +1879,11 @@ def attach_pr_feedback(
     )
 
 
-@app.command("approve")
+@app.command(
+    "approve",
+    rich_help_panel="Sessions and Feedback",
+    short_help="Approve or deny a request.",
+)
 def approve(
     request_id: str,
     approver: str,
@@ -1399,7 +1902,11 @@ def approve(
     typer.echo(f"Updated approval {request_id} to {request.status.value}")
 
 
-@app.command("seed-email")
+@app.command(
+    "seed-email",
+    rich_help_panel="Seeding and Fixtures",
+    short_help="Insert a test email.",
+)
 def seed_email(
     message_id: str,
     folder: str,
@@ -1444,7 +1951,11 @@ def seed_email(
     )
 
 
-@app.command("seed-discord-channel")
+@app.command(
+    "seed-discord-channel",
+    rich_help_panel="Seeding and Fixtures",
+    short_help="Insert a test Discord cursor.",
+)
 def seed_discord_channel(
     channel_id: str,
     config: ConfigOption = Path("config/gateway.yaml"),
@@ -1475,7 +1986,11 @@ def seed_discord_channel(
 
 
 
-@app.command("host-heartbeat")
+@app.command(
+    "host-heartbeat",
+    rich_help_panel="Background Workers",
+    short_help="Run the host heartbeat worker.",
+)
 def host_heartbeat(
     config: ConfigOption = Path("config/gateway.yaml"),
     run_once: Annotated[
@@ -1505,7 +2020,11 @@ def host_heartbeat(
     worker.run_forever()
 
 
-@app.command("poll-ado-backlog")
+@app.command(
+    "poll-ado-backlog",
+    rich_help_panel="Background Workers",
+    short_help="Poll Azure DevOps backlog.",
+)
 def poll_ado_backlog(
     log_level: Annotated[str, typer.Option("--log-level", help="Python logging level.")] = "INFO",
     reprocess: Annotated[
@@ -1533,3 +2052,7 @@ def poll_ado_backlog(
         forget=forget,
         list_unprocessed=list_unprocessed,
     )
+
+
+if __name__ == "__main__":
+    app()

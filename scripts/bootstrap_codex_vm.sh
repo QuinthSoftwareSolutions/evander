@@ -35,6 +35,8 @@ VM_NAME="$1"
 VM_USER="${2:-agent}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+# shellcheck source=lib/guest_ssh.sh
+source "${SCRIPT_DIR}/lib/guest_ssh.sh"
 CALLER_USER="${SUDO_USER:-$USER}"
 CALLER_HOME="$(getent passwd "${CALLER_USER}" | cut -d: -f6)"
 SSH_KEY_PATH="${SSH_KEY_PATH:-${CALLER_HOME}/.ssh/id_ed25519}"
@@ -46,10 +48,9 @@ HOST_CODEX_ROOT="${HOST_CODEX_ROOT:-${CALLER_HOME}/.nvm/versions/node/v24.14.0/l
 VENDOR_DIR="${HOST_CODEX_ROOT}/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl"
 LLM_BASE_URL="${LLM_BASE_URL:-}"
 ENABLE_GUEST_HEARTBEAT="${ENABLE_GUEST_HEARTBEAT:-0}"
+AGENT_SANDBOX_CONFIG="${AGENT_SANDBOX_CONFIG:-${ROOT_DIR}/config/gateway.yaml}"
 GUEST_HEARTBEAT_PROMPT="${GUEST_HEARTBEAT_PROMPT:-Resume work for this session. Check for pending feedback first, then continue the most recent task.}"
 SSH_OPTS=(
-  -o StrictHostKeyChecking=no
-  -o UserKnownHostsFile=/dev/null
   -i "${SSH_KEY_PATH}"
 )
 LEGACY_HEARTBEAT_DIR="${ROOT_DIR}/scripts/guest"
@@ -69,7 +70,7 @@ get_vm_ip() {
   local ip
 
   ip="$(
-    virsh domifaddr "${VM_NAME}" 2>/dev/null \
+    sudo -n virsh domifaddr "${VM_NAME}" 2>/dev/null \
       | awk '/ipv4/ {split($4, a, "/"); print a[1]; exit}'
   )"
   if [[ -n "${ip}" ]]; then
@@ -78,7 +79,7 @@ get_vm_ip() {
   fi
 
   ip="$(
-    sudo -n virsh domifaddr "${VM_NAME}" 2>/dev/null \
+    virsh domifaddr "${VM_NAME}" 2>/dev/null \
       | awk '/ipv4/ {split($4, a, "/"); print a[1]; exit}'
   )"
   if [[ -n "${ip}" ]]; then
@@ -92,6 +93,7 @@ get_vm_ip() {
 }
 
 VM_IP="$(get_vm_ip)"
+mapfile -t SSH_OPTS < <(guest_ssh_options "${VM_NAME}" "${VM_IP}" "${SSH_KEY_PATH}" "${CALLER_HOME}")
 
 echo "Bootstrapping Codex into ${VM_USER}@${VM_IP}"
 
@@ -107,7 +109,8 @@ ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "
 "
 scp "${SSH_OPTS[@]}" -r "${VENDOR_DIR}/." "${VM_USER}@${VM_IP}:~/codex-vendor/"
 
-ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "VM_USER='${VM_USER}' LLM_BASE_URL='${LLM_BASE_URL}' bash -s" <<'EOF'
+ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" \
+  "VM_USER='${VM_USER}' LLM_BASE_URL='${LLM_BASE_URL}' bash -s" <<'EOF'
 set -euo pipefail
 cp ~/codex-vendor/codex/codex ~/bin/codex
 chmod +x ~/bin/codex
@@ -117,12 +120,19 @@ if [ -f ~/.agent/config.env ]; then
   . ~/.agent/config.env
 fi
 CODEX_LLM_BASE_URL="${LLM_BASE_URL:-${AGENT_SANDBOX_LLM_BASE_URL:-http://192.168.250.1:11434/v1}}"
+CODEX_GATEWAY_URL="${AGENT_SANDBOX_GATEWAY_URL:-http://192.168.250.1:8000/mcp}"
 cat > ~/.codex/config.toml <<CONFIG
 model = "gpt-5.4"
 model_provider = "openai"
 model_reasoning_effort = "high"
 personality = "pragmatic"
 openai_base_url = "${CODEX_LLM_BASE_URL}"
+
+[mcp_servers.agent_sandbox]
+url = "${CODEX_GATEWAY_URL}"
+CONFIG
+cat >> ~/.codex/config.toml <<CONFIG
+enabled = true
 
 [projects."/home/${VM_USER}"]
 trust_level = "trusted"

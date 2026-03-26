@@ -23,6 +23,9 @@ dev = [
   "pytest>=8.3.2",
   "ruff>=0.6.8",
 ]
+desktop = [
+  "PySide6>=6.8.0",
+]
 
 [project.scripts]
 agent-sandbox-gateway = "agent_sandbox.gateway:main"
@@ -30,6 +33,7 @@ agent-sandbox-openai-relay = "agent_sandbox.openai_relay:main"
 agent-sandbox-nuget-relay = "agent_sandbox.nuget_relay:main"
 agent-sandbox-ado-worker = "agent_sandbox.ado_issue_worker:main"
 agent-sandbox-cli = "agent_sandbox.cli:app"
+agent-sandbox-admin = "agent_sandbox.admin_app:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

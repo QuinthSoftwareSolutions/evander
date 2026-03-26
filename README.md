@@ -96,6 +96,7 @@
    It also creates a shared host NuGet cache under `/var/lib/libvirt/images/agent-sandbox/nuget-cache/global-packages` and mounts it read-only into the guest at `/opt/agent-sandbox/nuget-cache-ro` via `virtiofs`.
    New VMs default to a `20G` virtual disk; override with `DISK_SIZE_GB=...` before launch if needed.
    New VMs receive provider-neutral baseline config (`/etc/agent-sandbox/session.env` and `/home/agent/.agent/config.env`) plus a shell profile hook; Codex-specific config is written later by `bootstrap_codex_vm.sh`.
+   Host-side guest SSH commands cache guest host keys in `~/.ssh/agent-sandbox-known_hosts` keyed by VM name, so repeated `list-vms`, bootstrap, and `agent-sandbox-cli ssh` calls stay quiet while preserving normal SSH host-key warnings.
    To see all currently running VMs together with live guest agent status, run `agent-sandbox-cli list-vms`.
 
 8. (Optional) Bootstrap a provider runtime inside the VM:
@@ -108,7 +109,7 @@
 
    ### Codex provider bootstrap
 
-   This copies the vendored Linux Codex binary from the host install into the guest user's `~/bin`, writes `~/.codex/config.toml` to use the host relay with `model = "gpt-5.4"`, `model_reasoning_effort = "high"`, and `personality = "pragmatic"`, preferring `LLM_BASE_URL` and otherwise falling back to `~/.agent/config.env`, ensures the placeholder API-key shell hook exists, and verifies `codex --version`.
+   This copies the vendored Linux Codex binary from the host install into the guest user's `~/bin`, writes `~/.codex/config.toml` to use the host relay with `model = "gpt-5.4"`, `model_reasoning_effort = "high"`, and `personality = "pragmatic"`, registers the host MCP gateway as `agent_sandbox`, mirrors the session manifest's `allowed_tools` into `enabled_tools` when available, prefers `LLM_BASE_URL` and otherwise falls back to `~/.agent/config.env`, ensures the placeholder API-key shell hook exists, and verifies `codex --version`.
 
 9. Optionally install the host `.NET` SDK into the VM:
 
@@ -118,7 +119,15 @@
 
    This copies the host `.NET` installation into the guest, seeds host dotnet tool state into `~/.dotnet`, appends `DOTNET_ROOT`, `DOTNET_CLI_HOME`, and tool-aware `PATH` exports to the guest profile, and verifies `dotnet --info`. When host-seeded Entity Framework tooling is available, the bootstrap also exposes `dotnet-ef` in the guest so agents can generate migrations offline.
 
-10. Optionally install host-relay NuGet sources into the VM:
+10. Optionally bootstrap a Python repo into a guest-local virtualenv:
+
+   ```bash
+   ./scripts/bootstrap_python_vm.sh vm-real /path/to/repo /home/agent/$(basename /path/to/repo)
+   ```
+
+   This builds a temporary host wheelhouse from the repo's `pyproject.toml`, copies it into the guest, creates a repo-local `.venv`, and installs the repo with dev dependencies offline.
+
+11. Optionally install host-relay NuGet sources into the VM:
 
    ```bash
    ./scripts/bootstrap_nuget_vm.sh vm-real
@@ -126,7 +135,7 @@
 
    This writes `~/.nuget/NuGet/NuGet.Config` in the guest so package restore can use host relay endpoints for nuget.org and Azure Artifacts, while keeping guest-local writable caches under `~/.nuget` and using the shared host cache as a read-only fallback package folder.
 
-11. Optionally provision a guest-local Microsoft SQL Server instance into the VM:
+12. Optionally provision a guest-local Microsoft SQL Server instance into the VM:
 
    ```bash
    MSSQL_SA_PASSWORD='your-strong-password' ./scripts/bootstrap_mssql_vm.sh vm-real
@@ -134,7 +143,7 @@
 
    This bootstraps host-installed SQL Server tooling plus the database engine into the guest, starts a local `mssql-server` service listening on `localhost:1433`, and verifies `sqlcmd` can query the guest-local instance. If you also need schema or data initialization, pass `--init-root /path/to/mssql-init`, where `init.sql` can run arbitrary setup or restore commands against the local instance.
 
-12. Optionally prewarm the shared host NuGet cache from the host before launching or restoring in guests:
+13. Optionally prewarm the shared host NuGet cache from the host before launching or restoring in guests:
 
    ```bash
    ./scripts/prewarm_nuget_cache.sh /path/to/project-or-solution.slnx
@@ -143,7 +152,7 @@
 
    Prewarming fills the shared host cache explicitly through real host restores, and the inspect script shows cache size or whether a specific package/version is already present.
 
-13. Optionally install Playwright into the VM for frontend debugging:
+14. Optionally install Playwright into the VM for frontend debugging:
 
    ```bash
    ./scripts/bootstrap_playwright_vm.sh vm-real
@@ -151,7 +160,7 @@
 
    This copies a host-seeded Node runtime, Playwright packages, and browser cache into the guest and verifies that Playwright can resolve Chromium offline.
 
-14. Optionally install a repo-specific browser-test runtime into the VM for frontend unit tests:
+15. Optionally install a repo-specific browser-test runtime into the VM for frontend unit tests:
 
    ```bash
    ./scripts/bootstrap_frontend_deps_vm.sh vm-real /path/to/repo /path/to/repo/Src/Clients
@@ -215,16 +224,46 @@ and `--frontend-deps` via `ADO_BOOTSTRAP_DOTNET`, `ADO_BOOTSTRAP_NUGET`,
 `ADO_BOOTSTRAP_MSSQL`, `ADO_BOOTSTRAP_PLAYWRIGHT`, and `ADO_BOOTSTRAP_FRONTEND_DEPS`.
 The first three default to `true`; the frontend-oriented toggles default to `false` because
 they depend on host-seeded artifacts. `ADO_BOOTSTRAP_MSSQL` also requires
-`ADO_MSSQL_SA_PASSWORD`, and can optionally use `ADO_MSSQL_INIT_ROOT`. `ADO_BOOTSTRAP_FRONTEND_DEPS`
+`ADO_MSSQL_SA_PASSWORD` (or legacy `MSSQL_SA_PASSWORD`), and can optionally use
+`ADO_MSSQL_INIT_ROOT`. `ADO_BOOTSTRAP_FRONTEND_DEPS`
 requires `ADO_FRONTEND_INSTALL_ROOTS`, and can optionally use `ADO_FRONTEND_HOST_CHECKOUT`
 when the mirrored repo source is remote.
+
+## Desktop Admin Console
+
+Install the optional desktop dependency set when you want a local Ubuntu operator GUI:
+
+```bash
+uv pip install -e '.[desktop]'
+```
+
+The desktop console is intended for a single operator on the host machine. It shows all
+libvirt guests, separates VM power state from guest agent state, and exposes one-click
+`Start`, `Shutdown`, `Enable`, `Disable`, and `Resume` actions together with local issue
+creation and issue-VM startup.
+
+Run it with:
+
+```bash
+agent-sandbox-admin
+```
+
+The CLI also exposes machine-readable and GUI-supporting surfaces:
+
+```bash
+agent-sandbox-cli list-vms --all --json
+agent-sandbox-cli start-vm vm-14084
+agent-sandbox-cli shutdown-vm vm-14084
+agent-sandbox-cli create-local-issue --title "Fix failing restore" --body "Investigate restore timeout"
+agent-sandbox-cli list-local-issues --json
+```
 
 ## Local Git Remotes
 
 For the full issue-VM bring-up path in one command, use:
 
 ```bash
-MSSQL_SA_PASSWORD='your-strong-password' ./scripts/setup_issue_vm.sh --dotnet --nuget --mssql --mssql-init-root /path/to/mssql-init --playwright --frontend-deps --frontend-install-root /path/to/repo/Src/Clients /path/to/issue.yaml /path/to/project-or-solution.slnx
+MSSQL_SA_PASSWORD='your-strong-password' ./scripts/setup_issue_vm.sh --python --dotnet --nuget --mssql --mssql-init-root /path/to/mssql-init --playwright --frontend-deps --frontend-install-root /path/to/repo/Src/Clients /path/to/issue.yaml /path/to/project-or-solution.slnx
 ```
 
 `setup_issue_vm.sh` now resolves host-dependent paths in this order:
@@ -239,6 +278,7 @@ agents or reruns for the same issue.
 
 Toolchain bootstraps are now opt-in:
 
+- `--python` runs `bootstrap_python_vm.sh` and creates a repo-local `.venv` from a host-built wheelhouse
 - `--dotnet` runs `bootstrap_dotnet_vm.sh`
 - `--nuget` runs `bootstrap_nuget_vm.sh` and host `prewarm_nuget_cache.sh` (requires `project-or-solution`)
 - `--mssql` runs `bootstrap_mssql_vm.sh` and requires `MSSQL_SA_PASSWORD` in the environment
@@ -271,6 +311,9 @@ Use `--no-start-agent` with `agent-sandbox-cli create-issue-vm` or `--dry-run` w
 `setup_issue_vm.sh` if you want the VM prepared without starting the agent process. The
 helper still accepts a raw issue number as the first argument for the older workflow, but
 YAML is the preferred input for long-running agent sessions.
+When `--python` is enabled, the guest repo also gets a repo-local `.venv`. Activate it with
+`. .venv/bin/activate`, then run `python -m pytest -q` and `python -m ruff check` from inside
+the guest clone.
 After the initial provider command run exits, the helper now performs one
 provider-specific follow-up verification pass to verify checklist completion
 (tests, docs, and PR markdown note). Override that follow-up prompt text with
@@ -281,6 +324,7 @@ For operator visibility from the host, use:
 
 ```bash
 agent-sandbox-cli list-vms
+agent-sandbox-cli list-vms --all
 agent-sandbox-cli logs 14084 --lines 50
 ```
 
@@ -292,9 +336,9 @@ The script and CLI wrappers share the same timeout environment variables (defaul
 - `VM_WAIT_IP_TIMEOUT_SECONDS` (default `180`)
 - `VM_WAIT_SSH_TIMEOUT_SECONDS` (default `180`)
 
-`list-vms` shows running VMs together with live guest agent status. `logs`
-prints the requested number of recent lines first, then follows the guest agent
-log live over SSH.
+`list-vms` shows running VMs together with live guest agent status by default.
+Pass `--all` to include inactive VMs as well. `logs` prints the requested
+number of recent lines first, then follows the guest agent log live over SSH.
 
 Use the included bare-repo helper when you want VMs to push code changes back to the host over the private network:
 
@@ -461,6 +505,15 @@ Use this when you want the guest to wake only for new review feedback and post t
   The timer uses the same `codex exec resume --last` path as the host resume flow and accepts
   `GUEST_HEARTBEAT_PROMPT` to override the resume prompt per agent.
 - Migration note for existing VMs: disable any previously enabled guest timer if you want host-only wakeups:
+- Agent enable/disable control is now mirrored in host state at `runtime/host-agent-control-state.json`,
+  so the host heartbeat worker can continue ignoring disabled agents even while their VMs are shut down.
+- Guests consume pending feedback via MCP tools by default.
+- `scripts/bootstrap_codex_vm.sh` defaults to `ENABLE_GUEST_HEARTBEAT=0`, which keeps
+  `agent-heartbeat.timer` disabled for new guests.
+- Set `ENABLE_GUEST_HEARTBEAT=1` to install and enable an optional guest-local resume timer.
+  The timer uses the same `codex exec resume --last` path as the host resume flow and accepts
+  `GUEST_HEARTBEAT_PROMPT` to override the resume prompt per agent.
+- Migration note for existing VMs: disable any previously enabled guest timer if you want host-only wakeups:
   `systemctl --user disable --now agent-heartbeat.timer || true`.
 
 ### Troubleshooting
@@ -478,7 +531,8 @@ Use this when you want the guest to wake only for new review feedback and post t
 ### Audit/log locations and healthy signals
 
 - Host heartbeat service logs: `journalctl -u agent-sandbox-host-heartbeat.service`.
-- Host runtime: `runtime/pr-feedback-store.json`, `runtime/pr-reply-idempotency.json`, `runtime/audit.jsonl`.
+- Host runtime: `runtime/pr-feedback-store.json`, `runtime/pr-reply-idempotency.json`,
+  `runtime/host-agent-control-state.json`, `runtime/audit.jsonl`.
 - Healthy pattern:
   - host worker alternates between quiet polls and discovered feedback events,
   - audit shows allowed calls for `has_pending_feedback`, `list_unread_feedback`, `list_all_feedback`, and `post_pr_feedback_reply`,

@@ -6,6 +6,7 @@ packages:
   - openssh-server
   - curl
   - ca-certificates
+  - git
 ssh_pwauth: false
 disable_root: true
 users:

@@ -108,6 +108,70 @@ class Directory(BaseModel):
         return normalized
 
 
+class SessionSummary(SessionManifest):
+    issue_number: str | None = None
+    is_expired: bool = False
+
+
+class SessionActionResult(BaseModel):
+    success: bool
+    session_id: str
+    action: str
+    message: str
+
+
+class VmSummary(BaseModel):
+    vm_name: str
+    issue_number: str | None = None
+    session_ids: list[str] = Field(default_factory=list)
+    libvirt_state: str
+    ip_address: str | None = None
+    agent_state: str
+    agent_repo_names: list[str] = Field(default_factory=list)
+    last_state_update_at: datetime | None = None
+
+
+class VmActionResult(BaseModel):
+    success: bool
+    vm_name: str
+    action: str
+    message: str
+
+
+class WorkerSummary(BaseModel):
+    worker_id: str
+    name: str
+    unit: str
+    active_state: str
+    sub_state: str | None = None
+    result: str | None = None
+    unit_file_state: str | None = None
+    description: str | None = None
+    main_pid: int | None = None
+    running: bool = False
+    failed: bool = False
+    detail: str | None = None
+
+
+class WorkerActionResult(BaseModel):
+    success: bool
+    worker_id: str
+    unit: str
+    action: str
+    message: str
+
+
+class LocalIssueRecord(BaseModel):
+    issue_number: str
+    title: str
+    body: str
+    yaml_path: str
+    repo_source: str | None = None
+    source: str = "local_gui"
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
 class EmailMessage(BaseModel):
     message_id: str
     mailbox_id: str = "default"

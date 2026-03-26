@@ -32,6 +32,15 @@ The security model is:
   - Default host port: `11434`
   - Important: streaming path had multiple bugs; current version keeps the upstream client alive for the full stream and proxies raw bytes for SSE.
 
+- NuGet relay:
+  - Entry point: `agent-sandbox-nuget-relay`
+  - Code: `src/agent_sandbox/nuget_relay.py`
+  - Default host port: `11666`
+
+- Host workers:
+  - Azure DevOps backlog worker: `agent-sandbox-ado-worker`
+  - Host heartbeat worker: `agent-sandbox-cli host-heartbeat` / `agent-sandbox-host-heartbeat`
+
 - VM lifecycle:
   - `scripts/create_base_vm.sh`
   - `scripts/launch_agent_vm.sh`
@@ -57,7 +66,13 @@ The security model is:
 - Host services:
   - `scripts/install_systemd_units.sh`
   - Templates in `systemd/`
-  - Firewall, gateway, and relay can be systemd-managed
+  - Systemd-managed units currently include:
+    - firewall
+    - gateway
+    - OpenAI relay
+    - NuGet relay
+    - ADO worker
+    - host-heartbeat worker
 
 - Host-local Git remotes:
   - `scripts/create_git_remote.sh`
@@ -77,6 +92,7 @@ The security model is:
   - `22` for SSH/Git
   - `8000` for MCP
   - `11434` for OpenAI relay
+  - `11666` for NuGet relay
   - Source of truth: `config/firewall.env.example`
 
 - Guest cloud-init:
@@ -84,7 +100,8 @@ The security model is:
   - Injects SSH public key
   - Installs `openssh-server`
   - Writes `/etc/agent-sandbox/session.env`
-  - Writes guest Codex config
+  - Writes provider-neutral guest baseline config at `/home/agent/.agent/config.env`
+  - Appends a shell profile hook that loads `/etc/agent-sandbox/session.env`
   - Fixes `/home/agent` ownership
 
 ## Known Good Flows
@@ -107,9 +124,14 @@ The security model is:
 3. Install/start host services:
    - `sudo ./scripts/install_systemd_units.sh`
    - fill in `config/openai-relay.env`
+   - fill in `config/nuget-relay.env`, `config/ado-worker.env`, and `config/host-heartbeat.env` as needed
    - `sudo systemctl start agent-sandbox-firewall.service`
    - `sudo systemctl start agent-sandbox-gateway.service`
    - `sudo systemctl start agent-sandbox-openai-relay.service`
+   - optional/currently supported additional units:
+     - `sudo systemctl start agent-sandbox-nuget-relay.service`
+     - `sudo systemctl start agent-sandbox-ado-worker.service`
+     - `sudo systemctl start agent-sandbox-host-heartbeat.service`
 
 ### Create/recreate VM
 
@@ -178,13 +200,15 @@ cd /home/jonathan/agent-sandbox
 ./.venv/bin/pytest -q
 ```
 
-At the time this note was written, the suite was green and included docs/regression checks for:
+The suite includes docs/regression checks for:
 
 - relay behavior
 - bootstrap scripts
 - firewall defaults
 - doc references
 - live smoke-test workflow
+
+Do not assume the suite is currently green; run it and inspect failures in the current worktree.
 
 ## Guidance For Future Changes
 

@@ -9,7 +9,7 @@ import subprocess
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from threading import BoundedSemaphore
 from threading import Lock
@@ -17,6 +17,10 @@ from typing import Any
 
 import httpx
 import yaml
+
+from .config import GatewayConfig, load_config
+from .models import SessionManifest, ToolName
+from .runtime import build_runtime
 
 
 @dataclass(frozen=True)
@@ -53,6 +57,8 @@ class WorkerConfig:
     include_comments: bool
     comments_max_count: int
     comment_text_max_chars: int
+    gateway_config_path: Path
+    session_ttl_hours: int
 
     @classmethod
     def load_from_env(cls) -> WorkerConfig:
@@ -95,10 +101,12 @@ class WorkerConfig:
         bootstrap_dotnet = _bool_env("ADO_BOOTSTRAP_DOTNET", True)
         bootstrap_nuget = _bool_env("ADO_BOOTSTRAP_NUGET", True)
         bootstrap_mssql = _bool_env("ADO_BOOTSTRAP_MSSQL", True)
-        mssql_sa_password = _optional_env("ADO_MSSQL_SA_PASSWORD")
+        mssql_sa_password = _optional_env_first("ADO_MSSQL_SA_PASSWORD", "MSSQL_SA_PASSWORD")
         mssql_init_root = _optional_env("ADO_MSSQL_INIT_ROOT")
         if bootstrap_mssql and not mssql_sa_password:
-            raise ValueError("ADO_MSSQL_SA_PASSWORD is required when ADO_BOOTSTRAP_MSSQL is true.")
+            raise ValueError(
+                "ADO_MSSQL_SA_PASSWORD or MSSQL_SA_PASSWORD is required when ADO_BOOTSTRAP_MSSQL is true."
+            )
         bootstrap_playwright = _bool_env("ADO_BOOTSTRAP_PLAYWRIGHT", False)
         bootstrap_frontend_deps = _bool_env("ADO_BOOTSTRAP_FRONTEND_DEPS", False)
         frontend_host_checkout = _optional_env("ADO_FRONTEND_HOST_CHECKOUT")
@@ -114,6 +122,10 @@ class WorkerConfig:
         repo_path = _optional_env("ADO_REPO_PATH")
         session_id = _optional_env("ADO_SESSION_ID")
         vm_user = _optional_env("ADO_VM_USER")
+        gateway_config_path = Path(
+            os.environ.get("ADO_GATEWAY_CONFIG", os.environ.get("AGENT_SANDBOX_CONFIG", "config/gateway.yaml"))
+        ).expanduser()
+        session_ttl_hours = _int_env("ADO_SESSION_TTL_HOURS", 8, minimum=1)
 
         return cls(
             organization_url=organization_url.rstrip("/"),
@@ -148,6 +160,8 @@ class WorkerConfig:
             include_comments=include_comments,
             comments_max_count=comments_max_count,
             comment_text_max_chars=comment_text_max_chars,
+            gateway_config_path=gateway_config_path,
+            session_ttl_hours=session_ttl_hours,
         )
 
 
@@ -161,6 +175,14 @@ def _require_env(name: str) -> str:
 def _optional_env(name: str) -> str | None:
     value = os.environ.get(name, "").strip()
     return value or None
+
+
+def _optional_env_first(*names: str) -> str | None:
+    for name in names:
+        value = _optional_env(name)
+        if value:
+            return value
+    return None
 
 
 def _csv_env(name: str) -> tuple[str, ...]:
@@ -602,7 +624,53 @@ def _write_setup_log(path: Path, content: str) -> None:
             handle.write("\n")
 
 
-def _build_setup_command(config: WorkerConfig, yaml_path: Path) -> list[str]:
+def _default_session_id(issue_number: int) -> str:
+    return f"issue-{issue_number}-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-{os.getpid()}"
+
+
+def _resolve_session_id(config: WorkerConfig, work_item_id: int) -> str:
+    return config.session_id or _default_session_id(work_item_id)
+
+
+def _build_issue_session_manifest(
+    *,
+    cfg: GatewayConfig,
+    session_id: str,
+    vm_id: str,
+    ttl_hours: int,
+) -> SessionManifest:
+    return SessionManifest(
+        session_id=session_id,
+        vm_id=vm_id,
+        allowed_tools=[
+            ToolName.APPROVAL_SUBMIT,
+            ToolName.APPROVAL_CHECK,
+        ],
+        email_mailbox_allowlist=cfg.email_mailbox_allowlist,
+        email_folder_allowlist_by_mailbox=cfg.email_folder_allowlist_by_mailbox,
+        email_draft_recipient_allowlist=cfg.email_draft_recipient_allowlist,
+        email_draft_domain_allowlist=cfg.email_draft_domain_allowlist,
+        email_send_enabled=cfg.email_send_enabled,
+        expires_at=datetime.now(UTC) + timedelta(hours=ttl_hours),
+        metadata={},
+    )
+
+
+def _ensure_issue_session_manifest(config: WorkerConfig, *, work_item_id: int, session_id: str) -> None:
+    cfg = load_config(config.gateway_config_path)
+    runtime = build_runtime(cfg)
+    if runtime.sessions.get(session_id) is not None:
+        return
+    manifest = _build_issue_session_manifest(
+        cfg=cfg,
+        session_id=session_id,
+        vm_id=f"vm-{work_item_id}",
+        ttl_hours=config.session_ttl_hours,
+    )
+    runtime.sessions.put(session_id, manifest)
+
+
+def _build_setup_command(config: WorkerConfig, yaml_path: Path, *, session_id: str) -> list[str]:
     cmd = [str(config.setup_script_path)]
     if config.bootstrap_dotnet:
         cmd.append("--dotnet")
@@ -625,8 +693,7 @@ def _build_setup_command(config: WorkerConfig, yaml_path: Path) -> list[str]:
         cmd.append(config.prewarm_target)
     if config.repo_path:
         cmd.append(config.repo_path)
-    if config.session_id:
-        cmd.append(config.session_id)
+    cmd.append(session_id)
     if config.vm_user:
         cmd.append(config.vm_user)
     return cmd
@@ -693,7 +760,9 @@ def process_work_item(
     setup_log_path = config.setup_log_dir / f"work-item-{work_item_id}.log"
     _atomic_write_yaml(yaml_path, _build_issue_payload(work_item))
 
-    cmd = _build_setup_command(config, yaml_path)
+    session_id = _resolve_session_id(config, work_item_id)
+    _ensure_issue_session_manifest(config, work_item_id=work_item_id, session_id=session_id)
+    cmd = _build_setup_command(config, yaml_path, session_id=session_id)
     run_env = os.environ.copy()
     if config.bootstrap_mssql and config.mssql_sa_password:
         run_env["MSSQL_SA_PASSWORD"] = config.mssql_sa_password

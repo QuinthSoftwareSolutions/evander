@@ -3,11 +3,13 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import re
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Lock
 from typing import Any, Protocol
+from urllib.parse import unquote
 
 import httpx
 from pydantic import BaseModel
@@ -16,6 +18,8 @@ from .audit import AuditEventType, AuditLogger
 
 
 logger = logging.getLogger(__name__)
+
+_FEEDBACK_RETENTION = timedelta(days=90)
 
 
 class FeedbackEnvelope(BaseModel):
@@ -41,14 +45,14 @@ class ProviderPollResult:
 
 
 class PrFeedbackStore:
-    """Atomic JSON-backed store for feedback dedupe and per-stream cursors."""
+    """Atomic JSON-backed store for feedback, provider cursors, and session read cursors."""
 
     def __init__(self, path: Path) -> None:
         self.path = path
         self._lock = Lock()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         if not self.path.exists():
-            self._atomic_write({"cursors": {}, "feedback": {}})
+            self._atomic_write({"cursors": {}, "feedback": {}, "session_reads": {}})
 
     def get_cursor(self, stream_key: str) -> str | None:
         with self._lock:
@@ -64,6 +68,7 @@ class PrFeedbackStore:
                 cursors.pop(stream_key, None)
             else:
                 cursors[stream_key] = cursor
+            self._compact_feedback(payload)
             self._atomic_write(payload)
 
     def add_feedback_if_new(self, envelope: FeedbackEnvelope) -> bool:
@@ -73,16 +78,145 @@ class PrFeedbackStore:
             if envelope.feedback_id in stored_feedback:
                 return False
             stored_feedback[envelope.feedback_id] = envelope.model_dump(mode="json")
+            self._compact_feedback(payload)
             self._atomic_write(payload)
             return True
 
+    def get_session_cursor(self, session_id: str, stream_key: str) -> str | None:
+        with self._lock:
+            payload = self._read_raw()
+            raw_session_reads = payload.get("session_reads", {})
+            if not isinstance(raw_session_reads, dict):
+                return None
+            session_reads = raw_session_reads.get(session_id, {})
+            if not isinstance(session_reads, dict):
+                return None
+            cursor = session_reads.get(stream_key)
+            return str(cursor) if cursor is not None else None
+
+    def advance_session_cursor(self, session_id: str, stream_key: str, cursor: str | None) -> str | None:
+        with self._lock:
+            payload = self._read_raw()
+            session_reads = payload.setdefault("session_reads", {})
+            if not isinstance(session_reads, dict):
+                session_reads = {}
+                payload["session_reads"] = session_reads
+            current_reads = session_reads.get(session_id)
+            if not isinstance(current_reads, dict):
+                current_reads = {}
+                session_reads[session_id] = current_reads
+
+            current_cursor = current_reads.get(stream_key)
+            next_cursor = _latest_cursor(
+                [
+                    str(current_cursor) if current_cursor is not None else None,
+                    cursor,
+                ]
+            )
+            if next_cursor is None:
+                current_reads.pop(stream_key, None)
+            else:
+                current_reads[stream_key] = next_cursor
+            if not current_reads:
+                session_reads.pop(session_id, None)
+            self._compact_feedback(payload)
+            self._atomic_write(payload)
+            return next_cursor
+
+    def has_unread_feedback(self, *, session_id: str, streams: list[dict[str, str]]) -> bool:
+        with self._lock:
+            payload = self._read_raw()
+            feedback_items = payload.get("feedback", {})
+            if not isinstance(feedback_items, dict):
+                return False
+            for stream in streams:
+                stream_key = _stream_key(stream["provider"], stream["repo"], stream["pr_id"])
+                session_cursor = self._get_session_cursor_from_payload(payload, session_id, stream_key)
+                if self._stream_has_unread_feedback(
+                    feedback_items=feedback_items,
+                    provider=stream["provider"],
+                    repo=stream["repo"],
+                    pr_id=stream["pr_id"],
+                    cursor=session_cursor,
+                ):
+                    return True
+            return False
+
+    @staticmethod
+    def _get_session_cursor_from_payload(payload: dict[str, Any], session_id: str, stream_key: str) -> str | None:
+        raw_session_reads = payload.get("session_reads", {})
+        if not isinstance(raw_session_reads, dict):
+            return None
+        session_reads = raw_session_reads.get(session_id, {})
+        if not isinstance(session_reads, dict):
+            return None
+        cursor = session_reads.get(stream_key)
+        return str(cursor) if cursor is not None else None
+
+    @staticmethod
+    def _stream_has_unread_feedback(
+        *,
+        feedback_items: dict[str, Any],
+        provider: str,
+        repo: str,
+        pr_id: str,
+        cursor: str | None,
+    ) -> bool:
+        cursor_dt = _parse_dt(cursor) if cursor else None
+        for raw_value in feedback_items.values():
+            if not isinstance(raw_value, dict):
+                continue
+            if (
+                str(raw_value.get("provider")) != provider
+                or str(raw_value.get("repo")) != repo
+                or str(raw_value.get("pr_id")) != pr_id
+            ):
+                continue
+            created_at = _parse_dt(raw_value.get("created_at"))
+            if cursor_dt and created_at <= cursor_dt:
+                continue
+            return True
+        return False
+
     def _read_raw(self) -> dict[str, Any]:
         return json.loads(self.path.read_text(encoding="utf-8"))
+
+    def _compact_feedback(self, payload: dict[str, Any]) -> None:
+        feedback = payload.get("feedback")
+        cursors = payload.get("cursors")
+        if not isinstance(feedback, dict) or not isinstance(cursors, dict):
+            return
+
+        cutoff = datetime.now(timezone.utc) - _FEEDBACK_RETENTION
+        compacted: dict[str, Any] = {}
+        changed = False
+        for feedback_id, raw_value in feedback.items():
+            if not isinstance(raw_value, dict):
+                compacted[feedback_id] = raw_value
+                continue
+            provider = str(raw_value.get("provider", "")).strip()
+            repo = str(raw_value.get("repo", "")).strip()
+            pr_id = str(raw_value.get("pr_id", "")).strip()
+            if not provider or not repo or not pr_id:
+                compacted[feedback_id] = raw_value
+                continue
+            created_at = _parse_dt(raw_value.get("created_at"))
+            stream_cursor = cursors.get(_stream_key(provider, repo, pr_id))
+            if created_at < cutoff and stream_cursor is not None and created_at <= _parse_dt(stream_cursor):
+                changed = True
+                continue
+            compacted[feedback_id] = raw_value
+        if changed:
+            payload["feedback"] = compacted
 
     def _atomic_write(self, payload: dict[str, Any]) -> None:
         tmp_path = self.path.with_suffix(f"{self.path.suffix}.tmp")
         tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
         tmp_path.replace(self.path)
+
+
+def _stream_key(provider: str, repo: str, pr_id: str) -> str:
+    return f"{provider}:{repo}:{pr_id}"
 
 
 class FeedbackProviderAdapter(Protocol):
@@ -269,8 +403,9 @@ class AzureDevOpsFeedbackAdapter:
         pr_id: str,
         cursor: str | None,
     ) -> ProviderPollResult:
+        repo_identifier = _normalize_azure_devops_repo_identifier(repo)
         url = (
-            f"{self.organization_url}/{self.project}/_apis/git/repositories/{repo}/"
+            f"{self.organization_url}/{self.project}/_apis/git/repositories/{repo_identifier}/"
             f"pullRequests/{pr_id}/threads"
         )
         response = client.get(url, params={"api-version": "7.1"}, headers=self._headers())
@@ -280,6 +415,7 @@ class AzureDevOpsFeedbackAdapter:
         cursor_dt = _parse_dt(cursor) if cursor else None
 
         feedback: list[FeedbackEnvelope] = []
+        seen_timestamps: list[str] = []
         for thread in threads:
             thread_id = str(thread.get("id"))
             resolved = _ado_thread_resolved(thread.get("status"))
@@ -292,6 +428,7 @@ class AzureDevOpsFeedbackAdapter:
                 created_at = _parse_dt(comment.get("publishedDate") or comment.get("lastUpdatedDate"))
                 if cursor_dt and created_at <= cursor_dt:
                     continue
+                seen_timestamps.append(created_at.isoformat())
                 comment_id = str(comment.get("id"))
                 parent_comment_id = comment.get("parentCommentId")
                 in_reply_to = (
@@ -299,6 +436,15 @@ class AzureDevOpsFeedbackAdapter:
                     if isinstance(parent_comment_id, int) and parent_comment_id > 0
                     else None
                 )
+                author = (comment.get("author", {}).get("displayName") or "unknown").strip()
+                body = (comment.get("content") or "").strip()
+                if _ado_should_skip_comment(
+                    author=author,
+                    body=body,
+                    comment_type=comment.get("commentType"),
+                    file_path=file_path,
+                ):
+                    continue
                 feedback.append(
                     FeedbackEnvelope(
                         feedback_id=f"azure_devops:thread_comment:{thread_id}:{comment_id}",
@@ -307,8 +453,8 @@ class AzureDevOpsFeedbackAdapter:
                         pr_id=str(pr_id),
                         thread_id=thread_id,
                         comment_id=comment_id,
-                        author=(comment.get("author", {}).get("displayName") or "unknown").strip(),
-                        body=(comment.get("content") or "").strip(),
+                        author=author,
+                        body=body,
                         file_path=file_path,
                         line=line,
                         created_at=created_at,
@@ -318,8 +464,44 @@ class AzureDevOpsFeedbackAdapter:
                 )
 
         ordered = sorted(feedback, key=lambda item: item.created_at)
-        next_cursor = _latest_cursor([cursor, *[item.created_at.isoformat() for item in ordered]])
+        next_cursor = _latest_cursor([cursor, *seen_timestamps])
         return ProviderPollResult(feedback=ordered, next_cursor=next_cursor)
+
+
+_ADO_SYSTEM_STATE_CHANGE_PATTERNS = (
+    re.compile(r"^.+ voted -?\d+$"),
+    re.compile(r"^.+ approved the changes$"),
+    re.compile(r"^.+ approved with suggestions$"),
+    re.compile(r"^.+ waiting for author$"),
+    re.compile(r"^.+ declined to review$"),
+    re.compile(r"^.+ reset all code reviewer votes$"),
+    re.compile(r"^.+ rejected this pull request$"),
+    re.compile(r"^.+ updated the pull request status to .+$"),
+    re.compile(r"^the reference refs/heads/.+ was updated\.$"),
+    re.compile(r"^.+ joined as a reviewer$"),
+    re.compile(r"^.+ added .+ as a reviewer$"),
+    re.compile(r"^.+ is changed to be a required reviewer$"),
+    re.compile(r"^.+ is no longer a required reviewer$"),
+    re.compile(r"^.+ removed .+ as a reviewer$"),
+)
+
+
+def _ado_should_skip_comment(
+    *,
+    author: str,
+    body: str,
+    comment_type: object,
+    file_path: str | None,
+) -> bool:
+    comment_type_value = str(comment_type or "").strip().lower()
+    if comment_type_value == "system":
+        return True
+    if file_path:
+        return False
+    normalized_body = body.strip().casefold()
+    if not normalized_body:
+        return False
+    return any(pattern.fullmatch(normalized_body) for pattern in _ADO_SYSTEM_STATE_CHANGE_PATTERNS)
 
 
 class PullRequestFeedbackWorker:
@@ -414,6 +596,21 @@ def _ado_line_from_context(thread_context: dict[str, Any]) -> int | None:
     if isinstance(left, dict) and isinstance(left.get("line"), int):
         return left["line"]
     return None
+
+
+def _normalize_azure_devops_repo_identifier(repo: str) -> str:
+    normalized = unquote(repo.strip())
+    if not normalized:
+        return normalized
+    if "/_git/" in normalized:
+        return normalized.split("/_git/", 1)[1].split("/", 1)[0]
+    if "/_apis/git/repositories/" in normalized:
+        return normalized.split("/_apis/git/repositories/", 1)[1].split("/", 1)[0]
+    if "ssh.dev.azure.com:v3/" in normalized:
+        return normalized.split("ssh.dev.azure.com:v3/", 1)[1].rsplit("/", 1)[-1]
+    if normalized.count("/") >= 2:
+        return normalized.rsplit("/", 1)[-1]
+    return normalized
 
 
 def _latest_cursor(candidates: list[str | None]) -> str | None:

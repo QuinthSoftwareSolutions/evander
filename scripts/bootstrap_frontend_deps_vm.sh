@@ -63,6 +63,9 @@ HOST_CHECKOUT_ROOT="$1"
 shift
 INSTALL_ROOTS=("$@")
 
+# shellcheck source=lib/guest_ssh.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/guest_ssh.sh"
+
 if [[ ${#INSTALL_ROOTS[@]} -lt 1 ]]; then
   echo "At least one install-root is required." >&2
   exit 1
@@ -77,8 +80,6 @@ fi
 
 HOST_NODE_ROOT="${HOST_NODE_ROOT:-${CALLER_HOME}/.nvm/versions/node/v24.14.0}"
 SSH_OPTS=(
-  -o StrictHostKeyChecking=no
-  -o UserKnownHostsFile=/dev/null
   -i "${SSH_KEY_PATH}"
 )
 
@@ -129,7 +130,7 @@ get_vm_ip() {
   local ip
 
   ip="$(
-    virsh domifaddr "${VM_NAME}" 2>/dev/null \
+    sudo -n virsh domifaddr "${VM_NAME}" 2>/dev/null \
       | awk '/ipv4/ {split($4, a, "/"); print a[1]; exit}'
   )"
   if [[ -n "${ip}" ]]; then
@@ -138,7 +139,7 @@ get_vm_ip() {
   fi
 
   ip="$(
-    sudo -n virsh domifaddr "${VM_NAME}" 2>/dev/null \
+    virsh domifaddr "${VM_NAME}" 2>/dev/null \
       | awk '/ipv4/ {split($4, a, "/"); print a[1]; exit}'
   )"
   if [[ -n "${ip}" ]]; then
@@ -152,6 +153,7 @@ get_vm_ip() {
 }
 
 VM_IP="$(get_vm_ip)"
+mapfile -t SSH_OPTS < <(guest_ssh_options "${VM_NAME}" "${VM_IP}" "${SSH_KEY_PATH}" "${CALLER_HOME}")
 
 echo "Bootstrapping frontend dependencies into ${VM_USER}@${VM_IP}"
 

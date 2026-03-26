@@ -236,7 +236,7 @@ process_agent_branch() {
   promote_branch "${TRUSTED_REPO_PATH}" "${AUTO_REMOTE_NAME}" "${agent_branch}" "${review_branch}"
 
   if ! git -C "${TRUSTED_REPO_PATH}" fetch "${AUTO_REMOTE_NAME}" \
-    "${PR_NOTES_REF}:${LOCAL_PR_NOTES_REF}" >/dev/null 2>&1; then
+    "+${PR_NOTES_REF}:${LOCAL_PR_NOTES_REF}" >/dev/null 2>&1; then
     notify_event \
       "AGENT_PR_NOTES fetch failed (non-fatal)" \
       "repo=$(basename "${TRUSTED_REPO_PATH}") notes_ref=${PR_NOTES_REF} local_notes_ref=${LOCAL_PR_NOTES_REF} branch=${review_branch} session_id=${session_id:-unknown}"

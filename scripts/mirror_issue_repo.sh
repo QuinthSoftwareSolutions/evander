@@ -53,6 +53,66 @@ is_remote_source() {
   return 1
 }
 
+reset_issue_remote_refs() {
+  local bare_repo_path="$1"
+  local -a refs=()
+
+  mapfile -t refs < <(
+    git --git-dir="${bare_repo_path}" for-each-ref --format='%(refname)' \
+      refs/heads \
+      refs/tags \
+      refs/notes/agent-pr \
+      refs/notes/agent-pr-cache
+  )
+
+  if (( ${#refs[@]} == 0 )); then
+    return 0
+  fi
+
+  {
+    for ref in "${refs[@]}"; do
+      printf 'delete %s\n' "${ref}"
+    done
+  } | git --git-dir="${bare_repo_path}" update-ref --stdin
+}
+
+build_safe_default_refspecs() {
+  local repo_path="$1"
+  local default_base_branch="$2"
+  local -a refspecs=()
+
+  while IFS= read -r ref; do
+    [[ -n "${ref}" ]] || continue
+    local branch_name="${ref#refs/heads/}"
+    case "${branch_name}" in
+      agents/*|review/*)
+        continue
+        ;;
+    esac
+    refspecs+=("${ref}:${ref}")
+  done < <(git -C "${repo_path}" for-each-ref --format='%(refname)' refs/heads)
+
+  while IFS= read -r ref; do
+    [[ -n "${ref}" ]] || continue
+    refspecs+=("${ref}:${ref}")
+  done < <(git -C "${repo_path}" for-each-ref --format='%(refname)' refs/tags)
+
+  if (( ${#refspecs[@]} == 0 )); then
+    if [[ -n "${default_base_branch}" ]] \
+      && git -C "${repo_path}" show-ref --verify --quiet "refs/heads/${default_base_branch}"; then
+      refspecs+=("refs/heads/${default_base_branch}:refs/heads/${default_base_branch}")
+    elif git -C "${repo_path}" rev-parse --verify HEAD >/dev/null 2>&1; then
+      local head_branch
+      head_branch="$(git -C "${repo_path}" branch --show-current)"
+      if [[ -n "${head_branch}" ]]; then
+        refspecs+=("refs/heads/${head_branch}:refs/heads/${head_branch}")
+      fi
+    fi
+  fi
+
+  printf '%s\n' "${refspecs[@]}"
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --sync-remote)
@@ -196,7 +256,7 @@ fi
 
 DEFAULT_BASE_BRANCH="$(
   git -C "${RESOLVED_REPO_PATH}" symbolic-ref --quiet --short "refs/remotes/${REMOTE_NAME}/HEAD" 2>/dev/null \
-    | sed "s#^${REMOTE_NAME}/##"
+    | sed "s#^${REMOTE_NAME}/##" || true
 )"
 if [[ -n "${DEFAULT_BASE_BRANCH}" ]]; then
   git --git-dir="${BARE_REPO_PATH}" config agent-sandbox.baseBranch "${DEFAULT_BASE_BRANCH}"
@@ -212,7 +272,13 @@ fi
 if (( ${#REFSPECS[@]} > 0 )); then
   git -C "${RESOLVED_REPO_PATH}" push --prune "${MIRROR_REMOTE_NAME}" "${REFSPECS[@]}"
 else
-  git -C "${RESOLVED_REPO_PATH}" push --mirror "${MIRROR_REMOTE_NAME}"
+  reset_issue_remote_refs "${BARE_REPO_PATH}"
+  mapfile -t DEFAULT_REFSPECS < <(build_safe_default_refspecs "${RESOLVED_REPO_PATH}" "${DEFAULT_BASE_BRANCH}")
+  if (( ${#DEFAULT_REFSPECS[@]} == 0 )); then
+    echo "Could not determine any safe refs to mirror from ${RESOLVED_REPO_PATH}." >&2
+    exit 1
+  fi
+  git -C "${RESOLVED_REPO_PATH}" push --prune "${MIRROR_REMOTE_NAME}" "${DEFAULT_REFSPECS[@]}"
 fi
 
 SOURCE_COMMIT=""

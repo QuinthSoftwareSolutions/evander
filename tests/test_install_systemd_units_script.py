@@ -28,3 +28,12 @@ def test_install_systemd_units_preflight_reports_failures_with_hints() -> None:
     assert "[FAIL]" in text
     assert "hint:" in text
     assert "Result: FAIL (critical checks failed)." in text
+
+
+def test_install_systemd_units_preflight_checks_for_mssql_worker_password_when_enabled() -> None:
+    text = _script_text()
+
+    assert 'env_var_is_truthy_in_file "${ROOT_DIR}/config/ado-worker.env" "ADO_BOOTSTRAP_MSSQL"' in text
+    assert 'check_any_env_var_in_file \\' in text
+    assert '"ADO_MSSQL_SA_PASSWORD"' in text
+    assert '"MSSQL_SA_PASSWORD"' in text

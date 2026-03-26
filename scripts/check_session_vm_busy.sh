@@ -65,5 +65,10 @@ if vm_agent_is_busy_status "${status}"; then
   exit 0
 fi
 
+if [[ "${status}" == "disabled" ]]; then
+  printf 'status=unavailable reason=agent-disabled session=%s vm=%s detail=%q\n' "${SESSION_ID}" "${VM_NAME}" "${status}"
+  exit 3
+fi
+
 printf 'status=idle session=%s vm=%s detail=%q\n' "${SESSION_ID}" "${VM_NAME}" "${status}"
 exit 1

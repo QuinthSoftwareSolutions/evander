@@ -1,6 +1,0 @@
-issue_number: 12305
-name: Create Operation Models
-description: Operation - Name, DisplayName, Description, EntityKey
-We need a table for routes that can be assigned to a WorkOrder. 
-
-It should be similar to WorkOrderProcess but instead of processes it uses Operations.

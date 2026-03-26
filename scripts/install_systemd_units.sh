@@ -136,6 +136,87 @@ PY
   fi
 }
 
+env_var_is_truthy_in_file() {
+  local file_path="$1"
+  local var_name="$2"
+
+  if [[ ! -f "${file_path}" ]]; then
+    return 1
+  fi
+
+  local value
+  value="$(python3 - "$file_path" "$var_name" <<'PY'
+import re
+import sys
+
+file_path, var_name = sys.argv[1], sys.argv[2]
+pattern = re.compile(r"^\s*" + re.escape(var_name) + r"\s*=\s*(.*)$")
+
+with open(file_path, encoding="utf-8") as handle:
+    for raw in handle:
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        match = pattern.match(line)
+        if not match:
+            continue
+        value = match.group(1).strip()
+        if len(value) >= 2 and ((value[0] == value[-1]) and value[0] in {'"', "'"}):
+            value = value[1:-1]
+        normalized = value.strip().lower()
+        print("true" if normalized in {"1", "true", "yes", "on"} else "false")
+        raise SystemExit(0)
+
+print("false")
+PY
+)"
+
+  [[ "${value}" == "true" ]]
+}
+
+check_any_env_var_in_file() {
+  local file_path="$1"
+  local hint="$2"
+  local severity="${3:-critical}"
+  shift 3
+
+  local var_name
+  for var_name in "$@"; do
+    local value
+    value="$(python3 - "$file_path" "$var_name" <<'PY'
+import re
+import sys
+
+file_path, var_name = sys.argv[1], sys.argv[2]
+pattern = re.compile(r"^\s*" + re.escape(var_name) + r"\s*=\s*(.*)$")
+
+with open(file_path, encoding="utf-8") as handle:
+    for raw in handle:
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        match = pattern.match(line)
+        if not match:
+            continue
+        value = match.group(1).strip()
+        if len(value) >= 2 and ((value[0] == value[-1]) and value[0] in {'"', "'"}):
+            value = value[1:-1]
+        print(value)
+        raise SystemExit(0)
+
+raise SystemExit(1)
+PY
+)" || true
+
+    if [[ -n "${value}" ]]; then
+      report_pass "${var_name} is set in ${file_path}."
+      return 0
+    fi
+  done
+
+  report_fail "$(printf "%s or %s is missing or empty in %s." "$1" "$2" "${file_path}")" "${hint}" "${severity}"
+}
+
 run_preflight_checks() {
   echo "Running install_systemd_units preflight checks..."
 
@@ -158,6 +239,14 @@ run_preflight_checks() {
   check_env_var_in_file "${ROOT_DIR}/config/ado-worker.env" "ADO_PROJECT" "Set ADO_PROJECT in config/ado-worker.env."
   check_env_var_in_file "${ROOT_DIR}/config/ado-worker.env" "ADO_PAT_ENV_VAR_NAME" "Set ADO_PAT_ENV_VAR_NAME in config/ado-worker.env."
   check_env_var_in_file "${ROOT_DIR}/config/ado-worker.env" "ADO_PROJECT_OR_SOLUTION" "Set ADO_PROJECT_OR_SOLUTION in config/ado-worker.env."
+  if env_var_is_truthy_in_file "${ROOT_DIR}/config/ado-worker.env" "ADO_BOOTSTRAP_MSSQL"; then
+    check_any_env_var_in_file \
+      "${ROOT_DIR}/config/ado-worker.env" \
+      "Set ADO_MSSQL_SA_PASSWORD or MSSQL_SA_PASSWORD in config/ado-worker.env when ADO_BOOTSTRAP_MSSQL=true." \
+      "critical" \
+      "ADO_MSSQL_SA_PASSWORD" \
+      "MSSQL_SA_PASSWORD"
+  fi
   check_env_var_in_file "${ROOT_DIR}/config/host-heartbeat.env" "AGENT_SANDBOX_CONFIG" "Set AGENT_SANDBOX_CONFIG to your gateway config path."
   check_env_var_in_file "${ROOT_DIR}/config/host-heartbeat.env" "HOST_HEARTBEAT_LOG_LEVEL" "Set HOST_HEARTBEAT_LOG_LEVEL in config/host-heartbeat.env."
   check_env_var_in_file "${ROOT_DIR}/config/host-heartbeat.env" "HOST_HEARTBEAT_POLL_INTERVAL_SECONDS" "Set HOST_HEARTBEAT_POLL_INTERVAL_SECONDS in config/host-heartbeat.env."

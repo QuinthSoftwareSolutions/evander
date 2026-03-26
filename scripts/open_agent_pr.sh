@@ -18,6 +18,7 @@ Options:
   --provider <name>   PR provider: auto, github, azure_devops. Default: auto.
   --base <branch>     Base branch for the PR. Default: repository default branch.
   --session-id <id>   Session id for mapping metadata. Defaults to branch-derived value.
+  --work-item-id <id> Explicit Azure DevOps work item id to associate with the PR.
   --title <title>     Explicit PR title.
   --body-file <path>  Read PR body from a file.
   --no-fill           Do not pass --fill to gh pr create.
@@ -45,6 +46,7 @@ BODY_FILE=""
 USE_FILL=1
 PROVIDER="auto"
 SESSION_ID=""
+WORK_ITEM_ID=""
 POSITIONAL=()
 
 while [[ $# -gt 0 ]]; do
@@ -79,6 +81,14 @@ while [[ $# -gt 0 ]]; do
         exit 1
       fi
       SESSION_ID="$2"
+      shift 2
+      ;;
+    --work-item-id)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --work-item-id" >&2
+        exit 1
+      fi
+      WORK_ITEM_ID="$2"
       shift 2
       ;;
     --title)
@@ -164,6 +174,24 @@ derive_session_id() {
   if [[ "${branch}" == agents/*/* || "${branch}" == review/*/* ]]; then
     local remainder="${branch#*/}"
     printf '%s\n' "${remainder%%/*}"
+    return 0
+  fi
+  return 1
+}
+
+extract_issue_number() {
+  local value="${1:-}"
+  [[ -n "${value}" ]] || return 1
+  if [[ "${value}" =~ ^[0-9]+$ ]]; then
+    printf '%s\n' "${value}"
+    return 0
+  fi
+  if [[ "${value}" =~ ^vm-([0-9]+)$ ]]; then
+    printf '%s\n' "${BASH_REMATCH[1]}"
+    return 0
+  fi
+  if [[ "${value}" =~ ^issue-([0-9]+)(-|$) ]]; then
+    printf '%s\n' "${BASH_REMATCH[1]}"
     return 0
   fi
   return 1
@@ -513,6 +541,15 @@ if [[ -z "${SESSION_ID}" ]]; then
   SESSION_ID="$(derive_session_id "${ORIGIN_BRANCH}" || derive_session_id "${LOCAL_BRANCH}" || true)"
 fi
 
+if [[ -z "${WORK_ITEM_ID}" && -n "${SESSION_ID}" ]]; then
+  WORK_ITEM_ID="$(extract_issue_number "${SESSION_ID}" || true)"
+fi
+
+if [[ -n "${WORK_ITEM_ID}" && ! "${WORK_ITEM_ID}" =~ ^[0-9]+$ ]]; then
+  echo "Work item id must be numeric: ${WORK_ITEM_ID}" >&2
+  exit 1
+fi
+
 REPO_SLUG="$(infer_repo_slug "${ORIGIN_URL}" "${PROVIDER}")"
 if [[ -z "${REPO_SLUG}" ]]; then
   REPO_SLUG="$(basename "${HOST_REPO_PATH}")"
@@ -569,6 +606,7 @@ case "${PROVIDER}" in
     TITLE="${TITLE}" \
     TITLE_EXPLICIT="${TITLE_EXPLICIT}" \
     BODY_CONTENT="${BODY_CONTENT}" \
+    WORK_ITEM_ID="${WORK_ITEM_ID}" \
     python3 - <<'PY'
 import base64
 import json
@@ -585,6 +623,7 @@ title = os.environ["TITLE"]
 title_explicit = os.environ.get("TITLE_EXPLICIT", "0") == "1"
 body = os.environ["BODY_CONTENT"]
 pat = os.environ["AZURE_DEVOPS_PAT_VALUE"]
+work_item_id = os.environ.get("WORK_ITEM_ID", "").strip()
 
 ssh_match = re.match(r"^git@ssh\.dev\.azure\.com:v3/([^/]+)/([^/]+)/([^/]+)$", origin_url)
 https_match = re.match(
@@ -621,6 +660,70 @@ headers = {
     "Content-Type": "application/json",
 }
 
+
+def request_json(url: str, *, method: str = "GET", payload: dict | None = None, content_type: str = "application/json") -> dict:
+    data = None
+    request_headers = dict(headers)
+    if payload is not None:
+      data = json.dumps(payload).encode("utf-8")
+      request_headers["Content-Type"] = content_type
+    request = urllib.request.Request(
+        url,
+        headers=request_headers,
+        data=data,
+        method=method,
+    )
+    with urllib.request.urlopen(request) as response:
+        return json.load(response)
+
+
+def ensure_work_item_link(pr: dict) -> None:
+    if not work_item_id:
+        return
+    repository = pr.get("repository") or {}
+    repository_id = str(repository.get("id") or "").strip()
+    project_info = repository.get("project") or {}
+    project_id = str(project_info.get("id") or "").strip()
+    pr_id = str(pr.get("pullRequestId") or "").strip()
+    if not repository_id or not project_id or not pr_id:
+        return
+
+    artifact_url = f"vstfs:///Git/PullRequestId/{project_id}%2F{repository_id}%2F{pr_id}"
+    work_item_url = (
+        f"https://dev.azure.com/{urllib.parse.quote(organization, safe='')}/"
+        f"{urllib.parse.quote(project, safe='')}/_apis/wit/workitems/{urllib.parse.quote(work_item_id, safe='')}"
+    )
+    try:
+        work_item = request_json(f"{work_item_url}?$expand=relations&api-version=7.1")
+        for relation in work_item.get("relations") or []:
+            if relation.get("rel") == "ArtifactLink" and relation.get("url") == artifact_url:
+                return
+
+        patch_doc = [
+            {
+                "op": "add",
+                "path": "/relations/-",
+                "value": {
+                    "rel": "ArtifactLink",
+                    "url": artifact_url,
+                    "attributes": {"name": "Pull Request"},
+                },
+            }
+        ]
+        request = urllib.request.Request(
+            f"{work_item_url}?api-version=7.1",
+            headers={**headers, "Content-Type": "application/json-patch+json"},
+            data=json.dumps(patch_doc).encode("utf-8"),
+            method="PATCH",
+        )
+        with urllib.request.urlopen(request) as response:
+            json.load(response)
+    except Exception as exc:
+        print(
+            f"Warning: failed to associate Azure DevOps PR {pr_id} with work item {work_item_id}: {exc}",
+            file=sys.stderr,
+        )
+
 query = urllib.parse.urlencode(
     {
         "searchCriteria.status": "active",
@@ -629,9 +732,7 @@ query = urllib.parse.urlencode(
         "api-version": "7.1",
     }
 )
-existing_request = urllib.request.Request(f"{base_url}?{query}", headers=headers)
-with urllib.request.urlopen(existing_request) as response:
-    payload = json.load(response)
+payload = request_json(f"{base_url}?{query}")
 
 if payload.get("count", 0):
     pr = payload["value"][0]
@@ -639,36 +740,28 @@ if payload.get("count", 0):
     update_doc = {"description": body}
     if title_explicit:
         update_doc["title"] = title
-    update_payload = json.dumps(update_doc).encode("utf-8")
-    update_request = urllib.request.Request(
+    pr = request_json(
         f"{base_url}/{urllib.parse.quote(pr_id)}?api-version=7.1",
-        headers=headers,
-        data=update_payload,
+        payload=update_doc,
         method="PATCH",
     )
-    with urllib.request.urlopen(update_request) as response:
-        pr = json.load(response)
+    ensure_work_item_link(pr)
     web = pr.get("_links", {}).get("web", {}).get("href") or pr.get("url")
     pr_id = str(pr.get("pullRequestId", ""))
     print(json.dumps({"pr_url": web, "pr_id": pr_id}, sort_keys=True))
     sys.exit(0)
 
-create_payload = json.dumps(
-    {
+pr = request_json(
+    f"{base_url}?api-version=7.1",
+    payload={
         "sourceRefName": f"refs/heads/{origin_branch}",
         "targetRefName": f"refs/heads/{base_branch}",
         "title": title,
         "description": body,
-    }
-).encode("utf-8")
-create_request = urllib.request.Request(
-    f"{base_url}?api-version=7.1",
-    headers=headers,
-    data=create_payload,
+    },
     method="POST",
 )
-with urllib.request.urlopen(create_request) as response:
-    pr = json.load(response)
+ensure_work_item_link(pr)
 
 web = pr.get("_links", {}).get("web", {}).get("href") or pr.get("url")
 pr_id = str(pr.get("pullRequestId", ""))
@@ -726,6 +819,7 @@ RESULT_JSON="$(
   ORIGIN_BRANCH="${ORIGIN_BRANCH}" \
   BASE_BRANCH="${BASE_BRANCH}" \
   SESSION_ID="${SESSION_ID}" \
+  WORK_ITEM_ID="${WORK_ITEM_ID}" \
   python3 - <<'PY'
 import json
 import os
@@ -738,6 +832,7 @@ print(
             "origin_branch": os.environ["ORIGIN_BRANCH"],
             "base_branch": os.environ["BASE_BRANCH"],
             "session_id": os.environ["SESSION_ID"],
+            "work_item_id": os.environ["WORK_ITEM_ID"],
         },
         sort_keys=True,
     )

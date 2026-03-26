@@ -18,6 +18,7 @@ from .models import (
 )
 from .policy import PolicyError
 from .runtime import RuntimeContext, build_runtime
+from .services import normalize_pr_feedback_provider
 
 
 def _redact_nested_value(config: GatewayConfig, value: Any) -> Any:
@@ -72,7 +73,13 @@ def _filter_discord_commands_for_session(
 
 
 def create_server(context: RuntimeContext) -> FastMCP:
-    server = FastMCP("Agent Sandbox Gateway", json_response=True)
+    server = FastMCP(
+        "Agent Sandbox Gateway",
+        json_response=True,
+        host=context.config.host,
+        port=context.config.port,
+        streamable_http_path="/mcp",
+    )
 
     def draft_recipients_from_payload(payload: dict[str, Any]) -> list[str]:
         recipients: list[str] = []
@@ -136,7 +143,10 @@ def create_server(context: RuntimeContext) -> FastMCP:
         try:
             session = context.policy.require_tool(session_id, ToolName.HAS_PENDING_FEEDBACK)
             streams = context.policy.require_pr_feedback_streams(session)
-            result = context.pr_feedback_service.has_pending_feedback(streams=streams).model_dump(mode="json")
+            result = context.pr_feedback_service.has_pending_feedback(
+                streams=streams,
+                session_id=session_id,
+            ).model_dump(mode="json")
             audit_success(
                 session_id,
                 ToolName.HAS_PENDING_FEEDBACK,
@@ -167,7 +177,10 @@ def create_server(context: RuntimeContext) -> FastMCP:
             session = context.policy.require_tool(session_id, ToolName.LIST_UNREAD_FEEDBACK)
             streams = context.policy.require_pr_feedback_streams(session)
             response = context.pr_feedback_service.list_unread_feedback(
-                streams=streams, cursor=cursor, limit=limit
+                streams=streams,
+                session_id=session_id,
+                cursor=cursor,
+                limit=limit,
             )
             result = response.model_dump(mode="json")
             audit_success(
@@ -236,7 +249,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
         normalized_comment_id = comment_id.strip() if isinstance(comment_id, str) else None
         request = PostPrFeedbackReplyRequest(
             session_id=session_id.strip(),
-            provider=provider.strip(),
+            provider=normalize_pr_feedback_provider(provider),
             repo=repo.strip(),
             pr_id=pr_id.strip(),
             body_text=body_text.strip(),
@@ -581,8 +594,6 @@ def main() -> None:
     config = load_config(args.config)
     context = build_runtime(config)
     server = create_server(context)
-    server.settings.host = config.host
-    server.settings.port = config.port
     server.run(transport="streamable-http")
 
 

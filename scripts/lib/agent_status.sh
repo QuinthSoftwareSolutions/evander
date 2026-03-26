@@ -1,25 +1,38 @@
 #!/usr/bin/env bash
 
+# shellcheck source=lib/guest_ssh.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/guest_ssh.sh"
+
 vm_agent_status_from_ssh() {
   local vm_user="$1"
-  local vm_ip="$2"
-  local ssh_private_key_path="$3"
-  local connect_timeout_seconds="$4"
+  local vm_name="$2"
+  local vm_ip="$3"
+  local ssh_private_key_path="$4"
+  local connect_timeout_seconds="$5"
   local state_max_age_seconds
+  local caller_user
+  local caller_home
+  local -a ssh_opts
 
   state_max_age_seconds="${VM_AGENT_STATE_MAX_AGE_SECONDS:-600}"
+  caller_user="${SUDO_USER:-${USER:-}}"
+  caller_home="${HOME:-}"
+  if [[ -n "${caller_user}" ]]; then
+    caller_home="$(getent passwd "${caller_user}" | cut -d: -f6 || printf '%s\n' "${caller_home}")"
+  fi
+
+  mapfile -t ssh_opts < <(guest_ssh_options "${vm_name}" "${vm_ip}" "${ssh_private_key_path}" "${caller_home}")
+  ssh_opts+=(-o ConnectTimeout="${connect_timeout_seconds}")
 
   if ! ssh \
-    -o StrictHostKeyChecking=no \
-    -o UserKnownHostsFile=/dev/null \
-    -o ConnectTimeout="${connect_timeout_seconds}" \
-    -i "${ssh_private_key_path}" \
+    "${ssh_opts[@]}" \
     "${vm_user}@${vm_ip}" \
     "VM_AGENT_STATE_MAX_AGE_SECONDS='${state_max_age_seconds}' bash -s" <<'REMOTE_EOF'
 set -euo pipefail
 
 LOG_DIR="${HOME}/.agent-sandbox"
 VM_AGENT_STATE_MAX_AGE_SECONDS="${VM_AGENT_STATE_MAX_AGE_SECONDS:-600}"
+CONTROL_STATE_PATH="${LOG_DIR}/agent-control.state"
 
 is_active_agent_pid() {
   local pid="$1"
@@ -58,12 +71,21 @@ if [[ ! -d "${LOG_DIR}" ]]; then
 fi
 
 active_entries=()
+control_status=""
 
 read_state_value() {
   local state_path="$1"
   local key="$2"
   awk -F= -v target_key="${key}" '$1 == target_key {print substr($0, index($0, "=") + 1); exit}' "${state_path}" 2>/dev/null || true
 }
+
+if [[ -f "${CONTROL_STATE_PATH}" ]]; then
+  control_status="$(read_state_value "${CONTROL_STATE_PATH}" "status")"
+  if [[ "${control_status}" == "disabled" ]]; then
+    printf '%s\n' "disabled"
+    exit 0
+  fi
+fi
 
 shopt -s nullglob
 for state_path in "${LOG_DIR}"/agent-*.state; do
@@ -116,7 +138,7 @@ vm_agent_status_for_vm() {
     return 0
   fi
 
-  vm_agent_status_from_ssh "${vm_user}" "${vm_ip}" "${ssh_private_key_path}" "${connect_timeout_seconds}"
+  vm_agent_status_from_ssh "${vm_user}" "${vm_name}" "${vm_ip}" "${ssh_private_key_path}" "${connect_timeout_seconds}"
 }
 
 vm_agent_is_busy_status() {

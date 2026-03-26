@@ -14,6 +14,7 @@ from typing import Any
 
 import httpx
 
+from .agent_control import AgentControlStore
 from .audit import AuditEventType
 from .config import GatewayConfig
 from .pr_feedback_worker import (
@@ -57,11 +58,13 @@ class HostHeartbeatWorker:
         runtime: RuntimeContext,
         feedback_worker: PullRequestFeedbackWorker,
         adapters: dict[str, FeedbackProviderAdapter],
+        agent_control_store: AgentControlStore | None = None,
     ) -> None:
         self.config = config
         self.runtime = runtime
         self.feedback_worker = feedback_worker
         self.adapters = adapters
+        self.agent_control_store = agent_control_store
 
     def _log_audit_decision(self, **kwargs: Any) -> None:
         audit = getattr(self.runtime, "audit", None)
@@ -153,7 +156,7 @@ class HostHeartbeatWorker:
                     )
                     continue
                 discovered_feedback += len(discovered)
-                if discovered:
+                if discovered or self._stream_has_unread_bindings(stream=stream, bindings=bindings):
                     self._record_busy_skips(stream=stream, bindings=bindings)
 
         next_sleep_seconds = _compute_next_sleep_seconds(
@@ -180,6 +183,26 @@ class HostHeartbeatWorker:
 
     def _record_busy_skips(self, *, stream: FeedbackStream, bindings: list[StreamSessionBinding]) -> None:
         for binding in bindings:
+            if not self._binding_has_unread_feedback(binding=binding, stream=stream):
+                continue
+            if self._binding_is_host_disabled(binding):
+                self._log_audit_decision(
+                    event_type=AuditEventType.BUSY_SKIP,
+                    session_id=binding.session_id,
+                    vm_id=binding.vm_id,
+                    provider=stream.provider,
+                    repo=stream.repo,
+                    pr_id=stream.pr_id,
+                    decision="skipped",
+                    reason="agent-disabled",
+                    args={"source": binding.source},
+                )
+                logger.info(
+                    "Host heartbeat skip reason=agent-disabled session_id=%s vm_id=%s",
+                    binding.session_id,
+                    binding.vm_id,
+                )
+                continue
             if _is_session_in_cooldown(
                 path=self.config.host_heartbeat_session_cooldown_path,
                 session_id=binding.session_id,
@@ -203,11 +226,12 @@ class HostHeartbeatWorker:
                 continue
             if not binding.vm_id:
                 continue
-            if _is_agent_busy(
+            agent_state = _probe_agent_dispatch_state(
                 session_id=binding.session_id,
                 vm_id=binding.vm_id,
                 script_path=self.config.host_busy_check_script_path,
-            ):
+            )
+            if agent_state == "busy":
                 _set_session_cooldown(
                     path=self.config.host_heartbeat_session_cooldown_path,
                     session_id=binding.session_id,
@@ -230,12 +254,55 @@ class HostHeartbeatWorker:
                     binding.vm_id,
                 )
                 continue
+            if agent_state == "unavailable":
+                self._log_audit_decision(
+                    event_type=AuditEventType.BUSY_SKIP,
+                    session_id=binding.session_id,
+                    vm_id=binding.vm_id,
+                    provider=stream.provider,
+                    repo=stream.repo,
+                    pr_id=stream.pr_id,
+                    decision="skipped",
+                    reason="agent-unavailable",
+                    args={"source": binding.source},
+                )
+                logger.info(
+                    "Host heartbeat skip reason=agent-unavailable session_id=%s vm_id=%s",
+                    binding.session_id,
+                    binding.vm_id,
+                )
+                continue
             self._resume_binding(binding)
             _set_session_cooldown(
                 path=self.config.host_heartbeat_session_cooldown_path,
                 session_id=binding.session_id,
                 cooldown_seconds=self.config.host_heartbeat_cooldown_seconds,
             )
+
+    def _binding_is_host_disabled(self, binding: StreamSessionBinding) -> bool:
+        if self.agent_control_store is None or not binding.vm_id:
+            return False
+        return self.agent_control_store.is_disabled(binding.vm_id)
+
+    def _stream_has_unread_bindings(self, *, stream: FeedbackStream, bindings: list[StreamSessionBinding]) -> bool:
+        for binding in bindings:
+            if self._binding_has_unread_feedback(binding=binding, stream=stream):
+                return True
+        return False
+
+    def _binding_has_unread_feedback(self, *, binding: StreamSessionBinding, stream: FeedbackStream) -> bool:
+        store = getattr(self.feedback_worker, "store", None)
+        if store is None:
+            return False
+        has_unread_feedback = getattr(store, "has_unread_feedback", None)
+        if has_unread_feedback is None:
+            return False
+        return bool(
+            has_unread_feedback(
+                session_id=binding.session_id,
+                streams=[{"provider": stream.provider, "repo": stream.repo, "pr_id": stream.pr_id}],
+            )
+        )
 
     def _resume_binding(self, binding: StreamSessionBinding) -> None:
         if not binding.vm_id:
@@ -263,6 +330,9 @@ class HostHeartbeatWorker:
             "--host-state-file",
             str(self.config.host_heartbeat_wake_state_path),
         ]
+        host_control_state_path = getattr(self.config, "host_agent_control_state_path", None)
+        if host_control_state_path is not None:
+            cmd.extend(["--host-control-state-path", str(host_control_state_path)])
         try:
             completed = subprocess.run(
                 cmd,
@@ -468,7 +538,7 @@ def _load_pr_map_entries(path: Path) -> dict[tuple[str, str, str], dict[str, Any
     return entries
 
 
-def _is_agent_busy(*, session_id: str, vm_id: str, script_path: Path) -> bool:
+def _probe_agent_dispatch_state(*, session_id: str, vm_id: str, script_path: Path) -> str:
     if not script_path.exists():
         logger.warning(
             "Busy check script missing path=%s session_id=%s vm_id=%s",
@@ -476,7 +546,7 @@ def _is_agent_busy(*, session_id: str, vm_id: str, script_path: Path) -> bool:
             session_id,
             vm_id,
         )
-        return False
+        return "unknown"
     try:
         completed = subprocess.run(
             [str(script_path), session_id, vm_id],
@@ -492,7 +562,7 @@ def _is_agent_busy(*, session_id: str, vm_id: str, script_path: Path) -> bool:
             vm_id,
             exc_info=True,
         )
-        return False
+        return "unknown"
 
     output = (completed.stdout or "").strip()
     if completed.returncode == 0:
@@ -502,9 +572,17 @@ def _is_agent_busy(*, session_id: str, vm_id: str, script_path: Path) -> bool:
             vm_id,
             output,
         )
-        return True
+        return "busy"
     if completed.returncode == 1:
-        return False
+        return "idle"
+    if completed.returncode == 3:
+        logger.info(
+            "Busy check status=unavailable session_id=%s vm_id=%s output=%s",
+            session_id,
+            vm_id,
+            output,
+        )
+        return "unavailable"
     logger.warning(
         "Busy check status=unknown session_id=%s vm_id=%s exit_code=%s output=%s",
         session_id,
@@ -512,7 +590,11 @@ def _is_agent_busy(*, session_id: str, vm_id: str, script_path: Path) -> bool:
         completed.returncode,
         output,
     )
-    return False
+    return "unknown"
+
+
+def _is_agent_busy(*, session_id: str, vm_id: str, script_path: Path) -> bool:
+    return _probe_agent_dispatch_state(session_id=session_id, vm_id=vm_id, script_path=script_path) == "busy"
 
 
 def _is_session_in_cooldown(*, path: Path, session_id: str) -> bool:
@@ -577,4 +659,5 @@ def build_host_heartbeat_worker(config: GatewayConfig) -> HostHeartbeatWorker:
         runtime=runtime,
         feedback_worker=feedback_worker,
         adapters=adapters,
+        agent_control_store=AgentControlStore(config.host_agent_control_state_path),
     )
