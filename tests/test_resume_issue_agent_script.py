@@ -258,6 +258,8 @@ def test_resume_issue_agent_tracks_explicit_state_lifecycle() -> None:
     assert 'ensure_agent_enabled' in script_text
     assert 'write_state "running" "resume"' in script_text
     assert 'trap on_exit_write_idle EXIT' in script_text
+    assert 'STATE_PATH="${STATE_PATH}" \\' in script_text
+    assert 'AGENT_STATE_REPO_NAME="${AGENT_STATE_REPO_NAME}" \\' in script_text
     assert 'AGENT_STATE_LIB_B64' in script_text
     assert 'printf \'%s\' "${AGENT_RUNNER_LIB_B64}" | base64 -d > "${LOG_DIR}/lib/agent_runner.sh"' in script_text
     assert 'printf \'%s\' "${AGENT_RUNNER_CODEX_LIB_B64}" | base64 -d > "${LOG_DIR}/lib/agent_runner_codex.sh"' in script_text
@@ -266,6 +268,8 @@ def test_resume_issue_agent_tracks_explicit_state_lifecycle() -> None:
     assert 'last_attempt_at' in script_text
     assert '--worker-mode' in script_text
     assert 'write_agent_control_state "${HOST_CONTROL_STATUS}" "host-sync"' in script_text
+    assert 'LOG_PATH="${LOG_DIR}/agent-${RESOLVED_REPO_NAME}.log"' in script_text
+    assert 'LOG_PATH="${LOG_DIR}/codex-heartbeat-run.log"' in script_text
 
 
 def test_resume_issue_agent_worker_mode_starts_vm_and_skips_tty(tmp_path: Path) -> None:

@@ -347,6 +347,64 @@ def _matching_issue_session_ids(issue_number: str, sessions: dict[str, SessionMa
     return matches
 
 
+def _parse_session_extension(value: str | None) -> timedelta:
+    raw_value = (value or "1d").strip().lower()
+    match = re.fullmatch(r"(\d+)([hd])", raw_value)
+    if match is None:
+        raise typer.BadParameter("Extension must use the format <number><h|d>, for example 8h or 2d.")
+
+    amount = int(match.group(1))
+    unit = match.group(2)
+    if unit == "h":
+        return timedelta(hours=amount)
+    return timedelta(days=amount)
+
+
+def _default_session_ttl(cfg: GatewayConfig) -> timedelta:
+    return timedelta(seconds=cfg.default_session_ttl_seconds)
+
+
+def _resolve_session_ttl(cfg: GatewayConfig, ttl_hours: int | None) -> timedelta:
+    if ttl_hours is not None:
+        return timedelta(hours=ttl_hours)
+    return _default_session_ttl(cfg)
+
+
+def _resolve_session_target(target: str, sessions: dict[str, SessionManifest]) -> tuple[str, SessionManifest]:
+    normalized = target.strip()
+    if not normalized:
+        raise typer.BadParameter("Target must be a non-empty issue number, vm name, or session id.")
+
+    direct_match = sessions.get(normalized)
+    if direct_match is not None:
+        return normalized, direct_match
+
+    matching_ids: set[str] = set()
+    issue_number = _extract_issue_number(normalized)
+    if issue_number is not None:
+        matching_ids.update(_matching_issue_session_ids(issue_number, sessions))
+    if normalized.startswith("vm-"):
+        matching_ids.update(
+            session_id
+            for session_id, session in sessions.items()
+            if session.vm_id == normalized
+        )
+
+    if not matching_ids:
+        raise typer.BadParameter(f"Unknown session target: {target}")
+
+    resolved_session_id = max(
+        matching_ids,
+        key=lambda session_id: _session_sort_key((session_id, sessions[session_id])),
+    )
+    return resolved_session_id, sessions[resolved_session_id]
+
+
+def _session_sort_key(item: tuple[str, SessionManifest]) -> tuple[datetime, datetime, str]:
+    session_id, manifest = item
+    return (manifest.created_at, manifest.expires_at, session_id)
+
+
 def _session_streams_for_session_ids(
     sessions: dict[str, SessionManifest],
     *,
@@ -660,7 +718,7 @@ def _build_issue_session_manifest(
         email_draft_recipient_allowlist=cfg.email_draft_recipient_allowlist,
         email_draft_domain_allowlist=cfg.email_draft_domain_allowlist,
         email_send_enabled=cfg.email_send_enabled,
-        expires_at=datetime.now(UTC) + timedelta(hours=ttl_hours or 8),
+        expires_at=datetime.now(UTC) + _resolve_session_ttl(cfg, ttl_hours),
         metadata={},
     )
 
@@ -911,7 +969,7 @@ def create_session(
         email_draft_recipient_allowlist=cfg.email_draft_recipient_allowlist,
         email_draft_domain_allowlist=cfg.email_draft_domain_allowlist,
         email_send_enabled=cfg.email_send_enabled,
-        expires_at=datetime.now(UTC) + timedelta(hours=ttl_hours or 8),
+        expires_at=datetime.now(UTC) + _resolve_session_ttl(cfg, ttl_hours),
     )
     if manifest.email_send_enabled:
         manifest.allowed_tools.append(ToolName.EMAIL_SEND_APPROVED)
@@ -953,6 +1011,148 @@ def prune_sessions(
 
     mode = "expired" if expired_only else "all"
     typer.echo(f"Pruned {len(keys_to_delete)} {mode} session(s)")
+
+
+@app.command(
+    "list-sessions",
+    rich_help_panel="Sessions and Feedback",
+    short_help="List active, expired, or all session manifests.",
+)
+def list_sessions(
+    config: ConfigOption = Path("config/gateway.yaml"),
+    all_sessions: Annotated[
+        bool,
+        typer.Option("--all", help="Show both active and expired sessions."),
+    ] = False,
+    expired_only: Annotated[
+        bool,
+        typer.Option("--expired-only", help="Show only expired sessions."),
+    ] = False,
+) -> None:
+    if all_sessions and expired_only:
+        raise typer.BadParameter("--all and --expired-only cannot be used together.")
+
+    cfg = load_config(config)
+    runtime = build_runtime(cfg)
+    sessions = runtime.sessions.read_all()
+    now = datetime.now(UTC)
+
+    selected: list[tuple[str, SessionManifest]] = []
+    for item in sorted(sessions.items(), key=_session_sort_key):
+        _, manifest = item
+        is_expired = manifest.expires_at <= now
+        if expired_only:
+            if is_expired:
+                selected.append(item)
+        elif all_sessions:
+            selected.append(item)
+        elif not is_expired:
+            selected.append(item)
+
+    if not selected:
+        typer.echo("No sessions found.")
+        return
+
+    for session_id, manifest in selected:
+        status = "expired" if manifest.expires_at <= now else "active"
+        typer.echo(
+            f"{session_id}\tstatus={status}\tvm_id={manifest.vm_id or '-'}\t"
+            f"created_at={manifest.created_at.isoformat()}\texpires_at={manifest.expires_at.isoformat()}"
+        )
+
+
+@app.command(
+    "renew-session",
+    rich_help_panel="Sessions and Feedback",
+    short_help="Extend or reissue a session manifest.",
+)
+def renew_session(
+    target: str,
+    extension: Annotated[
+        str,
+        typer.Option(
+            "--extend-by",
+            help="Duration to set from now, in <number><h|d> form.",
+        ),
+    ] = "1d",
+    config: ConfigOption = Path("config/gateway.yaml"),
+) -> None:
+    cfg = load_config(config)
+    runtime = build_runtime(cfg)
+    sessions = runtime.sessions.read_all()
+    session_id, manifest = _resolve_session_target(target, sessions)
+    duration = _parse_session_extension(extension)
+    base_time = datetime.now(UTC)
+    previous_expires_at = manifest.expires_at
+    manifest.expires_at = base_time + duration
+    runtime.sessions.put(session_id, manifest)
+    typer.echo(
+        f"Renewed session {session_id} "
+        f"(previous_expires_at={previous_expires_at.isoformat()} "
+        f"new_expires_at={manifest.expires_at.isoformat()})"
+    )
+
+
+@app.command(
+    "revoke-session",
+    rich_help_panel="Sessions and Feedback",
+    short_help="Expire a session immediately.",
+)
+def revoke_session(
+    target: str,
+    config: ConfigOption = Path("config/gateway.yaml"),
+) -> None:
+    cfg = load_config(config)
+    runtime = build_runtime(cfg)
+    sessions = runtime.sessions.read_all()
+    session_id, manifest = _resolve_session_target(target, sessions)
+    previous_expires_at = manifest.expires_at
+    manifest.expires_at = datetime.now(UTC)
+    runtime.sessions.put(session_id, manifest)
+    typer.echo(
+        f"Revoked session {session_id} "
+        f"(previous_expires_at={previous_expires_at.isoformat()} "
+        f"new_expires_at={manifest.expires_at.isoformat()})"
+    )
+
+
+@app.command(
+    "delete-session",
+    rich_help_panel="Sessions and Feedback",
+    short_help="Delete a session manifest.",
+)
+def delete_session(
+    target: str,
+    config: ConfigOption = Path("config/gateway.yaml"),
+) -> None:
+    cfg = load_config(config)
+    runtime = build_runtime(cfg)
+    sessions = runtime.sessions.read_all()
+    session_id, _ = _resolve_session_target(target, sessions)
+    runtime.sessions.delete(session_id)
+    typer.echo(f"Deleted session {session_id}")
+
+
+@app.command(
+    "delete-expired-sessions",
+    rich_help_panel="Sessions and Feedback",
+    short_help="Delete all expired session manifests.",
+)
+def delete_expired_sessions(
+    config: ConfigOption = Path("config/gateway.yaml"),
+) -> None:
+    cfg = load_config(config)
+    runtime = build_runtime(cfg)
+    sessions = runtime.sessions.read_all()
+    now = datetime.now(UTC)
+    expired_session_ids = [
+        session_id
+        for session_id, session in sessions.items()
+        if session.expires_at <= now
+    ]
+    for session_id in expired_session_ids:
+        runtime.sessions.delete(session_id)
+    typer.echo(f"Deleted {len(expired_session_ids)} expired session(s)")
 
 
 @app.command(

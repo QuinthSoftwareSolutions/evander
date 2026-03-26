@@ -81,7 +81,17 @@ def test_help_groups_commands_by_panel_then_alphabetically() -> None:
     panel_positions = [output.index(panel) for panel in panel_order]
     assert panel_positions == sorted(panel_positions)
 
-    assert output.index("approve") < output.index("attach-pr-feedback") < output.index("create-session") < output.index("prune-sessions")
+    assert (
+        output.index("approve")
+        < output.index("attach-pr-feedback")
+        < output.index("create-session")
+        < output.index("delete-expired-sessions")
+        < output.index("delete-session")
+        < output.index("list-sessions")
+        < output.index("prune-sessions")
+        < output.index("renew-session")
+        < output.index("revoke-session")
+    )
     assert output.index("create-issue-vm") < output.index("create-local-issue") < output.index("destroy-issue-vm") < output.index("list-local-issues") < output.index("prune-orphaned-issue-state")
     assert output.index("disable-agent") < output.index("enable-agent") < output.index("list-vms") < output.index("logs") < output.index("resume-agent") < output.index("shutdown-vm") < output.index("ssh") < output.index("start-vm")
     assert output.index("seed-discord-channel") < output.index("seed-email")
@@ -107,6 +117,27 @@ def test_create_session_disables_email_send_by_default(tmp_path: Path) -> None:
     manifest = sessions["session-1"]
     assert manifest["email_send_enabled"] is False
     assert "email_send_approved" not in manifest["allowed_tools"]
+
+
+def test_create_session_uses_configured_default_ttl_when_no_ttl_is_provided(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path)
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8") + '\ndefault_session_ttl_seconds: 172800\n',
+        encoding="utf-8",
+    )
+    runner = CliRunner()
+
+    init_result = runner.invoke(app, ["init-state", "--config", str(config_path)])
+    assert init_result.exit_code == 0
+
+    before = datetime.now(UTC)
+    result = runner.invoke(app, ["create-session", "--config", str(config_path), "session-1"])
+    after = datetime.now(UTC)
+
+    assert result.exit_code == 0
+    sessions = json.loads((tmp_path / "runtime" / "sessions.json").read_text(encoding="utf-8"))
+    expires_at = datetime.fromisoformat(sessions["session-1"]["expires_at"])
+    assert before + timedelta(days=2) <= expires_at <= after + timedelta(days=2)
 
 
 def test_create_issue_vm_creates_manifest_before_invoking_setup_script(tmp_path: Path, monkeypatch) -> None:
@@ -515,6 +546,416 @@ def test_prune_sessions_all_removes_every_session(tmp_path: Path) -> None:
     assert "Pruned 2 all session(s)" in result.stdout
     sessions = json.loads((tmp_path / "runtime" / "sessions.json").read_text(encoding="utf-8"))
     assert sessions == {}
+
+
+def test_renew_session_by_session_id_sets_expiration_from_now(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+
+    init_result = runner.invoke(app, ["init-state", "--config", str(config_path)])
+    assert init_result.exit_code == 0
+
+    expires_at = datetime.now(UTC) + timedelta(days=5)
+    sessions_path = tmp_path / "runtime" / "sessions.json"
+    sessions_path.write_text(
+        json.dumps(
+            {
+                "session-1": {
+                    "session_id": "session-1",
+                    "vm_id": "vm-100",
+                    "allowed_tools": ["approval_submit"],
+                    "discord_channel_allowlist": [],
+                    "email_folder_allowlist": [],
+                    "email_mailbox_allowlist": [],
+                    "email_folder_allowlist_by_mailbox": {},
+                    "email_draft_recipient_allowlist": [],
+                    "email_draft_domain_allowlist": [],
+                    "email_send_enabled": False,
+                    "quotas": {},
+                    "expires_at": expires_at.isoformat(),
+                    "created_at": datetime.now(UTC).isoformat(),
+                    "metadata": {},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(
+        app,
+        ["renew-session", "--config", str(config_path), "--extend-by", "6h", "session-1"],
+    )
+
+    before = datetime.now(UTC)
+    result = runner.invoke(
+        app,
+        ["renew-session", "--config", str(config_path), "--extend-by", "6h", "session-1"],
+    )
+    after = datetime.now(UTC)
+
+    assert result.exit_code == 0
+    sessions = json.loads(sessions_path.read_text(encoding="utf-8"))
+    renewed_expires_at = datetime.fromisoformat(sessions["session-1"]["expires_at"])
+    assert before + timedelta(hours=6) <= renewed_expires_at <= after + timedelta(hours=6)
+    assert "Renewed session session-1" in result.stdout
+
+
+def test_renew_session_by_issue_number_uses_latest_matching_session_and_defaults_to_one_day(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+
+    init_result = runner.invoke(app, ["init-state", "--config", str(config_path)])
+    assert init_result.exit_code == 0
+
+    earlier_created_at = datetime(2026, 3, 25, 7, 0, tzinfo=UTC)
+    later_created_at = datetime(2026, 3, 25, 9, 0, tzinfo=UTC)
+    earlier_expires_at = datetime.now(UTC) - timedelta(days=2)
+    later_expires_at = datetime.now(UTC) - timedelta(hours=2)
+    sessions_path = tmp_path / "runtime" / "sessions.json"
+    sessions_path.write_text(
+        json.dumps(
+            {
+                "issue-13301-older": {
+                    "session_id": "issue-13301-older",
+                    "vm_id": "vm-13301",
+                    "allowed_tools": ["approval_submit"],
+                    "discord_channel_allowlist": [],
+                    "email_folder_allowlist": [],
+                    "email_mailbox_allowlist": [],
+                    "email_folder_allowlist_by_mailbox": {},
+                    "email_draft_recipient_allowlist": [],
+                    "email_draft_domain_allowlist": [],
+                    "email_send_enabled": False,
+                    "quotas": {},
+                    "expires_at": earlier_expires_at.isoformat(),
+                    "created_at": earlier_created_at.isoformat(),
+                    "metadata": {},
+                },
+                "issue-13301-newer": {
+                    "session_id": "issue-13301-newer",
+                    "vm_id": "vm-13301",
+                    "allowed_tools": ["approval_submit"],
+                    "discord_channel_allowlist": [],
+                    "email_folder_allowlist": [],
+                    "email_mailbox_allowlist": [],
+                    "email_folder_allowlist_by_mailbox": {},
+                    "email_draft_recipient_allowlist": [],
+                    "email_draft_domain_allowlist": [],
+                    "email_send_enabled": False,
+                    "quotas": {},
+                    "expires_at": later_expires_at.isoformat(),
+                    "created_at": later_created_at.isoformat(),
+                    "metadata": {},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    before = datetime.now(UTC)
+    result = runner.invoke(app, ["renew-session", "--config", str(config_path), "13301"])
+    after = datetime.now(UTC)
+
+    assert result.exit_code == 0
+    sessions = json.loads(sessions_path.read_text(encoding="utf-8"))
+    assert datetime.fromisoformat(sessions["issue-13301-older"]["expires_at"]) == earlier_expires_at
+    renewed_expires_at = datetime.fromisoformat(sessions["issue-13301-newer"]["expires_at"])
+    assert before + timedelta(days=1) <= renewed_expires_at <= after + timedelta(days=1)
+    assert "Renewed session issue-13301-newer" in result.stdout
+
+
+def test_renew_session_by_vm_name_works(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+
+    init_result = runner.invoke(app, ["init-state", "--config", str(config_path)])
+    assert init_result.exit_code == 0
+
+    expires_at = datetime.now(UTC) - timedelta(hours=1)
+    sessions_path = tmp_path / "runtime" / "sessions.json"
+    sessions_path.write_text(
+        json.dumps(
+            {
+                "issue-14084-session": {
+                    "session_id": "issue-14084-session",
+                    "vm_id": "vm-14084",
+                    "allowed_tools": ["approval_submit"],
+                    "discord_channel_allowlist": [],
+                    "email_folder_allowlist": [],
+                    "email_mailbox_allowlist": [],
+                    "email_folder_allowlist_by_mailbox": {},
+                    "email_draft_recipient_allowlist": [],
+                    "email_draft_domain_allowlist": [],
+                    "email_send_enabled": False,
+                    "quotas": {},
+                    "expires_at": expires_at.isoformat(),
+                    "created_at": datetime.now(UTC).isoformat(),
+                    "metadata": {},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(
+        app,
+        ["renew-session", "--config", str(config_path), "--extend-by", "12h", "vm-14084"],
+    )
+
+    assert result.exit_code == 0
+    renewed_expires_at = datetime.fromisoformat(
+        json.loads(sessions_path.read_text(encoding="utf-8"))["issue-14084-session"]["expires_at"]
+    )
+    assert renewed_expires_at > datetime.now(UTC) + timedelta(hours=11, minutes=59)
+    assert "Renewed session issue-14084-session" in result.stdout
+
+
+def test_list_sessions_shows_only_active_by_default(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+
+    init_result = runner.invoke(app, ["init-state", "--config", str(config_path)])
+    assert init_result.exit_code == 0
+
+    sessions_path = tmp_path / "runtime" / "sessions.json"
+    sessions_path.write_text(
+        json.dumps(
+            {
+                "active-session": {
+                    "session_id": "active-session",
+                    "vm_id": "vm-100",
+                    "allowed_tools": ["approval_submit"],
+                    "discord_channel_allowlist": [],
+                    "email_folder_allowlist": [],
+                    "email_mailbox_allowlist": [],
+                    "email_folder_allowlist_by_mailbox": {},
+                    "email_draft_recipient_allowlist": [],
+                    "email_draft_domain_allowlist": [],
+                    "email_send_enabled": False,
+                    "quotas": {},
+                    "expires_at": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
+                    "created_at": datetime.now(UTC).isoformat(),
+                    "metadata": {},
+                },
+                "expired-session": {
+                    "session_id": "expired-session",
+                    "vm_id": "vm-200",
+                    "allowed_tools": ["approval_submit"],
+                    "discord_channel_allowlist": [],
+                    "email_folder_allowlist": [],
+                    "email_mailbox_allowlist": [],
+                    "email_folder_allowlist_by_mailbox": {},
+                    "email_draft_recipient_allowlist": [],
+                    "email_draft_domain_allowlist": [],
+                    "email_send_enabled": False,
+                    "quotas": {},
+                    "expires_at": (datetime.now(UTC) - timedelta(hours=1)).isoformat(),
+                    "created_at": datetime.now(UTC).isoformat(),
+                    "metadata": {},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(app, ["list-sessions", "--config", str(config_path)])
+
+    assert result.exit_code == 0
+    assert "active-session" in result.stdout
+    assert "status=active" in result.stdout
+    assert "expired-session" not in result.stdout
+
+
+def test_list_sessions_supports_all_and_expired_only(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+
+    init_result = runner.invoke(app, ["init-state", "--config", str(config_path)])
+    assert init_result.exit_code == 0
+
+    sessions_path = tmp_path / "runtime" / "sessions.json"
+    sessions_path.write_text(
+        json.dumps(
+            {
+                "active-session": {
+                    "session_id": "active-session",
+                    "vm_id": "vm-100",
+                    "allowed_tools": ["approval_submit"],
+                    "discord_channel_allowlist": [],
+                    "email_folder_allowlist": [],
+                    "email_mailbox_allowlist": [],
+                    "email_folder_allowlist_by_mailbox": {},
+                    "email_draft_recipient_allowlist": [],
+                    "email_draft_domain_allowlist": [],
+                    "email_send_enabled": False,
+                    "quotas": {},
+                    "expires_at": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
+                    "created_at": datetime.now(UTC).isoformat(),
+                    "metadata": {},
+                },
+                "expired-session": {
+                    "session_id": "expired-session",
+                    "vm_id": "vm-200",
+                    "allowed_tools": ["approval_submit"],
+                    "discord_channel_allowlist": [],
+                    "email_folder_allowlist": [],
+                    "email_mailbox_allowlist": [],
+                    "email_folder_allowlist_by_mailbox": {},
+                    "email_draft_recipient_allowlist": [],
+                    "email_draft_domain_allowlist": [],
+                    "email_send_enabled": False,
+                    "quotas": {},
+                    "expires_at": (datetime.now(UTC) - timedelta(hours=1)).isoformat(),
+                    "created_at": datetime.now(UTC).isoformat(),
+                    "metadata": {},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    all_result = runner.invoke(app, ["list-sessions", "--config", str(config_path), "--all"])
+    expired_result = runner.invoke(app, ["list-sessions", "--config", str(config_path), "--expired-only"])
+
+    assert all_result.exit_code == 0
+    assert "active-session" in all_result.stdout
+    assert "expired-session" in all_result.stdout
+    assert expired_result.exit_code == 0
+    assert "active-session" not in expired_result.stdout
+    assert "expired-session" in expired_result.stdout
+    assert "status=expired" in expired_result.stdout
+
+
+def test_revoke_session_expires_it_immediately(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+
+    init_result = runner.invoke(app, ["init-state", "--config", str(config_path)])
+    assert init_result.exit_code == 0
+
+    create_result = runner.invoke(app, ["create-session", "--config", str(config_path), "session-1"])
+    assert create_result.exit_code == 0
+
+    before = datetime.now(UTC)
+    result = runner.invoke(app, ["revoke-session", "--config", str(config_path), "session-1"])
+    after = datetime.now(UTC)
+
+    assert result.exit_code == 0
+    sessions = json.loads((tmp_path / "runtime" / "sessions.json").read_text(encoding="utf-8"))
+    expires_at = datetime.fromisoformat(sessions["session-1"]["expires_at"])
+    assert before <= expires_at <= after
+    assert "Revoked session session-1" in result.stdout
+
+
+def test_delete_session_removes_targeted_session(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+
+    init_result = runner.invoke(app, ["init-state", "--config", str(config_path)])
+    assert init_result.exit_code == 0
+
+    create_a = runner.invoke(app, ["create-session", "--config", str(config_path), "session-a"])
+    create_b = runner.invoke(app, ["create-session", "--config", str(config_path), "session-b"])
+    assert create_a.exit_code == 0
+    assert create_b.exit_code == 0
+
+    result = runner.invoke(app, ["delete-session", "--config", str(config_path), "session-a"])
+
+    assert result.exit_code == 0
+    sessions = json.loads((tmp_path / "runtime" / "sessions.json").read_text(encoding="utf-8"))
+    assert set(sessions) == {"session-b"}
+    assert "Deleted session session-a" in result.stdout
+
+
+def test_delete_expired_sessions_removes_all_expired(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+
+    init_result = runner.invoke(app, ["init-state", "--config", str(config_path)])
+    assert init_result.exit_code == 0
+
+    sessions_path = tmp_path / "runtime" / "sessions.json"
+    sessions_path.write_text(
+        json.dumps(
+            {
+                "active-session": {
+                    "session_id": "active-session",
+                    "vm_id": "vm-100",
+                    "allowed_tools": ["approval_submit"],
+                    "discord_channel_allowlist": [],
+                    "email_folder_allowlist": [],
+                    "email_mailbox_allowlist": [],
+                    "email_folder_allowlist_by_mailbox": {},
+                    "email_draft_recipient_allowlist": [],
+                    "email_draft_domain_allowlist": [],
+                    "email_send_enabled": False,
+                    "quotas": {},
+                    "expires_at": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
+                    "created_at": datetime.now(UTC).isoformat(),
+                    "metadata": {},
+                },
+                "expired-a": {
+                    "session_id": "expired-a",
+                    "vm_id": "vm-200",
+                    "allowed_tools": ["approval_submit"],
+                    "discord_channel_allowlist": [],
+                    "email_folder_allowlist": [],
+                    "email_mailbox_allowlist": [],
+                    "email_folder_allowlist_by_mailbox": {},
+                    "email_draft_recipient_allowlist": [],
+                    "email_draft_domain_allowlist": [],
+                    "email_send_enabled": False,
+                    "quotas": {},
+                    "expires_at": (datetime.now(UTC) - timedelta(hours=1)).isoformat(),
+                    "created_at": datetime.now(UTC).isoformat(),
+                    "metadata": {},
+                },
+                "expired-b": {
+                    "session_id": "expired-b",
+                    "vm_id": "vm-300",
+                    "allowed_tools": ["approval_submit"],
+                    "discord_channel_allowlist": [],
+                    "email_folder_allowlist": [],
+                    "email_mailbox_allowlist": [],
+                    "email_folder_allowlist_by_mailbox": {},
+                    "email_draft_recipient_allowlist": [],
+                    "email_draft_domain_allowlist": [],
+                    "email_send_enabled": False,
+                    "quotas": {},
+                    "expires_at": (datetime.now(UTC) - timedelta(days=1)).isoformat(),
+                    "created_at": datetime.now(UTC).isoformat(),
+                    "metadata": {},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(app, ["delete-expired-sessions", "--config", str(config_path)])
+
+    assert result.exit_code == 0
+    sessions = json.loads(sessions_path.read_text(encoding="utf-8"))
+    assert set(sessions) == {"active-session"}
+    assert "Deleted 2 expired session(s)" in result.stdout
+
+
+def test_renew_session_rejects_invalid_duration(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+
+    init_result = runner.invoke(app, ["init-state", "--config", str(config_path)])
+    assert init_result.exit_code == 0
+
+    create_result = runner.invoke(app, ["create-session", "--config", str(config_path), "session-1"])
+    assert create_result.exit_code == 0
+
+    result = runner.invoke(
+        app,
+        ["renew-session", "--config", str(config_path), "--extend-by", "90m", "session-1"],
+    )
+
+    assert result.exit_code != 0
+    assert "Extension must use the format <number><h|d>" in result.output
 
 
 def test_destroy_issue_vm_cleans_issue_state_and_bare_repo(tmp_path: Path, monkeypatch) -> None:

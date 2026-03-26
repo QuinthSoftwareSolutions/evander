@@ -567,9 +567,16 @@ nohup env \
   AGENT_MODEL="${AGENT_MODEL}" \
   PROMPT="${PROMPT}" \
   RUN_LOG_FILE="${RUN_LOG_FILE}" \
+  STATE_PATH="${STATE_PATH}" \
+  AGENT_STATE_REPO_NAME="${AGENT_STATE_REPO_NAME}" \
   bash -lc '
 . "$HOME/.agent-sandbox/lib/agent_runner.sh"
 . "$HOME/.agent-sandbox/lib/agent_state.sh"
+
+ensure_agent_enabled
+
+write_state "running" "resume"
+trap on_exit_write_idle EXIT
 
 agent_runner_resume_last \
   --dangerously-bypass-approvals-and-sandbox \
@@ -589,7 +596,46 @@ if (( OBSERVE )); then
     "${VM_USER}@${VM_IP}" \
     "LINES='${OBSERVE_LINES}' bash -s" <<'REMOTE'
 set -euo pipefail
-LOG_PATH="${HOME}/.agent-sandbox/codex-heartbeat-run.log"
+
+resolve_primary_agent_paths() {
+  local log_dir="$1"
+  local candidate_names=()
+  local path
+  local name
+
+  shopt -s nullglob
+  for path in "${log_dir}"/agent-*.pid "${log_dir}"/agent-*.log "${log_dir}"/agent-*.state; do
+    name="$(basename "${path}")"
+    name="${name#agent-}"
+    name="${name%.pid}"
+    name="${name%.log}"
+    name="${name%.state}"
+    if [[ -n "${name}" ]]; then
+      candidate_names+=("${name}")
+    fi
+  done
+  shopt -u nullglob
+
+  if [[ ${#candidate_names[@]} -eq 0 ]]; then
+    return 1
+  fi
+
+  mapfile -t candidate_names < <(printf '%s\n' "${candidate_names[@]}" | sort -u)
+  if [[ ${#candidate_names[@]} -ne 1 ]]; then
+    return 1
+  fi
+
+  printf '%s\n' "${candidate_names[0]}"
+}
+
+LOG_DIR="${HOME}/.agent-sandbox"
+RESOLVED_REPO_NAME="$(resolve_primary_agent_paths "${LOG_DIR}" || true)"
+if [[ -n "${RESOLVED_REPO_NAME}" ]]; then
+  LOG_PATH="${LOG_DIR}/agent-${RESOLVED_REPO_NAME}.log"
+else
+  LOG_PATH="${LOG_DIR}/codex-heartbeat-run.log"
+fi
+
 if [[ ! -f "${LOG_PATH}" ]]; then
   echo "No guest Codex resume log found at ${LOG_PATH}" >&2
   exit 0

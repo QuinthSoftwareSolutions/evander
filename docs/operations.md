@@ -748,7 +748,9 @@ After review and tests pass, push the reviewed branch to `origin` and optionally
 This is the preferred flow: VM -> quarantine bare repo -> trusted host clone -> `origin`/PR.
 
 For Azure DevOps origins, set `AZURE_DEVOPS_PAT` in `config/git-server.env` so the PR helper can
-create upstream PRs automatically against the Azure-hosted canonical repository.
+create upstream PRs automatically against the Azure-hosted canonical repository. When
+`open_agent_pr.sh` has an Azure work item id, or a session id like `issue-14084-...`, it also
+associates the PR with that work item in Azure DevOps.
 
 ## Live Smoke Tests
 

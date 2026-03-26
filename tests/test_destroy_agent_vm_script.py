@@ -86,6 +86,28 @@ exec "$@"
     vm_dir.mkdir(parents=True)
     (vm_dir / "disk.qcow2").write_text("disk", encoding="utf-8")
     env["VM_STORAGE_DIR"] = str(vm_storage_dir)
+    host_control_state_path = tmp_path / "runtime" / "host-agent-control-state.json"
+    host_control_state_path.parent.mkdir(parents=True)
+    host_control_state_path.write_text(
+        (
+            '{\n'
+            '  "vm-1234": {\n'
+            '    "phase": "operator-disable",\n'
+            '    "status": "disabled",\n'
+            '    "updated_at": "2026-03-25T01:17:00Z",\n'
+            '    "vm_name": "vm-1234"\n'
+            '  },\n'
+            '  "vm-9999": {\n'
+            '    "phase": "operator-disable",\n'
+            '    "status": "disabled",\n'
+            '    "updated_at": "2026-03-25T01:17:01Z",\n'
+            '    "vm_name": "vm-9999"\n'
+            '  }\n'
+            '}\n'
+        ),
+        encoding="utf-8",
+    )
+    env["HOST_AGENT_CONTROL_STATE_PATH"] = str(host_control_state_path)
 
     _write_executable(
         fake_bin / "rm",
@@ -111,3 +133,6 @@ exec /bin/rm "$@"
     assert any("destroy vm-1234" in line or "undefine vm-1234" in line for line in virsh_log.read_text(encoding="utf-8").splitlines())
     sudo_calls = sudo_log.read_text(encoding="utf-8").splitlines()
     assert any(str(vm_dir) in call and "rm -rf" in call for call in sudo_calls)
+    state_text = host_control_state_path.read_text(encoding="utf-8")
+    assert '"vm-1234"' not in state_text
+    assert '"vm-9999"' in state_text
