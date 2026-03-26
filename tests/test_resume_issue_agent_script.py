@@ -238,8 +238,10 @@ def test_resume_issue_agent_tracks_explicit_state_lifecycle() -> None:
     )
 
     assert 'STATE_PATH="${LOG_DIR}/codex-resume-last.state"' in script_text
+    assert 'RUN_LOG_FILE="${LOG_DIR}/codex-heartbeat-run.log"' in script_text
     assert 'write_state "running" "resume"' in script_text
     assert 'write_state "idle" "complete" "${exit_code}"' in script_text
+    assert '2>&1 | tee -a "${RUN_LOG_FILE}"' in script_text
     assert 'last_attempt_at' in script_text
     assert '--worker-mode' in script_text
 

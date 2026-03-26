@@ -327,6 +327,7 @@ source "${AGENT_RUNNER_TMP_DIR}/agent_runner.sh"
 
 LOG_DIR="${HOME}/.agent-sandbox"
 STATE_PATH="${LOG_DIR}/codex-resume-last.state"
+RUN_LOG_FILE="${LOG_DIR}/codex-heartbeat-run.log"
 PROMPT="$(python3 -c 'import base64, os; print(base64.b64decode(os.environ["PROMPT_B64"]).decode("utf-8"))')"
 mkdir -p "${LOG_DIR}"
 
@@ -364,7 +365,8 @@ agent_runner_resume_last \
   --dangerously-bypass-approvals-and-sandbox \
   --skip-git-repo-check \
   --model "${AGENT_MODEL}" \
-  "${PROMPT}"
+  "${PROMPT}" \
+  2>&1 | tee -a "${RUN_LOG_FILE}"
 REMOTE
   resume_exit_code="$?"
   set -e
@@ -403,9 +405,32 @@ LOG_DIR="${HOME}/.agent-sandbox"
 RUN_LOG_FILE="${LOG_DIR}/codex-heartbeat-run.log"
 RESUME_HINT_FILE="${LOG_DIR}/resume-args.txt"
 PID_FILE="${LOG_DIR}/codex-heartbeat.pid"
+STATE_PATH="${LOG_DIR}/codex-resume-last.state"
 PROMPT="$(python3 -c 'import base64, os; print(base64.b64decode(os.environ["PROMPT_B64"]).decode("utf-8"))')"
 
 mkdir -p "${LOG_DIR}"
+
+write_state() {
+  local status="$1"
+  local phase="$2"
+  local exit_code="${3:-}"
+  local now
+  local tmp_path
+
+  now="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  tmp_path="${STATE_PATH}.tmp"
+  {
+    printf "status=%s\n" "${status}"
+    printf "phase=%s\n" "${phase}"
+    printf "repo=%s\n" "resume-last"
+    printf "pid=%s\n" "$$"
+    printf "updated_at=%s\n" "${now}"
+    if [[ -n "${exit_code}" ]]; then
+      printf "exit_code=%s\n" "${exit_code}"
+    fi
+  } > "${tmp_path}"
+  mv "${tmp_path}" "${STATE_PATH}"
+}
 
 if [[ -f "${PID_FILE}" ]]; then
   EXISTING_PID="$(cat "${PID_FILE}")"
@@ -417,12 +442,45 @@ fi
 
 printf '%s\n' "--last" >"${RESUME_HINT_FILE}"
 
-nohup agent_runner_resume_last \
+nohup bash -lc '
+set -euo pipefail
+
+write_state() {
+  local status="$1"
+  local phase="$2"
+  local exit_code="${3:-}"
+  local now
+  local tmp_path
+
+  now="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  tmp_path="${STATE_PATH}.tmp"
+  {
+    printf "status=%s\n" "${status}"
+    printf "phase=%s\n" "${phase}"
+    printf "repo=%s\n" "resume-last"
+    printf "pid=%s\n" "$$"
+    printf "updated_at=%s\n" "${now}"
+    if [[ -n "${exit_code}" ]]; then
+      printf "exit_code=%s\n" "${exit_code}"
+    fi
+  } > "${tmp_path}"
+  mv "${tmp_path}" "${STATE_PATH}"
+}
+
+on_exit() {
+  local exit_code="$?"
+  write_state "idle" "complete" "${exit_code}"
+}
+
+write_state "running" "resume"
+trap on_exit EXIT
+
+agent_runner_resume_last \
   --dangerously-bypass-approvals-and-sandbox \
   --skip-git-repo-check \
   --model "${AGENT_MODEL}" \
-  "${PROMPT}" \
-  >>"${RUN_LOG_FILE}" 2>&1 < /dev/null &
+  "${PROMPT}"
+' >>"${RUN_LOG_FILE}" 2>&1 < /dev/null &
 
 AGENT_PID=$!
 printf '%s\n' "${AGENT_PID}" >"${PID_FILE}"
