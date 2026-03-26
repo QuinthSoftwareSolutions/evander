@@ -14,7 +14,9 @@ from .agent_control import AgentControlStore
 from .config import GatewayConfig, load_config
 from .models import (
     LocalIssueRecord,
+    SessionActionResult,
     SessionManifest,
+    SessionSummary,
     ToolName,
     VmActionResult,
     VmSummary,
@@ -83,6 +85,26 @@ def _issue_session_id_prefix(issue_number: str) -> str:
     return f"issue-{issue_number}-"
 
 
+def _parse_session_extension(value: str | None) -> timedelta:
+    raw_value = (value or "1d").strip().lower()
+    match = re.fullmatch(r"(\d+)([hd])", raw_value)
+    if match is None:
+        raise ValueError("Extension must use the format <number><h|d>, for example 8h or 2d.")
+    amount = int(match.group(1))
+    unit = match.group(2)
+    return timedelta(hours=amount) if unit == "h" else timedelta(days=amount)
+
+
+def _default_session_ttl(cfg: GatewayConfig) -> timedelta:
+    return timedelta(seconds=cfg.default_session_ttl_seconds)
+
+
+def _resolve_session_ttl(cfg: GatewayConfig, ttl_hours: int | None) -> timedelta:
+    if ttl_hours is not None:
+        return timedelta(hours=ttl_hours)
+    return _default_session_ttl(cfg)
+
+
 def _load_optional_env_file(path: Path) -> dict[str, str]:
     if not path.exists():
         return {}
@@ -118,6 +140,41 @@ def _matching_issue_session_ids(issue_number: str, sessions: dict[str, SessionMa
         if session.vm_id == vm_name or session_id == issue_number or session_id.startswith(prefix):
             matches.add(session_id)
     return matches
+
+
+def _session_sort_key(item: tuple[str, SessionManifest]) -> tuple[datetime, datetime, str]:
+    session_id, manifest = item
+    return (manifest.created_at, manifest.expires_at, session_id)
+
+
+def _resolve_session_target(target: str, sessions: dict[str, SessionManifest]) -> tuple[str, SessionManifest]:
+    normalized = target.strip()
+    if not normalized:
+        raise ValueError("Target must be a non-empty issue number, vm name, or session id.")
+
+    direct_match = sessions.get(normalized)
+    if direct_match is not None:
+        return normalized, direct_match
+
+    matching_ids: set[str] = set()
+    issue_number = _extract_issue_number(normalized)
+    if issue_number is not None:
+        matching_ids.update(_matching_issue_session_ids(issue_number, sessions))
+    if normalized.startswith("vm-"):
+        matching_ids.update(
+            session_id
+            for session_id, session in sessions.items()
+            if session.vm_id == normalized
+        )
+
+    if not matching_ids:
+        raise ValueError(f"Unknown session target: {target}")
+
+    resolved_session_id = max(
+        matching_ids,
+        key=lambda session_id: _session_sort_key((session_id, sessions[session_id])),
+    )
+    return resolved_session_id, sessions[resolved_session_id]
 
 
 def _prune_pr_map(path: Path, *, session_ids: set[str]) -> tuple[int, set[tuple[str, str, str]]]:
@@ -627,7 +684,7 @@ def _build_issue_session_manifest(
         email_draft_recipient_allowlist=cfg.email_draft_recipient_allowlist,
         email_draft_domain_allowlist=cfg.email_draft_domain_allowlist,
         email_send_enabled=cfg.email_send_enabled,
-        expires_at=_utc_now() + timedelta(hours=ttl_hours or 8),
+        expires_at=_utc_now() + _resolve_session_ttl(cfg, ttl_hours),
         metadata={},
     )
 
@@ -651,6 +708,70 @@ class AdminService:
         for session_ids in mapping.values():
             session_ids.sort()
         return mapping
+
+    def list_sessions(self, *, include_expired: bool = False, expired_only: bool = False) -> list[SessionSummary]:
+        if include_expired and expired_only:
+            raise ValueError("include_expired and expired_only cannot both be true")
+
+        now = _utc_now()
+        summaries: list[SessionSummary] = []
+        for session_id, manifest in sorted(self.runtime.sessions.read_all().items(), key=_session_sort_key):
+            is_expired = manifest.expires_at <= now
+            if expired_only:
+                if not is_expired:
+                    continue
+            elif not include_expired and is_expired:
+                continue
+            summaries.append(
+                SessionSummary(
+                    **manifest.model_dump(),
+                    issue_number=_extract_issue_number(manifest.vm_id) or _extract_issue_number(session_id),
+                    is_expired=is_expired,
+                )
+            )
+        return summaries
+
+    def renew_session(self, target: str, *, extension: str = "1d") -> SessionActionResult:
+        session_id, manifest = _resolve_session_target(target, self.runtime.sessions.read_all())
+        previous_expires_at = manifest.expires_at
+        manifest.expires_at = _utc_now() + _parse_session_extension(extension)
+        self.runtime.sessions.put(session_id, manifest)
+        return SessionActionResult(
+            success=True,
+            session_id=session_id,
+            action="renew_session",
+            message=(
+                f"Renewed session {session_id} "
+                f"(previous_expires_at={previous_expires_at.isoformat()} "
+                f"new_expires_at={manifest.expires_at.isoformat()})"
+            ),
+        )
+
+    def revoke_session(self, target: str) -> SessionActionResult:
+        session_id, manifest = _resolve_session_target(target, self.runtime.sessions.read_all())
+        previous_expires_at = manifest.expires_at
+        manifest.expires_at = _utc_now()
+        self.runtime.sessions.put(session_id, manifest)
+        return SessionActionResult(
+            success=True,
+            session_id=session_id,
+            action="revoke_session",
+            message=(
+                f"Revoked session {session_id} "
+                f"(previous_expires_at={previous_expires_at.isoformat()} "
+                f"new_expires_at={manifest.expires_at.isoformat()})"
+            ),
+        )
+
+    def delete_session(self, target: str) -> SessionActionResult:
+        session_id, _ = _resolve_session_target(target, self.runtime.sessions.read_all())
+        self.runtime.sessions.delete(session_id)
+        return SessionActionResult(
+            success=True,
+            session_id=session_id,
+            action="delete_session",
+            message=f"Deleted session {session_id}",
+        )
 
     def list_vms(self, *, include_inactive: bool = True, omit_state: bool = False, vm_user: str = "agent") -> list[VmSummary]:
         vm_names = _virsh_lines(["list", "--all" if include_inactive else "--state-running", "--name"])

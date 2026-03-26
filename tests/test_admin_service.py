@@ -99,6 +99,117 @@ def test_list_vms_marks_inactive_vm_disabled_from_host_control_state(tmp_path: P
     assert summaries[0].agent_state == "disabled"
 
 
+def test_list_sessions_filters_active_and_expired(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.sessions.put(
+        "issue-123-active",
+        SessionManifest(
+            session_id="issue-123-active",
+            vm_id="vm-123",
+            allowed_tools=[],
+            created_at=datetime(2026, 3, 25, 9, 0, tzinfo=UTC),
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    service.runtime.sessions.put(
+        "issue-123-expired",
+        SessionManifest(
+            session_id="issue-123-expired",
+            vm_id="vm-123",
+            allowed_tools=[],
+            created_at=datetime(2026, 3, 25, 8, 0, tzinfo=UTC),
+            expires_at=datetime.now(UTC) - timedelta(hours=1),
+        ),
+    )
+
+    active = service.list_sessions()
+    expired = service.list_sessions(expired_only=True)
+    all_sessions = service.list_sessions(include_expired=True)
+
+    assert [summary.session_id for summary in active] == ["issue-123-active"]
+    assert [summary.session_id for summary in expired] == ["issue-123-expired"]
+    assert [summary.session_id for summary in all_sessions] == ["issue-123-expired", "issue-123-active"]
+    assert active[0].issue_number == "123"
+    assert active[0].is_expired is False
+    assert expired[0].is_expired is True
+
+
+def test_renew_session_sets_expiration_from_now(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.sessions.put(
+        "issue-14084-session",
+        SessionManifest(
+            session_id="issue-14084-session",
+            vm_id="vm-14084",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(days=5),
+        ),
+    )
+
+    before = datetime.now(UTC)
+    result = service.renew_session("14084", extension="6h")
+    after = datetime.now(UTC)
+
+    renewed = service.runtime.sessions.get("issue-14084-session")
+    assert renewed is not None
+    assert result.success is True
+    assert result.session_id == "issue-14084-session"
+    assert before + timedelta(hours=6) <= renewed.expires_at <= after + timedelta(hours=6)
+
+
+def test_revoke_session_expires_immediately(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.sessions.put(
+        "session-1",
+        SessionManifest(
+            session_id="session-1",
+            vm_id="vm-1",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+        ),
+    )
+
+    before = datetime.now(UTC)
+    result = service.revoke_session("session-1")
+    after = datetime.now(UTC)
+
+    revoked = service.runtime.sessions.get("session-1")
+    assert revoked is not None
+    assert result.success is True
+    assert before <= revoked.expires_at <= after
+
+
+def test_delete_session_removes_latest_matching_target(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.sessions.put(
+        "issue-13301-older",
+        SessionManifest(
+            session_id="issue-13301-older",
+            vm_id="vm-13301",
+            allowed_tools=[],
+            created_at=datetime(2026, 3, 25, 8, 0, tzinfo=UTC),
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    service.runtime.sessions.put(
+        "issue-13301-newer",
+        SessionManifest(
+            session_id="issue-13301-newer",
+            vm_id="vm-13301",
+            allowed_tools=[],
+            created_at=datetime(2026, 3, 25, 9, 0, tzinfo=UTC),
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+        ),
+    )
+
+    result = service.delete_session("vm-13301")
+
+    remaining = service.runtime.sessions.read_all()
+    assert result.success is True
+    assert result.session_id == "issue-13301-newer"
+    assert set(remaining) == {"issue-13301-older"}
+
+
 def test_list_background_workers_reads_systemd_state(tmp_path: Path, monkeypatch) -> None:
     service = AdminService(write_config(tmp_path))
 

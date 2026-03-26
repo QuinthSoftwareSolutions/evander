@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import sys
 from pathlib import Path
@@ -290,6 +291,18 @@ def _set_text_preserving_scroll(text_edit, text: str) -> None:
     updated_scroll_bar.setValue(min(previous_value, updated_scroll_bar.maximum()))
 
 
+def _truncate_text(value: str, *, max_length: int = 36) -> str:
+    if len(value) <= max_length:
+        return value
+    return f"{value[: max_length - 3]}..."
+
+
+def _format_session_details(summary) -> str:
+    payload = summary.model_dump(mode="json")
+    payload["allowed_tools"] = [str(tool) for tool in summary.allowed_tools]
+    return json.dumps(payload, indent=2, sort_keys=True)
+
+
 class MainWindow(QMainWindow):  # type: ignore[misc]
     def __init__(self, service: AdminService) -> None:
         super().__init__()
@@ -298,6 +311,8 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self._active_workers: set[_ActionWorker] = set()
         self._vm_summaries = []
         self._issue_records = []
+        self._active_session_summaries = []
+        self._expired_session_summaries = []
         self._worker_summaries = []
         self.setWindowTitle("Agent Sandbox Admin")
         self.resize(1360, 820)
@@ -335,11 +350,30 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self.worker_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.worker_table.itemSelectionChanged.connect(self._on_worker_selection_changed)
 
+        self.active_session_table = QTableWidget(0, 4)
+        self.active_session_table.setHorizontalHeaderLabels(["Name", "VM", "Issue", "Expires"])
+        self.active_session_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.active_session_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.active_session_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.active_session_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.active_session_table.itemSelectionChanged.connect(self._on_active_session_selection_changed)
+
+        self.expired_session_table = QTableWidget(0, 4)
+        self.expired_session_table.setHorizontalHeaderLabels(["Name", "VM", "Issue", "Expires"])
+        self.expired_session_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.expired_session_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.expired_session_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.expired_session_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.expired_session_table.itemSelectionChanged.connect(self._on_expired_session_selection_changed)
+
         self.log_view = QTextEdit()
         self.log_view.setReadOnly(True)
         self.agent_log_view = QTextEdit()
         self.agent_log_view.setReadOnly(True)
         self.agent_log_view.setPlaceholderText("Select an issue VM to see its agent log.")
+        self.session_detail_view = QTextEdit()
+        self.session_detail_view.setReadOnly(True)
+        self.session_detail_view.setPlaceholderText("Select a session to see its full details.")
         self.worker_log_view = QTextEdit()
         self.worker_log_view.setReadOnly(True)
         self.worker_log_view.setPlaceholderText("Select a background worker to see its logs.")
@@ -431,6 +465,54 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         issue_layout.addLayout(issue_toolbar)
         issue_layout.addWidget(self.issue_table)
 
+        sessions_page = QWidget()
+        sessions_layout = QVBoxLayout(sessions_page)
+        sessions_toolbar = QHBoxLayout()
+        refresh_sessions_button = QPushButton("Refresh")
+        _set_standard_icon(refresh_sessions_button, "SP_BrowserReload")
+        refresh_sessions_button.clicked.connect(self.refresh_sessions)
+        sessions_toolbar.addWidget(refresh_sessions_button)
+        sessions_toolbar.addStretch(1)
+        self.session_selection_hint = QLabel("No session selected")
+        sessions_toolbar.addWidget(self.session_selection_hint)
+        self.session_action_bar = QHBoxLayout()
+        self.session_action_bar.setSpacing(6)
+        self.renew_session_button = QPushButton("Renew")
+        _set_standard_icon(self.renew_session_button, "SP_BrowserReload")
+        self.renew_session_button.clicked.connect(self.handle_renew_selected_session)
+        self.revoke_session_button = QPushButton("Revoke")
+        _set_standard_icon(self.revoke_session_button, "SP_DialogCancelButton")
+        self.revoke_session_button.clicked.connect(self.handle_revoke_selected_session)
+        self.delete_session_button = QPushButton("Delete")
+        _set_standard_icon(self.delete_session_button, "SP_TrashIcon")
+        self.delete_session_button.clicked.connect(self.handle_delete_selected_session)
+        for button in (
+            self.renew_session_button,
+            self.revoke_session_button,
+            self.delete_session_button,
+        ):
+            self.session_action_bar.addWidget(button)
+        sessions_toolbar.addLayout(self.session_action_bar)
+        sessions_layout.addLayout(sessions_toolbar)
+        self.session_tabs = QTabWidget()
+        active_sessions_page = QWidget()
+        active_sessions_layout = QVBoxLayout(active_sessions_page)
+        active_sessions_layout.setContentsMargins(0, 0, 0, 0)
+        active_sessions_layout.addWidget(self.active_session_table)
+        expired_sessions_page = QWidget()
+        expired_sessions_layout = QVBoxLayout(expired_sessions_page)
+        expired_sessions_layout.setContentsMargins(0, 0, 0, 0)
+        expired_sessions_layout.addWidget(self.expired_session_table)
+        self.session_tabs.addTab(active_sessions_page, "Active")
+        self.session_tabs.addTab(expired_sessions_page, "Expired")
+        self.session_tabs.currentChanged.connect(self._on_session_tab_changed)
+        session_splitter = QSplitter(Qt.Orientation.Vertical)
+        session_splitter.addWidget(self.session_tabs)
+        session_splitter.addWidget(self.session_detail_view)
+        session_splitter.setStretchFactor(0, 1)
+        session_splitter.setStretchFactor(1, 1)
+        sessions_layout.addWidget(session_splitter)
+
         worker_page = QWidget()
         worker_layout = QVBoxLayout(worker_page)
         worker_toolbar = QHBoxLayout()
@@ -462,20 +544,24 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
 
         self.tabs.addTab(vm_page, "VMs")
         self.tabs.addTab(issue_page, "Issues")
+        self.tabs.addTab(sessions_page, "Sessions")
         self.tabs.addTab(worker_page, "Workers")
 
         self.refresh_timer = QTimer(self)
         self.refresh_timer.setInterval(5000)
         self.refresh_timer.timeout.connect(self.refresh_vms)
         self.refresh_timer.timeout.connect(self.refresh_issues)
+        self.refresh_timer.timeout.connect(self.refresh_sessions)
         self.refresh_timer.timeout.connect(self.refresh_workers)
         self.refresh_timer.start()
 
         self.refresh_vms()
         self.refresh_issues()
+        self.refresh_sessions()
         self.refresh_workers()
         self.update_vm_action_bar()
         self.update_issue_action_bar()
+        self.update_session_action_bar()
         self.update_worker_action_bar()
         self._update_vm_splitter_layout()
 
@@ -826,6 +912,163 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         if issue is None:
             return
         self.confirm_delete_issue(issue.issue_number)
+
+    def refresh_sessions(self) -> None:
+        selected_session_id = None
+        current_session = self.selected_session_summary()
+        if current_session is not None:
+            selected_session_id = current_session.session_id
+        try:
+            active_sessions = self.service.list_sessions()
+            expired_sessions = self.service.list_sessions(expired_only=True)
+        except Exception as exc:
+            self.append_log(f"Refresh sessions failed: {exc}")
+            return
+
+        self._active_session_summaries = active_sessions
+        self._expired_session_summaries = expired_sessions
+        self.active_session_table.clearSelection()
+        self.expired_session_table.clearSelection()
+        self.active_session_table.setRowCount(len(active_sessions))
+        self.expired_session_table.setRowCount(len(expired_sessions))
+
+        for row, summary in enumerate(active_sessions):
+            self.active_session_table.setItem(row, 0, QTableWidgetItem(_truncate_text(summary.session_id)))
+            self.active_session_table.setItem(row, 1, QTableWidgetItem(summary.vm_id or ""))
+            self.active_session_table.setItem(row, 2, QTableWidgetItem(summary.issue_number or ""))
+            self.active_session_table.setItem(row, 3, QTableWidgetItem(summary.expires_at.isoformat()))
+
+        for row, summary in enumerate(expired_sessions):
+            self.expired_session_table.setItem(row, 0, QTableWidgetItem(_truncate_text(summary.session_id)))
+            self.expired_session_table.setItem(row, 1, QTableWidgetItem(summary.vm_id or ""))
+            self.expired_session_table.setItem(row, 2, QTableWidgetItem(summary.issue_number or ""))
+            self.expired_session_table.setItem(row, 3, QTableWidgetItem(summary.expires_at.isoformat()))
+
+        if selected_session_id:
+            restored = False
+            for row, summary in enumerate(active_sessions):
+                if summary.session_id == selected_session_id:
+                    self.session_tabs.setCurrentIndex(0)
+                    self.active_session_table.selectRow(row)
+                    restored = True
+                    break
+            if not restored:
+                for row, summary in enumerate(expired_sessions):
+                    if summary.session_id == selected_session_id:
+                        self.session_tabs.setCurrentIndex(1)
+                        self.expired_session_table.selectRow(row)
+                        restored = True
+                        break
+            if not restored:
+                self.active_session_table.setCurrentCell(-1, -1)
+                self.expired_session_table.setCurrentCell(-1, -1)
+        self.update_session_action_bar()
+        self.refresh_selected_session_details()
+
+    def _current_session_table(self):
+        return self.active_session_table if self.session_tabs.currentIndex() == 0 else self.expired_session_table
+
+    def selected_session_summary(self):
+        table = self._current_session_table()
+        summaries = self._active_session_summaries if table is self.active_session_table else self._expired_session_summaries
+        row = table.currentRow()
+        if row < 0 or row >= len(summaries):
+            return None
+        return summaries[row]
+
+    def update_session_action_bar(self) -> None:
+        summary = self.selected_session_summary()
+        if summary is None:
+            self.session_selection_hint.setText("No session selected")
+            self.renew_session_button.hide()
+            self.revoke_session_button.hide()
+            self.delete_session_button.hide()
+            return
+
+        self.session_selection_hint.setText(f"Selected: {summary.session_id}")
+        self.renew_session_button.show()
+        self.revoke_session_button.show()
+        self.delete_session_button.show()
+
+    def refresh_selected_session_details(self) -> None:
+        summary = self.selected_session_summary()
+        if summary is None:
+            _set_text_preserving_scroll(self.session_detail_view, "No session selected.")
+            return
+        _set_text_preserving_scroll(self.session_detail_view, _format_session_details(summary))
+
+    def _on_active_session_selection_changed(self) -> None:
+        if self.active_session_table.currentRow() >= 0 and self.expired_session_table.currentRow() >= 0:
+            self.expired_session_table.blockSignals(True)
+            self.expired_session_table.clearSelection()
+            self.expired_session_table.blockSignals(False)
+        self.update_session_action_bar()
+        self.refresh_selected_session_details()
+
+    def _on_expired_session_selection_changed(self) -> None:
+        if self.expired_session_table.currentRow() >= 0 and self.active_session_table.currentRow() >= 0:
+            self.active_session_table.blockSignals(True)
+            self.active_session_table.clearSelection()
+            self.active_session_table.blockSignals(False)
+        self.update_session_action_bar()
+        self.refresh_selected_session_details()
+
+    def _on_session_tab_changed(self) -> None:
+        self.update_session_action_bar()
+        self.refresh_selected_session_details()
+
+    def handle_renew_selected_session(self) -> None:
+        summary = self.selected_session_summary()
+        if summary is None:
+            return
+        extension, accepted = QInputDialog.getText(
+            self,
+            f"Renew {summary.session_id}",
+            "Extend by",
+            text="1d",
+        )
+        if not accepted or not extension.strip():
+            return
+        self.run_action(
+            f"Renew session {summary.session_id}",
+            self.service.renew_session,
+            summary.session_id,
+            extension=extension.strip(),
+        )
+
+    def handle_revoke_selected_session(self) -> None:
+        summary = self.selected_session_summary()
+        if summary is None:
+            return
+        answer = QMessageBox.question(
+            self,
+            "Revoke session",
+            f"Expire session {summary.session_id} immediately?",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self.run_action(
+            f"Revoke session {summary.session_id}",
+            self.service.revoke_session,
+            summary.session_id,
+        )
+
+    def handle_delete_selected_session(self) -> None:
+        summary = self.selected_session_summary()
+        if summary is None:
+            return
+        answer = QMessageBox.question(
+            self,
+            "Delete session",
+            f"Delete session {summary.session_id}?",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self.run_action(
+            f"Delete session {summary.session_id}",
+            self.service.delete_session,
+            summary.session_id,
+        )
 
     def selected_worker_summary(self):
         row = self.worker_table.currentRow()

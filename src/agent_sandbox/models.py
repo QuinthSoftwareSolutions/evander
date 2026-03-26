@@ -51,6 +51,18 @@ class SessionManifest(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class SessionSummary(SessionManifest):
+    issue_number: str | None = None
+    is_expired: bool = False
+
+
+class SessionActionResult(BaseModel):
+    success: bool
+    session_id: str
+    action: str
+    message: str
+
+
 class VmSummary(BaseModel):
     vm_name: str
     issue_number: str | None = None
