@@ -427,9 +427,11 @@ source "${AGENT_RUNNER_TMP_DIR}/agent_state.sh"
 LOG_DIR="${HOME}/.agent-sandbox"
 RESOLVED_REPO_NAME="$(resolve_primary_agent_paths "${LOG_DIR}" || true)"
 if [[ -n "${RESOLVED_REPO_NAME}" ]]; then
+  RUN_LOG_FILE="${LOG_DIR}/agent-${RESOLVED_REPO_NAME}.log"
   STATE_PATH="${LOG_DIR}/agent-${RESOLVED_REPO_NAME}.state"
   AGENT_STATE_REPO_NAME="${RESOLVED_REPO_NAME}"
 else
+  RUN_LOG_FILE="${LOG_DIR}/codex-heartbeat-run.log"
   STATE_PATH="${LOG_DIR}/codex-resume-last.state"
   AGENT_STATE_REPO_NAME="resume-last"
 fi
@@ -449,7 +451,8 @@ agent_runner_resume_last \
   --dangerously-bypass-approvals-and-sandbox \
   --skip-git-repo-check \
   --model "${AGENT_MODEL}" \
-  "${PROMPT}"
+  "${PROMPT}" \
+  2>&1 | tee -a "${RUN_LOG_FILE}"
 REMOTE
   resume_exit_code="$?"
   set -e
@@ -550,6 +553,28 @@ fi
 
 ensure_agent_enabled
 
+write_state() {
+  local status="$1"
+  local phase="$2"
+  local exit_code="${3:-}"
+  local now
+  local tmp_path
+
+  now="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  tmp_path="${STATE_PATH}.tmp"
+  {
+    printf "status=%s\n" "${status}"
+    printf "phase=%s\n" "${phase}"
+    printf "repo=%s\n" "resume-last"
+    printf "pid=%s\n" "$$"
+    printf "updated_at=%s\n" "${now}"
+    if [[ -n "${exit_code}" ]]; then
+      printf "exit_code=%s\n" "${exit_code}"
+    fi
+  } > "${tmp_path}"
+  mv "${tmp_path}" "${STATE_PATH}"
+}
+
 if [[ -f "${PID_FILE}" ]]; then
   EXISTING_PID="$(cat "${PID_FILE}")"
   if [[ -n "${EXISTING_PID}" ]] && kill -0 "${EXISTING_PID}" >/dev/null 2>&1; then
@@ -570,6 +595,7 @@ nohup env \
   STATE_PATH="${STATE_PATH}" \
   AGENT_STATE_REPO_NAME="${AGENT_STATE_REPO_NAME}" \
   bash -lc '
+set -euo pipefail
 . "$HOME/.agent-sandbox/lib/agent_runner.sh"
 . "$HOME/.agent-sandbox/lib/agent_state.sh"
 

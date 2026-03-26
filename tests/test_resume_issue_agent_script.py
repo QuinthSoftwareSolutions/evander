@@ -265,6 +265,9 @@ def test_resume_issue_agent_tracks_explicit_state_lifecycle() -> None:
     assert 'printf \'%s\' "${AGENT_RUNNER_CODEX_LIB_B64}" | base64 -d > "${LOG_DIR}/lib/agent_runner_codex.sh"' in script_text
     assert 'nohup env \\' in script_text
     assert '. "$HOME/.agent-sandbox/lib/agent_runner.sh"' in script_text
+    assert 'STATE_PATH="${LOG_DIR}/codex-resume-last.state"' in script_text
+    assert 'RUN_LOG_FILE="${LOG_DIR}/codex-heartbeat-run.log"' in script_text
+    assert 'write_state "running" "resume"' in script_text
     assert 'last_attempt_at' in script_text
     assert '--worker-mode' in script_text
     assert 'write_agent_control_state "${HOST_CONTROL_STATUS}" "host-sync"' in script_text
