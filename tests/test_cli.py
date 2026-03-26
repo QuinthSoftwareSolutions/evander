@@ -82,7 +82,8 @@ def test_help_groups_commands_by_panel_then_alphabetically() -> None:
     assert panel_positions == sorted(panel_positions)
 
     assert (
-        output.index("approve")
+        output.index("add-tool-permission")
+        < output.index("approve")
         < output.index("attach-pr-feedback")
         < output.index("create-session")
         < output.index("delete-expired-sessions")
@@ -91,8 +92,11 @@ def test_help_groups_commands_by_panel_then_alphabetically() -> None:
         < output.index("prune-sessions")
         < output.index("renew-session")
         < output.index("revoke-session")
+        < output.index("revoke-tool-permission")
     )
-    assert output.index("create-issue-vm") < output.index("create-local-issue") < output.index("destroy-issue-vm") < output.index("list-local-issues") < output.index("prune-orphaned-issue-state")
+    assert (
+        output.index("create-issue-vm") < output.index("create-local-issue") < output.index("destroy-issue-vm") < output.index("list-local-issues") < output.index("prune-orphaned-issue-state")
+    )
     assert output.index("disable-agent") < output.index("enable-agent") < output.index("list-vms") < output.index("logs") < output.index("resume-agent") < output.index("shutdown-vm") < output.index("ssh") < output.index("start-vm")
     assert output.index("seed-discord-channel") < output.index("seed-email")
     assert "init-state                  Create runtime state files." in output
@@ -471,6 +475,419 @@ def test_attach_pr_feedback_rejects_unknown_session(tmp_path: Path) -> None:
 
     assert result.exit_code != 0
     assert "Unknown session: missing-session" in result.output
+
+
+def test_add_tool_permission_by_session_id_updates_manifest(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+
+    init_result = runner.invoke(app, ["init-state", "--config", str(config_path)])
+    assert init_result.exit_code == 0
+
+    create_result = runner.invoke(app, ["create-session", "--config", str(config_path), "session-1"])
+    assert create_result.exit_code == 0
+
+    sessions_path = tmp_path / "runtime" / "sessions.json"
+    sessions = json.loads(sessions_path.read_text(encoding="utf-8"))
+    sessions["session-1"]["allowed_tools"] = ["approval_submit"]
+    sessions_path.write_text(json.dumps(sessions), encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        [
+            "add-tool-permission",
+            "--config",
+            str(config_path),
+            "session-1",
+            "email_send_approved",
+        ],
+    )
+
+    assert result.exit_code == 0
+    manifest = json.loads(sessions_path.read_text(encoding="utf-8"))["session-1"]
+    assert manifest["allowed_tools"] == ["approval_submit", "email_send_approved"]
+    assert "Added tool permission email_send_approved to session session-1" in result.stdout
+
+
+def test_add_tool_permission_by_vm_name_uses_matching_session(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+
+    init_result = runner.invoke(app, ["init-state", "--config", str(config_path)])
+    assert init_result.exit_code == 0
+
+    sessions_path = tmp_path / "runtime" / "sessions.json"
+    sessions_path.write_text(
+        json.dumps(
+            {
+                "issue-14084-session": {
+                    "session_id": "issue-14084-session",
+                    "vm_id": "vm-14084",
+                    "allowed_tools": ["approval_submit"],
+                    "discord_channel_allowlist": [],
+                    "email_folder_allowlist": [],
+                    "email_mailbox_allowlist": [],
+                    "email_folder_allowlist_by_mailbox": {},
+                    "email_draft_recipient_allowlist": [],
+                    "email_draft_domain_allowlist": [],
+                    "email_send_enabled": False,
+                    "quotas": {},
+                    "expires_at": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
+                    "created_at": datetime.now(UTC).isoformat(),
+                    "metadata": {},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "add-tool-permission",
+            "--config",
+            str(config_path),
+            "vm-14084",
+            "email_send_approved",
+        ],
+    )
+
+    assert result.exit_code == 0
+    manifest = json.loads(sessions_path.read_text(encoding="utf-8"))["issue-14084-session"]
+    assert manifest["allowed_tools"] == ["approval_submit", "email_send_approved"]
+    assert "Added tool permission email_send_approved to session issue-14084-session" in result.stdout
+
+
+def test_add_tool_permission_by_issue_number_uses_latest_matching_session(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+
+    init_result = runner.invoke(app, ["init-state", "--config", str(config_path)])
+    assert init_result.exit_code == 0
+
+    earlier_created_at = datetime(2026, 3, 25, 7, 0, tzinfo=UTC)
+    later_created_at = datetime(2026, 3, 25, 9, 0, tzinfo=UTC)
+    sessions_path = tmp_path / "runtime" / "sessions.json"
+    sessions_path.write_text(
+        json.dumps(
+            {
+                "issue-13301-older": {
+                    "session_id": "issue-13301-older",
+                    "vm_id": "vm-13301",
+                    "allowed_tools": ["approval_submit"],
+                    "discord_channel_allowlist": [],
+                    "email_folder_allowlist": [],
+                    "email_mailbox_allowlist": [],
+                    "email_folder_allowlist_by_mailbox": {},
+                    "email_draft_recipient_allowlist": [],
+                    "email_draft_domain_allowlist": [],
+                    "email_send_enabled": False,
+                    "quotas": {},
+                    "expires_at": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
+                    "created_at": earlier_created_at.isoformat(),
+                    "metadata": {},
+                },
+                "issue-13301-newer": {
+                    "session_id": "issue-13301-newer",
+                    "vm_id": "vm-13301",
+                    "allowed_tools": ["approval_submit"],
+                    "discord_channel_allowlist": [],
+                    "email_folder_allowlist": [],
+                    "email_mailbox_allowlist": [],
+                    "email_folder_allowlist_by_mailbox": {},
+                    "email_draft_recipient_allowlist": [],
+                    "email_draft_domain_allowlist": [],
+                    "email_send_enabled": False,
+                    "quotas": {},
+                    "expires_at": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
+                    "created_at": later_created_at.isoformat(),
+                    "metadata": {},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "add-tool-permission",
+            "--config",
+            str(config_path),
+            "13301",
+            "email_send_approved",
+        ],
+    )
+
+    assert result.exit_code == 0
+    sessions = json.loads(sessions_path.read_text(encoding="utf-8"))
+    assert sessions["issue-13301-older"]["allowed_tools"] == ["approval_submit"]
+    assert sessions["issue-13301-newer"]["allowed_tools"] == ["approval_submit", "email_send_approved"]
+    assert "Added tool permission email_send_approved to session issue-13301-newer" in result.stdout
+
+
+def test_add_tool_permission_is_idempotent_when_tool_already_present(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+
+    init_result = runner.invoke(app, ["init-state", "--config", str(config_path)])
+    assert init_result.exit_code == 0
+
+    sessions_path = tmp_path / "runtime" / "sessions.json"
+    sessions_path.write_text(
+        json.dumps(
+            {
+                "session-1": {
+                    "session_id": "session-1",
+                    "vm_id": "vm-100",
+                    "allowed_tools": ["approval_submit", "email_send_approved"],
+                    "discord_channel_allowlist": [],
+                    "email_folder_allowlist": [],
+                    "email_mailbox_allowlist": [],
+                    "email_folder_allowlist_by_mailbox": {},
+                    "email_draft_recipient_allowlist": [],
+                    "email_draft_domain_allowlist": [],
+                    "email_send_enabled": False,
+                    "quotas": {},
+                    "expires_at": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
+                    "created_at": datetime.now(UTC).isoformat(),
+                    "metadata": {},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "add-tool-permission",
+            "--config",
+            str(config_path),
+            "session-1",
+            "email_send_approved",
+        ],
+    )
+
+    assert result.exit_code == 0
+    manifest = json.loads(sessions_path.read_text(encoding="utf-8"))["session-1"]
+    assert manifest["allowed_tools"] == ["approval_submit", "email_send_approved"]
+    assert "Tool permission email_send_approved already present on session session-1" in result.stdout
+
+
+def test_revoke_tool_permission_by_session_id_updates_manifest(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+
+    init_result = runner.invoke(app, ["init-state", "--config", str(config_path)])
+    assert init_result.exit_code == 0
+
+    sessions_path = tmp_path / "runtime" / "sessions.json"
+    sessions_path.write_text(
+        json.dumps(
+            {
+                "session-1": {
+                    "session_id": "session-1",
+                    "vm_id": "vm-100",
+                    "allowed_tools": ["approval_submit", "email_send_approved"],
+                    "discord_channel_allowlist": [],
+                    "email_folder_allowlist": [],
+                    "email_mailbox_allowlist": [],
+                    "email_folder_allowlist_by_mailbox": {},
+                    "email_draft_recipient_allowlist": [],
+                    "email_draft_domain_allowlist": [],
+                    "email_send_enabled": False,
+                    "quotas": {},
+                    "expires_at": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
+                    "created_at": datetime.now(UTC).isoformat(),
+                    "metadata": {},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "revoke-tool-permission",
+            "--config",
+            str(config_path),
+            "session-1",
+            "email_send_approved",
+        ],
+    )
+
+    assert result.exit_code == 0
+    manifest = json.loads(sessions_path.read_text(encoding="utf-8"))["session-1"]
+    assert manifest["allowed_tools"] == ["approval_submit"]
+    assert "Revoked tool permission email_send_approved from session session-1" in result.stdout
+
+
+def test_revoke_tool_permission_by_vm_name_uses_matching_session(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+
+    init_result = runner.invoke(app, ["init-state", "--config", str(config_path)])
+    assert init_result.exit_code == 0
+
+    sessions_path = tmp_path / "runtime" / "sessions.json"
+    sessions_path.write_text(
+        json.dumps(
+            {
+                "issue-14084-session": {
+                    "session_id": "issue-14084-session",
+                    "vm_id": "vm-14084",
+                    "allowed_tools": ["approval_submit", "email_send_approved"],
+                    "discord_channel_allowlist": [],
+                    "email_folder_allowlist": [],
+                    "email_mailbox_allowlist": [],
+                    "email_folder_allowlist_by_mailbox": {},
+                    "email_draft_recipient_allowlist": [],
+                    "email_draft_domain_allowlist": [],
+                    "email_send_enabled": False,
+                    "quotas": {},
+                    "expires_at": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
+                    "created_at": datetime.now(UTC).isoformat(),
+                    "metadata": {},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "revoke-tool-permission",
+            "--config",
+            str(config_path),
+            "vm-14084",
+            "email_send_approved",
+        ],
+    )
+
+    assert result.exit_code == 0
+    manifest = json.loads(sessions_path.read_text(encoding="utf-8"))["issue-14084-session"]
+    assert manifest["allowed_tools"] == ["approval_submit"]
+    assert "Revoked tool permission email_send_approved from session issue-14084-session" in result.stdout
+
+
+def test_revoke_tool_permission_by_issue_number_uses_latest_matching_session(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+
+    init_result = runner.invoke(app, ["init-state", "--config", str(config_path)])
+    assert init_result.exit_code == 0
+
+    earlier_created_at = datetime(2026, 3, 25, 7, 0, tzinfo=UTC)
+    later_created_at = datetime(2026, 3, 25, 9, 0, tzinfo=UTC)
+    sessions_path = tmp_path / "runtime" / "sessions.json"
+    sessions_path.write_text(
+        json.dumps(
+            {
+                "issue-13301-older": {
+                    "session_id": "issue-13301-older",
+                    "vm_id": "vm-13301",
+                    "allowed_tools": ["approval_submit", "email_send_approved"],
+                    "discord_channel_allowlist": [],
+                    "email_folder_allowlist": [],
+                    "email_mailbox_allowlist": [],
+                    "email_folder_allowlist_by_mailbox": {},
+                    "email_draft_recipient_allowlist": [],
+                    "email_draft_domain_allowlist": [],
+                    "email_send_enabled": False,
+                    "quotas": {},
+                    "expires_at": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
+                    "created_at": earlier_created_at.isoformat(),
+                    "metadata": {},
+                },
+                "issue-13301-newer": {
+                    "session_id": "issue-13301-newer",
+                    "vm_id": "vm-13301",
+                    "allowed_tools": ["approval_submit", "email_send_approved"],
+                    "discord_channel_allowlist": [],
+                    "email_folder_allowlist": [],
+                    "email_mailbox_allowlist": [],
+                    "email_folder_allowlist_by_mailbox": {},
+                    "email_draft_recipient_allowlist": [],
+                    "email_draft_domain_allowlist": [],
+                    "email_send_enabled": False,
+                    "quotas": {},
+                    "expires_at": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
+                    "created_at": later_created_at.isoformat(),
+                    "metadata": {},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "revoke-tool-permission",
+            "--config",
+            str(config_path),
+            "13301",
+            "email_send_approved",
+        ],
+    )
+
+    assert result.exit_code == 0
+    sessions = json.loads(sessions_path.read_text(encoding="utf-8"))
+    assert sessions["issue-13301-older"]["allowed_tools"] == ["approval_submit", "email_send_approved"]
+    assert sessions["issue-13301-newer"]["allowed_tools"] == ["approval_submit"]
+    assert "Revoked tool permission email_send_approved from session issue-13301-newer" in result.stdout
+
+
+def test_revoke_tool_permission_is_idempotent_when_tool_missing(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+
+    init_result = runner.invoke(app, ["init-state", "--config", str(config_path)])
+    assert init_result.exit_code == 0
+
+    sessions_path = tmp_path / "runtime" / "sessions.json"
+    sessions_path.write_text(
+        json.dumps(
+            {
+                "session-1": {
+                    "session_id": "session-1",
+                    "vm_id": "vm-100",
+                    "allowed_tools": ["approval_submit"],
+                    "discord_channel_allowlist": [],
+                    "email_folder_allowlist": [],
+                    "email_mailbox_allowlist": [],
+                    "email_folder_allowlist_by_mailbox": {},
+                    "email_draft_recipient_allowlist": [],
+                    "email_draft_domain_allowlist": [],
+                    "email_send_enabled": False,
+                    "quotas": {},
+                    "expires_at": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
+                    "created_at": datetime.now(UTC).isoformat(),
+                    "metadata": {},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "revoke-tool-permission",
+            "--config",
+            str(config_path),
+            "session-1",
+            "email_send_approved",
+        ],
+    )
+
+    assert result.exit_code == 0
+    manifest = json.loads(sessions_path.read_text(encoding="utf-8"))["session-1"]
+    assert manifest["allowed_tools"] == ["approval_submit"]
+    assert "Tool permission email_send_approved not present on session session-1" in result.stdout
 
 
 def test_prune_sessions_removes_only_expired_by_default(tmp_path: Path) -> None:

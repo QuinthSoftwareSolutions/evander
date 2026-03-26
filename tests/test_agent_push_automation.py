@@ -55,6 +55,7 @@ def test_issue_vm_setup_configures_agent_remote_for_push_alias() -> None:
     assert 'config agent-sandbox.branchSuffix "${AGENT_BRANCH_SUFFIX}"' in setup_issue_vm
     assert '"${repo_root}/.agent-sandbox/bin/agent-pr-note" ensure-head' in setup_issue_vm
     assert "templates/guest-AGENTS.md.tmpl" in setup_issue_vm
+    assert "Check the repository's root for an `AGENTS.md` file containing instructions local to the repository." in guest_agents_template
     assert "git push agent HEAD:refs/heads/agents/" in guest_agents_template
     assert "refs/notes/agent-pr" in guest_agents_template
     assert "SESSION_ID is not set; refusing ambiguous agent push." in setup_issue_vm

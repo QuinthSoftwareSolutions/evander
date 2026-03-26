@@ -1780,6 +1780,52 @@ def create_issue_vm(
 
 
 @app.command(
+    "add-tool-permission",
+    rich_help_panel="Sessions and Feedback",
+    short_help="Add an allowed tool to a session manifest.",
+)
+def add_tool_permission(
+    target: str,
+    tool: ToolName,
+    config: ConfigOption = Path("config/gateway.yaml"),
+) -> None:
+    cfg = load_config(config)
+    runtime = build_runtime(cfg)
+    sessions = runtime.sessions.read_all()
+    session_id, manifest = _resolve_session_target(target, sessions)
+    if tool in manifest.allowed_tools:
+        typer.echo(f"Tool permission {tool.value} already present on session {session_id}")
+        return
+
+    manifest.allowed_tools.append(tool)
+    runtime.sessions.put(session_id, manifest)
+    typer.echo(f"Added tool permission {tool.value} to session {session_id}")
+
+
+@app.command(
+    "revoke-tool-permission",
+    rich_help_panel="Sessions and Feedback",
+    short_help="Remove an allowed tool from a session manifest.",
+)
+def revoke_tool_permission(
+    target: str,
+    tool: ToolName,
+    config: ConfigOption = Path("config/gateway.yaml"),
+) -> None:
+    cfg = load_config(config)
+    runtime = build_runtime(cfg)
+    sessions = runtime.sessions.read_all()
+    session_id, manifest = _resolve_session_target(target, sessions)
+    if tool not in manifest.allowed_tools:
+        typer.echo(f"Tool permission {tool.value} not present on session {session_id}")
+        return
+
+    manifest.allowed_tools.remove(tool)
+    runtime.sessions.put(session_id, manifest)
+    typer.echo(f"Revoked tool permission {tool.value} from session {session_id}")
+
+
+@app.command(
     "attach-pr-feedback",
     rich_help_panel="Sessions and Feedback",
     short_help="Bind a PR feedback stream.",
