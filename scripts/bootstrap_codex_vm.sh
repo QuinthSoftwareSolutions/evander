@@ -16,7 +16,8 @@ Environment:
   SSH_KEY_PATH    Private key matching the guest authorized key.
   HOST_CODEX_ROOT Host Codex package root.
   LLM_BASE_URL    Guest OpenAI-compatible base URL. Overrides ~/.agent/config.env when set.
-  ENABLE_GUEST_HEARTBEAT Legacy toggle for guest heartbeat timer install (0/1, default: 0).
+  ENABLE_GUEST_HEARTBEAT Install and enable the guest heartbeat timer (0/1, default: 0).
+  GUEST_HEARTBEAT_PROMPT Prompt passed to `codex exec resume --last` from the guest timer.
 EOF
 }
 
@@ -48,6 +49,7 @@ VENDOR_DIR="${HOST_CODEX_ROOT}/node_modules/@openai/codex-linux-x64/vendor/x86_6
 LLM_BASE_URL="${LLM_BASE_URL:-}"
 ENABLE_GUEST_HEARTBEAT="${ENABLE_GUEST_HEARTBEAT:-0}"
 AGENT_SANDBOX_CONFIG="${AGENT_SANDBOX_CONFIG:-${ROOT_DIR}/config/gateway.yaml}"
+GUEST_HEARTBEAT_PROMPT="${GUEST_HEARTBEAT_PROMPT:-Resume work for this session. Check for pending feedback first, then continue the most recent task.}"
 SSH_OPTS=(
   -i "${SSH_KEY_PATH}"
 )
@@ -160,29 +162,50 @@ export PATH="$HOME/bin:$HOME/codex-vendor/path:$PATH"
 export OPENAI_API_KEY="${OPENAI_API_KEY:-relay-placeholder}"
 codex --version
 
-echo "Host heartbeat worker is now responsible for feedback wakeups."
+echo "Host heartbeat worker is now responsible for feedback wakeups by default."
 EOF
 
+GUEST_HEARTBEAT_PROMPT_B64="$(printf '%s' "${GUEST_HEARTBEAT_PROMPT}" | base64 -w0)"
+
 if [[ "${ENABLE_GUEST_HEARTBEAT}" == "1" ]]; then
-  echo "ENABLE_GUEST_HEARTBEAT=1 set; attempting legacy guest heartbeat install (deprecated)."
+  echo "ENABLE_GUEST_HEARTBEAT=1 set; installing guest heartbeat service."
   if [[ -f "${LEGACY_HEARTBEAT_DIR}/heartbeat_cycle.sh" \
     && -f "${LEGACY_HEARTBEAT_DIR}/agent-heartbeat.service" \
-    && -f "${LEGACY_HEARTBEAT_DIR}/agent-heartbeat.timer" ]]; then
+    && -f "${LEGACY_HEARTBEAT_DIR}/agent-heartbeat.timer" \
+    && -f "${ROOT_DIR}/scripts/lib/agent_runner.sh" \
+    && -f "${ROOT_DIR}/scripts/lib/agent_runner_codex.sh" ]]; then
     scp "${SSH_OPTS[@]}" \
       "${LEGACY_HEARTBEAT_DIR}/heartbeat_cycle.sh" \
       "${LEGACY_HEARTBEAT_DIR}/agent-heartbeat.service" \
       "${LEGACY_HEARTBEAT_DIR}/agent-heartbeat.timer" \
-      "${VM_USER}@${VM_IP}:~/.config/systemd/user/"
+      "${ROOT_DIR}/scripts/lib/agent_runner.sh" \
+      "${ROOT_DIR}/scripts/lib/agent_runner_codex.sh" \
+      "${VM_USER}@${VM_IP}:~/.config/agent-sandbox/"
 
-    ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" '
+    ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "GUEST_HEARTBEAT_PROMPT_B64='${GUEST_HEARTBEAT_PROMPT_B64}' bash -s" <<'EOF'
       set -euo pipefail
+      mkdir -p ~/.config/systemd/user ~/.config/agent-sandbox/agent-runner-lib
+      mv ~/.config/agent-sandbox/heartbeat_cycle.sh ~/.config/systemd/user/heartbeat_cycle.sh
+      mv ~/.config/agent-sandbox/agent-heartbeat.service ~/.config/systemd/user/agent-heartbeat.service
+      mv ~/.config/agent-sandbox/agent-heartbeat.timer ~/.config/systemd/user/agent-heartbeat.timer
+      mv ~/.config/agent-sandbox/agent_runner.sh ~/.config/agent-sandbox/agent-runner-lib/agent_runner.sh
+      mv ~/.config/agent-sandbox/agent_runner_codex.sh ~/.config/agent-sandbox/agent-runner-lib/agent_runner_codex.sh
       chmod +x ~/.config/systemd/user/heartbeat_cycle.sh
+      cat > ~/.config/agent-sandbox/guest-heartbeat.env <<HEARTBEAT_ENV
+AGENT_SANDBOX_GUEST_HEARTBEAT_PROMPT=$(python3 -c 'import base64, os, shlex; print(shlex.quote(base64.b64decode(os.environ["GUEST_HEARTBEAT_PROMPT_B64"]).decode("utf-8")))')
+HEARTBEAT_ENV
       systemctl --user daemon-reload
       systemctl --user enable --now agent-heartbeat.timer
-    '
+EOF
   else
-    echo "Warning: legacy heartbeat assets are not present on host; skipping guest timer setup." >&2
+    echo "Warning: guest heartbeat assets are not present on host; skipping guest timer setup." >&2
   fi
+else
+  ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" '
+    set -euo pipefail
+    systemctl --user disable --now agent-heartbeat.timer >/dev/null 2>&1 || true
+    systemctl --user daemon-reload || true
+  '
 fi
 
 echo "Codex bootstrap complete for ${VM_NAME} (${VM_IP})"

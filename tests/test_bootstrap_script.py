@@ -24,3 +24,23 @@ def test_bootstrap_script_enforces_codex_config_and_placeholder_key() -> None:
     assert 'export OPENAI_API_KEY="${OPENAI_API_KEY:-relay-placeholder}"' in script
     assert "append_shell_setup ~/.profile" in script
     assert "append_shell_setup ~/.bashrc" in script
+    assert 'ENABLE_GUEST_HEARTBEAT="${ENABLE_GUEST_HEARTBEAT:-0}"' in script
+    assert 'GUEST_HEARTBEAT_PROMPT="${GUEST_HEARTBEAT_PROMPT:-Resume work for this session.' in script
+    assert 'systemctl --user disable --now agent-heartbeat.timer' in script
+    assert 'systemctl --user enable --now agent-heartbeat.timer' in script
+
+
+def test_guest_heartbeat_assets_exist() -> None:
+    root = Path("/home/jonathan/agent-sandbox/scripts/guest")
+
+    cycle_script = (root / "heartbeat_cycle.sh").read_text(encoding="utf-8")
+    service = (root / "agent-heartbeat.service").read_text(encoding="utf-8")
+    timer = (root / "agent-heartbeat.timer").read_text(encoding="utf-8")
+
+    assert 'AGENT_SANDBOX_GUEST_HEARTBEAT_PROMPT="${AGENT_SANDBOX_GUEST_HEARTBEAT_PROMPT:-' in cycle_script
+    assert "agent_runner_resume_last" in cycle_script
+    assert "agent-*.state" in cycle_script
+    assert "EnvironmentFile=-%h/.config/agent-sandbox/guest-heartbeat.env" in service
+    assert "ExecStart=%h/.config/systemd/user/heartbeat_cycle.sh" in service
+    assert "OnUnitActiveSec=5min" in timer
+    assert "Unit=agent-heartbeat.service" in timer

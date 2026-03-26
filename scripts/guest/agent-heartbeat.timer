@@ -1,0 +1,12 @@
+[Unit]
+Description=Agent Sandbox Guest Heartbeat Resume Timer
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+RandomizedDelaySec=30s
+Persistent=true
+Unit=agent-heartbeat.service
+
+[Install]
+WantedBy=timers.target
