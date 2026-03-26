@@ -24,6 +24,7 @@ class ToolName(str, Enum):
     EMAIL_SEND_APPROVED = "email_send_approved"
     HAS_PENDING_FEEDBACK = "has_pending_feedback"
     LIST_UNREAD_FEEDBACK = "list_unread_feedback"
+    LIST_ALL_FEEDBACK = "list_all_feedback"
     POST_PR_FEEDBACK_REPLY = "post_pr_feedback_reply"
 
 

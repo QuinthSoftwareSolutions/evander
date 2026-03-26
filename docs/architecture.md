@@ -37,7 +37,7 @@ boundaries.
 
 Per heartbeat loop, the host worker performs provider polling for streams allowlisted in active session manifests and updates the shared feedback store.
 
-Guests continue to use MCP tools (`has_pending_feedback`, `list_unread_feedback`, `post_pr_feedback_reply`) for consumption and reply actions.
+Guests continue to use MCP tools (`has_pending_feedback`, `list_unread_feedback`, `list_all_feedback`, `post_pr_feedback_reply`) for consumption and reply actions.
 
 This sequence minimizes payload volume when there is no new feedback and supports explicit at-least-once processing semantics.
 
