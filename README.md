@@ -15,6 +15,7 @@
 - Systemd service templates and an install script for persistent host services
 - Local bare Git remote tooling for getting code changes back out of VMs
 - Configuration templates and implementation notes for evolving the scaffold into a production setup
+- A consolidated configuration parameter reference at `docs/configuration-reference.md`
 
 ## Core Security Model
 
