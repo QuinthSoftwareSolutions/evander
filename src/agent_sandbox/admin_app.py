@@ -309,6 +309,9 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self.service = service
         self.thread_pool = QThreadPool()
         self._active_workers: set[_ActionWorker] = set()
+        self._refresh_in_flight: set[str] = set()
+        self._agent_log_request_token = 0
+        self._worker_log_request_token = 0
         self._vm_summaries = []
         self._issue_records = []
         self._active_session_summaries = []
@@ -383,7 +386,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         vm_toolbar = QHBoxLayout()
         refresh_vms_button = QPushButton("Refresh")
         _set_standard_icon(refresh_vms_button, "SP_BrowserReload")
-        refresh_vms_button.clicked.connect(self.refresh_vms)
+        refresh_vms_button.clicked.connect(lambda: self.refresh_vms(manual=True))
         vm_toolbar.addWidget(refresh_vms_button)
         vm_toolbar.addStretch(1)
         self.vm_selection_hint = QLabel("No VM selected")
@@ -518,7 +521,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         worker_toolbar = QHBoxLayout()
         refresh_workers_button = QPushButton("Refresh")
         _set_standard_icon(refresh_workers_button, "SP_BrowserReload")
-        refresh_workers_button.clicked.connect(self.refresh_workers)
+        refresh_workers_button.clicked.connect(lambda: self.refresh_workers(manual=True))
         worker_toolbar.addWidget(refresh_workers_button)
         worker_toolbar.addStretch(1)
         self.worker_selection_hint = QLabel("No worker selected")
@@ -549,13 +552,12 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
 
         self.refresh_timer = QTimer(self)
         self.refresh_timer.setInterval(5000)
-        self.refresh_timer.timeout.connect(self.refresh_vms)
+        self.refresh_timer.timeout.connect(self._refresh_visible_data)
         self.refresh_timer.timeout.connect(self.refresh_issues)
         self.refresh_timer.timeout.connect(self.refresh_sessions)
-        self.refresh_timer.timeout.connect(self.refresh_workers)
         self.refresh_timer.start()
 
-        self.refresh_vms()
+        self._refresh_visible_data()
         self.refresh_issues()
         self.refresh_sessions()
         self.refresh_workers()
@@ -590,7 +592,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self.append_log(f"{label}: {message}")
         if on_success is not None:
             on_success(result)
-        self.refresh_vms()
+        self._refresh_visible_data(manual=True)
         self.refresh_issues()
         self.refresh_workers()
 
@@ -599,17 +601,47 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self.append_log(f"{label} failed: {error}")
         QMessageBox.critical(self, "Action failed", error)
 
-    def refresh_vms(self) -> None:
+    def _start_refresh(self, key: str, fn, on_success) -> None:
+        if key in self._refresh_in_flight:
+            return
+        worker = _ActionWorker(fn)
+        self._active_workers.add(worker)
+        self._refresh_in_flight.add(key)
+        worker.signals.finished.connect(
+            lambda result, worker=worker, key=key, on_success=on_success: self._handle_refresh_success(
+                result, worker, key, on_success
+            )
+        )
+        worker.signals.failed.connect(
+            lambda error, worker=worker, key=key: self._handle_refresh_failure(error, worker, key)
+        )
+        self.thread_pool.start(worker)
+
+    def _handle_refresh_success(self, result, worker: _ActionWorker, key: str, on_success) -> None:
+        self._discard_worker(worker)
+        self._refresh_in_flight.discard(key)
+        on_success(result)
+
+    def _handle_refresh_failure(self, error: str, worker: _ActionWorker, key: str) -> None:
+        self._discard_worker(worker)
+        self._refresh_in_flight.discard(key)
+        self.append_log(f"Refresh {key} failed: {error}")
+
+    def _refresh_visible_data(self, *, manual: bool = False) -> None:
+        self.refresh_vms(manual=manual)
+        if self.tabs.currentWidget() is not None and self.tabs.currentWidget() == self.tabs.widget(3):
+            self.refresh_workers(manual=manual)
+
+    def refresh_vms(self, *, manual: bool = False) -> None:
+        self._start_refresh("vms", lambda: self.service.list_vms(include_inactive=True, vm_user="agent"), lambda summaries: self._apply_vm_refresh(summaries, refresh_log=manual))
+
+    def _apply_vm_refresh(self, summaries, *, refresh_log: bool) -> None:
         previously_selected_vm = None
         current_summary = self.selected_vm_summary()
         if current_summary is not None:
             previously_selected_vm = current_summary.vm_name
-        try:
-            summaries = self.service.list_vms(include_inactive=True, vm_user="agent")
-        except Exception as exc:
-            self.append_log(f"Refresh VMs failed: {exc}")
-            return
         self._vm_summaries = summaries
+        self.vm_table.blockSignals(True)
         self.vm_table.clearSelection()
         self.vm_table.setRowCount(len(summaries))
         for row, summary in enumerate(summaries):
@@ -631,8 +663,10 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
                     break
             if not restored:
                 self.vm_table.setCurrentCell(-1, -1)
+        self.vm_table.blockSignals(False)
         self.update_vm_action_bar()
-        self.refresh_selected_agent_log()
+        if refresh_log:
+            self.refresh_selected_agent_log()
 
     def selected_vm_summary(self):
         row = self.vm_table.currentRow()
@@ -696,8 +730,39 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         if not summary.issue_number:
             _set_text_preserving_scroll(self.agent_log_view, "Agent log unavailable for VMs without an issue number.")
             return
-        text = self.service.get_agent_log_snapshot(summary.issue_number, lines=50)
+        issue_number = summary.issue_number
+        self._agent_log_request_token += 1
+        request_token = self._agent_log_request_token
+        worker = _ActionWorker(self.service.get_agent_log_snapshot, issue_number, lines=50)
+        self._active_workers.add(worker)
+        worker.signals.finished.connect(
+            lambda text, worker=worker, request_token=request_token, issue_number=issue_number: self._handle_agent_log_success(
+                text, worker, request_token, issue_number
+            )
+        )
+        worker.signals.failed.connect(
+            lambda error, worker=worker, request_token=request_token: self._handle_agent_log_failure(
+                error, worker, request_token
+            )
+        )
+        self.thread_pool.start(worker)
+
+    def _handle_agent_log_success(
+        self, text: str, worker: _ActionWorker, request_token: int, issue_number: str
+    ) -> None:
+        self._discard_worker(worker)
+        current_summary = self.selected_vm_summary()
+        if request_token != self._agent_log_request_token:
+            return
+        if current_summary is None or current_summary.issue_number != issue_number:
+            return
         _set_text_preserving_scroll(self.agent_log_view, text)
+
+    def _handle_agent_log_failure(self, error: str, worker: _ActionWorker, request_token: int) -> None:
+        self._discard_worker(worker)
+        if request_token != self._agent_log_request_token:
+            return
+        _set_text_preserving_scroll(self.agent_log_view, f"Agent log unavailable: {error}")
 
     def handle_start_selected_vm(self) -> None:
         summary = self.selected_vm_summary()
@@ -779,16 +844,15 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         )
 
     def refresh_issues(self) -> None:
+        self._start_refresh("issues", self.service.list_local_issues, self._apply_issue_refresh)
+
+    def _apply_issue_refresh(self, issues) -> None:
         previously_selected_issue = None
         current_issue = self.selected_issue_record()
         if current_issue is not None:
             previously_selected_issue = current_issue.issue_number
-        try:
-            issues = self.service.list_local_issues()
-        except Exception as exc:
-            self.append_log(f"Refresh issues failed: {exc}")
-            return
         self._issue_records = issues
+        self.issue_table.blockSignals(True)
         self.issue_table.clearSelection()
         self.issue_table.setRowCount(len(issues))
         for row, issue in enumerate(issues):
@@ -805,19 +869,19 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
                     break
             if not restored:
                 self.issue_table.setCurrentCell(-1, -1)
+        self.issue_table.blockSignals(False)
         self.update_issue_action_bar()
 
-    def refresh_workers(self) -> None:
+    def refresh_workers(self, *, manual: bool = False) -> None:
+        self._start_refresh("workers", self.service.list_background_workers, lambda workers: self._apply_worker_refresh(workers, refresh_log=manual))
+
+    def _apply_worker_refresh(self, workers, *, refresh_log: bool) -> None:
         previously_selected_worker = None
         current_worker = self.selected_worker_summary()
         if current_worker is not None:
             previously_selected_worker = current_worker.worker_id
-        try:
-            workers = self.service.list_background_workers()
-        except Exception as exc:
-            self.append_log(f"Refresh workers failed: {exc}")
-            return
         self._worker_summaries = workers
+        self.worker_table.blockSignals(True)
         self.worker_table.clearSelection()
         self.worker_table.setRowCount(len(workers))
         for row, worker in enumerate(workers):
@@ -838,8 +902,10 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
                     break
             if not restored:
                 self.worker_table.setCurrentCell(-1, -1)
+        self.worker_table.blockSignals(False)
         self.update_worker_action_bar()
-        self.refresh_selected_worker_log()
+        if refresh_log:
+            self.refresh_selected_worker_log()
 
     def show_new_issue_dialog(self) -> None:
         dialog = IssueDialog(self)
@@ -914,19 +980,20 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self.confirm_delete_issue(issue.issue_number)
 
     def refresh_sessions(self) -> None:
+        self._start_refresh("sessions", lambda: self.service.list_sessions(include_expired=True), self._apply_session_refresh)
+
+    def _apply_session_refresh(self, session_summaries) -> None:
         selected_session_id = None
         current_session = self.selected_session_summary()
         if current_session is not None:
             selected_session_id = current_session.session_id
-        try:
-            active_sessions = self.service.list_sessions()
-            expired_sessions = self.service.list_sessions(expired_only=True)
-        except Exception as exc:
-            self.append_log(f"Refresh sessions failed: {exc}")
-            return
+        active_sessions = [summary for summary in session_summaries if not summary.is_expired]
+        expired_sessions = [summary for summary in session_summaries if summary.is_expired]
 
         self._active_session_summaries = active_sessions
         self._expired_session_summaries = expired_sessions
+        self.active_session_table.blockSignals(True)
+        self.expired_session_table.blockSignals(True)
         self.active_session_table.clearSelection()
         self.expired_session_table.clearSelection()
         self.active_session_table.setRowCount(len(active_sessions))
@@ -962,6 +1029,8 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             if not restored:
                 self.active_session_table.setCurrentCell(-1, -1)
                 self.expired_session_table.setCurrentCell(-1, -1)
+        self.active_session_table.blockSignals(False)
+        self.expired_session_table.blockSignals(False)
         self.update_session_action_bar()
         self.refresh_selected_session_details()
 
@@ -1092,8 +1161,39 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         if worker is None:
             _set_text_preserving_scroll(self.worker_log_view, "No worker selected.")
             return
-        text = self.service.get_background_worker_log_snapshot(worker.worker_id, lines=200)
+        worker_id = worker.worker_id
+        self._worker_log_request_token += 1
+        request_token = self._worker_log_request_token
+        log_worker = _ActionWorker(self.service.get_background_worker_log_snapshot, worker_id, lines=200)
+        self._active_workers.add(log_worker)
+        log_worker.signals.finished.connect(
+            lambda text, worker=log_worker, request_token=request_token, worker_id=worker_id: self._handle_worker_log_success(
+                text, worker, request_token, worker_id
+            )
+        )
+        log_worker.signals.failed.connect(
+            lambda error, worker=log_worker, request_token=request_token: self._handle_worker_log_failure(
+                error, worker, request_token
+            )
+        )
+        self.thread_pool.start(log_worker)
+
+    def _handle_worker_log_success(
+        self, text: str, worker: _ActionWorker, request_token: int, worker_id: str
+    ) -> None:
+        self._discard_worker(worker)
+        current_worker = self.selected_worker_summary()
+        if request_token != self._worker_log_request_token:
+            return
+        if current_worker is None or current_worker.worker_id != worker_id:
+            return
         _set_text_preserving_scroll(self.worker_log_view, text)
+
+    def _handle_worker_log_failure(self, error: str, worker: _ActionWorker, request_token: int) -> None:
+        self._discard_worker(worker)
+        if request_token != self._worker_log_request_token:
+            return
+        _set_text_preserving_scroll(self.worker_log_view, f"Worker log unavailable: {error}")
 
     def _on_worker_selection_changed(self) -> None:
         self.update_worker_action_bar()
