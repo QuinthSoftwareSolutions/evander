@@ -20,6 +20,63 @@
 - Session manifests are the smallest useful policy primitive for v1.
 - Approval records let you keep autonomy for drafts and read operations while gating sends.
 
+## Why Logic Is Split Between Shell And Python
+
+The split is about operational boundary, not language preference.
+
+- Shell scripts own machine orchestration.
+- Python modules own application and policy logic.
+
+### Shell-first responsibilities
+
+Use `scripts/*.sh` when the main job is coordinating host and guest environments by invoking
+existing system tools. Typical examples in this repo include:
+
+- libvirt lifecycle work such as `virt-install`, `virsh`, `qemu-img`, and `cloud-localds`
+- SSH, `scp`, and filesystem copy or move steps between host and guest
+- bootstrap sequencing across multiple host tools and guest commands
+- systemd unit installation and other host integration glue
+- thin wrappers that collect environment variables and then launch Python entry points
+
+This repo keeps that work in shell because the code is mostly process orchestration. Shell keeps
+those flows short, explicit, and easy to run manually while debugging.
+
+### Python-first responsibilities
+
+Use `src/agent_sandbox/*.py` when the main job is implementing product behavior rather than
+invoking the operating system. Typical examples in this repo include:
+
+- MCP gateway behavior and relay request handling
+- policy checks, approval gating, and audit decisions
+- typed config loading and validation
+- persistent state management and worker loops
+- structured provider integrations, retries, and error handling
+
+This repo keeps that work in Python because it is easier to make structured logic testable,
+maintainable, and less brittle there than in Bash.
+
+### Mixed cases
+
+Some shell scripts embed small Python snippets. That is intentional.
+
+- Keep the overall flow in shell if the script still primarily orchestrates external commands.
+- Use a small Python helper inline when shell would be awkward or fragile for structured parsing,
+  YAML or JSON manipulation, base64 handling, or path normalization.
+- If the embedded Python grows into substantial logic or starts carrying business rules, move that
+  logic into a proper Python module or CLI entry point and let shell stay as the orchestration
+  layer.
+
+### Practical rule of thumb
+
+When adding new code, ask:
+
+- Is this mostly orchestrating the environment, host tools, or guest setup? Put it in shell.
+- Is this mostly implementing long-lived service behavior, policy, state, or structured data
+  processing? Put it in Python.
+
+If both apply, keep the boundary narrow: shell should launch and sequence, Python should decide and
+validate.
+
 ## Host-Driven Feedback Heartbeat (Design)
 
 This model keeps feedback polling on the host while preserving host-side policy and secret

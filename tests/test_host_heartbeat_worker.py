@@ -20,6 +20,7 @@ from agent_sandbox.host_heartbeat_worker import (
     _single_instance_lock,
 )
 from agent_sandbox.models import SessionManifest, ToolName
+from agent_sandbox.worker_directory_context import ShadowDomainContext, WorkerDirectoryContext
 
 UTC = timezone.utc
 
@@ -145,6 +146,74 @@ def test_collect_stream_mappings_falls_back_to_pr_map_when_manifest_missing(tmp_
     assert mappings[stream][0].session_id == "active-a"
     assert mappings[stream][0].vm_id == "vm-1"
     assert mappings[stream][0].source == "pr_map"
+
+
+def test_collect_stream_mappings_attaches_directory_shadow_context(tmp_path, monkeypatch) -> None:
+    now = datetime.now(UTC)
+    sessions = {
+        "active-a": _build_manifest(
+            "active-a",
+            expires_at=now + timedelta(hours=2),
+            metadata={"pr_feedback_streams": [{"provider": "github", "repo": "org/repo", "pr_id": "88"}]},
+        ),
+    }
+    sessions["active-a"].directory_path = "root/team-a"
+
+    runtime = SimpleNamespace(sessions=SimpleNamespace(read_all=lambda: sessions), audit=_DummyAudit())
+    worker = HostHeartbeatWorker(
+        config=SimpleNamespace(pr_map_path=tmp_path / "missing-pr-map.json"),
+        runtime=runtime,
+        feedback_worker=_DummyFeedbackWorker(),
+        adapters={"github": object()},
+    )
+
+    class StubResolver:
+        def resolve_for_session(self, session_id: str | None, *, fallback_directory_path: str | None = None, source: str):
+            return WorkerDirectoryContext(
+                directory_path=fallback_directory_path or "root",
+                source=source,
+                session_id=session_id,
+                domains=(ShadowDomainContext(domain="workers", diff_paths=("pool.max",)),),
+            )
+
+    monkeypatch.setattr(worker, "directory_context_resolver", StubResolver())
+
+    mappings = worker._collect_stream_mappings()
+
+    stream = FeedbackStream(provider="github", repo="org/repo", pr_id="88")
+    assert mappings[stream][0].directory_path == "root/team-a"
+    assert mappings[stream][0].directory_context == {
+        "directory_path": "root/team-a",
+        "source": "host_heartbeat:session_manifest",
+        "session_id": "active-a",
+        "domains": [{"domain": "workers", "diff_paths": ["pool.max"], "validation_errors": []}],
+    }
+
+
+def test_collect_stream_mappings_leaves_directory_context_unset_when_feature_disabled(tmp_path) -> None:
+    now = datetime.now(UTC)
+    sessions = {
+        "active-a": _build_manifest(
+            "active-a",
+            expires_at=now + timedelta(hours=2),
+            metadata={"pr_feedback_streams": [{"provider": "github", "repo": "org/repo", "pr_id": "88"}]},
+        ),
+    }
+    sessions["active-a"].directory_path = "root/team-a"
+
+    runtime = SimpleNamespace(sessions=SimpleNamespace(read_all=lambda: sessions), audit=_DummyAudit())
+    worker = HostHeartbeatWorker(
+        config=SimpleNamespace(pr_map_path=tmp_path / "missing-pr-map.json", enable_directory_scoped_config=False),
+        runtime=runtime,
+        feedback_worker=_DummyFeedbackWorker(),
+        adapters={"github": object()},
+    )
+
+    mappings = worker._collect_stream_mappings()
+
+    stream = FeedbackStream(provider="github", repo="org/repo", pr_id="88")
+    assert mappings[stream][0].directory_path == "root/team-a"
+    assert mappings[stream][0].directory_context is None
 
 
 def test_run_once_rejects_conflicting_stream_when_policy_is_reject(tmp_path) -> None:

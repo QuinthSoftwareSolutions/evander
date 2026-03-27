@@ -70,6 +70,9 @@ orchestration layer as the CLI and surfaces:
 - VM power state and guest agent state separately
 - one-click `Start`, `Shutdown`, `Enable`, `Disable`, and `Resume`
 - local issue creation plus issue-VM startup
+- persistent selected-directory context with `root` fallback
+- direct-owned VM/session/issue listings for the selected directory
+- a configuration tab that inspects inherited per-domain directory config
 
 For machine-readable scripting that matches the GUI data model, use:
 
@@ -77,6 +80,51 @@ For machine-readable scripting that matches the GUI data model, use:
 agent-sandbox-cli list-vms --all --json
 agent-sandbox-cli list-local-issues --json
 ```
+
+## Directory Operations
+
+Directory ownership defaults to `root`. The directory tree is host-managed, with immutable `root`
+at the top and inherited config flowing from `root` down to the selected child directory. When
+enabled, `root` can also store explicit directory overlay files and those become the first
+directory-scoped layer above the global gateway baseline.
+
+To keep the rollout safe, directory-scoped config remains transition-gated:
+
+- `enable_directory_scoped_config: false` or unset:
+  - existing global config files and env vars stay authoritative
+  - worker directory resolution stays off
+  - directory edit/config write surfaces are disabled
+- `enable_directory_scoped_config: true`:
+  - host-side admin and CLI directory edit/config write surfaces are enabled
+  - workers compute directory config in shadow/readiness mode
+
+Initialize missing ownership on an existing runtime:
+
+```bash
+agent-sandbox-cli migrate-directory-ownership --config config/gateway.yaml
+```
+
+Common CLI flows:
+
+```bash
+agent-sandbox-cli directories list --config config/gateway.yaml --parent root
+agent-sandbox-cli directories create --config config/gateway.yaml --parent root team
+agent-sandbox-cli directories rename --config config/gateway.yaml root/team sandbox
+agent-sandbox-cli directories move --config config/gateway.yaml root/sandbox --new-parent root
+agent-sandbox-cli directories show --config config/gateway.yaml root
+agent-sandbox-cli directories config-set --config config/gateway.yaml --domain policy root/team '{"default_session_ttl_seconds":120}'
+agent-sandbox-cli directories config-show --config config/gateway.yaml --domain policy root/team
+```
+
+Storage layout for directory config:
+
+- directory metadata source of truth: `runtime/directories.json`
+- file-backed per-directory overlays: `runtime/directory-config/root/.../policy.json`
+- supported domains:
+  - `policy.json`
+  - `providers.json`
+  - `workers.json`
+  - `vm-defaults.json`
 
 ## SSH Access
 

@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_sandbox.directories import DirectoryStore
+from agent_sandbox.directories import DirectoryService, DirectoryStore
 from agent_sandbox.models import Directory, DirectoryPath, SessionManifest, ToolName
 
 
@@ -54,3 +54,57 @@ def test_session_manifest_directory_path_is_canonical() -> None:
         expires_at="2030-01-01T00:00:00Z",
     )
     assert manifest.directory_path == "root/team/sandbox"
+
+
+def test_directory_service_supports_create_show_rename_move_and_delete(tmp_path: Path) -> None:
+    service = DirectoryService(DirectoryStore(tmp_path / "directories.json"))
+
+    team = service.create(parent="root", name="team")
+    sandbox = service.create(parent=team.path, name="sandbox")
+
+    shown = service.show(sandbox.id)
+    assert shown.directory.path == "root/team/sandbox"
+    assert [item.path for item in shown.ancestry] == ["root", "root/team", "root/team/sandbox"]
+
+    renamed = service.rename(sandbox.id, new_name="lab")
+    assert renamed.path == "root/team/lab"
+
+    moved = service.move(renamed.id, new_parent="root")
+    assert moved.path == "root/lab"
+
+    listed = service.list_children(parent="root")
+    assert [item.path for item in listed] == ["root/lab", "root/team"]
+
+    deleted = service.delete(moved.id)
+    assert deleted == {"deleted_count": 1, "deleted_ids": [moved.id]}
+
+
+def test_directory_service_rejects_move_cycles_and_non_empty_delete_without_force(tmp_path: Path) -> None:
+    service = DirectoryService(DirectoryStore(tmp_path / "directories.json"))
+
+    team = service.create(parent="root", name="team")
+    sandbox = service.create(parent=team.id, name="sandbox")
+    child = service.create(parent=sandbox.id, name="child")
+
+    with pytest.raises(ValueError, match="cannot be moved into its descendant"):
+        service.move(team.id, new_parent=child.id)
+
+    with pytest.raises(ValueError, match="not empty"):
+        service.delete(team.id)
+
+    deleted = service.delete(team.id, force=True)
+    assert deleted["deleted_count"] == 3
+    assert deleted["deleted_ids"] == sorted([team.id, sandbox.id, child.id])
+
+
+def test_directory_service_rejects_root_mutation_invariants(tmp_path: Path) -> None:
+    service = DirectoryService(DirectoryStore(tmp_path / "directories.json"))
+
+    with pytest.raises(ValueError, match="root directory cannot be renamed"):
+        service.rename("root", new_name="other")
+
+    with pytest.raises(ValueError, match="root directory cannot be moved"):
+        service.move("root", new_parent="root")
+
+    with pytest.raises(ValueError, match="root directory cannot be deleted"):
+        service.delete("root", force=True)

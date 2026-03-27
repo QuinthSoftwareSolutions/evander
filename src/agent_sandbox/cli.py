@@ -23,6 +23,7 @@ from .audit import AuditEventType
 from .ado_issue_worker import run_worker_command
 from .config import GatewayConfig, load_config
 from .host_heartbeat_worker import build_host_heartbeat_worker
+from .migrations import migrate_directory_ownership_defaults
 from .email.providers import JsonEmailProvider, MultiMailboxEmailProvider
 from .models import ApprovalStatus, DiscordCommandEnvelope, EmailMessage, SessionManifest, ToolName
 from .runtime import build_runtime
@@ -49,6 +50,8 @@ class GroupedHelpTyperGroup(TyperGroup):
 
 
 app = typer.Typer(help="Utilities for the agent sandbox host control plane.", cls=GroupedHelpTyperGroup)
+directories_app = typer.Typer(help="Directory management and directory-scoped config inspection.")
+app.add_typer(directories_app, name="directories")
 
 ConfigOption = Annotated[Path, typer.Option("--config", help="Path to the gateway YAML config.")]
 _discord_seed_sequence = count()
@@ -169,6 +172,16 @@ def _run_subprocess_compat(
     if text is not None and "text" in parameters:
         kwargs["text"] = text
     return subprocess.run(cmd, **kwargs)
+
+
+def _echo_admin_result_or_exit(result, *, success_message: str | None = None) -> None:
+    if getattr(result, "ok", False):
+        if success_message is not None:
+            typer.echo(success_message)
+        return
+    errors = getattr(result, "errors", []) or []
+    message = errors[0].message if errors else "operation failed"
+    raise typer.BadParameter(message)
 
 
 def _load_heartbeat_summary(audit_log_path: Path, *, max_events: int = 400) -> HeartbeatSummary:
@@ -734,6 +747,147 @@ def init_state(config: ConfigOption = Path("config/gateway.yaml")) -> None:
     runtime = build_runtime(cfg)
     runtime.directories.ensure_root()
     typer.echo(f"Initialized runtime state under {cfg.runtime_dir}")
+
+
+@directories_app.command("list", short_help="List directory children.")
+def directories_list(
+    config: ConfigOption = Path("config/gateway.yaml"),
+    parent: Annotated[str, typer.Option("--parent", help="Parent directory path or id.")] = "root",
+) -> None:
+    service = AdminService(config)
+    result = service.directory_admin.list(parent)
+    _echo_admin_result_or_exit(result)
+    payload = result.data
+    assert payload is not None
+    typer.echo(json.dumps(payload.model_dump(mode="json"), indent=2, sort_keys=True))
+
+
+@directories_app.command("show", short_help="Show one directory and its ancestry.")
+def directories_show(
+    reference: str,
+    config: ConfigOption = Path("config/gateway.yaml"),
+) -> None:
+    service = AdminService(config)
+    result = service.get_directory(reference)
+    _echo_admin_result_or_exit(result)
+    payload = result.data
+    assert payload is not None
+    typer.echo(json.dumps(payload.model_dump(mode="json"), indent=2, sort_keys=True))
+
+
+@directories_app.command("create", short_help="Create a child directory.")
+def directories_create(
+    name: str,
+    config: ConfigOption = Path("config/gateway.yaml"),
+    parent: Annotated[str, typer.Option("--parent", help="Parent directory path or id.")] = "root",
+) -> None:
+    service = AdminService(config)
+    result = service.create_directory_child(parent, name)
+    _echo_admin_result_or_exit(result)
+    assert result.data is not None
+    typer.echo(result.data.details.directory.path)
+
+
+@directories_app.command("rename", short_help="Rename a directory.")
+def directories_rename(
+    reference: str,
+    new_name: str,
+    config: ConfigOption = Path("config/gateway.yaml"),
+) -> None:
+    service = AdminService(config)
+    result = service.directory_admin.update(reference, new_name=new_name)
+    _echo_admin_result_or_exit(result)
+    assert result.data is not None
+    typer.echo(result.data.details.directory.path)
+
+
+@directories_app.command("move", short_help="Move a directory to a new parent.")
+def directories_move(
+    reference: str,
+    config: ConfigOption = Path("config/gateway.yaml"),
+    new_parent: Annotated[str, typer.Option("--new-parent", help="New parent directory path or id.")] = "root",
+) -> None:
+    service = AdminService(config)
+    result = service.directory_admin.update(reference, new_parent=new_parent)
+    _echo_admin_result_or_exit(result)
+    assert result.data is not None
+    typer.echo(result.data.details.directory.path)
+
+
+@directories_app.command("delete", short_help="Delete a directory.")
+def directories_delete(
+    reference: str,
+    config: ConfigOption = Path("config/gateway.yaml"),
+    recursive: Annotated[bool, typer.Option("--recursive", help="Delete non-empty directories recursively.")] = False,
+) -> None:
+    service = AdminService(config)
+    result = service.directory_admin.delete(reference, recursive=recursive)
+    _echo_admin_result_or_exit(result)
+    assert result.data is not None
+    typer.echo(json.dumps(result.data.model_dump(mode="json"), indent=2, sort_keys=True))
+
+
+@directories_app.command("config-show", short_help="Show raw and effective config for one directory domain.")
+def directories_config_show(
+    reference: str,
+    domain: Annotated[str, typer.Option("--domain", help="Directory config domain name.")],
+    config: ConfigOption = Path("config/gateway.yaml"),
+) -> None:
+    service = AdminService(config)
+    raw_result = service.read_directory_domain_config(reference, domain)
+    effective_result = service.compute_directory_effective_config(reference, domain)
+    _echo_admin_result_or_exit(raw_result)
+    _echo_admin_result_or_exit(effective_result)
+    assert raw_result.data is not None
+    assert effective_result.data is not None
+    typer.echo(
+        json.dumps(
+            {
+                "raw": raw_result.data.model_dump(mode="json"),
+                "effective": effective_result.data.model_dump(mode="json"),
+                "validation_diagnostics": [
+                    item.model_dump(mode="json") for item in effective_result.validation_diagnostics
+                ],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+
+
+@directories_app.command("config-set", short_help="Write raw config for one directory domain.")
+def directories_config_set(
+    reference: str,
+    payload: str,
+    domain: Annotated[str, typer.Option("--domain", help="Directory config domain name.")],
+    config: ConfigOption = Path("config/gateway.yaml"),
+) -> None:
+    try:
+        parsed = json.loads(payload)
+    except json.JSONDecodeError as exc:
+        raise typer.BadParameter(f"invalid JSON payload: {exc}") from exc
+    if not isinstance(parsed, dict):
+        raise typer.BadParameter("config payload must be a JSON object")
+    service = AdminService(config)
+    result = service.write_directory_domain_config(reference, domain, parsed)
+    _echo_admin_result_or_exit(result)
+    assert result.data is not None
+    typer.echo(json.dumps(result.data.model_dump(mode="json"), indent=2, sort_keys=True))
+
+
+@app.command(
+    "migrate-directory-ownership",
+    rich_help_panel="Health and State",
+    short_help="Backfill missing directory ownership fields to root.",
+)
+def migrate_directory_ownership(
+    config: ConfigOption = Path("config/gateway.yaml"),
+) -> None:
+    cfg = load_config(config)
+    summary = migrate_directory_ownership_defaults(cfg)
+    typer.echo(
+        f"Backfilled {summary.changed_records} record(s) across {summary.changed_files} file(s)"
+    )
 
 
 @app.command(

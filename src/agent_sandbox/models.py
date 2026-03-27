@@ -108,6 +108,31 @@ class Directory(BaseModel):
         return normalized
 
 
+class DirectoryInfo(BaseModel):
+    id: str
+    name: str
+    parent_id: str | None = None
+    created_at: datetime
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    path: str
+
+    @classmethod
+    def from_directory(cls, directory: Directory, *, path: str) -> "DirectoryInfo":
+        return cls(
+            id=directory.id,
+            name=directory.name,
+            parent_id=directory.parent_id,
+            created_at=directory.created_at,
+            metadata=directory.metadata,
+            path=path,
+        )
+
+
+class DirectoryDetails(BaseModel):
+    directory: DirectoryInfo
+    ancestry: list[DirectoryInfo] = Field(default_factory=list)
+
+
 class SessionSummary(SessionManifest):
     issue_number: str | None = None
     is_expired: bool = False
@@ -124,6 +149,7 @@ class VmSummary(BaseModel):
     vm_name: str
     issue_number: str | None = None
     session_ids: list[str] = Field(default_factory=list)
+    directory_paths: list[str] = Field(default_factory=list)
     libvirt_state: str
     ip_address: str | None = None
     agent_state: str
@@ -166,10 +192,16 @@ class LocalIssueRecord(BaseModel):
     title: str
     body: str
     yaml_path: str
+    directory_path: str = "root"
     repo_source: str | None = None
     source: str = "local_gui"
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
+
+    @field_validator("directory_path")
+    @classmethod
+    def validate_directory_path(cls, value: str) -> str:
+        return DirectoryPath(segments=value).as_posix()
 
 
 class EmailMessage(BaseModel):

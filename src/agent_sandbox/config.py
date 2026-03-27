@@ -50,6 +50,7 @@ class GatewayConfig(BaseModel):
     email_cursor_store_path: Path = Path("/var/lib/agent-sandbox/email_cursors.json")
     discord_command_store_path: Path = Path("/var/lib/agent-sandbox/discord_commands.json")
     directories_store_path: Path = Path("/var/lib/agent-sandbox/directories.json")
+    enable_directory_scoped_config: bool = False
     discord_backend: Literal["stub", "bot_api"] = "stub"
     discord_bot_token_env: str = Field(default="DISCORD_BOT_TOKEN", min_length=1)
     discord_api_base_url: str = "https://discord.com/api/v10"

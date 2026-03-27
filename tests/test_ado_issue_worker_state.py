@@ -24,6 +24,7 @@ from agent_sandbox.ado_issue_worker import (
     run_worker_command,
     update_work_item_state,
 )
+from agent_sandbox.worker_directory_context import ShadowDomainContext, WorkerDirectoryContext
 
 
 @pytest.fixture
@@ -219,6 +220,77 @@ def test_process_work_item_creates_session_manifest_before_setup(
     assert store.is_processed(14084) is True
     assert captured["manifest"]["session_id"] == captured["session_id"]
     assert captured["manifest"]["vm_id"] == "vm-14084"
+
+
+def test_process_work_item_attaches_directory_shadow_context(
+    worker_config: WorkerConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = ProcessedWorkItemStore(worker_config.processed_store_path)
+
+    class StubResolver:
+        def resolve_for_session(self, session_id: str | None, *, fallback_directory_path: str | None = None, source: str):
+            return WorkerDirectoryContext(
+                directory_path="root/team-a",
+                source=source,
+                session_id=session_id,
+                domains=(ShadowDomainContext(domain="workers", diff_paths=("pool.max",)),),
+            )
+
+    gateway_payload = json.loads(worker_config.gateway_config_path.read_text(encoding="utf-8"))
+    gateway_payload["enable_directory_scoped_config"] = True
+    worker_config.gateway_config_path.write_text(json.dumps(gateway_payload), encoding="utf-8")
+    monkeypatch.setattr("agent_sandbox.ado_issue_worker.WorkerDirectoryContextResolver", lambda cfg: StubResolver())
+    monkeypatch.setattr(
+        "agent_sandbox.ado_issue_worker.subprocess.run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args=args, returncode=0, stdout="ok", stderr=""),
+    )
+
+    item = {
+        "id": 14085,
+        "title": "Do thing with directory config",
+        "description": "Details",
+        "tags": ["truman"],
+        "state": "Committed",
+        "url": "https://example/14085",
+        "updated_date": "2026-03-21T00:00:00Z",
+    }
+
+    succeeded = process_work_item(item, config=worker_config, store=store)
+
+    assert succeeded is True
+    assert item["directory_context"]["directory_path"] == "root/team-a"
+    assert item["directory_context"]["source"] == "ado_issue_worker"
+    assert item["directory_context"]["session_id"].startswith("issue-14085-")
+    assert item["directory_context"]["domains"] == [
+        {"domain": "workers", "diff_paths": ["pool.max"], "validation_errors": []}
+    ]
+
+
+def test_process_work_item_keeps_global_behavior_when_directory_scoped_config_disabled(
+    worker_config: WorkerConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = ProcessedWorkItemStore(worker_config.processed_store_path)
+    monkeypatch.setattr(
+        "agent_sandbox.ado_issue_worker.subprocess.run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args=args, returncode=0, stdout="ok", stderr=""),
+    )
+
+    item = {
+        "id": 14086,
+        "title": "Do thing without scoped config",
+        "description": "Details",
+        "tags": ["truman"],
+        "state": "Committed",
+        "url": "https://example/14086",
+        "updated_date": "2026-03-21T00:00:00Z",
+    }
+
+    succeeded = process_work_item(item, config=worker_config, store=store)
+
+    assert succeeded is True
+    assert "directory_context" not in item
 
 
 def test_update_work_item_state_uses_json_patch(worker_config: WorkerConfig, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -25,6 +25,7 @@ from .pr_feedback_worker import (
     build_pr_feedback_worker,
 )
 from .runtime import RuntimeContext, build_runtime
+from .worker_directory_context import WorkerDirectoryContextResolver, log_shadow_context
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +42,8 @@ class StreamSessionBinding:
     session_id: str
     vm_id: str | None
     source: str
+    directory_path: str | None = None
+    directory_context: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -65,6 +68,14 @@ class HostHeartbeatWorker:
         self.feedback_worker = feedback_worker
         self.adapters = adapters
         self.agent_control_store = agent_control_store
+        if getattr(config, "enable_directory_scoped_config", False):
+            try:
+                self.directory_context_resolver = WorkerDirectoryContextResolver(config)
+            except Exception:
+                logger.debug("Directory shadow resolver unavailable for host heartbeat worker", exc_info=True)
+                self.directory_context_resolver = None
+        else:
+            self.directory_context_resolver = None
 
     def _log_audit_decision(self, **kwargs: Any) -> None:
         audit = getattr(self.runtime, "audit", None)
@@ -142,6 +153,8 @@ class HostHeartbeatWorker:
                                 "session_id": binding.session_id,
                                 "vm_id": binding.vm_id,
                                 "source": binding.source,
+                                "directory_path": binding.directory_path,
+                                "directory_context": binding.directory_context,
                             }
                             for binding in bindings
                         ],
@@ -401,7 +414,9 @@ class HostHeartbeatWorker:
                     session_id=session.session_id,
                     vm_id=session.vm_id,
                     source="session_manifest",
+                    directory_path=session.directory_path,
                 )
+                binding = self._attach_directory_context(binding, provider=parsed.provider, repo=parsed.repo, pr_id=parsed.pr_id)
                 stream_index.setdefault(key, []).append(binding)
                 self._log_audit_decision(
                     event_type=AuditEventType.MAPPING_RESOLVED,
@@ -427,7 +442,13 @@ class HostHeartbeatWorker:
                 session_id=session_id,
                 vm_id=vm_id,
                 source="pr_map",
+                directory_path=(
+                    session.directory_path
+                    if session is not None
+                    else str(raw_entry.get("directory_path", "")).strip() or None
+                ),
             )
+            binding = self._attach_directory_context(binding, provider=key[0], repo=key[1], pr_id=key[2])
             stream_index[key] = [binding]
             self._log_audit_decision(
                 event_type=AuditEventType.MAPPING_RESOLVED,
@@ -449,6 +470,34 @@ class HostHeartbeatWorker:
             }
             mapped[stream] = list(deduped_bindings.values())
         return mapped
+
+    def _attach_directory_context(
+        self,
+        binding: StreamSessionBinding,
+        *,
+        provider: str,
+        repo: str,
+        pr_id: str,
+    ) -> StreamSessionBinding:
+        if self.directory_context_resolver is None:
+            return binding
+        context = self.directory_context_resolver.resolve_for_session(
+            binding.session_id,
+            fallback_directory_path=binding.directory_path,
+            source=f"host_heartbeat:{binding.source}",
+        )
+        log_shadow_context(
+            logger,
+            prefix=f"provider={provider} repo={repo} pr={pr_id} session_id={binding.session_id} shadow_readiness",
+            context=context,
+        )
+        return StreamSessionBinding(
+            session_id=binding.session_id,
+            vm_id=binding.vm_id,
+            source=binding.source,
+            directory_path=context.directory_path,
+            directory_context=context.as_log_dict(),
+        )
 
     def _collect_streams(self) -> list[FeedbackStream]:
         return sorted(
@@ -653,7 +702,7 @@ def build_host_heartbeat_worker(config: GatewayConfig) -> HostHeartbeatWorker:
             pat=azure_pat,
         ),
     }
-    feedback_worker = build_pr_feedback_worker(config.runtime_dir, adapters=adapters)
+    feedback_worker = build_pr_feedback_worker(config.runtime_dir, adapters=adapters, gateway_config=config)
     return HostHeartbeatWorker(
         config=config,
         runtime=runtime,

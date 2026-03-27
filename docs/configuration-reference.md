@@ -118,6 +118,8 @@ All keys are defined in `src/agent_sandbox/config.py` (`GatewayConfig` + `Mailbo
 | `runtime_dir` | `config/gateway*.yaml` | `src/agent_sandbox/runtime.py` (store locations), `src/agent_sandbox/host_heartbeat_worker.py` (feedback worker store root). |
 | `audit_log_path` | `config/gateway*.yaml` | `src/agent_sandbox/runtime.py` audit logger destination. |
 | `session_store_path`, `approval_store_path`, `draft_store_path`, `email_store_path`, `email_cursor_store_path`, `discord_command_store_path` | `config/gateway*.yaml` | `src/agent_sandbox/runtime.py` persistent JSON stores. |
+| `directories_store_path` | `config/gateway*.yaml` | `src/agent_sandbox/runtime.py`, `src/agent_sandbox/directories.py`, directory admin/config services. |
+| `enable_directory_scoped_config` | `config/gateway*.yaml` | `src/agent_sandbox/directory_admin.py`, `src/agent_sandbox/admin_app.py`, `src/agent_sandbox/ado_issue_worker.py`, `src/agent_sandbox/host_heartbeat_worker.py`, `src/agent_sandbox/pr_feedback_worker.py` (transition flag for directory edit surfaces and worker shadow resolution). |
 | `approval_ttl_seconds` | `config/gateway*.yaml` | `src/agent_sandbox/policy.py` approval expiry computation. |
 | `default_session_ttl_seconds` | `config/gateway*.yaml` | `src/agent_sandbox/cli.py` session creation defaults. |
 | `bind_network_cidr` | `config/gateway*.yaml` | `src/agent_sandbox/config.py` validation/normalization (policy-bound network constraints). |
@@ -216,6 +218,42 @@ These placeholders are substituted by `scripts/launch_agent_vm.sh` before VM boo
 | `__NUGET_HTTP_CACHE_PATH__` | `config/cloud-init-user-data.yaml` | `scripts/launch_agent_vm.sh`; written as `NUGET_HTTP_CACHE_PATH`. |
 | `__NUGET_CACHE_FS_TYPE__`, `__NUGET_CACHE_MOUNT_OPTIONS__`, `__NUGET_CACHE_TAG__` | `config/cloud-init-user-data.yaml` | `scripts/launch_agent_vm.sh`; mount + `/etc/fstab` entry for shared NuGet cache. |
 | `OPENAI_API_KEY` fallback in profile (`relay-placeholder`) | `config/cloud-init-user-data.yaml` | Guest runtime bootstrap fallback for relay-based sessions. |
+
+## Directory Config Domains And Storage
+
+Directory-scoped config is additive and host-side. It does not replace the existing global
+gateway YAML or `config/*.env*` files during transition.
+
+Storage paths:
+
+| Path | Source of truth | Used by |
+|---|---|---|
+| `runtime/directories.json` (or `directories_store_path`) | Directory tree metadata, canonical ownership, configured domains | `src/agent_sandbox/directories.py`, `src/agent_sandbox/directory_admin.py`, `src/agent_sandbox/ownership.py` |
+| `runtime/directory-config/root/.../<domain>.json` | Raw per-domain overlay payloads for directories listed in `directories.json` metadata | `src/agent_sandbox/directory_config.py` |
+
+Supported directory config domains:
+
+| Domain file | Purpose | YAML fields allowed |
+|---|---|---|
+| `policy.json` | Session/policy defaults and operator restrictions | `default_session_ttl_seconds`, Discord/email allowlists, `email_send_enabled`, `pr_reply_require_approval`, `redacted_keys` |
+| `providers.json` | Upstream/provider endpoints and credentials-by-reference | Discord, OpenAI, NuGet, GitHub, Azure DevOps, mailbox provider settings |
+| `workers.json` | Host worker polling/resume/busy-check behavior | host heartbeat timing, scripts, conflict policy, wake-state paths |
+| `vm-defaults.json` | Guest-facing relay/network defaults | `bind_network_cidr`, `gateway_url`, OpenAI relay host/port, NuGet relay host/port |
+
+Merge behavior in `src/agent_sandbox/directory_config.py`:
+
+- scalars: last write wins
+- maps/objects: deep merge
+- lists: replace
+- nullable fields: explicit `null` clears inherited value when validation permits it
+
+Inheritance path:
+
+- effective config is resolved in ancestor order: `root -> ... -> selected`
+- if present, `runtime/directory-config/root/*.json` is the first directory-scoped overlay layer above the global baseline
+- provenance metadata records which directory last set each effective value
+- when `enable_directory_scoped_config` is disabled, workers and admin edit surfaces keep the
+  current global behavior and directory config stays in inspection/transition mode
 
 ## 4) Additional env vars consumed directly in code paths
 

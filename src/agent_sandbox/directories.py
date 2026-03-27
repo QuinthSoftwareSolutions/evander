@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from collections import defaultdict
 from pathlib import Path
+from uuid import uuid4
 
-from .models import Directory, DirectoryPath
+from .models import Directory, DirectoryDetails, DirectoryInfo, DirectoryPath
 from .storage import JsonStore
 
 ROOT_DIRECTORY_ID = "root"
@@ -92,3 +94,163 @@ class DirectoryStore:
                     f"duplicate sibling directory name {directory.name!r} under parent {directory.parent_id!r}"
                 )
             sibling_names.add(sibling_key)
+
+        for directory_id in items:
+            seen: set[str] = set()
+            cursor = directory_id
+            while cursor is not None:
+                if cursor in seen:
+                    raise ValueError(f"directory tree contains cycle at {cursor!r}")
+                seen.add(cursor)
+                cursor = items[cursor].parent_id
+
+
+class DirectoryService:
+    def __init__(self, store: DirectoryStore) -> None:
+        self._store = store
+
+    def create(self, *, parent: str, name: str) -> DirectoryInfo:
+        items = self._store.read_all()
+        parent_directory = self._resolve(parent, items)
+        directory = Directory(id=uuid4().hex, name=name, parent_id=parent_directory.id)
+        items[directory.id] = directory
+        self._write(items)
+        return self._to_info(directory, items)
+
+    def rename(self, reference: str, *, new_name: str) -> DirectoryInfo:
+        items = self._store.read_all()
+        directory = self._resolve(reference, items)
+        self._ensure_not_root(directory.id, action="renamed")
+        updated = directory.model_copy(update={"name": new_name})
+        items[directory.id] = updated
+        self._write(items)
+        return self._to_info(updated, items)
+
+    def move(self, reference: str, *, new_parent: str) -> DirectoryInfo:
+        items = self._store.read_all()
+        directory = self._resolve(reference, items)
+        self._ensure_not_root(directory.id, action="moved")
+        new_parent_directory = self._resolve(new_parent, items)
+        if new_parent_directory.id == directory.id:
+            raise ValueError("directory cannot be moved into itself")
+        descendant_ids = self._descendant_ids(directory.id, items)
+        if new_parent_directory.id in descendant_ids:
+            raise ValueError("directory cannot be moved into its descendant")
+        updated = directory.model_copy(update={"parent_id": new_parent_directory.id})
+        items[directory.id] = updated
+        self._write(items)
+        return self._to_info(updated, items)
+
+    def delete(self, reference: str, *, force: bool = False) -> dict[str, object]:
+        items = self._store.read_all()
+        directory = self._resolve(reference, items)
+        self._ensure_not_root(directory.id, action="deleted")
+        descendant_ids = self._descendant_ids(directory.id, items)
+        if descendant_ids and not force:
+            raise ValueError("directory is not empty; pass force=True to delete recursively")
+        deleted_ids = sorted({directory.id, *descendant_ids})
+        for directory_id in deleted_ids:
+            items.pop(directory_id, None)
+        self._write(items)
+        return {"deleted_count": len(deleted_ids), "deleted_ids": deleted_ids}
+
+    def list_children(self, *, parent: str = ROOT_DIRECTORY_ID) -> list[DirectoryInfo]:
+        items = self._store.read_all()
+        parent_directory = self._resolve(parent, items)
+        children = self._children_by_parent(items).get(parent_directory.id, [])
+        return [self._to_info(child, items) for child in children]
+
+    def list_descendants(self, reference: str) -> list[DirectoryInfo]:
+        items = self._store.read_all()
+        directory = self._resolve(reference, items)
+        descendants = sorted(
+            (items[descendant_id] for descendant_id in self._descendant_ids(directory.id, items)),
+            key=lambda candidate: (self._path_for_id(candidate.id, items), candidate.id),
+        )
+        return [self._to_info(candidate, items) for candidate in descendants]
+
+    def show(self, reference: str) -> DirectoryDetails:
+        items = self._store.read_all()
+        directory = self._resolve(reference, items)
+        ancestry = self._ancestry(directory.id, items)
+        return DirectoryDetails(
+            directory=self._to_info(directory, items),
+            ancestry=[self._to_info(ancestor, items) for ancestor in ancestry],
+        )
+
+    def path_for(self, reference: str) -> str:
+        items = self._store.read_all()
+        directory = self._resolve(reference, items)
+        return self._path_for_id(directory.id, items)
+
+    def _resolve(self, reference: str, items: dict[str, Directory]) -> Directory:
+        normalized = reference.strip()
+        if not normalized:
+            raise ValueError("directory reference cannot be empty")
+        if normalized == ROOT_DIRECTORY_ID or "/" in normalized:
+            canonical = DirectoryPath(segments=normalized).as_posix()
+            cursor = items[ROOT_DIRECTORY_ID]
+            for segment in canonical.split("/")[1:]:
+                next_directory = None
+                for candidate in self._children_by_parent(items).get(cursor.id, []):
+                    if candidate.name == segment:
+                        next_directory = candidate
+                        break
+                if next_directory is None:
+                    raise ValueError(f"directory path segment {segment!r} does not exist under {cursor.id!r}")
+                cursor = next_directory
+            return cursor
+        directory = items.get(normalized)
+        if directory is None:
+            raise ValueError(f"directory {normalized!r} does not exist")
+        return directory
+
+    def _write(self, items: dict[str, Directory]) -> None:
+        self._store._validate_tree(items)
+        self._store._store.write_all(items)
+
+    def _to_info(self, directory: Directory, items: dict[str, Directory]) -> DirectoryInfo:
+        return DirectoryInfo.from_directory(directory, path=self._path_for_id(directory.id, items))
+
+    def _path_for_id(self, directory_id: str, items: dict[str, Directory]) -> str:
+        segments = [directory.name for directory in self._ancestry(directory_id, items)]
+        return DirectoryPath(segments=segments).as_posix()
+
+    def _ancestry(self, directory_id: str, items: dict[str, Directory]) -> list[Directory]:
+        ancestry: list[Directory] = []
+        cursor = items[directory_id]
+        while True:
+            ancestry.append(cursor)
+            if cursor.parent_id is None:
+                break
+            cursor = items[cursor.parent_id]
+        ancestry.reverse()
+        return ancestry
+
+    def _descendant_ids(self, directory_id: str, items: dict[str, Directory]) -> set[str]:
+        children_by_parent = self._children_by_parent(items)
+        stack = [directory_id]
+        descendants: set[str] = set()
+        while stack:
+            parent_id = stack.pop()
+            for child in children_by_parent.get(parent_id, []):
+                if child.id in descendants:
+                    continue
+                descendants.add(child.id)
+                stack.append(child.id)
+        return descendants
+
+    @staticmethod
+    def _ensure_not_root(directory_id: str, *, action: str) -> None:
+        if directory_id == ROOT_DIRECTORY_ID:
+            raise ValueError(f"root directory cannot be {action}")
+
+    @staticmethod
+    def _children_by_parent(items: dict[str, Directory]) -> dict[str, list[Directory]]:
+        children: dict[str, list[Directory]] = defaultdict(list)
+        for directory in items.values():
+            if directory.parent_id is not None:
+                children[directory.parent_id].append(directory)
+        for parent_id in children:
+            children[parent_id].sort(key=lambda directory: (directory.name, directory.id))
+        return dict(children)

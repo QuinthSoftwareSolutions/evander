@@ -18,6 +18,8 @@ from typing import Any
 import httpx
 import yaml
 
+from .worker_directory_context import WorkerDirectoryContextResolver, log_shadow_context
+
 from .config import GatewayConfig, load_config
 from .models import SessionManifest, ToolName
 from .runtime import build_runtime
@@ -762,6 +764,18 @@ def process_work_item(
 
     session_id = _resolve_session_id(config, work_item_id)
     _ensure_issue_session_manifest(config, work_item_id=work_item_id, session_id=session_id)
+    cfg = load_config(config.gateway_config_path)
+    if cfg.enable_directory_scoped_config:
+        shadow_context = WorkerDirectoryContextResolver(cfg).resolve_for_session(
+            session_id,
+            source="ado_issue_worker",
+        )
+        work_item["directory_context"] = shadow_context.as_log_dict()
+        log_shadow_context(
+            logging.getLogger(__name__),
+            prefix=f"work_item={work_item_id} shadow_readiness",
+            context=shadow_context,
+        )
     cmd = _build_setup_command(config, yaml_path, session_id=session_id)
     run_env = os.environ.copy()
     if config.bootstrap_mssql and config.mssql_sa_password:

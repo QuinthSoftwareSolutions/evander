@@ -15,6 +15,8 @@ import httpx
 from pydantic import BaseModel
 
 from .audit import AuditEventType, AuditLogger
+from .config import GatewayConfig
+from .worker_directory_context import WorkerDirectoryContextResolver, log_shadow_context
 
 
 logger = logging.getLogger(__name__)
@@ -511,10 +513,12 @@ class PullRequestFeedbackWorker:
         store: PrFeedbackStore,
         adapters: dict[str, FeedbackProviderAdapter],
         audit_logger: AuditLogger,
+        directory_context_resolver: WorkerDirectoryContextResolver | None = None,
     ) -> None:
         self.store = store
         self.adapters = adapters
         self.audit_logger = audit_logger
+        self.directory_context_resolver = directory_context_resolver
 
     def poll_once(
         self,
@@ -529,16 +533,54 @@ class PullRequestFeedbackWorker:
         stream_key = f"{provider}:{repo}:{pr_id}"
         cursor = self.store.get_cursor(stream_key)
         result = adapter.poll(client=client, repo=repo, pr_id=pr_id, cursor=cursor)
+        resolved_bindings = self._resolve_stream_bindings(
+            provider=provider,
+            repo=repo,
+            pr_id=pr_id,
+            stream_bindings=stream_bindings,
+        )
 
         discovered: list[FeedbackEnvelope] = []
         for envelope in result.feedback:
             if not self.store.add_feedback_if_new(envelope):
                 continue
             discovered.append(envelope)
-            self._log_discovery(envelope, stream_bindings=stream_bindings)
+            self._log_discovery(envelope, stream_bindings=resolved_bindings)
 
         self.store.set_cursor(stream_key, result.next_cursor)
         return discovered
+
+    def _resolve_stream_bindings(
+        self,
+        *,
+        provider: str,
+        repo: str,
+        pr_id: str,
+        stream_bindings: list[dict[str, str | None]] | None,
+    ) -> list[dict[str, Any]]:
+        bindings = [dict(binding) for binding in (stream_bindings or [])]
+        if self.directory_context_resolver is None:
+            return bindings
+
+        resolved: list[dict[str, Any]] = []
+        for binding in bindings:
+            session_id = str(binding.get("session_id") or "").strip() or None
+            fallback_directory_path = str(binding.get("directory_path") or "").strip() or None
+            source = str(binding.get("source") or "pr_feedback_worker").strip() or "pr_feedback_worker"
+            context = self.directory_context_resolver.resolve_for_session(
+                session_id,
+                fallback_directory_path=fallback_directory_path,
+                source=source,
+            )
+            binding["directory_path"] = context.directory_path
+            binding["directory_context"] = context.as_log_dict()
+            log_shadow_context(
+                logger,
+                prefix=f"provider={provider} repo={repo} pr={pr_id} session_id={session_id or 'unknown'} shadow_readiness",
+                context=context,
+            )
+            resolved.append(binding)
+        return resolved
 
     def _log_discovery(
         self,
@@ -634,8 +676,21 @@ def _parse_dt(value: Any) -> datetime:
 
 
 def build_pr_feedback_worker(
-    runtime_dir: Path, *, adapters: dict[str, FeedbackProviderAdapter]
+    runtime_dir: Path,
+    *,
+    adapters: dict[str, FeedbackProviderAdapter],
+    gateway_config: GatewayConfig | None = None,
 ) -> PullRequestFeedbackWorker:
     store = PrFeedbackStore(runtime_dir / "pr-feedback-store.json")
     audit = AuditLogger(runtime_dir / "audit.log")
-    return PullRequestFeedbackWorker(store=store, adapters=adapters, audit_logger=audit)
+    directory_context_resolver = (
+        WorkerDirectoryContextResolver(gateway_config)
+        if gateway_config is not None and gateway_config.enable_directory_scoped_config
+        else None
+    )
+    return PullRequestFeedbackWorker(
+        store=store,
+        adapters=adapters,
+        audit_logger=audit,
+        directory_context_resolver=directory_context_resolver,
+    )

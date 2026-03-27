@@ -147,3 +147,8 @@ def test_host_agent_control_state_path_follows_runtime_dir_default() -> None:
 def test_host_heartbeat_poll_interval_must_be_positive() -> None:
     with pytest.raises(ValueError, match="host_heartbeat_poll_interval_seconds"):
         GatewayConfig.model_validate({"host_heartbeat_poll_interval_seconds": 0})
+
+
+def test_directory_scoped_config_flag_defaults_to_disabled() -> None:
+    config = GatewayConfig.model_validate({})
+    assert config.enable_directory_scoped_config is False

@@ -12,6 +12,8 @@ from pathlib import Path
 
 from .agent_control import AgentControlStore
 from .config import GatewayConfig, load_config
+from .directory_admin import DirectoryAdminService
+from .ownership import DirectoryOwnershipQueries
 from .models import (
     LocalIssueRecord,
     SessionActionResult,
@@ -650,6 +652,8 @@ def _build_issue_session_manifest(
     cfg: GatewayConfig,
     session_id: str,
     vm_id: str,
+    issue_number: str | None,
+    directory_path: str,
     ttl_hours: int | None,
     discord_channels: list[str],
     email_mailboxes: list[str],
@@ -676,6 +680,7 @@ def _build_issue_session_manifest(
     return SessionManifest(
         session_id=session_id,
         vm_id=vm_id,
+        directory_path=directory_path,
         allowed_tools=list(dict.fromkeys(allowed_tools)),
         discord_channel_allowlist=discord_channels,
         email_folder_allowlist=resolved_email_folders,
@@ -685,7 +690,7 @@ def _build_issue_session_manifest(
         email_draft_domain_allowlist=cfg.email_draft_domain_allowlist,
         email_send_enabled=cfg.email_send_enabled,
         expires_at=_utc_now() + _resolve_session_ttl(cfg, ttl_hours),
-        metadata={},
+        metadata={"issue_number": issue_number} if issue_number is not None else {},
     )
 
 
@@ -699,6 +704,20 @@ class AdminService:
         self.local_issue_counter_path = self.config.runtime_dir / "local-issue-counter.txt"
         self.local_issue_yaml_dir = self.config.runtime_dir / "issues"
         self.local_issue_yaml_dir.mkdir(parents=True, exist_ok=True)
+        self.directory_admin = DirectoryAdminService.from_store(
+            directory_store=self.runtime.directories,
+            gateway_config=self.config,
+        )
+        self.directory_ownership = DirectoryOwnershipQueries(
+            directories=self.directory_admin._directories,
+            sessions=self.runtime.sessions,
+            pr_map_path=self.config.pr_map_path,
+            ado_processed_store_path=self.config.runtime_dir / "ado-processed-work-items.json",
+        )
+
+    @property
+    def directory_scoped_config_enabled(self) -> bool:
+        return self.config.enable_directory_scoped_config
 
     def _session_ids_by_vm(self) -> dict[str, list[str]]:
         mapping: dict[str, list[str]] = {}
@@ -709,13 +728,48 @@ class AdminService:
             session_ids.sort()
         return mapping
 
-    def list_sessions(self, *, include_expired: bool = False, expired_only: bool = False) -> list[SessionSummary]:
+    def _directory_paths_by_vm(self) -> dict[str, list[str]]:
+        mapping: dict[str, set[str]] = {}
+        for session in self.runtime.sessions.read_all().values():
+            if session.vm_id:
+                mapping.setdefault(session.vm_id, set()).add(session.directory_path)
+        return {vm_id: sorted(paths) for vm_id, paths in mapping.items()}
+
+    def _normalize_directory_path(self, directory_path: str | None) -> str:
+        if not directory_path:
+            return "root"
+        result = self.directory_admin.get(directory_path)
+        if not result.ok or result.data is None:
+            return "root"
+        return result.data.details.directory.path
+
+    def _direct_owned_entity_ids(self, directory_path: str, *, kind: str) -> set[str]:
+        snapshot = self.directory_ownership.list_entities(directory_path, include_descendants=False)
+        return {entity.entity_id for entity in snapshot.entities if entity.kind == kind}
+
+    def list_sessions(
+        self,
+        *,
+        include_expired: bool = False,
+        expired_only: bool = False,
+        directory_path: str | None = None,
+        direct_only: bool = False,
+    ) -> list[SessionSummary]:
         if include_expired and expired_only:
             raise ValueError("include_expired and expired_only cannot both be true")
 
         now = _utc_now()
+        normalized_directory_path = self._normalize_directory_path(directory_path)
+        owned_session_ids = (
+            self._direct_owned_entity_ids(normalized_directory_path, kind="session") if direct_only else set()
+        )
         summaries: list[SessionSummary] = []
         for session_id, manifest in sorted(self.runtime.sessions.read_all().items(), key=_session_sort_key):
+            if direct_only:
+                if session_id not in owned_session_ids:
+                    continue
+            elif directory_path is not None and manifest.directory_path != normalized_directory_path:
+                continue
             is_expired = manifest.expires_at <= now
             if expired_only:
                 if not is_expired:
@@ -773,11 +827,30 @@ class AdminService:
             message=f"Deleted session {session_id}",
         )
 
-    def list_vms(self, *, include_inactive: bool = True, omit_state: bool = False, vm_user: str = "agent") -> list[VmSummary]:
+    def list_vms(
+        self,
+        *,
+        include_inactive: bool = True,
+        omit_state: bool = False,
+        vm_user: str = "agent",
+        directory_path: str | None = None,
+        direct_only: bool = False,
+    ) -> list[VmSummary]:
         vm_names = _virsh_lines(["list", "--all" if include_inactive else "--state-running", "--name"])
         session_ids_by_vm = self._session_ids_by_vm()
+        directory_paths_by_vm = self._directory_paths_by_vm()
+        normalized_directory_path = self._normalize_directory_path(directory_path)
+        owned_vm_ids = self._direct_owned_entity_ids(normalized_directory_path, kind="vm") if direct_only else set()
         summaries: list[VmSummary] = []
         for vm_name in vm_names:
+            vm_directory_paths = directory_paths_by_vm.get(vm_name, [])
+            if direct_only:
+                if vm_name not in owned_vm_ids and not (
+                    normalized_directory_path == "root" and not vm_directory_paths
+                ):
+                    continue
+            elif directory_path is not None and normalized_directory_path not in vm_directory_paths:
+                continue
             libvirt_state = _dominfo_field(vm_name, "State") or "unknown"
             host_control_status = self.agent_control_store.status_for_vm(vm_name)
             ip_address = _resolve_vm_ip(vm_name) if libvirt_state == "running" else None
@@ -799,6 +872,7 @@ class AdminService:
                     vm_name=vm_name,
                     issue_number=_extract_issue_number(vm_name),
                     session_ids=session_ids_by_vm.get(vm_name, []),
+                    directory_paths=vm_directory_paths,
                     libvirt_state=libvirt_state,
                     ip_address=ip_address,
                     agent_state=agent_state,
@@ -1075,8 +1149,38 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
             [prompt, issue_number, vm_user, "--host-control-state-path", str(self.config.host_agent_control_state_path)],
         )
 
-    def list_local_issues(self) -> list[LocalIssueRecord]:
-        return sorted(self.local_issue_store.read_all().values(), key=lambda issue: issue.issue_number)
+    def list_local_issues(
+        self,
+        *,
+        directory_path: str | None = None,
+        direct_only: bool = False,
+    ) -> list[LocalIssueRecord]:
+        normalized_directory_path = self._normalize_directory_path(directory_path)
+        issues = sorted(self.local_issue_store.read_all().values(), key=lambda issue: issue.issue_number)
+        if direct_only or directory_path is not None:
+            return [issue for issue in issues if issue.directory_path == normalized_directory_path]
+        return issues
+
+    def list_direct_owned_entity_ids(self, directory_path: str, *, kind: str) -> list[str]:
+        return sorted(self._direct_owned_entity_ids(directory_path, kind=kind))
+
+    def list_directory_tree(self):
+        return self.directory_admin.tree("root")
+
+    def get_directory(self, reference: str):
+        return self.directory_admin.get(self._normalize_directory_path(reference))
+
+    def create_directory_child(self, parent: str, name: str):
+        return self.directory_admin.create_child(parent=self._normalize_directory_path(parent), name=name)
+
+    def read_directory_domain_config(self, directory_path: str, domain: str):
+        return self.directory_admin.read_domain_config(self._normalize_directory_path(directory_path), domain=domain)
+
+    def write_directory_domain_config(self, directory_path: str, domain: str, payload: dict[str, object]):
+        return self.directory_admin.write_domain_config(self._normalize_directory_path(directory_path), domain=domain, payload=payload)
+
+    def compute_directory_effective_config(self, directory_path: str, domain: str):
+        return self.directory_admin.compute_effective_config(self._normalize_directory_path(directory_path), domain=domain)
 
     def _next_local_issue_number(self) -> str:
         current = 0
@@ -1097,8 +1201,10 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
         body: str = "",
         repo_source: str | None = None,
         yaml_path: str | None = None,
+        directory_path: str = "root",
     ) -> LocalIssueRecord:
         now = _utc_now()
+        normalized_directory_path = self._normalize_directory_path(directory_path)
         if yaml_path:
             source_path = Path(yaml_path)
             issue_number = _read_issue_number_from_yaml(source_path)
@@ -1129,6 +1235,7 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
             title=title.strip() or f"Local issue {issue_number}",
             body=body.strip(),
             yaml_path=str(target_yaml_path),
+            directory_path=normalized_directory_path,
             repo_source=repo_source.strip() if repo_source else None,
             source="local_gui",
             created_at=now,
@@ -1158,10 +1265,12 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
         frontend_host_checkout: str | None = None,
         frontend_install_roots: list[str] | None = None,
         start_agent: bool = True,
+        directory_path: str = "root",
     ) -> VmActionResult:
         issue_number = _resolve_issue_number(issue)
         resolved_session_id = session_id or _default_issue_session_id(issue_number)
         resolved_vm_name = f"vm-{issue_number}"
+        normalized_directory_path = self._normalize_directory_path(directory_path)
         if self.runtime.sessions.get(resolved_session_id) is not None:
             return VmActionResult(
                 success=False,
@@ -1181,6 +1290,8 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
             cfg=self.config,
             session_id=resolved_session_id,
             vm_id=resolved_vm_name,
+            issue_number=issue_number,
+            directory_path=normalized_directory_path,
             ttl_hours=ttl_hours,
             discord_channels=discord_channels or [],
             email_mailboxes=email_mailboxes or [],
@@ -1265,6 +1376,7 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
             mssql=mssql,
             mssql_init_root=mssql_init_root,
             playwright=playwright,
+            directory_path=issue.directory_path,
         )
 
     def destroy_issue_vm(self, target: str) -> VmActionResult:

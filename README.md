@@ -11,6 +11,7 @@
 - A host-side shared NuGet cache that can be mounted read-only into guests for faster cold restores
 - File-backed session, approval, audit, and draft storage for local development
 - A small CLI for bootstrapping state and creating session manifests
+- Additive directory ownership and directory-scoped configuration support with inherited overrides
 - Libvirt, cloud-init, and firewall scripts for an isolated VM network
 - Systemd service templates and an install script for persistent host services
 - Local bare Git remote tooling for getting code changes back out of VMs
@@ -24,6 +25,20 @@
 - Every tool call is checked against a session manifest.
 - Irreversible actions require a separate approval record and exact payload match.
 - State is append-only where possible and intentionally simple in v1.
+
+## Directory Model
+
+- Every owned entity defaults to directory path `root`.
+- `root` is hard-coded, immutable, and always present.
+- Child directories inherit configuration from `root -> ... -> selected`.
+- `root` itself can carry explicit directory overlay files and acts as the first directory-scoped layer above the global baseline.
+- Directory config uses per-domain overlays, with deep-merge for maps, replace semantics for lists, and last-write-wins for scalars.
+- During transition, global config files and env vars remain the active runtime source of truth.
+
+Directory-scoped config currently runs in transition mode:
+
+- set `enable_directory_scoped_config: true` in `config/gateway.yaml` to enable directory edit/config write surfaces and worker shadow-readiness resolution
+- leave it unset or `false` to keep existing global behavior while still defaulting new records to `directory_path: root`
 
 ## Quick Start
 
@@ -59,6 +74,12 @@
 
    ```bash
    agent-sandbox-cli init-state --config config/gateway.yaml
+   ```
+
+   If you are adopting directory ownership on an existing runtime, backfill missing ownership fields without rewriting unrelated records:
+
+   ```bash
+   agent-sandbox-cli migrate-directory-ownership --config config/gateway.yaml
    ```
 
 4. Start the MCP gateway:
@@ -256,6 +277,8 @@ agent-sandbox-cli start-vm vm-14084
 agent-sandbox-cli shutdown-vm vm-14084
 agent-sandbox-cli create-local-issue --title "Fix failing restore" --body "Investigate restore timeout"
 agent-sandbox-cli list-local-issues --json
+agent-sandbox-cli directories list --parent root
+agent-sandbox-cli directories show root
 ```
 
 ## Local Git Remotes
@@ -619,6 +642,8 @@ agent-sandbox-cli create-session real-session --config config/gateway.yaml
 - `config/`: sample configuration and cloud-init template
 - `systemd/`: service templates for the host gateway, relay, and firewall policy
 - `docs/`: operating notes and next steps
+- `docs/architecture.md`: design rationale, including when logic belongs in `scripts/*.sh` versus
+  `src/agent_sandbox/*.py`
 
 ## Current Limitations
 

@@ -10,7 +10,7 @@ from agent_sandbox.models import SessionManifest
 UTC = timezone.utc
 
 
-def write_config(tmp_path: Path) -> Path:
+def write_config(tmp_path: Path, *, enable_directory_scoped_config: bool = False) -> Path:
     runtime_dir = tmp_path / "runtime"
     config_path = tmp_path / "gateway.yaml"
     config_path.write_text(
@@ -23,6 +23,7 @@ def write_config(tmp_path: Path) -> Path:
                 f'draft_store_path: "{runtime_dir / "drafts.json"}"',
                 f'email_store_path: "{runtime_dir / "emails.json"}"',
                 f'discord_command_store_path: "{runtime_dir / "discord_commands.json"}"',
+                f'enable_directory_scoped_config: {str(enable_directory_scoped_config).lower()}',
             ]
         ),
         encoding="utf-8",
@@ -48,6 +49,7 @@ def test_create_local_issue_persists_yaml_and_store(tmp_path: Path) -> None:
     assert '"Fix VM dashboard"' in yaml_text
 
     payload = json.loads((tmp_path / "runtime" / "local-issues.json").read_text(encoding="utf-8"))
+    assert payload["1"]["directory_path"] == "root"
     assert payload["1"]["repo_source"] == "/src/repo"
 
 
@@ -132,6 +134,84 @@ def test_list_sessions_filters_active_and_expired(tmp_path: Path) -> None:
     assert active[0].issue_number == "123"
     assert active[0].is_expired is False
     assert expired[0].is_expired is True
+
+
+def test_directory_filtered_lists_use_direct_owned_items_only(tmp_path: Path, monkeypatch) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    root_dir = service.create_directory_child("root", "team")
+    assert root_dir.ok is True and root_dir.data is not None
+    team_path = root_dir.data.details.directory.path
+
+    service.runtime.sessions.put(
+        "team-session",
+        SessionManifest(
+            session_id="team-session",
+            vm_id="vm-101",
+            directory_path=team_path,
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={"issue_number": "101"},
+        ),
+    )
+    service.runtime.sessions.put(
+        "root-session",
+        SessionManifest(
+            session_id="root-session",
+            vm_id="vm-root",
+            directory_path="root",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={"issue_number": "1"},
+        ),
+    )
+    service.create_local_issue(title="Root issue", body="a", directory_path="root")
+    service.create_local_issue(title="Team issue", body="b", directory_path=team_path)
+
+    monkeypatch.setattr("agent_sandbox.admin_service._virsh_lines", lambda args: ["vm-101", "vm-root", "vm-free"])
+    monkeypatch.setattr("agent_sandbox.admin_service._dominfo_field", lambda vm_name, field_name: "shut off")
+
+    team_sessions = service.list_sessions(include_expired=True, directory_path=team_path, direct_only=True)
+    team_issues = service.list_local_issues(directory_path=team_path, direct_only=True)
+    team_vms = service.list_vms(include_inactive=True, directory_path=team_path, direct_only=True)
+    root_vms = service.list_vms(include_inactive=True, directory_path="root", direct_only=True)
+
+    assert [summary.session_id for summary in team_sessions] == ["team-session"]
+    assert [issue.title for issue in team_issues] == ["Team issue"]
+    assert [summary.vm_name for summary in team_vms] == ["vm-101"]
+    assert {summary.vm_name for summary in root_vms} == {"vm-root", "vm-free"}
+
+
+def test_admin_service_exposes_directory_config_for_selected_directory(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    created = service.create_directory_child("root", "team")
+    assert created.ok is True and created.data is not None
+    team_path = created.data.details.directory.path
+
+    write_result = service.write_directory_domain_config(
+        team_path,
+        "policy",
+        {"default_session_ttl_seconds": 120},
+    )
+    assert write_result.ok is True
+
+    read_result = service.read_directory_domain_config(team_path, "policy")
+    assert read_result.ok is True
+    assert read_result.data is not None
+    assert read_result.data.config == {"default_session_ttl_seconds": 120}
+
+    effective_result = service.compute_directory_effective_config(team_path, "policy")
+    assert effective_result.ok is True
+    assert effective_result.data is not None
+    assert effective_result.data.resolution.effective_config["default_session_ttl_seconds"] == 120
+
+
+def test_admin_service_rejects_directory_edits_when_feature_flag_disabled(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+
+    result = service.create_directory_child("root", "team")
+
+    assert result.ok is False
+    assert result.errors[0].code == "feature_disabled"
 
 
 def test_renew_session_sets_expiration_from_now(tmp_path: Path) -> None:

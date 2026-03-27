@@ -12,7 +12,7 @@ from agent_sandbox.models import LocalIssueRecord, VmActionResult, VmSummary
 UTC = timezone.utc
 
 
-def write_config(tmp_path: Path) -> Path:
+def write_config(tmp_path: Path, *, enable_directory_scoped_config: bool = False) -> Path:
     runtime_dir = tmp_path / "runtime"
     config_path = tmp_path / "gateway.yaml"
     config_path.write_text(
@@ -25,6 +25,7 @@ def write_config(tmp_path: Path) -> Path:
                 f'draft_store_path: "{runtime_dir / "drafts.json"}"',
                 f'email_store_path: "{runtime_dir / "emails.json"}"',
                 f'discord_command_store_path: "{runtime_dir / "discord_commands.json"}"',
+                f'enable_directory_scoped_config: {str(enable_directory_scoped_config).lower()}',
             ]
         ),
         encoding="utf-8",
@@ -99,9 +100,12 @@ def test_help_groups_commands_by_panel_then_alphabetically() -> None:
     )
     assert output.index("disable-agent") < output.index("enable-agent") < output.index("list-vms") < output.index("logs") < output.index("resume-agent") < output.index("shutdown-vm") < output.index("ssh") < output.index("start-vm")
     assert output.index("seed-discord-channel") < output.index("seed-email")
-    assert "init-state                  Create runtime state files." in output
-    assert "create-issue-vm             Create and bootstrap an issue VM." in output
-    assert "host-heartbeat              Run the host heartbeat worker." in output
+    assert "init-state" in output and "Create runtime state files." in output
+    assert "migrate-directory-ownership" in output
+    assert "Backfill missing directory ownership fields to" in output
+    assert "root." in output
+    assert "create-issue-vm" in output and "Create and bootstrap an issue VM." in output
+    assert "host-heartbeat" in output and "Run the host heartbeat worker." in output
 
 
 def test_init_state_creates_directories_store_with_root(tmp_path: Path) -> None:
@@ -121,6 +125,227 @@ def test_init_state_creates_directories_store_with_root(tmp_path: Path) -> None:
             "metadata": {},
         }
     }
+
+
+def test_migrate_directory_ownership_backfills_missing_fields_only(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path)
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    (runtime_dir / "sessions.json").write_text(
+        json.dumps(
+            {
+                "session-a": {"session_id": "session-a", "allowed_tools": [], "expires_at": "2099-01-01T00:00:00Z"},
+                "session-b": {
+                    "session_id": "session-b",
+                    "allowed_tools": [],
+                    "expires_at": "2099-01-01T00:00:00Z",
+                    "directory_path": "root/team",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (runtime_dir / "local-issues.json").write_text(
+        json.dumps(
+            {
+                "1": {"issue_number": "1", "title": "A", "body": "", "yaml_path": "/tmp/1.yaml"},
+                "2": {
+                    "issue_number": "2",
+                    "title": "B",
+                    "body": "",
+                    "yaml_path": "/tmp/2.yaml",
+                    "directory_path": "root/team",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (runtime_dir / "pr-map.json").write_text(
+        json.dumps(
+            {
+                "entries": {
+                    "github:org/repo:1": {"provider": "github", "repo": "org/repo", "pr_id": "1", "session_id": "session-a"},
+                    "github:org/repo:2": {
+                        "provider": "github",
+                        "repo": "org/repo",
+                        "pr_id": "2",
+                        "session_id": "session-b",
+                        "directory_path": "root/team",
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    (runtime_dir / "ado-processed-work-items.json").write_text(
+        json.dumps(
+            {
+                "10": {"id": 10, "yaml_path": "/tmp/10.yaml"},
+                "11": {"id": 11, "yaml_path": "/tmp/11.yaml", "directory_path": "root/team"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["migrate-directory-ownership", "--config", str(config_path)])
+
+    assert result.exit_code == 0
+    assert "Backfilled 4 record(s) across 4 file(s)" in result.output
+
+    sessions = json.loads((runtime_dir / "sessions.json").read_text(encoding="utf-8"))
+    assert sessions["session-a"]["directory_path"] == "root"
+    assert sessions["session-b"]["directory_path"] == "root/team"
+
+    issues = json.loads((runtime_dir / "local-issues.json").read_text(encoding="utf-8"))
+    assert issues["1"]["directory_path"] == "root"
+    assert issues["2"]["directory_path"] == "root/team"
+
+    pr_map = json.loads((runtime_dir / "pr-map.json").read_text(encoding="utf-8"))
+    assert pr_map["entries"]["github:org/repo:1"]["directory_path"] == "root"
+    assert pr_map["entries"]["github:org/repo:2"]["directory_path"] == "root/team"
+
+    ado_processed = json.loads((runtime_dir / "ado-processed-work-items.json").read_text(encoding="utf-8"))
+    assert ado_processed["10"]["directory_path"] == "root"
+    assert ado_processed["11"]["directory_path"] == "root/team"
+
+
+def test_directories_cli_supports_crud_and_show(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path, enable_directory_scoped_config=True)
+    runner = CliRunner()
+
+    assert runner.invoke(app, ["init-state", "--config", str(config_path)]).exit_code == 0
+
+    create_team = runner.invoke(
+        app,
+        ["directories", "create", "--config", str(config_path), "--parent", "root", "team"],
+    )
+    assert create_team.exit_code == 0
+    assert create_team.output.strip() == "root/team"
+
+    create_lab = runner.invoke(
+        app,
+        ["directories", "create", "--config", str(config_path), "--parent", "root/team", "lab"],
+    )
+    assert create_lab.exit_code == 0
+    assert create_lab.output.strip() == "root/team/lab"
+
+    listed = runner.invoke(app, ["directories", "list", "--config", str(config_path), "--parent", "root"])
+    assert listed.exit_code == 0
+    payload = json.loads(listed.output)
+    assert [item["path"] for item in payload["children"]] == ["root/team"]
+
+    renamed = runner.invoke(
+        app,
+        ["directories", "rename", "--config", str(config_path), "root/team/lab", "sandbox"],
+    )
+    assert renamed.exit_code == 0
+    assert renamed.output.strip() == "root/team/sandbox"
+
+    moved = runner.invoke(
+        app,
+        ["directories", "move", "--config", str(config_path), "root/team/sandbox", "--new-parent", "root"],
+    )
+    assert moved.exit_code == 0
+    assert moved.output.strip() == "root/sandbox"
+
+    shown = runner.invoke(app, ["directories", "show", "--config", str(config_path), "root/sandbox"])
+    assert shown.exit_code == 0
+    show_payload = json.loads(shown.output)
+    assert show_payload["details"]["directory"]["path"] == "root/sandbox"
+    assert [item["path"] for item in show_payload["details"]["ancestry"]] == ["root", "root/sandbox"]
+
+    deleted = runner.invoke(app, ["directories", "delete", "--config", str(config_path), "root/sandbox"])
+    assert deleted.exit_code == 0
+    delete_payload = json.loads(deleted.output)
+    assert delete_payload["deleted_count"] == 1
+
+
+def test_directories_cli_rejects_edit_surfaces_when_feature_flag_disabled(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path, enable_directory_scoped_config=False)
+    runner = CliRunner()
+
+    assert runner.invoke(app, ["init-state", "--config", str(config_path)]).exit_code == 0
+
+    result = runner.invoke(
+        app,
+        ["directories", "create", "--config", str(config_path), "--parent", "root", "team"],
+    )
+
+    assert result.exit_code != 0
+    assert "directory-scoped config is disabled" in result.output
+
+
+def test_directories_cli_supports_config_show_and_set(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path, enable_directory_scoped_config=True)
+    runner = CliRunner()
+
+    assert runner.invoke(app, ["init-state", "--config", str(config_path)]).exit_code == 0
+    assert runner.invoke(
+        app,
+        ["directories", "create", "--config", str(config_path), "--parent", "root", "team"],
+    ).exit_code == 0
+
+    set_result = runner.invoke(
+        app,
+        [
+            "directories",
+            "config-set",
+            "--config",
+            str(config_path),
+            "--domain",
+            "policy",
+            "root/team",
+            '{"default_session_ttl_seconds": 120}',
+        ],
+    )
+    assert set_result.exit_code == 0
+    set_payload = json.loads(set_result.output)
+    assert set_payload["config"] == {"default_session_ttl_seconds": 120}
+
+    show_result = runner.invoke(
+        app,
+        ["directories", "config-show", "--config", str(config_path), "--domain", "policy", "root/team"],
+    )
+    assert show_result.exit_code == 0
+    show_payload = json.loads(show_result.output)
+    assert show_payload["raw"]["config"] == {"default_session_ttl_seconds": 120}
+    assert show_payload["effective"]["resolution"]["effective_config"]["default_session_ttl_seconds"] == 120
+
+
+def test_directories_cli_root_config_becomes_inherited_parent_layer(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path, enable_directory_scoped_config=True)
+    runner = CliRunner()
+
+    assert runner.invoke(app, ["init-state", "--config", str(config_path)]).exit_code == 0
+    assert runner.invoke(
+        app,
+        ["directories", "create", "--config", str(config_path), "--parent", "root", "team"],
+    ).exit_code == 0
+
+    root_set = runner.invoke(
+        app,
+        [
+            "directories",
+            "config-set",
+            "--config",
+            str(config_path),
+            "--domain",
+            "policy",
+            "root",
+            '{"default_session_ttl_seconds": 180}',
+        ],
+    )
+    assert root_set.exit_code == 0
+
+    team_show = runner.invoke(
+        app,
+        ["directories", "config-show", "--config", str(config_path), "--domain", "policy", "root/team"],
+    )
+    assert team_show.exit_code == 0
+    payload = json.loads(team_show.output)
+    assert payload["effective"]["resolution"]["effective_config"]["default_session_ttl_seconds"] == 180
+    assert payload["effective"]["resolution"]["applied_layers"][0]["directory_path"] == "root"
 
 
 def test_create_session_disables_email_send_by_default(tmp_path: Path) -> None:

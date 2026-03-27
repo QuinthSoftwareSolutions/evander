@@ -4,17 +4,22 @@ import json
 import os
 import sys
 from pathlib import Path
+from typing import Any, get_args, get_origin
 
 from .admin_service import AdminService
+from .config import GatewayConfig
+from .directory_config import DIRECTORY_CONFIG_DOMAIN_FIELDS, get_domain_base_config
 
 try:
-    from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Qt, Signal
+    from PySide6.QtCore import QObject, QRunnable, QSettings, QThreadPool, QTimer, Qt, Signal
     from PySide6.QtWidgets import (
         QApplication,
         QButtonGroup,
         QCheckBox,
+        QComboBox,
         QDialog,
         QDialogButtonBox,
+        QDoubleSpinBox,
         QFileDialog,
         QFormLayout,
         QHBoxLayout,
@@ -27,7 +32,9 @@ try:
         QPushButton,
         QPlainTextEdit,
         QRadioButton,
+        QScrollArea,
         QSplitter,
+        QSpinBox,
         QStatusBar,
         QAbstractItemView,
         QStyle,
@@ -43,6 +50,7 @@ except ImportError:  # pragma: no cover - exercised only when GUI extra is missi
     QApplication = None
     QObject = object
     QRunnable = object
+    QSettings = object
     QThreadPool = object
     QTimer = object
     Qt = object
@@ -52,7 +60,8 @@ except ImportError:  # pragma: no cover - exercised only when GUI extra is missi
     QHeaderView = QInputDialog = QLabel = QLineEdit = QMainWindow = QMessageBox = object
     QAbstractItemView = object
     QStyle = object
-    QPushButton = QPlainTextEdit = QRadioButton = QSplitter = QStatusBar = QTableWidget = QTableWidgetItem = object
+    QPushButton = QPlainTextEdit = QRadioButton = QScrollArea = QSplitter = QSpinBox = QDoubleSpinBox = object
+    QComboBox = QStatusBar = QTableWidget = QTableWidgetItem = object
     QToolButton = object
     QTabWidget = QTextEdit = QVBoxLayout = QWidget = object
 
@@ -297,6 +306,219 @@ def _truncate_text(value: str, *, max_length: int = 36) -> str:
     return f"{value[: max_length - 3]}..."
 
 
+def _pretty_config_field_name(name: str) -> str:
+    return name.replace("_", " ")
+
+
+CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
+    "default_session_ttl_seconds": (
+        "Default session lifetime in seconds when a new session is created without an explicit TTL."
+    ),
+    "discord_operator_channel_allowlist": (
+        "Channel IDs that the host Discord bot may poll for operator commands in addition to any "
+        "session-specific Discord channel allowlists."
+    ),
+    "discord_operator_user_allowlist": (
+        "Trusted Discord operator user IDs. Commands from these users are accepted even when they "
+        "arrive outside a session's channel allowlist."
+    ),
+    "discord_poll_operator_dms": (
+        "When enabled, the host Discord bot also polls direct messages from allowlisted operator users."
+    ),
+    "email_draft_domain_allowlist": (
+        "Allowed recipient domains for draft and send operations. Recipients outside these domains "
+        "are rejected by policy."
+    ),
+    "email_draft_recipient_allowlist": (
+        "Allowed full recipient addresses for draft and send operations. If non-empty, every "
+        "recipient must match this allowlist."
+    ),
+    "email_folder_allowlist_by_mailbox": (
+        "JSON object mapping mailbox IDs to the folder names sessions may access. Used by session "
+        "creation defaults and mailbox-specific policy checks."
+    ),
+    "email_mailbox_allowlist": (
+        "Mailbox IDs that new sessions may access by default."
+    ),
+    "email_send_enabled": (
+        "Enables actual email send operations. Leave disabled to keep email access in read-and-draft mode."
+    ),
+    "pr_reply_require_approval": (
+        "Requires an approval request before posting PR feedback replies through the gateway."
+    ),
+    "redacted_keys": (
+        "Request and response field names whose values should be redacted in gateway audit logs."
+    ),
+    "azure_devops_organization_url": (
+        "Base Azure DevOps organization URL used by PR reply and feedback clients, for example "
+        "https://dev.azure.com/<org>."
+    ),
+    "azure_devops_pat_env": (
+        "Name of the host environment variable that holds the Azure DevOps personal access token."
+    ),
+    "azure_devops_project": (
+        "Default Azure DevOps project name used by host-side PR feedback and reply integrations."
+    ),
+    "discord_api_base_url": (
+        "Base URL for the Discord Bot API client used by the host runtime when discord_backend is bot_api."
+    ),
+    "discord_backend": (
+        "Discord adapter mode. 'stub' uses the local JSON command store only; 'bot_api' talks to Discord's "
+        "HTTP API from the host."
+    ),
+    "discord_bot_token_env": (
+        "Name of the host environment variable that contains the Discord bot token for bot_api mode."
+    ),
+    "discord_poll_limit": (
+        "Maximum number of Discord events fetched in each polling request."
+    ),
+    "discord_retry_base_backoff_seconds": (
+        "Initial backoff in seconds between retried Discord API requests."
+    ),
+    "discord_retry_count": (
+        "How many times the host Discord client retries a failed API request before giving up."
+    ),
+    "discord_retry_max_backoff_seconds": (
+        "Upper bound in seconds for Discord API retry backoff."
+    ),
+    "discord_timeout_seconds": (
+        "HTTP timeout in seconds for Discord API requests."
+    ),
+    "email_mailboxes": (
+        "JSON array of mailbox definitions. Each entry supports mailbox_id, provider "
+        "(json_store/gmail/graph), account or address, auth_env_var_names/auth_secret_refs, "
+        "folder_mapping, and folder_allowlist_defaults."
+    ),
+    "email_provider_timeout_seconds": (
+        "HTTP timeout in seconds for provider-backed email and PR reply clients."
+    ),
+    "github_token_env": (
+        "Name of the host environment variable that holds the GitHub token for PR reply and feedback operations."
+    ),
+    "nuget_azure_feed_base_url": (
+        "Base URL for the Azure Artifacts NuGet feed proxied by the host relay."
+    ),
+    "nuget_azure_pat_env": (
+        "Name of the host environment variable that holds the Azure Artifacts PAT for the NuGet relay."
+    ),
+    "nuget_public_feed_base_url": (
+        "Base URL for the public NuGet feed proxied by the host relay."
+    ),
+    "nuget_relay_timeout_seconds": (
+        "Upstream request timeout in seconds for the NuGet relay."
+    ),
+    "openai_api_base_url": (
+        "Upstream OpenAI-compatible API base URL used by the host relay."
+    ),
+    "openai_api_key_env": (
+        "Name of the host environment variable that holds the upstream OpenAI API key."
+    ),
+    "openai_relay_timeout_seconds": (
+        "Upstream request timeout in seconds for the OpenAI relay."
+    ),
+    "host_busy_check_script_path": (
+        "Host script used by the heartbeat worker to detect whether a session VM is currently busy "
+        "before attempting to resume it."
+    ),
+    "host_heartbeat_cooldown_seconds": (
+        "Minimum cooldown in seconds before the heartbeat worker will try to resume the same session again."
+    ),
+    "host_heartbeat_http_timeout_seconds": (
+        "HTTP client timeout in seconds for each host heartbeat feedback polling cycle."
+    ),
+    "host_heartbeat_jitter_seconds": (
+        "Random delay added to each heartbeat sleep interval to avoid perfectly synchronized polling."
+    ),
+    "host_heartbeat_lock_path": (
+        "Single-instance lock file path for the host heartbeat worker."
+    ),
+    "host_heartbeat_poll_interval_seconds": (
+        "Base polling interval in seconds for the host heartbeat worker."
+    ),
+    "host_heartbeat_resume_prompt": (
+        "Prompt text passed to the resume script when waking an agent session to handle newly arrived feedback."
+    ),
+    "host_heartbeat_resume_timeout_seconds": (
+        "Timeout in seconds for the host resume script invocation."
+    ),
+    "host_heartbeat_session_cooldown_path": (
+        "JSON state file path where the heartbeat worker tracks per-session cooldowns."
+    ),
+    "host_heartbeat_stream_conflict_policy": (
+        "How the heartbeat worker handles one PR feedback stream matching multiple sessions: "
+        "'fanout' polls anyway, 'reject' skips that stream."
+    ),
+    "host_heartbeat_vm_user": (
+        "Guest username passed to the resume script when reconnecting to a VM."
+    ),
+    "host_heartbeat_wake_state_path": (
+        "Host-side JSON state file written by the resume script to track recent wake attempts."
+    ),
+    "host_resume_script_path": (
+        "Host script invoked by the heartbeat worker to resume an agent VM when unread feedback is available."
+    ),
+    "bind_network_cidr": (
+        "Network CIDR assigned to the guest bind network. Must be a real network, for example 192.168.250.0/24."
+    ),
+    "gateway_url": (
+        "MCP gateway URL exposed to guests and used by CLI health checks."
+    ),
+    "nuget_relay_host": (
+        "Host address the NuGet relay listens on."
+    ),
+    "nuget_relay_port": (
+        "Port the NuGet relay listens on."
+    ),
+    "openai_relay_host": (
+        "Host address the OpenAI relay listens on."
+    ),
+    "openai_relay_port": (
+        "Port the OpenAI relay listens on."
+    ),
+}
+
+
+def _format_config_value_preview(value: Any) -> str:
+    if value is None:
+        return "Inherited: null"
+    if value == "":
+        return "Inherited: \"\""
+    try:
+        rendered = json.dumps(value, sort_keys=True)
+    except TypeError:
+        rendered = str(value)
+    return f"Inherited: {_truncate_text(rendered, max_length=120)}"
+
+
+def _config_field_kind(field_name: str) -> tuple[str, tuple[Any, ...]]:
+    annotation = GatewayConfig.model_fields[field_name].annotation
+    origin = get_origin(annotation)
+    if annotation is bool:
+        return ("bool", ())
+    if annotation is int:
+        return ("int", ())
+    if annotation is float:
+        return ("float", ())
+    if origin is not None and str(origin).endswith("Literal"):
+        return ("literal", tuple(get_args(annotation)))
+    if annotation in {str, Path}:
+        return ("text", ())
+    return ("json", ())
+
+
+def _config_field_tooltip(field_name: str) -> str:
+    return CONFIG_FIELD_TOOLTIPS.get(field_name, "")
+
+
+def _parent_directory_path(path: str) -> str | None:
+    if path == "root":
+        return None
+    segments = path.split("/")
+    if len(segments) <= 1:
+        return None
+    return "/".join(segments[:-1]) or "root"
+
+
 def _format_session_details(summary) -> str:
     payload = summary.model_dump(mode="json")
     payload["allowed_tools"] = [str(tool) for tool in summary.allowed_tools]
@@ -307,21 +529,46 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
     def __init__(self, service: AdminService) -> None:
         super().__init__()
         self.service = service
+        self.settings = QSettings("agent-sandbox", "admin-app")
         self.thread_pool = QThreadPool()
         self._active_workers: set[_ActionWorker] = set()
         self._refresh_in_flight: set[str] = set()
         self._agent_log_request_token = 0
         self._worker_log_request_token = 0
+        self._config_request_token = 0
+        self._config_form_loading = False
+        self._config_dirty_domains: set[str] = set()
         self._vm_summaries = []
         self._issue_records = []
         self._active_session_summaries = []
         self._expired_session_summaries = []
         self._worker_summaries = []
+        self._selected_directory_path = "root"
         self.setWindowTitle("Agent Sandbox Admin")
         self.resize(1360, 820)
 
+        central = QWidget()
+        central_layout = QVBoxLayout(central)
+        central_layout.setContentsMargins(8, 8, 8, 8)
+        self.setCentralWidget(central)
+
+        directory_toolbar = QHBoxLayout()
+        self.selected_directory_label = QLabel("Selected directory: root")
+        self.select_directory_button = QPushButton("Change")
+        self.select_directory_button.clicked.connect(self.choose_directory)
+        self.create_directory_button = QPushButton("Create Sub-directory")
+        self.create_directory_button.clicked.connect(self.create_subdirectory)
+        self.delete_directory_button = QPushButton("Delete Directory")
+        self.delete_directory_button.clicked.connect(self.delete_selected_directory)
+        directory_toolbar.addWidget(self.selected_directory_label)
+        directory_toolbar.addWidget(self.select_directory_button)
+        directory_toolbar.addWidget(self.create_directory_button)
+        directory_toolbar.addWidget(self.delete_directory_button)
+        directory_toolbar.addStretch(1)
+        central_layout.addLayout(directory_toolbar)
+
         self.tabs = QTabWidget()
-        self.setCentralWidget(self.tabs)
+        central_layout.addWidget(self.tabs)
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
 
@@ -380,6 +627,61 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self.worker_log_view = QTextEdit()
         self.worker_log_view.setReadOnly(True)
         self.worker_log_view.setPlaceholderText("Select a background worker to see its logs.")
+        self.config_status_label = QLabel("No configuration loaded.")
+        self.config_status_label.setWordWrap(True)
+        self.config_tabs = QTabWidget()
+        self._config_widgets: dict[str, dict[str, object]] = {}
+        for domain in ("policy", "providers", "workers", "vm-defaults"):
+            page = QWidget()
+            page_layout = QVBoxLayout(page)
+            form_scroll = QScrollArea()
+            form_scroll.setWidgetResizable(True)
+            form_container = QWidget()
+            form_layout = QFormLayout(form_container)
+            form_scroll.setWidget(form_container)
+            field_specs: dict[str, dict[str, object]] = {}
+            for field_name in sorted(DIRECTORY_CONFIG_DOMAIN_FIELDS[domain]):
+                editor = self._build_config_field_editor(domain, field_name)
+                label = QLabel(_pretty_config_field_name(field_name))
+                tooltip = _config_field_tooltip(field_name)
+                if tooltip:
+                    label.setToolTip(tooltip)
+                form_layout.addRow(label, editor["container"])
+                field_specs[field_name] = editor
+            validation_view = QTextEdit()
+            validation_view.setReadOnly(True)
+            validation_view.setPlaceholderText("Validation diagnostics will appear here.")
+            save_button = QPushButton("Save")
+            save_button.clicked.connect(lambda _checked=False, domain=domain: self.save_config_domain(domain))
+            view_parent_defaults_button = QPushButton("View Parent Defaults")
+            view_parent_defaults_button.clicked.connect(
+                lambda _checked=False, domain=domain: self.show_parent_defaults_dialog(domain)
+            )
+            view_effective_button = QPushButton("View Effective JSON")
+            view_effective_button.clicked.connect(
+                lambda _checked=False, domain=domain: self.show_effective_config_dialog(domain)
+            )
+            action_row = QHBoxLayout()
+            action_row.addWidget(save_button)
+            action_row.addWidget(view_parent_defaults_button)
+            action_row.addWidget(view_effective_button)
+            action_row.addStretch(1)
+            page_layout.addWidget(QLabel("Overrides"))
+            page_layout.addWidget(form_scroll)
+            page_layout.addLayout(action_row)
+            page_layout.addWidget(QLabel("Validation"))
+            page_layout.addWidget(validation_view)
+            self.config_tabs.addTab(page, domain)
+            self._config_widgets[domain] = {
+                "form_scroll": form_scroll,
+                "field_specs": field_specs,
+                "validation_view": validation_view,
+                "save_button": save_button,
+                "view_parent_defaults_button": view_parent_defaults_button,
+                "view_effective_button": view_effective_button,
+                "latest_parent_defaults_payload": None,
+                "latest_effective_payload": None,
+            }
 
         vm_page = QWidget()
         vm_layout = QVBoxLayout(vm_page)
@@ -545,10 +847,17 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         worker_splitter.setStretchFactor(1, 1)
         worker_layout.addWidget(worker_splitter)
 
+        config_page = QWidget()
+        config_layout = QVBoxLayout(config_page)
+        config_layout.addWidget(self.config_status_label)
+        config_layout.addWidget(self.config_tabs)
+
         self.tabs.addTab(vm_page, "VMs")
         self.tabs.addTab(issue_page, "Issues")
         self.tabs.addTab(sessions_page, "Sessions")
+        self.tabs.addTab(config_page, "Configuration")
         self.tabs.addTab(worker_page, "Workers")
+        self.tabs.currentChanged.connect(self._on_main_tab_changed)
 
         self.refresh_timer = QTimer(self)
         self.refresh_timer.setInterval(5000)
@@ -557,9 +866,12 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self.refresh_timer.timeout.connect(self.refresh_sessions)
         self.refresh_timer.start()
 
+        self._restore_selected_directory()
+        self._apply_directory_feature_state()
         self._refresh_visible_data()
         self.refresh_issues()
         self.refresh_sessions()
+        self.refresh_configuration()
         self.refresh_workers()
         self.update_vm_action_bar()
         self.update_issue_action_bar()
@@ -629,11 +941,29 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
 
     def _refresh_visible_data(self, *, manual: bool = False) -> None:
         self.refresh_vms(manual=manual)
-        if self.tabs.currentWidget() is not None and self.tabs.currentWidget() == self.tabs.widget(3):
+        if self.tabs.currentWidget() is not None and self.tabs.tabText(self.tabs.currentIndex()) == "Workers":
             self.refresh_workers(manual=manual)
+        if self.tabs.currentWidget() is not None and self.tabs.tabText(self.tabs.currentIndex()) == "Configuration":
+            self.refresh_configuration()
+
+    def _on_main_tab_changed(self) -> None:
+        current_tab = self.tabs.tabText(self.tabs.currentIndex())
+        if current_tab == "Configuration":
+            self.refresh_configuration()
+        elif current_tab == "Workers":
+            self.refresh_workers(manual=True)
 
     def refresh_vms(self, *, manual: bool = False) -> None:
-        self._start_refresh("vms", lambda: self.service.list_vms(include_inactive=True, vm_user="agent"), lambda summaries: self._apply_vm_refresh(summaries, refresh_log=manual))
+        self._start_refresh(
+            "vms",
+            lambda: self.service.list_vms(
+                include_inactive=True,
+                vm_user="agent",
+                directory_path=self._selected_directory_path,
+                direct_only=True,
+            ),
+            lambda summaries: self._apply_vm_refresh(summaries, refresh_log=manual),
+        )
 
     def _apply_vm_refresh(self, summaries, *, refresh_log: bool) -> None:
         previously_selected_vm = None
@@ -844,7 +1174,11 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         )
 
     def refresh_issues(self) -> None:
-        self._start_refresh("issues", self.service.list_local_issues, self._apply_issue_refresh)
+        self._start_refresh(
+            "issues",
+            lambda: self.service.list_local_issues(directory_path=self._selected_directory_path, direct_only=True),
+            self._apply_issue_refresh,
+        )
 
     def _apply_issue_refresh(self, issues) -> None:
         previously_selected_issue = None
@@ -913,6 +1247,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             return
         payload = dialog.payload()
         start_vm = bool(payload.pop("start_vm", False))
+        payload["directory_path"] = self._selected_directory_path
 
         def after_create(record) -> None:
             if start_vm:
@@ -980,7 +1315,520 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self.confirm_delete_issue(issue.issue_number)
 
     def refresh_sessions(self) -> None:
-        self._start_refresh("sessions", lambda: self.service.list_sessions(include_expired=True), self._apply_session_refresh)
+        self._start_refresh(
+            "sessions",
+            lambda: self.service.list_sessions(
+                include_expired=True,
+                directory_path=self._selected_directory_path,
+                direct_only=True,
+            ),
+            self._apply_session_refresh,
+        )
+
+    def _restore_selected_directory(self) -> None:
+        stored = self.settings.value("selected_directory", "root")
+        self._set_selected_directory(str(stored or "root"), refresh=False)
+
+    def _set_selected_directory(self, directory_path: str, *, refresh: bool = True) -> None:
+        result = self.service.get_directory(directory_path)
+        if not result.ok or result.data is None:
+            directory_path = "root"
+            result = self.service.get_directory("root")
+        self._selected_directory_path = result.data.details.directory.path if result.ok and result.data else "root"
+        self.selected_directory_label.setText(f"Selected directory: {self._selected_directory_path}")
+        self.settings.setValue("selected_directory", self._selected_directory_path)
+        self._update_directory_action_bar()
+        if refresh:
+            self.refresh_vms(manual=True)
+            self.refresh_issues()
+            self.refresh_sessions()
+            self.refresh_configuration()
+
+    def _update_directory_action_bar(self) -> None:
+        edits_enabled = self.service.directory_scoped_config_enabled
+        self.create_directory_button.setEnabled(edits_enabled)
+        self.delete_directory_button.setEnabled(edits_enabled and self._selected_directory_path != "root")
+
+    def _build_config_field_editor(self, domain: str, field_name: str) -> dict[str, object]:
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        tooltip = _config_field_tooltip(field_name)
+
+        controls_row = QHBoxLayout()
+        controls_row.setContentsMargins(0, 0, 0, 0)
+        controls_row.setSpacing(6)
+        include_checkbox = QCheckBox("Override")
+        clear_checkbox = QCheckBox("Clear")
+        kind, literal_choices = _config_field_kind(field_name)
+        if kind == "bool":
+            control = QComboBox()
+            control.addItem("false")
+            control.addItem("true")
+            control.setMaximumWidth(90)
+        elif kind == "int":
+            control = QSpinBox()
+            control.setRange(-1_000_000_000, 1_000_000_000)
+            control.setMaximumWidth(140)
+        elif kind == "float":
+            control = QDoubleSpinBox()
+            control.setRange(-1_000_000_000.0, 1_000_000_000.0)
+            control.setDecimals(6)
+            control.setMaximumWidth(160)
+        elif kind == "literal":
+            control = QComboBox()
+            for choice in literal_choices:
+                control.addItem(str(choice))
+            control.setMaximumWidth(220)
+        elif kind == "text":
+            control = QLineEdit()
+            control.setMaximumWidth(360)
+        else:
+            control = QPlainTextEdit()
+            control.setPlaceholderText("JSON value")
+            control.setMaximumBlockCount(0)
+            control.setFixedHeight(84)
+
+        inherited_label = QLabel("Inherited: not loaded yet")
+        inherited_label.setWordWrap(False)
+        inherited_label.setMinimumWidth(160)
+        if tooltip:
+            container.setToolTip(tooltip)
+            control.setToolTip(tooltip)
+            inherited_label.setToolTip(tooltip)
+            include_checkbox.setToolTip(f"{tooltip}\n\nEnable to set a directory-specific override for this field.")
+            clear_checkbox.setToolTip(f"{tooltip}\n\nEnable with Override to write an explicit null and clear the inherited value.")
+
+        if kind == "json":
+            toggle_group = QHBoxLayout()
+            toggle_group.setContentsMargins(0, 0, 0, 0)
+            toggle_group.setSpacing(6)
+            toggle_group.addWidget(include_checkbox)
+            toggle_group.addWidget(clear_checkbox)
+            controls_row.addWidget(inherited_label, 1)
+            controls_row.addStretch(1)
+            controls_row.addLayout(toggle_group)
+            layout.addLayout(controls_row)
+            layout.addWidget(control)
+        else:
+            controls_row.addWidget(control)
+            controls_row.addWidget(inherited_label)
+            controls_row.addStretch(1)
+            toggle_group = QHBoxLayout()
+            toggle_group.setContentsMargins(0, 0, 0, 0)
+            toggle_group.setSpacing(6)
+            toggle_group.addWidget(include_checkbox)
+            toggle_group.addWidget(clear_checkbox)
+            controls_row.addLayout(toggle_group)
+            layout.addLayout(controls_row)
+
+        spec = {
+            "container": container,
+            "kind": kind,
+            "control": control,
+            "include_checkbox": include_checkbox,
+            "clear_checkbox": clear_checkbox,
+            "inherited_label": inherited_label,
+        }
+        self._update_config_field_control_value(spec, None)
+        self._update_config_field_enabled_state_from_spec(spec)
+        include_checkbox.toggled.connect(lambda _checked=False, domain=domain: self._mark_config_domain_dirty(domain))
+        include_checkbox.toggled.connect(
+            lambda _checked=False, domain=domain, field_name=field_name: self._update_config_field_enabled_state(
+                domain, field_name
+            )
+        )
+        clear_checkbox.toggled.connect(lambda _checked=False, domain=domain: self._mark_config_domain_dirty(domain))
+        clear_checkbox.toggled.connect(
+            lambda _checked=False, domain=domain, field_name=field_name: self._update_config_field_enabled_state(
+                domain, field_name
+            )
+        )
+        if kind == "bool":
+            control.currentTextChanged.connect(lambda _value, domain=domain: self._mark_config_domain_dirty(domain))
+        elif kind in {"int", "float"}:
+            control.valueChanged.connect(lambda _value, domain=domain: self._mark_config_domain_dirty(domain))
+        elif kind == "literal":
+            control.currentTextChanged.connect(lambda _value, domain=domain: self._mark_config_domain_dirty(domain))
+        elif kind == "text":
+            control.textChanged.connect(lambda _value, domain=domain: self._mark_config_domain_dirty(domain))
+        else:
+            control.textChanged.connect(lambda domain=domain: self._mark_config_domain_dirty(domain))
+        return spec
+
+    def _mark_config_domain_dirty(self, domain: str) -> None:
+        if self._config_form_loading:
+            return
+        self._config_dirty_domains.add(domain)
+
+    def _update_config_field_enabled_state(self, domain: str, field_name: str) -> None:
+        spec = self._config_widgets[domain]["field_specs"][field_name]
+        self._update_config_field_enabled_state_from_spec(spec)
+
+    @staticmethod
+    def _update_config_field_enabled_state_from_spec(spec: dict[str, object]) -> None:
+        include_checkbox = spec["include_checkbox"]
+        clear_checkbox = spec["clear_checkbox"]
+        control = spec["control"]
+        enabled = include_checkbox.isChecked()
+        clear_checkbox.setEnabled(enabled)
+        control.setEnabled(enabled and not clear_checkbox.isChecked())
+
+    def _populate_config_form(self, domain: str, *, raw_config: dict[str, Any], inherited_config: dict[str, Any]) -> None:
+        self._config_form_loading = True
+        try:
+            field_specs = self._config_widgets[domain]["field_specs"]
+            for field_name, spec in field_specs.items():
+                spec["inherited_label"].setText(
+                    _format_config_value_preview(inherited_config.get(field_name))
+                    if field_name in inherited_config
+                    else "Inherited: not set"
+                )
+                if field_name in raw_config:
+                    spec["include_checkbox"].setChecked(True)
+                    if raw_config[field_name] is None:
+                        spec["clear_checkbox"].setChecked(True)
+                        self._update_config_field_control_value(spec, None)
+                    else:
+                        spec["clear_checkbox"].setChecked(False)
+                        self._update_config_field_control_value(spec, raw_config[field_name])
+                else:
+                    spec["include_checkbox"].setChecked(False)
+                    spec["clear_checkbox"].setChecked(False)
+                    self._update_config_field_control_value(spec, None)
+                self._update_config_field_enabled_state_from_spec(spec)
+        finally:
+            self._config_form_loading = False
+        self._config_dirty_domains.discard(domain)
+
+    @staticmethod
+    def _update_config_field_control_value(spec: dict[str, object], value: Any) -> None:
+        kind = spec["kind"]
+        control = spec["control"]
+        if kind == "bool":
+            control.setCurrentText("true" if bool(value) else "false")
+        elif kind == "int":
+            control.setValue(int(value) if value is not None else 0)
+        elif kind == "float":
+            control.setValue(float(value) if value is not None else 0.0)
+        elif kind == "literal":
+            text_value = "" if value is None else str(value)
+            index = control.findText(text_value)
+            if index >= 0:
+                control.setCurrentIndex(index)
+            elif control.count() > 0:
+                control.setCurrentIndex(0)
+        elif kind == "text":
+            control.setText("" if value is None else str(value))
+        else:
+            text = "" if value is None else json.dumps(value, indent=2, sort_keys=True)
+            control.setPlainText(text)
+            control.document().setModified(False)
+
+    @staticmethod
+    def _read_config_field_control_value(spec: dict[str, object]) -> Any:
+        kind = spec["kind"]
+        control = spec["control"]
+        if kind == "bool":
+            return control.currentText() == "true"
+        if kind == "int":
+            return int(control.value())
+        if kind == "float":
+            return float(control.value())
+        if kind == "literal":
+            return control.currentText()
+        if kind == "text":
+            return control.text().strip()
+        raw_text = control.toPlainText().strip()
+        if not raw_text:
+            raise ValueError("structured values must be valid JSON")
+        return json.loads(raw_text)
+
+    @staticmethod
+    def _config_field_has_override(spec: dict[str, object]) -> bool:
+        kind = spec["kind"]
+        control = spec["control"]
+        if kind == "bool":
+            return True
+        if kind in {"int", "float"}:
+            return True
+        if kind == "literal":
+            return bool(control.currentText().strip())
+        if kind == "text":
+            return bool(control.text().strip())
+        return bool(control.toPlainText().strip())
+
+    def _collect_config_form_payload(self, domain: str) -> dict[str, Any]:
+        payload: dict[str, Any] = {}
+        for field_name, spec in self._config_widgets[domain]["field_specs"].items():
+            if not spec["include_checkbox"].isChecked():
+                continue
+            if spec["clear_checkbox"].isChecked():
+                payload[field_name] = None
+                continue
+            payload[field_name] = self._read_config_field_control_value(spec)
+        return payload
+
+    def _apply_directory_feature_state(self) -> None:
+        enabled = self.service.directory_scoped_config_enabled
+        self._update_directory_action_bar()
+        for widgets in self._config_widgets.values():
+            for spec in widgets["field_specs"].values():
+                spec["include_checkbox"].setEnabled(enabled)
+                if not enabled:
+                    spec["clear_checkbox"].setEnabled(False)
+                    spec["control"].setEnabled(False)
+                else:
+                    self._update_config_field_enabled_state_from_spec(spec)
+            widgets["save_button"].setEnabled(enabled)
+        if not enabled:
+            self.config_status_label.setText(
+                "Directory-scoped config is disabled; using root/global configuration defaults."
+            )
+
+    def choose_directory(self) -> None:
+        tree_result = self.service.list_directory_tree()
+        if not tree_result.ok or tree_result.data is None:
+            QMessageBox.warning(self, "Directories", "Directory management is unavailable; using root.")
+            self._set_selected_directory("root")
+            return
+
+        def flatten(node) -> list[str]:
+            values = [node.directory.path]
+            for child in node.children:
+                values.extend(flatten(child))
+            return values
+
+        options = flatten(tree_result.data)
+        selected, accepted = QInputDialog.getItem(
+            self,
+            "Select directory",
+            "Directory",
+            options,
+            options.index(self._selected_directory_path) if self._selected_directory_path in options else 0,
+            False,
+        )
+        if accepted and selected:
+            self._set_selected_directory(selected)
+
+    def create_subdirectory(self) -> None:
+        if not self.service.directory_scoped_config_enabled:
+            QMessageBox.information(
+                self,
+                "Create sub-directory",
+                "Directory-scoped config is disabled; set enable_directory_scoped_config=true to enable edits.",
+            )
+            return
+        name, accepted = QInputDialog.getText(
+            self,
+            "Create sub-directory",
+            f"New directory name under {self._selected_directory_path}",
+        )
+        if not accepted or not name.strip():
+            return
+        result = self.service.create_directory_child(self._selected_directory_path, name.strip())
+        if not result.ok:
+            message = result.errors[0].message if result.errors else "Directory create failed."
+            QMessageBox.warning(self, "Create sub-directory", message)
+            self.append_log(f"Create sub-directory failed: {message}")
+            return
+        self._set_selected_directory(self._selected_directory_path, refresh=True)
+        self.append_log(f"Created directory {result.data.details.directory.path}")
+
+    def delete_selected_directory(self) -> None:
+        if not self.service.directory_scoped_config_enabled:
+            QMessageBox.information(
+                self,
+                "Delete directory",
+                "Directory-scoped config is disabled; set enable_directory_scoped_config=true to enable edits.",
+            )
+            return
+        if self._selected_directory_path == "root":
+            QMessageBox.information(self, "Delete directory", "The root directory cannot be deleted.")
+            return
+        answer = QMessageBox.question(
+            self,
+            "Delete directory",
+            f"Delete directory {self._selected_directory_path}? Only empty directories can be deleted here.",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        result = self.service.directory_admin.delete(self._selected_directory_path, recursive=False)
+        if not result.ok:
+            message = result.errors[0].message if result.errors else "Directory delete failed."
+            QMessageBox.warning(self, "Delete directory", message)
+            self.append_log(f"Delete directory failed: {message}")
+            return
+        deleted_path = self._selected_directory_path
+        parent_path = _parent_directory_path(deleted_path) or "root"
+        self._set_selected_directory(parent_path, refresh=True)
+        self.append_log(f"Deleted directory {deleted_path}")
+
+    def refresh_configuration(self) -> None:
+        self._config_request_token += 1
+        request_token = self._config_request_token
+
+        def load_config_state():
+            state: dict[str, object] = {"selected_directory": self._selected_directory_path}
+            directory_result = self.service.get_directory(self._selected_directory_path)
+            state["directory"] = directory_result
+            for domain in ("policy", "providers", "workers", "vm-defaults"):
+                state[f"raw:{domain}"] = self.service.read_directory_domain_config(self._selected_directory_path, domain)
+                state[f"effective:{domain}"] = self.service.compute_directory_effective_config(
+                    self._selected_directory_path,
+                    domain,
+                )
+                parent_path = _parent_directory_path(self._selected_directory_path)
+                state[f"parent:{domain}"] = (
+                    self.service.compute_directory_effective_config(parent_path, domain) if parent_path else None
+                )
+            return state
+
+        worker = _ActionWorker(load_config_state)
+        self._active_workers.add(worker)
+        worker.signals.finished.connect(
+            lambda payload, worker=worker, request_token=request_token: self._handle_config_refresh_success(
+                payload, worker, request_token
+            )
+        )
+        worker.signals.failed.connect(
+            lambda error, worker=worker, request_token=request_token: self._handle_config_refresh_failure(
+                error, worker, request_token
+            )
+        )
+        self.thread_pool.start(worker)
+
+    def _handle_config_refresh_success(self, payload, worker: _ActionWorker, request_token: int) -> None:
+        self._discard_worker(worker)
+        if request_token != self._config_request_token:
+            return
+        selected_directory = payload["selected_directory"]
+        preserved_local_edits = False
+        self.config_status_label.setText(f"Configuration for {selected_directory}")
+        for domain, widgets in self._config_widgets.items():
+            raw_result = payload.get(f"raw:{domain}")
+            effective_result = payload.get(f"effective:{domain}")
+            parent_result = payload.get(f"parent:{domain}")
+            raw_config = {}
+            if getattr(raw_result, "ok", False) and raw_result.data is not None and raw_result.data.config is not None:
+                raw_config = raw_result.data.config
+            parent_effective_config = {}
+            if parent_result and getattr(parent_result, "ok", False) and parent_result.data is not None:
+                parent_effective_config = parent_result.data.resolution.effective_config
+            elif getattr(effective_result, "ok", False) and effective_result.data is not None:
+                parent_effective_config = get_domain_base_config(self.service.config, domain)
+            if domain not in self._config_dirty_domains:
+                self._populate_config_form(
+                    domain,
+                    raw_config=raw_config,
+                    inherited_config=parent_effective_config,
+                )
+            else:
+                preserved_local_edits = True
+            if parent_result and getattr(parent_result, "ok", False) and parent_result.data is not None:
+                widgets["latest_parent_defaults_payload"] = {
+                    "directory_path": _parent_directory_path(selected_directory),
+                    "resolution": parent_result.data.model_dump(mode="json"),
+                }
+            else:
+                widgets["latest_parent_defaults_payload"] = {
+                    "directory_path": None,
+                    "baseline": get_domain_base_config(self.service.config, domain),
+                    "note": (
+                        "Root directory has no parent directory. This baseline is the global config for "
+                        "the domain before any root overrides are applied."
+                    ),
+                }
+            if getattr(effective_result, "ok", False) and effective_result.data is not None:
+                widgets["latest_effective_payload"] = {
+                    "resolution": effective_result.data.model_dump(mode="json"),
+                    "validation_diagnostics": [
+                        diag.model_dump(mode="json") for diag in effective_result.validation_diagnostics
+                    ],
+                }
+                diagnostics = [diag.message for diag in effective_result.validation_diagnostics]
+                widgets["validation_view"].setPlainText("\n".join(diagnostics) if diagnostics else "No validation errors.")
+            else:
+                error_messages = [error.message for error in getattr(effective_result, "errors", [])]
+                widgets["latest_effective_payload"] = {
+                    "errors": error_messages,
+                }
+                widgets["validation_view"].setPlainText("\n".join(error_messages) if error_messages else "Unavailable.")
+        if preserved_local_edits:
+            self.config_status_label.setText(
+                f"Configuration for {selected_directory}. Local override edits were preserved."
+            )
+
+    def _handle_config_refresh_failure(self, error: str, worker: _ActionWorker, request_token: int) -> None:
+        self._discard_worker(worker)
+        if request_token != self._config_request_token:
+            return
+        self.config_status_label.setText(f"Configuration unavailable: {error}")
+
+    def show_parent_defaults_dialog(self, domain: str) -> None:
+        widgets = self._config_widgets[domain]
+        payload = widgets.get("latest_parent_defaults_payload")
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"Resolved Parent Defaults: {domain}")
+        dialog.resize(900, 640)
+        layout = QVBoxLayout(dialog)
+        text_view = QTextEdit()
+        text_view.setReadOnly(True)
+        if payload is None:
+            text_view.setPlainText("Resolved parent defaults have not been loaded yet.")
+        else:
+            text_view.setPlainText(json.dumps(payload, indent=2, sort_keys=True))
+        layout.addWidget(text_view)
+        buttons = QDialogButtonBox(QDialogButtonBox.Close)
+        buttons.rejected.connect(dialog.reject)
+        buttons.accepted.connect(dialog.accept)
+        buttons.button(QDialogButtonBox.Close).clicked.connect(dialog.accept)
+        layout.addWidget(buttons)
+        dialog.exec()
+
+    def show_effective_config_dialog(self, domain: str) -> None:
+        widgets = self._config_widgets[domain]
+        payload = widgets.get("latest_effective_payload")
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"Effective Configuration: {domain}")
+        dialog.resize(900, 640)
+        layout = QVBoxLayout(dialog)
+        text_view = QTextEdit()
+        text_view.setReadOnly(True)
+        if payload is None:
+            text_view.setPlainText("Effective configuration has not been loaded yet.")
+        else:
+            text_view.setPlainText(json.dumps(payload, indent=2, sort_keys=True))
+        layout.addWidget(text_view)
+        buttons = QDialogButtonBox(QDialogButtonBox.Close)
+        buttons.rejected.connect(dialog.reject)
+        buttons.accepted.connect(dialog.accept)
+        buttons.button(QDialogButtonBox.Close).clicked.connect(dialog.accept)
+        layout.addWidget(buttons)
+        dialog.exec()
+
+    def save_config_domain(self, domain: str) -> None:
+        if not self.service.directory_scoped_config_enabled:
+            self.config_status_label.setText(
+                "Directory-scoped config is disabled; save is unavailable until enable_directory_scoped_config=true."
+            )
+            return
+        widgets = self._config_widgets[domain]
+        try:
+            payload = self._collect_config_form_payload(domain)
+        except (json.JSONDecodeError, ValueError) as exc:
+            QMessageBox.warning(self, "Save configuration", f"Invalid configuration value: {exc}")
+            return
+        result = self.service.write_directory_domain_config(self._selected_directory_path, domain, payload)
+        if not result.ok:
+            message = result.errors[0].message if result.errors else "Save failed."
+            widgets["validation_view"].setPlainText(message)
+            self.config_status_label.setText(f"Save failed for {domain}: {message}")
+            return
+        self._config_dirty_domains.discard(domain)
+        self.config_status_label.setText(f"Saved {domain} overrides for {self._selected_directory_path}")
+        self.refresh_configuration()
 
     def _apply_session_refresh(self, session_summaries) -> None:
         selected_session_id = None

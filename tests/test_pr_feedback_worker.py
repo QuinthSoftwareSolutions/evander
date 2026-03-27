@@ -6,13 +6,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from agent_sandbox.audit import AuditLogger
+from agent_sandbox.config import GatewayConfig
 from agent_sandbox.pr_feedback_worker import (
     AzureDevOpsFeedbackAdapter,
     FeedbackEnvelope,
     GitHubFeedbackAdapter,
     PrFeedbackStore,
     PullRequestFeedbackWorker,
+    build_pr_feedback_worker,
 )
+from agent_sandbox.worker_directory_context import ShadowDomainContext, WorkerDirectoryContext
 
 
 def test_pr_feedback_store_dedupes_feedback(tmp_path: Path) -> None:
@@ -491,3 +494,90 @@ def test_worker_logs_audit_for_new_feedback(tmp_path: Path) -> None:
     assert payload["args"]["stream_bindings"] == [
         {"session_id": "session-123", "source": "session_manifest", "vm_id": "vm-9"}
     ]
+
+
+def test_worker_enriches_stream_bindings_with_directory_context(tmp_path: Path) -> None:
+    store = PrFeedbackStore(tmp_path / "runtime" / "pr-feedback-store.json")
+    audit = AuditLogger(tmp_path / "runtime" / "audit.log")
+
+    class StubAdapter:
+        provider_name = "github"
+
+        def poll(self, **kwargs: object):
+            return type(
+                "Result",
+                (),
+                {
+                    "feedback": [
+                        FeedbackEnvelope(
+                            feedback_id="github:issue_comment:18",
+                            provider="github",
+                            repo="org/repo",
+                            pr_id="77",
+                            thread_id="issue_comment:18",
+                            comment_id="18",
+                            author="octocat",
+                            body="check shadow config",
+                            created_at=datetime(2026, 3, 21, 0, 0, 1, tzinfo=timezone.utc),
+                        )
+                    ],
+                    "next_cursor": "2026-03-21T00:00:01Z",
+                },
+            )()
+
+    class StubResolver:
+        def resolve_for_session(self, session_id: str | None, *, fallback_directory_path: str | None = None, source: str):
+            return WorkerDirectoryContext(
+                directory_path=fallback_directory_path or "root/team-a",
+                source=source,
+                session_id=session_id,
+                domains=(ShadowDomainContext(domain="workers", diff_paths=("pool.max",)),),
+            )
+
+    worker = PullRequestFeedbackWorker(
+        store=store,
+        adapters={"github": StubAdapter()},
+        audit_logger=audit,
+        directory_context_resolver=StubResolver(),
+    )
+
+    worker.poll_once(
+        client=object(),
+        provider="github",
+        repo="org/repo",
+        pr_id="77",
+        stream_bindings=[
+            {
+                "session_id": "session-123",
+                "vm_id": "vm-9",
+                "source": "session_manifest",
+                "directory_path": "root/team-a",
+            }
+        ],
+    )
+
+    payload = json.loads((tmp_path / "runtime" / "audit.log").read_text(encoding="utf-8").strip())
+    assert payload["args"]["stream_bindings"] == [
+        {
+            "session_id": "session-123",
+            "source": "session_manifest",
+            "vm_id": "vm-9",
+            "directory_path": "root/team-a",
+            "directory_context": {
+                "directory_path": "root/team-a",
+                "source": "session_manifest",
+                "session_id": "session-123",
+                "domains": [{"domain": "workers", "diff_paths": ["pool.max"], "validation_errors": []}],
+            },
+        }
+    ]
+
+
+def test_build_pr_feedback_worker_keeps_global_behavior_when_directory_scoped_config_disabled(tmp_path: Path) -> None:
+    worker = build_pr_feedback_worker(
+        tmp_path / "runtime",
+        adapters={},
+        gateway_config=GatewayConfig.model_validate({"runtime_dir": str(tmp_path / "runtime")}),
+    )
+
+    assert worker.directory_context_resolver is None
