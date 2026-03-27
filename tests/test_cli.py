@@ -220,16 +220,18 @@ def test_migrate_global_config_to_root_materializes_all_domain_files(tmp_path: P
     result = runner.invoke(app, ["migrate-global-config-to-root", "--config", str(config_path)])
 
     assert result.exit_code == 0
-    assert "written=5 skipped=0 unchanged=0" in result.output
+    assert "written=6 skipped=0 unchanged=0" in result.output
     runtime_dir = tmp_path / "runtime"
     assert (runtime_dir / "directory-config" / "root" / "policy.json").exists()
     assert (runtime_dir / "directory-config" / "root" / "providers.json").exists()
     assert (runtime_dir / "directory-config" / "root" / "email.json").exists()
     assert (runtime_dir / "directory-config" / "root" / "heartbeat.json").exists()
+    assert (runtime_dir / "directory-config" / "root" / "ado-worker.json").exists()
     assert (runtime_dir / "directory-config" / "root" / "vm.json").exists()
 
     directories_payload = json.loads((runtime_dir / "directories.json").read_text(encoding="utf-8"))
     assert directories_payload["root"]["metadata"]["directory_config"]["domains"] == [
+        "ado-worker",
         "email",
         "heartbeat",
         "policy",
@@ -315,7 +317,7 @@ def test_migrate_global_config_to_root_recovers_when_metadata_lists_missing_root
     result = runner.invoke(app, ["migrate-global-config-to-root", "--config", str(config_path)])
 
     assert result.exit_code == 0
-    assert "written=5 skipped=0 unchanged=0" in result.output
+    assert "written=6 skipped=0 unchanged=0" in result.output
     assert (runtime_dir / "directory-config" / "root" / "providers.json").exists()
 
 

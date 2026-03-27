@@ -790,6 +790,9 @@ def test_worker_config_load_from_env_uses_gateway_provider_config(
                 "azure_devops_organization_url": "https://dev.azure.com/example-org",
                 "azure_devops_project": "example-project",
                 "azure_devops_pat_env": "ADO_DIRECTORY_PAT",
+                "ado_project_or_solution": "/tmp/FromGateway.slnx",
+                "ado_area_filters": ["Root\\Area"],
+                "ado_bootstrap_mssql": False,
             },
             sort_keys=False,
         ),
@@ -804,6 +807,39 @@ def test_worker_config_load_from_env_uses_gateway_provider_config(
     assert config.organization_url == "https://dev.azure.com/example-org"
     assert config.project == "example-project"
     assert config.pat_env_var_name == "ADO_DIRECTORY_PAT"
+    assert config.prewarm_target == "/tmp/FromGateway.slnx"
+    assert config.area_filters == ("Root\\Area",)
+    assert config.bootstrap_mssql is False
+
+
+def test_worker_config_load_from_env_warns_on_deprecated_env_override(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    gateway_config_path = tmp_path / "gateway.yaml"
+    gateway_config_path.write_text(
+        yaml.safe_dump(
+            {
+                "runtime_dir": str(tmp_path),
+                "azure_devops_organization_url": "https://dev.azure.com/example-org",
+                "azure_devops_project": "example-project",
+                "azure_devops_pat_env": "ADO_DIRECTORY_PAT",
+                "ado_project_or_solution": "/tmp/FromGateway.slnx",
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ADO_GATEWAY_CONFIG", str(gateway_config_path))
+    monkeypatch.setenv("ADO_PROJECT_OR_SOLUTION", "/tmp/FromEnv.slnx")
+    monkeypatch.setenv("ADO_BOOTSTRAP_MSSQL", "false")
+
+    with caplog.at_level("WARNING"):
+        config = WorkerConfig.load_from_env()
+
+    assert config.prewarm_target == "/tmp/FromEnv.slnx"
+    assert "Deprecated ADO worker env override in use for ado_project_or_solution" in caplog.text
 
 
 @pytest.mark.parametrize(

@@ -18,15 +18,23 @@ from typing import Any
 import httpx
 import yaml
 
-from .worker_directory_context import WorkerDirectoryContextResolver, log_shadow_context
-
 from .bootstrap import load_runtime_gateway_config, resolve_runtime_dir
 from .config import GatewayConfig
+from .directories import DirectoryService, DirectoryStore
+from .directory_config import (
+    DirectoryConfigResolver,
+    DirectoryConfigStore,
+    get_domain_base_config,
+    validate_effective_domain_payload,
+)
 from .models import SessionManifest, ToolName
 from .policy_config import EffectivePolicyConfig
 from .provider_config import ProviderConfigResolver
 from .runtime import build_runtime
 from .vm_defaults_config import VmDefaultsConfigResolver
+from .worker_directory_context import WorkerDirectoryContextResolver, log_shadow_context
+
+_LOG = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -90,6 +98,23 @@ class WorkerConfig:
             legacy_config_path=legacy_config_path,
         )
         provider_config = ProviderConfigResolver(runtime_gateway_config).resolve_for_directory("root")
+        directory_store = DirectoryStore(runtime_gateway_config.directories_store_path)
+        directory_store.ensure_root()
+        config_store = DirectoryConfigStore(directory_store, runtime_dir=runtime_gateway_config.runtime_dir)
+        ado_worker_config = (
+            DirectoryConfigResolver(
+                DirectoryService(directory_store),
+                base_gateway_config=runtime_gateway_config,
+                config_store=config_store,
+            )
+            .resolve_domain(
+                "root",
+                domain="ado-worker",
+                base_config=get_domain_base_config(runtime_gateway_config, "ado-worker"),
+                validator=lambda candidate: validate_effective_domain_payload("ado-worker", candidate),
+            )
+            .effective_config
+        )
         organization_url = provider_config.azure_devops_organization_url
         project = provider_config.azure_devops_project
         pat_env_var_name = provider_config.azure_devops_pat_env.strip()
@@ -105,7 +130,18 @@ class WorkerConfig:
             os.environ.get("ADO_PROCESSED_STORE_PATH", str(runtime_dir / "ado-processed-work-items.json"))
         ).expanduser()
 
-        prewarm_target = _optional_env("ADO_PREWARM_TARGET") or _require_env("ADO_PROJECT_OR_SOLUTION")
+        project_or_solution = _domain_str_with_env_override(
+            "ado_project_or_solution",
+            ado_worker_config,
+            env_name="ADO_PROJECT_OR_SOLUTION",
+            default="",
+            required=True,
+        )
+        prewarm_target = _domain_optional_str_with_env_override(
+            "ado_prewarm_target",
+            ado_worker_config,
+            env_name="ADO_PREWARM_TARGET",
+        ) or project_or_solution
         setup_script_path = Path(
             os.environ.get("ADO_SETUP_ISSUE_VM_SCRIPT", "scripts/setup_issue_vm.sh")
         ).expanduser()
@@ -116,19 +152,67 @@ class WorkerConfig:
         ).expanduser()
         fetch_retry_count = _int_env("ADO_FETCH_RETRY_COUNT", 2, minimum=0)
         fetch_retry_backoff_seconds = _float_env("ADO_FETCH_RETRY_BACKOFF_SECONDS", 2.0, minimum=0.0)
-        bootstrap_dotnet = _bool_env("ADO_BOOTSTRAP_DOTNET", True)
-        bootstrap_nuget = _bool_env("ADO_BOOTSTRAP_NUGET", True)
-        bootstrap_mssql = _bool_env("ADO_BOOTSTRAP_MSSQL", True)
-        mssql_sa_password = _optional_env_first("ADO_MSSQL_SA_PASSWORD", "MSSQL_SA_PASSWORD")
-        mssql_init_root = _optional_env("ADO_MSSQL_INIT_ROOT")
+        bootstrap_dotnet = _domain_bool_with_env_override(
+            "ado_bootstrap_dotnet",
+            ado_worker_config,
+            env_name="ADO_BOOTSTRAP_DOTNET",
+            default=True,
+        )
+        bootstrap_nuget = _domain_bool_with_env_override(
+            "ado_bootstrap_nuget",
+            ado_worker_config,
+            env_name="ADO_BOOTSTRAP_NUGET",
+            default=True,
+        )
+        bootstrap_mssql = _domain_bool_with_env_override(
+            "ado_bootstrap_mssql",
+            ado_worker_config,
+            env_name="ADO_BOOTSTRAP_MSSQL",
+            default=True,
+        )
+        mssql_password_env_name = _domain_optional_str_with_env_override(
+            "ado_mssql_sa_password_env",
+            ado_worker_config,
+            env_name=None,
+        )
+        if _is_env_set("ADO_MSSQL_SA_PASSWORD") or _is_env_set("MSSQL_SA_PASSWORD"):
+            _log_deprecated_env_override("ado_mssql_sa_password_env", "ADO_MSSQL_SA_PASSWORD", "MSSQL_SA_PASSWORD")
+            mssql_sa_password = _optional_env_first("ADO_MSSQL_SA_PASSWORD", "MSSQL_SA_PASSWORD")
+        elif mssql_password_env_name:
+            mssql_sa_password = _optional_env(mssql_password_env_name)
+        else:
+            mssql_sa_password = None
+        mssql_init_root = _domain_optional_str_with_env_override(
+            "ado_mssql_init_root",
+            ado_worker_config,
+            env_name="ADO_MSSQL_INIT_ROOT",
+        )
         if bootstrap_mssql and not mssql_sa_password:
             raise ValueError(
                 "ADO_MSSQL_SA_PASSWORD or MSSQL_SA_PASSWORD is required when ADO_BOOTSTRAP_MSSQL is true."
             )
-        bootstrap_playwright = _bool_env("ADO_BOOTSTRAP_PLAYWRIGHT", False)
-        bootstrap_frontend_deps = _bool_env("ADO_BOOTSTRAP_FRONTEND_DEPS", False)
-        frontend_host_checkout = _optional_env("ADO_FRONTEND_HOST_CHECKOUT")
-        frontend_install_roots = _csv_env("ADO_FRONTEND_INSTALL_ROOTS")
+        bootstrap_playwright = _domain_bool_with_env_override(
+            "ado_bootstrap_playwright",
+            ado_worker_config,
+            env_name="ADO_BOOTSTRAP_PLAYWRIGHT",
+            default=False,
+        )
+        bootstrap_frontend_deps = _domain_bool_with_env_override(
+            "ado_bootstrap_frontend_deps",
+            ado_worker_config,
+            env_name="ADO_BOOTSTRAP_FRONTEND_DEPS",
+            default=False,
+        )
+        frontend_host_checkout = _domain_optional_str_with_env_override(
+            "ado_frontend_host_checkout",
+            ado_worker_config,
+            env_name="ADO_FRONTEND_HOST_CHECKOUT",
+        )
+        frontend_install_roots = _domain_csv_with_env_override(
+            "ado_frontend_install_roots",
+            ado_worker_config,
+            env_name="ADO_FRONTEND_INSTALL_ROOTS",
+        )
         if bootstrap_frontend_deps and not frontend_install_roots:
             raise ValueError(
                 "ADO_FRONTEND_INSTALL_ROOTS is required when ADO_BOOTSTRAP_FRONTEND_DEPS is true."
@@ -147,8 +231,16 @@ class WorkerConfig:
             project=project,
             pat_env_var_name=pat_env_var_name,
             poll_interval_seconds=poll_interval_seconds,
-            area_filters=_csv_env("ADO_AREA_FILTERS"),
-            team_filters=_csv_env("ADO_TEAM_FILTERS"),
+            area_filters=_domain_csv_with_env_override(
+                "ado_area_filters",
+                ado_worker_config,
+                env_name="ADO_AREA_FILTERS",
+            ),
+            team_filters=_domain_csv_with_env_override(
+                "ado_team_filters",
+                ado_worker_config,
+                env_name="ADO_TEAM_FILTERS",
+            ),
             runtime_dir=runtime_dir,
             yaml_output_dir=yaml_output_dir,
             setup_log_dir=setup_log_dir,
@@ -185,6 +277,84 @@ def _require_env(name: str) -> str:
     value = os.environ.get(name, "").strip()
     if not value:
         raise ValueError(f"Environment variable {name} is required.")
+    return value
+
+
+def _is_env_set(name: str) -> bool:
+    return os.environ.get(name) is not None
+
+
+def _log_deprecated_env_override(field_name: str, *env_names: str) -> None:
+    _LOG.warning(
+        "Deprecated ADO worker env override in use for %s via %s. "
+        "Set the value in directory config domain 'ado-worker' instead.",
+        field_name,
+        ", ".join(env_names),
+    )
+
+
+def _domain_csv_with_env_override(field_name: str, domain_config: dict[str, Any], *, env_name: str) -> tuple[str, ...]:
+    if _is_env_set(env_name):
+        _log_deprecated_env_override(field_name, env_name)
+        return _csv_env(env_name)
+    value = domain_config.get(field_name, [])
+    if not isinstance(value, list):
+        raise ValueError(f"{field_name} must be a list in directory domain ado-worker.")
+    return tuple(str(item) for item in value if str(item).strip())
+
+
+def _domain_bool_with_env_override(
+    field_name: str,
+    domain_config: dict[str, Any],
+    *,
+    env_name: str,
+    default: bool,
+) -> bool:
+    if _is_env_set(env_name):
+        _log_deprecated_env_override(field_name, env_name)
+        return _bool_env(env_name, default)
+    value = domain_config.get(field_name, default)
+    if not isinstance(value, bool):
+        raise ValueError(f"{field_name} must be a boolean in directory domain ado-worker.")
+    return value
+
+
+def _domain_optional_str_with_env_override(
+    field_name: str,
+    domain_config: dict[str, Any],
+    *,
+    env_name: str | None,
+) -> str | None:
+    if env_name is not None and _is_env_set(env_name):
+        _log_deprecated_env_override(field_name, env_name)
+        return _optional_env(env_name)
+    value = domain_config.get(field_name)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f"{field_name} must be a string or null in directory domain ado-worker.")
+    normalized = value.strip()
+    return normalized or None
+
+
+def _domain_str_with_env_override(
+    field_name: str,
+    domain_config: dict[str, Any],
+    *,
+    env_name: str,
+    default: str,
+    required: bool = False,
+) -> str:
+    if _is_env_set(env_name):
+        _log_deprecated_env_override(field_name, env_name)
+        value = _require_env(env_name) if required else (_optional_env(env_name) or default)
+    else:
+        raw = domain_config.get(field_name, default)
+        if not isinstance(raw, str):
+            raise ValueError(f"{field_name} must be a string in directory domain ado-worker.")
+        value = raw.strip() or default
+    if required and not value:
+        raise ValueError(f"{field_name} must be set in directory domain ado-worker or {env_name}.")
     return value
 
 

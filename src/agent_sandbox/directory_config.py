@@ -23,6 +23,7 @@ DIRECTORY_CONFIG_DOMAIN_FILENAMES = {
     "providers": "providers.json",
     "email": "email.json",
     "heartbeat": "heartbeat.json",
+    "ado-worker": "ado-worker.json",
     "vm": "vm.json",
 }
 
@@ -111,7 +112,40 @@ DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
             "openai_relay_port",
         }
     ),
+    "ado-worker": frozenset(
+        {
+            "ado_area_filters",
+            "ado_team_filters",
+            "ado_project_or_solution",
+            "ado_prewarm_target",
+            "ado_bootstrap_dotnet",
+            "ado_bootstrap_nuget",
+            "ado_bootstrap_mssql",
+            "ado_mssql_init_root",
+            "ado_bootstrap_playwright",
+            "ado_bootstrap_frontend_deps",
+            "ado_frontend_host_checkout",
+            "ado_frontend_install_roots",
+            "ado_mssql_sa_password_env",
+        }
+    ),
 }
+
+
+class AdoWorkerDirectoryConfig(BaseModel):
+    ado_area_filters: list[str] = Field(default_factory=list)
+    ado_team_filters: list[str] = Field(default_factory=list)
+    ado_project_or_solution: str = ""
+    ado_prewarm_target: str | None = None
+    ado_bootstrap_dotnet: bool = True
+    ado_bootstrap_nuget: bool = True
+    ado_bootstrap_mssql: bool = True
+    ado_mssql_init_root: str | None = None
+    ado_bootstrap_playwright: bool = False
+    ado_bootstrap_frontend_deps: bool = False
+    ado_frontend_host_checkout: str | None = None
+    ado_frontend_install_roots: list[str] = Field(default_factory=list)
+    ado_mssql_sa_password_env: str | None = None
 
 LEGACY_DOMAIN_FIELD_SUBSETS: dict[str, dict[str, frozenset[str]]] = {
     "providers": {
@@ -253,6 +287,9 @@ class DirectoryConfigStore:
                 )
             payload = {key: value for key, value in payload.items() if key in allowed_fields}
             validated = GatewayConfig.model_validate(payload)
+            return validated.model_dump(mode="json", include=set(payload))
+        if domain == "ado-worker":
+            validated = AdoWorkerDirectoryConfig.model_validate(payload)
             return validated.model_dump(mode="json", include=set(payload))
         unknown_fields = sorted(set(payload) - allowed_fields)
         if unknown_fields:

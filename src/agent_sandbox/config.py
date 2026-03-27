@@ -88,6 +88,19 @@ class GatewayConfig(BaseModel):
     azure_devops_pat_env: str = "AZURE_DEVOPS_PAT"
     azure_devops_organization_url: str = "https://dev.azure.com"
     azure_devops_project: str = "default"
+    ado_area_filters: list[str] = Field(default_factory=list)
+    ado_team_filters: list[str] = Field(default_factory=list)
+    ado_project_or_solution: str = ""
+    ado_prewarm_target: str | None = None
+    ado_bootstrap_dotnet: bool = True
+    ado_bootstrap_nuget: bool = True
+    ado_bootstrap_mssql: bool = True
+    ado_mssql_init_root: str | None = None
+    ado_bootstrap_playwright: bool = False
+    ado_bootstrap_frontend_deps: bool = False
+    ado_frontend_host_checkout: str | None = None
+    ado_frontend_install_roots: list[str] = Field(default_factory=list)
+    ado_mssql_sa_password_env: str | None = None
     email_provider_timeout_seconds: float = Field(default=30.0, gt=0)
     host_heartbeat_poll_interval_seconds: float = Field(default=30.0, gt=0)
     host_heartbeat_jitter_seconds: float = Field(default=5.0, ge=0)
