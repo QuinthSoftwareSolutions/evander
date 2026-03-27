@@ -25,6 +25,7 @@ DIRECTORY_CONFIG_DOMAIN_FILENAMES = {
     "heartbeat": "heartbeat.json",
     "ado-worker": "ado-worker.json",
     "vm": "vm.json",
+    "issue-setup": "issue-setup.json",
 }
 
 LEGACY_DIRECTORY_CONFIG_DOMAIN_FILENAMES = {
@@ -129,6 +130,17 @@ DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
             "ado_mssql_sa_password_env",
         }
     ),
+    "issue-setup": frozenset(
+        {
+            "git_root",
+            "git_host",
+            "git_user",
+            "git_ssh_alias",
+            "post_exec_verification_prompt",
+            "enable_guest_heartbeat",
+            "guest_heartbeat_prompt",
+        }
+    ),
 }
 
 
@@ -146,6 +158,16 @@ class AdoWorkerDirectoryConfig(BaseModel):
     ado_frontend_host_checkout: str | None = None
     ado_frontend_install_roots: list[str] = Field(default_factory=list)
     ado_mssql_sa_password_env: str | None = None
+
+
+class IssueSetupDirectoryConfig(BaseModel):
+    git_root: str
+    git_host: str
+    git_user: str
+    git_ssh_alias: str
+    post_exec_verification_prompt: str | None
+    enable_guest_heartbeat: bool
+    guest_heartbeat_prompt: str
 
 LEGACY_DOMAIN_FIELD_SUBSETS: dict[str, dict[str, frozenset[str]]] = {
     "providers": {
@@ -290,6 +312,9 @@ class DirectoryConfigStore:
             return validated.model_dump(mode="json", include=set(payload))
         if domain == "ado-worker":
             validated = AdoWorkerDirectoryConfig.model_validate(payload)
+            return validated.model_dump(mode="json", include=set(payload))
+        if domain == "issue-setup":
+            validated = IssueSetupDirectoryConfig.model_validate(payload)
             return validated.model_dump(mode="json", include=set(payload))
         unknown_fields = sorted(set(payload) - allowed_fields)
         if unknown_fields:
