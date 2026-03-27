@@ -10,11 +10,17 @@ import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from pydantic import BaseModel
+
 from .agent_control import AgentControlStore
 from .bootstrap import load_host_bootstrap_config, load_runtime_gateway_config
 from .config import GatewayConfig
 from .directory_admin import DirectoryAdminService
-from .directory_config import DirectoryConfigStore
+from .directory_config import (
+    DirectoryConfigResolver,
+    DirectoryConfigStore,
+    validate_effective_domain_payload,
+)
 from .directories import DirectoryStore
 from .host_config import DEFAULT_RUNTIME_DIR
 from .bootstrap import resolve_runtime_dir
@@ -39,6 +45,18 @@ _WORKER_DEFINITIONS: tuple[tuple[str, str, str], ...] = (
     ("ado", "ADO Worker", "agent-sandbox-ado-worker.service"),
     ("host-heartbeat", "Host Heartbeat Worker", "agent-sandbox-host-heartbeat.service"),
 )
+
+
+class EffectiveIssueSetupConfig(BaseModel):
+    git_root: str
+    git_host: str
+    git_user: str
+    git_ssh_alias: str
+    post_exec_verification_prompt: str | None = None
+    enable_guest_heartbeat: bool = False
+    guest_heartbeat_prompt: str = (
+        "Resume work for this session. Check for pending feedback first, then continue the most recent task."
+    )
 
 
 def _utc_now() -> datetime:
@@ -782,6 +800,99 @@ class AdminService:
         )
         return resolver.resolve_for_directory(directory_path)
 
+    def _resolve_issue_setup(self, directory_path: str, *, root_dir: Path) -> EffectiveIssueSetupConfig:
+        resolver = DirectoryConfigResolver(
+            self.directory_admin._directories,
+            base_gateway_config=self.config,
+            config_store=DirectoryConfigStore(self.runtime.directories, runtime_dir=self.config.runtime_dir),
+        )
+        resolution = resolver.resolve_domain(
+            directory_path,
+            domain="issue-setup",
+            base_config={},
+            validator=lambda candidate: validate_effective_domain_payload("issue-setup", candidate),
+        )
+        effective = resolution.effective_config
+        return EffectiveIssueSetupConfig.model_validate(
+            {
+                "git_root": str(effective.get("git_root") or _resolve_git_root(root_dir)),
+                "git_host": str(effective.get("git_host") or "192.168.250.1"),
+                "git_user": str(effective.get("git_user") or os.environ.get("USER", "agent")),
+                "git_ssh_alias": str(effective.get("git_ssh_alias") or "agent-sandbox-git-host"),
+                "post_exec_verification_prompt": effective.get("post_exec_verification_prompt"),
+                "enable_guest_heartbeat": bool(effective.get("enable_guest_heartbeat", False)),
+                "guest_heartbeat_prompt": str(
+                    effective.get("guest_heartbeat_prompt")
+                    or "Resume work for this session. Check for pending feedback first, then continue the most recent task."
+                ),
+            }
+        )
+
+    def _build_setup_issue_vm_invocation(
+        self,
+        *,
+        setup_script: Path,
+        issue: str,
+        session_id: str,
+        vm_user: str,
+        start_agent: bool,
+        python: bool,
+        dotnet: bool,
+        nuget: str | None,
+        mssql: bool,
+        mssql_init_root: str | None,
+        playwright: bool,
+        frontend_deps: bool,
+        frontend_host_checkout: str | None,
+        frontend_install_roots: list[str] | None,
+        repo_source: str | None,
+        vm_defaults: EffectiveVmDefaultsConfig,
+        issue_setup: EffectiveIssueSetupConfig,
+    ) -> tuple[list[str], dict[str, str]]:
+        cmd = [str(setup_script)]
+        if not start_agent:
+            cmd.append("--dry-run")
+        if python:
+            cmd.append("--python")
+        if dotnet:
+            cmd.append("--dotnet")
+        if nuget is not None:
+            cmd.append("--nuget")
+        if mssql:
+            cmd.append("--mssql")
+        if mssql_init_root is not None:
+            cmd.extend(["--mssql-init-root", mssql_init_root])
+        if playwright:
+            cmd.append("--playwright")
+        if frontend_deps:
+            cmd.append("--frontend-deps")
+        if frontend_host_checkout is not None:
+            cmd.extend(["--frontend-host-checkout", frontend_host_checkout])
+        for install_root in frontend_install_roots or []:
+            cmd.extend(["--frontend-install-root", install_root])
+        cmd.append(issue)
+        if nuget is not None:
+            cmd.append(nuget)
+        if repo_source is not None:
+            cmd.append(repo_source)
+        cmd.extend([session_id, vm_user])
+
+        run_env = os.environ.copy()
+        run_env.update(vm_defaults.guest_environment())
+        run_env.update(
+            {
+                "AGENT_SANDBOX_GIT_ROOT": issue_setup.git_root,
+                "AGENT_SANDBOX_GIT_HOST": issue_setup.git_host,
+                "AGENT_SANDBOX_GIT_USER": issue_setup.git_user,
+                "AGENT_SANDBOX_GIT_SSH_ALIAS": issue_setup.git_ssh_alias,
+                "ENABLE_GUEST_HEARTBEAT": "1" if issue_setup.enable_guest_heartbeat else "0",
+                "GUEST_HEARTBEAT_PROMPT": issue_setup.guest_heartbeat_prompt,
+            }
+        )
+        if issue_setup.post_exec_verification_prompt is not None:
+            run_env["AGENT_POST_EXEC_VERIFICATION_PROMPT"] = issue_setup.post_exec_verification_prompt
+        return cmd, run_env
+
     def _direct_owned_entity_ids(self, directory_path: str, *, kind: str) -> set[str]:
         snapshot = self.directory_ownership.list_entities(directory_path, include_descendants=False)
         return {entity.entity_id for entity in snapshot.entities if entity.kind == kind}
@@ -1340,36 +1451,28 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
         self.runtime.sessions.put(resolved_session_id, manifest)
 
         setup_script = Path(__file__).resolve().parents[2] / "scripts" / "setup_issue_vm.sh"
-        cmd = [str(setup_script)]
-        if not start_agent:
-            cmd.append("--dry-run")
-        if python:
-            cmd.append("--python")
-        if dotnet:
-            cmd.append("--dotnet")
-        if nuget is not None:
-            cmd.append("--nuget")
-        if mssql:
-            cmd.append("--mssql")
-        if mssql_init_root is not None:
-            cmd.extend(["--mssql-init-root", mssql_init_root])
-        if playwright:
-            cmd.append("--playwright")
-        if frontend_deps:
-            cmd.append("--frontend-deps")
-        if frontend_host_checkout is not None:
-            cmd.extend(["--frontend-host-checkout", frontend_host_checkout])
-        for install_root in frontend_install_roots or []:
-            cmd.extend(["--frontend-install-root", install_root])
-        cmd.append(issue)
-        if nuget is not None:
-            cmd.append(nuget)
-        if repo_source is not None:
-            cmd.append(repo_source)
-        cmd.extend([resolved_session_id, vm_user])
+        root_dir = Path(__file__).resolve().parents[2]
         vm_defaults = self._resolve_vm_defaults(normalized_directory_path)
-        run_env = os.environ.copy()
-        run_env.update(vm_defaults.guest_environment())
+        issue_setup = self._resolve_issue_setup(normalized_directory_path, root_dir=root_dir)
+        cmd, run_env = self._build_setup_issue_vm_invocation(
+            setup_script=setup_script,
+            issue=issue,
+            session_id=resolved_session_id,
+            vm_user=vm_user,
+            start_agent=start_agent,
+            python=python,
+            dotnet=dotnet,
+            nuget=nuget,
+            mssql=mssql,
+            mssql_init_root=mssql_init_root,
+            playwright=playwright,
+            frontend_deps=frontend_deps,
+            frontend_host_checkout=frontend_host_checkout,
+            frontend_install_roots=frontend_install_roots,
+            repo_source=repo_source,
+            vm_defaults=vm_defaults,
+            issue_setup=issue_setup,
+        )
         completed = _run_subprocess(cmd, capture_output=True, text=True, env=run_env)
         message = (completed.stdout or completed.stderr or "").strip()
         if completed.returncode != 0:
