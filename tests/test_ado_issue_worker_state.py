@@ -718,6 +718,7 @@ def test_process_work_item_passes_timeout(
 
     assert succeeded is True
     assert isinstance(captured["env"], dict)
+    assert captured["env"]["AGENT_SANDBOX_AZURE_DEVOPS_PAT_ENV"] == "AZURE_DEVOPS_PAT"
     assert captured["env"]["MSSQL_SA_PASSWORD"] == "SecretPassw0rd!"
     assert captured["timeout"] == worker_config.setup_timeout_seconds
 
@@ -774,8 +775,46 @@ def test_worker_config_load_from_env_requires_any_mssql_password_when_bootstrap_
     monkeypatch.delenv("ADO_MSSQL_SA_PASSWORD", raising=False)
     monkeypatch.delenv("MSSQL_SA_PASSWORD", raising=False)
 
-    with pytest.raises(ValueError, match="ADO_MSSQL_SA_PASSWORD or MSSQL_SA_PASSWORD is required"):
+    with pytest.raises(ValueError, match="Environment variable MSSQL_SA_PASSWORD is required"):
         WorkerConfig.load_from_env()
+
+
+def test_worker_config_load_from_env_uses_ado_worker_mssql_env_ref(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    gateway_config_path = tmp_path / "gateway.yaml"
+    gateway_config_path.write_text(
+        yaml.safe_dump(
+            {
+                "runtime_dir": str(tmp_path),
+                "azure_devops_organization_url": "https://dev.azure.com/example",
+                "azure_devops_project": "example",
+                "azure_devops_pat_env": "AZURE_DEVOPS_PAT",
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    directory_root = tmp_path / "directory-config" / "root"
+    directory_root.mkdir(parents=True, exist_ok=True)
+    (directory_root / "ado-worker.json").write_text(
+        json.dumps(
+            {
+                "ado_project_or_solution": "/tmp/Example.slnx",
+                "ado_bootstrap_mssql": True,
+                "ado_mssql_sa_password_env": "TEAM_MSSQL_PASSWORD",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ADO_GATEWAY_CONFIG", str(gateway_config_path))
+    monkeypatch.setenv("TEAM_MSSQL_PASSWORD", "TopSecret!")
+
+    config = WorkerConfig.load_from_env()
+
+    assert config.bootstrap_mssql is True
+    assert config.mssql_sa_password == "TopSecret!"
 
 
 def test_worker_config_load_from_env_uses_gateway_provider_config(

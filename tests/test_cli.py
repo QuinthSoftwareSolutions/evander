@@ -725,6 +725,7 @@ def test_create_issue_vm_uses_root_vm_defaults_overlay_for_guest_env(tmp_path: P
     assert captured_env["GATEWAY_URL"] == "http://10.10.10.1:8000/mcp"
     assert captured_env["LLM_BASE_URL"] == "http://10.10.10.1:12000/v1"
     assert captured_env["NUGET_RELAY_BASE_URL"] == "http://10.10.10.1:13000"
+    assert captured_env["AGENT_SANDBOX_AZURE_DEVOPS_PAT_ENV"] == "AZURE_DEVOPS_PAT"
 
 
 def test_create_issue_vm_requires_mssql_password_env(tmp_path: Path, monkeypatch) -> None:

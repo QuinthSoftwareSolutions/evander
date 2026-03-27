@@ -26,6 +26,7 @@ from .host_config import DEFAULT_RUNTIME_DIR
 from .bootstrap import resolve_runtime_dir
 from .ownership import DirectoryOwnershipQueries
 from .policy_config import EffectivePolicyConfig
+from .provider_config import ProviderConfigResolver
 from .vm_defaults_config import EffectiveVmDefaultsConfig, VmDefaultsConfigResolver
 from .models import (
     LocalIssueRecord,
@@ -57,6 +58,7 @@ class EffectiveIssueSetupConfig(BaseModel):
     guest_heartbeat_prompt: str = (
         "Resume work for this session. Check for pending feedback first, then continue the most recent task."
     )
+    issue_setup_azure_devops_pat_env: str = "AZURE_DEVOPS_PAT"
 
 
 def _utc_now() -> datetime:
@@ -813,6 +815,23 @@ class AdminService:
             validator=lambda candidate: validate_effective_domain_payload("issue-setup", candidate),
         )
         effective = resolution.effective_config
+        provider_config = ProviderConfigResolver(
+            self.config,
+            directory_store=self.runtime.directories,
+            session_store=self.runtime.sessions,
+        ).resolve_for_directory(directory_path)
+        provider_pat_env = provider_config.azure_devops_pat_env.strip() or "AZURE_DEVOPS_PAT"
+        issue_setup_pat_env_raw = effective.get("issue_setup_azure_devops_pat_env")
+        issue_setup_pat_env = (
+            str(issue_setup_pat_env_raw).strip()
+            if isinstance(issue_setup_pat_env_raw, str)
+            else ""
+        ) or provider_pat_env
+        if not issue_setup_pat_env:
+            raise ValueError(
+                "Missing env-var name for Azure DevOps PAT lookup. "
+                "Set issue_setup_azure_devops_pat_env or providers.azure_devops_pat_env."
+            )
         return EffectiveIssueSetupConfig.model_validate(
             {
                 "git_root": str(effective.get("git_root") or _resolve_git_root(root_dir)),
@@ -825,6 +844,7 @@ class AdminService:
                     effective.get("guest_heartbeat_prompt")
                     or "Resume work for this session. Check for pending feedback first, then continue the most recent task."
                 ),
+                "issue_setup_azure_devops_pat_env": issue_setup_pat_env,
             }
         )
 
@@ -887,6 +907,7 @@ class AdminService:
                 "AGENT_SANDBOX_GIT_SSH_ALIAS": issue_setup.git_ssh_alias,
                 "ENABLE_GUEST_HEARTBEAT": "1" if issue_setup.enable_guest_heartbeat else "0",
                 "GUEST_HEARTBEAT_PROMPT": issue_setup.guest_heartbeat_prompt,
+                "AGENT_SANDBOX_AZURE_DEVOPS_PAT_ENV": issue_setup.issue_setup_azure_devops_pat_env,
             }
         )
         if issue_setup.post_exec_verification_prompt is not None:

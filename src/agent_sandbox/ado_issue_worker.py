@@ -35,6 +35,8 @@ from .vm_defaults_config import VmDefaultsConfigResolver
 from .worker_directory_context import WorkerDirectoryContextResolver, log_shadow_context
 
 _LOG = logging.getLogger(__name__)
+_DEFAULT_ADO_MSSQL_SA_PASSWORD_ENV = "MSSQL_SA_PASSWORD"
+_LEGACY_ADO_MSSQL_SA_PASSWORD_ENV = "ADO_MSSQL_SA_PASSWORD"
 
 
 @dataclass(frozen=True)
@@ -175,21 +177,36 @@ class WorkerConfig:
             ado_worker_config,
             env_name=None,
         )
-        if _is_env_set("ADO_MSSQL_SA_PASSWORD") or _is_env_set("MSSQL_SA_PASSWORD"):
+        if _is_env_set(_LEGACY_ADO_MSSQL_SA_PASSWORD_ENV) or _is_env_set(_DEFAULT_ADO_MSSQL_SA_PASSWORD_ENV):
             _log_deprecated_env_override("ado_mssql_sa_password_env", "ADO_MSSQL_SA_PASSWORD", "MSSQL_SA_PASSWORD")
-            mssql_sa_password = _optional_env_first("ADO_MSSQL_SA_PASSWORD", "MSSQL_SA_PASSWORD")
-        elif mssql_password_env_name:
-            mssql_sa_password = _optional_env(mssql_password_env_name)
+            mssql_sa_password = _optional_env_first(
+                _LEGACY_ADO_MSSQL_SA_PASSWORD_ENV,
+                _DEFAULT_ADO_MSSQL_SA_PASSWORD_ENV,
+            )
         else:
-            mssql_sa_password = None
+            resolved_mssql_env_name = _resolve_secret_env_ref(
+                ref_name=mssql_password_env_name,
+                default_env_name=_DEFAULT_ADO_MSSQL_SA_PASSWORD_ENV,
+                config_field_name="ado_mssql_sa_password_env",
+            )
+            mssql_sa_password = _optional_env(resolved_mssql_env_name)
         mssql_init_root = _domain_optional_str_with_env_override(
             "ado_mssql_init_root",
             ado_worker_config,
             env_name="ADO_MSSQL_INIT_ROOT",
         )
         if bootstrap_mssql and not mssql_sa_password:
+            if _is_env_set(_LEGACY_ADO_MSSQL_SA_PASSWORD_ENV) or _is_env_set(_DEFAULT_ADO_MSSQL_SA_PASSWORD_ENV):
+                raise ValueError(
+                    "ADO_MSSQL_SA_PASSWORD or MSSQL_SA_PASSWORD is required when ADO_BOOTSTRAP_MSSQL is true."
+                )
+            resolved_mssql_env_name = _resolve_secret_env_ref(
+                ref_name=mssql_password_env_name,
+                default_env_name=_DEFAULT_ADO_MSSQL_SA_PASSWORD_ENV,
+                config_field_name="ado_mssql_sa_password_env",
+            )
             raise ValueError(
-                "ADO_MSSQL_SA_PASSWORD or MSSQL_SA_PASSWORD is required when ADO_BOOTSTRAP_MSSQL is true."
+                f"Environment variable {resolved_mssql_env_name} is required when ado_bootstrap_mssql is true."
             )
         bootstrap_playwright = _domain_bool_with_env_override(
             "ado_bootstrap_playwright",
@@ -361,6 +378,15 @@ def _domain_str_with_env_override(
 def _optional_env(name: str) -> str | None:
     value = os.environ.get(name, "").strip()
     return value or None
+
+
+def _resolve_secret_env_ref(*, ref_name: str | None, default_env_name: str, config_field_name: str) -> str:
+    candidate = (ref_name or "").strip() or default_env_name.strip()
+    if not candidate:
+        raise ValueError(
+            f"{config_field_name} must resolve to a non-empty env-var name."
+        )
+    return candidate
 
 
 def _optional_env_first(*names: str) -> str | None:
@@ -969,6 +995,7 @@ def process_work_item(
         )
     cmd = _build_setup_command(config, yaml_path, session_id=session_id)
     run_env = os.environ.copy()
+    run_env["AGENT_SANDBOX_AZURE_DEVOPS_PAT_ENV"] = config.pat_env_var_name
     if config.bootstrap_mssql and config.mssql_sa_password:
         run_env["MSSQL_SA_PASSWORD"] = config.mssql_sa_password
     vm_defaults = VmDefaultsConfigResolver(cfg).resolve_for_session_id(session_id)
