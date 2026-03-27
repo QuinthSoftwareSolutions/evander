@@ -357,6 +357,9 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
     "azure_devops_pat_env": (
         "Name of the host environment variable that holds the Azure DevOps personal access token."
     ),
+    "ado_mssql_sa_password_env": (
+        "Name of the host environment variable that holds the MSSQL SA password used by ADO issue setup."
+    ),
     "azure_devops_project": (
         "Default Azure DevOps project name used by host-side PR feedback and reply integrations."
     ),
@@ -416,6 +419,9 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
     ),
     "openai_relay_timeout_seconds": (
         "Upstream request timeout in seconds for the OpenAI relay."
+    ),
+    "issue_setup_azure_devops_pat_env": (
+        "Optional override for the Azure DevOps PAT env-var name used by issue setup and PR scripts."
     ),
     "host_busy_check_script_path": (
         "Host script used by the heartbeat worker to detect whether a session VM is currently busy "

@@ -29,6 +29,7 @@ from .migrations import migrate_directory_ownership_defaults, migrate_global_con
 from .email.providers import JsonEmailProvider, MultiMailboxEmailProvider
 from .models import ApprovalStatus, DiscordCommandEnvelope, EmailMessage, SessionManifest, ToolName
 from .policy_config import EffectivePolicyConfig, PolicyConfigResolver
+from .provider_config import ProviderConfigResolver
 from .runtime import build_runtime
 from .vm_defaults_config import EffectiveVmDefaultsConfig, VmDefaultsConfigResolver
 
@@ -2009,8 +2010,10 @@ def create_issue_vm(
     cmd.extend([resolved_session_id, vm_user])
 
     vm_defaults = _resolve_root_vm_defaults(cfg)
+    provider_config = ProviderConfigResolver(cfg).resolve_for_directory("root")
     run_env = os.environ.copy()
     run_env.update(vm_defaults.guest_environment())
+    run_env["AGENT_SANDBOX_AZURE_DEVOPS_PAT_ENV"] = provider_config.azure_devops_pat_env.strip() or "AZURE_DEVOPS_PAT"
     _run_subprocess_compat(cmd, check=True, capture_output=False, text=False, env=run_env)
     typer.echo(
         f"Created issue VM session {resolved_session_id} for issue {issue_number} "

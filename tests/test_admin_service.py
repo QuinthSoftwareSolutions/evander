@@ -286,6 +286,44 @@ def test_create_issue_vm_uses_issue_setup_domain_for_setup_env(tmp_path: Path, m
     assert captured_env["AGENT_POST_EXEC_VERIFICATION_PROMPT"] == "verify everything"
     assert captured_env["ENABLE_GUEST_HEARTBEAT"] == "1"
     assert captured_env["GUEST_HEARTBEAT_PROMPT"] == "continue working"
+    assert captured_env["AGENT_SANDBOX_AZURE_DEVOPS_PAT_ENV"] == "AZURE_DEVOPS_PAT"
+
+
+def test_create_issue_vm_uses_issue_setup_azure_pat_override(tmp_path: Path, monkeypatch) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    create_result = service.create_directory_child("root", "team")
+    assert create_result.ok is True and create_result.data is not None
+    team_path = create_result.data.details.directory.path
+    write_result = service.write_directory_domain_config(
+        team_path,
+        "issue-setup",
+        {
+            "git_root": "/tmp/git-remotes",
+            "git_host": "10.1.2.3",
+            "git_user": "gitbot",
+            "git_ssh_alias": "issue-git",
+            "issue_setup_azure_devops_pat_env": "TEAM_ISSUE_SETUP_ADO_PAT",
+        },
+    )
+    assert write_result.ok is True
+
+    captured_env: dict[str, str] = {}
+
+    def fake_run(*args, **kwargs):
+        captured_env.update(kwargs.get("env", {}))
+        return subprocess.CompletedProcess(args[0], 0, stdout="", stderr="")
+
+    monkeypatch.setattr("agent_sandbox.admin_service.subprocess.run", fake_run)
+
+    result = service.create_issue_vm(
+        issue="125",
+        session_id="issue-125-session",
+        directory_path=team_path,
+        start_agent=False,
+    )
+
+    assert result.success is True
+    assert captured_env["AGENT_SANDBOX_AZURE_DEVOPS_PAT_ENV"] == "TEAM_ISSUE_SETUP_ADO_PAT"
 
 
 def test_admin_service_rejects_directory_edits_when_feature_flag_disabled(tmp_path: Path) -> None:

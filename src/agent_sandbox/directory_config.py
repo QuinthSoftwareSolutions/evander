@@ -139,6 +139,7 @@ DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
             "post_exec_verification_prompt",
             "enable_guest_heartbeat",
             "guest_heartbeat_prompt",
+            "issue_setup_azure_devops_pat_env",
         }
     ),
 }
@@ -168,6 +169,7 @@ class IssueSetupDirectoryConfig(BaseModel):
     post_exec_verification_prompt: str | None
     enable_guest_heartbeat: bool
     guest_heartbeat_prompt: str
+    issue_setup_azure_devops_pat_env: str | None = None
 
 LEGACY_DOMAIN_FIELD_SUBSETS: dict[str, dict[str, frozenset[str]]] = {
     "providers": {
