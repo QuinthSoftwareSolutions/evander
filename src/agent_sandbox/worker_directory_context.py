@@ -8,18 +8,21 @@ from typing import Any
 
 from .config import GatewayConfig, load_config
 from .directory_config import (
+    DIRECTORY_CONFIG_DOMAIN_FIELDS,
     DirectoryConfigResolver,
     DirectoryConfigStore,
-    get_domain_base_config,
     validate_effective_domain_payload,
 )
 from .directories import DirectoryService, DirectoryStore
+from .host_config import HostConfig
+from .policy_config import EffectivePolicyConfig
 from .models import SessionManifest
+from .vm_defaults_config import EffectiveVmDefaultsConfig
 from .storage import JsonStore
 
 logger = logging.getLogger(__name__)
 
-SHADOW_DOMAINS = ("policy", "providers", "workers", "vm-defaults")
+SHADOW_DOMAINS = ("policy", "providers", "email", "heartbeat", "vm")
 
 
 @dataclass(frozen=True)
@@ -106,7 +109,7 @@ class WorkerDirectoryContextResolver:
                 normalized_path = "root"
         domains: list[ShadowDomainContext] = []
         for domain in SHADOW_DOMAINS:
-            base_config = get_domain_base_config(self.config, domain)
+            base_config = _domain_default_payload(domain)
             resolution = self.resolver.resolve_domain(
                 normalized_path,
                 domain=domain,
@@ -144,9 +147,30 @@ class WorkerDirectoryContextResolver:
         return self.resolver.resolve_domain(
             normalized_path,
             domain=domain,
-            base_config=None,
+            base_config=_domain_default_payload(domain),
             validator=lambda candidate, domain=domain: validate_effective_domain_payload(domain, candidate),
         )
+
+
+def _domain_default_payload(domain: str) -> dict[str, Any]:
+    if domain == "policy":
+        return EffectivePolicyConfig().model_dump(mode="json")
+    payload = GatewayConfig().model_dump(mode="json")
+    if domain == "providers":
+        return {key: payload[key] for key in sorted(DIRECTORY_CONFIG_DOMAIN_FIELDS["providers"])}
+    if domain == "email":
+        return {key: payload[key] for key in sorted(DIRECTORY_CONFIG_DOMAIN_FIELDS["email"])}
+    if domain == "heartbeat":
+        host_default = HostConfig()
+        payload.update(
+            {
+                "host_agent_control_state_path": host_default.host_agent_control_state_path,
+            }
+        )
+        return {key: payload[key] for key in sorted(DIRECTORY_CONFIG_DOMAIN_FIELDS["heartbeat"])}
+    if domain == "vm":
+        return EffectiveVmDefaultsConfig().model_dump(mode="json", include={"bind_network_cidr", "gateway_url"})
+    raise ValueError(f"unsupported domain for worker shadow defaults: {domain!r}")
 
 
 def log_shadow_context(logger_obj: logging.Logger, *, prefix: str, context: WorkerDirectoryContext) -> None:

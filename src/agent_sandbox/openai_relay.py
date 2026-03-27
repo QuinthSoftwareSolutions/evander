@@ -4,6 +4,7 @@ import argparse
 import logging
 import os
 from collections.abc import AsyncIterator
+from pathlib import Path
 
 import httpx
 import uvicorn
@@ -12,9 +13,9 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
-from .config import GatewayConfig, load_config
+from .bootstrap import load_runtime_gateway_config, resolve_runtime_dir
+from .config import GatewayConfig
 from .provider_config import ProviderConfigResolver
-from .vm_defaults_config import VmDefaultsConfigResolver
 
 logger = logging.getLogger(__name__)
 
@@ -210,17 +211,36 @@ def create_app(config: GatewayConfig, transport: httpx.AsyncBaseTransport | None
     return OpenAIRelay(resolved_config, transport=transport).create_app()
 
 
+def _project_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
+def _bootstrap_runtime_config(*, legacy_config_path: Path | None = None) -> GatewayConfig:
+    return load_runtime_gateway_config(
+        runtime_dir=resolve_runtime_dir(runtime_dir=_project_root() / "runtime", legacy_config_path=legacy_config_path),
+        legacy_config_path=legacy_config_path,
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the host-side OpenAI relay.")
-    parser.add_argument("--config", default="config/gateway.yaml", help="Path to the gateway YAML config.")
+    parser.add_argument(
+        "--legacy-config",
+        help="Optional legacy gateway YAML used only to import root config if root is missing.",
+    )
+    parser.add_argument(
+        "--config",
+        dest="legacy_config",
+        help=argparse.SUPPRESS,
+    )
     args = parser.parse_args()
 
-    config = load_config(args.config)
-    vm_defaults = VmDefaultsConfigResolver(config).resolve_for_directory("root")
+    legacy_config_path = Path(args.legacy_config) if args.legacy_config else None
+    config = _bootstrap_runtime_config(legacy_config_path=legacy_config_path)
     uvicorn.run(
         create_app(config),
-        host=vm_defaults.openai_relay_host,
-        port=vm_defaults.openai_relay_port,
+        host=config.openai_relay_host,
+        port=config.openai_relay_port,
     )
 
 

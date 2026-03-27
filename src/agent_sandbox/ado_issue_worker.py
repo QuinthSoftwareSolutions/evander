@@ -20,7 +20,8 @@ import yaml
 
 from .worker_directory_context import WorkerDirectoryContextResolver, log_shadow_context
 
-from .config import GatewayConfig, load_config
+from .bootstrap import load_runtime_gateway_config, resolve_runtime_dir
+from .config import GatewayConfig
 from .models import SessionManifest, ToolName
 from .policy_config import EffectivePolicyConfig
 from .provider_config import ProviderConfigResolver
@@ -62,21 +63,13 @@ class WorkerConfig:
     include_comments: bool
     comments_max_count: int
     comment_text_max_chars: int
-    gateway_config_path: Path
-    session_ttl_hours: int
+    session_ttl_hours: int = 8
+    gateway_config_path: Path | None = None
+    legacy_config_path: Path | None = None
 
     @classmethod
     def load_from_env(cls) -> WorkerConfig:
-        gateway_config_path = Path(
-            os.environ.get("ADO_GATEWAY_CONFIG", os.environ.get("AGENT_SANDBOX_CONFIG", "config/gateway.yaml"))
-        ).expanduser()
-        provider_config = ProviderConfigResolver(load_config(gateway_config_path)).resolve_for_directory("root")
-
-        organization_url = provider_config.azure_devops_organization_url
-        project = provider_config.azure_devops_project
-        pat_env_var_name = provider_config.azure_devops_pat_env.strip()
-        if not pat_env_var_name:
-            raise ValueError("azure_devops_pat_env must not be empty in the gateway configuration.")
+        legacy_config_env = os.environ.get("ADO_GATEWAY_CONFIG", os.environ.get("AGENT_SANDBOX_CONFIG", "")).strip()
 
         poll_interval_raw = os.environ.get("ADO_POLL_INTERVAL_SECONDS", "30")
         try:
@@ -86,7 +79,22 @@ class WorkerConfig:
         if poll_interval_seconds <= 0:
             raise ValueError("ADO_POLL_INTERVAL_SECONDS must be > 0.")
 
-        runtime_dir = Path(os.environ.get("ADO_RUNTIME_DIR", "runtime")).expanduser()
+        runtime_dir_env = os.environ.get("ADO_RUNTIME_DIR", "").strip()
+        runtime_dir = Path(runtime_dir_env or "runtime").expanduser()
+        legacy_config_path = Path(legacy_config_env).expanduser() if legacy_config_env else None
+        runtime_gateway_config = load_runtime_gateway_config(
+            runtime_dir=resolve_runtime_dir(
+                runtime_dir=runtime_dir if runtime_dir_env else None,
+                legacy_config_path=legacy_config_path,
+            ),
+            legacy_config_path=legacy_config_path,
+        )
+        provider_config = ProviderConfigResolver(runtime_gateway_config).resolve_for_directory("root")
+        organization_url = provider_config.azure_devops_organization_url
+        project = provider_config.azure_devops_project
+        pat_env_var_name = provider_config.azure_devops_pat_env.strip()
+        if not pat_env_var_name:
+            raise ValueError("azure_devops_pat_env must not be empty in the gateway configuration.")
         yaml_output_dir = Path(
             os.environ.get("ADO_YAML_OUTPUT_DIR", str(runtime_dir / "ado-work-items"))
         ).expanduser()
@@ -167,7 +175,8 @@ class WorkerConfig:
             include_comments=include_comments,
             comments_max_count=comments_max_count,
             comment_text_max_chars=comment_text_max_chars,
-            gateway_config_path=gateway_config_path,
+            gateway_config_path=legacy_config_path,
+            legacy_config_path=legacy_config_path,
             session_ttl_hours=session_ttl_hours,
         )
 
@@ -665,7 +674,7 @@ def _build_issue_session_manifest(
 
 
 def _ensure_issue_session_manifest(config: WorkerConfig, *, work_item_id: int, session_id: str) -> None:
-    cfg = load_config(config.gateway_config_path)
+    cfg = _worker_runtime_config(config)
     runtime = build_runtime(cfg)
     if runtime.sessions.get(session_id) is not None:
         return
@@ -711,6 +720,11 @@ def _build_setup_command(config: WorkerConfig, yaml_path: Path, *, session_id: s
 def _snippet(text: str, max_chars: int = 1000) -> str:
     compact = " ".join(text.split())
     return compact[:max_chars]
+
+
+def _worker_runtime_config(config: WorkerConfig) -> GatewayConfig:
+    legacy_config_path = config.legacy_config_path or config.gateway_config_path
+    return load_runtime_gateway_config(runtime_dir=config.runtime_dir, legacy_config_path=legacy_config_path)
 
 
 def _is_vm_already_exists_output(output: str) -> bool:
@@ -771,7 +785,7 @@ def process_work_item(
 
     session_id = _resolve_session_id(config, work_item_id)
     _ensure_issue_session_manifest(config, work_item_id=work_item_id, session_id=session_id)
-    cfg = load_config(config.gateway_config_path)
+    cfg = _worker_runtime_config(config)
     if cfg.enable_directory_scoped_config:
         shadow_context = WorkerDirectoryContextResolver(cfg).resolve_for_session(
             session_id,

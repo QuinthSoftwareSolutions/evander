@@ -31,7 +31,7 @@ enabling send flows or touching non-test destinations.
   sudo systemctl status agent-sandbox-openai-relay.service
   ```
 
-- `config/gateway.yaml` uses `discord_backend: "bot_api"`.
+- The effective `root` config uses `discord_backend: "bot_api"`.
 - Host env contains live credentials:
   - `DISCORD_BOT_TOKEN`
   - `GMAIL_OPS_ACCESS_TOKEN` or equivalent Gmail test token env var
@@ -87,7 +87,7 @@ Create a dedicated smoke-test session:
 cd /home/jonathan/agent-sandbox
 ./.venv/bin/agent-sandbox-cli create-session \
   smoke-live \
-  --config config/gateway.yaml \
+  --runtime-dir runtime \
   --vm-id vm-smoke-live \
   --discord-channel 123456789012345678
 ```
@@ -97,7 +97,7 @@ Seed the dedicated Discord channel into the command store and note the returned 
 ```bash
 ./.venv/bin/agent-sandbox-cli seed-discord-channel \
   123456789012345678 \
-  --config config/gateway.yaml
+  --runtime-dir runtime
 ```
 
 The command prints a numeric seed cursor. Use that value as the initial `since_cursor` for

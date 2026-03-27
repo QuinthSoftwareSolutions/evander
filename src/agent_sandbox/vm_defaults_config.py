@@ -20,9 +20,7 @@ from .storage import JsonStore
 class EffectiveVmDefaultsConfig(BaseModel):
     bind_network_cidr: str = "192.168.250.0/24"
     gateway_url: str = "http://192.168.250.1:8000/mcp"
-    nuget_relay_host: str = "0.0.0.0"
     nuget_relay_port: int = 11666
-    openai_relay_host: str = "0.0.0.0"
     openai_relay_port: int = 11434
 
     def guest_openai_base_url(self) -> str:
@@ -67,11 +65,16 @@ class VmDefaultsConfigResolver:
         normalized_path = self._normalize_directory_path(directory_path)
         resolution = self.resolver.resolve_domain(
             normalized_path,
-            domain="vm-defaults",
-            base_config=get_domain_base_config(self.config, "vm-defaults"),
-            validator=lambda candidate: validate_effective_domain_payload("vm-defaults", candidate),
+            domain="vm",
+            base_config=get_domain_base_config(self.config, "vm"),
+            validator=lambda candidate: validate_effective_domain_payload("vm", candidate),
         )
-        return EffectiveVmDefaultsConfig.model_validate(resolution.effective_config)
+        payload = resolution.effective_config
+        payload.setdefault("openai_relay_host", self.config.openai_relay_host)
+        payload.setdefault("openai_relay_port", self.config.openai_relay_port)
+        payload.setdefault("nuget_relay_host", self.config.nuget_relay_host)
+        payload.setdefault("nuget_relay_port", self.config.nuget_relay_port)
+        return EffectiveVmDefaultsConfig.model_validate(payload)
 
     def resolve_for_session_id(self, session_id: str) -> EffectiveVmDefaultsConfig:
         session = self.session_store.get(session_id)

@@ -375,7 +375,7 @@ attach_pr_feedback_stream() {
   fi
 
   "${cli_path}" attach-pr-feedback \
-    --config "${ROOT_DIR}/config/gateway.yaml" \
+    --runtime-dir "${ROOT_DIR}/runtime" \
     --provider "${provider}" \
     --repo "${repo_slug}" \
     --pr-id "${pr_id}" \

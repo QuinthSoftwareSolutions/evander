@@ -220,19 +220,21 @@ def test_migrate_global_config_to_root_materializes_all_domain_files(tmp_path: P
     result = runner.invoke(app, ["migrate-global-config-to-root", "--config", str(config_path)])
 
     assert result.exit_code == 0
-    assert "written=4 skipped=0 unchanged=0" in result.output
+    assert "written=5 skipped=0 unchanged=0" in result.output
     runtime_dir = tmp_path / "runtime"
     assert (runtime_dir / "directory-config" / "root" / "policy.json").exists()
     assert (runtime_dir / "directory-config" / "root" / "providers.json").exists()
-    assert (runtime_dir / "directory-config" / "root" / "workers.json").exists()
-    assert (runtime_dir / "directory-config" / "root" / "vm-defaults.json").exists()
+    assert (runtime_dir / "directory-config" / "root" / "email.json").exists()
+    assert (runtime_dir / "directory-config" / "root" / "heartbeat.json").exists()
+    assert (runtime_dir / "directory-config" / "root" / "vm.json").exists()
 
     directories_payload = json.loads((runtime_dir / "directories.json").read_text(encoding="utf-8"))
     assert directories_payload["root"]["metadata"]["directory_config"]["domains"] == [
+        "email",
+        "heartbeat",
         "policy",
         "providers",
-        "vm-defaults",
-        "workers",
+        "vm",
     ]
 
 
@@ -259,7 +261,7 @@ def test_migrate_global_config_to_root_skips_existing_divergent_root_domains_wit
     result = runner.invoke(app, ["migrate-global-config-to-root", "--config", str(config_path)])
 
     assert result.exit_code == 0
-    assert "written=3 skipped=1 unchanged=0" in result.output
+    assert "written=0 skipped=1 unchanged=4" in result.output
     assert "skipped: policy" in result.output
     policy_payload = json.loads(
         (tmp_path / "runtime" / "directory-config" / "root" / "policy.json").read_text(encoding="utf-8")
@@ -292,7 +294,7 @@ def test_migrate_global_config_to_root_overwrites_when_requested(tmp_path: Path)
     )
 
     assert result.exit_code == 0
-    assert "written=4 skipped=0 unchanged=0" in result.output
+    assert "written=1 skipped=0 unchanged=4" in result.output
     policy_payload = json.loads(
         (tmp_path / "runtime" / "directory-config" / "root" / "policy.json").read_text(encoding="utf-8")
     )
@@ -313,7 +315,7 @@ def test_migrate_global_config_to_root_recovers_when_metadata_lists_missing_root
     result = runner.invoke(app, ["migrate-global-config-to-root", "--config", str(config_path)])
 
     assert result.exit_code == 0
-    assert "written=4 skipped=0 unchanged=0" in result.output
+    assert "written=5 skipped=0 unchanged=0" in result.output
     assert (runtime_dir / "directory-config" / "root" / "providers.json").exists()
 
 
@@ -692,7 +694,7 @@ def test_create_issue_vm_uses_root_vm_defaults_overlay_for_guest_env(tmp_path: P
                 "--config",
                 str(config_path),
                 "--domain",
-                "vm-defaults",
+                "vm",
                 "root",
                 '{"gateway_url":"http://10.10.10.1:8000/mcp","openai_relay_port":12000,"nuget_relay_port":13000}',
             ],
@@ -2782,7 +2784,7 @@ def test_status_uses_root_vm_defaults_overlay_for_health_endpoints(tmp_path: Pat
                 "--config",
                 str(config_path),
                 "--domain",
-                "vm-defaults",
+                "vm",
                 "root",
                 '{"gateway_url":"http://10.0.0.5:9000/mcp","openai_relay_host":"127.0.0.2","openai_relay_port":12000}',
             ],

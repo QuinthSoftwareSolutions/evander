@@ -9,7 +9,6 @@ from .directory_config import (
     DIRECTORY_CONFIG_DOMAIN_FILENAMES,
     DirectoryConfigResolution,
     DirectoryConfigStore,
-    get_domain_base_config,
     validate_effective_domain_payload,
 )
 from .directories import DirectoryService, DirectoryStore
@@ -201,7 +200,7 @@ class DirectoryAdminService:
         domain: str,
     ) -> AdminResult[DirectoryEffectiveConfigPayload]:
         def operation() -> DirectoryEffectiveConfigPayload:
-            base_config = get_domain_base_config(self._gateway_config, domain) if domain == "gateway" else None
+            base_config = self._gateway_config.model_dump(mode="json") if domain == "gateway" else None
             resolution = self._config_resolver().resolve_domain(
                 reference,
                 domain=domain,

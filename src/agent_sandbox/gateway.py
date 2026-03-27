@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 from typing import Any
 
 import httpx
 from mcp.server.fastmcp import FastMCP
 
-from .config import load_config
+from .bootstrap import load_runtime_gateway_config, resolve_runtime_dir
+from .config import GatewayConfig
 from .email.http_utils import ProviderRequestError
 from .models import (
     AuditEvent,
@@ -598,12 +600,32 @@ def create_server(context: RuntimeContext) -> FastMCP:
     return server
 
 
+def _project_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
+def _bootstrap_runtime_config(*, legacy_config_path: Path | None = None) -> GatewayConfig:
+    return load_runtime_gateway_config(
+        runtime_dir=resolve_runtime_dir(runtime_dir=_project_root() / "runtime", legacy_config_path=legacy_config_path),
+        legacy_config_path=legacy_config_path,
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the Agent Sandbox MCP gateway.")
-    parser.add_argument("--config", default="config/gateway.yaml", help="Path to the gateway YAML config.")
+    parser.add_argument(
+        "--legacy-config",
+        help="Optional legacy gateway YAML used only to import root config if root is missing.",
+    )
+    parser.add_argument(
+        "--config",
+        dest="legacy_config",
+        help=argparse.SUPPRESS,
+    )
     args = parser.parse_args()
 
-    config = load_config(args.config)
+    legacy_config_path = Path(args.legacy_config) if args.legacy_config else None
+    config = _bootstrap_runtime_config(legacy_config_path=legacy_config_path)
     context = build_runtime(config)
     server = create_server(context)
     server.run(transport="streamable-http")

@@ -7,7 +7,6 @@ def test_bootstrap_script_enforces_codex_config_and_placeholder_key() -> None:
     )
 
     assert "sudo -n virsh domifaddr" in script
-    assert 'AGENT_SANDBOX_CONFIG="${AGENT_SANDBOX_CONFIG:-${ROOT_DIR}/config/gateway.yaml}"' in script
     assert 'cat > ~/.codex/config.toml <<CONFIG' in script
     assert 'model = "gpt-5.4"' in script
     assert 'model_reasoning_effort = "high"' in script

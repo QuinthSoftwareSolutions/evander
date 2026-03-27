@@ -4,8 +4,9 @@ This document lists the **user-configurable parameters** in this repository, whe
 
 Scope included:
 
+- Host bootstrap configuration in `runtime/host-config.json`.
 - Environment-variable based configuration (`config/*.env.example`, plus generated guest env files).
-- Gateway YAML configuration keys (`config/gateway.yaml` / `config/gateway.example.yaml`).
+- Legacy gateway YAML import keys (from a legacy YAML file), used only to seed `root` during migration.
 - Cloud-init template placeholders used by VM launch/bootstrap.
 
 ## 1) Service environment files (`config/*.env.example`)
@@ -78,8 +79,8 @@ Scope included:
 | `ADO_COMMENT_TEXT_MAX_CHARS` | `config/ado-worker.env.example` | `src/agent_sandbox/ado_issue_worker.py`. |
 
 The ADO worker now loads `azure_devops_organization_url`, `azure_devops_project`, and
-`azure_devops_pat_env` from `config/gateway.yaml` (including any root-level provider overlay)
-instead of duplicating them in `config/ado-worker.env`.
+`azure_devops_pat_env` from `root` directory config instead of duplicating them in
+`config/ado-worker.env`.
 
 ## `config/git-server.env.example`
 
@@ -97,105 +98,123 @@ instead of duplicating them in `config/ado-worker.env`.
 | `AGENT_SANDBOX_PR_BODY_MAX_BYTES` | `config/git-server.env.example` | `scripts/handle_agent_push.sh` (body truncation limit). |
 | `AGENT_SANDBOX_NOTIFY_COMMAND` | `config/git-server.env.example` | `scripts/handle_agent_push.sh` (post-promotion host notification command). |
 
-## 2) Gateway YAML keys (`config/gateway.yaml`, `config/gateway.example.yaml`)
+## 2) Host bootstrap config (`runtime/host-config.json`)
 
-All keys are defined in `src/agent_sandbox/config.py` (`GatewayConfig` + `MailboxConfig`) and loaded by `load_config()`.
+This file is the live host-global bootstrap configuration. It contains process-level bind settings,
+runtime/store paths, and feature flags that are intentionally not inherited per directory.
+
+Key bootstrap fields include:
+
+- `runtime_dir`
+- `log_level`
+- `gateway_host`, `gateway_port`
+- `openai_relay_host`, `openai_relay_port`
+- `nuget_relay_host`, `nuget_relay_port`
+- `audit_log_path`
+- `session_store_path`, `approval_store_path`, `draft_store_path`, `email_store_path`, `email_cursor_store_path`
+- `discord_command_store_path`, `directories_store_path`, `pr_map_path`, `host_agent_control_state_path`
+- `enable_directory_scoped_config`
+
+## 3) Legacy gateway import keys
+
+These keys are defined in `src/agent_sandbox/config.py` (`GatewayConfig` + `MailboxConfig`) and were historically loaded by `load_config()`.
+In the root-only model, this file is an import source for seeding `runtime/directory-config/root/...` and is not the live runtime baseline.
 
 ### Core server/runtime keys
 
 | Key | Found in | Consumed by |
 |---|---|---|
-| `host`, `port` | `config/gateway*.yaml` | `src/agent_sandbox/gateway.py` server bind settings. |
-| `log_level` | `config/gateway*.yaml` | `src/agent_sandbox/gateway.py` logging setup for gateway process. |
-| `runtime_dir` | `config/gateway*.yaml` | `src/agent_sandbox/runtime.py` (store locations), `src/agent_sandbox/host_heartbeat_worker.py` (feedback worker store root). |
-| `audit_log_path` | `config/gateway*.yaml` | `src/agent_sandbox/runtime.py` audit logger destination. |
-| `session_store_path`, `approval_store_path`, `draft_store_path`, `email_store_path`, `email_cursor_store_path`, `discord_command_store_path` | `config/gateway*.yaml` | `src/agent_sandbox/runtime.py` persistent JSON stores. |
-| `directories_store_path` | `config/gateway*.yaml` | `src/agent_sandbox/runtime.py`, `src/agent_sandbox/directories.py`, directory admin/config services. |
-| `enable_directory_scoped_config` | `config/gateway*.yaml` | `src/agent_sandbox/directory_admin.py`, `src/agent_sandbox/admin_app.py`, `src/agent_sandbox/ado_issue_worker.py`, `src/agent_sandbox/host_heartbeat_worker.py`, `src/agent_sandbox/pr_feedback_worker.py` (transition flag for directory edit surfaces and worker shadow resolution). |
-| `approval_ttl_seconds` | `config/gateway*.yaml` | `src/agent_sandbox/policy.py` approval expiry computation. |
-| `default_session_ttl_seconds` | `config/gateway*.yaml` | `src/agent_sandbox/cli.py` session creation defaults. |
-| `bind_network_cidr` | `config/gateway*.yaml` | `src/agent_sandbox/config.py` validation/normalization (policy-bound network constraints). |
-| `gateway_url` | `config/gateway*.yaml` | `src/agent_sandbox/cli.py` health checks / external endpoint references. |
-| `redacted_keys` | `config/gateway*.yaml` (optional) | `src/agent_sandbox/gateway.py` request/response redaction in logs. |
+| `host`, `port` | legacy gateway YAML | `src/agent_sandbox/gateway.py` server bind settings. |
+| `log_level` | legacy gateway YAML | `src/agent_sandbox/gateway.py` logging setup for gateway process. |
+| `runtime_dir` | legacy gateway YAML | `src/agent_sandbox/runtime.py` (store locations), `src/agent_sandbox/host_heartbeat_worker.py` (feedback worker store root). |
+| `audit_log_path` | legacy gateway YAML | `src/agent_sandbox/runtime.py` audit logger destination. |
+| `session_store_path`, `approval_store_path`, `draft_store_path`, `email_store_path`, `email_cursor_store_path`, `discord_command_store_path` | legacy gateway YAML | `src/agent_sandbox/runtime.py` persistent JSON stores. |
+| `directories_store_path` | legacy gateway YAML | `src/agent_sandbox/runtime.py`, `src/agent_sandbox/directories.py`, directory admin/config services. |
+| `enable_directory_scoped_config` | legacy gateway YAML | `src/agent_sandbox/directory_admin.py`, `src/agent_sandbox/admin_app.py`, `src/agent_sandbox/ado_issue_worker.py`, `src/agent_sandbox/host_heartbeat_worker.py`, `src/agent_sandbox/pr_feedback_worker.py` (transition flag for directory edit surfaces and worker shadow resolution). |
+| `approval_ttl_seconds` | legacy gateway YAML | `src/agent_sandbox/policy.py` approval expiry computation. |
+| `default_session_ttl_seconds` | legacy gateway YAML | `src/agent_sandbox/cli.py` session creation defaults. |
+| `bind_network_cidr` | legacy gateway YAML | `src/agent_sandbox/config.py` validation/normalization (policy-bound network constraints). |
+| `gateway_url` | legacy gateway YAML | `src/agent_sandbox/cli.py` health checks / external endpoint references. |
+| `redacted_keys` | legacy gateway YAML (optional) | `src/agent_sandbox/gateway.py` request/response redaction in logs. |
 
 ### OpenAI relay keys
 
 | Key | Found in | Consumed by |
 |---|---|---|
-| `openai_relay_host`, `openai_relay_port` | `config/gateway*.yaml` | `src/agent_sandbox/openai_relay.py` listener bind. |
-| `openai_api_base_url` | `config/gateway*.yaml` | `src/agent_sandbox/openai_relay.py` upstream URL base. |
-| `openai_api_key_env` | `config/gateway*.yaml` | `src/agent_sandbox/openai_relay.py` env-var name lookup for API key. |
-| `openai_relay_timeout_seconds` | `config/gateway*.yaml` | `src/agent_sandbox/openai_relay.py` upstream request timeout. |
+| `openai_relay_host`, `openai_relay_port` | legacy gateway YAML | `src/agent_sandbox/openai_relay.py` listener bind. |
+| `openai_api_base_url` | legacy gateway YAML | `src/agent_sandbox/openai_relay.py` upstream URL base. |
+| `openai_api_key_env` | legacy gateway YAML | `src/agent_sandbox/openai_relay.py` env-var name lookup for API key. |
+| `openai_relay_timeout_seconds` | legacy gateway YAML | `src/agent_sandbox/openai_relay.py` upstream request timeout. |
 
 ### NuGet relay keys
 
 | Key | Found in | Consumed by |
 |---|---|---|
-| `nuget_relay_host`, `nuget_relay_port` | `config/gateway*.yaml` | `src/agent_sandbox/nuget_relay.py` listener bind. |
-| `nuget_public_feed_base_url` | `config/gateway*.yaml` | `src/agent_sandbox/nuget_relay.py` public feed proxy target. |
-| `nuget_azure_feed_base_url` | `config/gateway*.yaml` | `src/agent_sandbox/nuget_relay.py` Azure feed proxy target. |
-| `nuget_azure_pat_env` | `config/gateway*.yaml` | `src/agent_sandbox/nuget_relay.py` env-var name lookup for Azure Artifacts PAT. |
-| `nuget_relay_timeout_seconds` | `config/gateway*.yaml` | `src/agent_sandbox/nuget_relay.py` upstream timeout. |
+| `nuget_relay_host`, `nuget_relay_port` | legacy gateway YAML | `src/agent_sandbox/nuget_relay.py` listener bind. |
+| `nuget_public_feed_base_url` | legacy gateway YAML | `src/agent_sandbox/nuget_relay.py` public feed proxy target. |
+| `nuget_azure_feed_base_url` | legacy gateway YAML | `src/agent_sandbox/nuget_relay.py` Azure feed proxy target. |
+| `nuget_azure_pat_env` | legacy gateway YAML | `src/agent_sandbox/nuget_relay.py` env-var name lookup for Azure Artifacts PAT. |
+| `nuget_relay_timeout_seconds` | legacy gateway YAML | `src/agent_sandbox/nuget_relay.py` upstream timeout. |
 
 ### Discord keys
 
 | Key | Found in | Consumed by |
 |---|---|---|
-| `discord_backend` | `config/gateway*.yaml` | `src/agent_sandbox/runtime.py` adapter selection (`stub`/`bot_api`). |
-| `discord_bot_token_env` | `config/gateway*.yaml` | `src/agent_sandbox/runtime.py` token env lookup. |
-| `discord_api_base_url` | `config/gateway*.yaml` | `src/agent_sandbox/runtime.py` bot API client base URL. |
-| `discord_poll_limit` | `config/gateway*.yaml` | `src/agent_sandbox/runtime.py` polling window size. |
-| `discord_timeout_seconds` | `config/gateway*.yaml` | `src/agent_sandbox/runtime.py` HTTP timeout. |
-| `discord_retry_count` | `config/gateway*.yaml` | `src/agent_sandbox/runtime.py` retry behavior. |
-| `discord_retry_base_backoff_seconds` | `config/gateway*.yaml` | `src/agent_sandbox/runtime.py` retry backoff floor. |
-| `discord_retry_max_backoff_seconds` | `config/gateway*.yaml` | `src/agent_sandbox/runtime.py` retry backoff ceiling. |
-| `discord_operator_user_allowlist` | `config/gateway*.yaml` | `src/agent_sandbox/runtime.py` and `src/agent_sandbox/policy.py` authorization checks. |
-| `discord_operator_channel_allowlist` | `config/gateway*.yaml` | `src/agent_sandbox/runtime.py` channel filter for operator events. |
-| `discord_poll_operator_dms` | `config/gateway*.yaml` | `src/agent_sandbox/runtime.py` DM polling toggle. |
+| `discord_backend` | legacy gateway YAML | `src/agent_sandbox/runtime.py` adapter selection (`stub`/`bot_api`). |
+| `discord_bot_token_env` | legacy gateway YAML | `src/agent_sandbox/runtime.py` token env lookup. |
+| `discord_api_base_url` | legacy gateway YAML | `src/agent_sandbox/runtime.py` bot API client base URL. |
+| `discord_poll_limit` | legacy gateway YAML | `src/agent_sandbox/runtime.py` polling window size. |
+| `discord_timeout_seconds` | legacy gateway YAML | `src/agent_sandbox/runtime.py` HTTP timeout. |
+| `discord_retry_count` | legacy gateway YAML | `src/agent_sandbox/runtime.py` retry behavior. |
+| `discord_retry_base_backoff_seconds` | legacy gateway YAML | `src/agent_sandbox/runtime.py` retry backoff floor. |
+| `discord_retry_max_backoff_seconds` | legacy gateway YAML | `src/agent_sandbox/runtime.py` retry backoff ceiling. |
+| `discord_operator_user_allowlist` | legacy gateway YAML | `src/agent_sandbox/runtime.py` and `src/agent_sandbox/policy.py` authorization checks. |
+| `discord_operator_channel_allowlist` | legacy gateway YAML | `src/agent_sandbox/runtime.py` channel filter for operator events. |
+| `discord_poll_operator_dms` | legacy gateway YAML | `src/agent_sandbox/runtime.py` DM polling toggle. |
 
 ### Email keys
 
 | Key | Found in | Consumed by |
 |---|---|---|
-| `email_mailboxes[]` | `config/gateway*.yaml` | `src/agent_sandbox/runtime.py` mailbox provider adapter construction. |
-| `email_mailboxes[].mailbox_id` | `config/gateway*.yaml` | `src/agent_sandbox/runtime.py`, `src/agent_sandbox/policy.py`, validation in `src/agent_sandbox/config.py`. |
-| `email_mailboxes[].provider` | `config/gateway*.yaml` | `src/agent_sandbox/runtime.py` provider type dispatch (`json_store`/`gmail`/`graph`). |
-| `email_mailboxes[].account_identifier` (`account`/`address` aliases) | `config/gateway*.yaml` | `src/agent_sandbox/email/gmail_provider.py`, `src/agent_sandbox/email/graph_provider.py`. |
-| `email_mailboxes[].auth_secret_refs` (`auth_env_var_names` alias) | `config/gateway*.yaml` | `src/agent_sandbox/runtime.py` + provider token resolution. |
-| `email_mailboxes[].folder_mapping` | `config/gateway*.yaml` | Gmail/Graph provider folder mapping. |
-| `email_mailboxes[].folder_allowlist_defaults` | `config/gateway*.yaml` | Defaulting logic in `src/agent_sandbox/config.py`. |
-| `email_mailbox_allowlist` | `config/gateway*.yaml` | `src/agent_sandbox/cli.py` session manifest policy surface. |
-| `email_folder_allowlist_by_mailbox` | `config/gateway*.yaml` | `src/agent_sandbox/cli.py` / `src/agent_sandbox/policy.py`. |
-| `email_draft_recipient_allowlist` | `config/gateway*.yaml` | `src/agent_sandbox/policy.py` recipient checks. |
-| `email_draft_domain_allowlist` | `config/gateway*.yaml` | `src/agent_sandbox/policy.py` domain checks. |
-| `email_send_enabled` | `config/gateway*.yaml` | `src/agent_sandbox/cli.py`, `src/agent_sandbox/gateway.py`, `src/agent_sandbox/policy.py`. |
-| `email_provider_timeout_seconds` | `config/gateway*.yaml` | `src/agent_sandbox/runtime.py` email + PR provider HTTP client timeouts. |
+| `email_mailboxes[]` | legacy gateway YAML | `src/agent_sandbox/runtime.py` mailbox provider adapter construction. |
+| `email_mailboxes[].mailbox_id` | legacy gateway YAML | `src/agent_sandbox/runtime.py`, `src/agent_sandbox/policy.py`, validation in `src/agent_sandbox/config.py`. |
+| `email_mailboxes[].provider` | legacy gateway YAML | `src/agent_sandbox/runtime.py` provider type dispatch (`json_store`/`gmail`/`graph`). |
+| `email_mailboxes[].account_identifier` (`account`/`address` aliases) | legacy gateway YAML | `src/agent_sandbox/email/gmail_provider.py`, `src/agent_sandbox/email/graph_provider.py`. |
+| `email_mailboxes[].auth_secret_refs` (`auth_env_var_names` alias) | legacy gateway YAML | `src/agent_sandbox/runtime.py` + provider token resolution. |
+| `email_mailboxes[].folder_mapping` | legacy gateway YAML | Gmail/Graph provider folder mapping. |
+| `email_mailboxes[].folder_allowlist_defaults` | legacy gateway YAML | Defaulting logic in `src/agent_sandbox/config.py`. |
+| `email_mailbox_allowlist` | legacy gateway YAML | `src/agent_sandbox/cli.py` session manifest policy surface. |
+| `email_folder_allowlist_by_mailbox` | legacy gateway YAML | `src/agent_sandbox/cli.py` / `src/agent_sandbox/policy.py`. |
+| `email_draft_recipient_allowlist` | legacy gateway YAML | `src/agent_sandbox/policy.py` recipient checks. |
+| `email_draft_domain_allowlist` | legacy gateway YAML | `src/agent_sandbox/policy.py` domain checks. |
+| `email_send_enabled` | legacy gateway YAML | `src/agent_sandbox/cli.py`, `src/agent_sandbox/gateway.py`, `src/agent_sandbox/policy.py`. |
+| `email_provider_timeout_seconds` | legacy gateway YAML | `src/agent_sandbox/runtime.py` email + PR provider HTTP client timeouts. |
 
 ### PR/feedback + host-heartbeat keys
 
 | Key | Found in | Consumed by |
 |---|---|---|
-| `pr_reply_require_approval` | `config/gateway*.yaml` | `src/agent_sandbox/gateway.py` PR-reply approval gate. |
-| `github_token_env` | `config/gateway*.yaml` | `src/agent_sandbox/runtime.py` and `src/agent_sandbox/host_heartbeat_worker.py`. |
-| `azure_devops_pat_env` | `config/gateway*.yaml` | `src/agent_sandbox/runtime.py` and `src/agent_sandbox/host_heartbeat_worker.py`. |
-| `azure_devops_organization_url` | `config/gateway*.yaml` | `src/agent_sandbox/runtime.py` and `src/agent_sandbox/host_heartbeat_worker.py`. |
-| `azure_devops_project` | `config/gateway*.yaml` | `src/agent_sandbox/runtime.py` and `src/agent_sandbox/host_heartbeat_worker.py`. |
-| `host_heartbeat_poll_interval_seconds` | `config/gateway*.yaml` | `src/agent_sandbox/host_heartbeat_worker.py`. |
-| `host_heartbeat_jitter_seconds` | `config/gateway*.yaml` | `src/agent_sandbox/host_heartbeat_worker.py`. |
-| `host_heartbeat_cooldown_seconds` | `config/gateway*.yaml` | `src/agent_sandbox/host_heartbeat_worker.py`. |
-| `host_heartbeat_http_timeout_seconds` | `config/gateway*.yaml` | `src/agent_sandbox/host_heartbeat_worker.py`. |
-| `host_heartbeat_lock_path` | `config/gateway*.yaml` | `src/agent_sandbox/host_heartbeat_worker.py`. |
-| `host_heartbeat_session_cooldown_path` | `config/gateway*.yaml` | `src/agent_sandbox/host_heartbeat_worker.py`. |
-| `host_busy_check_script_path` | `config/gateway*.yaml` | `src/agent_sandbox/host_heartbeat_worker.py` subprocess call site. |
-| `host_resume_script_path` | `config/gateway*.yaml` | `src/agent_sandbox/host_heartbeat_worker.py` subprocess call site. |
-| `host_heartbeat_wake_state_path` | `config/gateway*.yaml` | `src/agent_sandbox/host_heartbeat_worker.py`. |
-| `host_heartbeat_resume_prompt` | `config/gateway*.yaml` | `src/agent_sandbox/host_heartbeat_worker.py`. |
-| `host_heartbeat_vm_user` | `config/gateway*.yaml` | `src/agent_sandbox/host_heartbeat_worker.py`. |
-| `host_heartbeat_resume_timeout_seconds` | `config/gateway*.yaml` | `src/agent_sandbox/host_heartbeat_worker.py`. |
-| `host_heartbeat_stream_conflict_policy` | `config/gateway*.yaml` | `src/agent_sandbox/host_heartbeat_worker.py`. |
-| `pr_map_path` | `config/gateway*.yaml` | `src/agent_sandbox/host_heartbeat_worker.py` PR map loading. |
+| `pr_reply_require_approval` | legacy gateway YAML | `src/agent_sandbox/gateway.py` PR-reply approval gate. |
+| `github_token_env` | legacy gateway YAML | `src/agent_sandbox/runtime.py` and `src/agent_sandbox/host_heartbeat_worker.py`. |
+| `azure_devops_pat_env` | legacy gateway YAML | `src/agent_sandbox/runtime.py` and `src/agent_sandbox/host_heartbeat_worker.py`. |
+| `azure_devops_organization_url` | legacy gateway YAML | `src/agent_sandbox/runtime.py` and `src/agent_sandbox/host_heartbeat_worker.py`. |
+| `azure_devops_project` | legacy gateway YAML | `src/agent_sandbox/runtime.py` and `src/agent_sandbox/host_heartbeat_worker.py`. |
+| `host_heartbeat_poll_interval_seconds` | legacy gateway YAML | `src/agent_sandbox/host_heartbeat_worker.py`. |
+| `host_heartbeat_jitter_seconds` | legacy gateway YAML | `src/agent_sandbox/host_heartbeat_worker.py`. |
+| `host_heartbeat_cooldown_seconds` | legacy gateway YAML | `src/agent_sandbox/host_heartbeat_worker.py`. |
+| `host_heartbeat_http_timeout_seconds` | legacy gateway YAML | `src/agent_sandbox/host_heartbeat_worker.py`. |
+| `host_heartbeat_lock_path` | legacy gateway YAML | `src/agent_sandbox/host_heartbeat_worker.py`. |
+| `host_heartbeat_session_cooldown_path` | legacy gateway YAML | `src/agent_sandbox/host_heartbeat_worker.py`. |
+| `host_busy_check_script_path` | legacy gateway YAML | `src/agent_sandbox/host_heartbeat_worker.py` subprocess call site. |
+| `host_resume_script_path` | legacy gateway YAML | `src/agent_sandbox/host_heartbeat_worker.py` subprocess call site. |
+| `host_heartbeat_wake_state_path` | legacy gateway YAML | `src/agent_sandbox/host_heartbeat_worker.py`. |
+| `host_heartbeat_resume_prompt` | legacy gateway YAML | `src/agent_sandbox/host_heartbeat_worker.py`. |
+| `host_heartbeat_vm_user` | legacy gateway YAML | `src/agent_sandbox/host_heartbeat_worker.py`. |
+| `host_heartbeat_resume_timeout_seconds` | legacy gateway YAML | `src/agent_sandbox/host_heartbeat_worker.py`. |
+| `host_heartbeat_stream_conflict_policy` | legacy gateway YAML | `src/agent_sandbox/host_heartbeat_worker.py`. |
+| `pr_map_path` | legacy gateway YAML | `src/agent_sandbox/host_heartbeat_worker.py` PR map loading. |
 
-## 3) Cloud-init template placeholders (`config/cloud-init-user-data.yaml`)
+## 4) Cloud-init template placeholders (`config/cloud-init-user-data.yaml`)
 
 These placeholders are substituted by `scripts/launch_agent_vm.sh` before VM boot.
 
@@ -213,8 +232,9 @@ These placeholders are substituted by `scripts/launch_agent_vm.sh` before VM boo
 
 ## Directory Config Domains And Storage
 
-Directory-scoped config is additive and host-side. It does not replace the existing global
-gateway YAML or `config/*.env*` files during transition.
+Directory-scoped config is additive and host-side. `root` is the live top-level baseline.
+Legacy gateway YAML is only an import source for existing installs; it is not the live
+runtime baseline.
 
 Storage paths:
 
@@ -227,10 +247,11 @@ Supported directory config domains:
 
 | Domain file | Purpose | YAML fields allowed |
 |---|---|---|
-| `policy.json` | Session/policy defaults and operator restrictions | `default_session_ttl_seconds`, Discord/email allowlists, `email_send_enabled`, `pr_reply_require_approval`, `redacted_keys` |
-| `providers.json` | Upstream/provider endpoints and credentials-by-reference | Discord, OpenAI, NuGet, GitHub, Azure DevOps, mailbox provider settings |
-| `workers.json` | Host worker polling/resume/busy-check behavior | host heartbeat timing, scripts, conflict policy, wake-state paths |
-| `vm-defaults.json` | Guest-facing relay/network defaults | `bind_network_cidr`, `gateway_url`, OpenAI relay host/port, NuGet relay host/port |
+| `policy.json` | Session/policy defaults and operator restrictions | `approval_ttl_seconds`, `default_session_ttl_seconds`, Discord/email allowlists, `email_send_enabled`, `pr_reply_require_approval`, `redacted_keys` |
+| `providers.json` | Upstream/provider endpoints and credentials-by-reference | Discord, OpenAI, NuGet, GitHub, Azure DevOps |
+| `email.json` | Mailbox provider definitions and email provider runtime settings | `email_mailboxes`, `email_provider_timeout_seconds` |
+| `heartbeat.json` | Host heartbeat worker behavior | heartbeat timing, scripts, conflict policy, wake-state paths |
+| `vm.json` | Guest-facing relay/network defaults | `bind_network_cidr`, `gateway_url`, OpenAI relay host/port, NuGet relay host/port |
 
 Merge behavior in `src/agent_sandbox/directory_config.py`:
 
@@ -242,10 +263,8 @@ Merge behavior in `src/agent_sandbox/directory_config.py`:
 Inheritance path:
 
 - effective config is resolved in ancestor order: `root -> ... -> selected`
-- if present, `runtime/directory-config/root/*.json` is the top of the directory-scoped inheritance chain
+- `runtime/directory-config/root/*.json` is the top of the directory-scoped inheritance chain
 - provenance metadata records which directory last set each effective value
-- when `enable_directory_scoped_config` is disabled, workers and admin edit surfaces keep the
-  current global behavior and directory config stays in inspection/transition mode
 
 ## 4) Additional env vars consumed directly in code paths
 
@@ -255,14 +274,13 @@ These are not primarily defined in `*.env.example` but are explicit configuratio
 |---|---|---|
 | `AGENT_SANDBOX_GIT_ROOT` | `src/agent_sandbox/cli.py` | `agent-sandbox` CLI git-remote helpers (`resolve_git_root`). |
 | `MSSQL_SA_PASSWORD` | `src/agent_sandbox/cli.py`, `scripts/setup_issue_vm.sh`, bootstrap scripts | Required when MSSQL bootstrap paths are enabled. |
-| Provider mailbox tokens (`GMAIL_*_ACCESS_TOKEN`, `GRAPH_*_ACCESS_TOKEN`, etc.) | Referenced indirectly in `config/gateway*.yaml` under `auth_secret_refs.access_token` | `src/agent_sandbox/runtime.py`, `src/agent_sandbox/email/gmail_provider.py`, `src/agent_sandbox/email/graph_provider.py`. |
+| Provider mailbox tokens (`GMAIL_*_ACCESS_TOKEN`, `GRAPH_*_ACCESS_TOKEN`, etc.) | Referenced indirectly in effective root directory config under `auth_secret_refs.access_token` | `src/agent_sandbox/runtime.py`, `src/agent_sandbox/email/gmail_provider.py`, `src/agent_sandbox/email/graph_provider.py`. |
 
 ---
 
 If you update configuration behavior, also update:
 
 - `config/*.env.example`
-- `config/gateway.example.yaml`
 - `docs/operations.md` / `README.md`
 - tests validating defaults and docs.
 

@@ -329,7 +329,7 @@ Installed systemd units:
 Next steps:
   1. Edit ${ROOT_DIR}/config/openai-relay.env and set OPENAI_API_KEY.
   2. Edit ${ROOT_DIR}/config/nuget-relay.env and set AZURE_ARTIFACTS_PAT if needed.
-  3. Edit ${ROOT_DIR}/config/ado-worker.env and ensure the PAT env var named by config/gateway.yaml is exported.
+  3. Edit ${ROOT_DIR}/config/ado-worker.env and ensure the PAT env var named by the root provider config is exported.
   4. Edit ${ROOT_DIR}/config/host-heartbeat.env for log level and provider credentials if private PR polling is needed.
   5. Optionally edit ${ROOT_DIR}/config/firewall.env to change allowed host ports.
   6. Start services:

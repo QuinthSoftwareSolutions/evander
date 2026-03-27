@@ -213,7 +213,7 @@ def test_create_issue_vm_uses_directory_vm_defaults_overlay_for_guest_env(tmp_pa
     team_path = create_result.data.details.directory.path
     write_result = service.write_directory_domain_config(
         team_path,
-        "vm-defaults",
+        "vm",
         {
             "gateway_url": "http://10.20.30.40:8000/mcp",
             "openai_relay_port": 12000,

@@ -207,13 +207,15 @@ class PolicyEngine:
         payload: dict[str, Any],
         human_summary: str,
     ) -> ApprovalRequest:
+        session = self.get_session(session_id)
+        effective_policy = self.effective_policy_for_session(session)
         request = ApprovalRequest(
             request_id=f"apr_{digest_payload({'session_id': session_id, **payload})[:16]}",
             session_id=session_id,
             action_type=action_type,
             payload_digest=digest_payload(payload),
             human_summary=human_summary,
-            expires_at=datetime.now(UTC) + timedelta(seconds=self.config.approval_ttl_seconds),
+            expires_at=datetime.now(UTC) + timedelta(seconds=effective_policy.approval_ttl_seconds),
         )
         self.approval_store.put(request.request_id, request)
         return request

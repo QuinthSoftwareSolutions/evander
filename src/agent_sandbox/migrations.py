@@ -8,6 +8,7 @@ from typing import Any
 from .config import GatewayConfig
 from .directory_config import DIRECTORY_CONFIG_DOMAIN_FILENAMES, DirectoryConfigStore, get_domain_base_config
 from .directories import DirectoryStore
+from .host_config import HostConfig, save_host_config
 
 
 @dataclass(frozen=True)
@@ -19,6 +20,7 @@ class OwnershipMigrationSummary:
 
 @dataclass(frozen=True)
 class RootConfigMigrationSummary:
+    host_config_written: bool
     written_domains: list[str]
     skipped_domains: list[str]
     unchanged_domains: list[str]
@@ -53,6 +55,8 @@ def migrate_directory_ownership_defaults(config: GatewayConfig) -> OwnershipMigr
 
 
 def migrate_global_config_to_root(config: GatewayConfig, *, overwrite: bool = False) -> RootConfigMigrationSummary:
+    host_config = HostConfig.from_legacy_gateway_config(config)
+    host_config_path = save_host_config(host_config)
     directory_store = DirectoryStore(config.directories_store_path)
     directory_store.ensure_root()
     config_store = DirectoryConfigStore(directory_store, runtime_dir=config.runtime_dir)
@@ -84,6 +88,7 @@ def migrate_global_config_to_root(config: GatewayConfig, *, overwrite: bool = Fa
         skipped_domains.append(domain)
 
     return RootConfigMigrationSummary(
+        host_config_written=host_config_path.exists(),
         written_domains=written_domains,
         skipped_domains=skipped_domains,
         unchanged_domains=unchanged_domains,

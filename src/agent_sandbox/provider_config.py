@@ -40,14 +40,15 @@ class ProviderConfigResolver:
 
     def resolve_for_directory(self, directory_path: str | None) -> GatewayConfig:
         normalized_path = self._normalize_directory_path(directory_path)
-        resolution = self.resolver.resolve_domain(
-            normalized_path,
-            domain="providers",
-            base_config=get_domain_base_config(self.config, "providers"),
-            validator=lambda candidate: validate_effective_domain_payload("providers", candidate),
-        )
         payload = self.config.model_dump(mode="json")
-        payload.update(resolution.effective_config)
+        for domain in ("providers", "email"):
+            resolution = self.resolver.resolve_domain(
+                normalized_path,
+                domain=domain,
+                base_config=get_domain_base_config(self.config, domain),
+                validator=lambda candidate, domain=domain: validate_effective_domain_payload(domain, candidate),
+            )
+            payload.update(resolution.effective_config)
         return GatewayConfig.model_validate(payload)
 
     def resolve_for_session_id(self, session_id: str) -> GatewayConfig:

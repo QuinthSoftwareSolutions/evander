@@ -16,22 +16,24 @@ Install these packages on the Ubuntu host before using the scripts:
 ## Bootstrap Flow
 
 1. Install Python dependencies with `uv`.
-2. Copy `config/gateway.example.yaml` to `config/gateway.yaml`.
-3. Run `agent-sandbox-cli init-state`.
-4. Create the libvirt network with `./scripts/create_libvirt_network.sh`.
-5. Apply guest forwarding policy with `./scripts/apply_firewall.sh`.
-6. Download the Ubuntu cloud image with `sudo ./scripts/create_base_vm.sh`.
-7. Create a session manifest with `agent-sandbox-cli create-session`.
-8. Launch a VM with `sudo ./scripts/launch_agent_vm.sh`.
-9. Optionally bootstrap a provider runtime in the guest (for Codex, use `./scripts/bootstrap_codex_vm.sh <vm-name>`).
-10. Optionally bootstrap a Python repo into a guest-local virtualenv with `./scripts/bootstrap_python_vm.sh <vm-name> <host-checkout-root> <guest-repo-root>`.
-11. Optionally install the host `.NET` SDK into the guest with `./scripts/bootstrap_dotnet_vm.sh <vm-name>`.
-12. Optionally prewarm the shared host NuGet cache with `./scripts/prewarm_nuget_cache.sh <path> [more paths...]`.
-13. Optionally install NuGet relay sources into the guest with `./scripts/bootstrap_nuget_vm.sh <vm-name>`.
-14. Optionally provision a guest-local Microsoft SQL Server instance into the guest with `MSSQL_SA_PASSWORD=... ./scripts/bootstrap_mssql_vm.sh <vm-name>`.
-15. Optionally install Playwright into the guest with `./scripts/bootstrap_playwright_vm.sh <vm-name>` for rendered-DOM debugging.
-16. Optionally create a local bare Git remote with `./scripts/create_git_remote.sh <repo-name>` or mirror the default host repo with `./scripts/mirror_issue_repo.sh <issue-number>` if the VM should push code back to the host.
-17. Use [live-smoke-tests.md](/home/jonathan/agent-sandbox/docs/live-smoke-tests.md) when you want to verify live Discord and provider-backed email behavior against real credentials.
+2. Run `agent-sandbox-cli init-state --runtime-dir runtime`.
+3. Edit host-global bootstrap settings in `runtime/host-config.json`.
+4. Configure `root` directory overlays directly with the admin UI or `agent-sandbox-cli directories config-set`.
+5. If you are importing an older install, run `agent-sandbox-cli migrate-global-config-to-root --config /path/to/legacy-gateway.yaml` once to seed `host-config.json` plus `root` from the legacy YAML file.
+6. Create the libvirt network with `./scripts/create_libvirt_network.sh`.
+7. Apply guest forwarding policy with `./scripts/apply_firewall.sh`.
+8. Download the Ubuntu cloud image with `sudo ./scripts/create_base_vm.sh`.
+9. Create a session manifest with `agent-sandbox-cli create-session`.
+10. Launch a VM with `sudo ./scripts/launch_agent_vm.sh`.
+10. Optionally bootstrap a provider runtime in the guest (for Codex, use `./scripts/bootstrap_codex_vm.sh <vm-name>`).
+11. Optionally bootstrap a Python repo into a guest-local virtualenv with `./scripts/bootstrap_python_vm.sh <vm-name> <host-checkout-root> <guest-repo-root>`.
+12. Optionally install the host `.NET` SDK into the guest with `./scripts/bootstrap_dotnet_vm.sh <vm-name>`.
+13. Optionally prewarm the shared host NuGet cache with `./scripts/prewarm_nuget_cache.sh <path> [more paths...]`.
+14. Optionally install NuGet relay sources into the guest with `./scripts/bootstrap_nuget_vm.sh <vm-name>`.
+15. Optionally provision a guest-local Microsoft SQL Server instance into the guest with `MSSQL_SA_PASSWORD=... ./scripts/bootstrap_mssql_vm.sh <vm-name>`.
+16. Optionally install Playwright into the guest with `./scripts/bootstrap_playwright_vm.sh <vm-name>` for rendered-DOM debugging.
+17. Optionally create a local bare Git remote with `./scripts/create_git_remote.sh <repo-name>` or mirror the default host repo with `./scripts/mirror_issue_repo.sh <issue-number>` if the VM should push code back to the host.
+18. Use [live-smoke-tests.md](/home/jonathan/agent-sandbox/docs/live-smoke-tests.md) when you want to verify live Discord and provider-backed email behavior against real credentials.
 
 - The launch script resizes each overlay disk to `20G` by default.
 - The launch script also exposes a read-only shared NuGet cache via `virtiofs` at `/opt/agent-sandbox/nuget-cache-ro` inside the guest.
@@ -42,9 +44,9 @@ Install these packages on the Ubuntu host before using the scripts:
 Before debugging individual scripts or services, run the consolidated host status command:
 
 - Human-readable summary:
-  - `agent-sandbox-cli status --config config/gateway.yaml`
+  - `agent-sandbox-cli status --runtime-dir runtime`
 - Machine-readable output:
-  - `agent-sandbox-cli status --config config/gateway.yaml --json`
+  - `agent-sandbox-cli status --runtime-dir runtime --json`
 
 The status output reports config load status, runtime store path permissions, key systemd unit states,
 gateway/relay endpoint reachability, and active/expired session summary.
@@ -91,9 +93,8 @@ directory-scoped values in the inheritance chain.
 To keep the rollout safe, directory-scoped config remains transition-gated:
 
 - `enable_directory_scoped_config: false` or unset:
-  - existing global config files and env vars stay authoritative
-  - worker directory resolution stays off
   - directory edit/config write surfaces are disabled
+  - worker directory shadow resolution stays off
 - `enable_directory_scoped_config: true`:
   - host-side admin and CLI directory edit/config write surfaces are enabled
   - workers compute directory config in shadow/readiness mode
@@ -101,30 +102,33 @@ To keep the rollout safe, directory-scoped config remains transition-gated:
 Initialize missing ownership on an existing runtime:
 
 ```bash
-agent-sandbox-cli migrate-directory-ownership --config config/gateway.yaml
+agent-sandbox-cli migrate-directory-ownership --runtime-dir runtime
 ```
 
 Common CLI flows:
 
 ```bash
-agent-sandbox-cli directories list --config config/gateway.yaml --parent root
-agent-sandbox-cli directories create --config config/gateway.yaml --parent root team
-agent-sandbox-cli directories rename --config config/gateway.yaml root/team sandbox
-agent-sandbox-cli directories move --config config/gateway.yaml root/sandbox --new-parent root
-agent-sandbox-cli directories show --config config/gateway.yaml root
-agent-sandbox-cli directories config-set --config config/gateway.yaml --domain policy root/team '{"default_session_ttl_seconds":120}'
-agent-sandbox-cli directories config-show --config config/gateway.yaml --domain policy root/team
+agent-sandbox-cli directories list --runtime-dir runtime --parent root
+agent-sandbox-cli directories create --runtime-dir runtime --parent root team
+agent-sandbox-cli directories rename --runtime-dir runtime root/team sandbox
+agent-sandbox-cli directories move --runtime-dir runtime root/sandbox --new-parent root
+agent-sandbox-cli directories show --runtime-dir runtime root
+agent-sandbox-cli directories config-set --runtime-dir runtime --domain policy root/team '{"default_session_ttl_seconds":120}'
+agent-sandbox-cli directories config-show --runtime-dir runtime --domain policy root/team
 ```
 
 Storage layout for directory config:
 
 - directory metadata source of truth: `runtime/directories.json`
+- host-global bootstrap source of truth: `runtime/host-config.json`
 - file-backed per-directory overlays: `runtime/directory-config/root/.../policy.json`
 - supported domains:
   - `policy.json`
   - `providers.json`
-  - `workers.json`
-  - `vm-defaults.json`
+  - `email.json`
+  - `heartbeat.json`
+  - `vm.json`
+- `root` is the live top-level layer; there is no hidden YAML base beneath it.
 
 ## SSH Access
 
@@ -241,8 +245,8 @@ A transport-terminated warning without client-visible failure can be expected fo
 
 ## Host-Side Discord Access
 
-- Set `discord_backend: "bot_api"` in `config/gateway.yaml` to enable the provider-backed Discord adapter.
-- Set `discord_bot_token_env` in `config/gateway.yaml` (default `DISCORD_BOT_TOKEN`).
+- Set `discord_backend: "bot_api"` in the effective `root` provider config to enable the provider-backed Discord adapter.
+- Set `discord_bot_token_env` in the effective `root` provider config (default `DISCORD_BOT_TOKEN`).
 - Export the matching host environment variable before launching `agent-sandbox-gateway`:
 
   ```bash
@@ -254,11 +258,11 @@ A transport-terminated warning without client-visible failure can be expected fo
   ```bash
   agent-sandbox-cli create-session \
     real-session \
-    --config config/gateway.yaml \
+    --runtime-dir runtime \
     --discord-channel 123456789012345678
   ```
 
-- Use `discord_operator_user_allowlist` in `config/gateway.yaml` for trusted operator user IDs that
+- Use `discord_operator_user_allowlist` in the effective `root` policy config for trusted operator user IDs that
   can issue commands outside per-session channel allowlists.
 - `bot_api` polling scope is explicit and narrow:
   - The gateway polls only channel IDs that already exist in `discord_command_store_path`
@@ -270,7 +274,7 @@ A transport-terminated warning without client-visible failure can be expected fo
 - Seed a dedicated test/control channel and get an initial cursor with:
 
   ```bash
-  ./.venv/bin/agent-sandbox-cli seed-discord-channel 123456789012345678 --config config/gateway.yaml
+  ./.venv/bin/agent-sandbox-cli seed-discord-channel 123456789012345678 --runtime-dir runtime
   ```
 
   Use the printed cursor as the first `since_cursor` for `discord_get_commands` so the seed entry
@@ -303,7 +307,7 @@ A transport-terminated warning without client-visible failure can be expected fo
 
 ## Host-Side Email Access
 
-- Configure one or more `email_mailboxes` entries in `config/gateway.yaml` with:
+- Configure one or more `email_mailboxes` entries in the effective `root` email config with:
   - `mailbox_id`
   - `provider` (`gmail` or `graph`)
   - `account` (Gmail `me`) or `address` (Graph mailbox address)
@@ -452,18 +456,13 @@ email_mailboxes:
 ### Multi-mailbox session allowlist example
 
 ```bash
-cat <<'YAML' >> config/gateway.yaml
-email_mailbox_allowlist:
-  - "ops-gmail"
-  - "exec-graph"
-  - "finance-graph"
-email_folder_allowlist_by_mailbox:
-  ops-gmail: ["inbox", "drafts"]
-  exec-graph: ["inbox", "drafts"]
-  finance-graph: ["inbox", "drafts"]
-YAML
+agent-sandbox-cli directories config-set \
+  --runtime-dir runtime \
+  --domain policy \
+  root \
+  '{"email_mailbox_allowlist":["ops-gmail","exec-graph","finance-graph"],"email_folder_allowlist_by_mailbox":{"ops-gmail":["inbox","drafts"],"exec-graph":["inbox","drafts"],"finance-graph":["inbox","drafts"]}}'
 
-agent-sandbox-cli create-session real-session --config config/gateway.yaml
+agent-sandbox-cli create-session real-session --runtime-dir runtime
 ```
 
 ## Host-Side NuGet Access
@@ -489,7 +488,7 @@ agent-sandbox-cli create-session real-session --config config/gateway.yaml
   when the mirrored repo source is remote.
 - Configure environment in `config/ado-worker.env` (start from
   `config/ado-worker.env.example`), then export the PAT value in the host shell/env-file named by
-  `azure_devops_pat_env` in `config/gateway.yaml` (default `AZURE_DEVOPS_PAT`).
+  `azure_devops_pat_env` in the effective `root` provider config (default `AZURE_DEVOPS_PAT`).
 
 Foreground runbook:
 
@@ -503,7 +502,7 @@ agent-sandbox-cli poll-ado-backlog --log-level INFO
 Systemd runbook:
 
 1. Ensure `config/ado-worker.env` exists and is populated.
-2. Ensure the PAT variable named by `azure_devops_pat_env` in `config/gateway.yaml` is available to the service user
+2. Ensure the PAT variable named by `azure_devops_pat_env` in the effective `root` provider config is available to the service user
    (for example through the user shell profile or a drop-in env file).
 3. Start/inspect:
 
@@ -575,10 +574,10 @@ Before running install mode, ensure preflight is clean (or only warning-only), t
 6. Copy `config/host-heartbeat.env.example` to `config/host-heartbeat.env` if needed.
 7. Set the real `OPENAI_API_KEY` in `config/openai-relay.env`.
 8. Set `AZURE_ARTIFACTS_PAT` in `config/nuget-relay.env` when private feeds are required.
-9. Ensure the PAT variable named by `azure_devops_pat_env` in `config/gateway.yaml` is exported
-   for the service user and `config/ado-worker.env` points at the right project/solution path.
+9. Ensure the PAT variable named by `azure_devops_pat_env` in the effective `root` provider config
+   is exported for the service user and `config/ado-worker.env` points at the right project/solution path.
 10. For private PR feedback polling, set `GITHUB_TOKEN` and/or `AZURE_DEVOPS_PAT` in
-    `config/host-heartbeat.env` and ensure `config/gateway.yaml` sets the correct
+    `config/host-heartbeat.env` and ensure the effective `root` provider config sets the correct
     `azure_devops_organization_url`, `azure_devops_project`, and heartbeat settings.
 11. Start and inspect services:
 

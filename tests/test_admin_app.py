@@ -1,0 +1,74 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from agent_sandbox import admin_app
+
+
+class _FakeApp:
+    def __init__(self, argv) -> None:
+        self.argv = list(argv)
+
+    def exec(self) -> int:
+        return 0
+
+
+class _FakeWindow:
+    def __init__(self, service) -> None:
+        self.service = service
+        self.shown = False
+
+    def show(self) -> None:
+        self.shown = True
+
+
+def test_main_uses_repo_local_runtime_dir_by_default(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(admin_app, "QApplication", _FakeApp)
+    monkeypatch.setattr(admin_app, "MainWindow", _FakeWindow)
+    monkeypatch.setattr(admin_app, "sys", type("FakeSys", (), {"argv": ["agent-sandbox-admin"]}))
+
+    def fake_admin_service(runtime_dir):
+        captured["runtime_dir"] = runtime_dir
+        return object()
+
+    monkeypatch.setattr(admin_app, "AdminService", fake_admin_service)
+
+    with pytest.raises(SystemExit) as exc:
+        admin_app.main()
+
+    assert exc.value.code == 0
+    assert captured["runtime_dir"] == Path("runtime")
+
+
+def test_main_accepts_runtime_dir_override(monkeypatch, tmp_path: Path) -> None:
+    captured: dict[str, object] = {}
+    runtime_dir = tmp_path / "custom-runtime"
+
+    monkeypatch.setattr(admin_app, "QApplication", _FakeApp)
+    monkeypatch.setattr(admin_app, "MainWindow", _FakeWindow)
+    monkeypatch.setattr(
+        admin_app,
+        "sys",
+        type("FakeSys", (), {"argv": ["agent-sandbox-admin", "--runtime-dir", str(runtime_dir)]}),
+    )
+
+    def fake_admin_service(selected_runtime_dir):
+        captured["runtime_dir"] = selected_runtime_dir
+        return object()
+
+    monkeypatch.setattr(admin_app, "AdminService", fake_admin_service)
+
+    with pytest.raises(SystemExit) as exc:
+        admin_app.main()
+
+    assert exc.value.code == 0
+    assert captured["runtime_dir"] == runtime_dir
+
+
+def test_config_field_kind_uses_multiline_editor_for_prompt_fields() -> None:
+    assert admin_app._config_field_kind("host_heartbeat_resume_prompt") == ("multiline_text", ())
+    assert admin_app._config_field_kind("host_resume_script_path") == ("text", ())

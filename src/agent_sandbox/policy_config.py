@@ -18,6 +18,7 @@ from .storage import JsonStore
 
 
 class EffectivePolicyConfig(BaseModel):
+    approval_ttl_seconds: int = 3600
     default_session_ttl_seconds: int = 28800
     discord_operator_channel_allowlist: list[str] = Field(default_factory=list)
     discord_operator_user_allowlist: list[str] = Field(default_factory=list)

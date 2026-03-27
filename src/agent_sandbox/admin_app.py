@@ -8,7 +8,8 @@ from typing import Any, get_args, get_origin
 
 from .admin_service import AdminService
 from .config import GatewayConfig
-from .directory_config import DIRECTORY_CONFIG_DOMAIN_FIELDS
+from .directory_config import DIRECTORY_CONFIG_DOMAIN_FIELDS, DIRECTORY_CONFIG_DOMAIN_FILENAMES
+ADMIN_APP_DEFAULT_RUNTIME_DIR = Path("runtime")
 
 try:
     from PySide6.QtCore import QObject, QRunnable, QSettings, QThreadPool, QTimer, Qt, Signal
@@ -501,6 +502,8 @@ def _config_field_kind(field_name: str) -> tuple[str, tuple[Any, ...]]:
         return ("float", ())
     if origin is not None and str(origin).endswith("Literal"):
         return ("literal", tuple(get_args(annotation)))
+    if annotation is str and field_name.endswith("_prompt"):
+        return ("multiline_text", ())
     if annotation in {str, Path}:
         return ("text", ())
     return ("json", ())
@@ -631,7 +634,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self.config_status_label.setWordWrap(True)
         self.config_tabs = QTabWidget()
         self._config_widgets: dict[str, dict[str, object]] = {}
-        for domain in ("policy", "providers", "workers", "vm-defaults"):
+        for domain in DIRECTORY_CONFIG_DOMAIN_FILENAMES:
             page = QWidget()
             page_layout = QVBoxLayout(page)
             form_scroll = QScrollArea()
@@ -1384,6 +1387,10 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         elif kind == "text":
             control = QLineEdit()
             control.setMaximumWidth(360)
+        elif kind == "multiline_text":
+            control = QPlainTextEdit()
+            control.setPlaceholderText("Text value")
+            control.setFixedHeight(96)
         else:
             control = QPlainTextEdit()
             control.setPlaceholderText("JSON value")
@@ -1453,6 +1460,8 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             control.currentTextChanged.connect(lambda _value, domain=domain: self._mark_config_domain_dirty(domain))
         elif kind == "text":
             control.textChanged.connect(lambda _value, domain=domain: self._mark_config_domain_dirty(domain))
+        elif kind == "multiline_text":
+            control.textChanged.connect(lambda domain=domain: self._mark_config_domain_dirty(domain))
         else:
             control.textChanged.connect(lambda domain=domain: self._mark_config_domain_dirty(domain))
         return spec
@@ -1554,6 +1563,9 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
                 control.setCurrentIndex(0)
         elif kind == "text":
             control.setText("" if value is None else str(value))
+        elif kind == "multiline_text":
+            control.setPlainText("" if value is None else str(value))
+            control.document().setModified(False)
         else:
             text = "" if value is None else json.dumps(value, indent=2, sort_keys=True)
             control.setPlainText(text)
@@ -1573,6 +1585,8 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             return control.currentText()
         if kind == "text":
             return control.text().strip()
+        if kind == "multiline_text":
+            return control.toPlainText().strip()
         raw_text = control.toPlainText().strip()
         if not raw_text:
             raise ValueError("structured values must be valid JSON")
@@ -1590,6 +1604,8 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             return bool(control.currentText().strip())
         if kind == "text":
             return bool(control.text().strip())
+        if kind == "multiline_text":
+            return bool(control.toPlainText().strip())
         return bool(control.toPlainText().strip())
 
     def _collect_config_form_payload(self, domain: str) -> dict[str, Any]:
@@ -1712,7 +1728,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             state: dict[str, object] = {"selected_directory": self._selected_directory_path}
             directory_result = self.service.get_directory(self._selected_directory_path)
             state["directory"] = directory_result
-            for domain in ("policy", "providers", "workers", "vm-defaults"):
+            for domain in DIRECTORY_CONFIG_DOMAIN_FILENAMES:
                 state[f"raw:{domain}"] = self.service.read_directory_domain_config(self._selected_directory_path, domain)
                 state[f"effective:{domain}"] = self.service.compute_directory_effective_config(
                     self._selected_directory_path,
@@ -2114,14 +2130,14 @@ def main() -> None:
             "uv pip install -e '.[desktop]'"
         )
 
-    config_path = Path("config/gateway.yaml")
+    runtime_dir = ADMIN_APP_DEFAULT_RUNTIME_DIR
     argv = sys.argv[:]
-    if len(argv) > 2 and argv[1] == "--config":
-        config_path = Path(argv[2])
+    if len(argv) > 2 and argv[1] in {"--runtime-dir", "--config"}:
+        runtime_dir = Path(argv[2])
         del argv[1:3]
 
     app = QApplication(argv)
-    service = AdminService(config_path)
+    service = AdminService(runtime_dir)
     window = MainWindow(service)
     window.show()
     raise SystemExit(app.exec())

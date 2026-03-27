@@ -17,7 +17,6 @@ import httpx
 from .agent_control import AgentControlStore
 from .audit import AuditEventType
 from .config import GatewayConfig
-from .directory_config import DIRECTORY_CONFIG_DOMAIN_FIELDS, get_domain_base_config
 from .provider_config import ProviderConfigResolver
 from .pr_feedback_worker import (
     AzureDevOpsFeedbackAdapter,
@@ -112,12 +111,12 @@ class HostHeartbeatWorker:
         try:
             resolution = self.directory_context_resolver.resolve_effective_domain_for_session(
                 session_id,
-                domain="workers",
+                domain="heartbeat",
                 fallback_directory_path=directory_path,
             )
         except Exception:
             logger.warning(
-                "Failed to resolve directory-scoped workers config source=%s session_id=%s directory_path=%s",
+                "Failed to resolve directory-scoped heartbeat config source=%s session_id=%s directory_path=%s",
                 source,
                 session_id,
                 directory_path or "root",
@@ -126,29 +125,16 @@ class HostHeartbeatWorker:
             return self.config
         if resolution.validation_errors:
             logger.warning(
-                "Invalid directory-scoped workers config source=%s session_id=%s directory_path=%s errors=%s",
+                "Invalid directory-scoped heartbeat config source=%s session_id=%s directory_path=%s errors=%s",
                 source,
                 session_id,
                 resolution.selected_directory.path,
                 resolution.validation_errors,
             )
             return self.config
-
-        payload = _merge_worker_domain_payloads(get_domain_base_config(self.config, "workers"), resolution.effective_config)
-        missing_fields = sorted(
-            field for field in DIRECTORY_CONFIG_DOMAIN_FIELDS["workers"] if field not in resolution.effective_config
-        )
-        if missing_fields:
-            logger.info(
-                "Directory-scoped workers config missing fields; using gateway fallback source=%s session_id=%s directory_path=%s fields=%s",
-                source,
-                session_id,
-                resolution.selected_directory.path,
-                missing_fields,
-            )
-        merged_gateway_payload = self.config.model_dump(mode="json")
-        merged_gateway_payload.update(payload)
-        return GatewayConfig.model_validate(merged_gateway_payload)
+        payload = self.config.model_dump(mode="json")
+        payload.update(resolution.effective_config)
+        return GatewayConfig.model_validate(payload)
 
     def _resolve_provider_adapter(
         self,
@@ -691,13 +677,6 @@ def _load_pr_map_entries(path: Path) -> dict[tuple[str, str, str], dict[str, Any
             continue
         entries[(provider, repo, pr_id)] = raw_entry
     return entries
-
-
-def _merge_worker_domain_payloads(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
-    merged = dict(base)
-    for key, value in overlay.items():
-        merged[key] = value
-    return merged
 
 
 def _probe_agent_dispatch_state(*, session_id: str, vm_id: str, script_path: Path) -> str:

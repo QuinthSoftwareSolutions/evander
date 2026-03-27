@@ -15,6 +15,7 @@ from .models import (
     ToolName,
 )
 from .config import GatewayConfig, MailboxConfig
+from .directory_config import load_root_gateway_config
 from .email.cursor_store import DurableCursorStore
 from .email.gmail_provider import GmailEmailProvider
 from .email.graph_provider import GraphEmailProvider
@@ -22,6 +23,7 @@ from .email.providers import JsonEmailProvider, MultiMailboxEmailProvider
 from .policy import PolicyEngine
 from .policy_config import PolicyConfigResolver
 from .provider_config import ProviderConfigResolver
+from .host_config import HostConfig
 from .services import (
     AzureDevOpsPrReplyProvider,
     DiscordBotApiService,
@@ -83,13 +85,20 @@ class RuntimeContext:
 
 
 def build_runtime(config: GatewayConfig) -> RuntimeContext:
+    directories = DirectoryStore(config.directories_store_path)
+    directories.ensure_root()
+    host_config = HostConfig.from_legacy_gateway_config(config)
+    config = load_root_gateway_config(
+        directories,
+        runtime_dir=config.runtime_dir,
+        host_config=host_config,
+        base_gateway_config=config,
+    )
     sessions = JsonStore(config.session_store_path, SessionManifest)
     approvals = JsonStore(config.approval_store_path, ApprovalRequest)
     drafts = JsonStore(config.draft_store_path, DraftMessage)
     emails = JsonStore(config.email_store_path, EmailMessage)
     email_cursors = DurableCursorStore(config.email_cursor_store_path)
-    directories = DirectoryStore(config.directories_store_path)
-    directories.ensure_root()
     policy_config = PolicyConfigResolver(config, directory_store=directories, session_store=sessions)
     provider_config = ProviderConfigResolver(config, directory_store=directories, session_store=sessions)
     discord_commands = JsonStore(config.discord_command_store_path, DiscordCommandEnvelope)

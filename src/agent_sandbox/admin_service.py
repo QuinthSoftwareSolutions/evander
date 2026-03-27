@@ -11,8 +11,13 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from .agent_control import AgentControlStore
-from .config import GatewayConfig, load_config
+from .bootstrap import load_host_bootstrap_config, load_runtime_gateway_config
+from .config import GatewayConfig
 from .directory_admin import DirectoryAdminService
+from .directory_config import DirectoryConfigStore
+from .directories import DirectoryStore
+from .host_config import DEFAULT_RUNTIME_DIR
+from .bootstrap import resolve_runtime_dir
 from .ownership import DirectoryOwnershipQueries
 from .policy_config import EffectivePolicyConfig
 from .vm_defaults_config import EffectiveVmDefaultsConfig, VmDefaultsConfigResolver
@@ -699,9 +704,31 @@ def _build_issue_session_manifest(
 
 
 class AdminService:
-    def __init__(self, config_path: str | Path = Path("config/gateway.yaml")) -> None:
-        self.config_path = Path(config_path)
-        self.config = load_config(self.config_path)
+    def __init__(
+        self,
+        runtime_dir: str | Path = DEFAULT_RUNTIME_DIR,
+        *,
+        legacy_config_path: str | Path | None = None,
+        config_path: str | Path | None = None,
+    ) -> None:
+        candidate_runtime = Path(runtime_dir)
+        explicit_legacy = Path(legacy_config_path or config_path) if (legacy_config_path or config_path) else None
+        if explicit_legacy is None and candidate_runtime.suffix.casefold() in {".yaml", ".yml"}:
+            explicit_legacy = candidate_runtime
+            candidate_runtime = resolve_runtime_dir(legacy_config_path=explicit_legacy)
+        self.runtime_dir = candidate_runtime
+        self.legacy_config_path = explicit_legacy
+        bootstrap_config = load_host_bootstrap_config(
+            runtime_dir=self.runtime_dir,
+            legacy_config_path=self.legacy_config_path,
+        )
+        directory_store = DirectoryStore(bootstrap_config.directories_store_path)
+        directory_store.ensure_root()
+        DirectoryConfigStore(directory_store, runtime_dir=bootstrap_config.runtime_dir).ensure_root()
+        self.config = load_runtime_gateway_config(
+            runtime_dir=bootstrap_config.runtime_dir,
+            legacy_config_path=self.legacy_config_path,
+        )
         self.runtime = build_runtime(self.config)
         self.agent_control_store = AgentControlStore(self.config.host_agent_control_state_path)
         self.local_issue_store = JsonStore(self.config.runtime_dir / "local-issues.json", LocalIssueRecord)

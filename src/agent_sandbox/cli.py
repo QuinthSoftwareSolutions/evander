@@ -21,8 +21,10 @@ from typer.core import TyperGroup
 from .admin_service import AdminService
 from .audit import AuditEventType
 from .ado_issue_worker import run_worker_command
+from .bootstrap import load_host_bootstrap_config, load_runtime_gateway_config, resolve_runtime_dir
 from .config import GatewayConfig, load_config
 from .host_heartbeat_worker import build_host_heartbeat_worker
+from .host_config import DEFAULT_RUNTIME_DIR
 from .migrations import migrate_directory_ownership_defaults, migrate_global_config_to_root
 from .email.providers import JsonEmailProvider, MultiMailboxEmailProvider
 from .models import ApprovalStatus, DiscordCommandEnvelope, EmailMessage, SessionManifest, ToolName
@@ -55,9 +57,35 @@ app = typer.Typer(help="Utilities for the agent sandbox host control plane.", cl
 directories_app = typer.Typer(help="Directory management and directory-scoped config inspection.")
 app.add_typer(directories_app, name="directories")
 
-ConfigOption = Annotated[Path, typer.Option("--config", help="Path to the gateway YAML config.")]
+CLI_DEFAULT_RUNTIME_DIR = Path("runtime")
+
+ConfigOption = Annotated[
+    Path,
+    typer.Option(
+        "--runtime-dir",
+        "--config",
+        help="Runtime directory root. A legacy gateway YAML path is accepted for bootstrap compatibility.",
+    ),
+]
 _discord_seed_sequence = count()
 UTC = timezone.utc
+
+
+def _bootstrap_inputs(config: Path) -> tuple[Path, Path | None]:
+    if config.suffix.casefold() in {".yaml", ".yml"}:
+        legacy = config
+        return resolve_runtime_dir(legacy_config_path=legacy), legacy
+    return Path(config).expanduser().resolve(), None
+
+
+def _load_runtime_config_from_option(config: Path) -> GatewayConfig:
+    runtime_dir, legacy_config_path = _bootstrap_inputs(config)
+    return load_runtime_gateway_config(runtime_dir=runtime_dir, legacy_config_path=legacy_config_path)
+
+
+def _load_host_config_from_option(config: Path):
+    runtime_dir, legacy_config_path = _bootstrap_inputs(config)
+    return load_host_bootstrap_config(runtime_dir=runtime_dir, legacy_config_path=legacy_config_path)
 
 
 @dataclass(slots=True)
@@ -752,16 +780,16 @@ def _build_issue_session_manifest(
     rich_help_panel="Health and State",
     short_help="Create runtime state files.",
 )
-def init_state(config: ConfigOption = Path("config/gateway.yaml")) -> None:
-    cfg = load_config(config)
-    runtime = build_runtime(cfg)
+def init_state(config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR) -> None:
+    host_cfg = _load_host_config_from_option(config)
+    runtime = build_runtime(load_runtime_gateway_config(runtime_dir=host_cfg.runtime_dir))
     runtime.directories.ensure_root()
-    typer.echo(f"Initialized runtime state under {cfg.runtime_dir}")
+    typer.echo(f"Initialized runtime state under {host_cfg.runtime_dir}")
 
 
 @directories_app.command("list", short_help="List directory children.")
 def directories_list(
-    config: ConfigOption = Path("config/gateway.yaml"),
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
     parent: Annotated[str, typer.Option("--parent", help="Parent directory path or id.")] = "root",
 ) -> None:
     service = AdminService(config)
@@ -775,7 +803,7 @@ def directories_list(
 @directories_app.command("show", short_help="Show one directory and its ancestry.")
 def directories_show(
     reference: str,
-    config: ConfigOption = Path("config/gateway.yaml"),
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
 ) -> None:
     service = AdminService(config)
     result = service.get_directory(reference)
@@ -788,7 +816,7 @@ def directories_show(
 @directories_app.command("create", short_help="Create a child directory.")
 def directories_create(
     name: str,
-    config: ConfigOption = Path("config/gateway.yaml"),
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
     parent: Annotated[str, typer.Option("--parent", help="Parent directory path or id.")] = "root",
 ) -> None:
     service = AdminService(config)
@@ -802,7 +830,7 @@ def directories_create(
 def directories_rename(
     reference: str,
     new_name: str,
-    config: ConfigOption = Path("config/gateway.yaml"),
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
 ) -> None:
     service = AdminService(config)
     result = service.directory_admin.update(reference, new_name=new_name)
@@ -814,7 +842,7 @@ def directories_rename(
 @directories_app.command("move", short_help="Move a directory to a new parent.")
 def directories_move(
     reference: str,
-    config: ConfigOption = Path("config/gateway.yaml"),
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
     new_parent: Annotated[str, typer.Option("--new-parent", help="New parent directory path or id.")] = "root",
 ) -> None:
     service = AdminService(config)
@@ -827,7 +855,7 @@ def directories_move(
 @directories_app.command("delete", short_help="Delete a directory.")
 def directories_delete(
     reference: str,
-    config: ConfigOption = Path("config/gateway.yaml"),
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
     recursive: Annotated[bool, typer.Option("--recursive", help="Delete non-empty directories recursively.")] = False,
 ) -> None:
     service = AdminService(config)
@@ -841,7 +869,7 @@ def directories_delete(
 def directories_config_show(
     reference: str,
     domain: Annotated[str, typer.Option("--domain", help="Directory config domain name.")],
-    config: ConfigOption = Path("config/gateway.yaml"),
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
 ) -> None:
     service = AdminService(config)
     raw_result = service.read_directory_domain_config(reference, domain)
@@ -870,7 +898,7 @@ def directories_config_set(
     reference: str,
     payload: str,
     domain: Annotated[str, typer.Option("--domain", help="Directory config domain name.")],
-    config: ConfigOption = Path("config/gateway.yaml"),
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
 ) -> None:
     try:
         parsed = json.loads(payload)
@@ -891,9 +919,9 @@ def directories_config_set(
     short_help="Backfill missing directory ownership fields to root.",
 )
 def migrate_directory_ownership(
-    config: ConfigOption = Path("config/gateway.yaml"),
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
 ) -> None:
-    cfg = load_config(config)
+    cfg = _load_runtime_config_from_option(config)
     summary = migrate_directory_ownership_defaults(cfg)
     typer.echo(
         f"Backfilled {summary.changed_records} record(s) across {summary.changed_files} file(s)"
@@ -906,7 +934,7 @@ def migrate_directory_ownership(
     short_help="Materialize current global config as explicit root directory config.",
 )
 def migrate_global_config_root(
-    config: ConfigOption = Path("config/gateway.yaml"),
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
     overwrite: Annotated[
         bool,
         typer.Option(
@@ -915,7 +943,11 @@ def migrate_global_config_root(
         ),
     ] = False,
 ) -> None:
-    cfg = load_config(config)
+    runtime_dir, legacy_config_path = _bootstrap_inputs(config)
+    if legacy_config_path is not None and legacy_config_path.exists():
+        cfg = load_config(legacy_config_path)
+    else:
+        cfg = _load_runtime_config_from_option(runtime_dir)
     summary = migrate_global_config_to_root(cfg, overwrite=overwrite)
     typer.echo(
         "Root config migration complete: "
@@ -936,7 +968,7 @@ def migrate_global_config_root(
     rich_help_panel="Health and State",
     short_help="Show host and runtime health.",
 )
-def status(config: ConfigOption = Path("config/gateway.yaml"), as_json: Annotated[bool, typer.Option("--json")] = False) -> None:
+def status(config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR, as_json: Annotated[bool, typer.Option("--json")] = False) -> None:
     report: dict[str, object] = {
         "generated_at": datetime.now(UTC).isoformat(),
         "overall": "ok",
@@ -956,7 +988,7 @@ def status(config: ConfigOption = Path("config/gateway.yaml"), as_json: Annotate
 
     cfg: GatewayConfig | None = None
     try:
-        cfg = load_config(config)
+        cfg = _load_runtime_config_from_option(config)
         report["config"] = {"loaded": True, "path": str(config), "error": None}
     except Exception as exc:
         report["overall"] = "degraded"
@@ -995,7 +1027,7 @@ def status(config: ConfigOption = Path("config/gateway.yaml"), as_json: Annotate
         vm_defaults = _resolve_root_vm_defaults(cfg)
         gateway_health_url = vm_defaults.gateway_url
         relay_health_url = (
-            f"http://{_normalize_host_for_local_check(vm_defaults.openai_relay_host)}:{vm_defaults.openai_relay_port}/healthz"
+            f"http://{_normalize_host_for_local_check(cfg.openai_relay_host)}:{cfg.openai_relay_port}/healthz"
         )
         health_results = [
             _check_health_endpoint("gateway", gateway_health_url),
@@ -1132,7 +1164,7 @@ def status(config: ConfigOption = Path("config/gateway.yaml"), as_json: Annotate
 )
 def create_session(
     session_id: str,
-    config: ConfigOption = Path("config/gateway.yaml"),
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
     vm_id: Annotated[str | None, typer.Option("--vm-id", help="VM identifier to bind to the session.")] = None,
     discord_channel: Annotated[
         list[str] | None,
@@ -1144,7 +1176,7 @@ def create_session(
     ] = None,
     ttl_hours: Annotated[int | None, typer.Option("--ttl-hours", help="Session time to live in hours.")] = None,
 ) -> None:
-    cfg = load_config(config)
+    cfg = _load_runtime_config_from_option(config)
     runtime = build_runtime(cfg)
     policy = runtime.policy_config.resolve_for_directory("root")
     manifest = SessionManifest(
@@ -1185,7 +1217,7 @@ def create_session(
     short_help="Delete expired or all sessions.",
 )
 def prune_sessions(
-    config: ConfigOption = Path("config/gateway.yaml"),
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
     expired_only: Annotated[
         bool,
         typer.Option(
@@ -1194,7 +1226,7 @@ def prune_sessions(
         ),
     ] = True,
 ) -> None:
-    cfg = load_config(config)
+    cfg = _load_runtime_config_from_option(config)
     runtime = build_runtime(cfg)
     policy = runtime.policy_config.resolve_for_directory("root")
     sessions = runtime.sessions.read_all()
@@ -1222,7 +1254,7 @@ def prune_sessions(
     short_help="List active, expired, or all session manifests.",
 )
 def list_sessions(
-    config: ConfigOption = Path("config/gateway.yaml"),
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
     all_sessions: Annotated[
         bool,
         typer.Option("--all", help="Show both active and expired sessions."),
@@ -1235,7 +1267,7 @@ def list_sessions(
     if all_sessions and expired_only:
         raise typer.BadParameter("--all and --expired-only cannot be used together.")
 
-    cfg = load_config(config)
+    cfg = _load_runtime_config_from_option(config)
     runtime = build_runtime(cfg)
     sessions = runtime.sessions.read_all()
     now = datetime.now(UTC)
@@ -1278,9 +1310,9 @@ def renew_session(
             help="Duration to set from now, in <number><h|d> form.",
         ),
     ] = "1d",
-    config: ConfigOption = Path("config/gateway.yaml"),
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
 ) -> None:
-    cfg = load_config(config)
+    cfg = _load_runtime_config_from_option(config)
     runtime = build_runtime(cfg)
     sessions = runtime.sessions.read_all()
     session_id, manifest = _resolve_session_target(target, sessions)
@@ -1303,9 +1335,9 @@ def renew_session(
 )
 def revoke_session(
     target: str,
-    config: ConfigOption = Path("config/gateway.yaml"),
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
 ) -> None:
-    cfg = load_config(config)
+    cfg = _load_runtime_config_from_option(config)
     runtime = build_runtime(cfg)
     sessions = runtime.sessions.read_all()
     session_id, manifest = _resolve_session_target(target, sessions)
@@ -1326,9 +1358,9 @@ def revoke_session(
 )
 def delete_session(
     target: str,
-    config: ConfigOption = Path("config/gateway.yaml"),
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
 ) -> None:
-    cfg = load_config(config)
+    cfg = _load_runtime_config_from_option(config)
     runtime = build_runtime(cfg)
     sessions = runtime.sessions.read_all()
     session_id, _ = _resolve_session_target(target, sessions)
@@ -1342,9 +1374,9 @@ def delete_session(
     short_help="Delete all expired session manifests.",
 )
 def delete_expired_sessions(
-    config: ConfigOption = Path("config/gateway.yaml"),
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
 ) -> None:
-    cfg = load_config(config)
+    cfg = _load_runtime_config_from_option(config)
     runtime = build_runtime(cfg)
     sessions = runtime.sessions.read_all()
     now = datetime.now(UTC)
@@ -1365,11 +1397,11 @@ def delete_expired_sessions(
 )
 def destroy_issue_vm(
     target: str,
-    config: ConfigOption = Path("config/gateway.yaml"),
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
 ) -> None:
     issue_number = _resolve_issue_number_or_raise(target)
     vm_name = f"vm-{issue_number}"
-    cfg = load_config(config)
+    cfg = _load_runtime_config_from_option(config)
     runtime = build_runtime(cfg)
 
     sessions = runtime.sessions.read_all()
@@ -1415,9 +1447,9 @@ def destroy_issue_vm(
     short_help="Remove issue state for missing VMs.",
 )
 def prune_orphaned_issue_state(
-    config: ConfigOption = Path("config/gateway.yaml"),
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
 ) -> None:
-    cfg = load_config(config)
+    cfg = _load_runtime_config_from_option(config)
     runtime = build_runtime(cfg)
     live_vm_names = _list_existing_issue_vm_names()
     live_issue_numbers = {
@@ -1521,7 +1553,7 @@ def list_vms(
         bool,
         typer.Option("--json", help="Emit machine-readable VM summaries."),
     ] = False,
-    config: ConfigOption = Path("config/gateway.yaml"),
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
 ) -> None:
     if as_json:
         service = AdminService(config)
@@ -1555,7 +1587,7 @@ def _echo_action_result_or_exit(result) -> None:
 )
 def start_vm(
     target: str,
-    config: ConfigOption = Path("config/gateway.yaml"),
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
 ) -> None:
     service = AdminService(config)
     _echo_action_result_or_exit(service.start_vm(target))
@@ -1568,7 +1600,7 @@ def start_vm(
 )
 def shutdown_vm(
     target: str,
-    config: ConfigOption = Path("config/gateway.yaml"),
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
     timeout_seconds: Annotated[
         int,
         typer.Option("--timeout-seconds", min=1, help="How long to wait for graceful shutdown."),
@@ -1584,7 +1616,7 @@ def shutdown_vm(
     short_help="Create a local issue record.",
 )
 def create_local_issue(
-    config: ConfigOption = Path("config/gateway.yaml"),
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
     title: Annotated[
         str,
         typer.Option("--title", help="Local issue title."),
@@ -1618,7 +1650,7 @@ def create_local_issue(
     short_help="List local issue records.",
 )
 def list_local_issues(
-    config: ConfigOption = Path("config/gateway.yaml"),
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
     as_json: Annotated[
         bool,
         typer.Option("--json", help="Emit machine-readable local issue records."),
@@ -1683,7 +1715,7 @@ def logs(
 
 def _set_agent_control_state(target: str, *, action: str, vm_user: str, config: Path) -> None:
     issue_number = _resolve_issue_number_or_raise(target)
-    cfg = load_config(config)
+    cfg = _load_runtime_config_from_option(config)
     script_path = Path(__file__).resolve().parents[2] / "scripts" / "set_issue_agent_state.sh"
     _run_subprocess_compat(
         [
@@ -1707,7 +1739,7 @@ def _set_agent_control_state(target: str, *, action: str, vm_user: str, config: 
 )
 def disable_agent(
     target: str,
-    config: ConfigOption = Path("config/gateway.yaml"),
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
     vm_user: Annotated[str, typer.Option("--vm-user", help="Guest user to connect as.")] = "agent",
 ) -> None:
     _set_agent_control_state(target, action="disable", vm_user=vm_user, config=config)
@@ -1720,7 +1752,7 @@ def disable_agent(
 )
 def enable_agent(
     target: str,
-    config: ConfigOption = Path("config/gateway.yaml"),
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
     vm_user: Annotated[str, typer.Option("--vm-user", help="Guest user to connect as.")] = "agent",
 ) -> None:
     _set_agent_control_state(target, action="enable", vm_user=vm_user, config=config)
@@ -1740,7 +1772,7 @@ def resume_agent(
             help="Prompt passed to the agent resume command.",
         ),
     ],
-    config: ConfigOption = Path("config/gateway.yaml"),
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
     observe: Annotated[
         bool,
         typer.Option(
@@ -1756,7 +1788,7 @@ def resume_agent(
 ) -> None:
     issue_number = _resolve_issue_number_or_raise(target)
     vm_name = f"vm-{issue_number}"
-    cfg = load_config(config)
+    cfg = _load_runtime_config_from_option(config)
     runtime = build_runtime(cfg)
     script_path = Path(__file__).resolve().parents[2] / "scripts" / "resume_issue_agent.sh"
     cmd = [
@@ -1841,7 +1873,7 @@ def resume_agent(
 )
 def create_issue_vm(
     issue: str,
-    config: ConfigOption = Path("config/gateway.yaml"),
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
     session_id: Annotated[
         str | None,
         typer.Option("--session-id", help="Session identifier to create and pass into the VM setup flow."),
@@ -1924,7 +1956,7 @@ def create_issue_vm(
     resolved_session_id = session_id or _default_issue_session_id(issue_number)
     resolved_vm_name = f"vm-{issue_number}"
 
-    cfg = load_config(config)
+    cfg = _load_runtime_config_from_option(config)
     runtime = build_runtime(cfg)
     policy = runtime.policy_config.resolve_for_directory("root")
     if runtime.sessions.get(resolved_session_id) is not None:
@@ -1994,9 +2026,9 @@ def create_issue_vm(
 def add_tool_permission(
     target: str,
     tool: ToolName,
-    config: ConfigOption = Path("config/gateway.yaml"),
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
 ) -> None:
-    cfg = load_config(config)
+    cfg = _load_runtime_config_from_option(config)
     runtime = build_runtime(cfg)
     sessions = runtime.sessions.read_all()
     session_id, manifest = _resolve_session_target(target, sessions)
@@ -2017,9 +2049,9 @@ def add_tool_permission(
 def revoke_tool_permission(
     target: str,
     tool: ToolName,
-    config: ConfigOption = Path("config/gateway.yaml"),
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
 ) -> None:
-    cfg = load_config(config)
+    cfg = _load_runtime_config_from_option(config)
     runtime = build_runtime(cfg)
     sessions = runtime.sessions.read_all()
     session_id, manifest = _resolve_session_target(target, sessions)
@@ -2042,9 +2074,9 @@ def attach_pr_feedback(
     provider: Annotated[str, typer.Option("--provider", help="Feedback provider name.")] ,
     repo: Annotated[str, typer.Option("--repo", help="Provider repository identifier.")] ,
     pr_id: Annotated[str, typer.Option("--pr-id", help="Pull request identifier.")] ,
-    config: ConfigOption = Path("config/gateway.yaml"),
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
 ) -> None:
-    cfg = load_config(config)
+    cfg = _load_runtime_config_from_option(config)
     runtime = build_runtime(cfg)
     manifest = runtime.sessions.get(session_id)
     if manifest is None:
@@ -2090,10 +2122,10 @@ def attach_pr_feedback(
 def approve(
     request_id: str,
     approver: str,
-    config: ConfigOption = Path("config/gateway.yaml"),
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
     approve: Annotated[bool, typer.Option("--approve/--deny", help="Approve or deny the request.")] = True,
 ) -> None:
-    cfg = load_config(config)
+    cfg = _load_runtime_config_from_option(config)
     runtime = build_runtime(cfg)
     request = runtime.approvals.get(request_id)
     if request is None:
@@ -2121,11 +2153,11 @@ def seed_email(
         list[str],
         typer.Option("--recipient", help="Repeat for each recipient address."),
     ] = [],
-    config: ConfigOption = Path("config/gateway.yaml"),
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
 ) -> None:
     if not recipient:
         raise typer.BadParameter("At least one --recipient value is required.")
-    cfg = load_config(config)
+    cfg = _load_runtime_config_from_option(config)
     runtime = build_runtime(cfg)
     message = EmailMessage(
         message_id=message_id,
@@ -2161,9 +2193,9 @@ def seed_email(
 )
 def seed_discord_channel(
     channel_id: str,
-    config: ConfigOption = Path("config/gateway.yaml"),
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
 ) -> None:
-    cfg = load_config(config)
+    cfg = _load_runtime_config_from_option(config)
     runtime = build_runtime(cfg)
     now = datetime.now(UTC)
     seed_cursor = str(int(now.timestamp() * 1_000_000) + next(_discord_seed_sequence))
@@ -2195,7 +2227,7 @@ def seed_discord_channel(
     short_help="Run the host heartbeat worker.",
 )
 def host_heartbeat(
-    config: ConfigOption = Path("config/gateway.yaml"),
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
     run_once: Annotated[
         bool,
         typer.Option("--once", help="Run a single heartbeat cycle and exit."),
@@ -2210,7 +2242,7 @@ def host_heartbeat(
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
 
-    cfg = load_config(config)
+    cfg = _load_runtime_config_from_option(config)
     worker = build_host_heartbeat_worker(cfg)
     if run_once:
         result = worker.run_once_with_lock()
@@ -2259,3 +2291,4 @@ def poll_ado_backlog(
 
 if __name__ == "__main__":
     app()
+CLI_DEFAULT_RUNTIME_DIR = Path("runtime")

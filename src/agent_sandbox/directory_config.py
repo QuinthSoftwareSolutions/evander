@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from .config import GatewayConfig
 from .directories import DirectoryService, DirectoryStore
+from .host_config import HostConfig, build_runtime_gateway_config
 from .models import Directory, DirectoryInfo, DirectoryPath
 
 DIRECTORY_CONFIG_OVERLAYS_KEY = "config_overlays"
@@ -20,13 +21,27 @@ DIRECTORY_CONFIG_ROOT_DIRNAME = "directory-config"
 DIRECTORY_CONFIG_DOMAIN_FILENAMES = {
     "policy": "policy.json",
     "providers": "providers.json",
+    "email": "email.json",
+    "heartbeat": "heartbeat.json",
+    "vm": "vm.json",
+}
+
+LEGACY_DIRECTORY_CONFIG_DOMAIN_FILENAMES = {
+    "policy": "policy.json",
+    "providers": "providers.json",
     "workers": "workers.json",
     "vm-defaults": "vm-defaults.json",
+}
+
+LEGACY_DIRECTORY_DOMAIN_ALIASES = {
+    "workers": "heartbeat",
+    "vm-defaults": "vm",
 }
 
 DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
     "policy": frozenset(
         {
+            "approval_ttl_seconds",
             "default_session_ttl_seconds",
             "discord_operator_channel_allowlist",
             "discord_operator_user_allowlist",
@@ -53,8 +68,6 @@ DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
             "discord_retry_count",
             "discord_retry_max_backoff_seconds",
             "discord_timeout_seconds",
-            "email_mailboxes",
-            "email_provider_timeout_seconds",
             "github_token_env",
             "nuget_azure_feed_base_url",
             "nuget_azure_pat_env",
@@ -65,7 +78,13 @@ DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
             "openai_relay_timeout_seconds",
         }
     ),
-    "workers": frozenset(
+    "email": frozenset(
+        {
+            "email_mailboxes",
+            "email_provider_timeout_seconds",
+        }
+    ),
+    "heartbeat": frozenset(
         {
             "host_busy_check_script_path",
             "host_heartbeat_cooldown_seconds",
@@ -82,7 +101,7 @@ DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
             "host_resume_script_path",
         }
     ),
-    "vm-defaults": frozenset(
+    "vm": frozenset(
         {
             "bind_network_cidr",
             "gateway_url",
@@ -92,6 +111,19 @@ DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
             "openai_relay_port",
         }
     ),
+}
+
+LEGACY_DOMAIN_FIELD_SUBSETS: dict[str, dict[str, frozenset[str]]] = {
+    "providers": {
+        "providers": DIRECTORY_CONFIG_DOMAIN_FIELDS["providers"],
+        "email": DIRECTORY_CONFIG_DOMAIN_FIELDS["email"],
+    },
+    "workers": {
+        "heartbeat": DIRECTORY_CONFIG_DOMAIN_FIELDS["heartbeat"],
+    },
+    "vm-defaults": {
+        "vm": DIRECTORY_CONFIG_DOMAIN_FIELDS["vm"],
+    },
 }
 
 
@@ -148,26 +180,51 @@ class DirectoryConfigStore:
 
     def list_domains(self, reference: str) -> list[str]:
         directory = self._service.show(reference).directory
-        return self._domains_for_directory_info(directory)
+        return self._domains_for_directory_info(directory, root_path=self._root_path)
 
     def read(self, reference: str, *, domain: str) -> dict[str, Any] | None:
-        self._validate_domain_name(domain)
+        domain = self._normalize_domain_name(domain)
         directory = self._service.show(reference).directory
-        if domain not in self._domains_for_directory_info(directory):
+        if domain not in self._domains_for_directory_info(directory, root_path=self._root_path):
             return None
         path = self._domain_file_path(directory.path, domain=domain)
-        if not path.exists():
-            raise ValueError(f"directory config file is missing for {directory.path!r} domain {domain!r}")
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        return self.validate_domain_payload(domain, payload)
+        if path.exists():
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            return self.validate_domain_payload(domain, payload)
+        legacy_payload = self._legacy_domain_payload(directory.path, domain=domain)
+        if legacy_payload is not None:
+            return self.validate_domain_payload(domain, legacy_payload)
+        raise ValueError(f"directory config file is missing for {directory.path!r} domain {domain!r}")
 
     def write(self, reference: str, *, domain: str, payload: dict[str, Any]) -> dict[str, Any]:
+        original_domain = domain
+        domain = self._normalize_domain_name(domain)
+        if original_domain == "providers" and isinstance(payload, dict):
+            provider_payload = {
+                key: value for key, value in payload.items() if key in DIRECTORY_CONFIG_DOMAIN_FIELDS["providers"]
+            }
+            email_payload = {
+                key: value for key, value in payload.items() if key in DIRECTORY_CONFIG_DOMAIN_FIELDS["email"]
+            }
+            unknown_fields = sorted(
+                set(payload) - DIRECTORY_CONFIG_DOMAIN_FIELDS["providers"] - DIRECTORY_CONFIG_DOMAIN_FIELDS["email"]
+            )
+            if unknown_fields:
+                raise ValueError(
+                    f"directory config domain 'providers' does not allow fields: {', '.join(unknown_fields)}"
+                )
+            if email_payload:
+                self.write(reference, domain="email", payload=email_payload)
+            payload = provider_payload
         normalized = self.validate_domain_payload(domain, payload)
         directory = self._service.show(reference).directory
         path = self._domain_file_path(directory.path, domain=domain)
         if not normalized:
             if path.exists():
                 path.unlink()
+            legacy_path = self._legacy_domain_file_path(directory.path, domain=domain)
+            if legacy_path is not None and legacy_path.exists():
+                legacy_path.unlink()
             self._prune_empty_parent_dirs(path.parent)
             self._remove_domain(directory.id, domain=domain)
             return normalized
@@ -183,10 +240,20 @@ class DirectoryConfigStore:
 
     @classmethod
     def validate_domain_payload(cls, domain: str, payload: dict[str, Any]) -> dict[str, Any]:
-        cls._validate_domain_name(domain)
+        domain = cls._normalize_domain_name(domain)
         if not isinstance(payload, dict):
             raise ValueError(f"directory config payload for domain {domain!r} must be a JSON object")
         allowed_fields = DIRECTORY_CONFIG_DOMAIN_FIELDS[domain]
+        if domain == "providers":
+            compatible_fields = allowed_fields | DIRECTORY_CONFIG_DOMAIN_FIELDS["email"]
+            unknown_fields = sorted(set(payload) - compatible_fields)
+            if unknown_fields:
+                raise ValueError(
+                    f"directory config domain {domain!r} does not allow fields: {', '.join(unknown_fields)}"
+                )
+            payload = {key: value for key, value in payload.items() if key in allowed_fields}
+            validated = GatewayConfig.model_validate(payload)
+            return validated.model_dump(mode="json", include=set(payload))
         unknown_fields = sorted(set(payload) - allowed_fields)
         if unknown_fields:
             raise ValueError(
@@ -197,13 +264,53 @@ class DirectoryConfigStore:
 
     @classmethod
     def _validate_domain_name(cls, domain: str) -> None:
-        if domain not in DIRECTORY_CONFIG_DOMAIN_FILENAMES:
+        normalized_domain = cls._normalize_domain_name(domain)
+        if normalized_domain not in DIRECTORY_CONFIG_DOMAIN_FILENAMES:
             raise ValueError(f"unsupported directory config domain: {domain!r}")
 
+    @staticmethod
+    def _normalize_domain_name(domain: str) -> str:
+        return LEGACY_DIRECTORY_DOMAIN_ALIASES.get(domain, domain)
+
     def _domain_file_path(self, canonical_path: str, *, domain: str) -> Path:
+        domain = self._normalize_domain_name(domain)
         self._validate_domain_name(domain)
         segments = DirectoryPath(segments=canonical_path).segments
         return self._root_path.joinpath(*segments, DIRECTORY_CONFIG_DOMAIN_FILENAMES[domain])
+
+    def _legacy_domain_file_path(self, canonical_path: str, *, domain: str) -> Path | None:
+        legacy_domain = None
+        if domain == "heartbeat":
+            legacy_domain = "workers"
+        elif domain == "vm":
+            legacy_domain = "vm-defaults"
+        elif domain in {"policy", "providers", "email"}:
+            legacy_domain = "providers" if domain in {"providers", "email"} else "policy"
+        if legacy_domain is None:
+            return None
+        segments = DirectoryPath(segments=canonical_path).segments
+        return self._root_path.joinpath(*segments, LEGACY_DIRECTORY_CONFIG_DOMAIN_FILENAMES[legacy_domain])
+
+    def _legacy_domain_payload(self, canonical_path: str, *, domain: str) -> dict[str, Any] | None:
+        legacy_path = self._legacy_domain_file_path(canonical_path, domain=domain)
+        if legacy_path is None or not legacy_path.exists():
+            return None
+        payload = json.loads(legacy_path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            return None
+        if domain == "policy":
+            return payload
+        if domain in {"providers", "email"}:
+            source_domain = "providers"
+        elif domain == "heartbeat":
+            source_domain = "workers"
+        elif domain == "vm":
+            source_domain = "vm-defaults"
+        else:
+            return None
+        allowed_fields = LEGACY_DOMAIN_FIELD_SUBSETS[source_domain][domain]
+        extracted = {key: payload[key] for key in sorted(allowed_fields) if key in payload}
+        return extracted or None
 
     def _record_domain(self, directory_id: str, *, domain: str) -> None:
         directory = self._directory_store.get(directory_id)
@@ -256,20 +363,33 @@ class DirectoryConfigStore:
             current = current.parent
 
     @staticmethod
-    def _domains_for_directory_info(directory: DirectoryInfo) -> list[str]:
+    def _domains_for_directory_info(directory: DirectoryInfo, *, root_path: Path) -> list[str]:
         config_metadata = directory.metadata.get(DIRECTORY_CONFIG_METADATA_KEY)
-        if not isinstance(config_metadata, dict):
-            return []
-        raw_domains = config_metadata.get(DIRECTORY_CONFIG_METADATA_DOMAINS_KEY, [])
-        if not isinstance(raw_domains, list):
-            return []
-        return sorted(
-            {
-                str(value).strip()
-                for value in raw_domains
-                if str(value).strip() in DIRECTORY_CONFIG_DOMAIN_FILENAMES
-            }
-        )
+        raw_domains = config_metadata.get(DIRECTORY_CONFIG_METADATA_DOMAINS_KEY, []) if isinstance(config_metadata, dict) else []
+        normalized_domains: set[str] = set()
+        if isinstance(raw_domains, list):
+            for raw_domain in raw_domains:
+                value = str(raw_domain).strip()
+                if value in DIRECTORY_CONFIG_DOMAIN_FILENAMES:
+                    normalized_domains.add(value)
+                    continue
+                alias = LEGACY_DIRECTORY_DOMAIN_ALIASES.get(value)
+                if alias is not None:
+                    normalized_domains.add(alias)
+                    continue
+                if value == "providers":
+                    normalized_domains.add("providers")
+                    legacy_path = root_path.joinpath(*DirectoryPath(segments=directory.path).segments, "providers.json")
+                    if legacy_path.exists():
+                        try:
+                            payload = json.loads(legacy_path.read_text(encoding="utf-8"))
+                        except (OSError, json.JSONDecodeError):
+                            payload = {}
+                        if isinstance(payload, dict) and any(
+                            field in payload for field in DIRECTORY_CONFIG_DOMAIN_FIELDS["email"]
+                        ):
+                            normalized_domains.add("email")
+        return sorted(normalized_domains)
 
 
 class DirectoryConfigResolver:
@@ -285,14 +405,30 @@ class DirectoryConfigResolver:
         self._config_store = config_store
 
     def resolve_gateway(self, reference: str) -> DirectoryConfigResolution:
-        if self._base_gateway_config is None:
-            raise ValueError("base_gateway_config is required to resolve gateway domain config")
         return self.resolve_domain(
             reference,
             domain="gateway",
-            base_config=self._base_gateway_config.model_dump(mode="json"),
+            base_config=(self._base_gateway_config or GatewayConfig()).model_dump(mode="json"),
             validator=GatewayConfig.model_validate,
         )
+
+    def resolve_root_gateway_config(
+        self,
+        host_config: HostConfig,
+        *,
+        base_gateway_config: GatewayConfig | None = None,
+    ) -> GatewayConfig:
+        root_bootstrap = base_gateway_config or build_runtime_gateway_config(host_config)
+        payload = root_bootstrap.model_dump(mode="json")
+        for domain in ("policy", "providers", "email", "heartbeat", "vm"):
+            resolution = self.resolve_domain(
+                "root",
+                domain=domain,
+                base_config=get_domain_base_config(root_bootstrap, domain),
+                validator=lambda candidate, domain=domain: validate_effective_domain_payload(domain, candidate),
+            )
+            payload.update(resolution.effective_config)
+        return GatewayConfig.model_validate(payload)
 
     def resolve_domain(
         self,
@@ -408,3 +544,18 @@ class DirectoryConfigResolver:
                 self._mark_provenance(value[child_key], (*path, child_key), provenance, source)
             return
         provenance[key] = source
+
+
+def load_root_gateway_config(
+    directory_store: DirectoryStore,
+    *,
+    runtime_dir: Path,
+    host_config: HostConfig,
+    base_gateway_config: GatewayConfig | None = None,
+) -> GatewayConfig:
+    service = DirectoryService(directory_store)
+    resolver = DirectoryConfigResolver(
+        service,
+        config_store=DirectoryConfigStore(directory_store, runtime_dir=runtime_dir),
+    )
+    return resolver.resolve_root_gateway_config(host_config, base_gateway_config=base_gateway_config)

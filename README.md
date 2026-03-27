@@ -30,15 +30,22 @@
 
 - Every owned entity defaults to directory path `root`.
 - `root` is hard-coded, immutable, and always present.
+- `root` is the live top-level baseline.
 - Child directories inherit configuration from `root -> ... -> selected`.
-- `root` itself can carry explicit directory overlay files and is the top of the directory-scoped inheritance chain.
+- `root` itself is the live top-level baseline and the top of the directory-scoped inheritance chain.
 - Directory config uses per-domain overlays, with deep-merge for maps, replace semantics for lists, and last-write-wins for scalars.
-- During transition, global config files and env vars remain the active runtime source of truth.
+- Legacy gateway YAML is only a migration/import source for existing installs; it is not the live runtime baseline.
 
-Directory-scoped config currently runs in transition mode:
+Live config is now split into:
 
-- set `enable_directory_scoped_config: true` in `config/gateway.yaml` to enable directory edit/config write surfaces and worker shadow-readiness resolution
-- leave it unset or `false` to keep existing global behavior while still defaulting new records to `directory_path: root`
+- host-global bootstrap config at `runtime/host-config.json`
+- directory-scoped config rooted at `runtime/directory-config/root/...`
+
+Directory-scoped config is rooted at `root`:
+
+- configure `root` directly for top-level defaults and overlays
+- use `migrate-global-config-to-root` only to import legacy gateway YAML content into `root`
+- leave `enable_directory_scoped_config` as documented in the configuration reference when editing surfaces are available in your build
 
 ## Quick Start
 
@@ -51,41 +58,32 @@ Directory-scoped config currently runs in transition mode:
    uv pip install -e .
    ```
 
-2. Copy the example configuration and adjust it:
+2. Initialize runtime state and host bootstrap config:
 
    ```bash
-   cp config/gateway.example.yaml config/gateway.yaml
+   agent-sandbox-cli init-state --runtime-dir runtime
    ```
 
-   For Discord bot polling/posting, switch `discord_backend` to `bot_api` and keep
-   `discord_bot_token_env` set to the host environment variable that holds your bot token
-   (default: `DISCORD_BOT_TOKEN`).
-
-   For provider-backed email, define one or more `email_mailboxes` entries using:
-   `mailbox_id`, `provider` (`gmail` or `graph`), `account`/`address`, auth env var names,
-   and mailbox-level `folder_allowlist_defaults`.
-
-   URL config fields (for example `gateway_url`, `openai_api_base_url`, and NuGet feed base URLs)
-   must be valid `http://` or `https://` URLs; surrounding whitespace and trailing `/` are
-   normalized automatically. `bind_network_cidr` must be a true network CIDR such as
-   `192.168.250.0/24` (not a host address like `192.168.250.1/24`).
+   This creates `runtime/host-config.json`, store files, and the immutable `root` directory.
+   Edit host-global settings in `host-config.json`, then configure `root` and child directories
+   through the admin UI or `agent-sandbox-cli directories config-set`.
 
 3. Initialize runtime state:
 
    ```bash
-   agent-sandbox-cli init-state --config config/gateway.yaml
+   agent-sandbox-cli init-state --runtime-dir runtime
    ```
 
    If you are adopting directory ownership on an existing runtime, backfill missing ownership fields without rewriting unrelated records:
 
    ```bash
-   agent-sandbox-cli migrate-directory-ownership --config config/gateway.yaml
+   agent-sandbox-cli migrate-directory-ownership --runtime-dir runtime
    ```
 
 4. Start the MCP gateway:
 
    ```bash
-   agent-sandbox-gateway --config config/gateway.yaml
+   agent-sandbox-gateway --runtime-dir runtime
    ```
 
 5. Create the libvirt network and firewall policy:
@@ -102,8 +100,8 @@ Directory-scoped config currently runs in transition mode:
    ```bash
    export OPENAI_API_KEY=...
    export DISCORD_BOT_TOKEN=...
-   agent-sandbox-gateway --config config/gateway.yaml
-   agent-sandbox-openai-relay --config config/gateway.yaml
+   agent-sandbox-gateway --runtime-dir runtime
+   agent-sandbox-openai-relay --runtime-dir runtime
    ```
 
 7. Download the base image and launch VMs from a libvirt-accessible storage path:
@@ -212,7 +210,7 @@ sudo systemctl start agent-sandbox-host-heartbeat.service
 
 The generated units run as your user where appropriate and read environment files from `config/`.
 For private PR feedback polling, `config/host-heartbeat.env` must export `GITHUB_TOKEN` and/or
-`AZURE_DEVOPS_PAT` as needed, and `config/gateway.yaml` must set the correct
+`AZURE_DEVOPS_PAT` as needed, and the effective `root` config must set the correct
 `azure_devops_organization_url`, `azure_devops_project`, and heartbeat timing/lock settings.
 
 ### Azure DevOps backlog worker
@@ -227,7 +225,7 @@ agent-sandbox-cli poll-ado-backlog --log-level INFO
 ```
 
 The ADO worker now reads `azure_devops_organization_url`, `azure_devops_project`, and
-`azure_devops_pat_env` from `config/gateway.yaml` instead of duplicating them in
+`azure_devops_pat_env` from the effective `root` provider config instead of duplicating them in
 `config/ado-worker.env`.
 
 For one-off recovery actions:
@@ -456,12 +454,12 @@ See [live-smoke-tests.md](/home/jonathan/agent-sandbox/docs/live-smoke-tests.md)
   ```bash
   agent-sandbox-cli create-session \
     real-session \
-    --config config/gateway.yaml \
+    --runtime-dir runtime \
     --discord-channel 123456789012345678 \
     --discord-channel 234567890123456789
   ```
 
-- Operator user allowlist is configured globally on the host in `config/gateway.yaml` with
+- Operator user allowlist is configured in the effective `root` policy config with
   `discord_operator_user_allowlist`.
 - In `bot_api` mode, polling targets come **only** from channel IDs already present in
   `runtime/discord_commands.json` (the Discord command store). The adapter does not discover
@@ -546,8 +544,8 @@ Use this when you want the guest to wake only for new review feedback and post t
 ### Troubleshooting
 
 - **Run consolidated status first:** start with a host snapshot before debugging individual services.
-  - Human-readable: `agent-sandbox-cli status --config config/gateway.yaml`
-  - Machine-readable: `agent-sandbox-cli status --config config/gateway.yaml --json`
+  - Human-readable: `agent-sandbox-cli status --runtime-dir runtime`
+  - Machine-readable: `agent-sandbox-cli status --runtime-dir runtime --json`
   - The command summarizes config loading, runtime path permissions, key systemd units, gateway/relay reachability, and session expiration health.
 - **Host heartbeat lock contention:** worker exits because another instance is running.
   - Check the configured lock path (`host_heartbeat_lock_path`) and active systemd processes before restarting.
@@ -625,18 +623,13 @@ email_mailboxes:
 Session allowlist example with all mailboxes:
 
 ```bash
-cat <<'YAML' >> config/gateway.yaml
-email_mailbox_allowlist:
-  - "ops-gmail"
-  - "exec-graph"
-  - "finance-graph"
-email_folder_allowlist_by_mailbox:
-  ops-gmail: ["inbox", "drafts"]
-  exec-graph: ["inbox", "drafts"]
-  finance-graph: ["inbox", "drafts"]
-YAML
+agent-sandbox-cli directories config-set \
+  --runtime-dir runtime \
+  --domain policy \
+  root \
+  '{"email_mailbox_allowlist":["ops-gmail","exec-graph","finance-graph"],"email_folder_allowlist_by_mailbox":{"ops-gmail":["inbox","drafts"],"exec-graph":["inbox","drafts"],"finance-graph":["inbox","drafts"]}}'
 
-agent-sandbox-cli create-session real-session --config config/gateway.yaml
+agent-sandbox-cli create-session real-session --runtime-dir runtime
 ```
 
 ## Project Layout
