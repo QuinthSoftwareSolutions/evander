@@ -41,6 +41,7 @@ SESSION_ID="$2"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 RUNTIME_DIR="${ROOT_DIR}/runtime"
+AGENT_SANDBOX_CONFIG="${AGENT_SANDBOX_CONFIG:-${ROOT_DIR}/config/gateway.yaml}"
 VM_STORAGE_DIR="${VM_STORAGE_DIR:-/var/lib/libvirt/images/agent-sandbox}"
 IMAGES_DIR="${VM_STORAGE_DIR}/images"
 VM_DIR="${VM_STORAGE_DIR}/vms/${VM_NAME}"
@@ -51,7 +52,6 @@ SEED_IMAGE="${VM_DIR}/seed.iso"
 USER_DATA_TEMPLATE="${ROOT_DIR}/config/cloud-init-user-data.yaml"
 USER_DATA_RENDERED="${STATE_DIR}/user-data"
 META_DATA="${STATE_DIR}/meta-data"
-GATEWAY_URL="${GATEWAY_URL:-http://192.168.250.1:8000/mcp}"
 CALLER_USER="${SUDO_USER:-$USER}"
 CALLER_HOME="$(getent passwd "${CALLER_USER}" | cut -d: -f6)"
 DEFAULT_SSH_KEY_FILE="${CALLER_HOME}/.ssh/id_ed25519.pub"
@@ -59,7 +59,6 @@ if [[ ! -f "${DEFAULT_SSH_KEY_FILE}" ]]; then
   DEFAULT_SSH_KEY_FILE="${CALLER_HOME}/.ssh/id_rsa.pub"
 fi
 SSH_PUBLIC_KEY_FILE="${SSH_PUBLIC_KEY_FILE:-${DEFAULT_SSH_KEY_FILE}}"
-LLM_BASE_URL="${LLM_BASE_URL:-http://192.168.250.1:11434/v1}"
 SHARED_NUGET_CACHE_DIR="${SHARED_NUGET_CACHE_DIR:-${VM_STORAGE_DIR}/nuget-cache/global-packages}"
 SHARED_NUGET_CACHE_TAG="${SHARED_NUGET_CACHE_TAG:-agent-sandbox-nuget-cache}"
 SHARED_NUGET_CACHE_MODE="${SHARED_NUGET_CACHE_MODE:-auto}"
@@ -69,6 +68,38 @@ GUEST_NUGET_HTTP_CACHE_PATH="/home/agent/.nuget/http-cache"
 RAM_MB="${RAM_MB:-4096}"
 VCPUS="${VCPUS:-4}"
 DISK_SIZE_GB="${DISK_SIZE_GB:-20}"
+
+resolve_vm_defaults_exports() {
+  local python_bin="${ROOT_DIR}/.venv/bin/python"
+  if [[ ! -x "${python_bin}" ]]; then
+    python_bin="python3"
+  fi
+  PYTHONPATH="${ROOT_DIR}/src${PYTHONPATH:+:${PYTHONPATH}}" \
+    "${python_bin}" - "${AGENT_SANDBOX_CONFIG}" "${SESSION_ID}" <<'PY'
+import shlex
+import sys
+
+from agent_sandbox.vm_defaults_config import VmDefaultsConfigResolver
+
+config_path, session_id = sys.argv[1], sys.argv[2]
+resolver = VmDefaultsConfigResolver.from_config_path(config_path)
+try:
+    vm_defaults = resolver.resolve_for_session_id(session_id)
+except ValueError:
+    vm_defaults = resolver.resolve_for_directory("root")
+for key, value in sorted(vm_defaults.guest_environment().items()):
+    print(f"export {key}={shlex.quote(value)}")
+PY
+}
+
+if [[ -z "${GATEWAY_URL:-}" || -z "${LLM_BASE_URL:-}" ]]; then
+  if VM_DEFAULTS_EXPORTS="$(resolve_vm_defaults_exports 2>/dev/null)"; then
+    eval "${VM_DEFAULTS_EXPORTS}"
+  fi
+fi
+
+GATEWAY_URL="${GATEWAY_URL:-http://192.168.250.1:8000/mcp}"
+LLM_BASE_URL="${LLM_BASE_URL:-http://192.168.250.1:11434/v1}"
 
 mkdir -p "${VM_DIR}"
 mkdir -p "${STATE_DIR}"

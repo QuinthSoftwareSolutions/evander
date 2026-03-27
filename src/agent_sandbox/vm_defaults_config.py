@@ -1,0 +1,113 @@
+from __future__ import annotations
+
+from pathlib import Path
+from urllib.parse import SplitResult, urlsplit, urlunsplit
+
+from pydantic import BaseModel
+
+from .config import GatewayConfig, load_config
+from .directory_config import (
+    DirectoryConfigResolver,
+    DirectoryConfigStore,
+    get_domain_base_config,
+    validate_effective_domain_payload,
+)
+from .directories import DirectoryService, DirectoryStore
+from .models import SessionManifest
+from .storage import JsonStore
+
+
+class EffectiveVmDefaultsConfig(BaseModel):
+    bind_network_cidr: str = "192.168.250.0/24"
+    gateway_url: str = "http://192.168.250.1:8000/mcp"
+    nuget_relay_host: str = "0.0.0.0"
+    nuget_relay_port: int = 11666
+    openai_relay_host: str = "0.0.0.0"
+    openai_relay_port: int = 11434
+
+    def guest_openai_base_url(self) -> str:
+        return _service_url_from_gateway_url(self.gateway_url, port=self.openai_relay_port, path="/v1")
+
+    def guest_nuget_relay_base_url(self) -> str:
+        return _service_url_from_gateway_url(self.gateway_url, port=self.nuget_relay_port, path="")
+
+    def guest_environment(self) -> dict[str, str]:
+        return {
+            "GATEWAY_URL": self.gateway_url,
+            "LLM_BASE_URL": self.guest_openai_base_url(),
+            "NUGET_RELAY_BASE_URL": self.guest_nuget_relay_base_url(),
+        }
+
+
+class VmDefaultsConfigResolver:
+    def __init__(
+        self,
+        config: GatewayConfig,
+        *,
+        directory_store: DirectoryStore | None = None,
+        session_store: JsonStore[SessionManifest] | None = None,
+    ) -> None:
+        self.config = config
+        self.directory_store = directory_store or DirectoryStore(config.directories_store_path)
+        self.directory_store.ensure_root()
+        self.directory_service = DirectoryService(self.directory_store)
+        self.config_store = DirectoryConfigStore(self.directory_store, runtime_dir=config.runtime_dir)
+        self.session_store = session_store or JsonStore(config.session_store_path, SessionManifest)
+        self.resolver = DirectoryConfigResolver(
+            self.directory_service,
+            base_gateway_config=config,
+            config_store=self.config_store,
+        )
+
+    @classmethod
+    def from_config_path(cls, path: str | Path) -> "VmDefaultsConfigResolver":
+        return cls(load_config(path))
+
+    def resolve_for_directory(self, directory_path: str | None) -> EffectiveVmDefaultsConfig:
+        normalized_path = self._normalize_directory_path(directory_path)
+        resolution = self.resolver.resolve_domain(
+            normalized_path,
+            domain="vm-defaults",
+            base_config=get_domain_base_config(self.config, "vm-defaults"),
+            validator=lambda candidate: validate_effective_domain_payload("vm-defaults", candidate),
+        )
+        return EffectiveVmDefaultsConfig.model_validate(resolution.effective_config)
+
+    def resolve_for_session_id(self, session_id: str) -> EffectiveVmDefaultsConfig:
+        session = self.session_store.get(session_id)
+        if session is None:
+            raise ValueError(f"unknown session: {session_id}")
+        return self.resolve_for_session_manifest(session)
+
+    def resolve_for_session_manifest(self, session: SessionManifest) -> EffectiveVmDefaultsConfig:
+        return self.resolve_for_directory(session.directory_path)
+
+    def _normalize_directory_path(self, directory_path: str | None) -> str:
+        if not directory_path:
+            return "root"
+        try:
+            return self.directory_service.show(directory_path).directory.path
+        except ValueError:
+            return "root"
+
+
+def _service_url_from_gateway_url(gateway_url: str, *, port: int, path: str) -> str:
+    parts = urlsplit(gateway_url)
+    host = parts.hostname or "127.0.0.1"
+    netloc = host
+    if ":" in host and not host.startswith("["):
+        netloc = f"[{host}]"
+    if parts.username:
+        credentials = parts.username
+        if parts.password:
+            credentials = f"{credentials}:{parts.password}"
+        netloc = f"{credentials}@{netloc}"
+    netloc = f"{netloc}:{port}"
+    normalized = SplitResult(
+        scheme=parts.scheme or "http",
+        netloc=netloc,
+        path=path,
+        query="",
+        fragment="",
+    )
+    return urlunsplit(normalized)

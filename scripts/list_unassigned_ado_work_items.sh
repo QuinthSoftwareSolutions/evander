@@ -14,7 +14,7 @@ Output format:
 
 Requirements:
 - A populated config/ado-worker.env
-- The PAT environment variable named by ADO_PAT_ENV_VAR_NAME
+- The PAT environment variable named by azure_devops_pat_env in config/gateway.yaml
 - A working .venv with agent-sandbox installed
 EOF
 }

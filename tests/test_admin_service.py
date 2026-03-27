@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+import subprocess
 
 from agent_sandbox.admin_service import AdminService
 from agent_sandbox.models import SessionManifest
@@ -203,6 +204,43 @@ def test_admin_service_exposes_directory_config_for_selected_directory(tmp_path:
     assert effective_result.ok is True
     assert effective_result.data is not None
     assert effective_result.data.resolution.effective_config["default_session_ttl_seconds"] == 120
+
+
+def test_create_issue_vm_uses_directory_vm_defaults_overlay_for_guest_env(tmp_path: Path, monkeypatch) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    create_result = service.create_directory_child("root", "team")
+    assert create_result.ok is True and create_result.data is not None
+    team_path = create_result.data.details.directory.path
+    write_result = service.write_directory_domain_config(
+        team_path,
+        "vm-defaults",
+        {
+            "gateway_url": "http://10.20.30.40:8000/mcp",
+            "openai_relay_port": 12000,
+            "nuget_relay_port": 13000,
+        },
+    )
+    assert write_result.ok is True
+
+    captured_env: dict[str, str] = {}
+
+    def fake_run(*args, **kwargs):
+        captured_env.update(kwargs.get("env", {}))
+        return subprocess.CompletedProcess(args[0], 0, stdout="", stderr="")
+
+    monkeypatch.setattr("agent_sandbox.admin_service.subprocess.run", fake_run)
+
+    result = service.create_issue_vm(
+        issue="123",
+        session_id="issue-123-session",
+        directory_path=team_path,
+        start_agent=False,
+    )
+
+    assert result.success is True
+    assert captured_env["GATEWAY_URL"] == "http://10.20.30.40:8000/mcp"
+    assert captured_env["LLM_BASE_URL"] == "http://10.20.30.40:12000/v1"
+    assert captured_env["NUGET_RELAY_BASE_URL"] == "http://10.20.30.40:13000"
 
 
 def test_admin_service_rejects_directory_edits_when_feature_flag_disabled(tmp_path: Path) -> None:

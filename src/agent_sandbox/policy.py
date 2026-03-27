@@ -12,6 +12,7 @@ from .models import (
     ToolName,
     digest_payload,
 )
+from .policy_config import EffectivePolicyConfig, PolicyConfigResolver
 from .storage import JsonStore
 
 
@@ -25,10 +26,16 @@ class PolicyEngine:
         config: GatewayConfig,
         session_store: JsonStore[SessionManifest],
         approval_store: JsonStore[ApprovalRequest],
+        *,
+        policy_config: PolicyConfigResolver | None = None,
     ) -> None:
         self.config = config
         self.session_store = session_store
         self.approval_store = approval_store
+        self.policy_config = policy_config or PolicyConfigResolver(
+            config,
+            session_store=session_store,
+        )
 
     def get_session(self, session_id: str) -> SessionManifest:
         session = self.session_store.get(session_id)
@@ -99,6 +106,7 @@ class PolicyEngine:
         session: SessionManifest,
         command: DiscordCommandEnvelope,
     ) -> None:
+        effective_policy = self.effective_policy_for_session(session)
         source = str(command.metadata.get("source", ""))
         if source != "discord_bot_api":
             raise PolicyError(f"Discord command {command.command_id} has untrusted source {source!r}")
@@ -111,7 +119,7 @@ class PolicyEngine:
             )
 
         allowlisted_channel = source_channel_id in session.discord_channel_allowlist
-        allowlisted_operator = source_author_id in self.config.discord_operator_user_allowlist
+        allowlisted_operator = source_author_id in effective_policy.discord_operator_user_allowlist
         if not (allowlisted_channel or allowlisted_operator):
             raise PolicyError(
                 f"Discord command {command.command_id} source is not allowlisted for session "
@@ -123,7 +131,10 @@ class PolicyEngine:
             raise PolicyError(f"Email folder is not allowlisted for session {session.session_id}")
 
     def require_email_mailbox(self, session: SessionManifest, mailbox_id: str) -> None:
-        if mailbox_id not in session.email_mailbox_allowlist:
+        mailbox_allowlist = session.email_mailbox_allowlist or self.effective_policy_for_session(
+            session
+        ).email_mailbox_allowlist
+        if mailbox_id not in mailbox_allowlist:
             raise PolicyError(f"Email mailbox is not allowlisted for session {session.session_id}")
 
     def require_email_folder_for_mailbox(
@@ -132,14 +143,18 @@ class PolicyEngine:
         mailbox_id: str,
         folder: str,
     ) -> None:
-        mailbox_folders = session.email_folder_allowlist_by_mailbox.get(mailbox_id, [])
-        if folder in mailbox_folders:
+        mailbox_folders = session.email_folder_allowlist_by_mailbox or self.effective_policy_for_session(
+            session
+        ).email_folder_allowlist_by_mailbox
+        allowed_folders = mailbox_folders.get(mailbox_id, [])
+        if folder in allowed_folders:
             return
         # Backward compatibility for older manifests that only had global folder allowlists.
         self.require_email_folder(session, folder)
 
     def require_email_send_enabled(self, session: SessionManifest) -> None:
-        if not session.email_send_enabled:
+        effective_policy = self.effective_policy_for_session(session)
+        if not (session.email_send_enabled or effective_policy.email_send_enabled):
             raise PolicyError(f"Email send is disabled for session {session.session_id}")
 
     def require_draft_recipients(self, session: SessionManifest, recipients: list[str]) -> None:
@@ -149,17 +164,24 @@ class PolicyEngine:
         if not normalized_recipients:
             return
 
-        if session.email_draft_recipient_allowlist:
-            allowlisted = {recipient.strip().lower() for recipient in session.email_draft_recipient_allowlist}
+        effective_policy = self.effective_policy_for_session(session)
+        recipient_allowlist = (
+            session.email_draft_recipient_allowlist or effective_policy.email_draft_recipient_allowlist
+        )
+        if recipient_allowlist:
+            allowlisted = {
+                recipient.strip().lower() for recipient in recipient_allowlist
+            }
             denied = [recipient for recipient in normalized_recipients if recipient not in allowlisted]
             if denied:
                 raise PolicyError(
                     f"Draft recipients are not allowlisted for session {session.session_id}: {', '.join(denied)}"
                 )
 
-        if session.email_draft_domain_allowlist:
+        domain_allowlist = session.email_draft_domain_allowlist or effective_policy.email_draft_domain_allowlist
+        if domain_allowlist:
             allowlisted_domains = {
-                domain.strip().lower().lstrip("@") for domain in session.email_draft_domain_allowlist
+                domain.strip().lower().lstrip("@") for domain in domain_allowlist
             }
             denied_domains: list[str] = []
             for recipient in normalized_recipients:
@@ -171,6 +193,12 @@ class PolicyEngine:
                     f"Draft recipient domains are not allowlisted for session {session.session_id}: "
                     f"{', '.join(denied_domains)}"
                 )
+
+    def effective_policy_for_session(self, session: SessionManifest) -> EffectivePolicyConfig:
+        return self.policy_config.resolve_for_session_manifest(session)
+
+    def effective_policy_for_session_id(self, session_id: str) -> EffectivePolicyConfig:
+        return self.policy_config.resolve_for_session_id(session_id)
 
     def create_approval(
         self,

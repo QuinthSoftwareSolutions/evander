@@ -4,6 +4,8 @@ from pathlib import Path
 import pytest
 
 from agent_sandbox.config import GatewayConfig
+from agent_sandbox.directory_config import DirectoryConfigStore
+from agent_sandbox.directories import DirectoryStore
 from agent_sandbox.models import (
     ApprovalRequest,
     ApprovalStatus,
@@ -28,6 +30,16 @@ def make_engine(tmp_path: Path) -> PolicyEngine:
     sessions = JsonStore(config.session_store_path, SessionManifest)
     approvals = JsonStore(config.approval_store_path, ApprovalRequest)
     return PolicyEngine(config, sessions, approvals)
+
+
+def write_root_policy_overlay(config: GatewayConfig, payload: dict[str, object]) -> None:
+    directory_store = DirectoryStore(config.directories_store_path)
+    directory_store.ensure_root()
+    DirectoryConfigStore(directory_store, runtime_dir=config.runtime_dir).write(
+        "root",
+        domain="policy",
+        payload=payload,
+    )
 
 
 def test_require_tool_rejects_unknown_tool(tmp_path: Path) -> None:
@@ -100,8 +112,8 @@ def test_require_discord_command_source_allows_operator_user(tmp_path: Path) -> 
         draft_store_path=tmp_path / "drafts.json",
         email_store_path=tmp_path / "emails.json",
         discord_command_store_path=tmp_path / "discord.json",
-        discord_operator_user_allowlist=["user-operator"],
     )
+    write_root_policy_overlay(config, {"discord_operator_user_allowlist": ["user-operator"]})
     sessions = JsonStore(config.session_store_path, SessionManifest)
     approvals = JsonStore(config.approval_store_path, ApprovalRequest)
     engine = PolicyEngine(config, sessions, approvals)
@@ -123,6 +135,30 @@ def test_require_discord_command_source_allows_operator_user(tmp_path: Path) -> 
     )
 
     engine.require_discord_command_source(session, command)
+
+
+def test_require_email_send_enabled_uses_effective_directory_policy(tmp_path: Path) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        audit_log_path=tmp_path / "audit.jsonl",
+        session_store_path=tmp_path / "sessions.json",
+        approval_store_path=tmp_path / "approvals.json",
+        draft_store_path=tmp_path / "drafts.json",
+        email_store_path=tmp_path / "emails.json",
+        discord_command_store_path=tmp_path / "discord.json",
+    )
+    write_root_policy_overlay(config, {"email_send_enabled": True})
+    sessions = JsonStore(config.session_store_path, SessionManifest)
+    approvals = JsonStore(config.approval_store_path, ApprovalRequest)
+    engine = PolicyEngine(config, sessions, approvals)
+    session = SessionManifest(
+        session_id="s1",
+        allowed_tools=[ToolName.EMAIL_SEND_APPROVED],
+        email_send_enabled=False,
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+
+    engine.require_email_send_enabled(session)
 
 
 def test_require_discord_command_source_rejects_untrusted_source(tmp_path: Path) -> None:

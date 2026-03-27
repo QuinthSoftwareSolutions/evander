@@ -6,7 +6,7 @@ from typing import Any
 import httpx
 from mcp.server.fastmcp import FastMCP
 
-from .config import GatewayConfig, load_config
+from .config import load_config
 from .email.http_utils import ProviderRequestError
 from .models import (
     AuditEvent,
@@ -21,24 +21,24 @@ from .runtime import RuntimeContext, build_runtime
 from .services import normalize_pr_feedback_provider
 
 
-def _redact_nested_value(config: GatewayConfig, value: Any) -> Any:
+def _redact_nested_value(redacted_keys: set[str], value: Any) -> Any:
     if isinstance(value, dict):
         redacted: dict[str, Any] = {}
         for key, nested_value in value.items():
-            if key in config.redacted_keys:
+            if key in redacted_keys:
                 redacted[key] = "<redacted>"
                 continue
-            redacted[key] = _redact_nested_value(config, nested_value)
+            redacted[key] = _redact_nested_value(redacted_keys, nested_value)
         return redacted
 
     if isinstance(value, list):
-        return [_redact_nested_value(config, item) for item in value]
+        return [_redact_nested_value(redacted_keys, item) for item in value]
 
     return value
 
 
-def _redact_args(config: GatewayConfig, args: dict[str, Any]) -> dict[str, Any]:
-    return _redact_nested_value(config, args)
+def _redact_args(redacted_keys: set[str], args: dict[str, Any]) -> dict[str, Any]:
+    return _redact_nested_value(redacted_keys, args)
 
 
 def _filter_discord_commands_for_session(
@@ -93,6 +93,14 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 recipients.extend([item for item in value if isinstance(item, str)])
         return recipients
 
+    def redacted_keys_for_session_id(session_id: str | None) -> set[str]:
+        if not session_id:
+            return set(context.policy.policy_config.resolve_for_directory("root").redacted_keys)
+        session = context.sessions.get(session_id)
+        if session is None:
+            return set(context.policy.policy_config.resolve_for_directory("root").redacted_keys)
+        return set(context.policy.effective_policy_for_session(session).redacted_keys)
+
     def audit_success(
         session_id: str,
         tool_name: ToolName,
@@ -107,7 +115,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 vm_id=session.vm_id,
                 tool_name=tool_name.value,
                 decision="allowed",
-                args=_redact_args(context.config, args),
+                args=_redact_args(redacted_keys_for_session_id(session_id), args),
                 result=result,
             )
         )
@@ -132,7 +140,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 vm_id=vm_id,
                 tool_name=tool_name.value,
                 decision=decision,
-                args=_redact_args(context.config, args),
+                args=_redact_args(redacted_keys_for_session_id(session_id), args),
                 result={"error": error, "error_class": error_class},
             )
         )
@@ -271,11 +279,11 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 repo=request.repo,
                 pr_id=request.pr_id,
             )
-            if context.config.pr_reply_require_approval:
+            if context.policy.effective_policy_for_session(session).pr_reply_require_approval:
                 if not request.request_id:
                     raise PolicyError("request_id is required when pr_reply_require_approval is enabled")
                 context.policy.require_approved(request.request_id, payload=args)
-            result = context.pr_reply_service.post_reply(
+            result = context.pr_reply_service_for_session(session_id).post_reply(
                 provider=request.provider,
                 repo=request.repo,
                 pr_id=request.pr_id,
@@ -325,7 +333,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
         args = {"session_id": session_id, "since_cursor": since_cursor}
         try:
             session = context.policy.require_tool(session_id, ToolName.DISCORD_GET_COMMANDS)
-            raw_commands = context.discord_service.get_commands(since_cursor)
+            raw_commands = context.discord_service_for_session(session_id).get_commands(since_cursor)
             commands, denied_count, next_cursor = _filter_discord_commands_for_session(
                 context,
                 session_id,
@@ -372,7 +380,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
         try:
             session = context.policy.require_tool(session_id, ToolName.DISCORD_POST_STATUS)
             context.policy.require_discord_channel(session, channel_id)
-            result = context.discord_service.post_status(message, channel_id, session_id)
+            result = context.discord_service_for_session(session_id).post_status(message, channel_id, session_id)
             audit_success(session_id, ToolName.DISCORD_POST_STATUS, args, result)
             return result
         except PolicyError as exc:
@@ -408,9 +416,10 @@ def create_server(context: RuntimeContext) -> FastMCP:
             session = context.policy.require_tool(session_id, ToolName.EMAIL_LIST_UNREAD)
             context.policy.require_email_mailbox(session, mailbox_id)
             context.policy.require_email_folder_for_mailbox(session, mailbox_id, folder)
+            email_service = context.email_service_for_session(session_id)
             messages = [
                 message.model_dump(mode="json")
-                for message in context.email_service.list_unread(mailbox_id=mailbox_id, folder=folder, limit=limit)
+                for message in email_service.list_unread(mailbox_id=mailbox_id, folder=folder, limit=limit)
             ]
             audit_success(session_id, ToolName.EMAIL_LIST_UNREAD, args, {"count": len(messages)})
             return messages
@@ -444,7 +453,10 @@ def create_server(context: RuntimeContext) -> FastMCP:
         try:
             session = context.policy.require_tool(session_id, ToolName.EMAIL_GET_MESSAGE)
             context.policy.require_email_mailbox(session, mailbox_id)
-            message = context.email_service.get_message(mailbox_id=mailbox_id, message_id=message_id)
+            message = context.email_service_for_session(session_id).get_message(
+                mailbox_id=mailbox_id,
+                message_id=message_id,
+            )
             context.policy.require_email_folder_for_mailbox(session, mailbox_id, message.folder)
             result = message.model_dump(mode="json")
             audit_success(session_id, ToolName.EMAIL_GET_MESSAGE, args, {"message_id": message_id})
@@ -496,7 +508,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
             context.policy.require_email_folder_for_mailbox(session, mailbox_id, "drafts")
             normalized_recipients = recipients or []
             context.policy.require_draft_recipients(session, normalized_recipients)
-            draft = context.email_service.create_draft(
+            draft = context.email_service_for_session(session_id).create_draft(
                 mailbox_id, thread_or_message_id, subject, body, normalized_recipients
             )
             result = draft.model_dump(mode="json")

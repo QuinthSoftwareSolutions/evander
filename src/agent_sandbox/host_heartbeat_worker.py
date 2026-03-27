@@ -17,6 +17,8 @@ import httpx
 from .agent_control import AgentControlStore
 from .audit import AuditEventType
 from .config import GatewayConfig
+from .directory_config import DIRECTORY_CONFIG_DOMAIN_FIELDS, get_domain_base_config
+from .provider_config import ProviderConfigResolver
 from .pr_feedback_worker import (
     AzureDevOpsFeedbackAdapter,
     FeedbackProviderAdapter,
@@ -62,12 +64,14 @@ class HostHeartbeatWorker:
         feedback_worker: PullRequestFeedbackWorker,
         adapters: dict[str, FeedbackProviderAdapter],
         agent_control_store: AgentControlStore | None = None,
+        provider_config_resolver: ProviderConfigResolver | None = None,
     ) -> None:
         self.config = config
         self.runtime = runtime
         self.feedback_worker = feedback_worker
         self.adapters = adapters
         self.agent_control_store = agent_control_store
+        self.provider_config_resolver = provider_config_resolver
         if getattr(config, "enable_directory_scoped_config", False):
             try:
                 self.directory_context_resolver = WorkerDirectoryContextResolver(config)
@@ -86,14 +90,108 @@ class HostHeartbeatWorker:
             return
         log_decision(**kwargs)
 
+    def _root_worker_config(self) -> GatewayConfig:
+        return self._resolve_worker_config_for_directory("root", source="host_heartbeat:root")
+
+    def _resolve_worker_config_for_binding(self, binding: StreamSessionBinding) -> GatewayConfig:
+        return self._resolve_worker_config_for_directory(
+            binding.directory_path,
+            session_id=binding.session_id,
+            source=f"host_heartbeat:{binding.source}",
+        )
+
+    def _resolve_worker_config_for_directory(
+        self,
+        directory_path: str | None,
+        *,
+        session_id: str | None = None,
+        source: str,
+    ) -> GatewayConfig:
+        if self.directory_context_resolver is None:
+            return self.config
+        try:
+            resolution = self.directory_context_resolver.resolve_effective_domain_for_session(
+                session_id,
+                domain="workers",
+                fallback_directory_path=directory_path,
+            )
+        except Exception:
+            logger.warning(
+                "Failed to resolve directory-scoped workers config source=%s session_id=%s directory_path=%s",
+                source,
+                session_id,
+                directory_path or "root",
+                exc_info=True,
+            )
+            return self.config
+        if resolution.validation_errors:
+            logger.warning(
+                "Invalid directory-scoped workers config source=%s session_id=%s directory_path=%s errors=%s",
+                source,
+                session_id,
+                resolution.selected_directory.path,
+                resolution.validation_errors,
+            )
+            return self.config
+
+        payload = _merge_worker_domain_payloads(get_domain_base_config(self.config, "workers"), resolution.effective_config)
+        missing_fields = sorted(
+            field for field in DIRECTORY_CONFIG_DOMAIN_FIELDS["workers"] if field not in resolution.effective_config
+        )
+        if missing_fields:
+            logger.info(
+                "Directory-scoped workers config missing fields; using gateway fallback source=%s session_id=%s directory_path=%s fields=%s",
+                source,
+                session_id,
+                resolution.selected_directory.path,
+                missing_fields,
+            )
+        merged_gateway_payload = self.config.model_dump(mode="json")
+        merged_gateway_payload.update(payload)
+        return GatewayConfig.model_validate(merged_gateway_payload)
+
+    def _resolve_provider_adapter(
+        self,
+        provider: str,
+        binding: StreamSessionBinding,
+    ) -> FeedbackProviderAdapter | None:
+        if self.provider_config_resolver is None:
+            return self.adapters.get(provider)
+        try:
+            resolved_config = self.provider_config_resolver.resolve_for_session_id(binding.session_id)
+        except ValueError:
+            resolved_config = self.provider_config_resolver.resolve_for_directory(binding.directory_path)
+        if provider == "github":
+            github_token = os.environ.get(resolved_config.github_token_env, "").strip()
+            return GitHubFeedbackAdapter(token=github_token)
+        if provider == "azure_devops":
+            azure_pat = os.environ.get(resolved_config.azure_devops_pat_env, "").strip()
+            return AzureDevOpsFeedbackAdapter(
+                organization_url=resolved_config.azure_devops_organization_url,
+                project=resolved_config.azure_devops_project,
+                pat=azure_pat,
+            )
+        return self.adapters.get(provider)
+
+    @staticmethod
+    def _group_bindings_by_directory(
+        bindings: list[StreamSessionBinding],
+    ) -> list[list[StreamSessionBinding]]:
+        grouped: dict[str, list[StreamSessionBinding]] = {}
+        for binding in bindings:
+            key = binding.directory_path or "root"
+            grouped.setdefault(key, []).append(binding)
+        return [grouped[key] for key in sorted(grouped)]
+
     def run_forever(self) -> None:
-        with _single_instance_lock(self.config.host_heartbeat_lock_path):
+        worker_config = self._root_worker_config()
+        with _single_instance_lock(worker_config.host_heartbeat_lock_path):
             logger.info(
                 "Host heartbeat worker started poll_interval=%.3f jitter=%.3f cooldown=%.3f lock=%s",
-                self.config.host_heartbeat_poll_interval_seconds,
-                self.config.host_heartbeat_jitter_seconds,
-                self.config.host_heartbeat_cooldown_seconds,
-                self.config.host_heartbeat_lock_path,
+                worker_config.host_heartbeat_poll_interval_seconds,
+                worker_config.host_heartbeat_jitter_seconds,
+                worker_config.host_heartbeat_cooldown_seconds,
+                worker_config.host_heartbeat_lock_path,
             )
             while True:
                 result = self.run_once()
@@ -106,10 +204,11 @@ class HostHeartbeatWorker:
                 time.sleep(result.next_sleep_seconds)
 
     def run_once_with_lock(self) -> HeartbeatCycleResult:
-        with _single_instance_lock(self.config.host_heartbeat_lock_path):
+        with _single_instance_lock(self._root_worker_config().host_heartbeat_lock_path):
             return self.run_once()
 
     def run_once(self) -> HeartbeatCycleResult:
+        worker_config = self._root_worker_config()
         stream_mappings = self._collect_stream_mappings()
         streams = sorted(
             stream_mappings.keys(),
@@ -118,64 +217,70 @@ class HostHeartbeatWorker:
         discovered_feedback = 0
         streams_polled = 0
 
-        with httpx.Client(timeout=self.config.host_heartbeat_http_timeout_seconds) as client:
+        with httpx.Client(timeout=worker_config.host_heartbeat_http_timeout_seconds) as client:
             for stream in streams:
                 bindings = stream_mappings.get(stream, [])
                 if len(bindings) > 1:
                     logger.warning(
                         "PR feedback stream matched multiple sessions policy=%s provider=%s repo=%s pr=%s session_ids=%s",
-                        self.config.host_heartbeat_stream_conflict_policy,
+                        worker_config.host_heartbeat_stream_conflict_policy,
                         stream.provider,
                         stream.repo,
                         stream.pr_id,
                         [binding.session_id for binding in bindings],
                     )
-                    if self.config.host_heartbeat_stream_conflict_policy == "reject":
+                    if worker_config.host_heartbeat_stream_conflict_policy == "reject":
                         continue
-                adapter = self.adapters.get(stream.provider)
-                if adapter is None:
-                    logger.warning(
-                        "Skipping unsupported feedback provider=%s repo=%s pr=%s",
-                        stream.provider,
-                        stream.repo,
-                        stream.pr_id,
-                    )
-                    continue
-                streams_polled += 1
-                try:
-                    discovered = self.feedback_worker.poll_once(
-                        client=client,
-                        provider=stream.provider,
-                        repo=stream.repo,
-                        pr_id=stream.pr_id,
-                        stream_bindings=[
-                            {
-                                "session_id": binding.session_id,
-                                "vm_id": binding.vm_id,
-                                "source": binding.source,
-                                "directory_path": binding.directory_path,
-                                "directory_context": binding.directory_context,
-                            }
-                            for binding in bindings
-                        ],
-                    )
-                except Exception:
-                    logger.warning(
-                        "Host heartbeat stream poll failed provider=%s repo=%s pr=%s",
-                        stream.provider,
-                        stream.repo,
-                        stream.pr_id,
-                        exc_info=True,
-                    )
-                    continue
-                discovered_feedback += len(discovered)
-                if discovered or self._stream_has_unread_bindings(stream=stream, bindings=bindings):
+                discovered_for_stream = 0
+                for binding_group in self._group_bindings_by_directory(bindings):
+                    adapter = self._resolve_provider_adapter(stream.provider, binding_group[0])
+                    if adapter is None:
+                        logger.warning(
+                            "Skipping unsupported feedback provider=%s repo=%s pr=%s directory_path=%s",
+                            stream.provider,
+                            stream.repo,
+                            stream.pr_id,
+                            binding_group[0].directory_path or "root",
+                        )
+                        continue
+                    streams_polled += 1
+                    try:
+                        discovered = self.feedback_worker.poll_once(
+                            client=client,
+                            provider=stream.provider,
+                            repo=stream.repo,
+                            pr_id=stream.pr_id,
+                            stream_bindings=[
+                                {
+                                    "session_id": binding.session_id,
+                                    "vm_id": binding.vm_id,
+                                    "source": binding.source,
+                                    "directory_path": binding.directory_path,
+                                    "directory_context": binding.directory_context,
+                                }
+                                for binding in binding_group
+                            ],
+                            adapter=adapter,
+                        )
+                    except Exception:
+                        logger.warning(
+                            "Host heartbeat stream poll failed provider=%s repo=%s pr=%s directory_path=%s",
+                            stream.provider,
+                            stream.repo,
+                            stream.pr_id,
+                            binding_group[0].directory_path or "root",
+                            exc_info=True,
+                        )
+                        continue
+                    discovered_for_stream += len(discovered)
+                discovered_feedback += discovered_for_stream
+                if discovered_for_stream or self._stream_has_unread_bindings(stream=stream, bindings=bindings):
                     self._record_busy_skips(stream=stream, bindings=bindings)
 
         next_sleep_seconds = _compute_next_sleep_seconds(
-            poll_interval_seconds=self.config.host_heartbeat_poll_interval_seconds,
-            jitter_seconds=self.config.host_heartbeat_jitter_seconds,
-            cooldown_seconds=self.config.host_heartbeat_cooldown_seconds,
+            poll_interval_seconds=worker_config.host_heartbeat_poll_interval_seconds,
+            jitter_seconds=worker_config.host_heartbeat_jitter_seconds,
+            cooldown_seconds=worker_config.host_heartbeat_cooldown_seconds,
             discovered_feedback=discovered_feedback,
         )
         self._log_audit_decision(
@@ -196,6 +301,7 @@ class HostHeartbeatWorker:
 
     def _record_busy_skips(self, *, stream: FeedbackStream, bindings: list[StreamSessionBinding]) -> None:
         for binding in bindings:
+            worker_config = self._resolve_worker_config_for_binding(binding)
             if not self._binding_has_unread_feedback(binding=binding, stream=stream):
                 continue
             if self._binding_is_host_disabled(binding):
@@ -217,7 +323,7 @@ class HostHeartbeatWorker:
                 )
                 continue
             if _is_session_in_cooldown(
-                path=self.config.host_heartbeat_session_cooldown_path,
+                path=worker_config.host_heartbeat_session_cooldown_path,
                 session_id=binding.session_id,
             ):
                 self._log_audit_decision(
@@ -242,13 +348,13 @@ class HostHeartbeatWorker:
             agent_state = _probe_agent_dispatch_state(
                 session_id=binding.session_id,
                 vm_id=binding.vm_id,
-                script_path=self.config.host_busy_check_script_path,
+                script_path=worker_config.host_busy_check_script_path,
             )
             if agent_state == "busy":
                 _set_session_cooldown(
-                    path=self.config.host_heartbeat_session_cooldown_path,
+                    path=worker_config.host_heartbeat_session_cooldown_path,
                     session_id=binding.session_id,
-                    cooldown_seconds=self.config.host_heartbeat_cooldown_seconds,
+                    cooldown_seconds=worker_config.host_heartbeat_cooldown_seconds,
                 )
                 self._log_audit_decision(
                     event_type=AuditEventType.BUSY_SKIP,
@@ -285,11 +391,11 @@ class HostHeartbeatWorker:
                     binding.vm_id,
                 )
                 continue
-            self._resume_binding(binding)
+            self._resume_binding(binding, worker_config=worker_config)
             _set_session_cooldown(
-                path=self.config.host_heartbeat_session_cooldown_path,
+                path=worker_config.host_heartbeat_session_cooldown_path,
                 session_id=binding.session_id,
-                cooldown_seconds=self.config.host_heartbeat_cooldown_seconds,
+                cooldown_seconds=worker_config.host_heartbeat_cooldown_seconds,
             )
 
     def _binding_is_host_disabled(self, binding: StreamSessionBinding) -> bool:
@@ -317,10 +423,10 @@ class HostHeartbeatWorker:
             )
         )
 
-    def _resume_binding(self, binding: StreamSessionBinding) -> None:
+    def _resume_binding(self, binding: StreamSessionBinding, *, worker_config: GatewayConfig) -> None:
         if not binding.vm_id:
             return
-        script_path = self.config.host_resume_script_path
+        script_path = worker_config.host_resume_script_path
         if not script_path.exists():
             logger.warning(
                 "Resume script missing path=%s session_id=%s vm_id=%s",
@@ -332,16 +438,16 @@ class HostHeartbeatWorker:
         cmd = [
             str(script_path),
             "--prompt",
-            self.config.host_heartbeat_resume_prompt,
+            worker_config.host_heartbeat_resume_prompt,
             "--vm-name",
             binding.vm_id,
             "--session-id",
             binding.session_id,
             "--vm-user",
-            self.config.host_heartbeat_vm_user,
+            worker_config.host_heartbeat_vm_user,
             "--worker-mode",
             "--host-state-file",
-            str(self.config.host_heartbeat_wake_state_path),
+            str(worker_config.host_heartbeat_wake_state_path),
         ]
         host_control_state_path = getattr(self.config, "host_agent_control_state_path", None)
         if host_control_state_path is not None:
@@ -352,7 +458,7 @@ class HostHeartbeatWorker:
                 check=False,
                 capture_output=True,
                 text=True,
-                timeout=self.config.host_heartbeat_resume_timeout_seconds,
+                timeout=worker_config.host_heartbeat_resume_timeout_seconds,
             )
         except OSError:
             logger.warning(
@@ -369,7 +475,7 @@ class HostHeartbeatWorker:
                 script_path,
                 binding.session_id,
                 binding.vm_id,
-                self.config.host_heartbeat_resume_timeout_seconds,
+                worker_config.host_heartbeat_resume_timeout_seconds,
             )
             return
 
@@ -587,6 +693,13 @@ def _load_pr_map_entries(path: Path) -> dict[tuple[str, str, str], dict[str, Any
     return entries
 
 
+def _merge_worker_domain_payloads(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(base)
+    for key, value in overlay.items():
+        merged[key] = value
+    return merged
+
+
 def _probe_agent_dispatch_state(*, session_id: str, vm_id: str, script_path: Path) -> str:
     if not script_path.exists():
         logger.warning(
@@ -692,13 +805,19 @@ def _save_cooldown_state(path: Path, state: dict[str, float]) -> None:
 
 def build_host_heartbeat_worker(config: GatewayConfig) -> HostHeartbeatWorker:
     runtime = build_runtime(config)
-    github_token = os.environ.get(config.github_token_env, "").strip()
-    azure_pat = os.environ.get(config.azure_devops_pat_env, "").strip()
+    provider_config_resolver = ProviderConfigResolver(
+        config,
+        directory_store=runtime.directories,
+        session_store=runtime.sessions,
+    )
+    root_provider_config = provider_config_resolver.resolve_for_directory("root")
+    github_token = os.environ.get(root_provider_config.github_token_env, "").strip()
+    azure_pat = os.environ.get(root_provider_config.azure_devops_pat_env, "").strip()
     adapters: dict[str, FeedbackProviderAdapter] = {
         "github": GitHubFeedbackAdapter(token=github_token),
         "azure_devops": AzureDevOpsFeedbackAdapter(
-            organization_url=config.azure_devops_organization_url,
-            project=config.azure_devops_project,
+            organization_url=root_provider_config.azure_devops_organization_url,
+            project=root_provider_config.azure_devops_project,
             pat=azure_pat,
         ),
     }
@@ -709,4 +828,5 @@ def build_host_heartbeat_worker(config: GatewayConfig) -> HostHeartbeatWorker:
         feedback_worker=feedback_worker,
         adapters=adapters,
         agent_control_store=AgentControlStore(config.host_agent_control_state_path),
+        provider_config_resolver=provider_config_resolver,
     )

@@ -31,7 +31,7 @@
 - Every owned entity defaults to directory path `root`.
 - `root` is hard-coded, immutable, and always present.
 - Child directories inherit configuration from `root -> ... -> selected`.
-- `root` itself can carry explicit directory overlay files and acts as the first directory-scoped layer above the global baseline.
+- `root` itself can carry explicit directory overlay files and is the top of the directory-scoped inheritance chain.
 - Directory config uses per-domain overlays, with deep-merge for maps, replace semantics for lists, and last-write-wins for scalars.
 - During transition, global config files and env vars remain the active runtime source of truth.
 
@@ -213,7 +213,7 @@ sudo systemctl start agent-sandbox-host-heartbeat.service
 The generated units run as your user where appropriate and read environment files from `config/`.
 For private PR feedback polling, `config/host-heartbeat.env` must export `GITHUB_TOKEN` and/or
 `AZURE_DEVOPS_PAT` as needed, and `config/gateway.yaml` must set the correct
-`azure_devops_organization_url` and `azure_devops_project`.
+`azure_devops_organization_url`, `azure_devops_project`, and heartbeat timing/lock settings.
 
 ### Azure DevOps backlog worker
 
@@ -225,6 +225,10 @@ set -a; source config/ado-worker.env; set +a
 export AZURE_DEVOPS_PAT=...
 agent-sandbox-cli poll-ado-backlog --log-level INFO
 ```
+
+The ADO worker now reads `azure_devops_organization_url`, `azure_devops_project`, and
+`azure_devops_pat_env` from `config/gateway.yaml` instead of duplicating them in
+`config/ado-worker.env`.
 
 For one-off recovery actions:
 

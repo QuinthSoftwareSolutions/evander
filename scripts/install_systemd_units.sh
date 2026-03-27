@@ -231,13 +231,8 @@ run_preflight_checks() {
   check_file "${ROOT_DIR}/config/ado-worker.env" "Copy config/ado-worker.env.example to config/ado-worker.env and configure required values."
   check_file "${ROOT_DIR}/config/host-heartbeat.env" "Copy config/host-heartbeat.env.example to config/host-heartbeat.env."
 
-  check_env_var_in_file "${ROOT_DIR}/config/gateway.env" "AGENT_SANDBOX_CONFIG" "Set AGENT_SANDBOX_CONFIG to your gateway config path."
-  check_env_var_in_file "${ROOT_DIR}/config/openai-relay.env" "AGENT_SANDBOX_CONFIG" "Set AGENT_SANDBOX_CONFIG to your gateway config path."
   check_env_var_in_file "${ROOT_DIR}/config/openai-relay.env" "OPENAI_API_KEY" "Set OPENAI_API_KEY in config/openai-relay.env."
   check_env_var_in_file "${ROOT_DIR}/config/firewall.env" "ALLOWED_TCP_PORTS" "Set ALLOWED_TCP_PORTS in config/firewall.env."
-  check_env_var_in_file "${ROOT_DIR}/config/ado-worker.env" "ADO_ORGANIZATION_URL" "Set ADO_ORGANIZATION_URL in config/ado-worker.env."
-  check_env_var_in_file "${ROOT_DIR}/config/ado-worker.env" "ADO_PROJECT" "Set ADO_PROJECT in config/ado-worker.env."
-  check_env_var_in_file "${ROOT_DIR}/config/ado-worker.env" "ADO_PAT_ENV_VAR_NAME" "Set ADO_PAT_ENV_VAR_NAME in config/ado-worker.env."
   check_env_var_in_file "${ROOT_DIR}/config/ado-worker.env" "ADO_PROJECT_OR_SOLUTION" "Set ADO_PROJECT_OR_SOLUTION in config/ado-worker.env."
   if env_var_is_truthy_in_file "${ROOT_DIR}/config/ado-worker.env" "ADO_BOOTSTRAP_MSSQL"; then
     check_any_env_var_in_file \
@@ -247,15 +242,7 @@ run_preflight_checks() {
       "ADO_MSSQL_SA_PASSWORD" \
       "MSSQL_SA_PASSWORD"
   fi
-  check_env_var_in_file "${ROOT_DIR}/config/host-heartbeat.env" "AGENT_SANDBOX_CONFIG" "Set AGENT_SANDBOX_CONFIG to your gateway config path."
   check_env_var_in_file "${ROOT_DIR}/config/host-heartbeat.env" "HOST_HEARTBEAT_LOG_LEVEL" "Set HOST_HEARTBEAT_LOG_LEVEL in config/host-heartbeat.env."
-  check_env_var_in_file "${ROOT_DIR}/config/host-heartbeat.env" "HOST_HEARTBEAT_POLL_INTERVAL_SECONDS" "Set HOST_HEARTBEAT_POLL_INTERVAL_SECONDS in config/host-heartbeat.env."
-  check_env_var_in_file "${ROOT_DIR}/config/host-heartbeat.env" "HOST_HEARTBEAT_JITTER_SECONDS" "Set HOST_HEARTBEAT_JITTER_SECONDS in config/host-heartbeat.env."
-  check_env_var_in_file "${ROOT_DIR}/config/host-heartbeat.env" "HOST_HEARTBEAT_COOLDOWN_SECONDS" "Set HOST_HEARTBEAT_COOLDOWN_SECONDS in config/host-heartbeat.env."
-  check_env_var_in_file "${ROOT_DIR}/config/host-heartbeat.env" "HOST_HEARTBEAT_HTTP_TIMEOUT_SECONDS" "Set HOST_HEARTBEAT_HTTP_TIMEOUT_SECONDS in config/host-heartbeat.env."
-  check_env_var_in_file "${ROOT_DIR}/config/host-heartbeat.env" "HOST_HEARTBEAT_LOCK_PATH" "Set HOST_HEARTBEAT_LOCK_PATH in config/host-heartbeat.env."
-  check_env_var_in_file "${ROOT_DIR}/config/host-heartbeat.env" "HOST_HEARTBEAT_SESSION_COOLDOWN_PATH" "Set HOST_HEARTBEAT_SESSION_COOLDOWN_PATH in config/host-heartbeat.env."
-  check_env_var_in_file "${ROOT_DIR}/config/host-heartbeat.env" "HOST_HEARTBEAT_STREAM_CONFLICT_POLICY" "Set HOST_HEARTBEAT_STREAM_CONFLICT_POLICY in config/host-heartbeat.env."
 
   echo
   echo "Preflight summary: ${PASS_COUNT} passed, ${FAIL_COUNT} failed."
@@ -342,8 +329,8 @@ Installed systemd units:
 Next steps:
   1. Edit ${ROOT_DIR}/config/openai-relay.env and set OPENAI_API_KEY.
   2. Edit ${ROOT_DIR}/config/nuget-relay.env and set AZURE_ARTIFACTS_PAT if needed.
-  3. Edit ${ROOT_DIR}/config/ado-worker.env and ensure ${ADO_PAT_ENV_VAR_NAME:-AZURE_DEVOPS_PAT} is exported.
-  4. Edit ${ROOT_DIR}/config/host-heartbeat.env for heartbeat cadence/lock settings.
+  3. Edit ${ROOT_DIR}/config/ado-worker.env and ensure the PAT env var named by config/gateway.yaml is exported.
+  4. Edit ${ROOT_DIR}/config/host-heartbeat.env for log level and provider credentials if private PR polling is needed.
   5. Optionally edit ${ROOT_DIR}/config/firewall.env to change allowed host ports.
   6. Start services:
      sudo systemctl start agent-sandbox-firewall.service

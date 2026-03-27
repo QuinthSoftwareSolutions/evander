@@ -97,6 +97,23 @@ def test_directory_admin_service_reads_writes_and_resolves_directory_config(tmp_
     assert resolved.validation_diagnostics == []
 
 
+def test_directory_admin_root_effective_config_has_no_implicit_global_base(tmp_path: Path) -> None:
+    config = GatewayConfig.model_validate(
+        {"runtime_dir": str(tmp_path / "runtime"), "enable_directory_scoped_config": True}
+    )
+    store = DirectoryStore(config.directories_store_path)
+    admin = DirectoryAdminService.from_store(directory_store=store, gateway_config=config)
+
+    written = admin.write_domain_config("root", domain="policy", payload={"default_session_ttl_seconds": 120})
+    assert written.ok is True
+
+    resolved = admin.compute_effective_config("root", domain="policy")
+
+    assert resolved.ok is True
+    assert resolved.data.resolution.effective_config == {"default_session_ttl_seconds": 120}
+    assert [layer.directory_path for layer in resolved.data.resolution.applied_layers] == ["root"]
+
+
 def test_directory_admin_empty_write_removes_domain_file_and_existence(tmp_path: Path) -> None:
     config = GatewayConfig.model_validate(
         {"runtime_dir": str(tmp_path / "runtime"), "enable_directory_scoped_config": True}

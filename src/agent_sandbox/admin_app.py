@@ -8,7 +8,7 @@ from typing import Any, get_args, get_origin
 
 from .admin_service import AdminService
 from .config import GatewayConfig
-from .directory_config import DIRECTORY_CONFIG_DOMAIN_FIELDS, get_domain_base_config
+from .directory_config import DIRECTORY_CONFIG_DOMAIN_FIELDS
 
 try:
     from PySide6.QtCore import QObject, QRunnable, QSettings, QThreadPool, QTimer, Qt, Signal
@@ -1430,6 +1430,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             "include_checkbox": include_checkbox,
             "clear_checkbox": clear_checkbox,
             "inherited_label": inherited_label,
+            "root_mode": False,
         }
         self._update_config_field_control_value(spec, None)
         self._update_config_field_enabled_state_from_spec(spec)
@@ -1439,9 +1440,8 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
                 domain, field_name
             )
         )
-        clear_checkbox.toggled.connect(lambda _checked=False, domain=domain: self._mark_config_domain_dirty(domain))
         clear_checkbox.toggled.connect(
-            lambda _checked=False, domain=domain, field_name=field_name: self._update_config_field_enabled_state(
+            lambda _checked=False, domain=domain, field_name=field_name: self._handle_config_field_clear_toggled(
                 domain, field_name
             )
         )
@@ -1466,37 +1466,70 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         spec = self._config_widgets[domain]["field_specs"][field_name]
         self._update_config_field_enabled_state_from_spec(spec)
 
+    def _handle_config_field_clear_toggled(self, domain: str, field_name: str) -> None:
+        spec = self._config_widgets[domain]["field_specs"][field_name]
+        if spec.get("root_mode"):
+            spec["include_checkbox"].setChecked(not spec["clear_checkbox"].isChecked())
+        self._mark_config_domain_dirty(domain)
+        self._update_config_field_enabled_state_from_spec(spec)
+
     @staticmethod
     def _update_config_field_enabled_state_from_spec(spec: dict[str, object]) -> None:
         include_checkbox = spec["include_checkbox"]
         clear_checkbox = spec["clear_checkbox"]
         control = spec["control"]
-        enabled = include_checkbox.isChecked()
-        clear_checkbox.setEnabled(enabled)
-        control.setEnabled(enabled and not clear_checkbox.isChecked())
+        if spec.get("root_mode"):
+            clear_checkbox.setEnabled(True)
+            control.setEnabled(not clear_checkbox.isChecked())
+        else:
+            enabled = include_checkbox.isChecked()
+            clear_checkbox.setEnabled(enabled)
+            control.setEnabled(enabled and not clear_checkbox.isChecked())
+
+    @staticmethod
+    def _set_config_field_root_mode(spec: dict[str, object], *, is_root: bool) -> None:
+        spec["root_mode"] = is_root
+        spec["include_checkbox"].setVisible(not is_root)
+        spec["inherited_label"].setVisible(not is_root)
+        spec["clear_checkbox"].setText("Unset" if is_root else "Clear")
+        if is_root:
+            spec["clear_checkbox"].setEnabled(True)
 
     def _populate_config_form(self, domain: str, *, raw_config: dict[str, Any], inherited_config: dict[str, Any]) -> None:
+        is_root = self._selected_directory_path == "root"
         self._config_form_loading = True
         try:
             field_specs = self._config_widgets[domain]["field_specs"]
             for field_name, spec in field_specs.items():
-                spec["inherited_label"].setText(
-                    _format_config_value_preview(inherited_config.get(field_name))
-                    if field_name in inherited_config
-                    else "Inherited: not set"
-                )
-                if field_name in raw_config:
-                    spec["include_checkbox"].setChecked(True)
-                    if raw_config[field_name] is None:
-                        spec["clear_checkbox"].setChecked(True)
-                        self._update_config_field_control_value(spec, None)
-                    else:
+                self._set_config_field_root_mode(spec, is_root=is_root)
+                if not is_root:
+                    spec["inherited_label"].setText(
+                        _format_config_value_preview(inherited_config.get(field_name))
+                        if field_name in inherited_config
+                        else "Inherited: not set"
+                    )
+                if is_root:
+                    if field_name in raw_config and raw_config[field_name] is not None:
+                        spec["include_checkbox"].setChecked(True)
                         spec["clear_checkbox"].setChecked(False)
                         self._update_config_field_control_value(spec, raw_config[field_name])
+                    else:
+                        spec["include_checkbox"].setChecked(False)
+                        spec["clear_checkbox"].setChecked(True)
+                        self._update_config_field_control_value(spec, None)
                 else:
-                    spec["include_checkbox"].setChecked(False)
-                    spec["clear_checkbox"].setChecked(False)
-                    self._update_config_field_control_value(spec, None)
+                    if field_name in raw_config:
+                        spec["include_checkbox"].setChecked(True)
+                        if raw_config[field_name] is None:
+                            spec["clear_checkbox"].setChecked(True)
+                            self._update_config_field_control_value(spec, None)
+                        else:
+                            spec["clear_checkbox"].setChecked(False)
+                            self._update_config_field_control_value(spec, raw_config[field_name])
+                    else:
+                        spec["include_checkbox"].setChecked(False)
+                        spec["clear_checkbox"].setChecked(False)
+                        self._update_config_field_control_value(spec, None)
                 self._update_config_field_enabled_state_from_spec(spec)
         finally:
             self._config_form_loading = False
@@ -1561,10 +1594,13 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
 
     def _collect_config_form_payload(self, domain: str) -> dict[str, Any]:
         payload: dict[str, Any] = {}
+        is_root = self._selected_directory_path == "root"
         for field_name, spec in self._config_widgets[domain]["field_specs"].items():
             if not spec["include_checkbox"].isChecked():
                 continue
             if spec["clear_checkbox"].isChecked():
+                if is_root:
+                    continue
                 payload[field_name] = None
                 continue
             payload[field_name] = self._read_config_field_control_value(spec)
@@ -1575,7 +1611,10 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self._update_directory_action_bar()
         for widgets in self._config_widgets.values():
             for spec in widgets["field_specs"].values():
-                spec["include_checkbox"].setEnabled(enabled)
+                if spec.get("root_mode"):
+                    spec["include_checkbox"].setEnabled(False)
+                else:
+                    spec["include_checkbox"].setEnabled(enabled)
                 if not enabled:
                     spec["clear_checkbox"].setEnabled(False)
                     spec["control"].setEnabled(False)
@@ -1584,7 +1623,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             widgets["save_button"].setEnabled(enabled)
         if not enabled:
             self.config_status_label.setText(
-                "Directory-scoped config is disabled; using root/global configuration defaults."
+                "Directory-scoped config is disabled; using root configuration defaults."
             )
 
     def choose_directory(self) -> None:
@@ -1716,8 +1755,6 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             parent_effective_config = {}
             if parent_result and getattr(parent_result, "ok", False) and parent_result.data is not None:
                 parent_effective_config = parent_result.data.resolution.effective_config
-            elif getattr(effective_result, "ok", False) and effective_result.data is not None:
-                parent_effective_config = get_domain_base_config(self.service.config, domain)
             if domain not in self._config_dirty_domains:
                 self._populate_config_form(
                     domain,
@@ -1734,10 +1771,9 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             else:
                 widgets["latest_parent_defaults_payload"] = {
                     "directory_path": None,
-                    "baseline": get_domain_base_config(self.service.config, domain),
                     "note": (
-                        "Root directory has no parent directory. This baseline is the global config for "
-                        "the domain before any root overrides are applied."
+                        "Root directory has no parent directory. It is the top of the directory config "
+                        "chain for this domain."
                     ),
                 }
             if getattr(effective_result, "ok", False) and effective_result.data is not None:

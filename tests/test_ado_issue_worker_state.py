@@ -140,6 +140,69 @@ def test_process_work_item_skips_when_already_processed(
     assert called["run"] is False
 
 
+def test_process_work_item_uses_root_vm_defaults_overlay_for_setup_env(
+    worker_config: WorkerConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_payload = json.loads(worker_config.gateway_config_path.read_text(encoding="utf-8"))
+    config_payload["enable_directory_scoped_config"] = True
+    worker_config.gateway_config_path.write_text(json.dumps(config_payload), encoding="utf-8")
+
+    runtime_dir = worker_config.runtime_dir
+    (runtime_dir / "directory-config" / "root").mkdir(parents=True, exist_ok=True)
+    (runtime_dir / "directory-config" / "root" / "vm-defaults.json").write_text(
+        json.dumps(
+            {
+                "gateway_url": "http://10.0.0.10:8000/mcp",
+                "openai_relay_port": 12000,
+                "nuget_relay_port": 13000,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (runtime_dir / "directories.json").write_text(
+        json.dumps(
+            {
+                "root": {
+                    "id": "root",
+                    "name": "root",
+                    "parent_id": None,
+                    "created_at": "2026-03-27T00:00:00Z",
+                    "metadata": {"directory_config": {"domains": ["vm-defaults"]}},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    captured_env: dict[str, str] = {}
+
+    def successful_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        captured_env.update(kwargs.get("env", {}))
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="ok", stderr="")
+
+    monkeypatch.setattr("agent_sandbox.ado_issue_worker.subprocess.run", successful_run)
+
+    processed = process_work_item(
+        {
+            "id": 123,
+            "title": "Needs setup",
+            "description": "",
+            "tags": ["truman"],
+            "state": "Committed",
+            "url": "",
+            "updated_date": "2026-03-21T00:00:00Z",
+        },
+        config=worker_config,
+        store=ProcessedWorkItemStore(worker_config.processed_store_path),
+    )
+
+    assert processed is True
+    assert captured_env["GATEWAY_URL"] == "http://10.0.0.10:8000/mcp"
+    assert captured_env["LLM_BASE_URL"] == "http://10.0.0.10:12000/v1"
+    assert captured_env["NUGET_RELAY_BASE_URL"] == "http://10.0.0.10:13000"
+
+
 def test_process_work_item_marks_state_only_after_success(
     worker_config: WorkerConfig,
     monkeypatch: pytest.MonkeyPatch,
@@ -661,9 +724,22 @@ def test_process_work_item_passes_timeout(
 
 def test_worker_config_load_from_env_accepts_legacy_mssql_password_env(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
-    monkeypatch.setenv("ADO_ORGANIZATION_URL", "https://dev.azure.com/example")
-    monkeypatch.setenv("ADO_PROJECT", "example")
+    gateway_config_path = tmp_path / "gateway.yaml"
+    gateway_config_path.write_text(
+        yaml.safe_dump(
+            {
+                "runtime_dir": str(tmp_path),
+                "azure_devops_organization_url": "https://dev.azure.com/example",
+                "azure_devops_project": "example",
+                "azure_devops_pat_env": "AZURE_DEVOPS_PAT",
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ADO_GATEWAY_CONFIG", str(gateway_config_path))
     monkeypatch.setenv("ADO_PROJECT_OR_SOLUTION", "/tmp/Example.slnx")
     monkeypatch.setenv("ADO_BOOTSTRAP_MSSQL", "true")
     monkeypatch.delenv("ADO_MSSQL_SA_PASSWORD", raising=False)
@@ -677,9 +753,22 @@ def test_worker_config_load_from_env_accepts_legacy_mssql_password_env(
 
 def test_worker_config_load_from_env_requires_any_mssql_password_when_bootstrap_enabled(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
-    monkeypatch.setenv("ADO_ORGANIZATION_URL", "https://dev.azure.com/example")
-    monkeypatch.setenv("ADO_PROJECT", "example")
+    gateway_config_path = tmp_path / "gateway.yaml"
+    gateway_config_path.write_text(
+        yaml.safe_dump(
+            {
+                "runtime_dir": str(tmp_path),
+                "azure_devops_organization_url": "https://dev.azure.com/example",
+                "azure_devops_project": "example",
+                "azure_devops_pat_env": "AZURE_DEVOPS_PAT",
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ADO_GATEWAY_CONFIG", str(gateway_config_path))
     monkeypatch.setenv("ADO_PROJECT_OR_SOLUTION", "/tmp/Example.slnx")
     monkeypatch.setenv("ADO_BOOTSTRAP_MSSQL", "true")
     monkeypatch.delenv("ADO_MSSQL_SA_PASSWORD", raising=False)
@@ -687,6 +776,34 @@ def test_worker_config_load_from_env_requires_any_mssql_password_when_bootstrap_
 
     with pytest.raises(ValueError, match="ADO_MSSQL_SA_PASSWORD or MSSQL_SA_PASSWORD is required"):
         WorkerConfig.load_from_env()
+
+
+def test_worker_config_load_from_env_uses_gateway_provider_config(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    gateway_config_path = tmp_path / "gateway.yaml"
+    gateway_config_path.write_text(
+        yaml.safe_dump(
+            {
+                "runtime_dir": str(tmp_path),
+                "azure_devops_organization_url": "https://dev.azure.com/example-org",
+                "azure_devops_project": "example-project",
+                "azure_devops_pat_env": "ADO_DIRECTORY_PAT",
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ADO_GATEWAY_CONFIG", str(gateway_config_path))
+    monkeypatch.setenv("ADO_PROJECT_OR_SOLUTION", "/tmp/Example.slnx")
+    monkeypatch.setenv("ADO_BOOTSTRAP_MSSQL", "false")
+
+    config = WorkerConfig.load_from_env()
+
+    assert config.organization_url == "https://dev.azure.com/example-org"
+    assert config.project == "example-project"
+    assert config.pat_env_var_name == "ADO_DIRECTORY_PAT"
 
 
 @pytest.mark.parametrize(

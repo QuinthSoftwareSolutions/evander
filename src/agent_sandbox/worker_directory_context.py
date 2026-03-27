@@ -77,6 +77,20 @@ class WorkerDirectoryContextResolver:
                 directory_path = session.directory_path
         return self.resolve_for_directory(directory_path, session_id=session_id, source=source)
 
+    def resolve_effective_domain_for_session(
+        self,
+        session_id: str | None,
+        *,
+        domain: str,
+        fallback_directory_path: str | None = None,
+    ):
+        directory_path = fallback_directory_path or "root"
+        if session_id:
+            session = self.sessions.get(session_id)
+            if session is not None:
+                directory_path = session.directory_path
+        return self.resolve_effective_domain_for_directory(directory_path, domain=domain)
+
     def resolve_for_directory(
         self,
         directory_path: str | None,
@@ -113,6 +127,25 @@ class WorkerDirectoryContextResolver:
             source=source,
             session_id=session_id,
             domains=tuple(domains),
+        )
+
+    def resolve_effective_domain_for_directory(
+        self,
+        directory_path: str | None,
+        *,
+        domain: str,
+    ):
+        normalized_path = "root"
+        if directory_path:
+            try:
+                normalized_path = self.directories.show(directory_path).directory.path
+            except ValueError:
+                normalized_path = "root"
+        return self.resolver.resolve_domain(
+            normalized_path,
+            domain=domain,
+            base_config=None,
+            validator=lambda candidate, domain=domain: validate_effective_domain_payload(domain, candidate),
         )
 
 

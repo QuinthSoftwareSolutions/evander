@@ -299,18 +299,19 @@ class DirectoryConfigResolver:
         reference: str,
         *,
         domain: str,
-        base_config: dict[str, Any],
+        base_config: dict[str, Any] | None = None,
         validator: Callable[[Any], Any] | None = None,
     ) -> DirectoryConfigResolution:
         details = self._service.show(reference)
-        effective = deepcopy(base_config)
+        effective = deepcopy(base_config) if base_config is not None else {}
         provenance: dict[str, DirectoryConfigValueSource] = {}
-        self._mark_provenance(
-            effective,
-            (),
-            provenance,
-            DirectoryConfigValueSource(source_type="base"),
-        )
+        if base_config is not None:
+            self._mark_provenance(
+                effective,
+                (),
+                provenance,
+                DirectoryConfigValueSource(source_type="base"),
+            )
 
         applied_layers: list[DirectoryConfigLayer] = []
         for directory in details.ancestry:

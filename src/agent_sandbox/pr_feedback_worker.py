@@ -528,8 +528,9 @@ class PullRequestFeedbackWorker:
         repo: str,
         pr_id: str,
         stream_bindings: list[dict[str, str | None]] | None = None,
+        adapter: FeedbackProviderAdapter | None = None,
     ) -> list[FeedbackEnvelope]:
-        adapter = self.adapters[provider]
+        adapter = adapter or self.adapters[provider]
         stream_key = f"{provider}:{repo}:{pr_id}"
         cursor = self.store.get_cursor(stream_key)
         result = adapter.poll(client=client, repo=repo, pr_id=pr_id, cursor=cursor)

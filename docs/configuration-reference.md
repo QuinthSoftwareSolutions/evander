@@ -14,13 +14,12 @@ Scope included:
 
 | Parameter | Found in | Consumed by |
 |---|---|---|
-| `AGENT_SANDBOX_CONFIG` | `config/gateway.env.example` | `systemd/agent-sandbox-gateway.service.template` (environment file), then `src/agent_sandbox/gateway.py` via `agent_sandbox.runtime.create_runtime` and `agent_sandbox.config.load_config`. |
+| `AZURE_DEVOPS_PAT` | `config/gateway.env.example` | `src/agent_sandbox/runtime.py` / `src/agent_sandbox/gateway.py` when PR reply providers use the default `azure_devops_pat_env`. |
 
 ## `config/openai-relay.env.example`
 
 | Parameter | Found in | Consumed by |
 |---|---|---|
-| `AGENT_SANDBOX_CONFIG` | `config/openai-relay.env.example` | `systemd/agent-sandbox-openai-relay.service.template`, then `src/agent_sandbox/openai_relay.py` loads gateway config. |
 | `OPENAI_API_KEY` | `config/openai-relay.env.example` | `src/agent_sandbox/openai_relay.py` (looked up using config key `openai_api_key_env`, defaulting to `OPENAI_API_KEY`). |
 
 ## `config/nuget-relay.env.example`
@@ -39,25 +38,14 @@ Scope included:
 
 | Parameter | Found in | Consumed by |
 |---|---|---|
-| `AGENT_SANDBOX_CONFIG` | `config/host-heartbeat.env.example` | `scripts/run_host_heartbeat.sh` (required, path to gateway YAML). |
 | `HOST_HEARTBEAT_LOG_LEVEL` | `config/host-heartbeat.env.example` | `scripts/run_host_heartbeat.sh` (`--log-level` passed to worker). |
 | `GITHUB_TOKEN` | `config/host-heartbeat.env.example` | `src/agent_sandbox/runtime.py` + `src/agent_sandbox/host_heartbeat_worker.py` using `github_token_env` from YAML config. |
 | `AZURE_DEVOPS_PAT` | `config/host-heartbeat.env.example` | `src/agent_sandbox/runtime.py` + `src/agent_sandbox/host_heartbeat_worker.py` using `azure_devops_pat_env` from YAML config. |
-| `HOST_HEARTBEAT_POLL_INTERVAL_SECONDS` | `config/host-heartbeat.env.example` | Read by `scripts/run_host_heartbeat.sh`, written into temporary YAML override consumed by `src/agent_sandbox/host_heartbeat_worker.py`. |
-| `HOST_HEARTBEAT_JITTER_SECONDS` | `config/host-heartbeat.env.example` | Same flow as above; consumed by host heartbeat scheduling logic. |
-| `HOST_HEARTBEAT_COOLDOWN_SECONDS` | `config/host-heartbeat.env.example` | Same flow as above; consumed by cooldown logic. |
-| `HOST_HEARTBEAT_HTTP_TIMEOUT_SECONDS` | `config/host-heartbeat.env.example` | Same flow as above; consumed by HTTP client timeout in heartbeat worker. |
-| `HOST_HEARTBEAT_LOCK_PATH` | `config/host-heartbeat.env.example` | Same flow as above; consumed by lock acquisition in heartbeat worker. |
-| `HOST_HEARTBEAT_SESSION_COOLDOWN_PATH` | `config/host-heartbeat.env.example` | Same flow as above; consumed by cooldown state persistence in heartbeat worker. |
-| `HOST_HEARTBEAT_STREAM_CONFLICT_POLICY` | `config/host-heartbeat.env.example` | Same flow as above; consumed by PR feedback stream conflict handling (`fanout`/`reject`). |
 
 ## `config/ado-worker.env.example`
 
 | Parameter | Found in | Consumed by |
 |---|---|---|
-| `ADO_ORGANIZATION_URL` | `config/ado-worker.env.example` | `src/agent_sandbox/ado_issue_worker.py` (`WorkerConfig.from_env`). |
-| `ADO_PROJECT` | `config/ado-worker.env.example` | `src/agent_sandbox/ado_issue_worker.py`. |
-| `ADO_PAT_ENV_VAR_NAME` | `config/ado-worker.env.example` | `src/agent_sandbox/ado_issue_worker.py` (name of env var that contains PAT). |
 | `ADO_POLL_INTERVAL_SECONDS` | `config/ado-worker.env.example` | `src/agent_sandbox/ado_issue_worker.py`. |
 | `ADO_AREA_FILTERS` | `config/ado-worker.env.example` | `src/agent_sandbox/ado_issue_worker.py`. |
 | `ADO_TEAM_FILTERS` | `config/ado-worker.env.example` | `src/agent_sandbox/ado_issue_worker.py`. |
@@ -88,6 +76,10 @@ Scope included:
 | `ADO_INCLUDE_COMMENTS` | `config/ado-worker.env.example` | `src/agent_sandbox/ado_issue_worker.py`. |
 | `ADO_COMMENTS_MAX_COUNT` | `config/ado-worker.env.example` | `src/agent_sandbox/ado_issue_worker.py`. |
 | `ADO_COMMENT_TEXT_MAX_CHARS` | `config/ado-worker.env.example` | `src/agent_sandbox/ado_issue_worker.py`. |
+
+The ADO worker now loads `azure_devops_organization_url`, `azure_devops_project`, and
+`azure_devops_pat_env` from `config/gateway.yaml` (including any root-level provider overlay)
+instead of duplicating them in `config/ado-worker.env`.
 
 ## `config/git-server.env.example`
 
@@ -250,7 +242,7 @@ Merge behavior in `src/agent_sandbox/directory_config.py`:
 Inheritance path:
 
 - effective config is resolved in ancestor order: `root -> ... -> selected`
-- if present, `runtime/directory-config/root/*.json` is the first directory-scoped overlay layer above the global baseline
+- if present, `runtime/directory-config/root/*.json` is the top of the directory-scoped inheritance chain
 - provenance metadata records which directory last set each effective value
 - when `enable_directory_scoped_config` is disabled, workers and admin edit surfaces keep the
   current global behavior and directory config stays in inspection/transition mode

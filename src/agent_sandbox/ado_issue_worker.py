@@ -22,7 +22,10 @@ from .worker_directory_context import WorkerDirectoryContextResolver, log_shadow
 
 from .config import GatewayConfig, load_config
 from .models import SessionManifest, ToolName
+from .policy_config import EffectivePolicyConfig
+from .provider_config import ProviderConfigResolver
 from .runtime import build_runtime
+from .vm_defaults_config import VmDefaultsConfigResolver
 
 
 @dataclass(frozen=True)
@@ -64,11 +67,16 @@ class WorkerConfig:
 
     @classmethod
     def load_from_env(cls) -> WorkerConfig:
-        organization_url = _require_env("ADO_ORGANIZATION_URL")
-        project = _require_env("ADO_PROJECT")
-        pat_env_var_name = os.environ.get("ADO_PAT_ENV_VAR_NAME", "AZURE_DEVOPS_PAT").strip()
+        gateway_config_path = Path(
+            os.environ.get("ADO_GATEWAY_CONFIG", os.environ.get("AGENT_SANDBOX_CONFIG", "config/gateway.yaml"))
+        ).expanduser()
+        provider_config = ProviderConfigResolver(load_config(gateway_config_path)).resolve_for_directory("root")
+
+        organization_url = provider_config.azure_devops_organization_url
+        project = provider_config.azure_devops_project
+        pat_env_var_name = provider_config.azure_devops_pat_env.strip()
         if not pat_env_var_name:
-            raise ValueError("ADO_PAT_ENV_VAR_NAME must not be empty.")
+            raise ValueError("azure_devops_pat_env must not be empty in the gateway configuration.")
 
         poll_interval_raw = os.environ.get("ADO_POLL_INTERVAL_SECONDS", "30")
         try:
@@ -124,9 +132,6 @@ class WorkerConfig:
         repo_path = _optional_env("ADO_REPO_PATH")
         session_id = _optional_env("ADO_SESSION_ID")
         vm_user = _optional_env("ADO_VM_USER")
-        gateway_config_path = Path(
-            os.environ.get("ADO_GATEWAY_CONFIG", os.environ.get("AGENT_SANDBOX_CONFIG", "config/gateway.yaml"))
-        ).expanduser()
         session_ttl_hours = _int_env("ADO_SESSION_TTL_HOURS", 8, minimum=1)
 
         return cls(
@@ -636,7 +641,7 @@ def _resolve_session_id(config: WorkerConfig, work_item_id: int) -> str:
 
 def _build_issue_session_manifest(
     *,
-    cfg: GatewayConfig,
+    policy: EffectivePolicyConfig,
     session_id: str,
     vm_id: str,
     ttl_hours: int,
@@ -644,15 +649,16 @@ def _build_issue_session_manifest(
     return SessionManifest(
         session_id=session_id,
         vm_id=vm_id,
+        directory_path="root",
         allowed_tools=[
             ToolName.APPROVAL_SUBMIT,
             ToolName.APPROVAL_CHECK,
         ],
-        email_mailbox_allowlist=cfg.email_mailbox_allowlist,
-        email_folder_allowlist_by_mailbox=cfg.email_folder_allowlist_by_mailbox,
-        email_draft_recipient_allowlist=cfg.email_draft_recipient_allowlist,
-        email_draft_domain_allowlist=cfg.email_draft_domain_allowlist,
-        email_send_enabled=cfg.email_send_enabled,
+        email_mailbox_allowlist=policy.email_mailbox_allowlist,
+        email_folder_allowlist_by_mailbox=policy.email_folder_allowlist_by_mailbox,
+        email_draft_recipient_allowlist=policy.email_draft_recipient_allowlist,
+        email_draft_domain_allowlist=policy.email_draft_domain_allowlist,
+        email_send_enabled=policy.email_send_enabled,
         expires_at=datetime.now(UTC) + timedelta(hours=ttl_hours),
         metadata={},
     )
@@ -663,8 +669,9 @@ def _ensure_issue_session_manifest(config: WorkerConfig, *, work_item_id: int, s
     runtime = build_runtime(cfg)
     if runtime.sessions.get(session_id) is not None:
         return
+    policy = runtime.policy_config.resolve_for_directory("root")
     manifest = _build_issue_session_manifest(
-        cfg=cfg,
+        policy=policy,
         session_id=session_id,
         vm_id=f"vm-{work_item_id}",
         ttl_hours=config.session_ttl_hours,
@@ -780,6 +787,8 @@ def process_work_item(
     run_env = os.environ.copy()
     if config.bootstrap_mssql and config.mssql_sa_password:
         run_env["MSSQL_SA_PASSWORD"] = config.mssql_sa_password
+    vm_defaults = VmDefaultsConfigResolver(cfg).resolve_for_session_id(session_id)
+    run_env.update(vm_defaults.guest_environment())
     try:
         with _setup_slot(config):
             result = subprocess.run(

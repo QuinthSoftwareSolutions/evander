@@ -14,6 +14,8 @@ from .agent_control import AgentControlStore
 from .config import GatewayConfig, load_config
 from .directory_admin import DirectoryAdminService
 from .ownership import DirectoryOwnershipQueries
+from .policy_config import EffectivePolicyConfig
+from .vm_defaults_config import EffectiveVmDefaultsConfig, VmDefaultsConfigResolver
 from .models import (
     LocalIssueRecord,
     SessionActionResult,
@@ -97,14 +99,14 @@ def _parse_session_extension(value: str | None) -> timedelta:
     return timedelta(hours=amount) if unit == "h" else timedelta(days=amount)
 
 
-def _default_session_ttl(cfg: GatewayConfig) -> timedelta:
-    return timedelta(seconds=cfg.default_session_ttl_seconds)
+def _default_session_ttl(policy: EffectivePolicyConfig) -> timedelta:
+    return timedelta(seconds=policy.default_session_ttl_seconds)
 
 
-def _resolve_session_ttl(cfg: GatewayConfig, ttl_hours: int | None) -> timedelta:
+def _resolve_session_ttl(policy: EffectivePolicyConfig, ttl_hours: int | None) -> timedelta:
     if ttl_hours is not None:
         return timedelta(hours=ttl_hours)
-    return _default_session_ttl(cfg)
+    return _default_session_ttl(policy)
 
 
 def _load_optional_env_file(path: Path) -> dict[str, str]:
@@ -365,6 +367,7 @@ def _run_subprocess(
     text: bool = True,
     timeout: float | None = None,
     input: str | None = None,
+    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         cmd,
@@ -373,6 +376,7 @@ def _run_subprocess(
         text=text,
         timeout=timeout,
         input=input,
+        env=env,
     )
 
 
@@ -649,7 +653,7 @@ def _default_issue_session_id(issue_number: str) -> str:
 
 def _build_issue_session_manifest(
     *,
-    cfg: GatewayConfig,
+    policy: EffectivePolicyConfig,
     session_id: str,
     vm_id: str,
     issue_number: str | None,
@@ -664,9 +668,9 @@ def _build_issue_session_manifest(
         allowed_tools.extend([ToolName.DISCORD_GET_COMMANDS, ToolName.DISCORD_POST_STATUS])
 
     email_requested = bool(email_mailboxes or email_folders)
-    resolved_email_mailboxes = email_mailboxes or (cfg.email_mailbox_allowlist if email_requested else [])
+    resolved_email_mailboxes = email_mailboxes or (policy.email_mailbox_allowlist if email_requested else [])
     resolved_email_folders = email_folders or (
-        sorted({folder for folders in cfg.email_folder_allowlist_by_mailbox.values() for folder in folders})
+        sorted({folder for folders in policy.email_folder_allowlist_by_mailbox.values() for folder in folders})
         if email_requested
         else []
     )
@@ -674,7 +678,7 @@ def _build_issue_session_manifest(
         allowed_tools.extend(
             [ToolName.EMAIL_LIST_UNREAD, ToolName.EMAIL_GET_MESSAGE, ToolName.EMAIL_CREATE_DRAFT]
         )
-        if cfg.email_send_enabled:
+        if policy.email_send_enabled:
             allowed_tools.append(ToolName.EMAIL_SEND_APPROVED)
 
     return SessionManifest(
@@ -685,11 +689,11 @@ def _build_issue_session_manifest(
         discord_channel_allowlist=discord_channels,
         email_folder_allowlist=resolved_email_folders,
         email_mailbox_allowlist=resolved_email_mailboxes,
-        email_folder_allowlist_by_mailbox=cfg.email_folder_allowlist_by_mailbox,
-        email_draft_recipient_allowlist=cfg.email_draft_recipient_allowlist,
-        email_draft_domain_allowlist=cfg.email_draft_domain_allowlist,
-        email_send_enabled=cfg.email_send_enabled,
-        expires_at=_utc_now() + _resolve_session_ttl(cfg, ttl_hours),
+        email_folder_allowlist_by_mailbox=policy.email_folder_allowlist_by_mailbox,
+        email_draft_recipient_allowlist=policy.email_draft_recipient_allowlist,
+        email_draft_domain_allowlist=policy.email_draft_domain_allowlist,
+        email_send_enabled=policy.email_send_enabled,
+        expires_at=_utc_now() + _resolve_session_ttl(policy, ttl_hours),
         metadata={"issue_number": issue_number} if issue_number is not None else {},
     )
 
@@ -742,6 +746,14 @@ class AdminService:
         if not result.ok or result.data is None:
             return "root"
         return result.data.details.directory.path
+
+    def _resolve_vm_defaults(self, directory_path: str) -> EffectiveVmDefaultsConfig:
+        resolver = VmDefaultsConfigResolver(
+            self.config,
+            directory_store=self.runtime.directories,
+            session_store=self.runtime.sessions,
+        )
+        return resolver.resolve_for_directory(directory_path)
 
     def _direct_owned_entity_ids(self, directory_path: str, *, kind: str) -> set[str]:
         snapshot = self.directory_ownership.list_entities(directory_path, include_descendants=False)
@@ -1271,6 +1283,7 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
         resolved_session_id = session_id or _default_issue_session_id(issue_number)
         resolved_vm_name = f"vm-{issue_number}"
         normalized_directory_path = self._normalize_directory_path(directory_path)
+        policy = self.runtime.policy_config.resolve_for_directory(normalized_directory_path)
         if self.runtime.sessions.get(resolved_session_id) is not None:
             return VmActionResult(
                 success=False,
@@ -1287,7 +1300,7 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
             )
 
         manifest = _build_issue_session_manifest(
-            cfg=self.config,
+            policy=policy,
             session_id=resolved_session_id,
             vm_id=resolved_vm_name,
             issue_number=issue_number,
@@ -1327,7 +1340,10 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
         if repo_source is not None:
             cmd.append(repo_source)
         cmd.extend([resolved_session_id, vm_user])
-        completed = _run_subprocess(cmd, capture_output=True, text=True)
+        vm_defaults = self._resolve_vm_defaults(normalized_directory_path)
+        run_env = os.environ.copy()
+        run_env.update(vm_defaults.guest_environment())
+        completed = _run_subprocess(cmd, capture_output=True, text=True, env=run_env)
         message = (completed.stdout or completed.stderr or "").strip()
         if completed.returncode != 0:
             return VmActionResult(

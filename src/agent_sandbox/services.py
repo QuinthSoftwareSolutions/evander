@@ -126,6 +126,7 @@ class DiscordBotApiService:
         retry_max_backoff_seconds: float = 5.0,
         allowed_channel_ids_provider: Callable[[], list[str]] = lambda: [],
         operator_user_ids_provider: Callable[[], list[str]] | None = None,
+        include_operator_dms_provider: Callable[[], bool] | None = None,
         include_operator_dms: bool = False,
     ) -> None:
         self.command_store = command_store
@@ -142,7 +143,7 @@ class DiscordBotApiService:
         )
         self.allowed_channel_ids_provider = allowed_channel_ids_provider
         self.operator_user_ids_provider = operator_user_ids_provider or (lambda: [])
-        self.include_operator_dms = include_operator_dms
+        self.include_operator_dms_provider = include_operator_dms_provider or (lambda: include_operator_dms)
 
     def _headers(self) -> dict[str, str]:
         return {
@@ -190,7 +191,7 @@ class DiscordBotApiService:
         )
 
     def _operator_dm_channel_ids(self, client: httpx.Client) -> list[str]:
-        if not self.include_operator_dms:
+        if not self.include_operator_dms_provider():
             return []
         operator_user_ids = set(self._operator_user_ids())
         if not operator_user_ids:

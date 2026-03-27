@@ -3,10 +3,19 @@ from pathlib import Path
 
 import pytest
 
+from agent_sandbox.directory_config import DirectoryConfigStore
+from agent_sandbox.directories import DirectoryService, DirectoryStore
+from agent_sandbox.config import GatewayConfig, MailboxConfig
+from agent_sandbox.email.gmail_provider import GmailEmailProvider
+from agent_sandbox.email.providers import MultiMailboxEmailProvider
 from agent_sandbox.models import SessionManifest, ToolName
 from agent_sandbox.runtime import _resolve_allowed_discord_channel_ids, build_runtime
-from agent_sandbox.config import GatewayConfig, MailboxConfig
-from agent_sandbox.services import DiscordBotApiService, StubDiscordService
+from agent_sandbox.services import (
+    AzureDevOpsPrReplyProvider,
+    DiscordBotApiService,
+    GitHubPrReplyProvider,
+    StubDiscordService,
+)
 
 
 def make_config(tmp_path: Path, **kwargs: object) -> GatewayConfig:
@@ -20,6 +29,13 @@ def make_config(tmp_path: Path, **kwargs: object) -> GatewayConfig:
         discord_command_store_path=tmp_path / "discord.json",
         **kwargs,
     )
+
+
+def write_provider_overlay(config: GatewayConfig, reference: str, payload: dict[str, object]) -> None:
+    directory_store = DirectoryStore(config.directories_store_path)
+    directory_store.ensure_root()
+    config_store = DirectoryConfigStore(directory_store, runtime_dir=config.runtime_dir)
+    config_store.write(reference, domain="providers", payload=payload)
 
 
 def test_build_runtime_uses_stub_discord_backend_by_default(tmp_path: Path) -> None:
@@ -64,6 +80,151 @@ def test_build_runtime_reads_bot_token_from_configured_env_var(
     assert isinstance(runtime.discord_service, DiscordBotApiService)
 
 
+def test_build_runtime_uses_root_provider_override_for_default_discord_service(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ROOT_DISCORD_TOKEN", "root-token")
+    config = make_config(tmp_path, discord_backend="stub")
+    write_provider_overlay(
+        config,
+        "root",
+        {
+            "discord_backend": "bot_api",
+            "discord_bot_token_env": "ROOT_DISCORD_TOKEN",
+        },
+    )
+
+    runtime = build_runtime(config)
+
+    assert isinstance(runtime.discord_service, DiscordBotApiService)
+    assert runtime.discord_service.token == "root-token"
+
+
+def test_runtime_discord_service_for_session_uses_directory_provider_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ROOT_DISCORD_TOKEN", "root-token")
+    monkeypatch.setenv("TEAM_DISCORD_TOKEN", "team-token")
+    config = make_config(tmp_path, discord_backend="stub")
+    directories = DirectoryService(DirectoryStore(config.directories_store_path))
+    team = directories.create(parent="root", name="team")
+    write_provider_overlay(
+        config,
+        "root",
+        {
+            "discord_backend": "bot_api",
+            "discord_bot_token_env": "ROOT_DISCORD_TOKEN",
+        },
+    )
+    write_provider_overlay(
+        config,
+        team.path,
+        {
+            "discord_bot_token_env": "TEAM_DISCORD_TOKEN",
+        },
+    )
+    runtime = build_runtime(config)
+    runtime.sessions.put(
+        "session-team",
+        SessionManifest(
+            session_id="session-team",
+            allowed_tools=[ToolName.DISCORD_GET_COMMANDS],
+            directory_path=team.path,
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+
+    discord_service = runtime.discord_service_for_session("session-team")
+
+    assert isinstance(discord_service, DiscordBotApiService)
+    assert discord_service.token == "team-token"
+
+
+def test_runtime_email_service_for_session_uses_directory_provider_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("TEAM_MAILBOX_TOKEN", "mailbox-token")
+    config = make_config(tmp_path)
+    directories = DirectoryService(DirectoryStore(config.directories_store_path))
+    team = directories.create(parent="root", name="team")
+    write_provider_overlay(
+        config,
+        team.path,
+        {
+            "email_provider_timeout_seconds": 12.5,
+            "email_mailboxes": [
+                {
+                    "mailbox_id": "ops",
+                    "provider": "gmail",
+                    "account": "me",
+                    "auth_env_var_names": {"access_token": "TEAM_MAILBOX_TOKEN"},
+                    "folder_allowlist_defaults": ["inbox", "drafts"],
+                }
+            ],
+        },
+    )
+    runtime = build_runtime(config)
+    runtime.sessions.put(
+        "session-team",
+        SessionManifest(
+            session_id="session-team",
+            allowed_tools=[ToolName.EMAIL_LIST_UNREAD],
+            directory_path=team.path,
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+
+    email_service = runtime.email_service_for_session("session-team")
+
+    assert isinstance(email_service.provider, MultiMailboxEmailProvider)
+    mailbox_provider = email_service.provider.providers_by_mailbox["ops"]
+    assert isinstance(mailbox_provider, GmailEmailProvider)
+    assert mailbox_provider.timeout_seconds == 12.5
+
+
+def test_runtime_pr_reply_service_for_session_uses_directory_provider_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("TEAM_GITHUB_TOKEN", "gh-token")
+    monkeypatch.setenv("TEAM_ADO_PAT", "ado-token")
+    config = make_config(tmp_path)
+    directories = DirectoryService(DirectoryStore(config.directories_store_path))
+    team = directories.create(parent="root", name="team")
+    write_provider_overlay(
+        config,
+        team.path,
+        {
+            "github_token_env": "TEAM_GITHUB_TOKEN",
+            "azure_devops_pat_env": "TEAM_ADO_PAT",
+            "azure_devops_organization_url": "https://dev.azure.com/team-org",
+            "azure_devops_project": "team-project",
+            "email_provider_timeout_seconds": 9.0,
+        },
+    )
+    runtime = build_runtime(config)
+    runtime.sessions.put(
+        "session-team",
+        SessionManifest(
+            session_id="session-team",
+            allowed_tools=[ToolName.POST_PR_FEEDBACK_REPLY],
+            directory_path=team.path,
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+
+    pr_reply_service = runtime.pr_reply_service_for_session("session-team")
+
+    github_provider = pr_reply_service.providers["github"]
+    azure_provider = pr_reply_service.providers["azure_devops"]
+    assert isinstance(github_provider, GitHubPrReplyProvider)
+    assert github_provider.token == "gh-token"
+    assert isinstance(azure_provider, AzureDevOpsPrReplyProvider)
+    assert azure_provider.organization_url == "https://dev.azure.com/team-org"
+    assert azure_provider.project == "team-project"
+    assert azure_provider.pat == "ado-token"
+    assert azure_provider.timeout_seconds == 9.0
+
+
 def test_resolve_allowed_discord_channel_ids_uses_active_sessions_and_config(
     tmp_path: Path,
 ) -> None:
@@ -100,6 +261,37 @@ def test_resolve_allowed_discord_channel_ids_uses_active_sessions_and_config(
     channel_ids = _resolve_allowed_discord_channel_ids(runtime.sessions, config)
 
     assert channel_ids == ["chan-operator", "chan-session"]
+
+
+def test_resolve_allowed_discord_channel_ids_uses_effective_directory_policy(
+    tmp_path: Path,
+) -> None:
+    config = make_config(tmp_path)
+    runtime = build_runtime(config)
+    directory_store = DirectoryStore(config.directories_store_path)
+    directories = DirectoryService(directory_store)
+    config_store = DirectoryConfigStore(directory_store, runtime_dir=config.runtime_dir)
+    team = directories.create(parent="root", name="team")
+    config_store.write("root", domain="policy", payload={"discord_operator_channel_allowlist": ["chan-root"]})
+    config_store.write(team.path, domain="policy", payload={"discord_operator_channel_allowlist": ["chan-team"]})
+    runtime.sessions.put(
+        "session-active",
+        SessionManifest(
+            session_id="session-active",
+            directory_path=team.path,
+            allowed_tools=[ToolName.DISCORD_GET_COMMANDS],
+            discord_channel_allowlist=["chan-session"],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+
+    channel_ids = _resolve_allowed_discord_channel_ids(
+        runtime.sessions,
+        config,
+        policy_config=runtime.policy_config,
+    )
+
+    assert channel_ids == ["chan-root", "chan-session", "chan-team"]
 @pytest.mark.parametrize("provider", ["gmail", "graph"])
 def test_build_runtime_requires_access_token_secret_ref_for_non_json_mailboxes(
     tmp_path: Path, provider: str

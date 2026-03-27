@@ -6,6 +6,8 @@ from pathlib import Path
 from typing import Any
 
 from .config import GatewayConfig
+from .directory_config import DIRECTORY_CONFIG_DOMAIN_FILENAMES, DirectoryConfigStore, get_domain_base_config
+from .directories import DirectoryStore
 
 
 @dataclass(frozen=True)
@@ -13,6 +15,13 @@ class OwnershipMigrationSummary:
     changed_files: int
     changed_records: int
     per_file_changes: dict[str, int]
+
+
+@dataclass(frozen=True)
+class RootConfigMigrationSummary:
+    written_domains: list[str]
+    skipped_domains: list[str]
+    unchanged_domains: list[str]
 
 
 def migrate_directory_ownership_defaults(config: GatewayConfig) -> OwnershipMigrationSummary:
@@ -40,6 +49,44 @@ def migrate_directory_ownership_defaults(config: GatewayConfig) -> OwnershipMigr
         changed_files=len(per_file_changes),
         changed_records=sum(per_file_changes.values()),
         per_file_changes=per_file_changes,
+    )
+
+
+def migrate_global_config_to_root(config: GatewayConfig, *, overwrite: bool = False) -> RootConfigMigrationSummary:
+    directory_store = DirectoryStore(config.directories_store_path)
+    directory_store.ensure_root()
+    config_store = DirectoryConfigStore(directory_store, runtime_dir=config.runtime_dir)
+    config_store.ensure_root()
+
+    written_domains: list[str] = []
+    skipped_domains: list[str] = []
+    unchanged_domains: list[str] = []
+
+    for domain in sorted(DIRECTORY_CONFIG_DOMAIN_FILENAMES):
+        desired_payload = get_domain_base_config(config, domain)
+        try:
+            existing_payload = config_store.read("root", domain=domain)
+        except ValueError as exc:
+            if "directory config file is missing" not in str(exc):
+                raise
+            existing_payload = None
+        if existing_payload is None:
+            config_store.write("root", domain=domain, payload=desired_payload)
+            written_domains.append(domain)
+            continue
+        if existing_payload == desired_payload:
+            unchanged_domains.append(domain)
+            continue
+        if overwrite:
+            config_store.write("root", domain=domain, payload=desired_payload)
+            written_domains.append(domain)
+            continue
+        skipped_domains.append(domain)
+
+    return RootConfigMigrationSummary(
+        written_domains=written_domains,
+        skipped_domains=skipped_domains,
+        unchanged_domains=unchanged_domains,
     )
 
 

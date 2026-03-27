@@ -12,6 +12,8 @@ import pytest
 from mcp.server.fastmcp.exceptions import ToolError
 
 from agent_sandbox.config import GatewayConfig
+from agent_sandbox.directory_config import DirectoryConfigStore
+from agent_sandbox.directories import DirectoryStore
 from agent_sandbox.email.http_utils import ProviderRequestError
 from agent_sandbox.email.providers import EmailDraft, EmailMessageDetail, EmailMessageSummary
 from agent_sandbox.gateway import create_server
@@ -55,6 +57,28 @@ def make_context(tmp_path: Path):
         discord_command_store_path=tmp_path / "discord.json",
     )
     return build_runtime(config)
+
+
+def write_root_policy_overlay(context, payload: dict[str, object]) -> None:
+    directory_store = DirectoryStore(context.config.directories_store_path)
+    directory_store.ensure_root()
+    DirectoryConfigStore(directory_store, runtime_dir=context.config.runtime_dir).write(
+        "root",
+        domain="policy",
+        payload=payload,
+    )
+
+
+def set_discord_service(context, service) -> None:
+    context.discord_service = service
+
+
+def set_email_service(context, service) -> None:
+    context.email_service = service
+
+
+def set_pr_reply_service(context, service) -> None:
+    context.pr_reply_service = service
 
 
 def read_audit_events(path: Path) -> list[dict[str, object]]:
@@ -111,7 +135,7 @@ def test_discord_get_commands_passes_since_cursor_and_filters_unallowlisted_sour
             ),
         ]
     )
-    context.discord_service = fake_discord
+    set_discord_service(context, fake_discord)
     server = create_server(context)
 
     result = call_tool(
@@ -137,7 +161,7 @@ def test_discord_post_status_posts_to_allowlisted_channel(tmp_path: Path) -> Non
         ),
     )
     fake_discord = FakeDiscordService(commands=[])
-    context.discord_service = fake_discord
+    set_discord_service(context, fake_discord)
     server = create_server(context)
 
     result = call_tool(
@@ -178,7 +202,7 @@ def test_discord_post_status_rejects_non_allowlisted_channel(tmp_path: Path) -> 
             expires_at=datetime.now(UTC) + timedelta(hours=1),
         ),
     )
-    context.discord_service = FakeDiscordService(commands=[])
+    set_discord_service(context, FakeDiscordService(commands=[]))
     server = create_server(context)
 
     with pytest.raises(ToolError, match="not allowlisted"):
@@ -205,7 +229,7 @@ def test_discord_tool_contract_signatures_and_shapes_stable(tmp_path: Path) -> N
           expires_at=datetime.now(UTC) + timedelta(hours=1),
         ),
     )
-    context.discord_service = FakeDiscordService(
+    set_discord_service(context, FakeDiscordService(
         commands=[
             DiscordCommandEnvelope(
                 command_id="cmd-1",
@@ -219,7 +243,7 @@ def test_discord_tool_contract_signatures_and_shapes_stable(tmp_path: Path) -> N
                 },
             )
         ]
-    )
+    ))
     server = create_server(context)
     assert list(signature(FakeDiscordService.get_commands).parameters) == [
         "self",
@@ -264,7 +288,7 @@ def test_discord_get_commands_audits_adapter_http_error(tmp_path: Path) -> None:
     fake_discord.get_commands = lambda since_cursor=None: (_ for _ in ()).throw(
         httpx.ReadTimeout("discord timeout")
     )
-    context.discord_service = fake_discord
+    set_discord_service(context, fake_discord)
     server = create_server(context)
 
     with pytest.raises(ToolError, match="discord timeout"):
@@ -298,7 +322,7 @@ def test_discord_post_status_audits_unexpected_adapter_error(tmp_path: Path) -> 
     fake_discord.post_status = lambda message, channel_id, session_id: (_ for _ in ()).throw(
         RuntimeError("discord adapter exploded")
     )
-    context.discord_service = fake_discord
+    set_discord_service(context, fake_discord)
     server = create_server(context)
 
     with pytest.raises(ToolError, match="discord adapter exploded"):
@@ -333,7 +357,7 @@ def test_discord_get_commands_emits_denied_and_allowed_audit_events(tmp_path: Pa
             expires_at=datetime.now(UTC) + timedelta(hours=1),
         ),
     )
-    context.discord_service = FakeDiscordService(
+    set_discord_service(context, FakeDiscordService(
         commands=[
             DiscordCommandEnvelope(
                 command_id="cmd-1",
@@ -347,7 +371,7 @@ def test_discord_get_commands_emits_denied_and_allowed_audit_events(tmp_path: Pa
                 },
             )
         ]
-    )
+    ))
     server = create_server(context)
     result = call_tool(server, "discord_get_commands", {"session_id": "session-1"})
 
@@ -701,9 +725,9 @@ def test_email_provider_auth_failures_are_audited(tmp_path: Path) -> None:
             expires_at=datetime.now(UTC) + timedelta(hours=1),
         ),
     )
-    context.email_service = _RaisingEmailService(
+    set_email_service(context, _RaisingEmailService(
         ProviderRequestError("provider auth failed", status_code=401, attempt=1, max_attempts=1)
-    )
+    ))
     server = create_server(context)
 
     with pytest.raises(ToolError, match="provider auth failed"):
@@ -735,7 +759,7 @@ def test_email_provider_timeouts_are_audited(tmp_path: Path) -> None:
             expires_at=datetime.now(UTC) + timedelta(hours=1),
         ),
     )
-    context.email_service = _RaisingEmailService(httpx.TimeoutException("provider timed out"))
+    set_email_service(context, _RaisingEmailService(httpx.TimeoutException("provider timed out")))
     server = create_server(context)
 
     with pytest.raises(ToolError, match="provider timed out"):
@@ -854,6 +878,37 @@ def test_audit_failure_recursively_redacts_nested_payload_fields(tmp_path: Path)
     assert event["args"]["payload"]["recipients"][0]["token"] == "<redacted>"
 
 
+def test_audit_redaction_uses_directory_policy_redacted_keys(tmp_path: Path) -> None:
+    context = make_context(tmp_path)
+    write_root_policy_overlay(context, {"redacted_keys": ["api_key"]})
+    context.sessions.put(
+        "session-1",
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    server = create_server(context)
+
+    with pytest.raises(ToolError, match="is not allowed"):
+        asyncio.run(
+            server.call_tool(
+                "approval_submit",
+                {
+                    "session_id": "session-1",
+                    "action_type": "email_send",
+                    "payload": {"api_key": "secret", "safe": "visible"},
+                    "human_summary": "should fail",
+                },
+            )
+        )
+
+    event = read_audit_events(context.config.audit_log_path)[-1]
+    assert event["args"]["payload"]["api_key"] == "<redacted>"
+    assert event["args"]["payload"]["safe"] == "visible"
+
+
 def test_has_pending_feedback_returns_minimal_heartbeat_payload(tmp_path: Path) -> None:
     context = make_context(tmp_path)
     context.sessions.put(
@@ -947,7 +1002,7 @@ def test_post_pr_feedback_reply_calls_provider_and_audits_reply_identifiers(tmp_
         ),
     )
     fake_service = _FakePrReplyService()
-    context.pr_reply_service = fake_service
+    set_pr_reply_service(context, fake_service)
     server = create_server(context)
 
     result = call_tool(
@@ -997,7 +1052,7 @@ def test_post_pr_feedback_reply_normalizes_azure_devops_provider_alias(tmp_path:
         ),
     )
     fake_service = _FakePrReplyService()
-    context.pr_reply_service = fake_service
+    set_pr_reply_service(context, fake_service)
     server = create_server(context)
 
     result = call_tool(
@@ -1032,7 +1087,7 @@ def test_post_pr_feedback_reply_rejects_missing_target_identifiers(tmp_path: Pat
             metadata={"pr_feedback_streams": [{"provider": "github", "repo": "org/repo", "pr_id": "17"}]},
         ),
     )
-    context.pr_reply_service = _FakePrReplyService()
+    set_pr_reply_service(context, _FakePrReplyService())
     server = create_server(context)
 
     with pytest.raises(ToolError, match="Either thread_id or comment_id is required"):
@@ -1045,5 +1100,35 @@ def test_post_pr_feedback_reply_rejects_missing_target_identifiers(tmp_path: Pat
                 "repo": "org/repo",
                 "pr_id": "17",
                 "body_text": "This should fail.",
+            },
+        )
+
+
+def test_post_pr_feedback_reply_uses_directory_policy_for_approval_requirement(tmp_path: Path) -> None:
+    context = make_context(tmp_path)
+    write_root_policy_overlay(context, {"pr_reply_require_approval": True})
+    context.sessions.put(
+        "session-1",
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[ToolName.POST_PR_FEEDBACK_REPLY],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={"pr_feedback_streams": [{"provider": "github", "repo": "org/repo", "pr_id": "17"}]},
+        ),
+    )
+    set_pr_reply_service(context, _FakePrReplyService())
+    server = create_server(context)
+
+    with pytest.raises(ToolError, match="request_id is required"):
+        call_tool(
+            server,
+            "post_pr_feedback_reply",
+            {
+                "session_id": "session-1",
+                "provider": "github",
+                "repo": "org/repo",
+                "pr_id": "17",
+                "comment_id": "91",
+                "body_text": "Applied in the latest patch.",
             },
         )

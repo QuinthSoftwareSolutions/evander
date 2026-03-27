@@ -9,6 +9,9 @@ from types import SimpleNamespace
 import httpx
 
 from agent_sandbox.agent_control import AgentControlStore
+from agent_sandbox.config import GatewayConfig
+from agent_sandbox.directory_config import DirectoryConfigStore
+from agent_sandbox.directories import DirectoryService, DirectoryStore
 from agent_sandbox.host_heartbeat_worker import (
     FeedbackStream,
     HostHeartbeatWorker,
@@ -53,6 +56,21 @@ def _build_manifest(session_id: str, *, expires_at: datetime, metadata: dict) ->
         allowed_tools=[ToolName.APPROVAL_CHECK],
         expires_at=expires_at,
         metadata=metadata,
+    )
+
+
+def _build_directory_scoped_gateway_config(tmp_path: Path) -> GatewayConfig:
+    runtime_dir = tmp_path / "runtime"
+    return GatewayConfig.model_validate(
+        {
+            "runtime_dir": str(runtime_dir),
+            "enable_directory_scoped_config": True,
+            "host_heartbeat_http_timeout_seconds": 0.1,
+            "host_heartbeat_poll_interval_seconds": 30.0,
+            "host_heartbeat_jitter_seconds": 0.0,
+            "host_heartbeat_cooldown_seconds": 10.0,
+            "host_heartbeat_stream_conflict_policy": "fanout",
+        }
     )
 
 
@@ -261,6 +279,107 @@ def test_run_once_rejects_conflicting_stream_when_policy_is_reject(tmp_path) -> 
     assert feedback_worker.calls == 0
 
 
+def test_run_once_uses_directory_scoped_provider_adapter(tmp_path) -> None:
+    now = datetime.now(UTC)
+    sessions = {
+        "active-a": _build_manifest(
+            "active-a",
+            expires_at=now + timedelta(hours=2),
+            metadata={"pr_feedback_streams": [{"provider": "github", "repo": "org/repo", "pr_id": "17"}]},
+        ),
+    }
+    sessions["active-a"].directory_path = "root/team-a"
+
+    class TrackingFeedbackWorker:
+        store = SimpleNamespace(has_unread_feedback=lambda **kwargs: False)
+
+        def __init__(self) -> None:
+            self.tokens: list[str | None] = []
+
+        def poll_once(self, **kwargs):  # noqa: ANN003
+            adapter = kwargs["adapter"]
+            self.tokens.append(getattr(adapter, "token", None))
+            return []
+
+    class StubProviderConfigResolver:
+        def resolve_for_session_id(self, session_id: str):
+            assert session_id == "active-a"
+            return SimpleNamespace(github_token_env="TEAM_GITHUB_TOKEN")
+
+        def resolve_for_directory(self, directory_path: str | None):
+            raise AssertionError(f"unexpected fallback for {directory_path!r}")
+
+    feedback_worker = TrackingFeedbackWorker()
+    runtime = SimpleNamespace(sessions=SimpleNamespace(read_all=lambda: sessions), audit=_DummyAudit())
+    worker = HostHeartbeatWorker(
+        config=SimpleNamespace(
+            host_heartbeat_http_timeout_seconds=0.1,
+            host_heartbeat_poll_interval_seconds=30.0,
+            host_heartbeat_jitter_seconds=0.0,
+            host_heartbeat_cooldown_seconds=10.0,
+            host_heartbeat_stream_conflict_policy="fanout",
+            pr_map_path=tmp_path / "missing-pr-map.json",
+            enable_directory_scoped_config=False,
+        ),
+        runtime=runtime,
+        feedback_worker=feedback_worker,
+        adapters={"github": object()},
+        provider_config_resolver=StubProviderConfigResolver(),
+    )
+
+    import os
+
+    os.environ["TEAM_GITHUB_TOKEN"] = "team-token"
+    result = worker.run_once()
+
+    assert result.streams_polled == 1
+    assert feedback_worker.tokens == ["team-token"]
+
+
+def test_run_once_uses_root_directory_workers_config_for_conflict_policy(tmp_path) -> None:
+    now = datetime.now(UTC)
+    sessions = {
+        "active-a": _build_manifest(
+            "active-a",
+            expires_at=now + timedelta(hours=2),
+            metadata={"pr_feedback_streams": [{"provider": "github", "repo": "org/repo", "pr_id": "17"}]},
+        ),
+        "active-b": _build_manifest(
+            "active-b",
+            expires_at=now + timedelta(hours=2),
+            metadata={"pr_feedback_streams": [{"provider": "github", "repo": "org/repo", "pr_id": "17"}]},
+        ),
+    }
+    runtime = SimpleNamespace(sessions=SimpleNamespace(read_all=lambda: sessions), audit=_DummyAudit())
+
+    class TrackingFeedbackWorker:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def poll_once(self, **kwargs):  # noqa: ANN003
+            self.calls += 1
+            return []
+
+    config = _build_directory_scoped_gateway_config(tmp_path)
+    directory_store = DirectoryStore(config.directories_store_path)
+    config_store = DirectoryConfigStore(directory_store, runtime_dir=config.runtime_dir)
+    config_store.ensure_root()
+    config_store.write("root", domain="workers", payload={"host_heartbeat_stream_conflict_policy": "reject"})
+
+    feedback_worker = TrackingFeedbackWorker()
+    worker = HostHeartbeatWorker(
+        config=config,
+        runtime=runtime,
+        feedback_worker=feedback_worker,
+        adapters={"github": object()},
+    )
+
+    result = worker.run_once()
+
+    assert result.streams_polled == 0
+    assert feedback_worker.calls == 0
+
+
 def test_compute_next_sleep_applies_jitter_and_feedback_cooldown(monkeypatch) -> None:
     monkeypatch.setattr("agent_sandbox.host_heartbeat_worker.random.uniform", lambda start, end: 2.5)
 
@@ -400,6 +519,83 @@ def test_wake_bindings_invokes_resume_script_when_idle(tmp_path, monkeypatch) ->
     assert "--session-id" in cmd and "active-a" in cmd
     assert "--vm-name" in cmd and "vm-1" in cmd
     assert "--host-state-file" in cmd
+
+
+def test_wake_bindings_uses_directory_workers_override_for_resume_command(tmp_path, monkeypatch) -> None:
+    now = datetime.now(UTC)
+    sessions = {
+        "active-a": _build_manifest(
+            "active-a",
+            expires_at=now + timedelta(hours=2),
+            metadata={"pr_feedback_streams": [{"provider": "github", "repo": "org/repo", "pr_id": "17"}]},
+        ),
+    }
+    sessions["active-a"].directory_path = "root/team-a"
+
+    class _FeedbackWorker:
+        store = SimpleNamespace(has_unread_feedback=lambda **kwargs: True)
+
+        def poll_once(self, **kwargs):  # noqa: ANN003
+            return [object()]
+
+    captured: list[list[str]] = []
+
+    def _fake_run(cmd, check, capture_output, text, timeout):  # noqa: ANN001
+        captured.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("agent_sandbox.host_heartbeat_worker._probe_agent_dispatch_state", lambda **kwargs: "idle")
+    monkeypatch.setattr("agent_sandbox.host_heartbeat_worker.subprocess.run", _fake_run)
+
+    runtime = SimpleNamespace(sessions=SimpleNamespace(read_all=lambda: sessions), audit=_DummyAudit())
+    config = _build_directory_scoped_gateway_config(tmp_path)
+    directory_store = DirectoryStore(config.directories_store_path)
+    directory_service = DirectoryService(directory_store)
+    team_a = directory_service.create(parent="root", name="team-a")
+    config_store = DirectoryConfigStore(directory_store, runtime_dir=config.runtime_dir)
+    config_store.ensure_root()
+    resume_script = tmp_path / "resume_issue_agent.sh"
+    resume_script.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    resume_script.chmod(0o755)
+    config_store.write(
+        "root",
+        domain="workers",
+        payload={
+            "host_resume_script_path": str(resume_script),
+            "host_heartbeat_resume_prompt": "global prompt",
+            "host_heartbeat_vm_user": "agent",
+            "host_heartbeat_wake_state_path": str(tmp_path / "wake-state-root.json"),
+            "host_heartbeat_resume_timeout_seconds": 12.0,
+            "host_busy_check_script_path": str(tmp_path / "check_busy_root.sh"),
+            "host_heartbeat_session_cooldown_path": str(tmp_path / "cooldowns-root.json"),
+            "host_heartbeat_cooldown_seconds": 10.0,
+        },
+    )
+    config_store.write(
+        team_a.path,
+        domain="workers",
+        payload={
+            "host_heartbeat_resume_prompt": "team prompt",
+            "host_heartbeat_vm_user": "teamagent",
+            "host_heartbeat_wake_state_path": str(tmp_path / "wake-state-team.json"),
+            "host_heartbeat_session_cooldown_path": str(tmp_path / "cooldowns-team.json"),
+        },
+    )
+
+    worker = HostHeartbeatWorker(
+        config=config,
+        runtime=runtime,
+        feedback_worker=_FeedbackWorker(),
+        adapters={"github": object()},
+    )
+
+    worker.run_once()
+
+    assert len(captured) == 1
+    cmd = captured[0]
+    assert "--prompt" in cmd and "team prompt" in cmd
+    assert "--vm-user" in cmd and "teamagent" in cmd
+    assert "--host-state-file" in cmd and str(tmp_path / "wake-state-team.json") in cmd
 
 
 def test_wake_bindings_skips_resume_when_busy(tmp_path, monkeypatch) -> None:

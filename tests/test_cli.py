@@ -101,9 +101,9 @@ def test_help_groups_commands_by_panel_then_alphabetically() -> None:
     assert output.index("disable-agent") < output.index("enable-agent") < output.index("list-vms") < output.index("logs") < output.index("resume-agent") < output.index("shutdown-vm") < output.index("ssh") < output.index("start-vm")
     assert output.index("seed-discord-channel") < output.index("seed-email")
     assert "init-state" in output and "Create runtime state files." in output
+    assert "migrate-global-config-to-root" in output
     assert "migrate-directory-ownership" in output
-    assert "Backfill missing directory ownership fields to" in output
-    assert "root." in output
+    assert "Backfill missing directory ownership fields" in output
     assert "create-issue-vm" in output and "Create and bootstrap an issue VM." in output
     assert "host-heartbeat" in output and "Run the host heartbeat worker." in output
 
@@ -208,6 +208,113 @@ def test_migrate_directory_ownership_backfills_missing_fields_only(tmp_path: Pat
     ado_processed = json.loads((runtime_dir / "ado-processed-work-items.json").read_text(encoding="utf-8"))
     assert ado_processed["10"]["directory_path"] == "root"
     assert ado_processed["11"]["directory_path"] == "root/team"
+
+
+def test_migrate_global_config_to_root_materializes_all_domain_files(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path, enable_directory_scoped_config=True)
+    runner = CliRunner()
+
+    init_result = runner.invoke(app, ["init-state", "--config", str(config_path)])
+    assert init_result.exit_code == 0
+
+    result = runner.invoke(app, ["migrate-global-config-to-root", "--config", str(config_path)])
+
+    assert result.exit_code == 0
+    assert "written=4 skipped=0 unchanged=0" in result.output
+    runtime_dir = tmp_path / "runtime"
+    assert (runtime_dir / "directory-config" / "root" / "policy.json").exists()
+    assert (runtime_dir / "directory-config" / "root" / "providers.json").exists()
+    assert (runtime_dir / "directory-config" / "root" / "workers.json").exists()
+    assert (runtime_dir / "directory-config" / "root" / "vm-defaults.json").exists()
+
+    directories_payload = json.loads((runtime_dir / "directories.json").read_text(encoding="utf-8"))
+    assert directories_payload["root"]["metadata"]["directory_config"]["domains"] == [
+        "policy",
+        "providers",
+        "vm-defaults",
+        "workers",
+    ]
+
+
+def test_migrate_global_config_to_root_skips_existing_divergent_root_domains_without_overwrite(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path, enable_directory_scoped_config=True)
+    runner = CliRunner()
+
+    assert runner.invoke(app, ["init-state", "--config", str(config_path)]).exit_code == 0
+    set_result = runner.invoke(
+        app,
+        [
+            "directories",
+            "config-set",
+            "--config",
+            str(config_path),
+            "--domain",
+            "policy",
+            "root",
+            '{"default_session_ttl_seconds": 120}',
+        ],
+    )
+    assert set_result.exit_code == 0
+
+    result = runner.invoke(app, ["migrate-global-config-to-root", "--config", str(config_path)])
+
+    assert result.exit_code == 0
+    assert "written=3 skipped=1 unchanged=0" in result.output
+    assert "skipped: policy" in result.output
+    policy_payload = json.loads(
+        (tmp_path / "runtime" / "directory-config" / "root" / "policy.json").read_text(encoding="utf-8")
+    )
+    assert policy_payload == {"default_session_ttl_seconds": 120}
+
+
+def test_migrate_global_config_to_root_overwrites_when_requested(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path, enable_directory_scoped_config=True)
+    runner = CliRunner()
+
+    assert runner.invoke(app, ["init-state", "--config", str(config_path)]).exit_code == 0
+    assert runner.invoke(
+        app,
+        [
+            "directories",
+            "config-set",
+            "--config",
+            str(config_path),
+            "--domain",
+            "policy",
+            "root",
+            '{"default_session_ttl_seconds": 120}',
+        ],
+    ).exit_code == 0
+
+    result = runner.invoke(
+        app,
+        ["migrate-global-config-to-root", "--config", str(config_path), "--overwrite"],
+    )
+
+    assert result.exit_code == 0
+    assert "written=4 skipped=0 unchanged=0" in result.output
+    policy_payload = json.loads(
+        (tmp_path / "runtime" / "directory-config" / "root" / "policy.json").read_text(encoding="utf-8")
+    )
+    assert policy_payload["default_session_ttl_seconds"] == 28800
+
+
+def test_migrate_global_config_to_root_recovers_when_metadata_lists_missing_root_file(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path, enable_directory_scoped_config=True)
+    runner = CliRunner()
+
+    assert runner.invoke(app, ["init-state", "--config", str(config_path)]).exit_code == 0
+    runtime_dir = tmp_path / "runtime"
+    directories_path = runtime_dir / "directories.json"
+    directories_payload = json.loads(directories_path.read_text(encoding="utf-8"))
+    directories_payload["root"]["metadata"] = {"directory_config": {"domains": ["providers"]}}
+    directories_path.write_text(json.dumps(directories_payload, indent=2, sort_keys=True), encoding="utf-8")
+
+    result = runner.invoke(app, ["migrate-global-config-to-root", "--config", str(config_path)])
+
+    assert result.exit_code == 0
+    assert "written=4 skipped=0 unchanged=0" in result.output
+    assert (runtime_dir / "directory-config" / "root" / "providers.json").exists()
 
 
 def test_directories_cli_supports_crud_and_show(tmp_path: Path) -> None:
@@ -388,6 +495,39 @@ def test_create_session_uses_configured_default_ttl_when_no_ttl_is_provided(tmp_
     assert before + timedelta(days=2) <= expires_at <= after + timedelta(days=2)
 
 
+def test_create_session_uses_root_directory_policy_overlay(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path, enable_directory_scoped_config=True)
+    runner = CliRunner()
+
+    assert runner.invoke(app, ["init-state", "--config", str(config_path)]).exit_code == 0
+    set_result = runner.invoke(
+        app,
+        [
+            "directories",
+            "config-set",
+            "--config",
+            str(config_path),
+            "--domain",
+            "policy",
+            "root",
+            '{"default_session_ttl_seconds": 120, "email_send_enabled": true}',
+        ],
+    )
+    assert set_result.exit_code == 0
+
+    before = datetime.now(UTC)
+    result = runner.invoke(app, ["create-session", "--config", str(config_path), "session-1"])
+    after = datetime.now(UTC)
+
+    assert result.exit_code == 0
+    sessions = json.loads((tmp_path / "runtime" / "sessions.json").read_text(encoding="utf-8"))
+    manifest = sessions["session-1"]
+    expires_at = datetime.fromisoformat(manifest["expires_at"])
+    assert before + timedelta(seconds=120) <= expires_at <= after + timedelta(seconds=120)
+    assert manifest["email_send_enabled"] is True
+    assert "email_send_approved" in manifest["allowed_tools"]
+
+
 def test_create_issue_vm_creates_manifest_before_invoking_setup_script(tmp_path: Path, monkeypatch) -> None:
     config_path = write_config(tmp_path)
     runner = CliRunner()
@@ -535,6 +675,52 @@ def test_create_issue_vm_builds_setup_issue_vm_command_correctly(tmp_path: Path,
         "session-14084",
         "agent",
     ]
+
+
+def test_create_issue_vm_uses_root_vm_defaults_overlay_for_guest_env(tmp_path: Path, monkeypatch) -> None:
+    config_path = write_config(tmp_path, enable_directory_scoped_config=True)
+    runner = CliRunner()
+    captured_env: dict[str, str] = {}
+
+    assert runner.invoke(app, ["init-state", "--config", str(config_path)]).exit_code == 0
+    assert (
+        runner.invoke(
+            app,
+            [
+                "directories",
+                "config-set",
+                "--config",
+                str(config_path),
+                "--domain",
+                "vm-defaults",
+                "root",
+                '{"gateway_url":"http://10.10.10.1:8000/mcp","openai_relay_port":12000,"nuget_relay_port":13000}',
+            ],
+        ).exit_code
+        == 0
+    )
+
+    def fake_run(
+        cmd: list[str],
+        check: bool,
+        capture_output: bool,
+        text: bool,
+        env: dict[str, str],
+    ) -> subprocess.CompletedProcess[str]:
+        captured_env.update(env)
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("agent_sandbox.cli.subprocess.run", fake_run)
+
+    result = runner.invoke(
+        app,
+        ["create-issue-vm", "--config", str(config_path), "--session-id", "issue-1-session", "1"],
+    )
+
+    assert result.exit_code == 0
+    assert captured_env["GATEWAY_URL"] == "http://10.10.10.1:8000/mcp"
+    assert captured_env["LLM_BASE_URL"] == "http://10.10.10.1:12000/v1"
+    assert captured_env["NUGET_RELAY_BASE_URL"] == "http://10.10.10.1:13000"
 
 
 def test_create_issue_vm_requires_mssql_password_env(tmp_path: Path, monkeypatch) -> None:
@@ -2579,6 +2765,47 @@ def test_status_human_output_reports_degraded_state(tmp_path: Path, monkeypatch)
     assert "emails.json: degraded" in result.stdout
     assert "inactive (available)" in result.stdout
     assert "openai_relay: degraded" in result.stdout
+
+
+def test_status_uses_root_vm_defaults_overlay_for_health_endpoints(tmp_path: Path, monkeypatch) -> None:
+    config_path = write_config(tmp_path, enable_directory_scoped_config=True)
+    runner = CliRunner()
+    checked_urls: list[tuple[str, str]] = []
+
+    assert runner.invoke(app, ["init-state", "--config", str(config_path)]).exit_code == 0
+    assert (
+        runner.invoke(
+            app,
+            [
+                "directories",
+                "config-set",
+                "--config",
+                str(config_path),
+                "--domain",
+                "vm-defaults",
+                "root",
+                '{"gateway_url":"http://10.0.0.5:9000/mcp","openai_relay_host":"127.0.0.2","openai_relay_port":12000}',
+            ],
+        ).exit_code
+        == 0
+    )
+
+    monkeypatch.setattr(
+        "agent_sandbox.cli._get_systemd_unit_state",
+        lambda unit: UnitStatus(unit=unit, state="active", available=True, detail=None),
+    )
+
+    def fake_check(name: str, url: str) -> EndpointStatus:
+        checked_urls.append((name, url))
+        return EndpointStatus(name=name, url=url, reachable=True, status_code=200, error=None)
+
+    monkeypatch.setattr("agent_sandbox.cli._check_health_endpoint", fake_check)
+
+    result = runner.invoke(app, ["status", "--config", str(config_path), "--json"])
+
+    assert result.exit_code == 0
+    assert ("gateway", "http://10.0.0.5:9000/mcp") in checked_urls
+    assert ("openai_relay", "http://127.0.0.2:12000/healthz") in checked_urls
 
 
 def test_host_heartbeat_once_runs_single_cycle(tmp_path: Path, monkeypatch) -> None:

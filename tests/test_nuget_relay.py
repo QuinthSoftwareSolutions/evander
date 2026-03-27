@@ -5,6 +5,8 @@ import httpx
 from starlette.testclient import TestClient
 
 from agent_sandbox.config import GatewayConfig
+from agent_sandbox.directory_config import DirectoryConfigStore
+from agent_sandbox.directories import DirectoryStore
 from agent_sandbox.nuget_relay import create_app
 
 
@@ -22,6 +24,16 @@ def make_config(tmp_path: Path) -> GatewayConfig:
             "https://pkgs.dev.azure.com/example/example/_packaging/example/nuget"
         ),
         nuget_azure_pat_env="AZURE_ARTIFACTS_PAT",
+    )
+
+
+def write_provider_overlay(config: GatewayConfig, payload: dict[str, object]) -> None:
+    directory_store = DirectoryStore(config.directories_store_path)
+    directory_store.ensure_root()
+    DirectoryConfigStore(directory_store, runtime_dir=config.runtime_dir).write(
+        "root",
+        domain="providers",
+        payload=payload,
     )
 
 
@@ -83,3 +95,31 @@ def test_public_proxy_rewrites_index_urls(tmp_path: Path) -> None:
     resource_url = payload["resources"][0]["@id"]
     assert resource_url.startswith("http://testserver/nuget/nuget-org")
     assert "api.nuget.org" not in resource_url
+
+
+def test_nuget_relay_uses_root_directory_provider_overlay(tmp_path: Path) -> None:
+    captured: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["authorization"] = request.headers.get("authorization", "")
+        captured["url"] = str(request.url)
+        return httpx.Response(200, json={"ok": True})
+
+    transport = httpx.MockTransport(handler)
+    config = make_config(tmp_path)
+    write_provider_overlay(
+        config,
+        {
+            "nuget_azure_feed_base_url": "https://pkgs.dev.azure.com/root/root/_packaging/root/nuget",
+            "nuget_azure_pat_env": "ROOT_AZURE_ARTIFACTS_PAT",
+        },
+    )
+    app = create_app(config, transport=transport)
+    client = TestClient(app)
+    os.environ["ROOT_AZURE_ARTIFACTS_PAT"] = "root-pat"
+
+    response = client.get("/nuget/azure/v3/index.json")
+
+    assert response.status_code == 200
+    assert captured["authorization"].startswith("Basic ")
+    assert captured["url"] == "https://pkgs.dev.azure.com/root/root/_packaging/root/nuget/v3/index.json"

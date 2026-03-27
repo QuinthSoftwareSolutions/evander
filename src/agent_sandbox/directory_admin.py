@@ -201,7 +201,7 @@ class DirectoryAdminService:
         domain: str,
     ) -> AdminResult[DirectoryEffectiveConfigPayload]:
         def operation() -> DirectoryEffectiveConfigPayload:
-            base_config = get_domain_base_config(self._gateway_config, domain)
+            base_config = get_domain_base_config(self._gateway_config, domain) if domain == "gateway" else None
             resolution = self._config_resolver().resolve_domain(
                 reference,
                 domain=domain,

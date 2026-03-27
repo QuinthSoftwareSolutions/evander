@@ -85,8 +85,8 @@ agent-sandbox-cli list-local-issues --json
 
 Directory ownership defaults to `root`. The directory tree is host-managed, with immutable `root`
 at the top and inherited config flowing from `root` down to the selected child directory. When
-enabled, `root` can also store explicit directory overlay files and those become the first
-directory-scoped layer above the global gateway baseline.
+enabled, `root` can also store explicit directory overlay files and those are the first
+directory-scoped values in the inheritance chain.
 
 To keep the rollout safe, directory-scoped config remains transition-gated:
 
@@ -489,7 +489,7 @@ agent-sandbox-cli create-session real-session --config config/gateway.yaml
   when the mirrored repo source is remote.
 - Configure environment in `config/ado-worker.env` (start from
   `config/ado-worker.env.example`), then export the PAT value in the host shell/env-file named by
-  `ADO_PAT_ENV_VAR_NAME` (default `AZURE_DEVOPS_PAT`).
+  `azure_devops_pat_env` in `config/gateway.yaml` (default `AZURE_DEVOPS_PAT`).
 
 Foreground runbook:
 
@@ -503,7 +503,7 @@ agent-sandbox-cli poll-ado-backlog --log-level INFO
 Systemd runbook:
 
 1. Ensure `config/ado-worker.env` exists and is populated.
-2. Ensure the PAT variable named by `ADO_PAT_ENV_VAR_NAME` is available to the service user
+2. Ensure the PAT variable named by `azure_devops_pat_env` in `config/gateway.yaml` is available to the service user
    (for example through the user shell profile or a drop-in env file).
 3. Start/inspect:
 
@@ -575,12 +575,12 @@ Before running install mode, ensure preflight is clean (or only warning-only), t
 6. Copy `config/host-heartbeat.env.example` to `config/host-heartbeat.env` if needed.
 7. Set the real `OPENAI_API_KEY` in `config/openai-relay.env`.
 8. Set `AZURE_ARTIFACTS_PAT` in `config/nuget-relay.env` when private feeds are required.
-9. Ensure the PAT variable named by `ADO_PAT_ENV_VAR_NAME` (default `AZURE_DEVOPS_PAT`) is
-   exported for the service user and `config/ado-worker.env` points at the right project/paths.
+9. Ensure the PAT variable named by `azure_devops_pat_env` in `config/gateway.yaml` is exported
+   for the service user and `config/ado-worker.env` points at the right project/solution path.
 10. For private PR feedback polling, set `GITHUB_TOKEN` and/or `AZURE_DEVOPS_PAT` in
     `config/host-heartbeat.env` and ensure `config/gateway.yaml` sets the correct
-    `azure_devops_organization_url` and `azure_devops_project`.
-11. Review cadence/lock settings in `config/host-heartbeat.env` and then start and inspect services:
+    `azure_devops_organization_url`, `azure_devops_project`, and heartbeat settings.
+11. Start and inspect services:
 
 ```bash
 sudo systemctl start agent-sandbox-firewall.service

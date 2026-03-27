@@ -266,13 +266,29 @@ def test_directory_config_resolver_applies_root_overlay_as_first_directory_layer
     config_store.write("root", domain="policy", payload={"default_session_ttl_seconds": 180})
     config_store.write(team.path, domain="policy", payload={"email_send_enabled": True})
 
-    resolution = resolver.resolve_domain(team.path, domain="policy", base_config={"default_session_ttl_seconds": 60})
+    resolution = resolver.resolve_domain(team.path, domain="policy")
 
     assert resolution.effective_config == {
         "default_session_ttl_seconds": 180,
         "email_send_enabled": True,
     }
     assert [layer.directory_path for layer in resolution.applied_layers] == ["root", "root/team"]
+    assert resolution.provenance["default_session_ttl_seconds"].directory_path == "root"
+
+
+def test_directory_config_resolver_treats_root_as_top_of_chain_without_implicit_base(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    store = DirectoryStore(runtime_dir / "directories.json")
+    service = DirectoryService(store)
+    config_store = DirectoryConfigStore(store, runtime_dir=runtime_dir)
+    resolver = DirectoryConfigResolver(service, config_store=config_store)
+
+    config_store.write("root", domain="policy", payload={"default_session_ttl_seconds": 180})
+
+    resolution = resolver.resolve_domain("root", domain="policy")
+
+    assert resolution.effective_config == {"default_session_ttl_seconds": 180}
+    assert [layer.directory_path for layer in resolution.applied_layers] == ["root"]
     assert resolution.provenance["default_session_ttl_seconds"].directory_path == "root"
 
 

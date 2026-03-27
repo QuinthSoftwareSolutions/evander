@@ -14,6 +14,8 @@ from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
 from .config import GatewayConfig, load_config
+from .provider_config import ProviderConfigResolver
+from .vm_defaults_config import VmDefaultsConfigResolver
 
 HOP_BY_HOP_HEADERS = {
     "authorization",
@@ -289,7 +291,8 @@ def _rewrite_urls(payload: object, old: str, new: str) -> object:
 
 
 def create_app(config: GatewayConfig, transport: httpx.AsyncBaseTransport | None = None) -> Starlette:
-    return NuGetRelay(config, transport=transport).create_app()
+    resolved_config = ProviderConfigResolver(config).resolve_for_directory("root")
+    return NuGetRelay(resolved_config, transport=transport).create_app()
 
 
 def main() -> None:
@@ -298,10 +301,11 @@ def main() -> None:
     args = parser.parse_args()
 
     config = load_config(args.config)
+    vm_defaults = VmDefaultsConfigResolver(config).resolve_for_directory("root")
     uvicorn.run(
         create_app(config),
-        host=config.nuget_relay_host,
-        port=config.nuget_relay_port,
+        host=vm_defaults.nuget_relay_host,
+        port=vm_defaults.nuget_relay_port,
     )
 
 

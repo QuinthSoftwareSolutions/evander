@@ -13,6 +13,8 @@ from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
 from .config import GatewayConfig, load_config
+from .provider_config import ProviderConfigResolver
+from .vm_defaults_config import VmDefaultsConfigResolver
 
 logger = logging.getLogger(__name__)
 
@@ -204,7 +206,8 @@ class OpenAIRelay:
 
 
 def create_app(config: GatewayConfig, transport: httpx.AsyncBaseTransport | None = None) -> Starlette:
-    return OpenAIRelay(config, transport=transport).create_app()
+    resolved_config = ProviderConfigResolver(config).resolve_for_directory("root")
+    return OpenAIRelay(resolved_config, transport=transport).create_app()
 
 
 def main() -> None:
@@ -213,10 +216,11 @@ def main() -> None:
     args = parser.parse_args()
 
     config = load_config(args.config)
+    vm_defaults = VmDefaultsConfigResolver(config).resolve_for_directory("root")
     uvicorn.run(
         create_app(config),
-        host=config.openai_relay_host,
-        port=config.openai_relay_port,
+        host=vm_defaults.openai_relay_host,
+        port=vm_defaults.openai_relay_port,
     )
 
 

@@ -23,10 +23,12 @@ from .audit import AuditEventType
 from .ado_issue_worker import run_worker_command
 from .config import GatewayConfig, load_config
 from .host_heartbeat_worker import build_host_heartbeat_worker
-from .migrations import migrate_directory_ownership_defaults
+from .migrations import migrate_directory_ownership_defaults, migrate_global_config_to_root
 from .email.providers import JsonEmailProvider, MultiMailboxEmailProvider
 from .models import ApprovalStatus, DiscordCommandEnvelope, EmailMessage, SessionManifest, ToolName
+from .policy_config import EffectivePolicyConfig, PolicyConfigResolver
 from .runtime import build_runtime
+from .vm_defaults_config import EffectiveVmDefaultsConfig, VmDefaultsConfigResolver
 
 _COMMAND_PANELS = {
     "Health and State": 0,
@@ -155,12 +157,17 @@ def _format_rows(rows: list[tuple[str, str]]) -> str:
     return "\n".join(f"{key:<{key_width}}  {value}" for key, value in rows)
 
 
+def _resolve_root_vm_defaults(cfg: GatewayConfig) -> EffectiveVmDefaultsConfig:
+    return VmDefaultsConfigResolver(cfg).resolve_for_directory("root")
+
+
 def _run_subprocess_compat(
     cmd: list[str],
     *,
     check: bool,
     capture_output: bool | None = None,
     text: bool | None = None,
+    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     kwargs: dict[str, object] = {"check": check}
     try:
@@ -171,6 +178,8 @@ def _run_subprocess_compat(
         kwargs["capture_output"] = capture_output
     if text is not None and "text" in parameters:
         kwargs["text"] = text
+    if env is not None and "env" in parameters:
+        kwargs["env"] = env
     return subprocess.run(cmd, **kwargs)
 
 
@@ -373,14 +382,14 @@ def _parse_session_extension(value: str | None) -> timedelta:
     return timedelta(days=amount)
 
 
-def _default_session_ttl(cfg: GatewayConfig) -> timedelta:
-    return timedelta(seconds=cfg.default_session_ttl_seconds)
+def _default_session_ttl(policy: EffectivePolicyConfig) -> timedelta:
+    return timedelta(seconds=policy.default_session_ttl_seconds)
 
 
-def _resolve_session_ttl(cfg: GatewayConfig, ttl_hours: int | None) -> timedelta:
+def _resolve_session_ttl(policy: EffectivePolicyConfig, ttl_hours: int | None) -> timedelta:
     if ttl_hours is not None:
         return timedelta(hours=ttl_hours)
-    return _default_session_ttl(cfg)
+    return _default_session_ttl(policy)
 
 
 def _resolve_session_target(target: str, sessions: dict[str, SessionManifest]) -> tuple[str, SessionManifest]:
@@ -674,9 +683,10 @@ def _parse_pr_feedback_streams(values: list[str]) -> list[dict[str, str]]:
 
 def _build_issue_session_manifest(
     *,
-    cfg: GatewayConfig,
+    policy: EffectivePolicyConfig,
     session_id: str,
     vm_id: str,
+    directory_path: str,
     ttl_hours: int | None,
     discord_channels: list[str],
     email_mailboxes: list[str],
@@ -696,12 +706,12 @@ def _build_issue_session_manifest(
         )
 
     email_requested = bool(email_mailboxes or email_folders)
-    resolved_email_mailboxes = email_mailboxes or (cfg.email_mailbox_allowlist if email_requested else [])
+    resolved_email_mailboxes = email_mailboxes or (policy.email_mailbox_allowlist if email_requested else [])
     resolved_email_folders = email_folders or (
         sorted(
             {
                 folder
-                for folders in cfg.email_folder_allowlist_by_mailbox.values()
+                for folders in policy.email_folder_allowlist_by_mailbox.values()
                 for folder in folders
             }
         )
@@ -716,23 +726,23 @@ def _build_issue_session_manifest(
                 ToolName.EMAIL_CREATE_DRAFT,
             ]
         )
-        if cfg.email_send_enabled:
+        if policy.email_send_enabled:
             allowed_tools.append(ToolName.EMAIL_SEND_APPROVED)
 
     unique_tools = list(dict.fromkeys(allowed_tools))
     return SessionManifest(
         session_id=session_id,
         vm_id=vm_id,
-        directory_path="root",
+        directory_path=directory_path,
         allowed_tools=unique_tools,
         discord_channel_allowlist=discord_channels,
         email_folder_allowlist=resolved_email_folders,
         email_mailbox_allowlist=resolved_email_mailboxes,
-        email_folder_allowlist_by_mailbox=cfg.email_folder_allowlist_by_mailbox,
-        email_draft_recipient_allowlist=cfg.email_draft_recipient_allowlist,
-        email_draft_domain_allowlist=cfg.email_draft_domain_allowlist,
-        email_send_enabled=cfg.email_send_enabled,
-        expires_at=datetime.now(UTC) + _resolve_session_ttl(cfg, ttl_hours),
+        email_folder_allowlist_by_mailbox=policy.email_folder_allowlist_by_mailbox,
+        email_draft_recipient_allowlist=policy.email_draft_recipient_allowlist,
+        email_draft_domain_allowlist=policy.email_draft_domain_allowlist,
+        email_send_enabled=policy.email_send_enabled,
+        expires_at=datetime.now(UTC) + _resolve_session_ttl(policy, ttl_hours),
         metadata={},
     )
 
@@ -891,6 +901,37 @@ def migrate_directory_ownership(
 
 
 @app.command(
+    "migrate-global-config-to-root",
+    rich_help_panel="Health and State",
+    short_help="Materialize current global config as explicit root directory config.",
+)
+def migrate_global_config_root(
+    config: ConfigOption = Path("config/gateway.yaml"),
+    overwrite: Annotated[
+        bool,
+        typer.Option(
+            "--overwrite",
+            help="Replace existing root domain files when they differ from the current global config.",
+        ),
+    ] = False,
+) -> None:
+    cfg = load_config(config)
+    summary = migrate_global_config_to_root(cfg, overwrite=overwrite)
+    typer.echo(
+        "Root config migration complete: "
+        f"written={len(summary.written_domains)} "
+        f"skipped={len(summary.skipped_domains)} "
+        f"unchanged={len(summary.unchanged_domains)}"
+    )
+    if summary.written_domains:
+        typer.echo(f"written: {', '.join(summary.written_domains)}")
+    if summary.skipped_domains:
+        typer.echo(f"skipped: {', '.join(summary.skipped_domains)}")
+    if summary.unchanged_domains:
+        typer.echo(f"unchanged: {', '.join(summary.unchanged_domains)}")
+
+
+@app.command(
     "status",
     rich_help_panel="Health and State",
     short_help="Show host and runtime health.",
@@ -951,9 +992,10 @@ def status(config: ConfigOption = Path("config/gateway.yaml"), as_json: Annotate
             if unit_status.available and unit_status.state != "active":
                 report["overall"] = "degraded"
 
-        gateway_health_url = cfg.gateway_url
+        vm_defaults = _resolve_root_vm_defaults(cfg)
+        gateway_health_url = vm_defaults.gateway_url
         relay_health_url = (
-            f"http://{_normalize_host_for_local_check(cfg.openai_relay_host)}:{cfg.openai_relay_port}/healthz"
+            f"http://{_normalize_host_for_local_check(vm_defaults.openai_relay_host)}:{vm_defaults.openai_relay_port}/healthz"
         )
         health_results = [
             _check_health_endpoint("gateway", gateway_health_url),
@@ -1104,6 +1146,7 @@ def create_session(
 ) -> None:
     cfg = load_config(config)
     runtime = build_runtime(cfg)
+    policy = runtime.policy_config.resolve_for_directory("root")
     manifest = SessionManifest(
         session_id=session_id,
         vm_id=vm_id,
@@ -1123,12 +1166,12 @@ def create_session(
         ],
         discord_channel_allowlist=discord_channel or [],
         email_folder_allowlist=email_folder or [],
-        email_mailbox_allowlist=cfg.email_mailbox_allowlist,
-        email_folder_allowlist_by_mailbox=cfg.email_folder_allowlist_by_mailbox,
-        email_draft_recipient_allowlist=cfg.email_draft_recipient_allowlist,
-        email_draft_domain_allowlist=cfg.email_draft_domain_allowlist,
-        email_send_enabled=cfg.email_send_enabled,
-        expires_at=datetime.now(UTC) + _resolve_session_ttl(cfg, ttl_hours),
+        email_mailbox_allowlist=policy.email_mailbox_allowlist,
+        email_folder_allowlist_by_mailbox=policy.email_folder_allowlist_by_mailbox,
+        email_draft_recipient_allowlist=policy.email_draft_recipient_allowlist,
+        email_draft_domain_allowlist=policy.email_draft_domain_allowlist,
+        email_send_enabled=policy.email_send_enabled,
+        expires_at=datetime.now(UTC) + _resolve_session_ttl(policy, ttl_hours),
     )
     if manifest.email_send_enabled:
         manifest.allowed_tools.append(ToolName.EMAIL_SEND_APPROVED)
@@ -1153,6 +1196,7 @@ def prune_sessions(
 ) -> None:
     cfg = load_config(config)
     runtime = build_runtime(cfg)
+    policy = runtime.policy_config.resolve_for_directory("root")
     sessions = runtime.sessions.read_all()
     now = datetime.now(UTC)
 
@@ -1882,6 +1926,7 @@ def create_issue_vm(
 
     cfg = load_config(config)
     runtime = build_runtime(cfg)
+    policy = runtime.policy_config.resolve_for_directory("root")
     if runtime.sessions.get(resolved_session_id) is not None:
         raise typer.BadParameter(f"Session already exists: {resolved_session_id}")
     if mssql and not os.environ.get("MSSQL_SA_PASSWORD", "").strip():
@@ -1890,9 +1935,10 @@ def create_issue_vm(
         raise typer.BadParameter("--mssql-init-root requires --mssql.")
 
     manifest = _build_issue_session_manifest(
-        cfg=cfg,
+        policy=policy,
         session_id=resolved_session_id,
         vm_id=resolved_vm_name,
+        directory_path="root",
         ttl_hours=ttl_hours,
         discord_channels=discord_channel,
         email_mailboxes=email_mailbox,
@@ -1930,7 +1976,10 @@ def create_issue_vm(
         cmd.append(repo_source)
     cmd.extend([resolved_session_id, vm_user])
 
-    _run_subprocess_compat(cmd, check=True, capture_output=False, text=False)
+    vm_defaults = _resolve_root_vm_defaults(cfg)
+    run_env = os.environ.copy()
+    run_env.update(vm_defaults.guest_environment())
+    _run_subprocess_compat(cmd, check=True, capture_output=False, text=False, env=run_env)
     typer.echo(
         f"Created issue VM session {resolved_session_id} for issue {issue_number} "
         f"using VM {resolved_vm_name}"

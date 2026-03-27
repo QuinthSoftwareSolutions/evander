@@ -6,6 +6,8 @@ import httpx
 from starlette.testclient import TestClient
 
 from agent_sandbox.config import GatewayConfig
+from agent_sandbox.directory_config import DirectoryConfigStore
+from agent_sandbox.directories import DirectoryStore
 from agent_sandbox.openai_relay import OpenAIRelay, create_app
 
 
@@ -20,6 +22,16 @@ def make_config(tmp_path: Path) -> GatewayConfig:
         discord_command_store_path=tmp_path / "discord.json",
         openai_api_base_url="https://api.openai.com/v1",
         openai_api_key_env="OPENAI_API_KEY",
+    )
+
+
+def write_provider_overlay(config: GatewayConfig, payload: dict[str, object]) -> None:
+    directory_store = DirectoryStore(config.directories_store_path)
+    directory_store.ensure_root()
+    DirectoryConfigStore(directory_store, runtime_dir=config.runtime_dir).write(
+        "root",
+        domain="providers",
+        payload=payload,
     )
 
 
@@ -56,6 +68,34 @@ def test_relay_injects_authorization_header(tmp_path: Path) -> None:
     assert captured["authorization"] == "Bearer test-key"
     assert captured["accept-encoding"] == "identity"
     assert captured["path"] == "/v1/responses"
+
+
+def test_relay_uses_root_directory_provider_overlay(tmp_path: Path) -> None:
+    captured: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["authorization"] = request.headers.get("authorization", "")
+        captured["url"] = str(request.url)
+        return httpx.Response(200, json={"id": "resp_test", "object": "response"})
+
+    transport = httpx.MockTransport(handler)
+    config = make_config(tmp_path)
+    write_provider_overlay(
+        config,
+        {
+            "openai_api_base_url": "https://override.example/v1",
+            "openai_api_key_env": "ROOT_OPENAI_TOKEN",
+        },
+    )
+    app = create_app(config, transport=transport)
+    client = TestClient(app)
+    os.environ["ROOT_OPENAI_TOKEN"] = "root-key"
+
+    response = client.post("/v1/responses", json={"model": "gpt-5.2-codex", "input": "hello"})
+
+    assert response.status_code == 200
+    assert captured["authorization"] == "Bearer root-key"
+    assert captured["url"] == "https://override.example/v1/responses"
 
 
 def test_relay_strips_content_encoding_from_response(tmp_path: Path) -> None:

@@ -304,6 +304,36 @@ if [[ -z "${SESSION_ID}" ]]; then
 fi
 
 REPO_SOURCE="${REPO_SOURCE_ARG:-${DEFAULT_REPO_SOURCE}}"
+AGENT_SANDBOX_CONFIG="${AGENT_SANDBOX_CONFIG:-${ROOT_DIR}/config/gateway.yaml}"
+
+resolve_vm_defaults_exports() {
+  local python_bin="${ROOT_DIR}/.venv/bin/python"
+  if [[ ! -x "${python_bin}" ]]; then
+    python_bin="python3"
+  fi
+  PYTHONPATH="${ROOT_DIR}/src${PYTHONPATH:+:${PYTHONPATH}}" \
+    "${python_bin}" - "${AGENT_SANDBOX_CONFIG}" "${SESSION_ID}" <<'PY'
+import shlex
+import sys
+
+from agent_sandbox.vm_defaults_config import VmDefaultsConfigResolver
+
+config_path, session_id = sys.argv[1], sys.argv[2]
+resolver = VmDefaultsConfigResolver.from_config_path(config_path)
+try:
+    vm_defaults = resolver.resolve_for_session_id(session_id)
+except ValueError:
+    vm_defaults = resolver.resolve_for_directory("root")
+for key, value in sorted(vm_defaults.guest_environment().items()):
+    print(f"export {key}={shlex.quote(value)}")
+PY
+}
+
+if [[ -z "${GATEWAY_URL:-}" || -z "${LLM_BASE_URL:-}" || -z "${NUGET_RELAY_BASE_URL:-}" ]]; then
+  if VM_DEFAULTS_EXPORTS="$(resolve_vm_defaults_exports 2>/dev/null)"; then
+    eval "${VM_DEFAULTS_EXPORTS}"
+  fi
+fi
 
 if (( BOOTSTRAP_NUGET )); then
   if [[ -z "${PREWARM_TARGET}" ]]; then
@@ -422,7 +452,11 @@ if (( BOOTSTRAP_NUGET )); then
   "${SCRIPT_DIR}/prewarm_nuget_cache.sh" "${PREWARM_TARGET}"
 fi
 log_step "launch_vm"
-sudo SSH_PUBLIC_KEY_FILE="${SSH_PUBLIC_KEY_FILE}" "${SCRIPT_DIR}/launch_agent_vm.sh" "${VM_NAME}" "${SESSION_ID}"
+sudo \
+  SSH_PUBLIC_KEY_FILE="${SSH_PUBLIC_KEY_FILE}" \
+  GATEWAY_URL="${GATEWAY_URL:-}" \
+  LLM_BASE_URL="${LLM_BASE_URL:-}" \
+  "${SCRIPT_DIR}/launch_agent_vm.sh" "${VM_NAME}" "${SESSION_ID}"
 log_step "wait_for_ip"
 VM_IP="$(vm_network_wait_for_ip "${VM_NAME}" "${VM_WAIT_IP_TIMEOUT_SECONDS}")"
 echo "Guest IPv4 detected: ${VM_IP}"
@@ -438,7 +472,7 @@ if (( BOOTSTRAP_DOTNET )); then
 fi
 if (( BOOTSTRAP_NUGET )); then
   log_step "bootstrap_nuget"
-  "${SCRIPT_DIR}/bootstrap_nuget_vm.sh" "${VM_NAME}" "${VM_USER}"
+  NUGET_RELAY_BASE_URL="${NUGET_RELAY_BASE_URL:-}" "${SCRIPT_DIR}/bootstrap_nuget_vm.sh" "${VM_NAME}" "${VM_USER}"
 fi
 if (( BOOTSTRAP_MSSQL )); then
   log_step "bootstrap_mssql"
