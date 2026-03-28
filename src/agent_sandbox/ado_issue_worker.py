@@ -1431,7 +1431,7 @@ def process_work_item(
         )
     cmd = _build_setup_command(config, yaml_path, session_id=session_id)
     run_env = os.environ.copy()
-    run_env["AGENT_SANDBOX_AZURE_DEVOPS_PAT_ENV"] = config.pat_env_var_name
+    run_env["AGENT_SANDBOX_AZURE_DEVOPS_PR_PAT_ENV"] = config.pat_env_var_name
     if config.bootstrap_mssql and config.mssql_sa_password:
         run_env["MSSQL_SA_PASSWORD"] = config.mssql_sa_password
     vm_defaults = VmDefaultsConfigResolver(cfg).resolve_for_session_id(session_id)

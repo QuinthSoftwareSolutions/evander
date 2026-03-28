@@ -788,7 +788,7 @@ def test_process_work_item_passes_timeout(
 
     assert succeeded is True
     assert isinstance(captured["env"], dict)
-    assert captured["env"]["AGENT_SANDBOX_AZURE_DEVOPS_PAT_ENV"] == "ADO_WORK_ITEMS_AZURE_DEVOPS_PAT"
+    assert captured["env"]["AGENT_SANDBOX_AZURE_DEVOPS_PR_PAT_ENV"] == "ADO_WORK_ITEMS_AZURE_DEVOPS_PAT"
     assert captured["env"]["MSSQL_SA_PASSWORD"] == "SecretPassw0rd!"
     assert captured["timeout"] == worker_config.setup_timeout_seconds
 
