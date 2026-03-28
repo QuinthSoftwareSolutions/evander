@@ -206,6 +206,84 @@ def test_admin_service_exposes_directory_config_for_selected_directory(tmp_path:
     assert effective_result.data.resolution.effective_config["default_session_ttl_seconds"] == 120
 
 
+def test_admin_service_reads_and_writes_ado_worker_global_config(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+
+    read_result = service.read_worker_global_config("ado")
+    assert read_result.exists is False
+    assert read_result.path == str(tmp_path / "config" / "ado-worker" / "config.json")
+    assert read_result.config["ado_work_items_azure_devops_pat_env"] == "ADO_WORK_ITEMS_AZURE_DEVOPS_PAT"
+    assert read_result.config["directories"] == []
+
+    write_result = service.write_worker_global_config(
+        "ado",
+        {
+            "runtime_dir": str(tmp_path / "runtime"),
+            "poll_interval_seconds": 12.5,
+            "directories": ["root/team-a", "root/team-b"],
+            "ado_work_items_azure_devops_pat_env": "ADO_WORK_ITEMS_AZURE_DEVOPS_PAT",
+            "include_comments": False,
+            "comments_max_count": 7,
+        },
+    )
+    assert write_result.config["poll_interval_seconds"] == 12.5
+    assert write_result.config["directories"] == ["root/team-a", "root/team-b"]
+    assert write_result.config["ado_work_items_azure_devops_pat_env"] == "ADO_WORK_ITEMS_AZURE_DEVOPS_PAT"
+
+    config_path = tmp_path / "config" / "ado-worker" / "config.json"
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    assert payload["poll_interval_seconds"] == 12.5
+    assert payload["directories"] == ["root/team-a", "root/team-b"]
+    assert payload["ado_work_items_azure_devops_pat_env"] == "ADO_WORK_ITEMS_AZURE_DEVOPS_PAT"
+    assert payload["include_comments"] is False
+    assert payload["comments_max_count"] == 7
+
+    reread = service.read_worker_global_config("ado")
+    assert reread.config["include_comments"] is False
+
+
+def test_admin_service_reads_and_writes_host_heartbeat_worker_global_config(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+
+    read_result = service.read_worker_global_config("host-heartbeat")
+    assert read_result.exists is False
+    assert read_result.path == str(tmp_path / "config" / "host-heartbeat" / "config.json")
+    assert read_result.config["host_heartbeat_poll_interval_seconds"] == 30.0
+    assert read_result.config["host_heartbeat_directory_paths"] == []
+
+    write_result = service.write_worker_global_config(
+        "host-heartbeat",
+        {
+            "runtime_dir": str(tmp_path / "runtime"),
+            "host_heartbeat_directory_paths": ["root/team-a", "root/team-b"],
+            "host_heartbeat_poll_interval_seconds": 12.5,
+            "host_heartbeat_jitter_seconds": 1.5,
+            "host_heartbeat_cooldown_seconds": 90.0,
+            "host_heartbeat_http_timeout_seconds": 15.0,
+            "host_heartbeat_lock_path": None,
+            "host_heartbeat_session_cooldown_path": None,
+            "host_busy_check_script_path": "scripts/check_session_vm_busy.sh",
+            "host_resume_script_path": "scripts/resume_issue_agent.sh",
+            "host_heartbeat_wake_state_path": None,
+            "host_heartbeat_vm_user": "worker",
+            "host_heartbeat_resume_timeout_seconds": 600.0,
+            "host_heartbeat_stream_conflict_policy": "reject",
+        },
+    )
+    assert write_result.config["host_heartbeat_stream_conflict_policy"] == "reject"
+
+    config_path = tmp_path / "config" / "host-heartbeat" / "config.json"
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    assert payload["host_heartbeat_directory_paths"] == ["root/team-a", "root/team-b"]
+    assert payload["host_heartbeat_poll_interval_seconds"] == 12.5
+    assert payload["host_heartbeat_stream_conflict_policy"] == "reject"
+    assert payload["host_heartbeat_vm_user"] == "worker"
+
+    reread = service.read_worker_global_config("host-heartbeat")
+    assert reread.config["host_heartbeat_directory_paths"] == ["root/team-a", "root/team-b"]
+    assert reread.config["host_heartbeat_stream_conflict_policy"] == "reject"
+
+
 def test_create_issue_vm_uses_directory_vm_defaults_overlay_for_guest_env(tmp_path: Path, monkeypatch) -> None:
     service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
     create_result = service.create_directory_child("root", "team")
@@ -241,6 +319,146 @@ def test_create_issue_vm_uses_directory_vm_defaults_overlay_for_guest_env(tmp_pa
     assert captured_env["GATEWAY_URL"] == "http://10.20.30.40:8000/mcp"
     assert captured_env["LLM_BASE_URL"] == "http://10.20.30.40:12000/v1"
     assert captured_env["NUGET_RELAY_BASE_URL"] == "http://10.20.30.40:13000"
+
+
+def test_create_issue_vm_uses_issue_setup_domain_for_setup_env(tmp_path: Path, monkeypatch) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    create_result = service.create_directory_child("root", "team")
+    assert create_result.ok is True and create_result.data is not None
+    team_path = create_result.data.details.directory.path
+    write_result = service.write_directory_domain_config(
+        team_path,
+        "issue_setup",
+        {
+            "git_root": "/tmp/git-remotes",
+            "git_host": "10.1.2.3",
+            "git_user": "gitbot",
+            "git_ssh_alias": "issue-git",
+            "post_exec_verification_prompt": "verify everything",
+            "enable_guest_heartbeat": True,
+            "guest_heartbeat_prompt": "continue working",
+        },
+    )
+    assert write_result.ok is True
+
+    captured_env: dict[str, str] = {}
+
+    def fake_run(*args, **kwargs):
+        captured_env.update(kwargs.get("env", {}))
+        return subprocess.CompletedProcess(args[0], 0, stdout="", stderr="")
+
+    monkeypatch.setattr("agent_sandbox.admin_service.subprocess.run", fake_run)
+
+    result = service.create_issue_vm(
+        issue="124",
+        session_id="issue-124-session",
+        directory_path=team_path,
+        start_agent=False,
+    )
+
+    assert result.success is True
+    assert captured_env["AGENT_SANDBOX_GIT_ROOT"] == "/tmp/git-remotes"
+    assert captured_env["AGENT_SANDBOX_GIT_HOST"] == "10.1.2.3"
+    assert captured_env["AGENT_SANDBOX_GIT_USER"] == "gitbot"
+    assert captured_env["AGENT_SANDBOX_GIT_SSH_ALIAS"] == "issue-git"
+    assert captured_env["AGENT_POST_EXEC_VERIFICATION_PROMPT"] == "verify everything"
+    assert captured_env["ENABLE_GUEST_HEARTBEAT"] == "1"
+    assert captured_env["GUEST_HEARTBEAT_PROMPT"] == "continue working"
+    assert captured_env["AGENT_SANDBOX_AZURE_DEVOPS_PR_PAT_ENV"] == "AZURE_DEVOPS_PR_PAT"
+
+
+def test_create_issue_vm_uses_issue_setup_azure_pat_override(tmp_path: Path, monkeypatch) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    create_result = service.create_directory_child("root", "team")
+    assert create_result.ok is True and create_result.data is not None
+    team_path = create_result.data.details.directory.path
+    write_result = service.write_directory_domain_config(
+        team_path,
+        "issue_setup",
+        {
+            "git_root": "/tmp/git-remotes",
+            "git_host": "10.1.2.3",
+            "git_user": "gitbot",
+            "git_ssh_alias": "issue-git",
+            "issue_setup_azure_devops_pr_pat_env": "TEAM_ISSUE_SETUP_ADO_PAT",
+        },
+    )
+    assert write_result.ok is True
+
+    captured_env: dict[str, str] = {}
+
+    def fake_run(*args, **kwargs):
+        captured_env.update(kwargs.get("env", {}))
+        return subprocess.CompletedProcess(args[0], 0, stdout="", stderr="")
+
+    monkeypatch.setattr("agent_sandbox.admin_service.subprocess.run", fake_run)
+
+    result = service.create_issue_vm(
+        issue="125",
+        session_id="issue-125-session",
+        directory_path=team_path,
+        start_agent=False,
+    )
+
+    assert result.success is True
+    assert captured_env["AGENT_SANDBOX_AZURE_DEVOPS_PR_PAT_ENV"] == "TEAM_ISSUE_SETUP_ADO_PAT"
+
+
+def test_create_issue_vm_uses_issue_setup_fallback_env_when_domain_missing(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("AGENT_SANDBOX_GIT_ROOT", "/tmp/from-env")
+    monkeypatch.setenv("AGENT_SANDBOX_GIT_HOST", "10.55.0.1")
+    monkeypatch.setenv("AGENT_SANDBOX_GIT_USER", "env-user")
+    monkeypatch.setenv("AGENT_SANDBOX_GIT_SSH_ALIAS", "env-git")
+    monkeypatch.setenv("AGENT_SANDBOX_AZURE_DEVOPS_PR_PAT_ENV", "ENV_PAT_NAME")
+    monkeypatch.setenv("AGENT_POST_EXEC_VERIFICATION_PROMPT", "verify from env")
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+
+    captured_env: dict[str, str] = {}
+
+    def fake_run(*args, **kwargs):
+        captured_env.update(kwargs.get("env", {}))
+        return subprocess.CompletedProcess(args[0], 0, stdout="", stderr="")
+
+    monkeypatch.setattr("agent_sandbox.admin_service.subprocess.run", fake_run)
+
+    result = service.create_issue_vm(
+        issue="126",
+        session_id="issue-126-session",
+        directory_path="root",
+        start_agent=False,
+    )
+
+    assert result.success is True
+    assert captured_env["AGENT_SANDBOX_GIT_ROOT"] == "/tmp/from-env"
+    assert captured_env["AGENT_SANDBOX_GIT_HOST"] == "10.55.0.1"
+    assert captured_env["AGENT_SANDBOX_GIT_USER"] == "env-user"
+    assert captured_env["AGENT_SANDBOX_GIT_SSH_ALIAS"] == "env-git"
+    assert captured_env["AGENT_SANDBOX_AZURE_DEVOPS_PR_PAT_ENV"] == "ENV_PAT_NAME"
+    assert captured_env["AGENT_POST_EXEC_VERIFICATION_PROMPT"] == "verify from env"
+
+
+def test_create_issue_vm_never_uses_pat_secret_as_env_var_name(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("AGENT_SANDBOX_AZURE_DEVOPS_PR_PAT_ENV", raising=False)
+    monkeypatch.setenv("AZURE_DEVOPS_PR_PAT", "super-secret-pat")
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+
+    captured_env: dict[str, str] = {}
+
+    def fake_run(*args, **kwargs):
+        captured_env.update(kwargs.get("env", {}))
+        return subprocess.CompletedProcess(args[0], 0, stdout="", stderr="")
+
+    monkeypatch.setattr("agent_sandbox.admin_service.subprocess.run", fake_run)
+
+    result = service.create_issue_vm(
+        issue="127",
+        session_id="issue-127-session",
+        directory_path="root",
+        start_agent=False,
+    )
+
+    assert result.success is True
+    assert captured_env["AGENT_SANDBOX_AZURE_DEVOPS_PR_PAT_ENV"] == "AZURE_DEVOPS_PR_PAT"
 
 
 def test_admin_service_rejects_directory_edits_when_feature_flag_disabled(tmp_path: Path) -> None:

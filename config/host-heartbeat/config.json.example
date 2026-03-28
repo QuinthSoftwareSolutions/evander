@@ -1,0 +1,16 @@
+{
+  "runtime_dir": "runtime",
+  "host_heartbeat_directory_paths": [],
+  "host_heartbeat_poll_interval_seconds": 30,
+  "host_heartbeat_jitter_seconds": 5,
+  "host_heartbeat_cooldown_seconds": 60,
+  "host_heartbeat_http_timeout_seconds": 30,
+  "host_heartbeat_lock_path": null,
+  "host_heartbeat_session_cooldown_path": null,
+  "host_busy_check_script_path": "scripts/check_session_vm_busy.sh",
+  "host_resume_script_path": "scripts/resume_issue_agent.sh",
+  "host_heartbeat_wake_state_path": null,
+  "host_heartbeat_vm_user": "agent",
+  "host_heartbeat_resume_timeout_seconds": 1200,
+  "host_heartbeat_stream_conflict_policy": "fanout"
+}

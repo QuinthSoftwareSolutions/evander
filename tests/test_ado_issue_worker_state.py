@@ -47,7 +47,7 @@ def worker_config(tmp_path: Path) -> WorkerConfig:
     return WorkerConfig(
         organization_url="https://dev.azure.com/example",
         project="example",
-        pat_env_var_name="AZURE_DEVOPS_PAT",
+        pat_env_var_name="ADO_WORK_ITEMS_AZURE_DEVOPS_PAT",
         poll_interval_seconds=30.0,
         area_filters=(),
         team_filters=(),
@@ -100,6 +100,31 @@ def test_processed_store_mark_and_forget(worker_config: WorkerConfig) -> None:
 
     assert store.forget(123) is True
     assert store.is_processed(123) is False
+
+
+def test_processed_store_tracks_directory_scoped_entries_separately(worker_config: WorkerConfig) -> None:
+    store = ProcessedWorkItemStore(worker_config.processed_store_path)
+
+    store.mark_processed(
+        work_item_id=777,
+        yaml_path=worker_config.yaml_output_dir / "work-item-777.yaml",
+        script_exit_code=0,
+        output_snippet="root",
+        directory_path="root",
+    )
+    store.mark_processed(
+        work_item_id=777,
+        yaml_path=worker_config.yaml_output_dir / "team-a" / "work-item-777.yaml",
+        script_exit_code=0,
+        output_snippet="team-a",
+        directory_path="root/team-a",
+    )
+
+    payload = json.loads(worker_config.processed_store_path.read_text(encoding="utf-8"))
+    assert payload["777"]["script_output_snippet"] == "root"
+    assert payload["root/team-a::777"]["script_output_snippet"] == "team-a"
+    assert store.is_processed(777, directory_path="root") is True
+    assert store.is_processed(777, directory_path="root/team-a") is True
 
 
 def test_process_work_item_skips_when_already_processed(
@@ -283,6 +308,51 @@ def test_process_work_item_creates_session_manifest_before_setup(
     assert store.is_processed(14084) is True
     assert captured["manifest"]["session_id"] == captured["session_id"]
     assert captured["manifest"]["vm_id"] == "vm-14084"
+    assert captured["manifest"]["directory_path"] == "root"
+
+
+def test_process_work_item_uses_configured_directory_for_session_manifest(
+    worker_config: WorkerConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    directory_config = WorkerConfig(
+        **{
+            **worker_config.__dict__,
+            "directory_path": "root/team-a",
+        }
+    )
+    store = ProcessedWorkItemStore(directory_config.processed_store_path)
+    captured: dict[str, object] = {}
+
+    def successful_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        cmd = args[0]
+        assert isinstance(cmd, list)
+        session_id = next(
+            part for part in cmd if isinstance(part, str) and part.startswith("issue-14086-root-team-a-")
+        )
+        payload = json.loads((directory_config.runtime_dir / "sessions.json").read_text(encoding="utf-8"))
+        manifest = payload[session_id]
+        captured["session_id"] = session_id
+        captured["manifest"] = manifest
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="ok", stderr="")
+
+    monkeypatch.setattr("agent_sandbox.ado_issue_worker.subprocess.run", successful_run)
+
+    item = {
+        "id": 14086,
+        "title": "Do thing",
+        "description": "Details",
+        "tags": ["truman"],
+        "state": "Committed",
+        "url": "https://example/14086",
+        "updated_date": "2026-03-21T00:00:00Z",
+    }
+
+    succeeded = process_work_item(item, config=directory_config, store=store)
+
+    assert succeeded is True
+    assert store.is_processed(14086, directory_path="root/team-a") is True
+    assert captured["manifest"]["directory_path"] == "root/team-a"
 
 
 def test_process_work_item_attaches_directory_shadow_context(
@@ -581,7 +651,7 @@ def test_build_setup_command_includes_optional_arguments(tmp_path: Path) -> None
     config = WorkerConfig(
         organization_url="https://dev.azure.com/example",
         project="example",
-        pat_env_var_name="AZURE_DEVOPS_PAT",
+        pat_env_var_name="ADO_WORK_ITEMS_AZURE_DEVOPS_PAT",
         poll_interval_seconds=30.0,
         area_filters=(),
         team_filters=(),
@@ -643,7 +713,7 @@ def test_build_setup_command_omits_disabled_bootstraps_and_nuget_prewarm_target(
     config = WorkerConfig(
         organization_url="https://dev.azure.com/example",
         project="example",
-        pat_env_var_name="AZURE_DEVOPS_PAT",
+        pat_env_var_name="ADO_WORK_ITEMS_AZURE_DEVOPS_PAT",
         poll_interval_seconds=30.0,
         area_filters=(),
         team_filters=(),
@@ -718,6 +788,7 @@ def test_process_work_item_passes_timeout(
 
     assert succeeded is True
     assert isinstance(captured["env"], dict)
+    assert captured["env"]["AGENT_SANDBOX_AZURE_DEVOPS_PR_PAT_ENV"] == "ADO_WORK_ITEMS_AZURE_DEVOPS_PAT"
     assert captured["env"]["MSSQL_SA_PASSWORD"] == "SecretPassw0rd!"
     assert captured["timeout"] == worker_config.setup_timeout_seconds
 
@@ -748,7 +819,74 @@ def test_worker_config_load_from_env_accepts_legacy_mssql_password_env(
     config = WorkerConfig.load_from_env()
 
     assert config.bootstrap_mssql is True
+    assert config.pat_env_var_name == "ADO_WORK_ITEMS_AZURE_DEVOPS_PAT"
     assert config.mssql_sa_password == "SecretPassw0rd!"
+
+
+def test_worker_config_load_from_env_reads_ado_worker_global_config(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    gateway_config_path = tmp_path / "gateway.yaml"
+    gateway_config_path.write_text(
+        yaml.safe_dump(
+            {
+                "runtime_dir": str(tmp_path / "runtime"),
+                "azure_devops_organization_url": "https://dev.azure.com/example",
+                "azure_devops_project": "example",
+                "azure_devops_pat_env": "AZURE_DEVOPS_PAT",
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    worker_config_path = tmp_path / "config" / "ado-worker" / "config.json"
+    worker_config_path.parent.mkdir(parents=True, exist_ok=True)
+    worker_config_path.write_text(
+        json.dumps(
+            {
+                "runtime_dir": str(tmp_path / "runtime-custom"),
+                "poll_interval_seconds": 12.5,
+                "directories": ["root/team-a", "root/team-b"],
+                "yaml_output_dir": str(tmp_path / "yaml"),
+                "setup_log_dir": str(tmp_path / "logs"),
+                "processed_store_path": str(tmp_path / "processed.json"),
+                "setup_script_path": "scripts/custom-setup.sh",
+                "ado_work_items_azure_devops_pat_env": "JSON_WORK_ITEM_PAT",
+                "setup_timeout_seconds": 42.0,
+                "setup_concurrency_limit": 3,
+                "setup_lock_path": str(tmp_path / "locks" / "setup.lock"),
+                "fetch_retry_count": 4,
+                "fetch_retry_backoff_seconds": 1.5,
+                "include_comments": False,
+                "comments_max_count": 11,
+                "comment_text_max_chars": 777,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ADO_GATEWAY_CONFIG", str(gateway_config_path))
+    monkeypatch.setenv("ADO_PROJECT_OR_SOLUTION", "/tmp/Example.slnx")
+    monkeypatch.setenv("ADO_BOOTSTRAP_MSSQL", "false")
+
+    config = WorkerConfig.load_from_env()
+
+    assert config.runtime_dir == tmp_path / "runtime-custom"
+    assert config.poll_interval_seconds == 12.5
+    assert config.directories == ("root/team-a", "root/team-b")
+    assert config.yaml_output_dir == tmp_path / "yaml"
+    assert config.setup_log_dir == tmp_path / "logs"
+    assert config.processed_store_path == tmp_path / "processed.json"
+    assert config.setup_script_path == tmp_path / "scripts" / "custom-setup.sh"
+    assert config.pat_env_var_name == "JSON_WORK_ITEM_PAT"
+    assert config.setup_timeout_seconds == 42.0
+    assert config.setup_concurrency_limit == 3
+    assert config.setup_lock_path == tmp_path / "locks" / "setup.lock"
+    assert config.fetch_retry_count == 4
+    assert config.fetch_retry_backoff_seconds == 1.5
+    assert config.include_comments is False
+    assert config.comments_max_count == 11
+    assert config.comment_text_max_chars == 777
 
 
 def test_worker_config_load_from_env_requires_any_mssql_password_when_bootstrap_enabled(
@@ -774,11 +912,208 @@ def test_worker_config_load_from_env_requires_any_mssql_password_when_bootstrap_
     monkeypatch.delenv("ADO_MSSQL_SA_PASSWORD", raising=False)
     monkeypatch.delenv("MSSQL_SA_PASSWORD", raising=False)
 
-    with pytest.raises(ValueError, match="ADO_MSSQL_SA_PASSWORD or MSSQL_SA_PASSWORD is required"):
+    with pytest.raises(ValueError, match="Environment variable MSSQL_SA_PASSWORD is required"):
         WorkerConfig.load_from_env()
 
 
-def test_worker_config_load_from_env_uses_gateway_provider_config(
+def test_worker_config_load_from_env_uses_ado_worker_mssql_env_ref(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    gateway_config_path = tmp_path / "gateway.yaml"
+    gateway_config_path.write_text(
+        yaml.safe_dump(
+            {
+                "runtime_dir": str(tmp_path),
+                "azure_devops_organization_url": "https://dev.azure.com/example",
+                "azure_devops_project": "example",
+                "azure_devops_pat_env": "AZURE_DEVOPS_PAT",
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    directory_root = tmp_path / "directory-config" / "root"
+    directory_root.mkdir(parents=True, exist_ok=True)
+    (directory_root / "ado-worker.json").write_text(
+        json.dumps(
+            {
+                "ado_project_or_solution": "/tmp/Example.slnx",
+                "ado_repo_source": "/tmp/repo",
+                "ado_bootstrap_mssql": True,
+                "ado_mssql_sa_password_env": "TEAM_MSSQL_PASSWORD",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ADO_GATEWAY_CONFIG", str(gateway_config_path))
+    monkeypatch.setenv("TEAM_MSSQL_PASSWORD", "TopSecret!")
+
+    config = WorkerConfig.load_from_env()
+
+    assert config.bootstrap_mssql is True
+    assert config.mssql_sa_password == "TopSecret!"
+    assert config.repo_path == "/tmp/repo"
+
+
+def test_worker_config_load_from_env_uses_dedicated_worker_pat_env_setting(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    gateway_config_path = tmp_path / "gateway.yaml"
+    gateway_config_path.write_text(
+        yaml.safe_dump(
+            {
+                "runtime_dir": str(tmp_path),
+                "azure_devops_organization_url": "https://dev.azure.com/example-org",
+                "azure_devops_project": "example-project",
+                "azure_devops_pat_env": "ADO_DIRECTORY_PAT",
+                "ado_project_or_solution": "/tmp/FromGateway.slnx",
+                "ado_area_filters": ["Root\\Area"],
+                "ado_bootstrap_mssql": False,
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    worker_config_dir = tmp_path / "config" / "ado-worker"
+    worker_config_dir.mkdir(parents=True, exist_ok=True)
+    (worker_config_dir / "config.json").write_text(
+        json.dumps({"ado_work_items_azure_devops_pat_env": "JSON_WORK_ITEM_PAT"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ADO_GATEWAY_CONFIG", str(gateway_config_path))
+    monkeypatch.setenv("ADO_PROJECT_OR_SOLUTION", "/tmp/Example.slnx")
+    monkeypatch.setenv("ADO_BOOTSTRAP_MSSQL", "false")
+
+    with caplog.at_level("WARNING"):
+        config = WorkerConfig.load_from_env()
+
+    assert config.organization_url == "https://dev.azure.com/example-org"
+    assert config.project == "example-project"
+    assert config.pat_env_var_name == "JSON_WORK_ITEM_PAT"
+    assert config.prewarm_target == "/tmp/Example.slnx"
+    assert config.area_filters == ("Root\\Area",)
+    assert config.bootstrap_mssql is False
+    assert "Deprecated ADO worker env override in use for ado_project_or_solution" in caplog.text
+
+
+def test_worker_config_load_from_env_prefers_worker_json_config(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    gateway_config_path = tmp_path / "gateway.yaml"
+    gateway_config_path.write_text(
+        yaml.safe_dump(
+            {
+                "runtime_dir": str(tmp_path),
+                "azure_devops_organization_url": "https://dev.azure.com/example-org",
+                "azure_devops_project": "example-project",
+                "azure_devops_pat_env": "ADO_DIRECTORY_PAT",
+                "ado_project_or_solution": "/tmp/FromGateway.slnx",
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    worker_config_dir = tmp_path / "config" / "ado-worker"
+    worker_config_dir.mkdir(parents=True, exist_ok=True)
+    (worker_config_dir / "config.json").write_text(
+        json.dumps(
+            {
+                "poll_interval_seconds": 45,
+                "directories": ["root/team-a"],
+                "runtime_dir": "json-runtime",
+                "yaml_output_dir": "json-runtime/yaml",
+                "setup_log_dir": "json-runtime/logs",
+                "processed_store_path": "json-runtime/state/processed.json",
+                "setup_script_path": "scripts/from-json.sh",
+                "ado_work_items_azure_devops_pat_env": "JSON_WORK_ITEM_PAT",
+                "setup_timeout_seconds": 999,
+                "setup_concurrency_limit": 3,
+                "setup_lock_path": "json-runtime/locks/setup.lock",
+                "fetch_retry_count": 7,
+                "fetch_retry_backoff_seconds": 9.5,
+                "include_comments": False,
+                "comments_max_count": 3,
+                "comment_text_max_chars": 1234,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ADO_GATEWAY_CONFIG", str(gateway_config_path))
+    monkeypatch.setenv("ADO_PROJECT_OR_SOLUTION", "/tmp/Example.slnx")
+    monkeypatch.setenv("ADO_BOOTSTRAP_MSSQL", "false")
+    monkeypatch.setenv("ADO_POLL_INTERVAL_SECONDS", "10")
+    monkeypatch.setenv("ADO_RUNTIME_DIR", "env-runtime")
+    monkeypatch.setenv("ADO_YAML_OUTPUT_DIR", "env-runtime/yaml")
+    monkeypatch.setenv("ADO_SETUP_LOG_DIR", "env-runtime/logs")
+    monkeypatch.setenv("ADO_PROCESSED_STORE_PATH", "env-runtime/state/processed.json")
+    monkeypatch.setenv("ADO_SETUP_ISSUE_VM_SCRIPT", "scripts/from-env.sh")
+    monkeypatch.setenv("ADO_SETUP_TIMEOUT_SECONDS", "111")
+    monkeypatch.setenv("ADO_SETUP_CONCURRENCY_LIMIT", "9")
+    monkeypatch.setenv("ADO_SETUP_LOCK_PATH", "env-runtime/locks/setup.lock")
+    monkeypatch.setenv("ADO_FETCH_RETRY_COUNT", "2")
+    monkeypatch.setenv("ADO_FETCH_RETRY_BACKOFF_SECONDS", "1.0")
+    monkeypatch.setenv("ADO_INCLUDE_COMMENTS", "true")
+    monkeypatch.setenv("ADO_COMMENTS_MAX_COUNT", "8")
+    monkeypatch.setenv("ADO_COMMENT_TEXT_MAX_CHARS", "456")
+
+    config = WorkerConfig.load_from_env()
+
+    assert config.poll_interval_seconds == 45
+    assert config.directories == ("root/team-a",)
+    assert config.runtime_dir == tmp_path / "json-runtime"
+    assert config.yaml_output_dir == tmp_path / "json-runtime" / "yaml"
+    assert config.setup_log_dir == tmp_path / "json-runtime" / "logs"
+    assert config.processed_store_path == tmp_path / "json-runtime" / "state" / "processed.json"
+    assert config.setup_script_path == tmp_path / "scripts" / "from-json.sh"
+    assert config.pat_env_var_name == "JSON_WORK_ITEM_PAT"
+    assert config.setup_timeout_seconds == 999
+    assert config.setup_concurrency_limit == 3
+    assert config.setup_lock_path == tmp_path / "json-runtime" / "locks" / "setup.lock"
+    assert config.fetch_retry_count == 7
+    assert config.fetch_retry_backoff_seconds == 9.5
+    assert config.include_comments is False
+    assert config.comments_max_count == 3
+    assert config.comment_text_max_chars == 1234
+
+
+def test_worker_config_load_from_env_warns_on_deprecated_env_override(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    gateway_config_path = tmp_path / "gateway.yaml"
+    gateway_config_path.write_text(
+        yaml.safe_dump(
+            {
+                "runtime_dir": str(tmp_path),
+                "azure_devops_organization_url": "https://dev.azure.com/example-org",
+                "azure_devops_project": "example-project",
+                "azure_devops_pat_env": "ADO_DIRECTORY_PAT",
+                "ado_project_or_solution": "/tmp/FromGateway.slnx",
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ADO_GATEWAY_CONFIG", str(gateway_config_path))
+    monkeypatch.setenv("ADO_PROJECT_OR_SOLUTION", "/tmp/FromEnv.slnx")
+    monkeypatch.setenv("ADO_REPO_PATH", "/tmp/from-env-repo")
+    monkeypatch.setenv("ADO_BOOTSTRAP_MSSQL", "false")
+
+    with caplog.at_level("WARNING"):
+        config = WorkerConfig.load_from_env()
+
+    assert config.prewarm_target == "/tmp/FromEnv.slnx"
+    assert config.repo_path == "/tmp/from-env-repo"
+    assert "Deprecated ADO worker env override in use for ado_project_or_solution" in caplog.text
+    assert "Deprecated ADO worker env override in use for ado_repo_source" in caplog.text
+
+
+def test_run_worker_command_forget_does_not_require_mssql_secret(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -795,15 +1130,46 @@ def test_worker_config_load_from_env_uses_gateway_provider_config(
         ),
         encoding="utf-8",
     )
+    directory_root = tmp_path / "directory-config" / "root"
+    directory_root.mkdir(parents=True, exist_ok=True)
+    (directory_root / "ado-worker.json").write_text(
+        json.dumps(
+            {
+                "ado_project_or_solution": "/tmp/Example.slnx",
+                "ado_bootstrap_mssql": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    processed_store_path = tmp_path / "processed.json"
+    processed_store_path.write_text(
+        json.dumps(
+            {
+                "14382": {
+                    "work_item_id": 14382,
+                    "yaml_path": str(tmp_path / "ado-work-items" / "work-item-14382.yaml"),
+                    "script_exit_code": 0,
+                    "script_output_snippet": "ok",
+                    "processed_at": "2026-03-28T12:00:00+00:00",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    worker_config_dir = tmp_path / "config" / "ado-worker"
+    worker_config_dir.mkdir(parents=True, exist_ok=True)
+    (worker_config_dir / "config.json").write_text(
+        json.dumps({"processed_store_path": str(processed_store_path)}),
+        encoding="utf-8",
+    )
     monkeypatch.setenv("ADO_GATEWAY_CONFIG", str(gateway_config_path))
-    monkeypatch.setenv("ADO_PROJECT_OR_SOLUTION", "/tmp/Example.slnx")
-    monkeypatch.setenv("ADO_BOOTSTRAP_MSSQL", "false")
+    monkeypatch.delenv("ADO_MSSQL_SA_PASSWORD", raising=False)
+    monkeypatch.delenv("MSSQL_SA_PASSWORD", raising=False)
 
-    config = WorkerConfig.load_from_env()
+    run_worker_command(log_level="INFO", forget=14382)
 
-    assert config.organization_url == "https://dev.azure.com/example-org"
-    assert config.project == "example-project"
-    assert config.pat_env_var_name == "ADO_DIRECTORY_PAT"
+    payload = json.loads(processed_store_path.read_text(encoding="utf-8"))
+    assert "14382" not in payload
 
 
 @pytest.mark.parametrize(
@@ -1273,6 +1639,122 @@ def test_list_unprocessed_work_items_filters_processed(
     ]
 
 
+def test_unprocessed_items_for_worker_iterates_configured_directories(
+    worker_config: WorkerConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent_sandbox import ado_issue_worker as ado_worker
+
+    runtime_gateway_config = yaml.safe_load(
+        json.dumps(
+            {
+                "runtime_dir": str(worker_config.runtime_dir),
+                "session_store_path": str(worker_config.runtime_dir / "sessions.json"),
+                "approval_store_path": str(worker_config.runtime_dir / "approvals.json"),
+                "draft_store_path": str(worker_config.runtime_dir / "drafts.json"),
+                "email_store_path": str(worker_config.runtime_dir / "emails.json"),
+                "discord_command_store_path": str(worker_config.runtime_dir / "discord_commands.json"),
+                "audit_log_path": str(worker_config.runtime_dir / "audit.jsonl"),
+                "directories_store_path": str(worker_config.runtime_dir / "directories.json"),
+            }
+        )
+    )
+    gateway_config = ado_worker.GatewayConfig.model_validate(runtime_gateway_config)
+    configured = WorkerConfig(
+        **{
+            **worker_config.__dict__,
+            "directories": ("root/team-a", "root/team-b"),
+        }
+    )
+    seen: list[str] = []
+
+    def fake_resolve(config: WorkerConfig, runtime_gateway_config: object, directory_path: str) -> WorkerConfig:
+        return WorkerConfig(
+            **{
+                **config.__dict__,
+                "directory_path": directory_path,
+            }
+        )
+
+    def fake_list_unprocessed_work_items(*, client, config, auth_header, store):
+        seen.append(config.directory_path)
+        return [{"id": len(seen), "title": config.directory_path}]
+
+    monkeypatch.setattr(ado_worker, "_resolve_directory_worker_config", fake_resolve)
+    monkeypatch.setattr(ado_worker, "list_unprocessed_work_items", fake_list_unprocessed_work_items)
+
+    with httpx.Client() as client:
+        items = ado_worker._unprocessed_items_for_worker(
+            client=client,
+            config=configured,
+            auth_header="Basic token",
+            store=ProcessedWorkItemStore(configured.processed_store_path),
+            runtime_gateway_config=gateway_config,
+        )
+
+    assert seen == ["root/team-a", "root/team-b"]
+    assert items == [{"id": 1, "title": "root/team-a"}, {"id": 2, "title": "root/team-b"}]
+
+
+def test_poll_and_process_directory_uses_directory_specific_config(
+    worker_config: WorkerConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent_sandbox import ado_issue_worker as ado_worker
+
+    runtime_gateway_config = ado_worker.GatewayConfig.model_validate(
+        {
+            "runtime_dir": str(worker_config.runtime_dir),
+            "session_store_path": str(worker_config.runtime_dir / "sessions.json"),
+            "approval_store_path": str(worker_config.runtime_dir / "approvals.json"),
+            "draft_store_path": str(worker_config.runtime_dir / "drafts.json"),
+            "email_store_path": str(worker_config.runtime_dir / "emails.json"),
+            "discord_command_store_path": str(worker_config.runtime_dir / "discord_commands.json"),
+            "audit_log_path": str(worker_config.runtime_dir / "audit.jsonl"),
+            "directories_store_path": str(worker_config.runtime_dir / "directories.json"),
+        }
+    )
+    configured = WorkerConfig(
+        **{
+            **worker_config.__dict__,
+            "directories": ("root/team-a",),
+        }
+    )
+    calls: list[tuple[str, str, int | None]] = []
+
+    def fake_resolve(config: WorkerConfig, runtime_gateway_config: object, directory_path: str) -> WorkerConfig:
+        return WorkerConfig(
+            **{
+                **config.__dict__,
+                "directory_path": directory_path,
+            }
+        )
+
+    def fake_poll_once(*, client, config, auth_header):
+        calls.append(("poll", config.directory_path, None))
+        return [{"id": 99, "title": config.directory_path}]
+
+    def fake_process_work_item(item, *, config, store, client=None, auth_header=None):
+        calls.append(("process", config.directory_path, int(item["id"])))
+        return True
+
+    monkeypatch.setattr(ado_worker, "_resolve_directory_worker_config", fake_resolve)
+    monkeypatch.setattr(ado_worker, "poll_once", fake_poll_once)
+    monkeypatch.setattr(ado_worker, "process_work_item", fake_process_work_item)
+
+    with httpx.Client() as client:
+        ado_worker._poll_and_process_directory(
+            client=client,
+            config=configured,
+            auth_header="Basic token",
+            store=ProcessedWorkItemStore(configured.processed_store_path),
+            runtime_gateway_config=runtime_gateway_config,
+            directory_path="root/team-a",
+        )
+
+    assert calls == [("poll", "root/team-a", None), ("process", "root/team-a", 99)]
+
+
 def test_format_work_item_listing_uses_tab_separated_fields() -> None:
     line = format_work_item_listing(
         {
@@ -1294,7 +1776,7 @@ def test_run_worker_command_lists_unprocessed_items(
     monkeypatch.setattr("agent_sandbox.ado_issue_worker.WorkerConfig.load_from_env", lambda: worker_config)
     monkeypatch.setattr("agent_sandbox.ado_issue_worker._require_env", lambda _name: "pat")
     monkeypatch.setattr(
-        "agent_sandbox.ado_issue_worker.list_unprocessed_work_items",
+        "agent_sandbox.ado_issue_worker._unprocessed_items_for_worker",
         lambda **kwargs: [
             {
                 "id": 42,

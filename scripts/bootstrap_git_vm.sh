@@ -19,6 +19,7 @@ Environment:
   AGENT_SANDBOX_GIT_ROOT          Host directory containing bare remotes.
   AGENT_SANDBOX_GIT_SSH_ALIAS     Guest SSH host alias. Default: agent-sandbox-git-host
   AGENT_SANDBOX_GIT_ALLOWED_FROM  Source CIDR allowed in the host authorized_keys entry.
+  Values can also come from root directory-scoped issue setup config.
 EOF
 }
 
@@ -38,7 +39,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # shellcheck source=lib/guest_ssh.sh
 source "${SCRIPT_DIR}/lib/guest_ssh.sh"
-ENV_FILE="${ROOT_DIR}/config/git-server.env"
+# shellcheck source=lib/runtime_config.sh
+source "${SCRIPT_DIR}/lib/runtime_config.sh"
 CALLER_USER="${SUDO_USER:-$USER}"
 CALLER_HOME="$(getent passwd "${CALLER_USER}" | cut -d: -f6)"
 SSH_KEY_PATH="${SSH_KEY_PATH:-${CALLER_HOME}/.ssh/id_ed25519}"
@@ -47,11 +49,7 @@ if [[ ! -f "${SSH_KEY_PATH}" ]]; then
   SSH_KEY_PATH="${CALLER_HOME}/.ssh/id_rsa"
 fi
 
-if [[ -f "${ENV_FILE}" ]]; then
-  set -a
-  . "${ENV_FILE}"
-  set +a
-fi
+load_issue_setup_config
 
 GIT_HOST="${AGENT_SANDBOX_GIT_HOST:-192.168.250.1}"
 GIT_USER="${AGENT_SANDBOX_GIT_USER:-${CALLER_USER}}"

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -40,6 +41,7 @@ def _prepare_sandbox(tmp_path: Path) -> tuple[Path, Path, Path]:
         Path(__file__).resolve().parents[1] / "scripts" / "lib" / "agent_runner_codex.sh"
     )
     source_state_lib = Path(__file__).resolve().parents[1] / "scripts" / "lib" / "agent_state.sh"
+    source_runtime_config_lib = Path(__file__).resolve().parents[1] / "scripts" / "lib" / "runtime_config.sh"
     (lib_dir / "agent_runner.sh").write_text(source_runner_lib.read_text(encoding="utf-8"), encoding="utf-8")
     (lib_dir / "agent_runner_codex.sh").write_text(
         source_runner_codex_lib.read_text(encoding="utf-8"),
@@ -49,6 +51,11 @@ def _prepare_sandbox(tmp_path: Path) -> tuple[Path, Path, Path]:
         source_state_lib.read_text(encoding="utf-8"),
         encoding="utf-8",
     )
+    (lib_dir / "runtime_config.sh").write_text(
+        source_runtime_config_lib.read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    os.chmod(lib_dir / "runtime_config.sh", 0o755)
 
     _write_executable(
         scripts_dir / "resolve_repo_source.sh",
@@ -186,8 +193,18 @@ def test_setup_issue_vm_reads_git_root_from_config_file(tmp_path: Path) -> None:
 
     configured_git_root = tmp_path / "from-config-git-root"
     configured_git_root.mkdir()
-    (root / "config" / "git-server.env").write_text(
-        f"AGENT_SANDBOX_GIT_ROOT={configured_git_root}\n",
+    (root / "runtime" / "directory-config" / "root").mkdir(parents=True, exist_ok=True)
+    (root / "runtime" / "directory-config" / "root" / "issue-setup.json").write_text(
+        json.dumps(
+            {
+                "git_root": str(configured_git_root),
+                "git_host": "10.1.2.3",
+                "git_user": "gitbot",
+                "git_ssh_alias": "issue-git",
+                "enable_guest_heartbeat": False,
+                "guest_heartbeat_prompt": "continue",
+            }
+        ),
         encoding="utf-8",
     )
 

@@ -18,15 +18,199 @@ from typing import Any
 import httpx
 import yaml
 
-from .worker_directory_context import WorkerDirectoryContextResolver, log_shadow_context
-
-from .bootstrap import load_runtime_gateway_config, resolve_runtime_dir
+from .bootstrap import load_runtime_gateway_config, resolve_project_dir
 from .config import GatewayConfig
-from .models import SessionManifest, ToolName
+from .directories import DirectoryService, DirectoryStore
+from .directory_config import (
+    DirectoryConfigResolver,
+    DirectoryConfigStore,
+    get_domain_base_config,
+    validate_effective_domain_payload,
+)
+from .models import DirectoryPath, SessionManifest, ToolName
 from .policy_config import EffectivePolicyConfig
 from .provider_config import ProviderConfigResolver
 from .runtime import build_runtime
 from .vm_defaults_config import VmDefaultsConfigResolver
+from .worker_directory_context import WorkerDirectoryContextResolver, log_shadow_context
+
+_LOG = logging.getLogger(__name__)
+_DEFAULT_ADO_MSSQL_SA_PASSWORD_ENV = "MSSQL_SA_PASSWORD"
+_LEGACY_ADO_MSSQL_SA_PASSWORD_ENV = "ADO_MSSQL_SA_PASSWORD"
+_ADO_WORKER_CONFIG_RELATIVE_PATH = Path("config") / "ado-worker" / "config.json"
+
+
+@dataclass(frozen=True)
+class AdoWorkerRuntimeConfig:
+    poll_interval_seconds: float
+    directories: tuple[str, ...]
+    runtime_dir: Path
+    yaml_output_dir: Path
+    setup_log_dir: Path
+    processed_store_path: Path
+    setup_script_path: Path
+    ado_work_items_azure_devops_pat_env: str
+    setup_timeout_seconds: float
+    setup_concurrency_limit: int
+    setup_lock_path: Path
+    fetch_retry_count: int
+    fetch_retry_backoff_seconds: float
+    include_comments: bool
+    comments_max_count: int
+    comment_text_max_chars: int
+
+    @classmethod
+    def load(cls, *, workspace_root: Path, legacy_env_runtime_dir: str | None = None) -> AdoWorkerRuntimeConfig:
+        raw_config = _load_json_object(workspace_root / _ADO_WORKER_CONFIG_RELATIVE_PATH)
+        runtime_dir_default = Path(legacy_env_runtime_dir or "runtime").expanduser()
+        if not runtime_dir_default.is_absolute():
+            runtime_dir_default = workspace_root / runtime_dir_default
+        runtime_dir = _resolve_path_setting(
+            raw_config,
+            workspace_root=workspace_root,
+            json_keys=("runtime_dir", "ADO_RUNTIME_DIR"),
+            env_name="ADO_RUNTIME_DIR",
+            default=runtime_dir_default,
+        )
+        if runtime_dir is None:
+            raise ValueError("runtime_dir must resolve to a non-empty path.")
+        yaml_output_dir = _resolve_path_setting(
+            raw_config,
+            workspace_root=workspace_root,
+            json_keys=("yaml_output_dir", "ADO_YAML_OUTPUT_DIR"),
+            env_name="ADO_YAML_OUTPUT_DIR",
+            default=runtime_dir / "ado-work-items",
+        )
+        setup_log_dir = _resolve_path_setting(
+            raw_config,
+            workspace_root=workspace_root,
+            json_keys=("setup_log_dir", "ADO_SETUP_LOG_DIR"),
+            env_name="ADO_SETUP_LOG_DIR",
+            default=runtime_dir / "setup-logs",
+        )
+        directories = _resolve_string_list_setting(
+            raw_config,
+            json_keys=("directories", "ADO_DIRECTORIES"),
+            env_name="ADO_DIRECTORIES",
+            default=(),
+        )
+        processed_store_path = _resolve_path_setting(
+            raw_config,
+            workspace_root=workspace_root,
+            json_keys=("processed_store_path", "ADO_PROCESSED_STORE_PATH"),
+            env_name="ADO_PROCESSED_STORE_PATH",
+            default=runtime_dir / "ado-processed-work-items.json",
+        )
+        setup_script_path = _resolve_path_setting(
+            raw_config,
+            workspace_root=workspace_root,
+            json_keys=("setup_script_path", "ADO_SETUP_ISSUE_VM_SCRIPT"),
+            env_name="ADO_SETUP_ISSUE_VM_SCRIPT",
+            default=workspace_root / "scripts" / "setup_issue_vm.sh",
+        )
+        ado_work_items_azure_devops_pat_env = _resolve_string_setting(
+            raw_config,
+            json_keys=(
+                "ado_work_items_azure_devops_pat_env",
+                "ADO_WORK_ITEMS_AZURE_DEVOPS_PAT_ENV",
+            ),
+            env_name="ADO_WORK_ITEMS_AZURE_DEVOPS_PAT_ENV",
+            default="ADO_WORK_ITEMS_AZURE_DEVOPS_PAT",
+        )
+        setup_timeout_seconds = _resolve_numeric_setting(
+            raw_config,
+            json_keys=("setup_timeout_seconds", "ADO_SETUP_TIMEOUT_SECONDS"),
+            env_name="ADO_SETUP_TIMEOUT_SECONDS",
+            default=1800.0,
+            kind="float",
+            minimum=1.0,
+        )
+        setup_concurrency_limit = int(
+            _resolve_numeric_setting(
+                raw_config,
+                json_keys=("setup_concurrency_limit", "ADO_SETUP_CONCURRENCY_LIMIT"),
+                env_name="ADO_SETUP_CONCURRENCY_LIMIT",
+                default=1,
+                kind="int",
+                minimum=1,
+            )
+        )
+        setup_lock_path = _resolve_path_setting(
+            raw_config,
+            workspace_root=workspace_root,
+            json_keys=("setup_lock_path", "ADO_SETUP_LOCK_PATH"),
+            env_name="ADO_SETUP_LOCK_PATH",
+            default=runtime_dir / "setup-issue-vm.lock",
+        )
+        fetch_retry_count = int(
+            _resolve_numeric_setting(
+                raw_config,
+                json_keys=("fetch_retry_count", "ADO_FETCH_RETRY_COUNT"),
+                env_name="ADO_FETCH_RETRY_COUNT",
+                default=2,
+                kind="int",
+                minimum=0,
+            )
+        )
+        fetch_retry_backoff_seconds = _resolve_numeric_setting(
+            raw_config,
+            json_keys=("fetch_retry_backoff_seconds", "ADO_FETCH_RETRY_BACKOFF_SECONDS"),
+            env_name="ADO_FETCH_RETRY_BACKOFF_SECONDS",
+            default=2.0,
+            kind="float",
+            minimum=0.0,
+        )
+        include_comments = _resolve_bool_setting(
+            raw_config,
+            json_keys=("include_comments", "ADO_INCLUDE_COMMENTS"),
+            env_name="ADO_INCLUDE_COMMENTS",
+            default=True,
+        )
+        comments_max_count = int(
+            _resolve_numeric_setting(
+                raw_config,
+                json_keys=("comments_max_count", "ADO_COMMENTS_MAX_COUNT"),
+                env_name="ADO_COMMENTS_MAX_COUNT",
+                default=20,
+                kind="int",
+                minimum=1,
+            )
+        )
+        comment_text_max_chars = int(
+            _resolve_numeric_setting(
+                raw_config,
+                json_keys=("comment_text_max_chars", "ADO_COMMENT_TEXT_MAX_CHARS"),
+                env_name="ADO_COMMENT_TEXT_MAX_CHARS",
+                default=4000,
+                kind="int",
+                minimum=1,
+            )
+        )
+        return cls(
+            poll_interval_seconds=_resolve_numeric_setting(
+                raw_config,
+                json_keys=("poll_interval_seconds", "ADO_POLL_INTERVAL_SECONDS"),
+                env_name="ADO_POLL_INTERVAL_SECONDS",
+                default=30.0,
+                kind="float",
+                minimum=0.0,
+            ),
+            runtime_dir=runtime_dir,
+            directories=directories,
+            yaml_output_dir=yaml_output_dir,
+            setup_log_dir=setup_log_dir,
+            processed_store_path=processed_store_path,
+            setup_script_path=setup_script_path,
+            ado_work_items_azure_devops_pat_env=ado_work_items_azure_devops_pat_env,
+            setup_timeout_seconds=setup_timeout_seconds,
+            setup_concurrency_limit=setup_concurrency_limit,
+            setup_lock_path=setup_lock_path,
+            fetch_retry_count=fetch_retry_count,
+            fetch_retry_backoff_seconds=fetch_retry_backoff_seconds,
+            include_comments=include_comments,
+            comments_max_count=comments_max_count,
+            comment_text_max_chars=comment_text_max_chars,
+        )
 
 
 @dataclass(frozen=True)
@@ -63,6 +247,8 @@ class WorkerConfig:
     include_comments: bool
     comments_max_count: int
     comment_text_max_chars: int
+    directories: tuple[str, ...] = ()
+    directory_path: str = "root"
     session_ttl_hours: int = 8
     gateway_config_path: Path | None = None
     legacy_config_path: Path | None = None
@@ -70,115 +256,210 @@ class WorkerConfig:
     @classmethod
     def load_from_env(cls) -> WorkerConfig:
         legacy_config_env = os.environ.get("ADO_GATEWAY_CONFIG", os.environ.get("AGENT_SANDBOX_CONFIG", "")).strip()
-
-        poll_interval_raw = os.environ.get("ADO_POLL_INTERVAL_SECONDS", "30")
-        try:
-            poll_interval_seconds = float(poll_interval_raw)
-        except ValueError as exc:
-            raise ValueError("ADO_POLL_INTERVAL_SECONDS must be numeric.") from exc
-        if poll_interval_seconds <= 0:
-            raise ValueError("ADO_POLL_INTERVAL_SECONDS must be > 0.")
-
-        runtime_dir_env = os.environ.get("ADO_RUNTIME_DIR", "").strip()
-        runtime_dir = Path(runtime_dir_env or "runtime").expanduser()
         legacy_config_path = Path(legacy_config_env).expanduser() if legacy_config_env else None
+        workspace_root = resolve_project_dir(legacy_config_path=legacy_config_path)
+        runtime_dir_env = os.environ.get("ADO_RUNTIME_DIR", "").strip() or None
+        worker_runtime_config = AdoWorkerRuntimeConfig.load(
+            workspace_root=workspace_root,
+            legacy_env_runtime_dir=runtime_dir_env,
+        )
+        runtime_dir = worker_runtime_config.runtime_dir
         runtime_gateway_config = load_runtime_gateway_config(
-            runtime_dir=resolve_runtime_dir(
-                runtime_dir=runtime_dir if runtime_dir_env else None,
-                legacy_config_path=legacy_config_path,
-            ),
+            runtime_dir=runtime_dir,
             legacy_config_path=legacy_config_path,
         )
-        provider_config = ProviderConfigResolver(runtime_gateway_config).resolve_for_directory("root")
-        organization_url = provider_config.azure_devops_organization_url
-        project = provider_config.azure_devops_project
-        pat_env_var_name = provider_config.azure_devops_pat_env.strip()
-        if not pat_env_var_name:
-            raise ValueError("azure_devops_pat_env must not be empty in the gateway configuration.")
-        yaml_output_dir = Path(
-            os.environ.get("ADO_YAML_OUTPUT_DIR", str(runtime_dir / "ado-work-items"))
-        ).expanduser()
-        setup_log_dir = Path(
-            os.environ.get("ADO_SETUP_LOG_DIR", str(runtime_dir / "setup-logs"))
-        ).expanduser()
-        processed_store_path = Path(
-            os.environ.get("ADO_PROCESSED_STORE_PATH", str(runtime_dir / "ado-processed-work-items.json"))
-        ).expanduser()
+        return _resolve_worker_config_for_directory(
+            worker_runtime_config=worker_runtime_config,
+            runtime_gateway_config=runtime_gateway_config,
+            directory_path="root",
+            legacy_config_path=legacy_config_path,
+            repo_path=_optional_env("ADO_REPO_PATH"),
+            session_id=_optional_env("ADO_SESSION_ID"),
+            vm_user=_optional_env("ADO_VM_USER"),
+            session_ttl_hours=_int_env("ADO_SESSION_TTL_HOURS", 8, minimum=1),
+        )
 
-        prewarm_target = _optional_env("ADO_PREWARM_TARGET") or _require_env("ADO_PROJECT_OR_SOLUTION")
-        setup_script_path = Path(
-            os.environ.get("ADO_SETUP_ISSUE_VM_SCRIPT", "scripts/setup_issue_vm.sh")
-        ).expanduser()
-        setup_timeout_seconds = _float_env("ADO_SETUP_TIMEOUT_SECONDS", 1800.0, minimum=1.0)
-        setup_concurrency_limit = _int_env("ADO_SETUP_CONCURRENCY_LIMIT", 1, minimum=1)
-        setup_lock_path = Path(
-            os.environ.get("ADO_SETUP_LOCK_PATH", str(runtime_dir / "setup-issue-vm.lock"))
-        ).expanduser()
-        fetch_retry_count = _int_env("ADO_FETCH_RETRY_COUNT", 2, minimum=0)
-        fetch_retry_backoff_seconds = _float_env("ADO_FETCH_RETRY_BACKOFF_SECONDS", 2.0, minimum=0.0)
-        bootstrap_dotnet = _bool_env("ADO_BOOTSTRAP_DOTNET", True)
-        bootstrap_nuget = _bool_env("ADO_BOOTSTRAP_NUGET", True)
-        bootstrap_mssql = _bool_env("ADO_BOOTSTRAP_MSSQL", True)
-        mssql_sa_password = _optional_env_first("ADO_MSSQL_SA_PASSWORD", "MSSQL_SA_PASSWORD")
-        mssql_init_root = _optional_env("ADO_MSSQL_INIT_ROOT")
-        if bootstrap_mssql and not mssql_sa_password:
+
+def _resolve_worker_config_for_directory(
+    *,
+    worker_runtime_config: AdoWorkerRuntimeConfig,
+    runtime_gateway_config: GatewayConfig,
+    directory_path: str,
+    legacy_config_path: Path | None,
+    repo_path: str | None,
+    session_id: str | None,
+    vm_user: str | None,
+    session_ttl_hours: int,
+) -> WorkerConfig:
+    directory_store = DirectoryStore(runtime_gateway_config.directories_store_path)
+    directory_store.ensure_root()
+    directory_service = DirectoryService(directory_store)
+    normalized_directory_path = directory_service.show(directory_path).directory.path
+    config_store = DirectoryConfigStore(directory_store, runtime_dir=runtime_gateway_config.runtime_dir)
+    provider_config = ProviderConfigResolver(runtime_gateway_config).resolve_for_directory(normalized_directory_path)
+    ado_worker_config = (
+        DirectoryConfigResolver(
+            directory_service,
+            base_gateway_config=runtime_gateway_config,
+            config_store=config_store,
+        )
+        .resolve_domain(
+            normalized_directory_path,
+            domain="ado_worker",
+            base_config=get_domain_base_config(runtime_gateway_config, "ado_worker"),
+            validator=lambda candidate: validate_effective_domain_payload("ado_worker", candidate),
+        )
+        .effective_config
+    )
+    organization_url = provider_config.azure_devops_organization_url
+    project = provider_config.azure_devops_project
+    pat_env_var_name = (
+        worker_runtime_config.ado_work_items_azure_devops_pat_env.strip()
+        or "ADO_WORK_ITEMS_AZURE_DEVOPS_PAT"
+    )
+    project_or_solution = _domain_str_with_env_override(
+        "ado_project_or_solution",
+        ado_worker_config,
+        env_name="ADO_PROJECT_OR_SOLUTION",
+        default="",
+        required=True,
+    )
+    prewarm_target = _domain_optional_str_with_env_override(
+        "ado_prewarm_target",
+        ado_worker_config,
+        env_name="ADO_PREWARM_TARGET",
+    ) or project_or_solution
+    repo_path = _domain_optional_str_with_env_override(
+        "ado_repo_source",
+        ado_worker_config,
+        env_name="ADO_REPO_PATH",
+    )
+    bootstrap_dotnet = _domain_bool_with_env_override(
+        "ado_bootstrap_dotnet",
+        ado_worker_config,
+        env_name="ADO_BOOTSTRAP_DOTNET",
+        default=True,
+    )
+    bootstrap_nuget = _domain_bool_with_env_override(
+        "ado_bootstrap_nuget",
+        ado_worker_config,
+        env_name="ADO_BOOTSTRAP_NUGET",
+        default=True,
+    )
+    bootstrap_mssql = _domain_bool_with_env_override(
+        "ado_bootstrap_mssql",
+        ado_worker_config,
+        env_name="ADO_BOOTSTRAP_MSSQL",
+        default=True,
+    )
+    mssql_password_env_name = _domain_optional_str_with_env_override(
+        "ado_mssql_sa_password_env",
+        ado_worker_config,
+        env_name=None,
+    )
+    if _is_env_set(_LEGACY_ADO_MSSQL_SA_PASSWORD_ENV) or _is_env_set(_DEFAULT_ADO_MSSQL_SA_PASSWORD_ENV):
+        _log_deprecated_env_override("ado_mssql_sa_password_env", "ADO_MSSQL_SA_PASSWORD", "MSSQL_SA_PASSWORD")
+        mssql_sa_password = _optional_env_first(
+            _LEGACY_ADO_MSSQL_SA_PASSWORD_ENV,
+            _DEFAULT_ADO_MSSQL_SA_PASSWORD_ENV,
+        )
+    else:
+        resolved_mssql_env_name = _resolve_secret_env_ref(
+            ref_name=mssql_password_env_name,
+            default_env_name=_DEFAULT_ADO_MSSQL_SA_PASSWORD_ENV,
+            config_field_name="ado_mssql_sa_password_env",
+        )
+        mssql_sa_password = _optional_env(resolved_mssql_env_name)
+    mssql_init_root = _domain_optional_str_with_env_override(
+        "ado_mssql_init_root",
+        ado_worker_config,
+        env_name="ADO_MSSQL_INIT_ROOT",
+    )
+    if bootstrap_mssql and not mssql_sa_password:
+        if _is_env_set(_LEGACY_ADO_MSSQL_SA_PASSWORD_ENV) or _is_env_set(_DEFAULT_ADO_MSSQL_SA_PASSWORD_ENV):
             raise ValueError(
                 "ADO_MSSQL_SA_PASSWORD or MSSQL_SA_PASSWORD is required when ADO_BOOTSTRAP_MSSQL is true."
             )
-        bootstrap_playwright = _bool_env("ADO_BOOTSTRAP_PLAYWRIGHT", False)
-        bootstrap_frontend_deps = _bool_env("ADO_BOOTSTRAP_FRONTEND_DEPS", False)
-        frontend_host_checkout = _optional_env("ADO_FRONTEND_HOST_CHECKOUT")
-        frontend_install_roots = _csv_env("ADO_FRONTEND_INSTALL_ROOTS")
-        if bootstrap_frontend_deps and not frontend_install_roots:
-            raise ValueError(
-                "ADO_FRONTEND_INSTALL_ROOTS is required when ADO_BOOTSTRAP_FRONTEND_DEPS is true."
-            )
-        include_comments = _bool_env("ADO_INCLUDE_COMMENTS", True)
-        comments_max_count = _int_env("ADO_COMMENTS_MAX_COUNT", 20, minimum=1)
-        comment_text_max_chars = _int_env("ADO_COMMENT_TEXT_MAX_CHARS", 4000, minimum=1)
-
-        repo_path = _optional_env("ADO_REPO_PATH")
-        session_id = _optional_env("ADO_SESSION_ID")
-        vm_user = _optional_env("ADO_VM_USER")
-        session_ttl_hours = _int_env("ADO_SESSION_TTL_HOURS", 8, minimum=1)
-
-        return cls(
-            organization_url=organization_url.rstrip("/"),
-            project=project,
-            pat_env_var_name=pat_env_var_name,
-            poll_interval_seconds=poll_interval_seconds,
-            area_filters=_csv_env("ADO_AREA_FILTERS"),
-            team_filters=_csv_env("ADO_TEAM_FILTERS"),
-            runtime_dir=runtime_dir,
-            yaml_output_dir=yaml_output_dir,
-            setup_log_dir=setup_log_dir,
-            processed_store_path=processed_store_path,
-            setup_script_path=setup_script_path,
-            prewarm_target=prewarm_target,
-            repo_path=repo_path,
-            session_id=session_id,
-            vm_user=vm_user,
-            setup_timeout_seconds=setup_timeout_seconds,
-            setup_concurrency_limit=setup_concurrency_limit,
-            setup_lock_path=setup_lock_path,
-            fetch_retry_count=fetch_retry_count,
-            fetch_retry_backoff_seconds=fetch_retry_backoff_seconds,
-            bootstrap_dotnet=bootstrap_dotnet,
-            bootstrap_nuget=bootstrap_nuget,
-            bootstrap_mssql=bootstrap_mssql,
-            mssql_sa_password=mssql_sa_password,
-            mssql_init_root=mssql_init_root,
-            bootstrap_playwright=bootstrap_playwright,
-            bootstrap_frontend_deps=bootstrap_frontend_deps,
-            frontend_host_checkout=frontend_host_checkout,
-            frontend_install_roots=frontend_install_roots,
-            include_comments=include_comments,
-            comments_max_count=comments_max_count,
-            comment_text_max_chars=comment_text_max_chars,
-            gateway_config_path=legacy_config_path,
-            legacy_config_path=legacy_config_path,
-            session_ttl_hours=session_ttl_hours,
+        resolved_mssql_env_name = _resolve_secret_env_ref(
+            ref_name=mssql_password_env_name,
+            default_env_name=_DEFAULT_ADO_MSSQL_SA_PASSWORD_ENV,
+            config_field_name="ado_mssql_sa_password_env",
         )
+        raise ValueError(
+            f"Environment variable {resolved_mssql_env_name} is required when ado_bootstrap_mssql is true."
+        )
+    bootstrap_playwright = _domain_bool_with_env_override(
+        "ado_bootstrap_playwright",
+        ado_worker_config,
+        env_name="ADO_BOOTSTRAP_PLAYWRIGHT",
+        default=False,
+    )
+    bootstrap_frontend_deps = _domain_bool_with_env_override(
+        "ado_bootstrap_frontend_deps",
+        ado_worker_config,
+        env_name="ADO_BOOTSTRAP_FRONTEND_DEPS",
+        default=False,
+    )
+    frontend_host_checkout = _domain_optional_str_with_env_override(
+        "ado_frontend_host_checkout",
+        ado_worker_config,
+        env_name="ADO_FRONTEND_HOST_CHECKOUT",
+    )
+    frontend_install_roots = _domain_csv_with_env_override(
+        "ado_frontend_install_roots",
+        ado_worker_config,
+        env_name="ADO_FRONTEND_INSTALL_ROOTS",
+    )
+    if bootstrap_frontend_deps and not frontend_install_roots:
+        raise ValueError("ADO_FRONTEND_INSTALL_ROOTS is required when ADO_BOOTSTRAP_FRONTEND_DEPS is true.")
+
+    return WorkerConfig(
+        organization_url=organization_url.rstrip("/"),
+        project=project,
+        pat_env_var_name=pat_env_var_name,
+        poll_interval_seconds=worker_runtime_config.poll_interval_seconds,
+        area_filters=_domain_csv_with_env_override(
+            "ado_area_filters",
+            ado_worker_config,
+            env_name="ADO_AREA_FILTERS",
+        ),
+        team_filters=_domain_csv_with_env_override(
+            "ado_team_filters",
+            ado_worker_config,
+            env_name="ADO_TEAM_FILTERS",
+        ),
+        runtime_dir=worker_runtime_config.runtime_dir,
+        yaml_output_dir=worker_runtime_config.yaml_output_dir,
+        setup_log_dir=worker_runtime_config.setup_log_dir,
+        processed_store_path=worker_runtime_config.processed_store_path,
+        setup_script_path=worker_runtime_config.setup_script_path,
+        prewarm_target=prewarm_target,
+        repo_path=repo_path,
+        session_id=session_id,
+        vm_user=vm_user,
+        setup_timeout_seconds=worker_runtime_config.setup_timeout_seconds,
+        setup_concurrency_limit=worker_runtime_config.setup_concurrency_limit,
+        setup_lock_path=worker_runtime_config.setup_lock_path,
+        fetch_retry_count=worker_runtime_config.fetch_retry_count,
+        fetch_retry_backoff_seconds=worker_runtime_config.fetch_retry_backoff_seconds,
+        bootstrap_dotnet=bootstrap_dotnet,
+        bootstrap_nuget=bootstrap_nuget,
+        bootstrap_mssql=bootstrap_mssql,
+        mssql_sa_password=mssql_sa_password,
+        mssql_init_root=mssql_init_root,
+        bootstrap_playwright=bootstrap_playwright,
+        bootstrap_frontend_deps=bootstrap_frontend_deps,
+        frontend_host_checkout=frontend_host_checkout,
+        frontend_install_roots=frontend_install_roots,
+        include_comments=worker_runtime_config.include_comments,
+        comments_max_count=worker_runtime_config.comments_max_count,
+        comment_text_max_chars=worker_runtime_config.comment_text_max_chars,
+        directories=worker_runtime_config.directories,
+        directory_path=normalized_directory_path,
+        gateway_config_path=legacy_config_path,
+        legacy_config_path=legacy_config_path,
+        session_ttl_hours=session_ttl_hours,
+    )
 
 
 def _require_env(name: str) -> str:
@@ -188,9 +469,241 @@ def _require_env(name: str) -> str:
     return value
 
 
+def _load_json_object(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise ValueError(f"JSON config file {path} must contain an object.")
+    return raw
+
+
+def _is_env_set(name: str) -> bool:
+    return os.environ.get(name) is not None
+
+
+def _log_deprecated_env_override(field_name: str, *env_names: str) -> None:
+    _LOG.warning(
+        "Deprecated ADO worker env override in use for %s via %s. "
+        "Set the value in directory config domain 'ado_worker' instead.",
+        field_name,
+        ", ".join(env_names),
+    )
+
+
+def _first_json_value(raw_config: dict[str, Any], keys: tuple[str, ...]) -> Any:
+    for key in keys:
+        if key not in raw_config:
+            continue
+        value = raw_config[key]
+        if value is None:
+            continue
+        if isinstance(value, str) and not value.strip():
+            continue
+        return value
+    return None
+
+
+def _resolve_path_setting(
+    raw_config: dict[str, Any],
+    *,
+    workspace_root: Path,
+    json_keys: tuple[str, ...],
+    env_name: str,
+    default: Path,
+) -> Path:
+    value = _first_json_value(raw_config, json_keys)
+    if value is None and _is_env_set(env_name):
+        _log_deprecated_env_override(json_keys[0], env_name)
+        value = _optional_env(env_name)
+    if value is None:
+        value = default
+    if isinstance(value, Path):
+        path = value
+    elif isinstance(value, str):
+        path = Path(value)
+    else:
+        raise ValueError(f"{json_keys[0]} must be a path string in the worker config.")
+    path = path.expanduser()
+    if not path.is_absolute():
+        path = workspace_root / path
+    return path
+
+
+def _resolve_numeric_setting(
+    raw_config: dict[str, Any],
+    *,
+    json_keys: tuple[str, ...],
+    env_name: str,
+    default: int | float,
+    kind: str,
+    minimum: int | float | None = None,
+) -> int | float:
+    value = _first_json_value(raw_config, json_keys)
+    if value is None and _is_env_set(env_name):
+        _log_deprecated_env_override(json_keys[0], env_name)
+        value = os.environ.get(env_name)
+    if value is None:
+        value = default
+    if isinstance(value, bool):
+        raise ValueError(f"{json_keys[0]} must be numeric.")
+    try:
+        if kind == "int":
+            if isinstance(value, float) and not value.is_integer():
+                raise ValueError
+            parsed: int | float = int(value)
+        elif kind == "float":
+            parsed = float(value)
+        else:
+            raise ValueError(f"Unsupported numeric kind: {kind}")
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{json_keys[0]} must be numeric.") from exc
+    if minimum is not None and parsed < minimum:
+        raise ValueError(f"{json_keys[0]} must be >= {minimum}.")
+    return parsed
+
+
+def _resolve_bool_setting(
+    raw_config: dict[str, Any],
+    *,
+    json_keys: tuple[str, ...],
+    env_name: str,
+    default: bool,
+) -> bool:
+    value = _first_json_value(raw_config, json_keys)
+    if value is None and _is_env_set(env_name):
+        _log_deprecated_env_override(json_keys[0], env_name)
+        return _bool_env(env_name, default)
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    raise ValueError(f"{json_keys[0]} must be a boolean value (true/false).")
+
+
+def _resolve_string_setting(
+    raw_config: dict[str, Any],
+    *,
+    json_keys: tuple[str, ...],
+    env_name: str,
+    default: str,
+) -> str:
+    value = _first_json_value(raw_config, json_keys)
+    if value is None and _is_env_set(env_name):
+        _log_deprecated_env_override(json_keys[0], env_name)
+        value = _optional_env(env_name)
+    if value is None:
+        value = default
+    if not isinstance(value, str):
+        raise ValueError(f"{json_keys[0]} must be a string.")
+    normalized = value.strip()
+    return normalized or default
+
+
+def _resolve_string_list_setting(
+    raw_config: dict[str, Any],
+    *,
+    json_keys: tuple[str, ...],
+    env_name: str,
+    default: tuple[str, ...],
+) -> tuple[str, ...]:
+    value = _first_json_value(raw_config, json_keys)
+    if value is None and _is_env_set(env_name):
+        _log_deprecated_env_override(json_keys[0], env_name)
+        value = _csv_env(env_name)
+    if value is None:
+        return default
+    if isinstance(value, str):
+        items = [part.strip() for part in value.replace(",", "\n").splitlines() if part.strip()]
+        return tuple(DirectoryPath(segments=item).as_posix() for item in items)
+    if isinstance(value, (list, tuple)):
+        return tuple(DirectoryPath(segments=str(item).strip()).as_posix() for item in value if str(item).strip())
+    raise ValueError(f"{json_keys[0]} must be a list of strings.")
+
+
+def _domain_csv_with_env_override(field_name: str, domain_config: dict[str, Any], *, env_name: str) -> tuple[str, ...]:
+    if _is_env_set(env_name):
+        _log_deprecated_env_override(field_name, env_name)
+        return _csv_env(env_name)
+    value = domain_config.get(field_name, [])
+    if not isinstance(value, list):
+        raise ValueError(f"{field_name} must be a list in directory domain ado_worker.")
+    return tuple(str(item) for item in value if str(item).strip())
+
+
+def _domain_bool_with_env_override(
+    field_name: str,
+    domain_config: dict[str, Any],
+    *,
+    env_name: str,
+    default: bool,
+) -> bool:
+    if _is_env_set(env_name):
+        _log_deprecated_env_override(field_name, env_name)
+        return _bool_env(env_name, default)
+    value = domain_config.get(field_name, default)
+    if not isinstance(value, bool):
+        raise ValueError(f"{field_name} must be a boolean in directory domain ado_worker.")
+    return value
+
+
+def _domain_optional_str_with_env_override(
+    field_name: str,
+    domain_config: dict[str, Any],
+    *,
+    env_name: str | None,
+) -> str | None:
+    if env_name is not None and _is_env_set(env_name):
+        _log_deprecated_env_override(field_name, env_name)
+        return _optional_env(env_name)
+    value = domain_config.get(field_name)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f"{field_name} must be a string or null in directory domain ado_worker.")
+    normalized = value.strip()
+    return normalized or None
+
+
+def _domain_str_with_env_override(
+    field_name: str,
+    domain_config: dict[str, Any],
+    *,
+    env_name: str,
+    default: str,
+    required: bool = False,
+) -> str:
+    if _is_env_set(env_name):
+        _log_deprecated_env_override(field_name, env_name)
+        value = _require_env(env_name) if required else (_optional_env(env_name) or default)
+    else:
+        raw = domain_config.get(field_name, default)
+        if not isinstance(raw, str):
+            raise ValueError(f"{field_name} must be a string in directory domain ado_worker.")
+        value = raw.strip() or default
+    if required and not value:
+        raise ValueError(f"{field_name} must be set in directory domain ado_worker or {env_name}.")
+    return value
+
+
 def _optional_env(name: str) -> str | None:
     value = os.environ.get(name, "").strip()
     return value or None
+
+
+def _resolve_secret_env_ref(*, ref_name: str | None, default_env_name: str, config_field_name: str) -> str:
+    candidate = (ref_name or "").strip() or default_env_name.strip()
+    if not candidate:
+        raise ValueError(
+            f"{config_field_name} must resolve to a non-empty env-var name."
+        )
+    return candidate
 
 
 def _optional_env_first(*names: str) -> str | None:
@@ -321,10 +834,10 @@ class ProcessedWorkItemStore:
         if not self.path.exists():
             self.path.write_text("{}", encoding="utf-8")
 
-    def is_processed(self, work_item_id: int) -> bool:
+    def is_processed(self, work_item_id: int, *, directory_path: str = "root") -> bool:
         with self._lock:
             payload = self._read_raw()
-            return str(work_item_id) in payload
+            return _processed_work_item_key(work_item_id, directory_path) in payload
 
     def mark_processed(
         self,
@@ -332,10 +845,12 @@ class ProcessedWorkItemStore:
         yaml_path: Path,
         script_exit_code: int,
         output_snippet: str,
+        *,
+        directory_path: str = "root",
     ) -> None:
         with self._lock:
             payload = self._read_raw()
-            payload[str(work_item_id)] = {
+            payload[_processed_work_item_key(work_item_id, directory_path)] = {
                 "processed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
                 "yaml_path": str(yaml_path),
                 "script_exit_code": script_exit_code,
@@ -343,10 +858,10 @@ class ProcessedWorkItemStore:
             }
             self._atomic_write(payload)
 
-    def forget(self, work_item_id: int) -> bool:
+    def forget(self, work_item_id: int, *, directory_path: str = "root") -> bool:
         with self._lock:
             payload = self._read_raw()
-            existed = payload.pop(str(work_item_id), None) is not None
+            existed = payload.pop(_processed_work_item_key(work_item_id, directory_path), None) is not None
             self._atomic_write(payload)
             return existed
 
@@ -606,6 +1121,100 @@ def list_unprocessed_work_items(
     return filter_unprocessed_work_items(items, store)
 
 
+def _resolve_directory_worker_config(
+    config: WorkerConfig,
+    runtime_gateway_config: GatewayConfig,
+    directory_path: str,
+) -> WorkerConfig:
+    worker_runtime_config = AdoWorkerRuntimeConfig(
+        poll_interval_seconds=config.poll_interval_seconds,
+        directories=config.directories,
+        runtime_dir=config.runtime_dir,
+        yaml_output_dir=config.yaml_output_dir,
+        setup_log_dir=config.setup_log_dir,
+        processed_store_path=config.processed_store_path,
+        setup_script_path=config.setup_script_path,
+        ado_work_items_azure_devops_pat_env=config.pat_env_var_name,
+        setup_timeout_seconds=config.setup_timeout_seconds,
+        setup_concurrency_limit=config.setup_concurrency_limit,
+        setup_lock_path=config.setup_lock_path,
+        fetch_retry_count=config.fetch_retry_count,
+        fetch_retry_backoff_seconds=config.fetch_retry_backoff_seconds,
+        include_comments=config.include_comments,
+        comments_max_count=config.comments_max_count,
+        comment_text_max_chars=config.comment_text_max_chars,
+    )
+    return _resolve_worker_config_for_directory(
+        worker_runtime_config=worker_runtime_config,
+        runtime_gateway_config=runtime_gateway_config,
+        directory_path=directory_path,
+        legacy_config_path=config.legacy_config_path or config.gateway_config_path,
+        repo_path=config.repo_path,
+        session_id=config.session_id,
+        vm_user=config.vm_user,
+        session_ttl_hours=config.session_ttl_hours,
+    )
+
+
+def _poll_and_process_directory(
+    *,
+    client: httpx.Client,
+    config: WorkerConfig,
+    auth_header: str,
+    store: ProcessedWorkItemStore,
+    runtime_gateway_config: GatewayConfig,
+    directory_path: str,
+) -> None:
+    directory_config = _resolve_directory_worker_config(config, runtime_gateway_config, directory_path)
+    attempts = 0
+    while True:
+        try:
+            items = poll_once(client=client, config=directory_config, auth_header=auth_header)
+            break
+        except httpx.HTTPError as exc:
+            attempts += 1
+            if attempts > directory_config.fetch_retry_count or not _is_transient_fetch_error(exc):
+                raise
+            sleep_seconds = directory_config.fetch_retry_backoff_seconds * attempts
+            logging.warning(
+                "cycle directory=%s transient_fetch_error=%s retry=%d/%d sleep=%.1fs",
+                directory_path,
+                exc.__class__.__name__,
+                attempts,
+                directory_config.fetch_retry_count,
+                sleep_seconds,
+            )
+            time.sleep(sleep_seconds)
+
+    for item in items:
+        process_work_item(
+            item,
+            config=directory_config,
+            store=store,
+            client=client,
+            auth_header=auth_header,
+        )
+
+
+def _unprocessed_items_for_worker(
+    *,
+    client: httpx.Client,
+    config: WorkerConfig,
+    auth_header: str,
+    store: ProcessedWorkItemStore,
+    runtime_gateway_config: GatewayConfig,
+) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for directory_path in config.directories:
+        try:
+            directory_config = _resolve_directory_worker_config(config, runtime_gateway_config, directory_path)
+        except Exception as exc:
+            logging.warning("list-unprocessed directory=%s config_resolution_failed error=%s", directory_path, exc)
+            continue
+        items.extend(list_unprocessed_work_items(client=client, config=directory_config, auth_header=auth_header, store=store))
+    return items
+
+
 def _build_issue_payload(work_item: dict[str, Any]) -> dict[str, Any]:
     return {
         "issue_number": work_item["id"],
@@ -640,12 +1249,26 @@ def _write_setup_log(path: Path, content: str) -> None:
             handle.write("\n")
 
 
-def _default_session_id(issue_number: int) -> str:
-    return f"issue-{issue_number}-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-{os.getpid()}"
+def _directory_token(directory_path: str) -> str:
+    normalized = DirectoryPath(segments=directory_path).as_posix()
+    return normalized.replace("/", "-")
+
+
+def _processed_work_item_key(work_item_id: int, directory_path: str) -> str:
+    if directory_path == "root":
+        return str(work_item_id)
+    return f"{directory_path}::{work_item_id}"
+
+
+def _default_session_id(issue_number: int, directory_path: str) -> str:
+    return (
+        f"issue-{issue_number}-{_directory_token(directory_path)}-"
+        f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-{os.getpid()}"
+    )
 
 
 def _resolve_session_id(config: WorkerConfig, work_item_id: int) -> str:
-    return config.session_id or _default_session_id(work_item_id)
+    return config.session_id or _default_session_id(work_item_id, config.directory_path)
 
 
 def _build_issue_session_manifest(
@@ -653,12 +1276,13 @@ def _build_issue_session_manifest(
     policy: EffectivePolicyConfig,
     session_id: str,
     vm_id: str,
+    directory_path: str,
     ttl_hours: int,
 ) -> SessionManifest:
     return SessionManifest(
         session_id=session_id,
         vm_id=vm_id,
-        directory_path="root",
+        directory_path=directory_path,
         allowed_tools=[
             ToolName.APPROVAL_SUBMIT,
             ToolName.APPROVAL_CHECK,
@@ -673,16 +1297,23 @@ def _build_issue_session_manifest(
     )
 
 
-def _ensure_issue_session_manifest(config: WorkerConfig, *, work_item_id: int, session_id: str) -> None:
+def _ensure_issue_session_manifest(
+    config: WorkerConfig,
+    *,
+    work_item_id: int,
+    session_id: str,
+    directory_path: str,
+) -> None:
     cfg = _worker_runtime_config(config)
     runtime = build_runtime(cfg)
     if runtime.sessions.get(session_id) is not None:
         return
-    policy = runtime.policy_config.resolve_for_directory("root")
+    policy = runtime.policy_config.resolve_for_directory(directory_path)
     manifest = _build_issue_session_manifest(
         policy=policy,
         session_id=session_id,
         vm_id=f"vm-{work_item_id}",
+        directory_path=directory_path,
         ttl_hours=config.session_ttl_hours,
     )
     runtime.sessions.put(session_id, manifest)
@@ -775,7 +1406,7 @@ def process_work_item(
     auth_header: str | None = None,
 ) -> bool:
     work_item_id = int(work_item["id"])
-    if store.is_processed(work_item_id):
+    if store.is_processed(work_item_id, directory_path=config.directory_path):
         logging.info("work_item=%s skipped=already_processed", work_item_id)
         return False
 
@@ -784,11 +1415,17 @@ def process_work_item(
     _atomic_write_yaml(yaml_path, _build_issue_payload(work_item))
 
     session_id = _resolve_session_id(config, work_item_id)
-    _ensure_issue_session_manifest(config, work_item_id=work_item_id, session_id=session_id)
+    _ensure_issue_session_manifest(
+        config,
+        work_item_id=work_item_id,
+        session_id=session_id,
+        directory_path=config.directory_path,
+    )
     cfg = _worker_runtime_config(config)
     if cfg.enable_directory_scoped_config:
         shadow_context = WorkerDirectoryContextResolver(cfg).resolve_for_session(
             session_id,
+            fallback_directory_path=config.directory_path,
             source="ado_issue_worker",
         )
         work_item["directory_context"] = shadow_context.as_log_dict()
@@ -799,6 +1436,7 @@ def process_work_item(
         )
     cmd = _build_setup_command(config, yaml_path, session_id=session_id)
     run_env = os.environ.copy()
+    run_env["AGENT_SANDBOX_AZURE_DEVOPS_PR_PAT_ENV"] = config.pat_env_var_name
     if config.bootstrap_mssql and config.mssql_sa_password:
         run_env["MSSQL_SA_PASSWORD"] = config.mssql_sa_password
     vm_defaults = VmDefaultsConfigResolver(cfg).resolve_for_session_id(session_id)
@@ -854,6 +1492,7 @@ def process_work_item(
         yaml_path=yaml_path,
         script_exit_code=result.returncode,
         output_snippet=output_snippet,
+        directory_path=config.directory_path,
     )
     if client is not None and auth_header:
         try:
@@ -901,41 +1540,33 @@ def run_worker(config: WorkerConfig) -> None:
     pat = _require_env(config.pat_env_var_name)
     auth_header = _build_auth_header(pat)
     store = ProcessedWorkItemStore(config.processed_store_path)
+    runtime_gateway_config = _worker_runtime_config(config)
 
     timeout = httpx.Timeout(connect=5.0, write=10.0, read=20.0, pool=5.0)
     with httpx.Client(timeout=timeout) as client:
         while True:
             cycle_start = time.monotonic()
             try:
-                attempts = 0
-                while True:
+                if not config.directories:
+                    logging.info("cycle skipped=no_directories")
+                for directory_path in config.directories:
                     try:
-                        items = poll_once(client=client, config=config, auth_header=auth_header)
-                        break
-                    except httpx.HTTPError as exc:
-                        attempts += 1
-                        if attempts > config.fetch_retry_count or not _is_transient_fetch_error(exc):
-                            raise
-                        sleep_seconds = config.fetch_retry_backoff_seconds * attempts
-                        logging.warning(
-                            "cycle transient_fetch_error=%s retry=%d/%d sleep=%.1fs",
-                            exc.__class__.__name__,
-                            attempts,
-                            config.fetch_retry_count,
-                            sleep_seconds,
+                        _poll_and_process_directory(
+                            client=client,
+                            config=config,
+                            auth_header=auth_header,
+                            store=store,
+                            runtime_gateway_config=runtime_gateway_config,
+                            directory_path=directory_path,
                         )
-                        time.sleep(sleep_seconds)
-
-                for item in items:
-                    process_work_item(
-                        item,
-                        config=config,
-                        store=store,
-                        client=client,
-                        auth_header=auth_header,
-                    )
-            except httpx.HTTPError as exc:
-                logging.warning("cycle error=%s", exc.__class__.__name__)
+                    except httpx.HTTPError as exc:
+                        logging.warning(
+                            "cycle directory=%s error=%s",
+                            directory_path,
+                            exc.__class__.__name__,
+                        )
+                    except Exception:
+                        logging.exception("cycle directory=%s error=unexpected", directory_path)
             except Exception:  # pragma: no cover
                 logging.exception("cycle error=unexpected")
 
@@ -956,13 +1587,22 @@ def run_worker_command(
         format="%(asctime)s %(levelname)s %(message)s",
     )
 
-    config = WorkerConfig.load_from_env()
-    store = ProcessedWorkItemStore(config.processed_store_path)
-
     if forget is not None:
+        legacy_config_env = os.environ.get("ADO_GATEWAY_CONFIG", os.environ.get("AGENT_SANDBOX_CONFIG", "")).strip()
+        legacy_config_path = Path(legacy_config_env).expanduser() if legacy_config_env else None
+        workspace_root = resolve_project_dir(legacy_config_path=legacy_config_path)
+        runtime_dir_env = os.environ.get("ADO_RUNTIME_DIR", "").strip() or None
+        worker_runtime_config = AdoWorkerRuntimeConfig.load(
+            workspace_root=workspace_root,
+            legacy_env_runtime_dir=runtime_dir_env,
+        )
+        store = ProcessedWorkItemStore(worker_runtime_config.processed_store_path)
         removed = store.forget(forget)
         logging.info("forget work_item=%s removed=%s", forget, removed)
         return
+
+    config = WorkerConfig.load_from_env()
+    store = ProcessedWorkItemStore(config.processed_store_path)
 
     if reprocess is not None:
         store.forget(reprocess)
@@ -986,12 +1626,14 @@ def run_worker_command(
         pat = _require_env(config.pat_env_var_name)
         auth_header = _build_auth_header(pat)
         timeout = httpx.Timeout(connect=5.0, write=10.0, read=20.0, pool=5.0)
+        runtime_gateway_config = _worker_runtime_config(config)
         with httpx.Client(timeout=timeout) as client:
-            items = list_unprocessed_work_items(
+            items = _unprocessed_items_for_worker(
                 client=client,
                 config=config,
                 auth_header=auth_header,
                 store=store,
+                runtime_gateway_config=runtime_gateway_config,
             )
         for item in items:
             print(format_work_item_listing(item))

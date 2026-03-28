@@ -5,7 +5,9 @@ runtime/
 *.pyc
 *.egg-info/
 git-remotes/
-config/git-server.env
 config/nuget-relay.env
 config/host-heartbeat.env
+config/ado-worker/config.json
+config/host-heartbeat/config.json
+secrets.env
 tasks/

@@ -21,14 +21,26 @@ from typer.core import TyperGroup
 from .admin_service import AdminService
 from .audit import AuditEventType
 from .ado_issue_worker import run_worker_command
-from .bootstrap import load_host_bootstrap_config, load_runtime_gateway_config, resolve_runtime_dir
+from .bootstrap import (
+    load_host_bootstrap_config,
+    load_runtime_gateway_config,
+    resolve_project_dir,
+    resolve_runtime_dir,
+)
 from .config import GatewayConfig, load_config
 from .host_heartbeat_worker import build_host_heartbeat_worker
 from .host_config import DEFAULT_RUNTIME_DIR
-from .migrations import migrate_directory_ownership_defaults, migrate_global_config_to_root
+from .migrations import (
+    migrate_ado_worker_env_to_root,
+    migrate_directory_ownership_defaults,
+    migrate_global_config_to_root,
+    migrate_issue_setup_env_to_root,
+    migrate_pr_template_to_root,
+)
 from .email.providers import JsonEmailProvider, MultiMailboxEmailProvider
 from .models import ApprovalStatus, DiscordCommandEnvelope, EmailMessage, SessionManifest, ToolName
 from .policy_config import EffectivePolicyConfig, PolicyConfigResolver
+from .provider_config import ProviderConfigResolver
 from .runtime import build_runtime
 from .vm_defaults_config import EffectiveVmDefaultsConfig, VmDefaultsConfigResolver
 
@@ -76,6 +88,16 @@ def _bootstrap_inputs(config: Path) -> tuple[Path, Path | None]:
         legacy = config
         return resolve_runtime_dir(legacy_config_path=legacy), legacy
     return Path(config).expanduser().resolve(), None
+
+
+def _workspace_root_for_config_option(config: Path) -> Path:
+    return config.expanduser().resolve().parent
+
+
+def _project_dir_for_config_option(config: Path) -> Path:
+    if config.suffix.casefold() in {".yaml", ".yml"}:
+        return resolve_project_dir(legacy_config_path=config)
+    return config.expanduser().resolve().parent
 
 
 def _load_runtime_config_from_option(config: Path) -> GatewayConfig:
@@ -380,10 +402,6 @@ def _resolve_git_root(root_dir: Path) -> Path:
     env_value = os.environ.get("AGENT_SANDBOX_GIT_ROOT", "").strip()
     if env_value:
         return Path(env_value)
-    env_file_values = _load_optional_env_file(root_dir / "config" / "git-server.env")
-    configured = env_file_values.get("AGENT_SANDBOX_GIT_ROOT", "").strip()
-    if configured:
-        return Path(configured)
     return root_dir / "git-remotes"
 
 
@@ -961,6 +979,97 @@ def migrate_global_config_root(
         typer.echo(f"skipped: {', '.join(summary.skipped_domains)}")
     if summary.unchanged_domains:
         typer.echo(f"unchanged: {', '.join(summary.unchanged_domains)}")
+
+
+@app.command(
+    "migrate-ado-worker-env-to-root",
+    rich_help_panel="Health and State",
+    short_help="Import ado-worker env settings into root ado_worker config.",
+)
+def migrate_ado_worker_env_root(
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
+    env_file: Annotated[
+        Path | None,
+        typer.Option(
+            "--env-file",
+            help="Path to the ado-worker env file to import. Current process env vars override file values.",
+        ),
+    ] = None,
+    overwrite: Annotated[
+        bool,
+        typer.Option("--overwrite/--no-overwrite", help="Replace existing root ado_worker config when it differs."),
+    ] = True,
+) -> None:
+    runtime_dir, legacy_config_path = _bootstrap_inputs(config)
+    if legacy_config_path is not None and legacy_config_path.exists():
+        cfg = load_config(legacy_config_path)
+    else:
+        cfg = _load_runtime_config_from_option(runtime_dir)
+    resolved_env_file = env_file.expanduser() if env_file is not None else _workspace_root_for_config_option(config) / "config" / "ado-worker.env"
+    result = migrate_ado_worker_env_to_root(cfg, env_file=resolved_env_file, overwrite=overwrite)
+    typer.echo(f"ADO worker env migration complete: {result.status} {result.domain} -> {result.path}")
+
+
+@app.command(
+    "migrate-issue-setup-env-to-root",
+    rich_help_panel="Health and State",
+    short_help="Import issue-setup env settings into root issue_setup config.",
+)
+def migrate_issue_setup_env_root(
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
+    env_file: Annotated[
+        Path | None,
+        typer.Option(
+            "--env-file",
+            help="Path to an env file to import. Current process env vars override file values.",
+        ),
+    ] = None,
+    overwrite: Annotated[
+        bool,
+        typer.Option("--overwrite/--no-overwrite", help="Replace existing root issue_setup config when it differs."),
+    ] = True,
+) -> None:
+    runtime_dir, legacy_config_path = _bootstrap_inputs(config)
+    if legacy_config_path is not None and legacy_config_path.exists():
+        cfg = load_config(legacy_config_path)
+    else:
+        cfg = _load_runtime_config_from_option(runtime_dir)
+    resolved_env_file = env_file.expanduser() if env_file is not None else None
+    result = migrate_issue_setup_env_to_root(cfg, env_file=resolved_env_file, overwrite=overwrite)
+    typer.echo(f"Issue setup env migration complete: {result.status} {result.domain} -> {result.path}")
+
+
+@app.command(
+    "migrate-pr-template-to-root",
+    rich_help_panel="Health and State",
+    short_help="Import pr-template.md into root pr_template config.",
+)
+def migrate_pr_template_root(
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
+    template_file: Annotated[
+        Path | None,
+        typer.Option(
+            "--template-file",
+            help="Path to the legacy markdown template file to import. Defaults to config/pr-template.md.",
+        ),
+    ] = None,
+    overwrite: Annotated[
+        bool,
+        typer.Option("--overwrite/--no-overwrite", help="Replace existing root pr_template config when it differs."),
+    ] = True,
+) -> None:
+    runtime_dir, legacy_config_path = _bootstrap_inputs(config)
+    if legacy_config_path is not None and legacy_config_path.exists():
+        cfg = load_config(legacy_config_path)
+    else:
+        cfg = _load_runtime_config_from_option(runtime_dir)
+    resolved_template_file = (
+        template_file.expanduser()
+        if template_file is not None
+        else _workspace_root_for_config_option(config) / "config" / "pr-template.md"
+    )
+    result = migrate_pr_template_to_root(cfg, template_file=resolved_template_file, overwrite=overwrite)
+    typer.echo(f"PR template migration complete: {result.status} {result.domain} -> {result.path}")
 
 
 @app.command(
@@ -2009,8 +2118,12 @@ def create_issue_vm(
     cmd.extend([resolved_session_id, vm_user])
 
     vm_defaults = _resolve_root_vm_defaults(cfg)
+    provider_config = ProviderConfigResolver(cfg).resolve_for_directory("root")
     run_env = os.environ.copy()
     run_env.update(vm_defaults.guest_environment())
+    run_env["AGENT_SANDBOX_AZURE_DEVOPS_PR_PAT_ENV"] = (
+        provider_config.azure_devops_pr_pat_env.strip() or "AZURE_DEVOPS_PR_PAT"
+    )
     _run_subprocess_compat(cmd, check=True, capture_output=False, text=False, env=run_env)
     typer.echo(
         f"Created issue VM session {resolved_session_id} for issue {issue_number} "
@@ -2243,7 +2356,7 @@ def host_heartbeat(
     )
 
     cfg = _load_runtime_config_from_option(config)
-    worker = build_host_heartbeat_worker(cfg)
+    worker = build_host_heartbeat_worker(cfg, project_dir=_project_dir_for_config_option(config))
     if run_once:
         result = worker.run_once_with_lock()
         typer.echo(

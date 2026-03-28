@@ -9,6 +9,15 @@ from .host_config import DEFAULT_RUNTIME_DIR, HostConfig, ensure_host_config
 from .migrations import migrate_global_config_to_root
 
 
+def resolve_project_dir(*, legacy_config_path: str | Path | None = None) -> Path:
+    if legacy_config_path is None:
+        return Path.cwd()
+    config_path = Path(legacy_config_path)
+    if config_path.parent.name == "config" and config_path.parent.parent != config_path.parent:
+        return config_path.parent.parent
+    return config_path.parent
+
+
 def resolve_runtime_dir(
     *,
     runtime_dir: str | Path | None = None,

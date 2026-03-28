@@ -1,6 +1,10 @@
 import pytest
 
-from agent_sandbox.config import GatewayConfig
+from agent_sandbox.config import (
+    AdoWorkerGlobalConfig,
+    GatewayConfig,
+    HostHeartbeatWorkerGlobalConfig,
+)
 
 
 def test_folder_allowlist_defaults_populate_only_when_mapping_is_empty() -> None:
@@ -147,6 +151,30 @@ def test_host_agent_control_state_path_follows_runtime_dir_default() -> None:
 def test_host_heartbeat_poll_interval_must_be_positive() -> None:
     with pytest.raises(ValueError, match="host_heartbeat_poll_interval_seconds"):
         GatewayConfig.model_validate({"host_heartbeat_poll_interval_seconds": 0})
+
+
+def test_host_heartbeat_worker_global_config_defaults_follow_runtime_dir() -> None:
+    config = HostHeartbeatWorkerGlobalConfig.model_validate({"runtime_dir": "/tmp/agent-sandbox-runtime"})
+    assert str(config.host_heartbeat_lock_path) == "/tmp/agent-sandbox-runtime/host-heartbeat.lock"
+    assert str(config.host_heartbeat_session_cooldown_path) == "/tmp/agent-sandbox-runtime/host-heartbeat-session-cooldown.json"
+    assert str(config.host_heartbeat_wake_state_path) == "/tmp/agent-sandbox-runtime/host-heartbeat-wake-state.json"
+    assert config.host_heartbeat_directory_paths == []
+
+
+def test_host_heartbeat_worker_global_config_directory_paths_are_normalized() -> None:
+    config = HostHeartbeatWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": "/tmp/agent-sandbox-runtime",
+            "host_heartbeat_directory_paths": [" root/team-a ", "root/team-a/subdir", "  "],
+        }
+    )
+    assert config.host_heartbeat_directory_paths == ["root/team-a", "root/team-a/subdir"]
+
+
+def test_ado_worker_global_config_defaults_include_dedicated_pat_env_name() -> None:
+    config = AdoWorkerGlobalConfig.model_validate({})
+    assert config.ado_work_items_azure_devops_pat_env == "ADO_WORK_ITEMS_AZURE_DEVOPS_PAT"
+    assert config.directories == []
 
 
 def test_directory_scoped_config_flag_defaults_to_disabled() -> None:

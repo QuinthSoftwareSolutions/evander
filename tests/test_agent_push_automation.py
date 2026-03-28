@@ -26,10 +26,12 @@ def test_bare_repo_flow_includes_hook_and_azure_support() -> None:
     assert "refs/notes/agent-pr" in handle_push
     assert "AGENT_SANDBOX_PR_FIXED_BODY_FILE" in handle_push
     assert "AGENT_SANDBOX_PR_BODY_MAX_BYTES" in handle_push
+    assert "resolve_pr_template_body_file()" in handle_push
+    assert "pr-template.json" in handle_push
     assert "## Agent Summary" in handle_push
     assert "compose_pr_body_file()" in handle_push
     assert '--body-file "${pr_body_file}"' in handle_push
-    assert "AZURE_DEVOPS_PAT" in open_pr
+    assert "AZURE_DEVOPS_PR_PAT" in open_pr
     assert "ssh.dev.azure.com" in open_pr
     assert '"api-version": "7.1"' in open_pr or "?api-version=7.1" in open_pr
     assert "AGENT_PR_RESULT " in open_pr

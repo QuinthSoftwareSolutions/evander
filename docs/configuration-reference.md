@@ -11,11 +11,17 @@ Scope included:
 
 ## 1) Service environment files (`config/*.env.example`)
 
+These example files document env vars that services may still consume. The rendered systemd units
+load the matching per-service `config/*.env` files as optional inputs, so startup no longer fails
+if a file is absent. Runtime configuration comes from `runtime/host-config.json` plus
+`runtime/directory-config/root/...`, and secret values can also be supplied through the service
+manager environment or optional repo-root `secrets.env`.
+
 ## `config/gateway.env.example`
 
 | Parameter | Found in | Consumed by |
 |---|---|---|
-| `AZURE_DEVOPS_PAT` | `config/gateway.env.example` | `src/agent_sandbox/runtime.py` / `src/agent_sandbox/gateway.py` when PR reply providers use the default `azure_devops_pat_env`. |
+| `AZURE_DEVOPS_PR_PAT` | `config/gateway.env.example` | `src/agent_sandbox/runtime.py` / `src/agent_sandbox/gateway.py` when PR reply providers use the default `azure_devops_pr_pat_env`. |
 
 ## `config/openai-relay.env.example`
 
@@ -41,62 +47,86 @@ Scope included:
 |---|---|---|
 | `HOST_HEARTBEAT_LOG_LEVEL` | `config/host-heartbeat.env.example` | `scripts/run_host_heartbeat.sh` (`--log-level` passed to worker). |
 | `GITHUB_TOKEN` | `config/host-heartbeat.env.example` | `src/agent_sandbox/runtime.py` + `src/agent_sandbox/host_heartbeat_worker.py` using `github_token_env` from YAML config. |
-| `AZURE_DEVOPS_PAT` | `config/host-heartbeat.env.example` | `src/agent_sandbox/runtime.py` + `src/agent_sandbox/host_heartbeat_worker.py` using `azure_devops_pat_env` from YAML config. |
+| `AZURE_DEVOPS_PR_PAT` | `config/host-heartbeat.env.example` | `src/agent_sandbox/runtime.py` + `src/agent_sandbox/host_heartbeat_worker.py` using `azure_devops_pr_pat_env` from YAML config. |
 
 ## `config/ado-worker.env.example`
 
 | Parameter | Found in | Consumed by |
 |---|---|---|
-| `ADO_POLL_INTERVAL_SECONDS` | `config/ado-worker.env.example` | `src/agent_sandbox/ado_issue_worker.py`. |
-| `ADO_AREA_FILTERS` | `config/ado-worker.env.example` | `src/agent_sandbox/ado_issue_worker.py`. |
-| `ADO_TEAM_FILTERS` | `config/ado-worker.env.example` | `src/agent_sandbox/ado_issue_worker.py`. |
-| `ADO_RUNTIME_DIR` | `config/ado-worker.env.example` | `src/agent_sandbox/ado_issue_worker.py`. |
-| `ADO_YAML_OUTPUT_DIR` | `config/ado-worker.env.example` | `src/agent_sandbox/ado_issue_worker.py`. |
-| `ADO_SETUP_LOG_DIR` | `config/ado-worker.env.example` | `src/agent_sandbox/ado_issue_worker.py`. |
-| `ADO_PROCESSED_STORE_PATH` | `config/ado-worker.env.example` | `src/agent_sandbox/ado_issue_worker.py`. |
-| `ADO_PROJECT_OR_SOLUTION` | `config/ado-worker.env.example` | `src/agent_sandbox/ado_issue_worker.py` (required for setup script hand-off). |
-| `ADO_PREWARM_TARGET` | `config/ado-worker.env.example` | `src/agent_sandbox/ado_issue_worker.py` (optional bootstrap arg). |
-| `ADO_SETUP_ISSUE_VM_SCRIPT` | `config/ado-worker.env.example` | `src/agent_sandbox/ado_issue_worker.py`. |
-| `ADO_BOOTSTRAP_DOTNET` | `config/ado-worker.env.example` | `src/agent_sandbox/ado_issue_worker.py` (forwarded to `setup_issue_vm.sh`). |
-| `ADO_BOOTSTRAP_NUGET` | `config/ado-worker.env.example` | `src/agent_sandbox/ado_issue_worker.py`. |
-| `ADO_BOOTSTRAP_MSSQL` | `config/ado-worker.env.example` | `src/agent_sandbox/ado_issue_worker.py`. |
-| `ADO_MSSQL_SA_PASSWORD` | `config/ado-worker.env.example` | `src/agent_sandbox/ado_issue_worker.py` (required when MSSQL bootstrap enabled). |
-| `ADO_MSSQL_INIT_ROOT` | `config/ado-worker.env.example` | `src/agent_sandbox/ado_issue_worker.py` (optional bootstrap arg). |
-| `ADO_BOOTSTRAP_PLAYWRIGHT` | `config/ado-worker.env.example` | `src/agent_sandbox/ado_issue_worker.py`. |
-| `ADO_BOOTSTRAP_FRONTEND_DEPS` | `config/ado-worker.env.example` | `src/agent_sandbox/ado_issue_worker.py`. |
-| `ADO_FRONTEND_HOST_CHECKOUT` | `config/ado-worker.env.example` | `src/agent_sandbox/ado_issue_worker.py` (optional bootstrap arg). |
-| `ADO_FRONTEND_INSTALL_ROOTS` | `config/ado-worker.env.example` | `src/agent_sandbox/ado_issue_worker.py` (optional bootstrap arg). |
-| `ADO_SETUP_TIMEOUT_SECONDS` | `config/ado-worker.env.example` | `src/agent_sandbox/ado_issue_worker.py`. |
-| `ADO_SETUP_CONCURRENCY_LIMIT` | `config/ado-worker.env.example` | `src/agent_sandbox/ado_issue_worker.py`. |
-| `ADO_SETUP_LOCK_PATH` | `config/ado-worker.env.example` | `src/agent_sandbox/ado_issue_worker.py`. |
-| `ADO_REPO_PATH` | `config/ado-worker.env.example` | `src/agent_sandbox/ado_issue_worker.py` (optional passthrough to setup script). |
-| `ADO_SESSION_ID` | `config/ado-worker.env.example` | `src/agent_sandbox/ado_issue_worker.py` (optional passthrough). |
-| `ADO_VM_USER` | `config/ado-worker.env.example` | `src/agent_sandbox/ado_issue_worker.py` (optional passthrough). |
-| `ADO_FETCH_RETRY_COUNT` | `config/ado-worker.env.example` | `src/agent_sandbox/ado_issue_worker.py`. |
-| `ADO_FETCH_RETRY_BACKOFF_SECONDS` | `config/ado-worker.env.example` | `src/agent_sandbox/ado_issue_worker.py`. |
-| `ADO_INCLUDE_COMMENTS` | `config/ado-worker.env.example` | `src/agent_sandbox/ado_issue_worker.py`. |
-| `ADO_COMMENTS_MAX_COUNT` | `config/ado-worker.env.example` | `src/agent_sandbox/ado_issue_worker.py`. |
-| `ADO_COMMENT_TEXT_MAX_CHARS` | `config/ado-worker.env.example` | `src/agent_sandbox/ado_issue_worker.py`. |
+| `ADO_WORK_ITEMS_AZURE_DEVOPS_PAT` | `config/ado-worker.env.example` | `src/agent_sandbox/ado_issue_worker.py` using `ado_work_items_azure_devops_pat_env` from `config/ado-worker/config.json`. |
 
-The ADO worker now loads `azure_devops_organization_url`, `azure_devops_project`, and
-`azure_devops_pat_env` from `root` directory config instead of duplicating them in
-`config/ado-worker.env`.
+## `config/ado-worker/config.json`
 
-## `config/git-server.env.example`
+This JSON file stores the ADO worker's global settings. The admin GUI's Workers tab edits this
+file directly for the `ado` worker.
 
 | Parameter | Found in | Consumed by |
 |---|---|---|
-| `AGENT_SANDBOX_GIT_ROOT` | `config/git-server.env.example` | `src/agent_sandbox/cli.py` and git automation scripts (`create_git_remote.sh`, `git_ssh_command_wrapper.sh`, `promote_agent_branch.sh`). |
-| `AGENT_SANDBOX_GIT_HOST` | `config/git-server.env.example` | `scripts/bootstrap_git_vm.sh`, `scripts/setup_issue_vm.sh`. |
-| `AGENT_SANDBOX_GIT_USER` | `config/git-server.env.example` | `scripts/bootstrap_git_vm.sh`, `scripts/setup_issue_vm.sh`. |
-| `AGENT_SANDBOX_GIT_SSH_ALIAS` | `config/git-server.env.example` | `scripts/bootstrap_git_vm.sh`, `scripts/setup_issue_vm.sh`. |
-| `AGENT_POST_EXEC_VERIFICATION_PROMPT` | `config/git-server.env.example` | `scripts/setup_issue_vm.sh` (post-exec resume pass prompt). |
-| `AZURE_DEVOPS_PAT` | `config/git-server.env.example` | `scripts/open_agent_pr.sh` (when provider is Azure DevOps). |
-| `AGENT_SANDBOX_AZURE_DEVOPS_PAT_ENV` | `config/git-server.env.example` | `scripts/open_agent_pr.sh` (alternate env var name for Azure PAT). |
-| `AGENT_SANDBOX_PR_NOTES_REF` | `config/git-server.env.example` | `scripts/handle_agent_push.sh` (PR notes ref). |
-| `AGENT_SANDBOX_PR_FIXED_BODY_FILE` | `config/git-server.env.example` | `scripts/handle_agent_push.sh` (prepend markdown to PR body). |
-| `AGENT_SANDBOX_PR_BODY_MAX_BYTES` | `config/git-server.env.example` | `scripts/handle_agent_push.sh` (body truncation limit). |
-| `AGENT_SANDBOX_NOTIFY_COMMAND` | `config/git-server.env.example` | `scripts/handle_agent_push.sh` (post-promotion host notification command). |
+| `runtime_dir` | `config/ado-worker/config.json` | `src/agent_sandbox/ado_issue_worker.py` and runtime path defaults. |
+| `poll_interval_seconds` | `config/ado-worker/config.json` | `src/agent_sandbox/ado_issue_worker.py`. |
+| `directories` | `config/ado-worker/config.json` | `src/agent_sandbox/ado_issue_worker.py` (canonical directories to poll once per cycle; empty list means process nothing). |
+| `yaml_output_dir` | `config/ado-worker/config.json` | `src/agent_sandbox/ado_issue_worker.py`. |
+| `setup_log_dir` | `config/ado-worker/config.json` | `src/agent_sandbox/ado_issue_worker.py`. |
+| `processed_store_path` | `config/ado-worker/config.json` | `src/agent_sandbox/ado_issue_worker.py`. |
+| `setup_script_path` | `config/ado-worker/config.json` | `src/agent_sandbox/ado_issue_worker.py`. |
+| `ado_work_items_azure_devops_pat_env` | `config/ado-worker/config.json` | `src/agent_sandbox/ado_issue_worker.py` (name of the host env var that holds the ADO work-item PAT). |
+| `setup_timeout_seconds` | `config/ado-worker/config.json` | `src/agent_sandbox/ado_issue_worker.py`. |
+| `setup_concurrency_limit` | `config/ado-worker/config.json` | `src/agent_sandbox/ado_issue_worker.py`. |
+| `setup_lock_path` | `config/ado-worker/config.json` | `src/agent_sandbox/ado_issue_worker.py`. |
+| `fetch_retry_count` | `config/ado-worker/config.json` | `src/agent_sandbox/ado_issue_worker.py`. |
+| `fetch_retry_backoff_seconds` | `config/ado-worker/config.json` | `src/agent_sandbox/ado_issue_worker.py`. |
+| `include_comments` | `config/ado-worker/config.json` | `src/agent_sandbox/ado_issue_worker.py`. |
+| `comments_max_count` | `config/ado-worker/config.json` | `src/agent_sandbox/ado_issue_worker.py`. |
+| `comment_text_max_chars` | `config/ado-worker/config.json` | `src/agent_sandbox/ado_issue_worker.py`. |
+
+`ADO_*` environment variables still work as compatibility fallbacks for one release, but the new
+persisted source of truth is `config/ado-worker/config.json`. Secret values such as
+`MSSQL_SA_PASSWORD` remain host-supplied via the shell or `secrets.env`. The work-item Azure
+DevOps PAT value is read from the host env var named by `ado_work_items_azure_devops_pat_env`,
+defaulting to `ADO_WORK_ITEMS_AZURE_DEVOPS_PAT`.
+
+## `config/host-heartbeat/config.json.example`
+
+This JSON file stores the host heartbeat worker's global operational settings. The admin GUI's
+Workers tab edits `config/host-heartbeat/config.json` for the `host-heartbeat` worker.
+
+| Parameter | Found in | Consumed by |
+|---|---|---|
+| `runtime_dir` | `config/host-heartbeat/config.json.example` | `src/agent_sandbox/host_heartbeat_worker.py` and runtime path defaults. |
+| `host_heartbeat_directory_paths` | `config/host-heartbeat/config.json.example` | `src/agent_sandbox/host_heartbeat_worker.py` (one pass per configured directory; empty list means no polling). |
+| `host_heartbeat_poll_interval_seconds` | `config/host-heartbeat/config.json.example` | `src/agent_sandbox/host_heartbeat_worker.py`. |
+| `host_heartbeat_jitter_seconds` | `config/host-heartbeat/config.json.example` | `src/agent_sandbox/host_heartbeat_worker.py`. |
+| `host_heartbeat_cooldown_seconds` | `config/host-heartbeat/config.json.example` | `src/agent_sandbox/host_heartbeat_worker.py`. |
+| `host_heartbeat_http_timeout_seconds` | `config/host-heartbeat/config.json.example` | `src/agent_sandbox/host_heartbeat_worker.py`. |
+| `host_heartbeat_lock_path` | `config/host-heartbeat/config.json.example` | `src/agent_sandbox/host_heartbeat_worker.py`. |
+| `host_heartbeat_session_cooldown_path` | `config/host-heartbeat/config.json.example` | `src/agent_sandbox/host_heartbeat_worker.py`. |
+| `host_busy_check_script_path` | `config/host-heartbeat/config.json.example` | `src/agent_sandbox/host_heartbeat_worker.py`. |
+| `host_resume_script_path` | `config/host-heartbeat/config.json.example` | `src/agent_sandbox/host_heartbeat_worker.py`. |
+| `host_heartbeat_wake_state_path` | `config/host-heartbeat/config.json.example` | `src/agent_sandbox/host_heartbeat_worker.py`. |
+| `host_heartbeat_vm_user` | `config/host-heartbeat/config.json.example` | `src/agent_sandbox/host_heartbeat_worker.py`. |
+| `host_heartbeat_resume_timeout_seconds` | `config/host-heartbeat/config.json.example` | `src/agent_sandbox/host_heartbeat_worker.py`. |
+| `host_heartbeat_stream_conflict_policy` | `config/host-heartbeat/config.json.example` | `src/agent_sandbox/host_heartbeat_worker.py`. |
+
+## Root issue setup and git automation config
+
+The retired git automation env file used to collect these values. They now come from
+root directory-scoped config and host environment:
+
+| Parameter | Found in | Consumed by |
+|---|---|---|
+| `AGENT_SANDBOX_GIT_ROOT` | `runtime/directory-config/root/issue-setup.json` | `src/agent_sandbox/cli.py` and git automation scripts (`create_git_remote.sh`, `git_ssh_command_wrapper.sh`, `promote_agent_branch.sh`). |
+| `AGENT_SANDBOX_GIT_HOST` | `runtime/directory-config/root/issue-setup.json` | `scripts/bootstrap_git_vm.sh`, `scripts/setup_issue_vm.sh`. |
+| `AGENT_SANDBOX_GIT_USER` | `runtime/directory-config/root/issue-setup.json` | `scripts/bootstrap_git_vm.sh`, `scripts/setup_issue_vm.sh`. |
+| `AGENT_SANDBOX_GIT_SSH_ALIAS` | `runtime/directory-config/root/issue-setup.json` | `scripts/bootstrap_git_vm.sh`, `scripts/setup_issue_vm.sh`. |
+| `ENABLE_GUEST_HEARTBEAT` | `runtime/directory-config/root/issue-setup.json` | `scripts/setup_issue_vm.sh` (guest heartbeat toggle). |
+| `GUEST_HEARTBEAT_PROMPT` | `runtime/directory-config/root/issue-setup.json` | `scripts/setup_issue_vm.sh` (guest heartbeat prompt). |
+| `AGENT_POST_EXEC_VERIFICATION_PROMPT` | `runtime/directory-config/root/issue-setup.json` | `scripts/setup_issue_vm.sh` (post-exec resume pass prompt). |
+| `AGENT_SANDBOX_AZURE_DEVOPS_PR_PAT_ENV` | `runtime/directory-config/root/providers.json` or host shell | `scripts/open_agent_pr.sh` (alternate env var name for Azure PR PAT). |
+| `AZURE_DEVOPS_PR_PAT` | host shell or `secrets.env` | `scripts/open_agent_pr.sh` (when provider is Azure DevOps). |
+| `AGENT_SANDBOX_PR_NOTES_REF` | host shell | `scripts/handle_agent_push.sh` (PR notes ref). |
+| `AGENT_SANDBOX_PR_FIXED_BODY_FILE` | host shell | `scripts/handle_agent_push.sh` (host-wide override that prepends markdown to PR body). |
+| `AGENT_SANDBOX_PR_BODY_MAX_BYTES` | host shell | `scripts/handle_agent_push.sh` (body truncation limit). |
+| `AGENT_SANDBOX_NOTIFY_COMMAND` | host shell | `scripts/handle_agent_push.sh` (post-promotion host notification command). |
 
 ## 2) Host bootstrap config (`runtime/host-config.json`)
 
@@ -196,22 +226,10 @@ In the root-only model, this file is an import source for seeding `runtime/direc
 |---|---|---|
 | `pr_reply_require_approval` | legacy gateway YAML | `src/agent_sandbox/gateway.py` PR-reply approval gate. |
 | `github_token_env` | legacy gateway YAML | `src/agent_sandbox/runtime.py` and `src/agent_sandbox/host_heartbeat_worker.py`. |
-| `azure_devops_pat_env` | legacy gateway YAML | `src/agent_sandbox/runtime.py` and `src/agent_sandbox/host_heartbeat_worker.py`. |
+| `azure_devops_pr_pat_env` | legacy gateway YAML | `src/agent_sandbox/runtime.py` and `src/agent_sandbox/host_heartbeat_worker.py`. |
 | `azure_devops_organization_url` | legacy gateway YAML | `src/agent_sandbox/runtime.py` and `src/agent_sandbox/host_heartbeat_worker.py`. |
 | `azure_devops_project` | legacy gateway YAML | `src/agent_sandbox/runtime.py` and `src/agent_sandbox/host_heartbeat_worker.py`. |
-| `host_heartbeat_poll_interval_seconds` | legacy gateway YAML | `src/agent_sandbox/host_heartbeat_worker.py`. |
-| `host_heartbeat_jitter_seconds` | legacy gateway YAML | `src/agent_sandbox/host_heartbeat_worker.py`. |
-| `host_heartbeat_cooldown_seconds` | legacy gateway YAML | `src/agent_sandbox/host_heartbeat_worker.py`. |
-| `host_heartbeat_http_timeout_seconds` | legacy gateway YAML | `src/agent_sandbox/host_heartbeat_worker.py`. |
-| `host_heartbeat_lock_path` | legacy gateway YAML | `src/agent_sandbox/host_heartbeat_worker.py`. |
-| `host_heartbeat_session_cooldown_path` | legacy gateway YAML | `src/agent_sandbox/host_heartbeat_worker.py`. |
-| `host_busy_check_script_path` | legacy gateway YAML | `src/agent_sandbox/host_heartbeat_worker.py` subprocess call site. |
-| `host_resume_script_path` | legacy gateway YAML | `src/agent_sandbox/host_heartbeat_worker.py` subprocess call site. |
-| `host_heartbeat_wake_state_path` | legacy gateway YAML | `src/agent_sandbox/host_heartbeat_worker.py`. |
 | `host_heartbeat_resume_prompt` | legacy gateway YAML | `src/agent_sandbox/host_heartbeat_worker.py`. |
-| `host_heartbeat_vm_user` | legacy gateway YAML | `src/agent_sandbox/host_heartbeat_worker.py`. |
-| `host_heartbeat_resume_timeout_seconds` | legacy gateway YAML | `src/agent_sandbox/host_heartbeat_worker.py`. |
-| `host_heartbeat_stream_conflict_policy` | legacy gateway YAML | `src/agent_sandbox/host_heartbeat_worker.py`. |
 | `pr_map_path` | legacy gateway YAML | `src/agent_sandbox/host_heartbeat_worker.py` PR map loading. |
 
 ## 4) Cloud-init template placeholders (`config/cloud-init-user-data.yaml`)
@@ -250,7 +268,10 @@ Supported directory config domains:
 | `policy.json` | Session/policy defaults and operator restrictions | `approval_ttl_seconds`, `default_session_ttl_seconds`, Discord/email allowlists, `email_send_enabled`, `pr_reply_require_approval`, `redacted_keys` |
 | `providers.json` | Upstream/provider endpoints and credentials-by-reference | Discord, OpenAI, NuGet, GitHub, Azure DevOps |
 | `email.json` | Mailbox provider definitions and email provider runtime settings | `email_mailboxes`, `email_provider_timeout_seconds` |
-| `heartbeat.json` | Host heartbeat worker behavior | heartbeat timing, scripts, conflict policy, wake-state paths |
+| `heartbeat.json` | Host heartbeat worker behavior | `host_heartbeat_resume_prompt` |
+| `ado-worker.json` | Azure DevOps backlog worker setup/bootstrap behavior | `ado_area_filters`, `ado_team_filters`, `ado_project_or_solution`, `ado_prewarm_target`, `ado_repo_source`, `ado_bootstrap_*`, `ado_mssql_sa_password_env`, frontend bootstrap fields |
+| `issue-setup.json` | VM issue setup/git hand-off defaults | `git_root`, `git_host`, `git_user`, `git_ssh_alias`, `post_exec_verification_prompt`, `enable_guest_heartbeat`, `guest_heartbeat_prompt`, optional `issue_setup_azure_devops_pr_pat_env` |
+| `pr-template.json` | Directory-scoped markdown boilerplate prepended to automated PR bodies | `pr_template_markdown` |
 | `vm.json` | Guest-facing relay/network defaults | `bind_network_cidr`, `gateway_url`, OpenAI relay host/port, NuGet relay host/port |
 
 Merge behavior in `src/agent_sandbox/directory_config.py`:
@@ -275,6 +296,10 @@ These are not primarily defined in `*.env.example` but are explicit configuratio
 | `AGENT_SANDBOX_GIT_ROOT` | `src/agent_sandbox/cli.py` | `agent-sandbox` CLI git-remote helpers (`resolve_git_root`). |
 | `MSSQL_SA_PASSWORD` | `src/agent_sandbox/cli.py`, `scripts/setup_issue_vm.sh`, bootstrap scripts | Required when MSSQL bootstrap paths are enabled. |
 | Provider mailbox tokens (`GMAIL_*_ACCESS_TOKEN`, `GRAPH_*_ACCESS_TOKEN`, etc.) | Referenced indirectly in effective root directory config under `auth_secret_refs.access_token` | `src/agent_sandbox/runtime.py`, `src/agent_sandbox/email/gmail_provider.py`, `src/agent_sandbox/email/graph_provider.py`. |
+
+For issue setup, `AGENT_SANDBOX_GIT_*` and `AGENT_POST_EXEC_VERIFICATION_PROMPT` are now
+read from the root `issue_setup` directory config when present, with host environment variables
+still acting as overrides. `AGENT_SANDBOX_AZURE_DEVOPS_PR_PAT_ENV` remains a provider-level setting.
 
 ---
 

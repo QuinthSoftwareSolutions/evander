@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import httpx
 
 from agent_sandbox.agent_control import AgentControlStore
-from agent_sandbox.config import GatewayConfig
+from agent_sandbox.config import GatewayConfig, HostHeartbeatWorkerGlobalConfig
 from agent_sandbox.directory_config import DirectoryConfigStore
 from agent_sandbox.directories import DirectoryService, DirectoryStore
 from agent_sandbox.host_heartbeat_worker import (
@@ -21,6 +21,7 @@ from agent_sandbox.host_heartbeat_worker import (
     _compute_next_sleep_seconds,
     _set_session_cooldown,
     _single_instance_lock,
+    build_host_heartbeat_worker,
 )
 from agent_sandbox.models import SessionManifest, ToolName
 from agent_sandbox.worker_directory_context import ShadowDomainContext, WorkerDirectoryContext
@@ -149,7 +150,11 @@ def test_collect_stream_mappings_falls_back_to_pr_map_when_manifest_missing(tmp_
         ),
         encoding="utf-8",
     )
-    runtime = SimpleNamespace(sessions=SimpleNamespace(read_all=lambda: sessions), audit=_DummyAudit())
+    runtime = SimpleNamespace(
+        sessions=SimpleNamespace(read_all=lambda: sessions),
+        directories=DirectoryStore(tmp_path / "directories.json"),
+        audit=_DummyAudit(),
+    )
     worker = HostHeartbeatWorker(
         config=SimpleNamespace(pr_map_path=pr_map_path),
         runtime=runtime,
@@ -177,7 +182,11 @@ def test_collect_stream_mappings_attaches_directory_shadow_context(tmp_path, mon
     }
     sessions["active-a"].directory_path = "root/team-a"
 
-    runtime = SimpleNamespace(sessions=SimpleNamespace(read_all=lambda: sessions), audit=_DummyAudit())
+    runtime = SimpleNamespace(
+        sessions=SimpleNamespace(read_all=lambda: sessions),
+        directories=DirectoryStore(tmp_path / "directories.json"),
+        audit=_DummyAudit(),
+    )
     worker = HostHeartbeatWorker(
         config=SimpleNamespace(pr_map_path=tmp_path / "missing-pr-map.json"),
         runtime=runtime,
@@ -219,7 +228,11 @@ def test_collect_stream_mappings_leaves_directory_context_unset_when_feature_dis
     }
     sessions["active-a"].directory_path = "root/team-a"
 
-    runtime = SimpleNamespace(sessions=SimpleNamespace(read_all=lambda: sessions), audit=_DummyAudit())
+    runtime = SimpleNamespace(
+        sessions=SimpleNamespace(read_all=lambda: sessions),
+        directories=DirectoryStore(tmp_path / "directories.json"),
+        audit=_DummyAudit(),
+    )
     worker = HostHeartbeatWorker(
         config=SimpleNamespace(pr_map_path=tmp_path / "missing-pr-map.json", enable_directory_scoped_config=False),
         runtime=runtime,
@@ -336,7 +349,7 @@ def test_run_once_uses_directory_scoped_provider_adapter(tmp_path) -> None:
     assert feedback_worker.tokens == ["team-token"]
 
 
-def test_run_once_uses_root_directory_workers_config_for_conflict_policy(tmp_path) -> None:
+def test_build_host_heartbeat_worker_uses_global_config_file_for_conflict_policy(tmp_path, monkeypatch) -> None:
     now = datetime.now(UTC)
     sessions = {
         "active-a": _build_manifest(
@@ -350,7 +363,11 @@ def test_run_once_uses_root_directory_workers_config_for_conflict_policy(tmp_pat
             metadata={"pr_feedback_streams": [{"provider": "github", "repo": "org/repo", "pr_id": "17"}]},
         ),
     }
-    runtime = SimpleNamespace(sessions=SimpleNamespace(read_all=lambda: sessions), audit=_DummyAudit())
+    runtime = SimpleNamespace(
+        sessions=SimpleNamespace(read_all=lambda: sessions),
+        directories=DirectoryStore(tmp_path / "directories.json"),
+        audit=_DummyAudit(),
+    )
 
     class TrackingFeedbackWorker:
         def __init__(self) -> None:
@@ -360,15 +377,172 @@ def test_run_once_uses_root_directory_workers_config_for_conflict_policy(tmp_pat
             self.calls += 1
             return []
 
+    project_dir = tmp_path / "project"
+    worker_config_path = project_dir / "config" / "host-heartbeat" / "config.json"
+    worker_config_path.parent.mkdir(parents=True, exist_ok=True)
+    worker_config_path.write_text(
+        json.dumps(
+            {
+                "host_heartbeat_directory_paths": ["root"],
+                "host_heartbeat_stream_conflict_policy": "reject",
+                "host_heartbeat_vm_user": "team-agent",
+            }
+        ),
+        encoding="utf-8",
+    )
     config = _build_directory_scoped_gateway_config(tmp_path)
-    directory_store = DirectoryStore(config.directories_store_path)
-    config_store = DirectoryConfigStore(directory_store, runtime_dir=config.runtime_dir)
-    config_store.ensure_root()
-    config_store.write("root", domain="workers", payload={"host_heartbeat_stream_conflict_policy": "reject"})
 
-    feedback_worker = TrackingFeedbackWorker()
+    class _ProviderConfig:
+        github_token_env = "GITHUB_TOKEN"
+        azure_devops_pr_pat_env = "AZURE_DEVOPS_PR_PAT"
+        azure_devops_organization_url = "https://dev.azure.com"
+        azure_devops_project = "default"
+
+    class _ProviderResolver:
+        def __init__(self, *args, **kwargs) -> None:
+            return None
+
+        def resolve_for_directory(self, directory_path):  # noqa: ANN001
+            return _ProviderConfig()
+
+    monkeypatch.setattr("agent_sandbox.host_heartbeat_worker.build_runtime", lambda cfg: runtime)
+    monkeypatch.setattr("agent_sandbox.host_heartbeat_worker.ProviderConfigResolver", _ProviderResolver)
+    monkeypatch.setattr(
+        "agent_sandbox.host_heartbeat_worker.build_pr_feedback_worker",
+        lambda runtime_dir, adapters, gateway_config: TrackingFeedbackWorker(),
+    )
+
+    worker = build_host_heartbeat_worker(config, project_dir=project_dir)
+
+    result = worker.run_once()
+
+    assert result.streams_polled == 0
+    assert worker.config.host_heartbeat_stream_conflict_policy == "reject"
+    assert worker.config.host_heartbeat_vm_user == "team-agent"
+    assert worker.feedback_worker.calls == 0
+
+
+def test_run_once_skips_polling_when_no_heartbeat_directories_are_configured(tmp_path, monkeypatch) -> None:
+    now = datetime.now(UTC)
+    sessions = {
+        "active-a": _build_manifest(
+            "active-a",
+            expires_at=now + timedelta(hours=2),
+            metadata={"pr_feedback_streams": [{"provider": "github", "repo": "org/repo", "pr_id": "17"}]},
+        ),
+    }
+
+    class _FeedbackWorker:
+        store = SimpleNamespace(has_unread_feedback=lambda **kwargs: True)
+
+        def poll_once(self, **kwargs):  # noqa: ANN003
+            raise AssertionError("poll_once should not be called when no directories are configured")
+
+    runtime = SimpleNamespace(sessions=SimpleNamespace(read_all=lambda: sessions), audit=_DummyAudit())
+    config = _build_directory_scoped_gateway_config(tmp_path)
+    worker_config = HostHeartbeatWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": str(tmp_path / "runtime"),
+            "host_heartbeat_directory_paths": [],
+        }
+    )
     worker = HostHeartbeatWorker(
         config=config,
+        worker_config=worker_config,
+        runtime=runtime,
+        feedback_worker=_FeedbackWorker(),
+        adapters={"github": object()},
+    )
+
+    result = worker.run_once()
+
+    assert result.streams_polled == 0
+    assert result.discovered_feedback == 0
+
+
+def test_run_once_processes_each_configured_directory_with_directory_resume_prompt(
+    tmp_path, monkeypatch
+) -> None:
+    now = datetime.now(UTC)
+    sessions = {
+        "active-a": _build_manifest(
+            "active-a",
+            expires_at=now + timedelta(hours=2),
+            metadata={"pr_feedback_streams": [{"provider": "github", "repo": "org/repo-a", "pr_id": "17"}]},
+        ),
+        "active-b": _build_manifest(
+            "active-b",
+            expires_at=now + timedelta(hours=2),
+            metadata={"pr_feedback_streams": [{"provider": "github", "repo": "org/repo-b", "pr_id": "18"}]},
+        ),
+    }
+    sessions["active-a"].directory_path = "root/team-a"
+    sessions["active-b"].directory_path = "root/team-b"
+
+    class _FeedbackWorker:
+        store = SimpleNamespace(has_unread_feedback=lambda **kwargs: True)
+
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def poll_once(self, **kwargs):  # noqa: ANN003
+            self.calls.append(kwargs)
+            return [object()]
+
+    captured: list[list[str]] = []
+
+    def _fake_run(cmd, check, capture_output, text, timeout):  # noqa: ANN001
+        captured.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("agent_sandbox.host_heartbeat_worker._probe_agent_dispatch_state", lambda **kwargs: "idle")
+    monkeypatch.setattr("agent_sandbox.host_heartbeat_worker.subprocess.run", _fake_run)
+
+    runtime = SimpleNamespace(
+        sessions=SimpleNamespace(read_all=lambda: sessions),
+        directories=DirectoryStore(tmp_path / "directories.json"),
+        audit=_DummyAudit(),
+    )
+    directory_service = DirectoryService(runtime.directories)
+    config_store = DirectoryConfigStore(runtime.directories, runtime_dir=tmp_path / "runtime")
+    config_store.ensure_root()
+    team_a = directory_service.create(parent="root", name="team-a")
+    team_b = directory_service.create(parent="root", name="team-b")
+    config_store.write(
+        team_a.path,
+        domain="heartbeat",
+        payload={"host_heartbeat_resume_prompt": "prompt-a"},
+    )
+    config_store.write(
+        team_b.path,
+        domain="heartbeat",
+        payload={"host_heartbeat_resume_prompt": "prompt-b"},
+    )
+
+    resume_script = tmp_path / "resume_issue_agent.sh"
+    resume_script.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    resume_script.chmod(0o755)
+
+    config = _build_directory_scoped_gateway_config(tmp_path)
+    config.host_resume_script_path = resume_script
+    config.host_busy_check_script_path = tmp_path / "check_busy.sh"
+    config.host_heartbeat_session_cooldown_path = tmp_path / "cooldowns.json"
+    config.host_heartbeat_wake_state_path = tmp_path / "wake-state.json"
+    config.host_heartbeat_vm_user = "teamagent"
+    config.host_heartbeat_resume_timeout_seconds = 12.0
+    config.host_heartbeat_cooldown_seconds = 10.0
+    config.directories_store_path = tmp_path / "directories.json"
+
+    worker_config = HostHeartbeatWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": str(tmp_path / "runtime"),
+            "host_heartbeat_directory_paths": ["root/team-a", "root/team-b"],
+        }
+    )
+    feedback_worker = _FeedbackWorker()
+    worker = HostHeartbeatWorker(
+        config=config,
+        worker_config=worker_config,
         runtime=runtime,
         feedback_worker=feedback_worker,
         adapters={"github": object()},
@@ -376,8 +550,11 @@ def test_run_once_uses_root_directory_workers_config_for_conflict_policy(tmp_pat
 
     result = worker.run_once()
 
-    assert result.streams_polled == 0
-    assert feedback_worker.calls == 0
+    assert result.streams_polled == 2
+    assert len(feedback_worker.calls) == 2
+    assert len(captured) == 2
+    assert any("--prompt" in " ".join(cmd) and "prompt-a" in " ".join(cmd) for cmd in captured)
+    assert any("--prompt" in " ".join(cmd) and "prompt-b" in " ".join(cmd) for cmd in captured)
 
 
 def test_compute_next_sleep_applies_jitter_and_feedback_cooldown(monkeypatch) -> None:
@@ -549,6 +726,13 @@ def test_wake_bindings_uses_directory_workers_override_for_resume_command(tmp_pa
 
     runtime = SimpleNamespace(sessions=SimpleNamespace(read_all=lambda: sessions), audit=_DummyAudit())
     config = _build_directory_scoped_gateway_config(tmp_path)
+    config.host_heartbeat_vm_user = "teamagent"
+    config.host_heartbeat_resume_prompt = "global prompt"
+    config.host_heartbeat_wake_state_path = tmp_path / "wake-state-root.json"
+    config.host_heartbeat_resume_timeout_seconds = 12.0
+    config.host_busy_check_script_path = tmp_path / "check_busy_root.sh"
+    config.host_heartbeat_session_cooldown_path = tmp_path / "cooldowns-root.json"
+    config.host_heartbeat_cooldown_seconds = 10.0
     directory_store = DirectoryStore(config.directories_store_path)
     directory_service = DirectoryService(directory_store)
     team_a = directory_service.create(parent="root", name="team-a")
@@ -557,28 +741,12 @@ def test_wake_bindings_uses_directory_workers_override_for_resume_command(tmp_pa
     resume_script = tmp_path / "resume_issue_agent.sh"
     resume_script.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
     resume_script.chmod(0o755)
-    config_store.write(
-        "root",
-        domain="workers",
-        payload={
-            "host_resume_script_path": str(resume_script),
-            "host_heartbeat_resume_prompt": "global prompt",
-            "host_heartbeat_vm_user": "agent",
-            "host_heartbeat_wake_state_path": str(tmp_path / "wake-state-root.json"),
-            "host_heartbeat_resume_timeout_seconds": 12.0,
-            "host_busy_check_script_path": str(tmp_path / "check_busy_root.sh"),
-            "host_heartbeat_session_cooldown_path": str(tmp_path / "cooldowns-root.json"),
-            "host_heartbeat_cooldown_seconds": 10.0,
-        },
-    )
+    config.host_resume_script_path = resume_script
     config_store.write(
         team_a.path,
-        domain="workers",
+        domain="heartbeat",
         payload={
             "host_heartbeat_resume_prompt": "team prompt",
-            "host_heartbeat_vm_user": "teamagent",
-            "host_heartbeat_wake_state_path": str(tmp_path / "wake-state-team.json"),
-            "host_heartbeat_session_cooldown_path": str(tmp_path / "cooldowns-team.json"),
         },
     )
 
@@ -595,7 +763,7 @@ def test_wake_bindings_uses_directory_workers_override_for_resume_command(tmp_pa
     cmd = captured[0]
     assert "--prompt" in cmd and "team prompt" in cmd
     assert "--vm-user" in cmd and "teamagent" in cmd
-    assert "--host-state-file" in cmd and str(tmp_path / "wake-state-team.json") in cmd
+    assert "--host-state-file" in cmd and str(tmp_path / "wake-state-root.json") in cmd
 
 
 def test_wake_bindings_skips_resume_when_busy(tmp_path, monkeypatch) -> None:

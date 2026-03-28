@@ -10,16 +10,24 @@ import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from pydantic import BaseModel
+
 from .agent_control import AgentControlStore
-from .bootstrap import load_host_bootstrap_config, load_runtime_gateway_config
-from .config import GatewayConfig
+from .bootstrap import load_host_bootstrap_config, load_runtime_gateway_config, resolve_project_dir
+from .config import AdoWorkerGlobalConfig, GatewayConfig, HostHeartbeatWorkerGlobalConfig
 from .directory_admin import DirectoryAdminService
-from .directory_config import DirectoryConfigStore
+from .directory_config import (
+    DirectoryConfigResolver,
+    DirectoryConfigStore,
+    get_domain_base_config,
+    validate_effective_domain_payload,
+)
 from .directories import DirectoryStore
 from .host_config import DEFAULT_RUNTIME_DIR
 from .bootstrap import resolve_runtime_dir
 from .ownership import DirectoryOwnershipQueries
 from .policy_config import EffectivePolicyConfig
+from .provider_config import ProviderConfigResolver
 from .vm_defaults_config import EffectiveVmDefaultsConfig, VmDefaultsConfigResolver
 from .models import (
     LocalIssueRecord,
@@ -39,6 +47,42 @@ _WORKER_DEFINITIONS: tuple[tuple[str, str, str], ...] = (
     ("ado", "ADO Worker", "agent-sandbox-ado-worker.service"),
     ("host-heartbeat", "Host Heartbeat Worker", "agent-sandbox-host-heartbeat.service"),
 )
+
+_WORKER_GLOBAL_CONFIG_PATHS: dict[str, str] = {
+    "ado": "config/ado-worker/config.json",
+    "host-heartbeat": "config/host-heartbeat/config.json",
+}
+
+_WORKER_GLOBAL_CONFIG_MODELS: dict[str, type[BaseModel]] = {
+    "ado": AdoWorkerGlobalConfig,
+    "host-heartbeat": HostHeartbeatWorkerGlobalConfig,
+}
+
+
+class EffectiveIssueSetupConfig(BaseModel):
+    git_root: str
+    git_host: str
+    git_user: str
+    git_ssh_alias: str
+    post_exec_verification_prompt: str | None = None
+    enable_guest_heartbeat: bool = False
+    guest_heartbeat_prompt: str = (
+        "Resume work for this session. Check for pending feedback first, then continue the most recent task."
+    )
+    issue_setup_azure_devops_pr_pat_env: str = "AZURE_DEVOPS_PR_PAT"
+
+
+class WorkerGlobalConfigPayload(BaseModel):
+    worker_id: str
+    path: str
+    exists: bool
+    config: dict[str, object]
+
+
+class WorkerGlobalConfigWritePayload(BaseModel):
+    worker_id: str
+    path: str
+    config: dict[str, object]
 
 
 def _utc_now() -> datetime:
@@ -134,10 +178,6 @@ def _resolve_git_root(root_dir: Path) -> Path:
     env_value = os.environ.get("AGENT_SANDBOX_GIT_ROOT", "").strip()
     if env_value:
         return Path(env_value)
-    env_file_values = _load_optional_env_file(root_dir / "config" / "git-server.env")
-    configured = env_file_values.get("AGENT_SANDBOX_GIT_ROOT", "").strip()
-    if configured:
-        return Path(configured)
     return root_dir / "git-remotes"
 
 
@@ -718,6 +758,7 @@ class AdminService:
             candidate_runtime = resolve_runtime_dir(legacy_config_path=explicit_legacy)
         self.runtime_dir = candidate_runtime
         self.legacy_config_path = explicit_legacy
+        self.project_dir = resolve_project_dir(legacy_config_path=self.legacy_config_path)
         bootstrap_config = load_host_bootstrap_config(
             runtime_dir=self.runtime_dir,
             legacy_config_path=self.legacy_config_path,
@@ -781,6 +822,118 @@ class AdminService:
             session_store=self.runtime.sessions,
         )
         return resolver.resolve_for_directory(directory_path)
+
+    def _resolve_issue_setup(self, directory_path: str, *, root_dir: Path) -> EffectiveIssueSetupConfig:
+        resolver = DirectoryConfigResolver(
+            self.directory_admin._directories,
+            base_gateway_config=self.config,
+            config_store=DirectoryConfigStore(self.runtime.directories, runtime_dir=self.config.runtime_dir),
+        )
+        resolution = resolver.resolve_domain(
+            directory_path,
+            domain="issue_setup",
+            base_config=get_domain_base_config(self.config, "issue_setup"),
+            validator=lambda candidate: validate_effective_domain_payload("issue_setup", candidate),
+        )
+        effective = resolution.effective_config
+        provider_config = ProviderConfigResolver(
+            self.config,
+            directory_store=self.runtime.directories,
+            session_store=self.runtime.sessions,
+        ).resolve_for_directory(directory_path)
+        provider_pat_env = provider_config.azure_devops_pr_pat_env.strip() or "AZURE_DEVOPS_PR_PAT"
+        issue_setup_pat_env_raw = effective.get("issue_setup_azure_devops_pr_pat_env")
+        issue_setup_pat_env = (
+            str(issue_setup_pat_env_raw).strip()
+            if isinstance(issue_setup_pat_env_raw, str)
+            else ""
+        ) or provider_pat_env
+        if not issue_setup_pat_env:
+            raise ValueError(
+                "Missing env-var name for Azure DevOps PR PAT lookup. "
+                "Set issue_setup_azure_devops_pr_pat_env or providers.azure_devops_pr_pat_env."
+            )
+        return EffectiveIssueSetupConfig.model_validate(
+            {
+                "git_root": str(effective.get("git_root") or _resolve_git_root(root_dir)),
+                "git_host": str(effective.get("git_host") or "192.168.250.1"),
+                "git_user": str(effective.get("git_user") or os.environ.get("USER", "agent")),
+                "git_ssh_alias": str(effective.get("git_ssh_alias") or "agent-sandbox-git-host"),
+                "post_exec_verification_prompt": effective.get("post_exec_verification_prompt"),
+                "enable_guest_heartbeat": bool(effective.get("enable_guest_heartbeat", False)),
+                "guest_heartbeat_prompt": str(
+                    effective.get("guest_heartbeat_prompt")
+                    or "Resume work for this session. Check for pending feedback first, then continue the most recent task."
+                ),
+                "issue_setup_azure_devops_pr_pat_env": issue_setup_pat_env,
+            }
+        )
+
+    def _build_setup_issue_vm_invocation(
+        self,
+        *,
+        setup_script: Path,
+        issue: str,
+        session_id: str,
+        vm_user: str,
+        start_agent: bool,
+        python: bool,
+        dotnet: bool,
+        nuget: str | None,
+        mssql: bool,
+        mssql_init_root: str | None,
+        playwright: bool,
+        frontend_deps: bool,
+        frontend_host_checkout: str | None,
+        frontend_install_roots: list[str] | None,
+        repo_source: str | None,
+        vm_defaults: EffectiveVmDefaultsConfig,
+        issue_setup: EffectiveIssueSetupConfig,
+    ) -> tuple[list[str], dict[str, str]]:
+        cmd = [str(setup_script)]
+        if not start_agent:
+            cmd.append("--dry-run")
+        if python:
+            cmd.append("--python")
+        if dotnet:
+            cmd.append("--dotnet")
+        if nuget is not None:
+            cmd.append("--nuget")
+        if mssql:
+            cmd.append("--mssql")
+        if mssql_init_root is not None:
+            cmd.extend(["--mssql-init-root", mssql_init_root])
+        if playwright:
+            cmd.append("--playwright")
+        if frontend_deps:
+            cmd.append("--frontend-deps")
+        if frontend_host_checkout is not None:
+            cmd.extend(["--frontend-host-checkout", frontend_host_checkout])
+        for install_root in frontend_install_roots or []:
+            cmd.extend(["--frontend-install-root", install_root])
+        cmd.append(issue)
+        if nuget is not None:
+            cmd.append(nuget)
+        if repo_source is not None:
+            cmd.append(repo_source)
+        cmd.extend([session_id, vm_user])
+
+        run_env = os.environ.copy()
+        run_env.update(vm_defaults.guest_environment())
+        run_env.update(
+            {
+                "AGENT_SANDBOX_GIT_ROOT": issue_setup.git_root,
+                "AGENT_SANDBOX_GIT_HOST": issue_setup.git_host,
+                "AGENT_SANDBOX_GIT_USER": issue_setup.git_user,
+                "AGENT_SANDBOX_GIT_SSH_ALIAS": issue_setup.git_ssh_alias,
+                "ENABLE_GUEST_HEARTBEAT": "1" if issue_setup.enable_guest_heartbeat else "0",
+                "GUEST_HEARTBEAT_PROMPT": issue_setup.guest_heartbeat_prompt,
+                "AGENT_SANDBOX_AZURE_DEVOPS_PR_PAT_ENV": issue_setup.issue_setup_azure_devops_pr_pat_env,
+            }
+        )
+        if issue_setup.post_exec_verification_prompt is not None:
+            run_env["AGENT_POST_EXEC_VERIFICATION_PROMPT"] = issue_setup.post_exec_verification_prompt
+        return cmd, run_env
 
     def _direct_owned_entity_ids(self, directory_path: str, *, kind: str) -> set[str]:
         snapshot = self.directory_ownership.list_entities(directory_path, include_descendants=False)
@@ -1221,6 +1374,44 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
     def compute_directory_effective_config(self, directory_path: str, domain: str):
         return self.directory_admin.compute_effective_config(self._normalize_directory_path(directory_path), domain=domain)
 
+    def read_worker_global_config(self, worker_id: str):
+        return self._read_worker_global_config(worker_id)
+
+    def write_worker_global_config(self, worker_id: str, payload: dict[str, object]):
+        return self._write_worker_global_config(worker_id, payload)
+
+    def _worker_global_config_path(self, worker_id: str) -> Path | None:
+        relative = _WORKER_GLOBAL_CONFIG_PATHS.get(worker_id)
+        if relative is None:
+            return None
+        return self.project_dir / relative
+
+    def _read_worker_global_config(self, worker_id: str) -> WorkerGlobalConfigPayload:
+        path = self._worker_global_config_path(worker_id)
+        if path is None:
+            raise ValueError(f"Unknown worker: {worker_id}")
+        exists = path.exists()
+        if exists:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(raw, dict):
+                raise ValueError(f"worker config file {path} must contain a JSON object")
+        else:
+            model = _WORKER_GLOBAL_CONFIG_MODELS[worker_id]
+            raw = model.model_validate(self.config.model_dump(mode="json")).model_dump(mode="json")
+        model = _WORKER_GLOBAL_CONFIG_MODELS[worker_id]
+        config = model.model_validate(raw).model_dump(mode="json")
+        return WorkerGlobalConfigPayload(worker_id=worker_id, path=str(path), exists=exists, config=config)
+
+    def _write_worker_global_config(self, worker_id: str, payload: dict[str, object]) -> WorkerGlobalConfigWritePayload:
+        path = self._worker_global_config_path(worker_id)
+        if path is None:
+            raise ValueError(f"Unknown worker: {worker_id}")
+        model = _WORKER_GLOBAL_CONFIG_MODELS[worker_id]
+        config = model.model_validate(payload).model_dump(mode="json")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(config, indent=2, sort_keys=True), encoding="utf-8")
+        return WorkerGlobalConfigWritePayload(worker_id=worker_id, path=str(path), config=config)
+
     def _next_local_issue_number(self) -> str:
         current = 0
         if self.local_issue_counter_path.exists():
@@ -1340,36 +1531,28 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
         self.runtime.sessions.put(resolved_session_id, manifest)
 
         setup_script = Path(__file__).resolve().parents[2] / "scripts" / "setup_issue_vm.sh"
-        cmd = [str(setup_script)]
-        if not start_agent:
-            cmd.append("--dry-run")
-        if python:
-            cmd.append("--python")
-        if dotnet:
-            cmd.append("--dotnet")
-        if nuget is not None:
-            cmd.append("--nuget")
-        if mssql:
-            cmd.append("--mssql")
-        if mssql_init_root is not None:
-            cmd.extend(["--mssql-init-root", mssql_init_root])
-        if playwright:
-            cmd.append("--playwright")
-        if frontend_deps:
-            cmd.append("--frontend-deps")
-        if frontend_host_checkout is not None:
-            cmd.extend(["--frontend-host-checkout", frontend_host_checkout])
-        for install_root in frontend_install_roots or []:
-            cmd.extend(["--frontend-install-root", install_root])
-        cmd.append(issue)
-        if nuget is not None:
-            cmd.append(nuget)
-        if repo_source is not None:
-            cmd.append(repo_source)
-        cmd.extend([resolved_session_id, vm_user])
+        root_dir = Path(__file__).resolve().parents[2]
         vm_defaults = self._resolve_vm_defaults(normalized_directory_path)
-        run_env = os.environ.copy()
-        run_env.update(vm_defaults.guest_environment())
+        issue_setup = self._resolve_issue_setup(normalized_directory_path, root_dir=root_dir)
+        cmd, run_env = self._build_setup_issue_vm_invocation(
+            setup_script=setup_script,
+            issue=issue,
+            session_id=resolved_session_id,
+            vm_user=vm_user,
+            start_agent=start_agent,
+            python=python,
+            dotnet=dotnet,
+            nuget=nuget,
+            mssql=mssql,
+            mssql_init_root=mssql_init_root,
+            playwright=playwright,
+            frontend_deps=frontend_deps,
+            frontend_host_checkout=frontend_host_checkout,
+            frontend_install_roots=frontend_install_roots,
+            repo_source=repo_source,
+            vm_defaults=vm_defaults,
+            issue_setup=issue_setup,
+        )
         completed = _run_subprocess(cmd, capture_output=True, text=True, env=run_env)
         message = (completed.stdout or completed.stderr or "").strip()
         if completed.returncode != 0:

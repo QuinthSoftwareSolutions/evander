@@ -127,6 +127,8 @@ Storage layout for directory config:
   - `providers.json`
   - `email.json`
   - `heartbeat.json`
+  - `ado-worker.json`
+  - `issue-setup.json`
   - `vm.json`
 - `root` is the live top-level layer; there is no hidden YAML base beneath it.
 
@@ -356,11 +358,22 @@ without exposing provider credentials in the VM.
   - `sudo systemctl start agent-sandbox-host-heartbeat.service`
   - `sudo systemctl stop agent-sandbox-host-heartbeat.service`
   - `sudo systemctl status agent-sandbox-host-heartbeat.service`
-- Cadence is controlled by gateway config:
+- Cadence and resume behavior are controlled by `config/host-heartbeat/config.json`:
+  - `host_heartbeat_directory_paths` (canonical directories to process; the worker skips polling when the list is empty)
   - `host_heartbeat_poll_interval_seconds`
   - `host_heartbeat_jitter_seconds`
   - `host_heartbeat_cooldown_seconds`
+  - `host_heartbeat_http_timeout_seconds`
   - `host_heartbeat_lock_path` (single-instance lock file)
+  - `host_heartbeat_session_cooldown_path`
+  - `host_busy_check_script_path`
+  - `host_resume_script_path`
+  - `host_heartbeat_wake_state_path`
+  - `host_heartbeat_vm_user`
+  - `host_heartbeat_resume_timeout_seconds`
+  - `host_heartbeat_stream_conflict_policy`
+- `host_heartbeat_resume_prompt` remains directory-scoped in `heartbeat.json`.
+- The host heartbeat worker runs one pass per configured directory and resolves the resume prompt from that directory's effective config.
 - Agent control state is mirrored on the host in `runtime/host-agent-control-state.json`; the host heartbeat worker checks that file before probing or resuming a session so disabled agents stay ignored even when their VMs are powered off.
 - The host worker reads session manifests through runtime state and writes provider feedback/cursors to `runtime/pr-feedback-store.json`.
 - Guests no longer run `agent-heartbeat.service` or `agent-heartbeat.timer` by default.
@@ -486,25 +499,36 @@ agent-sandbox-cli create-session real-session --runtime-dir runtime
   (or legacy `MSSQL_SA_PASSWORD`). `ADO_BOOTSTRAP_FRONTEND_DEPS` requires
   `ADO_FRONTEND_INSTALL_ROOTS` and can optionally use `ADO_FRONTEND_HOST_CHECKOUT`
   when the mirrored repo source is remote.
-- Configure environment in `config/ado-worker.env` (start from
-  `config/ado-worker.env.example`), then export the PAT value in the host shell/env-file named by
-  `azure_devops_pat_env` in the effective `root` provider config (default `AZURE_DEVOPS_PAT`).
+- Directory-scoped `ado_worker` config can set `ado_repo_source` to control the repo source path
+  or remote URL passed to `setup_issue_vm.sh` for each directory.
+- Preferred configuration now lives in directory domain `ado_worker` (`ado-worker.json`) so values
+  inherit through directory ancestry and appear in the Admin GUI automatically.
+- Global worker settings now live in `config/ado-worker/config.json` and are edited from the
+  Admin GUI's Workers tab when the `ado` worker is selected. That file now also carries the
+  dedicated host env-var name for the work-item Azure DevOps PAT and the list of directories
+  the worker should poll each cycle.
+- `ADO_*` env vars continue to work as compatibility fallbacks for one release and log deprecation
+  warnings.
+- Materialize `root/ado-worker.json` with `agent-sandbox-cli migrate-ado-worker-env-to-root` or
+  `migrate-global-config-to-root`, then export the PAT value in the host shell or `secrets.env`
+  named by `ado_work_items_azure_devops_pat_env` in `config/ado-worker/config.json` (default
+  `ADO_WORK_ITEMS_AZURE_DEVOPS_PAT`).
 
 Foreground runbook:
 
 ```bash
-cp config/ado-worker.env.example config/ado-worker.env
-set -a; source config/ado-worker.env; set +a
-export AZURE_DEVOPS_PAT=...
+set -a; source secrets.env; set +a
 agent-sandbox-cli poll-ado-backlog --log-level INFO
 ```
 
 Systemd runbook:
 
-1. Ensure `config/ado-worker.env` exists and is populated.
-2. Ensure the PAT variable named by `azure_devops_pat_env` in the effective `root` provider config is available to the service user
-   (for example through the user shell profile or a drop-in env file).
-3. Start/inspect:
+1. Ensure `runtime/directory-config/root/ado-worker.json` exists and is populated.
+2. Ensure `config/ado-worker/config.json` exists if you want to override the worker defaults.
+3. Ensure the PAT variable named by `ado_work_items_azure_devops_pat_env` in
+   `config/ado-worker/config.json` is available to the service user.
+4. Source `secrets.env` or another secret env file if that is how you manage host secrets.
+5. Start/inspect:
 
 ```bash
 sudo systemctl start agent-sandbox-ado-worker.service
@@ -515,24 +539,25 @@ sudo journalctl -u agent-sandbox-ado-worker.service -f
 Failure recovery:
 
 - Re-run a specific work item once:
+  Source `secrets.env` first if you keep secrets there.
 
   ```bash
-  set -a; source config/ado-worker.env; set +a
-  export AZURE_DEVOPS_PAT=...
+  set -a; source secrets.env; set +a
   agent-sandbox-cli poll-ado-backlog --reprocess 12345
   ```
 
 - Clear processed state for a specific work item so the next normal poll can pick it up again:
+  Source `secrets.env` first if you keep secrets there.
 
   ```bash
-  set -a; source config/ado-worker.env; set +a
+  set -a; source secrets.env; set +a
   agent-sandbox-cli poll-ado-backlog --forget 12345
   ```
 
 - List work items that match the worker query but are not yet in the processed store:
 
   ```bash
-  export AZURE_DEVOPS_PAT=...
+  export ADO_WORK_ITEMS_AZURE_DEVOPS_PAT=...
   ./scripts/list_unassigned_ado_work_items.sh
   ```
 
@@ -553,7 +578,7 @@ sudo ./scripts/install_systemd_units.sh
 ```
 
 Run `--preflight` before the first install (and before reruns) to verify required binaries,
-config files, and required env vars for enabled services without writing unit files.
+runtime config files, and required env vars for enabled services without writing unit files.
 
 This creates:
 
@@ -566,20 +591,18 @@ This creates:
 
 Before running install mode, ensure preflight is clean (or only warning-only), then:
 
-1. Copy `config/gateway.env.example` to `config/gateway.env` if needed.
-2. Copy `config/firewall.env.example` to `config/firewall.env` if needed.
-3. Copy `config/openai-relay.env.example` to `config/openai-relay.env` if needed.
-4. Copy `config/nuget-relay.env.example` to `config/nuget-relay.env` if needed.
-5. Copy `config/ado-worker.env.example` to `config/ado-worker.env` if needed.
-6. Copy `config/host-heartbeat.env.example` to `config/host-heartbeat.env` if needed.
-7. Set the real `OPENAI_API_KEY` in `config/openai-relay.env`.
-8. Set `AZURE_ARTIFACTS_PAT` in `config/nuget-relay.env` when private feeds are required.
-9. Ensure the PAT variable named by `azure_devops_pat_env` in the effective `root` provider config
-   is exported for the service user and `config/ado-worker.env` points at the right project/solution path.
-10. For private PR feedback polling, set `GITHUB_TOKEN` and/or `AZURE_DEVOPS_PAT` in
-    `config/host-heartbeat.env` and ensure the effective `root` provider config sets the correct
-    `azure_devops_organization_url`, `azure_devops_project`, and heartbeat settings.
-11. Start and inspect services:
+1. Copy `config/firewall.env.example` to `config/firewall.env` if needed.
+2. Ensure `runtime/directory-config/root/ado-worker.json` exists and the PAT variable named by
+   `ado_work_items_azure_devops_pat_env` in `config/ado-worker/config.json` is exported for the
+   service user.
+3. Ensure the needed service env vars are available. The rendered units will load optional
+   per-service `config/*.env` files and optional repo-root `secrets.env`.
+4. Ensure `OPENAI_API_KEY` is available for the OpenAI relay and `AZURE_ARTIFACTS_PAT` when the
+   NuGet relay needs private Azure Artifacts access.
+5. For private PR feedback polling, ensure the service environment exposes `GITHUB_TOKEN`
+   and/or `AZURE_DEVOPS_PR_PAT` and ensure the effective `root` provider config sets the correct
+   `azure_devops_organization_url`, `azure_devops_project`, and `azure_devops_pr_pat_env`.
+6. Start and inspect services:
 
 ```bash
 sudo systemctl start agent-sandbox-firewall.service
@@ -612,7 +635,7 @@ hard-coded:
   2. `AGENT_SANDBOX_DEFAULT_REPO_SOURCE`
   3. repo-relative fallback (`<agent-sandbox-repo-root>`)
 - guest clone remote root:
-  - `AGENT_SANDBOX_GIT_ROOT` (from env or `config/git-server.env`) plus
+  - `AGENT_SANDBOX_GIT_ROOT` from the `root` issue setup config or host environment, plus
     `/${ISSUE_NUMBER}_repo.git`
   - `AGENT_SANDBOX_GIT_ROOT` must exist on the host before guest clone starts
 - clone URL SSH alias:
@@ -654,8 +677,8 @@ host-side libvirt, firewall, or systemd verification for this scaffold.
 
 After the initial guest provider command run exits, setup triggers one
 provider-specific verification pass. Customize that verification
-prompt with `AGENT_POST_EXEC_VERIFICATION_PROMPT` (for example
-in `config/git-server.env`) when you need different checklist wording.
+prompt with `AGENT_POST_EXEC_VERIFICATION_PROMPT` in the `root` issue setup config or as a
+host environment variable when you need different checklist wording.
 
 To inspect or follow the guest agent from the host:
 
@@ -677,8 +700,7 @@ The script and CLI wrappers share the same timeout environment variables (defaul
 Create a host-local bare repository:
 
 ```bash
-cp config/git-server.env.example config/git-server.env
-$EDITOR config/git-server.env
+agent-sandbox-cli directories config-set --domain issue_setup root '{"git_root": "/home/jonathan/agent-sandbox/git-remotes", "git_host": "192.168.250.1", "git_user": "jonathan", "git_ssh_alias": "agent-sandbox-git-host"}'
 ./scripts/setup_issue_git_vm.sh vm-real 14084
 ```
 
@@ -700,15 +722,24 @@ push the review branch to `origin`, create or reuse the upstream PR, and append 
 
 ### PR body boilerplate controls
 
-PR body composition for automated `open_agent_pr.sh --create-pr` runs is controlled by host env
-values loaded from `config/git-server.env`:
+PR body composition for automated `open_agent_pr.sh --create-pr` runs is controlled by host
+environment variables:
 
 - `AGENT_SANDBOX_PR_FIXED_BODY_FILE` (optional): absolute path to operator-maintained markdown
-  boilerplate that should always appear at the top of auto-created PR descriptions.
+  boilerplate that should always appear at the top of auto-created PR descriptions. This is a
+  host-wide override; the directory-scoped `pr_template` domain is the primary per-directory
+  surface for PR boilerplate.
 - `AGENT_SANDBOX_PR_NOTES_REF` (optional, default `refs/notes/agent-pr`): notes ref used to read
   agent summary markdown from the promoted commit.
 - `AGENT_SANDBOX_PR_BODY_MAX_BYTES` (optional, default `60000`): hard byte cap applied to the
   composed PR body before creating/updating the PR.
+
+To migrate the legacy repo-level `config/pr-template.md` into the root directory-scoped template,
+run:
+
+```bash
+agent-sandbox-cli migrate-pr-template-to-root --config config/gateway.yaml
+```
 
 On guest issue VMs, prefer `git agent-pr-note set` / `git agent-pr-note append` instead of raw
 `git notes add -f`. The helper keeps an additive branch-local summary cache and `git push-agent`
@@ -797,7 +828,7 @@ After review and tests pass, push the reviewed branch to `origin` and optionally
 
 This is the preferred flow: VM -> quarantine bare repo -> trusted host clone -> `origin`/PR.
 
-For Azure DevOps origins, set `AZURE_DEVOPS_PAT` in `config/git-server.env` so the PR helper can
+For Azure DevOps origins, set `AZURE_DEVOPS_PR_PAT` in the environment so the PR helper can
 create upstream PRs automatically against the Azure-hosted canonical repository. When
 `open_agent_pr.sh` has an Azure work item id, or a session id like `issue-14084-...`, it also
 associates the PR with that work item in Azure DevOps.

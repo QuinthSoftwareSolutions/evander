@@ -28,8 +28,10 @@ def test_mirror_issue_repo_excludes_stale_agent_and_review_refs(tmp_path: Path) 
     sandbox_root = tmp_path / "sandbox"
     git_root = sandbox_root / "git-remotes"
     scripts_dir = sandbox_root / "scripts"
+    lib_dir = scripts_dir / "lib"
     git_root.mkdir(parents=True)
     scripts_dir.mkdir(parents=True)
+    lib_dir.mkdir(parents=True, exist_ok=True)
 
     repo_root = Path(__file__).resolve().parents[1]
     for name in ("mirror_issue_repo.sh", "create_git_remote.sh", "resolve_repo_source.sh"):
@@ -37,6 +39,9 @@ def test_mirror_issue_repo_excludes_stale_agent_and_review_refs(tmp_path: Path) 
         target = scripts_dir / name
         target.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
         os.chmod(target, 0o755)
+    runtime_config_source = repo_root / "scripts" / "lib" / "runtime_config.sh"
+    (lib_dir / "runtime_config.sh").write_text(runtime_config_source.read_text(encoding="utf-8"), encoding="utf-8")
+    os.chmod(lib_dir / "runtime_config.sh", 0o755)
     script = scripts_dir / "mirror_issue_repo.sh"
 
     source_repo = tmp_path / "source"

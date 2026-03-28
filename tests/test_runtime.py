@@ -186,7 +186,7 @@ def test_runtime_pr_reply_service_for_session_uses_directory_provider_override(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("TEAM_GITHUB_TOKEN", "gh-token")
-    monkeypatch.setenv("TEAM_ADO_PAT", "ado-token")
+    monkeypatch.setenv("TEAM_ADO_PR_PAT", "ado-token")
     config = make_config(tmp_path)
     directories = DirectoryService(DirectoryStore(config.directories_store_path))
     team = directories.create(parent="root", name="team")
@@ -195,7 +195,7 @@ def test_runtime_pr_reply_service_for_session_uses_directory_provider_override(
         team.path,
         {
             "github_token_env": "TEAM_GITHUB_TOKEN",
-            "azure_devops_pat_env": "TEAM_ADO_PAT",
+            "azure_devops_pr_pat_env": "TEAM_ADO_PR_PAT",
             "azure_devops_organization_url": "https://dev.azure.com/team-org",
             "azure_devops_project": "team-project",
             "email_provider_timeout_seconds": 9.0,
