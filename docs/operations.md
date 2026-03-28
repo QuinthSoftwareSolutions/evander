@@ -127,6 +127,8 @@ Storage layout for directory config:
   - `providers.json`
   - `email.json`
   - `heartbeat.json`
+  - `ado-worker.json`
+  - `issue-setup.json`
   - `vm.json`
 - `root` is the live top-level layer; there is no hidden YAML base beneath it.
 
@@ -486,6 +488,9 @@ agent-sandbox-cli create-session real-session --runtime-dir runtime
   (or legacy `MSSQL_SA_PASSWORD`). `ADO_BOOTSTRAP_FRONTEND_DEPS` requires
   `ADO_FRONTEND_INSTALL_ROOTS` and can optionally use `ADO_FRONTEND_HOST_CHECKOUT`
   when the mirrored repo source is remote.
+- Preferred configuration now lives in directory domain `ado_worker` (`ado-worker.json`) so values
+  inherit through directory ancestry and appear in the Admin GUI automatically. `ADO_*` env vars
+  continue to work as compatibility fallbacks for one release and log deprecation warnings.
 - Configure environment in `config/ado-worker.env` (start from
   `config/ado-worker.env.example`), then export the PAT value in the host shell/env-file named by
   `azure_devops_pat_env` in the effective `root` provider config (default `AZURE_DEVOPS_PAT`).

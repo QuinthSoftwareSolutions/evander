@@ -250,7 +250,7 @@ def test_create_issue_vm_uses_issue_setup_domain_for_setup_env(tmp_path: Path, m
     team_path = create_result.data.details.directory.path
     write_result = service.write_directory_domain_config(
         team_path,
-        "issue-setup",
+        "issue_setup",
         {
             "git_root": "/tmp/git-remotes",
             "git_host": "10.1.2.3",
@@ -296,7 +296,7 @@ def test_create_issue_vm_uses_issue_setup_azure_pat_override(tmp_path: Path, mon
     team_path = create_result.data.details.directory.path
     write_result = service.write_directory_domain_config(
         team_path,
-        "issue-setup",
+        "issue_setup",
         {
             "git_root": "/tmp/git-remotes",
             "git_host": "10.1.2.3",
@@ -324,6 +324,37 @@ def test_create_issue_vm_uses_issue_setup_azure_pat_override(tmp_path: Path, mon
 
     assert result.success is True
     assert captured_env["AGENT_SANDBOX_AZURE_DEVOPS_PAT_ENV"] == "TEAM_ISSUE_SETUP_ADO_PAT"
+
+
+def test_create_issue_vm_uses_issue_setup_fallback_env_when_domain_missing(tmp_path: Path, monkeypatch) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    monkeypatch.setenv("AGENT_SANDBOX_GIT_ROOT", "/tmp/from-env")
+    monkeypatch.setenv("AGENT_SANDBOX_GIT_HOST", "10.55.0.1")
+    monkeypatch.setenv("AGENT_SANDBOX_GIT_USER", "env-user")
+    monkeypatch.setenv("AGENT_SANDBOX_GIT_SSH_ALIAS", "env-git")
+    monkeypatch.setenv("AGENT_SANDBOX_AZURE_DEVOPS_PAT_ENV", "ENV_PAT_NAME")
+
+    captured_env: dict[str, str] = {}
+
+    def fake_run(*args, **kwargs):
+        captured_env.update(kwargs.get("env", {}))
+        return subprocess.CompletedProcess(args[0], 0, stdout="", stderr="")
+
+    monkeypatch.setattr("agent_sandbox.admin_service.subprocess.run", fake_run)
+
+    result = service.create_issue_vm(
+        issue="126",
+        session_id="issue-126-session",
+        directory_path="root",
+        start_agent=False,
+    )
+
+    assert result.success is True
+    assert captured_env["AGENT_SANDBOX_GIT_ROOT"] == "/tmp/from-env"
+    assert captured_env["AGENT_SANDBOX_GIT_HOST"] == "10.55.0.1"
+    assert captured_env["AGENT_SANDBOX_GIT_USER"] == "env-user"
+    assert captured_env["AGENT_SANDBOX_GIT_SSH_ALIAS"] == "env-git"
+    assert captured_env["AGENT_SANDBOX_AZURE_DEVOPS_PAT_ENV"] == "ENV_PAT_NAME"
 
 
 def test_admin_service_rejects_directory_edits_when_feature_flag_disabled(tmp_path: Path) -> None:

@@ -1,7 +1,12 @@
 from pathlib import Path
 
 from agent_sandbox.config import GatewayConfig
-from agent_sandbox.directory_config import DirectoryConfigResolver, DirectoryConfigStore
+from agent_sandbox.directory_config import (
+    DirectoryConfigResolver,
+    DirectoryConfigStore,
+    get_domain_base_config,
+    validate_effective_domain_payload,
+)
 from agent_sandbox.directories import DirectoryService, DirectoryStore
 
 
@@ -377,3 +382,68 @@ def test_directory_config_resolver_uses_explicit_merge_rules_for_maps_lists_scal
     assert resolution.provenance["map.nested.z"].directory_path == "root/team/child"
     assert resolution.provenance["list_value"].directory_path == "root/team/child"
     assert resolution.provenance["nullable"].directory_path == "root/team/child"
+
+
+def test_directory_config_store_validates_ado_worker_and_issue_setup_domains(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    store = DirectoryStore(runtime_dir / "directories.json")
+    service = DirectoryService(store)
+    config_store = DirectoryConfigStore(store, runtime_dir=runtime_dir)
+    team = service.create(parent="root", name="team")
+
+    worker_payload = config_store.write(
+        team.path,
+        domain="ado_worker",
+        payload={"ado_project_or_solution": "/tmp/Example.slnx", "ado_bootstrap_mssql": False},
+    )
+    issue_payload = config_store.write(
+        team.path,
+        domain="issue_setup",
+        payload={"git_root": "/tmp/git", "git_host": "10.1.2.3", "git_user": "agent", "git_ssh_alias": "agent-git"},
+    )
+
+    assert worker_payload == {"ado_project_or_solution": "/tmp/Example.slnx", "ado_bootstrap_mssql": False}
+    assert issue_payload == {
+        "git_root": "/tmp/git",
+        "git_host": "10.1.2.3",
+        "git_user": "agent",
+        "git_ssh_alias": "agent-git",
+    }
+
+
+def test_directory_config_resolver_inherits_ado_worker_and_issue_setup_overlays(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    store = DirectoryStore(runtime_dir / "directories.json")
+    service = DirectoryService(store)
+    config_store = DirectoryConfigStore(store, runtime_dir=runtime_dir)
+    resolver = DirectoryConfigResolver(service, config_store=config_store)
+    team = service.create(parent="root", name="team")
+    child = service.create(parent=team.id, name="child")
+
+    config_store.write(team.path, domain="ado_worker", payload={"ado_project_or_solution": "/tmp/Team.slnx"})
+    config_store.write(child.path, domain="ado_worker", payload={"ado_bootstrap_mssql": False})
+    config_store.write(
+        team.path,
+        domain="issue_setup",
+        payload={"git_root": "/tmp/team-git", "git_host": "10.1.2.3", "git_user": "team-bot", "git_ssh_alias": "team"},
+    )
+    config_store.write(child.path, domain="issue_setup", payload={"enable_guest_heartbeat": True})
+
+    ado_resolution = resolver.resolve_domain(
+        child.path,
+        domain="ado_worker",
+        base_config=get_domain_base_config(GatewayConfig(), "ado_worker"),
+        validator=lambda candidate: validate_effective_domain_payload("ado_worker", candidate),
+    )
+    issue_resolution = resolver.resolve_domain(
+        child.path,
+        domain="issue_setup",
+        base_config=get_domain_base_config(GatewayConfig(), "issue_setup"),
+        validator=lambda candidate: validate_effective_domain_payload("issue_setup", candidate),
+    )
+
+    assert ado_resolution.effective_config["ado_project_or_solution"] == "/tmp/Team.slnx"
+    assert ado_resolution.effective_config["ado_bootstrap_mssql"] is False
+    assert issue_resolution.effective_config["git_root"] == "/tmp/team-git"
+    assert issue_resolution.effective_config["git_user"] == "team-bot"
+    assert issue_resolution.effective_config["enable_guest_heartbeat"] is True

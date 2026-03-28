@@ -111,9 +111,9 @@ class WorkerConfig:
             )
             .resolve_domain(
                 "root",
-                domain="ado-worker",
-                base_config=get_domain_base_config(runtime_gateway_config, "ado-worker"),
-                validator=lambda candidate: validate_effective_domain_payload("ado-worker", candidate),
+                domain="ado_worker",
+                base_config=get_domain_base_config(runtime_gateway_config, "ado_worker"),
+                validator=lambda candidate: validate_effective_domain_payload("ado_worker", candidate),
             )
             .effective_config
         )
@@ -304,7 +304,7 @@ def _is_env_set(name: str) -> bool:
 def _log_deprecated_env_override(field_name: str, *env_names: str) -> None:
     _LOG.warning(
         "Deprecated ADO worker env override in use for %s via %s. "
-        "Set the value in directory config domain 'ado-worker' instead.",
+        "Set the value in directory config domain 'ado_worker' instead.",
         field_name,
         ", ".join(env_names),
     )
@@ -316,7 +316,7 @@ def _domain_csv_with_env_override(field_name: str, domain_config: dict[str, Any]
         return _csv_env(env_name)
     value = domain_config.get(field_name, [])
     if not isinstance(value, list):
-        raise ValueError(f"{field_name} must be a list in directory domain ado-worker.")
+        raise ValueError(f"{field_name} must be a list in directory domain ado_worker.")
     return tuple(str(item) for item in value if str(item).strip())
 
 
@@ -332,7 +332,7 @@ def _domain_bool_with_env_override(
         return _bool_env(env_name, default)
     value = domain_config.get(field_name, default)
     if not isinstance(value, bool):
-        raise ValueError(f"{field_name} must be a boolean in directory domain ado-worker.")
+        raise ValueError(f"{field_name} must be a boolean in directory domain ado_worker.")
     return value
 
 
@@ -349,7 +349,7 @@ def _domain_optional_str_with_env_override(
     if value is None:
         return None
     if not isinstance(value, str):
-        raise ValueError(f"{field_name} must be a string or null in directory domain ado-worker.")
+        raise ValueError(f"{field_name} must be a string or null in directory domain ado_worker.")
     normalized = value.strip()
     return normalized or None
 
@@ -368,10 +368,10 @@ def _domain_str_with_env_override(
     else:
         raw = domain_config.get(field_name, default)
         if not isinstance(raw, str):
-            raise ValueError(f"{field_name} must be a string in directory domain ado-worker.")
+            raise ValueError(f"{field_name} must be a string in directory domain ado_worker.")
         value = raw.strip() or default
     if required and not value:
-        raise ValueError(f"{field_name} must be set in directory domain ado-worker or {env_name}.")
+        raise ValueError(f"{field_name} must be set in directory domain ado_worker or {env_name}.")
     return value
 
 
