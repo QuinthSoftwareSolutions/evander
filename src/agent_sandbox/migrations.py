@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+import yaml
 
 from .config import GatewayConfig
 from .directory_config import (
@@ -41,6 +45,17 @@ class DomainMigrationResult:
     path: Path
 
 
+@dataclass(frozen=True)
+class LocalIssueSchemaMigrationSummary:
+    version: str
+    already_applied: bool
+    scanned_records: int
+    updated_records: int
+    imported_ado_artifacts: int
+    counter_rewritten: bool
+    marker_path: Path
+
+
 GLOBAL_DIRECTORY_CONFIG_DOMAINS = (
     "policy",
     "providers",
@@ -50,6 +65,8 @@ GLOBAL_DIRECTORY_CONFIG_DOMAINS = (
     "ado_worker",
     "issue_setup",
 )
+LOCAL_ISSUE_SCHEMA_VERSION = "2026-03-28-local-issues-v2"
+LOCAL_ISSUE_MIGRATION_MARKER_RELATIVE_PATH = Path("migrations/local-issues-schema-v2.json")
 
 
 def migrate_directory_ownership_defaults(config: GatewayConfig) -> OwnershipMigrationSummary:
@@ -77,6 +94,103 @@ def migrate_directory_ownership_defaults(config: GatewayConfig) -> OwnershipMigr
         changed_files=len(per_file_changes),
         changed_records=sum(per_file_changes.values()),
         per_file_changes=per_file_changes,
+    )
+
+
+def migrate_local_issues_to_unified_schema(
+    config: GatewayConfig,
+    *,
+    import_recent_ado_artifacts: bool = True,
+    ado_artifact_scan_limit: int = 200,
+) -> LocalIssueSchemaMigrationSummary:
+    marker_path = config.runtime_dir / LOCAL_ISSUE_MIGRATION_MARKER_RELATIVE_PATH
+    if marker_path.exists():
+        return LocalIssueSchemaMigrationSummary(
+            version=LOCAL_ISSUE_SCHEMA_VERSION,
+            already_applied=True,
+            scanned_records=0,
+            updated_records=0,
+            imported_ado_artifacts=0,
+            counter_rewritten=False,
+            marker_path=marker_path,
+        )
+
+    local_issues_path = config.runtime_dir / "local-issues.json"
+    if not local_issues_path.exists():
+        _write_local_issue_migration_marker(marker_path, scanned_records=0, updated_records=0, imported_ado_artifacts=0)
+        return LocalIssueSchemaMigrationSummary(
+            version=LOCAL_ISSUE_SCHEMA_VERSION,
+            already_applied=False,
+            scanned_records=0,
+            updated_records=0,
+            imported_ado_artifacts=0,
+            counter_rewritten=_reconcile_local_issue_counter(config, records={}),
+            marker_path=marker_path,
+        )
+
+    try:
+        payload = json.loads(local_issues_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return LocalIssueSchemaMigrationSummary(
+            version=LOCAL_ISSUE_SCHEMA_VERSION,
+            already_applied=False,
+            scanned_records=0,
+            updated_records=0,
+            imported_ado_artifacts=0,
+            counter_rewritten=False,
+            marker_path=marker_path,
+        )
+    if not isinstance(payload, dict):
+        return LocalIssueSchemaMigrationSummary(
+            version=LOCAL_ISSUE_SCHEMA_VERSION,
+            already_applied=False,
+            scanned_records=0,
+            updated_records=0,
+            imported_ado_artifacts=0,
+            counter_rewritten=False,
+            marker_path=marker_path,
+        )
+
+    scanned_records = 0
+    updated_records = 0
+    normalized_records: dict[str, dict[str, Any]] = {}
+    for key, raw_record in payload.items():
+        if not isinstance(raw_record, dict):
+            normalized_records[key] = raw_record
+            continue
+        scanned_records += 1
+        normalized = _normalize_local_issue_record(raw_record)
+        if normalized != raw_record:
+            updated_records += 1
+        normalized_records[key] = normalized
+
+    imported_ado_artifacts = 0
+    if import_recent_ado_artifacts:
+        imported_ado_artifacts = _import_recent_ado_yaml_into_proxy_records(
+            config.runtime_dir,
+            records=normalized_records,
+            limit=ado_artifact_scan_limit,
+        )
+        updated_records += imported_ado_artifacts
+
+    if normalized_records != payload:
+        local_issues_path.write_text(json.dumps(normalized_records, indent=2, sort_keys=True), encoding="utf-8")
+
+    counter_rewritten = _reconcile_local_issue_counter(config, records=normalized_records)
+    _write_local_issue_migration_marker(
+        marker_path,
+        scanned_records=scanned_records,
+        updated_records=updated_records,
+        imported_ado_artifacts=imported_ado_artifacts,
+    )
+    return LocalIssueSchemaMigrationSummary(
+        version=LOCAL_ISSUE_SCHEMA_VERSION,
+        already_applied=False,
+        scanned_records=scanned_records,
+        updated_records=updated_records,
+        imported_ado_artifacts=imported_ado_artifacts,
+        counter_rewritten=counter_rewritten,
+        marker_path=marker_path,
     )
 
 
@@ -260,6 +374,254 @@ def _migrate_domain_payload_to_root(
         config_store.write("root", domain=domain, payload=payload)
         return DomainMigrationResult(domain=domain, status="written", path=path)
     return DomainMigrationResult(domain=domain, status="skipped", path=path)
+
+
+def _normalize_local_issue_record(raw_record: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(raw_record)
+    issue_number = str(normalized.get("issue_number") or "").strip()
+    normalized["issue_number"] = issue_number
+    normalized["directory_path"] = str(normalized.get("directory_path") or "root").strip() or "root"
+
+    metadata = normalized.get("metadata")
+    if not isinstance(metadata, dict):
+        metadata = {}
+    metadata = dict(metadata)
+
+    yaml_payload = _load_yaml_payload(normalized.get("yaml_path"))
+    inferred_remote = _infer_remote_reference(issue_number, metadata, yaml_payload)
+    source = str(normalized.get("source") or "").strip()
+    if inferred_remote is not None:
+        metadata["remote"] = inferred_remote
+        if source in {"", "local_gui", "local"}:
+            source = "proxy_azure_devops"
+    if not source:
+        source = "local_gui"
+    normalized["source"] = source
+
+    existing_proxy_cache = metadata.get("proxy_cache")
+    if not isinstance(existing_proxy_cache, dict):
+        existing_proxy_cache = {}
+    inferred_proxy_cache = _infer_proxy_cache(normalized, yaml_payload)
+    merged_proxy_cache = {**existing_proxy_cache, **inferred_proxy_cache}
+    if _remote_issue_id(metadata) and merged_proxy_cache:
+        metadata["proxy_cache"] = merged_proxy_cache
+
+    normalized["metadata"] = metadata
+    return normalized
+
+
+def _load_yaml_payload(yaml_path: Any) -> dict[str, Any]:
+    if not isinstance(yaml_path, str) or not yaml_path.strip():
+        return {}
+    path = Path(yaml_path)
+    if not path.exists():
+        return {}
+    try:
+        parsed = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError):
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    return parsed
+
+
+def _infer_remote_reference(
+    issue_number: str,
+    metadata: dict[str, Any],
+    yaml_payload: dict[str, Any],
+) -> dict[str, str] | None:
+    existing_remote = metadata.get("remote")
+    if isinstance(existing_remote, dict):
+        provider = str(existing_remote.get("provider") or "").strip() or "azure_devops"
+        remote_issue_id = str(existing_remote.get("issue_id") or issue_number).strip()
+        if remote_issue_id:
+            return {
+                "provider": provider,
+                "issue_id": remote_issue_id,
+                "organization": str(existing_remote.get("organization") or "").strip(),
+                "project": str(existing_remote.get("project") or "").strip(),
+                "work_item_url": str(existing_remote.get("work_item_url") or "").strip(),
+            }
+
+    provider = str(metadata.get("provider") or "").strip()
+    legacy_remote_issue_id = str(metadata.get("issue_id") or "").strip()
+    if provider and legacy_remote_issue_id:
+        return {"provider": provider, "issue_id": legacy_remote_issue_id}
+
+    source_payload = yaml_payload.get("source")
+    if isinstance(source_payload, dict):
+        work_item_url = str(source_payload.get("work_item_url") or "").strip()
+        inferred_issue_id = _extract_ado_work_item_id(work_item_url) or issue_number
+        if inferred_issue_id:
+            return {
+                "provider": "azure_devops",
+                "issue_id": inferred_issue_id,
+                "organization": str(source_payload.get("organization") or "").strip(),
+                "project": str(source_payload.get("project") or "").strip(),
+                "work_item_url": work_item_url,
+            }
+
+    for url_key in ("work_item_url", "url"):
+        inferred_issue_id = _extract_ado_work_item_id(str(yaml_payload.get(url_key) or "").strip())
+        if inferred_issue_id:
+            return {"provider": "azure_devops", "issue_id": inferred_issue_id}
+    return None
+
+
+def _infer_proxy_cache(record: dict[str, Any], yaml_payload: dict[str, Any]) -> dict[str, Any]:
+    proxy_cache: dict[str, Any] = {}
+    title = str(yaml_payload.get("title") or record.get("title") or "").strip()
+    description = str(yaml_payload.get("description") or yaml_payload.get("body") or record.get("body") or "").strip()
+    state = str(yaml_payload.get("state") or "").strip()
+    url = str(yaml_payload.get("url") or "").strip()
+    updated_at = str(yaml_payload.get("updated_date") or yaml_payload.get("changed_date") or "").strip()
+    comments = yaml_payload.get("comments")
+
+    if title:
+        proxy_cache["title"] = title
+    if description:
+        proxy_cache["description"] = description
+    if state:
+        proxy_cache["state"] = state
+    if url:
+        proxy_cache["url"] = url
+    if updated_at:
+        proxy_cache["updated_at"] = updated_at
+    if isinstance(comments, list):
+        proxy_cache["comments"] = comments
+    return proxy_cache
+
+
+def _import_recent_ado_yaml_into_proxy_records(runtime_dir: Path, *, records: dict[str, Any], limit: int) -> int:
+    ado_dir = runtime_dir / "ado-work-items"
+    if not ado_dir.exists():
+        return 0
+    yaml_paths = sorted(ado_dir.glob("**/*.yaml"), key=_safe_mtime, reverse=True)[: max(limit, 0)]
+    if not yaml_paths:
+        return 0
+
+    changed = 0
+    by_issue_number: dict[str, dict[str, Any]] = {}
+    by_remote_issue_id: dict[str, dict[str, Any]] = {}
+    for raw_record in records.values():
+        if not isinstance(raw_record, dict):
+            continue
+        issue_number = str(raw_record.get("issue_number") or "").strip()
+        if issue_number:
+            by_issue_number[issue_number] = raw_record
+        remote_issue_id = _remote_issue_id(raw_record.get("metadata"))
+        if remote_issue_id:
+            by_remote_issue_id[remote_issue_id] = raw_record
+
+    for yaml_path in yaml_paths:
+        payload = _load_yaml_payload(str(yaml_path))
+        if not payload:
+            continue
+        issue_id = str(payload.get("issue_number") or "").strip() or _extract_ado_work_item_id(yaml_path.name)
+        if not issue_id:
+            continue
+        target = by_issue_number.get(issue_id) or by_remote_issue_id.get(issue_id)
+        if target is None:
+            continue
+        before = json.dumps(target, sort_keys=True, default=str)
+        normalized_target = _normalize_local_issue_record(target)
+        metadata = dict(normalized_target.get("metadata") if isinstance(normalized_target.get("metadata"), dict) else {})
+        metadata["remote"] = {
+            **(metadata.get("remote") if isinstance(metadata.get("remote"), dict) else {}),
+            **(_infer_remote_reference(issue_id, metadata, payload) or {"provider": "azure_devops", "issue_id": issue_id}),
+        }
+        if normalized_target.get("source") in {"", "local_gui", "local"}:
+            normalized_target["source"] = "proxy_azure_devops"
+        proxy_cache = dict(metadata.get("proxy_cache") if isinstance(metadata.get("proxy_cache"), dict) else {})
+        proxy_cache.update(_infer_proxy_cache(normalized_target, payload))
+        metadata["proxy_cache"] = proxy_cache
+        normalized_target["metadata"] = metadata
+        target.clear()
+        target.update(normalized_target)
+        by_remote_issue_id[issue_id] = target
+        after = json.dumps(target, sort_keys=True, default=str)
+        if before != after:
+            changed += 1
+    return changed
+
+
+def _safe_mtime(path: Path) -> float:
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
+def _remote_issue_id(metadata: Any) -> str:
+    if not isinstance(metadata, dict):
+        return ""
+    remote = metadata.get("remote")
+    if not isinstance(remote, dict):
+        return ""
+    return str(remote.get("issue_id") or "").strip()
+
+
+def _extract_ado_work_item_id(raw: str) -> str:
+    candidate = str(raw).strip()
+    if not candidate:
+        return ""
+    if candidate.isdigit():
+        return candidate
+    patterns = (
+        r"/workItems/edit/([0-9]+)",
+        r"\bwork-item-([0-9]+)\.ya?ml\b",
+        r"\b([0-9]{2,})\b",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, candidate, flags=re.IGNORECASE)
+        if match:
+            return match.group(1)
+    return ""
+
+
+def _reconcile_local_issue_counter(config: GatewayConfig, *, records: dict[str, Any]) -> bool:
+    counter_path = config.runtime_dir / "local-issue-counter.txt"
+    existing = 0
+    if counter_path.exists():
+        try:
+            existing = int(counter_path.read_text(encoding="utf-8").strip() or "0")
+        except ValueError:
+            existing = 0
+    max_manual_issue_number = 0
+    for raw_record in records.values():
+        if not isinstance(raw_record, dict):
+            continue
+        source = str(raw_record.get("source") or "").strip()
+        if source in {"proxy_azure_devops", "azure_devops", "ado_proxy"}:
+            continue
+        issue_number = str(raw_record.get("issue_number") or "").strip()
+        if issue_number.isdigit():
+            max_manual_issue_number = max(max_manual_issue_number, int(issue_number))
+    desired = max(existing, max_manual_issue_number)
+    if existing == desired and counter_path.exists():
+        return False
+    counter_path.parent.mkdir(parents=True, exist_ok=True)
+    counter_path.write_text(f"{desired}\n", encoding="utf-8")
+    return True
+
+
+def _write_local_issue_migration_marker(
+    marker_path: Path,
+    *,
+    scanned_records: int,
+    updated_records: int,
+    imported_ado_artifacts: int,
+) -> None:
+    marker_path.parent.mkdir(parents=True, exist_ok=True)
+    marker_payload = {
+        "migration": "local_issues_unified_schema",
+        "version": LOCAL_ISSUE_SCHEMA_VERSION,
+        "applied_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        "scanned_records": scanned_records,
+        "updated_records": updated_records,
+        "imported_ado_artifacts": imported_ado_artifacts,
+    }
+    marker_path.write_text(json.dumps(marker_payload, indent=2, sort_keys=True), encoding="utf-8")
 
 
 def _load_optional_env_file(path: Path) -> dict[str, str]:
