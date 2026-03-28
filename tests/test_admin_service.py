@@ -692,6 +692,38 @@ def test_issue_actions_use_local_behavior_for_non_proxy_issue(tmp_path: Path) ->
     assert read_result["comments"][-1]["text"] == "hello local"
 
 
+def test_create_local_issue_from_ado_yaml_creates_proxy_record_and_repoll_updates_without_duplicate(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    first_yaml = _write_proxy_issue_yaml(
+        tmp_path,
+        issue_number=42,
+        title="Proxy issue",
+        description="from remote",
+        state="New",
+    )
+    updated_yaml = _write_proxy_issue_yaml(
+        tmp_path,
+        issue_number=42,
+        title="Proxy issue updated",
+        description="updated body",
+        state="Active",
+    )
+
+    created = service.create_local_issue(yaml_path=str(first_yaml))
+    updated = service.create_local_issue(yaml_path=str(updated_yaml))
+
+    assert created.issue_number == "42"
+    assert updated.issue_number == "42"
+    issues = service.list_local_issues()
+    assert [issue.issue_number for issue in issues] == ["42"]
+    stored = service.local_issue_store.get("42")
+    assert stored is not None
+    assert stored.source == "proxy_azure_devops"
+    assert stored.metadata["remote"]["provider"] == "azure_devops"
+    assert stored.metadata["remote"]["issue_id"] == "42"
+    assert stored.metadata["proxy_cache"]["state"] == "Active"
+
+
 def test_issue_actions_forward_proxy_issues_and_sync_cache(tmp_path: Path) -> None:
     service = AdminService(write_config(tmp_path))
     issue = service.create_local_issue(
@@ -739,23 +771,62 @@ def test_issue_actions_forward_proxy_issues_and_sync_cache(tmp_path: Path) -> No
     stored = service.local_issue_store.get(issue.issue_number)
     assert stored is not None
     assert stored.metadata["proxy_cache"]["title"] == "Remote title"
-    assert any(name == "comment" for name, _ in calls)
-    assert any(name == "update" for name, _ in calls)
+    comment_call = next(kwargs for name, kwargs in calls if name == "comment")
+    update_call = next(kwargs for name, kwargs in calls if name == "update")
+    assert comment_call["remote_issue_id"] == issue.issue_number
+    assert update_call["state"] == "Resolved"
 
 
-def _write_proxy_issue_yaml(tmp_path: Path) -> Path:
+def test_create_issue_vm_accepts_unified_proxy_identifier(tmp_path: Path, monkeypatch: Any) -> None:
+    service = AdminService(write_config(tmp_path))
+    issue = service.create_local_issue(
+        yaml_path=str(
+            _write_proxy_issue_yaml(
+                tmp_path,
+                issue_number=77,
+                title="Proxy setup",
+                description="from ado",
+                state="Active",
+            )
+        )
+    )
+    captured: dict[str, Any] = {}
+
+    def _fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        captured["cmd"] = cmd
+        captured["env"] = kwargs.get("env")
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="ok", stderr="")
+
+    monkeypatch.setattr("agent_sandbox.admin_service.subprocess.run", _fake_run)
+
+    result = service.create_issue_vm(issue="proxy:ado/77", start_agent=False)
+
+    assert result.success is True
+    assert captured["cmd"][0].endswith("setup_issue_vm.sh")
+    assert captured["cmd"][-3] == issue.yaml_path
+    assert captured["cmd"][-1] == "agent"
+
+
+def _write_proxy_issue_yaml(
+    tmp_path: Path,
+    *,
+    issue_number: int = 42,
+    title: str = "Proxy issue",
+    description: str = "from remote",
+    state: str = "New",
+) -> Path:
     payload = {
-        "issue_number": 42,
-        "title": "Proxy issue",
-        "description": "from remote",
-        "state": "New",
-        "url": "https://ado.example/work/42",
+        "issue_number": issue_number,
+        "title": title,
+        "description": description,
+        "state": state,
+        "url": f"https://ado.example/work/{issue_number}",
         "source": {
             "organization": "https://dev.azure.com/example",
             "project": "sample",
-            "work_item_url": "https://dev.azure.com/example/sample/_workitems/edit/42",
+            "work_item_url": f"https://dev.azure.com/example/sample/_workitems/edit/{issue_number}",
         },
     }
-    path = tmp_path / "proxy-issue.yaml"
+    path = tmp_path / f"proxy-issue-{issue_number}-{state.lower()}.yaml"
     path.write_text(json.dumps(payload), encoding="utf-8")
     return path

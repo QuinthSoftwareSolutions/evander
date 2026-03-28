@@ -129,3 +129,41 @@ def test_issue_service_reads_legacy_proxy_metadata_shape() -> None:
     )
 
     assert resolved == ("azure_devops", "9001")
+
+
+def test_local_issue_migration_upgrades_legacy_proxy_metadata_shape(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path)
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    (runtime_dir / "local-issues.json").write_text(
+        json.dumps(
+            {
+                "9001": {
+                    "issue_number": "9001",
+                    "title": "Legacy proxy issue",
+                    "body": "",
+                    "yaml_path": str(runtime_dir / "issues" / "9001.yaml"),
+                    "source": "azure_devops",
+                    "metadata": {
+                        "provider": "azure_devops",
+                        "issue_id": "9001",
+                        "work_item_url": "https://dev.azure.com/example/sample/_workitems/edit/9001",
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    (runtime_dir / "local-issue-counter.txt").write_text("12\n", encoding="utf-8")
+
+    config = load_runtime_gateway_config(runtime_dir=runtime_dir, legacy_config_path=config_path)
+    summary = migrate_local_issues_to_unified_schema(config, import_recent_ado_artifacts=False)
+
+    assert summary.already_applied is False
+    assert summary.updated_records == 1
+    payload = json.loads((runtime_dir / "local-issues.json").read_text(encoding="utf-8"))
+    normalized = payload["9001"]
+    assert normalized["source"] == "proxy_azure_devops"
+    assert normalized["metadata"]["remote"]["provider"] == "azure_devops"
+    assert normalized["metadata"]["remote"]["issue_id"] == "9001"
+    assert normalized["metadata"]["remote"]["work_item_url"].endswith("/9001")

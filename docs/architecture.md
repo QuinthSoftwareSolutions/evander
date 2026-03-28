@@ -20,6 +20,29 @@
 - Session manifests are the smallest useful policy primitive for v1.
 - Approval records let you keep autonomy for drafts and read operations while gating sends.
 
+## Unified Issue Abstraction
+
+Issue workflows now use one host-side abstraction (`local-issues.json`) regardless of origin:
+
+- **Local issues** stay local (`source: local_gui`) and are handled entirely in host runtime state.
+- **Remote-backed issues** are modeled as local proxy issues (`source: proxy_azure_devops`) with:
+  - remote identity and routing data in `metadata.remote`
+  - locally cached remote snapshot data in `metadata.proxy_cache`
+
+This keeps Desktop and CLI behavior consistent: listing, selecting, and VM setup always target a
+local issue record first, then optionally forward provider operations.
+
+### Forwarding path for proxy issues
+
+When an operator reads a proxy issue, posts a comment, or updates state/fields:
+
+1. Admin service resolves the local issue record (number, session-style ID, or proxy ID alias).
+2. The issue service maps it to `(provider, remote_issue_id)` from `metadata.remote`.
+3. The provider adapter executes the remote Azure DevOps call.
+4. The local proxy cache (`metadata.proxy_cache`) is refreshed from the latest remote payload.
+
+Non-proxy records bypass forwarding and update only local runtime data.
+
 ## Why Logic Is Split Between Shell And Python
 
 The split is about operational boundary, not language preference.

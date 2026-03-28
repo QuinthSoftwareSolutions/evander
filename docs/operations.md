@@ -491,6 +491,11 @@ agent-sandbox-cli create-session real-session --runtime-dir runtime
   `agent-sandbox-cli poll-ado-backlog`.
 - The worker polls Azure DevOps work items in `Committed` state tagged `truman`, writes YAML
   payloads under `ADO_YAML_OUTPUT_DIR`, and invokes `scripts/setup_issue_vm.sh`.
+- A polled ADO work item is represented in the unified local issue store as a proxy issue
+  (`source: proxy_azure_devops`) keyed by local issue number with remote linkage in
+  `metadata.remote` and a last-seen cache in `metadata.proxy_cache`.
+- Re-polling the same remote issue updates the existing local proxy record/cache instead of
+  creating duplicates, so Desktop and CLI views remain stable across worker cycles.
 - Worker-triggered setup calls honor `ADO_BOOTSTRAP_DOTNET`, `ADO_BOOTSTRAP_NUGET`,
   `ADO_BOOTSTRAP_MSSQL`, `ADO_BOOTSTRAP_PLAYWRIGHT`, and `ADO_BOOTSTRAP_FRONTEND_DEPS` to
   decide which guest toolchains are bootstrapped for backlog-driven issue VMs. The first three
