@@ -102,6 +102,9 @@ def test_help_groups_commands_by_panel_then_alphabetically() -> None:
     assert output.index("seed-discord-channel") < output.index("seed-email")
     assert "init-state" in output and "Create runtime state files." in output
     assert "migrate-global-config-to-root" in output
+    assert "migrate-ado-worker-env-to-root" in output
+    assert "migrate-issue-setup-env-to-root" in output
+    assert "migrate-pr-template-to-root" in output
     assert "migrate-directory-ownership" in output
     assert "Backfill missing directory ownership fields" in output
     assert "create-issue-vm" in output and "Create and bootstrap an issue VM." in output
@@ -321,6 +324,220 @@ def test_migrate_global_config_to_root_recovers_when_metadata_lists_missing_root
     assert result.exit_code == 0
     assert "written=7 skipped=0 unchanged=0" in result.output
     assert (runtime_dir / "directory-config" / "root" / "providers.json").exists()
+
+
+def test_migrate_ado_worker_env_to_root_materializes_root_domain_file(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path, enable_directory_scoped_config=True)
+    runner = CliRunner()
+
+    assert runner.invoke(app, ["init-state", "--config", str(config_path)]).exit_code == 0
+    env_file = tmp_path / "config" / "ado-worker.env"
+    env_file.parent.mkdir(parents=True, exist_ok=True)
+    env_file.write_text(
+        "\n".join(
+            [
+                "ADO_PROJECT_OR_SOLUTION=/tmp/Example.slnx",
+                "ADO_PREWARM_TARGET=/tmp/Prewarm.slnx",
+                "ADO_BOOTSTRAP_MSSQL=true",
+                "ADO_MSSQL_SA_PASSWORD=SecretPassw0rd!",
+                "ADO_FRONTEND_INSTALL_ROOTS=/tmp/repo/Src/Clients,/tmp/repo/Src/Admin",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "migrate-ado-worker-env-to-root",
+            "--config",
+            str(config_path),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "ADO worker env migration complete: written ado_worker" in result.output
+    runtime_dir = tmp_path / "runtime"
+    payload = json.loads((runtime_dir / "directory-config" / "root" / "ado-worker.json").read_text(encoding="utf-8"))
+    assert payload == {
+        "ado_area_filters": [],
+        "ado_bootstrap_dotnet": True,
+        "ado_bootstrap_frontend_deps": False,
+        "ado_bootstrap_mssql": True,
+        "ado_bootstrap_nuget": True,
+        "ado_bootstrap_playwright": False,
+        "ado_frontend_install_roots": ["/tmp/repo/Src/Clients", "/tmp/repo/Src/Admin"],
+        "ado_prewarm_target": "/tmp/Prewarm.slnx",
+        "ado_project_or_solution": "/tmp/Example.slnx",
+        "ado_team_filters": [],
+    }
+    directories_payload = json.loads((runtime_dir / "directories.json").read_text(encoding="utf-8"))
+    assert "ado_worker" in directories_payload["root"]["metadata"]["directory_config"]["domains"]
+
+
+def test_migrate_issue_setup_env_to_root_materializes_root_domain_file(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path, enable_directory_scoped_config=True)
+    runner = CliRunner()
+
+    assert runner.invoke(app, ["init-state", "--config", str(config_path)]).exit_code == 0
+    env_file = tmp_path / "config" / "issue-setup.env"
+    env_file.parent.mkdir(parents=True, exist_ok=True)
+    env_file.write_text(
+        "\n".join(
+            [
+                "AGENT_SANDBOX_GIT_ROOT=/tmp/git-remotes",
+                "AGENT_SANDBOX_GIT_HOST=10.1.2.3",
+                "AGENT_SANDBOX_GIT_USER=gitbot",
+                "AGENT_SANDBOX_GIT_SSH_ALIAS=issue-git",
+                "AGENT_POST_EXEC_VERIFICATION_PROMPT=verify everything",
+                "ENABLE_GUEST_HEARTBEAT=1",
+                "GUEST_HEARTBEAT_PROMPT=continue working",
+                "AGENT_SANDBOX_AZURE_DEVOPS_PR_PAT_ENV=TEAM_ISSUE_SETUP_ADO_PAT",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "migrate-issue-setup-env-to-root",
+            "--config",
+            str(config_path),
+            "--env-file",
+            str(env_file),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "Issue setup env migration complete: written issue_setup" in result.output
+    runtime_dir = tmp_path / "runtime"
+    payload = json.loads((runtime_dir / "directory-config" / "root" / "issue-setup.json").read_text(encoding="utf-8"))
+    assert payload == {
+        "enable_guest_heartbeat": True,
+        "git_host": "10.1.2.3",
+        "git_root": "/tmp/git-remotes",
+        "git_ssh_alias": "issue-git",
+        "git_user": "gitbot",
+        "guest_heartbeat_prompt": "continue working",
+        "issue_setup_azure_devops_pr_pat_env": "TEAM_ISSUE_SETUP_ADO_PAT",
+        "post_exec_verification_prompt": "verify everything",
+    }
+    directories_payload = json.loads((runtime_dir / "directories.json").read_text(encoding="utf-8"))
+    assert "issue_setup" in directories_payload["root"]["metadata"]["directory_config"]["domains"]
+
+
+def test_migrate_pr_template_to_root_materializes_root_domain_file(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path, enable_directory_scoped_config=True)
+    runner = CliRunner()
+
+    assert runner.invoke(app, ["init-state", "--config", str(config_path)]).exit_code == 0
+    template_file = tmp_path / "config" / "pr-template.md"
+    template_file.parent.mkdir(parents=True, exist_ok=True)
+    template_file.write_text("Team checklist\n- [ ] Review\n", encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        [
+            "migrate-pr-template-to-root",
+            "--config",
+            str(config_path),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "PR template migration complete: written pr_template" in result.output
+    runtime_dir = tmp_path / "runtime"
+    payload = json.loads((runtime_dir / "directory-config" / "root" / "pr-template.json").read_text(encoding="utf-8"))
+    assert payload == {"pr_template_markdown": "Team checklist\n- [ ] Review\n"}
+    directories_payload = json.loads((runtime_dir / "directories.json").read_text(encoding="utf-8"))
+    assert "pr_template" in directories_payload["root"]["metadata"]["directory_config"]["domains"]
+
+
+def test_migrate_ado_worker_env_to_root_imports_env_file(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path, enable_directory_scoped_config=True)
+    env_file = tmp_path / "ado-worker.env"
+    env_file.write_text(
+        "\n".join(
+                [
+                    'ADO_PROJECT_OR_SOLUTION="/tmp/Example.slnx"',
+                    'ADO_AREA_FILTERS="Root\\Area,Root\\Other"',
+                    'ADO_BOOTSTRAP_MSSQL="true"',
+                    'ADO_MSSQL_SA_PASSWORD="TopSecret!"',
+                ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    runner = CliRunner()
+
+    assert runner.invoke(app, ["init-state", "--config", str(config_path)]).exit_code == 0
+    result = runner.invoke(
+        app,
+        [
+            "migrate-ado-worker-env-to-root",
+            "--config",
+            str(config_path),
+            "--env-file",
+            str(env_file),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "written ado_worker" in result.output
+    payload = json.loads((tmp_path / "runtime" / "directory-config" / "root" / "ado-worker.json").read_text("utf-8"))
+    assert payload["ado_project_or_solution"] == "/tmp/Example.slnx"
+    assert payload["ado_area_filters"] == ["Root\\Area", "Root\\Other"]
+    assert payload["ado_bootstrap_mssql"] is True
+    assert "ado_mssql_sa_password_env" not in payload
+    assert "ado_worker" in json.loads((tmp_path / "runtime" / "directories.json").read_text(encoding="utf-8"))["root"]["metadata"]["directory_config"]["domains"]
+
+
+def test_migrate_issue_setup_env_to_root_imports_env_file_and_env_overrides(tmp_path: Path, monkeypatch) -> None:
+    config_path = write_config(tmp_path, enable_directory_scoped_config=True)
+    env_file = tmp_path / "config" / "issue-setup.env"
+    env_file.parent.mkdir(parents=True, exist_ok=True)
+    env_file.write_text(
+        "\n".join(
+            [
+                'AGENT_SANDBOX_GIT_ROOT="/tmp/from-file"',
+                'AGENT_SANDBOX_GIT_HOST="10.55.0.1"',
+                'AGENT_SANDBOX_GIT_USER="env-file-user"',
+                'AGENT_SANDBOX_GIT_SSH_ALIAS="env-file-alias"',
+                'AGENT_POST_EXEC_VERIFICATION_PROMPT="verify from file"',
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ENABLE_GUEST_HEARTBEAT", "true")
+    monkeypatch.setenv("GUEST_HEARTBEAT_PROMPT", "continue from env")
+    monkeypatch.setenv("AZURE_DEVOPS_PR_PAT", "super-secret-pat")
+    runner = CliRunner()
+
+    assert runner.invoke(app, ["init-state", "--config", str(config_path)]).exit_code == 0
+    result = runner.invoke(
+        app,
+        [
+            "migrate-issue-setup-env-to-root",
+            "--config",
+            str(config_path),
+            "--env-file",
+            str(env_file),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "written issue_setup" in result.output
+    payload = json.loads((tmp_path / "runtime" / "directory-config" / "root" / "issue-setup.json").read_text("utf-8"))
+    assert payload["git_root"] == "/tmp/from-file"
+    assert payload["git_host"] == "10.55.0.1"
+    assert payload["git_user"] == "env-file-user"
+    assert payload["git_ssh_alias"] == "env-file-alias"
+    assert payload["post_exec_verification_prompt"] == "verify from file"
+    assert payload["enable_guest_heartbeat"] is True
+    assert payload["guest_heartbeat_prompt"] == "continue from env"
+    assert payload["issue_setup_azure_devops_pr_pat_env"] == "AZURE_DEVOPS_PR_PAT"
 
 
 def test_directories_cli_supports_crud_and_show(tmp_path: Path) -> None:
@@ -727,7 +944,7 @@ def test_create_issue_vm_uses_root_vm_defaults_overlay_for_guest_env(tmp_path: P
     assert captured_env["GATEWAY_URL"] == "http://10.10.10.1:8000/mcp"
     assert captured_env["LLM_BASE_URL"] == "http://10.10.10.1:12000/v1"
     assert captured_env["NUGET_RELAY_BASE_URL"] == "http://10.10.10.1:13000"
-    assert captured_env["AGENT_SANDBOX_AZURE_DEVOPS_PAT_ENV"] == "AZURE_DEVOPS_PAT"
+    assert captured_env["AGENT_SANDBOX_AZURE_DEVOPS_PR_PAT_ENV"] == "AZURE_DEVOPS_PR_PAT"
 
 
 def test_create_issue_vm_requires_mssql_password_env(tmp_path: Path, monkeypatch) -> None:
@@ -2831,7 +3048,7 @@ def test_host_heartbeat_once_runs_single_cycle(tmp_path: Path, monkeypatch) -> N
         def run_forever(self) -> None:
             raise AssertionError("run_forever should not be called in --once mode")
 
-    monkeypatch.setattr("agent_sandbox.cli.build_host_heartbeat_worker", lambda cfg: _FakeWorker())
+    monkeypatch.setattr("agent_sandbox.cli.build_host_heartbeat_worker", lambda cfg, **kwargs: _FakeWorker())
 
     result = runner.invoke(
         app,

@@ -27,6 +27,7 @@ DIRECTORY_CONFIG_DOMAIN_FILENAMES = {
     "ado_worker": "ado-worker.json",
     "vm": "vm.json",
     "issue_setup": "issue-setup.json",
+    "pr_template": "pr-template.json",
 }
 
 LEGACY_DIRECTORY_CONFIG_DOMAIN_FILENAMES = {
@@ -64,6 +65,7 @@ DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
         {
             "azure_devops_organization_url",
             "azure_devops_pat_env",
+            "azure_devops_pr_pat_env",
             "azure_devops_project",
             "discord_api_base_url",
             "discord_backend",
@@ -91,19 +93,7 @@ DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
     ),
     "heartbeat": frozenset(
         {
-            "host_busy_check_script_path",
-            "host_heartbeat_cooldown_seconds",
-            "host_heartbeat_http_timeout_seconds",
-            "host_heartbeat_jitter_seconds",
-            "host_heartbeat_lock_path",
-            "host_heartbeat_poll_interval_seconds",
             "host_heartbeat_resume_prompt",
-            "host_heartbeat_resume_timeout_seconds",
-            "host_heartbeat_session_cooldown_path",
-            "host_heartbeat_stream_conflict_policy",
-            "host_heartbeat_vm_user",
-            "host_heartbeat_wake_state_path",
-            "host_resume_script_path",
         }
     ),
     "vm": frozenset(
@@ -142,9 +132,10 @@ DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
             "post_exec_verification_prompt",
             "enable_guest_heartbeat",
             "guest_heartbeat_prompt",
-            "issue_setup_azure_devops_pat_env",
+            "issue_setup_azure_devops_pr_pat_env",
         }
     ),
+    "pr_template": frozenset({"pr_template_markdown"}),
 }
 
 
@@ -165,14 +156,29 @@ class AdoWorkerDirectoryConfig(BaseModel):
 
 
 class IssueSetupDirectoryConfig(BaseModel):
+    git_root: str | None = None
+    git_host: str | None = None
+    git_user: str | None = None
+    git_ssh_alias: str | None = None
+    post_exec_verification_prompt: str | None = None
+    enable_guest_heartbeat: bool | None = None
+    guest_heartbeat_prompt: str | None = None
+    issue_setup_azure_devops_pr_pat_env: str | None = None
+
+
+class EffectiveIssueSetupDirectoryConfig(BaseModel):
     git_root: str
     git_host: str
     git_user: str
     git_ssh_alias: str
-    post_exec_verification_prompt: str | None
+    post_exec_verification_prompt: str | None = None
     enable_guest_heartbeat: bool
     guest_heartbeat_prompt: str
-    issue_setup_azure_devops_pat_env: str | None = None
+    issue_setup_azure_devops_pr_pat_env: str | None = None
+
+
+class PrTemplateDirectoryConfig(BaseModel):
+    pr_template_markdown: str = ""
 
 LEGACY_DOMAIN_FIELD_SUBSETS: dict[str, dict[str, frozenset[str]]] = {
     "providers": {
@@ -208,18 +214,25 @@ def get_domain_base_config(config: GatewayConfig, domain: str) -> dict[str, Any]
                 or "Resume work for this session. Check for pending feedback first, then continue the most recent task."
             ),
             "post_exec_verification_prompt": os.environ.get("AGENT_POST_EXEC_VERIFICATION_PROMPT", "").strip() or None,
-            "issue_setup_azure_devops_pat_env": (
-                os.environ.get("AGENT_SANDBOX_AZURE_DEVOPS_PAT_ENV", "").strip()
-                or os.environ.get("AZURE_DEVOPS_PAT", "").strip()
-                or "AZURE_DEVOPS_PAT"
+            "issue_setup_azure_devops_pr_pat_env": (
+                os.environ.get("AGENT_SANDBOX_AZURE_DEVOPS_PR_PAT_ENV", "").strip()
+                or "AZURE_DEVOPS_PR_PAT"
             ),
         }
+    if domain == "pr_template":
+        return {"pr_template_markdown": ""}
     return {key: payload[key] for key in sorted(allowed_fields) if key in payload}
 
 
 def validate_effective_domain_payload(domain: str, payload: dict[str, Any]) -> dict[str, Any]:
     if domain == "gateway":
         validated = GatewayConfig.model_validate(payload)
+        return validated.model_dump(mode="json")
+    if domain == "issue_setup":
+        validated = EffectiveIssueSetupDirectoryConfig.model_validate(payload)
+        return validated.model_dump(mode="json")
+    if domain == "pr_template":
+        validated = PrTemplateDirectoryConfig.model_validate(payload)
         return validated.model_dump(mode="json")
     return DirectoryConfigStore.validate_domain_payload(domain, payload)
 
@@ -325,6 +338,29 @@ class DirectoryConfigStore:
         if not isinstance(payload, dict):
             raise ValueError(f"directory config payload for domain {domain!r} must be a JSON object")
         allowed_fields = DIRECTORY_CONFIG_DOMAIN_FIELDS[domain]
+        if domain == "heartbeat":
+            legacy_fields = {
+                "host_busy_check_script_path",
+                "host_heartbeat_cooldown_seconds",
+                "host_heartbeat_http_timeout_seconds",
+                "host_heartbeat_jitter_seconds",
+                "host_heartbeat_lock_path",
+                "host_heartbeat_poll_interval_seconds",
+                "host_heartbeat_resume_timeout_seconds",
+                "host_heartbeat_session_cooldown_path",
+                "host_heartbeat_stream_conflict_policy",
+                "host_heartbeat_vm_user",
+                "host_heartbeat_wake_state_path",
+                "host_resume_script_path",
+            }
+            unknown_fields = sorted(set(payload) - allowed_fields - legacy_fields)
+            if unknown_fields:
+                raise ValueError(
+                    f"directory config domain {domain!r} does not allow fields: {', '.join(unknown_fields)}"
+                )
+            payload = {key: value for key, value in payload.items() if key in allowed_fields}
+            validated = GatewayConfig.model_validate(payload)
+            return validated.model_dump(mode="json", include=set(payload))
         if domain == "providers":
             compatible_fields = allowed_fields | DIRECTORY_CONFIG_DOMAIN_FIELDS["email"]
             unknown_fields = sorted(set(payload) - compatible_fields)
@@ -340,6 +376,9 @@ class DirectoryConfigStore:
             return validated.model_dump(mode="json", include=set(payload))
         if domain == "issue_setup":
             validated = IssueSetupDirectoryConfig.model_validate(payload)
+            return validated.model_dump(mode="json", include=set(payload))
+        if domain == "pr_template":
+            validated = PrTemplateDirectoryConfig.model_validate(payload)
             return validated.model_dump(mode="json", include=set(payload))
         unknown_fields = sorted(set(payload) - allowed_fields)
         if unknown_fields:
@@ -397,6 +436,8 @@ class DirectoryConfigStore:
             return None
         allowed_fields = LEGACY_DOMAIN_FIELD_SUBSETS[source_domain][domain]
         extracted = {key: payload[key] for key in sorted(allowed_fields) if key in payload}
+        if domain == "heartbeat":
+            return extracted
         return extracted or None
 
     def _record_domain(self, directory_id: str, *, domain: str) -> None:

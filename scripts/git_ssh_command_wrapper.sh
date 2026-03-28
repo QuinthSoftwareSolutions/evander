@@ -18,13 +18,9 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
-ENV_FILE="${ROOT_DIR}/config/git-server.env"
-
-if [[ -f "${ENV_FILE}" ]]; then
-  set -a
-  . "${ENV_FILE}"
-  set +a
-fi
+# shellcheck source=lib/runtime_config.sh
+source "${SCRIPT_DIR}/lib/runtime_config.sh"
+load_issue_setup_config
 
 GIT_ROOT="${AGENT_SANDBOX_GIT_ROOT:-${ROOT_DIR}/git-remotes}"
 ROOT_REAL="$(realpath -m -- "${GIT_ROOT}")"

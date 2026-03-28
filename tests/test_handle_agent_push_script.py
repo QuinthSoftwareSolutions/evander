@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -126,6 +127,8 @@ def _run_handle_push(
     *,
     note_content: str | None,
     fixed_body: str | None,
+    directory_template: str | None = None,
+    session_directory_path: str | None = None,
     pr_body_max_bytes: int | None = None,
     notes_fetch_fail: bool = False,
     notes_read_fail: bool = False,
@@ -135,11 +138,16 @@ def _run_handle_push(
 
     sandbox_root = tmp_path / "sandbox"
     scripts_dir = sandbox_root / "scripts"
+    lib_dir = scripts_dir / "lib"
     scripts_dir.mkdir(parents=True)
+    lib_dir.mkdir(parents=True, exist_ok=True)
 
     handle_script = scripts_dir / "handle_agent_push.sh"
     handle_script.write_text(source_script.read_text(encoding="utf-8"), encoding="utf-8")
     os.chmod(handle_script, 0o755)
+    runtime_config_source = root / "scripts" / "lib" / "runtime_config.sh"
+    (lib_dir / "runtime_config.sh").write_text(runtime_config_source.read_text(encoding="utf-8"), encoding="utf-8")
+    os.chmod(lib_dir / "runtime_config.sh", 0o755)
 
     args_log = tmp_path / "open-agent-pr-args.log"
     _write_fake_open_agent_pr(scripts_dir / "open_agent_pr.sh", args_log)
@@ -152,6 +160,32 @@ def _run_handle_push(
 
     bare_repo = tmp_path / "bare.git"
     bare_repo.mkdir()
+
+    runtime_dir = sandbox_root / "runtime"
+    if directory_template is not None or session_directory_path is not None:
+        runtime_dir.mkdir(parents=True, exist_ok=True)
+        if session_directory_path is not None:
+            (runtime_dir / "sessions.json").write_text(
+                json.dumps(
+                    {
+                        "session-123": {
+                            "directory_path": session_directory_path,
+                        }
+                    },
+                    indent=2,
+                    sort_keys=True,
+                ),
+                encoding="utf-8",
+            )
+        if directory_template is not None:
+            template_path = runtime_dir / "directory-config"
+            for segment in (session_directory_path or "root").split("/"):
+                template_path /= segment
+            template_path.mkdir(parents=True, exist_ok=True)
+            (template_path / "pr-template.json").write_text(
+                json.dumps({"pr_template_markdown": directory_template}, indent=2, sort_keys=True),
+                encoding="utf-8",
+            )
 
     _write_fake_git(fake_bin / "git", trusted_repo)
 
@@ -227,6 +261,26 @@ def test_handle_agent_push_force_fetches_agent_pr_notes(tmp_path: Path) -> None:
 
     _, args_log, _ = _run_handle_push(tmp_path / "neither", note_content=None, fixed_body=None)
     assert _extract_body_file_path(args_log) is None
+
+
+def test_handle_agent_push_uses_directory_pr_template_for_session_directory(tmp_path: Path) -> None:
+    template = "Team checklist\n- [ ] Review"
+    note = "Agent note body"
+
+    _, args_log, _ = _run_handle_push(
+        tmp_path,
+        note_content=note,
+        fixed_body=None,
+        directory_template=template,
+        session_directory_path="root/team",
+    )
+
+    composed_path = _extract_body_file_path(args_log)
+    assert composed_path is not None
+    composed_content = Path(composed_path).read_text(encoding="utf-8")
+    assert composed_content == (
+        "Team checklist\n- [ ] Review\n\n---\n\n## Agent Summary\n\nAgent note body\n"
+    )
 
 
 def test_handle_agent_push_truncates_oversized_body_with_notice(tmp_path: Path) -> None:

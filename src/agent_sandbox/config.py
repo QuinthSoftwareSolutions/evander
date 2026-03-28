@@ -18,6 +18,8 @@ from pydantic import (
     model_validator,
 )
 
+from .models import DirectoryPath
+
 _HTTP_URL_ADAPTER = TypeAdapter(AnyHttpUrl)
 
 
@@ -86,6 +88,7 @@ class GatewayConfig(BaseModel):
     pr_reply_require_approval: bool = False
     github_token_env: str = "GITHUB_TOKEN"
     azure_devops_pat_env: str = "AZURE_DEVOPS_PAT"
+    azure_devops_pr_pat_env: str = "AZURE_DEVOPS_PR_PAT"
     azure_devops_organization_url: str = "https://dev.azure.com"
     azure_devops_project: str = "default"
     ado_area_filters: list[str] = Field(default_factory=list)
@@ -226,6 +229,100 @@ class GatewayConfig(BaseModel):
                 for mailbox in self.email_mailboxes
             }
 
+        return self
+
+
+class AdoWorkerGlobalConfig(BaseModel):
+    runtime_dir: Path = Path("runtime")
+    poll_interval_seconds: float = Field(default=30.0, gt=0)
+    directories: list[str] = Field(default_factory=list)
+    yaml_output_dir: Path | None = None
+    setup_log_dir: Path | None = None
+    processed_store_path: Path | None = None
+    setup_script_path: Path = Path("scripts/setup_issue_vm.sh")
+    ado_work_items_azure_devops_pat_env: str = "ADO_WORK_ITEMS_AZURE_DEVOPS_PAT"
+    setup_timeout_seconds: float = Field(default=1800.0, gt=0)
+    setup_concurrency_limit: int = Field(default=1, ge=1)
+    setup_lock_path: Path | None = None
+    fetch_retry_count: int = Field(default=2, ge=0)
+    fetch_retry_backoff_seconds: float = Field(default=2.0, ge=0.0)
+    include_comments: bool = True
+    comments_max_count: int = Field(default=20, ge=1)
+    comment_text_max_chars: int = Field(default=4000, ge=1)
+
+    @field_validator("directories", mode="before")
+    @classmethod
+    def normalize_directories(cls, value: object) -> object:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            value = [value]
+        if not isinstance(value, (list, tuple)):
+            return value
+        normalized: list[str] = []
+        for item in value:
+            text = str(item).strip()
+            if not text:
+                continue
+            normalized.append(DirectoryPath(segments=text).as_posix())
+        return normalized
+
+    @model_validator(mode="after")
+    def apply_runtime_path_defaults(self) -> AdoWorkerGlobalConfig:
+        if self.yaml_output_dir is None:
+            self.yaml_output_dir = self.runtime_dir / "ado-work-items"
+        if self.setup_log_dir is None:
+            self.setup_log_dir = self.runtime_dir / "setup-logs"
+        if self.processed_store_path is None:
+            self.processed_store_path = self.runtime_dir / "ado-processed-work-items.json"
+        if self.setup_lock_path is None:
+            self.setup_lock_path = self.runtime_dir / "setup-issue-vm.lock"
+        return self
+
+
+class HostHeartbeatWorkerGlobalConfig(BaseModel):
+    runtime_dir: Path = Path("runtime")
+    host_heartbeat_directory_paths: list[str] = Field(default_factory=list)
+    host_heartbeat_poll_interval_seconds: float = Field(default=30.0, gt=0)
+    host_heartbeat_jitter_seconds: float = Field(default=5.0, ge=0)
+    host_heartbeat_cooldown_seconds: float = Field(default=60.0, ge=0)
+    host_heartbeat_http_timeout_seconds: float = Field(default=30.0, gt=0)
+    host_heartbeat_lock_path: Path | None = None
+    host_heartbeat_session_cooldown_path: Path | None = None
+    host_busy_check_script_path: Path = Path("scripts/check_session_vm_busy.sh")
+    host_resume_script_path: Path = Path("scripts/resume_issue_agent.sh")
+    host_heartbeat_wake_state_path: Path | None = None
+    host_heartbeat_vm_user: str = "agent"
+    host_heartbeat_resume_timeout_seconds: float = Field(default=1200.0, gt=0)
+    host_heartbeat_stream_conflict_policy: Literal["fanout", "reject"] = "fanout"
+
+    @field_validator("host_heartbeat_directory_paths", mode="before")
+    @classmethod
+    def normalize_host_heartbeat_directory_paths(cls, value: object) -> object:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            value = [value]
+        if not isinstance(value, (list, tuple)):
+            return value
+        normalized: list[str] = []
+        for item in value:
+            text = str(item).strip()
+            if not text:
+                continue
+            normalized.append(DirectoryPath(segments=text).as_posix())
+        return normalized
+
+    @model_validator(mode="after")
+    def apply_runtime_path_defaults(self) -> HostHeartbeatWorkerGlobalConfig:
+        if self.host_heartbeat_lock_path is None:
+            self.host_heartbeat_lock_path = self.runtime_dir / "host-heartbeat.lock"
+        if self.host_heartbeat_session_cooldown_path is None:
+            self.host_heartbeat_session_cooldown_path = (
+                self.runtime_dir / "host-heartbeat-session-cooldown.json"
+            )
+        if self.host_heartbeat_wake_state_path is None:
+            self.host_heartbeat_wake_state_path = self.runtime_dir / "host-heartbeat-wake-state.json"
         return self
 
 

@@ -25,9 +25,8 @@ Options:
   -h, --help          Show this help text.
 
 Configuration:
-  Reads config/git-server.env when present.
-  Azure DevOps PR creation requires AZURE_DEVOPS_PAT (or the value configured in
-  AGENT_SANDBOX_AZURE_DEVOPS_PAT_ENV).
+  Azure DevOps PR creation requires AZURE_DEVOPS_PR_PAT (or the value configured in
+  AGENT_SANDBOX_AZURE_DEVOPS_PR_PAT_ENV).
   If a PR is created and a session id is available, the script also attaches the
   PR feedback stream to that session through agent-sandbox-cli.
 EOF
@@ -137,13 +136,9 @@ ORIGIN_BRANCH="${3:-}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
-ENV_FILE="${ROOT_DIR}/config/git-server.env"
-
-if [[ -f "${ENV_FILE}" ]]; then
-  set -a
-  . "${ENV_FILE}"
-  set +a
-fi
+# shellcheck source=lib/runtime_config.sh
+source "${SCRIPT_DIR}/lib/runtime_config.sh"
+load_provider_config
 
 if [[ -z "${HOME:-}" ]]; then
   CURRENT_USER="$(id -un)"
@@ -153,7 +148,7 @@ if [[ -z "${HOME:-}" ]]; then
   fi
 fi
 
-AZURE_PAT_ENV="${AGENT_SANDBOX_AZURE_DEVOPS_PAT_ENV:-AZURE_DEVOPS_PAT}"
+AZURE_PR_PAT_ENV="${AGENT_SANDBOX_AZURE_DEVOPS_PR_PAT_ENV:-AZURE_DEVOPS_PR_PAT}"
 
 if [[ ! -d "${HOST_REPO_PATH}/.git" ]]; then
   echo "Host repo path is not a Git working tree: ${HOST_REPO_PATH}" >&2
@@ -460,7 +455,7 @@ AZURE_PAT_ENV_VALUE=""
 AZURE_AUTH_HEADER=""
 USE_GH_GIT_CREDENTIAL_HELPER=0
 if [[ "${PUSH_PROVIDER}" == "azure_devops" ]]; then
-  AZURE_PAT_ENV_VALUE="${!AZURE_PAT_ENV:-}"
+  AZURE_PAT_ENV_VALUE="${!AZURE_PR_PAT_ENV:-}"
   if [[ -n "${AZURE_PAT_ENV_VALUE}" ]]; then
     HTTPS_ORIGIN_URL="$(azure_https_origin_url "${ORIGIN_URL}")"
     if [[ -n "${HTTPS_ORIGIN_URL}" ]]; then
@@ -591,16 +586,16 @@ case "${PROVIDER}" in
     PR_ID="$(printf '%s\n' "${PR_URL}" | sed -nE 's#.*/pull/([0-9]+)$#\1#p')"
     ;;
   azure_devops)
-    AZURE_DEVOPS_PAT_VALUE="${!AZURE_PAT_ENV:-}"
-    if [[ -z "${AZURE_DEVOPS_PAT_VALUE}" ]]; then
-      echo "Azure DevOps PAT is required for --provider azure_devops." >&2
-      echo "Set ${AZURE_PAT_ENV} in the environment or config/git-server.env." >&2
+    AZURE_DEVOPS_PR_PAT_VALUE="${!AZURE_PR_PAT_ENV:-}"
+    if [[ -z "${AZURE_DEVOPS_PR_PAT_VALUE}" ]]; then
+      echo "Azure DevOps PR PAT is required for --provider azure_devops." >&2
+      echo "Set ${AZURE_PR_PAT_ENV} in the environment or the root providers config." >&2
       exit 1
     fi
 
     AZURE_RESULT="$(
     ORIGIN_URL="${ORIGIN_URL}" \
-    AZURE_DEVOPS_PAT_VALUE="${AZURE_DEVOPS_PAT_VALUE}" \
+    AZURE_DEVOPS_PR_PAT_VALUE="${AZURE_DEVOPS_PR_PAT_VALUE}" \
     BASE_BRANCH="${BASE_BRANCH}" \
     ORIGIN_BRANCH="${ORIGIN_BRANCH}" \
     TITLE="${TITLE}" \
@@ -622,7 +617,7 @@ origin_branch = os.environ["ORIGIN_BRANCH"]
 title = os.environ["TITLE"]
 title_explicit = os.environ.get("TITLE_EXPLICIT", "0") == "1"
 body = os.environ["BODY_CONTENT"]
-pat = os.environ["AZURE_DEVOPS_PAT_VALUE"]
+pat = os.environ["AZURE_DEVOPS_PR_PAT_VALUE"]
 work_item_id = os.environ.get("WORK_ITEM_ID", "").strip()
 
 ssh_match = re.match(r"^git@ssh\.dev\.azure\.com:v3/([^/]+)/([^/]+)/([^/]+)$", origin_url)

@@ -14,7 +14,6 @@ from .directory_config import (
     validate_effective_domain_payload,
 )
 from .directories import DirectoryService, DirectoryStore
-from .host_config import HostConfig
 from .policy_config import EffectivePolicyConfig
 from .models import SessionManifest
 from .vm_defaults_config import EffectiveVmDefaultsConfig
@@ -161,12 +160,6 @@ def _domain_default_payload(domain: str) -> dict[str, Any]:
     if domain == "email":
         return {key: payload[key] for key in sorted(DIRECTORY_CONFIG_DOMAIN_FIELDS["email"])}
     if domain == "heartbeat":
-        host_default = HostConfig()
-        payload.update(
-            {
-                "host_agent_control_state_path": host_default.host_agent_control_state_path,
-            }
-        )
         return {key: payload[key] for key in sorted(DIRECTORY_CONFIG_DOMAIN_FIELDS["heartbeat"])}
     if domain == "vm":
         return EffectiveVmDefaultsConfig().model_dump(mode="json", include={"bind_network_cidr", "gateway_url"})

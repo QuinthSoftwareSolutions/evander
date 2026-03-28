@@ -17,8 +17,7 @@ Create a local bare remote on the host:
 
 ```bash
 cd /home/jonathan/agent-sandbox
-cp config/git-server.env.example config/git-server.env
-$EDITOR config/git-server.env
+agent-sandbox-cli directories config-set --domain issue_setup root '{"git_root": "/home/jonathan/agent-sandbox/git-remotes", "git_host": "192.168.250.1", "git_user": "jonathan", "git_ssh_alias": "agent-sandbox-git-host"}'
 ./scripts/create_git_remote.sh sample-repo
 ```
 
@@ -172,6 +171,10 @@ When a PR body is assembled, merge order is deterministic:
 2. separator + heading (`---` and `## Agent Summary`)
 3. appended agent summary markdown from the commit note in `refs/notes/agent-pr`
 
+For per-directory PR boilerplate, use the directory-scoped `pr_template` domain and migrate the
+legacy repo-level `config/pr-template.md` into root config with
+`agent-sandbox-cli migrate-pr-template-to-root --config config/gateway.yaml`.
+
 Fallback behavior when the note is missing:
 
 - If no note exists for the pushed commit, PR creation continues without the note content.
@@ -184,10 +187,10 @@ Treat note content as **untrusted agent input**. The host flow passes it through
 for PR descriptions only; operators should not shell-interpolate, eval, or execute note text.
 Keep usage to display/render contexts (for example, PR body markdown) rather than command contexts.
 
-For Azure DevOps remotes, set a PAT in `config/git-server.env`:
+For Azure DevOps remotes, set the PR PAT in the environment:
 
 ```bash
-AZURE_DEVOPS_PAT=...
+AZURE_DEVOPS_PR_PAT=...
 ```
 
 `open_agent_pr.sh` detects Azure DevOps automatically from the trusted clone's `origin` URL and

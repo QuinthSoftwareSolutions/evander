@@ -229,7 +229,7 @@ def _build_discord_service(
 
 def _build_pr_reply_service(config: GatewayConfig) -> PrReplyService:
     github_token = os.environ.get(config.github_token_env, "").strip()
-    azure_pat = os.environ.get(config.azure_devops_pat_env, "").strip()
+    azure_pat = os.environ.get(config.azure_devops_pr_pat_env, "").strip()
 
     providers = {}
     if github_token:

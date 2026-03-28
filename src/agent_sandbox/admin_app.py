@@ -3,16 +3,20 @@ from __future__ import annotations
 import json
 import os
 import sys
+from types import UnionType
 from pathlib import Path
 from typing import Any, get_args, get_origin
 
+from pydantic import BaseModel
+
 from .admin_service import AdminService
-from .config import GatewayConfig
+from .config import AdoWorkerGlobalConfig, GatewayConfig, HostHeartbeatWorkerGlobalConfig
 from .directory_config import (
     AdoWorkerDirectoryConfig,
     DIRECTORY_CONFIG_DOMAIN_FIELDS,
     DIRECTORY_CONFIG_DOMAIN_FILENAMES,
     IssueSetupDirectoryConfig,
+    PrTemplateDirectoryConfig,
 )
 ADMIN_APP_DEFAULT_RUNTIME_DIR = Path("runtime")
 
@@ -40,6 +44,7 @@ try:
         QRadioButton,
         QScrollArea,
         QSplitter,
+        QStackedWidget,
         QSpinBox,
         QStatusBar,
         QAbstractItemView,
@@ -69,6 +74,7 @@ except ImportError:  # pragma: no cover - exercised only when GUI extra is missi
     QPushButton = QPlainTextEdit = QRadioButton = QScrollArea = QSplitter = QSpinBox = QDoubleSpinBox = object
     QComboBox = QStatusBar = QTableWidget = QTableWidgetItem = object
     QToolButton = object
+    QStackedWidget = object
     QTabWidget = QTextEdit = QVBoxLayout = QWidget = object
 
 
@@ -316,6 +322,26 @@ def _pretty_config_field_name(name: str) -> str:
     return name.replace("_", " ")
 
 
+def _unwrap_optional_annotation(annotation: Any) -> Any:
+    origin = get_origin(annotation)
+    if origin in {UnionType} or str(origin) == "typing.Union":
+        non_none_args = tuple(arg for arg in get_args(annotation) if arg is not type(None))
+        if len(non_none_args) == 1:
+            return non_none_args[0]
+    return annotation
+
+
+def _is_string_list_annotation(annotation: Any) -> bool:
+    annotation = _unwrap_optional_annotation(annotation)
+    origin = get_origin(annotation)
+    if origin is None:
+        return False
+    if origin not in {list, tuple} and str(origin) not in {"typing.List", "typing.Sequence"}:
+        return False
+    args = get_args(annotation)
+    return len(args) == 1 and args[0] is str
+
+
 CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
     "default_session_ttl_seconds": (
         "Default session lifetime in seconds when a new session is created without an explicit TTL."
@@ -361,6 +387,9 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
     ),
     "azure_devops_pat_env": (
         "Name of the host environment variable that holds the Azure DevOps personal access token."
+    ),
+    "azure_devops_pr_pat_env": (
+        "Name of the host environment variable that holds the Azure DevOps PR personal access token."
     ),
     "ado_mssql_sa_password_env": (
         "Name of the host environment variable that holds the MSSQL SA password used by ADO issue setup."
@@ -461,8 +490,11 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
     "openai_relay_timeout_seconds": (
         "Upstream request timeout in seconds for the OpenAI relay."
     ),
-    "issue_setup_azure_devops_pat_env": (
-        "Optional override for the Azure DevOps PAT env-var name used by issue setup and PR scripts."
+    "issue_setup_azure_devops_pr_pat_env": (
+        "Optional override for the Azure DevOps PR PAT env-var name used by issue setup and PR scripts."
+    ),
+    "pr_template_markdown": (
+        "Markdown boilerplate prepended to automated PR descriptions for this directory."
     ),
     "git_root": (
         "Host root directory that stores bare git remotes used during issue setup."
@@ -546,6 +578,49 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
     ),
 }
 
+WORKER_GLOBAL_CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
+    "runtime_dir": "Base runtime directory for the ADO worker's state and default relative paths.",
+    "poll_interval_seconds": "How often the ADO worker polls Azure DevOps for new work items.",
+    "directories": (
+        "Canonical directory paths the ADO worker should process on each cycle. "
+        "One path per line; an empty list means the worker skips polling."
+    ),
+    "host_heartbeat_directory_paths": (
+        "Canonical directory paths the host heartbeat worker should process on each cycle. "
+        "One path per line; an empty list means the worker skips polling."
+    ),
+    "yaml_output_dir": "Directory where fetched work items are rendered as YAML before setup runs.",
+    "setup_log_dir": "Directory where setup invocation logs are written.",
+    "processed_store_path": "JSON state file used to remember work items that have already been handled.",
+    "setup_script_path": "Host script invoked to provision an issue VM for each selected work item.",
+    "ado_work_items_azure_devops_pat_env": "Name of the host environment variable that holds the Azure DevOps PAT used for ADO work-item polling.",
+    "setup_timeout_seconds": "Timeout in seconds for the issue VM setup script.",
+    "setup_concurrency_limit": "Maximum number of setup jobs that may run at once.",
+    "setup_lock_path": "Lock file used to serialize setup work when concurrency is limited.",
+    "fetch_retry_count": "How many times the worker retries Azure DevOps fetch calls.",
+    "fetch_retry_backoff_seconds": "Backoff in seconds between Azure DevOps fetch retries.",
+    "include_comments": "Whether fetched work item comments are attached to the YAML payloads.",
+    "comments_max_count": "Maximum number of comments fetched per work item.",
+    "comment_text_max_chars": "Maximum number of comment characters kept per comment.",
+    "host_heartbeat_poll_interval_seconds": "Base polling interval in seconds for the host heartbeat worker.",
+    "host_heartbeat_jitter_seconds": "Random delay added to each host heartbeat sleep interval.",
+    "host_heartbeat_cooldown_seconds": "Minimum cooldown in seconds before the host heartbeat worker retries the same session.",
+    "host_heartbeat_http_timeout_seconds": "HTTP client timeout in seconds for host heartbeat polling cycles.",
+    "host_heartbeat_lock_path": "Single-instance lock file for the host heartbeat worker.",
+    "host_heartbeat_session_cooldown_path": "JSON state file used by the host heartbeat worker for session cooldown tracking.",
+    "host_busy_check_script_path": "Host script used to determine whether a session VM is busy before resuming it.",
+    "host_resume_script_path": "Host script invoked to resume a session VM when feedback is waiting.",
+    "host_heartbeat_wake_state_path": "Host-side JSON state file written by the resume workflow.",
+    "host_heartbeat_vm_user": "Guest username passed to the host resume script.",
+    "host_heartbeat_resume_timeout_seconds": "Timeout in seconds for the host resume script invocation.",
+    "host_heartbeat_stream_conflict_policy": "How the host heartbeat worker handles one PR feedback stream matching multiple sessions.",
+}
+
+WORKER_GLOBAL_CONFIG_MODELS: dict[str, type[BaseModel]] = {
+    "ado": AdoWorkerGlobalConfig,
+    "host-heartbeat": HostHeartbeatWorkerGlobalConfig,
+}
+
 
 def _format_config_value_preview(value: Any) -> str:
     if value is None:
@@ -562,8 +637,11 @@ def _format_config_value_preview(value: Any) -> str:
 def _config_field_kind(field_name: str) -> tuple[str, tuple[Any, ...]]:
     field_models = (
         GatewayConfig.model_fields,
+        AdoWorkerGlobalConfig.model_fields,
+        HostHeartbeatWorkerGlobalConfig.model_fields,
         AdoWorkerDirectoryConfig.model_fields,
         IssueSetupDirectoryConfig.model_fields,
+        PrTemplateDirectoryConfig.model_fields,
     )
     annotation = None
     for model_fields in field_models:
@@ -573,6 +651,7 @@ def _config_field_kind(field_name: str) -> tuple[str, tuple[Any, ...]]:
             break
     if annotation is None:
         return ("json", ())
+    annotation = _unwrap_optional_annotation(annotation)
     origin = get_origin(annotation)
     if annotation is bool:
         return ("bool", ())
@@ -582,7 +661,9 @@ def _config_field_kind(field_name: str) -> tuple[str, tuple[Any, ...]]:
         return ("float", ())
     if origin is not None and str(origin).endswith("Literal"):
         return ("literal", tuple(get_args(annotation)))
-    if annotation is str and field_name.endswith("_prompt"):
+    if _is_string_list_annotation(annotation):
+        return ("string_list", ())
+    if annotation is str and (field_name.endswith("_prompt") or field_name.endswith("_markdown")):
         return ("multiline_text", ())
     if annotation in {str, Path}:
         return ("text", ())
@@ -591,6 +672,14 @@ def _config_field_kind(field_name: str) -> tuple[str, tuple[Any, ...]]:
 
 def _config_field_tooltip(field_name: str) -> str:
     return CONFIG_FIELD_TOOLTIPS.get(field_name, "")
+
+
+def _worker_global_config_tooltip(field_name: str) -> str:
+    return WORKER_GLOBAL_CONFIG_FIELD_TOOLTIPS.get(field_name, "")
+
+
+def _root_config_field_starts_editable(domain: str, field_name: str, raw_config: dict[str, Any]) -> bool:
+    return domain == "pr_template" and field_name == "pr_template_markdown" and field_name not in raw_config
 
 
 def _parent_directory_path(path: str) -> str | None:
@@ -618,9 +707,13 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self._refresh_in_flight: set[str] = set()
         self._agent_log_request_token = 0
         self._worker_log_request_token = 0
+        self._worker_global_config_request_token = 0
         self._config_request_token = 0
         self._config_form_loading = False
         self._config_dirty_domains: set[str] = set()
+        self._worker_global_config_form_loading = False
+        self._worker_global_config_dirty = False
+        self._worker_global_config_worker_id: str | None = None
         self._vm_summaries = []
         self._issue_records = []
         self._active_session_summaries = []
@@ -710,6 +803,29 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self.worker_log_view = QTextEdit()
         self.worker_log_view.setReadOnly(True)
         self.worker_log_view.setPlaceholderText("Select a background worker to see its logs.")
+        self.worker_global_settings_status_label = QLabel(
+            "Select a worker to edit global settings."
+        )
+        self.worker_global_settings_status_label.setWordWrap(True)
+        self.worker_global_settings_form_scroll = QScrollArea()
+        self.worker_global_settings_form_scroll.setWidgetResizable(True)
+        self.worker_global_settings_form_stack = QStackedWidget()
+        self.worker_global_settings_form_scroll.setWidget(self.worker_global_settings_form_stack)
+        self._worker_global_config_widgets: dict[str, dict[str, dict[str, object]]] = {}
+        self._worker_global_config_pages: dict[str, QWidget] = {}
+        for worker_id, model in WORKER_GLOBAL_CONFIG_MODELS.items():
+            page, widgets = self._build_worker_global_settings_page(worker_id, model)
+            self.worker_global_settings_form_stack.addWidget(page)
+            self._worker_global_config_widgets[worker_id] = widgets
+            self._worker_global_config_pages[worker_id] = page
+        self.worker_global_settings_save_button = QPushButton("Save")
+        self.worker_global_settings_save_button.clicked.connect(self.save_worker_global_settings)
+        self.worker_global_settings_reload_button = QPushButton("Reload")
+        self.worker_global_settings_reload_button.clicked.connect(self.refresh_selected_worker_global_settings)
+        self.worker_global_settings_button_row = QHBoxLayout()
+        self.worker_global_settings_button_row.addWidget(self.worker_global_settings_save_button)
+        self.worker_global_settings_button_row.addWidget(self.worker_global_settings_reload_button)
+        self.worker_global_settings_button_row.addStretch(1)
         self.config_status_label = QLabel("No configuration loaded.")
         self.config_status_label.setWordWrap(True)
         self.config_tabs = QTabWidget()
@@ -924,11 +1040,24 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         worker_toolbar.addLayout(self.worker_action_bar)
         worker_layout.addLayout(worker_toolbar)
         worker_splitter = QSplitter(Qt.Orientation.Vertical)
+        self.worker_splitter = worker_splitter
         worker_splitter.addWidget(self.worker_table)
-        worker_splitter.addWidget(self.worker_log_view)
+        self.worker_details_panel = QWidget()
+        worker_details_layout = QVBoxLayout(self.worker_details_panel)
+        worker_details_layout.setContentsMargins(0, 0, 0, 0)
+        self.worker_log_section = CollapsibleSection("Worker log", self.worker_log_view)
+        self.worker_global_settings_section = CollapsibleSection(
+            "Worker global settings",
+            self._build_worker_global_settings_panel(),
+        )
+        worker_details_layout.addWidget(self.worker_log_section)
+        worker_details_layout.addWidget(self.worker_global_settings_section)
+        worker_splitter.addWidget(self.worker_details_panel)
         worker_splitter.setStretchFactor(0, 1)
         worker_splitter.setStretchFactor(1, 1)
         worker_layout.addWidget(worker_splitter)
+        self.worker_log_section.toggle_button.toggled.connect(self._update_worker_splitter_layout)
+        self.worker_global_settings_section.toggle_button.toggled.connect(self._update_worker_splitter_layout)
 
         config_page = QWidget()
         config_layout = QVBoxLayout(config_page)
@@ -1471,6 +1600,10 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             control = QPlainTextEdit()
             control.setPlaceholderText("Text value")
             control.setFixedHeight(96)
+        elif kind == "string_list":
+            control = QPlainTextEdit()
+            control.setPlaceholderText("One item per line")
+            control.setFixedHeight(96)
         else:
             control = QPlainTextEdit()
             control.setPlaceholderText("JSON value")
@@ -1485,7 +1618,14 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             control.setToolTip(tooltip)
             inherited_label.setToolTip(tooltip)
             include_checkbox.setToolTip(f"{tooltip}\n\nEnable to set a directory-specific override for this field.")
-            clear_checkbox.setToolTip(f"{tooltip}\n\nEnable with Override to write an explicit null and clear the inherited value.")
+            if kind == "string_list":
+                clear_checkbox.setToolTip(
+                    f"{tooltip}\n\nEnable with Override to clear the inherited list value."
+                )
+            else:
+                clear_checkbox.setToolTip(
+                    f"{tooltip}\n\nEnable with Override to write an explicit null and clear the inherited value."
+                )
 
         if kind == "json":
             toggle_group = QHBoxLayout()
@@ -1541,6 +1681,8 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         elif kind == "text":
             control.textChanged.connect(lambda _value, domain=domain: self._mark_config_domain_dirty(domain))
         elif kind == "multiline_text":
+            control.textChanged.connect(lambda domain=domain: self._mark_config_domain_dirty(domain))
+        elif kind == "string_list":
             control.textChanged.connect(lambda domain=domain: self._mark_config_domain_dirty(domain))
         else:
             control.textChanged.connect(lambda domain=domain: self._mark_config_domain_dirty(domain))
@@ -1602,6 +1744,10 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
                         spec["include_checkbox"].setChecked(True)
                         spec["clear_checkbox"].setChecked(False)
                         self._update_config_field_control_value(spec, raw_config[field_name])
+                    elif _root_config_field_starts_editable(domain, field_name, raw_config):
+                        spec["include_checkbox"].setChecked(True)
+                        spec["clear_checkbox"].setChecked(False)
+                        self._update_config_field_control_value(spec, "")
                     else:
                         spec["include_checkbox"].setChecked(False)
                         spec["clear_checkbox"].setChecked(True)
@@ -1646,6 +1792,19 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         elif kind == "multiline_text":
             control.setPlainText("" if value is None else str(value))
             control.document().setModified(False)
+        elif kind == "string_list":
+            if value is None:
+                control.setPlainText("")
+            else:
+                if isinstance(value, str):
+                    candidate_values = [value]
+                elif isinstance(value, (list, tuple)):
+                    candidate_values = list(value)
+                else:
+                    candidate_values = [value]
+                lines = [str(item).strip() for item in candidate_values if str(item).strip()]
+                control.setPlainText("\n".join(lines))
+            control.document().setModified(False)
         else:
             text = "" if value is None else json.dumps(value, indent=2, sort_keys=True)
             control.setPlainText(text)
@@ -1667,6 +1826,8 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             return control.text().strip()
         if kind == "multiline_text":
             return control.toPlainText().strip()
+        if kind == "string_list":
+            return [line.strip() for line in control.toPlainText().splitlines() if line.strip()]
         raw_text = control.toPlainText().strip()
         if not raw_text:
             raise ValueError("structured values must be valid JSON")
@@ -1686,6 +1847,8 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             return bool(control.text().strip())
         if kind == "multiline_text":
             return bool(control.toPlainText().strip())
+        if kind == "string_list":
+            return bool([line for line in control.toPlainText().splitlines() if line.strip()])
         return bool(control.toPlainText().strip())
 
     def _collect_config_form_payload(self, domain: str) -> dict[str, Any]:
@@ -1696,6 +1859,9 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
                 continue
             if spec["clear_checkbox"].isChecked():
                 if is_root:
+                    continue
+                if _config_field_kind(field_name)[0] == "string_list":
+                    payload[field_name] = []
                     continue
                 payload[field_name] = None
                 continue
@@ -2178,9 +2344,271 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
     def _on_worker_selection_changed(self) -> None:
         self.update_worker_action_bar()
         self.refresh_selected_worker_log()
+        self.refresh_selected_worker_global_settings()
 
     def update_worker_action_bar(self) -> None:
         self.update_worker_selection_hint()
+        self._update_worker_global_settings_visibility()
+        self._update_worker_splitter_layout()
+
+    def _update_worker_global_settings_visibility(self) -> None:
+        worker = self.selected_worker_summary()
+        supported_worker = worker is not None and worker.worker_id in WORKER_GLOBAL_CONFIG_MODELS
+        self.worker_global_settings_section.setVisible(supported_worker)
+        self.worker_global_settings_save_button.setEnabled(
+            supported_worker and not self._worker_global_config_form_loading
+        )
+        self.worker_global_settings_reload_button.setEnabled(
+            supported_worker and not self._worker_global_config_form_loading
+        )
+        if worker is None:
+            self.worker_global_settings_status_label.setText("Select a worker to edit global settings.")
+        elif not supported_worker:
+            self.worker_global_settings_status_label.setText(
+                f"Global settings are unavailable for {worker.name}."
+            )
+
+    def refresh_selected_worker_global_settings(self) -> None:
+        worker = self.selected_worker_summary()
+        if worker is None:
+            self._worker_global_config_worker_id = None
+            self._populate_worker_global_settings_form({})
+            self.worker_global_settings_status_label.setText("Select a worker to edit global settings.")
+            return
+        if worker.worker_id not in WORKER_GLOBAL_CONFIG_MODELS:
+            self._worker_global_config_worker_id = None
+            self._populate_worker_global_settings_form({})
+            self.worker_global_settings_status_label.setText(
+                f"Global settings are unavailable for {worker.name}."
+            )
+            return
+        self._set_worker_global_settings_page(worker.worker_id)
+        self._worker_global_config_request_token += 1
+        request_token = self._worker_global_config_request_token
+        self._worker_global_config_worker_id = worker.worker_id
+        load_worker = _ActionWorker(self.service.read_worker_global_config, worker.worker_id)
+        self._active_workers.add(load_worker)
+        load_worker.signals.finished.connect(
+            lambda payload, worker=load_worker, request_token=request_token, worker_id=worker.worker_id: self._handle_worker_global_settings_success(
+                payload,
+                worker,
+                request_token,
+                worker_id,
+            )
+        )
+        load_worker.signals.failed.connect(
+            lambda error, worker=load_worker, request_token=request_token: self._handle_worker_global_settings_failure(
+                error,
+                worker,
+                request_token,
+            )
+        )
+        self.worker_global_settings_status_label.setText(f"Loading {worker.name} global settings...")
+        self.thread_pool.start(load_worker)
+
+    def _handle_worker_global_settings_success(
+        self,
+        payload,
+        worker: _ActionWorker,
+        request_token: int,
+        worker_id: str,
+    ) -> None:
+        self._discard_worker(worker)
+        if request_token != self._worker_global_config_request_token:
+            return
+        current_worker = self.selected_worker_summary()
+        if current_worker is None or current_worker.worker_id != worker_id:
+            return
+        config = payload.config if isinstance(getattr(payload, "config", None), dict) else {}
+        self._set_worker_global_settings_page(worker_id)
+        self._populate_worker_global_settings_form(config)
+        worker_name = current_worker.name if current_worker is not None else worker_id
+        status_prefix = "Loaded existing config from" if getattr(payload, "exists", False) else "Using current settings from"
+        self.worker_global_settings_status_label.setText(f"{status_prefix} {payload.path} for {worker_name}.")
+
+    def _handle_worker_global_settings_failure(self, error: str, worker: _ActionWorker, request_token: int) -> None:
+        self._discard_worker(worker)
+        if request_token != self._worker_global_config_request_token:
+            return
+        self.worker_global_settings_status_label.setText(f"Worker global settings unavailable: {error}")
+
+    def save_worker_global_settings(self) -> None:
+        worker = self.selected_worker_summary()
+        if worker is None or worker.worker_id not in WORKER_GLOBAL_CONFIG_MODELS:
+            return
+        try:
+            payload = self._collect_worker_global_settings_payload()
+        except (json.JSONDecodeError, ValueError) as exc:
+            QMessageBox.warning(self, "Save worker settings", f"Invalid worker setting value: {exc}")
+            return
+        try:
+            self.service.write_worker_global_config(worker.worker_id, payload)
+        except Exception as exc:  # pragma: no cover - GUI-only path
+            message = str(exc)
+            self.worker_global_settings_status_label.setText(f"Worker global settings save failed: {message}")
+            QMessageBox.warning(self, "Save worker settings", message)
+            return
+        self._worker_global_config_dirty = False
+        self.refresh_selected_worker_global_settings()
+
+    def _build_worker_global_settings_panel(self) -> QWidget:
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.worker_global_settings_status_label)
+        layout.addWidget(self.worker_global_settings_form_scroll)
+        layout.addLayout(self.worker_global_settings_button_row)
+        return panel
+
+    def _build_worker_global_settings_page(
+        self,
+        worker_id: str,
+        model: type[BaseModel],
+    ) -> tuple[QWidget, dict[str, dict[str, object]]]:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        form = QFormLayout()
+        widgets: dict[str, dict[str, object]] = {}
+        for field_name in sorted(model.model_fields):
+            editor = self._build_worker_global_config_field_editor(field_name)
+            label = QLabel(_pretty_config_field_name(field_name))
+            tooltip = _worker_global_config_tooltip(field_name)
+            if tooltip:
+                label.setToolTip(tooltip)
+                editor["container"].setToolTip(tooltip)
+            form.addRow(label, editor["container"])
+            widgets[field_name] = editor
+        layout.addLayout(form)
+        return page, widgets
+
+    def _set_worker_global_settings_page(self, worker_id: str) -> None:
+        page = self._worker_global_config_pages.get(worker_id)
+        if page is None:
+            return
+        self.worker_global_settings_form_stack.setCurrentWidget(page)
+        self._worker_global_config_worker_id = worker_id
+
+    def _build_worker_global_config_field_editor(self, field_name: str) -> dict[str, object]:
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        kind, literal_choices = _config_field_kind(field_name)
+        if kind == "bool":
+            control = QComboBox()
+            control.addItem("false")
+            control.addItem("true")
+            control.setMaximumWidth(90)
+        elif kind == "int":
+            control = QSpinBox()
+            control.setRange(-1_000_000_000, 1_000_000_000)
+            control.setMaximumWidth(160)
+        elif kind == "float":
+            control = QDoubleSpinBox()
+            control.setRange(-1_000_000_000.0, 1_000_000_000.0)
+            control.setDecimals(6)
+            control.setMaximumWidth(180)
+        elif kind == "literal":
+            control = QComboBox()
+            for choice in literal_choices:
+                control.addItem(str(choice))
+            control.setMaximumWidth(260)
+        elif kind == "text":
+            control = QLineEdit()
+            control.setMaximumWidth(520)
+        elif kind == "multiline_text":
+            control = QPlainTextEdit()
+            control.setPlaceholderText("Text value")
+            control.setFixedHeight(96)
+        elif kind == "string_list":
+            control = QPlainTextEdit()
+            control.setPlaceholderText("One item per line")
+            control.setFixedHeight(96)
+        else:
+            control = QPlainTextEdit()
+            control.setPlaceholderText("JSON value")
+            control.setFixedHeight(96)
+        layout.addWidget(control)
+        spec = {
+            "container": container,
+            "kind": kind,
+            "control": control,
+            "field_name": field_name,
+        }
+        self._update_config_field_control_value(spec, None)
+        if kind == "bool":
+            control.currentTextChanged.connect(lambda _value, field_name=field_name: self._mark_worker_global_settings_dirty())
+        elif kind in {"int", "float"}:
+            control.valueChanged.connect(lambda _value, field_name=field_name: self._mark_worker_global_settings_dirty())
+        elif kind == "literal":
+            control.currentTextChanged.connect(lambda _value, field_name=field_name: self._mark_worker_global_settings_dirty())
+        elif kind == "text":
+            control.textChanged.connect(lambda _value, field_name=field_name: self._mark_worker_global_settings_dirty())
+        elif kind == "multiline_text":
+            control.textChanged.connect(lambda field_name=field_name: self._mark_worker_global_settings_dirty())
+        elif kind == "string_list":
+            control.textChanged.connect(lambda field_name=field_name: self._mark_worker_global_settings_dirty())
+        else:
+            control.textChanged.connect(lambda field_name=field_name: self._mark_worker_global_settings_dirty())
+        return spec
+
+    def _mark_worker_global_settings_dirty(self) -> None:
+        if self._worker_global_config_form_loading:
+            return
+        self._worker_global_config_dirty = True
+
+    def _populate_worker_global_settings_form(self, payload: dict[str, Any]) -> None:
+        self._worker_global_config_form_loading = True
+        try:
+            worker_id = self._worker_global_config_worker_id
+            widgets = self._worker_global_config_widgets.get(worker_id or "", {})
+            for field_name, spec in widgets.items():
+                self._update_config_field_control_value(spec, payload.get(field_name))
+        finally:
+            self._worker_global_config_form_loading = False
+        self._worker_global_config_dirty = False
+
+    def _collect_worker_global_settings_payload(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {}
+        worker_id = self._worker_global_config_worker_id
+        widgets = self._worker_global_config_widgets.get(worker_id or "", {})
+        for field_name, spec in widgets.items():
+            value = self._read_config_field_control_value(spec)
+            if field_name in {"yaml_output_dir", "setup_log_dir", "processed_store_path", "setup_lock_path"} and value == "":
+                value = None
+            if field_name in {
+                "host_heartbeat_lock_path",
+                "host_heartbeat_session_cooldown_path",
+                "host_heartbeat_wake_state_path",
+            } and value == "":
+                value = None
+            if field_name in {"runtime_dir", "setup_script_path"} and value == "":
+                raise ValueError(f"{field_name} cannot be empty")
+            if field_name in {"host_busy_check_script_path", "host_resume_script_path"} and value == "":
+                raise ValueError(f"{field_name} cannot be empty")
+            payload[field_name] = value
+        return payload
+
+    def _update_worker_splitter_layout(self) -> None:
+        visible_sections = [section for section in (self.worker_log_section, self.worker_global_settings_section) if section.isVisible()]
+        if any(section.is_expanded() for section in visible_sections):
+            self.worker_details_panel.setMinimumHeight(0)
+            self.worker_details_panel.setMaximumHeight(16777215)
+            self.worker_splitter.setSizes([1, 1])
+            return
+        details_layout = self.worker_details_panel.layout()
+        if details_layout is None:
+            self.worker_details_panel.setMinimumHeight(0)
+            self.worker_details_panel.setMaximumHeight(16777215)
+            self.worker_splitter.setSizes([1, 1])
+            return
+        collapsed_height = sum(section.collapsed_height() for section in visible_sections)
+        collapsed_height += details_layout.contentsMargins().top() + details_layout.contentsMargins().bottom()
+        collapsed_height += max(details_layout.spacing(), 0) * max(len(visible_sections) - 1, 0)
+        self.worker_details_panel.setMinimumHeight(collapsed_height)
+        self.worker_details_panel.setMaximumHeight(collapsed_height)
+        self.worker_splitter.setSizes([1000, collapsed_height])
 
     def handle_start_selected_worker(self) -> None:
         worker = self.selected_worker_summary()

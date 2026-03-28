@@ -5,7 +5,7 @@ show_help() {
   cat <<'EOF'
 Usage: list_unassigned_ado_work_items.sh
 
-Load config/ado-worker.env when present and print Azure DevOps work items that:
+Load secrets.env when present and print Azure DevOps work items that:
 - match the same worker query as agent-sandbox-ado-worker
 - have not yet been picked up by agents according to ADO_PROCESSED_STORE_PATH
 
@@ -13,8 +13,9 @@ Output format:
   <work-item-id><TAB><changed-date><TAB><state><TAB><title>
 
 Requirements:
-- A populated config/ado-worker.env
-- The PAT environment variable named by the effective root `providers.json` config
+- Root directory config for ado_worker
+- The PAT environment variable named by `config/ado-worker/config.json`
+- Optional `secrets.env` in the repo root for secret env vars
 - A working .venv with agent-sandbox installed
 EOF
 }
@@ -26,12 +27,11 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
-ENV_FILE="${ROOT_DIR}/config/ado-worker.env"
 CLI_BIN="${ROOT_DIR}/.venv/bin/agent-sandbox-cli"
 
-if [[ -f "${ENV_FILE}" ]]; then
+if [[ -f "${ROOT_DIR}/secrets.env" ]]; then
   set -a
-  . "${ENV_FILE}"
+  . "${ROOT_DIR}/secrets.env"
   set +a
 fi
 

@@ -16,7 +16,7 @@ import httpx
 
 from .agent_control import AgentControlStore
 from .audit import AuditEventType
-from .config import GatewayConfig
+from .config import GatewayConfig, HostHeartbeatWorkerGlobalConfig
 from .provider_config import ProviderConfigResolver
 from .pr_feedback_worker import (
     AzureDevOpsFeedbackAdapter,
@@ -27,6 +27,7 @@ from .pr_feedback_worker import (
 )
 from .runtime import RuntimeContext, build_runtime
 from .worker_directory_context import WorkerDirectoryContextResolver, log_shadow_context
+from .models import DirectoryPath
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +60,7 @@ class HostHeartbeatWorker:
         self,
         *,
         config: GatewayConfig,
+        worker_config: HostHeartbeatWorkerGlobalConfig | None = None,
         runtime: RuntimeContext,
         feedback_worker: PullRequestFeedbackWorker,
         adapters: dict[str, FeedbackProviderAdapter],
@@ -66,6 +68,7 @@ class HostHeartbeatWorker:
         provider_config_resolver: ProviderConfigResolver | None = None,
     ) -> None:
         self.config = config
+        self.worker_config = worker_config
         self.runtime = runtime
         self.feedback_worker = feedback_worker
         self.adapters = adapters
@@ -91,6 +94,25 @@ class HostHeartbeatWorker:
 
     def _root_worker_config(self) -> GatewayConfig:
         return self._resolve_worker_config_for_directory("root", source="host_heartbeat:root")
+
+    def _configured_directory_paths(self, worker_config: GatewayConfig | HostHeartbeatWorkerGlobalConfig) -> list[str]:
+        raw_paths = getattr(worker_config, "host_heartbeat_directory_paths", None)
+        if raw_paths is None:
+            return ["root"]
+        normalized_paths: list[str] = []
+        for raw_path in raw_paths:
+            text = str(raw_path).strip()
+            if not text:
+                continue
+            try:
+                normalized_paths.append(DirectoryPath(segments=text).as_posix())
+            except Exception:
+                logger.warning(
+                    "Skipping invalid host heartbeat directory path path=%r",
+                    raw_path,
+                    exc_info=True,
+                )
+        return normalized_paths
 
     def _resolve_worker_config_for_binding(self, binding: StreamSessionBinding) -> GatewayConfig:
         return self._resolve_worker_config_for_directory(
@@ -151,7 +173,7 @@ class HostHeartbeatWorker:
             github_token = os.environ.get(resolved_config.github_token_env, "").strip()
             return GitHubFeedbackAdapter(token=github_token)
         if provider == "azure_devops":
-            azure_pat = os.environ.get(resolved_config.azure_devops_pat_env, "").strip()
+            azure_pat = os.environ.get(resolved_config.azure_devops_pr_pat_env, "").strip()
             return AzureDevOpsFeedbackAdapter(
                 organization_url=resolved_config.azure_devops_organization_url,
                 project=resolved_config.azure_devops_project,
@@ -195,73 +217,75 @@ class HostHeartbeatWorker:
 
     def run_once(self) -> HeartbeatCycleResult:
         worker_config = self._root_worker_config()
-        stream_mappings = self._collect_stream_mappings()
-        streams = sorted(
-            stream_mappings.keys(),
-            key=lambda stream: (stream.provider, stream.repo, stream.pr_id),
-        )
+        configured_directory_paths = self._configured_directory_paths(self.worker_config or self.config)
         discovered_feedback = 0
         streams_polled = 0
-
-        with httpx.Client(timeout=worker_config.host_heartbeat_http_timeout_seconds) as client:
-            for stream in streams:
-                bindings = stream_mappings.get(stream, [])
-                if len(bindings) > 1:
-                    logger.warning(
-                        "PR feedback stream matched multiple sessions policy=%s provider=%s repo=%s pr=%s session_ids=%s",
-                        worker_config.host_heartbeat_stream_conflict_policy,
-                        stream.provider,
-                        stream.repo,
-                        stream.pr_id,
-                        [binding.session_id for binding in bindings],
+        if configured_directory_paths:
+            with httpx.Client(timeout=worker_config.host_heartbeat_http_timeout_seconds) as client:
+                for configured_directory_path in configured_directory_paths:
+                    stream_mappings = self._collect_stream_mappings(directory_path=configured_directory_path)
+                    streams = sorted(
+                        stream_mappings.keys(),
+                        key=lambda stream: (stream.provider, stream.repo, stream.pr_id),
                     )
-                    if worker_config.host_heartbeat_stream_conflict_policy == "reject":
-                        continue
-                discovered_for_stream = 0
-                for binding_group in self._group_bindings_by_directory(bindings):
-                    adapter = self._resolve_provider_adapter(stream.provider, binding_group[0])
-                    if adapter is None:
-                        logger.warning(
-                            "Skipping unsupported feedback provider=%s repo=%s pr=%s directory_path=%s",
-                            stream.provider,
-                            stream.repo,
-                            stream.pr_id,
-                            binding_group[0].directory_path or "root",
-                        )
-                        continue
-                    streams_polled += 1
-                    try:
-                        discovered = self.feedback_worker.poll_once(
-                            client=client,
-                            provider=stream.provider,
-                            repo=stream.repo,
-                            pr_id=stream.pr_id,
-                            stream_bindings=[
-                                {
-                                    "session_id": binding.session_id,
-                                    "vm_id": binding.vm_id,
-                                    "source": binding.source,
-                                    "directory_path": binding.directory_path,
-                                    "directory_context": binding.directory_context,
-                                }
-                                for binding in binding_group
-                            ],
-                            adapter=adapter,
-                        )
-                    except Exception:
-                        logger.warning(
-                            "Host heartbeat stream poll failed provider=%s repo=%s pr=%s directory_path=%s",
-                            stream.provider,
-                            stream.repo,
-                            stream.pr_id,
-                            binding_group[0].directory_path or "root",
-                            exc_info=True,
-                        )
-                        continue
-                    discovered_for_stream += len(discovered)
-                discovered_feedback += discovered_for_stream
-                if discovered_for_stream or self._stream_has_unread_bindings(stream=stream, bindings=bindings):
-                    self._record_busy_skips(stream=stream, bindings=bindings)
+                    for stream in streams:
+                        bindings = stream_mappings.get(stream, [])
+                        if len(bindings) > 1:
+                            logger.warning(
+                                "PR feedback stream matched multiple sessions policy=%s provider=%s repo=%s pr=%s session_ids=%s",
+                                worker_config.host_heartbeat_stream_conflict_policy,
+                                stream.provider,
+                                stream.repo,
+                                stream.pr_id,
+                                [binding.session_id for binding in bindings],
+                            )
+                            if worker_config.host_heartbeat_stream_conflict_policy == "reject":
+                                continue
+                        discovered_for_stream = 0
+                        for binding_group in self._group_bindings_by_directory(bindings):
+                            adapter = self._resolve_provider_adapter(stream.provider, binding_group[0])
+                            if adapter is None:
+                                logger.warning(
+                                    "Skipping unsupported feedback provider=%s repo=%s pr=%s directory_path=%s",
+                                    stream.provider,
+                                    stream.repo,
+                                    stream.pr_id,
+                                    binding_group[0].directory_path or "root",
+                                )
+                                continue
+                            streams_polled += 1
+                            try:
+                                discovered = self.feedback_worker.poll_once(
+                                    client=client,
+                                    provider=stream.provider,
+                                    repo=stream.repo,
+                                    pr_id=stream.pr_id,
+                                    stream_bindings=[
+                                        {
+                                            "session_id": binding.session_id,
+                                            "vm_id": binding.vm_id,
+                                            "source": binding.source,
+                                            "directory_path": binding.directory_path,
+                                            "directory_context": binding.directory_context,
+                                        }
+                                        for binding in binding_group
+                                    ],
+                                    adapter=adapter,
+                                )
+                            except Exception:
+                                logger.warning(
+                                    "Host heartbeat stream poll failed provider=%s repo=%s pr=%s directory_path=%s",
+                                    stream.provider,
+                                    stream.repo,
+                                    stream.pr_id,
+                                    binding_group[0].directory_path or "root",
+                                    exc_info=True,
+                                )
+                                continue
+                            discovered_for_stream += len(discovered)
+                        discovered_feedback += discovered_for_stream
+                        if discovered_for_stream or self._stream_has_unread_bindings(stream=stream, bindings=bindings):
+                            self._record_busy_skips(stream=stream, bindings=bindings)
 
         next_sleep_seconds = _compute_next_sleep_seconds(
             poll_interval_seconds=worker_config.host_heartbeat_poll_interval_seconds,
@@ -481,13 +505,21 @@ class HostHeartbeatWorker:
             (completed.stderr or "").strip(),
         )
 
-    def _collect_stream_mappings(self) -> dict[FeedbackStream, list[StreamSessionBinding]]:
+    def _collect_stream_mappings(
+        self,
+        *,
+        directory_path: str | None = None,
+    ) -> dict[FeedbackStream, list[StreamSessionBinding]]:
         now = datetime.now(timezone.utc)
         sessions_by_id = self.runtime.sessions.read_all()
         stream_index: dict[tuple[str, str, str], list[StreamSessionBinding]] = {}
+        scope_directory_path = DirectoryPath(segments=directory_path or "root").as_posix()
+        scope_is_root = scope_directory_path == "root"
 
         for session in sessions_by_id.values():
             if session.expires_at <= now:
+                continue
+            if not scope_is_root and not _directory_is_within_scope(session.directory_path, scope_directory_path):
                 continue
             raw_streams = session.metadata.get("pr_feedback_streams")
             if not isinstance(raw_streams, list):
@@ -529,16 +561,19 @@ class HostHeartbeatWorker:
             if not session_id:
                 continue
             session = sessions_by_id.get(session_id)
+            entry_directory_path = (
+                session.directory_path
+                if session is not None
+                else str(raw_entry.get("directory_path", "")).strip() or None
+            )
+            if not scope_is_root and not _directory_is_within_scope(entry_directory_path, scope_directory_path):
+                continue
             vm_id = session.vm_id if session is not None else None
             binding = StreamSessionBinding(
                 session_id=session_id,
                 vm_id=vm_id,
                 source="pr_map",
-                directory_path=(
-                    session.directory_path
-                    if session is not None
-                    else str(raw_entry.get("directory_path", "")).strip() or None
-                ),
+                directory_path=entry_directory_path,
             )
             binding = self._attach_directory_context(binding, provider=key[0], repo=key[1], pr_id=key[2])
             stream_index[key] = [binding]
@@ -640,6 +675,12 @@ def _compute_next_sleep_seconds(
     if discovered_feedback > 0:
         delay = max(delay, cooldown_seconds)
     return max(0.0, delay)
+
+
+def _directory_is_within_scope(directory_path: str | None, scope_directory_path: str) -> bool:
+    candidate_segments = DirectoryPath(segments=directory_path or "root").segments
+    scope_segments = DirectoryPath(segments=scope_directory_path).segments
+    return candidate_segments[: len(scope_segments)] == scope_segments
 
 
 def _parse_stream(raw_stream: Any) -> FeedbackStream | None:
@@ -782,16 +823,45 @@ def _save_cooldown_state(path: Path, state: dict[str, float]) -> None:
     tmp_path.replace(path)
 
 
-def build_host_heartbeat_worker(config: GatewayConfig) -> HostHeartbeatWorker:
-    runtime = build_runtime(config)
+def _worker_global_config_path(project_dir: Path) -> Path:
+    return project_dir / "config" / "host-heartbeat" / "config.json"
+
+
+def _load_host_heartbeat_worker_global_config(
+    project_dir: Path,
+    *,
+    base_config: GatewayConfig | None = None,
+) -> HostHeartbeatWorkerGlobalConfig:
+    base_payload = HostHeartbeatWorkerGlobalConfig.model_validate(
+        (base_config or GatewayConfig()).model_dump(mode="json")
+    ).model_dump(mode="json")
+    path = _worker_global_config_path(project_dir)
+    if not path.exists():
+        return HostHeartbeatWorkerGlobalConfig.model_validate(base_payload)
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise ValueError(f"worker config file {path} must contain a JSON object")
+    return HostHeartbeatWorkerGlobalConfig.model_validate({**base_payload, **raw})
+
+
+def build_host_heartbeat_worker(config: GatewayConfig, *, project_dir: Path | None = None) -> HostHeartbeatWorker:
+    resolved_project_dir = Path(project_dir) if project_dir is not None else Path.cwd()
+    worker_config = _load_host_heartbeat_worker_global_config(resolved_project_dir, base_config=config)
+    effective_config = GatewayConfig.model_validate(
+        {
+            **config.model_dump(mode="json"),
+            **worker_config.model_dump(mode="json"),
+        }
+    )
+    runtime = build_runtime(effective_config)
     provider_config_resolver = ProviderConfigResolver(
-        config,
+        effective_config,
         directory_store=runtime.directories,
         session_store=runtime.sessions,
     )
     root_provider_config = provider_config_resolver.resolve_for_directory("root")
     github_token = os.environ.get(root_provider_config.github_token_env, "").strip()
-    azure_pat = os.environ.get(root_provider_config.azure_devops_pat_env, "").strip()
+    azure_pat = os.environ.get(root_provider_config.azure_devops_pr_pat_env, "").strip()
     adapters: dict[str, FeedbackProviderAdapter] = {
         "github": GitHubFeedbackAdapter(token=github_token),
         "azure_devops": AzureDevOpsFeedbackAdapter(
@@ -800,12 +870,13 @@ def build_host_heartbeat_worker(config: GatewayConfig) -> HostHeartbeatWorker:
             pat=azure_pat,
         ),
     }
-    feedback_worker = build_pr_feedback_worker(config.runtime_dir, adapters=adapters, gateway_config=config)
+    feedback_worker = build_pr_feedback_worker(effective_config.runtime_dir, adapters=adapters, gateway_config=effective_config)
     return HostHeartbeatWorker(
-        config=config,
+        config=effective_config,
+        worker_config=worker_config,
         runtime=runtime,
         feedback_worker=feedback_worker,
         adapters=adapters,
-        agent_control_store=AgentControlStore(config.host_agent_control_state_path),
+        agent_control_store=AgentControlStore(effective_config.host_agent_control_state_path),
         provider_config_resolver=provider_config_resolver,
     )

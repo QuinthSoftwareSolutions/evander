@@ -411,6 +411,25 @@ def test_directory_config_store_validates_ado_worker_and_issue_setup_domains(tmp
     }
 
 
+def test_directory_config_store_validates_pr_template_domain(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    store = DirectoryStore(runtime_dir / "directories.json")
+    service = DirectoryService(store)
+    config_store = DirectoryConfigStore(store, runtime_dir=runtime_dir)
+    team = service.create(parent="root", name="team")
+    child = service.create(parent=team.id, name="child")
+
+    config_store.write(team.path, domain="pr_template", payload={"pr_template_markdown": "Team template"})
+    config_store.write(child.path, domain="pr_template", payload={"pr_template_markdown": "Child template"})
+
+    assert config_store.read(team.path, domain="pr_template") == {"pr_template_markdown": "Team template"}
+    assert config_store.read(child.path, domain="pr_template") == {"pr_template_markdown": "Child template"}
+
+    resolver = DirectoryConfigResolver(service, config_store=config_store)
+    resolution = resolver.resolve_domain(child.path, domain="pr_template", base_config={"pr_template_markdown": ""})
+    assert resolution.effective_config == {"pr_template_markdown": "Child template"}
+
+
 def test_directory_config_resolver_inherits_ado_worker_and_issue_setup_overlays(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     store = DirectoryStore(runtime_dir / "directories.json")
@@ -447,3 +466,35 @@ def test_directory_config_resolver_inherits_ado_worker_and_issue_setup_overlays(
     assert issue_resolution.effective_config["git_root"] == "/tmp/team-git"
     assert issue_resolution.effective_config["git_user"] == "team-bot"
     assert issue_resolution.effective_config["enable_guest_heartbeat"] is True
+
+
+def test_directory_config_resolver_keeps_heartbeat_prompt_directory_scoped_only(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    store = DirectoryStore(runtime_dir / "directories.json")
+    service = DirectoryService(store)
+    config_store = DirectoryConfigStore(store, runtime_dir=runtime_dir)
+    resolver = DirectoryConfigResolver(service, config_store=config_store)
+    team = service.create(parent="root", name="team")
+
+    config_store.write(
+        team.path,
+        domain="heartbeat",
+        payload={
+            "host_heartbeat_resume_prompt": "team prompt",
+            "host_heartbeat_poll_interval_seconds": 12.0,
+            "host_busy_check_script_path": "/tmp/check.sh",
+        },
+    )
+
+    read_payload = config_store.read(team.path, domain="heartbeat")
+    assert read_payload == {"host_heartbeat_resume_prompt": "team prompt"}
+
+    resolution = resolver.resolve_domain(
+        team.path,
+        domain="heartbeat",
+        base_config=get_domain_base_config(GatewayConfig(), "heartbeat"),
+        validator=lambda candidate: validate_effective_domain_payload("heartbeat", candidate),
+    )
+
+    assert resolution.effective_config["host_heartbeat_resume_prompt"] == "team prompt"
+    assert "host_heartbeat_poll_interval_seconds" not in resolution.effective_config

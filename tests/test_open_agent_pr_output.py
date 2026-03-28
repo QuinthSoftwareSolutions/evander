@@ -471,7 +471,7 @@ if [[ -n "${{AZURE_RESULT:-}}" ]]; then
   exit 0
 fi
 
-if [[ -n "${{ORIGIN_URL:-}}" && -n "${{AZURE_DEVOPS_PAT_VALUE:-}}" ]]; then
+if [[ -n "${{ORIGIN_URL:-}}" && -n "${{AZURE_DEVOPS_PR_PAT_VALUE:-}}" ]]; then
   printf 'TITLE=%s\\nTITLE_EXPLICIT=%s\\n' "${{TITLE:-}}" "${{TITLE_EXPLICIT:-}}" >> "{python_log}"
   printf '%s\\n' '{{"pr_url":"https://dev.azure.com/example-org/example-project/_git/example-repo/pullrequest/42","pr_id":"42"}}'
   exit 0
@@ -501,7 +501,7 @@ printf '%s\\n' "$*" >> "{attach_log}"
     env["PATH"] = f"{fake_bin}:{env['PATH']}"
     env["AGENT_SANDBOX_PR_MAP_PATH"] = str(tmp_path / "runtime" / "pr-map.json")
     env["AGENT_SANDBOX_CLI_BIN"] = str(fake_bin / "agent-sandbox-cli")
-    env["AZURE_DEVOPS_PAT"] = "test-pat"
+    env["AZURE_DEVOPS_PR_PAT"] = "test-pat"
 
     result = subprocess.run(
         [str(script), "--create-pr", "--provider", "azure_devops", str(host_repo), "review/session-123/work"],
@@ -600,7 +600,7 @@ if [[ -n "${{AZURE_RESULT:-}}" ]]; then
   exit 0
 fi
 
-if [[ -n "${{ORIGIN_URL:-}}" && -n "${{AZURE_DEVOPS_PAT_VALUE:-}}" ]]; then
+if [[ -n "${{ORIGIN_URL:-}}" && -n "${{AZURE_DEVOPS_PR_PAT_VALUE:-}}" ]]; then
   printf 'WORK_ITEM_ID=%s\\n' "${{WORK_ITEM_ID:-}}" >> "{python_log}"
   printf '%s\\n' '{{"pr_url":"https://dev.azure.com/example-org/example-project/_git/example-repo/pullrequest/42","pr_id":"42"}}'
   exit 0
@@ -630,7 +630,7 @@ printf '%s\\n' "$*" >> "{attach_log}"
     env["PATH"] = f"{fake_bin}:{env['PATH']}"
     env["AGENT_SANDBOX_PR_MAP_PATH"] = str(tmp_path / "runtime" / "pr-map.json")
     env["AGENT_SANDBOX_CLI_BIN"] = str(fake_bin / "agent-sandbox-cli")
-    env["AZURE_DEVOPS_PAT"] = "test-pat"
+    env["AZURE_DEVOPS_PR_PAT"] = "test-pat"
 
     result = subprocess.run(
         [str(script), "--create-pr", "--provider", "azure_devops", str(host_repo), "review/issue-14084-abc/work"],

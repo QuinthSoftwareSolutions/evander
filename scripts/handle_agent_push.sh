@@ -13,7 +13,7 @@ Arguments:
   bare-repo-path  Absolute path to the host bare repository.
 
 Configuration:
-  Reads config/git-server.env when present.
+  Uses environment variables and root config-derived defaults.
 EOF
 }
 
@@ -30,22 +30,20 @@ fi
 BARE_REPO_PATH="$1"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
-ENV_FILE="${ROOT_DIR}/config/git-server.env"
-
-if [[ -f "${ENV_FILE}" ]]; then
-  set -a
-  . "${ENV_FILE}"
-  set +a
-fi
+# shellcheck source=lib/runtime_config.sh
+source "${SCRIPT_DIR}/lib/runtime_config.sh"
+load_provider_config
 
 EVENT_LOG="${AGENT_SANDBOX_EVENT_LOG:-${ROOT_DIR}/runtime/agent-events.log}"
 NOTIFY_COMMAND="${AGENT_SANDBOX_NOTIFY_COMMAND:-}"
 AUTO_REMOTE_NAME="${AGENT_SANDBOX_AUTO_REMOTE_NAME:-agent-dropbox-auto}"
 PR_NOTES_REF="${AGENT_SANDBOX_PR_NOTES_REF:-refs/notes/agent-pr}"
 LOCAL_PR_NOTES_REF=""
+RUNTIME_DIR="${AGENT_SANDBOX_RUNTIME_DIR:-${ROOT_DIR}/runtime}"
 PR_BODY_DIR="${AGENT_SANDBOX_PR_BODY_DIR:-${ROOT_DIR}/runtime/pr-body}"
 PR_FIXED_BODY_FILE="${AGENT_SANDBOX_PR_FIXED_BODY_FILE:-}"
 PR_BODY_MAX_BYTES="${AGENT_SANDBOX_PR_BODY_MAX_BYTES:-60000}"
+PR_TEMPLATE_LEGACY_FILE="${ROOT_DIR}/config/pr-template.md"
 
 mkdir -p "$(dirname "${EVENT_LOG}")"
 mkdir -p "${PR_BODY_DIR}"
@@ -103,6 +101,81 @@ compose_pr_body_file() {
   fi
 
   return 1
+}
+
+resolve_pr_template_body_file() {
+  local session_id="$1"
+  local legacy_template_file="$2"
+  local python_bin="${ROOT_DIR}/.venv/bin/python"
+  if [[ ! -x "${python_bin}" ]]; then
+    python_bin="python3"
+  fi
+
+  RUNTIME_DIR_PATH="${RUNTIME_DIR}" SESSION_ID_VALUE="${session_id}" LEGACY_TEMPLATE_FILE="${legacy_template_file}" PR_BODY_DIR_PATH="${PR_BODY_DIR}" \
+    "${python_bin}" - <<'PY'
+import json
+import os
+import tempfile
+from pathlib import Path
+
+runtime_dir = Path(os.environ["RUNTIME_DIR_PATH"])
+session_id = os.environ.get("SESSION_ID_VALUE", "").strip()
+legacy_template_file = Path(os.environ["LEGACY_TEMPLATE_FILE"])
+pr_body_dir = Path(os.environ["PR_BODY_DIR_PATH"])
+pr_body_dir.mkdir(parents=True, exist_ok=True)
+
+directory_path = "root"
+sessions_path = runtime_dir / "sessions.json"
+if session_id and sessions_path.exists():
+    try:
+        sessions_payload = json.loads(sessions_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        sessions_payload = {}
+    if isinstance(sessions_payload, dict):
+        session_payload = sessions_payload.get(session_id)
+        if isinstance(session_payload, dict):
+            candidate_directory_path = str(session_payload.get("directory_path", "")).strip()
+            if candidate_directory_path:
+                directory_path = candidate_directory_path
+
+template_text = None
+segments = [segment for segment in Path(directory_path).parts if segment]
+if not segments or segments[0] != "root":
+    segments = ["root"]
+directory_config_root = runtime_dir / "directory-config"
+for index in range(1, len(segments) + 1):
+    candidate = directory_config_root.joinpath(*segments[:index], "pr-template.json")
+    if not candidate.exists():
+        continue
+    try:
+        payload = json.loads(candidate.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        continue
+    if isinstance(payload, dict):
+        value = payload.get("pr_template_markdown")
+        if isinstance(value, str):
+            template_text = value
+
+if template_text is None:
+    if legacy_template_file.exists():
+        template_text = legacy_template_file.read_text(encoding="utf-8")
+    else:
+        raise SystemExit(1)
+
+if not template_text.strip():
+    raise SystemExit(1)
+
+with tempfile.NamedTemporaryFile(
+    "w",
+    encoding="utf-8",
+    dir=str(pr_body_dir),
+    prefix="resolved-pr-template-",
+    suffix=".md",
+    delete=False,
+) as handle:
+    handle.write(template_text)
+    print(handle.name)
+PY
 }
 
 enforce_pr_body_size_limit() {
@@ -223,6 +296,7 @@ process_agent_branch() {
   local review_branch
   local session_id
   local note_body_file
+  local resolved_template_body_file
   local resolved_sha
   local pr_body_file
   local body_truncated
@@ -261,10 +335,15 @@ process_agent_branch() {
       "repo=$(basename "${TRUSTED_REPO_PATH}") new_sha=${new_sha} branch=${review_branch} session_id=${session_id:-unknown}"
   fi
 
+  resolved_template_body_file=""
+  if [[ -z "${PR_FIXED_BODY_FILE}" ]]; then
+    resolved_template_body_file="$(resolve_pr_template_body_file "${session_id:-}" "${PR_TEMPLATE_LEGACY_FILE}" 2>/dev/null || true)"
+  fi
+
   USED_FIXED_BODY=0
   USED_AGENT_NOTE=0
   COMPOSED_PR_BODY_FILE=""
-  if compose_pr_body_file "${PR_FIXED_BODY_FILE}" "${note_body_file}"; then
+  if compose_pr_body_file "${PR_FIXED_BODY_FILE:-${resolved_template_body_file}}" "${note_body_file}"; then
     pr_body_file="${COMPOSED_PR_BODY_FILE}"
   else
     pr_body_file=""

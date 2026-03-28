@@ -198,7 +198,6 @@ $EDITOR config/gateway.env
 $EDITOR config/firewall.env
 $EDITOR config/openai-relay.env
 $EDITOR config/nuget-relay.env
-$EDITOR config/ado-worker.env
 $EDITOR config/host-heartbeat.env
 sudo systemctl start agent-sandbox-firewall.service
 sudo systemctl start agent-sandbox-gateway.service
@@ -210,7 +209,7 @@ sudo systemctl start agent-sandbox-host-heartbeat.service
 
 The generated units run as your user where appropriate and read environment files from `config/`.
 For private PR feedback polling, `config/host-heartbeat.env` must export `GITHUB_TOKEN` and/or
-`AZURE_DEVOPS_PAT` as needed, and the effective `root` config must set the correct
+`AZURE_DEVOPS_PR_PAT` as needed, and the effective `root` config must set the correct
 `azure_devops_organization_url`, `azure_devops_project`, and heartbeat timing/lock settings.
 
 ### Azure DevOps backlog worker
@@ -218,26 +217,30 @@ For private PR feedback polling, `config/host-heartbeat.env` must export `GITHUB
 For foreground/backfill operation, run:
 
 ```bash
-cp config/ado-worker.env.example config/ado-worker.env
-set -a; source config/ado-worker.env; set +a
-export AZURE_DEVOPS_PAT=...
+set -a; source secrets.env; set +a
 agent-sandbox-cli poll-ado-backlog --log-level INFO
 ```
 
-The ADO worker now reads `azure_devops_organization_url`, `azure_devops_project`, and
-`azure_devops_pat_env` from the effective `root` provider config instead of duplicating them in
-`config/ado-worker.env`.
+The ADO worker reads `azure_devops_organization_url` and `azure_devops_project` from the
+effective `root` provider config. Its work-item PAT env-var name now comes from
+`config/ado-worker/config.json` via `ado_work_items_azure_devops_pat_env` (default
+`ADO_WORK_ITEMS_AZURE_DEVOPS_PAT`). The root `ado_worker` directory config is the primary source
+for worker bootstrap and filter settings, while `config/ado-worker/config.json` now also carries
+the canonical directory list that the singleton worker polls on each cycle.
 
 For one-off recovery actions:
 
 ```bash
 # Forget prior state for an item so the next poll can process it again.
+set -a; source secrets.env; set +a
 agent-sandbox-cli poll-ado-backlog --forget 12345
 
 # Immediately reprocess one item now (fetch + setup path), then exit.
+set -a; source secrets.env; set +a
 agent-sandbox-cli poll-ado-backlog --reprocess 12345
 
 # List matching work items that have not yet been picked up by agents.
+set -a; source secrets.env; set +a
 ./scripts/list_unassigned_ado_work_items.sh
 ```
 
@@ -321,8 +324,9 @@ restore them into the matching relative paths inside the guest clone.
 
 The guest clone URL is also derived from configurable Git-root settings:
 
-- `AGENT_SANDBOX_GIT_ROOT` (or `config/git-server.env`) selects the host bare-remote root
-  and must already exist before guest clone starts.
+- `AGENT_SANDBOX_GIT_ROOT` selects the host bare-remote root. Set it in the `root`
+  issue setup config or as a host environment variable, and make sure it already exists
+  before guest clone starts.
 - `AGENT_SANDBOX_GIT_SSH_ALIAS` controls the SSH alias used in the guest clone URL
   (default: `agent-sandbox-git-host`).
 
@@ -342,8 +346,8 @@ the guest clone.
 After the initial provider command run exits, the helper now performs one
 provider-specific follow-up verification pass to verify checklist completion
 (tests, docs, and PR markdown note). Override that follow-up prompt text with
-`AGENT_POST_EXEC_VERIFICATION_PROMPT` (for example in
-`config/git-server.env`).
+`AGENT_POST_EXEC_VERIFICATION_PROMPT` in the `root` issue setup config or as a host
+environment variable.
 
 For operator visibility from the host, use:
 
@@ -367,9 +371,11 @@ number of recent lines first, then follows the guest agent log live over SSH.
 
 Use the included bare-repo helper when you want VMs to push code changes back to the host over the private network:
 
+Set the `root` issue setup config values for `AGENT_SANDBOX_GIT_ROOT`,
+`AGENT_SANDBOX_GIT_HOST`, `AGENT_SANDBOX_GIT_USER`, and `AGENT_SANDBOX_GIT_SSH_ALIAS`
+through the admin UI or `agent-sandbox-cli directories config-set`, then run:
+
 ```bash
-cp config/git-server.env.example config/git-server.env
-$EDITOR config/git-server.env
 ./scripts/setup_issue_git_vm.sh vm-real 14084
 ```
 
@@ -407,9 +413,12 @@ general shell access. Issue mirrors also carry a `post-receive` hook so host-sid
 promote pushed `agents/...` branches into the trusted clone, push the review branch to `origin`,
 and create the upstream PR automatically.
 
-For fixed PR boilerplate, set `AGENT_SANDBOX_PR_FIXED_BODY_FILE` in `config/git-server.env` to a
-host markdown file. Automation then assembles PR descriptions in this order: fixed boilerplate,
-`## Agent Summary` heading, then the git note content from `refs/notes/agent-pr`.
+For fixed PR boilerplate, set `AGENT_SANDBOX_PR_FIXED_BODY_FILE` as a host environment variable
+pointing at a markdown file. For per-directory boilerplate, use the root `pr_template` directory config
+domain and migrate the legacy repo-level `config/pr-template.md` with
+`agent-sandbox-cli migrate-pr-template-to-root --config config/gateway.yaml`.
+Automation assembles PR descriptions in this order: fixed boilerplate, `## Agent Summary`
+heading, then the git note content from `refs/notes/agent-pr`.
 
 Guest issue VMs install a `git agent-pr-note` helper so agents can maintain that note as an
 additive branch summary instead of overwriting it with per-commit deltas. `git push-agent`
@@ -519,10 +528,10 @@ Use this when you want the guest to wake only for new review feedback and post t
 
 ### Expected timing behavior
 
-- Host heartbeat cadence is controlled by gateway config:
-  `host_heartbeat_poll_interval_seconds`, `host_heartbeat_jitter_seconds`,
+- Host heartbeat cadence is controlled by the host heartbeat worker config:
+  `host_heartbeat_directory_paths`, `host_heartbeat_poll_interval_seconds`, `host_heartbeat_jitter_seconds`,
   and `host_heartbeat_cooldown_seconds`.
-- Feedback polling happens once on the host and updates the shared host feedback store.
+- Feedback polling happens once per configured directory on the host and updates the shared host feedback store.
 - Guests consume pending feedback via MCP tools by default.
 - `scripts/bootstrap_codex_vm.sh` defaults to `ENABLE_GUEST_HEARTBEAT=0`, which keeps
   `agent-heartbeat.timer` disabled for new guests.
@@ -550,7 +559,7 @@ Use this when you want the guest to wake only for new review feedback and post t
 - **Host heartbeat lock contention:** worker exits because another instance is running.
   - Check the configured lock path (`host_heartbeat_lock_path`) and active systemd processes before restarting.
 - **Provider API failures while replying:** gateway tool errors from GitHub/Azure DevOps calls.
-  - Validate host tokens (`GITHUB_TOKEN`/configured env, `AZURE_DEVOPS_PAT`/configured env).
+  - Validate host tokens (`GITHUB_TOKEN`/configured env, `AZURE_DEVOPS_PR_PAT`/configured env).
   - Retry with the **same idempotency key** so `post_pr_feedback_reply` deduplicates safely.
 
 ### Audit/log locations and healthy signals

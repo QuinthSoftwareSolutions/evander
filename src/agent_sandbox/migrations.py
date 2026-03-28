@@ -1,12 +1,20 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from .config import GatewayConfig
-from .directory_config import DIRECTORY_CONFIG_DOMAIN_FILENAMES, DirectoryConfigStore, get_domain_base_config
+from .directory_config import (
+    AdoWorkerDirectoryConfig,
+    DIRECTORY_CONFIG_DOMAIN_FILENAMES,
+    DirectoryConfigStore,
+    EffectiveIssueSetupDirectoryConfig,
+    PrTemplateDirectoryConfig,
+    get_domain_base_config,
+)
 from .directories import DirectoryStore
 from .host_config import HostConfig, save_host_config
 
@@ -24,6 +32,24 @@ class RootConfigMigrationSummary:
     written_domains: list[str]
     skipped_domains: list[str]
     unchanged_domains: list[str]
+
+
+@dataclass(frozen=True)
+class DomainMigrationResult:
+    domain: str
+    status: str
+    path: Path
+
+
+GLOBAL_DIRECTORY_CONFIG_DOMAINS = (
+    "policy",
+    "providers",
+    "email",
+    "heartbeat",
+    "vm",
+    "ado_worker",
+    "issue_setup",
+)
 
 
 def migrate_directory_ownership_defaults(config: GatewayConfig) -> OwnershipMigrationSummary:
@@ -57,35 +83,16 @@ def migrate_directory_ownership_defaults(config: GatewayConfig) -> OwnershipMigr
 def migrate_global_config_to_root(config: GatewayConfig, *, overwrite: bool = False) -> RootConfigMigrationSummary:
     host_config = HostConfig.from_legacy_gateway_config(config)
     host_config_path = save_host_config(host_config)
-    directory_store = DirectoryStore(config.directories_store_path)
-    directory_store.ensure_root()
-    config_store = DirectoryConfigStore(directory_store, runtime_dir=config.runtime_dir)
-    config_store.ensure_root()
-
     written_domains: list[str] = []
     skipped_domains: list[str] = []
     unchanged_domains: list[str] = []
 
-    for domain in sorted(DIRECTORY_CONFIG_DOMAIN_FILENAMES):
+    for domain in GLOBAL_DIRECTORY_CONFIG_DOMAINS:
         desired_payload = get_domain_base_config(config, domain)
-        try:
-            existing_payload = config_store.read("root", domain=domain)
-        except ValueError as exc:
-            if "directory config file is missing" not in str(exc):
-                raise
-            existing_payload = None
-        if existing_payload is None:
-            config_store.write("root", domain=domain, payload=desired_payload)
-            written_domains.append(domain)
-            continue
-        if existing_payload == desired_payload:
-            unchanged_domains.append(domain)
-            continue
-        if overwrite:
-            config_store.write("root", domain=domain, payload=desired_payload)
-            written_domains.append(domain)
-            continue
-        skipped_domains.append(domain)
+        summary = migrate_root_domain_payload(config, domain=domain, desired_payload=desired_payload, overwrite=overwrite)
+        written_domains.extend(summary.written_domains)
+        skipped_domains.extend(summary.skipped_domains)
+        unchanged_domains.extend(summary.unchanged_domains)
 
     return RootConfigMigrationSummary(
         host_config_written=host_config_path.exists(),
@@ -93,6 +100,215 @@ def migrate_global_config_to_root(config: GatewayConfig, *, overwrite: bool = Fa
         skipped_domains=skipped_domains,
         unchanged_domains=unchanged_domains,
     )
+
+
+def migrate_ado_worker_env_to_root(
+    config: GatewayConfig,
+    *,
+    env_file: Path | None = None,
+    overwrite: bool = False,
+) -> DomainMigrationResult:
+    env_values = _load_optional_env_file(env_file) if env_file is not None else {}
+    project_or_solution = _merged_env_value("ADO_PROJECT_OR_SOLUTION", env_values)
+    if not project_or_solution:
+        raise ValueError("ADO_PROJECT_OR_SOLUTION must be set in the environment or env file.")
+    payload = AdoWorkerDirectoryConfig(
+        ado_area_filters=_csv_values(_merged_env_value("ADO_AREA_FILTERS", env_values)),
+        ado_team_filters=_csv_values(_merged_env_value("ADO_TEAM_FILTERS", env_values)),
+        ado_project_or_solution=project_or_solution,
+        ado_prewarm_target=_merged_env_value("ADO_PREWARM_TARGET", env_values) or project_or_solution,
+        ado_bootstrap_dotnet=_bool_value(_merged_env_value("ADO_BOOTSTRAP_DOTNET", env_values), default=True),
+        ado_bootstrap_nuget=_bool_value(_merged_env_value("ADO_BOOTSTRAP_NUGET", env_values), default=True),
+        ado_bootstrap_mssql=_bool_value(_merged_env_value("ADO_BOOTSTRAP_MSSQL", env_values), default=True),
+        ado_mssql_init_root=_merged_env_value("ADO_MSSQL_INIT_ROOT", env_values) or None,
+        ado_bootstrap_playwright=_bool_value(_merged_env_value("ADO_BOOTSTRAP_PLAYWRIGHT", env_values), default=False),
+        ado_bootstrap_frontend_deps=_bool_value(
+            _merged_env_value("ADO_BOOTSTRAP_FRONTEND_DEPS", env_values),
+            default=False,
+        ),
+        ado_frontend_host_checkout=_merged_env_value("ADO_FRONTEND_HOST_CHECKOUT", env_values) or None,
+        ado_frontend_install_roots=_csv_values(_merged_env_value("ADO_FRONTEND_INSTALL_ROOTS", env_values)),
+    ).model_dump(mode="json", exclude_none=True)
+    return _migrate_domain_payload_to_root(config, domain="ado_worker", payload=payload, overwrite=overwrite)
+
+
+def migrate_issue_setup_env_to_root(
+    config: GatewayConfig,
+    *,
+    env_file: Path | None = None,
+    overwrite: bool = False,
+) -> DomainMigrationResult:
+    env_values = _load_optional_env_file(env_file) if env_file is not None else {}
+    payload = EffectiveIssueSetupDirectoryConfig(
+        git_root=_merged_env_value("AGENT_SANDBOX_GIT_ROOT", env_values) or "git-remotes",
+        git_host=_merged_env_value("AGENT_SANDBOX_GIT_HOST", env_values) or "192.168.250.1",
+        git_user=_merged_env_value("AGENT_SANDBOX_GIT_USER", env_values) or os.environ.get("USER", "agent"),
+        git_ssh_alias=_merged_env_value("AGENT_SANDBOX_GIT_SSH_ALIAS", env_values) or "agent-sandbox-git-host",
+        post_exec_verification_prompt=_merged_env_value("AGENT_POST_EXEC_VERIFICATION_PROMPT", env_values) or None,
+        enable_guest_heartbeat=_bool_value(_merged_env_value("ENABLE_GUEST_HEARTBEAT", env_values), default=False),
+        guest_heartbeat_prompt=(
+            _merged_env_value("GUEST_HEARTBEAT_PROMPT", env_values)
+            or "Resume work for this session. Check for pending feedback first, then continue the most recent task."
+        ),
+        issue_setup_azure_devops_pr_pat_env=(
+            _merged_env_value("AGENT_SANDBOX_AZURE_DEVOPS_PR_PAT_ENV", env_values)
+            or "AZURE_DEVOPS_PR_PAT"
+        ),
+    ).model_dump(mode="json", exclude_none=True)
+    return _migrate_domain_payload_to_root(config, domain="issue_setup", payload=payload, overwrite=overwrite)
+
+
+def migrate_pr_template_to_root(
+    config: GatewayConfig,
+    *,
+    template_file: Path | None = None,
+    overwrite: bool = False,
+) -> DomainMigrationResult:
+    directory_store = DirectoryStore(config.directories_store_path)
+    directory_store.ensure_root()
+    config_store = DirectoryConfigStore(directory_store, runtime_dir=config.runtime_dir)
+    config_store.ensure_root()
+    path = config_store.root_path / "root" / DIRECTORY_CONFIG_DOMAIN_FILENAMES["pr_template"]
+    if template_file is None or not template_file.exists():
+        try:
+            existing_payload = config_store.read("root", domain="pr_template")
+        except ValueError as exc:
+            if "directory config file is missing" not in str(exc):
+                raise
+            existing_payload = None
+        if existing_payload is None:
+            return DomainMigrationResult(domain="pr_template", status="skipped", path=path)
+        return DomainMigrationResult(domain="pr_template", status="unchanged", path=path)
+
+    payload = PrTemplateDirectoryConfig(
+        pr_template_markdown=template_file.read_text(encoding="utf-8")
+    ).model_dump(mode="json", exclude_none=True)
+    return _migrate_domain_payload_to_root(config, domain="pr_template", payload=payload, overwrite=overwrite)
+
+
+def migrate_root_domain_payload(
+    config: GatewayConfig,
+    *,
+    domain: str,
+    desired_payload: dict[str, Any],
+    overwrite: bool = False,
+) -> RootConfigMigrationSummary:
+    directory_store = DirectoryStore(config.directories_store_path)
+    directory_store.ensure_root()
+    config_store = DirectoryConfigStore(directory_store, runtime_dir=config.runtime_dir)
+    config_store.ensure_root()
+
+    discovered_root_payload = False
+    try:
+        existing_payload = config_store.read("root", domain=domain)
+    except ValueError as exc:
+        if "directory config file is missing" not in str(exc):
+            raise
+        existing_payload = _read_root_domain_file_without_metadata(config_store, domain=domain)
+        discovered_root_payload = existing_payload is not None
+    if existing_payload is None:
+        existing_payload = _read_root_domain_file_without_metadata(config_store, domain=domain)
+        discovered_root_payload = existing_payload is not None
+    if discovered_root_payload and existing_payload is not None:
+        config_store.write("root", domain=domain, payload=existing_payload)
+    if existing_payload is None:
+        config_store.write("root", domain=domain, payload=desired_payload)
+        return RootConfigMigrationSummary(False, [domain], [], [])
+    if existing_payload == desired_payload:
+        return RootConfigMigrationSummary(False, [], [], [domain])
+    if overwrite:
+        config_store.write("root", domain=domain, payload=desired_payload)
+        return RootConfigMigrationSummary(False, [domain], [], [])
+    return RootConfigMigrationSummary(False, [], [domain], [])
+
+
+def _read_root_domain_file_without_metadata(config_store: DirectoryConfigStore, *, domain: str) -> dict[str, Any] | None:
+    path = config_store.root_path / "root" / DIRECTORY_CONFIG_DOMAIN_FILENAMES[domain]
+    if not path.exists():
+        return None
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        return None
+    return config_store.validate_domain_payload(domain, payload)
+
+
+def _migrate_domain_payload_to_root(
+    config: GatewayConfig,
+    *,
+    domain: str,
+    payload: dict[str, Any],
+    overwrite: bool,
+) -> DomainMigrationResult:
+    directory_store = DirectoryStore(config.directories_store_path)
+    directory_store.ensure_root()
+    config_store = DirectoryConfigStore(directory_store, runtime_dir=config.runtime_dir)
+    config_store.ensure_root()
+    path = config_store.root_path / "root" / DIRECTORY_CONFIG_DOMAIN_FILENAMES[domain]
+    try:
+        existing_payload = config_store.read("root", domain=domain)
+    except ValueError as exc:
+        if "directory config file is missing" not in str(exc):
+            raise
+        existing_payload = _read_root_domain_file_without_metadata(config_store, domain=domain)
+    if existing_payload is None:
+        config_store.write("root", domain=domain, payload=payload)
+        return DomainMigrationResult(domain=domain, status="written", path=path)
+    if existing_payload == payload:
+        return DomainMigrationResult(domain=domain, status="unchanged", path=path)
+    if overwrite:
+        config_store.write("root", domain=domain, payload=payload)
+        return DomainMigrationResult(domain=domain, status="written", path=path)
+    return DomainMigrationResult(domain=domain, status="skipped", path=path)
+
+
+def _load_optional_env_file(path: Path) -> dict[str, str]:
+    if not path.exists():
+        return {}
+    values: dict[str, str] = {}
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if not key:
+            continue
+        values[key] = value.strip().strip('"').strip("'")
+    return values
+
+
+def _merged_env_value(name: str, env_values: dict[str, str]) -> str:
+    if name in os.environ:
+        return os.environ.get(name, "").strip()
+    return env_values.get(name, "").strip()
+
+
+def _bool_value(raw: str, *, default: bool) -> bool:
+    normalized = raw.strip().lower()
+    if not normalized:
+        return default
+    return normalized in {"1", "true", "yes", "on"}
+
+
+def _csv_values(raw: str) -> list[str]:
+    return [part.strip() for part in raw.split(",") if part.strip()]
+
+
+def _resolve_present_secret_env_name(
+    env_values: dict[str, str],
+    *,
+    preferred: str,
+    fallback: str | None,
+) -> str | None:
+    if preferred in env_values:
+        return preferred
+    if fallback is not None and fallback in env_values:
+        return fallback
+    if _merged_env_value(preferred, env_values):
+        return preferred
+    if fallback is not None and _merged_env_value(fallback, env_values):
+        return fallback
+    return None
 
 
 def _backfill_top_level_directory_path(path: Path) -> int:

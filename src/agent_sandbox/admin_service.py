@@ -13,12 +13,13 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from .agent_control import AgentControlStore
-from .bootstrap import load_host_bootstrap_config, load_runtime_gateway_config
-from .config import GatewayConfig
+from .bootstrap import load_host_bootstrap_config, load_runtime_gateway_config, resolve_project_dir
+from .config import AdoWorkerGlobalConfig, GatewayConfig, HostHeartbeatWorkerGlobalConfig
 from .directory_admin import DirectoryAdminService
 from .directory_config import (
     DirectoryConfigResolver,
     DirectoryConfigStore,
+    get_domain_base_config,
     validate_effective_domain_payload,
 )
 from .directories import DirectoryStore
@@ -47,6 +48,16 @@ _WORKER_DEFINITIONS: tuple[tuple[str, str, str], ...] = (
     ("host-heartbeat", "Host Heartbeat Worker", "agent-sandbox-host-heartbeat.service"),
 )
 
+_WORKER_GLOBAL_CONFIG_PATHS: dict[str, str] = {
+    "ado": "config/ado-worker/config.json",
+    "host-heartbeat": "config/host-heartbeat/config.json",
+}
+
+_WORKER_GLOBAL_CONFIG_MODELS: dict[str, type[BaseModel]] = {
+    "ado": AdoWorkerGlobalConfig,
+    "host-heartbeat": HostHeartbeatWorkerGlobalConfig,
+}
+
 
 class EffectiveIssueSetupConfig(BaseModel):
     git_root: str
@@ -58,7 +69,20 @@ class EffectiveIssueSetupConfig(BaseModel):
     guest_heartbeat_prompt: str = (
         "Resume work for this session. Check for pending feedback first, then continue the most recent task."
     )
-    issue_setup_azure_devops_pat_env: str = "AZURE_DEVOPS_PAT"
+    issue_setup_azure_devops_pr_pat_env: str = "AZURE_DEVOPS_PR_PAT"
+
+
+class WorkerGlobalConfigPayload(BaseModel):
+    worker_id: str
+    path: str
+    exists: bool
+    config: dict[str, object]
+
+
+class WorkerGlobalConfigWritePayload(BaseModel):
+    worker_id: str
+    path: str
+    config: dict[str, object]
 
 
 def _utc_now() -> datetime:
@@ -154,10 +178,6 @@ def _resolve_git_root(root_dir: Path) -> Path:
     env_value = os.environ.get("AGENT_SANDBOX_GIT_ROOT", "").strip()
     if env_value:
         return Path(env_value)
-    env_file_values = _load_optional_env_file(root_dir / "config" / "git-server.env")
-    configured = env_file_values.get("AGENT_SANDBOX_GIT_ROOT", "").strip()
-    if configured:
-        return Path(configured)
     return root_dir / "git-remotes"
 
 
@@ -738,6 +758,7 @@ class AdminService:
             candidate_runtime = resolve_runtime_dir(legacy_config_path=explicit_legacy)
         self.runtime_dir = candidate_runtime
         self.legacy_config_path = explicit_legacy
+        self.project_dir = resolve_project_dir(legacy_config_path=self.legacy_config_path)
         bootstrap_config = load_host_bootstrap_config(
             runtime_dir=self.runtime_dir,
             legacy_config_path=self.legacy_config_path,
@@ -811,7 +832,7 @@ class AdminService:
         resolution = resolver.resolve_domain(
             directory_path,
             domain="issue_setup",
-            base_config={},
+            base_config=get_domain_base_config(self.config, "issue_setup"),
             validator=lambda candidate: validate_effective_domain_payload("issue_setup", candidate),
         )
         effective = resolution.effective_config
@@ -820,8 +841,8 @@ class AdminService:
             directory_store=self.runtime.directories,
             session_store=self.runtime.sessions,
         ).resolve_for_directory(directory_path)
-        provider_pat_env = provider_config.azure_devops_pat_env.strip() or "AZURE_DEVOPS_PAT"
-        issue_setup_pat_env_raw = effective.get("issue_setup_azure_devops_pat_env")
+        provider_pat_env = provider_config.azure_devops_pr_pat_env.strip() or "AZURE_DEVOPS_PR_PAT"
+        issue_setup_pat_env_raw = effective.get("issue_setup_azure_devops_pr_pat_env")
         issue_setup_pat_env = (
             str(issue_setup_pat_env_raw).strip()
             if isinstance(issue_setup_pat_env_raw, str)
@@ -829,8 +850,8 @@ class AdminService:
         ) or provider_pat_env
         if not issue_setup_pat_env:
             raise ValueError(
-                "Missing env-var name for Azure DevOps PAT lookup. "
-                "Set issue_setup_azure_devops_pat_env or providers.azure_devops_pat_env."
+                "Missing env-var name for Azure DevOps PR PAT lookup. "
+                "Set issue_setup_azure_devops_pr_pat_env or providers.azure_devops_pr_pat_env."
             )
         return EffectiveIssueSetupConfig.model_validate(
             {
@@ -844,7 +865,7 @@ class AdminService:
                     effective.get("guest_heartbeat_prompt")
                     or "Resume work for this session. Check for pending feedback first, then continue the most recent task."
                 ),
-                "issue_setup_azure_devops_pat_env": issue_setup_pat_env,
+                "issue_setup_azure_devops_pr_pat_env": issue_setup_pat_env,
             }
         )
 
@@ -907,7 +928,7 @@ class AdminService:
                 "AGENT_SANDBOX_GIT_SSH_ALIAS": issue_setup.git_ssh_alias,
                 "ENABLE_GUEST_HEARTBEAT": "1" if issue_setup.enable_guest_heartbeat else "0",
                 "GUEST_HEARTBEAT_PROMPT": issue_setup.guest_heartbeat_prompt,
-                "AGENT_SANDBOX_AZURE_DEVOPS_PAT_ENV": issue_setup.issue_setup_azure_devops_pat_env,
+                "AGENT_SANDBOX_AZURE_DEVOPS_PR_PAT_ENV": issue_setup.issue_setup_azure_devops_pr_pat_env,
             }
         )
         if issue_setup.post_exec_verification_prompt is not None:
@@ -1352,6 +1373,44 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
 
     def compute_directory_effective_config(self, directory_path: str, domain: str):
         return self.directory_admin.compute_effective_config(self._normalize_directory_path(directory_path), domain=domain)
+
+    def read_worker_global_config(self, worker_id: str):
+        return self._read_worker_global_config(worker_id)
+
+    def write_worker_global_config(self, worker_id: str, payload: dict[str, object]):
+        return self._write_worker_global_config(worker_id, payload)
+
+    def _worker_global_config_path(self, worker_id: str) -> Path | None:
+        relative = _WORKER_GLOBAL_CONFIG_PATHS.get(worker_id)
+        if relative is None:
+            return None
+        return self.project_dir / relative
+
+    def _read_worker_global_config(self, worker_id: str) -> WorkerGlobalConfigPayload:
+        path = self._worker_global_config_path(worker_id)
+        if path is None:
+            raise ValueError(f"Unknown worker: {worker_id}")
+        exists = path.exists()
+        if exists:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(raw, dict):
+                raise ValueError(f"worker config file {path} must contain a JSON object")
+        else:
+            model = _WORKER_GLOBAL_CONFIG_MODELS[worker_id]
+            raw = model.model_validate(self.config.model_dump(mode="json")).model_dump(mode="json")
+        model = _WORKER_GLOBAL_CONFIG_MODELS[worker_id]
+        config = model.model_validate(raw).model_dump(mode="json")
+        return WorkerGlobalConfigPayload(worker_id=worker_id, path=str(path), exists=exists, config=config)
+
+    def _write_worker_global_config(self, worker_id: str, payload: dict[str, object]) -> WorkerGlobalConfigWritePayload:
+        path = self._worker_global_config_path(worker_id)
+        if path is None:
+            raise ValueError(f"Unknown worker: {worker_id}")
+        model = _WORKER_GLOBAL_CONFIG_MODELS[worker_id]
+        config = model.model_validate(payload).model_dump(mode="json")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(config, indent=2, sort_keys=True), encoding="utf-8")
+        return WorkerGlobalConfigWritePayload(worker_id=worker_id, path=str(path), config=config)
 
     def _next_local_issue_number(self) -> str:
         current = 0
