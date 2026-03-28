@@ -2631,6 +2631,7 @@ def test_create_local_issue_uses_admin_service(tmp_path: Path, monkeypatch) -> N
             assert repo_source == "/src/repo"
             assert yaml_path is None
             return LocalIssueRecord(
+                issue_id="local-77",
                 issue_number="77",
                 title=title,
                 body=body,

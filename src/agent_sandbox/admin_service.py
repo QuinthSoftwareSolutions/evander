@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import time
+from uuid import uuid4
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -1353,6 +1354,24 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
             return [issue for issue in issues if issue.directory_path == normalized_directory_path]
         return issues
 
+    def _resolve_local_issue_key(self, identifier: str) -> str | None:
+        normalized = identifier.strip()
+        if not normalized:
+            return None
+        issues = self.local_issue_store.read_all()
+        if normalized in issues:
+            return normalized
+        matches = [issue_id for issue_id, issue in issues.items() if issue.issue_number == normalized]
+        if not matches:
+            return None
+        if len(matches) == 1:
+            return matches[0]
+        sorted_matches = sorted(
+            matches,
+            key=lambda key: issues[key].created_at,
+        )
+        return sorted_matches[-1]
+
     def list_direct_owned_entity_ids(self, directory_path: str, *, kind: str) -> list[str]:
         return sorted(self._direct_owned_entity_ids(directory_path, kind=kind))
 
@@ -1461,6 +1480,7 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
             )
             target_yaml_path.write_text(yaml_text, encoding="utf-8")
         record = LocalIssueRecord(
+            issue_id=f"local-{uuid4()}",
             issue_number=issue_number,
             title=title.strip() or f"Local issue {issue_number}",
             body=body.strip(),
@@ -1471,7 +1491,7 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
             created_at=now,
             updated_at=now,
         )
-        self.local_issue_store.put(record.issue_number, record)
+        self.local_issue_store.put(record.issue_id, record)
         return record
 
     def create_issue_vm(
@@ -1571,7 +1591,7 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
 
     def create_issue_vm_from_local_issue(
         self,
-        issue_number: str,
+        issue_identifier: str,
         *,
         repo_source: str | None = None,
         vm_user: str = "agent",
@@ -1583,13 +1603,14 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
         mssql_init_root: str | None = None,
         playwright: bool = False,
     ) -> VmActionResult:
-        issue = self.local_issue_store.get(issue_number)
+        issue_key = self._resolve_local_issue_key(issue_identifier)
+        issue = self.local_issue_store.get(issue_key) if issue_key is not None else None
         if issue is None:
             return VmActionResult(
                 success=False,
-                vm_name=f"vm-{issue_number}",
+                vm_name=f"vm-{issue_identifier}",
                 action="create_issue_vm",
-                message=f"Unknown local issue: {issue_number}",
+                message=f"Unknown local issue: {issue_identifier}",
             )
         return self.create_issue_vm(
             issue=issue.yaml_path,
@@ -1662,15 +1683,17 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
             message=summary,
         )
 
-    def delete_local_issue(self, issue_number: str) -> VmActionResult:
-        issue = self.local_issue_store.get(issue_number)
+    def delete_local_issue(self, issue_identifier: str) -> VmActionResult:
+        issue_key = self._resolve_local_issue_key(issue_identifier)
+        issue = self.local_issue_store.get(issue_key) if issue_key is not None else None
         if issue is None:
             return VmActionResult(
                 success=False,
-                vm_name=f"vm-{issue_number}",
+                vm_name=f"vm-{issue_identifier}",
                 action="delete_local_issue",
-                message=f"Unknown local issue: {issue_number}",
+                message=f"Unknown local issue: {issue_identifier}",
             )
+        issue_number = issue.issue_number
 
         vm_name = f"vm-{issue_number}"
         existing_vm_state = _dominfo_field(vm_name, "State")
@@ -1689,7 +1712,7 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
                 message=f"Destroy {vm_name} before deleting local issue {issue_number}.",
             )
 
-        self.local_issue_store.delete(issue_number)
+        self.local_issue_store.delete(issue.issue_id)
         yaml_path = Path(issue.yaml_path)
         if yaml_path.exists():
             yaml_path.unlink()

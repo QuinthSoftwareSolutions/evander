@@ -50,8 +50,8 @@ def test_create_local_issue_persists_yaml_and_store(tmp_path: Path) -> None:
     assert '"Fix VM dashboard"' in yaml_text
 
     payload = json.loads((tmp_path / "runtime" / "local-issues.json").read_text(encoding="utf-8"))
-    assert payload["1"]["directory_path"] == "root"
-    assert payload["1"]["repo_source"] == "/src/repo"
+    assert payload[issue.issue_id]["directory_path"] == "root"
+    assert payload[issue.issue_id]["repo_source"] == "/src/repo"
 
 
 def test_list_vms_collects_session_and_agent_state(tmp_path: Path, monkeypatch) -> None:
