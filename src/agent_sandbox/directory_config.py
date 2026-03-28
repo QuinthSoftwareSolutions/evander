@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 from copy import deepcopy
 from pathlib import Path
@@ -23,9 +24,9 @@ DIRECTORY_CONFIG_DOMAIN_FILENAMES = {
     "providers": "providers.json",
     "email": "email.json",
     "heartbeat": "heartbeat.json",
-    "ado-worker": "ado-worker.json",
+    "ado_worker": "ado-worker.json",
     "vm": "vm.json",
-    "issue-setup": "issue-setup.json",
+    "issue_setup": "issue-setup.json",
 }
 
 LEGACY_DIRECTORY_CONFIG_DOMAIN_FILENAMES = {
@@ -38,6 +39,8 @@ LEGACY_DIRECTORY_CONFIG_DOMAIN_FILENAMES = {
 LEGACY_DIRECTORY_DOMAIN_ALIASES = {
     "workers": "heartbeat",
     "vm-defaults": "vm",
+    "ado-worker": "ado_worker",
+    "issue-setup": "issue_setup",
 }
 
 DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
@@ -113,7 +116,7 @@ DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
             "openai_relay_port",
         }
     ),
-    "ado-worker": frozenset(
+    "ado_worker": frozenset(
         {
             "ado_area_filters",
             "ado_team_filters",
@@ -130,7 +133,7 @@ DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
             "ado_mssql_sa_password_env",
         }
     ),
-    "issue-setup": frozenset(
+    "issue_setup": frozenset(
         {
             "git_root",
             "git_host",
@@ -191,6 +194,26 @@ def get_domain_base_config(config: GatewayConfig, domain: str) -> dict[str, Any]
     DirectoryConfigStore._validate_domain_name(domain)
     payload = config.model_dump(mode="json")
     allowed_fields = DIRECTORY_CONFIG_DOMAIN_FIELDS[domain]
+    if domain == "issue_setup":
+        return {
+            "git_root": os.environ.get("AGENT_SANDBOX_GIT_ROOT", "").strip() or "git-remotes",
+            "git_host": os.environ.get("AGENT_SANDBOX_GIT_HOST", "").strip() or "192.168.250.1",
+            "git_user": os.environ.get("AGENT_SANDBOX_GIT_USER", "").strip() or os.environ.get("USER", "agent"),
+            "git_ssh_alias": os.environ.get("AGENT_SANDBOX_GIT_SSH_ALIAS", "").strip() or "agent-sandbox-git-host",
+            "enable_guest_heartbeat": (
+                os.environ.get("ENABLE_GUEST_HEARTBEAT", "").strip().lower() in {"1", "true", "yes", "on"}
+            ),
+            "guest_heartbeat_prompt": (
+                os.environ.get("GUEST_HEARTBEAT_PROMPT", "").strip()
+                or "Resume work for this session. Check for pending feedback first, then continue the most recent task."
+            ),
+            "post_exec_verification_prompt": os.environ.get("AGENT_POST_EXEC_VERIFICATION_PROMPT", "").strip() or None,
+            "issue_setup_azure_devops_pat_env": (
+                os.environ.get("AGENT_SANDBOX_AZURE_DEVOPS_PAT_ENV", "").strip()
+                or os.environ.get("AZURE_DEVOPS_PAT", "").strip()
+                or "AZURE_DEVOPS_PAT"
+            ),
+        }
     return {key: payload[key] for key in sorted(allowed_fields) if key in payload}
 
 
@@ -312,10 +335,10 @@ class DirectoryConfigStore:
             payload = {key: value for key, value in payload.items() if key in allowed_fields}
             validated = GatewayConfig.model_validate(payload)
             return validated.model_dump(mode="json", include=set(payload))
-        if domain == "ado-worker":
+        if domain == "ado_worker":
             validated = AdoWorkerDirectoryConfig.model_validate(payload)
             return validated.model_dump(mode="json", include=set(payload))
-        if domain == "issue-setup":
+        if domain == "issue_setup":
             validated = IssueSetupDirectoryConfig.model_validate(payload)
             return validated.model_dump(mode="json", include=set(payload))
         unknown_fields = sorted(set(payload) - allowed_fields)

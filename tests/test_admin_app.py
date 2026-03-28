@@ -72,3 +72,18 @@ def test_main_accepts_runtime_dir_override(monkeypatch, tmp_path: Path) -> None:
 def test_config_field_kind_uses_multiline_editor_for_prompt_fields() -> None:
     assert admin_app._config_field_kind("host_heartbeat_resume_prompt") == ("multiline_text", ())
     assert admin_app._config_field_kind("host_resume_script_path") == ("text", ())
+
+
+def test_config_field_kind_supports_issue_setup_fields() -> None:
+    assert admin_app._config_field_kind("git_root") == ("text", ())
+    assert admin_app._config_field_kind("enable_guest_heartbeat") == ("bool", ())
+
+
+def test_directory_config_domains_include_ado_worker_and_issue_setup_tabs() -> None:
+    assert "ado_worker" in admin_app.DIRECTORY_CONFIG_DOMAIN_FILENAMES
+    assert "issue_setup" in admin_app.DIRECTORY_CONFIG_DOMAIN_FILENAMES
+
+    for field_name in admin_app.DIRECTORY_CONFIG_DOMAIN_FIELDS["ado_worker"]:
+        assert field_name in admin_app.CONFIG_FIELD_TOOLTIPS
+    for field_name in admin_app.DIRECTORY_CONFIG_DOMAIN_FIELDS["issue_setup"]:
+        assert field_name in admin_app.CONFIG_FIELD_TOOLTIPS

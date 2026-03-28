@@ -81,6 +81,9 @@ Scope included:
 The ADO worker now loads `azure_devops_organization_url`, `azure_devops_project`, and
 `azure_devops_pat_env` from `root` directory config instead of duplicating them in
 `config/ado-worker.env`.
+Directory domain `ado_worker` is now the primary configuration surface for worker bootstrap/filter
+controls (`ado_area_filters`, `ado_team_filters`, bootstrap toggles, etc.); `ADO_*` env vars remain
+as one-release compatibility fallbacks and emit deprecation warnings when used.
 
 ## `config/git-server.env.example`
 
@@ -251,6 +254,8 @@ Supported directory config domains:
 | `providers.json` | Upstream/provider endpoints and credentials-by-reference | Discord, OpenAI, NuGet, GitHub, Azure DevOps |
 | `email.json` | Mailbox provider definitions and email provider runtime settings | `email_mailboxes`, `email_provider_timeout_seconds` |
 | `heartbeat.json` | Host heartbeat worker behavior | heartbeat timing, scripts, conflict policy, wake-state paths |
+| `ado-worker.json` | Azure DevOps backlog worker setup/bootstrap behavior | `ado_area_filters`, `ado_team_filters`, `ado_project_or_solution`, `ado_prewarm_target`, `ado_bootstrap_*`, `ado_mssql_sa_password_env`, frontend bootstrap fields |
+| `issue-setup.json` | VM issue setup/git hand-off defaults | `git_root`, `git_host`, `git_user`, `git_ssh_alias`, `post_exec_verification_prompt`, `enable_guest_heartbeat`, `guest_heartbeat_prompt`, optional `issue_setup_azure_devops_pat_env` |
 | `vm.json` | Guest-facing relay/network defaults | `bind_network_cidr`, `gateway_url`, OpenAI relay host/port, NuGet relay host/port |
 
 Merge behavior in `src/agent_sandbox/directory_config.py`:
@@ -275,6 +280,9 @@ These are not primarily defined in `*.env.example` but are explicit configuratio
 | `AGENT_SANDBOX_GIT_ROOT` | `src/agent_sandbox/cli.py` | `agent-sandbox` CLI git-remote helpers (`resolve_git_root`). |
 | `MSSQL_SA_PASSWORD` | `src/agent_sandbox/cli.py`, `scripts/setup_issue_vm.sh`, bootstrap scripts | Required when MSSQL bootstrap paths are enabled. |
 | Provider mailbox tokens (`GMAIL_*_ACCESS_TOKEN`, `GRAPH_*_ACCESS_TOKEN`, etc.) | Referenced indirectly in effective root directory config under `auth_secret_refs.access_token` | `src/agent_sandbox/runtime.py`, `src/agent_sandbox/email/gmail_provider.py`, `src/agent_sandbox/email/graph_provider.py`. |
+
+For issue setup, `AGENT_SANDBOX_GIT_*`, `AGENT_POST_EXEC_VERIFICATION_PROMPT`, and
+`AGENT_SANDBOX_AZURE_DEVOPS_PAT_ENV` remain fallback sources when `issue_setup` domain values are unset.
 
 ---
 

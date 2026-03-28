@@ -810,9 +810,9 @@ class AdminService:
         )
         resolution = resolver.resolve_domain(
             directory_path,
-            domain="issue-setup",
+            domain="issue_setup",
             base_config={},
-            validator=lambda candidate: validate_effective_domain_payload("issue-setup", candidate),
+            validator=lambda candidate: validate_effective_domain_payload("issue_setup", candidate),
         )
         effective = resolution.effective_config
         provider_config = ProviderConfigResolver(

@@ -8,7 +8,12 @@ from typing import Any, get_args, get_origin
 
 from .admin_service import AdminService
 from .config import GatewayConfig
-from .directory_config import DIRECTORY_CONFIG_DOMAIN_FIELDS, DIRECTORY_CONFIG_DOMAIN_FILENAMES
+from .directory_config import (
+    AdoWorkerDirectoryConfig,
+    DIRECTORY_CONFIG_DOMAIN_FIELDS,
+    DIRECTORY_CONFIG_DOMAIN_FILENAMES,
+    IssueSetupDirectoryConfig,
+)
 ADMIN_APP_DEFAULT_RUNTIME_DIR = Path("runtime")
 
 try:
@@ -360,6 +365,42 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
     "ado_mssql_sa_password_env": (
         "Name of the host environment variable that holds the MSSQL SA password used by ADO issue setup."
     ),
+    "ado_area_filters": (
+        "Optional Azure DevOps area path allowlist used by the ADO worker when selecting work items."
+    ),
+    "ado_team_filters": (
+        "Optional Azure DevOps team filter list used by the ADO worker when selecting work items."
+    ),
+    "ado_project_or_solution": (
+        "Project or solution path handed to setup_issue_vm.sh for repo bootstrap and prewarm tasks."
+    ),
+    "ado_prewarm_target": (
+        "Optional override target for prewarm steps; falls back to ado_project_or_solution when unset."
+    ),
+    "ado_bootstrap_dotnet": (
+        "Enable or disable dotnet/bootstrap steps in setup_issue_vm.sh for ADO worker-created VMs."
+    ),
+    "ado_bootstrap_nuget": (
+        "Enable or disable NuGet bootstrap setup for ADO worker-created VMs."
+    ),
+    "ado_bootstrap_mssql": (
+        "Enable or disable MSSQL bootstrap setup for ADO worker-created VMs."
+    ),
+    "ado_mssql_init_root": (
+        "Optional host path containing SQL initialization scripts copied during MSSQL bootstrap."
+    ),
+    "ado_bootstrap_playwright": (
+        "Enable or disable Playwright bootstrap setup for ADO worker-created VMs."
+    ),
+    "ado_bootstrap_frontend_deps": (
+        "Enable or disable frontend dependency bootstrap setup for ADO worker-created VMs."
+    ),
+    "ado_frontend_host_checkout": (
+        "Optional host checkout path used by frontend dependency bootstrap."
+    ),
+    "ado_frontend_install_roots": (
+        "Optional list of install roots used by frontend dependency bootstrap."
+    ),
     "azure_devops_project": (
         "Default Azure DevOps project name used by host-side PR feedback and reply integrations."
     ),
@@ -422,6 +463,27 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
     ),
     "issue_setup_azure_devops_pat_env": (
         "Optional override for the Azure DevOps PAT env-var name used by issue setup and PR scripts."
+    ),
+    "git_root": (
+        "Host root directory that stores bare git remotes used during issue setup."
+    ),
+    "git_host": (
+        "Host address or name the guest uses to reach git remotes during issue setup."
+    ),
+    "git_user": (
+        "Host username used by guest SSH/git commands during issue setup."
+    ),
+    "git_ssh_alias": (
+        "SSH host alias configured in the guest for host git operations."
+    ),
+    "post_exec_verification_prompt": (
+        "Optional one-time follow-up prompt injected after the primary post-exec run."
+    ),
+    "enable_guest_heartbeat": (
+        "When enabled, setup_issue_vm.sh writes guest heartbeat integration settings for Codex sessions."
+    ),
+    "guest_heartbeat_prompt": (
+        "Prompt used by guest heartbeat wake-ups when enable_guest_heartbeat is true."
     ),
     "host_busy_check_script_path": (
         "Host script used by the heartbeat worker to detect whether a session VM is currently busy "
@@ -498,7 +560,19 @@ def _format_config_value_preview(value: Any) -> str:
 
 
 def _config_field_kind(field_name: str) -> tuple[str, tuple[Any, ...]]:
-    annotation = GatewayConfig.model_fields[field_name].annotation
+    field_models = (
+        GatewayConfig.model_fields,
+        AdoWorkerDirectoryConfig.model_fields,
+        IssueSetupDirectoryConfig.model_fields,
+    )
+    annotation = None
+    for model_fields in field_models:
+        field_info = model_fields.get(field_name)
+        if field_info is not None:
+            annotation = field_info.annotation
+            break
+    if annotation is None:
+        return ("json", ())
     origin = get_origin(annotation)
     if annotation is bool:
         return ("bool", ())
