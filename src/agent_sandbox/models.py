@@ -195,6 +195,7 @@ class LocalIssueRecord(BaseModel):
     directory_path: str = "root"
     repo_source: str | None = None
     source: str = "local_gui"
+    metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 
