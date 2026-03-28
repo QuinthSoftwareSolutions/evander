@@ -194,11 +194,7 @@ Install the gateway and relay services:
 ```bash
 ./scripts/install_systemd_units.sh --preflight
 sudo ./scripts/install_systemd_units.sh
-$EDITOR config/gateway.env
 $EDITOR config/firewall.env
-$EDITOR config/openai-relay.env
-$EDITOR config/nuget-relay.env
-$EDITOR config/host-heartbeat.env
 sudo systemctl start agent-sandbox-firewall.service
 sudo systemctl start agent-sandbox-gateway.service
 sudo systemctl start agent-sandbox-openai-relay.service
@@ -207,8 +203,10 @@ sudo systemctl start agent-sandbox-ado-worker.service
 sudo systemctl start agent-sandbox-host-heartbeat.service
 ```
 
-The generated units run as your user where appropriate and read environment files from `config/`.
-For private PR feedback polling, `config/host-heartbeat.env` must export `GITHUB_TOKEN` and/or
+The generated units run as your user where appropriate. Runtime settings come from runtime/root
+config, while service env vars can come from optional per-service `config/*.env` files and/or
+optional `secrets.env`.
+For private PR feedback polling, the service environment must provide `GITHUB_TOKEN` and/or
 `AZURE_DEVOPS_PR_PAT` as needed, and the effective `root` config must set the correct
 `azure_devops_organization_url`, `azure_devops_project`, and heartbeat timing/lock settings.
 

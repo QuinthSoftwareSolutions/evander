@@ -37,3 +37,36 @@ def test_install_systemd_units_preflight_checks_for_mssql_worker_password_when_e
     assert 'runtime/directory-config/root/ado-worker.json' in text
     assert 'secrets.env' in text
     assert 'config/ado-worker.env' not in text
+
+
+def test_install_systemd_units_no_longer_requires_removed_per_service_env_files() -> None:
+    text = _script_text()
+
+    assert 'config/gateway.env' not in text
+    assert 'config/openai-relay.env' not in text
+    assert 'config/nuget-relay.env' not in text
+    assert 'config/host-heartbeat.env' not in text
+
+
+def test_service_templates_use_optional_shared_secrets_env() -> None:
+    repo = Path(__file__).resolve().parents[1]
+
+    gateway = (repo / "systemd" / "agent-sandbox-gateway.service.template").read_text(encoding="utf-8")
+    openai = (repo / "systemd" / "agent-sandbox-openai-relay.service.template").read_text(
+        encoding="utf-8"
+    )
+    nuget = (repo / "systemd" / "agent-sandbox-nuget-relay.service.template").read_text(
+        encoding="utf-8"
+    )
+    heartbeat = (repo / "systemd" / "agent-sandbox-host-heartbeat.service.template").read_text(
+        encoding="utf-8"
+    )
+
+    assert "EnvironmentFile=-__PROJECT_DIR__/config/gateway.env" in gateway
+    assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in gateway
+    assert "EnvironmentFile=-__PROJECT_DIR__/config/openai-relay.env" in openai
+    assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in openai
+    assert "EnvironmentFile=-__PROJECT_DIR__/config/nuget-relay.env" in nuget
+    assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in nuget
+    assert "EnvironmentFile=-__PROJECT_DIR__/config/host-heartbeat.env" in heartbeat
+    assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in heartbeat

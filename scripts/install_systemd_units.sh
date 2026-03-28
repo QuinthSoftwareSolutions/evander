@@ -259,11 +259,7 @@ run_preflight_checks() {
   check_command "python3" "Install Python 3 so the gateway/relay and env checks can run."
   check_command "virsh" "Install libvirt-clients so VM lifecycle commands are available." "warning"
 
-  check_file "${ROOT_DIR}/config/gateway.env" "Copy config/gateway.env.example to config/gateway.env and update values."
-  check_file "${ROOT_DIR}/config/openai-relay.env" "Copy config/openai-relay.env.example to config/openai-relay.env and set OPENAI_API_KEY."
   check_file "${ROOT_DIR}/config/firewall.env" "Copy config/firewall.env.example to config/firewall.env."
-  check_file "${ROOT_DIR}/config/nuget-relay.env" "Copy config/nuget-relay.env.example to config/nuget-relay.env."
-  check_file "${ROOT_DIR}/config/host-heartbeat.env" "Copy config/host-heartbeat.env.example to config/host-heartbeat.env."
   check_file \
     "${ROOT_DIR}/config/ado-worker/config.json" \
     "Save the ADO worker global settings in the Admin GUI or copy config/ado-worker/config.json.example to config/ado-worker/config.json."
@@ -271,9 +267,7 @@ run_preflight_checks() {
     "${ROOT_DIR}/runtime/directory-config/root/ado-worker.json" \
     "Run agent-sandbox-cli migrate-ado-worker-env-to-root or migrate-global-config-to-root first."
 
-  check_env_var_in_file "${ROOT_DIR}/config/openai-relay.env" "OPENAI_API_KEY" "Set OPENAI_API_KEY in config/openai-relay.env."
   check_env_var_in_file "${ROOT_DIR}/config/firewall.env" "ALLOWED_TCP_PORTS" "Set ALLOWED_TCP_PORTS in config/firewall.env."
-  check_env_var_in_file "${ROOT_DIR}/config/host-heartbeat.env" "HOST_HEARTBEAT_LOG_LEVEL" "Set HOST_HEARTBEAT_LOG_LEVEL in config/host-heartbeat.env."
   if [[ -f "${ROOT_DIR}/runtime/directory-config/root/ado-worker.json" ]]; then
     if [[ "$(json_field_in_file "${ROOT_DIR}/runtime/directory-config/root/ado-worker.json" "ado_bootstrap_mssql")" == "true" ]]; then
       ado_mssql_env_name="$(json_field_in_file "${ROOT_DIR}/runtime/directory-config/root/ado-worker.json" "ado_mssql_sa_password_env")"
@@ -374,14 +368,11 @@ Installed systemd units:
   agent-sandbox-host-heartbeat.service
 
 Next steps:
-  1. Edit ${ROOT_DIR}/config/openai-relay.env and set OPENAI_API_KEY.
-  2. Edit ${ROOT_DIR}/config/nuget-relay.env and set AZURE_ARTIFACTS_PAT if needed.
-  3. Populate ${ROOT_DIR}/runtime/directory-config/root/ado-worker.json via the root directory config migration commands.
-  4. Populate ${ROOT_DIR}/config/ado-worker/config.json via the Admin GUI if you want to override worker defaults.
-  5. Export the ADO work-item PAT named by ${ROOT_DIR}/config/ado-worker/config.json and the MSSQL secret env var named by root config, or source ${ROOT_DIR}/secrets.env if you keep one.
-  6. Edit ${ROOT_DIR}/config/host-heartbeat.env for log level and provider credentials if private PR polling is needed.
-  7. Optionally edit ${ROOT_DIR}/config/firewall.env to change allowed host ports.
-  8. Start services:
+  1. Populate ${ROOT_DIR}/runtime/directory-config/root/ado-worker.json via the root directory config migration commands.
+  2. Populate ${ROOT_DIR}/config/ado-worker/config.json via the Admin GUI if you want to override worker defaults.
+  3. Export the required host secrets in the service manager environment, or source ${ROOT_DIR}/secrets.env if you keep one there.
+  4. Optionally edit ${ROOT_DIR}/config/firewall.env to change allowed host ports.
+  5. Start services:
      sudo systemctl start agent-sandbox-firewall.service
      sudo systemctl start agent-sandbox-gateway.service
      sudo systemctl start agent-sandbox-openai-relay.service

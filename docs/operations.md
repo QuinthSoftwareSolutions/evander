@@ -576,7 +576,7 @@ sudo ./scripts/install_systemd_units.sh
 ```
 
 Run `--preflight` before the first install (and before reruns) to verify required binaries,
-config files, and required env vars for enabled services without writing unit files.
+runtime config files, and required env vars for enabled services without writing unit files.
 
 This creates:
 
@@ -589,20 +589,18 @@ This creates:
 
 Before running install mode, ensure preflight is clean (or only warning-only), then:
 
-1. Copy `config/gateway.env.example` to `config/gateway.env` if needed.
-2. Copy `config/firewall.env.example` to `config/firewall.env` if needed.
-3. Copy `config/openai-relay.env.example` to `config/openai-relay.env` if needed.
-4. Copy `config/nuget-relay.env.example` to `config/nuget-relay.env` if needed.
-5. Copy `config/host-heartbeat.env.example` to `config/host-heartbeat.env` if needed.
-6. Set the real `OPENAI_API_KEY` in `config/openai-relay.env`.
-7. Set `AZURE_ARTIFACTS_PAT` in `config/nuget-relay.env` when private feeds are required.
-8. Ensure `runtime/directory-config/root/ado-worker.json` exists and the PAT variable named by
+1. Copy `config/firewall.env.example` to `config/firewall.env` if needed.
+2. Ensure `runtime/directory-config/root/ado-worker.json` exists and the PAT variable named by
    `ado_work_items_azure_devops_pat_env` in `config/ado-worker/config.json` is exported for the
    service user.
-9. For private PR feedback polling, set `GITHUB_TOKEN` and/or `AZURE_DEVOPS_PR_PAT` in
-   `config/host-heartbeat.env` and ensure the effective `root` provider config sets the correct
+3. Ensure the needed service env vars are available. The rendered units will load optional
+   per-service `config/*.env` files and optional repo-root `secrets.env`.
+4. Ensure `OPENAI_API_KEY` is available for the OpenAI relay and `AZURE_ARTIFACTS_PAT` when the
+   NuGet relay needs private Azure Artifacts access.
+5. For private PR feedback polling, ensure the service environment exposes `GITHUB_TOKEN`
+   and/or `AZURE_DEVOPS_PR_PAT` and ensure the effective `root` provider config sets the correct
    `azure_devops_organization_url`, `azure_devops_project`, and `azure_devops_pr_pat_env`.
-10. Start and inspect services:
+6. Start and inspect services:
 
 ```bash
 sudo systemctl start agent-sandbox-firewall.service

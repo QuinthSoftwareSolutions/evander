@@ -11,6 +11,12 @@ Scope included:
 
 ## 1) Service environment files (`config/*.env.example`)
 
+These example files document env vars that services may still consume. The rendered systemd units
+load the matching per-service `config/*.env` files as optional inputs, so startup no longer fails
+if a file is absent. Runtime configuration comes from `runtime/host-config.json` plus
+`runtime/directory-config/root/...`, and secret values can also be supplied through the service
+manager environment or optional repo-root `secrets.env`.
+
 ## `config/gateway.env.example`
 
 | Parameter | Found in | Consumed by |
