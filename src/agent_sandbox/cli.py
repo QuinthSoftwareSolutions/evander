@@ -1720,6 +1720,40 @@ def shutdown_vm(
 
 
 @app.command(
+    "create-issue",
+    rich_help_panel="Issue Lifecycle",
+    short_help="Create a local/proxy-backed issue record.",
+)
+def create_issue(
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
+    title: Annotated[
+        str,
+        typer.Option("--title", help="Issue title."),
+    ] = "",
+    body: Annotated[
+        str,
+        typer.Option("--body", help="Issue body/description."),
+    ] = "",
+    repo_source: Annotated[
+        str | None,
+        typer.Option("--repo-source", help="Default repo source used when starting a VM for this issue."),
+    ] = None,
+    yaml_path: Annotated[
+        Path | None,
+        typer.Option("--yaml-path", help="Import an existing issue YAML file instead of creating one from title/body."),
+    ] = None,
+) -> None:
+    service = AdminService(config)
+    issue = service.create_issue(
+        title=title,
+        body=body,
+        repo_source=repo_source,
+        yaml_path=str(yaml_path) if yaml_path is not None else None,
+    )
+    typer.echo(f"Created local issue {issue.issue_number} ({issue.title}) at {issue.yaml_path}")
+
+
+@app.command(
     "create-local-issue",
     rich_help_panel="Issue Lifecycle",
     short_help="Create a local issue record.",
@@ -1754,6 +1788,30 @@ def create_local_issue(
 
 
 @app.command(
+    "list-issues",
+    rich_help_panel="Issue Lifecycle",
+    short_help="List local issue records.",
+)
+def list_issues(
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
+    as_json: Annotated[
+        bool,
+        typer.Option("--json", help="Emit machine-readable local issue records."),
+    ] = False,
+) -> None:
+    service = AdminService(config)
+    issues = service.list_issues()
+    if as_json:
+        typer.echo(json.dumps([issue.model_dump(mode="json") for issue in issues], indent=2, sort_keys=True))
+        return
+    if not issues:
+        return
+    typer.echo(f"{'Issue':<8} {'Title':<32} YAML")
+    for issue in issues:
+        typer.echo(f"{issue.issue_number:<8} {issue.title[:32]:<32} {issue.yaml_path}")
+
+
+@app.command(
     "list-local-issues",
     rich_help_panel="Issue Lifecycle",
     short_help="List local issue records.",
@@ -1765,16 +1823,114 @@ def list_local_issues(
         typer.Option("--json", help="Emit machine-readable local issue records."),
     ] = False,
 ) -> None:
+    list_issues(config=config, as_json=as_json)
+
+
+@app.command(
+    "get-issue",
+    rich_help_panel="Issue Lifecycle",
+    short_help="Read a local/proxy issue payload by local issue identifier.",
+)
+def get_issue(
+    issue_id: str,
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
+    include_remote_comments: Annotated[
+        bool,
+        typer.Option(
+            "--include-remote-comments/--no-include-remote-comments",
+            help="Include remote comments when resolving proxy-backed issues.",
+        ),
+    ] = True,
+    sync_proxy_cache: Annotated[
+        bool,
+        typer.Option(
+            "--sync-proxy-cache/--no-sync-proxy-cache",
+            help="Refresh and persist cached proxy issue fields after reading.",
+        ),
+    ] = True,
+    as_json: Annotated[
+        bool,
+        typer.Option("--json", help="Emit machine-readable issue details."),
+    ] = False,
+) -> None:
     service = AdminService(config)
-    issues = service.list_local_issues()
+    payload = service.get_issue(
+        issue_id,
+        include_remote_comments=include_remote_comments,
+        sync_proxy_cache=sync_proxy_cache,
+    )
     if as_json:
-        typer.echo(json.dumps([issue.model_dump(mode="json") for issue in issues], indent=2, sort_keys=True))
+        typer.echo(json.dumps(payload, indent=2, sort_keys=True))
         return
-    if not issues:
+    typer.echo(f"Issue {payload.get('issue_number', issue_id)}")
+    typer.echo(f"Source: {payload.get('source_type', '')}")
+    typer.echo(f"Title: {payload.get('title', '')}")
+    typer.echo(f"State: {payload.get('state', '')}")
+    typer.echo(f"Updated: {payload.get('updated_at', '')}")
+
+
+@app.command(
+    "add-issue-comment",
+    rich_help_panel="Issue Lifecycle",
+    short_help="Add an issue comment by local issue identifier.",
+)
+def add_issue_comment(
+    issue_id: str,
+    comment: Annotated[
+        str,
+        typer.Option("--comment", help="Comment text to add."),
+    ],
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
+    sync_proxy_cache: Annotated[
+        bool,
+        typer.Option(
+            "--sync-proxy-cache/--no-sync-proxy-cache",
+            help="Refresh and persist cached proxy issue fields after writing.",
+        ),
+    ] = True,
+    as_json: Annotated[
+        bool,
+        typer.Option("--json", help="Emit machine-readable write result."),
+    ] = False,
+) -> None:
+    service = AdminService(config)
+    payload = service.add_issue_comment(issue_id, comment, sync_proxy_cache=sync_proxy_cache)
+    if as_json:
+        typer.echo(json.dumps(payload, indent=2, sort_keys=True))
         return
-    typer.echo(f"{'Issue':<8} {'Title':<32} YAML")
-    for issue in issues:
-        typer.echo(f"{issue.issue_number:<8} {issue.title[:32]:<32} {issue.yaml_path}")
+    typer.echo(f"Comment added to issue {payload.get('issue_number', issue_id)} ({payload.get('source_type', '')})")
+
+
+@app.command(
+    "set-issue-state",
+    rich_help_panel="Issue Lifecycle",
+    short_help="Set issue state by local issue identifier.",
+)
+def set_issue_state(
+    issue_id: str,
+    state: Annotated[
+        str,
+        typer.Option("--state", help="Target issue state value."),
+    ],
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
+    sync_proxy_cache: Annotated[
+        bool,
+        typer.Option(
+            "--sync-proxy-cache/--no-sync-proxy-cache",
+            help="Refresh and persist cached proxy issue fields after writing.",
+        ),
+    ] = True,
+    as_json: Annotated[
+        bool,
+        typer.Option("--json", help="Emit machine-readable write result."),
+    ] = False,
+) -> None:
+    service = AdminService(config)
+    payload = service.set_issue_state(issue_id, state, sync_proxy_cache=sync_proxy_cache)
+    if as_json:
+        typer.echo(json.dumps(payload, indent=2, sort_keys=True))
+        return
+    typer.echo(f"State updated for issue {payload.get('issue_number', issue_id)} ({payload.get('source_type', '')})")
 
 
 @app.command(
@@ -2061,74 +2217,30 @@ def create_issue_vm(
         ),
     ] = True,
 ) -> None:
-    issue_number = _resolve_issue_number(issue)
-    resolved_session_id = session_id or _default_issue_session_id(issue_number)
-    resolved_vm_name = f"vm-{issue_number}"
-
-    cfg = _load_runtime_config_from_option(config)
-    runtime = build_runtime(cfg)
-    policy = runtime.policy_config.resolve_for_directory("root")
-    if runtime.sessions.get(resolved_session_id) is not None:
-        raise typer.BadParameter(f"Session already exists: {resolved_session_id}")
-    if mssql and not os.environ.get("MSSQL_SA_PASSWORD", "").strip():
-        raise typer.BadParameter("MSSQL_SA_PASSWORD must be set in the environment when --mssql is used.")
     if mssql_init_root is not None and not mssql:
         raise typer.BadParameter("--mssql-init-root requires --mssql.")
-
-    manifest = _build_issue_session_manifest(
-        policy=policy,
-        session_id=resolved_session_id,
-        vm_id=resolved_vm_name,
-        directory_path="root",
+    service = AdminService(config)
+    result = service.create_issue_vm(
+        issue=issue,
+        session_id=session_id,
+        repo_source=repo_source,
+        vm_user=vm_user,
         ttl_hours=ttl_hours,
         discord_channels=discord_channel,
         email_mailboxes=email_mailbox,
         email_folders=email_folder,
+        python=python,
+        dotnet=dotnet,
+        nuget=nuget,
+        mssql=mssql,
+        mssql_init_root=mssql_init_root,
+        playwright=playwright,
+        frontend_deps=frontend_deps,
+        frontend_host_checkout=frontend_host_checkout,
+        frontend_install_roots=frontend_install_root,
+        start_agent=start_agent,
     )
-    runtime.sessions.put(resolved_session_id, manifest)
-
-    setup_script = Path(__file__).resolve().parents[2] / "scripts" / "setup_issue_vm.sh"
-    cmd = [str(setup_script)]
-    if not start_agent:
-        cmd.append("--dry-run")
-    if python:
-        cmd.append("--python")
-    if dotnet:
-        cmd.append("--dotnet")
-    if nuget is not None:
-        cmd.append("--nuget")
-    if mssql:
-        cmd.append("--mssql")
-    if mssql_init_root is not None:
-        cmd.extend(["--mssql-init-root", mssql_init_root])
-    if playwright:
-        cmd.append("--playwright")
-    if frontend_deps:
-        cmd.append("--frontend-deps")
-    if frontend_host_checkout is not None:
-        cmd.extend(["--frontend-host-checkout", frontend_host_checkout])
-    for install_root in frontend_install_root:
-        cmd.extend(["--frontend-install-root", install_root])
-
-    cmd.append(issue)
-    if nuget is not None:
-        cmd.append(nuget)
-    if repo_source is not None:
-        cmd.append(repo_source)
-    cmd.extend([resolved_session_id, vm_user])
-
-    vm_defaults = _resolve_root_vm_defaults(cfg)
-    provider_config = ProviderConfigResolver(cfg).resolve_for_directory("root")
-    run_env = os.environ.copy()
-    run_env.update(vm_defaults.guest_environment())
-    run_env["AGENT_SANDBOX_AZURE_DEVOPS_PR_PAT_ENV"] = (
-        provider_config.azure_devops_pr_pat_env.strip() or "AZURE_DEVOPS_PR_PAT"
-    )
-    _run_subprocess_compat(cmd, check=True, capture_output=False, text=False, env=run_env)
-    typer.echo(
-        f"Created issue VM session {resolved_session_id} for issue {issue_number} "
-        f"using VM {resolved_vm_name}"
-    )
+    _echo_action_result_or_exit(result)
 
 
 @app.command(

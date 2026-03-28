@@ -5,8 +5,8 @@ from pathlib import Path
 from .config import GatewayConfig, load_config
 from .directory_config import DirectoryConfigStore, load_root_gateway_config
 from .directories import DirectoryStore
-from .host_config import DEFAULT_RUNTIME_DIR, HostConfig, ensure_host_config
-from .migrations import migrate_global_config_to_root
+from .host_config import DEFAULT_RUNTIME_DIR, HostConfig, build_runtime_gateway_config, ensure_host_config
+from .migrations import migrate_global_config_to_root, migrate_local_issues_to_unified_schema
 
 
 def resolve_project_dir(*, legacy_config_path: str | Path | None = None) -> Path:
@@ -47,6 +47,7 @@ def load_runtime_gateway_config(
         legacy_path = Path(legacy_config_path)
         if legacy_path.exists() and not config_store.list_domains("root"):
             migrate_global_config_to_root(load_config(legacy_path), overwrite=False)
+    migrate_local_issues_to_unified_schema(build_runtime_gateway_config(host_config))
     return load_root_gateway_config(
         directory_store,
         runtime_dir=host_config.runtime_dir,

@@ -14,6 +14,7 @@ from .models import (
     SessionManifest,
     ToolName,
 )
+from .migrations import migrate_local_issues_to_unified_schema
 from .config import GatewayConfig, MailboxConfig
 from .directory_config import load_root_gateway_config
 from .email.cursor_store import DurableCursorStore
@@ -85,6 +86,7 @@ class RuntimeContext:
 
 
 def build_runtime(config: GatewayConfig) -> RuntimeContext:
+    migrate_local_issues_to_unified_schema(config)
     directories = DirectoryStore(config.directories_store_path)
     directories.ensure_root()
     host_config = HostConfig.from_legacy_gateway_config(config)

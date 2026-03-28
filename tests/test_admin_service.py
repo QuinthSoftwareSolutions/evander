@@ -4,6 +4,7 @@ import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import subprocess
+from typing import Any
 
 from agent_sandbox.admin_service import AdminService
 from agent_sandbox.models import SessionManifest
@@ -42,6 +43,7 @@ def test_create_local_issue_persists_yaml_and_store(tmp_path: Path) -> None:
     )
 
     assert issue.issue_number == "1"
+    assert issue.issue_id == "root::local::1"
     assert issue.title == "Fix VM dashboard"
     yaml_path = Path(issue.yaml_path)
     assert yaml_path.exists()
@@ -50,8 +52,30 @@ def test_create_local_issue_persists_yaml_and_store(tmp_path: Path) -> None:
     assert '"Fix VM dashboard"' in yaml_text
 
     payload = json.loads((tmp_path / "runtime" / "local-issues.json").read_text(encoding="utf-8"))
-    assert payload["1"]["directory_path"] == "root"
-    assert payload["1"]["repo_source"] == "/src/repo"
+    assert payload[issue.issue_id]["directory_path"] == "root"
+    assert payload[issue.issue_id]["repo_source"] == "/src/repo"
+
+
+def test_create_local_issue_reuses_scoped_id_within_directory(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    created = service.create_directory_child("root", "team")
+    assert created.ok is True and created.data is not None
+    team_path = created.data.details.directory.path
+
+    source_path = tmp_path / "team-issue.yaml"
+    source_path.write_text("issue_number: 7\ntitle: Team issue\nbody: First body\n", encoding="utf-8")
+    first = service.create_local_issue(yaml_path=str(source_path), directory_path=team_path)
+
+    source_path.write_text("issue_number: 7\ntitle: Team issue\nbody: Updated body\n", encoding="utf-8")
+    second = service.create_local_issue(yaml_path=str(source_path), directory_path=team_path)
+
+    assert first.issue_id == "root/team::local::7"
+    assert second.issue_id == first.issue_id
+    assert second.body == "Updated body"
+
+    records = service.local_issue_store.read_all()
+    assert list(records) == ["root/team::local::7"]
+
 
 
 def test_list_vms_collects_session_and_agent_state(tmp_path: Path, monkeypatch) -> None:
@@ -674,3 +698,161 @@ def test_background_worker_actions_reject_unknown_worker(tmp_path: Path) -> None
     assert stop.success is False
     assert start.message == "Unknown worker: missing"
     assert stop.message == "Unknown worker: missing"
+
+
+def test_issue_actions_use_local_behavior_for_non_proxy_issue(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    issue = service.create_local_issue(title="Local", body="only local")
+
+    comment_result = service.post_issue_comment(issue.issue_number, "hello local")
+    update_result = service.update_issue(issue.issue_number, state="Done", fields={"priority": "high"})
+    read_result = service.read_issue(issue.issue_number)
+
+    assert comment_result["source_type"] == "local"
+    assert update_result["source_type"] == "local"
+    assert read_result["source_type"] == "local"
+    assert read_result["state"] == "Done"
+    assert read_result["comments"][-1]["text"] == "hello local"
+
+
+def test_create_local_issue_from_ado_yaml_creates_proxy_record_and_repoll_updates_without_duplicate(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    first_yaml = _write_proxy_issue_yaml(
+        tmp_path,
+        issue_number=42,
+        title="Proxy issue",
+        description="from remote",
+        state="New",
+    )
+    updated_yaml = _write_proxy_issue_yaml(
+        tmp_path,
+        issue_number=42,
+        title="Proxy issue updated",
+        description="updated body",
+        state="Active",
+    )
+
+    created = service.create_local_issue(yaml_path=str(first_yaml))
+    updated = service.create_local_issue(yaml_path=str(updated_yaml))
+
+    assert created.issue_number == "42"
+    assert updated.issue_number == "42"
+    issues = service.list_local_issues()
+    assert [issue.issue_number for issue in issues] == ["42"]
+    stored = service.local_issue_store.get(created.issue_id)
+    assert stored is not None
+    assert stored.source == "proxy_azure_devops"
+    assert stored.source_type == "remote_proxy"
+    assert stored.remote_reference is not None
+    assert stored.remote_reference.provider == "azure_devops"
+    assert stored.remote_reference.work_item_id == "42"
+    assert stored.state == "Active"
+
+
+def test_issue_actions_forward_proxy_issues_and_sync_cache(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    issue = service.create_local_issue(
+        title="Proxy issue",
+        body="from remote",
+        yaml_path=str(_write_proxy_issue_yaml(tmp_path)),
+    )
+
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    class _Adapter:
+        provider_name = "azure_devops"
+
+        def read_issue(self, **kwargs):
+            calls.append(("read", kwargs))
+            return {
+                "provider": "azure_devops",
+                "remote_issue_id": kwargs["remote_issue_id"],
+                "title": "Remote title",
+                "description": "Remote description",
+                "state": "Active",
+                "url": "https://ado.example/work/42",
+                "updated_at": "2026-03-28T10:11:12Z",
+                "comments": [{"id": "1", "text": "remote comment"}],
+                "fields": {"System.State": "Active"},
+            }
+
+        def post_comment(self, **kwargs):
+            calls.append(("comment", kwargs))
+            return {"provider": "azure_devops", "remote_issue_id": kwargs["remote_issue_id"], "comment": {"id": "9"}}
+
+        def update_issue(self, **kwargs):
+            calls.append(("update", kwargs))
+            return {"provider": "azure_devops", "remote_issue_id": kwargs["remote_issue_id"], "updated": True}
+
+    service.issue_service.adapters["azure_devops"] = _Adapter()
+
+    read_result = service.read_issue(issue.issue_number, include_remote_comments=True, sync_proxy_cache=True)
+    comment_result = service.post_issue_comment(issue.issue_number, "push to remote", sync_proxy_cache=True)
+    update_result = service.update_issue(issue.issue_number, state="Resolved", fields={"Custom.Priority": "1"})
+
+    assert read_result["source_type"] == "proxy"
+    assert comment_result["source_type"] == "proxy"
+    assert update_result["source_type"] == "proxy"
+    stored = service.local_issue_store.get(issue.issue_id)
+    assert stored is not None
+    assert stored.title == "Remote title"
+    assert stored.state == "Active"
+    comment_call = next(kwargs for name, kwargs in calls if name == "comment")
+    update_call = next(kwargs for name, kwargs in calls if name == "update")
+    assert comment_call["remote_issue_id"] == issue.issue_number
+    assert update_call["state"] == "Resolved"
+
+
+def test_create_issue_vm_accepts_unified_proxy_identifier(tmp_path: Path, monkeypatch: Any) -> None:
+    service = AdminService(write_config(tmp_path))
+    issue = service.create_local_issue(
+        yaml_path=str(
+            _write_proxy_issue_yaml(
+                tmp_path,
+                issue_number=77,
+                title="Proxy setup",
+                description="from ado",
+                state="Active",
+            )
+        )
+    )
+    captured: dict[str, Any] = {}
+
+    def _fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        captured["cmd"] = cmd
+        captured["env"] = kwargs.get("env")
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="ok", stderr="")
+
+    monkeypatch.setattr("agent_sandbox.admin_service.subprocess.run", _fake_run)
+
+    result = service.create_issue_vm(issue="proxy:ado/77", start_agent=False)
+
+    assert result.success is True
+    assert captured["cmd"][0].endswith("setup_issue_vm.sh")
+    assert captured["cmd"][-3] == issue.yaml_path
+    assert captured["cmd"][-1] == "agent"
+
+
+def _write_proxy_issue_yaml(
+    tmp_path: Path,
+    *,
+    issue_number: int = 42,
+    title: str = "Proxy issue",
+    description: str = "from remote",
+    state: str = "New",
+) -> Path:
+    payload = {
+        "issue_number": issue_number,
+        "title": title,
+        "description": description,
+        "state": state,
+        "url": f"https://ado.example/work/{issue_number}",
+        "source": {
+            "organization": "https://dev.azure.com/example",
+            "project": "sample",
+            "work_item_url": f"https://dev.azure.com/example/sample/_workitems/edit/{issue_number}",
+        },
+    }
+    path = tmp_path / f"proxy-issue-{issue_number}-{state.lower()}.yaml"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path

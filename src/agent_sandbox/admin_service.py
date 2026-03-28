@@ -9,8 +9,10 @@ import sys
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 from pydantic import BaseModel
+import yaml
 
 from .agent_control import AgentControlStore
 from .bootstrap import load_host_bootstrap_config, load_runtime_gateway_config, resolve_project_dir
@@ -28,9 +30,12 @@ from .bootstrap import resolve_runtime_dir
 from .ownership import DirectoryOwnershipQueries
 from .policy_config import EffectivePolicyConfig
 from .provider_config import ProviderConfigResolver
+from .issue_service import IssueService
 from .vm_defaults_config import EffectiveVmDefaultsConfig, VmDefaultsConfigResolver
 from .models import (
+    DirectoryPath,
     LocalIssueRecord,
+    RemoteIssueReference,
     SessionActionResult,
     SessionManifest,
     SessionSummary,
@@ -120,6 +125,30 @@ def _read_issue_number_from_yaml(issue_path: Path) -> str:
     )
 
 
+def _extract_issue_number_from_payload(payload: dict[str, Any]) -> str | None:
+    for key in ("issue_number", "number", "id"):
+        value = payload.get(key)
+        if value is None:
+            continue
+        normalized = str(value).strip()
+        if normalized.isdigit():
+            return normalized
+    source = payload.get("source")
+    if isinstance(source, dict):
+        for key in ("work_item_id", "issue_id", "work_item_url"):
+            value = str(source.get(key) or "").strip()
+            if value.isdigit():
+                return value
+            parsed = _extract_issue_number(value)
+            if parsed is not None:
+                return parsed
+    for key in ("url",):
+        parsed = _extract_issue_number(str(payload.get(key) or "").strip())
+        if parsed is not None:
+            return parsed
+    return None
+
+
 def _resolve_issue_number(issue_input: str) -> str:
     candidate = Path(issue_input)
     if candidate.is_file():
@@ -136,6 +165,22 @@ def _resolve_vm_name(target: str) -> str:
 
 def _issue_session_id_prefix(issue_number: str) -> str:
     return f"issue-{issue_number}-"
+
+
+def _scoped_issue_id(
+    issue_number: str,
+    *,
+    directory_path: str,
+    provider: str,
+    organization: str | None = None,
+    project: str | None = None,
+) -> str:
+    normalized_directory_path = DirectoryPath(segments=directory_path).as_posix()
+    parts = [normalized_directory_path, provider]
+    if organization and project:
+        parts.extend([organization.rstrip("/"), project])
+    parts.append(issue_number)
+    return "::".join(parts)
 
 
 def _parse_session_extension(value: str | None) -> timedelta:
@@ -786,6 +831,13 @@ class AdminService:
             pr_map_path=self.config.pr_map_path,
             ado_processed_store_path=self.config.runtime_dir / "ado-processed-work-items.json",
         )
+        self.issue_service = IssueService(
+            ProviderConfigResolver(
+                self.config,
+                directory_store=self.runtime.directories,
+                session_store=self.runtime.sessions,
+            )
+        )
 
     @property
     def directory_scoped_config_enabled(self) -> bool:
@@ -1347,11 +1399,106 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
         directory_path: str | None = None,
         direct_only: bool = False,
     ) -> list[LocalIssueRecord]:
+        return self.list_issues(directory_path=directory_path, direct_only=direct_only)
+
+    def _extract_local_issue_id_candidate(self, value: str) -> str | None:
+        normalized = value.strip()
+        if not normalized:
+            return None
+        if normalized.isdigit():
+            return normalized
+        if normalized.startswith("vm-") and normalized[3:].isdigit():
+            return normalized[3:]
+        prefixed_match = re.match(r"^(?:local|issue)[:/\-]([0-9]+)$", normalized, flags=re.IGNORECASE)
+        if prefixed_match:
+            return prefixed_match.group(1)
+        session_match = re.match(r"^issue-([0-9]+)(?:-|$)", normalized)
+        if session_match:
+            return session_match.group(1)
+        return None
+
+    def _find_local_issue_by_remote_identifier(self, issue_identifier: str) -> LocalIssueRecord | None:
+        normalized = issue_identifier.strip()
+        if not normalized:
+            return None
+        provider = ""
+        remote_issue_id = ""
+        prefixed_match = re.match(
+            r"^(?:(?:proxy:)?(azure_devops|ado)[:/])([0-9]+)$",
+            normalized,
+            flags=re.IGNORECASE,
+        )
+        if prefixed_match:
+            provider = "azure_devops"
+            remote_issue_id = prefixed_match.group(2)
+        if not remote_issue_id:
+            return None
+        for issue in self.local_issue_store.read_all().values():
+            remote = issue.remote_reference
+            if remote is not None:
+                issue_provider = str(remote.provider or "").strip()
+                issue_remote_id = str(remote.work_item_id or "").strip()
+            else:
+                legacy_remote = issue.metadata.get("remote") if isinstance(issue.metadata.get("remote"), dict) else {}
+                issue_provider = str(legacy_remote.get("provider") or "").strip()
+                issue_remote_id = str(legacy_remote.get("issue_id") or "").strip()
+            if issue_provider != provider:
+                continue
+            if issue_remote_id == remote_issue_id:
+                return issue
+        return None
+
+    def _resolve_local_issue_record(self, issue_identifier: str) -> LocalIssueRecord:
+        candidate = Path(issue_identifier)
+        if candidate.is_file():
+            issue_number = _read_issue_number_from_yaml(candidate)
+            issue_key = self._resolve_local_issue_key(issue_number)
+            issue = self.local_issue_store.get(issue_key) if issue_key is not None else None
+            if issue is None:
+                raise ValueError(f"Unknown local issue: {issue_number}")
+            return issue
+
+        issue_key = self._resolve_local_issue_key(issue_identifier)
+        if issue_key is not None:
+            issue = self.local_issue_store.get(issue_key)
+            if issue is not None:
+                return issue
+
+        by_remote_identifier = self._find_local_issue_by_remote_identifier(issue_identifier)
+        if by_remote_identifier is not None:
+            return by_remote_identifier
+
+        raise ValueError(f"Unknown local issue identifier: {issue_identifier}")
+
+    def list_issues(
+        self,
+        *,
+        directory_path: str | None = None,
+        direct_only: bool = False,
+    ) -> list[LocalIssueRecord]:
         normalized_directory_path = self._normalize_directory_path(directory_path)
         issues = sorted(self.local_issue_store.read_all().values(), key=lambda issue: issue.issue_number)
         if direct_only or directory_path is not None:
             return [issue for issue in issues if issue.directory_path == normalized_directory_path]
         return issues
+
+    def _resolve_local_issue_key(self, identifier: str) -> str | None:
+        normalized = identifier.strip()
+        if not normalized:
+            return None
+        issues = self.local_issue_store.read_all()
+        if normalized in issues:
+            return normalized
+        matches = [issue_id for issue_id, issue in issues.items() if issue.issue_number == normalized]
+        if not matches:
+            return None
+        if len(matches) == 1:
+            return matches[0]
+        sorted_matches = sorted(
+            matches,
+            key=lambda key: issues[key].created_at,
+        )
+        return sorted_matches[-1]
 
     def list_direct_owned_entity_ids(self, directory_path: str, *, kind: str) -> list[str]:
         return sorted(self._direct_owned_entity_ids(directory_path, kind=kind))
@@ -1424,7 +1571,39 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
         self.local_issue_counter_path.write_text(f"{current}\n", encoding="utf-8")
         return str(current)
 
+    def _canonical_local_issue_id(self, issue_number: str, directory_path: str) -> str:
+        return _scoped_issue_id(issue_number, directory_path=directory_path, provider="local")
+
+    def _canonical_issue_id(self, record: LocalIssueRecord) -> str:
+        remote = record.remote_reference
+        if remote is not None and remote.provider == "azure_devops" and remote.work_item_id:
+            return _scoped_issue_id(
+                remote.work_item_id,
+                directory_path=record.directory_path,
+                provider="azure_devops",
+                organization=remote.organization,
+                project=remote.project,
+            )
+        return self._canonical_local_issue_id(record.issue_number, record.directory_path)
+
     def create_local_issue(
+        self,
+        *,
+        title: str = "",
+        body: str = "",
+        repo_source: str | None = None,
+        yaml_path: str | None = None,
+        directory_path: str = "root",
+    ) -> LocalIssueRecord:
+        return self.create_issue(
+            title=title,
+            body=body,
+            repo_source=repo_source,
+            yaml_path=yaml_path,
+            directory_path=directory_path,
+        )
+
+    def create_issue(
         self,
         *,
         title: str = "",
@@ -1435,18 +1614,75 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
     ) -> LocalIssueRecord:
         now = _utc_now()
         normalized_directory_path = self._normalize_directory_path(directory_path)
+        metadata: dict[str, Any] = {}
+        source_value = "local_gui"
+        source_type = "local_manual"
+        remote_reference: RemoteIssueReference | None = None
+        state_value: str | None = None
+        url_value: str | None = None
+        comments_value: list[dict[str, str]] = []
         if yaml_path:
             source_path = Path(yaml_path)
-            issue_number = _read_issue_number_from_yaml(source_path)
+            source_text = source_path.read_text(encoding="utf-8")
+            try:
+                yaml_payload = json.loads(json.dumps(yaml.safe_load(source_text) or {}))
+            except Exception:
+                yaml_payload = {}
+            issue_number = _extract_issue_number_from_payload(yaml_payload) or _read_issue_number_from_yaml(source_path)
             target_yaml_path = self.local_issue_yaml_dir / f"{issue_number}.yaml"
-            target_yaml_path.write_text(source_path.read_text(encoding="utf-8"), encoding="utf-8")
+            target_yaml_path.write_text(source_text, encoding="utf-8")
             yaml_text = target_yaml_path.read_text(encoding="utf-8")
+            try:
+                yaml_payload = json.loads(json.dumps(yaml.safe_load(yaml_text) or {}))
+            except Exception:
+                yaml_payload = {}
+            raw_source = yaml_payload.get("source")
+            if isinstance(raw_source, str) and raw_source.strip():
+                source_value = raw_source.strip()
+            elif isinstance(raw_source, dict):
+                source_value = "proxy_azure_devops"
+                source_type = "remote_proxy"
+                metadata["remote"] = {
+                    "provider": "azure_devops",
+                    "organization": str(raw_source.get("organization") or "").strip(),
+                    "project": str(raw_source.get("project") or "").strip(),
+                    "work_item_url": str(raw_source.get("work_item_url") or "").strip(),
+                    "issue_id": issue_number,
+                }
+                remote_reference = RemoteIssueReference(
+                    provider="azure_devops",
+                    organization=str(raw_source.get("organization") or "").strip() or None,
+                    project=str(raw_source.get("project") or "").strip() or None,
+                    work_item_id=issue_number,
+                    work_item_url=str(raw_source.get("work_item_url") or "").strip() or None,
+                    last_synced_at=now,
+                )
+            if "url" in yaml_payload or "state" in yaml_payload or "comments" in yaml_payload:
+                if source_value == "local_gui":
+                    source_value = "proxy_azure_devops"
+                source_type = "remote_proxy"
+                metadata["proxy_cache"] = {
+                    "url": str(yaml_payload.get("url") or "").strip(),
+                    "state": str(yaml_payload.get("state") or "").strip(),
+                    "comments": list(yaml_payload.get("comments") or []),
+                    "updated_at": str(yaml_payload.get("updated_date") or "").strip(),
+                }
+                metadata.setdefault("remote", {"provider": "azure_devops", "issue_id": issue_number})
+            state_value = str(yaml_payload.get("state") or "").strip() or None
+            url_value = str(yaml_payload.get("url") or "").strip() or None
+            comments_value = [
+                dict(comment)
+                for comment in list(yaml_payload.get("comments") or [])
+                if isinstance(comment, dict)
+            ]
             if not title:
                 title_match = re.search(r"(?m)^\s*title\s*:\s*[\"']?(.*?)[\"']?\s*$", yaml_text)
-                title = title_match.group(1).strip() if title_match else f"Local issue {issue_number}"
+                title = title_match.group(1).strip() if title_match else str(yaml_payload.get("title") or "").strip()
+                if not title:
+                    title = f"Local issue {issue_number}"
             if not body:
                 body_match = re.search(r"(?m)^\s*body\s*:\s*[\"']?(.*?)[\"']?\s*$", yaml_text)
-                body = body_match.group(1).strip() if body_match else ""
+                body = body_match.group(1).strip() if body_match else str(yaml_payload.get("description") or "").strip()
         else:
             if not title.strip():
                 raise ValueError("title is required when yaml_path is not provided")
@@ -1460,19 +1696,230 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
                 f"created_at: {json.dumps(now.isoformat())}\n"
             )
             target_yaml_path.write_text(yaml_text, encoding="utf-8")
+        if remote_reference is not None and remote_reference.provider == "azure_devops":
+            issue_id = _scoped_issue_id(
+                issue_number,
+                directory_path=normalized_directory_path,
+                provider="azure_devops",
+                organization=remote_reference.organization,
+                project=remote_reference.project,
+            )
+        else:
+            issue_id = self._canonical_local_issue_id(issue_number, normalized_directory_path)
+        existing_record = self.local_issue_store.get(issue_id)
         record = LocalIssueRecord(
+            issue_id=issue_id,
             issue_number=issue_number,
             title=title.strip() or f"Local issue {issue_number}",
             body=body.strip(),
             yaml_path=str(target_yaml_path),
             directory_path=normalized_directory_path,
             repo_source=repo_source.strip() if repo_source else None,
-            source="local_gui",
-            created_at=now,
+            source_type=source_type,
+            remote_reference=remote_reference,
+            state=state_value,
+            url=url_value,
+            comments=comments_value,
+            source=source_value,
+            metadata=metadata,
+            created_at=existing_record.created_at if existing_record is not None else now,
             updated_at=now,
         )
-        self.local_issue_store.put(record.issue_number, record)
+        self.local_issue_store.put(record.issue_id, record)
         return record
+
+    def _refresh_proxy_cache_from_remote(
+        self,
+        issue: LocalIssueRecord,
+        remote_payload: dict[str, object],
+    ) -> LocalIssueRecord:
+        issue.metadata = dict(issue.metadata)
+        remote_comments = [dict(comment) for comment in list(remote_payload.get("comments") or []) if isinstance(comment, dict)]
+        issue.metadata["proxy_cache"] = {
+            "title": str(remote_payload.get("title") or issue.title),
+            "description": str(remote_payload.get("description") or issue.body),
+            "state": str(remote_payload.get("state") or ""),
+            "url": str(remote_payload.get("url") or ""),
+            "updated_at": str(remote_payload.get("updated_at") or ""),
+            "comments": remote_comments,
+        }
+        issue.title = str(remote_payload.get("title") or issue.title).strip() or issue.title
+        issue.body = str(remote_payload.get("description") or issue.body).strip() or issue.body
+        issue.state = str(remote_payload.get("state") or issue.state or "").strip() or None
+        issue.url = str(remote_payload.get("url") or issue.url or "").strip() or None
+        issue.comments = remote_comments
+        if issue.remote_reference is not None:
+            issue.remote_reference.last_synced_at = _utc_now()
+            issue.remote_reference.last_known_remote_state = issue.state
+            issue.remote_reference.work_item_url = issue.url or issue.remote_reference.work_item_url
+        issue.updated_at = _utc_now()
+        self.local_issue_store.put(issue.issue_id, issue)
+        return issue
+
+    def _proxy_target_for_issue(self, issue: LocalIssueRecord) -> tuple[str, str] | None:
+        remote = issue.remote_reference
+        if remote is not None and remote.provider and remote.work_item_id:
+            return remote.provider, remote.work_item_id
+        return self.issue_service.resolve_proxy_target(
+            issue_number=issue.issue_number,
+            issue_source=issue.source,
+            metadata=issue.metadata,
+        )
+
+    def get_issue(
+        self,
+        issue_id: str,
+        *,
+        include_remote_comments: bool = True,
+        sync_proxy_cache: bool = True,
+    ) -> dict[str, object]:
+        issue = self._resolve_local_issue_record(issue_id)
+        proxy_target = self._proxy_target_for_issue(issue)
+        if proxy_target is None:
+            comments = issue.comments or (
+                issue.metadata.get("comments") if isinstance(issue.metadata.get("comments"), list) else []
+            )
+            return {
+                "issue_number": issue.issue_number,
+                "source_type": "local",
+                "title": issue.title,
+                "description": issue.body,
+                "state": issue.state or str(issue.metadata.get("state") or ""),
+                "comments": comments,
+                "updated_at": issue.updated_at.isoformat(),
+            }
+        provider, remote_issue_id = proxy_target
+        remote_payload = self.issue_service.read_remote_issue(
+            provider=provider,
+            remote_issue_id=remote_issue_id,
+            directory_path=issue.directory_path,
+            include_comments=include_remote_comments,
+        )
+        if sync_proxy_cache:
+            issue = self._refresh_proxy_cache_from_remote(issue, remote_payload)
+        return {
+            "issue_number": issue.issue_number,
+            "source_type": "proxy",
+            "provider": provider,
+            "remote_issue_id": remote_issue_id,
+            **remote_payload,
+        }
+
+    def read_issue(
+        self,
+        issue_number: str,
+        *,
+        include_remote_comments: bool = True,
+        sync_proxy_cache: bool = True,
+    ) -> dict[str, object]:
+        return self.get_issue(
+            issue_number,
+            include_remote_comments=include_remote_comments,
+            sync_proxy_cache=sync_proxy_cache,
+        )
+
+    def add_issue_comment(
+        self,
+        issue_id: str,
+        comment: str,
+        *,
+        sync_proxy_cache: bool = True,
+    ) -> dict[str, object]:
+        normalized_comment = comment.strip()
+        if not normalized_comment:
+            raise ValueError("comment must be non-empty")
+        issue = self._resolve_local_issue_record(issue_id)
+        proxy_target = self._proxy_target_for_issue(issue)
+        if proxy_target is None:
+            issue.metadata = dict(issue.metadata)
+            comments = list(issue.comments or issue.metadata.get("comments") or [])
+            comments.append({"text": normalized_comment, "created_at": _utc_now().isoformat()})
+            issue.metadata["comments"] = comments
+            issue.comments = comments
+            issue.updated_at = _utc_now()
+            self.local_issue_store.put(issue.issue_id, issue)
+            return {"issue_number": issue.issue_number, "source_type": "local", "comment_added": True}
+
+        provider, remote_issue_id = proxy_target
+        result = self.issue_service.post_remote_comment(
+            provider=provider,
+            remote_issue_id=remote_issue_id,
+            directory_path=issue.directory_path,
+            comment=normalized_comment,
+        )
+        if sync_proxy_cache:
+            remote_payload = self.issue_service.read_remote_issue(
+                provider=provider,
+                remote_issue_id=remote_issue_id,
+                directory_path=issue.directory_path,
+                include_comments=True,
+            )
+            self._refresh_proxy_cache_from_remote(issue, remote_payload)
+        return {"issue_number": issue.issue_number, "source_type": "proxy", **result}
+
+    def post_issue_comment(
+        self,
+        issue_number: str,
+        comment: str,
+        *,
+        sync_proxy_cache: bool = True,
+    ) -> dict[str, object]:
+        return self.add_issue_comment(issue_number, comment, sync_proxy_cache=sync_proxy_cache)
+
+    def set_issue_state(
+        self,
+        issue_id: str,
+        state: str,
+        *,
+        sync_proxy_cache: bool = True,
+    ) -> dict[str, object]:
+        return self.update_issue(
+            issue_id,
+            state=state,
+            fields=None,
+            sync_proxy_cache=sync_proxy_cache,
+        )
+
+    def update_issue(
+        self,
+        issue_id: str,
+        *,
+        state: str | None = None,
+        fields: dict[str, object] | None = None,
+        sync_proxy_cache: bool = True,
+    ) -> dict[str, object]:
+        issue = self._resolve_local_issue_record(issue_id)
+        proxy_target = self._proxy_target_for_issue(issue)
+        if proxy_target is None:
+            issue.metadata = dict(issue.metadata)
+            if state is not None:
+                issue.metadata["state"] = state
+                issue.state = state
+            if fields:
+                local_fields = dict(issue.metadata.get("fields") or {})
+                local_fields.update(fields)
+                issue.metadata["fields"] = local_fields
+            issue.updated_at = _utc_now()
+            self.local_issue_store.put(issue.issue_id, issue)
+            return {"issue_number": issue.issue_number, "source_type": "local", "updated": True}
+
+        provider, remote_issue_id = proxy_target
+        result = self.issue_service.update_remote_issue(
+            provider=provider,
+            remote_issue_id=remote_issue_id,
+            directory_path=issue.directory_path,
+            state=state,
+            fields=fields,
+        )
+        if sync_proxy_cache:
+            remote_payload = self.issue_service.read_remote_issue(
+                provider=provider,
+                remote_issue_id=remote_issue_id,
+                directory_path=issue.directory_path,
+                include_comments=True,
+            )
+            self._refresh_proxy_cache_from_remote(issue, remote_payload)
+        return {"issue_number": issue.issue_number, "source_type": "proxy", **result}
 
     def create_issue_vm(
         self,
@@ -1497,10 +1944,21 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
         start_agent: bool = True,
         directory_path: str = "root",
     ) -> VmActionResult:
-        issue_number = _resolve_issue_number(issue)
+        issue_input = issue
+        issue_number = _resolve_issue_number(issue_input)
+        local_issue: LocalIssueRecord | None = None
+        if not Path(issue_input).is_file():
+            try:
+                local_issue = self._resolve_local_issue_record(issue_input)
+                issue_number = local_issue.issue_number
+                issue_input = local_issue.yaml_path
+            except ValueError:
+                pass
         resolved_session_id = session_id or _default_issue_session_id(issue_number)
         resolved_vm_name = f"vm-{issue_number}"
-        normalized_directory_path = self._normalize_directory_path(directory_path)
+        normalized_directory_path = self._normalize_directory_path(
+            local_issue.directory_path if local_issue is not None and directory_path == "root" else directory_path
+        )
         policy = self.runtime.policy_config.resolve_for_directory(normalized_directory_path)
         if self.runtime.sessions.get(resolved_session_id) is not None:
             return VmActionResult(
@@ -1536,7 +1994,7 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
         issue_setup = self._resolve_issue_setup(normalized_directory_path, root_dir=root_dir)
         cmd, run_env = self._build_setup_issue_vm_invocation(
             setup_script=setup_script,
-            issue=issue,
+            issue=issue_input,
             session_id=resolved_session_id,
             vm_user=vm_user,
             start_agent=start_agent,
@@ -1571,7 +2029,7 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
 
     def create_issue_vm_from_local_issue(
         self,
-        issue_number: str,
+        issue_identifier: str,
         *,
         repo_source: str | None = None,
         vm_user: str = "agent",
@@ -1583,13 +2041,14 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
         mssql_init_root: str | None = None,
         playwright: bool = False,
     ) -> VmActionResult:
-        issue = self.local_issue_store.get(issue_number)
+        issue_key = self._resolve_local_issue_key(issue_identifier)
+        issue = self.local_issue_store.get(issue_key) if issue_key is not None else None
         if issue is None:
             return VmActionResult(
                 success=False,
-                vm_name=f"vm-{issue_number}",
+                vm_name=f"vm-{issue_identifier}",
                 action="create_issue_vm",
-                message=f"Unknown local issue: {issue_number}",
+                message=f"Unknown local issue: {issue_identifier}",
             )
         return self.create_issue_vm(
             issue=issue.yaml_path,
@@ -1662,15 +2121,17 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
             message=summary,
         )
 
-    def delete_local_issue(self, issue_number: str) -> VmActionResult:
-        issue = self.local_issue_store.get(issue_number)
+    def delete_local_issue(self, issue_identifier: str) -> VmActionResult:
+        issue_key = self._resolve_local_issue_key(issue_identifier)
+        issue = self.local_issue_store.get(issue_key) if issue_key is not None else None
         if issue is None:
             return VmActionResult(
                 success=False,
-                vm_name=f"vm-{issue_number}",
+                vm_name=f"vm-{issue_identifier}",
                 action="delete_local_issue",
-                message=f"Unknown local issue: {issue_number}",
+                message=f"Unknown local issue: {issue_identifier}",
             )
+        issue_number = issue.issue_number
 
         vm_name = f"vm-{issue_number}"
         existing_vm_state = _dominfo_field(vm_name, "State")
@@ -1689,7 +2150,7 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
                 message=f"Destroy {vm_name} before deleting local issue {issue_number}.",
             )
 
-        self.local_issue_store.delete(issue_number)
+        self.local_issue_store.delete(issue.issue_id)
         yaml_path = Path(issue.yaml_path)
         if yaml_path.exists():
             yaml_path.unlink()

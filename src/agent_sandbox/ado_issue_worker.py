@@ -27,10 +27,11 @@ from .directory_config import (
     get_domain_base_config,
     validate_effective_domain_payload,
 )
-from .models import DirectoryPath, SessionManifest, ToolName
+from .models import DirectoryPath, LocalIssueRecord, RemoteIssueReference, SessionManifest, ToolName
 from .policy_config import EffectivePolicyConfig
 from .provider_config import ProviderConfigResolver
 from .runtime import build_runtime
+from .storage import JsonStore
 from .vm_defaults_config import VmDefaultsConfigResolver
 from .worker_directory_context import WorkerDirectoryContextResolver, log_shadow_context
 
@@ -254,7 +255,7 @@ class WorkerConfig:
     legacy_config_path: Path | None = None
 
     @classmethod
-    def load_from_env(cls) -> WorkerConfig:
+    def load_from_env(cls, *, require_runtime_secrets: bool = True) -> WorkerConfig:
         legacy_config_env = os.environ.get("ADO_GATEWAY_CONFIG", os.environ.get("AGENT_SANDBOX_CONFIG", "")).strip()
         legacy_config_path = Path(legacy_config_env).expanduser() if legacy_config_env else None
         workspace_root = resolve_project_dir(legacy_config_path=legacy_config_path)
@@ -277,6 +278,7 @@ class WorkerConfig:
             session_id=_optional_env("ADO_SESSION_ID"),
             vm_user=_optional_env("ADO_VM_USER"),
             session_ttl_hours=_int_env("ADO_SESSION_TTL_HOURS", 8, minimum=1),
+            require_runtime_secrets=require_runtime_secrets,
         )
 
 
@@ -290,6 +292,7 @@ def _resolve_worker_config_for_directory(
     session_id: str | None,
     vm_user: str | None,
     session_ttl_hours: int,
+    require_runtime_secrets: bool = True,
 ) -> WorkerConfig:
     directory_store = DirectoryStore(runtime_gateway_config.directories_store_path)
     directory_store.ensure_root()
@@ -375,7 +378,7 @@ def _resolve_worker_config_for_directory(
         ado_worker_config,
         env_name="ADO_MSSQL_INIT_ROOT",
     )
-    if bootstrap_mssql and not mssql_sa_password:
+    if bootstrap_mssql and require_runtime_secrets and not mssql_sa_password:
         if _is_env_set(_LEGACY_ADO_MSSQL_SA_PASSWORD_ENV) or _is_env_set(_DEFAULT_ADO_MSSQL_SA_PASSWORD_ENV):
             raise ValueError(
                 "ADO_MSSQL_SA_PASSWORD or MSSQL_SA_PASSWORD is required when ADO_BOOTSTRAP_MSSQL is true."
@@ -834,34 +837,81 @@ class ProcessedWorkItemStore:
         if not self.path.exists():
             self.path.write_text("{}", encoding="utf-8")
 
-    def is_processed(self, work_item_id: int, *, directory_path: str = "root") -> bool:
+    def is_processed(
+        self,
+        work_item_id: int | str,
+        *,
+        directory_path: str = "root",
+        provider: str | None = None,
+        organization: str | None = None,
+        project: str | None = None,
+    ) -> bool:
         with self._lock:
             payload = self._read_raw()
-            return _processed_work_item_key(work_item_id, directory_path) in payload
+            return _processed_work_item_key(
+                work_item_id,
+                directory_path,
+                provider=provider,
+                organization=organization,
+                project=project,
+            ) in payload
 
     def mark_processed(
         self,
-        work_item_id: int,
+        work_item_id: int | str,
         yaml_path: Path,
         script_exit_code: int,
         output_snippet: str,
         *,
         directory_path: str = "root",
+        provider: str | None = None,
+        organization: str | None = None,
+        project: str | None = None,
+        issue_id: str | None = None,
     ) -> None:
         with self._lock:
             payload = self._read_raw()
-            payload[_processed_work_item_key(work_item_id, directory_path)] = {
+            payload[_processed_work_item_key(
+                work_item_id,
+                directory_path,
+                provider=provider,
+                organization=organization,
+                project=project,
+            )] = {
                 "processed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
                 "yaml_path": str(yaml_path),
                 "script_exit_code": script_exit_code,
                 "script_output_snippet": output_snippet,
+                "directory_path": directory_path,
+                "provider": provider,
+                "organization": organization,
+                "project": project,
+                "remote_work_item_id": str(work_item_id),
+                "issue_id": issue_id,
             }
             self._atomic_write(payload)
 
-    def forget(self, work_item_id: int, *, directory_path: str = "root") -> bool:
+    def forget(
+        self,
+        work_item_id: int | str,
+        *,
+        directory_path: str = "root",
+        provider: str | None = None,
+        organization: str | None = None,
+        project: str | None = None,
+    ) -> bool:
         with self._lock:
             payload = self._read_raw()
-            existed = payload.pop(_processed_work_item_key(work_item_id, directory_path), None) is not None
+            existed = payload.pop(
+                _processed_work_item_key(
+                    work_item_id,
+                    directory_path,
+                    provider=provider,
+                    organization=organization,
+                    project=project,
+                ),
+                None,
+            ) is not None
             self._atomic_write(payload)
             return existed
 
@@ -1096,8 +1146,20 @@ def poll_once(client: httpx.Client, config: WorkerConfig, auth_header: str) -> l
 def filter_unprocessed_work_items(
     items: list[dict[str, Any]],
     store: ProcessedWorkItemStore,
+    *,
+    config: WorkerConfig,
 ) -> list[dict[str, Any]]:
-    return [item for item in items if not store.is_processed(int(item["id"]))]
+    return [
+        item
+        for item in items
+        if not store.is_processed(
+            int(item["id"]),
+            directory_path=config.directory_path,
+            provider="azure_devops",
+            organization=config.organization_url,
+            project=config.project,
+        )
+    ]
 
 
 def format_work_item_listing(work_item: dict[str, Any]) -> str:
@@ -1118,7 +1180,7 @@ def list_unprocessed_work_items(
     store: ProcessedWorkItemStore,
 ) -> list[dict[str, Any]]:
     items = poll_once(client=client, config=config, auth_header=auth_header)
-    return filter_unprocessed_work_items(items, store)
+    return filter_unprocessed_work_items(items, store, config=config)
 
 
 def _resolve_directory_worker_config(
@@ -1215,16 +1277,117 @@ def _unprocessed_items_for_worker(
     return items
 
 
-def _build_issue_payload(work_item: dict[str, Any]) -> dict[str, Any]:
+def _forget_work_item_for_worker(store: ProcessedWorkItemStore, config: WorkerConfig, work_item_id: int) -> bool:
+    removed = False
+    directory_paths = config.directories or (config.directory_path,)
+    for directory_path in directory_paths:
+        removed = (
+            store.forget(
+                work_item_id,
+                directory_path=directory_path,
+                provider="azure_devops",
+                organization=config.organization_url,
+                project=config.project,
+            )
+            or removed
+        )
+        removed = store.forget(work_item_id, directory_path=directory_path) or removed
+    return removed
+
+
+def _build_proxy_issue_id(config: WorkerConfig, work_item_id: int, directory_path: str) -> str:
+    return _processed_work_item_key(
+        work_item_id,
+        directory_path,
+        provider="azure_devops",
+        organization=config.organization_url,
+        project=config.project,
+    )
+
+
+def _upsert_unified_issue_record(
+    *,
+    config: WorkerConfig,
+    work_item: dict[str, Any],
+    yaml_path: Path,
+) -> LocalIssueRecord:
+    store = JsonStore(config.runtime_dir / "local-issues.json", LocalIssueRecord)
+    work_item_id = int(work_item["id"])
+    normalized_directory_path = DirectoryPath(segments=config.directory_path).as_posix()
+    now = datetime.now(timezone.utc)
+
+    existing_key: str | None = None
+    existing_record: LocalIssueRecord | None = None
+    for issue_id, record in store.read_all().items():
+        remote = record.remote_reference
+        if (
+            record.directory_path == normalized_directory_path
+            and remote is not None
+            and remote.provider == "azure_devops"
+            and (remote.organization or "").rstrip("/") == config.organization_url.rstrip("/")
+            and (remote.project or "") == config.project
+            and (remote.work_item_id or "") == str(work_item_id)
+        ):
+            existing_key = issue_id
+            existing_record = record
+            break
+
+    issue_id = existing_key or _build_proxy_issue_id(config, work_item_id, normalized_directory_path)
+    issue_number = str(work_item_id)
+    description = str(work_item.get("description", "") or "")
+
+    remote_reference = RemoteIssueReference(
+        provider="azure_devops",
+        organization=config.organization_url.rstrip("/"),
+        project=config.project,
+        work_item_id=issue_number,
+        work_item_url=str(work_item.get("url", "") or "") or None,
+        last_synced_at=now,
+        last_remote_updated_at=_parse_ado_datetime(str(work_item.get("updated_date", "") or "")),
+        last_known_remote_state=str(work_item.get("state", "") or "") or None,
+    )
+
+    record = LocalIssueRecord(
+        issue_id=issue_id,
+        issue_number=issue_number,
+        title=str(work_item.get("title", "") or "").strip() or f"ADO Work Item {issue_number}",
+        body=description,
+        description=description,
+        yaml_path=str(yaml_path),
+        directory_path=normalized_directory_path,
+        repo_source=config.repo_path,
+        source_type="remote_proxy",
+        remote_reference=remote_reference,
+        tags=[str(tag) for tag in work_item.get("tags", []) if str(tag).strip()],
+        state=str(work_item.get("state", "") or "") or None,
+        url=str(work_item.get("url", "") or "") or None,
+        comments=[dict(comment) for comment in work_item.get("comments", []) if isinstance(comment, dict)],
+        source="ado_worker",
+        created_at=existing_record.created_at if existing_record is not None else now,
+        updated_at=now,
+    )
+    store.put(record.issue_id, record)
+    return record
+
+
+def _build_issue_payload(record: LocalIssueRecord) -> dict[str, Any]:
+    remote = record.remote_reference
     return {
-        "issue_number": work_item["id"],
-        "title": work_item.get("title", ""),
-        "description": work_item.get("description", ""),
-        "tags": work_item.get("tags", []),
-        "state": work_item.get("state", ""),
-        "url": work_item.get("url", ""),
-        "updated_date": work_item.get("updated_date", ""),
-        "comments": work_item.get("comments", []),
+        "issue_number": int(record.issue_number) if record.issue_number.isdigit() else record.issue_number,
+        "issue_id": record.issue_id,
+        "title": record.title,
+        "description": record.description or record.body,
+        "tags": record.tags,
+        "state": record.state or "",
+        "url": (remote.work_item_url if remote is not None else None) or record.url or "",
+        "updated_date": (
+            remote.last_remote_updated_at.isoformat().replace("+00:00", "Z")
+            if remote is not None and remote.last_remote_updated_at is not None
+            else ""
+        ),
+        "comments": record.comments,
+        "directory_path": record.directory_path,
+        "remote_reference": remote.model_dump(mode="json") if remote is not None else None,
         "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
     }
 
@@ -1254,7 +1417,19 @@ def _directory_token(directory_path: str) -> str:
     return normalized.replace("/", "-")
 
 
-def _processed_work_item_key(work_item_id: int, directory_path: str) -> str:
+def _processed_work_item_key(
+    work_item_id: int | str,
+    directory_path: str,
+    *,
+    provider: str | None = None,
+    organization: str | None = None,
+    project: str | None = None,
+) -> str:
+    if provider and organization and project:
+        return (
+            f"{DirectoryPath(segments=directory_path).as_posix()}::"
+            f"{provider}::{organization.rstrip('/')}::{project}::{work_item_id}"
+        )
     if directory_path == "root":
         return str(work_item_id)
     return f"{directory_path}::{work_item_id}"
@@ -1406,13 +1581,20 @@ def process_work_item(
     auth_header: str | None = None,
 ) -> bool:
     work_item_id = int(work_item["id"])
-    if store.is_processed(work_item_id, directory_path=config.directory_path):
-        logging.info("work_item=%s skipped=already_processed", work_item_id)
-        return False
-
     yaml_path = config.yaml_output_dir / f"work-item-{work_item_id}.yaml"
     setup_log_path = config.setup_log_dir / f"work-item-{work_item_id}.log"
-    _atomic_write_yaml(yaml_path, _build_issue_payload(work_item))
+    record = _upsert_unified_issue_record(config=config, work_item=work_item, yaml_path=yaml_path)
+    _atomic_write_yaml(yaml_path, _build_issue_payload(record))
+
+    if store.is_processed(
+        work_item_id,
+        directory_path=config.directory_path,
+        provider="azure_devops",
+        organization=config.organization_url,
+        project=config.project,
+    ):
+        logging.info("work_item=%s skipped=already_processed issue_id=%s", work_item_id, record.issue_id)
+        return False
 
     session_id = _resolve_session_id(config, work_item_id)
     _ensure_issue_session_manifest(
@@ -1493,6 +1675,10 @@ def process_work_item(
         script_exit_code=result.returncode,
         output_snippet=output_snippet,
         directory_path=config.directory_path,
+        provider="azure_devops",
+        organization=config.organization_url,
+        project=config.project,
+        issue_id=record.issue_id,
     )
     if client is not None and auth_header:
         try:
@@ -1536,10 +1722,14 @@ def fetch_work_item_by_id(
     return item
 
 
+def _processed_store_for_config(config: WorkerConfig) -> ProcessedWorkItemStore:
+    return ProcessedWorkItemStore(config.processed_store_path)
+
+
 def run_worker(config: WorkerConfig) -> None:
     pat = _require_env(config.pat_env_var_name)
     auth_header = _build_auth_header(pat)
-    store = ProcessedWorkItemStore(config.processed_store_path)
+    store = _processed_store_for_config(config)
     runtime_gateway_config = _worker_runtime_config(config)
 
     timeout = httpx.Timeout(connect=5.0, write=10.0, read=20.0, pool=5.0)
@@ -1588,24 +1778,17 @@ def run_worker_command(
     )
 
     if forget is not None:
-        legacy_config_env = os.environ.get("ADO_GATEWAY_CONFIG", os.environ.get("AGENT_SANDBOX_CONFIG", "")).strip()
-        legacy_config_path = Path(legacy_config_env).expanduser() if legacy_config_env else None
-        workspace_root = resolve_project_dir(legacy_config_path=legacy_config_path)
-        runtime_dir_env = os.environ.get("ADO_RUNTIME_DIR", "").strip() or None
-        worker_runtime_config = AdoWorkerRuntimeConfig.load(
-            workspace_root=workspace_root,
-            legacy_env_runtime_dir=runtime_dir_env,
-        )
-        store = ProcessedWorkItemStore(worker_runtime_config.processed_store_path)
-        removed = store.forget(forget)
+        config = WorkerConfig.load_from_env(require_runtime_secrets=False)
+        store = _processed_store_for_config(config)
+        removed = _forget_work_item_for_worker(store, config, forget)
         logging.info("forget work_item=%s removed=%s", forget, removed)
         return
 
     config = WorkerConfig.load_from_env()
-    store = ProcessedWorkItemStore(config.processed_store_path)
+    store = _processed_store_for_config(config)
 
     if reprocess is not None:
-        store.forget(reprocess)
+        _forget_work_item_for_worker(store, config, reprocess)
         pat = _require_env(config.pat_env_var_name)
         auth_header = _build_auth_header(pat)
         timeout = httpx.Timeout(connect=5.0, write=10.0, read=20.0, pool=5.0)

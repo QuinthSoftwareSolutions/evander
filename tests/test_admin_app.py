@@ -186,6 +186,58 @@ def test_apply_vm_refresh_always_refreshes_selected_agent_log() -> None:
     assert captured == ["refreshed"]
 
 
+def test_update_issue_action_bar_shows_yaml_button_for_selected_issue() -> None:
+    class DummyLabel:
+        def __init__(self) -> None:
+            self.text = ""
+
+        def setText(self, value: str) -> None:
+            self.text = value
+
+    class DummyButton:
+        def __init__(self) -> None:
+            self.visible = None
+
+        def show(self) -> None:
+            self.visible = True
+
+        def hide(self) -> None:
+            self.visible = False
+
+    window = SimpleNamespace(
+        issue_selection_hint=DummyLabel(),
+        create_issue_vm_button=DummyButton(),
+        view_issue_yaml_button=DummyButton(),
+        delete_issue_button=DummyButton(),
+        selected_issue_record=lambda: SimpleNamespace(issue_number="14382"),
+    )
+
+    admin_app.MainWindow.update_issue_action_bar(window)
+
+    assert window.issue_selection_hint.text == "Selected: 14382"
+    assert window.create_issue_vm_button.visible is True
+    assert window.view_issue_yaml_button.visible is True
+    assert window.delete_issue_button.visible is True
+
+
+def test_handle_view_selected_issue_yaml_opens_readonly_dialog(tmp_path: Path) -> None:
+    yaml_path = tmp_path / "14382.yaml"
+    yaml_path.write_text("issue_number: 14382\ntitle: Example\n", encoding="utf-8")
+    captured: dict[str, str] = {}
+
+    window = SimpleNamespace(
+        selected_issue_record=lambda: SimpleNamespace(issue_number="14382", yaml_path=str(yaml_path)),
+        _show_read_only_text_dialog=lambda *, title, text: captured.update({"title": title, "text": text}),
+    )
+
+    admin_app.MainWindow.handle_view_selected_issue_yaml(window)
+
+    assert captured == {
+        "title": "Issue YAML: 14382",
+        "text": "issue_number: 14382\ntitle: Example\n",
+    }
+
+
 def test_pr_template_root_field_starts_editable_without_existing_root_file() -> None:
     assert admin_app._root_config_field_starts_editable("pr_template", "pr_template_markdown", {}) is True
     assert admin_app._root_config_field_starts_editable("pr_template", "pr_template_markdown", {"pr_template_markdown": "x"}) is False

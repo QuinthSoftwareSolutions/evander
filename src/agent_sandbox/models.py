@@ -188,13 +188,23 @@ class WorkerActionResult(BaseModel):
 
 
 class LocalIssueRecord(BaseModel):
+    issue_id: str = ""
     issue_number: str
     title: str
     body: str
+    description: str | None = None
     yaml_path: str
     directory_path: str = "root"
     repo_source: str | None = None
+    source_type: str = "local_manual"
+    remote_reference: "RemoteIssueReference | None" = None
+    tags: list[str] = Field(default_factory=list)
+    state: str | None = None
+    url: str | None = None
+    comments: list[dict[str, str]] = Field(default_factory=list)
+    forwarding_policy: "IssueForwardingPolicy | None" = None
     source: str = "local_gui"
+    metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 
@@ -202,6 +212,30 @@ class LocalIssueRecord(BaseModel):
     @classmethod
     def validate_directory_path(cls, value: str) -> str:
         return DirectoryPath(segments=value).as_posix()
+
+    def model_post_init(self, __context: Any) -> None:
+        if not self.issue_id.strip():
+            self.issue_id = self.issue_number
+        if self.description is None:
+            self.description = self.body
+        if not self.body and self.description:
+            self.body = self.description
+
+
+class RemoteIssueReference(BaseModel):
+    provider: str
+    organization: str | None = None
+    project: str | None = None
+    work_item_id: str | None = None
+    work_item_url: str | None = None
+    last_synced_at: datetime | None = None
+    last_remote_updated_at: datetime | None = None
+    last_known_remote_state: str | None = None
+
+
+class IssueForwardingPolicy(BaseModel):
+    forward_comments: bool = False
+    forward_state_updates: bool = False
 
 
 class EmailMessage(BaseModel):
