@@ -198,6 +198,10 @@ class LocalIssueRecord(BaseModel):
     repo_source: str | None = None
     source_type: str = "local_manual"
     remote_reference: "RemoteIssueReference | None" = None
+    tags: list[str] = Field(default_factory=list)
+    state: str | None = None
+    url: str | None = None
+    comments: list[dict[str, str]] = Field(default_factory=list)
     forwarding_policy: "IssueForwardingPolicy | None" = None
     source: str = "local_gui"
     created_at: datetime = Field(default_factory=utc_now)
