@@ -268,6 +268,17 @@ libvirt guests, separates VM power state from guest agent state, and exposes one
 `Start`, `Shutdown`, `Enable`, `Disable`, and `Resume` actions together with local issue
 creation and issue-VM startup.
 
+Issue handling is now a single local abstraction in both Desktop and CLI flows:
+
+- local-only issues are created and managed in `runtime/local-issues.json`
+- ADO-backed issues are stored as local **proxy issues** (`source: proxy_azure_devops`) with
+  remote identity under `metadata.remote` plus a cached snapshot under `metadata.proxy_cache`
+- Desktop/CLI read/comment/state operations use the same command surface for both types; proxy
+  records forward those operations to Azure DevOps and refresh the local cache afterward
+- VM setup can target either a local issue number (`77`) or proxy identifier forms like
+  `proxy:ado/77`, and both resolve through the same local issue record before invoking
+  `setup_issue_vm.sh`
+
 Run it with:
 
 ```bash
