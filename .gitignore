@@ -7,5 +7,7 @@ runtime/
 git-remotes/
 config/nuget-relay.env
 config/host-heartbeat.env
+config/ado-worker/config.json
+config/host-heartbeat/config.json
 secrets.env
 tasks/
