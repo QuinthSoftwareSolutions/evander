@@ -4,6 +4,7 @@ import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import subprocess
+from typing import Any
 
 from agent_sandbox.admin_service import AdminService
 from agent_sandbox.models import SessionManifest
@@ -674,3 +675,87 @@ def test_background_worker_actions_reject_unknown_worker(tmp_path: Path) -> None
     assert stop.success is False
     assert start.message == "Unknown worker: missing"
     assert stop.message == "Unknown worker: missing"
+
+
+def test_issue_actions_use_local_behavior_for_non_proxy_issue(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    issue = service.create_local_issue(title="Local", body="only local")
+
+    comment_result = service.post_issue_comment(issue.issue_number, "hello local")
+    update_result = service.update_issue(issue.issue_number, state="Done", fields={"priority": "high"})
+    read_result = service.read_issue(issue.issue_number)
+
+    assert comment_result["source_type"] == "local"
+    assert update_result["source_type"] == "local"
+    assert read_result["source_type"] == "local"
+    assert read_result["state"] == "Done"
+    assert read_result["comments"][-1]["text"] == "hello local"
+
+
+def test_issue_actions_forward_proxy_issues_and_sync_cache(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    issue = service.create_local_issue(
+        title="Proxy issue",
+        body="from remote",
+        yaml_path=str(_write_proxy_issue_yaml(tmp_path)),
+    )
+
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    class _Adapter:
+        provider_name = "azure_devops"
+
+        def read_issue(self, **kwargs):
+            calls.append(("read", kwargs))
+            return {
+                "provider": "azure_devops",
+                "remote_issue_id": kwargs["remote_issue_id"],
+                "title": "Remote title",
+                "description": "Remote description",
+                "state": "Active",
+                "url": "https://ado.example/work/42",
+                "updated_at": "2026-03-28T10:11:12Z",
+                "comments": [{"id": "1", "text": "remote comment"}],
+                "fields": {"System.State": "Active"},
+            }
+
+        def post_comment(self, **kwargs):
+            calls.append(("comment", kwargs))
+            return {"provider": "azure_devops", "remote_issue_id": kwargs["remote_issue_id"], "comment": {"id": "9"}}
+
+        def update_issue(self, **kwargs):
+            calls.append(("update", kwargs))
+            return {"provider": "azure_devops", "remote_issue_id": kwargs["remote_issue_id"], "updated": True}
+
+    service.issue_service.adapters["azure_devops"] = _Adapter()
+
+    read_result = service.read_issue(issue.issue_number, include_remote_comments=True, sync_proxy_cache=True)
+    comment_result = service.post_issue_comment(issue.issue_number, "push to remote", sync_proxy_cache=True)
+    update_result = service.update_issue(issue.issue_number, state="Resolved", fields={"Custom.Priority": "1"})
+
+    assert read_result["source_type"] == "proxy"
+    assert comment_result["source_type"] == "proxy"
+    assert update_result["source_type"] == "proxy"
+    stored = service.local_issue_store.get(issue.issue_number)
+    assert stored is not None
+    assert stored.metadata["proxy_cache"]["title"] == "Remote title"
+    assert any(name == "comment" for name, _ in calls)
+    assert any(name == "update" for name, _ in calls)
+
+
+def _write_proxy_issue_yaml(tmp_path: Path) -> Path:
+    payload = {
+        "issue_number": 42,
+        "title": "Proxy issue",
+        "description": "from remote",
+        "state": "New",
+        "url": "https://ado.example/work/42",
+        "source": {
+            "organization": "https://dev.azure.com/example",
+            "project": "sample",
+            "work_item_url": "https://dev.azure.com/example/sample/_workitems/edit/42",
+        },
+    }
+    path = tmp_path / "proxy-issue.yaml"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
