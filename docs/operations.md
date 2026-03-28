@@ -499,6 +499,8 @@ agent-sandbox-cli create-session real-session --runtime-dir runtime
   (or legacy `MSSQL_SA_PASSWORD`). `ADO_BOOTSTRAP_FRONTEND_DEPS` requires
   `ADO_FRONTEND_INSTALL_ROOTS` and can optionally use `ADO_FRONTEND_HOST_CHECKOUT`
   when the mirrored repo source is remote.
+- Directory-scoped `ado_worker` config can set `ado_repo_source` to control the repo source path
+  or remote URL passed to `setup_issue_vm.sh` for each directory.
 - Preferred configuration now lives in directory domain `ado_worker` (`ado-worker.json`) so values
   inherit through directory ancestry and appear in the Admin GUI automatically.
 - Global worker settings now live in `config/ado-worker/config.json` and are edited from the

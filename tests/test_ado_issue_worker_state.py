@@ -939,6 +939,7 @@ def test_worker_config_load_from_env_uses_ado_worker_mssql_env_ref(
         json.dumps(
             {
                 "ado_project_or_solution": "/tmp/Example.slnx",
+                "ado_repo_source": "/tmp/repo",
                 "ado_bootstrap_mssql": True,
                 "ado_mssql_sa_password_env": "TEAM_MSSQL_PASSWORD",
             }
@@ -952,6 +953,7 @@ def test_worker_config_load_from_env_uses_ado_worker_mssql_env_ref(
 
     assert config.bootstrap_mssql is True
     assert config.mssql_sa_password == "TopSecret!"
+    assert config.repo_path == "/tmp/repo"
 
 
 def test_worker_config_load_from_env_uses_dedicated_worker_pat_env_setting(
@@ -1099,13 +1101,75 @@ def test_worker_config_load_from_env_warns_on_deprecated_env_override(
     )
     monkeypatch.setenv("ADO_GATEWAY_CONFIG", str(gateway_config_path))
     monkeypatch.setenv("ADO_PROJECT_OR_SOLUTION", "/tmp/FromEnv.slnx")
+    monkeypatch.setenv("ADO_REPO_PATH", "/tmp/from-env-repo")
     monkeypatch.setenv("ADO_BOOTSTRAP_MSSQL", "false")
 
     with caplog.at_level("WARNING"):
         config = WorkerConfig.load_from_env()
 
     assert config.prewarm_target == "/tmp/FromEnv.slnx"
+    assert config.repo_path == "/tmp/from-env-repo"
     assert "Deprecated ADO worker env override in use for ado_project_or_solution" in caplog.text
+    assert "Deprecated ADO worker env override in use for ado_repo_source" in caplog.text
+
+
+def test_run_worker_command_forget_does_not_require_mssql_secret(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    gateway_config_path = tmp_path / "gateway.yaml"
+    gateway_config_path.write_text(
+        yaml.safe_dump(
+            {
+                "runtime_dir": str(tmp_path),
+                "azure_devops_organization_url": "https://dev.azure.com/example-org",
+                "azure_devops_project": "example-project",
+                "azure_devops_pat_env": "ADO_DIRECTORY_PAT",
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    directory_root = tmp_path / "directory-config" / "root"
+    directory_root.mkdir(parents=True, exist_ok=True)
+    (directory_root / "ado-worker.json").write_text(
+        json.dumps(
+            {
+                "ado_project_or_solution": "/tmp/Example.slnx",
+                "ado_bootstrap_mssql": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    processed_store_path = tmp_path / "processed.json"
+    processed_store_path.write_text(
+        json.dumps(
+            {
+                "14382": {
+                    "work_item_id": 14382,
+                    "yaml_path": str(tmp_path / "ado-work-items" / "work-item-14382.yaml"),
+                    "script_exit_code": 0,
+                    "script_output_snippet": "ok",
+                    "processed_at": "2026-03-28T12:00:00+00:00",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    worker_config_dir = tmp_path / "config" / "ado-worker"
+    worker_config_dir.mkdir(parents=True, exist_ok=True)
+    (worker_config_dir / "config.json").write_text(
+        json.dumps({"processed_store_path": str(processed_store_path)}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ADO_GATEWAY_CONFIG", str(gateway_config_path))
+    monkeypatch.delenv("ADO_MSSQL_SA_PASSWORD", raising=False)
+    monkeypatch.delenv("MSSQL_SA_PASSWORD", raising=False)
+
+    run_worker_command(log_level="INFO", forget=14382)
+
+    payload = json.loads(processed_store_path.read_text(encoding="utf-8"))
+    assert "14382" not in payload
 
 
 @pytest.mark.parametrize(

@@ -117,6 +117,7 @@ def migrate_ado_worker_env_to_root(
         ado_team_filters=_csv_values(_merged_env_value("ADO_TEAM_FILTERS", env_values)),
         ado_project_or_solution=project_or_solution,
         ado_prewarm_target=_merged_env_value("ADO_PREWARM_TARGET", env_values) or project_or_solution,
+        ado_repo_source=_merged_env_value("ADO_REPO_PATH", env_values) or None,
         ado_bootstrap_dotnet=_bool_value(_merged_env_value("ADO_BOOTSTRAP_DOTNET", env_values), default=True),
         ado_bootstrap_nuget=_bool_value(_merged_env_value("ADO_BOOTSTRAP_NUGET", env_values), default=True),
         ado_bootstrap_mssql=_bool_value(_merged_env_value("ADO_BOOTSTRAP_MSSQL", env_values), default=True),

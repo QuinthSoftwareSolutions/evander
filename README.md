@@ -252,6 +252,8 @@ they depend on host-seeded artifacts. `ADO_BOOTSTRAP_MSSQL` also requires
 `ADO_MSSQL_INIT_ROOT`. `ADO_BOOTSTRAP_FRONTEND_DEPS`
 requires `ADO_FRONTEND_INSTALL_ROOTS`, and can optionally use `ADO_FRONTEND_HOST_CHECKOUT`
 when the mirrored repo source is remote.
+Directory-scoped `ado_worker` config can also set `ado_repo_source` so backlog-driven setup uses
+the correct host repo path or remote URL per directory.
 
 ## Desktop Admin Console
 

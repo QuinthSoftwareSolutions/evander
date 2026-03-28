@@ -329,6 +329,11 @@ def _resolve_worker_config_for_directory(
         ado_worker_config,
         env_name="ADO_PREWARM_TARGET",
     ) or project_or_solution
+    repo_path = _domain_optional_str_with_env_override(
+        "ado_repo_source",
+        ado_worker_config,
+        env_name="ADO_REPO_PATH",
+    )
     bootstrap_dotnet = _domain_bool_with_env_override(
         "ado_bootstrap_dotnet",
         ado_worker_config,
@@ -1582,13 +1587,22 @@ def run_worker_command(
         format="%(asctime)s %(levelname)s %(message)s",
     )
 
-    config = WorkerConfig.load_from_env()
-    store = ProcessedWorkItemStore(config.processed_store_path)
-
     if forget is not None:
+        legacy_config_env = os.environ.get("ADO_GATEWAY_CONFIG", os.environ.get("AGENT_SANDBOX_CONFIG", "")).strip()
+        legacy_config_path = Path(legacy_config_env).expanduser() if legacy_config_env else None
+        workspace_root = resolve_project_dir(legacy_config_path=legacy_config_path)
+        runtime_dir_env = os.environ.get("ADO_RUNTIME_DIR", "").strip() or None
+        worker_runtime_config = AdoWorkerRuntimeConfig.load(
+            workspace_root=workspace_root,
+            legacy_env_runtime_dir=runtime_dir_env,
+        )
+        store = ProcessedWorkItemStore(worker_runtime_config.processed_store_path)
         removed = store.forget(forget)
         logging.info("forget work_item=%s removed=%s", forget, removed)
         return
+
+    config = WorkerConfig.load_from_env()
+    store = ProcessedWorkItemStore(config.processed_store_path)
 
     if reprocess is not None:
         store.forget(reprocess)

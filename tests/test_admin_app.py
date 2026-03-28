@@ -122,6 +122,70 @@ def test_worker_global_settings_tooltips_include_ado_and_host_heartbeat_fields()
         assert field_name in admin_app.WORKER_GLOBAL_CONFIG_FIELD_TOOLTIPS
 
 
+def test_preferred_agent_log_repo_name_uses_single_detected_repo() -> None:
+    summary = SimpleNamespace(agent_repo_names=["ExampleIndustryAPP"])
+    assert admin_app.MainWindow._preferred_agent_log_repo_name(summary) == "ExampleIndustryAPP"
+
+
+def test_preferred_agent_log_repo_name_skips_ambiguous_or_empty_repo_lists() -> None:
+    assert admin_app.MainWindow._preferred_agent_log_repo_name(SimpleNamespace(agent_repo_names=[])) is None
+    assert (
+        admin_app.MainWindow._preferred_agent_log_repo_name(
+            SimpleNamespace(agent_repo_names=["repo-one", "repo-two"])
+        )
+        is None
+    )
+
+
+def test_apply_vm_refresh_always_refreshes_selected_agent_log() -> None:
+    captured: list[str] = []
+
+    class DummyTable:
+        def blockSignals(self, _value) -> None:
+            pass
+
+        def clearSelection(self) -> None:
+            pass
+
+        def setRowCount(self, _value) -> None:
+            pass
+
+        def setItem(self, *_args) -> None:
+            pass
+
+        def selectRow(self, _row) -> None:
+            pass
+
+        def setCurrentCell(self, *_args) -> None:
+            pass
+
+    window = SimpleNamespace(
+        _vm_summaries=[],
+        vm_table=DummyTable(),
+        selected_vm_summary=lambda: SimpleNamespace(vm_name="vm-14382"),
+        update_vm_action_bar=lambda: None,
+        refresh_selected_agent_log=lambda: captured.append("refreshed"),
+    )
+
+    admin_app.MainWindow._apply_vm_refresh(
+        window,
+        [
+            SimpleNamespace(
+                vm_name="vm-14382",
+                issue_number="14382",
+                session_ids=[],
+                libvirt_state="running",
+                ip_address="192.168.250.10",
+                agent_state="running",
+                agent_repo_names=["ExampleIndustryAPP"],
+                last_state_update_at=None,
+            )
+        ],
+    )
+
+    assert captured == ["refreshed"]
+
+
 def test_pr_template_root_field_starts_editable_without_existing_root_file() -> None:
     assert admin_app._root_config_field_starts_editable("pr_template", "pr_template_markdown", {}) is True
     assert admin_app._root_config_field_starts_editable("pr_template", "pr_template_markdown", {"pr_template_markdown": "x"}) is False

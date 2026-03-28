@@ -112,6 +112,7 @@ DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
             "ado_team_filters",
             "ado_project_or_solution",
             "ado_prewarm_target",
+            "ado_repo_source",
             "ado_bootstrap_dotnet",
             "ado_bootstrap_nuget",
             "ado_bootstrap_mssql",
@@ -144,6 +145,7 @@ class AdoWorkerDirectoryConfig(BaseModel):
     ado_team_filters: list[str] = Field(default_factory=list)
     ado_project_or_solution: str = ""
     ado_prewarm_target: str | None = None
+    ado_repo_source: str | None = None
     ado_bootstrap_dotnet: bool = True
     ado_bootstrap_nuget: bool = True
     ado_bootstrap_mssql: bool = True

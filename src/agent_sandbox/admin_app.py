@@ -406,6 +406,9 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
     "ado_prewarm_target": (
         "Optional override target for prewarm steps; falls back to ado_project_or_solution when unset."
     ),
+    "ado_repo_source": (
+        "Host repo path or remote URL passed to setup_issue_vm.sh for guest repo mirroring."
+    ),
     "ado_bootstrap_dotnet": (
         "Enable or disable dotnet/bootstrap steps in setup_issue_vm.sh for ADO worker-created VMs."
     ),
@@ -1174,10 +1177,10 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
                 directory_path=self._selected_directory_path,
                 direct_only=True,
             ),
-            lambda summaries: self._apply_vm_refresh(summaries, refresh_log=manual),
+            lambda summaries: self._apply_vm_refresh(summaries),
         )
 
-    def _apply_vm_refresh(self, summaries, *, refresh_log: bool) -> None:
+    def _apply_vm_refresh(self, summaries) -> None:
         previously_selected_vm = None
         current_summary = self.selected_vm_summary()
         if current_summary is not None:
@@ -1207,8 +1210,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
                 self.vm_table.setCurrentCell(-1, -1)
         self.vm_table.blockSignals(False)
         self.update_vm_action_bar()
-        if refresh_log:
-            self.refresh_selected_agent_log()
+        self.refresh_selected_agent_log()
 
     def selected_vm_summary(self):
         row = self.vm_table.currentRow()
@@ -1273,9 +1275,10 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             _set_text_preserving_scroll(self.agent_log_view, "Agent log unavailable for VMs without an issue number.")
             return
         issue_number = summary.issue_number
+        repo_name = self._preferred_agent_log_repo_name(summary)
         self._agent_log_request_token += 1
         request_token = self._agent_log_request_token
-        worker = _ActionWorker(self.service.get_agent_log_snapshot, issue_number, lines=50)
+        worker = _ActionWorker(self.service.get_agent_log_snapshot, issue_number, lines=50, repo_name=repo_name)
         self._active_workers.add(worker)
         worker.signals.finished.connect(
             lambda text, worker=worker, request_token=request_token, issue_number=issue_number: self._handle_agent_log_success(
@@ -1305,6 +1308,13 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         if request_token != self._agent_log_request_token:
             return
         _set_text_preserving_scroll(self.agent_log_view, f"Agent log unavailable: {error}")
+
+    @staticmethod
+    def _preferred_agent_log_repo_name(summary) -> str | None:
+        repo_names = [str(name).strip() for name in getattr(summary, "agent_repo_names", []) if str(name).strip()]
+        if len(repo_names) == 1:
+            return repo_names[0]
+        return None
 
     def handle_start_selected_vm(self) -> None:
         summary = self.selected_vm_summary()

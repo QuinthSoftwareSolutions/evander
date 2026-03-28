@@ -338,6 +338,7 @@ def test_migrate_ado_worker_env_to_root_materializes_root_domain_file(tmp_path: 
             [
                 "ADO_PROJECT_OR_SOLUTION=/tmp/Example.slnx",
                 "ADO_PREWARM_TARGET=/tmp/Prewarm.slnx",
+                "ADO_REPO_PATH=/tmp/repo",
                 "ADO_BOOTSTRAP_MSSQL=true",
                 "ADO_MSSQL_SA_PASSWORD=SecretPassw0rd!",
                 "ADO_FRONTEND_INSTALL_ROOTS=/tmp/repo/Src/Clients,/tmp/repo/Src/Admin",
@@ -369,6 +370,7 @@ def test_migrate_ado_worker_env_to_root_materializes_root_domain_file(tmp_path: 
         "ado_frontend_install_roots": ["/tmp/repo/Src/Clients", "/tmp/repo/Src/Admin"],
         "ado_prewarm_target": "/tmp/Prewarm.slnx",
         "ado_project_or_solution": "/tmp/Example.slnx",
+        "ado_repo_source": "/tmp/repo",
         "ado_team_filters": [],
     }
     directories_payload = json.loads((runtime_dir / "directories.json").read_text(encoding="utf-8"))
@@ -461,6 +463,7 @@ def test_migrate_ado_worker_env_to_root_imports_env_file(tmp_path: Path) -> None
         "\n".join(
                 [
                     'ADO_PROJECT_OR_SOLUTION="/tmp/Example.slnx"',
+                    'ADO_REPO_PATH="/tmp/repo"',
                     'ADO_AREA_FILTERS="Root\\Area,Root\\Other"',
                     'ADO_BOOTSTRAP_MSSQL="true"',
                     'ADO_MSSQL_SA_PASSWORD="TopSecret!"',
@@ -487,6 +490,7 @@ def test_migrate_ado_worker_env_to_root_imports_env_file(tmp_path: Path) -> None
     assert "written ado_worker" in result.output
     payload = json.loads((tmp_path / "runtime" / "directory-config" / "root" / "ado-worker.json").read_text("utf-8"))
     assert payload["ado_project_or_solution"] == "/tmp/Example.slnx"
+    assert payload["ado_repo_source"] == "/tmp/repo"
     assert payload["ado_area_filters"] == ["Root\\Area", "Root\\Other"]
     assert payload["ado_bootstrap_mssql"] is True
     assert "ado_mssql_sa_password_env" not in payload
