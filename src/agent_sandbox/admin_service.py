@@ -7,7 +7,6 @@ import shutil
 import subprocess
 import sys
 import time
-from uuid import uuid4
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -31,6 +30,7 @@ from .policy_config import EffectivePolicyConfig
 from .provider_config import ProviderConfigResolver
 from .vm_defaults_config import EffectiveVmDefaultsConfig, VmDefaultsConfigResolver
 from .models import (
+    DirectoryPath,
     LocalIssueRecord,
     SessionActionResult,
     SessionManifest,
@@ -137,6 +137,22 @@ def _resolve_vm_name(target: str) -> str:
 
 def _issue_session_id_prefix(issue_number: str) -> str:
     return f"issue-{issue_number}-"
+
+
+def _scoped_issue_id(
+    issue_number: str,
+    *,
+    directory_path: str,
+    provider: str,
+    organization: str | None = None,
+    project: str | None = None,
+) -> str:
+    normalized_directory_path = DirectoryPath(segments=directory_path).as_posix()
+    parts = [normalized_directory_path, provider]
+    if organization and project:
+        parts.extend([organization.rstrip("/"), project])
+    parts.append(issue_number)
+    return "::".join(parts)
 
 
 def _parse_session_extension(value: str | None) -> timedelta:
@@ -1443,6 +1459,21 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
         self.local_issue_counter_path.write_text(f"{current}\n", encoding="utf-8")
         return str(current)
 
+    def _canonical_local_issue_id(self, issue_number: str, directory_path: str) -> str:
+        return _scoped_issue_id(issue_number, directory_path=directory_path, provider="local")
+
+    def _canonical_issue_id(self, record: LocalIssueRecord) -> str:
+        remote = record.remote_reference
+        if remote is not None and remote.provider == "azure_devops" and remote.work_item_id:
+            return _scoped_issue_id(
+                remote.work_item_id,
+                directory_path=record.directory_path,
+                provider="azure_devops",
+                organization=remote.organization,
+                project=remote.project,
+            )
+        return self._canonical_local_issue_id(record.issue_number, record.directory_path)
+
     def create_local_issue(
         self,
         *,
@@ -1479,8 +1510,10 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
                 f"created_at: {json.dumps(now.isoformat())}\n"
             )
             target_yaml_path.write_text(yaml_text, encoding="utf-8")
+        issue_id = self._canonical_local_issue_id(issue_number, normalized_directory_path)
+        existing_record = self.local_issue_store.get(issue_id)
         record = LocalIssueRecord(
-            issue_id=f"local-{uuid4()}",
+            issue_id=issue_id,
             issue_number=issue_number,
             title=title.strip() or f"Local issue {issue_number}",
             body=body.strip(),
@@ -1488,7 +1521,7 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
             directory_path=normalized_directory_path,
             repo_source=repo_source.strip() if repo_source else None,
             source="local_gui",
-            created_at=now,
+            created_at=existing_record.created_at if existing_record is not None else now,
             updated_at=now,
         )
         self.local_issue_store.put(record.issue_id, record)

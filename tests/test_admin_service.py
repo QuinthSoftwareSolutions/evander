@@ -42,6 +42,7 @@ def test_create_local_issue_persists_yaml_and_store(tmp_path: Path) -> None:
     )
 
     assert issue.issue_number == "1"
+    assert issue.issue_id == "root::local::1"
     assert issue.title == "Fix VM dashboard"
     yaml_path = Path(issue.yaml_path)
     assert yaml_path.exists()
@@ -52,6 +53,28 @@ def test_create_local_issue_persists_yaml_and_store(tmp_path: Path) -> None:
     payload = json.loads((tmp_path / "runtime" / "local-issues.json").read_text(encoding="utf-8"))
     assert payload[issue.issue_id]["directory_path"] == "root"
     assert payload[issue.issue_id]["repo_source"] == "/src/repo"
+
+
+def test_create_local_issue_reuses_scoped_id_within_directory(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    created = service.create_directory_child("root", "team")
+    assert created.ok is True and created.data is not None
+    team_path = created.data.details.directory.path
+
+    source_path = tmp_path / "team-issue.yaml"
+    source_path.write_text("issue_number: 7\ntitle: Team issue\nbody: First body\n", encoding="utf-8")
+    first = service.create_local_issue(yaml_path=str(source_path), directory_path=team_path)
+
+    source_path.write_text("issue_number: 7\ntitle: Team issue\nbody: Updated body\n", encoding="utf-8")
+    second = service.create_local_issue(yaml_path=str(source_path), directory_path=team_path)
+
+    assert first.issue_id == "root/team::local::7"
+    assert second.issue_id == first.issue_id
+    assert second.body == "Updated body"
+
+    records = service.local_issue_store.read_all()
+    assert list(records) == ["root/team::local::7"]
+
 
 
 def test_list_vms_collects_session_and_agent_state(tmp_path: Path, monkeypatch) -> None:

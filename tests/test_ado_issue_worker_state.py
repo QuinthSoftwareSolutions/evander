@@ -114,8 +114,17 @@ def test_processed_store_mark_and_forget(worker_config: WorkerConfig) -> None:
     assert payload[expected_key]["script_exit_code"] == 0
     assert payload[expected_key]["script_output_snippet"] == "ok"
 
-    assert store.forget(123) is True
+    assert (
+        store.forget(
+            123,
+            provider="azure_devops",
+            organization=worker_config.organization_url,
+            project=worker_config.project,
+        )
+        is True
+    )
     assert store.is_processed(123) is False
+
 
 
 def test_processed_store_tracks_directory_scoped_entries_separately(worker_config: WorkerConfig) -> None:

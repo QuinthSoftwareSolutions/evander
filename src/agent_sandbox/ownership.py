@@ -168,22 +168,24 @@ class DirectoryOwnershipQueries:
             return []
         payload = self._read_json_file(self._ado_processed_store_path)
         entities: list[OwnedEntity] = []
-        for work_item_id, raw_entry in sorted(payload.items()):
+        for entry_key, raw_entry in sorted(payload.items()):
             if not isinstance(raw_entry, dict):
                 continue
             session_id = str(raw_entry.get("session_id", "")).strip()
             directory_path = self._owned_directory_path(raw_entry, sessions=sessions, session_id=session_id)
             if directory_path is None or directory_path not in allowed_paths:
                 continue
+            work_item_id = str(raw_entry.get("remote_work_item_id") or "").strip() or entry_key
             entities.append(
                 OwnedEntity(
                     kind="ado_work_item",
-                    entity_id=str(work_item_id),
+                    entity_id=entry_key,
                     directory_path=directory_path,
-                    label=str(work_item_id),
+                    label=work_item_id,
                     source="ado_processed_store",
                     payload={
                         "session_id": session_id or None,
+                        "remote_work_item_id": work_item_id,
                         "yaml_path": raw_entry.get("yaml_path"),
                         "script_exit_code": raw_entry.get("script_exit_code"),
                     },

@@ -10,7 +10,6 @@ import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, timezone
-from hashlib import sha1
 from pathlib import Path
 from threading import BoundedSemaphore
 from threading import Lock
@@ -256,7 +255,7 @@ class WorkerConfig:
     legacy_config_path: Path | None = None
 
     @classmethod
-    def load_from_env(cls) -> WorkerConfig:
+    def load_from_env(cls, *, require_runtime_secrets: bool = True) -> WorkerConfig:
         legacy_config_env = os.environ.get("ADO_GATEWAY_CONFIG", os.environ.get("AGENT_SANDBOX_CONFIG", "")).strip()
         legacy_config_path = Path(legacy_config_env).expanduser() if legacy_config_env else None
         workspace_root = resolve_project_dir(legacy_config_path=legacy_config_path)
@@ -279,6 +278,7 @@ class WorkerConfig:
             session_id=_optional_env("ADO_SESSION_ID"),
             vm_user=_optional_env("ADO_VM_USER"),
             session_ttl_hours=_int_env("ADO_SESSION_TTL_HOURS", 8, minimum=1),
+            require_runtime_secrets=require_runtime_secrets,
         )
 
 
@@ -292,6 +292,7 @@ def _resolve_worker_config_for_directory(
     session_id: str | None,
     vm_user: str | None,
     session_ttl_hours: int,
+    require_runtime_secrets: bool = True,
 ) -> WorkerConfig:
     directory_store = DirectoryStore(runtime_gateway_config.directories_store_path)
     directory_store.ensure_root()
@@ -377,7 +378,7 @@ def _resolve_worker_config_for_directory(
         ado_worker_config,
         env_name="ADO_MSSQL_INIT_ROOT",
     )
-    if bootstrap_mssql and not mssql_sa_password:
+    if bootstrap_mssql and require_runtime_secrets and not mssql_sa_password:
         if _is_env_set(_LEGACY_ADO_MSSQL_SA_PASSWORD_ENV) or _is_env_set(_DEFAULT_ADO_MSSQL_SA_PASSWORD_ENV):
             raise ValueError(
                 "ADO_MSSQL_SA_PASSWORD or MSSQL_SA_PASSWORD is required when ADO_BOOTSTRAP_MSSQL is true."
@@ -1295,17 +1296,13 @@ def _forget_work_item_for_worker(store: ProcessedWorkItemStore, config: WorkerCo
 
 
 def _build_proxy_issue_id(config: WorkerConfig, work_item_id: int, directory_path: str) -> str:
-    identity = "|".join(
-        [
-            "azure_devops",
-            config.organization_url.rstrip("/"),
-            config.project,
-            directory_path,
-            str(work_item_id),
-        ]
+    return _processed_work_item_key(
+        work_item_id,
+        directory_path,
+        provider="azure_devops",
+        organization=config.organization_url,
+        project=config.project,
     )
-    digest = sha1(identity.encode("utf-8")).hexdigest()[:16]
-    return f"ado-proxy-{digest}"
 
 
 def _upsert_unified_issue_record(
@@ -1725,10 +1722,14 @@ def fetch_work_item_by_id(
     return item
 
 
+def _processed_store_for_config(config: WorkerConfig) -> ProcessedWorkItemStore:
+    return ProcessedWorkItemStore(config.processed_store_path)
+
+
 def run_worker(config: WorkerConfig) -> None:
     pat = _require_env(config.pat_env_var_name)
     auth_header = _build_auth_header(pat)
-    store = ProcessedWorkItemStore(config.processed_store_path)
+    store = _processed_store_for_config(config)
     runtime_gateway_config = _worker_runtime_config(config)
 
     timeout = httpx.Timeout(connect=5.0, write=10.0, read=20.0, pool=5.0)
@@ -1777,14 +1778,14 @@ def run_worker_command(
     )
 
     if forget is not None:
-        config = WorkerConfig.load_from_env()
-        store = ProcessedWorkItemStore(config.processed_store_path)
+        config = WorkerConfig.load_from_env(require_runtime_secrets=False)
+        store = _processed_store_for_config(config)
         removed = _forget_work_item_for_worker(store, config, forget)
         logging.info("forget work_item=%s removed=%s", forget, removed)
         return
 
     config = WorkerConfig.load_from_env()
-    store = ProcessedWorkItemStore(config.processed_store_path)
+    store = _processed_store_for_config(config)
 
     if reprocess is not None:
         _forget_work_item_for_worker(store, config, reprocess)

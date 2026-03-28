@@ -171,6 +171,25 @@ class IssueDialog(QDialog):  # type: ignore[misc]
         }
 
 
+class ReadOnlyTextDialog(QDialog):  # type: ignore[misc]
+    def __init__(self, *, title: str, text: str, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.resize(900, 640)
+
+        layout = QVBoxLayout(self)
+        text_view = QPlainTextEdit()
+        text_view.setReadOnly(True)
+        text_view.setPlainText(text)
+        layout.addWidget(text_view)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Close)
+        buttons.rejected.connect(self.reject)
+        buttons.accepted.connect(self.accept)
+        buttons.button(QDialogButtonBox.Close).clicked.connect(self.accept)
+        layout.addWidget(buttons)
+
+
 class CreateVmDialog(QDialog):  # type: ignore[misc]
     def __init__(self, issue_number: str, repo_source: str | None = None, parent=None) -> None:
         super().__init__(parent)
@@ -768,6 +787,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self.issue_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.issue_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.issue_table.itemSelectionChanged.connect(self._on_issue_selection_changed)
+        self.issue_table.itemDoubleClicked.connect(self._on_issue_activated)
 
         self.worker_table = QTableWidget(0, 8)
         self.worker_table.setHorizontalHeaderLabels(
@@ -963,10 +983,14 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self.create_issue_vm_button = QPushButton("Create VM")
         _set_standard_icon(self.create_issue_vm_button, "SP_ComputerIcon")
         self.create_issue_vm_button.clicked.connect(self.handle_create_vm_selected_issue)
+        self.view_issue_yaml_button = QPushButton("View YAML")
+        _set_standard_icon(self.view_issue_yaml_button, "SP_FileDialogContentsView")
+        self.view_issue_yaml_button.clicked.connect(self.handle_view_selected_issue_yaml)
         self.delete_issue_button = QPushButton("Delete")
         _set_standard_icon(self.delete_issue_button, "SP_TrashIcon")
         self.delete_issue_button.clicked.connect(self.handle_delete_selected_issue)
         self.issue_action_bar.addWidget(self.create_issue_vm_button)
+        self.issue_action_bar.addWidget(self.view_issue_yaml_button)
         self.issue_action_bar.addWidget(self.delete_issue_button)
         issue_toolbar.addLayout(self.issue_action_bar)
         issue_layout.addLayout(issue_toolbar)
@@ -1509,26 +1533,49 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             return None
         return self._issue_records[row]
 
+    def _show_read_only_text_dialog(self, *, title: str, text: str) -> None:
+        ReadOnlyTextDialog(title=title, text=text, parent=self).exec()
+
     def update_issue_action_bar(self) -> None:
         issue = self.selected_issue_record()
         if issue is None:
             self.issue_selection_hint.setText("No issue selected")
             self.create_issue_vm_button.hide()
+            self.view_issue_yaml_button.hide()
             self.delete_issue_button.hide()
             return
 
         self.issue_selection_hint.setText(f"Selected: {issue.issue_number}")
         self.create_issue_vm_button.show()
+        self.view_issue_yaml_button.show()
         self.delete_issue_button.show()
 
     def _on_issue_selection_changed(self) -> None:
         self.update_issue_action_bar()
+
+    def _on_issue_activated(self, _item) -> None:
+        self.handle_view_selected_issue_yaml()
 
     def handle_create_vm_selected_issue(self) -> None:
         issue = self.selected_issue_record()
         if issue is None:
             return
         self.open_create_vm_dialog(issue.issue_number, issue.repo_source)
+
+    def handle_view_selected_issue_yaml(self) -> None:
+        issue = self.selected_issue_record()
+        if issue is None:
+            return
+        yaml_path = Path(issue.yaml_path)
+        try:
+            yaml_text = yaml_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            QMessageBox.warning(self, "View issue YAML", f"Could not read {yaml_path}: {exc}")
+            return
+        self._show_read_only_text_dialog(
+            title=f"Issue YAML: {issue.issue_number}",
+            text=yaml_text,
+        )
 
     def handle_delete_selected_issue(self) -> None:
         issue = self.selected_issue_record()
