@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import os
+import re
 from datetime import UTC, datetime
 from typing import Any, Protocol
 
@@ -270,6 +271,23 @@ class IssueService:
         provider = str(remote.get("provider") or "").strip()
         remote_issue_id = str(remote.get("issue_id") or issue_number).strip()
 
+        # Compatibility reader (one release window): older records stored these keys at
+        # metadata root instead of metadata.remote.
+        if not provider:
+            provider = str(metadata.get("provider") or "").strip()
+        if not remote_issue_id:
+            remote_issue_id = str(metadata.get("issue_id") or "").strip()
+        if not remote_issue_id:
+            for legacy_key in ("work_item_url", "url"):
+                legacy_value = str(metadata.get(legacy_key) or "").strip()
+                if not legacy_value:
+                    continue
+                parsed = _extract_ado_work_item_id(legacy_value)
+                if parsed:
+                    remote_issue_id = parsed
+                    provider = provider or "azure_devops"
+                    break
+
         if not provider:
             normalized_source = issue_source.strip().lower()
             if normalized_source in {"proxy_azure_devops", "azure_devops", "ado_proxy"}:
@@ -334,3 +352,14 @@ class IssueService:
             state=state,
             fields=fields,
         )
+
+
+def _extract_ado_work_item_id(value: str) -> str:
+    text = value.strip()
+    if not text:
+        return ""
+    for pattern in (r"/workItems/edit/([0-9]+)", r"\b([0-9]{2,})\b"):
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            return match.group(1)
+    return ""
