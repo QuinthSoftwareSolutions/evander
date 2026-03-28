@@ -3,7 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from agent_sandbox.bootstrap import load_runtime_gateway_config
+from agent_sandbox.bootstrap import load_host_bootstrap_config, load_runtime_gateway_config
+from agent_sandbox.host_config import build_runtime_gateway_config
 from agent_sandbox.issue_service import IssueService
 from agent_sandbox.migrations import (
     LOCAL_ISSUE_MIGRATION_MARKER_RELATIVE_PATH,
@@ -80,7 +81,9 @@ def test_local_issue_migration_normalizes_records_imports_ado_and_preserves_coun
         encoding="utf-8",
     )
 
-    config = load_runtime_gateway_config(runtime_dir=runtime_dir, legacy_config_path=config_path)
+    config = build_runtime_gateway_config(
+        load_host_bootstrap_config(runtime_dir=runtime_dir, legacy_config_path=config_path)
+    )
     summary = migrate_local_issues_to_unified_schema(config)
 
     assert summary.scanned_records == 2
@@ -156,7 +159,9 @@ def test_local_issue_migration_upgrades_legacy_proxy_metadata_shape(tmp_path: Pa
     )
     (runtime_dir / "local-issue-counter.txt").write_text("12\n", encoding="utf-8")
 
-    config = load_runtime_gateway_config(runtime_dir=runtime_dir, legacy_config_path=config_path)
+    config = build_runtime_gateway_config(
+        load_host_bootstrap_config(runtime_dir=runtime_dir, legacy_config_path=config_path)
+    )
     summary = migrate_local_issues_to_unified_schema(config, import_recent_ado_artifacts=False)
 
     assert summary.already_applied is False

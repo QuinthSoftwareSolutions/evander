@@ -194,7 +194,7 @@ def test_migrate_directory_ownership_backfills_missing_fields_only(tmp_path: Pat
     result = runner.invoke(app, ["migrate-directory-ownership", "--config", str(config_path)])
 
     assert result.exit_code == 0
-    assert "Backfilled 4 record(s) across 4 file(s)" in result.output
+    assert "Backfilled 3 record(s) across 3 file(s)" in result.output
 
     sessions = json.loads((runtime_dir / "sessions.json").read_text(encoding="utf-8"))
     assert sessions["session-a"]["directory_path"] == "root"
@@ -763,7 +763,7 @@ def test_create_issue_vm_creates_manifest_before_invoking_setup_script(tmp_path:
     init_result = runner.invoke(app, ["init-state", "--config", str(config_path)])
     assert init_result.exit_code == 0
 
-    def fake_run(cmd: list[str], check: bool) -> subprocess.CompletedProcess[str]:
+    def fake_run(cmd: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
         nonlocal captured_cmd
         captured_cmd = cmd
         sessions = json.loads((tmp_path / "runtime" / "sessions.json").read_text(encoding="utf-8"))
@@ -771,7 +771,7 @@ def test_create_issue_vm_creates_manifest_before_invoking_setup_script(tmp_path:
         assert sessions["issue-1234-session"]["vm_id"] == "vm-1234"
         return subprocess.CompletedProcess(cmd, 0)
 
-    monkeypatch.setattr("agent_sandbox.cli.subprocess.run", fake_run)
+    monkeypatch.setattr("agent_sandbox.admin_service.subprocess.run", fake_run)
 
     result = runner.invoke(
         app,
@@ -797,8 +797,8 @@ def test_create_issue_vm_persists_expected_manifest_shape(tmp_path: Path, monkey
     assert init_result.exit_code == 0
 
     monkeypatch.setattr(
-        "agent_sandbox.cli.subprocess.run",
-        lambda cmd, check: subprocess.CompletedProcess(cmd, 0),
+        "agent_sandbox.admin_service.subprocess.run",
+        lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, 0),
     )
 
     result = runner.invoke(
@@ -835,7 +835,7 @@ def test_create_issue_vm_persists_expected_manifest_shape(tmp_path: Path, monkey
         "email_get_message",
         "email_create_draft",
     }
-    assert manifest["metadata"] == {}
+    assert manifest["metadata"] == {"issue_number": "14084"}
 
 
 def test_create_issue_vm_builds_setup_issue_vm_command_correctly(tmp_path: Path, monkeypatch) -> None:
@@ -848,15 +848,13 @@ def test_create_issue_vm_builds_setup_issue_vm_command_correctly(tmp_path: Path,
 
     def fake_run(
         cmd: list[str],
-        check: bool,
-        capture_output: bool,
-        text: bool,
+        **kwargs,
     ) -> subprocess.CompletedProcess[str]:
         nonlocal captured_cmd
         captured_cmd = cmd
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
-    monkeypatch.setattr("agent_sandbox.cli.subprocess.run", fake_run)
+    monkeypatch.setattr("agent_sandbox.admin_service.subprocess.run", fake_run)
 
     with monkeypatch.context() as m:
         m.setenv("MSSQL_SA_PASSWORD", "SecretPassw0rd!")
@@ -929,15 +927,12 @@ def test_create_issue_vm_uses_root_vm_defaults_overlay_for_guest_env(tmp_path: P
 
     def fake_run(
         cmd: list[str],
-        check: bool,
-        capture_output: bool,
-        text: bool,
-        env: dict[str, str],
+        **kwargs,
     ) -> subprocess.CompletedProcess[str]:
-        captured_env.update(env)
+        captured_env.update(kwargs.get("env") or {})
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
-    monkeypatch.setattr("agent_sandbox.cli.subprocess.run", fake_run)
+    monkeypatch.setattr("agent_sandbox.admin_service.subprocess.run", fake_run)
 
     result = runner.invoke(
         app,
@@ -971,7 +966,7 @@ def test_create_issue_vm_requires_mssql_password_env(tmp_path: Path, monkeypatch
     )
 
     assert result.exit_code != 0
-    assert "MSSQL_SA_PASSWORD must be set in the environment" in result.output
+    assert "MSSQL_SA_PASSWORD must be set when --mssql is used." in result.output
 
 
 def test_create_issue_vm_rejects_mssql_init_root_without_mssql(tmp_path: Path, monkeypatch) -> None:
@@ -982,8 +977,8 @@ def test_create_issue_vm_rejects_mssql_init_root_without_mssql(tmp_path: Path, m
     assert init_result.exit_code == 0
 
     monkeypatch.setattr(
-        "agent_sandbox.cli.subprocess.run",
-        lambda cmd, check: subprocess.CompletedProcess(cmd, 0),
+        "agent_sandbox.admin_service.subprocess.run",
+        lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, 0),
     )
 
     result = runner.invoke(
@@ -1045,8 +1040,8 @@ def test_create_issue_vm_does_not_grant_unrequested_tool_families(tmp_path: Path
     assert init_result.exit_code == 0
 
     monkeypatch.setattr(
-        "agent_sandbox.cli.subprocess.run",
-        lambda cmd, check: subprocess.CompletedProcess(cmd, 0),
+        "agent_sandbox.admin_service.subprocess.run",
+        lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, 0),
     )
 
     result = runner.invoke(
@@ -1067,7 +1062,7 @@ def test_create_issue_vm_does_not_grant_unrequested_tool_families(tmp_path: Path
     assert manifest["allowed_tools"] == ["approval_submit", "approval_check"]
     assert manifest["email_mailbox_allowlist"] == []
     assert manifest["email_folder_allowlist"] == []
-    assert manifest["metadata"] == {}
+    assert manifest["metadata"] == {"issue_number": "200"}
 
 
 def test_attach_pr_feedback_updates_existing_session(tmp_path: Path) -> None:

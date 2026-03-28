@@ -269,7 +269,7 @@ class IssueService:
     ) -> tuple[str, str] | None:
         remote = metadata.get("remote") if isinstance(metadata.get("remote"), dict) else {}
         provider = str(remote.get("provider") or "").strip()
-        remote_issue_id = str(remote.get("issue_id") or issue_number).strip()
+        remote_issue_id = str(remote.get("issue_id") or "").strip()
 
         # Compatibility reader (one release window): older records stored these keys at
         # metadata root instead of metadata.remote.
@@ -292,6 +292,9 @@ class IssueService:
             normalized_source = issue_source.strip().lower()
             if normalized_source in {"proxy_azure_devops", "azure_devops", "ado_proxy"}:
                 provider = "azure_devops"
+
+        if not remote_issue_id and provider:
+            remote_issue_id = issue_number
 
         if provider and remote_issue_id:
             return provider, remote_issue_id

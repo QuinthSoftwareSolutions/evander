@@ -739,12 +739,14 @@ def test_create_local_issue_from_ado_yaml_creates_proxy_record_and_repoll_update
     assert updated.issue_number == "42"
     issues = service.list_local_issues()
     assert [issue.issue_number for issue in issues] == ["42"]
-    stored = service.local_issue_store.get("42")
+    stored = service.local_issue_store.get(created.issue_id)
     assert stored is not None
     assert stored.source == "proxy_azure_devops"
-    assert stored.metadata["remote"]["provider"] == "azure_devops"
-    assert stored.metadata["remote"]["issue_id"] == "42"
-    assert stored.metadata["proxy_cache"]["state"] == "Active"
+    assert stored.source_type == "remote_proxy"
+    assert stored.remote_reference is not None
+    assert stored.remote_reference.provider == "azure_devops"
+    assert stored.remote_reference.work_item_id == "42"
+    assert stored.state == "Active"
 
 
 def test_issue_actions_forward_proxy_issues_and_sync_cache(tmp_path: Path) -> None:
@@ -791,9 +793,10 @@ def test_issue_actions_forward_proxy_issues_and_sync_cache(tmp_path: Path) -> No
     assert read_result["source_type"] == "proxy"
     assert comment_result["source_type"] == "proxy"
     assert update_result["source_type"] == "proxy"
-    stored = service.local_issue_store.get(issue.issue_number)
+    stored = service.local_issue_store.get(issue.issue_id)
     assert stored is not None
-    assert stored.metadata["proxy_cache"]["title"] == "Remote title"
+    assert stored.title == "Remote title"
+    assert stored.state == "Active"
     comment_call = next(kwargs for name, kwargs in calls if name == "comment")
     update_call = next(kwargs for name, kwargs in calls if name == "update")
     assert comment_call["remote_issue_id"] == issue.issue_number

@@ -1777,13 +1777,14 @@ def create_local_issue(
         typer.Option("--yaml-path", help="Import an existing issue YAML file instead of creating one from title/body."),
     ] = None,
 ) -> None:
-    create_issue(
-        config=config,
+    service = AdminService(config)
+    issue = service.create_local_issue(
         title=title,
         body=body,
         repo_source=repo_source,
-        yaml_path=yaml_path,
+        yaml_path=str(yaml_path) if yaml_path is not None else None,
     )
+    typer.echo(f"Created local issue {issue.issue_number} ({issue.title}) at {issue.yaml_path}")
 
 
 @app.command(

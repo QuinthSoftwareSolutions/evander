@@ -392,7 +392,7 @@ def _normalize_local_issue_record(raw_record: dict[str, Any]) -> dict[str, Any]:
     source = str(normalized.get("source") or "").strip()
     if inferred_remote is not None:
         metadata["remote"] = inferred_remote
-        if source in {"", "local_gui", "local"}:
+        if source in {"", "local_gui", "local", "azure_devops", "ado_proxy"}:
             source = "proxy_azure_devops"
     if not source:
         source = "local_gui"
@@ -446,7 +446,11 @@ def _infer_remote_reference(
     provider = str(metadata.get("provider") or "").strip()
     legacy_remote_issue_id = str(metadata.get("issue_id") or "").strip()
     if provider and legacy_remote_issue_id:
-        return {"provider": provider, "issue_id": legacy_remote_issue_id}
+        return {
+            "provider": provider,
+            "issue_id": legacy_remote_issue_id,
+            "work_item_url": str(metadata.get("work_item_url") or "").strip(),
+        }
 
     source_payload = yaml_payload.get("source")
     if isinstance(source_payload, dict):
