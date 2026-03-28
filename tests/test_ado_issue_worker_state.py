@@ -1148,6 +1148,94 @@ def test_worker_config_load_from_env_uses_dedicated_worker_pat_env_setting(
     assert "Deprecated ADO worker env override in use for ado_project_or_solution" in caplog.text
 
 
+def test_worker_config_load_from_env_bootstraps_from_first_configured_directory(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    gateway_config_path = tmp_path / "gateway.yaml"
+    gateway_config_path.write_text(
+        yaml.safe_dump(
+            {
+                "runtime_dir": str(tmp_path),
+                "azure_devops_organization_url": "https://dev.azure.com/example-org",
+                "azure_devops_project": "example-project",
+                "azure_devops_pat_env": "ADO_DIRECTORY_PAT",
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    directories_path = tmp_path / "directories.json"
+    directories_path.write_text(
+        json.dumps(
+            {
+                "root": {
+                    "id": "root",
+                    "name": "root",
+                    "parent_id": None,
+                    "created_at": "2026-03-28T00:00:00Z",
+                    "metadata": {},
+                },
+                "example": {
+                    "id": "example",
+                    "name": "example-industry",
+                    "parent_id": "root",
+                    "created_at": "2026-03-28T00:00:00Z",
+                    "metadata": {},
+                },
+                "app": {
+                    "id": "app",
+                    "name": "app",
+                    "parent_id": "example",
+                    "created_at": "2026-03-28T00:00:00Z",
+                    "metadata": {
+                        "directory_config": {
+                            "domains": ["ado_worker"],
+                        }
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    root_directory = tmp_path / "directory-config" / "root"
+    app_directory = root_directory / "example-industry" / "app"
+    app_directory.mkdir(parents=True, exist_ok=True)
+    (root_directory / "ado-worker.json").write_text(
+        json.dumps(
+            {
+                "ado_area_filters": [],
+                "ado_team_filters": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (app_directory / "ado-worker.json").write_text(
+        json.dumps(
+            {
+                "ado_project_or_solution": "/tmp/Example.slnx",
+                "ado_repo_source": "/tmp/repo",
+                "ado_bootstrap_mssql": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+    worker_config_dir = tmp_path / "config" / "ado-worker"
+    worker_config_dir.mkdir(parents=True, exist_ok=True)
+    (worker_config_dir / "config.json").write_text(
+        json.dumps({"directories": ["root/example-industry/app"]}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ADO_GATEWAY_CONFIG", str(gateway_config_path))
+
+    config = WorkerConfig.load_from_env()
+
+    assert config.directory_path == "root/example-industry/app"
+    assert config.directories == ("root/example-industry/app",)
+    assert config.prewarm_target == "/tmp/Example.slnx"
+    assert config.repo_path == "/tmp/repo"
+
+
 def test_worker_config_load_from_env_prefers_worker_json_config(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1163,6 +1251,28 @@ def test_worker_config_load_from_env_prefers_worker_json_config(
                 "ado_project_or_solution": "/tmp/FromGateway.slnx",
             },
             sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    directories_path = tmp_path / "directories.json"
+    directories_path.write_text(
+        json.dumps(
+            {
+                "root": {
+                    "id": "root",
+                    "name": "root",
+                    "parent_id": None,
+                    "created_at": "2026-03-28T00:00:00Z",
+                    "metadata": {},
+                },
+                "team-a": {
+                    "id": "team-a",
+                    "name": "team-a",
+                    "parent_id": "root",
+                    "created_at": "2026-03-28T00:00:00Z",
+                    "metadata": {},
+                },
+            }
         ),
         encoding="utf-8",
     )
@@ -1319,6 +1429,67 @@ def test_run_worker_command_forget_does_not_require_mssql_secret(
 
     payload = json.loads(processed_store_path.read_text(encoding="utf-8"))
     assert "14382" not in payload
+
+
+def test_run_worker_command_forget_does_not_require_root_ado_project_or_solution(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    gateway_config_path = tmp_path / "gateway.yaml"
+    gateway_config_path.write_text(
+        yaml.safe_dump(
+            {
+                "runtime_dir": str(tmp_path),
+                "azure_devops_organization_url": "https://dev.azure.com/example-org",
+                "azure_devops_project": "example-project",
+                "azure_devops_pat_env": "ADO_DIRECTORY_PAT",
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    directory_root = tmp_path / "directory-config" / "root"
+    directory_root.mkdir(parents=True, exist_ok=True)
+    (directory_root / "ado-worker.json").write_text(
+        json.dumps(
+            {
+                "ado_area_filters": [],
+                "ado_team_filters": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    processed_store_path = tmp_path / "processed.json"
+    processed_store_path.write_text(
+        json.dumps(
+            {
+                "root/example-industry/app::azure_devops::https://dev.azure.com/example-org::example-project::14382": {
+                    "directory_path": "root/example-industry/app",
+                    "organization": "https://dev.azure.com/example-org",
+                    "project": "example-project",
+                    "provider": "azure_devops",
+                    "remote_work_item_id": "14382",
+                    "yaml_path": str(tmp_path / "ado-work-items" / "work-item-14382.yaml"),
+                    "script_exit_code": 0,
+                    "script_output_snippet": "ok",
+                    "processed_at": "2026-03-28T12:00:00+00:00",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    worker_config_dir = tmp_path / "config" / "ado-worker"
+    worker_config_dir.mkdir(parents=True, exist_ok=True)
+    (worker_config_dir / "config.json").write_text(
+        json.dumps({"processed_store_path": str(processed_store_path)}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ADO_GATEWAY_CONFIG", str(gateway_config_path))
+
+    run_worker_command(log_level="INFO", forget=14382)
+
+    payload = json.loads(processed_store_path.read_text(encoding="utf-8"))
+    assert payload == {}
 
 
 @pytest.mark.parametrize(
@@ -1908,6 +2079,120 @@ def test_poll_and_process_directory_uses_directory_specific_config(
         )
 
     assert calls == [("poll", "root/team-a", None), ("process", "root/team-a", 99)]
+
+
+def test_resolve_directory_worker_config_uses_each_directorys_own_project_or_solution(
+    worker_config: WorkerConfig,
+) -> None:
+    from agent_sandbox import ado_issue_worker as ado_worker
+
+    directories_path = worker_config.runtime_dir / "directories.json"
+    directories_path.write_text(
+        json.dumps(
+            {
+                "root": {
+                    "id": "root",
+                    "name": "root",
+                    "parent_id": None,
+                    "created_at": "2026-03-28T00:00:00Z",
+                    "metadata": {},
+                },
+                "example": {
+                    "id": "example",
+                    "name": "example-industry",
+                    "parent_id": "root",
+                    "created_at": "2026-03-28T00:00:00Z",
+                    "metadata": {},
+                },
+                "app": {
+                    "id": "app",
+                    "name": "app",
+                    "parent_id": "example",
+                    "created_at": "2026-03-28T00:00:00Z",
+                    "metadata": {"directory_config": {"domains": ["ado_worker"]}},
+                },
+                "other": {
+                    "id": "other",
+                    "name": "other-team",
+                    "parent_id": "root",
+                    "created_at": "2026-03-28T00:00:00Z",
+                    "metadata": {},
+                },
+                "app": {
+                    "id": "app",
+                    "name": "app",
+                    "parent_id": "other",
+                    "created_at": "2026-03-28T00:00:00Z",
+                    "metadata": {"directory_config": {"domains": ["ado_worker"]}},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    app_ado_dir = worker_config.runtime_dir / "directory-config" / "root" / "example-industry" / "app"
+    app_ado_dir = worker_config.runtime_dir / "directory-config" / "root" / "other-team" / "app"
+    app_ado_dir.mkdir(parents=True, exist_ok=True)
+    app_ado_dir.mkdir(parents=True, exist_ok=True)
+    (app_ado_dir / "ado-worker.json").write_text(
+        json.dumps(
+            {
+                "ado_project_or_solution": "/repos/app/App.slnx",
+                "ado_repo_source": "/repos/app",
+                "ado_bootstrap_mssql": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (app_ado_dir / "ado-worker.json").write_text(
+        json.dumps(
+            {
+                "ado_project_or_solution": "/repos/app/App.slnx",
+                "ado_repo_source": "/repos/app",
+                "ado_bootstrap_mssql": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    runtime_gateway_config = ado_worker.GatewayConfig.model_validate(
+        {
+            "runtime_dir": str(worker_config.runtime_dir),
+            "session_store_path": str(worker_config.runtime_dir / "sessions.json"),
+            "approval_store_path": str(worker_config.runtime_dir / "approvals.json"),
+            "draft_store_path": str(worker_config.runtime_dir / "drafts.json"),
+            "email_store_path": str(worker_config.runtime_dir / "emails.json"),
+            "discord_command_store_path": str(worker_config.runtime_dir / "discord_commands.json"),
+            "audit_log_path": str(worker_config.runtime_dir / "audit.jsonl"),
+            "directories_store_path": str(directories_path),
+            "azure_devops_organization_url": "https://dev.azure.com/example",
+            "azure_devops_project": "example",
+            "azure_devops_pat_env": "ADO_WORK_ITEMS_AZURE_DEVOPS_PAT",
+        }
+    )
+    configured = WorkerConfig(
+        **{
+            **worker_config.__dict__,
+            "directories": ("root/example-industry/app", "root/other-team/app"),
+        }
+    )
+
+    app_config = ado_worker._resolve_directory_worker_config(
+        configured,
+        runtime_gateway_config,
+        "root/example-industry/app",
+    )
+    app_config = ado_worker._resolve_directory_worker_config(
+        configured,
+        runtime_gateway_config,
+        "root/other-team/app",
+    )
+
+    assert app_config.directory_path == "root/example-industry/app"
+    assert app_config.prewarm_target == "/repos/app/App.slnx"
+    assert app_config.repo_path == "/repos/app"
+    assert app_config.directory_path == "root/other-team/app"
+    assert app_config.prewarm_target == "/repos/app/App.slnx"
+    assert app_config.repo_path == "/repos/app"
 
 
 def test_format_work_item_listing_uses_tab_separated_fields() -> None:

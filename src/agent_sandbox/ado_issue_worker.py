@@ -269,10 +269,11 @@ class WorkerConfig:
             runtime_dir=runtime_dir,
             legacy_config_path=legacy_config_path,
         )
+        bootstrap_directory_path = worker_runtime_config.directories[0] if worker_runtime_config.directories else "root"
         return _resolve_worker_config_for_directory(
             worker_runtime_config=worker_runtime_config,
             runtime_gateway_config=runtime_gateway_config,
-            directory_path="root",
+            directory_path=bootstrap_directory_path,
             legacy_config_path=legacy_config_path,
             repo_path=_optional_env("ADO_REPO_PATH"),
             session_id=_optional_env("ADO_SESSION_ID"),
@@ -914,6 +915,27 @@ class ProcessedWorkItemStore:
             ) is not None
             self._atomic_write(payload)
             return existed
+
+    def forget_all(self, work_item_id: int | str) -> int:
+        normalized_work_item_id = str(work_item_id)
+        with self._lock:
+            payload = self._read_raw()
+            removed_keys = [
+                key
+                for key, value in payload.items()
+                if key == normalized_work_item_id
+                or key.endswith(f"::{normalized_work_item_id}")
+                or (
+                    isinstance(value, dict)
+                    and str(value.get("remote_work_item_id") or "").strip() == normalized_work_item_id
+                )
+            ]
+            if not removed_keys:
+                return 0
+            for key in removed_keys:
+                payload.pop(key, None)
+            self._atomic_write(payload)
+            return len(removed_keys)
 
     def _read_raw(self) -> dict[str, Any]:
         return json.loads(self.path.read_text(encoding="utf-8"))
@@ -1726,6 +1748,18 @@ def _processed_store_for_config(config: WorkerConfig) -> ProcessedWorkItemStore:
     return ProcessedWorkItemStore(config.processed_store_path)
 
 
+def _processed_store_for_runtime() -> ProcessedWorkItemStore:
+    legacy_config_env = os.environ.get("ADO_GATEWAY_CONFIG", os.environ.get("AGENT_SANDBOX_CONFIG", "")).strip()
+    legacy_config_path = Path(legacy_config_env).expanduser() if legacy_config_env else None
+    workspace_root = resolve_project_dir(legacy_config_path=legacy_config_path)
+    runtime_dir_env = os.environ.get("ADO_RUNTIME_DIR", "").strip() or None
+    worker_runtime_config = AdoWorkerRuntimeConfig.load(
+        workspace_root=workspace_root,
+        legacy_env_runtime_dir=runtime_dir_env,
+    )
+    return ProcessedWorkItemStore(worker_runtime_config.processed_store_path)
+
+
 def run_worker(config: WorkerConfig) -> None:
     pat = _require_env(config.pat_env_var_name)
     auth_header = _build_auth_header(pat)
@@ -1778,10 +1812,9 @@ def run_worker_command(
     )
 
     if forget is not None:
-        config = WorkerConfig.load_from_env(require_runtime_secrets=False)
-        store = _processed_store_for_config(config)
-        removed = _forget_work_item_for_worker(store, config, forget)
-        logging.info("forget work_item=%s removed=%s", forget, removed)
+        store = _processed_store_for_runtime()
+        removed_count = store.forget_all(forget)
+        logging.info("forget work_item=%s removed_count=%s", forget, removed_count)
         return
 
     config = WorkerConfig.load_from_env()
