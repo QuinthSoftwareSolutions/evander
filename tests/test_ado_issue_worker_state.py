@@ -24,6 +24,8 @@ from agent_sandbox.ado_issue_worker import (
     run_worker_command,
     update_work_item_state,
 )
+from agent_sandbox.models import LocalIssueRecord
+from agent_sandbox.storage import JsonStore
 from agent_sandbox.worker_directory_context import ShadowDomainContext, WorkerDirectoryContext
 
 
@@ -91,12 +93,26 @@ def test_processed_store_mark_and_forget(worker_config: WorkerConfig) -> None:
         yaml_path=worker_config.yaml_output_dir / "work-item-123.yaml",
         script_exit_code=0,
         output_snippet="ok",
+        provider="azure_devops",
+        organization=worker_config.organization_url,
+        project=worker_config.project,
     )
-    assert store.is_processed(123) is True
+    assert (
+        store.is_processed(
+            123,
+            provider="azure_devops",
+            organization=worker_config.organization_url,
+            project=worker_config.project,
+        )
+        is True
+    )
 
     payload = json.loads(worker_config.processed_store_path.read_text(encoding="utf-8"))
-    assert payload["123"]["script_exit_code"] == 0
-    assert payload["123"]["script_output_snippet"] == "ok"
+    expected_key = (
+        "root::azure_devops::https://dev.azure.com/example::example::123"
+    )
+    assert payload[expected_key]["script_exit_code"] == 0
+    assert payload[expected_key]["script_output_snippet"] == "ok"
 
     assert store.forget(123) is True
     assert store.is_processed(123) is False
@@ -111,6 +127,9 @@ def test_processed_store_tracks_directory_scoped_entries_separately(worker_confi
         script_exit_code=0,
         output_snippet="root",
         directory_path="root",
+        provider="azure_devops",
+        organization=worker_config.organization_url,
+        project=worker_config.project,
     )
     store.mark_processed(
         work_item_id=777,
@@ -118,13 +137,36 @@ def test_processed_store_tracks_directory_scoped_entries_separately(worker_confi
         script_exit_code=0,
         output_snippet="team-a",
         directory_path="root/team-a",
+        provider="azure_devops",
+        organization=worker_config.organization_url,
+        project=worker_config.project,
     )
 
     payload = json.loads(worker_config.processed_store_path.read_text(encoding="utf-8"))
-    assert payload["777"]["script_output_snippet"] == "root"
-    assert payload["root/team-a::777"]["script_output_snippet"] == "team-a"
-    assert store.is_processed(777, directory_path="root") is True
-    assert store.is_processed(777, directory_path="root/team-a") is True
+    root_key = "root::azure_devops::https://dev.azure.com/example::example::777"
+    team_key = "root/team-a::azure_devops::https://dev.azure.com/example::example::777"
+    assert payload[root_key]["script_output_snippet"] == "root"
+    assert payload[team_key]["script_output_snippet"] == "team-a"
+    assert (
+        store.is_processed(
+            777,
+            directory_path="root",
+            provider="azure_devops",
+            organization=worker_config.organization_url,
+            project=worker_config.project,
+        )
+        is True
+    )
+    assert (
+        store.is_processed(
+            777,
+            directory_path="root/team-a",
+            provider="azure_devops",
+            organization=worker_config.organization_url,
+            project=worker_config.project,
+        )
+        is True
+    )
 
 
 def test_process_work_item_skips_when_already_processed(
@@ -137,6 +179,9 @@ def test_process_work_item_skips_when_already_processed(
         yaml_path=worker_config.yaml_output_dir / "work-item-456.yaml",
         script_exit_code=0,
         output_snippet="done",
+        provider="azure_devops",
+        organization=worker_config.organization_url,
+        project=worker_config.project,
     )
 
     called = {"run": False}
@@ -265,10 +310,72 @@ def test_process_work_item_marks_state_only_after_success(
 
     succeeded = process_work_item(item, config=worker_config, store=store)
     assert succeeded is True
-    assert store.is_processed(789) is True
+    assert (
+        store.is_processed(
+            789,
+            provider="azure_devops",
+            organization=worker_config.organization_url,
+            project=worker_config.project,
+        )
+        is True
+    )
     log_text = (worker_config.setup_log_dir / "work-item-789.log").read_text(encoding="utf-8")
     assert "===== " in log_text
     assert log_text.endswith("ok\n")
+
+
+def test_process_work_item_upserts_unified_issue_and_refreshes_yaml(
+    worker_config: WorkerConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = ProcessedWorkItemStore(worker_config.processed_store_path)
+
+    def successful_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="ok", stderr="")
+
+    monkeypatch.setattr("agent_sandbox.ado_issue_worker.subprocess.run", successful_run)
+
+    first = {
+        "id": 990,
+        "title": "Initial title",
+        "description": "First description",
+        "tags": ["truman"],
+        "state": "Committed",
+        "url": "https://example/990",
+        "updated_date": "2026-03-21T00:00:00Z",
+        "comments": [{"text": "First", "author": "Ann", "created_date": "", "modified_date": ""}],
+    }
+    assert process_work_item(first, config=worker_config, store=store) is True
+
+    second = {
+        **first,
+        "title": "Updated title",
+        "description": "Second description",
+        "tags": ["truman", "backend"],
+        "state": "In Progress",
+        "comments": [{"text": "Second", "author": "Bob", "created_date": "", "modified_date": ""}],
+        "updated_date": "2026-03-21T01:00:00Z",
+    }
+    assert process_work_item(second, config=worker_config, store=store) is False
+
+    local_issues_store = JsonStore(worker_config.runtime_dir / "local-issues.json", LocalIssueRecord)
+    records = list(local_issues_store.read_all().values())
+    assert len(records) == 1
+    assert records[0].title == "Updated title"
+    assert records[0].description == "Second description"
+    assert records[0].state == "In Progress"
+    assert records[0].tags == ["truman", "backend"]
+    assert records[0].comments == [{"text": "Second", "author": "Bob", "created_date": "", "modified_date": ""}]
+    assert records[0].remote_reference is not None
+    assert records[0].remote_reference.work_item_id == "990"
+
+    yaml_path = worker_config.yaml_output_dir / "work-item-990.yaml"
+    parsed = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
+    assert parsed["issue_id"] == records[0].issue_id
+    assert parsed["title"] == "Updated title"
+    assert parsed["description"] == "Second description"
+    assert parsed["state"] == "In Progress"
+    assert parsed["tags"] == ["truman", "backend"]
 
 
 def test_process_work_item_creates_session_manifest_before_setup(
@@ -305,7 +412,15 @@ def test_process_work_item_creates_session_manifest_before_setup(
     succeeded = process_work_item(item, config=worker_config, store=store)
 
     assert succeeded is True
-    assert store.is_processed(14084) is True
+    assert (
+        store.is_processed(
+            14084,
+            provider="azure_devops",
+            organization=worker_config.organization_url,
+            project=worker_config.project,
+        )
+        is True
+    )
     assert captured["manifest"]["session_id"] == captured["session_id"]
     assert captured["manifest"]["vm_id"] == "vm-14084"
     assert captured["manifest"]["directory_path"] == "root"
@@ -351,7 +466,16 @@ def test_process_work_item_uses_configured_directory_for_session_manifest(
     succeeded = process_work_item(item, config=directory_config, store=store)
 
     assert succeeded is True
-    assert store.is_processed(14086, directory_path="root/team-a") is True
+    assert (
+        store.is_processed(
+            14086,
+            directory_path="root/team-a",
+            provider="azure_devops",
+            organization=worker_config.organization_url,
+            project=worker_config.project,
+        )
+        is True
+    )
     assert captured["manifest"]["directory_path"] == "root/team-a"
 
 
@@ -508,7 +632,15 @@ def test_process_work_item_updates_state_after_success(
         )
 
     assert succeeded is True
-    assert store.is_processed(790) is True
+    assert (
+        store.is_processed(
+            790,
+            provider="azure_devops",
+            organization=worker_config.organization_url,
+            project=worker_config.project,
+        )
+        is True
+    )
     assert state_updates == [(790, "In Progress")]
 
 
@@ -642,7 +774,15 @@ def test_process_work_item_treats_existing_vm_as_success(
         )
 
     assert succeeded is True
-    assert store.is_processed(793) is True
+    assert (
+        store.is_processed(
+            793,
+            provider="azure_devops",
+            organization=worker_config.organization_url,
+            project=worker_config.project,
+        )
+        is True
+    )
     assert state_updates == [(793, "In Progress")]
 
 
@@ -1596,13 +1736,16 @@ def test_filter_unprocessed_work_items_excludes_processed(worker_config: WorkerC
         yaml_path=worker_config.yaml_output_dir / "work-item-10.yaml",
         script_exit_code=0,
         output_snippet="done",
+        provider="azure_devops",
+        organization=worker_config.organization_url,
+        project=worker_config.project,
     )
     items = [
         {"id": 10, "title": "Picked up"},
         {"id": 11, "title": "Still pending"},
     ]
 
-    filtered = filter_unprocessed_work_items(items, store)
+    filtered = filter_unprocessed_work_items(items, store, config=worker_config)
 
     assert filtered == [{"id": 11, "title": "Still pending"}]
 
@@ -1617,6 +1760,9 @@ def test_list_unprocessed_work_items_filters_processed(
         yaml_path=worker_config.yaml_output_dir / "work-item-10.yaml",
         script_exit_code=0,
         output_snippet="done",
+        provider="azure_devops",
+        organization=worker_config.organization_url,
+        project=worker_config.project,
     )
     monkeypatch.setattr(
         "agent_sandbox.ado_issue_worker.poll_once",
