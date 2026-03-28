@@ -1,5 +1,16 @@
 #!/usr/bin/env bash
 
+load_root_secrets_env() {
+  local secrets_env="${ROOT_DIR}/secrets.env"
+
+  [[ -f "${secrets_env}" ]] || return 0
+
+  set -a
+  # shellcheck source=/dev/null
+  . "${secrets_env}"
+  set +a
+}
+
 load_issue_setup_config() {
   local issue_setup_json="${ROOT_DIR}/runtime/directory-config/root/issue-setup.json"
 

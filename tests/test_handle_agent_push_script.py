@@ -115,6 +115,7 @@ def _write_fake_open_agent_pr(path: Path, args_log: Path) -> None:
         f"""#!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >> "{args_log}"
+printf 'AZURE_DEVOPS_PR_PAT=%s\n' "${{AZURE_DEVOPS_PR_PAT:-}}" >> "{args_log}"
 printf 'AGENT_PR_RESULT {{"provider":"github","pr_id":"1"}}\n'
 """,
         encoding="utf-8",
@@ -222,7 +223,11 @@ def _run_handle_push(
 
 
 def _extract_body_file_path(args_log: Path) -> str | None:
-    entries = [line.strip() for line in args_log.read_text(encoding="utf-8").splitlines() if line.strip()]
+    entries = [
+        line.strip()
+        for line in args_log.read_text(encoding="utf-8").splitlines()
+        if line.strip() and "--create-pr" in line
+    ]
     assert entries, "open_agent_pr.sh was not invoked"
     latest = entries[-1].split()
     for index, token in enumerate(latest):
@@ -315,3 +320,61 @@ def test_handle_agent_push_continues_when_notes_fetch_or_read_fails(tmp_path: Pa
     assert "AGENT_PR_NOTES fetch failed (non-fatal)" in log_text
     assert "AGENT_PR_NOTES read failed (non-fatal)" in log_text
     assert "Agent branch promoted and PR prepared" in log_text
+
+
+def test_handle_agent_push_loads_repo_secrets_env(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    source_script = root / "scripts" / "handle_agent_push.sh"
+
+    sandbox_root = tmp_path / "sandbox"
+    scripts_dir = sandbox_root / "scripts"
+    lib_dir = scripts_dir / "lib"
+    scripts_dir.mkdir(parents=True)
+    lib_dir.mkdir(parents=True, exist_ok=True)
+
+    handle_script = scripts_dir / "handle_agent_push.sh"
+    handle_script.write_text(source_script.read_text(encoding="utf-8"), encoding="utf-8")
+    os.chmod(handle_script, 0o755)
+    runtime_config_source = root / "scripts" / "lib" / "runtime_config.sh"
+    (lib_dir / "runtime_config.sh").write_text(runtime_config_source.read_text(encoding="utf-8"), encoding="utf-8")
+    os.chmod(lib_dir / "runtime_config.sh", 0o755)
+
+    args_log = tmp_path / "open-agent-pr-args.log"
+    _write_fake_open_agent_pr(scripts_dir / "open_agent_pr.sh", args_log)
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+
+    trusted_repo = tmp_path / "trusted"
+    (trusted_repo / ".git").mkdir(parents=True)
+
+    bare_repo = tmp_path / "bare.git"
+    bare_repo.mkdir()
+
+    _write_fake_git(fake_bin / "git", trusted_repo)
+
+    (sandbox_root / "secrets.env").write_text(
+        'AZURE_DEVOPS_PR_PAT="from-secrets-env"\n',
+        encoding="utf-8",
+    )
+
+    env = os.environ.copy()
+    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+    env["FAKE_GIT_LOG"] = str(tmp_path / "git.log")
+    env.pop("AZURE_DEVOPS_PR_PAT", None)
+
+    subprocess.run(
+        [str(handle_script), str(bare_repo)],
+        input=(
+            "0000000000000000000000000000000000000000 "
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa "
+            "refs/heads/agents/session-123/topic\n"
+        ),
+        text=True,
+        capture_output=True,
+        env=env,
+        check=True,
+    )
+
+    log_lines = args_log.read_text(encoding="utf-8").splitlines()
+    assert "AZURE_DEVOPS_PR_PAT=from-secrets-env" in log_lines

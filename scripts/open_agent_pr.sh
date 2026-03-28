@@ -138,6 +138,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # shellcheck source=lib/runtime_config.sh
 source "${SCRIPT_DIR}/lib/runtime_config.sh"
+load_root_secrets_env
 load_provider_config
 
 if [[ -z "${HOME:-}" ]]; then
