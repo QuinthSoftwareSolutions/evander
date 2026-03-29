@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import concurrent.futures
 import json
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import subprocess
@@ -78,6 +80,40 @@ def test_create_local_issue_reuses_scoped_id_within_directory(tmp_path: Path) ->
 
     records = service.local_issue_store.read_all()
     assert list(records) == ["root/team::local::7"]
+
+
+def test_create_local_issue_serializes_concurrent_issue_number_allocation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config_path = write_config(tmp_path)
+
+    def slow_next_issue_number(self: AdminService) -> str:
+        current = 0
+        if self.local_issue_counter_path.exists():
+            try:
+                current = int(self.local_issue_counter_path.read_text(encoding="utf-8").strip() or "0")
+            except ValueError:
+                current = 0
+        time.sleep(0.05)
+        current += 1
+        self.local_issue_counter_path.parent.mkdir(parents=True, exist_ok=True)
+        self.local_issue_counter_path.write_text(f"{current}\n", encoding="utf-8")
+        return str(current)
+
+    monkeypatch.setattr(AdminService, "_next_local_issue_number", slow_next_issue_number)
+    services = [AdminService(config_path) for _ in range(6)]
+
+    def create_issue(args: tuple[AdminService, int]) -> str:
+        service, index = args
+        issue = service.create_local_issue(title=f"Issue {index}", body="parallel")
+        return issue.issue_number
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
+        issue_numbers = list(pool.map(create_issue, zip(services, range(6), strict=True)))
+
+    assert sorted(issue_numbers) == ["1", "2", "3", "4", "5", "6"]
+    payload = json.loads((tmp_path / "runtime" / "local-issues.json").read_text(encoding="utf-8"))
+    assert sorted(payload) == [f"root::local::{number}" for number in range(1, 7)]
+    for number in range(1, 7):
+        assert (tmp_path / "runtime" / "issues" / f"{number}.yaml").exists()
 
 
 def test_update_local_issue_updates_store_and_yaml(tmp_path: Path) -> None:

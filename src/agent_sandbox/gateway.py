@@ -6,7 +6,8 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import Context, FastMCP
+from mcp.server.fastmcp.exceptions import ToolError
 
 from .bootstrap import load_runtime_gateway_config, resolve_runtime_dir
 from .admin_service import AdminService
@@ -106,6 +107,28 @@ def _redact_nested_value(redacted_keys: set[str], value: Any) -> Any:
 
 def _redact_args(redacted_keys: set[str], args: dict[str, Any]) -> dict[str, Any]:
     return _redact_nested_value(redacted_keys, args)
+
+
+def _resolve_session_id_from_context(session_id: str | None, ctx: Context | None) -> str:
+    normalized = str(session_id or "").strip()
+    if normalized:
+        return normalized
+    if ctx is None:
+        raise ToolError("session_id is required")
+    request = getattr(ctx.request_context, "request", None)
+    if request is None:
+        raise ToolError("session_id is required")
+    query_params = getattr(request, "query_params", None)
+    if query_params is not None:
+        candidate = str(query_params.get("session_id") or "").strip()
+        if candidate:
+            return candidate
+    headers = getattr(request, "headers", None)
+    if headers is not None:
+        candidate = str(headers.get("x-agent-sandbox-session-id") or headers.get("mcp-session-id") or "").strip()
+        if candidate:
+            return candidate
+    raise ToolError("session_id is required")
 
 
 def _filter_discord_commands_for_session(
@@ -214,15 +237,17 @@ def create_server(context: RuntimeContext) -> FastMCP:
 
     @server.tool()
     def list_issues(
-        session_id: str,
         status: list[str] | None = None,
+        session_id: str | None = None,
+        ctx: Context | None = None,
     ) -> dict[str, Any]:
+        resolved_session_id = _resolve_session_id_from_context(session_id, ctx)
         args = {
-            "session_id": session_id,
+            "session_id": resolved_session_id,
             "status": status,
         }
         try:
-            session = context.policy.require_tool(session_id, ToolName.LIST_ISSUES)
+            session = context.policy.require_tool(resolved_session_id, ToolName.LIST_ISSUES)
             status_filter = _normalize_issue_status_filters(status)
             issues = AdminService(context.config.runtime_dir).list_local_issues(
                 directory_path=session.directory_path,
@@ -240,7 +265,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 "issues": [issue.model_dump(mode="json") for issue in filtered],
             }
             audit_success(
-                session_id,
+                resolved_session_id,
                 ToolName.LIST_ISSUES,
                 args,
                 {
@@ -250,11 +275,11 @@ def create_server(context: RuntimeContext) -> FastMCP:
             )
             return result
         except PolicyError as exc:
-            audit_failure(session_id, ToolName.LIST_ISSUES, args, str(exc))
+            audit_failure(resolved_session_id, ToolName.LIST_ISSUES, args, str(exc))
             raise
         except Exception as exc:
             audit_failure(
-                session_id,
+                resolved_session_id,
                 ToolName.LIST_ISSUES,
                 args,
                 str(exc),
@@ -265,19 +290,21 @@ def create_server(context: RuntimeContext) -> FastMCP:
 
     @server.tool()
     def create_local_issue(
-        session_id: str,
         title: str,
         body: str = "",
         repo_source: str | None = None,
+        session_id: str | None = None,
+        ctx: Context | None = None,
     ) -> dict[str, Any]:
+        resolved_session_id = _resolve_session_id_from_context(session_id, ctx)
         args = {
-            "session_id": session_id,
+            "session_id": resolved_session_id,
             "title": title,
             "body": body,
             "repo_source": repo_source,
         }
         try:
-            session = context.policy.require_tool(session_id, ToolName.CREATE_LOCAL_ISSUE)
+            session = context.policy.require_tool(resolved_session_id, ToolName.CREATE_LOCAL_ISSUE)
             admin_service = AdminService(context.config.runtime_dir)
             metadata = _issue_creation_metadata(session)
             issue_kwargs: dict[str, Any] = {
@@ -291,7 +318,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
             issue = admin_service.create_local_issue(**issue_kwargs)
             result = _payload_from_result(issue) or {}
             audit_success(
-                session_id,
+                resolved_session_id,
                 ToolName.CREATE_LOCAL_ISSUE,
                 args,
                 {
@@ -302,11 +329,11 @@ def create_server(context: RuntimeContext) -> FastMCP:
             )
             return result
         except PolicyError as exc:
-            audit_failure(session_id, ToolName.CREATE_LOCAL_ISSUE, args, str(exc))
+            audit_failure(resolved_session_id, ToolName.CREATE_LOCAL_ISSUE, args, str(exc))
             raise
         except Exception as exc:
             audit_failure(
-                session_id,
+                resolved_session_id,
                 ToolName.CREATE_LOCAL_ISSUE,
                 args,
                 str(exc),
@@ -317,19 +344,21 @@ def create_server(context: RuntimeContext) -> FastMCP:
 
     @server.tool()
     def approve_issue(
-        session_id: str,
         issue_id: str,
         priority: str | None = None,
         reason: str | None = None,
+        session_id: str | None = None,
+        ctx: Context | None = None,
     ) -> dict[str, Any]:
+        resolved_session_id = _resolve_session_id_from_context(session_id, ctx)
         args = {
-            "session_id": session_id,
+            "session_id": resolved_session_id,
             "issue_id": issue_id,
             "priority": priority,
             "reason": reason,
         }
         try:
-            session = context.policy.require_tool(session_id, ToolName.APPROVE_ISSUE)
+            session = context.policy.require_tool(resolved_session_id, ToolName.APPROVE_ISSUE)
             fields: dict[str, object] | None = None
             if reason is not None or priority is not None:
                 fields = {}
@@ -343,7 +372,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 fields=fields,
             )
             audit_success(
-                session_id,
+                resolved_session_id,
                 ToolName.APPROVE_ISSUE,
                 args,
                 {
@@ -354,11 +383,11 @@ def create_server(context: RuntimeContext) -> FastMCP:
             )
             return result
         except PolicyError as exc:
-            audit_failure(session_id, ToolName.APPROVE_ISSUE, args, str(exc))
+            audit_failure(resolved_session_id, ToolName.APPROVE_ISSUE, args, str(exc))
             raise
         except Exception as exc:
             audit_failure(
-                session_id,
+                resolved_session_id,
                 ToolName.APPROVE_ISSUE,
                 args,
                 str(exc),
@@ -368,14 +397,15 @@ def create_server(context: RuntimeContext) -> FastMCP:
             raise
 
     @server.tool()
-    def claim_next_issue(session_id: str) -> dict[str, Any]:
-        args = {"session_id": session_id}
+    def claim_next_issue(session_id: str | None = None, ctx: Context | None = None) -> dict[str, Any]:
+        resolved_session_id = _resolve_session_id_from_context(session_id, ctx)
+        args = {"session_id": resolved_session_id}
         try:
-            session = context.policy.require_tool(session_id, ToolName.CLAIM_NEXT_ISSUE)
-            result = AdminService(context.config.runtime_dir).claim_next_issue(session_id=session_id)
+            session = context.policy.require_tool(resolved_session_id, ToolName.CLAIM_NEXT_ISSUE)
+            result = AdminService(context.config.runtime_dir).claim_next_issue(session_id=resolved_session_id)
             payload = _payload_from_result(result)
             audit_success(
-                session_id,
+                resolved_session_id,
                 ToolName.CLAIM_NEXT_ISSUE,
                 args,
                 {
@@ -387,11 +417,11 @@ def create_server(context: RuntimeContext) -> FastMCP:
             )
             return payload or {}
         except PolicyError as exc:
-            audit_failure(session_id, ToolName.CLAIM_NEXT_ISSUE, args, str(exc))
+            audit_failure(resolved_session_id, ToolName.CLAIM_NEXT_ISSUE, args, str(exc))
             raise
         except Exception as exc:
             audit_failure(
-                session_id,
+                resolved_session_id,
                 ToolName.CLAIM_NEXT_ISSUE,
                 args,
                 str(exc),
@@ -401,18 +431,24 @@ def create_server(context: RuntimeContext) -> FastMCP:
             raise
 
     @server.tool()
-    def complete_issue(session_id: str, issue_id: str, summary: str) -> dict[str, Any]:
-        args = {"session_id": session_id, "issue_id": issue_id, "summary": summary}
+    def complete_issue(
+        issue_id: str,
+        summary: str,
+        session_id: str | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        resolved_session_id = _resolve_session_id_from_context(session_id, ctx)
+        args = {"session_id": resolved_session_id, "issue_id": issue_id, "summary": summary}
         try:
-            session = context.policy.require_tool(session_id, ToolName.COMPLETE_ISSUE)
+            session = context.policy.require_tool(resolved_session_id, ToolName.COMPLETE_ISSUE)
             result = AdminService(context.config.runtime_dir).complete_issue(
-                session_id=session_id,
+                session_id=resolved_session_id,
                 issue_id=issue_id,
                 summary=summary,
             )
             payload = _payload_from_result(result) or {}
             audit_success(
-                session_id,
+                resolved_session_id,
                 ToolName.COMPLETE_ISSUE,
                 args,
                 {
@@ -423,11 +459,11 @@ def create_server(context: RuntimeContext) -> FastMCP:
             )
             return payload
         except PolicyError as exc:
-            audit_failure(session_id, ToolName.COMPLETE_ISSUE, args, str(exc))
+            audit_failure(resolved_session_id, ToolName.COMPLETE_ISSUE, args, str(exc))
             raise
         except Exception as exc:
             audit_failure(
-                session_id,
+                resolved_session_id,
                 ToolName.COMPLETE_ISSUE,
                 args,
                 str(exc),
@@ -438,17 +474,19 @@ def create_server(context: RuntimeContext) -> FastMCP:
 
     @server.tool()
     def reject_issue(
-        session_id: str,
         issue_id: str,
         reason: str | None = None,
+        session_id: str | None = None,
+        ctx: Context | None = None,
     ) -> dict[str, Any]:
+        resolved_session_id = _resolve_session_id_from_context(session_id, ctx)
         args = {
-            "session_id": session_id,
+            "session_id": resolved_session_id,
             "issue_id": issue_id,
             "reason": reason,
         }
         try:
-            session = context.policy.require_tool(session_id, ToolName.REJECT_ISSUE)
+            session = context.policy.require_tool(resolved_session_id, ToolName.REJECT_ISSUE)
             fields: dict[str, object] | None = None
             if reason is not None:
                 fields = {"Reason": reason}
@@ -458,7 +496,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 fields=fields,
             )
             audit_success(
-                session_id,
+                resolved_session_id,
                 ToolName.REJECT_ISSUE,
                 args,
                 {
@@ -469,11 +507,11 @@ def create_server(context: RuntimeContext) -> FastMCP:
             )
             return result
         except PolicyError as exc:
-            audit_failure(session_id, ToolName.REJECT_ISSUE, args, str(exc))
+            audit_failure(resolved_session_id, ToolName.REJECT_ISSUE, args, str(exc))
             raise
         except Exception as exc:
             audit_failure(
-                session_id,
+                resolved_session_id,
                 ToolName.REJECT_ISSUE,
                 args,
                 str(exc),

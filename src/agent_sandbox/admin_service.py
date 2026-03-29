@@ -8,6 +8,8 @@ import subprocess
 import sys
 import threading
 import time
+import fcntl
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -1121,6 +1123,7 @@ class AdminService:
         self.agent_control_store = AgentControlStore(self.config.host_agent_control_state_path)
         self.local_issue_store = JsonStore(self.config.runtime_dir / "local-issues.json", LocalIssueRecord)
         self.local_issue_counter_path = self.config.runtime_dir / "local-issue-counter.txt"
+        self.local_issue_create_lock_path = self.config.runtime_dir / "local-issue-create.lock"
         self.local_issue_yaml_dir = self.config.runtime_dir / "issues"
         self.local_issue_yaml_dir.mkdir(parents=True, exist_ok=True)
         self.use_privileged_helper = False
@@ -2044,6 +2047,19 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
         self.local_issue_counter_path.write_text(f"{current}\n", encoding="utf-8")
         return str(current)
 
+    @contextmanager
+    def _local_issue_creation_lock(self):
+        self.local_issue_create_lock_path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(self.local_issue_create_lock_path, os.O_RDWR | os.O_CREAT, 0o644)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            yield
+        finally:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            finally:
+                os.close(fd)
+
     def _canonical_local_issue_id(self, issue_number: str, directory_path: str) -> str:
         return _scoped_issue_id(issue_number, directory_path=directory_path, provider="local")
 
@@ -2140,117 +2156,118 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
         state_value: str | None = "New"
         url_value: str | None = None
         comments_value: list[dict[str, str]] = []
-        if yaml_path:
-            source_path = Path(yaml_path)
-            source_text = source_path.read_text(encoding="utf-8")
-            try:
-                yaml_payload = json.loads(json.dumps(yaml.safe_load(source_text) or {}))
-            except Exception:
-                yaml_payload = {}
-            issue_number = _extract_issue_number_from_payload(yaml_payload) or _read_issue_number_from_yaml(source_path)
-            target_yaml_path = self.local_issue_yaml_dir / f"{issue_number}.yaml"
-            target_yaml_path.write_text(source_text, encoding="utf-8")
-            yaml_text = target_yaml_path.read_text(encoding="utf-8")
-            try:
-                yaml_payload = json.loads(json.dumps(yaml.safe_load(yaml_text) or {}))
-            except Exception:
-                yaml_payload = {}
-            raw_source = yaml_payload.get("source")
-            if isinstance(raw_source, str) and raw_source.strip():
-                source_value = raw_source.strip()
-            elif isinstance(raw_source, dict):
-                source_value = "proxy_azure_devops"
-                source_type = "remote_proxy"
-                merged_metadata["remote"] = {
-                    "provider": "azure_devops",
-                    "organization": str(raw_source.get("organization") or "").strip(),
-                    "project": str(raw_source.get("project") or "").strip(),
-                    "work_item_url": str(raw_source.get("work_item_url") or "").strip(),
-                    "issue_id": issue_number,
-                }
-                remote_reference = RemoteIssueReference(
-                    provider="azure_devops",
-                    organization=str(raw_source.get("organization") or "").strip() or None,
-                    project=str(raw_source.get("project") or "").strip() or None,
-                    work_item_id=issue_number,
-                    work_item_url=str(raw_source.get("work_item_url") or "").strip() or None,
-                    last_synced_at=now,
-                )
-            if "url" in yaml_payload or "state" in yaml_payload or "comments" in yaml_payload:
-                if source_value == "local_gui":
+        with self._local_issue_creation_lock():
+            if yaml_path:
+                source_path = Path(yaml_path)
+                source_text = source_path.read_text(encoding="utf-8")
+                try:
+                    yaml_payload = json.loads(json.dumps(yaml.safe_load(source_text) or {}))
+                except Exception:
+                    yaml_payload = {}
+                issue_number = _extract_issue_number_from_payload(yaml_payload) or _read_issue_number_from_yaml(source_path)
+                target_yaml_path = self.local_issue_yaml_dir / f"{issue_number}.yaml"
+                target_yaml_path.write_text(source_text, encoding="utf-8")
+                yaml_text = target_yaml_path.read_text(encoding="utf-8")
+                try:
+                    yaml_payload = json.loads(json.dumps(yaml.safe_load(yaml_text) or {}))
+                except Exception:
+                    yaml_payload = {}
+                raw_source = yaml_payload.get("source")
+                if isinstance(raw_source, str) and raw_source.strip():
+                    source_value = raw_source.strip()
+                elif isinstance(raw_source, dict):
                     source_value = "proxy_azure_devops"
-                source_type = "remote_proxy"
-                merged_metadata["proxy_cache"] = {
-                    "url": str(yaml_payload.get("url") or "").strip(),
-                    "state": str(yaml_payload.get("state") or "").strip(),
-                    "comments": list(yaml_payload.get("comments") or []),
-                    "updated_at": str(yaml_payload.get("updated_date") or "").strip(),
-                }
-                merged_metadata.setdefault("remote", {"provider": "azure_devops", "issue_id": issue_number})
-            state_value = str(yaml_payload.get("state") or "").strip() or None
-            url_value = str(yaml_payload.get("url") or "").strip() or None
-            comments_value = [
-                dict(comment)
-                for comment in list(yaml_payload.get("comments") or [])
-                if isinstance(comment, dict)
-            ]
-            if not title:
-                title_match = re.search(r"(?m)^\s*title\s*:\s*[\"']?(.*?)[\"']?\s*$", yaml_text)
-                title = title_match.group(1).strip() if title_match else str(yaml_payload.get("title") or "").strip()
+                    source_type = "remote_proxy"
+                    merged_metadata["remote"] = {
+                        "provider": "azure_devops",
+                        "organization": str(raw_source.get("organization") or "").strip(),
+                        "project": str(raw_source.get("project") or "").strip(),
+                        "work_item_url": str(raw_source.get("work_item_url") or "").strip(),
+                        "issue_id": issue_number,
+                    }
+                    remote_reference = RemoteIssueReference(
+                        provider="azure_devops",
+                        organization=str(raw_source.get("organization") or "").strip() or None,
+                        project=str(raw_source.get("project") or "").strip() or None,
+                        work_item_id=issue_number,
+                        work_item_url=str(raw_source.get("work_item_url") or "").strip() or None,
+                        last_synced_at=now,
+                    )
+                if "url" in yaml_payload or "state" in yaml_payload or "comments" in yaml_payload:
+                    if source_value == "local_gui":
+                        source_value = "proxy_azure_devops"
+                    source_type = "remote_proxy"
+                    merged_metadata["proxy_cache"] = {
+                        "url": str(yaml_payload.get("url") or "").strip(),
+                        "state": str(yaml_payload.get("state") or "").strip(),
+                        "comments": list(yaml_payload.get("comments") or []),
+                        "updated_at": str(yaml_payload.get("updated_date") or "").strip(),
+                    }
+                    merged_metadata.setdefault("remote", {"provider": "azure_devops", "issue_id": issue_number})
+                state_value = str(yaml_payload.get("state") or "").strip() or None
+                url_value = str(yaml_payload.get("url") or "").strip() or None
+                comments_value = [
+                    dict(comment)
+                    for comment in list(yaml_payload.get("comments") or [])
+                    if isinstance(comment, dict)
+                ]
                 if not title:
-                    title = f"Local issue {issue_number}"
-            if not body:
-                body_match = re.search(r"(?m)^\s*body\s*:\s*[\"']?(.*?)[\"']?\s*$", yaml_text)
-                body = body_match.group(1).strip() if body_match else str(yaml_payload.get("description") or "").strip()
-        else:
-            if not title.strip():
-                raise ValueError("title is required when yaml_path is not provided")
-            issue_number = self._next_local_issue_number()
-            target_yaml_path = self.local_issue_yaml_dir / f"{issue_number}.yaml"
-            yaml_text = (
-                f"issue_number: {issue_number}\n"
-                f"title: {json.dumps(title.strip())}\n"
-                f"body: {json.dumps(body.strip())}\n"
-                f"state: {json.dumps('New')}\n"
-                f"source: local_gui\n"
-                f"created_at: {json.dumps(now.isoformat())}\n"
-            )
-            target_yaml_path.write_text(yaml_text, encoding="utf-8")
-        if remote_reference is not None and remote_reference.provider == "azure_devops":
-            issue_id = _scoped_issue_id(
-                issue_number,
+                    title_match = re.search(r"(?m)^\s*title\s*:\s*[\"']?(.*?)[\"']?\s*$", yaml_text)
+                    title = title_match.group(1).strip() if title_match else str(yaml_payload.get("title") or "").strip()
+                    if not title:
+                        title = f"Local issue {issue_number}"
+                if not body:
+                    body_match = re.search(r"(?m)^\s*body\s*:\s*[\"']?(.*?)[\"']?\s*$", yaml_text)
+                    body = body_match.group(1).strip() if body_match else str(yaml_payload.get("description") or "").strip()
+            else:
+                if not title.strip():
+                    raise ValueError("title is required when yaml_path is not provided")
+                issue_number = self._next_local_issue_number()
+                target_yaml_path = self.local_issue_yaml_dir / f"{issue_number}.yaml"
+                yaml_text = (
+                    f"issue_number: {issue_number}\n"
+                    f"title: {json.dumps(title.strip())}\n"
+                    f"body: {json.dumps(body.strip())}\n"
+                    f"state: {json.dumps('New')}\n"
+                    f"source: local_gui\n"
+                    f"created_at: {json.dumps(now.isoformat())}\n"
+                )
+                target_yaml_path.write_text(yaml_text, encoding="utf-8")
+            if remote_reference is not None and remote_reference.provider == "azure_devops":
+                issue_id = _scoped_issue_id(
+                    issue_number,
+                    directory_path=normalized_directory_path,
+                    provider="azure_devops",
+                    organization=remote_reference.organization,
+                    project=remote_reference.project,
+                )
+            else:
+                issue_id = self._canonical_local_issue_id(issue_number, normalized_directory_path)
+            existing_record = self.local_issue_store.get(issue_id)
+            record = LocalIssueRecord(
+                issue_id=issue_id,
+                issue_number=issue_number,
+                title=title.strip() or f"Local issue {issue_number}",
+                body=body.strip(),
+                yaml_path=str(target_yaml_path),
                 directory_path=normalized_directory_path,
-                provider="azure_devops",
-                organization=remote_reference.organization,
-                project=remote_reference.project,
+                repo_source=repo_source.strip() if repo_source else None,
+                source_type=source_type,
+                remote_reference=remote_reference,
+                state=(
+                    state_value
+                    if source_type == "remote_proxy"
+                    else _normalize_local_issue_state(state_value, allow_empty=False)
+                ),
+                url=url_value,
+                comments=comments_value,
+                source=source_value,
+                metadata=merged_metadata,
+                created_at=existing_record.created_at if existing_record is not None else now,
+                updated_at=now,
             )
-        else:
-            issue_id = self._canonical_local_issue_id(issue_number, normalized_directory_path)
-        existing_record = self.local_issue_store.get(issue_id)
-        record = LocalIssueRecord(
-            issue_id=issue_id,
-            issue_number=issue_number,
-            title=title.strip() or f"Local issue {issue_number}",
-            body=body.strip(),
-            yaml_path=str(target_yaml_path),
-            directory_path=normalized_directory_path,
-            repo_source=repo_source.strip() if repo_source else None,
-            source_type=source_type,
-            remote_reference=remote_reference,
-            state=(
-                state_value
-                if source_type == "remote_proxy"
-                else _normalize_local_issue_state(state_value, allow_empty=False)
-            ),
-            url=url_value,
-            comments=comments_value,
-            source=source_value,
-            metadata=merged_metadata,
-            created_at=existing_record.created_at if existing_record is not None else now,
-            updated_at=now,
-        )
-        self.local_issue_store.put(record.issue_id, record)
-        return record
+            self.local_issue_store.put(record.issue_id, record)
+            return record
 
     def _refresh_proxy_cache_from_remote(
         self,

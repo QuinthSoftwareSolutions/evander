@@ -102,8 +102,15 @@ if [ -f ~/.agent/config.env ]; then
   # shellcheck disable=SC1091
   . ~/.agent/config.env
 fi
+if [ -f /etc/agent-sandbox/session.env ]; then
+  # shellcheck disable=SC1091
+  . /etc/agent-sandbox/session.env
+fi
 CODEX_LLM_BASE_URL="${LLM_BASE_URL:-${AGENT_SANDBOX_LLM_BASE_URL:-http://192.168.250.1:11434/v1}}"
 CODEX_GATEWAY_URL="${AGENT_SANDBOX_GATEWAY_URL:-http://192.168.250.1:8000/mcp}"
+if [ -n "${AGENT_SANDBOX_SESSION_ID:-}" ]; then
+  CODEX_GATEWAY_URL="${CODEX_GATEWAY_URL}?session_id=${AGENT_SANDBOX_SESSION_ID}"
+fi
 cat > ~/.codex/config.toml <<CONFIG
 model = "gpt-5.4"
 model_provider = "openai"

@@ -1,7 +1,10 @@
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
-from agent_sandbox.gateway import _filter_discord_commands_for_session
+import pytest
+from mcp.server.fastmcp.exceptions import ToolError
+
+from agent_sandbox.gateway import _filter_discord_commands_for_session, _resolve_session_id_from_context
 from agent_sandbox.models import DiscordCommandEnvelope, SessionManifest, ToolName
 from agent_sandbox.policy import PolicyError
 
@@ -55,3 +58,36 @@ def test_filter_discord_commands_returns_raw_stream_cursor_with_denials() -> Non
     assert denied_count == 1
     assert next_cursor == "cmd_denied"
     assert denied_audits[0]["command_id"] == "cmd_denied"
+
+
+def test_resolve_session_id_from_context_prefers_explicit_value() -> None:
+    ctx = SimpleNamespace(
+        request_context=SimpleNamespace(
+            request=SimpleNamespace(query_params={"session_id": "query-session"}, headers={})
+        )
+    )
+
+    assert _resolve_session_id_from_context("explicit-session", ctx) == "explicit-session"
+
+
+def test_resolve_session_id_from_context_reads_query_param_then_header() -> None:
+    query_ctx = SimpleNamespace(
+        request_context=SimpleNamespace(
+            request=SimpleNamespace(query_params={"session_id": "query-session"}, headers={})
+        )
+    )
+    header_ctx = SimpleNamespace(
+        request_context=SimpleNamespace(
+            request=SimpleNamespace(query_params={}, headers={"x-agent-sandbox-session-id": "header-session"})
+        )
+    )
+
+    assert _resolve_session_id_from_context(None, query_ctx) == "query-session"
+    assert _resolve_session_id_from_context(None, header_ctx) == "header-session"
+
+
+def test_resolve_session_id_from_context_requires_value() -> None:
+    ctx = SimpleNamespace(request_context=SimpleNamespace(request=SimpleNamespace(query_params={}, headers={})))
+
+    with pytest.raises(ToolError, match="session_id is required"):
+        _resolve_session_id_from_context(None, ctx)
