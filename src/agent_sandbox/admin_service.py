@@ -62,6 +62,8 @@ _WORKER_GLOBAL_CONFIG_MODELS: dict[str, type[BaseModel]] = {
     "ado": AdoWorkerGlobalConfig,
     "host-heartbeat": HostHeartbeatWorkerGlobalConfig,
 }
+ISSUE_STATES: tuple[str, ...] = ("New", "Committed", "In Progress", "Completed", "Closed")
+_ISSUE_STATE_SET = set(ISSUE_STATES)
 
 
 class EffectiveIssueSetupConfig(BaseModel):
@@ -92,6 +94,16 @@ class WorkerGlobalConfigWritePayload(BaseModel):
 
 def _utc_now() -> datetime:
     return datetime.now(UTC)
+
+
+def _normalize_local_issue_state(state: str | None, *, allow_empty: bool = False) -> str | None:
+    normalized = str(state or "").strip()
+    if not normalized:
+        return None if allow_empty else "New"
+    if normalized not in _ISSUE_STATE_SET:
+        allowed = ", ".join(ISSUE_STATES)
+        raise ValueError(f"Invalid issue state: {normalized!r}. Allowed values: {allowed}.")
+    return normalized
 
 
 def _extract_issue_number(value: str | None) -> str | None:
@@ -1618,7 +1630,7 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
         source_value = "local_gui"
         source_type = "local_manual"
         remote_reference: RemoteIssueReference | None = None
-        state_value: str | None = None
+        state_value: str | None = "New"
         url_value: str | None = None
         comments_value: list[dict[str, str]] = []
         if yaml_path:
@@ -1692,6 +1704,7 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
                 f"issue_number: {issue_number}\n"
                 f"title: {json.dumps(title.strip())}\n"
                 f"body: {json.dumps(body.strip())}\n"
+                f"state: {json.dumps('New')}\n"
                 f"source: local_gui\n"
                 f"created_at: {json.dumps(now.isoformat())}\n"
             )
@@ -1717,7 +1730,11 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
             repo_source=repo_source.strip() if repo_source else None,
             source_type=source_type,
             remote_reference=remote_reference,
-            state=state_value,
+            state=(
+                state_value
+                if source_type == "remote_proxy"
+                else _normalize_local_issue_state(state_value, allow_empty=False)
+            ),
             url=url_value,
             comments=comments_value,
             source=source_value,
@@ -1893,8 +1910,9 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
         if proxy_target is None:
             issue.metadata = dict(issue.metadata)
             if state is not None:
-                issue.metadata["state"] = state
-                issue.state = state
+                normalized_state = _normalize_local_issue_state(state, allow_empty=False)
+                issue.metadata["state"] = normalized_state
+                issue.state = normalized_state
             if fields:
                 local_fields = dict(issue.metadata.get("fields") or {})
                 local_fields.update(fields)

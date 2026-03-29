@@ -780,8 +780,8 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self.vm_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.vm_table.itemSelectionChanged.connect(self._on_vm_selection_changed)
 
-        self.issue_table = QTableWidget(0, 4)
-        self.issue_table.setHorizontalHeaderLabels(["Issue", "Title", "Repo source", "YAML"])
+        self.issue_table = QTableWidget(0, 5)
+        self.issue_table.setHorizontalHeaderLabels(["Issue", "Title", "State", "Repo source", "YAML"])
         self.issue_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.issue_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.issue_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
@@ -1438,8 +1438,9 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         for row, issue in enumerate(issues):
             self.issue_table.setItem(row, 0, QTableWidgetItem(issue.issue_number))
             self.issue_table.setItem(row, 1, QTableWidgetItem(issue.title))
-            self.issue_table.setItem(row, 2, QTableWidgetItem(issue.repo_source or ""))
-            self.issue_table.setItem(row, 3, QTableWidgetItem(issue.yaml_path))
+            self.issue_table.setItem(row, 2, QTableWidgetItem(issue.state or ""))
+            self.issue_table.setItem(row, 3, QTableWidgetItem(issue.repo_source or ""))
+            self.issue_table.setItem(row, 4, QTableWidgetItem(issue.yaml_path))
         if previously_selected_issue:
             restored = False
             for row, issue in enumerate(issues):

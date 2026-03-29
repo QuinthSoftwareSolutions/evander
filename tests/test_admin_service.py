@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 from typing import Any
 
+import pytest
 from agent_sandbox.admin_service import AdminService
 from agent_sandbox.models import SessionManifest
 
@@ -705,14 +706,32 @@ def test_issue_actions_use_local_behavior_for_non_proxy_issue(tmp_path: Path) ->
     issue = service.create_local_issue(title="Local", body="only local")
 
     comment_result = service.post_issue_comment(issue.issue_number, "hello local")
-    update_result = service.update_issue(issue.issue_number, state="Done", fields={"priority": "high"})
+    update_result = service.update_issue(issue.issue_number, state="Completed", fields={"priority": "high"})
     read_result = service.read_issue(issue.issue_number)
 
     assert comment_result["source_type"] == "local"
     assert update_result["source_type"] == "local"
     assert read_result["source_type"] == "local"
-    assert read_result["state"] == "Done"
+    assert read_result["state"] == "Completed"
     assert read_result["comments"][-1]["text"] == "hello local"
+
+
+def test_create_local_issue_defaults_to_new_state(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+
+    issue = service.create_local_issue(title="Local", body="only local")
+
+    stored = service.local_issue_store.get(issue.issue_id)
+    assert stored is not None
+    assert stored.state == "New"
+
+
+def test_update_issue_rejects_invalid_local_state(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    issue = service.create_local_issue(title="Local", body="only local")
+
+    with pytest.raises(ValueError, match="Invalid issue state"):
+        service.update_issue(issue.issue_number, state="Done")
 
 
 def test_create_local_issue_from_ado_yaml_creates_proxy_record_and_repoll_updates_without_duplicate(tmp_path: Path) -> None:
