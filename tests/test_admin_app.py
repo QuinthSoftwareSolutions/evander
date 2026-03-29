@@ -204,18 +204,23 @@ def test_update_issue_action_bar_shows_yaml_button_for_selected_issue() -> None:
         def hide(self) -> None:
             self.visible = False
 
+        def setVisible(self, value: bool) -> None:
+            self.visible = value
+
     window = SimpleNamespace(
         issue_selection_hint=DummyLabel(),
         create_issue_vm_button=DummyButton(),
+        edit_issue_button=DummyButton(),
         view_issue_yaml_button=DummyButton(),
         delete_issue_button=DummyButton(),
-        selected_issue_record=lambda: SimpleNamespace(issue_number="14382"),
+        selected_issue_record=lambda: SimpleNamespace(issue_number="14382", source_type="local_manual"),
     )
 
     admin_app.MainWindow.update_issue_action_bar(window)
 
     assert window.issue_selection_hint.text == "Selected: 14382"
     assert window.create_issue_vm_button.visible is True
+    assert window.edit_issue_button.visible is True
     assert window.view_issue_yaml_button.visible is True
     assert window.delete_issue_button.visible is True
 

@@ -9,7 +9,7 @@ from typing import Any, get_args, get_origin
 
 from pydantic import BaseModel
 
-from .admin_service import AdminService
+from .admin_service import ISSUE_STATES, AdminService
 from .config import AdoWorkerGlobalConfig, GatewayConfig, HostHeartbeatWorkerGlobalConfig
 from .directory_config import (
     AdoWorkerDirectoryConfig,
@@ -168,6 +168,44 @@ class IssueDialog(QDialog):  # type: ignore[misc]
             "repo_source": self.repo_source_edit.text().strip() or None,
             "yaml_path": None if manual_mode else yaml_path,
             "start_vm": self.start_vm_checkbox.isChecked(),
+        }
+
+
+class EditIssueDialog(QDialog):  # type: ignore[misc]
+    def __init__(self, issue, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(f"Edit Local Issue {issue.issue_number}")
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+
+        self.title_edit = QLineEdit(issue.title)
+        self.repo_source_edit = QLineEdit(issue.repo_source or "")
+        self.state_combo = QComboBox()
+        self.state_combo.addItems(list(ISSUE_STATES))
+        selected_state = issue.state or "New"
+        selected_index = self.state_combo.findText(selected_state)
+        if selected_index >= 0:
+            self.state_combo.setCurrentIndex(selected_index)
+        self.body_edit = QPlainTextEdit()
+        self.body_edit.setPlainText(issue.body or "")
+
+        form.addRow("Title", self.title_edit)
+        form.addRow("Repo source", self.repo_source_edit)
+        form.addRow("State", self.state_combo)
+        form.addRow("Body", self.body_edit)
+        layout.addLayout(form)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def payload(self) -> dict[str, object]:
+        return {
+            "title": self.title_edit.text().strip(),
+            "repo_source": self.repo_source_edit.text().strip() or None,
+            "state": self.state_combo.currentText().strip() or "New",
+            "body": self.body_edit.toPlainText().strip(),
         }
 
 
@@ -989,7 +1027,11 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self.delete_issue_button = QPushButton("Delete")
         _set_standard_icon(self.delete_issue_button, "SP_TrashIcon")
         self.delete_issue_button.clicked.connect(self.handle_delete_selected_issue)
+        self.edit_issue_button = QPushButton("Edit")
+        _set_standard_icon(self.edit_issue_button, "SP_FileDialogDetailedView")
+        self.edit_issue_button.clicked.connect(self.show_edit_issue_dialog)
         self.issue_action_bar.addWidget(self.create_issue_vm_button)
+        self.issue_action_bar.addWidget(self.edit_issue_button)
         self.issue_action_bar.addWidget(self.view_issue_yaml_button)
         self.issue_action_bar.addWidget(self.delete_issue_button)
         issue_toolbar.addLayout(self.issue_action_bar)
@@ -1542,12 +1584,14 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         if issue is None:
             self.issue_selection_hint.setText("No issue selected")
             self.create_issue_vm_button.hide()
+            self.edit_issue_button.hide()
             self.view_issue_yaml_button.hide()
             self.delete_issue_button.hide()
             return
 
         self.issue_selection_hint.setText(f"Selected: {issue.issue_number}")
         self.create_issue_vm_button.show()
+        self.edit_issue_button.setVisible(issue.source_type == "local_manual")
         self.view_issue_yaml_button.show()
         self.delete_issue_button.show()
 
@@ -1562,6 +1606,21 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         if issue is None:
             return
         self.open_create_vm_dialog(issue.issue_number, issue.repo_source)
+
+    def show_edit_issue_dialog(self) -> None:
+        issue = self.selected_issue_record()
+        if issue is None or issue.source_type != "local_manual":
+            return
+        dialog = EditIssueDialog(issue, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        payload = dialog.payload()
+        self.run_action(
+            f"Edit issue {issue.issue_number}",
+            self.service.update_local_issue,
+            issue.issue_number,
+            **payload,
+        )
 
     def handle_view_selected_issue_yaml(self) -> None:
         issue = self.selected_issue_record()
