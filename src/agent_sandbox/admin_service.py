@@ -2538,8 +2538,16 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
                 local_issue = self._resolve_local_issue_record(issue_input)
                 issue_number = local_issue.issue_number
                 issue_input = local_issue.yaml_path
-            except ValueError:
-                pass
+            except ValueError as exc:
+                if str(exc).startswith("Unknown local issue"):
+                    pass
+                else:
+                    return VmActionResult(
+                        success=False,
+                        vm_name=f"vm-{issue_number}",
+                        action="create_issue_vm",
+                        message=str(exc),
+                    )
         resolved_session_id = session_id or _default_issue_session_id(issue_number)
         resolved_vm_name = f"vm-{issue_number}"
         normalized_directory_path = self._normalize_directory_path(
