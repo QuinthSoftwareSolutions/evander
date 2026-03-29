@@ -876,6 +876,20 @@ def test_update_issue_accepts_approved_state(tmp_path: Path) -> None:
     assert stored.metadata["fields"]["Priority"] == "P1"
 
 
+def test_update_issue_updates_local_yaml_file(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    issue = service.create_local_issue(title="Task", body="only local")
+    original_yaml = Path(issue.yaml_path).read_text(encoding="utf-8")
+
+    result = service.update_issue(issue.issue_number, state="Committed", fields={"Priority": "P1"})
+
+    updated_yaml = Path(issue.yaml_path).read_text(encoding="utf-8")
+    assert result["source_type"] == "local"
+    assert updated_yaml != original_yaml
+    assert "state: Committed" in updated_yaml
+    assert "Priority: P1" in updated_yaml
+
+
 def test_issue_actions_reject_ambiguous_bare_number_across_directories(tmp_path: Path) -> None:
     service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
     created = service.create_directory_child("root", "team")

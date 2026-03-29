@@ -2113,7 +2113,10 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
         issue.repo_source = repo_source.strip() if repo_source else None
         issue.updated_at = now
         self.local_issue_store.put(issue.issue_id, issue)
+        self._write_local_issue_yaml(issue, updated_at=now)
+        return issue
 
+    def _write_local_issue_yaml(self, issue: LocalIssueRecord, *, updated_at: datetime | None = None) -> None:
         yaml_path = Path(issue.yaml_path)
         payload: dict[str, object] = {}
         if yaml_path.exists():
@@ -2128,10 +2131,15 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
         payload["body"] = issue.body
         payload["state"] = issue.state
         payload["source"] = issue.source or "local_gui"
-        payload["updated_at"] = now.isoformat()
+        fields = _local_issue_fields(issue)
+        if fields:
+            payload["fields"] = fields
+        else:
+            payload.pop("fields", None)
+        if updated_at is not None:
+            payload["updated_at"] = updated_at.isoformat()
         yaml_path.parent.mkdir(parents=True, exist_ok=True)
         yaml_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
-        return issue
 
     def create_issue(
         self,
@@ -2438,6 +2446,7 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
                 issue.metadata["fields"] = local_fields
             issue.updated_at = _utc_now()
             self.local_issue_store.put(issue.issue_id, issue)
+            self._write_local_issue_yaml(issue, updated_at=issue.updated_at)
             return {"issue_number": issue.issue_number, "source_type": "local", "updated": True}
 
         provider, remote_issue_id = proxy_target
