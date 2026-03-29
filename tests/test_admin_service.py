@@ -441,6 +441,44 @@ def test_create_issue_vm_uses_directory_vm_defaults_overlay_for_guest_env(tmp_pa
     assert captured_env["NUGET_RELAY_BASE_URL"] == "http://10.20.30.40:13000"
 
 
+def test_create_issue_vm_uses_issue_directory_when_called_with_yaml_path(tmp_path: Path, monkeypatch) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    create_result = service.create_directory_child("root", "team")
+    assert create_result.ok is True and create_result.data is not None
+    team_path = create_result.data.details.directory.path
+    write_result = service.write_directory_domain_config(
+        team_path,
+        "vm",
+        {
+            "gateway_url": "http://10.20.30.40:8000/mcp",
+            "openai_relay_port": 12000,
+            "nuget_relay_port": 13000,
+        },
+    )
+    assert write_result.ok is True
+    issue = service.create_local_issue(title="Team issue", body="body", directory_path=team_path)
+
+    captured_env: dict[str, str] = {}
+
+    def fake_run(*args, **kwargs):
+        captured_env.update(kwargs.get("env", {}))
+        return subprocess.CompletedProcess(args[0], 0, stdout="", stderr="")
+
+    monkeypatch.setattr("agent_sandbox.admin_service.subprocess.run", fake_run)
+
+    result = service.create_issue_vm(
+        issue=issue.yaml_path,
+        session_id="issue-1-session",
+        start_agent=False,
+    )
+
+    manifest = service.runtime.sessions.get("issue-1-session")
+    assert result.success is True
+    assert manifest is not None
+    assert manifest.directory_path == team_path
+    assert captured_env["GATEWAY_URL"] == "http://10.20.30.40:8000/mcp"
+
+
 def test_create_issue_vm_uses_issue_setup_domain_for_setup_env(tmp_path: Path, monkeypatch) -> None:
     service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
     create_result = service.create_directory_child("root", "team")

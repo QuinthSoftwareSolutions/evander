@@ -2553,13 +2553,12 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
         issue_input = issue
         issue_number = _resolve_issue_number(issue_input)
         local_issue: LocalIssueRecord | None = None
-        if not Path(issue_input).is_file():
-            try:
-                local_issue = self._resolve_local_issue_record(issue_input)
-                issue_number = local_issue.issue_number
-                issue_input = local_issue.yaml_path
-            except ValueError:
-                pass
+        try:
+            local_issue = self._resolve_local_issue_record(issue_input)
+            issue_number = local_issue.issue_number
+            issue_input = local_issue.yaml_path
+        except ValueError:
+            pass
         resolved_session_id = session_id or _default_issue_session_id(issue_number)
         resolved_vm_name = f"vm-{issue_number}"
         normalized_directory_path = self._normalize_directory_path(
