@@ -24,6 +24,15 @@ from .runtime import RuntimeContext, build_runtime
 from .services import normalize_pr_feedback_provider
 
 
+def _normalize_issue_status_filters(statuses: list[str] | None) -> set[str]:
+    if not statuses:
+        return {"closed", "completed"}
+    normalized = {str(status).strip().lower() for status in statuses if str(status).strip()}
+    if not normalized:
+        return {"closed", "completed"}
+    return normalized
+
+
 def _redact_nested_value(redacted_keys: set[str], value: Any) -> Any:
     if isinstance(value, dict):
         redacted: dict[str, Any] = {}
@@ -147,6 +156,57 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 result={"error": error, "error_class": error_class},
             )
         )
+
+    @server.tool()
+    def list_issues(
+        session_id: str,
+        status: list[str] | None = None,
+    ) -> dict[str, Any]:
+        args = {
+            "session_id": session_id,
+            "status": status,
+        }
+        try:
+            session = context.policy.require_tool(session_id, ToolName.LIST_ISSUES)
+            status_filter = _normalize_issue_status_filters(status)
+            issues = AdminService(context.config.runtime_dir).list_local_issues(
+                directory_path=session.directory_path,
+                direct_only=True,
+            )
+            if status:
+                filtered = [
+                    issue for issue in issues if str(issue.state or "").strip().lower() in status_filter
+                ]
+            else:
+                filtered = [
+                    issue for issue in issues if str(issue.state or "").strip().lower() not in status_filter
+                ]
+            result = {
+                "issues": [issue.model_dump(mode="json") for issue in filtered],
+            }
+            audit_success(
+                session_id,
+                ToolName.LIST_ISSUES,
+                args,
+                {
+                    "directory_path": session.directory_path,
+                    "count": len(filtered),
+                },
+            )
+            return result
+        except PolicyError as exc:
+            audit_failure(session_id, ToolName.LIST_ISSUES, args, str(exc))
+            raise
+        except Exception as exc:
+            audit_failure(
+                session_id,
+                ToolName.LIST_ISSUES,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
 
     @server.tool()
     def create_local_issue(
