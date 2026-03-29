@@ -16,6 +16,8 @@ def utc_now() -> datetime:
 
 class ToolName(str, Enum):
     CREATE_LOCAL_ISSUE = "create_local_issue"
+    APPROVE_ISSUE = "approve_issue"
+    REJECT_ISSUE = "reject_issue"
     DISCORD_GET_COMMANDS = "discord_get_commands"
     DISCORD_POST_STATUS = "discord_post_status"
     EMAIL_LIST_UNREAD = "email_list_unread"

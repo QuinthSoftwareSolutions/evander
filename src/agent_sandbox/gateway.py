@@ -196,6 +196,98 @@ def create_server(context: RuntimeContext) -> FastMCP:
             raise
 
     @server.tool()
+    def approve_issue(
+        session_id: str,
+        issue_id: str,
+        reason: str | None = None,
+    ) -> dict[str, Any]:
+        args = {
+            "session_id": session_id,
+            "issue_id": issue_id,
+            "reason": reason,
+        }
+        try:
+            session = context.policy.require_tool(session_id, ToolName.APPROVE_ISSUE)
+            fields: dict[str, object] | None = None
+            if reason is not None:
+                fields = {"Reason": reason}
+            result = AdminService(context.config.runtime_dir).update_issue(
+                issue_id,
+                state="Committed",
+                fields=fields,
+            )
+            audit_success(
+                session_id,
+                ToolName.APPROVE_ISSUE,
+                args,
+                {
+                    "issue_number": result.get("issue_number"),
+                    "source_type": result.get("source_type"),
+                    "directory_path": session.directory_path,
+                },
+            )
+            return result
+        except PolicyError as exc:
+            audit_failure(session_id, ToolName.APPROVE_ISSUE, args, str(exc))
+            raise
+        except Exception as exc:
+            audit_failure(
+                session_id,
+                ToolName.APPROVE_ISSUE,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
+    def reject_issue(
+        session_id: str,
+        issue_id: str,
+        reason: str | None = None,
+    ) -> dict[str, Any]:
+        args = {
+            "session_id": session_id,
+            "issue_id": issue_id,
+            "reason": reason,
+        }
+        try:
+            session = context.policy.require_tool(session_id, ToolName.REJECT_ISSUE)
+            fields: dict[str, object] | None = None
+            if reason is not None:
+                fields = {"Reason": reason}
+            result = AdminService(context.config.runtime_dir).update_issue(
+                issue_id,
+                state="Closed",
+                fields=fields,
+            )
+            audit_success(
+                session_id,
+                ToolName.REJECT_ISSUE,
+                args,
+                {
+                    "issue_number": result.get("issue_number"),
+                    "source_type": result.get("source_type"),
+                    "directory_path": session.directory_path,
+                },
+            )
+            return result
+        except PolicyError as exc:
+            audit_failure(session_id, ToolName.REJECT_ISSUE, args, str(exc))
+            raise
+        except Exception as exc:
+            audit_failure(
+                session_id,
+                ToolName.REJECT_ISSUE,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
     def has_pending_feedback(session_id: str) -> dict[str, Any]:
         args = HasPendingFeedbackRequest(session_id=session_id).model_dump(mode="json")
         try:

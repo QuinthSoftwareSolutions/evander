@@ -273,6 +273,154 @@ def test_create_local_issue_requires_tool_permission(tmp_path: Path) -> None:
         )
 
 
+def test_approve_issue_sets_committed_state_and_reason(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    context = make_context(tmp_path)
+    context.sessions.put(
+        "session-1",
+        SessionManifest(
+            session_id="session-1",
+            directory_path="root/team-a",
+            allowed_tools=[ToolName.APPROVE_ISSUE],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    captured: dict[str, object] = {}
+
+    class StubAdminService:
+        def __init__(self, runtime_dir: Path) -> None:
+            captured["runtime_dir"] = runtime_dir
+
+        def update_issue(
+            self,
+            issue_id: str,
+            *,
+            state: str | None = None,
+            fields: dict[str, object] | None = None,
+            sync_proxy_cache: bool = True,  # noqa: ARG002
+        ) -> dict[str, object]:
+            captured["payload"] = {
+                "issue_id": issue_id,
+                "state": state,
+                "fields": fields,
+            }
+            return {"issue_number": issue_id, "source_type": "local", "updated": True}
+
+    monkeypatch.setattr("agent_sandbox.gateway.AdminService", StubAdminService)
+    server = create_server(context)
+
+    result = call_tool(
+        server,
+        "approve_issue",
+        {"session_id": "session-1", "issue_id": "42", "reason": "Capacity confirmed"},
+    )
+
+    assert captured["runtime_dir"] == context.config.runtime_dir
+    assert captured["payload"] == {
+        "issue_id": "42",
+        "state": "Committed",
+        "fields": {"Reason": "Capacity confirmed"},
+    }
+    assert result["issue_number"] == "42"
+
+
+def test_reject_issue_sets_closed_state_and_reason(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    context = make_context(tmp_path)
+    context.sessions.put(
+        "session-1",
+        SessionManifest(
+            session_id="session-1",
+            directory_path="root/team-a",
+            allowed_tools=[ToolName.REJECT_ISSUE],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    captured: dict[str, object] = {}
+
+    class StubAdminService:
+        def __init__(self, runtime_dir: Path) -> None:
+            captured["runtime_dir"] = runtime_dir
+
+        def update_issue(
+            self,
+            issue_id: str,
+            *,
+            state: str | None = None,
+            fields: dict[str, object] | None = None,
+            sync_proxy_cache: bool = True,  # noqa: ARG002
+        ) -> dict[str, object]:
+            captured["payload"] = {
+                "issue_id": issue_id,
+                "state": state,
+                "fields": fields,
+            }
+            return {"issue_number": issue_id, "source_type": "local", "updated": True}
+
+    monkeypatch.setattr("agent_sandbox.gateway.AdminService", StubAdminService)
+    server = create_server(context)
+
+    result = call_tool(
+        server,
+        "reject_issue",
+        {"session_id": "session-1", "issue_id": "42", "reason": "Out of scope"},
+    )
+
+    assert captured["runtime_dir"] == context.config.runtime_dir
+    assert captured["payload"] == {
+        "issue_id": "42",
+        "state": "Closed",
+        "fields": {"Reason": "Out of scope"},
+    }
+    assert result["issue_number"] == "42"
+
+
+def test_approve_issue_requires_tool_permission(tmp_path: Path) -> None:
+    context = make_context(tmp_path)
+    context.sessions.put(
+        "session-1",
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    server = create_server(context)
+
+    with pytest.raises(ToolError, match="not allowed"):
+        asyncio.run(
+            server.call_tool(
+                "approve_issue",
+                {
+                    "session_id": "session-1",
+                    "issue_id": "42",
+                },
+            )
+        )
+
+
+def test_reject_issue_requires_tool_permission(tmp_path: Path) -> None:
+    context = make_context(tmp_path)
+    context.sessions.put(
+        "session-1",
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    server = create_server(context)
+
+    with pytest.raises(ToolError, match="not allowed"):
+        asyncio.run(
+            server.call_tool(
+                "reject_issue",
+                {
+                    "session_id": "session-1",
+                    "issue_id": "42",
+                },
+            )
+        )
+
+
 def test_create_server_uses_configured_host_and_port(tmp_path: Path) -> None:
     context = make_context(tmp_path)
     context.config.host = "0.0.0.0"
