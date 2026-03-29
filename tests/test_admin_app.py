@@ -225,6 +225,50 @@ def test_update_issue_action_bar_shows_yaml_button_for_selected_issue() -> None:
     assert window.delete_issue_button.visible is True
 
 
+def test_format_issue_details_includes_reason_when_present() -> None:
+    issue = SimpleNamespace(
+        issue_number="14385",
+        title="Deduplicate bootstrap logic",
+        state="Closed",
+        directory_path="root/agent-sandbox/test",
+        repo_source="/tmp/repo",
+        yaml_path="runtime/issues/issue-14385.yaml",
+        reason="Out of scope for now",
+        description="Needs a concrete defect before refactoring.",
+        body="",
+    )
+
+    formatted = admin_app._format_issue_details(issue)
+
+    assert "Issue: 14385" in formatted
+    assert "State: Closed" in formatted
+    assert "Reason: Out of scope for now" in formatted
+    assert "Description:" in formatted
+
+
+def test_refresh_selected_issue_detail_clears_when_no_issue_selected() -> None:
+    class DummyTextEdit:
+        def __init__(self) -> None:
+            self.cleared = False
+            self.text = None
+
+        def clear(self) -> None:
+            self.cleared = True
+            self.text = ""
+
+        def setPlainText(self, value: str) -> None:
+            self.text = value
+
+    window = SimpleNamespace(
+        issue_detail_view=DummyTextEdit(),
+        selected_issue_record=lambda: None,
+    )
+
+    admin_app.MainWindow.refresh_selected_issue_detail(window)
+
+    assert window.issue_detail_view.cleared is True
+
+
 def test_update_vm_action_bar_shows_destroy_for_non_issue_vm() -> None:
     class DummyLabel:
         def __init__(self) -> None:

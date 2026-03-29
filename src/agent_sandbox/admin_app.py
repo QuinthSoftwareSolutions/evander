@@ -863,6 +863,23 @@ def _format_session_details(summary) -> str:
     return json.dumps(payload, indent=2, sort_keys=True)
 
 
+def _format_issue_details(issue) -> str:
+    lines = [
+        f"Issue: {issue.issue_number}",
+        f"Title: {issue.title}",
+        f"State: {issue.state or ''}",
+        f"Directory: {issue.directory_path}",
+        f"Repo source: {issue.repo_source or ''}",
+        f"YAML: {issue.yaml_path}",
+    ]
+    if getattr(issue, "reason", None):
+        lines.append(f"Reason: {issue.reason}")
+    description = str(issue.description or issue.body or "").strip()
+    if description:
+        lines.extend(["", "Description:", description])
+    return "\n".join(lines)
+
+
 class MainWindow(QMainWindow):  # type: ignore[misc]
     def __init__(self, service: AdminService) -> None:
         super().__init__()
@@ -970,6 +987,9 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self.agent_log_view = QTextEdit()
         self.agent_log_view.setReadOnly(True)
         self.agent_log_view.setPlaceholderText("Select an issue VM to see its agent log.")
+        self.issue_detail_view = QTextEdit()
+        self.issue_detail_view.setReadOnly(True)
+        self.issue_detail_view.setPlaceholderText("Select an issue to see details.")
         self.session_detail_view = QTextEdit()
         self.session_detail_view.setReadOnly(True)
         self.session_detail_view.setPlaceholderText("Select a session to see its full details.")
@@ -1153,7 +1173,13 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self.issue_action_bar.addWidget(self.delete_issue_button)
         issue_toolbar.addLayout(self.issue_action_bar)
         issue_layout.addLayout(issue_toolbar)
-        issue_layout.addWidget(self.issue_table)
+        issue_splitter = QSplitter(Qt.Orientation.Vertical)
+        self.issue_splitter = issue_splitter
+        issue_splitter.addWidget(self.issue_table)
+        issue_splitter.addWidget(self.issue_detail_view)
+        issue_splitter.setStretchFactor(0, 1)
+        issue_splitter.setStretchFactor(1, 1)
+        issue_layout.addWidget(issue_splitter)
 
         sessions_page = QWidget()
         sessions_layout = QVBoxLayout(sessions_page)
@@ -1666,6 +1692,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
                 self.issue_table.setCurrentCell(-1, -1)
         self.issue_table.blockSignals(False)
         self.update_issue_action_bar()
+        self.refresh_selected_issue_detail()
 
     def refresh_workers(self, *, manual: bool = False) -> None:
         self._start_refresh("workers", self.service.list_background_workers, lambda workers: self._apply_worker_refresh(workers, refresh_log=manual))
@@ -1768,6 +1795,13 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
     def _show_read_only_text_dialog(self, *, title: str, text: str) -> None:
         ReadOnlyTextDialog(title=title, text=text, parent=self).exec()
 
+    def refresh_selected_issue_detail(self) -> None:
+        issue = self.selected_issue_record()
+        if issue is None:
+            self.issue_detail_view.clear()
+            return
+        self.issue_detail_view.setPlainText(_format_issue_details(issue))
+
     def update_issue_action_bar(self) -> None:
         issue = self.selected_issue_record()
         if issue is None:
@@ -1786,6 +1820,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
 
     def _on_issue_selection_changed(self) -> None:
         self.update_issue_action_bar()
+        self.refresh_selected_issue_detail()
 
     def _on_issue_activated(self, _item) -> None:
         self.handle_view_selected_issue_yaml()

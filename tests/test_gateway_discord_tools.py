@@ -357,6 +357,80 @@ def test_list_issues_filters_by_requested_status_values(
     assert [entry["issue_number"] for entry in result["issues"]] == ["2"]
 
 
+def test_list_issues_exposes_rejection_reason_from_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = make_context(tmp_path)
+    context.sessions.put(
+        "session-1",
+        SessionManifest(
+            session_id="session-1",
+            directory_path="root/team-a",
+            allowed_tools=[ToolName.LIST_ISSUES],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+
+    class StubAdminService:
+        def __init__(self, _runtime_dir: Path) -> None:
+            pass
+
+        def list_local_issues(
+            self,
+            *,
+            directory_path: str | None = None,
+            direct_only: bool = False,
+        ) -> list[LocalIssueRecord]:
+            return [
+                LocalIssueRecord(
+                    issue_number="42",
+                    issue_id="local-42",
+                    title="Rejected issue",
+                    body="",
+                    yaml_path="runtime/issues/issue-42.yaml",
+                    directory_path=directory_path or "root/team-a",
+                    state="Closed",
+                    metadata={"fields": {"Reason": "Out of scope"}},
+                ),
+            ]
+
+    monkeypatch.setattr("agent_sandbox.gateway.AdminService", StubAdminService)
+    server = create_server(context)
+
+    result = call_tool(
+        server,
+        "list_issues",
+        {"session_id": "session-1", "status": ["closed"]},
+    )
+
+    assert result["issues"] == [
+        {
+            "issue_id": "local-42",
+            "issue_number": "42",
+            "title": "Rejected issue",
+            "body": "",
+            "description": "",
+            "reason": "Out of scope",
+            "rejection_reason": "Out of scope",
+            "yaml_path": "runtime/issues/issue-42.yaml",
+            "directory_path": "root/team-a",
+            "repo_source": None,
+            "source_type": "local_manual",
+            "remote_reference": None,
+            "tags": [],
+            "state": "Closed",
+            "url": None,
+            "comments": [],
+            "forwarding_policy": None,
+            "source": "local_gui",
+            "metadata": {"fields": {"Reason": "Out of scope"}},
+            "created_at": result["issues"][0]["created_at"],
+            "updated_at": result["issues"][0]["updated_at"],
+        }
+    ]
+
+
 def test_discord_post_status_posts_to_allowlisted_channel(tmp_path: Path) -> None:
     context = make_context(tmp_path)
     context.sessions.put(

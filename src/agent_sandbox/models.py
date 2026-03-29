@@ -202,6 +202,8 @@ class LocalIssueRecord(BaseModel):
     title: str
     body: str
     description: str | None = None
+    reason: str | None = None
+    rejection_reason: str | None = None
     yaml_path: str
     directory_path: str = "root"
     repo_source: str | None = None
@@ -229,6 +231,30 @@ class LocalIssueRecord(BaseModel):
             self.description = self.body
         if not self.body and self.description:
             self.body = self.description
+        self.sync_derived_fields()
+
+    @staticmethod
+    def _normalize_reason_value(value: object) -> str | None:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+    def sync_derived_fields(self) -> None:
+        metadata_fields = self.metadata.get("fields") if isinstance(self.metadata, dict) else None
+        metadata_reason = None
+        if isinstance(metadata_fields, dict):
+            metadata_reason = self._normalize_reason_value(metadata_fields.get("Reason"))
+        normalized_reason = (
+            metadata_reason
+            or self._normalize_reason_value(self.reason)
+            or self._normalize_reason_value(self.rejection_reason)
+        )
+        self.reason = normalized_reason
+        if str(self.state or "").strip().lower() == "closed":
+            self.rejection_reason = normalized_reason
+        else:
+            self.rejection_reason = None
 
 
 class RemoteIssueReference(BaseModel):

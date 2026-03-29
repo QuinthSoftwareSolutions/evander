@@ -2460,6 +2460,7 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
                 local_fields = dict(issue.metadata.get("fields") or {})
                 local_fields.update(fields)
                 issue.metadata["fields"] = local_fields
+            issue.sync_derived_fields()
             issue.updated_at = _utc_now()
             self.local_issue_store.put(issue.issue_id, issue)
             return {"issue_number": issue.issue_number, "source_type": "local", "updated": True}
