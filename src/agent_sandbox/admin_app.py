@@ -23,6 +23,7 @@ from .directory_config import (
     IssueSetupDirectoryConfig,
     PrTemplateDirectoryConfig,
 )
+from .models import ToolName
 ADMIN_APP_DEFAULT_RUNTIME_DIR = Path("runtime")
 
 try:
@@ -972,6 +973,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self.session_detail_view = QTextEdit()
         self.session_detail_view.setReadOnly(True)
         self.session_detail_view.setPlaceholderText("Select a session to see its full details.")
+        self.session_tools_checkboxes: dict[ToolName, QCheckBox] = {}
         self.worker_log_view = QTextEdit()
         self.worker_log_view.setReadOnly(True)
         self.worker_log_view.setPlaceholderText("Select a background worker to see its logs.")
@@ -1165,7 +1167,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         sessions_toolbar.addWidget(self.session_selection_hint)
         self.session_action_bar = QHBoxLayout()
         self.session_action_bar.setSpacing(6)
-        self.renew_session_button = QPushButton("Renew")
+        self.renew_session_button = QPushButton("Extend")
         _set_standard_icon(self.renew_session_button, "SP_BrowserReload")
         self.renew_session_button.clicked.connect(self.handle_renew_selected_session)
         self.revoke_session_button = QPushButton("Revoke")
@@ -1194,9 +1196,39 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self.session_tabs.addTab(active_sessions_page, "Active")
         self.session_tabs.addTab(expired_sessions_page, "Expired")
         self.session_tabs.currentChanged.connect(self._on_session_tab_changed)
+        self.save_session_tools_button = QPushButton("Save Tools")
+        _set_standard_icon(self.save_session_tools_button, "SP_DialogSaveButton")
+        self.save_session_tools_button.clicked.connect(self.handle_save_selected_session_tools)
+        session_tools_widget = QWidget()
+        session_tools_layout = QVBoxLayout(session_tools_widget)
+        session_tools_layout.setContentsMargins(0, 0, 0, 0)
+        session_tools_layout.addWidget(QLabel("Allowed tools"))
+        tools_scroll = QScrollArea()
+        tools_scroll.setWidgetResizable(True)
+        tools_scroll_contents = QWidget()
+        tools_scroll_layout = QVBoxLayout(tools_scroll_contents)
+        tools_scroll_layout.setContentsMargins(4, 4, 4, 4)
+        for tool in ToolName:
+            checkbox = QCheckBox(tool.value)
+            self.session_tools_checkboxes[tool] = checkbox
+            tools_scroll_layout.addWidget(checkbox)
+        tools_scroll_layout.addStretch(1)
+        tools_scroll.setWidget(tools_scroll_contents)
+        session_tools_layout.addWidget(tools_scroll)
+        session_tools_layout.addWidget(self.save_session_tools_button)
+        session_tools_layout.addStretch(1)
         session_splitter = QSplitter(Qt.Orientation.Vertical)
         session_splitter.addWidget(self.session_tabs)
-        session_splitter.addWidget(self.session_detail_view)
+        session_details_widget = QWidget()
+        session_details_layout = QVBoxLayout(session_details_widget)
+        session_details_layout.setContentsMargins(0, 0, 0, 0)
+        session_details_splitter = QSplitter(Qt.Orientation.Horizontal)
+        session_details_splitter.addWidget(self.session_detail_view)
+        session_details_splitter.addWidget(session_tools_widget)
+        session_details_splitter.setStretchFactor(0, 1)
+        session_details_splitter.setStretchFactor(1, 0)
+        session_details_layout.addWidget(session_details_splitter)
+        session_splitter.addWidget(session_details_widget)
         session_splitter.setStretchFactor(0, 1)
         session_splitter.setStretchFactor(1, 1)
         sessions_layout.addWidget(session_splitter)
@@ -2472,12 +2504,21 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             self.renew_session_button.hide()
             self.revoke_session_button.hide()
             self.delete_session_button.hide()
+            self.save_session_tools_button.setEnabled(False)
+            for checkbox in self.session_tools_checkboxes.values():
+                checkbox.setEnabled(False)
+                checkbox.setChecked(False)
             return
 
         self.session_selection_hint.setText(f"Selected: {summary.session_id}")
         self.renew_session_button.show()
         self.revoke_session_button.show()
         self.delete_session_button.show()
+        self.save_session_tools_button.setEnabled(True)
+        allowed_tool_set = set(summary.allowed_tools)
+        for tool_name, checkbox in self.session_tools_checkboxes.items():
+            checkbox.setEnabled(True)
+            checkbox.setChecked(tool_name in allowed_tool_set)
 
     def refresh_selected_session_details(self) -> None:
         summary = self.selected_session_summary()
@@ -2557,6 +2598,23 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             f"Delete session {summary.session_id}",
             self.service.delete_session,
             summary.session_id,
+        )
+
+    def handle_save_selected_session_tools(self) -> None:
+        summary = self.selected_session_summary()
+        if summary is None:
+            return
+        selected_tools = [
+            tool_name.value
+            for tool_name, checkbox in self.session_tools_checkboxes.items()
+            if checkbox.isChecked()
+        ]
+        self.run_action(
+            f"Update allowed tools for {summary.session_id}",
+            self.service.set_session_allowed_tools,
+            summary.session_id,
+            selected_tools,
+            on_success=self.refresh_sessions,
         )
 
     def selected_worker_summary(self):

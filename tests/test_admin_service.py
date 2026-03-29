@@ -702,6 +702,30 @@ def test_delete_session_removes_latest_matching_target(tmp_path: Path) -> None:
     assert set(remaining) == {"issue-13301-older"}
 
 
+def test_set_session_allowed_tools_updates_manifest(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.sessions.put(
+        "issue-13302-session",
+        SessionManifest(
+            session_id="issue-13302-session",
+            vm_id="vm-13302",
+            allowed_tools=[ToolName.CLAIM_NEXT_ISSUE],
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+        ),
+    )
+
+    result = service.set_session_allowed_tools(
+        "13302",
+        [ToolName.COMPLETE_ISSUE.value, ToolName.COMPLETE_ISSUE.value, ToolName.APPROVAL_CHECK.value],
+    )
+
+    updated = service.runtime.sessions.get("issue-13302-session")
+    assert result.success is True
+    assert result.session_id == "issue-13302-session"
+    assert updated is not None
+    assert updated.allowed_tools == [ToolName.COMPLETE_ISSUE, ToolName.APPROVAL_CHECK]
+
+
 def test_list_background_workers_reads_systemd_state(tmp_path: Path, monkeypatch) -> None:
     service = AdminService(write_config(tmp_path))
 
