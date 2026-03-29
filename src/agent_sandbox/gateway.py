@@ -8,6 +8,7 @@ import httpx
 from mcp.server.fastmcp import FastMCP
 
 from .bootstrap import load_runtime_gateway_config, resolve_runtime_dir
+from .admin_service import AdminService
 from .config import GatewayConfig
 from .email.http_utils import ProviderRequestError
 from .models import (
@@ -21,6 +22,15 @@ from .models import (
 from .policy import PolicyError
 from .runtime import RuntimeContext, build_runtime
 from .services import normalize_pr_feedback_provider
+
+
+def _normalize_issue_status_filters(statuses: list[str] | None) -> set[str]:
+    if not statuses:
+        return {"closed", "completed"}
+    normalized = {str(status).strip().lower() for status in statuses if str(status).strip()}
+    if not normalized:
+        return {"closed", "completed"}
+    return normalized
 
 
 def _redact_nested_value(redacted_keys: set[str], value: Any) -> Any:
@@ -146,6 +156,196 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 result={"error": error, "error_class": error_class},
             )
         )
+
+    @server.tool()
+    def list_issues(
+        session_id: str,
+        status: list[str] | None = None,
+    ) -> dict[str, Any]:
+        args = {
+            "session_id": session_id,
+            "status": status,
+        }
+        try:
+            session = context.policy.require_tool(session_id, ToolName.LIST_ISSUES)
+            status_filter = _normalize_issue_status_filters(status)
+            issues = AdminService(context.config.runtime_dir).list_local_issues(
+                directory_path=session.directory_path,
+                direct_only=True,
+            )
+            if status:
+                filtered = [
+                    issue for issue in issues if str(issue.state or "").strip().lower() in status_filter
+                ]
+            else:
+                filtered = [
+                    issue for issue in issues if str(issue.state or "").strip().lower() not in status_filter
+                ]
+            result = {
+                "issues": [issue.model_dump(mode="json") for issue in filtered],
+            }
+            audit_success(
+                session_id,
+                ToolName.LIST_ISSUES,
+                args,
+                {
+                    "directory_path": session.directory_path,
+                    "count": len(filtered),
+                },
+            )
+            return result
+        except PolicyError as exc:
+            audit_failure(session_id, ToolName.LIST_ISSUES, args, str(exc))
+            raise
+        except Exception as exc:
+            audit_failure(
+                session_id,
+                ToolName.LIST_ISSUES,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
+    def create_local_issue(
+        session_id: str,
+        title: str,
+        body: str = "",
+        repo_source: str | None = None,
+    ) -> dict[str, Any]:
+        args = {
+            "session_id": session_id,
+            "title": title,
+            "body": body,
+            "repo_source": repo_source,
+        }
+        try:
+            session = context.policy.require_tool(session_id, ToolName.CREATE_LOCAL_ISSUE)
+            issue = AdminService(context.config.runtime_dir).create_local_issue(
+                title=title,
+                body=body,
+                repo_source=repo_source,
+                directory_path=session.directory_path,
+            )
+            result = issue.model_dump(mode="json")
+            audit_success(
+                session_id,
+                ToolName.CREATE_LOCAL_ISSUE,
+                args,
+                {
+                    "issue_id": issue.issue_id,
+                    "issue_number": issue.issue_number,
+                    "directory_path": issue.directory_path,
+                },
+            )
+            return result
+        except PolicyError as exc:
+            audit_failure(session_id, ToolName.CREATE_LOCAL_ISSUE, args, str(exc))
+            raise
+        except Exception as exc:
+            audit_failure(
+                session_id,
+                ToolName.CREATE_LOCAL_ISSUE,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
+    def approve_issue(
+        session_id: str,
+        issue_id: str,
+        reason: str | None = None,
+    ) -> dict[str, Any]:
+        args = {
+            "session_id": session_id,
+            "issue_id": issue_id,
+            "reason": reason,
+        }
+        try:
+            session = context.policy.require_tool(session_id, ToolName.APPROVE_ISSUE)
+            fields: dict[str, object] | None = None
+            if reason is not None:
+                fields = {"Reason": reason}
+            result = AdminService(context.config.runtime_dir).update_issue(
+                issue_id,
+                state="Committed",
+                fields=fields,
+            )
+            audit_success(
+                session_id,
+                ToolName.APPROVE_ISSUE,
+                args,
+                {
+                    "issue_number": result.get("issue_number"),
+                    "source_type": result.get("source_type"),
+                    "directory_path": session.directory_path,
+                },
+            )
+            return result
+        except PolicyError as exc:
+            audit_failure(session_id, ToolName.APPROVE_ISSUE, args, str(exc))
+            raise
+        except Exception as exc:
+            audit_failure(
+                session_id,
+                ToolName.APPROVE_ISSUE,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
+    def reject_issue(
+        session_id: str,
+        issue_id: str,
+        reason: str | None = None,
+    ) -> dict[str, Any]:
+        args = {
+            "session_id": session_id,
+            "issue_id": issue_id,
+            "reason": reason,
+        }
+        try:
+            session = context.policy.require_tool(session_id, ToolName.REJECT_ISSUE)
+            fields: dict[str, object] | None = None
+            if reason is not None:
+                fields = {"Reason": reason}
+            result = AdminService(context.config.runtime_dir).update_issue(
+                issue_id,
+                state="Closed",
+                fields=fields,
+            )
+            audit_success(
+                session_id,
+                ToolName.REJECT_ISSUE,
+                args,
+                {
+                    "issue_number": result.get("issue_number"),
+                    "source_type": result.get("source_type"),
+                    "directory_path": session.directory_path,
+                },
+            )
+            return result
+        except PolicyError as exc:
+            audit_failure(session_id, ToolName.REJECT_ISSUE, args, str(exc))
+            raise
+        except Exception as exc:
+            audit_failure(
+                session_id,
+                ToolName.REJECT_ISSUE,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
 
     @server.tool()
     def has_pending_feedback(session_id: str) -> dict[str, Any]:
