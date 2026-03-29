@@ -1,8 +1,10 @@
 from pathlib import Path
 
+ROOT = Path(__file__).resolve().parents[1]
+
 
 def test_live_smoke_doc_is_linked_from_core_docs() -> None:
-    repo = Path("/home/jonathan/agent-sandbox")
+    repo = ROOT
     live_doc = "docs/live-smoke-tests.md"
 
     readme = (repo / "README.md").read_text(encoding="utf-8")
@@ -15,9 +17,7 @@ def test_live_smoke_doc_is_linked_from_core_docs() -> None:
 
 
 def test_live_smoke_doc_mentions_seed_discord_channel_helper() -> None:
-    contents = Path("/home/jonathan/agent-sandbox/docs/live-smoke-tests.md").read_text(
-        encoding="utf-8"
-    )
+    contents = (ROOT / "docs" / "live-smoke-tests.md").read_text(encoding="utf-8")
 
     assert "seed-discord-channel" in contents
     assert "adapter_http_error" in contents

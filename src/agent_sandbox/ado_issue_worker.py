@@ -298,9 +298,15 @@ def _resolve_worker_config_for_directory(
     directory_store = DirectoryStore(runtime_gateway_config.directories_store_path)
     directory_store.ensure_root()
     directory_service = DirectoryService(directory_store)
-    normalized_directory_path = directory_service.show(directory_path).directory.path
+    requested_directory_path = DirectoryPath(segments=directory_path).as_posix()
+    try:
+        normalized_directory_path = directory_service.show(requested_directory_path).directory.path
+        resolution_directory_path = normalized_directory_path
+    except ValueError:
+        normalized_directory_path = requested_directory_path
+        resolution_directory_path = "root"
     config_store = DirectoryConfigStore(directory_store, runtime_dir=runtime_gateway_config.runtime_dir)
-    provider_config = ProviderConfigResolver(runtime_gateway_config).resolve_for_directory(normalized_directory_path)
+    provider_config = ProviderConfigResolver(runtime_gateway_config).resolve_for_directory(resolution_directory_path)
     ado_worker_config = (
         DirectoryConfigResolver(
             directory_service,
@@ -308,7 +314,7 @@ def _resolve_worker_config_for_directory(
             config_store=config_store,
         )
         .resolve_domain(
-            normalized_directory_path,
+            resolution_directory_path,
             domain="ado_worker",
             base_config=get_domain_base_config(runtime_gateway_config, "ado_worker"),
             validator=lambda candidate: validate_effective_domain_payload("ado_worker", candidate),

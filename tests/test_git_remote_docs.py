@@ -1,19 +1,15 @@
 from pathlib import Path
 
+ROOT = Path(__file__).resolve().parents[1]
+
 
 def test_git_remote_docs_and_script_are_present() -> None:
-    readme = Path("/home/jonathan/agent-sandbox/README.md").read_text(encoding="utf-8")
-    ops = Path("/home/jonathan/agent-sandbox/docs/operations.md").read_text(encoding="utf-8")
-    git_docs = Path("/home/jonathan/agent-sandbox/docs/git-remotes.md").read_text(encoding="utf-8")
-    script = Path("/home/jonathan/agent-sandbox/scripts/create_git_remote.sh").read_text(
-        encoding="utf-8"
-    )
-    promote_script = Path(
-        "/home/jonathan/agent-sandbox/scripts/promote_agent_branch.sh"
-    ).read_text(encoding="utf-8")
-    pr_script = Path("/home/jonathan/agent-sandbox/scripts/open_agent_pr.sh").read_text(
-        encoding="utf-8"
-    )
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    ops = (ROOT / "docs" / "operations.md").read_text(encoding="utf-8")
+    git_docs = (ROOT / "docs" / "git-remotes.md").read_text(encoding="utf-8")
+    script = (ROOT / "scripts" / "create_git_remote.sh").read_text(encoding="utf-8")
+    promote_script = (ROOT / "scripts" / "promote_agent_branch.sh").read_text(encoding="utf-8")
+    pr_script = (ROOT / "scripts" / "open_agent_pr.sh").read_text(encoding="utf-8")
 
     assert (
         "create_git_remote.sh" in readme or "setup_issue_git_vm.sh" in readme

@@ -82,6 +82,13 @@ a host-side notification.
 Mirror runs emit an audit summary including source mode, effective default/base branch, and source
 commit SHA used for the mirror update.
 
+Issue mirrors also persist their mirror-source settings in the bare repo config. When a guest fetches
+or pulls from an issue mirror over the restricted SSH alias, the host now refreshes that mirror from
+its configured source immediately before serving `git-upload-pack`. In practice, `git pull` inside the
+guest can bring the host mirror up to date with the canonical repo and then pull those latest refs
+into the guest in one step. If the host-side refresh fails, the guest fetch/pull fails rather than
+silently serving stale refs.
+
 ## VM Workflow
 
 Inside the VM:

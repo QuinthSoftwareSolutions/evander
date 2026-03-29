@@ -2,9 +2,7 @@ from pathlib import Path
 
 
 def test_email_docs_do_not_regress_to_stub_only_wording() -> None:
-    repo_root = Path("/home/jonathan/agent-sandbox")
-    if not repo_root.exists():
-        repo_root = Path(__file__).resolve().parents[1]
+    repo_root = Path(__file__).resolve().parents[1]
 
     readme = (repo_root / "README.md").read_text(encoding="utf-8")
     architecture = (repo_root / "docs/architecture.md").read_text(encoding="utf-8")

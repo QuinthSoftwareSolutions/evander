@@ -1,5 +1,7 @@
 from pathlib import Path
 
+ROOT = Path(__file__).resolve().parents[1]
+
 
 def test_bare_repo_flow_includes_hook_and_azure_support() -> None:
     root = Path(__file__).resolve().parents[1]
@@ -39,12 +41,8 @@ def test_bare_repo_flow_includes_hook_and_azure_support() -> None:
 
 
 def test_issue_vm_setup_configures_agent_remote_for_push_alias() -> None:
-    setup_issue_vm = Path("/home/jonathan/agent-sandbox/scripts/setup_issue_vm.sh").read_text(
-        encoding="utf-8"
-    )
-    guest_agents_template = Path(
-        "/home/jonathan/agent-sandbox/templates/guest-AGENTS.md.tmpl"
-    ).read_text(encoding="utf-8")
+    setup_issue_vm = (ROOT / "scripts" / "setup_issue_vm.sh").read_text(encoding="utf-8")
+    guest_agents_template = (ROOT / "templates" / "guest-AGENTS.md.tmpl").read_text(encoding="utf-8")
 
     assert 'git -C "${TARGET_DIR}" remote add agent "${REMOTE_URL}"' in setup_issue_vm
     assert 'AGENT_PR_NOTE_HELPER_B64="$(' in setup_issue_vm
@@ -71,9 +69,7 @@ def test_issue_vm_setup_configures_agent_remote_for_push_alias() -> None:
 
 
 def test_guest_agent_pr_note_helper_supports_additive_updates() -> None:
-    helper = Path("/home/jonathan/agent-sandbox/scripts/guest/agent_pr_note.sh").read_text(
-        encoding="utf-8"
-    )
+    helper = (ROOT / "scripts" / "guest" / "agent_pr_note.sh").read_text(encoding="utf-8")
 
     assert "append (-m TEXT | -F FILE)" in helper
     assert "ensure-head" in helper

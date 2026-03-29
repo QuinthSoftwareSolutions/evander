@@ -101,33 +101,23 @@ if ! "${HOST_PYTHON_BIN}" --version >/dev/null 2>&1; then
 fi
 
 if ! "${HOST_PYTHON_BIN}" -m pip --version >/dev/null 2>&1; then
-  echo "Host Python must provide pip: ${HOST_PYTHON_BIN}" >&2
-  exit 1
+  if ! "${HOST_PYTHON_BIN}" -m ensurepip --upgrade >/dev/null 2>&1; then
+    echo "Host Python must provide pip: ${HOST_PYTHON_BIN}" >&2
+    exit 1
+  fi
+  if ! "${HOST_PYTHON_BIN}" -m pip --version >/dev/null 2>&1; then
+    echo "Host Python must provide pip: ${HOST_PYTHON_BIN}" >&2
+    exit 1
+  fi
 fi
 
 get_vm_ip() {
-  local ip
-
-  ip="$(
-    sudo -n virsh domifaddr "${VM_NAME}" 2>/dev/null \
-      | awk '/ipv4/ {split($4, a, "/"); print a[1]; exit}'
-  )"
-  if [[ -n "${ip}" ]]; then
-    printf '%s\n' "${ip}"
-    return 0
-  fi
-
-  ip="$(
-    virsh domifaddr "${VM_NAME}" 2>/dev/null \
-      | awk '/ipv4/ {split($4, a, "/"); print a[1]; exit}'
-  )"
-  if [[ -n "${ip}" ]]; then
-    printf '%s\n' "${ip}"
+  if guest_ssh_resolve_vm_ip "${VM_NAME}"; then
     return 0
   fi
 
   echo "Could not determine an IPv4 address for VM ${VM_NAME}." >&2
-  echo "Run this script with sudo, or grant the current user libvirt access." >&2
+  echo "Run this script with sudo, grant the current user libvirt access, or authorize the pkexec prompt." >&2
   return 1
 }
 
@@ -182,6 +172,11 @@ if [[ ${#PACKAGE_REQUIREMENTS[@]} -eq 0 ]]; then
   echo "No Python requirements found in ${HOST_CHECKOUT_ROOT}/pyproject.toml" >&2
   exit 1
 fi
+BOOTSTRAP_REQUIREMENTS=(
+  setuptools
+  wheel
+  virtualenv
+)
 
 TEMP_WHEELHOUSE="$(mktemp -d)"
 trap 'rm -rf "${TEMP_WHEELHOUSE}"' EXIT
@@ -189,6 +184,7 @@ trap 'rm -rf "${TEMP_WHEELHOUSE}"' EXIT
 echo "Building Python wheelhouse from ${HOST_CHECKOUT_ROOT}"
 "${HOST_PYTHON_BIN}" -m pip wheel \
   --wheel-dir "${TEMP_WHEELHOUSE}" \
+  "${BOOTSTRAP_REQUIREMENTS[@]}" \
   "${PACKAGE_REQUIREMENTS[@]}"
 
 VM_IP="$(get_vm_ip)"
@@ -234,7 +230,20 @@ if [[ ! -d "${GUEST_REPO_ROOT}" ]]; then
   exit 1
 fi
 
-"${GUEST_PYTHON_BIN}" -m venv "${GUEST_REPO_ROOT}/.venv"
+"${GUEST_PYTHON_BIN}" - "${GUEST_WHEELHOUSE_DIR}" "${GUEST_REPO_ROOT}/.venv" <<'PY'
+import sys
+from pathlib import Path
+
+wheelhouse = Path(sys.argv[1])
+venv_path = sys.argv[2]
+
+for wheel in sorted(wheelhouse.glob("*.whl")):
+    sys.path.insert(0, str(wheel))
+
+from virtualenv import cli_run
+
+cli_run([venv_path])
+PY
 "${GUEST_REPO_ROOT}/.venv/bin/python" -m pip install \
   --no-index \
   --find-links "${GUEST_WHEELHOUSE_DIR}" \

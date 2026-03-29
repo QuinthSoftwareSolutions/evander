@@ -58,6 +58,13 @@ try:
         QWidget,
     )
 except ImportError:  # pragma: no cover - exercised only when GUI extra is missing.
+    class _FallbackTableWidgetItem:
+        def __init__(self, text: str = "") -> None:
+            self._text = text
+
+        def text(self) -> str:
+            return self._text
+
     QApplication = None
     QObject = object
     QRunnable = object
@@ -72,7 +79,8 @@ except ImportError:  # pragma: no cover - exercised only when GUI extra is missi
     QAbstractItemView = object
     QStyle = object
     QPushButton = QPlainTextEdit = QRadioButton = QScrollArea = QSplitter = QSpinBox = QDoubleSpinBox = object
-    QComboBox = QStatusBar = QTableWidget = QTableWidgetItem = object
+    QComboBox = QStatusBar = QTableWidget = object
+    QTableWidgetItem = _FallbackTableWidgetItem
     QToolButton = object
     QStackedWidget = object
     QTabWidget = QTextEdit = QVBoxLayout = QWidget = object
@@ -303,6 +311,89 @@ class CreateVmDialog(QDialog):  # type: ignore[misc]
             "mssql": self.mssql_checkbox.isChecked(),
             "mssql_init_root": mssql_init_root if self.mssql_checkbox.isChecked() else None,
             "start_agent": self.start_agent_checkbox.isChecked(),
+        }
+
+
+class CreateStandaloneVmDialog(QDialog):  # type: ignore[misc]
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Create VM")
+
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+
+        self.vm_name_edit = QLineEdit()
+        self.vm_name_edit.setPlaceholderText("lab-vm-1")
+        self.session_id_edit = QLineEdit()
+        self.session_id_edit.setPlaceholderText("Optional; generated when empty")
+        self.repo_source_edit = QLineEdit()
+        self.repo_source_edit.setPlaceholderText("/path/to/repo or git@host:repo.git")
+        self.python_checkbox = QCheckBox("Bootstrap Python")
+        self.dotnet_checkbox = QCheckBox("Bootstrap .NET")
+        self.nuget_checkbox = QCheckBox("Bootstrap NuGet")
+        self.playwright_checkbox = QCheckBox("Bootstrap Playwright")
+        self.mssql_checkbox = QCheckBox("Bootstrap MSSQL")
+        self.mssql_available = bool(os.environ.get("MSSQL_SA_PASSWORD", "").strip())
+        if not self.mssql_available:
+            self.mssql_checkbox.setEnabled(False)
+            self.mssql_checkbox.setToolTip("Set MSSQL_SA_PASSWORD in the host environment to enable MSSQL bootstrap.")
+        self.mssql_init_root_edit = QLineEdit()
+        self.mssql_init_root_edit.setPlaceholderText("/path/to/mssql-init")
+        self.mssql_init_root_row = QWidget()
+        mssql_init_root_layout = QHBoxLayout(self.mssql_init_root_row)
+        mssql_init_root_layout.setContentsMargins(0, 0, 0, 0)
+        mssql_init_root_layout.addWidget(self.mssql_init_root_edit)
+        self.mssql_hint_label = QLabel(
+            "MSSQL bootstrap is disabled because MSSQL_SA_PASSWORD is not set in the host environment."
+        )
+        self.mssql_hint_label.setWordWrap(True)
+        self.mssql_hint_label.setVisible(not self.mssql_available)
+        self.python_hint_label = QLabel(
+            "Python bootstrap installs into a cloned guest repo checkout, so it requires Repo source."
+        )
+        self.python_hint_label.setWordWrap(True)
+
+        form.addRow("VM name", self.vm_name_edit)
+        form.addRow("Session ID", self.session_id_edit)
+        form.addRow("Repo source", self.repo_source_edit)
+        form.addRow("", self.python_checkbox)
+        form.addRow("", self.python_hint_label)
+        form.addRow("", self.dotnet_checkbox)
+        form.addRow("", self.nuget_checkbox)
+        form.addRow("", self.playwright_checkbox)
+        form.addRow("", self.mssql_checkbox)
+        form.addRow("", self.mssql_hint_label)
+        form.addRow("MSSQL init root", self.mssql_init_root_row)
+        layout.addLayout(form)
+
+        self.repo_source_edit.textChanged.connect(self._update_state)
+        self.mssql_checkbox.toggled.connect(self._update_state)
+        self._update_state()
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _update_state(self) -> None:
+        self.mssql_init_root_row.setVisible(self.mssql_checkbox.isChecked())
+        repo_available = bool(self.repo_source_edit.text().strip())
+        self.python_checkbox.setEnabled(repo_available)
+        self.python_hint_label.setVisible(not repo_available)
+        if not repo_available:
+            self.python_checkbox.setChecked(False)
+
+    def payload(self) -> dict[str, object]:
+        return {
+            "vm_name": self.vm_name_edit.text().strip(),
+            "session_id": self.session_id_edit.text().strip() or None,
+            "repo_source": self.repo_source_edit.text().strip() or None,
+            "python": self.python_checkbox.isChecked(),
+            "dotnet": self.dotnet_checkbox.isChecked(),
+            "nuget": self.nuget_checkbox.isChecked(),
+            "playwright": self.playwright_checkbox.isChecked(),
+            "mssql": self.mssql_checkbox.isChecked(),
+            "mssql_init_root": self.mssql_init_root_edit.text().strip() or None,
         }
 
 
@@ -761,6 +852,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
     def __init__(self, service: AdminService) -> None:
         super().__init__()
         self.service = service
+        self.service.use_privileged_helper = True
         self.settings = QSettings("agent-sandbox", "admin-app")
         self.thread_pool = QThreadPool()
         self._active_workers: set[_ActionWorker] = set()
@@ -796,11 +888,16 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self.create_directory_button.clicked.connect(self.create_subdirectory)
         self.delete_directory_button = QPushButton("Delete Directory")
         self.delete_directory_button.clicked.connect(self.delete_selected_directory)
+        self.unlock_privileges_button = QPushButton("Unlock")
+        self.unlock_privileges_button.clicked.connect(self.handle_unlock_privileges)
+        self.privilege_status_label = QLabel("Privileges: locked")
         directory_toolbar.addWidget(self.selected_directory_label)
         directory_toolbar.addWidget(self.select_directory_button)
         directory_toolbar.addWidget(self.create_directory_button)
         directory_toolbar.addWidget(self.delete_directory_button)
         directory_toolbar.addStretch(1)
+        directory_toolbar.addWidget(self.privilege_status_label)
+        directory_toolbar.addWidget(self.unlock_privileges_button)
         central_layout.addLayout(directory_toolbar)
 
         self.tabs = QTabWidget()
@@ -949,6 +1046,10 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         refresh_vms_button = QPushButton("Refresh")
         _set_standard_icon(refresh_vms_button, "SP_BrowserReload")
         refresh_vms_button.clicked.connect(lambda: self.refresh_vms(manual=True))
+        create_vm_button = QPushButton("New VM")
+        _set_standard_icon(create_vm_button, "SP_FileDialogNewFolder")
+        create_vm_button.clicked.connect(self.show_new_vm_dialog)
+        vm_toolbar.addWidget(create_vm_button)
         vm_toolbar.addWidget(refresh_vms_button)
         vm_toolbar.addStretch(1)
         self.vm_selection_hint = QLabel("No VM selected")
@@ -1159,10 +1260,16 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self.update_session_action_bar()
         self.update_worker_action_bar()
         self._update_vm_splitter_layout()
+        self._update_privilege_status()
 
     def append_log(self, message: str) -> None:
         self.log_view.append(message)
         self.status_bar.showMessage(message, 8000)
+
+    def _update_privilege_status(self) -> None:
+        unlocked = self.service.privileged_operations_unlocked()
+        self.privilege_status_label.setText("Privileges: unlocked" if unlocked else "Privileges: locked")
+        self.unlock_privileges_button.setEnabled(not unlocked)
 
     def run_action(self, label: str, fn, *args, on_success=None, **kwargs) -> None:
         self.append_log(f"{label}...")
@@ -1179,10 +1286,23 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
     def _discard_worker(self, worker: _ActionWorker) -> None:
         self._active_workers.discard(worker)
 
+    def _show_action_error_dialog(self, message: str) -> None:
+        self._show_read_only_text_dialog(title="Action Failed", text=message)
+
     def _handle_action_success(self, label: str, result, on_success, worker: _ActionWorker) -> None:
         self._discard_worker(worker)
+        if getattr(result, "success", True) is False:
+            message = getattr(result, "message", str(result))
+            self.append_log(f"{label} failed: {message}")
+            self._update_privilege_status()
+            self._refresh_visible_data(manual=True)
+            self.refresh_issues()
+            self.refresh_workers()
+            self._show_action_error_dialog(message)
+            return
         message = getattr(result, "message", str(result))
         self.append_log(f"{label}: {message}")
+        self._update_privilege_status()
         if on_success is not None:
             on_success(result)
         self._refresh_visible_data(manual=True)
@@ -1192,7 +1312,11 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
     def _handle_action_failure(self, label: str, error: str, worker: _ActionWorker) -> None:
         self._discard_worker(worker)
         self.append_log(f"{label} failed: {error}")
-        QMessageBox.critical(self, "Action failed", error)
+        self._update_privilege_status()
+        self._show_action_error_dialog(error)
+
+    def handle_unlock_privileges(self) -> None:
+        self.run_action("Unlock privileged operations", self.service.unlock_privileged_operations)
 
     def _start_refresh(self, key: str, fn, on_success) -> None:
         if key in self._refresh_in_flight:
@@ -1233,6 +1357,10 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             self.refresh_configuration()
         elif current_tab == "Workers":
             self.refresh_workers(manual=True)
+
+    def closeEvent(self, event) -> None:
+        self.service.lock_privileged_operations()
+        super().closeEvent(event)
 
     def refresh_vms(self, *, manual: bool = False) -> None:
         self._start_refresh(
@@ -1307,7 +1435,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self.enable_agent_button.setVisible(bool(summary.issue_number) and summary.agent_state == "disabled")
         self.disable_agent_button.setVisible(bool(summary.issue_number) and summary.agent_state != "disabled")
         self.resume_agent_button.setVisible(bool(summary.issue_number) and summary.agent_state != "disabled")
-        self.destroy_vm_button.setVisible(bool(summary.issue_number))
+        self.destroy_vm_button.setVisible(True)
 
     def _on_vm_selection_changed(self) -> None:
         self.update_vm_action_bar()
@@ -1427,19 +1555,23 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self.confirm_destroy_vm(summary)
 
     def confirm_destroy_vm(self, summary) -> None:
-        if not summary.issue_number:
-            return
+        title = "Destroy issue VM" if summary.issue_number else "Destroy VM"
+        prompt = (
+            f"Destroy {summary.vm_name} and remove its associated issue-VM state?"
+            if summary.issue_number
+            else f"Destroy {summary.vm_name} and remove its local session state?"
+        )
         answer = QMessageBox.question(
             self,
-            "Destroy issue VM",
-            f"Destroy {summary.vm_name} and remove its associated issue-VM state?",
+            title,
+            prompt,
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
         self.run_action(
             f"Destroy {summary.vm_name}",
-            self.service.destroy_issue_vm,
-            summary.issue_number,
+            self.service.destroy_vm,
+            summary.vm_name,
         )
 
     def resume_vm(self, summary) -> None:
@@ -1553,6 +1685,23 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             f"Create VM for issue {issue_number}",
             self.service.create_issue_vm_from_local_issue,
             issue_number,
+            **payload,
+        )
+
+    def show_new_vm_dialog(self) -> None:
+        dialog = CreateStandaloneVmDialog(self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        payload = dialog.payload()
+        vm_name = str(payload.pop("vm_name", "") or "").strip()
+        if not vm_name:
+            QMessageBox.warning(self, "Create VM", "VM name is required.")
+            return
+        self.run_action(
+            f"Create VM {vm_name}",
+            self.service.create_vm,
+            directory_path=self._selected_directory_path,
+            vm_name=vm_name,
             **payload,
         )
 

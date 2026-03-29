@@ -1,10 +1,10 @@
 from pathlib import Path
 
+ROOT = Path(__file__).resolve().parents[1]
+
 
 def test_setup_issue_vm_supports_opt_in_bootstraps() -> None:
-    setup_issue_vm = Path("/home/jonathan/agent-sandbox/scripts/setup_issue_vm.sh").read_text(
-        encoding="utf-8"
-    )
+    setup_issue_vm = (ROOT / "scripts" / "setup_issue_vm.sh").read_text(encoding="utf-8")
 
     assert "--dotnet" in setup_issue_vm
     assert "--python" in setup_issue_vm
@@ -30,9 +30,7 @@ def test_setup_issue_vm_supports_opt_in_bootstraps() -> None:
 
 
 def test_setup_issue_vm_reinterprets_positionals_when_nuget_is_disabled() -> None:
-    setup_issue_vm = Path("/home/jonathan/agent-sandbox/scripts/setup_issue_vm.sh").read_text(
-        encoding="utf-8"
-    )
+    setup_issue_vm = (ROOT / "scripts" / "setup_issue_vm.sh").read_text(encoding="utf-8")
 
     assert 'if (( BOOTSTRAP_NUGET )); then' in setup_issue_vm
     assert 'PREWARM_TARGET="${2:-}"' in setup_issue_vm
@@ -40,9 +38,7 @@ def test_setup_issue_vm_reinterprets_positionals_when_nuget_is_disabled() -> Non
 
 
 def test_setup_issue_vm_reinterprets_positionals_when_frontend_deps_is_enabled() -> None:
-    setup_issue_vm = Path("/home/jonathan/agent-sandbox/scripts/setup_issue_vm.sh").read_text(
-        encoding="utf-8"
-    )
+    setup_issue_vm = (ROOT / "scripts" / "setup_issue_vm.sh").read_text(encoding="utf-8")
 
     assert "--frontend-host-checkout" in setup_issue_vm
     assert "--frontend-install-root" in setup_issue_vm

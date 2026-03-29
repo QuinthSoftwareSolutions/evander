@@ -6,6 +6,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -283,6 +284,24 @@ def _resolve_session_target(target: str, sessions: dict[str, SessionManifest]) -
     return resolved_session_id, sessions[resolved_session_id]
 
 
+def _default_base_branch_for_repo(repo_path: str) -> str | None:
+    candidates = [
+        ["git", "-C", repo_path, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"],
+        ["git", "-C", repo_path, "branch", "--show-current"],
+    ]
+    for cmd in candidates:
+        result = _run_subprocess(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            continue
+        value = (result.stdout or "").strip()
+        if not value:
+            continue
+        if value.startswith("origin/"):
+            value = value[len("origin/") :]
+        return value or None
+    return None
+
+
 def _prune_pr_map(path: Path, *, session_ids: set[str]) -> tuple[int, set[tuple[str, str, str]]]:
     if not path.exists():
         return 0, set()
@@ -452,13 +471,23 @@ def _known_hosts_path() -> Path:
         path = Path(configured)
     else:
         path = _caller_home() / ".ssh" / "agent-sandbox-known_hosts"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.touch(exist_ok=True)
     try:
-        path.chmod(0o600)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch(exist_ok=True)
+        try:
+            path.chmod(0o600)
+        except OSError:
+            pass
+        return path
     except OSError:
-        pass
-    return path
+        fallback = Path("/tmp") / f"agent-sandbox-known_hosts-{os.environ.get('SUDO_USER') or os.environ.get('USER') or 'agent'}"
+        fallback.parent.mkdir(parents=True, exist_ok=True)
+        fallback.touch(exist_ok=True)
+        try:
+            fallback.chmod(0o600)
+        except OSError:
+            pass
+        return fallback
 
 
 def _run_subprocess(
@@ -480,6 +509,61 @@ def _run_subprocess(
         input=input,
         env=env,
     )
+
+
+def _combined_process_message(stdout: str | None, stderr: str | None) -> str:
+    stdout_text = (stdout or "").strip()
+    stderr_text = (stderr or "").strip()
+    if stdout_text and stderr_text:
+        if stdout_text == stderr_text:
+            return stdout_text
+        return f"{stdout_text}\n{stderr_text}"
+    return stdout_text or stderr_text
+
+
+def _python_has_pip(python_bin: str) -> bool:
+    version_check = _run_subprocess([python_bin, "--version"], capture_output=True, text=True)
+    if version_check.returncode != 0:
+        return False
+    pip_check = _run_subprocess([python_bin, "-m", "pip", "--version"], capture_output=True, text=True)
+    return pip_check.returncode == 0
+
+
+def _ensure_python_has_pip(python_bin: str) -> bool:
+    if _python_has_pip(python_bin):
+        return True
+    ensurepip_result = _run_subprocess(
+        [python_bin, "-m", "ensurepip", "--upgrade", "--default-pip"],
+        capture_output=True,
+        text=True,
+    )
+    if ensurepip_result.returncode != 0:
+        return False
+    return _python_has_pip(python_bin)
+
+
+def _resolve_host_python_with_pip() -> str:
+    configured = os.environ.get("HOST_PYTHON_BIN", "").strip()
+    if configured:
+        if _ensure_python_has_pip(configured):
+            return configured
+        raise RuntimeError(f"Host Python must provide pip: {configured}")
+
+    candidates: list[str] = []
+    if sys.executable:
+        candidates.append(sys.executable)
+    candidates.extend(["python3", "python"])
+
+    seen: set[str] = set()
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        if _ensure_python_has_pip(candidate):
+            return candidate
+
+    preferred = sys.executable or "python3"
+    raise RuntimeError(f"Host Python must provide pip: {preferred}")
 
 
 def _run_virsh(args: list[str]) -> subprocess.CompletedProcess[str]:
@@ -607,6 +691,61 @@ def _resolve_vm_ip(vm_name: str) -> str | None:
             address = parts[3]
             return address.split("/", 1)[0]
     return None
+
+
+def _resolve_vm_ip_with_pkexec(vm_name: str) -> str | None:
+    result = _run_subprocess(["pkexec", "virsh", "domifaddr", vm_name], capture_output=True, text=True)
+    if result.returncode != 0:
+        return None
+    for line in (result.stdout or "").splitlines():
+        parts = line.split()
+        if "ipv4" in parts and len(parts) >= 4:
+            address = parts[3]
+            return address.split("/", 1)[0]
+    return None
+
+
+def _wait_for_vm_ip(vm_name: str, *, timeout_seconds: int = 180, allow_pkexec: bool = False) -> str | None:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        ip = _resolve_vm_ip(vm_name)
+        if ip:
+            return ip
+        if allow_pkexec:
+            ip = _resolve_vm_ip_with_pkexec(vm_name)
+            if ip:
+                return ip
+        time.sleep(2)
+    return None
+
+
+def _wait_for_vm_ssh(
+    vm_name: str,
+    vm_ip: str,
+    vm_user: str,
+    *,
+    timeout_seconds: int = 180,
+) -> None:
+    ssh_private_key_path = _resolve_private_key_path()
+    if ssh_private_key_path is None:
+        raise RuntimeError(
+            "Missing SSH private key. Set SSH_PRIVATE_KEY_PATH to the private key that matches the VM's authorized key."
+        )
+
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        completed = _run_subprocess(
+            ["ssh", *_ssh_options(vm_name, vm_ip, ssh_private_key_path), f"{vm_user}@{vm_ip}", "true"],
+            capture_output=True,
+            text=True,
+        )
+        if completed.returncode == 0:
+            return
+        time.sleep(2)
+
+    raise RuntimeError(
+        f"Timed out waiting for SSH on '{vm_user}@{vm_ip}' after {timeout_seconds}s (VM '{vm_name}')."
+    )
 
 
 def _ssh_options(vm_name: str, vm_ip: str, ssh_private_key_path: Path) -> list[str]:
@@ -753,6 +892,11 @@ def _default_issue_session_id(issue_number: str) -> str:
     return f"issue-{issue_number}-{_utc_now():%Y%m%dT%H%M%SZ}-{os.getpid()}"
 
 
+def _default_vm_session_id(vm_name: str) -> str:
+    normalized = re.sub(r"[^a-zA-Z0-9._-]+", "-", vm_name.strip()).strip("-") or "vm"
+    return f"{normalized}-{_utc_now():%Y%m%dT%H%M%SZ}-{os.getpid()}"
+
+
 def _build_issue_session_manifest(
     *,
     policy: EffectivePolicyConfig,
@@ -800,6 +944,90 @@ def _build_issue_session_manifest(
     )
 
 
+def _matching_vm_session_ids(vm_name: str, sessions: dict[str, SessionManifest]) -> set[str]:
+    return {session_id for session_id, session in sessions.items() if session.vm_id == vm_name}
+
+
+def _pkexec_env_command(base_cmd: list[str], env: dict[str, str], allowed_keys: tuple[str, ...]) -> list[str]:
+    cmd = ["pkexec", "env"]
+    for key in allowed_keys:
+        value = env.get(key)
+        if value:
+            cmd.append(f"{key}={value}")
+    cmd.extend(base_cmd)
+    return cmd
+
+
+class PrivilegedHelperSession:
+    def __init__(self, *, python_executable: str, project_dir: Path) -> None:
+        self.python_executable = python_executable
+        self.project_dir = project_dir
+        self._process: subprocess.Popen[str] | None = None
+        self._lock = threading.Lock()
+
+    def is_running(self) -> bool:
+        return self._process is not None and self._process.poll() is None
+
+    def start(self) -> None:
+        with self._lock:
+            if self.is_running():
+                return
+            env_cmd = [
+                "pkexec",
+                "env",
+                f"PYTHONPATH={self.project_dir / 'src'}",
+                self.python_executable,
+                "-m",
+                "agent_sandbox.admin_privileged_helper",
+            ]
+            self._process = subprocess.Popen(
+                env_cmd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1,
+            )
+            response = self._request_locked({"op": "ping"})
+            if response.get("ok") is not True:
+                raise RuntimeError(str(response.get("error") or "Failed to start privileged helper."))
+
+    def close(self) -> None:
+        with self._lock:
+            if not self.is_running():
+                self._process = None
+                return
+            try:
+                self._request_locked({"op": "exit"})
+            except Exception:
+                pass
+            process = self._process
+            self._process = None
+            if process is not None and process.poll() is None:
+                process.terminate()
+
+    def call(self, op: str, **payload: object) -> dict[str, object]:
+        with self._lock:
+            if not self.is_running():
+                raise RuntimeError("Privileged helper is not running.")
+            response = self._request_locked({"op": op, **payload})
+            if response.get("ok") is not True:
+                raise RuntimeError(str(response.get("error") or f"Privileged helper op {op} failed."))
+            return response
+
+    def _request_locked(self, payload: dict[str, object]) -> dict[str, object]:
+        process = self._process
+        if process is None or process.stdin is None or process.stdout is None:
+            raise RuntimeError("Privileged helper is unavailable.")
+        process.stdin.write(json.dumps(payload) + "\n")
+        process.stdin.flush()
+        line = process.stdout.readline()
+        if not line:
+            stderr = process.stderr.read().strip() if process.stderr is not None else ""
+            raise RuntimeError(stderr or "Privileged helper exited unexpectedly.")
+        return json.loads(line)
+
+
 class AdminService:
     def __init__(
         self,
@@ -833,6 +1061,8 @@ class AdminService:
         self.local_issue_counter_path = self.config.runtime_dir / "local-issue-counter.txt"
         self.local_issue_yaml_dir = self.config.runtime_dir / "issues"
         self.local_issue_yaml_dir.mkdir(parents=True, exist_ok=True)
+        self.use_privileged_helper = False
+        self._privileged_helper: PrivilegedHelperSession | None = None
         self.directory_admin = DirectoryAdminService.from_store(
             directory_store=self.runtime.directories,
             gateway_config=self.config,
@@ -854,6 +1084,22 @@ class AdminService:
     @property
     def directory_scoped_config_enabled(self) -> bool:
         return self.config.enable_directory_scoped_config
+
+    def unlock_privileged_operations(self) -> str:
+        helper = self._privileged_helper
+        if helper is None:
+            helper = PrivilegedHelperSession(python_executable=sys.executable, project_dir=self.project_dir)
+            self._privileged_helper = helper
+        helper.start()
+        return "Privileged operations unlocked."
+
+    def lock_privileged_operations(self) -> None:
+        if self._privileged_helper is not None:
+            self._privileged_helper.close()
+            self._privileged_helper = None
+
+    def privileged_operations_unlocked(self) -> bool:
+        return self._privileged_helper is not None and self._privileged_helper.is_running()
 
     def _session_ids_by_vm(self) -> dict[str, list[str]]:
         mapping: dict[str, list[str]] = {}
@@ -998,6 +1244,127 @@ class AdminService:
         if issue_setup.post_exec_verification_prompt is not None:
             run_env["AGENT_POST_EXEC_VERIFICATION_PROMPT"] = issue_setup.post_exec_verification_prompt
         return cmd, run_env
+
+    def _resolve_repo_source(self, repo_source: str) -> tuple[str, str]:
+        resolve_script = self.project_dir / "scripts" / "resolve_repo_source.sh"
+        path_result = _run_subprocess([str(resolve_script), "--path-only", repo_source], capture_output=True, text=True)
+        if path_result.returncode != 0:
+            raise RuntimeError((path_result.stderr or path_result.stdout or "").strip() or f"Failed to resolve repo source: {repo_source}")
+        name_result = _run_subprocess([str(resolve_script), "--name-only", repo_source], capture_output=True, text=True)
+        if name_result.returncode != 0:
+            raise RuntimeError((name_result.stderr or name_result.stdout or "").strip() or f"Failed to determine repo name: {repo_source}")
+        return (path_result.stdout or "").strip(), (name_result.stdout or "").strip()
+
+    def _sync_repo_into_bare_remote(self, repo_name: str, resolved_repo_path: str, *, issue_setup: EffectiveIssueSetupConfig) -> Path:
+        create_remote_script = self.project_dir / "scripts" / "create_git_remote.sh"
+        completed = _run_subprocess(
+            [str(create_remote_script), repo_name, "agents"],
+            capture_output=True,
+            text=True,
+            env=os.environ | {
+                "AGENT_SANDBOX_GIT_ROOT": issue_setup.git_root,
+                "AGENT_SANDBOX_GIT_HOST": issue_setup.git_host,
+                "AGENT_SANDBOX_GIT_USER": issue_setup.git_user,
+                "AGENT_SANDBOX_GIT_SSH_ALIAS": issue_setup.git_ssh_alias,
+            },
+        )
+        if completed.returncode != 0:
+            raise RuntimeError((completed.stderr or completed.stdout or "").strip() or f"Failed to create git remote for {repo_name}")
+        bare_repo_path = Path(issue_setup.git_root) / f"{repo_name}.git"
+        fetch_result = _run_subprocess(
+            [
+                "git",
+                f"--git-dir={bare_repo_path}",
+                "fetch",
+                "--prune",
+                resolved_repo_path,
+                "+refs/heads/*:refs/heads/*",
+                "+refs/tags/*:refs/tags/*",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        if fetch_result.returncode != 0:
+            raise RuntimeError((fetch_result.stderr or fetch_result.stdout or "").strip() or f"Failed to mirror repo into {bare_repo_path}")
+        default_base_branch = _default_base_branch_for_repo(resolved_repo_path)
+        if default_base_branch:
+            symbolic_ref_result = _run_subprocess(
+                [
+                    "git",
+                    f"--git-dir={bare_repo_path}",
+                    "symbolic-ref",
+                    "HEAD",
+                    f"refs/heads/{default_base_branch}",
+                ],
+                capture_output=True,
+                text=True,
+            )
+            if symbolic_ref_result.returncode != 0:
+                raise RuntimeError(
+                    (symbolic_ref_result.stderr or symbolic_ref_result.stdout or "").strip()
+                    or f"Failed to set HEAD for {bare_repo_path}"
+                )
+        return bare_repo_path
+
+    def _clone_repo_into_vm(
+        self,
+        *,
+        vm_name: str,
+        vm_user: str,
+        session_id: str,
+        repo_name: str,
+        issue_setup: EffectiveIssueSetupConfig,
+        vm_ip: str | None = None,
+    ) -> str:
+        bootstrap_git_script = self.project_dir / "scripts" / "bootstrap_git_vm.sh"
+        completed = _run_subprocess(
+            [str(bootstrap_git_script), vm_name, vm_user],
+            capture_output=True,
+            text=True,
+            env=os.environ | {
+                "AGENT_SANDBOX_GIT_ROOT": issue_setup.git_root,
+                "AGENT_SANDBOX_GIT_HOST": issue_setup.git_host,
+                "AGENT_SANDBOX_GIT_USER": issue_setup.git_user,
+                "AGENT_SANDBOX_GIT_SSH_ALIAS": issue_setup.git_ssh_alias,
+            },
+        )
+        if completed.returncode != 0:
+            raise RuntimeError((completed.stderr or completed.stdout or "").strip() or f"Failed to bootstrap guest git for {vm_name}")
+
+        vm_ip = vm_ip or _resolve_vm_ip(vm_name)
+        ssh_private_key_path = _resolve_private_key_path()
+        if not vm_ip or ssh_private_key_path is None:
+            raise RuntimeError(f"Unable to resolve SSH access for {vm_name}")
+
+        remote_url = f"ssh://{issue_setup.git_ssh_alias}{issue_setup.git_root}/{repo_name}.git"
+        guest_repo_root = f"/home/{vm_user}/{repo_name}"
+        remote_script = f"""
+set -euo pipefail
+. ~/.profile
+TARGET_DIR="{guest_repo_root}"
+REMOTE_URL="{remote_url}"
+SESSION_ID="{session_id}"
+if [[ -e "${{TARGET_DIR}}" ]]; then
+  echo "Guest repo path already exists: ${{TARGET_DIR}}" >&2
+  exit 1
+fi
+git clone "${{REMOTE_URL}}" "${{TARGET_DIR}}"
+git -C "${{TARGET_DIR}}" remote add agent "${{REMOTE_URL}}"
+git -C "${{TARGET_DIR}}" config user.name "Truman Bot"
+git -C "${{TARGET_DIR}}" config user.email "truman@quinth.se"
+git -C "${{TARGET_DIR}}" config agent-sandbox.sessionId "${{SESSION_ID}}"
+git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_ID:-$(git config --get agent-sandbox.sessionId || true)}}; if [ -z "${{session_id}}" ]; then echo "SESSION_ID is not set; refusing ambiguous agent push." >&2; return 1; fi; branch=$(git rev-parse --abbrev-ref HEAD); git push agent HEAD:refs/heads/agents/${{session_id}}/${{branch}}; }}; f'
+"""
+        ssh_result = _run_subprocess(
+            ["ssh", *_ssh_options(vm_name, vm_ip, ssh_private_key_path), f"{vm_user}@{vm_ip}", "bash", "-s"],
+            capture_output=True,
+            text=True,
+            timeout=60.0,
+            input=remote_script,
+        )
+        if ssh_result.returncode != 0:
+            raise RuntimeError((ssh_result.stderr or ssh_result.stdout or "").strip() or f"Failed to clone repo into {vm_name}")
+        return guest_repo_root
 
     def _direct_owned_entity_ids(self, directory_path: str, *, kind: str) -> set[str]:
         snapshot = self.directory_ownership.list_entities(directory_path, include_descendants=False)
@@ -2124,6 +2491,254 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
             playwright=playwright,
             directory_path=issue.directory_path,
         )
+
+    def create_vm(
+        self,
+        *,
+        vm_name: str,
+        session_id: str | None = None,
+        repo_source: str | None = None,
+        vm_user: str = "agent",
+        ttl_hours: int | None = None,
+        discord_channels: list[str] | None = None,
+        email_mailboxes: list[str] | None = None,
+        email_folders: list[str] | None = None,
+        python: bool = False,
+        dotnet: bool = False,
+        nuget: bool = False,
+        mssql: bool = False,
+        mssql_init_root: str | None = None,
+        playwright: bool = False,
+        directory_path: str = "root",
+    ) -> VmActionResult:
+        resolved_vm_name = vm_name.strip()
+        if not resolved_vm_name:
+            return VmActionResult(success=False, vm_name="", action="create_vm", message="VM name is required.")
+        if _dominfo_field(resolved_vm_name, "State") is not None:
+            return VmActionResult(
+                success=False,
+                vm_name=resolved_vm_name,
+                action="create_vm",
+                message=f"VM already exists: {resolved_vm_name}",
+            )
+
+        normalized_directory_path = self._normalize_directory_path(directory_path)
+        policy = self.runtime.policy_config.resolve_for_directory(normalized_directory_path)
+        resolved_session_id = session_id.strip() if session_id and session_id.strip() else _default_vm_session_id(resolved_vm_name)
+        if self.runtime.sessions.get(resolved_session_id) is not None:
+            return VmActionResult(
+                success=False,
+                vm_name=resolved_vm_name,
+                action="create_vm",
+                message=f"Session already exists: {resolved_session_id}",
+            )
+        if python and not (repo_source or "").strip():
+            return VmActionResult(
+                success=False,
+                vm_name=resolved_vm_name,
+                action="create_vm",
+                message="repo_source is required when Python bootstrap is enabled.",
+            )
+        if mssql and not os.environ.get("MSSQL_SA_PASSWORD", "").strip():
+            return VmActionResult(
+                success=False,
+                vm_name=resolved_vm_name,
+                action="create_vm",
+                message="MSSQL_SA_PASSWORD must be set when MSSQL bootstrap is enabled.",
+            )
+
+        manifest = _build_issue_session_manifest(
+            policy=policy,
+            session_id=resolved_session_id,
+            vm_id=resolved_vm_name,
+            issue_number=None,
+            directory_path=normalized_directory_path,
+            ttl_hours=ttl_hours,
+            discord_channels=discord_channels or [],
+            email_mailboxes=email_mailboxes or [],
+            email_folders=email_folders or [],
+        )
+        self.runtime.sessions.put(resolved_session_id, manifest)
+
+        root_dir = Path(__file__).resolve().parents[2]
+        vm_defaults = self._resolve_vm_defaults(normalized_directory_path)
+        issue_setup = self._resolve_issue_setup(normalized_directory_path, root_dir=root_dir)
+        setup_script = root_dir / "scripts" / "setup_vm.sh"
+        python_script = root_dir / "scripts" / "bootstrap_python_vm.sh"
+        run_env = os.environ.copy()
+        run_env.update(vm_defaults.guest_environment())
+
+        try:
+            resolved_repo_path: str | None = None
+            resolved_repo_name: str | None = None
+            guest_repo_root: str | None = None
+            vm_ip: str | None = None
+            helper = self._privileged_helper if self.use_privileged_helper else None
+            if helper is not None and not helper.is_running():
+                helper.start()
+            setup_args = []
+            if dotnet:
+                setup_args.append("--dotnet")
+            if nuget:
+                setup_args.append("--nuget")
+            if mssql:
+                setup_args.append("--mssql")
+                if mssql_init_root is not None:
+                    setup_args.extend(["--mssql-init-root", mssql_init_root])
+            if playwright:
+                setup_args.append("--playwright")
+            setup_args.extend([resolved_vm_name, resolved_session_id, vm_user])
+            if helper is not None:
+                response = helper.call(
+                    "run_script",
+                    script_path=str(setup_script),
+                    args=setup_args,
+                    env=run_env,
+                )
+                message = _combined_process_message(
+                    str(response.get("stdout") or ""),
+                    str(response.get("stderr") or ""),
+                )
+            else:
+                launch_step = _pkexec_env_command(
+                    [str(setup_script), *setup_args],
+                    run_env,
+                    (
+                        "SSH_PUBLIC_KEY_FILE",
+                        "SSH_PRIVATE_KEY_PATH",
+                        "GATEWAY_URL",
+                        "LLM_BASE_URL",
+                        "NUGET_RELAY_BASE_URL",
+                        "AGENT_SANDBOX_RUNTIME_DIR",
+                        "VM_STORAGE_DIR",
+                        "SHARED_NUGET_CACHE_DIR",
+                        "SHARED_NUGET_CACHE_TAG",
+                        "SHARED_NUGET_CACHE_MODE",
+                        "RAM_MB",
+                        "VCPUS",
+                        "DISK_SIZE_GB",
+                        "VM_WAIT_IP_TIMEOUT_SECONDS",
+                        "VM_WAIT_SSH_TIMEOUT_SECONDS",
+                        "MSSQL_SA_PASSWORD",
+                    ),
+                )
+                completed = _run_subprocess(launch_step, capture_output=True, text=True, env=run_env)
+                message = _combined_process_message(completed.stdout, completed.stderr)
+                if completed.returncode != 0:
+                    raise RuntimeError(message or f"{setup_script.name} exited with code {completed.returncode}")
+            messages: list[str] = []
+            if message:
+                messages.append(message)
+            if helper is not None:
+                vm_ip = str(helper.call("virsh_domifaddr", vm_name=resolved_vm_name).get("ip") or "")
+            else:
+                vm_ip = _resolve_vm_ip(resolved_vm_name)
+            if vm_ip:
+                run_env["AGENT_SANDBOX_VM_IP"] = vm_ip
+
+            if (repo_source or "").strip():
+                resolved_repo_path, resolved_repo_name = self._resolve_repo_source(repo_source.strip())
+                self._sync_repo_into_bare_remote(resolved_repo_name, resolved_repo_path, issue_setup=issue_setup)
+                guest_repo_root = self._clone_repo_into_vm(
+                    vm_name=resolved_vm_name,
+                    vm_user=vm_user,
+                    session_id=resolved_session_id,
+                    repo_name=resolved_repo_name,
+                    issue_setup=issue_setup,
+                    vm_ip=vm_ip,
+                )
+            if python:
+                if not resolved_repo_path or not guest_repo_root:
+                    raise RuntimeError("Python bootstrap requires a resolved guest repo checkout.")
+                python_run_env = run_env | {
+                    "HOST_PYTHON_BIN": _resolve_host_python_with_pip(),
+                }
+                completed = _run_subprocess(
+                    [str(python_script), "--vm-user", vm_user, resolved_vm_name, resolved_repo_path, guest_repo_root],
+                    capture_output=True,
+                    text=True,
+                    env=python_run_env,
+                )
+                message = _combined_process_message(completed.stdout, completed.stderr)
+                if completed.returncode != 0:
+                    raise RuntimeError(message or f"{python_script.name} exited with code {completed.returncode}")
+                if message:
+                    messages.append(message)
+        except Exception as exc:
+            preserved_vm = _dominfo_field(resolved_vm_name, "State") is not None
+            if not preserved_vm:
+                self.runtime.sessions.delete(resolved_session_id)
+            detail = f"Failed to create VM {resolved_vm_name}: {exc}"
+            if preserved_vm:
+                detail = (
+                    f"{detail}\n"
+                    f"VM {resolved_vm_name} and session {resolved_session_id} were preserved for inspection."
+                )
+            return VmActionResult(
+                success=False,
+                vm_name=resolved_vm_name,
+                action="create_vm",
+                message=detail,
+            )
+
+        summary = messages[-1] if messages else f"Created VM {resolved_vm_name}"
+        return VmActionResult(success=True, vm_name=resolved_vm_name, action="create_vm", message=summary)
+
+    def destroy_vm(self, target: str) -> VmActionResult:
+        vm_name = target.strip()
+        if not vm_name:
+            return VmActionResult(success=False, vm_name="", action="destroy_vm", message="VM name is required.")
+        issue_number = _extract_issue_number(vm_name)
+        if issue_number is not None and vm_name == f"vm-{issue_number}":
+            return self.destroy_issue_vm(issue_number)
+
+        root_dir = Path(__file__).resolve().parents[2]
+        destroy_script = root_dir / "scripts" / "destroy_agent_vm.sh"
+        helper = self._privileged_helper if self.use_privileged_helper else None
+        if helper is not None and not helper.is_running():
+            helper.start()
+        if helper is not None:
+            response = helper.call("destroy_vm", script_path=str(destroy_script), vm_name=vm_name)
+            message = str(response.get("stdout") or response.get("stderr") or "").strip()
+        else:
+            completed = _run_subprocess(
+                ["pkexec", str(destroy_script), vm_name],
+                capture_output=True,
+                text=True,
+            )
+            message = (completed.stdout or completed.stderr or "").strip()
+            if completed.returncode != 0:
+                return VmActionResult(
+                    success=False,
+                    vm_name=vm_name,
+                    action="destroy_vm",
+                    message=message or f"destroy-vm exited with code {completed.returncode}",
+                )
+
+        sessions = self.runtime.sessions.read_all()
+        session_ids = _matching_vm_session_ids(vm_name, sessions)
+        if session_ids:
+            remaining_sessions = {
+                session_id: manifest for session_id, manifest in sessions.items() if session_id not in session_ids
+            }
+            self.runtime.sessions.write_all(remaining_sessions)
+        removed_approvals = _prune_approvals_for_sessions(self.runtime, session_ids=session_ids)
+        removed_pr_map_entries, removed_streams = _prune_pr_map(self.config.pr_map_path, session_ids=session_ids)
+        removed_cursors, removed_feedback = _prune_pr_feedback_store(
+            self.config.runtime_dir / "pr-feedback-store.json",
+            streams=removed_streams,
+        )
+        summary = (
+            f"Destroyed VM {vm_name}; "
+            f"removed_sessions={len(session_ids)} "
+            f"removed_pr_map_entries={removed_pr_map_entries} "
+            f"removed_approvals={removed_approvals} "
+            f"removed_feedback_cursors={removed_cursors} "
+            f"removed_feedback_items={removed_feedback}"
+        )
+        if message:
+            summary = f"{message}\n{summary}"
+        return VmActionResult(success=True, vm_name=vm_name, action="destroy_vm", message=summary)
 
     def destroy_issue_vm(self, target: str) -> VmActionResult:
         issue_number = _extract_issue_number(target) or target

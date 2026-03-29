@@ -218,7 +218,7 @@ def test_setup_issue_vm_reads_git_root_from_config_file(tmp_path: Path) -> None:
 
 
 def test_setup_issue_vm_default_session_id_includes_issue_number() -> None:
-    setup_issue_vm = Path("/home/jonathan/agent-sandbox/scripts/setup_issue_vm.sh").read_text(
+    setup_issue_vm = (Path(__file__).resolve().parents[1] / "scripts" / "setup_issue_vm.sh").read_text(
         encoding="utf-8"
     )
 

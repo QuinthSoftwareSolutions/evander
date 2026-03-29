@@ -2,7 +2,7 @@ from pathlib import Path
 
 
 def test_root_only_config_docs_describe_root_as_live_baseline() -> None:
-    repo = Path("/home/jonathan/agent-sandbox")
+    repo = Path(__file__).resolve().parents[1]
     readme = (repo / "README.md").read_text(encoding="utf-8")
     operations = (repo / "docs/operations.md").read_text(encoding="utf-8")
     configuration_reference = (repo / "docs/configuration-reference.md").read_text(encoding="utf-8")

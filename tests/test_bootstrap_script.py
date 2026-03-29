@@ -1,12 +1,16 @@
 from pathlib import Path
 
+ROOT = Path(__file__).resolve().parents[1]
+
 
 def test_bootstrap_script_enforces_codex_config_and_placeholder_key() -> None:
-    script = Path("/home/jonathan/agent-sandbox/scripts/bootstrap_codex_vm.sh").read_text(
-        encoding="utf-8"
-    )
+    script = (ROOT / "scripts" / "bootstrap_codex_vm.sh").read_text(encoding="utf-8")
+    guest_ssh_lib = (ROOT / "scripts" / "lib" / "guest_ssh.sh").read_text(encoding="utf-8")
 
-    assert "sudo -n virsh domifaddr" in script
+    assert "guest_ssh_resolve_vm_ip" in script
+    assert 'ip="${AGENT_SANDBOX_VM_IP:-}"' in guest_ssh_lib
+    assert "sudo -n virsh domifaddr" in guest_ssh_lib
+    assert "pkexec virsh domifaddr" in guest_ssh_lib
     assert 'cat > ~/.codex/config.toml <<CONFIG' in script
     assert 'model = "gpt-5.4"' in script
     assert 'model_reasoning_effort = "high"' in script
@@ -29,8 +33,23 @@ def test_bootstrap_script_enforces_codex_config_and_placeholder_key() -> None:
     assert 'systemctl --user enable --now agent-heartbeat.timer' in script
 
 
+def test_launch_script_can_derive_public_key_from_private_key() -> None:
+    script = (ROOT / "scripts" / "launch_agent_vm.sh").read_text(encoding="utf-8")
+
+    assert 'SSH_PRIVATE_KEY_PATH="${SSH_PRIVATE_KEY_PATH:-${CALLER_HOME}/.ssh/id_ed25519}"' in script
+    assert 'ssh-keygen -y -f "${SSH_PRIVATE_KEY_PATH}" > "${DERIVED_PUBLIC_KEY_FILE}"' in script
+    assert 'Alternatively set SSH_PRIVATE_KEY_PATH to derive the public key automatically.' in script
+
+
+def test_setup_issue_vm_can_derive_public_key_from_private_key() -> None:
+    script = (ROOT / "scripts" / "setup_issue_vm.sh").read_text(encoding="utf-8")
+
+    assert 'ssh-keygen -y -f "${SSH_PRIVATE_KEY_PATH}" > "${DERIVED_PUBLIC_KEY_FILE}"' in script
+    assert 'Alternatively set SSH_PRIVATE_KEY_PATH to derive the public key automatically.' in script
+
+
 def test_guest_heartbeat_assets_exist() -> None:
-    root = Path("/home/jonathan/agent-sandbox/scripts/guest")
+    root = ROOT / "scripts" / "guest"
 
     cycle_script = (root / "heartbeat_cycle.sh").read_text(encoding="utf-8")
     service = (root / "agent-heartbeat.service").read_text(encoding="utf-8")

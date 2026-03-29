@@ -107,3 +107,67 @@ def test_mirror_issue_repo_excludes_stale_agent_and_review_refs(tmp_path: Path) 
     assert "refs/heads/agents/stale-session/main-vm-14357" not in refs_output
     assert "refs/heads/review/old-session/main-vm-14357" not in refs_output
     assert "refs/heads/agents/old-session/main-vm-14357" not in refs_output
+
+
+def test_mirror_issue_repo_persists_refresh_metadata(tmp_path: Path) -> None:
+    sandbox_root = tmp_path / "sandbox"
+    git_root = sandbox_root / "git-remotes"
+    scripts_dir = sandbox_root / "scripts"
+    lib_dir = scripts_dir / "lib"
+    git_root.mkdir(parents=True)
+    scripts_dir.mkdir(parents=True)
+    lib_dir.mkdir(parents=True, exist_ok=True)
+
+    repo_root = Path(__file__).resolve().parents[1]
+    for name in ("mirror_issue_repo.sh", "create_git_remote.sh", "resolve_repo_source.sh"):
+        source = repo_root / "scripts" / name
+        target = scripts_dir / name
+        target.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+        os.chmod(target, 0o755)
+    runtime_config_source = repo_root / "scripts" / "lib" / "runtime_config.sh"
+    (lib_dir / "runtime_config.sh").write_text(runtime_config_source.read_text(encoding="utf-8"), encoding="utf-8")
+    os.chmod(lib_dir / "runtime_config.sh", 0o755)
+    script = scripts_dir / "mirror_issue_repo.sh"
+
+    source_repo = tmp_path / "source"
+    source_repo.mkdir()
+    _git(source_repo, "init", "-b", "main")
+    origin_bare = tmp_path / "origin.git"
+    subprocess.run(["git", "init", "--bare", str(origin_bare)], check=True, text=True, capture_output=True)
+    _git(source_repo, "remote", "add", "origin", str(origin_bare))
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "GIT_AUTHOR_NAME": "Test User",
+            "GIT_AUTHOR_EMAIL": "test@example.com",
+            "GIT_COMMITTER_NAME": "Test User",
+            "GIT_COMMITTER_EMAIL": "test@example.com",
+            "AGENT_SANDBOX_GIT_ROOT": str(git_root),
+        }
+    )
+
+    (source_repo / "README.md").write_text("main\n", encoding="utf-8")
+    _git(source_repo, "add", "README.md", env=env)
+    _git(source_repo, "commit", "-m", "Initial commit", env=env)
+
+    subprocess.run(
+        [
+            str(script),
+            "--branch",
+            "main",
+            "14357",
+            str(source_repo),
+        ],
+        check=True,
+        text=True,
+        capture_output=True,
+        env=env,
+    )
+
+    bare_repo = git_root / "14357_repo.git"
+    assert _git_dir(bare_repo, "config", "--get", "agent-sandbox.mirrorSource").stdout.strip() == str(source_repo)
+    assert _git_dir(bare_repo, "config", "--get", "agent-sandbox.mirrorRemoteName").stdout.strip() == "origin"
+    assert _git_dir(bare_repo, "config", "--get", "agent-sandbox.mirrorSyncRemote").stdout.strip() == "0"
+    assert _git_dir(bare_repo, "config", "--get", "agent-sandbox.mirrorForceLocal").stdout.strip() == "0"
+    assert _git_dir(bare_repo, "config", "--get-all", "agent-sandbox.mirrorRefspec").stdout.strip() == "refs/heads/main:refs/heads/main"

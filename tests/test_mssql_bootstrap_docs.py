@@ -1,18 +1,14 @@
 from pathlib import Path
 
+ROOT = Path(__file__).resolve().parents[1]
+
 
 def test_mssql_bootstrap_docs_and_script_are_present() -> None:
-    readme = Path("/home/jonathan/agent-sandbox/README.md").read_text(encoding="utf-8")
-    ops = Path("/home/jonathan/agent-sandbox/docs/operations.md").read_text(encoding="utf-8")
-    script = Path("/home/jonathan/agent-sandbox/scripts/bootstrap_mssql_vm.sh").read_text(
-        encoding="utf-8"
-    )
-    tools_script = Path(
-        "/home/jonathan/agent-sandbox/scripts/bootstrap_mssql_tools_vm.sh"
-    ).read_text(encoding="utf-8")
-    server_script = Path(
-        "/home/jonathan/agent-sandbox/scripts/bootstrap_mssql_server_vm.sh"
-    ).read_text(encoding="utf-8")
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    ops = (ROOT / "docs" / "operations.md").read_text(encoding="utf-8")
+    script = (ROOT / "scripts" / "bootstrap_mssql_vm.sh").read_text(encoding="utf-8")
+    tools_script = (ROOT / "scripts" / "bootstrap_mssql_tools_vm.sh").read_text(encoding="utf-8")
+    server_script = (ROOT / "scripts" / "bootstrap_mssql_server_vm.sh").read_text(encoding="utf-8")
 
     assert "bootstrap_mssql_vm.sh" in readme
     assert "bootstrap_mssql_vm.sh" in ops

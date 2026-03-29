@@ -1,12 +1,12 @@
 from pathlib import Path
 
+ROOT = Path(__file__).resolve().parents[1]
+
 
 def test_frontend_deps_bootstrap_docs_and_script_are_present() -> None:
-    readme = Path("/home/jonathan/agent-sandbox/README.md").read_text(encoding="utf-8")
-    ops = Path("/home/jonathan/agent-sandbox/docs/operations.md").read_text(encoding="utf-8")
-    script = Path("/home/jonathan/agent-sandbox/scripts/bootstrap_frontend_deps_vm.sh").read_text(
-        encoding="utf-8"
-    )
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    ops = (ROOT / "docs" / "operations.md").read_text(encoding="utf-8")
+    script = (ROOT / "scripts" / "bootstrap_frontend_deps_vm.sh").read_text(encoding="utf-8")
 
     assert "bootstrap_frontend_deps_vm.sh" in readme
     assert "bootstrap_frontend_deps_vm.sh" in ops

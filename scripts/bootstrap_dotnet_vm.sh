@@ -65,28 +65,12 @@ if [[ ! -f "${SSH_KEY_PATH}" ]]; then
 fi
 
 get_vm_ip() {
-  local ip
-
-  ip="$(
-    sudo -n virsh domifaddr "${VM_NAME}" 2>/dev/null \
-      | awk '/ipv4/ {split($4, a, "/"); print a[1]; exit}'
-  )"
-  if [[ -n "${ip}" ]]; then
-    printf '%s\n' "${ip}"
-    return 0
-  fi
-
-  ip="$(
-    virsh domifaddr "${VM_NAME}" 2>/dev/null \
-      | awk '/ipv4/ {split($4, a, "/"); print a[1]; exit}'
-  )"
-  if [[ -n "${ip}" ]]; then
-    printf '%s\n' "${ip}"
+  if guest_ssh_resolve_vm_ip "${VM_NAME}"; then
     return 0
   fi
 
   echo "Could not determine an IPv4 address for VM ${VM_NAME}." >&2
-  echo "Run this script with sudo, or grant the current user libvirt access." >&2
+  echo "Run this script with sudo, grant the current user libvirt access, or authorize the pkexec prompt." >&2
   return 1
 }
 

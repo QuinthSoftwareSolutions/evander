@@ -1,10 +1,10 @@
 from pathlib import Path
 
+ROOT = Path(__file__).resolve().parents[1]
+
 
 def test_cloud_init_contains_provider_neutral_session_and_profile_exports() -> None:
-    template = Path("/home/jonathan/agent-sandbox/config/cloud-init-user-data.yaml").read_text(
-        encoding="utf-8"
-    )
+    template = (ROOT / "config" / "cloud-init-user-data.yaml").read_text(encoding="utf-8")
 
     assert "/etc/agent-sandbox/session.env" in template
     assert "/home/agent/.agent/config.env" in template

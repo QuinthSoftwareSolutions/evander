@@ -225,6 +225,101 @@ def test_update_issue_action_bar_shows_yaml_button_for_selected_issue() -> None:
     assert window.delete_issue_button.visible is True
 
 
+def test_update_vm_action_bar_shows_destroy_for_non_issue_vm() -> None:
+    class DummyLabel:
+        def __init__(self) -> None:
+            self.text = ""
+
+        def setText(self, value: str) -> None:
+            self.text = value
+
+        def show(self) -> None:
+            pass
+
+    class DummyButton:
+        def __init__(self) -> None:
+            self.visible = None
+
+        def setVisible(self, value: bool) -> None:
+            self.visible = value
+
+        def hide(self) -> None:
+            self.visible = False
+
+    window = SimpleNamespace(
+        vm_selection_hint=DummyLabel(),
+        start_vm_button=DummyButton(),
+        shutdown_vm_button=DummyButton(),
+        enable_agent_button=DummyButton(),
+        disable_agent_button=DummyButton(),
+        resume_agent_button=DummyButton(),
+        destroy_vm_button=DummyButton(),
+        selected_vm_summary=lambda: SimpleNamespace(
+            vm_name="lab-vm",
+            libvirt_state="running",
+            issue_number=None,
+            agent_state="unknown",
+        ),
+    )
+
+    admin_app.MainWindow.update_vm_action_bar(window)
+
+    assert window.vm_selection_hint.text == "Selected: lab-vm"
+    assert window.destroy_vm_button.visible is True
+    assert window.enable_agent_button.visible is False
+    assert window.disable_agent_button.visible is False
+    assert window.resume_agent_button.visible is False
+
+
+def test_show_new_vm_dialog_calls_generic_create_vm(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeDialog:
+        def __init__(self, parent=None) -> None:
+            pass
+
+        def exec(self) -> int:
+            return admin_app.QDialog.DialogCode.Accepted
+
+        def payload(self) -> dict[str, object]:
+            return {
+                "vm_name": "lab-vm",
+                "session_id": "lab-session",
+                "repo_source": "/src/repo",
+                "python": True,
+                "dotnet": True,
+                "nuget": False,
+                "playwright": True,
+                "mssql": False,
+                "mssql_init_root": None,
+            }
+
+    monkeypatch.setattr(admin_app, "CreateStandaloneVmDialog", FakeDialog)
+
+    window = SimpleNamespace(
+        _selected_directory_path="root/team",
+        service=SimpleNamespace(create_vm="create-vm-fn"),
+        run_action=lambda label, fn, **kwargs: captured.update({"label": label, "fn": fn, "kwargs": kwargs}),
+    )
+
+    admin_app.MainWindow.show_new_vm_dialog(window)
+
+    assert captured["label"] == "Create VM lab-vm"
+    assert captured["fn"] == "create-vm-fn"
+    assert captured["kwargs"] == {
+        "directory_path": "root/team",
+        "vm_name": "lab-vm",
+        "session_id": "lab-session",
+        "repo_source": "/src/repo",
+        "python": True,
+        "dotnet": True,
+        "nuget": False,
+        "playwright": True,
+        "mssql": False,
+        "mssql_init_root": None,
+    }
+
+
 def test_handle_view_selected_issue_yaml_opens_readonly_dialog(tmp_path: Path) -> None:
     yaml_path = tmp_path / "14382.yaml"
     yaml_path.write_text("issue_number: 14382\ntitle: Example\n", encoding="utf-8")
@@ -269,6 +364,12 @@ def test_main_window_initializes_worker_splitter(monkeypatch) -> None:
                 ),
             )
 
+        def privileged_operations_unlocked(self):
+            return False
+
+        def lock_privileged_operations(self):
+            return None
+
     monkeypatch.setattr(admin_app.MainWindow, "_restore_selected_directory", lambda self: None)
     monkeypatch.setattr(admin_app.MainWindow, "_apply_directory_feature_state", lambda self: None)
     monkeypatch.setattr(admin_app.MainWindow, "_refresh_visible_data", lambda self, manual=False: None)
@@ -283,3 +384,78 @@ def test_main_window_initializes_worker_splitter(monkeypatch) -> None:
     assert window.worker_splitter is not None
     window.close()
     app.processEvents()
+
+
+def test_update_privilege_status_tracks_service_state() -> None:
+    class DummyLabel:
+        def __init__(self) -> None:
+            self.text = ""
+
+        def setText(self, value: str) -> None:
+            self.text = value
+
+    class DummyButton:
+        def __init__(self) -> None:
+            self.enabled = None
+
+        def setEnabled(self, value: bool) -> None:
+            self.enabled = value
+
+    unlocked_state = {"value": False}
+    window = SimpleNamespace(
+        service=SimpleNamespace(privileged_operations_unlocked=lambda: unlocked_state["value"]),
+        privilege_status_label=DummyLabel(),
+        unlock_privileges_button=DummyButton(),
+    )
+
+    admin_app.MainWindow._update_privilege_status(window)
+    assert window.privilege_status_label.text == "Privileges: locked"
+    assert window.unlock_privileges_button.enabled is True
+
+    unlocked_state["value"] = True
+    admin_app.MainWindow._update_privilege_status(window)
+    assert window.privilege_status_label.text == "Privileges: unlocked"
+    assert window.unlock_privileges_button.enabled is False
+
+
+def test_handle_action_success_treats_unsuccessful_result_as_failure(monkeypatch) -> None:
+    log_messages: list[str] = []
+    refresh_calls: list[str] = []
+    dialog_messages: list[tuple[str, str]] = []
+
+    window = SimpleNamespace(
+        append_log=lambda message: log_messages.append(message),
+        _discard_worker=lambda worker: refresh_calls.append("discarded"),
+        _update_privilege_status=lambda: refresh_calls.append("status"),
+        _refresh_visible_data=lambda manual=False: refresh_calls.append(f"visible:{manual}"),
+        refresh_issues=lambda: refresh_calls.append("issues"),
+        refresh_workers=lambda: refresh_calls.append("workers"),
+        _show_action_error_dialog=lambda message: dialog_messages.append(("Action Failed", message)),
+    )
+
+    result = SimpleNamespace(success=False, message="Failed to create VM idea-generator-vm: codex failed")
+
+    admin_app.MainWindow._handle_action_success(window, "Create VM idea-generator-vm", result, None, object())
+
+    assert log_messages == [
+        "Create VM idea-generator-vm failed: Failed to create VM idea-generator-vm: codex failed"
+    ]
+    assert dialog_messages == [("Action Failed", "Failed to create VM idea-generator-vm: codex failed")]
+    assert refresh_calls == ["discarded", "status", "visible:True", "issues", "workers"]
+
+
+def test_handle_action_failure_uses_scrollable_error_dialog() -> None:
+    log_messages: list[str] = []
+    dialog_messages: list[str] = []
+
+    window = SimpleNamespace(
+        _discard_worker=lambda worker: None,
+        append_log=lambda message: log_messages.append(message),
+        _update_privilege_status=lambda: None,
+        _show_action_error_dialog=lambda message: dialog_messages.append(message),
+    )
+
+    admin_app.MainWindow._handle_action_failure(window, "Create VM idea-generator-vm", "very long error", object())
+
+    assert log_messages == ["Create VM idea-generator-vm failed: very long error"]
+    assert dialog_messages == ["very long error"]

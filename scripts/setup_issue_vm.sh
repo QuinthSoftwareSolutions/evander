@@ -417,9 +417,17 @@ PY
 fi
 
 if [[ ! -f "${SSH_PUBLIC_KEY_FILE}" ]]; then
-  echo "Missing SSH public key: ${SSH_PUBLIC_KEY_FILE}" >&2
-  echo "Set SSH_PUBLIC_KEY_FILE to a readable public key before running this helper." >&2
-  exit 1
+  if [[ -f "${SSH_PRIVATE_KEY_PATH}" ]] && command -v ssh-keygen >/dev/null 2>&1; then
+    DERIVED_PUBLIC_KEY_FILE="$(mktemp)"
+    trap 'rm -f "${DERIVED_PUBLIC_KEY_FILE:-}"' EXIT
+    ssh-keygen -y -f "${SSH_PRIVATE_KEY_PATH}" > "${DERIVED_PUBLIC_KEY_FILE}"
+    SSH_PUBLIC_KEY_FILE="${DERIVED_PUBLIC_KEY_FILE}"
+  else
+    echo "Missing SSH public key: ${SSH_PUBLIC_KEY_FILE}" >&2
+    echo "Set SSH_PUBLIC_KEY_FILE to a readable public key before running this helper." >&2
+    echo "Alternatively set SSH_PRIVATE_KEY_PATH to derive the public key automatically." >&2
+    exit 1
+  fi
 fi
 
 if [[ ! -f "${SSH_PRIVATE_KEY_PATH}" ]]; then

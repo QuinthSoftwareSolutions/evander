@@ -6,11 +6,13 @@ from pathlib import Path
 import subprocess
 from typing import Any
 
+import agent_sandbox.admin_service as admin_service
 import pytest
 from agent_sandbox.admin_service import AdminService
 from agent_sandbox.models import SessionManifest
 
 UTC = timezone.utc
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def write_config(tmp_path: Path, *, enable_directory_scoped_config: bool = False) -> Path:
@@ -886,6 +888,366 @@ def test_create_issue_vm_accepts_unified_proxy_identifier(tmp_path: Path, monkey
     assert captured["cmd"][0].endswith("setup_issue_vm.sh")
     assert captured["cmd"][-3] == issue.yaml_path
     assert captured["cmd"][-1] == "agent"
+
+
+def test_create_vm_launches_generic_vm_and_bootstraps_selected_toolchains(tmp_path: Path, monkeypatch: Any) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    created = service.create_directory_child("root", "team")
+    assert created.ok is True and created.data is not None
+    team_path = created.data.details.directory.path
+    write_result = service.write_directory_domain_config(
+        team_path,
+        "vm",
+        {
+            "gateway_url": "http://10.20.30.40:8000/mcp",
+            "openai_relay_port": 12000,
+            "nuget_relay_port": 13000,
+        },
+    )
+    assert write_result.ok is True
+
+    monkeypatch.setenv("SSH_PUBLIC_KEY_FILE", "/home/jonathan/.ssh/gh_id_ed25519.pub")
+    monkeypatch.setenv("SSH_PRIVATE_KEY_PATH", "/home/jonathan/.ssh/gh_id_ed25519")
+    monkeypatch.setattr("agent_sandbox.admin_service._dominfo_field", lambda vm_name, field_name: None)
+    monkeypatch.setattr("agent_sandbox.admin_service._resolve_vm_ip", lambda vm_name: "192.168.250.10")
+    calls: list[tuple[list[str], dict[str, str] | None]] = []
+
+    def _fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append((cmd, kwargs.get("env")))
+        script_name = next((Path(part).name for part in cmd if part.endswith(".sh")), Path(cmd[0]).name)
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout=f"ok:{script_name}", stderr="")
+
+    monkeypatch.setattr("agent_sandbox.admin_service.subprocess.run", _fake_run)
+
+    result = service.create_vm(
+        vm_name="lab-vm",
+        session_id="lab-session",
+        dotnet=True,
+        nuget=True,
+        playwright=True,
+        directory_path=team_path,
+    )
+
+    assert result.success is True
+    assert [cmd[-1] for cmd, _env in calls] == ["agent"]
+    assert calls[0][0][:3] == ["pkexec", "env", "SSH_PUBLIC_KEY_FILE=/home/jonathan/.ssh/gh_id_ed25519.pub"]
+    assert "SSH_PRIVATE_KEY_PATH=/home/jonathan/.ssh/gh_id_ed25519" in calls[0][0]
+    assert calls[0][0][-7:] == [
+        str(Path(__file__).resolve().parents[1] / "scripts" / "setup_vm.sh"),
+        "--dotnet",
+        "--nuget",
+        "--playwright",
+        "lab-vm",
+        "lab-session",
+        "agent",
+    ]
+    setup_env = calls[0][1]
+    assert setup_env is not None
+    assert setup_env["GATEWAY_URL"] == "http://10.20.30.40:8000/mcp"
+    assert setup_env["LLM_BASE_URL"] == "http://10.20.30.40:12000/v1"
+    assert setup_env["NUGET_RELAY_BASE_URL"] == "http://10.20.30.40:13000"
+    manifest = service.runtime.sessions.get("lab-session")
+    assert manifest is not None
+    assert manifest.vm_id == "lab-vm"
+    assert manifest.directory_path == team_path
+    assert manifest.metadata == {}
+    assert result.message == "ok:setup_vm.sh"
+
+
+def test_create_vm_with_repo_source_clones_repo_and_bootstraps_python(tmp_path: Path, monkeypatch: Any) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    captured_runs: list[tuple[list[str], dict[str, str] | None]] = []
+
+    monkeypatch.setattr("agent_sandbox.admin_service._dominfo_field", lambda vm_name, field_name: None)
+    monkeypatch.setattr("agent_sandbox.admin_service._resolve_vm_ip", lambda vm_name: "192.168.250.10")
+    monkeypatch.setattr("agent_sandbox.admin_service._resolve_private_key_path", lambda: Path("/tmp/test-key"))
+    monkeypatch.setattr(
+        "agent_sandbox.admin_service._resolve_host_python_with_pip",
+        lambda: str(REPO_ROOT / ".venv" / "bin" / "python"),
+    )
+
+    def _fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        captured_runs.append((cmd, kwargs.get("env")))
+        if cmd[0].endswith("resolve_repo_source.sh") and "--path-only" in cmd:
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="/src/repo\n", stderr="")
+        if cmd[0].endswith("resolve_repo_source.sh") and "--name-only" in cmd:
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="sample-repo\n", stderr="")
+        if cmd[:5] == ["git", "-C", "/src/repo", "symbolic-ref", "--quiet"]:
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="origin/main\n", stderr="")
+        if cmd[:4] == ["git", "-C", "/src/repo", "branch"]:
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="main\n", stderr="")
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="ok", stderr="")
+
+    monkeypatch.setattr("agent_sandbox.admin_service.subprocess.run", _fake_run)
+
+    result = service.create_vm(
+        vm_name="lab-vm",
+        session_id="lab-session",
+        repo_source="/src/repo",
+        python=True,
+    )
+
+    assert result.success is True
+    captured_cmds = [cmd for cmd, _env in captured_runs]
+    assert any(cmd[0].endswith("create_git_remote.sh") and cmd[1] == "sample-repo" for cmd in captured_cmds)
+    assert any(cmd[0] == "git" and cmd[1].endswith("/sample-repo.git") and cmd[2] == "fetch" for cmd in captured_cmds)
+    assert any(
+        cmd[0] == "git"
+        and cmd[1].endswith("/sample-repo.git")
+        and cmd[2:5] == ["symbolic-ref", "HEAD", "refs/heads/main"]
+        for cmd in captured_cmds
+    )
+    assert any(cmd[0].endswith("bootstrap_git_vm.sh") and cmd[1:] == ["lab-vm", "agent"] for cmd in captured_cmds)
+    assert any(cmd[0] == "ssh" and cmd[-3:] == ["agent@192.168.250.10", "bash", "-s"] for cmd in captured_cmds)
+    python_runs = [
+        (cmd, env)
+        for cmd, env in captured_runs
+        if cmd[0].endswith("bootstrap_python_vm.sh")
+    ]
+    assert len(python_runs) == 1
+    assert python_runs[0][0][1:] == ["--vm-user", "agent", "lab-vm", "/src/repo", "/home/agent/sample-repo"]
+    assert python_runs[0][1] is not None
+    assert python_runs[0][1]["HOST_PYTHON_BIN"] == str(REPO_ROOT / ".venv" / "bin" / "python")
+
+
+def test_create_vm_preserves_session_when_bootstrap_fails_after_launch(tmp_path: Path, monkeypatch: Any) -> None:
+    service = AdminService(write_config(tmp_path))
+    state = {"launched": False}
+    monkeypatch.setattr(
+        "agent_sandbox.admin_service._dominfo_field",
+        lambda vm_name, field_name: "running" if state["launched"] and field_name == "State" else None,
+    )
+
+    def _fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        if any(part.endswith("setup_vm.sh") for part in cmd):
+            state["launched"] = True
+            return subprocess.CompletedProcess(args=cmd, returncode=1, stdout="", stderr="codex failed")
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="ok", stderr="")
+
+    monkeypatch.setattr("agent_sandbox.admin_service.subprocess.run", _fake_run)
+
+    result = service.create_vm(vm_name="lab-vm", session_id="lab-session")
+
+    assert result.success is False
+    assert result.message == (
+        "Failed to create VM lab-vm: codex failed\n"
+        "VM lab-vm and session lab-session were preserved for inspection."
+    )
+    manifest = service.runtime.sessions.get("lab-session")
+    assert manifest is not None
+    assert manifest.vm_id == "lab-vm"
+
+
+def test_create_vm_failure_preserves_stdout_and_stderr(tmp_path: Path, monkeypatch: Any) -> None:
+    service = AdminService(write_config(tmp_path))
+    state = {"launched": False}
+    monkeypatch.setattr(
+        "agent_sandbox.admin_service._dominfo_field",
+        lambda vm_name, field_name: "running" if state["launched"] and field_name == "State" else None,
+    )
+
+    def _fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        if any(part.endswith("setup_vm.sh") for part in cmd):
+            state["launched"] = True
+            return subprocess.CompletedProcess(
+                args=cmd,
+                returncode=1,
+                stdout="Bootstrapping Codex into agent@192.168.250.204\n",
+                stderr="scp: /home/agent/bin/codex: No such file or directory\n",
+            )
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="ok", stderr="")
+
+    monkeypatch.setattr("agent_sandbox.admin_service.subprocess.run", _fake_run)
+
+    result = service.create_vm(vm_name="idea-generator-vm", session_id="idea-generator")
+
+    assert result.success is False
+    assert "Bootstrapping Codex into agent@192.168.250.204" in result.message
+    assert "scp: /home/agent/bin/codex: No such file or directory" in result.message
+    assert "were preserved for inspection" in result.message
+
+
+def test_create_vm_waits_for_ssh_before_bootstrap(tmp_path: Path, monkeypatch: Any) -> None:
+    service = AdminService(write_config(tmp_path))
+    monkeypatch.setattr("agent_sandbox.admin_service._dominfo_field", lambda vm_name, field_name: None)
+    monkeypatch.setattr("agent_sandbox.admin_service._resolve_vm_ip", lambda vm_name: "192.168.250.154")
+    captured_cmds: list[list[str]] = []
+    monkeypatch.setattr(
+        "agent_sandbox.admin_service.subprocess.run",
+        lambda cmd, **kwargs: captured_cmds.append(cmd) or subprocess.CompletedProcess(args=cmd, returncode=0, stdout="ok", stderr=""),
+    )
+
+    result = service.create_vm(vm_name="idea-generator-vm", session_id="idea-generator")
+
+    assert result.success is True
+    assert any(any(part.endswith("setup_vm.sh") for part in cmd) for cmd in captured_cmds)
+
+
+def test_sync_repo_into_bare_remote_sets_head_to_default_branch(tmp_path: Path, monkeypatch: Any) -> None:
+    service = AdminService(write_config(tmp_path))
+    issue_setup = service._resolve_issue_setup("root", root_dir=Path(__file__).resolve().parents[1])
+    captured_cmds: list[list[str]] = []
+
+    def _fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        captured_cmds.append(cmd)
+        if cmd[0].endswith("create_git_remote.sh"):
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="ok", stderr="")
+        if cmd[0] == "git" and "symbolic-ref" in cmd:
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+        if cmd[0] == "git" and "fetch" in cmd:
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+        if cmd[:5] == ["git", "-C", "/src/repo", "symbolic-ref", "--quiet"]:
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="origin/main\n", stderr="")
+        if cmd[:4] == ["git", "-C", "/src/repo", "branch"]:
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="main\n", stderr="")
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("agent_sandbox.admin_service.subprocess.run", _fake_run)
+
+    service._sync_repo_into_bare_remote("sample-repo", "/src/repo", issue_setup=issue_setup)
+
+    assert any(
+        cmd[0] == "git"
+        and cmd[1].endswith("/sample-repo.git")
+        and cmd[2:5] == ["symbolic-ref", "HEAD", "refs/heads/main"]
+        for cmd in captured_cmds
+    )
+
+
+def test_resolve_host_python_with_pip_prefers_current_interpreter(monkeypatch: Any) -> None:
+    monkeypatch.delenv("HOST_PYTHON_BIN", raising=False)
+    monkeypatch.setattr(admin_service.sys, "executable", "/work/.venv/bin/python")
+
+    def _fake_has_pip(candidate: str) -> bool:
+        return candidate == "/work/.venv/bin/python"
+
+    monkeypatch.setattr("agent_sandbox.admin_service._python_has_pip", _fake_has_pip)
+
+    assert admin_service._resolve_host_python_with_pip() == "/work/.venv/bin/python"
+
+
+def test_resolve_host_python_with_pip_honors_configured_override(monkeypatch: Any) -> None:
+    monkeypatch.setenv("HOST_PYTHON_BIN", "/custom/python")
+    monkeypatch.setattr("agent_sandbox.admin_service._ensure_python_has_pip", lambda candidate: candidate == "/custom/python")
+
+    assert admin_service._resolve_host_python_with_pip() == "/custom/python"
+
+
+def test_resolve_host_python_with_pip_bootstraps_pip_with_ensurepip(monkeypatch: Any) -> None:
+    monkeypatch.delenv("HOST_PYTHON_BIN", raising=False)
+    monkeypatch.setattr(admin_service.sys, "executable", "/work/.venv/bin/python3")
+    attempts: list[str] = []
+
+    def _fake_ensure(candidate: str) -> bool:
+        attempts.append(candidate)
+        return candidate == "/work/.venv/bin/python3"
+
+    monkeypatch.setattr("agent_sandbox.admin_service._ensure_python_has_pip", _fake_ensure)
+
+    assert admin_service._resolve_host_python_with_pip() == "/work/.venv/bin/python3"
+    assert attempts == ["/work/.venv/bin/python3"]
+
+
+def test_create_vm_requires_repo_source_for_python(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+
+    result = service.create_vm(vm_name="lab-vm", python=True)
+
+    assert result.success is False
+    assert result.message == "repo_source is required when Python bootstrap is enabled."
+
+
+def test_wait_for_vm_ip_uses_pkexec_when_requested(monkeypatch) -> None:
+    calls: list[bool] = []
+
+    def _fake_plain(vm_name: str) -> str | None:
+        calls.append(False)
+        return None
+
+    def _fake_pkexec(vm_name: str) -> str | None:
+        calls.append(True)
+        return "192.168.250.10"
+
+    monkeypatch.setattr("agent_sandbox.admin_service._resolve_vm_ip", _fake_plain)
+    monkeypatch.setattr("agent_sandbox.admin_service._resolve_vm_ip_with_pkexec", _fake_pkexec)
+    monkeypatch.setattr("agent_sandbox.admin_service.time.sleep", lambda _seconds: None)
+
+    ip = admin_service._wait_for_vm_ip(
+        "vm-test",
+        timeout_seconds=1,
+        allow_pkexec=True,
+    )
+
+    assert ip == "192.168.250.10"
+    assert calls == [False, True]
+
+
+def test_unlock_privileged_operations_starts_helper(monkeypatch, tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    started: list[str] = []
+
+    class FakeHelper:
+        def __init__(self, *, python_executable: str, project_dir: Path) -> None:
+            started.append("init")
+
+        def start(self) -> None:
+            started.append("start")
+
+        def is_running(self) -> bool:
+            return True
+
+        def close(self) -> None:
+            started.append("close")
+
+    monkeypatch.setattr("agent_sandbox.admin_service.PrivilegedHelperSession", FakeHelper)
+
+    assert service.unlock_privileged_operations() == "Privileged operations unlocked."
+    assert service.privileged_operations_unlocked() is True
+    service.lock_privileged_operations()
+    assert started == ["init", "start", "close"]
+
+
+def test_destroy_vm_prunes_generic_sessions_and_feedback_state(tmp_path: Path, monkeypatch: Any) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.sessions.put(
+        "lab-session",
+        SessionManifest(
+            session_id="lab-session",
+            vm_id="lab-vm",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    service.runtime.sessions.put(
+        "other-session",
+        SessionManifest(
+            session_id="other-session",
+            vm_id="other-vm",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    monkeypatch.setattr(
+        "agent_sandbox.admin_service.subprocess.run",
+        lambda cmd, **kwargs: subprocess.CompletedProcess(args=cmd, returncode=0, stdout="destroyed", stderr=""),
+    )
+    monkeypatch.setattr("agent_sandbox.admin_service._prune_approvals_for_sessions", lambda runtime, session_ids: len(session_ids))
+    monkeypatch.setattr(
+        "agent_sandbox.admin_service._prune_pr_map",
+        lambda path, session_ids: (len(session_ids), {"stream-a"} if session_ids else set()),
+    )
+    monkeypatch.setattr(
+        "agent_sandbox.admin_service._prune_pr_feedback_store",
+        lambda path, streams: (len(streams), len(streams)),
+    )
+
+    result = service.destroy_vm("lab-vm")
+
+    assert result.success is True
+    assert service.runtime.sessions.get("lab-session") is None
+    assert service.runtime.sessions.get("other-session") is not None
+    assert "removed_sessions=1" in result.message
+    assert "removed_pr_map_entries=1" in result.message
 
 
 def _write_proxy_issue_yaml(

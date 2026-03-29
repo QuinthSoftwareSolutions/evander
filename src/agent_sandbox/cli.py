@@ -1500,6 +1500,20 @@ def delete_expired_sessions(
 
 
 @app.command(
+    "destroy-vm",
+    rich_help_panel="VM Operations",
+    short_help="Destroy a VM and prune local session state.",
+)
+def destroy_vm(
+    target: str,
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
+) -> None:
+    service = AdminService(config)
+    result = service.destroy_vm(target)
+    _echo_action_result_or_exit(result)
+
+
+@app.command(
     "destroy-issue-vm",
     rich_help_panel="Issue Lifecycle",
     short_help="Destroy an issue VM and state.",
@@ -2129,6 +2143,86 @@ def resume_agent(
     if getattr(completed, "stderr", ""):
         typer.echo(completed.stderr, err=True, nl=False)
     raise typer.Exit(code=completed.returncode)
+
+
+@app.command(
+    "create-vm",
+    rich_help_panel="VM Operations",
+    short_help="Create and bootstrap a standalone VM.",
+)
+def create_vm(
+    vm_name: str,
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
+    directory_path: Annotated[
+        str,
+        typer.Option("--directory-path", help="Directory path that owns the new VM/session."),
+    ] = "root",
+    session_id: Annotated[
+        str | None,
+        typer.Option("--session-id", help="Session identifier to create and pass into the VM launch flow."),
+    ] = None,
+    repo_source: Annotated[
+        str | None,
+        typer.Option("--repo-source", help="Host repo path or remote URL to clone into the guest."),
+    ] = None,
+    vm_user: Annotated[str, typer.Option("--vm-user", help="Guest user to configure.")] = "agent",
+    ttl_hours: Annotated[int | None, typer.Option("--ttl-hours", help="Session time to live in hours.")] = None,
+    discord_channel: Annotated[
+        list[str],
+        typer.Option("--discord-channel", help="Allowlisted Discord control channel."),
+    ] = [],
+    email_mailbox: Annotated[
+        list[str],
+        typer.Option("--email-mailbox", help="Allowlisted mailbox id. Repeat for multiple mailboxes."),
+    ] = [],
+    email_folder: Annotated[
+        list[str],
+        typer.Option("--email-folder", help="Allowlisted email folder. Repeat for multiple folders."),
+    ] = [],
+    python: Annotated[
+        bool,
+        typer.Option("--python", help="Bootstrap a guest-local Python virtualenv inside the cloned repo."),
+    ] = False,
+    dotnet: Annotated[bool, typer.Option("--dotnet", help="Bootstrap the host .NET SDK into the guest.")] = False,
+    nuget: Annotated[
+        bool,
+        typer.Option("--nuget", help="Bootstrap NuGet relay configuration into the guest."),
+    ] = False,
+    mssql: Annotated[
+        bool, typer.Option("--mssql", help="Provision a guest-local Microsoft SQL Server instance.")
+    ] = False,
+    mssql_init_root: Annotated[
+        str | None,
+        typer.Option(
+            "--mssql-init-root",
+            help="Host directory copied into /var/opt/mssql/init. If present, init.sql is executed.",
+        ),
+    ] = None,
+    playwright: Annotated[
+        bool, typer.Option("--playwright", help="Bootstrap the host-seeded Playwright runtime into the guest.")
+    ] = False,
+) -> None:
+    if mssql_init_root is not None and not mssql:
+        raise typer.BadParameter("--mssql-init-root requires --mssql.")
+    service = AdminService(config)
+    result = service.create_vm(
+        vm_name=vm_name,
+        session_id=session_id,
+        repo_source=repo_source,
+        vm_user=vm_user,
+        ttl_hours=ttl_hours,
+        discord_channels=discord_channel,
+        email_mailboxes=email_mailbox,
+        email_folders=email_folder,
+        python=python,
+        dotnet=dotnet,
+        nuget=nuget,
+        mssql=mssql,
+        mssql_init_root=mssql_init_root,
+        playwright=playwright,
+        directory_path=directory_path,
+    )
+    _echo_action_result_or_exit(result)
 
 
 @app.command(

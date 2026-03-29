@@ -98,7 +98,7 @@ def test_help_groups_commands_by_panel_then_alphabetically() -> None:
     assert (
         output.index("create-issue-vm") < output.index("create-local-issue") < output.index("destroy-issue-vm") < output.index("list-local-issues") < output.index("prune-orphaned-issue-state")
     )
-    assert output.index("disable-agent") < output.index("enable-agent") < output.index("list-vms") < output.index("logs") < output.index("resume-agent") < output.index("shutdown-vm") < output.index("ssh") < output.index("start-vm")
+    assert output.index("create-vm") < output.index("destroy-vm") < output.index("disable-agent") < output.index("enable-agent") < output.index("list-vms") < output.index("logs") < output.index("resume-agent") < output.index("shutdown-vm") < output.index("ssh") < output.index("start-vm")
     assert output.index("seed-discord-channel") < output.index("seed-email")
     assert "init-state" in output and "Create runtime state files." in output
     assert "migrate-global-config-to-root" in output
@@ -108,6 +108,7 @@ def test_help_groups_commands_by_panel_then_alphabetically() -> None:
     assert "migrate-directory-ownership" in output
     assert "Backfill missing directory ownership fields" in output
     assert "create-issue-vm" in output and "Create and bootstrap an issue VM." in output
+    assert "create-vm" in output and "Create and bootstrap a standalone VM." in output
     assert "host-heartbeat" in output and "Run the host heartbeat worker." in output
 
 
@@ -1063,6 +1064,78 @@ def test_create_issue_vm_does_not_grant_unrequested_tool_families(tmp_path: Path
     assert manifest["email_mailbox_allowlist"] == []
     assert manifest["email_folder_allowlist"] == []
     assert manifest["metadata"] == {"issue_number": "200"}
+
+
+def test_create_vm_creates_manifest_before_invoking_launch_flow(tmp_path: Path, monkeypatch) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+    captured_kwargs: dict[str, object] = {}
+
+    assert runner.invoke(app, ["init-state", "--config", str(config_path)]).exit_code == 0
+
+    class FakeAdminService:
+        def __init__(self, config) -> None:
+            captured_kwargs["config"] = config
+
+        def create_vm(self, **kwargs):
+            captured_kwargs["kwargs"] = kwargs
+            return VmActionResult(success=True, vm_name=kwargs["vm_name"], action="create_vm", message="ok")
+
+    monkeypatch.setattr("agent_sandbox.cli.AdminService", FakeAdminService)
+
+    result = runner.invoke(
+        app,
+        [
+            "create-vm",
+            "--config",
+            str(config_path),
+            "--directory-path",
+            "root/team",
+            "--session-id",
+            "lab-session",
+            "--repo-source",
+            "/src/repo",
+            "--python",
+            "--dotnet",
+            "--nuget",
+            "--playwright",
+            "lab-vm",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured_kwargs["kwargs"] == {
+        "vm_name": "lab-vm",
+        "session_id": "lab-session",
+        "repo_source": "/src/repo",
+        "vm_user": "agent",
+        "ttl_hours": None,
+        "discord_channels": [],
+        "email_mailboxes": [],
+        "email_folders": [],
+        "python": True,
+        "dotnet": True,
+        "nuget": True,
+        "mssql": False,
+        "mssql_init_root": None,
+        "playwright": True,
+        "directory_path": "root/team",
+    }
+
+
+def test_create_vm_rejects_mssql_init_root_without_mssql(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+
+    assert runner.invoke(app, ["init-state", "--config", str(config_path)]).exit_code == 0
+
+    result = runner.invoke(
+        app,
+        ["create-vm", "--config", str(config_path), "--mssql-init-root", "/tmp/init", "lab-vm"],
+    )
+
+    assert result.exit_code != 0
+    assert "--mssql-init-root requires --mssql" in result.output
 
 
 def test_attach_pr_feedback_updates_existing_session(tmp_path: Path) -> None:
@@ -2250,6 +2323,28 @@ def test_destroy_issue_vm_accepts_vm_name_target(tmp_path: Path, monkeypatch) ->
     assert result.exit_code == 0
     assert captured_cmd[0].endswith("/scripts/destroy_agent_vm.sh")
     assert captured_cmd[1:] == ["vm-1234"]
+
+
+def test_destroy_vm_delegates_to_admin_service(tmp_path: Path, monkeypatch) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+    captured: dict[str, object] = {}
+
+    class FakeAdminService:
+        def __init__(self, config) -> None:
+            captured["config"] = config
+
+        def destroy_vm(self, target: str):
+            captured["target"] = target
+            return VmActionResult(success=True, vm_name=target, action="destroy_vm", message="destroyed")
+
+    monkeypatch.setattr("agent_sandbox.cli.AdminService", FakeAdminService)
+
+    result = runner.invoke(app, ["destroy-vm", "--config", str(config_path), "lab-vm"])
+
+    assert result.exit_code == 0
+    assert captured["target"] == "lab-vm"
+    assert "destroyed" in result.stdout
 
 
 def test_prune_orphaned_issue_state_removes_state_for_missing_issue_vms(tmp_path: Path, monkeypatch) -> None:

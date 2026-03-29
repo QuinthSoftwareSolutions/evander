@@ -243,6 +243,11 @@ fi
 
 "${SCRIPT_DIR}/create_git_remote.sh" "${BARE_REPO_NAME}"
 git --git-dir="${BARE_REPO_PATH}" config agent-sandbox.trustedRepoPath "${RESOLVED_REPO_PATH}"
+git --git-dir="${BARE_REPO_PATH}" config agent-sandbox.mirrorSource "${REPO_SOURCE}"
+git --git-dir="${BARE_REPO_PATH}" config agent-sandbox.mirrorRemoteName "${REMOTE_NAME}"
+git --git-dir="${BARE_REPO_PATH}" config agent-sandbox.mirrorSyncRemote "${SYNC_REMOTE}"
+git --git-dir="${BARE_REPO_PATH}" config agent-sandbox.mirrorForceLocal "${FORCE_LOCAL}"
+git --git-dir="${BARE_REPO_PATH}" config --unset-all agent-sandbox.mirrorRefspec >/dev/null 2>&1 || true
 
 CANONICAL_ORIGIN_URL=""
 if [[ "${SOURCE_MODE}" == "remote" ]]; then
@@ -252,6 +257,12 @@ elif git -C "${RESOLVED_REPO_PATH}" remote get-url "${REMOTE_NAME}" >/dev/null 2
 fi
 if [[ -n "${CANONICAL_ORIGIN_URL}" ]]; then
   git --git-dir="${BARE_REPO_PATH}" config agent-sandbox.canonicalOriginUrl "${CANONICAL_ORIGIN_URL}"
+fi
+
+if (( ${#REFSPECS[@]} > 0 )); then
+  for refspec in "${REFSPECS[@]}"; do
+    git --git-dir="${BARE_REPO_PATH}" config --add agent-sandbox.mirrorRefspec "${refspec}"
+  done
 fi
 
 DEFAULT_BASE_BRANCH="$(

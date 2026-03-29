@@ -111,7 +111,7 @@ Directory-scoped config is rooted at `root`:
    sudo ./scripts/launch_agent_vm.sh vm-real real-session
    ```
 
-   By default, the launch script injects your host `~/.ssh/id_ed25519.pub` key into the guest and exposes a host-side LLM base URL of `http://192.168.250.1:11434/v1`. Override with `SSH_PUBLIC_KEY_FILE=...` or `LLM_BASE_URL=...` if needed.
+   By default, the launch script injects your host `~/.ssh/id_ed25519.pub` key into the guest and exposes a host-side LLM base URL of `http://192.168.250.1:11434/v1`. Override with `SSH_PUBLIC_KEY_FILE=...`, `SSH_PRIVATE_KEY_PATH=...`, or `LLM_BASE_URL=...` if needed.
    It also creates a shared host NuGet cache under `/var/lib/libvirt/images/agent-sandbox/nuget-cache/global-packages` and mounts it read-only into the guest at `/opt/agent-sandbox/nuget-cache-ro` via `virtiofs`.
    New VMs default to a `20G` virtual disk; override with `DISK_SIZE_GB=...` before launch if needed.
    New VMs receive provider-neutral baseline config (`/etc/agent-sandbox/session.env` and `/home/agent/.agent/config.env`) plus a shell profile hook; Codex-specific config is written later by `bootstrap_codex_vm.sh`.
@@ -423,6 +423,8 @@ refreshes the issue-numbered host mirror in one command. The lower-level
 general shell access. Issue mirrors also carry a `post-receive` hook so host-side automation can
 promote pushed `agents/...` branches into the trusted clone, push the review branch to `origin`,
 and create the upstream PR automatically.
+Issue mirrors also remember their source settings, so later guest `git fetch` / `git pull`
+operations can trigger a host-side mirror refresh before the read is served.
 
 For fixed PR boilerplate, set `AGENT_SANDBOX_PR_FIXED_BODY_FILE` as a host environment variable
 pointing at a markdown file. For per-directory boilerplate, use the root `pr_template` directory config

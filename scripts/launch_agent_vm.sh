@@ -16,6 +16,7 @@ Environment:
   VM_STORAGE_DIR       Root directory for libvirt-accessible VM storage.
   GATEWAY_URL          Host MCP gateway URL exposed to the guest.
   SSH_PUBLIC_KEY_FILE  Public key injected into the guest.
+  SSH_PRIVATE_KEY_PATH Private key used to derive a temporary public key when needed.
   LLM_BASE_URL         Host OpenAI-compatible base URL exposed to the guest.
   SHARED_NUGET_CACHE_DIR  Host read-only NuGet package cache directory mounted into the guest.
   SHARED_NUGET_CACHE_TAG  Guest mount tag/path name for the shared NuGet cache. Default: agent-sandbox-nuget-cache
@@ -58,6 +59,10 @@ if [[ ! -f "${DEFAULT_SSH_KEY_FILE}" ]]; then
   DEFAULT_SSH_KEY_FILE="${CALLER_HOME}/.ssh/id_rsa.pub"
 fi
 SSH_PUBLIC_KEY_FILE="${SSH_PUBLIC_KEY_FILE:-${DEFAULT_SSH_KEY_FILE}}"
+SSH_PRIVATE_KEY_PATH="${SSH_PRIVATE_KEY_PATH:-${CALLER_HOME}/.ssh/id_ed25519}"
+if [[ ! -f "${SSH_PRIVATE_KEY_PATH}" ]]; then
+  SSH_PRIVATE_KEY_PATH="${CALLER_HOME}/.ssh/id_rsa"
+fi
 SHARED_NUGET_CACHE_DIR="${SHARED_NUGET_CACHE_DIR:-${VM_STORAGE_DIR}/nuget-cache/global-packages}"
 SHARED_NUGET_CACHE_TAG="${SHARED_NUGET_CACHE_TAG:-agent-sandbox-nuget-cache}"
 SHARED_NUGET_CACHE_MODE="${SHARED_NUGET_CACHE_MODE:-auto}"
@@ -117,9 +122,17 @@ if [[ ! -f "${BASE_IMAGE}" ]]; then
 fi
 
 if [[ ! -f "${SSH_PUBLIC_KEY_FILE}" ]]; then
-  echo "Missing SSH public key: ${SSH_PUBLIC_KEY_FILE}" >&2
-  echo "Set SSH_PUBLIC_KEY_FILE to a readable public key before launching the VM." >&2
-  exit 1
+  if [[ -f "${SSH_PRIVATE_KEY_PATH}" ]] && command -v ssh-keygen >/dev/null 2>&1; then
+    DERIVED_PUBLIC_KEY_FILE="$(mktemp)"
+    trap 'rm -f "${DERIVED_PUBLIC_KEY_FILE:-}"' EXIT
+    ssh-keygen -y -f "${SSH_PRIVATE_KEY_PATH}" > "${DERIVED_PUBLIC_KEY_FILE}"
+    SSH_PUBLIC_KEY_FILE="${DERIVED_PUBLIC_KEY_FILE}"
+  else
+    echo "Missing SSH public key: ${SSH_PUBLIC_KEY_FILE}" >&2
+    echo "Set SSH_PUBLIC_KEY_FILE to a readable public key before launching the VM." >&2
+    echo "Alternatively set SSH_PRIVATE_KEY_PATH to derive the public key automatically." >&2
+    exit 1
+  fi
 fi
 
 if [[ ! -w "${VM_DIR}" ]]; then

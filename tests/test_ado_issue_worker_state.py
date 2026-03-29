@@ -1036,6 +1036,7 @@ def test_worker_config_load_from_env_reads_ado_worker_global_config(
     assert config.include_comments is False
     assert config.comments_max_count == 11
     assert config.comment_text_max_chars == 777
+    assert config.directory_path == "root/team-a"
 
 
 def test_worker_config_load_from_env_requires_any_mssql_password_when_bootstrap_enabled(
