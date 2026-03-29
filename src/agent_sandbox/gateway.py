@@ -46,6 +46,15 @@ def _issue_kind_for_role(role: str | None) -> str | None:
     return None
 
 
+def _normalize_agent_status(state: str | None) -> str:
+    normalized = str(state or "").strip().lower()
+    if normalized == "running":
+        return "active"
+    if normalized in {"idle", "not_started"}:
+        return "idle"
+    return "unknown"
+
+
 def _issue_creation_metadata(session: Any) -> dict[str, Any]:
     metadata: dict[str, Any] = {
         "generated_by_session_id": session.session_id,
@@ -513,6 +522,163 @@ def create_server(context: RuntimeContext) -> FastMCP:
             audit_failure(
                 resolved_session_id,
                 ToolName.REJECT_ISSUE,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
+    def commit_issue(
+        issue_id: str,
+        reason: str | None = None,
+        session_id: str | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        resolved_session_id = _resolve_session_id_from_context(session_id, ctx)
+        args = {
+            "session_id": resolved_session_id,
+            "issue_id": issue_id,
+            "reason": reason,
+        }
+        try:
+            session = context.policy.require_tool(resolved_session_id, ToolName.COMMIT_ISSUE)
+            fields: dict[str, object] | None = None
+            if reason is not None:
+                fields = {"Reason": reason}
+            result = AdminService(context.config.runtime_dir).update_issue(
+                issue_id,
+                state="Committed",
+                fields=fields,
+            )
+            audit_success(
+                resolved_session_id,
+                ToolName.COMMIT_ISSUE,
+                args,
+                {
+                    "issue_number": result.get("issue_number"),
+                    "source_type": result.get("source_type"),
+                    "directory_path": session.directory_path,
+                },
+            )
+            return result
+        except PolicyError as exc:
+            audit_failure(resolved_session_id, ToolName.COMMIT_ISSUE, args, str(exc))
+            raise
+        except Exception as exc:
+            audit_failure(
+                resolved_session_id,
+                ToolName.COMMIT_ISSUE,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
+    def get_agent_status(
+        vm_name: str,
+        vm_user: str = "agent",
+        session_id: str | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        resolved_session_id = _resolve_session_id_from_context(session_id, ctx)
+        args = {
+            "session_id": resolved_session_id,
+            "vm_name": vm_name,
+            "vm_user": vm_user,
+        }
+        try:
+            session = context.policy.require_tool(resolved_session_id, ToolName.GET_AGENT_STATUS)
+            if session.vm_id and session.vm_id != vm_name:
+                raise ToolError(f"VM '{vm_name}' is not allowlisted for session '{resolved_session_id}'.")
+            summaries = AdminService(context.config.runtime_dir).list_vms(include_inactive=True, vm_user=vm_user)
+            summary = next((item for item in summaries if item.vm_name == vm_name), None)
+            if summary is None:
+                payload = {"vm_name": vm_name, "status": "unknown", "agent_state": "unknown"}
+            else:
+                payload = {
+                    "vm_name": vm_name,
+                    "status": _normalize_agent_status(summary.agent_state),
+                    "agent_state": summary.agent_state,
+                    "libvirt_state": summary.libvirt_state,
+                    "ip_address": summary.ip_address,
+                    "agent_repo_names": summary.agent_repo_names,
+                    "last_state_update_at": (
+                        summary.last_state_update_at.isoformat() if summary.last_state_update_at else None
+                    ),
+                }
+            audit_success(
+                resolved_session_id,
+                ToolName.GET_AGENT_STATUS,
+                args,
+                {
+                    "vm_name": vm_name,
+                    "status": payload["status"],
+                    "directory_path": session.directory_path,
+                },
+            )
+            return payload
+        except PolicyError as exc:
+            audit_failure(resolved_session_id, ToolName.GET_AGENT_STATUS, args, str(exc))
+            raise
+        except Exception as exc:
+            audit_failure(
+                resolved_session_id,
+                ToolName.GET_AGENT_STATUS,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
+    def get_agent_logs(
+        vm_name: str,
+        lines: int = 50,
+        repo_name: str | None = None,
+        vm_user: str = "agent",
+        session_id: str | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        resolved_session_id = _resolve_session_id_from_context(session_id, ctx)
+        args = {
+            "session_id": resolved_session_id,
+            "vm_name": vm_name,
+            "lines": lines,
+            "repo_name": repo_name,
+            "vm_user": vm_user,
+        }
+        try:
+            context.policy.require_tool(resolved_session_id, ToolName.GET_AGENT_LOGS)
+            session = context.policy.get_session(resolved_session_id)
+            if session.vm_id and session.vm_id != vm_name:
+                raise ToolError(f"VM '{vm_name}' is not allowlisted for session '{resolved_session_id}'.")
+            safe_lines = max(1, min(lines, 1000))
+            logs = AdminService(context.config.runtime_dir).get_agent_log_snapshot(
+                vm_name,
+                lines=safe_lines,
+                repo_name=repo_name,
+                vm_user=vm_user,
+            )
+            payload = {"vm_name": vm_name, "lines": safe_lines, "repo_name": repo_name, "log": logs}
+            audit_success(
+                resolved_session_id,
+                ToolName.GET_AGENT_LOGS,
+                args,
+                {"vm_name": vm_name, "lines": safe_lines, "has_output": bool(str(logs).strip())},
+            )
+            return payload
+        except PolicyError as exc:
+            audit_failure(resolved_session_id, ToolName.GET_AGENT_LOGS, args, str(exc))
+            raise
+        except Exception as exc:
+            audit_failure(
+                resolved_session_id,
+                ToolName.GET_AGENT_LOGS,
                 args,
                 str(exc),
                 decision="error",
