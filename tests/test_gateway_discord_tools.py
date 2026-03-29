@@ -149,6 +149,75 @@ def test_discord_get_commands_passes_since_cursor_and_filters_unallowlisted_sour
     assert [entry["command_id"] for entry in result["commands"]] == ["cmd-1"]
 
 
+def test_create_local_issue_uses_session_directory_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    context = make_context(tmp_path)
+    context.sessions.put(
+        "session-1",
+        SessionManifest(
+            session_id="session-1",
+            directory_path="root/team-a",
+            allowed_tools=[ToolName.CREATE_LOCAL_ISSUE],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    captured: dict[str, object] = {}
+
+    class StubAdminService:
+        def __init__(self, runtime_dir: Path) -> None:
+            captured["runtime_dir"] = runtime_dir
+
+        def create_local_issue(
+            self,
+            *,
+            title: str,
+            body: str,
+            repo_source: str | None,
+            directory_path: str,
+        ) -> object:
+            captured["payload"] = {
+                "title": title,
+                "body": body,
+                "repo_source": repo_source,
+                "directory_path": directory_path,
+            }
+            return SimpleNamespace(
+                issue_id="local-11",
+                issue_number="11",
+                directory_path=directory_path,
+                model_dump=lambda mode="json": {  # noqa: ARG005
+                    "issue_id": "local-11",
+                    "issue_number": "11",
+                    "directory_path": directory_path,
+                    "title": title,
+                    "body": body,
+                },
+            )
+
+    monkeypatch.setattr("agent_sandbox.gateway.AdminService", StubAdminService)
+    server = create_server(context)
+
+    result = call_tool(
+        server,
+        "create_local_issue",
+        {
+            "session_id": "session-1",
+            "title": "Add local issue MCP tool",
+            "body": "Needs to scope to session directory.",
+            "repo_source": "/tmp/repo",
+        },
+    )
+
+    assert captured["runtime_dir"] == context.config.runtime_dir
+    assert captured["payload"] == {
+        "title": "Add local issue MCP tool",
+        "body": "Needs to scope to session directory.",
+        "repo_source": "/tmp/repo",
+        "directory_path": "root/team-a",
+    }
+    assert result["issue_number"] == "11"
+    assert result["directory_path"] == "root/team-a"
+
+
 def test_discord_post_status_posts_to_allowlisted_channel(tmp_path: Path) -> None:
     context = make_context(tmp_path)
     context.sessions.put(
@@ -178,6 +247,30 @@ def test_discord_post_status_posts_to_allowlisted_channel(tmp_path: Path) -> Non
     assert fake_discord.post_calls == [
         ("Host relay is healthy.", "chan-allowlisted", "session-1"),
     ]
+
+
+def test_create_local_issue_requires_tool_permission(tmp_path: Path) -> None:
+    context = make_context(tmp_path)
+    context.sessions.put(
+        "session-1",
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    server = create_server(context)
+
+    with pytest.raises(ToolError, match="not allowed"):
+        asyncio.run(
+            server.call_tool(
+                "create_local_issue",
+                {
+                    "session_id": "session-1",
+                    "title": "Denied",
+                },
+            )
+        )
 
 
 def test_create_server_uses_configured_host_and_port(tmp_path: Path) -> None:
