@@ -78,6 +78,42 @@ def test_create_local_issue_reuses_scoped_id_within_directory(tmp_path: Path) ->
     assert list(records) == ["root/team::local::7"]
 
 
+def test_update_local_issue_updates_store_and_yaml(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    issue = service.create_local_issue(title="Old title", body="Old body", repo_source="/old/repo")
+
+    updated = service.update_local_issue(
+        issue.issue_number,
+        title="New title",
+        body="New body",
+        state="In Progress",
+        repo_source="/new/repo",
+    )
+
+    assert updated.title == "New title"
+    assert updated.body == "New body"
+    assert updated.state == "In Progress"
+    assert updated.repo_source == "/new/repo"
+    yaml_text = Path(updated.yaml_path).read_text(encoding="utf-8")
+    assert "title: New title" in yaml_text
+    assert "body: New body" in yaml_text
+    assert "state: In Progress" in yaml_text
+
+
+def test_update_local_issue_rejects_proxy_issue(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    issue = service.create_local_issue(yaml_path=str(_write_proxy_issue_yaml(tmp_path)))
+
+    with pytest.raises(ValueError, match="Only local manual issues"):
+        service.update_local_issue(
+            issue.issue_number,
+            title="Ignore",
+            body="Ignore",
+            state="New",
+            repo_source=None,
+        )
+
+
 
 def test_list_vms_collects_session_and_agent_state(tmp_path: Path, monkeypatch) -> None:
     service = AdminService(write_config(tmp_path))

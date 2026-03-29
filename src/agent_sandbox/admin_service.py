@@ -1615,6 +1615,49 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
             directory_path=directory_path,
         )
 
+    def update_local_issue(
+        self,
+        issue_identifier: str,
+        *,
+        title: str,
+        body: str,
+        state: str,
+        repo_source: str | None = None,
+    ) -> LocalIssueRecord:
+        issue = self._resolve_local_issue_record(issue_identifier)
+        if issue.source_type != "local_manual":
+            raise ValueError("Only local manual issues can be edited from the admin GUI.")
+        normalized_title = title.strip()
+        if not normalized_title:
+            raise ValueError("title is required")
+        normalized_state = _normalize_local_issue_state(state, allow_empty=False)
+        now = _utc_now()
+        issue.title = normalized_title
+        issue.body = body.strip()
+        issue.state = normalized_state
+        issue.repo_source = repo_source.strip() if repo_source else None
+        issue.updated_at = now
+        self.local_issue_store.put(issue.issue_id, issue)
+
+        yaml_path = Path(issue.yaml_path)
+        payload: dict[str, object] = {}
+        if yaml_path.exists():
+            try:
+                loaded = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
+            except Exception:
+                loaded = {}
+            if isinstance(loaded, dict):
+                payload = dict(loaded)
+        payload["issue_number"] = issue.issue_number
+        payload["title"] = issue.title
+        payload["body"] = issue.body
+        payload["state"] = issue.state
+        payload["source"] = issue.source or "local_gui"
+        payload["updated_at"] = now.isoformat()
+        yaml_path.parent.mkdir(parents=True, exist_ok=True)
+        yaml_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+        return issue
+
     def create_issue(
         self,
         *,
