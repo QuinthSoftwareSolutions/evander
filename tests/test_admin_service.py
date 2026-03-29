@@ -1080,6 +1080,42 @@ def test_issue_actions_forward_proxy_issues_and_sync_cache(tmp_path: Path) -> No
     assert update_call["state"] == "Resolved"
 
 
+def test_proxy_identifier_rejects_ambiguous_ado_work_item_ids_across_projects(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    project_a_issue = service.create_local_issue(
+        yaml_path=str(
+            _write_proxy_issue_yaml(
+                tmp_path,
+                issue_number=42,
+                title="Project A issue",
+                description="from project a",
+                project="project-a",
+            )
+        )
+    )
+    project_b_issue = service.create_local_issue(
+        yaml_path=str(
+            _write_proxy_issue_yaml(
+                tmp_path,
+                issue_number=42,
+                title="Project B issue",
+                description="from project b",
+                project="project-b",
+            )
+        )
+    )
+
+    with pytest.raises(ValueError, match=r"Ambiguous proxy issue identifier: proxy:ado/42\."):
+        service.read_issue("proxy:ado/42")
+    with pytest.raises(ValueError, match=r"Ambiguous proxy issue identifier: proxy:ado/42\."):
+        service.update_issue("proxy:ado/42", state="Resolved")
+    with pytest.raises(ValueError, match=r"Ambiguous proxy issue identifier: proxy:ado/42\."):
+        service.post_issue_comment("proxy:ado/42", "push to remote")
+
+    assert service._resolve_local_issue_record(project_a_issue.issue_id).issue_id == project_a_issue.issue_id
+    assert service._resolve_local_issue_record(project_b_issue.issue_id).issue_id == project_b_issue.issue_id
+
+
 def test_create_issue_vm_accepts_unified_proxy_identifier(tmp_path: Path, monkeypatch: Any) -> None:
     service = AdminService(write_config(tmp_path))
     issue = service.create_local_issue(
@@ -1477,6 +1513,8 @@ def _write_proxy_issue_yaml(
     title: str = "Proxy issue",
     description: str = "from remote",
     state: str = "New",
+    organization_url: str = "https://dev.azure.com/example",
+    project: str = "sample",
 ) -> Path:
     payload = {
         "issue_number": issue_number,
@@ -1485,9 +1523,9 @@ def _write_proxy_issue_yaml(
         "state": state,
         "url": f"https://ado.example/work/{issue_number}",
         "source": {
-            "organization": "https://dev.azure.com/example",
-            "project": "sample",
-            "work_item_url": f"https://dev.azure.com/example/sample/_workitems/edit/{issue_number}",
+            "organization": organization_url,
+            "project": project,
+            "work_item_url": f"{organization_url.rstrip('/')}/{project}/_workitems/edit/{issue_number}",
         },
     }
     path = tmp_path / f"proxy-issue-{issue_number}-{state.lower()}.yaml"

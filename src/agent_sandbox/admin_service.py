@@ -1887,6 +1887,7 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
             remote_issue_id = prefixed_match.group(2)
         if not remote_issue_id:
             return None
+        matches: list[LocalIssueRecord] = []
         for issue in self.local_issue_store.read_all().values():
             remote = issue.remote_reference
             if remote is not None:
@@ -1899,7 +1900,17 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
             if issue_provider != provider:
                 continue
             if issue_remote_id == remote_issue_id:
-                return issue
+                matches.append(issue)
+        if not matches:
+            return None
+        if len(matches) == 1:
+            return matches[0]
+        sorted_matches = sorted(issue.issue_id for issue in matches)
+        raise ValueError(
+            "Ambiguous proxy issue identifier: "
+            f"{normalized}. Matches: {', '.join(sorted_matches)}. "
+            "Use a canonical proxy issue identifier."
+        )
         return None
 
     def _resolve_local_issue_record(self, issue_identifier: str) -> LocalIssueRecord:
