@@ -58,6 +58,7 @@ def test_guest_heartbeat_assets_exist() -> None:
     assert 'AGENT_SANDBOX_GUEST_HEARTBEAT_PROMPT="${AGENT_SANDBOX_GUEST_HEARTBEAT_PROMPT:-' in cycle_script
     assert "agent_runner_resume_last" in cycle_script
     assert "agent-*.state" in cycle_script
+    assert "codex-resume-last.state" in cycle_script
     assert "EnvironmentFile=-%h/.config/agent-sandbox/guest-heartbeat.env" in service
     assert "ExecStart=%h/.config/systemd/user/heartbeat_cycle.sh" in service
     assert "OnUnitActiveSec=5min" in timer

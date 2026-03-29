@@ -1,12 +1,13 @@
 from pathlib import Path
 
 
-def test_agent_status_uses_explicit_state_file_only() -> None:
+def test_agent_status_uses_explicit_state_files_for_repo_and_codex_heartbeat() -> None:
     script = (Path(__file__).resolve().parents[1] / "scripts" / "lib" / "agent_status.sh").read_text(
         encoding="utf-8"
     )
 
     assert 'for state_path in "${LOG_DIR}"/agent-*.state; do' in script
+    assert 'codex_state_path="${LOG_DIR}/codex-resume-last.state"' in script
     assert 'status="$(read_state_value "${state_path}" "status")"' in script
     assert 'CONTROL_STATE_PATH="${LOG_DIR}/agent-control.state"' in script
     assert 'if [[ "${control_status}" == "disabled" ]]; then' in script
@@ -22,4 +23,5 @@ def test_agent_status_uses_explicit_state_file_only() -> None:
         in script
     )
     assert 'active_entries+=("${name}")' in script
+    assert 'active_entries+=("codex-heartbeat")' in script
     assert 'date -u -d "${raw}" +%s' in script

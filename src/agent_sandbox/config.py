@@ -326,6 +326,45 @@ class HostHeartbeatWorkerGlobalConfig(BaseModel):
         return self
 
 
+class IssueOrchestratorWorkerGlobalConfig(BaseModel):
+    runtime_dir: Path = Path("runtime")
+    directories: list[str] = Field(default_factory=list)
+    poll_interval_seconds: float = Field(default=30.0, gt=0)
+    jitter_seconds: float = Field(default=5.0, ge=0)
+    cooldown_seconds: float = Field(default=60.0, ge=0)
+    lock_path: Path | None = None
+    busy_check_script_path: Path = Path("scripts/check_session_vm_busy.sh")
+    resume_script_path: Path = Path("scripts/resume_issue_agent.sh")
+    wake_state_path: Path | None = None
+    vm_user: str = "agent"
+    resume_timeout_seconds: float = Field(default=1200.0, gt=0)
+
+    @field_validator("directories", mode="before")
+    @classmethod
+    def normalize_directories(cls, value: object) -> object:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            value = [value]
+        if not isinstance(value, (list, tuple)):
+            return value
+        normalized: list[str] = []
+        for item in value:
+            text = str(item).strip()
+            if not text:
+                continue
+            normalized.append(DirectoryPath(segments=text).as_posix())
+        return normalized
+
+    @model_validator(mode="after")
+    def apply_runtime_path_defaults(self) -> IssueOrchestratorWorkerGlobalConfig:
+        if self.lock_path is None:
+            self.lock_path = self.runtime_dir / "issue-orchestrator.lock"
+        if self.wake_state_path is None:
+            self.wake_state_path = self.runtime_dir / "issue-orchestrator-wake-state.json"
+        return self
+
+
 def load_config(path: str | Path) -> GatewayConfig:
     config_path = Path(path)
     data = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}

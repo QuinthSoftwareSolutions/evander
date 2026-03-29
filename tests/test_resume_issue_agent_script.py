@@ -374,6 +374,94 @@ exit 0
     assert "last_attempt_at" in session_state
 
 
+def test_resume_issue_agent_dispatch_only_returns_after_launch(tmp_path: Path) -> None:
+    script_path, fake_bin = _prepare_script(tmp_path)
+    caller_home = tmp_path / "caller-home"
+    ssh_dir = caller_home / ".ssh"
+    ssh_dir.mkdir(parents=True)
+    private_key = ssh_dir / "id_ed25519"
+    private_key.write_text("PRIVATE\n", encoding="utf-8")
+    ssh_log = tmp_path / "ssh.log"
+    host_state_path = tmp_path / "resume-state.json"
+    _write_fake_sudo(fake_bin / "sudo")
+
+    _write_executable(
+        fake_bin / "virsh",
+        """#!/usr/bin/env bash
+set -euo pipefail
+cmd="${1:-}"
+shift || true
+
+case "${cmd}" in
+  dominfo)
+    [[ "${1:-}" == "bug-finder-vm" ]] || exit 1
+    cat <<'OUT'
+Id:             7
+Name:           bug-finder-vm
+State:          running
+OUT
+    ;;
+  domifaddr)
+    [[ "${1:-}" == "bug-finder-vm" ]] || exit 1
+    printf 'vnet0 52:54:00:00:00:01 ipv4 192.168.122.44/24\n'
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+""",
+    )
+
+    _write_executable(
+        fake_bin / "ssh",
+        f"""#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> "{ssh_log}"
+if [[ "${{@: -1}}" == "true" ]]; then
+  exit 0
+fi
+cat > /dev/null
+exit 0
+""",
+    )
+
+    env = os.environ.copy()
+    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+    env["HOME"] = str(caller_home)
+    env["USER"] = ""
+    env["SUDO_USER"] = ""
+
+    result = subprocess.run(
+        [
+            str(script_path),
+            "--prompt",
+            "Find one bug",
+            "--vm-name",
+            "bug-finder-vm",
+            "--session-id",
+            "bug-session",
+            "--worker-mode",
+            "--dispatch-only",
+            "--host-state-file",
+            str(host_state_path),
+        ],
+        text=True,
+        capture_output=True,
+        env=env,
+        check=True,
+    )
+
+    assert result.stdout == ""
+    ssh_calls = ssh_log.read_text(encoding="utf-8").splitlines()
+    run_call = next(call for call in ssh_calls if "PROMPT_B64=" in call)
+    assert " -t " not in f" {run_call} "
+    assert "bug-finder-vm" in run_call
+
+    state_payload = json.loads(host_state_path.read_text(encoding="utf-8"))
+    session_state = state_payload["sessions"]["bug-session"]
+    assert session_state["outcome"] == "ok"
+
+
 def test_resume_issue_agent_refuses_host_disabled_agent(tmp_path: Path) -> None:
     script_path, fake_bin = _prepare_script(tmp_path)
     private_key = tmp_path / "id_ed25519"

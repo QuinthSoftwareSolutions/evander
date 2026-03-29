@@ -7,7 +7,7 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any, Callable
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from .config import GatewayConfig
 from .directories import DirectoryService, DirectoryStore
@@ -28,6 +28,7 @@ DIRECTORY_CONFIG_DOMAIN_FILENAMES = {
     "vm": "vm.json",
     "issue_setup": "issue-setup.json",
     "pr_template": "pr-template.json",
+    "automation": "automation.json",
 }
 
 LEGACY_DIRECTORY_CONFIG_DOMAIN_FILENAMES = {
@@ -136,6 +137,14 @@ DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
             "issue_setup_azure_devops_pr_pat_env",
         }
     ),
+    "automation": frozenset(
+        {
+            "approved_issue_cap",
+            "originator_roles",
+            "prioritizer_roles",
+            "worker_roles",
+        }
+    ),
     "pr_template": frozenset({"pr_template_markdown"}),
 }
 
@@ -182,6 +191,41 @@ class EffectiveIssueSetupDirectoryConfig(BaseModel):
 class PrTemplateDirectoryConfig(BaseModel):
     pr_template_markdown: str = ""
 
+
+class AutomationDirectoryConfig(BaseModel):
+    approved_issue_cap: int = Field(default=10, ge=0)
+    originator_roles: list[str] = Field(default_factory=list)
+    prioritizer_roles: list[str] = Field(default_factory=list)
+    worker_roles: list[str] = Field(default_factory=list)
+
+    @field_validator("originator_roles", "prioritizer_roles", "worker_roles", mode="before")
+    @classmethod
+    def normalize_role_lists(cls, value: object) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            value = [value]
+        if not isinstance(value, (list, tuple)):
+            raise ValueError("role lists must be JSON arrays")
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for item in value:
+            role = str(item).strip()
+            if not role:
+                raise ValueError("role names cannot be empty")
+            if role in seen:
+                raise ValueError(f"duplicate role name: {role!r}")
+            seen.add(role)
+            normalized.append(role)
+        return normalized
+
+
+class EffectiveAutomationDirectoryConfig(BaseModel):
+    approved_issue_cap: int = Field(default=10, ge=0)
+    originator_roles: list[str] = Field(default_factory=list)
+    prioritizer_roles: list[str] = Field(default_factory=list)
+    worker_roles: list[str] = Field(default_factory=list)
+
 LEGACY_DOMAIN_FIELD_SUBSETS: dict[str, dict[str, frozenset[str]]] = {
     "providers": {
         "providers": DIRECTORY_CONFIG_DOMAIN_FIELDS["providers"],
@@ -202,6 +246,13 @@ def get_domain_base_config(config: GatewayConfig, domain: str) -> dict[str, Any]
     DirectoryConfigStore._validate_domain_name(domain)
     payload = config.model_dump(mode="json")
     allowed_fields = DIRECTORY_CONFIG_DOMAIN_FIELDS[domain]
+    if domain == "automation":
+        return {
+            "approved_issue_cap": 10,
+            "originator_roles": [],
+            "prioritizer_roles": [],
+            "worker_roles": [],
+        }
     if domain == "issue_setup":
         return {
             "git_root": os.environ.get("AGENT_SANDBOX_GIT_ROOT", "").strip() or "git-remotes",
@@ -229,6 +280,9 @@ def get_domain_base_config(config: GatewayConfig, domain: str) -> dict[str, Any]
 def validate_effective_domain_payload(domain: str, payload: dict[str, Any]) -> dict[str, Any]:
     if domain == "gateway":
         validated = GatewayConfig.model_validate(payload)
+        return validated.model_dump(mode="json")
+    if domain == "automation":
+        validated = EffectiveAutomationDirectoryConfig.model_validate(payload)
         return validated.model_dump(mode="json")
     if domain == "issue_setup":
         validated = EffectiveIssueSetupDirectoryConfig.model_validate(payload)
@@ -379,6 +433,9 @@ class DirectoryConfigStore:
         if domain == "issue_setup":
             validated = IssueSetupDirectoryConfig.model_validate(payload)
             return validated.model_dump(mode="json", include=set(payload))
+        if domain == "automation":
+            validated = AutomationDirectoryConfig.model_validate(payload)
+            return validated.model_dump(mode="json", include=set(payload))
         if domain == "pr_template":
             validated = PrTemplateDirectoryConfig.model_validate(payload)
             return validated.model_dump(mode="json", include=set(payload))
@@ -519,6 +576,9 @@ class DirectoryConfigStore:
                             field in payload for field in DIRECTORY_CONFIG_DOMAIN_FIELDS["email"]
                         ):
                             normalized_domains.add("email")
+        automation_path = root_path.joinpath(*DirectoryPath(segments=directory.path).segments, "automation.json")
+        if automation_path.exists():
+            normalized_domains.add("automation")
         return sorted(normalized_domains)
 
 

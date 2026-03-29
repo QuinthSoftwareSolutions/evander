@@ -112,6 +112,10 @@ if [[ -z "${RESOLVED_REPO_NAME}" ]]; then
     fi
   done
 
+  if [[ -f "${LOG_DIR}/codex-heartbeat-run.log" || -f "${LOG_DIR}/codex-heartbeat.pid" ]]; then
+    candidates+=("codex-heartbeat")
+  fi
+
   shopt -u nullglob
 
   if [[ ${#candidates[@]} -eq 0 ]]; then
@@ -132,8 +136,13 @@ if [[ -z "${RESOLVED_REPO_NAME}" ]]; then
   RESOLVED_REPO_NAME="${unique_candidates[0]}"
 fi
 
-LOG_PATH="${LOG_DIR}/agent-${RESOLVED_REPO_NAME}.log"
-PID_PATH="${LOG_DIR}/agent-${RESOLVED_REPO_NAME}.pid"
+if [[ "${RESOLVED_REPO_NAME}" == "codex-heartbeat" ]]; then
+  LOG_PATH="${LOG_DIR}/codex-heartbeat-run.log"
+  PID_PATH="${LOG_DIR}/codex-heartbeat.pid"
+else
+  LOG_PATH="${LOG_DIR}/agent-${RESOLVED_REPO_NAME}.log"
+  PID_PATH="${LOG_DIR}/agent-${RESOLVED_REPO_NAME}.pid"
+fi
 echo "repo:  ${RESOLVED_REPO_NAME}"
 
 if [[ ! -f "${PID_PATH}" ]]; then

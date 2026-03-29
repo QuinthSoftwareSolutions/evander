@@ -157,8 +157,10 @@ def test_create_local_issue_uses_session_directory_path(tmp_path: Path, monkeypa
         SessionManifest(
             session_id="session-1",
             directory_path="root/team-a",
+            vm_id="bug-finder-vm",
             allowed_tools=[ToolName.CREATE_LOCAL_ISSUE],
             expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={"automation_role": "bug_finder"},
         ),
     )
     captured: dict[str, object] = {}
@@ -174,23 +176,27 @@ def test_create_local_issue_uses_session_directory_path(tmp_path: Path, monkeypa
             body: str,
             repo_source: str | None,
             directory_path: str,
+            metadata: dict[str, object] | None = None,
         ) -> object:
             captured["payload"] = {
                 "title": title,
                 "body": body,
                 "repo_source": repo_source,
                 "directory_path": directory_path,
+                "metadata": metadata,
             }
             return SimpleNamespace(
                 issue_id="local-11",
                 issue_number="11",
                 directory_path=directory_path,
+                metadata=metadata or {},
                 model_dump=lambda mode="json": {  # noqa: ARG005
                     "issue_id": "local-11",
                     "issue_number": "11",
                     "directory_path": directory_path,
                     "title": title,
                     "body": body,
+                    "metadata": metadata or {},
                 },
             )
 
@@ -214,9 +220,16 @@ def test_create_local_issue_uses_session_directory_path(tmp_path: Path, monkeypa
         "body": "Needs to scope to session directory.",
         "repo_source": "/tmp/repo",
         "directory_path": "root/team-a",
+        "metadata": {
+            "generated_by_session_id": "session-1",
+            "generated_by_vm_id": "bug-finder-vm",
+            "generated_by_role": "bug_finder",
+            "issue_kind": "bug",
+        },
     }
     assert result["issue_number"] == "11"
     assert result["directory_path"] == "root/team-a"
+    assert result["metadata"]["issue_kind"] == "bug"
 
 
 def test_list_issues_defaults_to_open_states_in_session_directory(
@@ -420,7 +433,7 @@ def test_list_issues_requires_tool_permission(tmp_path: Path) -> None:
         )
 
 
-def test_approve_issue_sets_committed_state_and_reason(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_approve_issue_sets_approved_state_and_reason(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     context = make_context(tmp_path)
     context.sessions.put(
         "session-1",
@@ -458,14 +471,19 @@ def test_approve_issue_sets_committed_state_and_reason(tmp_path: Path, monkeypat
     result = call_tool(
         server,
         "approve_issue",
-        {"session_id": "session-1", "issue_id": "42", "reason": "Capacity confirmed"},
+        {
+            "session_id": "session-1",
+            "issue_id": "42",
+            "priority": "P1",
+            "reason": "Capacity confirmed",
+        },
     )
 
     assert captured["runtime_dir"] == context.config.runtime_dir
     assert captured["payload"] == {
         "issue_id": "42",
-        "state": "Committed",
-        "fields": {"Reason": "Capacity confirmed"},
+        "state": "Approved",
+        "fields": {"Priority": "P1", "Reason": "Capacity confirmed"},
     }
     assert result["issue_number"] == "42"
 
@@ -520,6 +538,99 @@ def test_reject_issue_sets_closed_state_and_reason(tmp_path: Path, monkeypatch: 
     assert result["issue_number"] == "42"
 
 
+def test_claim_next_issue_passes_through_backend_payload(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    context = make_context(tmp_path)
+    context.sessions.put(
+        "session-1",
+        SessionManifest(
+            session_id="session-1",
+            directory_path="root/team-a",
+            allowed_tools=[ToolName.CLAIM_NEXT_ISSUE],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    captured: dict[str, object] = {}
+
+    class StubAdminService:
+        def __init__(self, runtime_dir: Path) -> None:
+            captured["runtime_dir"] = runtime_dir
+
+        def claim_next_issue(self, *, session_id: str) -> object:
+            captured["payload"] = {"session_id": session_id}
+            return SimpleNamespace(
+                issue_number="99",
+                source_type="local",
+                model_dump=lambda mode="json": {  # noqa: ARG005
+                    "issue_number": "99",
+                    "issue_id": "local-99",
+                    "source_type": "local",
+                    "title": "Claimed issue",
+                },
+            )
+
+    monkeypatch.setattr("agent_sandbox.gateway.AdminService", StubAdminService)
+    server = create_server(context)
+
+    result = call_tool(server, "claim_next_issue", {"session_id": "session-1"})
+
+    assert captured["runtime_dir"] == context.config.runtime_dir
+    assert captured["payload"] == {"session_id": "session-1"}
+    assert result["issue_number"] == "99"
+    assert result["title"] == "Claimed issue"
+
+
+def test_complete_issue_passes_through_backend_payload(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    context = make_context(tmp_path)
+    context.sessions.put(
+        "session-1",
+        SessionManifest(
+            session_id="session-1",
+            directory_path="root/team-a",
+            allowed_tools=[ToolName.COMPLETE_ISSUE],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    captured: dict[str, object] = {}
+
+    class StubAdminService:
+        def __init__(self, runtime_dir: Path) -> None:
+            captured["runtime_dir"] = runtime_dir
+
+        def complete_issue(self, *, session_id: str, issue_id: str, summary: str) -> dict[str, object]:
+            captured["payload"] = {
+                "session_id": session_id,
+                "issue_id": issue_id,
+                "summary": summary,
+            }
+            return {
+                "issue_number": issue_id,
+                "source_type": "local",
+                "updated": True,
+            }
+
+    monkeypatch.setattr("agent_sandbox.gateway.AdminService", StubAdminService)
+    server = create_server(context)
+
+    result = call_tool(
+        server,
+        "complete_issue",
+        {
+            "session_id": "session-1",
+            "issue_id": "42",
+            "summary": "Implemented and pushed.",
+        },
+    )
+
+    assert captured["runtime_dir"] == context.config.runtime_dir
+    assert captured["payload"] == {
+        "session_id": "session-1",
+        "issue_id": "42",
+        "summary": "Implemented and pushed.",
+    }
+    assert result["issue_number"] == "42"
+    assert result["updated"] is True
+
+
 def test_approve_issue_requires_tool_permission(tmp_path: Path) -> None:
     context = make_context(tmp_path)
     context.sessions.put(
@@ -563,6 +674,52 @@ def test_reject_issue_requires_tool_permission(tmp_path: Path) -> None:
                 {
                     "session_id": "session-1",
                     "issue_id": "42",
+                },
+            )
+        )
+
+
+def test_claim_next_issue_requires_tool_permission(tmp_path: Path) -> None:
+    context = make_context(tmp_path)
+    context.sessions.put(
+        "session-1",
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    server = create_server(context)
+
+    with pytest.raises(ToolError, match="not allowed"):
+        asyncio.run(
+            server.call_tool(
+                "claim_next_issue",
+                {"session_id": "session-1"},
+            )
+        )
+
+
+def test_complete_issue_requires_tool_permission(tmp_path: Path) -> None:
+    context = make_context(tmp_path)
+    context.sessions.put(
+        "session-1",
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    server = create_server(context)
+
+    with pytest.raises(ToolError, match="not allowed"):
+        asyncio.run(
+            server.call_tool(
+                "complete_issue",
+                {
+                    "session_id": "session-1",
+                    "issue_id": "42",
+                    "summary": "done",
                 },
             )
         )

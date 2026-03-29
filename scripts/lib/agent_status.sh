@@ -103,6 +103,17 @@ for state_path in "${LOG_DIR}"/agent-*.state; do
   name="${name%.state}"
   active_entries+=("${name}")
 done
+codex_state_path="${LOG_DIR}/codex-resume-last.state"
+if [[ -f "${codex_state_path}" ]]; then
+  status="$(read_state_value "${codex_state_path}" "status")"
+  if [[ "${status}" == "running" ]]; then
+    updated_at="$(read_state_value "${codex_state_path}" "updated_at")"
+    pid="$(read_state_value "${codex_state_path}" "pid")"
+    if state_is_fresh "${updated_at}" || is_active_agent_pid "${pid}"; then
+      active_entries+=("codex-heartbeat")
+    fi
+  fi
+fi
 shopt -u nullglob
 
 if [[ ${#active_entries[@]} -gt 0 ]]; then

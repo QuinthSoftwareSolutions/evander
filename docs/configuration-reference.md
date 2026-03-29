@@ -85,6 +85,25 @@ persisted source of truth is `config/ado-worker/config.json`. Secret values such
 DevOps PAT value is read from the host env var named by `ado_work_items_azure_devops_pat_env`,
 defaulting to `ADO_WORK_ITEMS_AZURE_DEVOPS_PAT`.
 
+## `config/issue-orchestrator/config.json`
+
+This JSON file stores the new issue orchestrator worker's global settings. The scaffold keeps this
+worker separate from the ADO and PR-feedback workers, so its config is intentionally isolated.
+
+| Parameter | Found in | Consumed by |
+|---|---|---|
+| `runtime_dir` | `config/issue-orchestrator/config.json` | Future issue orchestrator worker runtime path defaults. |
+| `directories` | `config/issue-orchestrator/config.json` | Future issue orchestrator worker directory list. |
+| `poll_interval_seconds` | `config/issue-orchestrator/config.json` | Future issue orchestrator worker sleep cadence. |
+| `jitter_seconds` | `config/issue-orchestrator/config.json` | Future issue orchestrator worker jitter. |
+| `cooldown_seconds` | `config/issue-orchestrator/config.json` | Future issue orchestrator worker per-session cooldown. |
+| `lock_path` | `config/issue-orchestrator/config.json` | Future issue orchestrator single-instance lock. |
+| `busy_check_script_path` | `config/issue-orchestrator/config.json` | Future issue orchestrator guest-busy check hook. |
+| `resume_script_path` | `config/issue-orchestrator/config.json` | Future issue orchestrator VM resume hook. |
+| `wake_state_path` | `config/issue-orchestrator/config.json` | Future issue orchestrator wake state file. |
+| `vm_user` | `config/issue-orchestrator/config.json` | Future issue orchestrator guest user name. |
+| `resume_timeout_seconds` | `config/issue-orchestrator/config.json` | Future issue orchestrator resume timeout. |
+
 ## `config/host-heartbeat/config.json.example`
 
 This JSON file stores the host heartbeat worker's global operational settings. The admin GUI's

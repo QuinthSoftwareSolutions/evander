@@ -9,7 +9,7 @@ from typing import Any
 import agent_sandbox.admin_service as admin_service
 import pytest
 from agent_sandbox.admin_service import AdminService
-from agent_sandbox.models import SessionManifest
+from agent_sandbox.models import SessionManifest, ToolName
 
 UTC = timezone.utc
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -163,6 +163,63 @@ def test_list_vms_marks_inactive_vm_disabled_from_host_control_state(tmp_path: P
     summaries = service.list_vms(include_inactive=True)
 
     assert summaries[0].agent_state == "disabled"
+
+
+def test_probe_agent_state_accepts_codex_resume_state(tmp_path: Path, monkeypatch) -> None:
+    write_config(tmp_path)
+    monkeypatch.setattr("agent_sandbox.admin_service._resolve_private_key_path", lambda: Path("/tmp/test-key"))
+
+    captured: dict[str, object] = {}
+
+    def _fake_run_subprocess(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        captured["cmd"] = cmd
+        captured["input"] = kwargs.get("input")
+        return subprocess.CompletedProcess(
+            args=cmd,
+            returncode=0,
+            stdout='{"state":"running","repos":["codex-heartbeat"],"updated_at":"2026-03-29T12:06:53+00:00"}',
+            stderr="",
+        )
+
+    monkeypatch.setattr("agent_sandbox.admin_service._run_subprocess", _fake_run_subprocess)
+
+    state, repos, updated_at = admin_service._probe_agent_state("bug-finder-vm", "192.168.122.11", "agent")
+
+    assert state == "running"
+    assert repos == ["codex-heartbeat"]
+    assert updated_at == datetime(2026, 3, 29, 12, 6, 53, tzinfo=UTC)
+    remote_script = str(captured["input"])
+    assert 'codex_state_path="${LOG_DIR}/codex-resume-last.state"' in remote_script
+    assert 'active_entries+=("codex-heartbeat")' in remote_script
+
+
+def test_get_agent_log_snapshot_accepts_codex_heartbeat_log(tmp_path: Path, monkeypatch) -> None:
+    service = AdminService(write_config(tmp_path))
+    monkeypatch.setattr("agent_sandbox.admin_service._dominfo_field", lambda vm_name, field_name: "running")
+    monkeypatch.setattr("agent_sandbox.admin_service._resolve_vm_ip", lambda vm_name: "192.168.122.11")
+    monkeypatch.setattr("agent_sandbox.admin_service._resolve_private_key_path", lambda: Path("/tmp/test-key"))
+
+    captured: dict[str, object] = {}
+
+    def _fake_run_subprocess(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        captured["cmd"] = cmd
+        captured["input"] = kwargs.get("input")
+        return subprocess.CompletedProcess(
+            args=cmd,
+            returncode=0,
+            stdout="Repo: codex-heartbeat\nLog: /home/agent/.agent-sandbox/codex-heartbeat-run.log\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr("agent_sandbox.admin_service._run_subprocess", _fake_run_subprocess)
+
+    output = service.get_agent_log_snapshot("bug-finder-vm")
+
+    assert "Repo: codex-heartbeat" in output
+    assert "codex-heartbeat-run.log" in output
+    remote_script = str(captured["input"])
+    assert 'candidates+=("codex-heartbeat")' in remote_script
+    assert 'LOG_PATH="${LOG_DIR}/codex-heartbeat-run.log"' in remote_script
 
 
 def test_list_sessions_filters_active_and_expired(tmp_path: Path) -> None:
@@ -635,12 +692,23 @@ def test_list_background_workers_reads_systemd_state(tmp_path: Path, monkeypatch
             "ExecMainCode": "1",
             "ExecMainStatus": "2",
         },
+        "agent-sandbox-issue-orchestrator.service": {
+            "ActiveState": "inactive",
+            "SubState": "dead",
+            "Result": "success",
+            "UnitFileState": "disabled",
+            "Description": "Issue orchestrator worker",
+            "MainPID": "0",
+            "LoadState": "loaded",
+            "ExecMainCode": "1",
+            "ExecMainStatus": "0",
+        },
     }
     monkeypatch.setattr("agent_sandbox.admin_service._systemctl_show", lambda unit: payloads[unit])
 
     summaries = service.list_background_workers()
 
-    assert [summary.worker_id for summary in summaries] == ["ado", "host-heartbeat"]
+    assert [summary.worker_id for summary in summaries] == ["ado", "host-heartbeat", "issue-orchestrator"]
     assert summaries[0].running is True
     assert summaries[0].failed is False
     assert summaries[0].main_pid == 123
@@ -648,6 +716,9 @@ def test_list_background_workers_reads_systemd_state(tmp_path: Path, monkeypatch
     assert summaries[1].running is False
     assert summaries[1].failed is True
     assert summaries[1].detail == "load=loaded, exec=1:2"
+    assert summaries[2].running is False
+    assert summaries[2].failed is False
+    assert summaries[2].unit_file_state == "disabled"
 
 
 def test_list_background_workers_marks_unavailable_when_systemctl_fails(tmp_path: Path, monkeypatch) -> None:
@@ -770,6 +841,73 @@ def test_update_issue_rejects_invalid_local_state(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="Invalid issue state"):
         service.update_issue(issue.issue_number, state="Done")
+
+
+def test_update_issue_accepts_approved_state(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    issue = service.create_local_issue(title="Local", body="only local")
+
+    result = service.update_issue(issue.issue_number, state="Approved", fields={"Priority": "P1"})
+
+    stored = service.local_issue_store.get(issue.issue_id)
+    assert result["source_type"] == "local"
+    assert stored is not None
+    assert stored.state == "Approved"
+    assert stored.metadata["fields"]["Priority"] == "P1"
+
+
+def test_claim_next_issue_prefers_highest_priority_committed_issue(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    low = service.create_local_issue(title="Low", body="x")
+    high = service.create_local_issue(title="High", body="x")
+    service.update_issue(low.issue_number, state="Committed", fields={"Priority": "P2"})
+    service.update_issue(high.issue_number, state="Committed", fields={"Priority": "P0"})
+    service.runtime.sessions.put(
+        "worker-session",
+        SessionManifest(
+            session_id="worker-session",
+            vm_id="issue-worker-1-vm",
+            directory_path="root",
+            allowed_tools=[ToolName.CLAIM_NEXT_ISSUE],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+
+    claimed = service.claim_next_issue(session_id="worker-session")
+
+    assert claimed is not None
+    assert claimed.issue_number == high.issue_number
+    assert claimed.state == "In Progress"
+    assert claimed.metadata["fields"]["claimed_by_session_id"] == "worker-session"
+    assert claimed.metadata["fields"]["claimed_by_vm_id"] == "issue-worker-1-vm"
+
+
+def test_complete_issue_marks_claimed_issue_completed(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    issue = service.create_local_issue(title="Task", body="x")
+    service.update_issue(issue.issue_number, state="Committed", fields={"Priority": "P1"})
+    service.runtime.sessions.put(
+        "worker-session",
+        SessionManifest(
+            session_id="worker-session",
+            vm_id="issue-worker-1-vm",
+            directory_path="root",
+            allowed_tools=[ToolName.CLAIM_NEXT_ISSUE, ToolName.COMPLETE_ISSUE],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    claimed = service.claim_next_issue(session_id="worker-session")
+    assert claimed is not None
+
+    completed = service.complete_issue(
+        session_id="worker-session",
+        issue_id=claimed.issue_number,
+        summary="Implemented and pushed",
+    )
+
+    assert completed.state == "Completed"
+    assert completed.metadata["fields"]["completed_summary"] == "Implemented and pushed"
+    assert completed.metadata["fields"]["completed_by_session_id"] == "worker-session"
 
 
 def test_create_local_issue_from_ado_yaml_creates_proxy_record_and_repoll_updates_without_duplicate(tmp_path: Path) -> None:

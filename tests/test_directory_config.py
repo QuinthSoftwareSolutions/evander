@@ -419,6 +419,106 @@ def test_directory_config_store_validates_ado_worker_and_issue_setup_domains(tmp
     }
 
 
+def test_directory_config_store_validates_automation_domain_and_updates_metadata(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    store = DirectoryStore(runtime_dir / "directories.json")
+    service = DirectoryService(store)
+    config_store = DirectoryConfigStore(store, runtime_dir=runtime_dir)
+    team = service.create(parent="root", name="team")
+
+    written = config_store.write(
+        team.path,
+        domain="automation",
+        payload={
+            "approved_issue_cap": 10,
+            "originator_roles": ["idea_generator", "bug_finder"],
+            "prioritizer_roles": ["issue_prioritizer"],
+            "worker_roles": ["issue_worker"],
+        },
+    )
+
+    assert written == {
+        "approved_issue_cap": 10,
+        "originator_roles": ["idea_generator", "bug_finder"],
+        "prioritizer_roles": ["issue_prioritizer"],
+        "worker_roles": ["issue_worker"],
+    }
+    file_path = runtime_dir / "directory-config" / "root" / "team" / "automation.json"
+    assert file_path.exists()
+    assert config_store.read(team.id, domain="automation") == written
+
+    stored_directory = store.get(team.id)
+    assert stored_directory is not None
+    assert stored_directory.metadata["directory_config"]["domains"] == ["automation"]
+
+
+def test_directory_config_resolver_reads_file_backed_automation_domain_without_metadata(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    store = DirectoryStore(runtime_dir / "directories.json")
+    service = DirectoryService(store)
+    config_store = DirectoryConfigStore(store, runtime_dir=runtime_dir)
+    resolver = DirectoryConfigResolver(service, config_store=config_store)
+    team = service.create(parent="root", name="team")
+
+    file_path = runtime_dir / "directory-config" / "root" / "team" / "automation.json"
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    file_path.write_text(
+        """
+{
+  "approved_issue_cap": 3,
+  "originator_roles": ["idea_generator"],
+  "prioritizer_roles": ["issue_prioritizer"],
+  "worker_roles": ["issue_worker"]
+}
+""".strip(),
+        encoding="utf-8",
+    )
+
+    assert config_store.read(team.path, domain="automation") == {
+        "approved_issue_cap": 3,
+        "originator_roles": ["idea_generator"],
+        "prioritizer_roles": ["issue_prioritizer"],
+        "worker_roles": ["issue_worker"],
+    }
+
+    resolution = resolver.resolve_domain(
+        team.path,
+        domain="automation",
+        base_config=get_domain_base_config(GatewayConfig(), "automation"),
+        validator=lambda candidate: validate_effective_domain_payload("automation", candidate),
+    )
+
+    assert resolution.effective_config == {
+        "approved_issue_cap": 3,
+        "originator_roles": ["idea_generator"],
+        "prioritizer_roles": ["issue_prioritizer"],
+        "worker_roles": ["issue_worker"],
+    }
+    assert resolution.provenance["approved_issue_cap"].directory_path == "root/team"
+    assert resolution.validation_errors == []
+
+
+def test_directory_config_store_rejects_duplicate_automation_roles(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    store = DirectoryStore(runtime_dir / "directories.json")
+    service = DirectoryService(store)
+    config_store = DirectoryConfigStore(store, runtime_dir=runtime_dir)
+    team = service.create(parent="root", name="team")
+
+    try:
+        config_store.write(
+            team.path,
+            domain="automation",
+            payload={
+                "originator_roles": ["idea_generator", "idea_generator"],
+            },
+        )
+    except ValueError as exc:
+        assert "duplicate role name" in str(exc)
+    else:
+        raise AssertionError("expected write() to reject duplicate automation roles")
+
+
 def test_directory_config_store_validates_pr_template_domain(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     store = DirectoryStore(runtime_dir / "directories.json")

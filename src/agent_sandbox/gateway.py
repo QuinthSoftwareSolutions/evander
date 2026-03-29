@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from inspect import Parameter, signature
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +32,60 @@ def _normalize_issue_status_filters(statuses: list[str] | None) -> set[str]:
     if not normalized:
         return {"closed", "completed"}
     return normalized
+
+
+def _issue_kind_for_role(role: str | None) -> str | None:
+    normalized_role = str(role or "").strip()
+    if normalized_role == "idea_generator":
+        return "feature"
+    if normalized_role == "bug_finder":
+        return "bug"
+    if normalized_role == "refactor_finder":
+        return "refactor"
+    return None
+
+
+def _issue_creation_metadata(session: Any) -> dict[str, Any]:
+    metadata: dict[str, Any] = {
+        "generated_by_session_id": session.session_id,
+    }
+    if session.vm_id:
+        metadata["generated_by_vm_id"] = session.vm_id
+    automation_role = None
+    if isinstance(session.metadata, dict):
+        automation_role = session.metadata.get("automation_role")
+    if automation_role:
+        metadata["generated_by_role"] = str(automation_role)
+        issue_kind = _issue_kind_for_role(str(automation_role))
+        if issue_kind is not None:
+            metadata["issue_kind"] = issue_kind
+    return metadata
+
+
+def _method_accepts_keyword_argument(method: Any, parameter_name: str) -> bool:
+    try:
+        method_signature = signature(method)
+    except (TypeError, ValueError):
+        return False
+    for parameter in method_signature.parameters.values():
+        if parameter.kind == Parameter.VAR_KEYWORD:
+            return True
+        if parameter.name == parameter_name and parameter.kind in {
+            Parameter.POSITIONAL_OR_KEYWORD,
+            Parameter.KEYWORD_ONLY,
+        }:
+            return True
+    return False
+
+
+def _payload_from_result(result: Any) -> dict[str, Any] | None:
+    if result is None:
+        return None
+    if hasattr(result, "model_dump"):
+        return result.model_dump(mode="json")
+    if isinstance(result, dict):
+        return result
+    return {"value": result}
 
 
 def _redact_nested_value(redacted_keys: set[str], value: Any) -> Any:
@@ -223,21 +278,26 @@ def create_server(context: RuntimeContext) -> FastMCP:
         }
         try:
             session = context.policy.require_tool(session_id, ToolName.CREATE_LOCAL_ISSUE)
-            issue = AdminService(context.config.runtime_dir).create_local_issue(
-                title=title,
-                body=body,
-                repo_source=repo_source,
-                directory_path=session.directory_path,
-            )
-            result = issue.model_dump(mode="json")
+            admin_service = AdminService(context.config.runtime_dir)
+            metadata = _issue_creation_metadata(session)
+            issue_kwargs: dict[str, Any] = {
+                "title": title,
+                "body": body,
+                "repo_source": repo_source,
+                "directory_path": session.directory_path,
+            }
+            if metadata and _method_accepts_keyword_argument(admin_service.create_local_issue, "metadata"):
+                issue_kwargs["metadata"] = metadata
+            issue = admin_service.create_local_issue(**issue_kwargs)
+            result = _payload_from_result(issue) or {}
             audit_success(
                 session_id,
                 ToolName.CREATE_LOCAL_ISSUE,
                 args,
                 {
-                    "issue_id": issue.issue_id,
-                    "issue_number": issue.issue_number,
-                    "directory_path": issue.directory_path,
+                    "issue_id": result.get("issue_id"),
+                    "issue_number": result.get("issue_number"),
+                    "directory_path": result.get("directory_path", session.directory_path),
                 },
             )
             return result
@@ -259,21 +319,27 @@ def create_server(context: RuntimeContext) -> FastMCP:
     def approve_issue(
         session_id: str,
         issue_id: str,
+        priority: str | None = None,
         reason: str | None = None,
     ) -> dict[str, Any]:
         args = {
             "session_id": session_id,
             "issue_id": issue_id,
+            "priority": priority,
             "reason": reason,
         }
         try:
             session = context.policy.require_tool(session_id, ToolName.APPROVE_ISSUE)
             fields: dict[str, object] | None = None
-            if reason is not None:
-                fields = {"Reason": reason}
+            if reason is not None or priority is not None:
+                fields = {}
+                if reason is not None:
+                    fields["Reason"] = reason
+                if priority is not None:
+                    fields["Priority"] = priority
             result = AdminService(context.config.runtime_dir).update_issue(
                 issue_id,
-                state="Committed",
+                state="Approved",
                 fields=fields,
             )
             audit_success(
@@ -294,6 +360,75 @@ def create_server(context: RuntimeContext) -> FastMCP:
             audit_failure(
                 session_id,
                 ToolName.APPROVE_ISSUE,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
+    def claim_next_issue(session_id: str) -> dict[str, Any]:
+        args = {"session_id": session_id}
+        try:
+            session = context.policy.require_tool(session_id, ToolName.CLAIM_NEXT_ISSUE)
+            result = AdminService(context.config.runtime_dir).claim_next_issue(session_id=session_id)
+            payload = _payload_from_result(result)
+            audit_success(
+                session_id,
+                ToolName.CLAIM_NEXT_ISSUE,
+                args,
+                {
+                    "issue_number": None if payload is None else payload.get("issue_number"),
+                    "source_type": None if payload is None else payload.get("source_type"),
+                    "directory_path": session.directory_path,
+                    "claimed": payload is not None,
+                },
+            )
+            return payload or {}
+        except PolicyError as exc:
+            audit_failure(session_id, ToolName.CLAIM_NEXT_ISSUE, args, str(exc))
+            raise
+        except Exception as exc:
+            audit_failure(
+                session_id,
+                ToolName.CLAIM_NEXT_ISSUE,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
+    def complete_issue(session_id: str, issue_id: str, summary: str) -> dict[str, Any]:
+        args = {"session_id": session_id, "issue_id": issue_id, "summary": summary}
+        try:
+            session = context.policy.require_tool(session_id, ToolName.COMPLETE_ISSUE)
+            result = AdminService(context.config.runtime_dir).complete_issue(
+                session_id=session_id,
+                issue_id=issue_id,
+                summary=summary,
+            )
+            payload = _payload_from_result(result) or {}
+            audit_success(
+                session_id,
+                ToolName.COMPLETE_ISSUE,
+                args,
+                {
+                    "issue_number": payload.get("issue_number"),
+                    "source_type": payload.get("source_type"),
+                    "directory_path": session.directory_path,
+                },
+            )
+            return payload
+        except PolicyError as exc:
+            audit_failure(session_id, ToolName.COMPLETE_ISSUE, args, str(exc))
+            raise
+        except Exception as exc:
+            audit_failure(
+                session_id,
+                ToolName.COMPLETE_ISSUE,
                 args,
                 str(exc),
                 decision="error",

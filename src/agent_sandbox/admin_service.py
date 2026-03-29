@@ -17,7 +17,12 @@ import yaml
 
 from .agent_control import AgentControlStore
 from .bootstrap import load_host_bootstrap_config, load_runtime_gateway_config, resolve_project_dir
-from .config import AdoWorkerGlobalConfig, GatewayConfig, HostHeartbeatWorkerGlobalConfig
+from .config import (
+    AdoWorkerGlobalConfig,
+    GatewayConfig,
+    HostHeartbeatWorkerGlobalConfig,
+    IssueOrchestratorWorkerGlobalConfig,
+)
 from .directory_admin import DirectoryAdminService
 from .directory_config import (
     DirectoryConfigResolver,
@@ -52,19 +57,23 @@ from .storage import JsonStore
 _WORKER_DEFINITIONS: tuple[tuple[str, str, str], ...] = (
     ("ado", "ADO Worker", "agent-sandbox-ado-worker.service"),
     ("host-heartbeat", "Host Heartbeat Worker", "agent-sandbox-host-heartbeat.service"),
+    ("issue-orchestrator", "Issue Orchestrator Worker", "agent-sandbox-issue-orchestrator.service"),
 )
 
 _WORKER_GLOBAL_CONFIG_PATHS: dict[str, str] = {
     "ado": "config/ado-worker/config.json",
     "host-heartbeat": "config/host-heartbeat/config.json",
+    "issue-orchestrator": "config/issue-orchestrator/config.json",
 }
 
 _WORKER_GLOBAL_CONFIG_MODELS: dict[str, type[BaseModel]] = {
     "ado": AdoWorkerGlobalConfig,
     "host-heartbeat": HostHeartbeatWorkerGlobalConfig,
+    "issue-orchestrator": IssueOrchestratorWorkerGlobalConfig,
 }
-ISSUE_STATES: tuple[str, ...] = ("New", "Committed", "In Progress", "Completed", "Closed")
+ISSUE_STATES: tuple[str, ...] = ("New", "Approved", "Committed", "In Progress", "Completed", "Closed")
 _ISSUE_STATE_SET = set(ISSUE_STATES)
+_ISSUE_PRIORITY_ORDER: dict[str, int] = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
 
 
 class EffectiveIssueSetupConfig(BaseModel):
@@ -105,6 +114,37 @@ def _normalize_local_issue_state(state: str | None, *, allow_empty: bool = False
         allowed = ", ".join(ISSUE_STATES)
         raise ValueError(f"Invalid issue state: {normalized!r}. Allowed values: {allowed}.")
     return normalized
+
+
+def _normalize_issue_priority(priority: str | None) -> str | None:
+    normalized = str(priority or "").strip().upper()
+    if not normalized:
+        return None
+    if normalized not in _ISSUE_PRIORITY_ORDER:
+        allowed = ", ".join(sorted(_ISSUE_PRIORITY_ORDER))
+        raise ValueError(f"Invalid issue priority: {normalized!r}. Allowed values: {allowed}.")
+    return normalized
+
+
+def _local_issue_fields(issue: LocalIssueRecord) -> dict[str, object]:
+    fields = issue.metadata.get("fields")
+    if isinstance(fields, dict):
+        return dict(fields)
+    return {}
+
+
+def _issue_priority_sort_key(issue: LocalIssueRecord) -> tuple[int, datetime, datetime, str]:
+    fields = _local_issue_fields(issue)
+    priority_value = fields.get("priority")
+    if priority_value is None:
+        priority_value = fields.get("Priority")
+    priority = _normalize_issue_priority(str(priority_value or "").strip()) or "P3"
+    return (
+        _ISSUE_PRIORITY_ORDER[priority],
+        issue.updated_at,
+        issue.created_at,
+        issue.issue_number,
+    )
 
 
 def _extract_issue_number(value: str | None) -> str | None:
@@ -174,6 +214,15 @@ def _resolve_vm_name(target: str) -> str:
     if normalized.isdigit():
         return f"vm-{normalized}"
     return normalized
+
+
+def _resolve_vm_name_from_target(target: str, sessions: dict[str, SessionManifest]) -> str:
+    normalized = target.strip()
+    if not normalized:
+        return ""
+    if normalized in sessions:
+        return sessions[normalized].vm_id or normalized
+    return _resolve_vm_name(normalized)
 
 
 def _issue_session_id_prefix(issue_number: str) -> str:
@@ -850,6 +899,19 @@ for state_path in "${LOG_DIR}"/agent-*.state; do
   name="${name%.state}"
   active_entries+=("${name}")
 done
+codex_state_path="${LOG_DIR}/codex-resume-last.state"
+if [[ -f "${codex_state_path}" ]]; then
+  found_any_state=1
+  status="$(read_state_value "${codex_state_path}" "status" || true)"
+  updated_at="$(read_state_value "${codex_state_path}" "updated_at" || true)"
+  pid="$(read_state_value "${codex_state_path}" "pid" || true)"
+  if [[ -n "${updated_at}" && ( -z "${newest_updated_at}" || "${updated_at}" > "${newest_updated_at}" ) ]]; then
+    newest_updated_at="${updated_at}"
+  fi
+  if [[ "${status}" == "running" ]] && ( state_is_fresh "${updated_at}" || is_active_agent_pid "${pid}" ); then
+    active_entries+=("codex-heartbeat")
+  fi
+fi
 shopt -u nullglob
 
 if [[ ${#active_entries[@]} -gt 0 ]]; then
@@ -1616,10 +1678,9 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
         repo_name: str | None = None,
         vm_user: str = "agent",
     ) -> str:
-        issue_number = _extract_issue_number(target) or target
-        if not issue_number:
-            return "Agent log unavailable: no issue number for selected VM."
-        vm_name = f"vm-{issue_number}"
+        vm_name = _resolve_vm_name_from_target(target, self.runtime.sessions.read_all())
+        if not vm_name:
+            return "Agent log unavailable: no VM target selected."
         vm_state = _dominfo_field(vm_name, "State")
         if vm_state != "running":
             return f"Agent log unavailable: {vm_name} is not running."
@@ -1649,6 +1710,9 @@ if [[ -z "${RESOLVED_REPO_NAME}" ]]; then
       candidates+=("${name}")
     fi
   done
+  if [[ -f "${LOG_DIR}/codex-heartbeat-run.log" || -f "${LOG_DIR}/codex-heartbeat.pid" ]]; then
+    candidates+=("codex-heartbeat")
+  fi
   shopt -u nullglob
 
   if [[ ${#candidates[@]} -eq 0 ]]; then
@@ -1667,7 +1731,11 @@ if [[ -z "${RESOLVED_REPO_NAME}" ]]; then
   RESOLVED_REPO_NAME="${unique_candidates[0]}"
 fi
 
-LOG_PATH="${LOG_DIR}/agent-${RESOLVED_REPO_NAME}.log"
+if [[ "${RESOLVED_REPO_NAME}" == "codex-heartbeat" ]]; then
+  LOG_PATH="${LOG_DIR}/codex-heartbeat-run.log"
+else
+  LOG_PATH="${LOG_DIR}/agent-${RESOLVED_REPO_NAME}.log"
+fi
 if [[ ! -f "${LOG_PATH}" ]]; then
   echo "No guest agent log found at ${LOG_PATH}"
   exit 0
@@ -1740,9 +1808,16 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
     def _run_script(self, script_name: str, args: list[str]) -> VmActionResult:
         script_path = Path(__file__).resolve().parents[2] / "scripts" / script_name
         completed = _run_subprocess([str(script_path), *args], capture_output=True, text=True)
-        issue_target = args[1] if len(args) > 1 else ""
-        issue_number = _extract_issue_number(issue_target) or issue_target
-        vm_name = _resolve_vm_name(issue_number) if issue_number else ""
+        vm_name = ""
+        if "--vm-name" in args:
+            try:
+                vm_name = args[args.index("--vm-name") + 1]
+            except IndexError:
+                vm_name = ""
+        elif len(args) > 1:
+            issue_target = args[1]
+            issue_number = _extract_issue_number(issue_target) or issue_target
+            vm_name = _resolve_vm_name(issue_number) if issue_number else ""
         message = (completed.stdout or completed.stderr or "").strip()
         return VmActionResult(
             success=completed.returncode == 0,
@@ -1752,24 +1827,24 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
         )
 
     def enable_agent(self, target: str, *, vm_user: str = "agent") -> VmActionResult:
-        issue_number = _extract_issue_number(target) or target
+        vm_name = _resolve_vm_name_from_target(target, self.runtime.sessions.read_all())
         return self._run_script(
             "set_issue_agent_state.sh",
-            ["enable", issue_number, vm_user, "--host-state-path", str(self.config.host_agent_control_state_path)],
+            ["--state", "enable", "--vm-name", vm_name, "--vm-user", vm_user, "--host-state-path", str(self.config.host_agent_control_state_path)],
         )
 
     def disable_agent(self, target: str, *, vm_user: str = "agent") -> VmActionResult:
-        issue_number = _extract_issue_number(target) or target
+        vm_name = _resolve_vm_name_from_target(target, self.runtime.sessions.read_all())
         return self._run_script(
             "set_issue_agent_state.sh",
-            ["disable", issue_number, vm_user, "--host-state-path", str(self.config.host_agent_control_state_path)],
+            ["--state", "disable", "--vm-name", vm_name, "--vm-user", vm_user, "--host-state-path", str(self.config.host_agent_control_state_path)],
         )
 
     def resume_agent(self, target: str, prompt: str, *, vm_user: str = "agent") -> VmActionResult:
-        issue_number = _extract_issue_number(target) or target
+        vm_name = _resolve_vm_name_from_target(target, self.runtime.sessions.read_all())
         return self._run_script(
             "resume_issue_agent.sh",
-            [prompt, issue_number, vm_user, "--host-control-state-path", str(self.config.host_agent_control_state_path)],
+            ["--prompt", prompt, "--vm-name", vm_name, "--vm-user", vm_user, "--host-control-state-path", str(self.config.host_agent_control_state_path)],
         )
 
     def list_local_issues(
@@ -1860,6 +1935,25 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
         if direct_only or directory_path is not None:
             return [issue for issue in issues if issue.directory_path == normalized_directory_path]
         return issues
+
+    def list_actionable_local_issues(
+        self,
+        *,
+        directory_path: str,
+        states: set[str] | None = None,
+    ) -> list[LocalIssueRecord]:
+        normalized_directory_path = self._normalize_directory_path(directory_path)
+        issues = self.list_issues(directory_path=normalized_directory_path, direct_only=True)
+        actionable: list[LocalIssueRecord] = []
+        for issue in issues:
+            if self._proxy_target_for_issue(issue) is not None:
+                continue
+            if issue.source_type != "local_manual":
+                continue
+            if states is not None and (issue.state or "New") not in states:
+                continue
+            actionable.append(issue)
+        return actionable
 
     def _resolve_local_issue_key(self, identifier: str) -> str | None:
         normalized = identifier.strip()
@@ -1973,6 +2067,7 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
         repo_source: str | None = None,
         yaml_path: str | None = None,
         directory_path: str = "root",
+        metadata: dict[str, Any] | None = None,
     ) -> LocalIssueRecord:
         return self.create_issue(
             title=title,
@@ -1980,6 +2075,7 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
             repo_source=repo_source,
             yaml_path=yaml_path,
             directory_path=directory_path,
+            metadata=metadata,
         )
 
     def update_local_issue(
@@ -2033,10 +2129,11 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
         repo_source: str | None = None,
         yaml_path: str | None = None,
         directory_path: str = "root",
+        metadata: dict[str, Any] | None = None,
     ) -> LocalIssueRecord:
         now = _utc_now()
         normalized_directory_path = self._normalize_directory_path(directory_path)
-        metadata: dict[str, Any] = {}
+        merged_metadata: dict[str, Any] = dict(metadata or {})
         source_value = "local_gui"
         source_type = "local_manual"
         remote_reference: RemoteIssueReference | None = None
@@ -2064,7 +2161,7 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
             elif isinstance(raw_source, dict):
                 source_value = "proxy_azure_devops"
                 source_type = "remote_proxy"
-                metadata["remote"] = {
+                merged_metadata["remote"] = {
                     "provider": "azure_devops",
                     "organization": str(raw_source.get("organization") or "").strip(),
                     "project": str(raw_source.get("project") or "").strip(),
@@ -2083,13 +2180,13 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
                 if source_value == "local_gui":
                     source_value = "proxy_azure_devops"
                 source_type = "remote_proxy"
-                metadata["proxy_cache"] = {
+                merged_metadata["proxy_cache"] = {
                     "url": str(yaml_payload.get("url") or "").strip(),
                     "state": str(yaml_payload.get("state") or "").strip(),
                     "comments": list(yaml_payload.get("comments") or []),
                     "updated_at": str(yaml_payload.get("updated_date") or "").strip(),
                 }
-                metadata.setdefault("remote", {"provider": "azure_devops", "issue_id": issue_number})
+                merged_metadata.setdefault("remote", {"provider": "azure_devops", "issue_id": issue_number})
             state_value = str(yaml_payload.get("state") or "").strip() or None
             url_value = str(yaml_payload.get("url") or "").strip() or None
             comments_value = [
@@ -2148,7 +2245,7 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
             url=url_value,
             comments=comments_value,
             source=source_value,
-            metadata=metadata,
+            metadata=merged_metadata,
             created_at=existing_record.created_at if existing_record is not None else now,
             updated_at=now,
         )
@@ -2348,6 +2445,66 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
             )
             self._refresh_proxy_cache_from_remote(issue, remote_payload)
         return {"issue_number": issue.issue_number, "source_type": "proxy", **result}
+
+    def claim_next_issue(
+        self,
+        *,
+        session_id: str,
+    ) -> LocalIssueRecord | None:
+        session = self.runtime.sessions.get(session_id)
+        if session is None:
+            raise ValueError(f"Unknown session: {session_id}")
+        candidates = sorted(
+            self.list_actionable_local_issues(directory_path=session.directory_path, states={"Committed"}),
+            key=_issue_priority_sort_key,
+        )
+        if not candidates:
+            return None
+        issue = candidates[0]
+        issue.metadata = dict(issue.metadata)
+        local_fields = _local_issue_fields(issue)
+        local_fields["claimed_by_session_id"] = session_id
+        if session.vm_id:
+            local_fields["claimed_by_vm_id"] = session.vm_id
+        local_fields["claimed_at"] = _utc_now().isoformat()
+        issue.metadata["fields"] = local_fields
+        issue.state = "In Progress"
+        issue.metadata["state"] = issue.state
+        issue.updated_at = _utc_now()
+        self.local_issue_store.put(issue.issue_id, issue)
+        return issue
+
+    def complete_issue(
+        self,
+        *,
+        session_id: str,
+        issue_id: str,
+        summary: str,
+    ) -> LocalIssueRecord:
+        session = self.runtime.sessions.get(session_id)
+        if session is None:
+            raise ValueError(f"Unknown session: {session_id}")
+        normalized_summary = summary.strip()
+        if not normalized_summary:
+            raise ValueError("summary must be non-empty")
+        issue = self._resolve_local_issue_record(issue_id)
+        if self._proxy_target_for_issue(issue) is not None:
+            raise ValueError("Only local issues can be completed through the issue orchestrator.")
+        if issue.state != "In Progress":
+            raise ValueError(f"Issue {issue.issue_number} must be In Progress before completion.")
+        issue.metadata = dict(issue.metadata)
+        local_fields = _local_issue_fields(issue)
+        local_fields["completed_summary"] = normalized_summary
+        local_fields["completed_by_session_id"] = session_id
+        if session.vm_id:
+            local_fields["completed_by_vm_id"] = session.vm_id
+        local_fields["completed_at"] = _utc_now().isoformat()
+        issue.metadata["fields"] = local_fields
+        issue.state = "Completed"
+        issue.metadata["state"] = issue.state
+        issue.updated_at = _utc_now()
+        self.local_issue_store.put(issue.issue_id, issue)
+        return issue
 
     def create_issue_vm(
         self,

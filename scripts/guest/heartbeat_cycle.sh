@@ -55,6 +55,13 @@ for state_path in "${LOG_DIR}"/agent-*.state; do
     exit 0
   fi
 done
+if [[ -f "${LOG_DIR}/codex-resume-last.state" ]]; then
+  status="$(awk -F= '$1 == "status" {print substr($0, index($0, "=") + 1); exit}' "${LOG_DIR}/codex-resume-last.state" 2>/dev/null || true)"
+  if [[ "${status}" == "running" ]]; then
+    printf 'Guest heartbeat skipped: active agent state=%s\n' "codex-resume-last.state"
+    exit 0
+  fi
+fi
 shopt -u nullglob
 
 printf '%s\n' "--last" > "${RESUME_HINT_FILE}"

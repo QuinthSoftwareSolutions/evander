@@ -107,6 +107,10 @@ if [[ -z "${RESOLVED_REPO_NAME}" ]]; then
     fi
   done
 
+  if [[ -f "${LOG_DIR}/codex-heartbeat-run.log" || -f "${LOG_DIR}/codex-heartbeat.pid" ]]; then
+    candidates+=("codex-heartbeat")
+  fi
+
   shopt -u nullglob
 
   if [[ ${#candidates[@]} -eq 0 ]]; then
@@ -124,7 +128,11 @@ if [[ -z "${RESOLVED_REPO_NAME}" ]]; then
   RESOLVED_REPO_NAME="${unique_candidates[0]}"
 fi
 
-LOG_PATH="${LOG_DIR}/agent-${RESOLVED_REPO_NAME}.log"
+if [[ "${RESOLVED_REPO_NAME}" == "codex-heartbeat" ]]; then
+  LOG_PATH="${LOG_DIR}/codex-heartbeat-run.log"
+else
+  LOG_PATH="${LOG_DIR}/agent-${RESOLVED_REPO_NAME}.log"
+fi
 if [[ ! -f "${LOG_PATH}" ]]; then
   echo "No guest agent log found at ${LOG_PATH}" >&2
   exit 0

@@ -19,6 +19,8 @@ class ToolName(str, Enum):
     LIST_ISSUES = "list_issues"
     APPROVE_ISSUE = "approve_issue"
     REJECT_ISSUE = "reject_issue"
+    CLAIM_NEXT_ISSUE = "claim_next_issue"
+    COMPLETE_ISSUE = "complete_issue"
     DISCORD_GET_COMMANDS = "discord_get_commands"
     DISCORD_POST_STATUS = "discord_post_status"
     EMAIL_LIST_UNREAD = "email_list_unread"

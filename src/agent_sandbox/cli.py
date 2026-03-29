@@ -29,6 +29,7 @@ from .bootstrap import (
 )
 from .config import GatewayConfig, load_config
 from .host_heartbeat_worker import build_host_heartbeat_worker
+from .issue_orchestrator import build_issue_orchestrator_worker
 from .host_config import DEFAULT_RUNTIME_DIR
 from .migrations import (
     migrate_ado_worker_env_to_root,
@@ -1968,6 +1969,7 @@ def ssh(
 )
 def logs(
     target: str,
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
     repo_name: Annotated[
         str | None,
         typer.Option(
@@ -1977,34 +1979,58 @@ def logs(
     ] = None,
     lines: Annotated[
         int,
-        typer.Option("--lines", min=1, help="Number of log lines to print before following the log."),
+        typer.Option("--lines", min=1, help="Number of log lines to print from the guest agent log."),
     ] = 10,
     vm_user: Annotated[str, typer.Option("--vm-user", help="Guest user to inspect over SSH.")] = "agent",
 ) -> None:
-    issue_number = _resolve_issue_number_or_raise(target)
-    script_path = Path(__file__).resolve().parents[2] / "scripts" / "tail_issue_vm_log.sh"
-    cmd = [str(script_path), issue_number, str(lines)]
-    if repo_name is not None:
-        cmd.append(repo_name)
-        cmd.append(vm_user)
-    elif vm_user != "agent":
-        cmd.extend(["", vm_user])
-    _run_subprocess_compat(cmd, check=True, capture_output=False, text=False)
+    normalized = target.strip()
+    is_legacy_issue_target = normalized.isdigit() or (normalized.startswith("vm-") and normalized[3:].isdigit())
+    if is_legacy_issue_target:
+        issue_number = _resolve_issue_number_or_raise(target)
+        script_path = Path(__file__).resolve().parents[2] / "scripts" / "tail_issue_vm_log.sh"
+        cmd = [str(script_path), issue_number, str(lines)]
+        if repo_name is not None:
+            cmd.append(repo_name)
+            cmd.append(vm_user)
+        elif vm_user != "agent":
+            cmd.extend(["", vm_user])
+        _run_subprocess_compat(cmd, check=True, capture_output=False, text=False)
+        return
+
+    service = AdminService(config)
+    output = service.get_agent_log_snapshot(target, lines=lines, repo_name=repo_name, vm_user=vm_user)
+    typer.echo(output)
 
 
 def _set_agent_control_state(target: str, *, action: str, vm_user: str, config: Path) -> None:
-    issue_number = _resolve_issue_number_or_raise(target)
+    normalized = target.strip()
     cfg = _load_runtime_config_from_option(config)
     script_path = Path(__file__).resolve().parents[2] / "scripts" / "set_issue_agent_state.sh"
-    _run_subprocess_compat(
-        [
+    if normalized.isdigit() or (normalized.startswith("vm-") and normalized[3:].isdigit()):
+        issue_number = _resolve_issue_number_or_raise(target)
+        cmd = [
             str(script_path),
             action,
             issue_number,
             vm_user,
             "--host-state-path",
             str(cfg.host_agent_control_state_path),
-        ],
+        ]
+    else:
+        vm_name = _resolve_vm_name(target)
+        cmd = [
+            str(script_path),
+            "--state",
+            action,
+            "--vm-name",
+            vm_name,
+            "--vm-user",
+            vm_user,
+            "--host-state-path",
+            str(cfg.host_agent_control_state_path),
+        ]
+    _run_subprocess_compat(
+        cmd,
         check=True,
         capture_output=False,
         text=False,
@@ -2065,19 +2091,34 @@ def resume_agent(
     ] = 10,
     vm_user: Annotated[str, typer.Option("--vm-user", help="Guest user to connect as.")] = "agent",
 ) -> None:
-    issue_number = _resolve_issue_number_or_raise(target)
-    vm_name = f"vm-{issue_number}"
+    normalized = target.strip()
     cfg = _load_runtime_config_from_option(config)
     runtime = build_runtime(cfg)
     script_path = Path(__file__).resolve().parents[2] / "scripts" / "resume_issue_agent.sh"
-    cmd = [
-        str(script_path),
-        message,
-        issue_number,
-        vm_user,
-        "--host-control-state-path",
-        str(cfg.host_agent_control_state_path),
-    ]
+    if normalized.isdigit() or (normalized.startswith("vm-") and normalized[3:].isdigit()):
+        issue_number = _resolve_issue_number_or_raise(target)
+        vm_name = f"vm-{issue_number}"
+        cmd = [
+            str(script_path),
+            message,
+            issue_number,
+            vm_user,
+            "--host-control-state-path",
+            str(cfg.host_agent_control_state_path),
+        ]
+    else:
+        vm_name = _resolve_vm_name(target)
+        cmd = [
+            str(script_path),
+            "--prompt",
+            message,
+            "--vm-name",
+            vm_name,
+            "--vm-user",
+            vm_user,
+            "--host-control-state-path",
+            str(cfg.host_agent_control_state_path),
+        ]
     if observe:
         cmd.extend(["--observe", str(lines)])
 
@@ -2568,6 +2609,40 @@ def host_heartbeat(
         typer.echo(
             f"Host heartbeat cycle complete streams={result.streams_polled} "
             f"discovered={result.discovered_feedback} sleep_seconds={result.next_sleep_seconds:.3f}"
+        )
+        return
+
+    worker.run_forever()
+
+
+@app.command(
+    "issue-orchestrator",
+    rich_help_panel="Background Workers",
+    short_help="Run the issue orchestrator worker.",
+)
+def issue_orchestrator(
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
+    run_once: Annotated[
+        bool,
+        typer.Option("--once", help="Run a single issue orchestrator cycle and exit."),
+    ] = False,
+    log_level: Annotated[str, typer.Option("--log-level", help="Python logging level.")] = "INFO",
+) -> None:
+    logging_level = getattr(logging, log_level.upper(), None)
+    if not isinstance(logging_level, int):
+        raise typer.BadParameter(f"Invalid --log-level value: {log_level}")
+    logging.basicConfig(
+        level=logging_level,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+
+    cfg = _load_runtime_config_from_option(config)
+    worker = build_issue_orchestrator_worker(cfg, project_dir=_project_dir_for_config_option(config))
+    if run_once:
+        result = worker.run_once_with_lock()
+        typer.echo(
+            f"Issue orchestrator cycle complete resumed={result.resumed_sessions} "
+            f"eligible={result.eligible_sessions} sleep_seconds={result.next_sleep_seconds:.3f}"
         )
         return
 

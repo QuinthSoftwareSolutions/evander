@@ -48,6 +48,8 @@ def test_issue_vm_helpers_auto_detect_repo_name_when_omitted() -> None:
         assert 'sort -u' in text
         assert 'agent-*.pid' in text
         assert 'agent-*.log' in text
+        assert 'codex-heartbeat-run.log' in text
+        assert 'codex-heartbeat.pid' in text
 
     assert 'Number of log lines to print before following. Default: 10' in tail_script
     assert 'Multiple guest agent logs found under' in tail_script

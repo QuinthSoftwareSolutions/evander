@@ -135,3 +135,52 @@ exit 0
 
     assert result.stdout == ""
     assert result.stderr == ""
+
+
+def test_tail_issue_vm_log_auto_detects_codex_heartbeat_log(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    script_path = root / "scripts" / "tail_issue_vm_log.sh"
+    private_key = tmp_path / "id_ed25519"
+    private_key.write_text("PRIVATE\n", encoding="utf-8")
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+
+    _write_executable(
+        fake_bin / "virsh",
+        """#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "domifaddr" ]]; then
+  printf 'vnet0 52:54:00:00:00:01 ipv4 192.168.122.11/24\\n'
+  exit 0
+fi
+exit 1
+""",
+    )
+
+    _write_executable(
+        fake_bin / "ssh",
+        """#!/usr/bin/env bash
+set -euo pipefail
+cat >/dev/null
+printf 'Repo: codex-heartbeat\\n'
+printf 'Log: /home/agent/.agent-sandbox/codex-heartbeat-run.log\\n'
+""",
+    )
+
+    env = os.environ.copy()
+    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+    env["SSH_PRIVATE_KEY_PATH"] = str(private_key)
+    env["USER"] = env.get("USER", "root")
+
+    result = subprocess.run(
+        [str(script_path), "12305"],
+        text=True,
+        capture_output=True,
+        env=env,
+        check=True,
+    )
+
+    assert "Repo: codex-heartbeat" in result.stdout
+    assert "codex-heartbeat-run.log" in result.stdout
+    assert result.stderr == ""

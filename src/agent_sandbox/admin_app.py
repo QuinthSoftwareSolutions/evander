@@ -10,7 +10,12 @@ from typing import Any, get_args, get_origin
 from pydantic import BaseModel
 
 from .admin_service import ISSUE_STATES, AdminService
-from .config import AdoWorkerGlobalConfig, GatewayConfig, HostHeartbeatWorkerGlobalConfig
+from .config import (
+    AdoWorkerGlobalConfig,
+    GatewayConfig,
+    HostHeartbeatWorkerGlobalConfig,
+    IssueOrchestratorWorkerGlobalConfig,
+)
 from .directory_config import (
     AdoWorkerDirectoryConfig,
     DIRECTORY_CONFIG_DOMAIN_FIELDS,
@@ -765,11 +770,20 @@ WORKER_GLOBAL_CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
     "host_heartbeat_vm_user": "Guest username passed to the host resume script.",
     "host_heartbeat_resume_timeout_seconds": "Timeout in seconds for the host resume script invocation.",
     "host_heartbeat_stream_conflict_policy": "How the host heartbeat worker handles one PR feedback stream matching multiple sessions.",
+    "jitter_seconds": "Random delay added to each issue orchestrator sleep interval.",
+    "cooldown_seconds": "Minimum cooldown before the issue orchestrator retries the same session.",
+    "lock_path": "Single-instance lock file for the issue orchestrator worker.",
+    "busy_check_script_path": "Host script used by the issue orchestrator to detect whether a session VM is busy.",
+    "resume_script_path": "Host script invoked by the issue orchestrator to resume a session VM.",
+    "wake_state_path": "Host-side JSON state file written by issue orchestrator resume attempts.",
+    "vm_user": "Guest username passed to the issue orchestrator resume script.",
+    "resume_timeout_seconds": "Timeout in seconds for an issue orchestrator resume invocation.",
 }
 
 WORKER_GLOBAL_CONFIG_MODELS: dict[str, type[BaseModel]] = {
     "ado": AdoWorkerGlobalConfig,
     "host-heartbeat": HostHeartbeatWorkerGlobalConfig,
+    "issue-orchestrator": IssueOrchestratorWorkerGlobalConfig,
 }
 
 
@@ -1432,9 +1446,10 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self.vm_selection_hint.show()
         self.start_vm_button.setVisible(summary.libvirt_state != "running")
         self.shutdown_vm_button.setVisible(summary.libvirt_state == "running")
-        self.enable_agent_button.setVisible(bool(summary.issue_number) and summary.agent_state == "disabled")
-        self.disable_agent_button.setVisible(bool(summary.issue_number) and summary.agent_state != "disabled")
-        self.resume_agent_button.setVisible(bool(summary.issue_number) and summary.agent_state != "disabled")
+        supports_agent_controls = bool(summary.vm_name) and summary.agent_state != "unknown"
+        self.enable_agent_button.setVisible(supports_agent_controls and summary.agent_state == "disabled")
+        self.disable_agent_button.setVisible(supports_agent_controls and summary.agent_state != "disabled")
+        self.resume_agent_button.setVisible(supports_agent_controls and summary.agent_state != "disabled")
         self.destroy_vm_button.setVisible(True)
 
     def _on_vm_selection_changed(self) -> None:
@@ -1465,18 +1480,14 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         if summary is None:
             _set_text_preserving_scroll(self.agent_log_view, "No VM selected.")
             return
-        if not summary.issue_number:
-            _set_text_preserving_scroll(self.agent_log_view, "Agent log unavailable for VMs without an issue number.")
-            return
-        issue_number = summary.issue_number
         repo_name = self._preferred_agent_log_repo_name(summary)
         self._agent_log_request_token += 1
         request_token = self._agent_log_request_token
-        worker = _ActionWorker(self.service.get_agent_log_snapshot, issue_number, lines=50, repo_name=repo_name)
+        worker = _ActionWorker(self.service.get_agent_log_snapshot, summary.vm_name, lines=50, repo_name=repo_name)
         self._active_workers.add(worker)
         worker.signals.finished.connect(
-            lambda text, worker=worker, request_token=request_token, issue_number=issue_number: self._handle_agent_log_success(
-                text, worker, request_token, issue_number
+            lambda text, worker=worker, request_token=request_token, vm_name=summary.vm_name: self._handle_agent_log_success(
+                text, worker, request_token, vm_name
             )
         )
         worker.signals.failed.connect(
@@ -1487,13 +1498,13 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self.thread_pool.start(worker)
 
     def _handle_agent_log_success(
-        self, text: str, worker: _ActionWorker, request_token: int, issue_number: str
+        self, text: str, worker: _ActionWorker, request_token: int, vm_name: str
     ) -> None:
         self._discard_worker(worker)
         current_summary = self.selected_vm_summary()
         if request_token != self._agent_log_request_token:
             return
-        if current_summary is None or current_summary.issue_number != issue_number:
+        if current_summary is None or current_summary.vm_name != vm_name:
             return
         _set_text_preserving_scroll(self.agent_log_view, text)
 
@@ -1524,22 +1535,22 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
 
     def handle_enable_selected_vm(self) -> None:
         summary = self.selected_vm_summary()
-        if summary is None or not summary.issue_number:
+        if summary is None:
             return
         self.run_action(
             f"Enable agent {summary.vm_name}",
             self.service.enable_agent,
-            summary.issue_number,
+            summary.vm_name,
         )
 
     def handle_disable_selected_vm(self) -> None:
         summary = self.selected_vm_summary()
-        if summary is None or not summary.issue_number:
+        if summary is None:
             return
         self.run_action(
             f"Disable agent {summary.vm_name}",
             self.service.disable_agent,
-            summary.issue_number,
+            summary.vm_name,
         )
 
     def handle_resume_selected_vm(self) -> None:
@@ -1575,9 +1586,6 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         )
 
     def resume_vm(self, summary) -> None:
-        if not summary.issue_number:
-            QMessageBox.information(self, "Resume agent", "Resume is supported only for issue-numbered VMs.")
-            return
         prompt, accepted = QInputDialog.getMultiLineText(
             self,
             f"Resume {summary.vm_name}",
@@ -1589,7 +1597,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self.run_action(
             f"Resume {summary.vm_name}",
             self.service.resume_agent,
-            summary.issue_number,
+            summary.vm_name,
             prompt.strip(),
         )
 
