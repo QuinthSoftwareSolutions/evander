@@ -8,6 +8,7 @@ import httpx
 from mcp.server.fastmcp import FastMCP
 
 from .bootstrap import load_runtime_gateway_config, resolve_runtime_dir
+from .admin_service import AdminService
 from .config import GatewayConfig
 from .email.http_utils import ProviderRequestError
 from .models import (
@@ -146,6 +147,53 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 result={"error": error, "error_class": error_class},
             )
         )
+
+    @server.tool()
+    def create_local_issue(
+        session_id: str,
+        title: str,
+        body: str = "",
+        repo_source: str | None = None,
+    ) -> dict[str, Any]:
+        args = {
+            "session_id": session_id,
+            "title": title,
+            "body": body,
+            "repo_source": repo_source,
+        }
+        try:
+            session = context.policy.require_tool(session_id, ToolName.CREATE_LOCAL_ISSUE)
+            issue = AdminService(context.config.runtime_dir).create_local_issue(
+                title=title,
+                body=body,
+                repo_source=repo_source,
+                directory_path=session.directory_path,
+            )
+            result = issue.model_dump(mode="json")
+            audit_success(
+                session_id,
+                ToolName.CREATE_LOCAL_ISSUE,
+                args,
+                {
+                    "issue_id": issue.issue_id,
+                    "issue_number": issue.issue_number,
+                    "directory_path": issue.directory_path,
+                },
+            )
+            return result
+        except PolicyError as exc:
+            audit_failure(session_id, ToolName.CREATE_LOCAL_ISSUE, args, str(exc))
+            raise
+        except Exception as exc:
+            audit_failure(
+                session_id,
+                ToolName.CREATE_LOCAL_ISSUE,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
 
     @server.tool()
     def has_pending_feedback(session_id: str) -> dict[str, Any]:
