@@ -1420,6 +1420,12 @@ def _build_issue_payload(record: LocalIssueRecord) -> dict[str, Any]:
     }
 
 
+def _persist_unified_issue_record(config: WorkerConfig, record: LocalIssueRecord, yaml_path: Path) -> None:
+    store = JsonStore(config.runtime_dir / "local-issues.json", LocalIssueRecord)
+    store.put(record.issue_id, record)
+    _atomic_write_yaml(yaml_path, _build_issue_payload(record))
+
+
 def _atomic_write_yaml(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_suffix(f"{path.suffix}.tmp")
@@ -1612,7 +1618,7 @@ def process_work_item(
     yaml_path = config.yaml_output_dir / f"work-item-{work_item_id}.yaml"
     setup_log_path = config.setup_log_dir / f"work-item-{work_item_id}.log"
     record = _upsert_unified_issue_record(config=config, work_item=work_item, yaml_path=yaml_path)
-    _atomic_write_yaml(yaml_path, _build_issue_payload(record))
+    _persist_unified_issue_record(config, record, yaml_path)
 
     if store.is_processed(
         work_item_id,
@@ -1725,6 +1731,13 @@ def process_work_item(
                 exc.__class__.__name__,
             )
         else:
+            now = datetime.now(timezone.utc)
+            record.state = "In Progress"
+            if record.remote_reference is not None:
+                record.remote_reference.last_synced_at = now
+                record.remote_reference.last_known_remote_state = "In Progress"
+            record.updated_at = now
+            _persist_unified_issue_record(config, record, yaml_path)
             logging.info("work_item=%s state_updated=%s", work_item_id, "In Progress")
     logging.info("work_item=%s processed yaml=%s", work_item_id, yaml_path)
     return True

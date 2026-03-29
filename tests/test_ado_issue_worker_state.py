@@ -653,6 +653,61 @@ def test_process_work_item_updates_state_after_success(
     assert state_updates == [(790, "In Progress")]
 
 
+def test_process_work_item_refreshes_local_proxy_state_after_success(
+    worker_config: WorkerConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = ProcessedWorkItemStore(worker_config.processed_store_path)
+
+    def successful_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="ok", stderr="")
+
+    def fake_update_work_item_state(
+        *,
+        client: httpx.Client,
+        config: WorkerConfig,
+        auth_header: str,
+        work_item_id: int,
+        state: str,
+    ) -> None:
+        return None
+
+    monkeypatch.setattr("agent_sandbox.ado_issue_worker.subprocess.run", successful_run)
+    monkeypatch.setattr("agent_sandbox.ado_issue_worker.update_work_item_state", fake_update_work_item_state)
+
+    item = {
+        "id": 14382,
+        "title": "Do thing",
+        "description": "Details",
+        "tags": ["truman"],
+        "state": "Committed",
+        "url": "https://example/14382",
+        "updated_date": "2026-03-21T00:00:00Z",
+    }
+
+    with httpx.Client() as client:
+        succeeded = process_work_item(
+            item,
+            config=worker_config,
+            store=store,
+            client=client,
+            auth_header="Basic token",
+        )
+
+    assert succeeded is True
+
+    local_issues_store = JsonStore(worker_config.runtime_dir / "local-issues.json", LocalIssueRecord)
+    records = list(local_issues_store.read_all().values())
+    assert len(records) == 1
+    assert records[0].issue_number == "14382"
+    assert records[0].state == "In Progress"
+    assert records[0].remote_reference is not None
+    assert records[0].remote_reference.last_known_remote_state == "In Progress"
+
+    yaml_payload = yaml.safe_load((worker_config.yaml_output_dir / "work-item-14382.yaml").read_text(encoding="utf-8"))
+    assert yaml_payload["state"] == "In Progress"
+
+
 def test_process_work_item_does_not_update_state_when_setup_fails(
     worker_config: WorkerConfig,
     monkeypatch: pytest.MonkeyPatch,
