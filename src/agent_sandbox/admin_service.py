@@ -1967,11 +1967,12 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
             return None
         if len(matches) == 1:
             return matches[0]
-        sorted_matches = sorted(
-            matches,
-            key=lambda key: issues[key].created_at,
+        sorted_matches = sorted(matches)
+        raise ValueError(
+            "Ambiguous local issue identifier: "
+            f"{normalized}. Matches: {', '.join(sorted_matches)}. "
+            "Use a scoped issue identifier."
         )
-        return sorted_matches[-1]
 
     def list_direct_owned_entity_ids(self, directory_path: str, *, kind: str) -> list[str]:
         return sorted(self._direct_owned_entity_ids(directory_path, kind=kind))
@@ -2626,7 +2627,15 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
         mssql_init_root: str | None = None,
         playwright: bool = False,
     ) -> VmActionResult:
-        issue_key = self._resolve_local_issue_key(issue_identifier)
+        try:
+            issue_key = self._resolve_local_issue_key(issue_identifier)
+        except ValueError as exc:
+            return VmActionResult(
+                success=False,
+                vm_name=f"vm-{issue_identifier}",
+                action="create_issue_vm",
+                message=str(exc),
+            )
         issue = self.local_issue_store.get(issue_key) if issue_key is not None else None
         if issue is None:
             return VmActionResult(
@@ -2955,7 +2964,15 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
         )
 
     def delete_local_issue(self, issue_identifier: str) -> VmActionResult:
-        issue_key = self._resolve_local_issue_key(issue_identifier)
+        try:
+            issue_key = self._resolve_local_issue_key(issue_identifier)
+        except ValueError as exc:
+            return VmActionResult(
+                success=False,
+                vm_name=f"vm-{issue_identifier}",
+                action="delete_local_issue",
+                message=str(exc),
+            )
         issue = self.local_issue_store.get(issue_key) if issue_key is not None else None
         if issue is None:
             return VmActionResult(
