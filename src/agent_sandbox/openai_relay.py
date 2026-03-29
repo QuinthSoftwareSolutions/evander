@@ -1,17 +1,21 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import logging
 import os
+from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import Any
 
 import httpx
 import uvicorn
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
-from starlette.routing import Route
+from starlette.routing import Route, WebSocketRoute
+from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from .bootstrap import load_runtime_gateway_config, resolve_runtime_dir
 from .config import GatewayConfig
@@ -104,11 +108,32 @@ class OpenAIRelay:
                     media_type=upstream_response.headers.get("content-type"),
                 )
 
+        async def websocket_proxy(websocket: WebSocket) -> None:
+            api_key = os.environ.get(relay.config.openai_api_key_env)
+            if not api_key:
+                await websocket.close(code=1011, reason="missing upstream API key")
+                return
+
+            upstream_path = websocket.path_params["path"]
+            upstream_url = relay._upstream_websocket_url(websocket, upstream_path)
+            headers = {
+                key: value
+                for key, value in websocket.headers.items()
+                if key.lower() not in HOP_BY_HOP_HEADERS
+                and not key.lower().startswith("sec-websocket-")
+            }
+            headers["authorization"] = f"Bearer {api_key}"
+
+            async with relay._connect_upstream_websocket(upstream_url, headers=headers) as upstream:
+                await websocket.accept()
+                await relay._proxy_websocket_traffic(websocket, upstream)
+
         return Starlette(
             debug=False,
             routes=[
                 Route("/healthz", health, methods=["GET"]),
                 Route("/v1/{path:path}", proxy, methods=["GET", "POST", "PUT", "PATCH", "DELETE"]),
+                WebSocketRoute("/v1/{path:path}", websocket_proxy),
             ],
         )
 
@@ -204,6 +229,102 @@ class OpenAIRelay:
             for key, value in response.headers.items()
             if key.lower() not in HOP_BY_HOP_HEADERS
         }
+
+    @staticmethod
+    def _websocket_base_url(base_url: str) -> str:
+        if base_url.startswith("https://"):
+            return f"wss://{base_url[len('https://'):]}"
+        if base_url.startswith("http://"):
+            return f"ws://{base_url[len('http://'):]}"
+        return base_url
+
+    def _upstream_websocket_url(self, websocket: WebSocket, upstream_path: str) -> str:
+        base_url = self._websocket_base_url(self.config.openai_api_base_url.rstrip("/"))
+        upstream_url = f"{base_url}/{upstream_path}"
+        if websocket.url.query:
+            upstream_url = f"{upstream_url}?{websocket.url.query}"
+        return upstream_url
+
+    @asynccontextmanager
+    async def _connect_upstream_websocket(
+        self, upstream_url: str, *, headers: dict[str, str]
+    ) -> AsyncIterator[Any]:
+        try:
+            import websockets
+        except ModuleNotFoundError as exc:  # pragma: no cover - exercised via integration/runtime
+            raise RuntimeError(
+                "websocket relay support requires the 'websockets' package to be installed"
+            ) from exc
+
+        async with websockets.connect(
+            upstream_url,
+            additional_headers=headers,
+            open_timeout=self.config.openai_relay_timeout_seconds,
+            close_timeout=self.config.openai_relay_timeout_seconds,
+        ) as upstream:
+            yield upstream
+
+    async def _proxy_websocket_traffic(self, websocket: WebSocket, upstream: Any) -> None:
+        try:
+            from websockets.exceptions import ConnectionClosedOK
+        except ModuleNotFoundError:  # pragma: no cover - guarded earlier
+            ConnectionClosedOK = ()  # type: ignore[assignment]
+
+        async def safe_close_client(code: int = 1000, reason: str = "") -> None:
+            try:
+                await websocket.close(code=code, reason=reason)
+            except RuntimeError:
+                # Starlette/Uvicorn raises if the websocket is already closing/closed.
+                return
+
+        async def client_to_upstream() -> None:
+            while True:
+                try:
+                    message = await websocket.receive()
+                except WebSocketDisconnect:
+                    await upstream.close()
+                    return
+
+                message_type = message["type"]
+                if message_type == "websocket.disconnect":
+                    await upstream.close()
+                    return
+                if message_type != "websocket.receive":
+                    continue
+                if message.get("text") is not None:
+                    await upstream.send(message["text"])
+                    continue
+                if message.get("bytes") is not None:
+                    await upstream.send(message["bytes"])
+
+        async def upstream_to_client() -> None:
+            while True:
+                try:
+                    message = await upstream.recv()
+                except Exception as exc:
+                    if isinstance(exc, ConnectionClosedOK):
+                        await safe_close_client(code=1000)
+                        return
+                    await safe_close_client(code=1011)
+                    return
+
+                if isinstance(message, bytes):
+                    await websocket.send_bytes(message)
+                else:
+                    await websocket.send_text(message)
+
+        tasks = [
+            asyncio.create_task(client_to_upstream()),
+            asyncio.create_task(upstream_to_client()),
+        ]
+        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+        for task in done:
+            exc = task.exception()
+            if exc is not None and not isinstance(exc, WebSocketDisconnect):
+                raise exc
 
 
 def create_app(config: GatewayConfig, transport: httpx.AsyncBaseTransport | None = None) -> Starlette:

@@ -194,8 +194,11 @@ class IssueOrchestratorWorker:
         approved_issue_cap = int(automation.get("approved_issue_cap") or 10)
 
         prelude = (
-            "Before acting, call the list_issues tool to inspect the current issues in this directory "
-            "and avoid duplicating existing work. Work only within the repository already cloned in the VM."
+            f"Before acting, call the list_issues MCP tool with session_id={session.session_id} to inspect the current "
+            "host-backed issues in this directory and avoid duplicating existing work. If you create an issue, you must "
+            f"use the create_local_issue MCP tool with session_id={session.session_id}. Do not use the local CLI to list "
+            "or create issues. Do not write issue files directly under runtime/. Work only within the repository already "
+            "cloned in the VM."
         )
 
         if role in originator_roles:
@@ -226,6 +229,7 @@ class IssueOrchestratorWorker:
                 return None
             return (
                 f"{prelude} Process all issues currently in state New. For each one, evaluate it against the current repo. "
+                f"Call approve_issue or reject_issue with session_id={session.session_id}. "
                 "If it is underspecified, low-value, or factually wrong, reject it with a concise reason. "
                 "If it is worthwhile, approve it with a priority of P0, P1, P2, or P3."
             )
@@ -234,9 +238,9 @@ class IssueOrchestratorWorker:
             if committed_count <= 0:
                 return None
             return (
-                "Claim work by calling claim_next_issue first. If no issue is returned, stop. "
+                f"Claim work by calling claim_next_issue with session_id={session.session_id} first. If no issue is returned, stop. "
                 "If an issue is returned, work only on that issue. After implementing it and pushing your changes, "
-                "call complete_issue with a short completion summary."
+                f"call complete_issue with session_id={session.session_id} and a short completion summary."
             )
 
         return None

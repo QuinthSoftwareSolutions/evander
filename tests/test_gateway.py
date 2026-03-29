@@ -71,9 +71,13 @@ def test_resolve_session_id_from_context_prefers_explicit_value() -> None:
 
 
 def test_resolve_session_id_from_context_reads_query_param_then_header() -> None:
+    transport_map: dict[str, str] = {}
     query_ctx = SimpleNamespace(
         request_context=SimpleNamespace(
-            request=SimpleNamespace(query_params={"session_id": "query-session"}, headers={})
+            request=SimpleNamespace(
+                query_params={"session_id": "query-session"},
+                headers={"mcp-session-id": "transport-1"},
+            )
         )
     )
     header_ctx = SimpleNamespace(
@@ -81,9 +85,20 @@ def test_resolve_session_id_from_context_reads_query_param_then_header() -> None
             request=SimpleNamespace(query_params={}, headers={"x-agent-sandbox-session-id": "header-session"})
         )
     )
+    mapped_ctx = SimpleNamespace(
+        request_context=SimpleNamespace(
+            request=SimpleNamespace(query_params={}, headers={"mcp-session-id": "transport-1"})
+        )
+    )
 
-    assert _resolve_session_id_from_context(None, query_ctx) == "query-session"
+    assert (
+        _resolve_session_id_from_context(None, query_ctx, transport_session_map=transport_map) == "query-session"
+    )
+    assert transport_map == {"transport-1": "query-session"}
     assert _resolve_session_id_from_context(None, header_ctx) == "header-session"
+    assert (
+        _resolve_session_id_from_context(None, mapped_ctx, transport_session_map=transport_map) == "query-session"
+    )
 
 
 def test_resolve_session_id_from_context_requires_value() -> None:

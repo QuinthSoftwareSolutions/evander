@@ -1,8 +1,12 @@
+import asyncio
 import gzip
 import os
+import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import httpx
+import pytest
 from starlette.testclient import TestClient
 
 from agent_sandbox.config import GatewayConfig
@@ -137,6 +141,31 @@ class _CleanStream(httpx.AsyncByteStream):
         return None
 
 
+class _FakeUpstreamWebSocket:
+    def __init__(self) -> None:
+        self.sent_messages: list[str | bytes] = []
+        self.received_messages: list[str | bytes] = []
+        self._recv_queue: asyncio.Queue[str | bytes | None] = asyncio.Queue()
+        self.closed = False
+
+    async def send(self, message: str | bytes) -> None:
+        self.sent_messages.append(message)
+
+    async def recv(self) -> str | bytes:
+        message = await self._recv_queue.get()
+        if message is None:
+            raise RuntimeError("upstream closed")
+        self.received_messages.append(message)
+        return message
+
+    async def push(self, message: str | bytes) -> None:
+        await self._recv_queue.put(message)
+
+    async def close(self) -> None:
+        self.closed = True
+        await self._recv_queue.put(None)
+
+
 def test_relay_stream_transport_errors_are_suppressed_with_warning(
     tmp_path: Path, caplog
 ) -> None:
@@ -207,3 +236,63 @@ def test_relay_stream_clean_end_logs_completion(tmp_path: Path, caplog) -> None:
     assert "relay_stream_request_start" in caplog.text
     assert "relay_stream_upstream_response" in caplog.text
     assert "relay_stream_completed" in caplog.text
+
+
+def test_relay_proxies_websocket_messages_and_injects_auth(tmp_path: Path) -> None:
+    captured: dict[str, object] = {}
+    upstream = _FakeUpstreamWebSocket()
+    config = make_config(tmp_path)
+    relay = OpenAIRelay(config)
+
+    @asynccontextmanager
+    async def fake_connect(url: str, *, headers: dict[str, str]):
+        captured["url"] = url
+        captured["headers"] = headers
+        yield upstream
+
+    relay._connect_upstream_websocket = fake_connect  # type: ignore[method-assign]
+    app = relay.create_app()
+    client = TestClient(app)
+    os.environ["OPENAI_API_KEY"] = "test-key"
+
+    with client.websocket_connect("/v1/responses") as websocket:
+        websocket.send_text("hello upstream")
+        deadline = time.time() + 1.0
+        while time.time() < deadline and upstream.sent_messages != ["hello upstream"]:
+            time.sleep(0.01)
+        assert upstream.sent_messages == ["hello upstream"]
+
+        asyncio.run(upstream.push('{"id":"resp_1"}'))
+        assert websocket.receive_text() == '{"id":"resp_1"}'
+
+    assert upstream.closed
+    assert captured["url"] == "wss://api.openai.com/v1/responses"
+    headers = captured["headers"]
+    assert isinstance(headers, dict)
+    assert headers["authorization"] == "Bearer test-key"
+    assert all(not key.lower().startswith("sec-websocket-") for key in headers)
+
+
+def test_relay_treats_clean_upstream_websocket_close_as_normal(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    relay = OpenAIRelay(config)
+    client_messages: list[dict[str, object]] = []
+
+    class DummyClientWebSocket:
+        async def receive(self):
+            await asyncio.sleep(10)
+
+        async def close(self, code: int = 1000, reason: str = "") -> None:
+            client_messages.append({"code": code, "reason": reason})
+
+    class DummyUpstream:
+        async def recv(self):
+            from websockets.exceptions import ConnectionClosedOK
+
+            raise ConnectionClosedOK(None, None)
+
+    async def run_case() -> None:
+        await relay._proxy_websocket_traffic(DummyClientWebSocket(), DummyUpstream())
+
+    asyncio.run(run_case())
+    assert client_messages == [{"code": 1000, "reason": ""}]
