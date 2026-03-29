@@ -1515,6 +1515,25 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
             message=f"Deleted session {session_id}",
         )
 
+    def set_session_allowed_tools(self, target: str, allowed_tools: list[str | ToolName]) -> SessionActionResult:
+        session_id, manifest = _resolve_session_target(target, self.runtime.sessions.read_all())
+        normalized_tools: list[ToolName] = []
+        seen: set[ToolName] = set()
+        for tool in allowed_tools:
+            normalized_tool = tool if isinstance(tool, ToolName) else ToolName(str(tool).strip())
+            if normalized_tool in seen:
+                continue
+            seen.add(normalized_tool)
+            normalized_tools.append(normalized_tool)
+        manifest.allowed_tools = normalized_tools
+        self.runtime.sessions.put(session_id, manifest)
+        return SessionActionResult(
+            success=True,
+            session_id=session_id,
+            action="set_session_allowed_tools",
+            message=f"Updated allowed tools for session {session_id}",
+        )
+
     def list_vms(
         self,
         *,
