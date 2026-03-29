@@ -538,6 +538,80 @@ def test_reject_issue_sets_closed_state_and_reason(tmp_path: Path, monkeypatch: 
     assert result["issue_number"] == "42"
 
 
+def test_commit_issue_sets_committed_state_and_reason(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    context = make_context(tmp_path)
+    context.sessions.put(
+        "session-1",
+        SessionManifest(
+            session_id="session-1",
+            directory_path="root/team-a",
+            allowed_tools=[ToolName.COMMIT_ISSUE],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    captured: dict[str, object] = {}
+
+    class StubAdminService:
+        def __init__(self, runtime_dir: Path) -> None:
+            captured["runtime_dir"] = runtime_dir
+
+        def update_issue(
+            self,
+            issue_id: str,
+            *,
+            state: str | None = None,
+            fields: dict[str, object] | None = None,
+            sync_proxy_cache: bool = True,  # noqa: ARG002
+        ) -> dict[str, object]:
+            captured["payload"] = {
+                "issue_id": issue_id,
+                "state": state,
+                "fields": fields,
+            }
+            return {"issue_number": issue_id, "source_type": "local", "updated": True}
+
+    monkeypatch.setattr("agent_sandbox.gateway.AdminService", StubAdminService)
+    server = create_server(context)
+
+    result = call_tool(
+        server,
+        "commit_issue",
+        {"session_id": "session-1", "issue_id": "42", "reason": "Implementation has started"},
+    )
+
+    assert captured["runtime_dir"] == context.config.runtime_dir
+    assert captured["payload"] == {
+        "issue_id": "42",
+        "state": "Committed",
+        "fields": {"Reason": "Implementation has started"},
+    }
+    assert result["issue_number"] == "42"
+
+
+def test_commit_issue_requires_tool_permission(tmp_path: Path) -> None:
+    context = make_context(tmp_path)
+    context.sessions.put(
+        "session-1",
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    server = create_server(context)
+
+    with pytest.raises(ToolError, match="not allowed"):
+        asyncio.run(
+            server.call_tool(
+                "commit_issue",
+                {
+                    "session_id": "session-1",
+                    "issue_id": "42",
+                },
+            )
+        )
+
+
 def test_claim_next_issue_passes_through_backend_payload(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     context = make_context(tmp_path)
     context.sessions.put(
@@ -723,6 +797,96 @@ def test_complete_issue_requires_tool_permission(tmp_path: Path) -> None:
                 },
             )
         )
+
+
+def test_get_agent_status_maps_backend_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    context = make_context(tmp_path)
+    context.sessions.put(
+        "session-1",
+        SessionManifest(
+            session_id="session-1",
+            vm_id="vm-123",
+            allowed_tools=[ToolName.GET_AGENT_STATUS],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    captured: dict[str, object] = {}
+
+    class StubAdminService:
+        def __init__(self, runtime_dir: Path) -> None:
+            captured["runtime_dir"] = runtime_dir
+
+        def list_vms(self, *, include_inactive: bool, vm_user: str) -> list[SimpleNamespace]:
+            captured["list_args"] = {"include_inactive": include_inactive, "vm_user": vm_user}
+            return [
+                SimpleNamespace(
+                    vm_name="vm-123",
+                    agent_state="running",
+                    libvirt_state="running",
+                    ip_address="10.0.0.12",
+                    agent_repo_names=["repo-a"],
+                    last_state_update_at=datetime(2026, 3, 29, 12, 0, tzinfo=UTC),
+                )
+            ]
+
+    monkeypatch.setattr("agent_sandbox.gateway.AdminService", StubAdminService)
+    server = create_server(context)
+
+    result = call_tool(server, "get_agent_status", {"session_id": "session-1", "vm_name": "vm-123"})
+
+    assert captured["runtime_dir"] == context.config.runtime_dir
+    assert captured["list_args"] == {"include_inactive": True, "vm_user": "agent"}
+    assert result["status"] == "active"
+    assert result["agent_state"] == "running"
+    assert result["last_state_update_at"] == "2026-03-29T12:00:00+00:00"
+
+
+def test_get_agent_logs_returns_tail_from_service(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    context = make_context(tmp_path)
+    context.sessions.put(
+        "session-1",
+        SessionManifest(
+            session_id="session-1",
+            vm_id="vm-123",
+            allowed_tools=[ToolName.GET_AGENT_LOGS],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    captured: dict[str, object] = {}
+
+    class StubAdminService:
+        def __init__(self, runtime_dir: Path) -> None:
+            captured["runtime_dir"] = runtime_dir
+
+        def get_agent_log_snapshot(
+            self, target: str, *, lines: int, repo_name: str | None, vm_user: str
+        ) -> str:
+            captured["payload"] = {
+                "target": target,
+                "lines": lines,
+                "repo_name": repo_name,
+                "vm_user": vm_user,
+            }
+            return "log-line-1\nlog-line-2"
+
+    monkeypatch.setattr("agent_sandbox.gateway.AdminService", StubAdminService)
+    server = create_server(context)
+
+    result = call_tool(
+        server,
+        "get_agent_logs",
+        {"session_id": "session-1", "vm_name": "vm-123", "lines": 20, "repo_name": "repo-a"},
+    )
+
+    assert captured["runtime_dir"] == context.config.runtime_dir
+    assert captured["payload"] == {
+        "target": "vm-123",
+        "lines": 20,
+        "repo_name": "repo-a",
+        "vm_user": "agent",
+    }
+    assert result["lines"] == 20
+    assert result["log"] == "log-line-1\nlog-line-2"
 
 
 def test_create_server_uses_configured_host_and_port(tmp_path: Path) -> None:
