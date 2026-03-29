@@ -916,6 +916,95 @@ def test_update_issue_accepts_approved_state(tmp_path: Path) -> None:
     assert stored.metadata["fields"]["Priority"] == "P1"
 
 
+def test_issue_actions_reject_ambiguous_bare_number_across_directories(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    created = service.create_directory_child("root", "team")
+    assert created.ok is True and created.data is not None
+    team_path = created.data.details.directory.path
+
+    root_yaml = tmp_path / "root-issue.yaml"
+    root_yaml.write_text("issue_number: 7\ntitle: Root issue\nbody: Root body\n", encoding="utf-8")
+    team_yaml = tmp_path / "team-issue.yaml"
+    team_yaml.write_text("issue_number: 7\ntitle: Team issue\nbody: Team body\n", encoding="utf-8")
+
+    root_issue = service.create_local_issue(yaml_path=str(root_yaml), directory_path="root")
+    team_issue = service.create_local_issue(yaml_path=str(team_yaml), directory_path=team_path)
+
+    with pytest.raises(ValueError, match=r"Ambiguous local issue identifier: 7\."):
+        service.read_issue("7")
+    with pytest.raises(ValueError, match=r"Ambiguous local issue identifier: 7\."):
+        service.update_issue("7", state="Completed")
+    with pytest.raises(ValueError, match=r"Ambiguous local issue identifier: 7\."):
+        service.update_local_issue(
+            "7",
+            title="Edited through bare number",
+            body="Edited body",
+            state="In Progress",
+        )
+
+    root_read = service.read_issue(root_issue.issue_id)
+    team_updated = service.update_local_issue(
+        team_issue.issue_id,
+        title="Edited team issue",
+        body="Updated team body",
+        state="In Progress",
+    )
+
+    assert root_read["title"] == "Root issue"
+    assert team_updated.issue_id == team_issue.issue_id
+    assert service.local_issue_store.get(root_issue.issue_id).title == "Root issue"
+
+
+def test_vm_and_delete_actions_reject_ambiguous_bare_number_across_directories(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    created = service.create_directory_child("root", "team")
+    assert created.ok is True and created.data is not None
+    team_path = created.data.details.directory.path
+
+    root_yaml = tmp_path / "root-issue.yaml"
+    root_yaml.write_text("issue_number: 7\ntitle: Root issue\nbody: Root body\n", encoding="utf-8")
+    team_yaml = tmp_path / "team-issue.yaml"
+    team_yaml.write_text("issue_number: 7\ntitle: Team issue\nbody: Team body\n", encoding="utf-8")
+
+    service.create_local_issue(yaml_path=str(root_yaml), directory_path="root")
+    service.create_local_issue(yaml_path=str(team_yaml), directory_path=team_path)
+
+    create_result = service.create_issue_vm_from_local_issue("7", start_agent=False)
+    delete_result = service.delete_local_issue("7")
+
+    assert create_result.success is False
+    assert delete_result.success is False
+    assert create_result.message.startswith("Ambiguous local issue identifier: 7.")
+    assert delete_result.message.startswith("Ambiguous local issue identifier: 7.")
+
+
+def test_create_issue_vm_rejects_ambiguous_bare_local_issue_number_in_primary_path(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    created = service.create_directory_child("root", "team")
+    assert created.ok is True and created.data is not None
+    team_path = created.data.details.directory.path
+
+    root_yaml = tmp_path / "root-issue.yaml"
+    root_yaml.write_text("issue_number: 7\ntitle: Root issue\nbody: Root body\n", encoding="utf-8")
+    team_yaml = tmp_path / "team-issue.yaml"
+    team_yaml.write_text("issue_number: 7\ntitle: Team issue\nbody: Team body\n", encoding="utf-8")
+
+    service.create_local_issue(yaml_path=str(root_yaml), directory_path="root")
+    service.create_local_issue(yaml_path=str(team_yaml), directory_path=team_path)
+
+    def _fail_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        raise AssertionError("create_issue_vm should reject ambiguous identifiers before invoking setup")
+
+    monkeypatch.setattr("agent_sandbox.admin_service.subprocess.run", _fail_run)
+
+    result = service.create_issue_vm(issue="7", start_agent=False)
+
+    assert result.success is False
+    assert result.message.startswith("Ambiguous local issue identifier: 7.")
+
+
 def test_claim_next_issue_prefers_highest_priority_committed_issue(tmp_path: Path) -> None:
     service = AdminService(write_config(tmp_path))
     low = service.create_local_issue(title="Low", body="x")
