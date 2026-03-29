@@ -2574,38 +2574,54 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
         )
         self.runtime.sessions.put(resolved_session_id, manifest)
 
-        setup_script = Path(__file__).resolve().parents[2] / "scripts" / "setup_issue_vm.sh"
-        root_dir = Path(__file__).resolve().parents[2]
-        vm_defaults = self._resolve_vm_defaults(normalized_directory_path)
-        issue_setup = self._resolve_issue_setup(normalized_directory_path, root_dir=root_dir)
-        cmd, run_env = self._build_setup_issue_vm_invocation(
-            setup_script=setup_script,
-            issue=issue_input,
-            session_id=resolved_session_id,
-            vm_user=vm_user,
-            start_agent=start_agent,
-            python=python,
-            dotnet=dotnet,
-            nuget=nuget,
-            mssql=mssql,
-            mssql_init_root=mssql_init_root,
-            playwright=playwright,
-            frontend_deps=frontend_deps,
-            frontend_host_checkout=frontend_host_checkout,
-            frontend_install_roots=frontend_install_roots,
-            repo_source=repo_source,
-            vm_defaults=vm_defaults,
-            issue_setup=issue_setup,
-        )
-        completed = _run_subprocess(cmd, capture_output=True, text=True, env=run_env)
-        message = (completed.stdout or completed.stderr or "").strip()
-        if completed.returncode != 0:
+        def _issue_vm_failure(message: str) -> VmActionResult:
+            preserved_vm = _dominfo_field(resolved_vm_name, "State") is not None
+            if not preserved_vm:
+                self.runtime.sessions.delete(resolved_session_id)
+            detail = message
+            if preserved_vm:
+                detail = (
+                    f"{detail}\n"
+                    f"VM {resolved_vm_name} and session {resolved_session_id} were preserved for inspection."
+                )
             return VmActionResult(
                 success=False,
                 vm_name=resolved_vm_name,
                 action="create_issue_vm",
-                message=message or f"setup_issue_vm.sh exited with code {completed.returncode}",
+                message=detail,
             )
+
+        try:
+            setup_script = Path(__file__).resolve().parents[2] / "scripts" / "setup_issue_vm.sh"
+            root_dir = Path(__file__).resolve().parents[2]
+            vm_defaults = self._resolve_vm_defaults(normalized_directory_path)
+            issue_setup = self._resolve_issue_setup(normalized_directory_path, root_dir=root_dir)
+            cmd, run_env = self._build_setup_issue_vm_invocation(
+                setup_script=setup_script,
+                issue=issue_input,
+                session_id=resolved_session_id,
+                vm_user=vm_user,
+                start_agent=start_agent,
+                python=python,
+                dotnet=dotnet,
+                nuget=nuget,
+                mssql=mssql,
+                mssql_init_root=mssql_init_root,
+                playwright=playwright,
+                frontend_deps=frontend_deps,
+                frontend_host_checkout=frontend_host_checkout,
+                frontend_install_roots=frontend_install_roots,
+                repo_source=repo_source,
+                vm_defaults=vm_defaults,
+                issue_setup=issue_setup,
+            )
+            completed = _run_subprocess(cmd, capture_output=True, text=True, env=run_env)
+        except Exception as exc:
+            return _issue_vm_failure(str(exc) or f"Failed to create VM {resolved_vm_name}")
+
+        message = (completed.stdout or completed.stderr or "").strip()
+        if completed.returncode != 0:
+            return _issue_vm_failure(message or f"setup_issue_vm.sh exited with code {completed.returncode}")
         return VmActionResult(
             success=True,
             vm_name=resolved_vm_name,

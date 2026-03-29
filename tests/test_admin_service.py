@@ -581,6 +581,26 @@ def test_create_issue_vm_never_uses_pat_secret_as_env_var_name(tmp_path: Path, m
     assert captured_env["AGENT_SANDBOX_AZURE_DEVOPS_PR_PAT_ENV"] == "AZURE_DEVOPS_PR_PAT"
 
 
+def test_create_issue_vm_deletes_session_when_setup_fails_before_vm_exists(tmp_path: Path, monkeypatch: Any) -> None:
+    service = AdminService(write_config(tmp_path))
+    issue = service.create_local_issue(title="Issue VM", body="create and fail")
+    monkeypatch.setattr("agent_sandbox.admin_service._dominfo_field", lambda vm_name, field_name: None)
+    monkeypatch.setattr(
+        "agent_sandbox.admin_service._run_subprocess",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args=args[0], returncode=17, stdout="", stderr="boom"),
+    )
+
+    result = service.create_issue_vm(
+        issue=issue.issue_number,
+        session_id="issue-1-session",
+        start_agent=False,
+    )
+
+    assert result.success is False
+    assert result.message == "boom"
+    assert service.runtime.sessions.get("issue-1-session") is None
+
+
 def test_admin_service_rejects_directory_edits_when_feature_flag_disabled(tmp_path: Path) -> None:
     service = AdminService(write_config(tmp_path))
 
