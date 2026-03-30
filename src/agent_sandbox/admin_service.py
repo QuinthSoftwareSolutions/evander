@@ -39,6 +39,10 @@ from .provider_config import ProviderConfigResolver
 from .issue_service import IssueService
 from .vm_defaults_config import EffectiveVmDefaultsConfig, VmDefaultsConfigResolver
 from .models import (
+    ApprovalDecisionRecord,
+    ApprovalQueueHealth,
+    ApprovalRequest,
+    ApprovalStatus,
     DirectoryPath,
     LocalIssueRecord,
     RemoteIssueReference,
@@ -74,6 +78,22 @@ _WORKER_GLOBAL_CONFIG_MODELS: dict[str, type[BaseModel]] = {
 ISSUE_STATES: tuple[str, ...] = ("New", "Approved", "Committed", "In Progress", "Completed", "Closed")
 _ISSUE_STATE_SET = set(ISSUE_STATES)
 _ISSUE_PRIORITY_ORDER: dict[str, int] = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
+_APPROVAL_STATUS_ORDER: dict[ApprovalStatus, int] = {
+    ApprovalStatus.PENDING: 0,
+    ApprovalStatus.EXPIRED: 1,
+    ApprovalStatus.DENIED: 2,
+    ApprovalStatus.APPROVED: 3,
+}
+_SENSITIVE_PAYLOAD_MARKERS: tuple[str, ...] = (
+    "token",
+    "secret",
+    "password",
+    "pat",
+    "authorization",
+    "cookie",
+    "private_key",
+    "ssh_key",
+)
 
 
 class EffectiveIssueSetupConfig(BaseModel):
@@ -152,6 +172,21 @@ def _issue_number_sort_key(issue: LocalIssueRecord) -> tuple[int, int | str, str
     if normalized.isdigit():
         return (0, int(normalized), issue.issue_id)
     return (1, normalized, issue.issue_id)
+
+
+def _approval_sort_key(request: ApprovalRequest) -> tuple[int, datetime, str]:
+    return (_APPROVAL_STATUS_ORDER[request.status], request.created_at, request.request_id)
+
+
+def _redact_sensitive_payload(value: Any, *, key_name: str | None = None) -> Any:
+    normalized_key = (key_name or "").strip().lower()
+    if normalized_key and any(marker in normalized_key for marker in _SENSITIVE_PAYLOAD_MARKERS):
+        return "<redacted>"
+    if isinstance(value, dict):
+        return {str(key): _redact_sensitive_payload(item, key_name=str(key)) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_redact_sensitive_payload(item) for item in value]
+    return value
 
 
 def _extract_issue_number(value: str | None) -> str | None:
@@ -1953,6 +1988,218 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
         if direct_only or directory_path is not None:
             return [issue for issue in issues if issue.directory_path == normalized_directory_path]
         return issues
+
+    def _refresh_approval_request(self, request: ApprovalRequest) -> ApprovalRequest:
+        session = self.runtime.sessions.get(request.session_id)
+        mutated = False
+        if not request.directory_path and session is not None:
+            request.directory_path = session.directory_path
+            mutated = True
+        if request.vm_id is None and session is not None and session.vm_id:
+            request.vm_id = session.vm_id
+            mutated = True
+        if not request.tool_name:
+            request.tool_name = request.action_type
+            mutated = True
+        if request.status in {ApprovalStatus.PENDING, ApprovalStatus.APPROVED} and request.expires_at <= _utc_now():
+            request.status = ApprovalStatus.EXPIRED
+            mutated = True
+        if mutated:
+            self.runtime.approvals.put(request.request_id, request)
+        return request
+
+    def _approval_matches_filters(
+        self,
+        request: ApprovalRequest,
+        *,
+        statuses: set[ApprovalStatus] | None = None,
+        directory_path: str | None = None,
+        direct_only: bool = False,
+        session_id: str | None = None,
+        vm_id: str | None = None,
+        tool_name: str | None = None,
+        min_age_seconds: int | None = None,
+    ) -> bool:
+        if statuses is not None and request.status not in statuses:
+            return False
+        if directory_path is not None:
+            normalized_directory_path = self._normalize_directory_path(directory_path)
+            request_directory_path = self._normalize_directory_path(request.directory_path)
+            if direct_only or request_directory_path != normalized_directory_path:
+                if request_directory_path != normalized_directory_path:
+                    return False
+        if session_id is not None and request.session_id != session_id.strip():
+            return False
+        if vm_id is not None and (request.vm_id or "") != vm_id.strip():
+            return False
+        if tool_name is not None and (request.tool_name or request.action_type) != tool_name.strip():
+            return False
+        if min_age_seconds is not None:
+            age_seconds = int((_utc_now() - request.created_at).total_seconds())
+            if age_seconds < min_age_seconds:
+                return False
+        return True
+
+    def list_approval_requests(
+        self,
+        *,
+        statuses: set[ApprovalStatus] | None = None,
+        directory_path: str | None = None,
+        direct_only: bool = False,
+        session_id: str | None = None,
+        vm_id: str | None = None,
+        tool_name: str | None = None,
+        min_age_seconds: int | None = None,
+    ) -> list[ApprovalRequest]:
+        requests = [
+            self._refresh_approval_request(request)
+            for request in self.runtime.approvals.read_all().values()
+        ]
+        filtered = [
+            request
+            for request in requests
+            if self._approval_matches_filters(
+                request,
+                statuses=statuses,
+                directory_path=directory_path,
+                direct_only=direct_only,
+                session_id=session_id,
+                vm_id=vm_id,
+                tool_name=tool_name,
+                min_age_seconds=min_age_seconds,
+            )
+        ]
+        return sorted(filtered, key=_approval_sort_key)
+
+    def approval_queue_health(
+        self,
+        *,
+        statuses: set[ApprovalStatus] | None = None,
+        directory_path: str | None = None,
+        direct_only: bool = False,
+        session_id: str | None = None,
+        vm_id: str | None = None,
+        tool_name: str | None = None,
+        min_age_seconds: int | None = None,
+    ) -> ApprovalQueueHealth:
+        requests = self.list_approval_requests(
+            statuses=statuses,
+            directory_path=directory_path,
+            direct_only=direct_only,
+            session_id=session_id,
+            vm_id=vm_id,
+            tool_name=tool_name,
+            min_age_seconds=min_age_seconds,
+        )
+        health = ApprovalQueueHealth(total=len(requests))
+        pending_ages: list[int] = []
+        for request in requests:
+            if request.status == ApprovalStatus.PENDING:
+                health.pending += 1
+                pending_ages.append(int((_utc_now() - request.created_at).total_seconds()))
+            elif request.status == ApprovalStatus.APPROVED:
+                health.approved += 1
+            elif request.status == ApprovalStatus.DENIED:
+                health.denied += 1
+            elif request.status == ApprovalStatus.EXPIRED:
+                health.expired += 1
+        if pending_ages:
+            health.oldest_pending_age_seconds = max(pending_ages)
+        return health
+
+    def get_approval_request(self, request_id: str) -> ApprovalRequest:
+        request = self.runtime.approvals.get(request_id)
+        if request is None:
+            raise ValueError(f"Unknown approval request: {request_id}")
+        return self._refresh_approval_request(request)
+
+    def _approval_audit_context(self, request: ApprovalRequest, *, limit: int = 8) -> list[dict[str, Any]]:
+        if not self.config.audit_log_path.exists():
+            return []
+        try:
+            lines = self.config.audit_log_path.read_text(encoding="utf-8").splitlines()
+        except Exception:
+            return []
+        matches: list[dict[str, Any]] = []
+        for raw_line in reversed(lines):
+            try:
+                payload = json.loads(raw_line)
+            except json.JSONDecodeError:
+                continue
+            args_payload = payload.get("args") if isinstance(payload.get("args"), dict) else {}
+            result_payload = payload.get("result") if isinstance(payload.get("result"), dict) else {}
+            if (
+                payload.get("session_id") == request.session_id
+                or args_payload.get("request_id") == request.request_id
+                or result_payload.get("request_id") == request.request_id
+            ):
+                matches.append(payload)
+            if len(matches) >= limit:
+                break
+        matches.reverse()
+        return matches
+
+    def get_approval_review(self, request_id: str) -> dict[str, Any]:
+        request = self.get_approval_request(request_id)
+        age_seconds = int((_utc_now() - request.created_at).total_seconds())
+        expires_in_seconds = int((request.expires_at - _utc_now()).total_seconds())
+        request_payload = request.model_dump(mode="json")
+        request_payload["payload"] = _redact_sensitive_payload(request.payload)
+        return {
+            "request": request_payload,
+            "redacted_payload": request_payload["payload"],
+            "audit_context": self._approval_audit_context(request),
+            "age_seconds": age_seconds,
+            "expires_in_seconds": expires_in_seconds,
+        }
+
+    def decide_approval_request(
+        self,
+        request_id: str,
+        *,
+        approver: str,
+        approve: bool,
+        reason: str,
+    ) -> ApprovalRequest:
+        request = self.get_approval_request(request_id)
+        normalized_approver = approver.strip()
+        normalized_reason = reason.strip()
+        if not normalized_approver:
+            raise ValueError("approver is required")
+        if not normalized_reason:
+            raise ValueError("reason is required")
+        if request.status != ApprovalStatus.PENDING:
+            raise ValueError(f"Approval request {request_id} is not pending")
+        decision_status = ApprovalStatus.APPROVED if approve else ApprovalStatus.DENIED
+        decided_at = _utc_now()
+        request.status = decision_status
+        request.approver = normalized_approver
+        request.decision_at = decided_at
+        request.decision_reason = normalized_reason
+        request.decision_history.append(
+            ApprovalDecisionRecord(
+                status=decision_status,
+                approver=normalized_approver,
+                reason=normalized_reason,
+                decided_at=decided_at,
+            )
+        )
+        self.runtime.approvals.put(request.request_id, request)
+        self.runtime.audit.log_decision(
+            event_type="approval_decision",
+            session_id=request.session_id,
+            vm_id=request.vm_id,
+            decision=request.status.value,
+            reason=normalized_reason,
+            args={
+                "request_id": request.request_id,
+                "tool_name": request.tool_name or request.action_type,
+                "approver": normalized_approver,
+                "payload_digest": request.payload_digest,
+            },
+            result={"status": request.status.value},
+        )
+        return request
 
     def list_actionable_local_issues(
         self,

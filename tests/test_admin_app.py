@@ -273,6 +273,7 @@ def test_update_vm_action_bar_shows_destroy_for_non_issue_vm() -> None:
 
 def test_show_new_vm_dialog_calls_generic_create_vm(monkeypatch) -> None:
     captured: dict[str, object] = {}
+    monkeypatch.setattr(admin_app, "QDialog", SimpleNamespace(DialogCode=SimpleNamespace(Accepted=1)))
 
     class FakeDialog:
         def __init__(self, parent=None) -> None:
@@ -374,6 +375,7 @@ def test_main_window_initializes_worker_splitter(monkeypatch) -> None:
     monkeypatch.setattr(admin_app.MainWindow, "_apply_directory_feature_state", lambda self: None)
     monkeypatch.setattr(admin_app.MainWindow, "_refresh_visible_data", lambda self, manual=False: None)
     monkeypatch.setattr(admin_app.MainWindow, "refresh_issues", lambda self: None)
+    monkeypatch.setattr(admin_app.MainWindow, "refresh_approvals", lambda self: None)
     monkeypatch.setattr(admin_app.MainWindow, "refresh_sessions", lambda self: None)
     monkeypatch.setattr(admin_app.MainWindow, "refresh_configuration", lambda self: None)
     monkeypatch.setattr(admin_app.MainWindow, "refresh_workers", lambda self, manual=False: None)
@@ -429,6 +431,7 @@ def test_handle_action_success_treats_unsuccessful_result_as_failure(monkeypatch
         _update_privilege_status=lambda: refresh_calls.append("status"),
         _refresh_visible_data=lambda manual=False: refresh_calls.append(f"visible:{manual}"),
         refresh_issues=lambda: refresh_calls.append("issues"),
+        refresh_approvals=lambda: refresh_calls.append("approvals"),
         refresh_workers=lambda: refresh_calls.append("workers"),
         _show_action_error_dialog=lambda message: dialog_messages.append(("Action Failed", message)),
     )
@@ -441,7 +444,7 @@ def test_handle_action_success_treats_unsuccessful_result_as_failure(monkeypatch
         "Create VM idea-generator-vm failed: Failed to create VM idea-generator-vm: codex failed"
     ]
     assert dialog_messages == [("Action Failed", "Failed to create VM idea-generator-vm: codex failed")]
-    assert refresh_calls == ["discarded", "status", "visible:True", "issues", "workers"]
+    assert refresh_calls == ["discarded", "status", "visible:True", "issues", "approvals", "workers"]
 
 
 def test_handle_action_failure_uses_scrollable_error_dialog() -> None:

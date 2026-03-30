@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from datetime import UTC, datetime
 from types import UnionType
 from pathlib import Path
 from typing import Any, get_args, get_origin
@@ -23,6 +24,7 @@ from .directory_config import (
     IssueSetupDirectoryConfig,
     PrTemplateDirectoryConfig,
 )
+from .models import ApprovalStatus
 ADMIN_APP_DEFAULT_RUNTIME_DIR = Path("runtime")
 
 try:
@@ -882,6 +884,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self._worker_global_config_worker_id: str | None = None
         self._vm_summaries = []
         self._issue_records = []
+        self._approval_requests = []
         self._active_session_summaries = []
         self._expired_session_summaries = []
         self._worker_summaries = []
@@ -963,6 +966,39 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self.expired_session_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.expired_session_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.expired_session_table.itemSelectionChanged.connect(self._on_expired_session_selection_changed)
+
+        self.approval_table = QTableWidget(0, 8)
+        self.approval_table.setHorizontalHeaderLabels(
+            ["Request", "Status", "Session", "VM", "Tool", "Age", "Expires", "Summary"]
+        )
+        self.approval_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.approval_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.approval_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.approval_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.approval_table.itemSelectionChanged.connect(self._on_approval_selection_changed)
+        self.approval_detail_view = QTextEdit()
+        self.approval_detail_view.setReadOnly(True)
+        self.approval_detail_view.setPlaceholderText(
+            "Select an approval request to review its payload and audit context."
+        )
+        self.approval_health_label = QLabel("No approval data loaded.")
+        self.approval_status_filter = QComboBox()
+        self.approval_status_filter.addItems(["all", "pending", "approved", "denied", "expired"])
+        self.approval_status_filter.currentIndexChanged.connect(self.refresh_approvals)
+        self.approval_session_filter = QLineEdit()
+        self.approval_session_filter.setPlaceholderText("Session filter")
+        self.approval_vm_filter = QLineEdit()
+        self.approval_vm_filter.setPlaceholderText("VM filter")
+        self.approval_tool_filter = QLineEdit()
+        self.approval_tool_filter.setPlaceholderText("Tool filter")
+        self.approval_min_age_minutes = QSpinBox()
+        self.approval_min_age_minutes.setRange(0, 1_000_000)
+        self.approval_min_age_minutes.setSuffix(" min")
+        self.approval_selection_hint = QLabel("No approval selected")
+        self.approval_approve_button = QPushButton("Approve")
+        self.approval_approve_button.clicked.connect(lambda: self.handle_decide_selected_approval(True))
+        self.approval_deny_button = QPushButton("Deny")
+        self.approval_deny_button.clicked.connect(lambda: self.handle_decide_selected_approval(False))
 
         self.log_view = QTextEdit()
         self.log_view.setReadOnly(True)
@@ -1153,6 +1189,36 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         issue_layout.addLayout(issue_toolbar)
         issue_layout.addWidget(self.issue_table)
 
+        approvals_page = QWidget()
+        approvals_layout = QVBoxLayout(approvals_page)
+        approvals_toolbar = QHBoxLayout()
+        refresh_approvals_button = QPushButton("Refresh")
+        _set_standard_icon(refresh_approvals_button, "SP_BrowserReload")
+        refresh_approvals_button.clicked.connect(self.refresh_approvals)
+        approvals_toolbar.addWidget(refresh_approvals_button)
+        approvals_toolbar.addWidget(QLabel("Status"))
+        approvals_toolbar.addWidget(self.approval_status_filter)
+        approvals_toolbar.addWidget(self.approval_session_filter)
+        approvals_toolbar.addWidget(self.approval_vm_filter)
+        approvals_toolbar.addWidget(self.approval_tool_filter)
+        approvals_toolbar.addWidget(QLabel("Min age"))
+        approvals_toolbar.addWidget(self.approval_min_age_minutes)
+        apply_approval_filters_button = QPushButton("Apply")
+        apply_approval_filters_button.clicked.connect(self.refresh_approvals)
+        approvals_toolbar.addWidget(apply_approval_filters_button)
+        approvals_toolbar.addStretch(1)
+        approvals_toolbar.addWidget(self.approval_selection_hint)
+        approvals_toolbar.addWidget(self.approval_approve_button)
+        approvals_toolbar.addWidget(self.approval_deny_button)
+        approvals_layout.addLayout(approvals_toolbar)
+        approvals_layout.addWidget(self.approval_health_label)
+        approval_splitter = QSplitter(Qt.Orientation.Vertical)
+        approval_splitter.addWidget(self.approval_table)
+        approval_splitter.addWidget(self.approval_detail_view)
+        approval_splitter.setStretchFactor(0, 1)
+        approval_splitter.setStretchFactor(1, 1)
+        approvals_layout.addWidget(approval_splitter)
+
         sessions_page = QWidget()
         sessions_layout = QVBoxLayout(sessions_page)
         sessions_toolbar = QHBoxLayout()
@@ -1250,6 +1316,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
 
         self.tabs.addTab(vm_page, "VMs")
         self.tabs.addTab(issue_page, "Issues")
+        self.tabs.addTab(approvals_page, "Approvals")
         self.tabs.addTab(sessions_page, "Sessions")
         self.tabs.addTab(config_page, "Configuration")
         self.tabs.addTab(worker_page, "Workers")
@@ -1259,6 +1326,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self.refresh_timer.setInterval(5000)
         self.refresh_timer.timeout.connect(self._refresh_visible_data)
         self.refresh_timer.timeout.connect(self.refresh_issues)
+        self.refresh_timer.timeout.connect(self.refresh_approvals)
         self.refresh_timer.timeout.connect(self.refresh_sessions)
         self.refresh_timer.start()
 
@@ -1266,11 +1334,13 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self._apply_directory_feature_state()
         self._refresh_visible_data()
         self.refresh_issues()
+        self.refresh_approvals()
         self.refresh_sessions()
         self.refresh_configuration()
         self.refresh_workers()
         self.update_vm_action_bar()
         self.update_issue_action_bar()
+        self.update_approval_action_bar()
         self.update_session_action_bar()
         self.update_worker_action_bar()
         self._update_vm_splitter_layout()
@@ -1311,6 +1381,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             self._update_privilege_status()
             self._refresh_visible_data(manual=True)
             self.refresh_issues()
+            self.refresh_approvals()
             self.refresh_workers()
             self._show_action_error_dialog(message)
             return
@@ -1321,6 +1392,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             on_success(result)
         self._refresh_visible_data(manual=True)
         self.refresh_issues()
+        self.refresh_approvals()
         self.refresh_workers()
 
     def _handle_action_failure(self, label: str, error: str, worker: _ActionWorker) -> None:
@@ -1362,6 +1434,8 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self.refresh_vms(manual=manual)
         if self.tabs.currentWidget() is not None and self.tabs.tabText(self.tabs.currentIndex()) == "Workers":
             self.refresh_workers(manual=manual)
+        if self.tabs.currentWidget() is not None and self.tabs.tabText(self.tabs.currentIndex()) == "Approvals":
+            self.refresh_approvals()
         if self.tabs.currentWidget() is not None and self.tabs.tabText(self.tabs.currentIndex()) == "Configuration":
             self.refresh_configuration()
 
@@ -1369,6 +1443,8 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         current_tab = self.tabs.tabText(self.tabs.currentIndex())
         if current_tab == "Configuration":
             self.refresh_configuration()
+        elif current_tab == "Approvals":
+            self.refresh_approvals()
         elif current_tab == "Workers":
             self.refresh_workers(manual=True)
 
@@ -1635,6 +1711,80 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self.issue_table.blockSignals(False)
         self.update_issue_action_bar()
 
+    def _selected_approval_status_filter(self) -> set[ApprovalStatus] | None:
+        status_text = self.approval_status_filter.currentText().strip().lower()
+        if not status_text or status_text == "all":
+            return None
+        return {ApprovalStatus(status_text)}
+
+    def refresh_approvals(self) -> None:
+        min_age_minutes = self.approval_min_age_minutes.value()
+        min_age_seconds = min_age_minutes * 60 if min_age_minutes > 0 else None
+        self._start_refresh(
+            "approvals",
+            lambda: (
+                self.service.approval_queue_health(
+                    statuses=self._selected_approval_status_filter(),
+                    directory_path=self._selected_directory_path,
+                    direct_only=True,
+                    session_id=self.approval_session_filter.text().strip() or None,
+                    vm_id=self.approval_vm_filter.text().strip() or None,
+                    tool_name=self.approval_tool_filter.text().strip() or None,
+                    min_age_seconds=min_age_seconds,
+                ),
+                self.service.list_approval_requests(
+                    statuses=self._selected_approval_status_filter(),
+                    directory_path=self._selected_directory_path,
+                    direct_only=True,
+                    session_id=self.approval_session_filter.text().strip() or None,
+                    vm_id=self.approval_vm_filter.text().strip() or None,
+                    tool_name=self.approval_tool_filter.text().strip() or None,
+                    min_age_seconds=min_age_seconds,
+                ),
+            ),
+            self._apply_approval_refresh,
+        )
+
+    def _apply_approval_refresh(self, result) -> None:
+        health, approvals = result
+        previously_selected_request = None
+        current_request = self.selected_approval_request()
+        if current_request is not None:
+            previously_selected_request = current_request.request_id
+        self._approval_requests = approvals
+        self.approval_health_label.setText(
+            "Queue "
+            f"total={health.total} pending={health.pending} approved={health.approved} "
+            f"denied={health.denied} expired={health.expired} "
+            f"oldest_pending_age_seconds={health.oldest_pending_age_seconds}"
+        )
+        self.approval_table.blockSignals(True)
+        self.approval_table.clearSelection()
+        self.approval_table.setRowCount(len(approvals))
+        for row, request in enumerate(approvals):
+            age_seconds = int((datetime.now(UTC) - request.created_at).total_seconds())
+            expires_in_seconds = int((request.expires_at - datetime.now(UTC)).total_seconds())
+            self.approval_table.setItem(row, 0, QTableWidgetItem(request.request_id))
+            self.approval_table.setItem(row, 1, QTableWidgetItem(request.status.value))
+            self.approval_table.setItem(row, 2, QTableWidgetItem(request.session_id))
+            self.approval_table.setItem(row, 3, QTableWidgetItem(request.vm_id or ""))
+            self.approval_table.setItem(row, 4, QTableWidgetItem(request.tool_name or request.action_type))
+            self.approval_table.setItem(row, 5, QTableWidgetItem(f"{age_seconds}s"))
+            self.approval_table.setItem(row, 6, QTableWidgetItem(f"{expires_in_seconds}s"))
+            self.approval_table.setItem(row, 7, QTableWidgetItem(request.human_summary))
+        if previously_selected_request:
+            restored = False
+            for row, request in enumerate(approvals):
+                if request.request_id == previously_selected_request:
+                    self.approval_table.selectRow(row)
+                    restored = True
+                    break
+            if not restored:
+                self.approval_table.setCurrentCell(-1, -1)
+        self.approval_table.blockSignals(False)
+        self.update_approval_action_bar()
+        self.refresh_selected_approval_detail()
+
     def refresh_workers(self, *, manual: bool = False) -> None:
         self._start_refresh("workers", self.service.list_background_workers, lambda workers: self._apply_worker_refresh(workers, refresh_log=manual))
 
@@ -1733,6 +1883,12 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             return None
         return self._issue_records[row]
 
+    def selected_approval_request(self):
+        row = self.approval_table.currentRow()
+        if row < 0 or row >= len(self._approval_requests):
+            return None
+        return self._approval_requests[row]
+
     def _show_read_only_text_dialog(self, *, title: str, text: str) -> None:
         ReadOnlyTextDialog(title=title, text=text, parent=self).exec()
 
@@ -1752,11 +1908,27 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self.view_issue_yaml_button.show()
         self.delete_issue_button.show()
 
+    def update_approval_action_bar(self) -> None:
+        request = self.selected_approval_request()
+        if request is None:
+            self.approval_selection_hint.setText("No approval selected")
+            self.approval_approve_button.hide()
+            self.approval_deny_button.hide()
+            return
+        self.approval_selection_hint.setText(f"Selected: {request.request_id}")
+        is_pending = request.status == ApprovalStatus.PENDING
+        self.approval_approve_button.setVisible(is_pending)
+        self.approval_deny_button.setVisible(is_pending)
+
     def _on_issue_selection_changed(self) -> None:
         self.update_issue_action_bar()
 
     def _on_issue_activated(self, _item) -> None:
         self.handle_view_selected_issue_yaml()
+
+    def _on_approval_selection_changed(self) -> None:
+        self.update_approval_action_bar()
+        self.refresh_selected_approval_detail()
 
     def handle_create_vm_selected_issue(self) -> None:
         issue = self.selected_issue_record()
@@ -1799,6 +1971,46 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         if issue is None:
             return
         self.confirm_delete_issue(issue.issue_number)
+
+    def refresh_selected_approval_detail(self) -> None:
+        request = self.selected_approval_request()
+        if request is None:
+            _set_text_preserving_scroll(self.approval_detail_view, "No approval selected.")
+            return
+        try:
+            payload = self.service.get_approval_review(request.request_id)
+        except Exception as exc:
+            _set_text_preserving_scroll(self.approval_detail_view, f"Approval details unavailable: {exc}")
+            return
+        _set_text_preserving_scroll(self.approval_detail_view, json.dumps(payload, indent=2, sort_keys=True))
+
+    def handle_decide_selected_approval(self, approve: bool) -> None:
+        request = self.selected_approval_request()
+        if request is None:
+            return
+        approver, accepted = QInputDialog.getText(
+            self,
+            "Approval Decision",
+            "Approver",
+        )
+        if not accepted or not str(approver or "").strip():
+            return
+        reason, accepted = QInputDialog.getMultiLineText(
+            self,
+            "Approval Decision",
+            "Reason",
+        )
+        if not accepted or not str(reason or "").strip():
+            return
+        action_label = "Approve" if approve else "Deny"
+        self.run_action(
+            f"{action_label} approval {request.request_id}",
+            self.service.decide_approval_request,
+            request.request_id,
+            approver=str(approver).strip(),
+            approve=approve,
+            reason=str(reason).strip(),
+        )
 
     def refresh_sessions(self) -> None:
         self._start_refresh(

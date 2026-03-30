@@ -215,6 +215,10 @@ class PolicyEngine:
             action_type=action_type,
             payload_digest=digest_payload(payload),
             human_summary=human_summary,
+            payload=payload,
+            directory_path=session.directory_path,
+            vm_id=session.vm_id,
+            tool_name=action_type,
             expires_at=datetime.now(UTC) + timedelta(seconds=effective_policy.approval_ttl_seconds),
         )
         self.approval_store.put(request.request_id, request)
@@ -224,7 +228,7 @@ class PolicyEngine:
         request = self.approval_store.get(request_id)
         if request is None:
             raise PolicyError(f"Unknown approval request: {request_id}")
-        if request.status == ApprovalStatus.APPROVED and request.expires_at <= datetime.now(UTC):
+        if request.status in {ApprovalStatus.PENDING, ApprovalStatus.APPROVED} and request.expires_at <= datetime.now(UTC):
             request.status = ApprovalStatus.EXPIRED
             self.approval_store.put(request.request_id, request)
         return request
