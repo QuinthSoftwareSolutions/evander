@@ -27,6 +27,8 @@ Options:
 Configuration:
   Azure DevOps PR creation requires AZURE_DEVOPS_PR_PAT (or the value configured in
   AGENT_SANDBOX_AZURE_DEVOPS_PR_PAT_ENV).
+  Directory-scoped ado_worker config may set create_prs_as_draft=true so new Azure DevOps
+  PRs open as drafts for that session's directory.
   If a PR is created and a session id is available, the script also attaches the
   PR feedback stream to that session through agent-sandbox-cli.
 EOF
@@ -274,6 +276,65 @@ refresh_remote_branch_tracking_ref() {
     git_with_push_auth "${repo_path}" fetch "${remote_name}" \
       "refs/heads/${branch_name}:refs/remotes/${remote_name}/${branch_name}" >/dev/null
   fi
+}
+
+resolve_create_prs_as_draft() {
+  local session_id="$1"
+  local runtime_dir="${AGENT_SANDBOX_RUNTIME_DIR:-${ROOT_DIR}/runtime}"
+
+  RUNTIME_DIR_PATH="${runtime_dir}" \
+  SESSION_ID_VALUE="${session_id}" \
+  python3 - <<'PY'
+import json
+import os
+from pathlib import Path, PurePosixPath
+
+runtime_dir = Path(os.environ["RUNTIME_DIR_PATH"])
+session_id = os.environ.get("SESSION_ID_VALUE", "").strip()
+directory_path = "root"
+sessions_path = runtime_dir / "sessions.json"
+
+if session_id and sessions_path.exists():
+    try:
+        sessions_payload = json.loads(sessions_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        sessions_payload = {}
+    if isinstance(sessions_payload, dict):
+        session_payload = sessions_payload.get(session_id)
+        if isinstance(session_payload, dict):
+            candidate_directory_path = str(session_payload.get("directory_path") or "").strip()
+            if candidate_directory_path:
+                directory_path = candidate_directory_path
+
+segments = [segment for segment in PurePosixPath(directory_path).parts if segment not in {"", "."}]
+if not segments or segments[0] != "root":
+    segments = ["root"]
+
+create_prs_as_draft = False
+directory_config_root = runtime_dir / "directory-config"
+for index in range(1, len(segments) + 1):
+    candidate = directory_config_root.joinpath(*segments[:index], "ado-worker.json")
+    if not candidate.exists():
+        continue
+    try:
+        payload = json.loads(candidate.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        continue
+    if not isinstance(payload, dict) or "create_prs_as_draft" not in payload:
+        continue
+    value = payload.get("create_prs_as_draft")
+    if isinstance(value, bool):
+        create_prs_as_draft = value
+        continue
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            create_prs_as_draft = True
+        elif normalized in {"0", "false", "no", "off", ""}:
+            create_prs_as_draft = False
+
+print("1" if create_prs_as_draft else "0", end="")
+PY
 }
 
 azure_https_origin_url() {
@@ -573,6 +634,11 @@ if [[ -z "${SESSION_ID}" ]]; then
   SESSION_ID="$(derive_session_id "${ORIGIN_BRANCH}" || derive_session_id "${LOCAL_BRANCH}" || true)"
 fi
 
+if [[ -z "${WORK_ITEM_ID}" && -n "${SESSION_ID}" ]]; then
+  WORK_ITEM_ID="$(extract_issue_number "${SESSION_ID}" || true)"
+fi
+
+CREATE_PRS_AS_DRAFT="$(resolve_create_prs_as_draft "${SESSION_ID}")"
 if [[ -n "${WORK_ITEM_ID}" && ! "${WORK_ITEM_ID}" =~ ^[0-9]+$ ]]; then
   echo "Work item id must be numeric: ${WORK_ITEM_ID}" >&2
   exit 1
@@ -635,6 +701,7 @@ case "${PROVIDER}" in
     TITLE_EXPLICIT="${TITLE_EXPLICIT}" \
     BODY_CONTENT="${BODY_CONTENT}" \
     WORK_ITEM_ID="${WORK_ITEM_ID}" \
+    CREATE_PRS_AS_DRAFT="${CREATE_PRS_AS_DRAFT}" \
     python3 - <<'PY'
 import base64
 import json
@@ -652,6 +719,7 @@ title_explicit = os.environ.get("TITLE_EXPLICIT", "0") == "1"
 body = os.environ["BODY_CONTENT"]
 pat = os.environ["AZURE_DEVOPS_PR_PAT_VALUE"]
 work_item_id = os.environ.get("WORK_ITEM_ID", "").strip()
+create_prs_as_draft = os.environ.get("CREATE_PRS_AS_DRAFT", "").strip() in {"1", "true", "yes", "on"}
 
 ssh_match = re.match(r"^git@ssh\.dev\.azure\.com:v3/([^/]+)/([^/]+)/([^/]+)$", origin_url)
 https_match = re.match(
@@ -786,6 +854,7 @@ pr = request_json(
         "targetRefName": f"refs/heads/{base_branch}",
         "title": title,
         "description": body,
+        "isDraft": create_prs_as_draft,
     },
     method="POST",
 )

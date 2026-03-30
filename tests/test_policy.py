@@ -80,6 +80,67 @@ def test_require_approved_rejects_payload_mismatch(tmp_path: Path) -> None:
         raise AssertionError("Expected PolicyError")
 
 
+def test_create_approval_persists_redacted_payload(tmp_path: Path) -> None:
+    engine = make_engine(tmp_path)
+    engine.session_store.put(
+        "s1",
+        SessionManifest(
+            session_id="s1",
+            allowed_tools=[ToolName.APPROVAL_SUBMIT],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+
+    approval = engine.create_approval(
+        "s1",
+        "email_send_approved",
+        {
+            "body": "secret body",
+            "authorization": "Bearer abc",
+            "nested": {"token": "nested-secret", "safe": "ok"},
+        },
+        "send email",
+    )
+
+    assert approval.payload["body"] == "<redacted>"
+    assert approval.payload["authorization"] == "<redacted>"
+    assert approval.payload["nested"]["token"] == "<redacted>"
+    assert approval.payload["nested"]["safe"] == "ok"
+
+
+def test_get_approval_redacts_legacy_stored_payload(tmp_path: Path) -> None:
+    engine = make_engine(tmp_path)
+    engine.session_store.put(
+        "s1",
+        SessionManifest(
+            session_id="s1",
+            allowed_tools=[ToolName.APPROVAL_SUBMIT],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    engine.approval_store.put(
+        "apr1",
+        ApprovalRequest(
+            request_id="apr1",
+            session_id="s1",
+            action_type="email_send_approved",
+            payload_digest="abc",
+            human_summary="send email",
+            payload={"body": "secret", "nested": {"token": "secret-token", "safe": "ok"}},
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+
+    approval = engine.get_approval("apr1")
+    persisted = engine.approval_store.get("apr1")
+
+    assert approval.payload["body"] == "<redacted>"
+    assert approval.payload["nested"]["token"] == "<redacted>"
+    assert approval.payload["nested"]["safe"] == "ok"
+    assert persisted is not None
+    assert persisted.payload == approval.payload
+
+
 def test_require_discord_command_source_allows_session_channel(tmp_path: Path) -> None:
     engine = make_engine(tmp_path)
     session = SessionManifest(

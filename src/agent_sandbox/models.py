@@ -304,17 +304,44 @@ class DraftMessage(BaseModel):
     created_at: datetime = Field(default_factory=utc_now)
 
 
+class ApprovalDecisionRecord(BaseModel):
+    status: ApprovalStatus
+    approver: str | None = None
+    reason: str | None = None
+    decided_at: datetime = Field(default_factory=utc_now)
+
+
 class ApprovalRequest(BaseModel):
     request_id: str
     session_id: str
     action_type: str
     payload_digest: str
     human_summary: str
+    payload: dict[str, Any] = Field(default_factory=dict)
+    directory_path: str = "root"
+    vm_id: str | None = None
+    tool_name: str | None = None
     status: ApprovalStatus = ApprovalStatus.PENDING
     created_at: datetime = Field(default_factory=utc_now)
     expires_at: datetime
     approver: str | None = None
     decision_at: datetime | None = None
+    decision_reason: str | None = None
+    decision_history: list[ApprovalDecisionRecord] = Field(default_factory=list)
+
+    @field_validator("directory_path")
+    @classmethod
+    def validate_directory_path(cls, value: str) -> str:
+        return DirectoryPath(segments=value).as_posix()
+
+
+class ApprovalQueueHealth(BaseModel):
+    total: int = 0
+    pending: int = 0
+    approved: int = 0
+    denied: int = 0
+    expired: int = 0
+    oldest_pending_age_seconds: int | None = None
 
 
 class DiscordCommandEnvelope(BaseModel):

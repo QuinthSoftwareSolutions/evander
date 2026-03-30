@@ -2484,17 +2484,105 @@ def approve(
     approver: str,
     config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
     approve: Annotated[bool, typer.Option("--approve/--deny", help="Approve or deny the request.")] = True,
+    reason: Annotated[str, typer.Option("--reason", help="Operator-entered reason for the decision.")] = "",
 ) -> None:
-    cfg = _load_runtime_config_from_option(config)
-    runtime = build_runtime(cfg)
-    request = runtime.approvals.get(request_id)
-    if request is None:
-        raise typer.BadParameter(f"Unknown approval request: {request_id}")
-    request.status = ApprovalStatus.APPROVED if approve else ApprovalStatus.DENIED
-    request.approver = approver
-    request.decision_at = datetime.now(UTC)
-    runtime.approvals.put(request_id, request)
+    service = AdminService(config)
+    normalized_reason = reason.strip() or ("approved-via-cli" if approve else "denied-via-cli")
+    try:
+        request = service.decide_approval_request(
+            request_id,
+            approver=approver,
+            approve=approve,
+            reason=normalized_reason,
+        )
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
     typer.echo(f"Updated approval {request_id} to {request.status.value}")
+
+
+@app.command(
+    "list-approvals",
+    rich_help_panel="Sessions and Feedback",
+    short_help="List approval requests and queue health.",
+)
+def list_approvals(
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
+    status: Annotated[
+        list[ApprovalStatus],
+        typer.Option("--status", help="Filter by approval status. Repeat for multiple values."),
+    ] = [],
+    directory_path: Annotated[str | None, typer.Option("--directory-path", help="Filter by canonical directory path.")] = None,
+    direct_only: Annotated[bool, typer.Option("--direct-only", help="Match only the selected directory path exactly.")] = False,
+    session_id: Annotated[str | None, typer.Option("--session-id", help="Filter by session id.")] = None,
+    vm_id: Annotated[str | None, typer.Option("--vm-id", help="Filter by VM id.")] = None,
+    tool: Annotated[str | None, typer.Option("--tool", help="Filter by tool/action type.")] = None,
+    older_than_seconds: Annotated[int | None, typer.Option("--older-than-seconds", help="Minimum age in seconds.")] = None,
+    show_payload: Annotated[bool, typer.Option("--show-payload", help="Show redacted payloads inline.")] = False,
+) -> None:
+    service = AdminService(config)
+    statuses = set(status) or None
+    health = service.approval_queue_health(
+        statuses=statuses,
+        directory_path=directory_path,
+        direct_only=direct_only,
+        session_id=session_id,
+        vm_id=vm_id,
+        tool_name=tool,
+        min_age_seconds=older_than_seconds,
+    )
+    typer.echo(
+        "Queue "
+        f"total={health.total} pending={health.pending} approved={health.approved} "
+        f"denied={health.denied} expired={health.expired} "
+        f"oldest_pending_age_seconds={health.oldest_pending_age_seconds}"
+    )
+    requests = service.list_approval_requests(
+        statuses=statuses,
+        directory_path=directory_path,
+        direct_only=direct_only,
+        session_id=session_id,
+        vm_id=vm_id,
+        tool_name=tool,
+        min_age_seconds=older_than_seconds,
+    )
+    for request in requests:
+        age_seconds = int((datetime.now(UTC) - request.created_at).total_seconds())
+        expires_in_seconds = int((request.expires_at - datetime.now(UTC)).total_seconds())
+        typer.echo(
+            "\t".join(
+                [
+                    request.request_id,
+                    request.status.value,
+                    request.directory_path,
+                    request.session_id,
+                    request.vm_id or "-",
+                    request.tool_name or request.action_type,
+                    f"age={age_seconds}s",
+                    f"expires_in={expires_in_seconds}s",
+                    request.human_summary,
+                ]
+            )
+        )
+        if show_payload:
+            review = service.get_approval_review(request.request_id)
+            typer.echo(json.dumps(review["redacted_payload"], indent=2, sort_keys=True))
+
+
+@app.command(
+    "show-approval",
+    rich_help_panel="Sessions and Feedback",
+    short_help="Show approval request details for review.",
+)
+def show_approval(
+    request_id: str,
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
+) -> None:
+    service = AdminService(config)
+    try:
+        payload = service.get_approval_review(request_id)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    typer.echo(json.dumps(payload, indent=2, sort_keys=True))
 
 
 @app.command(

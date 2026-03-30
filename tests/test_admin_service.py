@@ -11,7 +11,7 @@ from typing import Any
 import agent_sandbox.admin_service as admin_service
 import pytest
 from agent_sandbox.admin_service import AdminService
-from agent_sandbox.models import SessionManifest, ToolName
+from agent_sandbox.models import ApprovalRequest, ApprovalStatus, SessionManifest, ToolName
 
 UTC = timezone.utc
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -367,6 +367,128 @@ def test_list_issues_sorts_issue_numbers_numerically(tmp_path: Path) -> None:
     issues = service.list_issues()
 
     assert [issue.issue_number for issue in issues] == ["2", "10"]
+
+
+def test_list_local_issues_supports_state_filters(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    active_issue = service.create_local_issue(title="Active", body="body")
+    completed_issue = service.create_local_issue(title="Completed", body="body")
+    closed_issue = service.create_local_issue(title="Closed", body="body")
+
+    service.update_issue(active_issue.issue_number, state="In Progress")
+    service.update_issue(completed_issue.issue_number, state="Completed")
+    service.update_issue(closed_issue.issue_number, state="Closed")
+
+    active_only = service.list_local_issues(exclude_states={"Completed", "Closed"})
+    completed_only = service.list_local_issues(states={"Completed"})
+
+    assert [issue.title for issue in active_only] == ["Active"]
+    assert [issue.title for issue in completed_only] == ["Completed"]
+
+
+def test_list_approval_requests_filters_health_and_redacts_payload(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    created = service.create_directory_child("root", "team")
+    assert created.ok is True and created.data is not None
+    team_path = created.data.details.directory.path
+    service.runtime.sessions.put(
+        "team-session",
+        SessionManifest(
+            session_id="team-session",
+            vm_id="vm-42",
+            directory_path=team_path,
+            allowed_tools=[ToolName.APPROVAL_SUBMIT],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    service.runtime.approvals.put(
+        "approval-pending",
+        ApprovalRequest(
+            request_id="approval-pending",
+            session_id="team-session",
+            action_type="email_send_approved",
+            tool_name="email_send_approved",
+            payload_digest="abc",
+            human_summary="send email",
+            payload={"token": "secret", "body": "ok"},
+            directory_path=team_path,
+            vm_id="vm-42",
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    service.runtime.approvals.put(
+        "approval-denied",
+        ApprovalRequest(
+            request_id="approval-denied",
+            session_id="team-session",
+            action_type="email_send_approved",
+            tool_name="email_send_approved",
+            payload_digest="def",
+            human_summary="already denied",
+            payload={"body": "blocked"},
+            directory_path=team_path,
+            vm_id="vm-42",
+            status=ApprovalStatus.DENIED,
+            approver="ops",
+            decision_at=datetime.now(UTC),
+            decision_reason="unsafe",
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+
+    pending = service.list_approval_requests(
+        statuses={ApprovalStatus.PENDING},
+        directory_path=team_path,
+        direct_only=True,
+        tool_name="email_send_approved",
+    )
+    health = service.approval_queue_health(directory_path=team_path, direct_only=True)
+    review = service.get_approval_review("approval-pending")
+
+    assert [request.request_id for request in pending] == ["approval-pending"]
+    assert health.total == 2
+    assert health.pending == 1
+    assert health.denied == 1
+    assert review["redacted_payload"]["token"] == "<redacted>"
+    assert review["request"]["payload"]["token"] == "<redacted>"
+
+
+def test_decide_approval_request_records_reason_history_and_audit(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.sessions.put(
+        "session-1",
+        SessionManifest(
+            session_id="session-1",
+            vm_id="vm-1",
+            allowed_tools=[ToolName.APPROVAL_SUBMIT],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    service.runtime.approvals.put(
+        "approval-1",
+        ApprovalRequest(
+            request_id="approval-1",
+            session_id="session-1",
+            action_type="email_send_approved",
+            tool_name="email_send_approved",
+            payload_digest="abc",
+            human_summary="send email",
+            payload={"body": "hello"},
+            vm_id="vm-1",
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+
+    decided = service.decide_approval_request("approval-1", approver="alice", approve=False, reason="unsafe")
+    audit_lines = (tmp_path / "runtime" / "audit.jsonl").read_text(encoding="utf-8").splitlines()
+    audit_payload = json.loads(audit_lines[-1])
+
+    assert decided.status == ApprovalStatus.DENIED
+    assert decided.decision_reason == "unsafe"
+    assert decided.decision_history[0].reason == "unsafe"
+    assert audit_payload["event_type"] == "approval_decision"
+    assert audit_payload["args"]["request_id"] == "approval-1"
+    assert audit_payload["reason"] == "unsafe"
 
 
 def test_admin_service_exposes_directory_config_for_selected_directory(tmp_path: Path) -> None:

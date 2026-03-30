@@ -20,6 +20,20 @@ class PolicyError(RuntimeError):
     """Raised when a tool action violates the session policy."""
 
 
+def _redact_nested_payload(redacted_keys: set[str], value: Any) -> Any:
+    if isinstance(value, dict):
+        redacted: dict[str, Any] = {}
+        for key, nested_value in value.items():
+            if key in redacted_keys:
+                redacted[key] = "<redacted>"
+                continue
+            redacted[key] = _redact_nested_payload(redacted_keys, nested_value)
+        return redacted
+    if isinstance(value, list):
+        return [_redact_nested_payload(redacted_keys, item) for item in value]
+    return value
+
+
 class PolicyEngine:
     def __init__(
         self,
@@ -209,12 +223,17 @@ class PolicyEngine:
     ) -> ApprovalRequest:
         session = self.get_session(session_id)
         effective_policy = self.effective_policy_for_session(session)
+        redacted_payload = _redact_nested_payload(effective_policy.redacted_keys, payload)
         request = ApprovalRequest(
             request_id=f"apr_{digest_payload({'session_id': session_id, **payload})[:16]}",
             session_id=session_id,
             action_type=action_type,
             payload_digest=digest_payload(payload),
             human_summary=human_summary,
+            payload=redacted_payload,
+            directory_path=session.directory_path,
+            vm_id=session.vm_id,
+            tool_name=action_type,
             expires_at=datetime.now(UTC) + timedelta(seconds=effective_policy.approval_ttl_seconds),
         )
         self.approval_store.put(request.request_id, request)
@@ -224,7 +243,16 @@ class PolicyEngine:
         request = self.approval_store.get(request_id)
         if request is None:
             raise PolicyError(f"Unknown approval request: {request_id}")
-        if request.status == ApprovalStatus.APPROVED and request.expires_at <= datetime.now(UTC):
+        session = self.session_store.get(request.session_id)
+        if session is not None:
+            redacted_payload = _redact_nested_payload(
+                self.effective_policy_for_session(session).redacted_keys,
+                request.payload,
+            )
+            if redacted_payload != request.payload:
+                request.payload = redacted_payload
+                self.approval_store.put(request.request_id, request)
+        if request.status in {ApprovalStatus.PENDING, ApprovalStatus.APPROVED} and request.expires_at <= datetime.now(UTC):
             request.status = ApprovalStatus.EXPIRED
             self.approval_store.put(request.request_id, request)
         return request

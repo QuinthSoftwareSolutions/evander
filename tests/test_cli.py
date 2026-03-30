@@ -7,7 +7,7 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 from agent_sandbox.cli import EndpointStatus, UnitStatus, app
-from agent_sandbox.models import LocalIssueRecord, VmActionResult, VmSummary
+from agent_sandbox.models import ApprovalRequest, LocalIssueRecord, VmActionResult, VmSummary
 
 UTC = timezone.utc
 
@@ -212,6 +212,76 @@ def test_migrate_directory_ownership_backfills_missing_fields_only(tmp_path: Pat
     ado_processed = json.loads((runtime_dir / "ado-processed-work-items.json").read_text(encoding="utf-8"))
     assert ado_processed["10"]["directory_path"] == "root"
     assert ado_processed["11"]["directory_path"] == "root/team"
+
+
+def test_list_approvals_outputs_queue_health_and_redacted_payload(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+    assert runner.invoke(app, ["init-state", "--config", str(config_path)]).exit_code == 0
+
+    approvals_path = tmp_path / "runtime" / "approvals.json"
+    approvals_path.write_text(
+        json.dumps(
+            {
+                "approval-1": ApprovalRequest(
+                    request_id="approval-1",
+                    session_id="session-1",
+                    action_type="email_send_approved",
+                    tool_name="email_send_approved",
+                    payload_digest="abc",
+                    human_summary="send email",
+                    payload={"token": "secret", "body": "hello"},
+                    expires_at=datetime.now(UTC) + timedelta(hours=1),
+                ).model_dump(mode="json")
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(app, ["list-approvals", "--config", str(config_path), "--show-payload"])
+
+    assert result.exit_code == 0
+    assert "Queue total=1 pending=1 approved=0 denied=0 expired=0" in result.output
+    assert "approval-1" in result.output
+    assert "<redacted>" in result.output
+
+
+def test_show_approval_and_approve_record_reason(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+    assert runner.invoke(app, ["init-state", "--config", str(config_path)]).exit_code == 0
+
+    approvals_path = tmp_path / "runtime" / "approvals.json"
+    approvals_path.write_text(
+        json.dumps(
+            {
+                "approval-1": ApprovalRequest(
+                    request_id="approval-1",
+                    session_id="session-1",
+                    action_type="email_send_approved",
+                    tool_name="email_send_approved",
+                    payload_digest="abc",
+                    human_summary="send email",
+                    payload={"token": "secret", "body": "hello"},
+                    expires_at=datetime.now(UTC) + timedelta(hours=1),
+                ).model_dump(mode="json")
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    show_result = runner.invoke(app, ["show-approval", "--config", str(config_path), "approval-1"])
+    approve_result = runner.invoke(
+        app,
+        ["approve", "--config", str(config_path), "--reason", "looks safe", "approval-1", "alice"],
+    )
+
+    assert show_result.exit_code == 0
+    assert "<redacted>" in show_result.output
+    assert approve_result.exit_code == 0
+    approvals = json.loads(approvals_path.read_text(encoding="utf-8"))
+    assert approvals["approval-1"]["decision_reason"] == "looks safe"
+    assert approvals["approval-1"]["decision_history"][0]["reason"] == "looks safe"
 
 
 def test_migrate_global_config_to_root_materializes_all_domain_files(tmp_path: Path) -> None:

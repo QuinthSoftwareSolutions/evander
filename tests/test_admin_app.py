@@ -109,6 +109,52 @@ def test_directory_config_domains_include_ado_worker_and_issue_setup_tabs() -> N
         assert field_name in admin_app.CONFIG_FIELD_TOOLTIPS
 
 
+def test_selected_issue_state_filters_support_active_all_and_specific_states() -> None:
+    active_window = SimpleNamespace(issue_state_filter=SimpleNamespace(currentText=lambda: "Active"))
+    all_window = SimpleNamespace(issue_state_filter=SimpleNamespace(currentText=lambda: "All"))
+    specific_window = SimpleNamespace(issue_state_filter=SimpleNamespace(currentText=lambda: "Completed"))
+
+    assert admin_app.MainWindow._selected_issue_state_filters(active_window) == (
+        None,
+        {"Completed", "Closed"},
+    )
+    assert admin_app.MainWindow._selected_issue_state_filters(all_window) == (None, None)
+    assert admin_app.MainWindow._selected_issue_state_filters(specific_window) == ({"Completed"}, None)
+
+
+def test_refresh_issues_passes_selected_state_filters() -> None:
+    captured: dict[str, object] = {}
+
+    def _list_local_issues(**kwargs):
+        captured.update(kwargs)
+        return []
+
+    def _start_refresh(key, fn, on_success):
+        captured["key"] = key
+        captured["issues"] = fn()
+        captured["on_success"] = on_success
+
+    window = SimpleNamespace(
+        _selected_directory_path="root/team-a",
+        _selected_issue_state_filters=lambda: (None, {"Completed", "Closed"}),
+        service=SimpleNamespace(list_local_issues=_list_local_issues),
+        _start_refresh=_start_refresh,
+        _apply_issue_refresh="apply",
+    )
+
+    admin_app.MainWindow.refresh_issues(window)
+
+    assert captured == {
+        "key": "issues",
+        "directory_path": "root/team-a",
+        "direct_only": True,
+        "states": None,
+        "exclude_states": {"Completed", "Closed"},
+        "issues": [],
+        "on_success": "apply",
+    }
+
+
 def test_worker_global_settings_tooltips_include_ado_and_host_heartbeat_fields() -> None:
     for field_name in {
         "directories",
@@ -317,6 +363,7 @@ def test_update_vm_action_bar_shows_destroy_for_non_issue_vm() -> None:
 
 def test_show_new_vm_dialog_calls_generic_create_vm(monkeypatch) -> None:
     captured: dict[str, object] = {}
+    monkeypatch.setattr(admin_app, "QDialog", SimpleNamespace(DialogCode=SimpleNamespace(Accepted=1)))
 
     class FakeDialog:
         def __init__(self, parent=None) -> None:
@@ -418,6 +465,7 @@ def test_main_window_initializes_worker_splitter(monkeypatch) -> None:
     monkeypatch.setattr(admin_app.MainWindow, "_apply_directory_feature_state", lambda self: None)
     monkeypatch.setattr(admin_app.MainWindow, "_refresh_visible_data", lambda self, manual=False: None)
     monkeypatch.setattr(admin_app.MainWindow, "refresh_issues", lambda self: None)
+    monkeypatch.setattr(admin_app.MainWindow, "refresh_approvals", lambda self: None)
     monkeypatch.setattr(admin_app.MainWindow, "refresh_sessions", lambda self: None)
     monkeypatch.setattr(admin_app.MainWindow, "refresh_configuration", lambda self: None)
     monkeypatch.setattr(admin_app.MainWindow, "refresh_workers", lambda self, manual=False: None)
@@ -473,6 +521,7 @@ def test_handle_action_success_treats_unsuccessful_result_as_failure(monkeypatch
         _update_privilege_status=lambda: refresh_calls.append("status"),
         _refresh_visible_data=lambda manual=False: refresh_calls.append(f"visible:{manual}"),
         refresh_issues=lambda: refresh_calls.append("issues"),
+        refresh_approvals=lambda: refresh_calls.append("approvals"),
         refresh_workers=lambda: refresh_calls.append("workers"),
         _show_action_error_dialog=lambda message: dialog_messages.append(("Action Failed", message)),
     )
@@ -485,7 +534,7 @@ def test_handle_action_success_treats_unsuccessful_result_as_failure(monkeypatch
         "Create VM idea-generator-vm failed: Failed to create VM idea-generator-vm: codex failed"
     ]
     assert dialog_messages == [("Action Failed", "Failed to create VM idea-generator-vm: codex failed")]
-    assert refresh_calls == ["discarded", "status", "visible:True", "issues", "workers"]
+    assert refresh_calls == ["discarded", "status", "visible:True", "issues", "approvals", "workers"]
 
 
 def test_handle_action_failure_uses_scrollable_error_dialog() -> None:
@@ -503,3 +552,97 @@ def test_handle_action_failure_uses_scrollable_error_dialog() -> None:
 
     assert log_messages == ["Create VM idea-generator-vm failed: very long error"]
     assert dialog_messages == ["very long error"]
+
+
+def test_refresh_selected_approval_detail_uses_background_worker(monkeypatch) -> None:
+    updates: list[str] = []
+    started_workers: list[object] = []
+
+    class DummySignal:
+        def __init__(self) -> None:
+            self.callbacks: list[object] = []
+
+        def connect(self, callback) -> None:
+            self.callbacks.append(callback)
+
+    class DummyWorker:
+        def __init__(self, fn, *args, **kwargs) -> None:
+            self.fn = fn
+            self.args = args
+            self.kwargs = kwargs
+            self.signals = SimpleNamespace(finished=DummySignal(), failed=DummySignal())
+
+    monkeypatch.setattr(admin_app, "_ActionWorker", DummyWorker)
+    monkeypatch.setattr(admin_app, "_set_text_preserving_scroll", lambda _view, text: updates.append(text))
+
+    request = SimpleNamespace(request_id="approval-1")
+    window = SimpleNamespace(
+        selected_approval_request=lambda: request,
+        approval_detail_view=object(),
+        _approval_detail_request_token=0,
+        _active_workers=set(),
+        service=SimpleNamespace(get_approval_review=lambda request_id: {"request_id": request_id}),
+        thread_pool=SimpleNamespace(start=lambda worker: started_workers.append(worker)),
+        _handle_approval_detail_success=lambda *args, **kwargs: None,
+        _handle_approval_detail_failure=lambda *args, **kwargs: None,
+    )
+
+    admin_app.MainWindow.refresh_selected_approval_detail(window)
+
+    assert updates == ["Loading approval details for approval-1..."]
+    assert window._approval_detail_request_token == 1
+    assert len(started_workers) == 1
+    assert len(window._active_workers) == 1
+    worker = started_workers[0]
+    assert worker.fn is window.service.get_approval_review
+    assert worker.args == ("approval-1",)
+
+
+def test_handle_approval_detail_success_ignores_stale_result(monkeypatch) -> None:
+    updates: list[str] = []
+    monkeypatch.setattr(admin_app, "_set_text_preserving_scroll", lambda _view, text: updates.append(text))
+
+    request = SimpleNamespace(request_id="approval-2")
+    discarded: list[object] = []
+    window = SimpleNamespace(
+        _discard_worker=lambda worker: discarded.append(worker),
+        selected_approval_request=lambda: request,
+        _approval_detail_request_token=2,
+        approval_detail_view=object(),
+    )
+
+    admin_app.MainWindow._handle_approval_detail_success(
+        window,
+        {"request": {"request_id": "approval-1"}},
+        object(),
+        1,
+        "approval-1",
+    )
+
+    assert discarded
+    assert updates == []
+
+
+def test_handle_approval_detail_failure_updates_selected_request(monkeypatch) -> None:
+    updates: list[str] = []
+    monkeypatch.setattr(admin_app, "_set_text_preserving_scroll", lambda _view, text: updates.append(text))
+
+    request = SimpleNamespace(request_id="approval-1")
+    discarded: list[object] = []
+    window = SimpleNamespace(
+        _discard_worker=lambda worker: discarded.append(worker),
+        selected_approval_request=lambda: request,
+        _approval_detail_request_token=1,
+        approval_detail_view=object(),
+    )
+
+    admin_app.MainWindow._handle_approval_detail_failure(
+        window,
+        "boom",
+        object(),
+        1,
+        "approval-1",
+    )
+
+    assert discarded
+    assert updates == ["Approval details unavailable: boom"]
