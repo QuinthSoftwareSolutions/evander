@@ -508,3 +508,97 @@ def test_handle_action_failure_uses_scrollable_error_dialog() -> None:
 
     assert log_messages == ["Create VM idea-generator-vm failed: very long error"]
     assert dialog_messages == ["very long error"]
+
+
+def test_refresh_selected_approval_detail_uses_background_worker(monkeypatch) -> None:
+    updates: list[str] = []
+    started_workers: list[object] = []
+
+    class DummySignal:
+        def __init__(self) -> None:
+            self.callbacks: list[object] = []
+
+        def connect(self, callback) -> None:
+            self.callbacks.append(callback)
+
+    class DummyWorker:
+        def __init__(self, fn, *args, **kwargs) -> None:
+            self.fn = fn
+            self.args = args
+            self.kwargs = kwargs
+            self.signals = SimpleNamespace(finished=DummySignal(), failed=DummySignal())
+
+    monkeypatch.setattr(admin_app, "_ActionWorker", DummyWorker)
+    monkeypatch.setattr(admin_app, "_set_text_preserving_scroll", lambda _view, text: updates.append(text))
+
+    request = SimpleNamespace(request_id="approval-1")
+    window = SimpleNamespace(
+        selected_approval_request=lambda: request,
+        approval_detail_view=object(),
+        _approval_detail_request_token=0,
+        _active_workers=set(),
+        service=SimpleNamespace(get_approval_review=lambda request_id: {"request_id": request_id}),
+        thread_pool=SimpleNamespace(start=lambda worker: started_workers.append(worker)),
+        _handle_approval_detail_success=lambda *args, **kwargs: None,
+        _handle_approval_detail_failure=lambda *args, **kwargs: None,
+    )
+
+    admin_app.MainWindow.refresh_selected_approval_detail(window)
+
+    assert updates == ["Loading approval details for approval-1..."]
+    assert window._approval_detail_request_token == 1
+    assert len(started_workers) == 1
+    assert len(window._active_workers) == 1
+    worker = started_workers[0]
+    assert worker.fn is window.service.get_approval_review
+    assert worker.args == ("approval-1",)
+
+
+def test_handle_approval_detail_success_ignores_stale_result(monkeypatch) -> None:
+    updates: list[str] = []
+    monkeypatch.setattr(admin_app, "_set_text_preserving_scroll", lambda _view, text: updates.append(text))
+
+    request = SimpleNamespace(request_id="approval-2")
+    discarded: list[object] = []
+    window = SimpleNamespace(
+        _discard_worker=lambda worker: discarded.append(worker),
+        selected_approval_request=lambda: request,
+        _approval_detail_request_token=2,
+        approval_detail_view=object(),
+    )
+
+    admin_app.MainWindow._handle_approval_detail_success(
+        window,
+        {"request": {"request_id": "approval-1"}},
+        object(),
+        1,
+        "approval-1",
+    )
+
+    assert discarded
+    assert updates == []
+
+
+def test_handle_approval_detail_failure_updates_selected_request(monkeypatch) -> None:
+    updates: list[str] = []
+    monkeypatch.setattr(admin_app, "_set_text_preserving_scroll", lambda _view, text: updates.append(text))
+
+    request = SimpleNamespace(request_id="approval-1")
+    discarded: list[object] = []
+    window = SimpleNamespace(
+        _discard_worker=lambda worker: discarded.append(worker),
+        selected_approval_request=lambda: request,
+        _approval_detail_request_token=1,
+        approval_detail_view=object(),
+    )
+
+    admin_app.MainWindow._handle_approval_detail_failure(
+        window,
+        "boom",
+        object(),
+        1,
+        "approval-1",
+    )
+
+    assert discarded
+    assert updates == ["Approval details unavailable: boom"]

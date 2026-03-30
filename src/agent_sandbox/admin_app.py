@@ -880,6 +880,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self._active_workers: set[_ActionWorker] = set()
         self._refresh_in_flight: set[str] = set()
         self._agent_log_request_token = 0
+        self._approval_detail_request_token = 0
         self._worker_log_request_token = 0
         self._worker_global_config_request_token = 0
         self._config_request_token = 0
@@ -2005,12 +2006,55 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         if request is None:
             _set_text_preserving_scroll(self.approval_detail_view, "No approval selected.")
             return
-        try:
-            payload = self.service.get_approval_review(request.request_id)
-        except Exception as exc:
-            _set_text_preserving_scroll(self.approval_detail_view, f"Approval details unavailable: {exc}")
+        self._approval_detail_request_token += 1
+        request_token = self._approval_detail_request_token
+        _set_text_preserving_scroll(
+            self.approval_detail_view,
+            f"Loading approval details for {request.request_id}...",
+        )
+        worker = _ActionWorker(self.service.get_approval_review, request.request_id)
+        self._active_workers.add(worker)
+        worker.signals.finished.connect(
+            lambda payload, worker=worker, request_token=request_token, request_id=request.request_id: self._handle_approval_detail_success(
+                payload, worker, request_token, request_id
+            )
+        )
+        worker.signals.failed.connect(
+            lambda error, worker=worker, request_token=request_token, request_id=request.request_id: self._handle_approval_detail_failure(
+                error, worker, request_token, request_id
+            )
+        )
+        self.thread_pool.start(worker)
+
+    def _handle_approval_detail_success(
+        self,
+        payload: dict[str, Any],
+        worker: _ActionWorker,
+        request_token: int,
+        request_id: str,
+    ) -> None:
+        self._discard_worker(worker)
+        current_request = self.selected_approval_request()
+        if request_token != self._approval_detail_request_token:
+            return
+        if current_request is None or current_request.request_id != request_id:
             return
         _set_text_preserving_scroll(self.approval_detail_view, json.dumps(payload, indent=2, sort_keys=True))
+
+    def _handle_approval_detail_failure(
+        self,
+        error: str,
+        worker: _ActionWorker,
+        request_token: int,
+        request_id: str,
+    ) -> None:
+        self._discard_worker(worker)
+        current_request = self.selected_approval_request()
+        if request_token != self._approval_detail_request_token:
+            return
+        if current_request is None or current_request.request_id != request_id:
+            return
+        _set_text_preserving_scroll(self.approval_detail_view, f"Approval details unavailable: {error}")
 
     def handle_decide_selected_approval(self, approve: bool) -> None:
         request = self.selected_approval_request()
