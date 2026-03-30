@@ -355,6 +355,55 @@ def create_server(context: RuntimeContext) -> FastMCP:
             raise
 
     @server.tool()
+    def get_issue(
+        issue_id: str,
+        include_remote_comments: bool = True,
+        sync_proxy_cache: bool = True,
+        *,
+        session_id: str | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        session_id = _resolve_session_id_from_context(session_id, ctx, transport_session_map=transport_session_map)
+        args = {
+            "session_id": session_id,
+            "issue_id": issue_id,
+            "include_remote_comments": include_remote_comments,
+            "sync_proxy_cache": sync_proxy_cache,
+        }
+        try:
+            session = context.policy.require_tool(session_id, ToolName.GET_ISSUE)
+            result = AdminService(context.config.runtime_dir).get_issue(
+                issue_id,
+                include_remote_comments=include_remote_comments,
+                sync_proxy_cache=sync_proxy_cache,
+            )
+            audit_success(
+                session_id,
+                ToolName.GET_ISSUE,
+                args,
+                {
+                    "issue_number": result.get("issue_number"),
+                    "source_type": result.get("source_type"),
+                    "state": result.get("state"),
+                    "directory_path": session.directory_path,
+                },
+            )
+            return result
+        except PolicyError as exc:
+            audit_failure(session_id, ToolName.GET_ISSUE, args, str(exc))
+            raise
+        except Exception as exc:
+            audit_failure(
+                session_id,
+                ToolName.GET_ISSUE,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
     def create_local_issue(
         title: str,
         body: str = "",

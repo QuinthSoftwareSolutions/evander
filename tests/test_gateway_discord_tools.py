@@ -431,6 +431,72 @@ def test_list_issues_exposes_rejection_reason_from_metadata(
     ]
 
 
+def test_get_issue_passes_through_backend_payload(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = make_context(tmp_path)
+    context.sessions.put(
+        "session-1",
+        SessionManifest(
+            session_id="session-1",
+            directory_path="root/team-a",
+            allowed_tools=[ToolName.GET_ISSUE],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    captured: dict[str, object] = {}
+
+    class StubAdminService:
+        def __init__(self, runtime_dir: Path) -> None:
+            captured["runtime_dir"] = runtime_dir
+
+        def get_issue(
+            self,
+            issue_id: str,
+            *,
+            include_remote_comments: bool = True,
+            sync_proxy_cache: bool = True,
+        ) -> dict[str, object]:
+            captured["payload"] = {
+                "issue_id": issue_id,
+                "include_remote_comments": include_remote_comments,
+                "sync_proxy_cache": sync_proxy_cache,
+            }
+            return {
+                "issue_id": "local-42",
+                "issue_number": "42",
+                "source_type": "local",
+                "title": "Rejected issue",
+                "state": "Closed",
+                "reason": "Out of scope",
+                "rejection_reason": "Out of scope",
+            }
+
+    monkeypatch.setattr("agent_sandbox.gateway.AdminService", StubAdminService)
+    server = create_server(context)
+
+    result = call_tool(
+        server,
+        "get_issue",
+        {
+            "session_id": "session-1",
+            "issue_id": "42",
+            "include_remote_comments": False,
+            "sync_proxy_cache": False,
+        },
+    )
+
+    assert captured["runtime_dir"] == context.config.runtime_dir
+    assert captured["payload"] == {
+        "issue_id": "42",
+        "include_remote_comments": False,
+        "sync_proxy_cache": False,
+    }
+    assert result["issue_number"] == "42"
+    assert result["rejection_reason"] == "Out of scope"
+
+
 def test_discord_post_status_posts_to_allowlisted_channel(tmp_path: Path) -> None:
     context = make_context(tmp_path)
     context.sessions.put(
@@ -503,6 +569,30 @@ def test_list_issues_requires_tool_permission(tmp_path: Path) -> None:
             server.call_tool(
                 "list_issues",
                 {"session_id": "session-1"},
+            )
+        )
+
+
+def test_get_issue_requires_tool_permission(tmp_path: Path) -> None:
+    context = make_context(tmp_path)
+    context.sessions.put(
+        "session-1",
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    server = create_server(context)
+
+    with pytest.raises(ToolError, match="not allowed"):
+        asyncio.run(
+            server.call_tool(
+                "get_issue",
+                {
+                    "session_id": "session-1",
+                    "issue_id": "42",
+                },
             )
         )
 

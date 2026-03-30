@@ -20,6 +20,7 @@ def test_originator_prompt_requires_mcp_issue_tools_and_forbids_cli_fallback() -
 
     assert prompt is not None
     assert "list_issues MCP tool" in prompt
+    assert "get_issue MCP tool" in prompt
     assert "create_local_issue MCP tool" in prompt
     assert "session_id=idea-session-123" in prompt
     assert "Do not use the local CLI" in prompt

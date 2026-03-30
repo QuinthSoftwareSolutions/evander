@@ -195,10 +195,11 @@ class IssueOrchestratorWorker:
 
         prelude = (
             f"Before acting, call the list_issues MCP tool with session_id={session.session_id} to inspect the current "
-            "host-backed issues in this directory and avoid duplicating existing work. If you create an issue, you must "
-            f"use the create_local_issue MCP tool with session_id={session.session_id}. Do not use the local CLI to list "
-            "or create issues. Do not write issue files directly under runtime/. Work only within the repository already "
-            "cloned in the VM."
+            "host-backed issues in this directory and avoid duplicating existing work. Once you know a specific issue "
+            "identifier, prefer the get_issue MCP tool to inspect that issue directly across any state. If you create "
+            f"an issue, you must use the create_local_issue MCP tool with session_id={session.session_id}. Do not use "
+            "the local CLI to list or create issues. Do not write issue files directly under runtime/. Work only within "
+            "the repository already cloned in the VM."
         )
 
         if role in originator_roles:

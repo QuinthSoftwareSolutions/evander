@@ -2655,19 +2655,12 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
         sync_proxy_cache: bool = True,
     ) -> dict[str, object]:
         issue = self._resolve_local_issue_record(issue_id)
+        base_payload = issue.model_dump(mode="json")
         proxy_target = self._proxy_target_for_issue(issue)
         if proxy_target is None:
-            comments = issue.comments or (
-                issue.metadata.get("comments") if isinstance(issue.metadata.get("comments"), list) else []
-            )
             return {
-                "issue_number": issue.issue_number,
+                **base_payload,
                 "source_type": "local",
-                "title": issue.title,
-                "description": issue.body,
-                "state": issue.state or str(issue.metadata.get("state") or ""),
-                "comments": comments,
-                "updated_at": issue.updated_at.isoformat(),
             }
         provider, remote_issue_id = proxy_target
         remote_payload = self.issue_service.read_remote_issue(
@@ -2678,8 +2671,9 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
         )
         if sync_proxy_cache:
             issue = self._refresh_proxy_cache_from_remote(issue, remote_payload)
+            base_payload = issue.model_dump(mode="json")
         return {
-            "issue_number": issue.issue_number,
+            **base_payload,
             "source_type": "proxy",
             "provider": provider,
             "remote_issue_id": remote_issue_id,

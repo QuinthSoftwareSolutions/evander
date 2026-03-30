@@ -556,6 +556,13 @@ See [live-smoke-tests.md](/home/jonathan/agent-sandbox/docs/live-smoke-tests.md)
 - Guests never need direct Microsoft Graph credentials or internet access; Teams API access
   happens only in the host-side gateway process.
 
+## Issue Tooling
+
+- Use `list_issues` to browse issues in the current directory scope and avoid duplicating work.
+- Use `get_issue` once you already know an issue number or canonical issue ID. It returns the
+  current issue record directly, regardless of state, and is the preferred MCP path for agents to
+  inspect rejected, approved, committed, or completed issues without depending on list filters.
+
 ## Relay Environment Configuration
 
 - `OPENAI_API_KEY` is required on the host for `agent-sandbox-openai-relay`.
