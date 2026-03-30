@@ -26,6 +26,7 @@ class ToolName(str, Enum):
     GET_AGENT_LOGS = "get_agent_logs"
     DISCORD_GET_COMMANDS = "discord_get_commands"
     DISCORD_POST_STATUS = "discord_post_status"
+    TEAMS_GET_MESSAGES = "teams_get_messages"
     EMAIL_LIST_UNREAD = "email_list_unread"
     EMAIL_GET_MESSAGE = "email_get_message"
     EMAIL_CREATE_DRAFT = "email_create_draft"
@@ -51,6 +52,7 @@ class SessionManifest(BaseModel):
     directory_path: str = "root"
     allowed_tools: list[ToolName]
     discord_channel_allowlist: list[str] = Field(default_factory=list)
+    teams_channel_allowlist: list[str] = Field(default_factory=list)
     email_folder_allowlist: list[str] = Field(default_factory=list)
     email_mailbox_allowlist: list[str] = Field(default_factory=list)
     email_folder_allowlist_by_mailbox: dict[str, list[str]] = Field(default_factory=dict)
@@ -348,6 +350,18 @@ class DiscordCommandEnvelope(BaseModel):
     command_id: str
     author_id: str
     channel_id: str
+    content: str
+    created_at: datetime = Field(default_factory=utc_now)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class TeamsMessageEnvelope(BaseModel):
+    cursor: str
+    message_id: str
+    author_id: str
+    team_id: str
+    channel_id: str
+    thread_id: str | None = None
     content: str
     created_at: datetime = Field(default_factory=utc_now)
     metadata: dict[str, Any] = Field(default_factory=dict)

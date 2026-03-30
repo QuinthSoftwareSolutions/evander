@@ -24,6 +24,7 @@ from .models import (
     HasPendingFeedbackRequest,
     ListUnreadFeedbackRequest,
     PostPrFeedbackReplyRequest,
+    TeamsMessageEnvelope,
     ToolName,
 )
 from .policy import PolicyError
@@ -192,6 +193,37 @@ def _filter_discord_commands_for_session(
             continue
         commands.append(command.model_dump(mode="json"))
     return commands, denied_count, next_cursor
+
+
+def _filter_teams_messages_for_session(
+    context: RuntimeContext,
+    session_id: str,
+    session: Any,
+    raw_messages: list[TeamsMessageEnvelope],
+    args: dict[str, Any],
+    audit_failure_cb: Any,
+) -> tuple[list[dict[str, Any]], int, str | None]:
+    messages: list[dict[str, Any]] = []
+    denied_count = 0
+    next_cursor = raw_messages[-1].cursor if raw_messages else args.get("since_cursor")
+    for message in raw_messages:
+        try:
+            context.policy.require_teams_message_source(session, message)
+        except PolicyError as exc:
+            denied_count += 1
+            audit_failure_cb(
+                session_id,
+                ToolName.TEAMS_GET_MESSAGES,
+                {
+                    **args,
+                    "cursor": message.cursor,
+                    "source_metadata": message.metadata,
+                },
+                str(exc),
+            )
+            continue
+        messages.append(message.model_dump(mode="json"))
+    return messages, denied_count, next_cursor
 
 
 def create_server(context: RuntimeContext) -> FastMCP:
@@ -970,6 +1002,52 @@ def create_server(context: RuntimeContext) -> FastMCP:
             audit_failure(
                 session_id,
                 ToolName.DISCORD_POST_STATUS,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
+    def teams_get_messages(session_id: str, since_cursor: str | None = None) -> dict[str, Any]:
+        args = {"session_id": session_id, "since_cursor": since_cursor}
+        try:
+            session = context.policy.require_tool(session_id, ToolName.TEAMS_GET_MESSAGES)
+            raw_messages = context.teams_service_for_session(session_id).get_messages(since_cursor)
+            messages, denied_count, next_cursor = _filter_teams_messages_for_session(
+                context,
+                session_id,
+                session,
+                raw_messages,
+                args,
+                audit_failure,
+            )
+            result = {"messages": messages, "next_cursor": next_cursor}
+            audit_success(
+                session_id,
+                ToolName.TEAMS_GET_MESSAGES,
+                args,
+                {"count": len(messages), "denied_count": denied_count, "next_cursor": next_cursor},
+            )
+            return result
+        except PolicyError as exc:
+            audit_failure(session_id, ToolName.TEAMS_GET_MESSAGES, args, str(exc))
+            raise
+        except httpx.HTTPError as exc:
+            audit_failure(
+                session_id,
+                ToolName.TEAMS_GET_MESSAGES,
+                args,
+                str(exc),
+                decision="error",
+                error_class="adapter_http_error",
+            )
+            raise
+        except Exception as exc:
+            audit_failure(
+                session_id,
+                ToolName.TEAMS_GET_MESSAGES,
                 args,
                 str(exc),
                 decision="error",

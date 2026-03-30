@@ -83,6 +83,7 @@ def test_unique_email_mailbox_ids_pass_validation_with_alias_fields() -> None:
     [
         ("gateway_url", " https://example.test/mcp/ "),
         ("discord_api_base_url", " https://discord.com/api/v10/ "),
+        ("teams_graph_api_base_url", " https://graph.microsoft.com/v1.0/ "),
         ("openai_api_base_url", " https://api.openai.com/v1/ "),
         ("nuget_public_feed_base_url", " https://api.nuget.org/ "),
         (
@@ -103,6 +104,7 @@ def test_http_url_fields_are_trimmed_and_trailing_slash_is_removed(
     [
         ("gateway_url", "ftp://example.test/mcp"),
         ("discord_api_base_url", "discord.com/api/v10"),
+        ("teams_graph_api_base_url", "graph.microsoft.com/v1.0"),
         ("openai_api_base_url", "not-a-url"),
         ("nuget_public_feed_base_url", "://missing-scheme"),
         ("nuget_azure_feed_base_url", ""),

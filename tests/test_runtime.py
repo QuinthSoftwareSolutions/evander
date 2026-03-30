@@ -13,8 +13,10 @@ from agent_sandbox.runtime import _resolve_allowed_discord_channel_ids, build_ru
 from agent_sandbox.services import (
     AzureDevOpsPrReplyProvider,
     DiscordBotApiService,
+    GraphTeamsService,
     GitHubPrReplyProvider,
     StubDiscordService,
+    StubTeamsService,
 )
 
 
@@ -41,6 +43,7 @@ def write_provider_overlay(config: GatewayConfig, reference: str, payload: dict[
 def test_build_runtime_uses_stub_discord_backend_by_default(tmp_path: Path) -> None:
     runtime = build_runtime(make_config(tmp_path))
     assert isinstance(runtime.discord_service, StubDiscordService)
+    assert isinstance(runtime.teams_service, StubTeamsService)
 
 
 def test_build_runtime_requires_bot_token_for_bot_api_backend(
@@ -78,6 +81,27 @@ def test_build_runtime_reads_bot_token_from_configured_env_var(
     runtime = build_runtime(config)
 
     assert isinstance(runtime.discord_service, DiscordBotApiService)
+
+
+def test_build_runtime_requires_graph_token_for_teams_backend(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("GRAPH_TEAMS_ACCESS_TOKEN", raising=False)
+    config = make_config(tmp_path, teams_backend="graph_api")
+
+    with pytest.raises(RuntimeError, match="requires an access token"):
+        build_runtime(config)
+
+
+def test_build_runtime_uses_graph_teams_backend_when_token_is_present(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GRAPH_TEAMS_ACCESS_TOKEN", "graph-token")
+    config = make_config(tmp_path, teams_backend="graph_api")
+
+    runtime = build_runtime(config)
+
+    assert isinstance(runtime.teams_service, GraphTeamsService)
 
 
 def test_build_runtime_uses_root_provider_override_for_default_discord_service(

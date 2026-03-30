@@ -9,6 +9,7 @@ from .models import (
     ApprovalStatus,
     DiscordCommandEnvelope,
     SessionManifest,
+    TeamsMessageEnvelope,
     ToolName,
     digest_payload,
 )
@@ -137,6 +138,29 @@ class PolicyEngine:
         if not (allowlisted_channel or allowlisted_operator):
             raise PolicyError(
                 f"Discord command {command.command_id} source is not allowlisted for session "
+                f"{session.session_id}"
+            )
+
+    def require_teams_message_source(
+        self,
+        session: SessionManifest,
+        message: TeamsMessageEnvelope,
+    ) -> None:
+        source = str(message.metadata.get("source", ""))
+        if source != "teams_graph_api":
+            raise PolicyError(f"Teams message {message.cursor} has untrusted source {source!r}")
+
+        team_id = str(message.metadata.get("team_id", message.team_id)).strip()
+        channel_id = str(message.metadata.get("channel_id", message.channel_id)).strip()
+        if not team_id or not channel_id:
+            raise PolicyError(
+                f"Teams message {message.cursor} is missing required source metadata"
+            )
+
+        channel_target = f"{team_id}/{channel_id}"
+        if channel_target not in session.teams_channel_allowlist:
+            raise PolicyError(
+                f"Teams message {message.cursor} source is not allowlisted for session "
                 f"{session.session_id}"
             )
 

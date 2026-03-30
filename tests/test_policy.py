@@ -11,6 +11,7 @@ from agent_sandbox.models import (
     ApprovalStatus,
     DiscordCommandEnvelope,
     SessionManifest,
+    TeamsMessageEnvelope,
     ToolName,
 )
 from agent_sandbox.policy import PolicyEngine, PolicyError
@@ -347,6 +348,61 @@ def test_require_discord_command_source_rejects_unrestricted_polling_target(tmp_
 
     with pytest.raises(PolicyError, match="source is not allowlisted"):
         engine.require_discord_command_source(session, command)
+
+
+def test_require_teams_message_source_allows_session_channel(tmp_path: Path) -> None:
+    engine = make_engine(tmp_path)
+    session = SessionManifest(
+        session_id="s1",
+        allowed_tools=[ToolName.TEAMS_GET_MESSAGES],
+        teams_channel_allowlist=["team-a/channel-1"],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    message = TeamsMessageEnvelope(
+        cursor="team-a/channel-1/msg-1",
+        message_id="msg-1",
+        author_id="user-1",
+        team_id="team-a",
+        channel_id="channel-1",
+        thread_id="msg-1",
+        content="hello",
+        metadata={
+            "source": "teams_graph_api",
+            "team_id": "team-a",
+            "channel_id": "channel-1",
+            "author_id": "user-1",
+        },
+    )
+
+    engine.require_teams_message_source(session, message)
+
+
+def test_require_teams_message_source_rejects_unallowlisted_channel(tmp_path: Path) -> None:
+    engine = make_engine(tmp_path)
+    session = SessionManifest(
+        session_id="s1",
+        allowed_tools=[ToolName.TEAMS_GET_MESSAGES],
+        teams_channel_allowlist=["team-a/channel-1"],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    message = TeamsMessageEnvelope(
+        cursor="team-b/channel-2/msg-1",
+        message_id="msg-1",
+        author_id="user-1",
+        team_id="team-b",
+        channel_id="channel-2",
+        thread_id="msg-1",
+        content="hello",
+        metadata={
+            "source": "teams_graph_api",
+            "team_id": "team-b",
+            "channel_id": "channel-2",
+            "author_id": "user-1",
+        },
+    )
+
+    with pytest.raises(PolicyError, match="source is not allowlisted"):
+        engine.require_teams_message_source(session, message)
 def test_require_email_mailbox_and_folder_for_mailbox(tmp_path: Path) -> None:
     engine = make_engine(tmp_path)
     session = SessionManifest(

@@ -12,6 +12,7 @@ from .models import (
     DraftMessage,
     EmailMessage,
     SessionManifest,
+    TeamsMessageEnvelope,
     ToolName,
 )
 from .migrations import migrate_local_issues_to_unified_schema
@@ -30,10 +31,13 @@ from .services import (
     DiscordBotApiService,
     DiscordService,
     EmailService,
+    GraphTeamsService,
     GitHubPrReplyProvider,
     PrFeedbackService,
     PrReplyService,
     StubDiscordService,
+    StubTeamsService,
+    TeamsService,
 )
 from .storage import JsonStore
 
@@ -47,6 +51,7 @@ class RuntimeContext:
     policy: PolicyEngine
     email_service: EmailService
     discord_service: DiscordService
+    teams_service: TeamsService
     pr_feedback_service: PrFeedbackService
     pr_reply_service: PrReplyService
     sessions: JsonStore[SessionManifest]
@@ -56,6 +61,7 @@ class RuntimeContext:
     emails: JsonStore[EmailMessage]
     email_cursors: DurableCursorStore
     discord_commands: JsonStore[DiscordCommandEnvelope]
+    teams_messages: JsonStore[TeamsMessageEnvelope]
 
     def resolve_provider_config_for_session(self, session_id: str) -> GatewayConfig:
         return self.provider_config.resolve_for_session_id(session_id)
@@ -84,6 +90,14 @@ class RuntimeContext:
             return self.pr_reply_service
         return _build_pr_reply_service(resolved_config)
 
+    def teams_service_for_session(self, session_id: str) -> TeamsService:
+        if not isinstance(self.teams_service, (StubTeamsService, GraphTeamsService)):
+            return self.teams_service
+        resolved_config = self.resolve_provider_config_for_session(session_id)
+        if resolved_config == self.config:
+            return self.teams_service
+        return _build_teams_service(resolved_config, self.teams_messages, self.sessions)
+
 
 def build_runtime(config: GatewayConfig) -> RuntimeContext:
     migrate_local_issues_to_unified_schema(config)
@@ -104,8 +118,10 @@ def build_runtime(config: GatewayConfig) -> RuntimeContext:
     policy_config = PolicyConfigResolver(config, directory_store=directories, session_store=sessions)
     provider_config = ProviderConfigResolver(config, directory_store=directories, session_store=sessions)
     discord_commands = JsonStore(config.discord_command_store_path, DiscordCommandEnvelope)
+    teams_messages = JsonStore(config.teams_message_store_path, TeamsMessageEnvelope)
     root_provider_config = provider_config.resolve_for_directory("root")
     discord_service = _build_discord_service(root_provider_config, discord_commands, sessions, policy_config)
+    teams_service = _build_teams_service(root_provider_config, teams_messages, sessions)
 
     return RuntimeContext(
         config=config,
@@ -115,6 +131,7 @@ def build_runtime(config: GatewayConfig) -> RuntimeContext:
         policy=PolicyEngine(config, sessions, approvals, policy_config=policy_config),
         email_service=EmailService(_build_email_provider(root_provider_config, emails, drafts, email_cursors)),
         discord_service=discord_service,
+        teams_service=teams_service,
         pr_feedback_service=PrFeedbackService(
             config.runtime_dir / "pr-feedback-store.json",
             ignored_feedback_store_path=config.runtime_dir / "ignored-feedback-ids.json",
@@ -127,6 +144,7 @@ def build_runtime(config: GatewayConfig) -> RuntimeContext:
         emails=emails,
         email_cursors=email_cursors,
         discord_commands=discord_commands,
+        teams_messages=teams_messages,
     )
 
 
@@ -229,6 +247,41 @@ def _build_discord_service(
     )
 
 
+def _build_teams_service(
+    config: GatewayConfig,
+    message_store: JsonStore[TeamsMessageEnvelope],
+    sessions: JsonStore[SessionManifest],
+) -> TeamsService:
+    if config.teams_backend == "stub":
+        return StubTeamsService(message_store)
+    if config.teams_backend == "graph_api":
+        env_var_name = config.teams_graph_access_token_env.strip()
+        if not env_var_name:
+            raise RuntimeError(
+                "teams backend 'graph_api' requires config.teams_graph_access_token_env to be set"
+            )
+        token = os.environ.get(env_var_name, "").strip()
+        if not token:
+            raise RuntimeError(
+                "teams backend 'graph_api' requires an access token in environment variable "
+                f"{env_var_name!r}"
+            )
+        return GraphTeamsService(
+            message_store,
+            token=token,
+            api_base_url=config.teams_graph_api_base_url,
+            poll_limit=config.teams_poll_limit,
+            timeout_seconds=config.teams_timeout_seconds,
+            retry_count=config.teams_retry_count,
+            retry_base_backoff_seconds=config.teams_retry_base_backoff_seconds,
+            retry_max_backoff_seconds=config.teams_retry_max_backoff_seconds,
+            allowed_channel_targets_provider=lambda: _resolve_allowed_teams_channel_targets(sessions),
+        )
+    raise RuntimeError(
+        f"Unsupported teams backend {config.teams_backend!r}. Expected one of: 'stub', 'graph_api'."
+    )
+
+
 def _build_pr_reply_service(config: GatewayConfig) -> PrReplyService:
     github_token = os.environ.get(config.github_token_env, "").strip()
     azure_pat = os.environ.get(config.azure_devops_pr_pat_env, "").strip()
@@ -272,3 +325,17 @@ def _resolve_allowed_discord_channel_ids(
             continue
         channel_ids.update(session.discord_channel_allowlist)
     return sorted({channel_id.strip() for channel_id in channel_ids if channel_id.strip()})
+
+
+def _resolve_allowed_teams_channel_targets(
+    session_store: JsonStore[SessionManifest],
+) -> list[str]:
+    now = datetime.now(UTC)
+    targets: set[str] = set()
+    for session in session_store.read_all().values():
+        if session.expires_at <= now:
+            continue
+        if ToolName.TEAMS_GET_MESSAGES not in session.allowed_tools:
+            continue
+        targets.update(session.teams_channel_allowlist)
+    return sorted({target.strip().strip("/") for target in targets if target.strip()})

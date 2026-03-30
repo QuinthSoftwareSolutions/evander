@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Lock
 from typing import Any, Callable, Protocol
-from urllib.parse import unquote
+from urllib.parse import quote, unquote
 
 import httpx
 from .models import (
@@ -18,6 +18,7 @@ from .models import (
     ListUnreadFeedbackResponse,
     PostPrFeedbackReplyResponse,
     PrFeedbackItem,
+    TeamsMessageEnvelope,
 )
 from .pr_feedback_worker import PrFeedbackStore, _stream_key
 from .email.providers import EmailDraft, EmailMessageDetail, EmailMessageSummary, EmailProvider
@@ -73,6 +74,10 @@ class DiscordService(Protocol):
     def get_commands(self, since_cursor: str | None = None) -> list["DiscordCommandEnvelope"]: ...
 
     def post_status(self, message: str, channel_id: str, session_id: str) -> dict[str, Any]: ...
+
+
+class TeamsService(Protocol):
+    def get_messages(self, since_cursor: str | None = None) -> list["TeamsMessageEnvelope"]: ...
 
 
 class StubDiscordService:
@@ -342,6 +347,222 @@ class DiscordBotApiService:
             "session_id": session_id,
             "message_id": payload["id"],
         }
+
+
+def _sorted_teams_messages(messages: dict[str, TeamsMessageEnvelope]) -> list[TeamsMessageEnvelope]:
+    return sorted(messages.values(), key=lambda item: (item.created_at, item.cursor))
+
+
+def _filter_teams_messages_since_cursor(
+    messages: list[TeamsMessageEnvelope], since_cursor: str | None
+) -> list[TeamsMessageEnvelope]:
+    if since_cursor is None:
+        return messages
+    if any(message.cursor == since_cursor for message in messages):
+        seen_cursor = False
+        filtered: list[TeamsMessageEnvelope] = []
+        for message in messages:
+            if seen_cursor:
+                filtered.append(message)
+                continue
+            if message.cursor == since_cursor:
+                seen_cursor = True
+        return filtered
+    return [message for message in messages if message.cursor > since_cursor]
+
+
+def _parse_graph_datetime(value: str | None) -> datetime:
+    if not value:
+        return datetime.now(UTC)
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def _parse_teams_channel_target(target: str) -> tuple[str, str]:
+    normalized = target.strip().strip("/")
+    team_id, separator, channel_id = normalized.partition("/")
+    if not separator or not team_id or not channel_id:
+        raise ValueError(
+            f"Invalid Teams channel target {target!r}: expected 'team-id/channel-id'."
+        )
+    return team_id, channel_id
+
+
+class StubTeamsService:
+    def __init__(self, message_store: JsonStore[TeamsMessageEnvelope]) -> None:
+        self.message_store = message_store
+
+    def get_messages(self, since_cursor: str | None = None) -> list[TeamsMessageEnvelope]:
+        messages = list(self.message_store.read_all().values())
+        for message in messages:
+            message.metadata = {
+                "source": message.metadata.get("source", "stub"),
+                "team_id": message.metadata.get("team_id", message.team_id),
+                "channel_id": message.metadata.get("channel_id", message.channel_id),
+                "thread_id": message.metadata.get("thread_id", message.thread_id),
+                "author_id": message.metadata.get("author_id", message.author_id),
+                **{
+                    key: value
+                    for key, value in message.metadata.items()
+                    if key not in {"source", "team_id", "channel_id", "thread_id", "author_id"}
+                },
+            }
+        ordered = _sorted_teams_messages({message.cursor: message for message in messages})
+        return _filter_teams_messages_since_cursor(ordered, since_cursor)
+
+
+class GraphTeamsService:
+    def __init__(
+        self,
+        message_store: JsonStore[TeamsMessageEnvelope],
+        *,
+        token: str,
+        api_base_url: str,
+        poll_limit: int,
+        timeout_seconds: float,
+        retry_count: int = 3,
+        retry_base_backoff_seconds: float = 0.5,
+        retry_max_backoff_seconds: float = 5.0,
+        allowed_channel_targets_provider: Callable[[], list[str]] = lambda: [],
+    ) -> None:
+        self.message_store = message_store
+        self.token = token
+        self.api_base_url = api_base_url.rstrip("/")
+        self.poll_limit = poll_limit
+        self.timeout_seconds = timeout_seconds
+        self.retry_count = retry_count
+        self.retry_base_backoff_seconds = retry_base_backoff_seconds
+        self.retry_max_backoff_seconds = retry_max_backoff_seconds
+        self.max_total_retry_time_seconds = sum(
+            min(self.retry_max_backoff_seconds, self.retry_base_backoff_seconds * (2**attempt))
+            for attempt in range(self.retry_count)
+        )
+        self.allowed_channel_targets_provider = allowed_channel_targets_provider
+
+    def _headers(self) -> dict[str, str]:
+        return {
+            "Authorization": f"Bearer {self.token}",
+            "Content-Type": "application/json",
+        }
+
+    def _allowed_channel_targets(self) -> list[str]:
+        return sorted(
+            {
+                target.strip().strip("/")
+                for target in self.allowed_channel_targets_provider()
+                if target.strip()
+            }
+        )
+
+    def _request_with_retries(
+        self,
+        client: httpx.Client,
+        method: str,
+        url: str,
+        *,
+        params: dict[str, Any] | None = None,
+    ) -> httpx.Response:
+        start_time = time.monotonic()
+        attempt = 0
+        last_error: Exception | None = None
+        while True:
+            try:
+                response = client.request(
+                    method,
+                    url,
+                    headers=self._headers(),
+                    params=params,
+                    timeout=self.timeout_seconds,
+                )
+                response.raise_for_status()
+                return response
+            except (httpx.TimeoutException, httpx.ConnectError) as exc:
+                last_error = exc
+                if attempt >= self.retry_count:
+                    raise
+            except httpx.HTTPStatusError as exc:
+                status_code = exc.response.status_code
+                if status_code not in {429} and not (500 <= status_code <= 599):
+                    raise
+                if attempt >= self.retry_count:
+                    raise
+                last_error = exc
+
+            planned_backoff = min(
+                self.retry_max_backoff_seconds,
+                self.retry_base_backoff_seconds * (2**attempt),
+            )
+            jittered_backoff = random.uniform(0.5 * planned_backoff, 1.5 * planned_backoff)
+            elapsed = time.monotonic() - start_time
+            remaining_budget = self.max_total_retry_time_seconds - elapsed
+            if remaining_budget <= 0:
+                if last_error is not None:
+                    raise last_error
+                raise TimeoutError("Retry budget exhausted before completing Teams API request")
+            sleep_for = min(jittered_backoff, remaining_budget)
+            time.sleep(sleep_for)
+            attempt += 1
+
+    @staticmethod
+    def _author_id(payload: dict[str, Any]) -> str:
+        sender = payload.get("from") or {}
+        for source_key in ("user", "application", "device"):
+            source = sender.get(source_key) or {}
+            candidate = str(source.get("id") or "").strip()
+            if candidate:
+                return candidate
+        return "unknown"
+
+    def _to_envelope(self, payload: dict[str, Any], *, team_id: str, channel_id: str) -> TeamsMessageEnvelope:
+        message_id = str(payload.get("id") or "").strip()
+        thread_id = str(payload.get("replyToId") or message_id).strip() or None
+        cursor = f"{team_id}/{channel_id}/{message_id}"
+        body = payload.get("body") or {}
+        author_id = self._author_id(payload)
+        return TeamsMessageEnvelope(
+            cursor=cursor,
+            message_id=message_id,
+            author_id=author_id,
+            team_id=team_id,
+            channel_id=channel_id,
+            thread_id=thread_id,
+            content=str(body.get("content") or ""),
+            created_at=_parse_graph_datetime(str(payload.get("createdDateTime") or "")),
+            metadata={
+                "source": "teams_graph_api",
+                "team_id": team_id,
+                "channel_id": channel_id,
+                "thread_id": thread_id,
+                "author_id": author_id,
+                "reply_to_id": str(payload.get("replyToId") or "").strip() or None,
+                "web_url": str(payload.get("webUrl") or "").strip() or None,
+                "content_type": str(body.get("contentType") or "").strip() or None,
+                "message": payload,
+            },
+        )
+
+    def get_messages(self, since_cursor: str | None = None) -> list[TeamsMessageEnvelope]:
+        messages: dict[str, TeamsMessageEnvelope] = dict(self.message_store.read_all())
+        with httpx.Client(timeout=self.timeout_seconds) as client:
+            for target in self._allowed_channel_targets():
+                team_id, channel_id = _parse_teams_channel_target(target)
+                response = self._request_with_retries(
+                    client,
+                    "GET",
+                    f"{self.api_base_url}/teams/{quote(team_id, safe='')}/channels/{quote(channel_id, safe='')}/messages",
+                    params={"$top": self.poll_limit, "$expand": "replies"},
+                )
+                payload = response.json()
+                for message_payload in payload.get("value", []):
+                    envelope = self._to_envelope(message_payload, team_id=team_id, channel_id=channel_id)
+                    messages[envelope.cursor] = envelope
+                    self.message_store.put(envelope.cursor, envelope)
+                    for reply_payload in message_payload.get("replies") or []:
+                        reply_envelope = self._to_envelope(reply_payload, team_id=team_id, channel_id=channel_id)
+                        messages[reply_envelope.cursor] = reply_envelope
+                        self.message_store.put(reply_envelope.cursor, reply_envelope)
+
+        ordered = _sorted_teams_messages(messages)
+        return _filter_teams_messages_since_cursor(ordered, since_cursor)
 
 
 class PrFeedbackService:

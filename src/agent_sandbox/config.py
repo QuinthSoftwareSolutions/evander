@@ -51,6 +51,7 @@ class GatewayConfig(BaseModel):
     email_store_path: Path = Path("/var/lib/agent-sandbox/emails.json")
     email_cursor_store_path: Path = Path("/var/lib/agent-sandbox/email_cursors.json")
     discord_command_store_path: Path = Path("/var/lib/agent-sandbox/discord_commands.json")
+    teams_message_store_path: Path = Path("/var/lib/agent-sandbox/teams_messages.json")
     directories_store_path: Path = Path("/var/lib/agent-sandbox/directories.json")
     enable_directory_scoped_config: bool = False
     discord_backend: Literal["stub", "bot_api"] = "stub"
@@ -64,6 +65,14 @@ class GatewayConfig(BaseModel):
     discord_operator_user_allowlist: list[str] = Field(default_factory=list)
     discord_operator_channel_allowlist: list[str] = Field(default_factory=list)
     discord_poll_operator_dms: bool = False
+    teams_backend: Literal["stub", "graph_api"] = "stub"
+    teams_graph_access_token_env: str = Field(default="GRAPH_TEAMS_ACCESS_TOKEN", min_length=1)
+    teams_graph_api_base_url: str = "https://graph.microsoft.com/v1.0"
+    teams_poll_limit: int = Field(default=50, ge=1, le=100)
+    teams_timeout_seconds: float = Field(default=15.0, gt=0)
+    teams_retry_count: int = Field(default=3, ge=0, le=10)
+    teams_retry_base_backoff_seconds: float = Field(default=0.5, gt=0)
+    teams_retry_max_backoff_seconds: float = Field(default=5.0, gt=0)
     bind_network_cidr: IPvAnyNetwork = "192.168.250.0/24"
     gateway_url: str = "http://192.168.250.1:8000/mcp"
     openai_relay_host: str = "0.0.0.0"
@@ -140,6 +149,7 @@ class GatewayConfig(BaseModel):
     @field_validator(
         "gateway_url",
         "discord_api_base_url",
+        "teams_graph_api_base_url",
         "openai_api_base_url",
         "nuget_public_feed_base_url",
         "nuget_azure_feed_base_url",
@@ -157,6 +167,7 @@ class GatewayConfig(BaseModel):
     @field_validator(
         "gateway_url",
         "discord_api_base_url",
+        "teams_graph_api_base_url",
         "openai_api_base_url",
         "nuget_public_feed_base_url",
         "nuget_azure_feed_base_url",
@@ -202,6 +213,7 @@ class GatewayConfig(BaseModel):
             "email_store_path": default_runtime_dir / "emails.json",
             "email_cursor_store_path": default_runtime_dir / "email_cursors.json",
             "discord_command_store_path": default_runtime_dir / "discord_commands.json",
+            "teams_message_store_path": default_runtime_dir / "teams_messages.json",
             "directories_store_path": default_runtime_dir / "directories.json",
             "pr_map_path": default_runtime_dir / "pr-map.json",
         }
