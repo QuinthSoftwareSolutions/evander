@@ -80,6 +80,23 @@ def test_create_local_issue_reuses_scoped_id_within_directory(tmp_path: Path) ->
     assert list(records) == ["root/team::local::7"]
 
 
+def test_create_local_issue_imports_block_scalar_body(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    source_path = tmp_path / "block-issue.yaml"
+    source_path.write_text(
+        "issue_number: 7\n"
+        "title: Block body\n"
+        "body: |\n"
+        "  line one\n"
+        "  line two\n",
+        encoding="utf-8",
+    )
+
+    issue = service.create_local_issue(yaml_path=str(source_path))
+
+    assert issue.body == "line one\nline two"
+
+
 def test_update_local_issue_updates_store_and_yaml(tmp_path: Path) -> None:
     service = AdminService(write_config(tmp_path))
     issue = service.create_local_issue(title="Old title", body="Old body", repo_source="/old/repo")
@@ -300,6 +317,21 @@ def test_directory_filtered_lists_use_direct_owned_items_only(tmp_path: Path, mo
     assert [issue.title for issue in team_issues] == ["Team issue"]
     assert [summary.vm_name for summary in team_vms] == ["vm-101"]
     assert {summary.vm_name for summary in root_vms} == {"vm-root", "vm-free"}
+
+
+def test_list_issues_sorts_issue_numbers_numerically(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    low_path = tmp_path / "issue-2.yaml"
+    low_path.write_text("issue_number: 2\ntitle: Low issue\nbody: body\n", encoding="utf-8")
+    high_path = tmp_path / "issue-10.yaml"
+    high_path.write_text("issue_number: 10\ntitle: High issue\nbody: body\n", encoding="utf-8")
+
+    service.create_local_issue(yaml_path=str(high_path))
+    service.create_local_issue(yaml_path=str(low_path))
+
+    issues = service.list_issues()
+
+    assert [issue.issue_number for issue in issues] == ["2", "10"]
 
 
 def test_admin_service_exposes_directory_config_for_selected_directory(tmp_path: Path) -> None:
