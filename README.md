@@ -563,6 +563,14 @@ See [live-smoke-tests.md](/home/jonathan/agent-sandbox/docs/live-smoke-tests.md)
   current issue record directly, regardless of state, and is the preferred MCP path for agents to
   inspect rejected, approved, committed, or completed issues without depending on list filters.
 
+## Agent Inspection Tooling
+
+- `get_agent_status` and `get_agent_logs` are directory-scoped inspection tools.
+- A session with either tool can inspect its own VM and any other VM visible in the same logical
+  `directory_path`.
+- Requests for VMs outside the caller's directory scope are rejected at the gateway boundary with a
+  scope-specific error.
+
 ## Relay Environment Configuration
 
 - `OPENAI_API_KEY` is required on the host for `agent-sandbox-openai-relay`.

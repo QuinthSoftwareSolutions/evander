@@ -228,6 +228,36 @@ def _filter_teams_messages_for_session(
     return messages, denied_count, next_cursor
 
 
+def _visible_vm_summaries_for_session(
+    context: RuntimeContext,
+    session: Any,
+    *,
+    vm_user: str,
+) -> list[Any]:
+    return AdminService(context.config.runtime_dir).list_vms(
+        include_inactive=True,
+        vm_user=vm_user,
+        directory_path=session.directory_path,
+        direct_only=True,
+    )
+
+
+def _require_vm_visible_in_session_directory(
+    context: RuntimeContext,
+    session: Any,
+    *,
+    vm_name: str,
+    vm_user: str,
+) -> Any:
+    summaries = _visible_vm_summaries_for_session(context, session, vm_user=vm_user)
+    summary = next((item for item in summaries if item.vm_name == vm_name), None)
+    if summary is None:
+        raise PolicyError(
+            f"VM '{vm_name}' is outside the session directory scope '{session.directory_path}'."
+        )
+    return summary
+
+
 def create_server(context: RuntimeContext) -> FastMCP:
     server = FastMCP(
         "Agent Sandbox Gateway",
@@ -704,24 +734,23 @@ def create_server(context: RuntimeContext) -> FastMCP:
         }
         try:
             session = context.policy.require_tool(resolved_session_id, ToolName.GET_AGENT_STATUS)
-            if session.vm_id and session.vm_id != vm_name:
-                raise ToolError(f"VM '{vm_name}' is not allowlisted for session '{resolved_session_id}'.")
-            summaries = AdminService(context.config.runtime_dir).list_vms(include_inactive=True, vm_user=vm_user)
-            summary = next((item for item in summaries if item.vm_name == vm_name), None)
-            if summary is None:
-                payload = {"vm_name": vm_name, "status": "unknown", "agent_state": "unknown"}
-            else:
-                payload = {
-                    "vm_name": vm_name,
-                    "status": _normalize_agent_status(summary.agent_state),
-                    "agent_state": summary.agent_state,
-                    "libvirt_state": summary.libvirt_state,
-                    "ip_address": summary.ip_address,
-                    "agent_repo_names": summary.agent_repo_names,
-                    "last_state_update_at": (
-                        summary.last_state_update_at.isoformat() if summary.last_state_update_at else None
-                    ),
-                }
+            summary = _require_vm_visible_in_session_directory(
+                context,
+                session,
+                vm_name=vm_name,
+                vm_user=vm_user,
+            )
+            payload = {
+                "vm_name": vm_name,
+                "status": _normalize_agent_status(summary.agent_state),
+                "agent_state": summary.agent_state,
+                "libvirt_state": summary.libvirt_state,
+                "ip_address": summary.ip_address,
+                "agent_repo_names": summary.agent_repo_names,
+                "last_state_update_at": (
+                    summary.last_state_update_at.isoformat() if summary.last_state_update_at else None
+                ),
+            }
             audit_success(
                 resolved_session_id,
                 ToolName.GET_AGENT_STATUS,
@@ -767,8 +796,12 @@ def create_server(context: RuntimeContext) -> FastMCP:
         try:
             context.policy.require_tool(resolved_session_id, ToolName.GET_AGENT_LOGS)
             session = context.policy.get_session(resolved_session_id)
-            if session.vm_id and session.vm_id != vm_name:
-                raise ToolError(f"VM '{vm_name}' is not allowlisted for session '{resolved_session_id}'.")
+            _require_vm_visible_in_session_directory(
+                context,
+                session,
+                vm_name=vm_name,
+                vm_user=vm_user,
+            )
             safe_lines = max(1, min(lines, 1000))
             logs = AdminService(context.config.runtime_dir).get_agent_log_snapshot(
                 vm_name,
