@@ -110,6 +110,90 @@ printf '%s\\n' "$*" >> "{attach_log}"
     assert "session-123" in attach_args
 
 
+def test_open_agent_pr_defaults_origin_branch_to_feature_issue_when_session_encodes_issue(
+    tmp_path: Path,
+) -> None:
+    script = Path(__file__).resolve().parents[1] / "scripts/open_agent_pr.sh"
+    host_repo = tmp_path / "repo"
+    host_repo.mkdir()
+    (host_repo / ".git").mkdir()
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    git_log = tmp_path / "git.log"
+
+    (fake_bin / "git").write_text(
+        f"""#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> "{git_log}"
+args=("$@")
+if [[ "${{args[0]}}" == "-C" ]]; then
+  args=("${{args[@]:2}}")
+fi
+while [[ "${{args[0]:-}}" == "-c" ]]; do
+  args=("${{args[@]:2}}")
+done
+case "${{args[0]:-}}" in
+  rev-parse)
+    ;;
+  remote)
+    echo "https://github.com/example/repo.git"
+    ;;
+  push)
+    ;;
+  symbolic-ref)
+    echo "origin/main"
+    ;;
+  log)
+    echo "Automated PR title"
+    ;;
+  *)
+    echo "unexpected git invocation: $*" >&2
+    exit 1
+    ;;
+esac
+""",
+        encoding="utf-8",
+    )
+    (fake_bin / "gh").write_text(
+        "#!/usr/bin/env bash\nset -euo pipefail\necho \"https://github.com/example/repo/pull/42\"\n",
+        encoding="utf-8",
+    )
+    (fake_bin / "agent-sandbox-cli").write_text(
+        "#!/usr/bin/env bash\nset -euo pipefail\n",
+        encoding="utf-8",
+    )
+    os.chmod(fake_bin / "git", 0o755)
+    os.chmod(fake_bin / "gh", 0o755)
+    os.chmod(fake_bin / "agent-sandbox-cli", 0o755)
+
+    env = os.environ.copy()
+    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+    env["AGENT_SANDBOX_PR_MAP_PATH"] = str(tmp_path / "runtime" / "pr-map.json")
+    env["AGENT_SANDBOX_CLI_BIN"] = str(fake_bin / "agent-sandbox-cli")
+
+    result = subprocess.run(
+        [str(script), "--create-pr", str(host_repo), "review/issue-14084-abc/work"],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    lines = [line for line in result.stdout.splitlines() if line.startswith("AGENT_PR_RESULT ")]
+    assert lines, result.stdout
+    payload = json.loads(lines[-1].split(" ", 1)[1])
+    assert payload["origin_branch"] == "feature/issue-14084"
+    assert payload["session_id"] == "issue-14084-abc"
+    assert payload["work_item_id"] == "14084"
+
+    commands = git_log.read_text(encoding="utf-8").splitlines()
+    assert any(
+        "push origin review/issue-14084-abc/work:refs/heads/feature/issue-14084" in command
+        for command in commands
+    )
+
+
 def test_open_agent_pr_refreshes_review_branch_before_force_with_lease_push(tmp_path: Path) -> None:
     script = Path(__file__).resolve().parents[1] / "scripts/open_agent_pr.sh"
     host_repo = tmp_path / "repo"
@@ -644,6 +728,7 @@ printf '%s\\n' "$*" >> "{attach_log}"
     assert lines, result.stdout
     payload = json.loads(lines[-1].split(" ", 1)[1])
     assert payload["provider"] == "azure_devops"
+    assert payload["origin_branch"] == "feature/issue-14084"
     assert payload["work_item_id"] == "14084"
     logged = python_log.read_text(encoding="utf-8")
     assert "WORK_ITEM_ID=14084" in logged

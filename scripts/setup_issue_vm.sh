@@ -546,6 +546,7 @@ git -C "${TARGET_DIR}" remote add agent "${REMOTE_URL}"
 git -C "${TARGET_DIR}" config user.name "Truman Bot"
 git -C "${TARGET_DIR}" config user.email "truman@quinth.se"
 git -C "${TARGET_DIR}" config agent-sandbox.sessionId "${SESSION_ID}"
+git -C "${TARGET_DIR}" config agent-sandbox.issueNumber "${ISSUE_NUMBER}"
 git -C "${TARGET_DIR}" config agent-sandbox.branchSuffix "${AGENT_BRANCH_SUFFIX}"
 install -d -m 0755 "${TARGET_DIR}/.agent-sandbox/bin"
 python3 - "${TARGET_DIR}/.agent-sandbox/bin/agent-pr-note" "${AGENT_PR_NOTE_HELPER_B64}" <<'PY'
@@ -559,7 +560,7 @@ target_path.write_bytes(base64.b64decode(sys.argv[2]))
 os.chmod(target_path, 0o755)
 PY
 git -C "${TARGET_DIR}" config alias.agent-pr-note '!f(){ repo_root=$(git rev-parse --show-toplevel); "${repo_root}/.agent-sandbox/bin/agent-pr-note" "$@"; }; f'
-git -C "${TARGET_DIR}" config alias.push-agent '!f(){ session_id=${SESSION_ID:-$(git config --get agent-sandbox.sessionId || true)}; if [ -z "${session_id}" ]; then echo "SESSION_ID is not set; refusing ambiguous agent push." >&2; return 1; fi; suffix_source=${AGENT_BRANCH_SUFFIX:-$(git config --get agent-sandbox.branchSuffix || true)}; if [ -z "${suffix_source}" ]; then suffix_source=${HOSTNAME:-}; fi; suffix=$(printf "%s" "${suffix_source}" | tr "[:upper:]" "[:lower:]" | tr -cs "a-z0-9._-" "-" | sed "s/^-*//;s/-*$//"); if [ -z "${suffix}" ]; then echo "AGENT_BRANCH_SUFFIX/HOSTNAME is empty; refusing ambiguous agent push." >&2; return 1; fi; repo_root=$(git rev-parse --show-toplevel); "${repo_root}/.agent-sandbox/bin/agent-pr-note" ensure-head; branch=$(git rev-parse --abbrev-ref HEAD); git push agent HEAD:refs/heads/agents/${session_id}/${branch}-${suffix} refs/notes/agent-pr; }; f'
+git -C "${TARGET_DIR}" config alias.push-agent '!f(){ session_id=${SESSION_ID:-$(git config --get agent-sandbox.sessionId || true)}; if [ -z "${session_id}" ]; then echo "SESSION_ID is not set; refusing ambiguous agent push." >&2; return 1; fi; expected_issue_number=$(git config --get agent-sandbox.issueNumber || true); if [ -n "${expected_issue_number}" ]; then case "${session_id}" in issue-${expected_issue_number}|issue-${expected_issue_number}-*) ;; *) echo "SESSION_ID (${session_id}) does not match expected issue ${expected_issue_number}; refusing agent push." >&2; return 1 ;; esac; fi; suffix_source=${AGENT_BRANCH_SUFFIX:-$(git config --get agent-sandbox.branchSuffix || true)}; if [ -z "${suffix_source}" ]; then suffix_source=${HOSTNAME:-}; fi; suffix=$(printf "%s" "${suffix_source}" | tr "[:upper:]" "[:lower:]" | tr -cs "a-z0-9._-" "-" | sed "s/^-*//;s/-*$//"); if [ -z "${suffix}" ]; then echo "AGENT_BRANCH_SUFFIX/HOSTNAME is empty; refusing ambiguous agent push." >&2; return 1; fi; repo_root=$(git rev-parse --show-toplevel); "${repo_root}/.agent-sandbox/bin/agent-pr-note" ensure-head; branch=$(git rev-parse --abbrev-ref HEAD); git push agent HEAD:refs/heads/agents/${session_id}/${branch}-${suffix} refs/notes/agent-pr; }; f'
 
 if [[ "${BOOTSTRAP_FRONTEND_DEPS:-0}" == "1" ]]; then
   python3 - "$TARGET_DIR" "${FRONTEND_INSTALL_ROOTS_JSON:-[]}" <<'PY'

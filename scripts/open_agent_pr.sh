@@ -193,6 +193,34 @@ extract_issue_number() {
   return 1
 }
 
+derive_origin_branch() {
+  local explicit_origin_branch="$1"
+  local local_branch="$2"
+  local session_id="$3"
+  local work_item_id="$4"
+  local issue_number=""
+
+  if [[ -n "${explicit_origin_branch}" ]]; then
+    printf '%s\n' "${explicit_origin_branch}"
+    return 0
+  fi
+
+  if [[ -n "${work_item_id}" ]]; then
+    issue_number="$(extract_issue_number "${work_item_id}" || true)"
+  fi
+
+  if [[ -z "${issue_number}" && -n "${session_id}" ]]; then
+    issue_number="$(extract_issue_number "${session_id}" || true)"
+  fi
+
+  if [[ -n "${issue_number}" ]]; then
+    printf 'feature/issue-%s\n' "${issue_number}"
+    return 0
+  fi
+
+  printf '%s\n' "${local_branch}"
+}
+
 infer_provider_from_url() {
   local origin_url="$1"
   case "${origin_url}" in
@@ -434,8 +462,16 @@ path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="
 PY
 }
 
+if [[ -z "${SESSION_ID}" ]]; then
+  SESSION_ID="$(derive_session_id "${LOCAL_BRANCH}" || true)"
+fi
+
+if [[ -z "${WORK_ITEM_ID}" && -n "${SESSION_ID}" ]]; then
+  WORK_ITEM_ID="$(extract_issue_number "${SESSION_ID}" || true)"
+fi
+
 if [[ -z "${ORIGIN_BRANCH}" ]]; then
-  ORIGIN_BRANCH="${LOCAL_BRANCH}"
+  ORIGIN_BRANCH="$(derive_origin_branch "${ORIGIN_BRANCH}" "${LOCAL_BRANCH}" "${SESSION_ID}" "${WORK_ITEM_ID}")"
 fi
 
 git -C "${HOST_REPO_PATH}" rev-parse --verify "${LOCAL_BRANCH}^{commit}" >/dev/null
@@ -535,10 +571,6 @@ fi
 
 if [[ -z "${SESSION_ID}" ]]; then
   SESSION_ID="$(derive_session_id "${ORIGIN_BRANCH}" || derive_session_id "${LOCAL_BRANCH}" || true)"
-fi
-
-if [[ -z "${WORK_ITEM_ID}" && -n "${SESSION_ID}" ]]; then
-  WORK_ITEM_ID="$(extract_issue_number "${SESSION_ID}" || true)"
 fi
 
 if [[ -n "${WORK_ITEM_ID}" && ! "${WORK_ITEM_ID}" =~ ^[0-9]+$ ]]; then

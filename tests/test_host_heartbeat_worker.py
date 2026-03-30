@@ -24,6 +24,8 @@ from agent_sandbox.host_heartbeat_worker import (
     build_host_heartbeat_worker,
 )
 from agent_sandbox.models import SessionManifest, ToolName
+from agent_sandbox.pr_feedback_worker import FeedbackEnvelope, PrFeedbackStore
+from agent_sandbox.services import PrFeedbackService
 from agent_sandbox.worker_directory_context import ShadowDomainContext, WorkerDirectoryContext
 
 UTC = timezone.utc
@@ -1040,3 +1042,89 @@ def test_wake_bindings_invokes_resume_script_for_persisted_unread_feedback(tmp_p
     worker.run_once()
 
     assert len(captured) == 1
+
+
+def test_wake_bindings_skips_resume_for_ignored_feedback(tmp_path, monkeypatch) -> None:
+    now = datetime.now(UTC)
+    sessions = {
+        "active-a": _build_manifest(
+            "active-a",
+            expires_at=now + timedelta(hours=2),
+            metadata={"pr_feedback_streams": [{"provider": "github", "repo": "org/repo", "pr_id": "17"}]},
+        ),
+    }
+
+    class _FeedbackWorker:
+        def __init__(self, store) -> None:  # noqa: ANN001
+            self.store = store
+
+        def poll_once(self, **kwargs):  # noqa: ANN003
+            return []
+
+    captured: list[list[str]] = []
+
+    def _fake_run(cmd, check, capture_output, text, timeout):  # noqa: ANN001
+        captured.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("agent_sandbox.host_heartbeat_worker._probe_agent_dispatch_state", lambda **kwargs: "idle")
+    monkeypatch.setattr("agent_sandbox.host_heartbeat_worker.subprocess.run", _fake_run)
+
+    store_path = tmp_path / "pr-feedback-store.json"
+    store = PrFeedbackStore(store_path)
+    assert store.add_feedback_if_new(
+        FeedbackEnvelope(
+            feedback_id="github:review_comment:42",
+            provider="github",
+            repo="org/repo",
+            pr_id="17",
+            thread_id="11",
+            comment_id="42",
+            author="reviewer",
+            body="Already handled",
+            created_at=datetime(2026, 1, 11, 12, 0, 0, tzinfo=timezone.utc),
+        )
+    )
+    ignored_path = tmp_path / "ignored-feedback-ids.json"
+    ignored_path.write_text(
+        json.dumps(
+            {
+                "feedback_ids": [
+                    {"feedback_id": "github:review_comment:42", "ignored_at": "2026-01-11T12:05:00Z"}
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    pr_feedback_service = PrFeedbackService(store_path, ignored_feedback_store_path=ignored_path)
+    runtime = SimpleNamespace(
+        sessions=SimpleNamespace(read_all=lambda: sessions),
+        pr_feedback_service=pr_feedback_service,
+    )
+    resume_script = tmp_path / "resume_issue_agent.sh"
+    resume_script.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    resume_script.chmod(0o755)
+    worker = HostHeartbeatWorker(
+        config=SimpleNamespace(
+            host_heartbeat_http_timeout_seconds=0.1,
+            host_heartbeat_poll_interval_seconds=30.0,
+            host_heartbeat_jitter_seconds=0.0,
+            host_heartbeat_cooldown_seconds=10.0,
+            host_heartbeat_stream_conflict_policy="fanout",
+            host_heartbeat_session_cooldown_path=tmp_path / "cooldowns.json",
+            host_busy_check_script_path=tmp_path / "check_busy.sh",
+            host_resume_script_path=resume_script,
+            host_heartbeat_resume_prompt="wake up now",
+            host_heartbeat_vm_user="agent",
+            host_heartbeat_wake_state_path=tmp_path / "wake-state.json",
+            host_heartbeat_resume_timeout_seconds=12.0,
+            pr_map_path=tmp_path / "missing-pr-map.json",
+        ),
+        runtime=runtime,
+        feedback_worker=_FeedbackWorker(store),
+        adapters={"github": object()},
+    )
+
+    worker.run_once()
+
+    assert captured == []

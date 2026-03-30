@@ -76,6 +76,19 @@ def test_has_pending_feedback_uses_persisted_session_read_cursor(tmp_path: Path)
     assert second.next_cursor == first.next_cursor
 
 
+def test_has_pending_feedback_does_not_advance_session_cursor(tmp_path: Path) -> None:
+    store_path = tmp_path / "pr-feedback-store.json"
+    _write_store(store_path)
+    service = PrFeedbackService(store_path)
+    stream = [{"provider": "github", "repo": "org/repo", "pr_id": "17"}]
+
+    response = service.has_pending_feedback(streams=stream, session_id="session-1")
+
+    assert response.pending is True
+    unread = service.list_unread_feedback(streams=stream, session_id="session-1", limit=1)
+    assert [item.feedback_id for item in unread.feedback] == ["github:review:1"]
+
+
 def test_list_unread_feedback_returns_full_records_for_allowed_streams(tmp_path: Path) -> None:
     store_path = tmp_path / "pr-feedback-store.json"
     _write_store(store_path)

@@ -357,7 +357,13 @@ class PrFeedbackService:
         session_id: str | None = None,
         cursor: str | None = None,
     ) -> HasPendingFeedbackResponse:
-        feedback = self.list_unread_feedback(streams=streams, session_id=session_id, cursor=cursor)
+        feedback = self._list_feedback(
+            streams=streams,
+            session_id=session_id,
+            cursor=cursor,
+            limit=None,
+            persist_session_cursor=False,
+        )
         return HasPendingFeedbackResponse(
             pending=bool(feedback.feedback),
             next_cursor=feedback.next_cursor,
@@ -376,6 +382,7 @@ class PrFeedbackService:
             session_id=session_id,
             cursor=cursor,
             limit=limit,
+            persist_session_cursor=True,
         )
 
     def list_all_feedback(
@@ -389,6 +396,7 @@ class PrFeedbackService:
             session_id=None,
             cursor=None,
             limit=limit,
+            persist_session_cursor=False,
         )
 
     def _list_feedback(
@@ -398,6 +406,7 @@ class PrFeedbackService:
         session_id: str | None,
         cursor: str | None,
         limit: int | None,
+        persist_session_cursor: bool,
     ) -> ListUnreadFeedbackResponse:
         payload = self._read_store()
         allowed_streams = {
@@ -436,7 +445,7 @@ class PrFeedbackService:
             if items
             else self._max_cursors(stream_cursors.values())
         )
-        if session_id is not None:
+        if persist_session_cursor and session_id is not None:
             for stream in streams:
                 self.store.advance_session_cursor(
                     session_id,
@@ -668,8 +677,6 @@ class PrReplyService:
             raise ValueError(
                 f"PR feedback provider {provider_name!r} is not configured for this gateway instance"
             )
-        prefixed_body_text = _prefix_feedback_reply(body_text)
-
         normalized_key = idempotency_key.strip() if idempotency_key else None
         cache_key = (
             f"{provider_name}:{repo}:{pr_id}:{normalized_key}" if normalized_key else None
@@ -686,7 +693,7 @@ class PrReplyService:
             pr_id=pr_id,
             thread_id=thread_id,
             comment_id=comment_id,
-            body_text=prefixed_body_text,
+            body_text=body_text.strip(),
         )
         response.idempotency_key = normalized_key
         self._record_ignored_feedback_id(response)
@@ -742,16 +749,6 @@ def _feedback_id_for_reply_response(response: PostPrFeedbackReplyResponse) -> st
     if response.provider == "azure_devops" and response.thread_id:
         return f"azure_devops:thread_comment:{response.thread_id}:{response.reply_id}"
     return None
-
-
-def _prefix_feedback_reply(body_text: str) -> str:
-    normalized = body_text.strip()
-    prefix = "[Truman] "
-    if normalized.startswith(prefix):
-        return normalized
-    return f"{prefix}{normalized}"
-
-
 def _normalize_ignored_feedback_payload(payload: dict[str, Any]) -> tuple[dict[str, Any], set[str], bool]:
     now = datetime.now(UTC)
     cutoff = now - _IGNORED_FEEDBACK_RETENTION

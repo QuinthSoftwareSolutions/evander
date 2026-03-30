@@ -75,5 +75,13 @@ def test_service_templates_use_optional_shared_secrets_env() -> None:
     assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in nuget
     assert "EnvironmentFile=-__PROJECT_DIR__/config/host-heartbeat.env" in heartbeat
     assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in heartbeat
+    assert "Environment=ADO_WORKER_LOG_LEVEL=INFO" in (
+        repo / "systemd" / "agent-sandbox-ado-worker.service.template"
+    ).read_text(encoding="utf-8")
+    assert "--log-level ${ADO_WORKER_LOG_LEVEL}" in (
+        repo / "systemd" / "agent-sandbox-ado-worker.service.template"
+    ).read_text(encoding="utf-8")
+    assert "Environment=ISSUE_ORCHESTRATOR_LOG_LEVEL=INFO" in orchestrator
+    assert "--log-level ${ISSUE_ORCHESTRATOR_LOG_LEVEL}" in orchestrator
     assert "ExecStart=__PROJECT_DIR__/.venv/bin/agent-sandbox-issue-orchestrator" in orchestrator
     assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in orchestrator

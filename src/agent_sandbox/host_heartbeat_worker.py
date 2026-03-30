@@ -420,6 +420,19 @@ class HostHeartbeatWorker:
         return False
 
     def _binding_has_unread_feedback(self, *, binding: StreamSessionBinding, stream: FeedbackStream) -> bool:
+        pr_feedback_service = getattr(self.runtime, "pr_feedback_service", None)
+        if pr_feedback_service is not None:
+            has_pending_feedback = getattr(pr_feedback_service, "has_pending_feedback", None)
+            if has_pending_feedback is not None:
+                response = has_pending_feedback(
+                    session_id=binding.session_id,
+                    streams=[{"provider": stream.provider, "repo": stream.repo, "pr_id": stream.pr_id}],
+                )
+                pending = getattr(response, "pending", None)
+                if pending is not None:
+                    return bool(pending)
+                if isinstance(response, dict):
+                    return bool(response.get("pending"))
         store = getattr(self.feedback_worker, "store", None)
         if store is None:
             return False

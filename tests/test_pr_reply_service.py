@@ -70,10 +70,10 @@ def test_pr_reply_service_idempotency_reuses_first_response(tmp_path: Path) -> N
     assert first.status == "posted"
     assert second.status == "deduplicated"
     assert provider.calls == 1
-    assert provider.body_texts == ["[Truman] done"]
+    assert provider.body_texts == ["done"]
 
 
-def test_pr_reply_service_prefixes_feedback_replies_once(tmp_path: Path) -> None:
+def test_pr_reply_service_trims_feedback_replies_before_posting(tmp_path: Path) -> None:
     class StubProvider:
         def __init__(self) -> None:
             self.body_text: str | None = None
@@ -104,10 +104,10 @@ def test_pr_reply_service_prefixes_feedback_replies_once(tmp_path: Path) -> None
         pr_id="17",
         thread_id=None,
         comment_id="7",
-        body_text="[Truman] done",
+        body_text="done",
     )
 
-    assert provider.body_text == "[Truman] done"
+    assert provider.body_text == "done"
 
 
 def test_pr_reply_service_records_ignored_feedback_id_for_github_reply(tmp_path: Path) -> None:

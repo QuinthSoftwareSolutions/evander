@@ -13,3 +13,4 @@ def test_shared_nuget_cache_paths_are_documented_in_scripts() -> None:
     assert '--filesystem "${VIRT_INSTALL_FILESYSTEM_ARG}"' in launch_script
     assert "__NUGET_CACHE_TAG__ /opt/agent-sandbox/nuget-cache-ro __NUGET_CACHE_FS_TYPE__ __NUGET_CACHE_MOUNT_OPTIONS__ 0 0" in cloud_init
     assert 'SHARED_NUGET_CACHE_DIR="${SHARED_NUGET_CACHE_DIR:-/var/lib/libvirt/images/agent-sandbox/nuget-cache/global-packages}"' in prewarm_script
+    assert "-p:NuGetAudit=false" in prewarm_script

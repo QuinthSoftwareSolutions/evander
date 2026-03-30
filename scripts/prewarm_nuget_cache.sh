@@ -68,7 +68,7 @@ for target in "$@"; do
   NUGET_HTTP_CACHE_PATH="${NUGET_HTTP_CACHE_DIR}" \
   NUGET_PLUGINS_CACHE_PATH="${NUGET_PLUGIN_CACHE_DIR}" \
   TMPDIR="${NUGET_TEMP_DIR}" \
-  dotnet restore "${target}" --configfile "${NUGET_CONFIG_FILE}" -v minimal
+  dotnet restore "${target}" --configfile "${NUGET_CONFIG_FILE}" -v minimal -p:NuGetAudit=false
 done
 
 echo "Prewarmed shared NuGet cache at ${SHARED_NUGET_CACHE_DIR}"
