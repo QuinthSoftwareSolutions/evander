@@ -1916,12 +1916,12 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
     def _resolve_local_issue_record(self, issue_identifier: str) -> LocalIssueRecord:
         candidate = Path(issue_identifier)
         if candidate.is_file():
+            candidate_path = candidate.resolve()
+            for issue in self.local_issue_store.read_all().values():
+                if issue.yaml_path and Path(issue.yaml_path).resolve() == candidate_path:
+                    return issue
             issue_number = _read_issue_number_from_yaml(candidate)
-            issue_key = self._resolve_local_issue_key(issue_number)
-            issue = self.local_issue_store.get(issue_key) if issue_key is not None else None
-            if issue is None:
-                raise ValueError(f"Unknown local issue: {issue_number}")
-            return issue
+            raise ValueError(f"Unknown local issue: {issue_number}")
 
         issue_key = self._resolve_local_issue_key(issue_identifier)
         if issue_key is not None:
@@ -2553,12 +2553,19 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
         issue_input = issue
         issue_number = _resolve_issue_number(issue_input)
         local_issue: LocalIssueRecord | None = None
-        try:
+        candidate_issue_path = Path(issue_input)
+        if candidate_issue_path.is_file():
             local_issue = self._resolve_local_issue_record(issue_input)
             issue_number = local_issue.issue_number
             issue_input = local_issue.yaml_path
-        except ValueError:
-            pass
+        else:
+            try:
+                local_issue = self._resolve_local_issue_record(issue_input)
+                issue_number = local_issue.issue_number
+                issue_input = local_issue.yaml_path
+            except ValueError as exc:
+                if not str(exc).startswith("Unknown local issue identifier: "):
+                    raise
         resolved_session_id = session_id or _default_issue_session_id(issue_number)
         resolved_vm_name = f"vm-{issue_number}"
         normalized_directory_path = self._normalize_directory_path(
@@ -2594,7 +2601,10 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
         self.runtime.sessions.put(resolved_session_id, manifest)
 
         def _issue_vm_failure(message: str) -> VmActionResult:
-            preserved_vm = _dominfo_field(resolved_vm_name, "State") is not None
+            try:
+                preserved_vm = _dominfo_field(resolved_vm_name, "State") is not None
+            except RuntimeError:
+                preserved_vm = False
             if not preserved_vm:
                 self.runtime.sessions.delete(resolved_session_id)
             detail = message
