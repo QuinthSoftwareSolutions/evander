@@ -334,6 +334,23 @@ def test_list_issues_sorts_issue_numbers_numerically(tmp_path: Path) -> None:
     assert [issue.issue_number for issue in issues] == ["2", "10"]
 
 
+def test_list_local_issues_supports_state_filters(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    active_issue = service.create_local_issue(title="Active", body="body")
+    completed_issue = service.create_local_issue(title="Completed", body="body")
+    closed_issue = service.create_local_issue(title="Closed", body="body")
+
+    service.update_issue(active_issue.issue_number, state="In Progress")
+    service.update_issue(completed_issue.issue_number, state="Completed")
+    service.update_issue(closed_issue.issue_number, state="Closed")
+
+    active_only = service.list_local_issues(exclude_states={"Completed", "Closed"})
+    completed_only = service.list_local_issues(states={"Completed"})
+
+    assert [issue.title for issue in active_only] == ["Active"]
+    assert [issue.title for issue in completed_only] == ["Completed"]
+
+
 def test_list_approval_requests_filters_health_and_redacts_payload(tmp_path: Path) -> None:
     service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
     created = service.create_directory_child("root", "team")

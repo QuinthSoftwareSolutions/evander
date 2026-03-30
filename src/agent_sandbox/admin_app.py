@@ -26,6 +26,9 @@ from .directory_config import (
 )
 from .models import ApprovalStatus
 ADMIN_APP_DEFAULT_RUNTIME_DIR = Path("runtime")
+_ACTIVE_ISSUE_FILTER_LABEL = "Active"
+_ALL_ISSUE_FILTER_LABEL = "All"
+_INACTIVE_ISSUE_STATES = frozenset({"Completed", "Closed"})
 
 try:
     from PySide6.QtCore import QObject, QRunnable, QSettings, QThreadPool, QTimer, Qt, Signal
@@ -943,6 +946,9 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self.issue_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.issue_table.itemSelectionChanged.connect(self._on_issue_selection_changed)
         self.issue_table.itemDoubleClicked.connect(self._on_issue_activated)
+        self.issue_state_filter = QComboBox()
+        self.issue_state_filter.addItems([_ACTIVE_ISSUE_FILTER_LABEL, _ALL_ISSUE_FILTER_LABEL, *ISSUE_STATES])
+        self.issue_state_filter.currentIndexChanged.connect(self.refresh_issues)
 
         self.worker_table = QTableWidget(0, 8)
         self.worker_table.setHorizontalHeaderLabels(
@@ -1167,6 +1173,8 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         new_issue_button.clicked.connect(self.show_new_issue_dialog)
         issue_toolbar.addWidget(new_issue_button)
         issue_toolbar.addWidget(refresh_issues_button)
+        issue_toolbar.addWidget(QLabel("State"))
+        issue_toolbar.addWidget(self.issue_state_filter)
         issue_toolbar.addStretch(1)
         self.issue_selection_hint = QLabel("No issue selected")
         issue_toolbar.addWidget(self.issue_selection_hint)
@@ -1681,9 +1689,15 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         )
 
     def refresh_issues(self) -> None:
+        states, exclude_states = self._selected_issue_state_filters()
         self._start_refresh(
             "issues",
-            lambda: self.service.list_local_issues(directory_path=self._selected_directory_path, direct_only=True),
+            lambda: self.service.list_local_issues(
+                directory_path=self._selected_directory_path,
+                direct_only=True,
+                states=states,
+                exclude_states=exclude_states,
+            ),
             self._apply_issue_refresh,
         )
 
@@ -1713,6 +1727,17 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
                 self.issue_table.setCurrentCell(-1, -1)
         self.issue_table.blockSignals(False)
         self.update_issue_action_bar()
+
+    def _selected_issue_state_filters(self) -> tuple[set[str] | None, set[str] | None]:
+        state_text = self.issue_state_filter.currentText().strip().lower()
+        if not state_text or state_text == _ALL_ISSUE_FILTER_LABEL.lower():
+            return None, None
+        if state_text == _ACTIVE_ISSUE_FILTER_LABEL.lower():
+            return None, set(_INACTIVE_ISSUE_STATES)
+        for issue_state in ISSUE_STATES:
+            if issue_state.lower() == state_text:
+                return {issue_state}, None
+        return None, None
 
     def _selected_approval_status_filter(self) -> set[ApprovalStatus] | None:
         status_text = self.approval_status_filter.currentText().strip().lower()

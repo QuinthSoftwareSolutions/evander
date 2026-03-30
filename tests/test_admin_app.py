@@ -109,6 +109,52 @@ def test_directory_config_domains_include_ado_worker_and_issue_setup_tabs() -> N
         assert field_name in admin_app.CONFIG_FIELD_TOOLTIPS
 
 
+def test_selected_issue_state_filters_support_active_all_and_specific_states() -> None:
+    active_window = SimpleNamespace(issue_state_filter=SimpleNamespace(currentText=lambda: "Active"))
+    all_window = SimpleNamespace(issue_state_filter=SimpleNamespace(currentText=lambda: "All"))
+    specific_window = SimpleNamespace(issue_state_filter=SimpleNamespace(currentText=lambda: "Completed"))
+
+    assert admin_app.MainWindow._selected_issue_state_filters(active_window) == (
+        None,
+        {"Completed", "Closed"},
+    )
+    assert admin_app.MainWindow._selected_issue_state_filters(all_window) == (None, None)
+    assert admin_app.MainWindow._selected_issue_state_filters(specific_window) == ({"Completed"}, None)
+
+
+def test_refresh_issues_passes_selected_state_filters() -> None:
+    captured: dict[str, object] = {}
+
+    def _list_local_issues(**kwargs):
+        captured.update(kwargs)
+        return []
+
+    def _start_refresh(key, fn, on_success):
+        captured["key"] = key
+        captured["issues"] = fn()
+        captured["on_success"] = on_success
+
+    window = SimpleNamespace(
+        _selected_directory_path="root/team-a",
+        _selected_issue_state_filters=lambda: (None, {"Completed", "Closed"}),
+        service=SimpleNamespace(list_local_issues=_list_local_issues),
+        _start_refresh=_start_refresh,
+        _apply_issue_refresh="apply",
+    )
+
+    admin_app.MainWindow.refresh_issues(window)
+
+    assert captured == {
+        "key": "issues",
+        "directory_path": "root/team-a",
+        "direct_only": True,
+        "states": None,
+        "exclude_states": {"Completed", "Closed"},
+        "issues": [],
+        "on_success": "apply",
+    }
+
+
 def test_worker_global_settings_tooltips_include_ado_and_host_heartbeat_fields() -> None:
     for field_name in {
         "directories",

@@ -1894,8 +1894,15 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
         *,
         directory_path: str | None = None,
         direct_only: bool = False,
+        states: set[str] | None = None,
+        exclude_states: set[str] | None = None,
     ) -> list[LocalIssueRecord]:
-        return self.list_issues(directory_path=directory_path, direct_only=direct_only)
+        return self.list_issues(
+            directory_path=directory_path,
+            direct_only=direct_only,
+            states=states,
+            exclude_states=exclude_states,
+        )
 
     def _extract_local_issue_id_candidate(self, value: str) -> str | None:
         normalized = value.strip()
@@ -1982,12 +1989,26 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
         *,
         directory_path: str | None = None,
         direct_only: bool = False,
+        states: set[str] | None = None,
+        exclude_states: set[str] | None = None,
     ) -> list[LocalIssueRecord]:
         normalized_directory_path = self._normalize_directory_path(directory_path)
+        normalized_states = {value.strip() for value in (states or set()) if value.strip()} or None
+        normalized_excluded_states = {
+            value.strip() for value in (exclude_states or set()) if value.strip()
+        } or None
         issues = sorted(self.local_issue_store.read_all().values(), key=_issue_number_sort_key)
+        filtered: list[LocalIssueRecord] = []
+        for issue in issues:
+            issue_state = (issue.state or "").strip()
+            if normalized_states is not None and issue_state not in normalized_states:
+                continue
+            if normalized_excluded_states is not None and issue_state in normalized_excluded_states:
+                continue
+            filtered.append(issue)
         if direct_only or directory_path is not None:
-            return [issue for issue in issues if issue.directory_path == normalized_directory_path]
-        return issues
+            return [issue for issue in filtered if issue.directory_path == normalized_directory_path]
+        return filtered
 
     def _refresh_approval_request(self, request: ApprovalRequest) -> ApprovalRequest:
         session = self.runtime.sessions.get(request.session_id)
