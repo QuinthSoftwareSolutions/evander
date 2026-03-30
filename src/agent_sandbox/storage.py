@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from threading import Lock
+from threading import RLock
 from typing import Generic, TypeVar
 
 from pydantic import BaseModel
@@ -14,7 +14,7 @@ class JsonStore(Generic[T]):
     def __init__(self, path: Path, model: type[T]) -> None:
         self.path = path
         self.model = model
-        self._lock = Lock()
+        self._lock = RLock()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         if not self.path.exists():
             self.path.write_text("{}", encoding="utf-8")
@@ -33,11 +33,13 @@ class JsonStore(Generic[T]):
         return self.read_all().get(key)
 
     def put(self, key: str, value: T) -> None:
-        items = self.read_all()
-        items[key] = value
-        self.write_all(items)
+        with self._lock:
+            items = self.read_all()
+            items[key] = value
+            self.write_all(items)
 
     def delete(self, key: str) -> None:
-        items = self.read_all()
-        items.pop(key, None)
-        self.write_all(items)
+        with self._lock:
+            items = self.read_all()
+            items.pop(key, None)
+            self.write_all(items)

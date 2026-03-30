@@ -149,6 +149,13 @@ def _issue_priority_sort_key(issue: LocalIssueRecord) -> tuple[int, datetime, da
     )
 
 
+def _issue_number_sort_key(issue: LocalIssueRecord) -> tuple[int, int | str, str]:
+    normalized = issue.issue_number.strip()
+    if normalized.isdigit():
+        return (0, int(normalized), issue.issue_id)
+    return (1, normalized, issue.issue_id)
+
+
 def _extract_issue_number(value: str | None) -> str | None:
     if not value:
         return None
@@ -1379,6 +1386,7 @@ class AdminService:
         session_id: str,
         repo_name: str,
         issue_setup: EffectiveIssueSetupConfig,
+        issue_number: str | None = None,
         vm_ip: str | None = None,
     ) -> str:
         bootstrap_git_script = self.project_dir / "scripts" / "bootstrap_git_vm.sh"
@@ -1403,6 +1411,9 @@ class AdminService:
 
         remote_url = f"ssh://{issue_setup.git_ssh_alias}{issue_setup.git_root}/{repo_name}.git"
         guest_repo_root = f"/home/{vm_user}/{repo_name}"
+        issue_config_line = ""
+        if issue_number:
+            issue_config_line = f'git -C "${{TARGET_DIR}}" config agent-sandbox.issueNumber "{issue_number}"\n'
         remote_script = f"""
 set -euo pipefail
 . ~/.profile
@@ -1418,8 +1429,7 @@ git -C "${{TARGET_DIR}}" remote add agent "${{REMOTE_URL}}"
 git -C "${{TARGET_DIR}}" config user.name "Truman Bot"
 git -C "${{TARGET_DIR}}" config user.email "truman@quinth.se"
 git -C "${{TARGET_DIR}}" config agent-sandbox.sessionId "${{SESSION_ID}}"
-git -C "${{TARGET_DIR}}" config agent-sandbox.issueNumber "{issue_number}"
-git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_ID:-$(git config --get agent-sandbox.sessionId || true)}}; if [ -z "${{session_id}}" ]; then echo "SESSION_ID is not set; refusing ambiguous agent push." >&2; return 1; fi; expected_issue_number=$(git config --get agent-sandbox.issueNumber || true); if [ -n "${{expected_issue_number}}" ]; then case "${{session_id}}" in issue-${{expected_issue_number}}|issue-${{expected_issue_number}}-*) ;; *) echo "SESSION_ID (${{session_id}}) does not match expected issue ${{expected_issue_number}}; refusing agent push." >&2; return 1 ;; esac; fi; branch=$(git rev-parse --abbrev-ref HEAD); git push agent HEAD:refs/heads/agents/${{session_id}}/${{branch}}; }}; f'
+{issue_config_line}git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_ID:-$(git config --get agent-sandbox.sessionId || true)}}; if [ -z "${{session_id}}" ]; then echo "SESSION_ID is not set; refusing ambiguous agent push." >&2; return 1; fi; expected_issue_number=$(git config --get agent-sandbox.issueNumber || true); if [ -n "${{expected_issue_number}}" ]; then case "${{session_id}}" in issue-${{expected_issue_number}}|issue-${{expected_issue_number}}-*) ;; *) echo "SESSION_ID (${{session_id}}) does not match expected issue ${{expected_issue_number}}; refusing agent push." >&2; return 1 ;; esac; fi; branch=$(git rev-parse --abbrev-ref HEAD); git push agent HEAD:refs/heads/agents/${{session_id}}/${{branch}}; }}; f'
 """
         ssh_result = _run_subprocess(
             ["ssh", *_ssh_options(vm_name, vm_ip, ssh_private_key_path), f"{vm_user}@{vm_ip}", "bash", "-s"],
@@ -1910,6 +1920,7 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
             remote_issue_id = prefixed_match.group(2)
         if not remote_issue_id:
             return None
+        matches: list[LocalIssueRecord] = []
         for issue in self.local_issue_store.read_all().values():
             remote = issue.remote_reference
             if remote is not None:
@@ -1922,18 +1933,28 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
             if issue_provider != provider:
                 continue
             if issue_remote_id == remote_issue_id:
-                return issue
+                matches.append(issue)
+        if not matches:
+            return None
+        if len(matches) == 1:
+            return matches[0]
+        sorted_matches = sorted(issue.issue_id for issue in matches)
+        raise ValueError(
+            "Ambiguous proxy issue identifier: "
+            f"{normalized}. Matches: {', '.join(sorted_matches)}. "
+            "Use a canonical proxy issue identifier."
+        )
         return None
 
     def _resolve_local_issue_record(self, issue_identifier: str) -> LocalIssueRecord:
         candidate = Path(issue_identifier)
         if candidate.is_file():
+            candidate_path = candidate.resolve()
+            for issue in self.local_issue_store.read_all().values():
+                if issue.yaml_path and Path(issue.yaml_path).resolve() == candidate_path:
+                    return issue
             issue_number = _read_issue_number_from_yaml(candidate)
-            issue_key = self._resolve_local_issue_key(issue_number)
-            issue = self.local_issue_store.get(issue_key) if issue_key is not None else None
-            if issue is None:
-                raise ValueError(f"Unknown local issue: {issue_number}")
-            return issue
+            raise ValueError(f"Unknown local issue: {issue_number}")
 
         issue_key = self._resolve_local_issue_key(issue_identifier)
         if issue_key is not None:
@@ -1954,7 +1975,7 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
         direct_only: bool = False,
     ) -> list[LocalIssueRecord]:
         normalized_directory_path = self._normalize_directory_path(directory_path)
-        issues = sorted(self.local_issue_store.read_all().values(), key=lambda issue: issue.issue_number)
+        issues = sorted(self.local_issue_store.read_all().values(), key=_issue_number_sort_key)
         if direct_only or directory_path is not None:
             return [issue for issue in issues if issue.directory_path == normalized_directory_path]
         return issues
@@ -2138,7 +2159,10 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
         issue.repo_source = repo_source.strip() if repo_source else None
         issue.updated_at = now
         self.local_issue_store.put(issue.issue_id, issue)
+        self._write_local_issue_yaml(issue, updated_at=now)
+        return issue
 
+    def _write_local_issue_yaml(self, issue: LocalIssueRecord, *, updated_at: datetime | None = None) -> None:
         yaml_path = Path(issue.yaml_path)
         payload: dict[str, object] = {}
         if yaml_path.exists():
@@ -2153,10 +2177,15 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
         payload["body"] = issue.body
         payload["state"] = issue.state
         payload["source"] = issue.source or "local_gui"
-        payload["updated_at"] = now.isoformat()
+        fields = _local_issue_fields(issue)
+        if fields:
+            payload["fields"] = fields
+        else:
+            payload.pop("fields", None)
+        if updated_at is not None:
+            payload["updated_at"] = updated_at.isoformat()
         yaml_path.parent.mkdir(parents=True, exist_ok=True)
         yaml_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
-        return issue
 
     def create_issue(
         self,
@@ -2233,13 +2262,23 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
                     if isinstance(comment, dict)
                 ]
                 if not title:
-                    title_match = re.search(r"(?m)^\s*title\s*:\s*[\"']?(.*?)[\"']?\s*$", yaml_text)
-                    title = title_match.group(1).strip() if title_match else str(yaml_payload.get("title") or "").strip()
+                    parsed_title = yaml_payload.get("title")
+                    normalized_title = str(parsed_title or "").strip() if isinstance(parsed_title, str) else ""
+                    if normalized_title:
+                        title = normalized_title
+                    else:
+                        title_match = re.search(r"(?m)^\s*title\s*:\s*[\"']?(.*?)[\"']?\s*$", yaml_text)
+                        title = title_match.group(1).strip() if title_match else ""
                     if not title:
                         title = f"Local issue {issue_number}"
                 if not body:
-                    body_match = re.search(r"(?m)^\s*body\s*:\s*[\"']?(.*?)[\"']?\s*$", yaml_text)
-                    body = body_match.group(1).strip() if body_match else str(yaml_payload.get("description") or "").strip()
+                    parsed_body = yaml_payload.get("body")
+                    normalized_body = str(parsed_body or "").strip() if isinstance(parsed_body, str) else ""
+                    if normalized_body:
+                        body = normalized_body
+                    else:
+                        body_match = re.search(r"(?m)^\s*body\s*:\s*[\"']?(.*?)[\"']?\s*$", yaml_text)
+                        body = body_match.group(1).strip() if body_match else str(yaml_payload.get("description") or "").strip()
             else:
                 if not title.strip():
                     raise ValueError("title is required when yaml_path is not provided")
@@ -2465,6 +2504,7 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
             issue.sync_derived_fields()
             issue.updated_at = _utc_now()
             self.local_issue_store.put(issue.issue_id, issue)
+            self._write_local_issue_yaml(issue, updated_at=issue.updated_at)
             return {"issue_number": issue.issue_number, "source_type": "local", "updated": True}
 
         provider, remote_issue_id = proxy_target
@@ -2571,15 +2611,18 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
         issue_input = issue
         issue_number = _resolve_issue_number(issue_input)
         local_issue: LocalIssueRecord | None = None
-        if not Path(issue_input).is_file():
+        candidate_issue_path = Path(issue_input)
+        if candidate_issue_path.is_file():
+            local_issue = self._resolve_local_issue_record(issue_input)
+            issue_number = local_issue.issue_number
+            issue_input = local_issue.yaml_path
+        else:
             try:
                 local_issue = self._resolve_local_issue_record(issue_input)
                 issue_number = local_issue.issue_number
                 issue_input = local_issue.yaml_path
             except ValueError as exc:
-                if str(exc).startswith("Unknown local issue"):
-                    pass
-                else:
+                if not str(exc).startswith("Unknown local issue identifier: "):
                     return VmActionResult(
                         success=False,
                         vm_name=f"vm-{issue_number}",
@@ -2620,38 +2663,57 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
         )
         self.runtime.sessions.put(resolved_session_id, manifest)
 
-        setup_script = Path(__file__).resolve().parents[2] / "scripts" / "setup_issue_vm.sh"
-        root_dir = Path(__file__).resolve().parents[2]
-        vm_defaults = self._resolve_vm_defaults(normalized_directory_path)
-        issue_setup = self._resolve_issue_setup(normalized_directory_path, root_dir=root_dir)
-        cmd, run_env = self._build_setup_issue_vm_invocation(
-            setup_script=setup_script,
-            issue=issue_input,
-            session_id=resolved_session_id,
-            vm_user=vm_user,
-            start_agent=start_agent,
-            python=python,
-            dotnet=dotnet,
-            nuget=nuget,
-            mssql=mssql,
-            mssql_init_root=mssql_init_root,
-            playwright=playwright,
-            frontend_deps=frontend_deps,
-            frontend_host_checkout=frontend_host_checkout,
-            frontend_install_roots=frontend_install_roots,
-            repo_source=repo_source,
-            vm_defaults=vm_defaults,
-            issue_setup=issue_setup,
-        )
-        completed = _run_subprocess(cmd, capture_output=True, text=True, env=run_env)
-        message = (completed.stdout or completed.stderr or "").strip()
-        if completed.returncode != 0:
+        def _issue_vm_failure(message: str) -> VmActionResult:
+            try:
+                preserved_vm = _dominfo_field(resolved_vm_name, "State") is not None
+            except RuntimeError:
+                preserved_vm = False
+            if not preserved_vm:
+                self.runtime.sessions.delete(resolved_session_id)
+            detail = message
+            if preserved_vm:
+                detail = (
+                    f"{detail}\n"
+                    f"VM {resolved_vm_name} and session {resolved_session_id} were preserved for inspection."
+                )
             return VmActionResult(
                 success=False,
                 vm_name=resolved_vm_name,
                 action="create_issue_vm",
-                message=message or f"setup_issue_vm.sh exited with code {completed.returncode}",
+                message=detail,
             )
+
+        try:
+            setup_script = Path(__file__).resolve().parents[2] / "scripts" / "setup_issue_vm.sh"
+            root_dir = Path(__file__).resolve().parents[2]
+            vm_defaults = self._resolve_vm_defaults(normalized_directory_path)
+            issue_setup = self._resolve_issue_setup(normalized_directory_path, root_dir=root_dir)
+            cmd, run_env = self._build_setup_issue_vm_invocation(
+                setup_script=setup_script,
+                issue=issue_input,
+                session_id=resolved_session_id,
+                vm_user=vm_user,
+                start_agent=start_agent,
+                python=python,
+                dotnet=dotnet,
+                nuget=nuget,
+                mssql=mssql,
+                mssql_init_root=mssql_init_root,
+                playwright=playwright,
+                frontend_deps=frontend_deps,
+                frontend_host_checkout=frontend_host_checkout,
+                frontend_install_roots=frontend_install_roots,
+                repo_source=repo_source,
+                vm_defaults=vm_defaults,
+                issue_setup=issue_setup,
+            )
+            completed = _run_subprocess(cmd, capture_output=True, text=True, env=run_env)
+        except Exception as exc:
+            return _issue_vm_failure(str(exc) or f"Failed to create VM {resolved_vm_name}")
+
+        message = (completed.stdout or completed.stderr or "").strip()
+        if completed.returncode != 0:
+            return _issue_vm_failure(message or f"setup_issue_vm.sh exited with code {completed.returncode}")
         return VmActionResult(
             success=True,
             vm_name=resolved_vm_name,

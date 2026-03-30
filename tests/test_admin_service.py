@@ -81,7 +81,6 @@ def test_create_local_issue_reuses_scoped_id_within_directory(tmp_path: Path) ->
     records = service.local_issue_store.read_all()
     assert list(records) == ["root/team::local::7"]
 
-
 def test_create_local_issue_serializes_concurrent_issue_number_allocation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     config_path = write_config(tmp_path)
 
@@ -114,6 +113,23 @@ def test_create_local_issue_serializes_concurrent_issue_number_allocation(tmp_pa
     assert sorted(payload) == [f"root::local::{number}" for number in range(1, 7)]
     for number in range(1, 7):
         assert (tmp_path / "runtime" / "issues" / f"{number}.yaml").exists()
+
+
+def test_create_local_issue_imports_block_scalar_body(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    source_path = tmp_path / "block-issue.yaml"
+    source_path.write_text(
+        "issue_number: 7\n"
+        "title: Block body\n"
+        "body: |\n"
+        "  line one\n"
+        "  line two\n",
+        encoding="utf-8",
+    )
+
+    issue = service.create_local_issue(yaml_path=str(source_path))
+
+    assert issue.body == "line one\nline two"
 
 
 def test_update_local_issue_updates_store_and_yaml(tmp_path: Path) -> None:
@@ -338,6 +354,21 @@ def test_directory_filtered_lists_use_direct_owned_items_only(tmp_path: Path, mo
     assert {summary.vm_name for summary in root_vms} == {"vm-root", "vm-free"}
 
 
+def test_list_issues_sorts_issue_numbers_numerically(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    low_path = tmp_path / "issue-2.yaml"
+    low_path.write_text("issue_number: 2\ntitle: Low issue\nbody: body\n", encoding="utf-8")
+    high_path = tmp_path / "issue-10.yaml"
+    high_path.write_text("issue_number: 10\ntitle: High issue\nbody: body\n", encoding="utf-8")
+
+    service.create_local_issue(yaml_path=str(high_path))
+    service.create_local_issue(yaml_path=str(low_path))
+
+    issues = service.list_issues()
+
+    assert [issue.issue_number for issue in issues] == ["2", "10"]
+
+
 def test_admin_service_exposes_directory_config_for_selected_directory(tmp_path: Path) -> None:
     service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
     created = service.create_directory_child("root", "team")
@@ -475,6 +506,142 @@ def test_create_issue_vm_uses_directory_vm_defaults_overlay_for_guest_env(tmp_pa
     assert captured_env["GATEWAY_URL"] == "http://10.20.30.40:8000/mcp"
     assert captured_env["LLM_BASE_URL"] == "http://10.20.30.40:12000/v1"
     assert captured_env["NUGET_RELAY_BASE_URL"] == "http://10.20.30.40:13000"
+
+
+def test_create_issue_vm_uses_issue_directory_when_called_with_yaml_path(tmp_path: Path, monkeypatch) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    create_result = service.create_directory_child("root", "team")
+    assert create_result.ok is True and create_result.data is not None
+    team_path = create_result.data.details.directory.path
+    write_result = service.write_directory_domain_config(
+        team_path,
+        "vm",
+        {
+            "gateway_url": "http://10.20.30.40:8000/mcp",
+            "openai_relay_port": 12000,
+            "nuget_relay_port": 13000,
+        },
+    )
+    assert write_result.ok is True
+    issue = service.create_local_issue(title="Team issue", body="body", directory_path=team_path)
+
+    captured_env: dict[str, str] = {}
+
+    def fake_run(*args, **kwargs):
+        captured_env.update(kwargs.get("env", {}))
+        return subprocess.CompletedProcess(args[0], 0, stdout="", stderr="")
+
+    monkeypatch.setattr("agent_sandbox.admin_service.subprocess.run", fake_run)
+
+    result = service.create_issue_vm(
+        issue=issue.yaml_path,
+        session_id="issue-1-session",
+        start_agent=False,
+    )
+
+    manifest = service.runtime.sessions.get("issue-1-session")
+    assert result.success is True
+    assert manifest is not None
+    assert manifest.directory_path == team_path
+    assert captured_env["GATEWAY_URL"] == "http://10.20.30.40:8000/mcp"
+
+
+def test_create_issue_vm_uses_yaml_path_owner_when_issue_number_is_ambiguous(tmp_path: Path, monkeypatch: Any) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    team_a = service.create_directory_child("root", "team-a")
+    team_b = service.create_directory_child("root", "team-b")
+    assert team_a.ok is True and team_a.data is not None
+    assert team_b.ok is True and team_b.data is not None
+    team_a_path = team_a.data.details.directory.path
+    team_b_path = team_b.data.details.directory.path
+
+    assert service.write_directory_domain_config(
+        team_a_path,
+        "vm",
+        {
+            "gateway_url": "http://10.20.30.41:8000/mcp",
+            "openai_relay_port": 12001,
+            "nuget_relay_port": 13001,
+        },
+    ).ok is True
+    assert service.write_directory_domain_config(
+        team_b_path,
+        "vm",
+        {
+            "gateway_url": "http://10.20.30.42:8000/mcp",
+            "openai_relay_port": 12002,
+            "nuget_relay_port": 13002,
+        },
+    ).ok is True
+
+    (tmp_path / "project-a").mkdir()
+    (tmp_path / "project-b").mkdir()
+
+    project_a_source = tmp_path / "project-a" / "proxy-issue-42.yaml"
+    project_a_source.write_text(
+        "\n".join(
+            [
+                "issue_number: 42",
+                'title: "Project A issue"',
+                'description: "from project a"',
+                'state: "New"',
+                'url: "https://ado.example/work/42"',
+                "source:",
+                '  organization: "https://dev.azure.com/example"',
+                '  project: "project-a"',
+                '  work_item_url: "https://dev.azure.com/example/project-a/_workitems/edit/42"',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    project_b_source = tmp_path / "project-b" / "proxy-issue-42.yaml"
+    project_b_source.write_text(
+        "\n".join(
+            [
+                "issue_number: 42",
+                'title: "Project B issue"',
+                'description: "from project b"',
+                'state: "New"',
+                'url: "https://ado.example/work/42"',
+                "source:",
+                '  organization: "https://dev.azure.com/example"',
+                '  project: "project-b"',
+                '  work_item_url: "https://dev.azure.com/example/project-b/_workitems/edit/42"',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    project_a_issue = service.create_local_issue(
+        directory_path=team_a_path,
+        yaml_path=str(project_a_source),
+    )
+    service.create_local_issue(
+        directory_path=team_b_path,
+        yaml_path=str(project_b_source),
+    )
+
+    captured_env: dict[str, str] = {}
+
+    def fake_run(*args, **kwargs):
+        captured_env.update(kwargs.get("env", {}))
+        return subprocess.CompletedProcess(args[0], 0, stdout="", stderr="")
+
+    monkeypatch.setattr("agent_sandbox.admin_service.subprocess.run", fake_run)
+
+    result = service.create_issue_vm(
+        issue=project_a_issue.yaml_path,
+        session_id="issue-42-session",
+        start_agent=False,
+    )
+
+    manifest = service.runtime.sessions.get("issue-42-session")
+    assert result.success is True
+    assert manifest is not None
+    assert manifest.directory_path == team_a_path
+    assert captured_env["GATEWAY_URL"] == "http://10.20.30.41:8000/mcp"
 
 
 def test_create_issue_vm_uses_issue_setup_domain_for_setup_env(tmp_path: Path, monkeypatch) -> None:
@@ -615,6 +782,49 @@ def test_create_issue_vm_never_uses_pat_secret_as_env_var_name(tmp_path: Path, m
 
     assert result.success is True
     assert captured_env["AGENT_SANDBOX_AZURE_DEVOPS_PR_PAT_ENV"] == "AZURE_DEVOPS_PR_PAT"
+
+
+def test_create_issue_vm_deletes_session_when_setup_fails_before_vm_exists(tmp_path: Path, monkeypatch: Any) -> None:
+    service = AdminService(write_config(tmp_path))
+    issue = service.create_local_issue(title="Issue VM", body="create and fail")
+    monkeypatch.setattr("agent_sandbox.admin_service._dominfo_field", lambda vm_name, field_name: None)
+    monkeypatch.setattr(
+        "agent_sandbox.admin_service._run_subprocess",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args=args[0], returncode=17, stdout="", stderr="boom"),
+    )
+
+    result = service.create_issue_vm(
+        issue=issue.issue_number,
+        session_id="issue-1-session",
+        start_agent=False,
+    )
+
+    assert result.success is False
+    assert result.message == "boom"
+    assert service.runtime.sessions.get("issue-1-session") is None
+
+
+def test_create_issue_vm_deletes_session_when_dominfo_probe_fails(tmp_path: Path, monkeypatch: Any) -> None:
+    service = AdminService(write_config(tmp_path))
+    issue = service.create_local_issue(title="Issue VM", body="create and fail")
+    monkeypatch.setattr(
+        "agent_sandbox.admin_service._dominfo_field",
+        lambda vm_name, field_name: (_ for _ in ()).throw(RuntimeError("virsh unavailable")),
+    )
+    monkeypatch.setattr(
+        "agent_sandbox.admin_service._run_subprocess",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args=args[0], returncode=17, stdout="", stderr="boom"),
+    )
+
+    result = service.create_issue_vm(
+        issue=issue.issue_number,
+        session_id="issue-1-session",
+        start_agent=False,
+    )
+
+    assert result.success is False
+    assert result.message == "boom"
+    assert service.runtime.sessions.get("issue-1-session") is None
 
 
 def test_admin_service_rejects_directory_edits_when_feature_flag_disabled(tmp_path: Path) -> None:
@@ -916,6 +1126,20 @@ def test_update_issue_accepts_approved_state(tmp_path: Path) -> None:
     assert stored.metadata["fields"]["Priority"] == "P1"
 
 
+def test_update_issue_updates_local_yaml_file(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    issue = service.create_local_issue(title="Task", body="only local")
+    original_yaml = Path(issue.yaml_path).read_text(encoding="utf-8")
+
+    result = service.update_issue(issue.issue_number, state="Committed", fields={"Priority": "P1"})
+
+    updated_yaml = Path(issue.yaml_path).read_text(encoding="utf-8")
+    assert result["source_type"] == "local"
+    assert updated_yaml != original_yaml
+    assert "state: Committed" in updated_yaml
+    assert "Priority: P1" in updated_yaml
+
+
 def test_issue_actions_reject_ambiguous_bare_number_across_directories(tmp_path: Path) -> None:
     service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
     created = service.create_directory_child("root", "team")
@@ -1145,6 +1369,42 @@ def test_issue_actions_forward_proxy_issues_and_sync_cache(tmp_path: Path) -> No
     update_call = next(kwargs for name, kwargs in calls if name == "update")
     assert comment_call["remote_issue_id"] == issue.issue_number
     assert update_call["state"] == "Resolved"
+
+
+def test_proxy_identifier_rejects_ambiguous_ado_work_item_ids_across_projects(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    project_a_issue = service.create_local_issue(
+        yaml_path=str(
+            _write_proxy_issue_yaml(
+                tmp_path,
+                issue_number=42,
+                title="Project A issue",
+                description="from project a",
+                project="project-a",
+            )
+        )
+    )
+    project_b_issue = service.create_local_issue(
+        yaml_path=str(
+            _write_proxy_issue_yaml(
+                tmp_path,
+                issue_number=42,
+                title="Project B issue",
+                description="from project b",
+                project="project-b",
+            )
+        )
+    )
+
+    with pytest.raises(ValueError, match=r"Ambiguous proxy issue identifier: proxy:ado/42\."):
+        service.read_issue("proxy:ado/42")
+    with pytest.raises(ValueError, match=r"Ambiguous proxy issue identifier: proxy:ado/42\."):
+        service.update_issue("proxy:ado/42", state="Resolved")
+    with pytest.raises(ValueError, match=r"Ambiguous proxy issue identifier: proxy:ado/42\."):
+        service.post_issue_comment("proxy:ado/42", "push to remote")
+
+    assert service._resolve_local_issue_record(project_a_issue.issue_id).issue_id == project_a_issue.issue_id
+    assert service._resolve_local_issue_record(project_b_issue.issue_id).issue_id == project_b_issue.issue_id
 
 
 def test_create_issue_vm_accepts_unified_proxy_identifier(tmp_path: Path, monkeypatch: Any) -> None:
@@ -1544,6 +1804,8 @@ def _write_proxy_issue_yaml(
     title: str = "Proxy issue",
     description: str = "from remote",
     state: str = "New",
+    organization_url: str = "https://dev.azure.com/example",
+    project: str = "sample",
 ) -> Path:
     payload = {
         "issue_number": issue_number,
@@ -1552,9 +1814,9 @@ def _write_proxy_issue_yaml(
         "state": state,
         "url": f"https://ado.example/work/{issue_number}",
         "source": {
-            "organization": "https://dev.azure.com/example",
-            "project": "sample",
-            "work_item_url": f"https://dev.azure.com/example/sample/_workitems/edit/{issue_number}",
+            "organization": organization_url,
+            "project": project,
+            "work_item_url": f"{organization_url.rstrip('/')}/{project}/_workitems/edit/{issue_number}",
         },
     }
     path = tmp_path / f"proxy-issue-{issue_number}-{state.lower()}.yaml"
