@@ -63,6 +63,9 @@ def test_service_templates_use_optional_shared_secrets_env() -> None:
     heartbeat = (repo / "systemd" / "agent-sandbox-host-heartbeat.service.template").read_text(
         encoding="utf-8"
     )
+    discord_ingest = (repo / "systemd" / "agent-sandbox-discord-ingest.service.template").read_text(
+        encoding="utf-8"
+    )
     orchestrator = (repo / "systemd" / "agent-sandbox-issue-orchestrator.service.template").read_text(
         encoding="utf-8"
     )
@@ -75,6 +78,10 @@ def test_service_templates_use_optional_shared_secrets_env() -> None:
     assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in nuget
     assert "EnvironmentFile=-__PROJECT_DIR__/config/host-heartbeat.env" in heartbeat
     assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in heartbeat
+    assert "Environment=DISCORD_INGEST_LOG_LEVEL=INFO" in discord_ingest
+    assert "--log-level ${DISCORD_INGEST_LOG_LEVEL}" in discord_ingest
+    assert "ExecStart=__PROJECT_DIR__/.venv/bin/agent-sandbox-discord-ingest" in discord_ingest
+    assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in discord_ingest
     assert "Environment=ADO_WORKER_LOG_LEVEL=INFO" in (
         repo / "systemd" / "agent-sandbox-ado-worker.service.template"
     ).read_text(encoding="utf-8")

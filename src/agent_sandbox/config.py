@@ -73,6 +73,7 @@ class GatewayConfig(BaseModel):
     teams_retry_count: int = Field(default=3, ge=0, le=10)
     teams_retry_base_backoff_seconds: float = Field(default=0.5, gt=0)
     teams_retry_max_backoff_seconds: float = Field(default=5.0, gt=0)
+    discord_inbox_routes: dict[str, list[str]] = Field(default_factory=dict)
     bind_network_cidr: IPvAnyNetwork = "192.168.250.0/24"
     gateway_url: str = "http://192.168.250.1:8000/mcp"
     openai_relay_host: str = "0.0.0.0"
@@ -126,7 +127,13 @@ class GatewayConfig(BaseModel):
     host_busy_check_script_path: Path = Path("scripts/check_session_vm_busy.sh")
     host_resume_script_path: Path = Path("scripts/resume_issue_agent.sh")
     host_heartbeat_wake_state_path: Path = Path("/var/lib/agent-sandbox/host-heartbeat-wake-state.json")
-    host_heartbeat_resume_prompt: str = "Resume and address newly received PR feedback."
+    host_heartbeat_pr_resume_prompt: str = (
+        "You have unread PR comments. Please fetch them with list_unread_feedback."
+    )
+    host_heartbeat_discord_resume_prompt: str = (
+        "You have unread Discord messages. Please fetch them with "
+        "list_unread_discord_messages and respond with discord_post_status if needed."
+    )
     host_heartbeat_vm_user: str = "agent"
     host_heartbeat_resume_timeout_seconds: float = Field(default=1200.0, gt=0)
     host_heartbeat_stream_conflict_policy: Literal["fanout", "reject"] = "fanout"
@@ -374,6 +381,38 @@ class IssueOrchestratorWorkerGlobalConfig(BaseModel):
             self.lock_path = self.runtime_dir / "issue-orchestrator.lock"
         if self.wake_state_path is None:
             self.wake_state_path = self.runtime_dir / "issue-orchestrator-wake-state.json"
+        return self
+
+
+class DiscordIngestWorkerGlobalConfig(BaseModel):
+    runtime_dir: Path = Path("runtime")
+    directories: list[str] = Field(default_factory=list)
+    poll_interval_seconds: float = Field(default=30.0, gt=0)
+    jitter_seconds: float = Field(default=5.0, ge=0)
+    backoff_seconds: float = Field(default=60.0, ge=0)
+    lock_path: Path | None = None
+
+    @field_validator("directories", mode="before")
+    @classmethod
+    def normalize_directories(cls, value: object) -> object:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            value = [value]
+        if not isinstance(value, (list, tuple)):
+            return value
+        normalized: list[str] = []
+        for item in value:
+            text = str(item).strip()
+            if not text:
+                continue
+            normalized.append(DirectoryPath(segments=text).as_posix())
+        return normalized
+
+    @model_validator(mode="after")
+    def apply_runtime_path_defaults(self) -> DiscordIngestWorkerGlobalConfig:
+        if self.lock_path is None:
+            self.lock_path = self.runtime_dir / "discord-ingest.lock"
         return self
 
 

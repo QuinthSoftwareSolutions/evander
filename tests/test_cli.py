@@ -443,6 +443,7 @@ def test_migrate_ado_worker_env_to_root_materializes_root_domain_file(tmp_path: 
         "ado_project_or_solution": "/tmp/Example.slnx",
         "ado_repo_source": "/tmp/repo",
         "ado_team_filters": [],
+        "create_prs_as_draft": False,
     }
     directories_payload = json.loads((runtime_dir / "directories.json").read_text(encoding="utf-8"))
     assert "ado_worker" in directories_payload["root"]["metadata"]["directory_config"]["domains"]
@@ -826,6 +827,59 @@ def test_create_session_uses_root_directory_policy_overlay(tmp_path: Path) -> No
     assert "email_send_approved" in manifest["allowed_tools"]
 
 
+def test_create_session_uses_selected_directory_policy_overlay(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path, enable_directory_scoped_config=True)
+    runner = CliRunner()
+
+    assert runner.invoke(app, ["init-state", "--config", str(config_path)]).exit_code == 0
+    assert (
+        runner.invoke(
+            app,
+            ["directories", "create", "--config", str(config_path), "--parent", "root", "team"],
+        ).exit_code
+        == 0
+    )
+    assert (
+        runner.invoke(
+            app,
+            [
+                "directories",
+                "config-set",
+                "--config",
+                str(config_path),
+                "--domain",
+                "policy",
+                "root/team",
+                '{"default_session_ttl_seconds": 180, "email_send_enabled": true}',
+            ],
+        ).exit_code
+        == 0
+    )
+
+    before = datetime.now(UTC)
+    result = runner.invoke(
+        app,
+        [
+            "create-session",
+            "--config",
+            str(config_path),
+            "--directory",
+            "root/team",
+            "session-team",
+        ],
+    )
+    after = datetime.now(UTC)
+
+    assert result.exit_code == 0
+    sessions = json.loads((tmp_path / "runtime" / "sessions.json").read_text(encoding="utf-8"))
+    manifest = sessions["session-team"]
+    expires_at = datetime.fromisoformat(manifest["expires_at"])
+    assert manifest["directory_path"] == "root/team"
+    assert before + timedelta(seconds=180) <= expires_at <= after + timedelta(seconds=180)
+    assert manifest["email_send_enabled"] is True
+    assert "email_send_approved" in manifest["allowed_tools"]
+
+
 def test_create_issue_vm_creates_manifest_before_invoking_setup_script(tmp_path: Path, monkeypatch) -> None:
     config_path = write_config(tmp_path)
     runner = CliRunner()
@@ -902,6 +956,9 @@ def test_create_issue_vm_persists_expected_manifest_shape(tmp_path: Path, monkey
         "approval_check",
         "discord_get_commands",
         "discord_post_status",
+        "has_pending_discord_messages",
+        "list_unread_discord_messages",
+        "list_all_discord_messages",
         "email_list_unread",
         "email_get_message",
         "email_create_draft",

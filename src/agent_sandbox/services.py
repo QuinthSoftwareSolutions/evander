@@ -12,14 +12,18 @@ from urllib.parse import quote, unquote
 import httpx
 from .models import (
     DiscordCommandEnvelope,
+    DiscordMessageEnvelope,
     DraftMessage,
     EmailMessage,
+    HasPendingDiscordMessagesResponse,
     HasPendingFeedbackResponse,
+    ListUnreadDiscordMessagesResponse,
     ListUnreadFeedbackResponse,
     PostPrFeedbackReplyResponse,
     PrFeedbackItem,
     TeamsMessageEnvelope,
 )
+from .discord_inbox_store import DiscordInboxStore
 from .pr_feedback_worker import PrFeedbackStore, _stream_key
 from .email.providers import EmailDraft, EmailMessageDetail, EmailMessageSummary, EmailProvider
 from .storage import JsonStore
@@ -34,6 +38,24 @@ def _parse_snowflake(value: str, *, field_name: str) -> int:
         raise ValueError(
             f"Invalid {field_name} {value!r}: expected a numeric Discord snowflake string."
         ) from exc
+
+
+def _parse_dt(value: Any) -> datetime:
+    if not isinstance(value, str):
+        raise ValueError(f"Invalid timestamp {value!r}: expected an ISO 8601 string.")
+    normalized = value.strip()
+    if normalized.endswith("Z"):
+        normalized = normalized[:-1] + "+00:00"
+    parsed = datetime.fromisoformat(normalized)
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def _message_sort_value(value: str) -> tuple[int, int | str]:
+    if value.isdigit():
+        return (0, int(value))
+    return (1, value)
 
 
 class EmailService:
@@ -348,7 +370,6 @@ class DiscordBotApiService:
             "message_id": payload["id"],
         }
 
-
 def _sorted_teams_messages(messages: dict[str, TeamsMessageEnvelope]) -> list[TeamsMessageEnvelope]:
     return sorted(messages.values(), key=lambda item: (item.created_at, item.cursor))
 
@@ -563,6 +584,164 @@ class GraphTeamsService:
 
         ordered = _sorted_teams_messages(messages)
         return _filter_teams_messages_since_cursor(ordered, since_cursor)
+
+
+class DiscordInboxService:
+    def __init__(self, store_path: Path) -> None:
+        self.store_path = store_path
+        self.store = DiscordInboxStore(store_path)
+
+    def has_pending_discord_messages(
+        self,
+        *,
+        streams: list[dict[str, str]],
+        session_id: str | None = None,
+        cursor: str | None = None,
+    ) -> HasPendingDiscordMessagesResponse:
+        messages = self._list_messages(
+            streams=streams,
+            session_id=session_id,
+            cursor=cursor,
+            limit=None,
+            persist_session_cursor=False,
+        )
+        return HasPendingDiscordMessagesResponse(
+            pending=bool(messages.messages),
+            next_cursor=messages.next_cursor,
+        )
+
+    def list_unread_discord_messages(
+        self,
+        *,
+        streams: list[dict[str, str]],
+        session_id: str | None = None,
+        cursor: str | None = None,
+        limit: int | None = None,
+    ) -> ListUnreadDiscordMessagesResponse:
+        return self._list_messages(
+            streams=streams,
+            session_id=session_id,
+            cursor=cursor,
+            limit=limit,
+            persist_session_cursor=True,
+        )
+
+    def list_all_discord_messages(
+        self,
+        *,
+        streams: list[dict[str, str]],
+        limit: int | None = None,
+    ) -> ListUnreadDiscordMessagesResponse:
+        return self._list_messages(
+            streams=streams,
+            session_id=None,
+            cursor=None,
+            limit=limit,
+            persist_session_cursor=False,
+        )
+
+    def _list_messages(
+        self,
+        *,
+        streams: list[dict[str, str]],
+        session_id: str | None,
+        cursor: str | None,
+        limit: int | None,
+        persist_session_cursor: bool,
+    ) -> ListUnreadDiscordMessagesResponse:
+        payload = self._read_store()
+        allowed_channels = {stream["channel_id"] for stream in streams}
+        channel_cursors = {
+            stream["channel_id"]: self._effective_cursor(
+                session_id=session_id,
+                channel_id=stream["channel_id"],
+                explicit_cursor=cursor,
+            )
+            for stream in streams
+        }
+        items: list[DiscordMessageEnvelope] = []
+        for raw_value in payload.get("messages", {}).values():
+            if not isinstance(raw_value, dict):
+                continue
+            candidate = DiscordMessageEnvelope.model_validate(raw_value)
+            if candidate.channel_id not in allowed_channels:
+                continue
+            if session_id is not None and self._is_self_authored_message(candidate, session_id=session_id):
+                continue
+            effective_cursor = channel_cursors.get(candidate.channel_id)
+            if effective_cursor and candidate.created_at <= self._parse_cursor(effective_cursor):
+                continue
+            items.append(candidate)
+
+        items.sort(
+            key=lambda item: (
+                item.created_at,
+                _message_sort_value(item.message_id),
+            )
+        )
+        if limit is not None:
+            items = items[:limit]
+        next_cursor = (
+            items[-1].created_at.isoformat().replace("+00:00", "Z")
+            if items
+            else self._max_cursors(channel_cursors.values())
+        )
+        if persist_session_cursor and session_id is not None:
+            for stream in streams:
+                self.store.advance_session_cursor(
+                    session_id,
+                    stream["channel_id"],
+                    next_cursor if next_cursor is not None else cursor,
+                )
+        return ListUnreadDiscordMessagesResponse(messages=items, next_cursor=next_cursor)
+
+    def _read_store(self) -> dict[str, Any]:
+        return self.store.read_raw()
+
+    @staticmethod
+    def _is_self_authored_message(message: DiscordMessageEnvelope, *, session_id: str) -> bool:
+        raw_source = str(message.raw.get("source", "")).strip()
+        raw_session_id = str(message.raw.get("session_id", "")).strip()
+        return raw_source == "discord_bot_api_status" and raw_session_id == session_id
+
+    def _effective_cursor(
+        self,
+        *,
+        session_id: str | None,
+        channel_id: str,
+        explicit_cursor: str | None,
+    ) -> str | None:
+        if session_id is None:
+            return explicit_cursor
+        return self._max_cursor(
+            self.store.get_session_cursor(session_id, channel_id),
+            explicit_cursor,
+        )
+
+    def _max_cursor(self, first: str | None, second: str | None) -> str | None:
+        if first is None:
+            return second
+        if second is None:
+            return first
+        if self._parse_cursor(first) >= self._parse_cursor(second):
+            return first
+        return second
+
+    def _max_cursors(self, cursors: Any) -> str | None:
+        maximum: str | None = None
+        for cursor in cursors:
+            maximum = self._max_cursor(maximum, cursor)
+        return maximum
+
+    @staticmethod
+    def _parse_cursor(cursor: str) -> datetime:
+        normalized = cursor.strip()
+        if normalized.endswith("Z"):
+            normalized = normalized[:-1] + "+00:00"
+        parsed = datetime.fromisoformat(normalized)
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=UTC)
+        return parsed.astimezone(UTC)
 
 
 class PrFeedbackService:

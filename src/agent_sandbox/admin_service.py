@@ -21,6 +21,7 @@ from .agent_control import AgentControlStore
 from .bootstrap import load_host_bootstrap_config, load_runtime_gateway_config, resolve_project_dir
 from .config import (
     AdoWorkerGlobalConfig,
+    DiscordIngestWorkerGlobalConfig,
     GatewayConfig,
     HostHeartbeatWorkerGlobalConfig,
     IssueOrchestratorWorkerGlobalConfig,
@@ -62,18 +63,21 @@ from .storage import JsonStore
 
 _WORKER_DEFINITIONS: tuple[tuple[str, str, str], ...] = (
     ("ado", "ADO Worker", "agent-sandbox-ado-worker.service"),
+    ("discord-ingest", "Discord Ingest Worker", "agent-sandbox-discord-ingest.service"),
     ("host-heartbeat", "Host Heartbeat Worker", "agent-sandbox-host-heartbeat.service"),
     ("issue-orchestrator", "Issue Orchestrator Worker", "agent-sandbox-issue-orchestrator.service"),
 )
 
 _WORKER_GLOBAL_CONFIG_PATHS: dict[str, str] = {
     "ado": "config/ado-worker/config.json",
+    "discord-ingest": "config/discord-ingest/config.json",
     "host-heartbeat": "config/host-heartbeat/config.json",
     "issue-orchestrator": "config/issue-orchestrator/config.json",
 }
 
 _WORKER_GLOBAL_CONFIG_MODELS: dict[str, type[BaseModel]] = {
     "ado": AdoWorkerGlobalConfig,
+    "discord-ingest": DiscordIngestWorkerGlobalConfig,
     "host-heartbeat": HostHeartbeatWorkerGlobalConfig,
     "issue-orchestrator": IssueOrchestratorWorkerGlobalConfig,
 }
@@ -1017,7 +1021,15 @@ def _build_issue_session_manifest(
 ) -> SessionManifest:
     allowed_tools: list[ToolName] = [ToolName.APPROVAL_SUBMIT, ToolName.APPROVAL_CHECK]
     if discord_channels:
-        allowed_tools.extend([ToolName.DISCORD_GET_COMMANDS, ToolName.DISCORD_POST_STATUS])
+        allowed_tools.extend(
+            [
+                ToolName.DISCORD_GET_COMMANDS,
+                ToolName.DISCORD_POST_STATUS,
+                ToolName.HAS_PENDING_DISCORD_MESSAGES,
+                ToolName.LIST_UNREAD_DISCORD_MESSAGES,
+                ToolName.LIST_ALL_DISCORD_MESSAGES,
+            ]
+        )
 
     email_requested = bool(email_mailboxes or email_folders)
     resolved_email_mailboxes = email_mailboxes or (policy.email_mailbox_allowlist if email_requested else [])

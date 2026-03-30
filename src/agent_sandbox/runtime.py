@@ -29,6 +29,7 @@ from .host_config import HostConfig
 from .services import (
     AzureDevOpsPrReplyProvider,
     DiscordBotApiService,
+    DiscordInboxService,
     DiscordService,
     EmailService,
     GraphTeamsService,
@@ -52,6 +53,7 @@ class RuntimeContext:
     email_service: EmailService
     discord_service: DiscordService
     teams_service: TeamsService
+    discord_inbox_service: DiscordInboxService
     pr_feedback_service: PrFeedbackService
     pr_reply_service: PrReplyService
     sessions: JsonStore[SessionManifest]
@@ -78,9 +80,16 @@ class RuntimeContext:
         if not isinstance(self.discord_service, (StubDiscordService, DiscordBotApiService)):
             return self.discord_service
         resolved_config = self.resolve_provider_config_for_session(session_id)
-        if resolved_config == self.config:
-            return self.discord_service
-        return _build_discord_service(resolved_config, self.discord_commands, self.sessions, self.policy_config)
+        return _build_discord_service(
+            resolved_config,
+            self.discord_commands,
+            self.sessions,
+            self.policy_config,
+            session_id=session_id,
+        )
+
+    def discord_inbox_service_for_session(self, session_id: str) -> DiscordInboxService:
+        return self.discord_inbox_service
 
     def pr_reply_service_for_session(self, session_id: str) -> PrReplyService:
         if not isinstance(self.pr_reply_service, PrReplyService):
@@ -119,6 +128,7 @@ def build_runtime(config: GatewayConfig) -> RuntimeContext:
     provider_config = ProviderConfigResolver(config, directory_store=directories, session_store=sessions)
     discord_commands = JsonStore(config.discord_command_store_path, DiscordCommandEnvelope)
     teams_messages = JsonStore(config.teams_message_store_path, TeamsMessageEnvelope)
+    discord_inbox_service = DiscordInboxService(config.runtime_dir / "discord-inbox-store.json")
     root_provider_config = provider_config.resolve_for_directory("root")
     discord_service = _build_discord_service(root_provider_config, discord_commands, sessions, policy_config)
     teams_service = _build_teams_service(root_provider_config, teams_messages, sessions)
@@ -132,6 +142,7 @@ def build_runtime(config: GatewayConfig) -> RuntimeContext:
         email_service=EmailService(_build_email_provider(root_provider_config, emails, drafts, email_cursors)),
         discord_service=discord_service,
         teams_service=teams_service,
+        discord_inbox_service=discord_inbox_service,
         pr_feedback_service=PrFeedbackService(
             config.runtime_dir / "pr-feedback-store.json",
             ignored_feedback_store_path=config.runtime_dir / "ignored-feedback-ids.json",
@@ -212,6 +223,8 @@ def _build_discord_service(
     command_store: JsonStore[DiscordCommandEnvelope],
     sessions: JsonStore[SessionManifest],
     policy_config: PolicyConfigResolver,
+    *,
+    session_id: str | None = None,
 ) -> DiscordService:
     if config.discord_backend == "stub":
         return StubDiscordService(command_store)
@@ -237,10 +250,21 @@ def _build_discord_service(
             retry_base_backoff_seconds=config.discord_retry_base_backoff_seconds,
             retry_max_backoff_seconds=config.discord_retry_max_backoff_seconds,
             allowed_channel_ids_provider=lambda: _resolve_allowed_discord_channel_ids(
-                sessions, config, policy_config=policy_config
+                sessions,
+                config,
+                policy_config=policy_config,
+                session_id=session_id,
             ),
-            operator_user_ids_provider=policy_config.operator_user_ids_for_active_sessions,
-            include_operator_dms_provider=policy_config.include_operator_dms_for_active_sessions,
+            operator_user_ids_provider=(
+                policy_config.operator_user_ids_for_active_sessions
+                if session_id is None
+                else lambda: policy_config.operator_user_ids_for_session_id(session_id)
+            ),
+            include_operator_dms_provider=(
+                policy_config.include_operator_dms_for_active_sessions
+                if session_id is None
+                else lambda: policy_config.include_operator_dms_for_session_id(session_id)
+            ),
         )
     raise RuntimeError(
         f"Unsupported discord backend {config.discord_backend!r}. Expected one of: 'stub', 'bot_api'."
@@ -311,7 +335,19 @@ def _resolve_allowed_discord_channel_ids(
     config: GatewayConfig,
     *,
     policy_config: PolicyConfigResolver | None = None,
+    session_id: str | None = None,
 ) -> list[str]:
+    if session_id is not None:
+        if policy_config is not None:
+            return policy_config.allowed_discord_channel_ids_for_session_id(session_id)
+        session = session_store.get(session_id)
+        if session is None:
+            raise ValueError(f"unknown session: {session_id}")
+        channel_ids = set(config.discord_operator_channel_allowlist)
+        if ToolName.DISCORD_GET_COMMANDS in session.allowed_tools:
+            channel_ids.update(session.discord_channel_allowlist)
+        return sorted(channel_id.strip() for channel_id in channel_ids if channel_id.strip())
+
     now = datetime.now(UTC)
     channel_ids: set[str] = set()
     if policy_config is None:

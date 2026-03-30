@@ -248,7 +248,8 @@ In the root-only model, this file is an import source for seeding `runtime/direc
 | `azure_devops_pr_pat_env` | legacy gateway YAML | `src/agent_sandbox/runtime.py` and `src/agent_sandbox/host_heartbeat_worker.py`. |
 | `azure_devops_organization_url` | legacy gateway YAML | `src/agent_sandbox/runtime.py` and `src/agent_sandbox/host_heartbeat_worker.py`. |
 | `azure_devops_project` | legacy gateway YAML | `src/agent_sandbox/runtime.py` and `src/agent_sandbox/host_heartbeat_worker.py`. |
-| `host_heartbeat_resume_prompt` | legacy gateway YAML | `src/agent_sandbox/host_heartbeat_worker.py`. |
+| `host_heartbeat_pr_resume_prompt` | legacy gateway YAML | `src/agent_sandbox/host_heartbeat_worker.py`. |
+| `host_heartbeat_discord_resume_prompt` | legacy gateway YAML | `src/agent_sandbox/host_heartbeat_worker.py`. |
 | `pr_map_path` | legacy gateway YAML | `src/agent_sandbox/host_heartbeat_worker.py` PR map loading. |
 
 ## 4) Cloud-init template placeholders (`config/cloud-init-user-data.yaml`)
@@ -287,7 +288,7 @@ Supported directory config domains:
 | `policy.json` | Session/policy defaults and operator restrictions | `approval_ttl_seconds`, `default_session_ttl_seconds`, Discord/email allowlists, `email_send_enabled`, `pr_reply_require_approval`, `redacted_keys` |
 | `providers.json` | Upstream/provider endpoints and credentials-by-reference | Discord, OpenAI, NuGet, GitHub, Azure DevOps |
 | `email.json` | Mailbox provider definitions and email provider runtime settings | `email_mailboxes`, `email_provider_timeout_seconds` |
-| `heartbeat.json` | Host heartbeat worker behavior | `host_heartbeat_resume_prompt` |
+| `heartbeat.json` | Host heartbeat worker behavior | `host_heartbeat_pr_resume_prompt`, `host_heartbeat_discord_resume_prompt` |
 | `ado-worker.json` | Azure DevOps backlog worker setup/bootstrap behavior | `ado_area_filters`, `ado_team_filters`, `ado_project_or_solution`, `ado_prewarm_target`, `ado_repo_source`, `ado_bootstrap_*`, `ado_mssql_sa_password_env`, frontend bootstrap fields |
 | `issue-setup.json` | VM issue setup/git hand-off defaults | `git_root`, `git_host`, `git_user`, `git_ssh_alias`, `post_exec_verification_prompt`, `enable_guest_heartbeat`, `guest_heartbeat_prompt`, optional `issue_setup_azure_devops_pr_pat_env` |
 | `pr-template.json` | Directory-scoped markdown boilerplate prepended to automated PR bodies | `pr_template_markdown` |

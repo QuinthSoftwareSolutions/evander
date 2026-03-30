@@ -2,6 +2,7 @@ import pytest
 
 from agent_sandbox.config import (
     AdoWorkerGlobalConfig,
+    DiscordIngestWorkerGlobalConfig,
     GatewayConfig,
     HostHeartbeatWorkerGlobalConfig,
 )
@@ -171,6 +172,22 @@ def test_host_heartbeat_worker_global_config_directory_paths_are_normalized() ->
         }
     )
     assert config.host_heartbeat_directory_paths == ["root/team-a", "root/team-a/subdir"]
+
+
+def test_discord_ingest_worker_global_config_defaults_follow_runtime_dir() -> None:
+    config = DiscordIngestWorkerGlobalConfig.model_validate({"runtime_dir": "/tmp/agent-sandbox-runtime"})
+    assert str(config.lock_path) == "/tmp/agent-sandbox-runtime/discord-ingest.lock"
+    assert config.directories == []
+
+
+def test_discord_ingest_worker_global_config_directory_paths_are_normalized() -> None:
+    config = DiscordIngestWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": "/tmp/agent-sandbox-runtime",
+            "directories": [" root/team-a ", "root/team-a/subdir", "  "],
+        }
+    )
+    assert config.directories == ["root/team-a", "root/team-a/subdir"]
 
 
 def test_ado_worker_global_config_defaults_include_dedicated_pat_env_name() -> None:

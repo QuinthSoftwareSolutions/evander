@@ -21,7 +21,9 @@ from .email.http_utils import ProviderRequestError
 from .models import (
     AuditEvent,
     DiscordCommandEnvelope,
+    HasPendingDiscordMessagesRequest,
     HasPendingFeedbackRequest,
+    ListUnreadDiscordMessagesRequest,
     ListUnreadFeedbackRequest,
     PostPrFeedbackReplyRequest,
     TeamsMessageEnvelope,
@@ -1043,6 +1045,108 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 decision="error",
                 error_class="adapter_http_error",
             )
+            raise
+
+    @server.tool()
+    def has_pending_discord_messages(session_id: str) -> dict[str, Any]:
+        args = HasPendingDiscordMessagesRequest(session_id=session_id).model_dump(mode="json")
+        try:
+            context.policy.require_tool(session_id, ToolName.HAS_PENDING_DISCORD_MESSAGES)
+            streams = [{"channel_id": channel_id} for channel_id in context.policy_config.discord_inbox_channel_ids_for_session_id(session_id)]
+            result = context.discord_inbox_service_for_session(session_id).has_pending_discord_messages(
+                streams=streams,
+                session_id=session_id,
+            ).model_dump(mode="json")
+            audit_success(
+                session_id,
+                ToolName.HAS_PENDING_DISCORD_MESSAGES,
+                args,
+                {"pending": result["pending"]},
+            )
+            return result
+        except PolicyError as exc:
+            audit_failure(session_id, ToolName.HAS_PENDING_DISCORD_MESSAGES, args, str(exc))
+            raise
+        except Exception as exc:
+            audit_failure(
+                session_id,
+                ToolName.HAS_PENDING_DISCORD_MESSAGES,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
+    def list_unread_discord_messages(
+        session_id: str, cursor: str | None = None, limit: int | None = None
+    ) -> dict[str, Any]:
+        args = ListUnreadDiscordMessagesRequest(session_id=session_id, cursor=cursor, limit=limit).model_dump(
+            mode="json"
+        )
+        try:
+            context.policy.require_tool(session_id, ToolName.LIST_UNREAD_DISCORD_MESSAGES)
+            streams = [{"channel_id": channel_id} for channel_id in context.policy_config.discord_inbox_channel_ids_for_session_id(session_id)]
+            response = context.discord_inbox_service_for_session(session_id).list_unread_discord_messages(
+                streams=streams,
+                session_id=session_id,
+                cursor=cursor,
+                limit=limit,
+            )
+            result = response.model_dump(mode="json")
+            audit_success(
+                session_id,
+                ToolName.LIST_UNREAD_DISCORD_MESSAGES,
+                args,
+                {"count": len(response.messages), "next_cursor": response.next_cursor},
+            )
+            return result
+        except PolicyError as exc:
+            audit_failure(session_id, ToolName.LIST_UNREAD_DISCORD_MESSAGES, args, str(exc))
+            raise
+        except Exception as exc:
+            audit_failure(
+                session_id,
+                ToolName.LIST_UNREAD_DISCORD_MESSAGES,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
+    def list_all_discord_messages(session_id: str, limit: int | None = None) -> dict[str, Any]:
+        args = {"session_id": session_id, "limit": limit}
+        try:
+            context.policy.require_tool(session_id, ToolName.LIST_ALL_DISCORD_MESSAGES)
+            streams = [{"channel_id": channel_id} for channel_id in context.policy_config.discord_inbox_channel_ids_for_session_id(session_id)]
+            response = context.discord_inbox_service_for_session(session_id).list_all_discord_messages(
+                streams=streams,
+                limit=limit,
+            )
+            result = response.model_dump(mode="json")
+            audit_success(
+                session_id,
+                ToolName.LIST_ALL_DISCORD_MESSAGES,
+                args,
+                {"count": len(response.messages), "next_cursor": response.next_cursor},
+            )
+            return result
+        except PolicyError as exc:
+            audit_failure(session_id, ToolName.LIST_ALL_DISCORD_MESSAGES, args, str(exc))
+            raise
+        except Exception as exc:
+            audit_failure(
+                session_id,
+                ToolName.LIST_ALL_DISCORD_MESSAGES,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
             raise
         except Exception as exc:
             audit_failure(

@@ -28,6 +28,7 @@ from .bootstrap import (
     resolve_runtime_dir,
 )
 from .config import GatewayConfig, load_config
+from .directories import DirectoryService
 from .host_heartbeat_worker import build_host_heartbeat_worker
 from .issue_orchestrator import build_issue_orchestrator_worker
 from .host_config import DEFAULT_RUNTIME_DIR
@@ -749,6 +750,9 @@ def _build_issue_session_manifest(
             [
                 ToolName.DISCORD_GET_COMMANDS,
                 ToolName.DISCORD_POST_STATUS,
+                ToolName.HAS_PENDING_DISCORD_MESSAGES,
+                ToolName.LIST_UNREAD_DISCORD_MESSAGES,
+                ToolName.LIST_ALL_DISCORD_MESSAGES,
             ]
         )
 
@@ -1276,6 +1280,10 @@ def create_session(
     session_id: str,
     config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
     vm_id: Annotated[str | None, typer.Option("--vm-id", help="VM identifier to bind to the session.")] = None,
+    directory: Annotated[
+        str | None,
+        typer.Option("--directory", help="Directory path whose effective config should apply to the session."),
+    ] = None,
     discord_channel: Annotated[
         list[str] | None,
         typer.Option("--discord-channel", help="Allowlisted Discord control channel."),
@@ -1288,14 +1296,19 @@ def create_session(
 ) -> None:
     cfg = _load_runtime_config_from_option(config)
     runtime = build_runtime(cfg)
-    policy = runtime.policy_config.resolve_for_directory("root")
+    service = DirectoryService(runtime.directories)
+    normalized_directory = service.show(directory or "root").directory.path
+    policy = runtime.policy_config.resolve_for_directory(normalized_directory)
     manifest = SessionManifest(
         session_id=session_id,
         vm_id=vm_id,
-        directory_path="root",
+        directory_path=normalized_directory,
         allowed_tools=[
             ToolName.DISCORD_GET_COMMANDS,
             ToolName.DISCORD_POST_STATUS,
+            ToolName.HAS_PENDING_DISCORD_MESSAGES,
+            ToolName.LIST_UNREAD_DISCORD_MESSAGES,
+            ToolName.LIST_ALL_DISCORD_MESSAGES,
             ToolName.EMAIL_LIST_UNREAD,
             ToolName.EMAIL_GET_MESSAGE,
             ToolName.EMAIL_CREATE_DRAFT,

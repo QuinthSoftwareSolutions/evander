@@ -610,6 +610,41 @@ def test_admin_service_reads_and_writes_host_heartbeat_worker_global_config(tmp_
     assert reread.config["host_heartbeat_stream_conflict_policy"] == "reject"
 
 
+def test_admin_service_reads_and_writes_discord_ingest_worker_global_config(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+
+    read_result = service.read_worker_global_config("discord-ingest")
+    assert read_result.exists is False
+    assert read_result.path == str(tmp_path / "config" / "discord-ingest" / "config.json")
+    assert read_result.config["poll_interval_seconds"] == 30.0
+    assert read_result.config["directories"] == []
+    assert read_result.config["backoff_seconds"] == 60.0
+
+    write_result = service.write_worker_global_config(
+        "discord-ingest",
+        {
+            "runtime_dir": str(tmp_path / "runtime"),
+            "directories": ["root/team-a", "root/team-b"],
+            "poll_interval_seconds": 12.5,
+            "jitter_seconds": 1.5,
+            "backoff_seconds": 45.0,
+            "lock_path": None,
+        },
+    )
+    assert write_result.config["directories"] == ["root/team-a", "root/team-b"]
+    assert write_result.config["poll_interval_seconds"] == 12.5
+
+    config_path = tmp_path / "config" / "discord-ingest" / "config.json"
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    assert payload["directories"] == ["root/team-a", "root/team-b"]
+    assert payload["poll_interval_seconds"] == 12.5
+    assert payload["backoff_seconds"] == 45.0
+
+    reread = service.read_worker_global_config("discord-ingest")
+    assert reread.config["directories"] == ["root/team-a", "root/team-b"]
+    assert reread.config["backoff_seconds"] == 45.0
+
+
 def test_create_issue_vm_uses_directory_vm_defaults_overlay_for_guest_env(tmp_path: Path, monkeypatch) -> None:
     service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
     create_result = service.create_directory_child("root", "team")
@@ -1090,6 +1125,17 @@ def test_list_background_workers_reads_systemd_state(tmp_path: Path, monkeypatch
             "ExecMainCode": "1",
             "ExecMainStatus": "0",
         },
+        "agent-sandbox-discord-ingest.service": {
+            "ActiveState": "active",
+            "SubState": "running",
+            "Result": "success",
+            "UnitFileState": "enabled",
+            "Description": "Discord ingest worker",
+            "MainPID": "456",
+            "LoadState": "loaded",
+            "ExecMainCode": "1",
+            "ExecMainStatus": "0",
+        },
         "agent-sandbox-host-heartbeat.service": {
             "ActiveState": "failed",
             "SubState": "failed",
@@ -1117,17 +1163,25 @@ def test_list_background_workers_reads_systemd_state(tmp_path: Path, monkeypatch
 
     summaries = service.list_background_workers()
 
-    assert [summary.worker_id for summary in summaries] == ["ado", "host-heartbeat", "issue-orchestrator"]
+    assert [summary.worker_id for summary in summaries] == [
+        "ado",
+        "discord-ingest",
+        "host-heartbeat",
+        "issue-orchestrator",
+    ]
     assert summaries[0].running is True
     assert summaries[0].failed is False
     assert summaries[0].main_pid == 123
     assert summaries[0].unit_file_state == "enabled"
-    assert summaries[1].running is False
-    assert summaries[1].failed is True
-    assert summaries[1].detail == "load=loaded, exec=1:2"
+    assert summaries[1].running is True
+    assert summaries[1].failed is False
+    assert summaries[1].main_pid == 456
     assert summaries[2].running is False
-    assert summaries[2].failed is False
-    assert summaries[2].unit_file_state == "disabled"
+    assert summaries[2].failed is True
+    assert summaries[2].detail == "load=loaded, exec=1:2"
+    assert summaries[3].running is False
+    assert summaries[3].failed is False
+    assert summaries[3].unit_file_state == "disabled"
 
 
 def test_list_background_workers_marks_unavailable_when_systemctl_fails(tmp_path: Path, monkeypatch) -> None:

@@ -71,7 +71,8 @@ def test_main_accepts_runtime_dir_override(monkeypatch, tmp_path: Path) -> None:
 
 
 def test_config_field_kind_uses_multiline_editor_for_prompt_fields() -> None:
-    assert admin_app._config_field_kind("host_heartbeat_resume_prompt") == ("multiline_text", ())
+    assert admin_app._config_field_kind("host_heartbeat_pr_resume_prompt") == ("multiline_text", ())
+    assert admin_app._config_field_kind("host_heartbeat_discord_resume_prompt") == ("multiline_text", ())
     assert admin_app._config_field_kind("pr_template_markdown") == ("multiline_text", ())
     assert admin_app._config_field_kind("host_resume_script_path") == ("text", ())
 
@@ -166,6 +167,78 @@ def test_worker_global_settings_tooltips_include_ado_and_host_heartbeat_fields()
         "host_resume_script_path",
     }:
         assert field_name in admin_app.WORKER_GLOBAL_CONFIG_FIELD_TOOLTIPS
+
+
+def test_directory_config_domain_help_text_calls_out_discord_fields() -> None:
+    discord_help = admin_app._directory_config_domain_help_text("discord")
+    policy_help = admin_app._directory_config_domain_help_text("policy")
+    providers_help = admin_app._directory_config_domain_help_text("providers")
+
+    assert discord_help is not None
+    assert "Per-directory Discord configuration" in discord_help
+    assert policy_help is not None
+    assert "discord_operator_user_allowlist" in policy_help
+    assert providers_help is not None
+    assert "discord_backend" in providers_help
+    assert "discord_bot_token_env" in providers_help
+    assert admin_app._directory_config_domain_help_text("email") is None
+
+
+def test_directory_config_tab_field_sources_expose_composite_discord_tab() -> None:
+    field_sources = admin_app._directory_config_tab_field_sources("discord")
+    field_domains = {field_name: domain for domain, field_name in field_sources}
+
+    assert ("providers", "discord_backend") in field_sources
+    assert ("policy", "discord_operator_user_allowlist") in field_sources
+    assert field_domains["discord_bot_token_env"] == "providers"
+    assert field_domains["discord_poll_operator_dms"] == "policy"
+    assert admin_app._directory_config_tab_underlying_domains("discord") == ("providers", "policy")
+
+
+def test_collect_config_form_payloads_by_domain_splits_discord_tab_fields() -> None:
+    class DummyCheckbox:
+        def __init__(self, checked: bool) -> None:
+            self._checked = checked
+
+        def isChecked(self) -> bool:
+            return self._checked
+
+    window = SimpleNamespace(
+        _selected_directory_path="root/team-a",
+        _config_widgets={
+            "discord": {
+                "field_specs": {
+                    "discord_backend": {
+                        "include_checkbox": DummyCheckbox(True),
+                        "clear_checkbox": DummyCheckbox(False),
+                        "kind": "literal",
+                        "control": object(),
+                    },
+                    "discord_operator_user_allowlist": {
+                        "include_checkbox": DummyCheckbox(True),
+                        "clear_checkbox": DummyCheckbox(False),
+                        "kind": "string_list",
+                        "control": object(),
+                    },
+                },
+                "field_domains": {
+                    "discord_backend": "providers",
+                    "discord_operator_user_allowlist": "policy",
+                },
+            }
+        },
+        _read_config_field_control_value=lambda spec: (
+            "bot_api" if spec["kind"] == "literal" else ["123456789012345678"]
+        ),
+        _collect_config_form_payload=lambda domain: admin_app.MainWindow._collect_config_form_payload(window, domain),
+    )
+
+    payloads = admin_app.MainWindow._collect_config_form_payloads_by_domain(window, "discord")
+
+    assert payloads == {
+        "providers": {"discord_backend": "bot_api"},
+        "policy": {"discord_operator_user_allowlist": ["123456789012345678"]},
+    }
 
 
 def test_preferred_agent_log_repo_name_uses_single_detected_repo() -> None:

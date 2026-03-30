@@ -286,6 +286,12 @@ class HostHeartbeatWorker:
                         discovered_feedback += discovered_for_stream
                         if discovered_for_stream or self._stream_has_unread_bindings(stream=stream, bindings=bindings):
                             self._record_busy_skips(stream=stream, bindings=bindings)
+                    discord_bindings = self._collect_discord_channel_mappings(directory_path=configured_directory_path)
+                    for channel_id, bindings in sorted(discord_bindings.items()):
+                        streams_polled += 1
+                        if self._discord_channel_has_unread_bindings(channel_id=channel_id, bindings=bindings):
+                            discovered_feedback += 1
+                            self._record_discord_busy_skips(channel_id=channel_id, bindings=bindings)
 
         next_sleep_seconds = _compute_next_sleep_seconds(
             poll_interval_seconds=worker_config.host_heartbeat_poll_interval_seconds,
@@ -419,6 +425,17 @@ class HostHeartbeatWorker:
                 return True
         return False
 
+    def _discord_channel_has_unread_bindings(
+        self,
+        *,
+        channel_id: str,
+        bindings: list[StreamSessionBinding],
+    ) -> bool:
+        for binding in bindings:
+            if self._binding_has_unread_discord_messages(binding=binding, channel_id=channel_id):
+                return True
+        return False
+
     def _binding_has_unread_feedback(self, *, binding: StreamSessionBinding, stream: FeedbackStream) -> bool:
         pr_feedback_service = getattr(self.runtime, "pr_feedback_service", None)
         if pr_feedback_service is not None:
@@ -446,6 +463,125 @@ class HostHeartbeatWorker:
             )
         )
 
+    def _binding_has_unread_discord_messages(self, *, binding: StreamSessionBinding, channel_id: str) -> bool:
+        discord_inbox_service = getattr(self.runtime, "discord_inbox_service", None)
+        if discord_inbox_service is None:
+            return False
+        response = discord_inbox_service.has_pending_discord_messages(
+            session_id=binding.session_id,
+            streams=[{"channel_id": channel_id}],
+        )
+        pending = getattr(response, "pending", None)
+        if pending is not None:
+            return bool(pending)
+        if isinstance(response, dict):
+            return bool(response.get("pending"))
+        return False
+
+    def _record_discord_busy_skips(self, *, channel_id: str, bindings: list[StreamSessionBinding]) -> None:
+        for binding in bindings:
+            worker_config = self._resolve_worker_config_for_binding(binding)
+            if not self._binding_has_unread_discord_messages(binding=binding, channel_id=channel_id):
+                continue
+            if self._binding_is_host_disabled(binding):
+                self._log_audit_decision(
+                    event_type=AuditEventType.BUSY_SKIP,
+                    session_id=binding.session_id,
+                    vm_id=binding.vm_id,
+                    decision="skipped",
+                    reason="agent-disabled",
+                    args={"source": binding.source, "channel_id": channel_id},
+                )
+                continue
+            if _is_session_in_cooldown(
+                path=worker_config.host_heartbeat_session_cooldown_path,
+                session_id=binding.session_id,
+            ):
+                self._log_audit_decision(
+                    event_type=AuditEventType.BUSY_SKIP,
+                    session_id=binding.session_id,
+                    vm_id=binding.vm_id,
+                    decision="skipped",
+                    reason="session-cooldown",
+                    args={"source": binding.source, "channel_id": channel_id},
+                )
+                continue
+            if not binding.vm_id:
+                continue
+            agent_state = _probe_agent_dispatch_state(
+                session_id=binding.session_id,
+                vm_id=binding.vm_id,
+                script_path=worker_config.host_busy_check_script_path,
+            )
+            if agent_state == "busy":
+                _set_session_cooldown(
+                    path=worker_config.host_heartbeat_session_cooldown_path,
+                    session_id=binding.session_id,
+                    cooldown_seconds=worker_config.host_heartbeat_cooldown_seconds,
+                )
+                self._log_audit_decision(
+                    event_type=AuditEventType.BUSY_SKIP,
+                    session_id=binding.session_id,
+                    vm_id=binding.vm_id,
+                    decision="skipped",
+                    reason="agent-busy",
+                    args={"source": binding.source, "channel_id": channel_id},
+                )
+                continue
+            if agent_state == "unavailable":
+                self._log_audit_decision(
+                    event_type=AuditEventType.BUSY_SKIP,
+                    session_id=binding.session_id,
+                    vm_id=binding.vm_id,
+                    decision="skipped",
+                    reason="agent-unavailable",
+                    args={"source": binding.source, "channel_id": channel_id},
+                )
+                continue
+            self._resume_binding(binding, worker_config=worker_config)
+            _set_session_cooldown(
+                path=worker_config.host_heartbeat_session_cooldown_path,
+                session_id=binding.session_id,
+                cooldown_seconds=worker_config.host_heartbeat_cooldown_seconds,
+            )
+
+    def _build_resume_prompt(self, binding: StreamSessionBinding, *, worker_config: GatewayConfig) -> str:
+        prompt_parts: list[str] = []
+        unread_pr_streams = [
+            stream
+            for stream in self._collect_pr_streams_for_session(binding)
+            if self._binding_has_unread_feedback(binding=binding, stream=stream)
+        ]
+        if unread_pr_streams:
+            prompt_parts.append(self._pr_resume_prompt(worker_config))
+
+        unread_discord_channel_ids = [
+            channel_id
+            for channel_id in self._collect_discord_channels_for_session(binding.session_id)
+            if self._binding_has_unread_discord_messages(binding=binding, channel_id=channel_id)
+        ]
+        if unread_discord_channel_ids:
+            prompt_parts.append(self._discord_resume_prompt(worker_config))
+
+        if prompt_parts:
+            return " ".join(prompt_parts)
+        return self._pr_resume_prompt(worker_config)
+
+    @staticmethod
+    def _pr_resume_prompt(worker_config: GatewayConfig) -> str:
+        return str(getattr(worker_config, "host_heartbeat_pr_resume_prompt", "")).strip()
+
+    @staticmethod
+    def _discord_resume_prompt(worker_config: GatewayConfig) -> str:
+        return str(
+            getattr(
+                worker_config,
+                "host_heartbeat_discord_resume_prompt",
+                "You have unread Discord messages. Please fetch them with "
+                "list_unread_discord_messages and respond with discord_post_status if needed.",
+            )
+        ).strip()
+
     def _resume_binding(self, binding: StreamSessionBinding, *, worker_config: GatewayConfig) -> None:
         if not binding.vm_id:
             return
@@ -461,7 +597,7 @@ class HostHeartbeatWorker:
         cmd = [
             str(script_path),
             "--prompt",
-            worker_config.host_heartbeat_resume_prompt,
+            self._build_resume_prompt(binding, worker_config=worker_config),
             "--vm-name",
             binding.vm_id,
             "--session-id",
@@ -644,6 +780,62 @@ class HostHeartbeatWorker:
             self._collect_stream_mappings().keys(),
             key=lambda stream: (stream.provider, stream.repo, stream.pr_id),
         )
+
+    def _collect_pr_streams_for_session(self, binding: StreamSessionBinding) -> list[FeedbackStream]:
+        sessions_by_id = self.runtime.sessions.read_all()
+        session = sessions_by_id.get(binding.session_id)
+        collected: dict[tuple[str, str, str], FeedbackStream] = {}
+        if session is not None:
+            raw_streams = session.metadata.get("pr_feedback_streams")
+            if isinstance(raw_streams, list):
+                for raw_stream in raw_streams:
+                    parsed = _parse_stream(raw_stream)
+                    if parsed is not None:
+                        collected[(parsed.provider, parsed.repo, parsed.pr_id)] = parsed
+
+        for (provider, repo, pr_id), raw_entry in _load_pr_map_entries(self.config.pr_map_path).items():
+            session_id = str(raw_entry.get("session_id", "")).strip()
+            if session_id != binding.session_id:
+                continue
+            collected[(provider, repo, pr_id)] = FeedbackStream(provider=provider, repo=repo, pr_id=pr_id)
+
+        return sorted(collected.values(), key=lambda stream: (stream.provider, stream.repo, stream.pr_id))
+
+    def _collect_discord_channels_for_session(self, session_id: str) -> list[str]:
+        policy_config = getattr(self.runtime, "policy_config", None)
+        if policy_config is None:
+            return []
+        return list(policy_config.discord_inbox_channel_ids_for_session_id(session_id))
+
+    def _collect_discord_channel_mappings(
+        self,
+        *,
+        directory_path: str | None = None,
+    ) -> dict[str, list[StreamSessionBinding]]:
+        policy_config = getattr(self.runtime, "policy_config", None)
+        if policy_config is None:
+            return {}
+        now = datetime.now(timezone.utc)
+        scope_directory_path = DirectoryPath(segments=directory_path or "root").as_posix()
+        scope_is_root = scope_directory_path == "root"
+        mapped: dict[str, list[StreamSessionBinding]] = {}
+        for session in self.runtime.sessions.read_all().values():
+            if session.expires_at <= now:
+                continue
+            if not scope_is_root and not _directory_is_within_scope(session.directory_path, scope_directory_path):
+                continue
+            for channel_id in policy_config.discord_inbox_channel_ids_for_session_id(session.session_id):
+                binding = StreamSessionBinding(
+                    session_id=session.session_id,
+                    vm_id=session.vm_id,
+                    source="discord_inbox_routes",
+                    directory_path=session.directory_path,
+                )
+                mapped.setdefault(channel_id, []).append(binding)
+        return {
+            channel_id: list({(binding.session_id, binding.vm_id, binding.source): binding for binding in bindings}.values())
+            for channel_id, bindings in mapped.items()
+        }
 
 
 class _LockHandle:

@@ -29,6 +29,20 @@ ADMIN_APP_DEFAULT_RUNTIME_DIR = Path("runtime")
 _ACTIVE_ISSUE_FILTER_LABEL = "Active"
 _ALL_ISSUE_FILTER_LABEL = "All"
 _INACTIVE_ISSUE_STATES = frozenset({"Completed", "Closed"})
+_DISCORD_CONFIG_FIELDS: tuple[tuple[str, str], ...] = (
+    ("providers", "discord_backend"),
+    ("providers", "discord_bot_token_env"),
+    ("providers", "discord_api_base_url"),
+    ("providers", "discord_poll_limit"),
+    ("providers", "discord_timeout_seconds"),
+    ("providers", "discord_retry_count"),
+    ("providers", "discord_retry_base_backoff_seconds"),
+    ("providers", "discord_retry_max_backoff_seconds"),
+    ("policy", "discord_operator_channel_allowlist"),
+    ("policy", "discord_inbox_routes"),
+    ("policy", "discord_operator_user_allowlist"),
+    ("policy", "discord_poll_operator_dms"),
+)
 
 try:
     from PySide6.QtCore import QObject, QRunnable, QSettings, QThreadPool, QTimer, Qt, Signal
@@ -508,6 +522,10 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
         "Channel IDs that the host Discord bot may poll for operator commands in addition to any "
         "session-specific Discord channel allowlists."
     ),
+    "discord_inbox_routes": (
+        "Directory-scoped mapping from watched Discord channel IDs to target session IDs for "
+        "always-on inbox delivery."
+    ),
     "discord_operator_user_allowlist": (
         "Trusted Discord operator user IDs. Commands from these users are accepted even when they "
         "arrive outside a session's channel allowlist."
@@ -700,8 +718,11 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
     "host_heartbeat_poll_interval_seconds": (
         "Base polling interval in seconds for the host heartbeat worker."
     ),
-    "host_heartbeat_resume_prompt": (
-        "Prompt text passed to the resume script when waking an agent session to handle newly arrived feedback."
+    "host_heartbeat_pr_resume_prompt": (
+        "Prompt text passed to the resume script when waking an agent session for unread PR comments."
+    ),
+    "host_heartbeat_discord_resume_prompt": (
+        "Prompt text passed to the resume script when waking an agent session for unread Discord messages."
     ),
     "host_heartbeat_resume_timeout_seconds": (
         "Timeout in seconds for the host resume script invocation."
@@ -847,8 +868,41 @@ def _config_field_tooltip(field_name: str) -> str:
     return CONFIG_FIELD_TOOLTIPS.get(field_name, "")
 
 
+def _directory_config_domain_help_text(domain: str) -> str | None:
+    if domain == "discord":
+        return (
+            "Per-directory Discord configuration. This combines Discord adapter settings from "
+            "`providers` with Discord policy fields from `policy`."
+        )
+    if domain == "policy":
+        return (
+            "Session-scoped Discord policy lives here, including "
+            "`discord_operator_user_allowlist`."
+        )
+    if domain == "providers":
+        return (
+            "Host-side Discord adapter settings live here, including "
+            "`discord_backend` and `discord_bot_token_env`."
+        )
+    return None
+
+
 def _worker_global_config_tooltip(field_name: str) -> str:
     return WORKER_GLOBAL_CONFIG_FIELD_TOOLTIPS.get(field_name, "")
+
+
+def _directory_config_tab_field_sources(tab_key: str) -> tuple[tuple[str, str], ...]:
+    if tab_key == "discord":
+        return _DISCORD_CONFIG_FIELDS
+    return tuple((tab_key, field_name) for field_name in sorted(DIRECTORY_CONFIG_DOMAIN_FIELDS[tab_key]))
+
+
+def _directory_config_tab_underlying_domains(tab_key: str) -> tuple[str, ...]:
+    return tuple(dict.fromkeys(domain for domain, _field_name in _directory_config_tab_field_sources(tab_key)))
+
+
+def _directory_config_tab_title(tab_key: str) -> str:
+    return tab_key
 
 
 def _root_config_field_starts_editable(domain: str, field_name: str, raw_config: dict[str, Any]) -> bool:
@@ -1069,16 +1123,22 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self.config_status_label.setWordWrap(True)
         self.config_tabs = QTabWidget()
         self._config_widgets: dict[str, dict[str, object]] = {}
-        for domain in DIRECTORY_CONFIG_DOMAIN_FILENAMES:
+        for domain in [*DIRECTORY_CONFIG_DOMAIN_FILENAMES.keys(), "discord"]:
             page = QWidget()
             page_layout = QVBoxLayout(page)
+            domain_help = _directory_config_domain_help_text(domain)
+            if domain_help:
+                help_label = QLabel(domain_help)
+                help_label.setWordWrap(True)
+                page_layout.addWidget(help_label)
             form_scroll = QScrollArea()
             form_scroll.setWidgetResizable(True)
             form_container = QWidget()
             form_layout = QFormLayout(form_container)
             form_scroll.setWidget(form_container)
             field_specs: dict[str, dict[str, object]] = {}
-            for field_name in sorted(DIRECTORY_CONFIG_DOMAIN_FIELDS[domain]):
+            field_sources = _directory_config_tab_field_sources(domain)
+            for source_domain, field_name in field_sources:
                 editor = self._build_config_field_editor(domain, field_name)
                 label = QLabel(_pretty_config_field_name(field_name))
                 tooltip = _config_field_tooltip(field_name)
@@ -1109,10 +1169,12 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             page_layout.addLayout(action_row)
             page_layout.addWidget(QLabel("Validation"))
             page_layout.addWidget(validation_view)
-            self.config_tabs.addTab(page, domain)
+            self.config_tabs.addTab(page, _directory_config_tab_title(domain))
             self._config_widgets[domain] = {
                 "form_scroll": form_scroll,
                 "field_specs": field_specs,
+                "field_domains": {field_name: source_domain for source_domain, field_name in field_sources},
+                "underlying_domains": _directory_config_tab_underlying_domains(domain),
                 "validation_view": validation_view,
                 "save_button": save_button,
                 "view_parent_defaults_button": view_parent_defaults_button,
@@ -2492,6 +2554,15 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             payload[field_name] = self._read_config_field_control_value(spec)
         return payload
 
+    def _collect_config_form_payloads_by_domain(self, domain: str) -> dict[str, dict[str, Any]]:
+        payload = self._collect_config_form_payload(domain)
+        field_domains = self._config_widgets[domain]["field_domains"]
+        payloads_by_domain: dict[str, dict[str, Any]] = {}
+        for field_name, value in payload.items():
+            source_domain = field_domains[field_name]
+            payloads_by_domain.setdefault(source_domain, {})[field_name] = value
+        return payloads_by_domain
+
     def _apply_directory_feature_state(self) -> None:
         enabled = self.service.directory_scoped_config_enabled
         self._update_directory_action_bar()
@@ -2632,15 +2703,43 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         preserved_local_edits = False
         self.config_status_label.setText(f"Configuration for {selected_directory}")
         for domain, widgets in self._config_widgets.items():
-            raw_result = payload.get(f"raw:{domain}")
-            effective_result = payload.get(f"effective:{domain}")
-            parent_result = payload.get(f"parent:{domain}")
-            raw_config = {}
-            if getattr(raw_result, "ok", False) and raw_result.data is not None and raw_result.data.config is not None:
-                raw_config = raw_result.data.config
-            parent_effective_config = {}
-            if parent_result and getattr(parent_result, "ok", False) and parent_result.data is not None:
-                parent_effective_config = parent_result.data.resolution.effective_config
+            underlying_domains = widgets["underlying_domains"]
+            raw_config: dict[str, Any] = {}
+            parent_effective_config: dict[str, Any] = {}
+            latest_parent_payload: dict[str, Any] | None = None
+            latest_effective_payload: dict[str, Any] | None = None
+            diagnostics: list[str] = []
+            error_messages: list[str] = []
+            for source_domain in underlying_domains:
+                raw_result = payload.get(f"raw:{source_domain}")
+                effective_result = payload.get(f"effective:{source_domain}")
+                parent_result = payload.get(f"parent:{source_domain}")
+                if getattr(raw_result, "ok", False) and raw_result.data is not None and raw_result.data.config is not None:
+                    raw_config.update(raw_result.data.config)
+                if parent_result and getattr(parent_result, "ok", False) and parent_result.data is not None:
+                    parent_effective_config.update(parent_result.data.resolution.effective_config)
+                if parent_result and getattr(parent_result, "ok", False) and parent_result.data is not None:
+                    if latest_parent_payload is None:
+                        latest_parent_payload = {"directory_path": _parent_directory_path(selected_directory), "resolution": {}}
+                    latest_parent_payload["resolution"][source_domain] = parent_result.data.model_dump(mode="json")
+                elif latest_parent_payload is None:
+                    latest_parent_payload = {
+                        "directory_path": None,
+                        "note": (
+                            "Root directory has no parent directory. It is the top of the directory config "
+                            "chain for this domain."
+                        ),
+                    }
+                if getattr(effective_result, "ok", False) and effective_result.data is not None:
+                    if latest_effective_payload is None:
+                        latest_effective_payload = {"resolution": {}, "validation_diagnostics": []}
+                    latest_effective_payload["resolution"][source_domain] = effective_result.data.model_dump(mode="json")
+                    latest_effective_payload["validation_diagnostics"].extend(
+                        diag.model_dump(mode="json") for diag in effective_result.validation_diagnostics
+                    )
+                    diagnostics.extend(diag.message for diag in effective_result.validation_diagnostics)
+                else:
+                    error_messages.extend([error.message for error in getattr(effective_result, "errors", [])])
             if domain not in self._config_dirty_domains:
                 self._populate_config_form(
                     domain,
@@ -2649,33 +2748,12 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
                 )
             else:
                 preserved_local_edits = True
-            if parent_result and getattr(parent_result, "ok", False) and parent_result.data is not None:
-                widgets["latest_parent_defaults_payload"] = {
-                    "directory_path": _parent_directory_path(selected_directory),
-                    "resolution": parent_result.data.model_dump(mode="json"),
-                }
-            else:
-                widgets["latest_parent_defaults_payload"] = {
-                    "directory_path": None,
-                    "note": (
-                        "Root directory has no parent directory. It is the top of the directory config "
-                        "chain for this domain."
-                    ),
-                }
-            if getattr(effective_result, "ok", False) and effective_result.data is not None:
-                widgets["latest_effective_payload"] = {
-                    "resolution": effective_result.data.model_dump(mode="json"),
-                    "validation_diagnostics": [
-                        diag.model_dump(mode="json") for diag in effective_result.validation_diagnostics
-                    ],
-                }
-                diagnostics = [diag.message for diag in effective_result.validation_diagnostics]
+            widgets["latest_parent_defaults_payload"] = latest_parent_payload
+            if latest_effective_payload is not None and not error_messages:
+                widgets["latest_effective_payload"] = latest_effective_payload
                 widgets["validation_view"].setPlainText("\n".join(diagnostics) if diagnostics else "No validation errors.")
             else:
-                error_messages = [error.message for error in getattr(effective_result, "errors", [])]
-                widgets["latest_effective_payload"] = {
-                    "errors": error_messages,
-                }
+                widgets["latest_effective_payload"] = {"errors": error_messages}
                 widgets["validation_view"].setPlainText("\n".join(error_messages) if error_messages else "Unavailable.")
         if preserved_local_edits:
             self.config_status_label.setText(
@@ -2738,16 +2816,18 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             return
         widgets = self._config_widgets[domain]
         try:
-            payload = self._collect_config_form_payload(domain)
+            payloads_by_domain = self._collect_config_form_payloads_by_domain(domain)
         except (json.JSONDecodeError, ValueError) as exc:
             QMessageBox.warning(self, "Save configuration", f"Invalid configuration value: {exc}")
             return
-        result = self.service.write_directory_domain_config(self._selected_directory_path, domain, payload)
-        if not result.ok:
-            message = result.errors[0].message if result.errors else "Save failed."
-            widgets["validation_view"].setPlainText(message)
-            self.config_status_label.setText(f"Save failed for {domain}: {message}")
-            return
+        for source_domain in widgets["underlying_domains"]:
+            payload = payloads_by_domain.get(source_domain, {})
+            result = self.service.write_directory_domain_config(self._selected_directory_path, source_domain, payload)
+            if not result.ok:
+                message = result.errors[0].message if result.errors else "Save failed."
+                widgets["validation_view"].setPlainText(message)
+                self.config_status_label.setText(f"Save failed for {domain}: {message}")
+                return
         self._config_dirty_domains.discard(domain)
         self.config_status_label.setText(f"Saved {domain} overrides for {self._selected_directory_path}")
         self.refresh_configuration()
