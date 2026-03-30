@@ -403,6 +403,22 @@ def test_require_teams_message_source_rejects_unallowlisted_channel(tmp_path: Pa
 
     with pytest.raises(PolicyError, match="source is not allowlisted"):
         engine.require_teams_message_source(session, message)
+
+
+def test_require_teams_channel_target_validates_allowlist_and_shape(tmp_path: Path) -> None:
+    engine = make_engine(tmp_path)
+    session = SessionManifest(
+        session_id="s1",
+        allowed_tools=[ToolName.TEAMS_POST_STATUS],
+        teams_channel_allowlist=["team-a/channel-1"],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+
+    assert engine.require_teams_channel_target(session, "team-a/channel-1") == "team-a/channel-1"
+    with pytest.raises(PolicyError, match="expected 'team-id/channel-id'"):
+        engine.require_teams_channel_target(session, "channel-1")
+    with pytest.raises(PolicyError, match="not allowlisted"):
+        engine.require_teams_channel_target(session, "team-b/channel-9")
 def test_require_email_mailbox_and_folder_for_mailbox(tmp_path: Path) -> None:
     engine = make_engine(tmp_path)
     session = SessionManifest(

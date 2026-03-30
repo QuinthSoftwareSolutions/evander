@@ -512,18 +512,19 @@ See [live-smoke-tests.md](/home/jonathan/agent-sandbox/docs/live-smoke-tests.md)
 
 ## Teams Adapter Configuration
 
-- Teams ingestion is host-side and read-only in this implementation. Configure the gateway with:
+- Teams access is host-side. Configure the gateway with:
   - `teams_backend: graph_api`
   - `teams_graph_access_token_env: <ENV_VAR_NAME>`
   - optional `teams_graph_api_base_url` when you need a non-default Graph endpoint
 - The access token referenced by `teams_graph_access_token_env` must be able to read Microsoft
-  Teams channel messages for the teams/channels you plan to poll.
-- Session manifests opt into Teams polling explicitly:
+  Teams channel messages and, if you enable outbound status posts, create channel messages/replies
+  for the teams/channels you plan to use.
+- Session manifests opt into Teams access explicitly:
 
   ```json
   {
     "session_id": "teams-session",
-    "allowed_tools": ["teams_get_messages"],
+    "allowed_tools": ["teams_get_messages", "teams_post_status"],
     "teams_channel_allowlist": ["<team-id>/<channel-id>"]
   }
   ```
@@ -541,6 +542,15 @@ See [live-smoke-tests.md](/home/jonathan/agent-sandbox/docs/live-smoke-tests.md)
   - `content`
   - `created_at`
   - raw Graph payload preserved under `metadata.message`
+- The `teams_post_status` gateway tool accepts:
+  - `channel_target`
+  - `message`
+  - optional `thread_id` to reply into an existing channel thread
+- `teams_post_status` writes via:
+  - `POST /teams/{team-id}/channels/{channel-id}/messages` for top-level posts
+  - `POST /teams/{team-id}/channels/{channel-id}/messages/{thread_id}/replies` for replies
+- Outbound posts are audited and persisted in `runtime/teams_messages.json` with
+  `metadata.source == "teams_graph_api_status"` and the originating `session_id`.
 - Source filtering is strict: only envelopes tagged with `metadata.source == "teams_graph_api"`
   and originating from a session allowlisted `team-id/channel-id` are returned to that session.
 - Guests never need direct Microsoft Graph credentials or internet access; Teams API access

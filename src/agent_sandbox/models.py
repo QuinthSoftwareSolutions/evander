@@ -27,6 +27,7 @@ class ToolName(str, Enum):
     DISCORD_GET_COMMANDS = "discord_get_commands"
     DISCORD_POST_STATUS = "discord_post_status"
     TEAMS_GET_MESSAGES = "teams_get_messages"
+    TEAMS_POST_STATUS = "teams_post_status"
     EMAIL_LIST_UNREAD = "email_list_unread"
     EMAIL_GET_MESSAGE = "email_get_message"
     EMAIL_CREATE_DRAFT = "email_create_draft"

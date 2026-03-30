@@ -188,3 +188,92 @@ def test_stub_teams_service_filters_by_cursor(tmp_path: Path) -> None:
     messages = service.get_messages(since_cursor="team-a/channel-1/msg-1")
 
     assert [message.cursor for message in messages] == ["team-a/channel-1/msg-2"]
+
+
+def test_graph_teams_service_posts_status_and_thread_reply(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.method == "POST" and request.url.path.endswith("/teams/team-a/channels/channel-1/messages"):
+            return httpx.Response(
+                201,
+                json={
+                    "id": "msg-root",
+                    "createdDateTime": "2026-03-30T12:00:00Z",
+                    "body": {"content": "root status", "contentType": "text"},
+                    "from": {"application": {"id": "bot-app"}},
+                    "webUrl": "https://teams.example/root",
+                },
+                request=request,
+            )
+        if request.method == "POST" and request.url.path.endswith(
+            "/teams/team-a/channels/channel-1/messages/msg-root/replies"
+        ):
+            return httpx.Response(
+                201,
+                json={
+                    "id": "msg-reply",
+                    "replyToId": "msg-root",
+                    "createdDateTime": "2026-03-30T12:01:00Z",
+                    "body": {"content": "thread reply", "contentType": "text"},
+                    "from": {"application": {"id": "bot-app"}},
+                    "webUrl": "https://teams.example/reply",
+                },
+                request=request,
+            )
+        raise AssertionError(f"Unexpected request: {request.method} {request.url.path}")
+
+    transport = httpx.MockTransport(handler)
+    patch_httpx_client(monkeypatch, transport)
+    store = JsonStore(tmp_path / "teams.json", TeamsMessageEnvelope)
+    service = GraphTeamsService(
+        store,
+        token="graph-token",
+        api_base_url="https://graph.microsoft.com/v1.0",
+        poll_limit=25,
+        timeout_seconds=5.0,
+        allowed_channel_targets_provider=lambda: ["team-a/channel-1"],
+    )
+
+    post_result = service.post_status("root status", "team-a/channel-1", "session-1")
+    reply_result = service.post_status(
+        "thread reply",
+        "team-a/channel-1",
+        "session-1",
+        thread_id="msg-root",
+    )
+
+    assert post_result == {
+        "status": "posted",
+        "channel_target": "team-a/channel-1",
+        "team_id": "team-a",
+        "channel_id": "channel-1",
+        "thread_id": "msg-root",
+        "reply_to_message_id": None,
+        "session_id": "session-1",
+        "message_id": "msg-root",
+        "web_url": "https://teams.example/root",
+    }
+    assert reply_result == {
+        "status": "posted",
+        "channel_target": "team-a/channel-1",
+        "team_id": "team-a",
+        "channel_id": "channel-1",
+        "thread_id": "msg-root",
+        "reply_to_message_id": "msg-root",
+        "session_id": "session-1",
+        "message_id": "msg-reply",
+        "web_url": "https://teams.example/reply",
+    }
+    assert requests[0].headers["Authorization"] == "Bearer graph-token"
+    assert requests[0].content == b'{"body":{"content":"root status","contentType":"text"}}'
+    assert requests[1].content == b'{"body":{"content":"thread reply","contentType":"text"}}'
+
+    stored = store.read_all()
+    assert stored["team-a/channel-1/msg-root"].metadata["source"] == "teams_graph_api_status"
+    assert stored["team-a/channel-1/msg-root"].metadata["session_id"] == "session-1"
+    assert stored["team-a/channel-1/msg-reply"].thread_id == "msg-root"

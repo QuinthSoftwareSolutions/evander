@@ -1160,6 +1160,54 @@ def create_server(context: RuntimeContext) -> FastMCP:
             raise
 
     @server.tool()
+    def teams_post_status(
+        session_id: str,
+        channel_target: str,
+        message: str,
+        thread_id: str | None = None,
+    ) -> dict[str, Any]:
+        args = {
+            "session_id": session_id,
+            "channel_target": channel_target,
+            "message": message,
+            "thread_id": thread_id,
+        }
+        try:
+            session = context.policy.require_tool(session_id, ToolName.TEAMS_POST_STATUS)
+            normalized_target = context.policy.require_teams_channel_target(session, channel_target)
+            result = context.teams_service_for_session(session_id).post_status(
+                message,
+                normalized_target,
+                session_id,
+                thread_id=thread_id,
+            )
+            audit_success(session_id, ToolName.TEAMS_POST_STATUS, args, result)
+            return result
+        except PolicyError as exc:
+            audit_failure(session_id, ToolName.TEAMS_POST_STATUS, args, str(exc))
+            raise
+        except httpx.HTTPError as exc:
+            audit_failure(
+                session_id,
+                ToolName.TEAMS_POST_STATUS,
+                args,
+                str(exc),
+                decision="error",
+                error_class="adapter_http_error",
+            )
+            raise
+        except Exception as exc:
+            audit_failure(
+                session_id,
+                ToolName.TEAMS_POST_STATUS,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
     def email_list_unread(
         session_id: str, mailbox_id: str, folder: str, limit: int = 10
     ) -> list[dict[str, Any]]:

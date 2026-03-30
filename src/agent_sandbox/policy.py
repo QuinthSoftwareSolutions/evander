@@ -164,6 +164,17 @@ class PolicyEngine:
                 f"{session.session_id}"
             )
 
+    def require_teams_channel_target(self, session: SessionManifest, channel_target: str) -> str:
+        normalized_target = str(channel_target).strip().strip("/")
+        team_id, separator, channel_id = normalized_target.partition("/")
+        if not separator or not team_id or not channel_id:
+            raise PolicyError(
+                f"Invalid Teams channel target {channel_target!r}: expected 'team-id/channel-id'."
+            )
+        if normalized_target not in session.teams_channel_allowlist:
+            raise PolicyError(f"Teams channel is not allowlisted for session {session.session_id}")
+        return normalized_target
+
     def require_email_folder(self, session: SessionManifest, folder: str) -> None:
         if folder not in session.email_folder_allowlist:
             raise PolicyError(f"Email folder is not allowlisted for session {session.session_id}")
