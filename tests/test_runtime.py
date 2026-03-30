@@ -13,6 +13,7 @@ from agent_sandbox.runtime import _resolve_allowed_discord_channel_ids, build_ru
 from agent_sandbox.services import (
     AzureDevOpsPrReplyProvider,
     DiscordBotApiService,
+    DiscordInboxService,
     GitHubPrReplyProvider,
     StubDiscordService,
 )
@@ -100,6 +101,13 @@ def test_build_runtime_uses_root_provider_override_for_default_discord_service(
     assert runtime.discord_service.token == "root-token"
 
 
+def test_build_runtime_initializes_discord_inbox_service(tmp_path: Path) -> None:
+    runtime = build_runtime(make_config(tmp_path))
+
+    assert isinstance(runtime.discord_inbox_service, DiscordInboxService)
+    assert runtime.discord_inbox_service.store_path == tmp_path / "discord-inbox-store.json"
+
+
 def test_runtime_discord_service_for_session_uses_directory_provider_override(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -138,6 +146,87 @@ def test_runtime_discord_service_for_session_uses_directory_provider_override(
 
     assert isinstance(discord_service, DiscordBotApiService)
     assert discord_service.token == "team-token"
+
+
+def test_runtime_discord_service_for_session_uses_session_scoped_policy_inputs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ROOT_DISCORD_TOKEN", "root-token")
+    monkeypatch.setenv("TEAM_DISCORD_TOKEN", "team-token")
+    config = make_config(tmp_path, discord_backend="stub")
+    directories = DirectoryService(DirectoryStore(config.directories_store_path))
+    team = directories.create(parent="root", name="team")
+    write_provider_overlay(
+        config,
+        "root",
+        {
+            "discord_backend": "bot_api",
+            "discord_bot_token_env": "ROOT_DISCORD_TOKEN",
+        },
+    )
+    write_provider_overlay(
+        config,
+        team.path,
+        {
+            "discord_bot_token_env": "TEAM_DISCORD_TOKEN",
+        },
+    )
+    directory_store = DirectoryStore(config.directories_store_path)
+    directory_store.ensure_root()
+    config_store = DirectoryConfigStore(directory_store, runtime_dir=config.runtime_dir)
+    config_store.write(
+        "root",
+        domain="policy",
+        payload={
+            "discord_operator_channel_allowlist": ["root-ops"],
+            "discord_operator_user_allowlist": ["root-user"],
+            "discord_poll_operator_dms": False,
+        },
+    )
+    config_store.write(
+        team.path,
+        domain="policy",
+        payload={
+            "discord_operator_channel_allowlist": ["team-ops"],
+            "discord_operator_user_allowlist": ["team-user"],
+            "discord_poll_operator_dms": True,
+        },
+    )
+    runtime = build_runtime(config)
+    runtime.sessions.put(
+        "session-root",
+        SessionManifest(
+            session_id="session-root",
+            allowed_tools=[ToolName.DISCORD_GET_COMMANDS],
+            discord_channel_allowlist=["root-control"],
+            directory_path="root",
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    runtime.sessions.put(
+        "session-team",
+        SessionManifest(
+            session_id="session-team",
+            allowed_tools=[ToolName.DISCORD_GET_COMMANDS],
+            discord_channel_allowlist=["team-control"],
+            directory_path=team.path,
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+
+    root_service = runtime.discord_service_for_session("session-root")
+    team_service = runtime.discord_service_for_session("session-team")
+
+    assert isinstance(root_service, DiscordBotApiService)
+    assert isinstance(team_service, DiscordBotApiService)
+    assert root_service.token == "root-token"
+    assert team_service.token == "team-token"
+    assert root_service._allowed_channel_ids() == ["root-control", "root-ops"]
+    assert team_service._allowed_channel_ids() == ["team-control", "team-ops"]
+    assert root_service._operator_user_ids() == ["root-user"]
+    assert team_service._operator_user_ids() == ["team-user"]
+    assert root_service.include_operator_dms_provider() is False
+    assert team_service.include_operator_dms_provider() is True
 
 
 def test_runtime_email_service_for_session_uses_directory_provider_override(

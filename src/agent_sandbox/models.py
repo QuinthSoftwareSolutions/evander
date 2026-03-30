@@ -36,6 +36,9 @@ class ToolName(str, Enum):
     LIST_UNREAD_FEEDBACK = "list_unread_feedback"
     LIST_ALL_FEEDBACK = "list_all_feedback"
     POST_PR_FEEDBACK_REPLY = "post_pr_feedback_reply"
+    HAS_PENDING_DISCORD_MESSAGES = "has_pending_discord_messages"
+    LIST_UNREAD_DISCORD_MESSAGES = "list_unread_discord_messages"
+    LIST_ALL_DISCORD_MESSAGES = "list_all_discord_messages"
 
 
 class ApprovalStatus(str, Enum):
@@ -353,6 +356,17 @@ class DiscordCommandEnvelope(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class DiscordMessageEnvelope(BaseModel):
+    message_id: str
+    channel_id: str
+    author_id: str
+    author_name: str
+    content: str
+    created_at: datetime
+    in_reply_to: str | None = None
+    raw: dict[str, Any] = Field(default_factory=dict)
+
+
 class AuditEvent(BaseModel):
     event_type: str
     session_id: str | None = None
@@ -401,6 +415,26 @@ class ListUnreadFeedbackRequest(BaseModel):
 
 class ListUnreadFeedbackResponse(BaseModel):
     feedback: list[PrFeedbackItem] = Field(default_factory=list)
+    next_cursor: str | None = None
+
+
+class HasPendingDiscordMessagesRequest(BaseModel):
+    session_id: str
+
+
+class HasPendingDiscordMessagesResponse(BaseModel):
+    pending: bool
+    next_cursor: str | None = None
+
+
+class ListUnreadDiscordMessagesRequest(BaseModel):
+    session_id: str
+    cursor: str | None = None
+    limit: int | None = Field(default=None, ge=1)
+
+
+class ListUnreadDiscordMessagesResponse(BaseModel):
+    messages: list[DiscordMessageEnvelope] = Field(default_factory=list)
     next_cursor: str | None = None
 
 

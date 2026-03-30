@@ -350,6 +350,10 @@ render_unit \
   "${SYSTEMD_DIR}/agent-sandbox-ado-worker.service"
 
 render_unit \
+  "${ROOT_DIR}/systemd/agent-sandbox-discord-ingest.service.template" \
+  "${SYSTEMD_DIR}/agent-sandbox-discord-ingest.service"
+
+render_unit \
   "${ROOT_DIR}/systemd/agent-sandbox-host-heartbeat.service.template" \
   "${SYSTEMD_DIR}/agent-sandbox-host-heartbeat.service"
 
@@ -363,6 +367,7 @@ systemctl enable agent-sandbox-openai-relay.service
 systemctl enable agent-sandbox-firewall.service
 systemctl enable agent-sandbox-nuget-relay.service
 systemctl enable agent-sandbox-ado-worker.service
+systemctl enable agent-sandbox-discord-ingest.service
 systemctl enable agent-sandbox-host-heartbeat.service
 systemctl enable agent-sandbox-issue-orchestrator.service
 
@@ -373,6 +378,7 @@ Installed systemd units:
   agent-sandbox-firewall.service
   agent-sandbox-nuget-relay.service
   agent-sandbox-ado-worker.service
+  agent-sandbox-discord-ingest.service
   agent-sandbox-host-heartbeat.service
   agent-sandbox-issue-orchestrator.service
 
@@ -388,6 +394,7 @@ Next steps:
      sudo systemctl start agent-sandbox-openai-relay.service
      sudo systemctl start agent-sandbox-nuget-relay.service
      sudo systemctl start agent-sandbox-ado-worker.service
+     sudo systemctl start agent-sandbox-discord-ingest.service
      sudo systemctl start agent-sandbox-host-heartbeat.service
      sudo systemctl start agent-sandbox-issue-orchestrator.service
 EOF

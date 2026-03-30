@@ -581,7 +581,7 @@ def test_directory_config_resolver_inherits_ado_worker_and_issue_setup_overlays(
     assert issue_resolution.effective_config["enable_guest_heartbeat"] is True
 
 
-def test_directory_config_resolver_keeps_heartbeat_prompt_directory_scoped_only(tmp_path: Path) -> None:
+def test_directory_config_resolver_keeps_heartbeat_prompts_directory_scoped_only(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     store = DirectoryStore(runtime_dir / "directories.json")
     service = DirectoryService(store)
@@ -593,14 +593,18 @@ def test_directory_config_resolver_keeps_heartbeat_prompt_directory_scoped_only(
         team.path,
         domain="heartbeat",
         payload={
-            "host_heartbeat_resume_prompt": "team prompt",
+            "host_heartbeat_pr_resume_prompt": "team PR prompt",
+            "host_heartbeat_discord_resume_prompt": "team Discord prompt",
             "host_heartbeat_poll_interval_seconds": 12.0,
             "host_busy_check_script_path": "/tmp/check.sh",
         },
     )
 
     read_payload = config_store.read(team.path, domain="heartbeat")
-    assert read_payload == {"host_heartbeat_resume_prompt": "team prompt"}
+    assert read_payload == {
+        "host_heartbeat_pr_resume_prompt": "team PR prompt",
+        "host_heartbeat_discord_resume_prompt": "team Discord prompt",
+    }
 
     resolution = resolver.resolve_domain(
         team.path,
@@ -609,5 +613,6 @@ def test_directory_config_resolver_keeps_heartbeat_prompt_directory_scoped_only(
         validator=lambda candidate: validate_effective_domain_payload("heartbeat", candidate),
     )
 
-    assert resolution.effective_config["host_heartbeat_resume_prompt"] == "team prompt"
+    assert resolution.effective_config["host_heartbeat_pr_resume_prompt"] == "team PR prompt"
+    assert resolution.effective_config["host_heartbeat_discord_resume_prompt"] == "team Discord prompt"
     assert "host_heartbeat_poll_interval_seconds" not in resolution.effective_config

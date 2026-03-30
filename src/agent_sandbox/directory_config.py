@@ -51,6 +51,7 @@ DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
             "approval_ttl_seconds",
             "default_session_ttl_seconds",
             "discord_operator_channel_allowlist",
+            "discord_inbox_routes",
             "discord_operator_user_allowlist",
             "discord_poll_operator_dms",
             "email_draft_domain_allowlist",
@@ -94,7 +95,8 @@ DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
     ),
     "heartbeat": frozenset(
         {
-            "host_heartbeat_resume_prompt",
+            "host_heartbeat_pr_resume_prompt",
+            "host_heartbeat_discord_resume_prompt",
         }
     ),
     "vm": frozenset(

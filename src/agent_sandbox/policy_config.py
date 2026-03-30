@@ -23,6 +23,7 @@ class EffectivePolicyConfig(BaseModel):
     discord_operator_channel_allowlist: list[str] = Field(default_factory=list)
     discord_operator_user_allowlist: list[str] = Field(default_factory=list)
     discord_poll_operator_dms: bool = False
+    discord_inbox_routes: dict[str, list[str]] = Field(default_factory=dict)
     email_draft_domain_allowlist: list[str] = Field(default_factory=list)
     email_draft_recipient_allowlist: list[str] = Field(default_factory=list)
     email_folder_allowlist_by_mailbox: dict[str, list[str]] = Field(default_factory=dict)
@@ -99,14 +100,47 @@ class PolicyConfigResolver:
             channel_ids.update(session.discord_channel_allowlist)
         return sorted(channel_id.strip() for channel_id in channel_ids if channel_id.strip())
 
+    def allowed_discord_channel_ids_for_session_id(self, session_id: str) -> list[str]:
+        session = self.session_store.get(session_id)
+        if session is None:
+            raise ValueError(f"unknown session: {session_id}")
+        policy = self.resolve_for_session_manifest(session)
+        channel_ids = set(policy.discord_operator_channel_allowlist)
+        if ToolName.DISCORD_GET_COMMANDS in session.allowed_tools:
+            channel_ids.update(session.discord_channel_allowlist)
+        return sorted(channel_id.strip() for channel_id in channel_ids if channel_id.strip())
+
     def operator_user_ids_for_active_sessions(self) -> list[str]:
         user_ids: set[str] = set()
         for policy in self.active_session_policies():
             user_ids.update(policy.discord_operator_user_allowlist)
         return sorted(user_id.strip() for user_id in user_ids if user_id.strip())
 
+    def operator_user_ids_for_session_id(self, session_id: str) -> list[str]:
+        policy = self.resolve_for_session_id(session_id)
+        return sorted(user_id.strip() for user_id in policy.discord_operator_user_allowlist if user_id.strip())
+
     def include_operator_dms_for_active_sessions(self) -> bool:
         return any(policy.discord_poll_operator_dms for policy in self.active_session_policies())
+
+    def include_operator_dms_for_session_id(self, session_id: str) -> bool:
+        return self.resolve_for_session_id(session_id).discord_poll_operator_dms
+
+    def discord_inbox_routes_for_directory(self, directory_path: str | None) -> dict[str, list[str]]:
+        policy = self.resolve_for_directory(directory_path)
+        return {
+            str(channel_id).strip(): [str(session_id).strip() for session_id in session_ids if str(session_id).strip()]
+            for channel_id, session_ids in policy.discord_inbox_routes.items()
+            if str(channel_id).strip()
+        }
+
+    def discord_inbox_channel_ids_for_session_id(self, session_id: str) -> list[str]:
+        routes = self.resolve_for_session_id(session_id).discord_inbox_routes
+        return sorted(
+            channel_id.strip()
+            for channel_id, target_session_ids in routes.items()
+            if channel_id.strip() and session_id in {str(candidate).strip() for candidate in target_session_ids}
+        )
 
     def _normalize_directory_path(self, directory_path: str | None) -> str:
         if not directory_path:

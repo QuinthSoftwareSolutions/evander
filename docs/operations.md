@@ -372,8 +372,8 @@ without exposing provider credentials in the VM.
   - `host_heartbeat_vm_user`
   - `host_heartbeat_resume_timeout_seconds`
   - `host_heartbeat_stream_conflict_policy`
-- `host_heartbeat_resume_prompt` remains directory-scoped in `heartbeat.json`.
-- The host heartbeat worker runs one pass per configured directory and resolves the resume prompt from that directory's effective config.
+- `host_heartbeat_pr_resume_prompt` and `host_heartbeat_discord_resume_prompt` remain directory-scoped in `heartbeat.json`.
+- The host heartbeat worker runs one pass per configured directory and resolves the effective PR/Discord wake prompt text from that directory's config before dispatching a resume.
 - Agent control state is mirrored on the host in `runtime/host-agent-control-state.json`; the host heartbeat worker checks that file before probing or resuming a session so disabled agents stay ignored even when their VMs are powered off.
 - The host worker reads session manifests through runtime state and writes provider feedback/cursors to `runtime/pr-feedback-store.json`.
 - Guests no longer run `agent-heartbeat.service` or `agent-heartbeat.timer` by default.
