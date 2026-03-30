@@ -147,6 +147,13 @@ def _issue_priority_sort_key(issue: LocalIssueRecord) -> tuple[int, datetime, da
     )
 
 
+def _issue_number_sort_key(issue: LocalIssueRecord) -> tuple[int, int | str, str]:
+    normalized = issue.issue_number.strip()
+    if normalized.isdigit():
+        return (0, int(normalized), issue.issue_id)
+    return (1, normalized, issue.issue_id)
+
+
 def _extract_issue_number(value: str | None) -> str | None:
     if not value:
         return None
@@ -1942,7 +1949,7 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
         direct_only: bool = False,
     ) -> list[LocalIssueRecord]:
         normalized_directory_path = self._normalize_directory_path(directory_path)
-        issues = sorted(self.local_issue_store.read_all().values(), key=lambda issue: issue.issue_number)
+        issues = sorted(self.local_issue_store.read_all().values(), key=_issue_number_sort_key)
         if direct_only or directory_path is not None:
             return [issue for issue in issues if issue.directory_path == normalized_directory_path]
         return issues
