@@ -132,6 +132,23 @@ def test_create_local_issue_imports_block_scalar_body(tmp_path: Path) -> None:
     assert issue.body == "line one\nline two"
 
 
+def test_create_local_issue_imports_block_scalar_title(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    source_path = tmp_path / "block-title-issue.yaml"
+    source_path.write_text(
+        "issue_number: 8\n"
+        "title: |\n"
+        "  line one\n"
+        "  line two\n"
+        "body: ok\n",
+        encoding="utf-8",
+    )
+
+    issue = service.create_local_issue(yaml_path=str(source_path))
+
+    assert issue.title == "line one\nline two"
+
+
 def test_update_local_issue_updates_store_and_yaml(tmp_path: Path) -> None:
     service = AdminService(write_config(tmp_path))
     issue = service.create_local_issue(title="Old title", body="Old body", repo_source="/old/repo")
