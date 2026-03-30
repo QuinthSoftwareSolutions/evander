@@ -295,6 +295,54 @@ def test_runtime_email_service_for_session_uses_directory_provider_override(
     assert mailbox_provider.timeout_seconds == 12.5
 
 
+def test_runtime_teams_service_for_session_uses_directory_provider_override_and_session_scope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GRAPH_TEAMS_ACCESS_TOKEN", "root-token")
+    monkeypatch.setenv("ROOT_TEAMS_TOKEN", "root-token")
+    monkeypatch.setenv("TEAM_A_TEAMS_TOKEN", "team-a-token")
+    config = make_config(tmp_path, teams_backend="graph_api")
+    directories = DirectoryService(DirectoryStore(config.directories_store_path))
+    team_a = directories.create(parent="root", name="team-a")
+    team_b = directories.create(parent="root", name="team-b")
+    runtime = build_runtime(config)
+    runtime.sessions.put(
+        "session-a",
+        SessionManifest(
+            session_id="session-a",
+            directory_path=team_a.path,
+            allowed_tools=[ToolName.TEAMS_GET_MESSAGES],
+            teams_channel_allowlist=["team-a/channel-1"],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    runtime.sessions.put(
+        "session-b",
+        SessionManifest(
+            session_id="session-b",
+            directory_path=team_b.path,
+            allowed_tools=[ToolName.TEAMS_GET_MESSAGES],
+            teams_channel_allowlist=["team-b/channel-9"],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    monkeypatch.setattr(
+        type(runtime),
+        "resolve_provider_config_for_session",
+        lambda self, session_id: (
+            self.config.model_copy(update={"teams_graph_access_token_env": "TEAM_A_TEAMS_TOKEN"})
+            if session_id == "session-a"
+            else self.config
+        ),
+    )
+
+    teams_service = runtime.teams_service_for_session("session-a")
+
+    assert isinstance(teams_service, GraphTeamsService)
+    assert teams_service.token == "team-a-token"
+    assert teams_service._allowed_channel_targets() == ["team-a/channel-1"]
+
+
 def test_runtime_pr_reply_service_for_session_uses_directory_provider_override(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

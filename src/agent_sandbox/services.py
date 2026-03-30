@@ -6,7 +6,7 @@ import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Lock
-from typing import Any, Callable, Protocol
+from typing import Any, Callable, Iterator, Protocol
 from urllib.parse import quote, unquote
 
 import httpx
@@ -561,19 +561,41 @@ class GraphTeamsService:
             },
         )
 
+    def _iter_channel_messages(
+        self,
+        client: httpx.Client,
+        *,
+        team_id: str,
+        channel_id: str,
+    ) -> Iterator[dict[str, Any]]:
+        next_url = (
+            f"{self.api_base_url}/teams/{quote(team_id, safe='')}/channels/"
+            f"{quote(channel_id, safe='')}/messages"
+        )
+        params: dict[str, Any] | None = {"$top": self.poll_limit, "$expand": "replies"}
+        seen_urls: set[str] = set()
+        while next_url:
+            if next_url in seen_urls:
+                raise RuntimeError(f"Teams Graph pagination loop detected for channel {team_id}/{channel_id}")
+            seen_urls.add(next_url)
+            response = self._request_with_retries(client, "GET", next_url, params=params)
+            payload = response.json()
+            for message_payload in payload.get("value", []):
+                yield message_payload
+            raw_next_url = payload.get("@odata.nextLink")
+            next_url = str(raw_next_url).strip() if raw_next_url else ""
+            params = None
+
     def get_messages(self, since_cursor: str | None = None) -> list[TeamsMessageEnvelope]:
         messages: dict[str, TeamsMessageEnvelope] = dict(self.message_store.read_all())
         with httpx.Client(timeout=self.timeout_seconds) as client:
             for target in self._allowed_channel_targets():
                 team_id, channel_id = _parse_teams_channel_target(target)
-                response = self._request_with_retries(
+                for message_payload in self._iter_channel_messages(
                     client,
-                    "GET",
-                    f"{self.api_base_url}/teams/{quote(team_id, safe='')}/channels/{quote(channel_id, safe='')}/messages",
-                    params={"$top": self.poll_limit, "$expand": "replies"},
-                )
-                payload = response.json()
-                for message_payload in payload.get("value", []):
+                    team_id=team_id,
+                    channel_id=channel_id,
+                ):
                     envelope = self._to_envelope(message_payload, team_id=team_id, channel_id=channel_id)
                     messages[envelope.cursor] = envelope
                     self.message_store.put(envelope.cursor, envelope)

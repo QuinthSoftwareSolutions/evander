@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from datetime import UTC, datetime
 from dataclasses import dataclass
+from typing import Callable
 
 from .audit import AuditLogger
 from .directories import DirectoryStore
@@ -105,7 +106,15 @@ class RuntimeContext:
         resolved_config = self.resolve_provider_config_for_session(session_id)
         if resolved_config == self.config:
             return self.teams_service
-        return _build_teams_service(resolved_config, self.teams_messages, self.sessions)
+        return _build_teams_service(
+            resolved_config,
+            self.teams_messages,
+            self.sessions,
+            allowed_channel_targets_provider=lambda: _resolve_allowed_teams_channel_targets_for_session(
+                self.sessions,
+                session_id,
+            ),
+        )
 
 
 def build_runtime(config: GatewayConfig) -> RuntimeContext:
@@ -275,6 +284,8 @@ def _build_teams_service(
     config: GatewayConfig,
     message_store: JsonStore[TeamsMessageEnvelope],
     sessions: JsonStore[SessionManifest],
+    *,
+    allowed_channel_targets_provider: Callable[[], list[str]] | None = None,
 ) -> TeamsService:
     if config.teams_backend == "stub":
         return StubTeamsService(message_store)
@@ -299,7 +310,8 @@ def _build_teams_service(
             retry_count=config.teams_retry_count,
             retry_base_backoff_seconds=config.teams_retry_base_backoff_seconds,
             retry_max_backoff_seconds=config.teams_retry_max_backoff_seconds,
-            allowed_channel_targets_provider=lambda: _resolve_allowed_teams_channel_targets(sessions),
+            allowed_channel_targets_provider=allowed_channel_targets_provider
+            or (lambda: _resolve_allowed_teams_channel_targets(sessions)),
         )
     raise RuntimeError(
         f"Unsupported teams backend {config.teams_backend!r}. Expected one of: 'stub', 'graph_api'."
@@ -375,3 +387,19 @@ def _resolve_allowed_teams_channel_targets(
             continue
         targets.update(session.teams_channel_allowlist)
     return sorted({target.strip().strip("/") for target in targets if target.strip()})
+
+
+def _resolve_allowed_teams_channel_targets_for_session(
+    session_store: JsonStore[SessionManifest],
+    session_id: str,
+) -> list[str]:
+    session = session_store.read_all().get(session_id)
+    if session is None:
+        return []
+    if session.expires_at <= datetime.now(UTC):
+        return []
+    if ToolName.TEAMS_GET_MESSAGES not in session.allowed_tools:
+        return []
+    return sorted(
+        {target.strip().strip("/") for target in session.teams_channel_allowlist if target.strip()}
+    )
