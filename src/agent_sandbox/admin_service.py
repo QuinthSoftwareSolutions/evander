@@ -2220,8 +2220,13 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
                 if not title:
                     title = f"Local issue {issue_number}"
             if not body:
-                body_match = re.search(r"(?m)^\s*body\s*:\s*[\"']?(.*?)[\"']?\s*$", yaml_text)
-                body = body_match.group(1).strip() if body_match else str(yaml_payload.get("description") or "").strip()
+                parsed_body = yaml_payload.get("body")
+                normalized_body = str(parsed_body or "").strip() if isinstance(parsed_body, str) else ""
+                if normalized_body:
+                    body = normalized_body
+                else:
+                    body_match = re.search(r"(?m)^\s*body\s*:\s*[\"']?(.*?)[\"']?\s*$", yaml_text)
+                    body = body_match.group(1).strip() if body_match else str(yaml_payload.get("description") or "").strip()
         else:
             if not title.strip():
                 raise ValueError("title is required when yaml_path is not provided")
