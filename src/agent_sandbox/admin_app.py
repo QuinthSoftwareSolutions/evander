@@ -564,6 +564,9 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
     "ado_repo_source": (
         "Host repo path or remote URL passed to setup_issue_vm.sh for guest repo mirroring."
     ),
+    "create_prs_as_draft": (
+        "When enabled, new Azure DevOps pull requests opened for this directory are created as drafts."
+    ),
     "ado_bootstrap_dotnet": (
         "Enable or disable dotnet/bootstrap steps in setup_issue_vm.sh for ADO worker-created VMs."
     ),
