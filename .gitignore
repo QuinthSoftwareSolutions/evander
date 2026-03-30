@@ -10,4 +10,5 @@ config/host-heartbeat.env
 config/ado-worker/config.json
 config/host-heartbeat/config.json
 secrets.env
+secrets (Copy).env
 tasks/
