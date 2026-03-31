@@ -53,6 +53,7 @@ class ApprovalStatus(str, Enum):
 class SessionManifest(BaseModel):
     session_id: str
     vm_id: str | None = None
+    model: str | None = None
     directory_path: str = "root"
     allowed_tools: list[ToolName]
     discord_channel_allowlist: list[str] = Field(default_factory=list)
