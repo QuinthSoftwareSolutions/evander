@@ -170,6 +170,44 @@ def test_worker_global_settings_tooltips_include_ado_and_host_heartbeat_fields()
         assert field_name in admin_app.WORKER_GLOBAL_CONFIG_FIELD_TOOLTIPS
 
 
+def test_list_wake_schedules_for_selected_directory_aggregates_and_sorts() -> None:
+    window = SimpleNamespace(
+        _selected_directory_path="root/team-a",
+        service=SimpleNamespace(
+            list_sessions=lambda **kwargs: [SimpleNamespace(session_id="s1"), SimpleNamespace(session_id="s2")],
+            list_wake_schedules=lambda session_id: [
+                {
+                    "request_id": f"wake-{session_id}",
+                    "updated_at": "2026-04-01T10:00:00Z" if session_id == "s1" else "2026-04-01T11:00:00Z",
+                }
+            ],
+        ),
+    )
+
+    schedules = admin_app.MainWindow.list_wake_schedules_for_selected_directory(window)
+
+    assert [item["request_id"] for item in schedules] == ["wake-s2", "wake-s1"]
+
+
+def test_create_wake_schedule_uses_admin_ui_source() -> None:
+    captured: dict[str, object] = {}
+    window = SimpleNamespace(
+        service=SimpleNamespace(create_wake_schedule=object()),
+        run_action=lambda label, fn, **kwargs: captured.update({"label": label, "fn": fn, "kwargs": kwargs}),
+    )
+
+    admin_app.MainWindow.create_wake_schedule(
+        window,
+        session_id="session-1",
+        prompt="Wake up",
+        cron="*/10 * * * *",
+        resume_mode="same_context",
+    )
+
+    assert captured["label"] == "Create wake schedule for session-1"
+    assert captured["kwargs"]["source"] == "admin_ui"
+
+
 def test_directory_config_domain_help_text_calls_out_discord_fields() -> None:
     discord_help = admin_app._directory_config_domain_help_text("discord")
     policy_help = admin_app._directory_config_domain_help_text("policy")

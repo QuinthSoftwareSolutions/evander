@@ -1421,3 +1421,67 @@ def test_run_once_dispatches_due_cron_wake_and_advances_next_run(tmp_path, monke
     dispatch_entries = list(raw["dispatches"].values())
     assert len(dispatch_entries) == 1
     assert dispatch_entries[0]["source"] == "scheduled_cron"
+
+
+def test_run_once_skips_due_wake_when_session_is_in_cooldown(tmp_path, monkeypatch) -> None:
+    now = datetime.now(UTC)
+    sessions = {
+        "active-a": _build_manifest("active-a", expires_at=now + timedelta(hours=1), metadata={}),
+    }
+    wake_store = WakeRequestStore(tmp_path / "wake-store.json")
+    wake_store.schedule_resume_request(
+        session_id="active-a",
+        prompt="User scheduled prompt",
+        schedule=WakeScheduleDefinition(resume_at=now - timedelta(minutes=1), cron=None),
+        request_id="wake-once-1",
+        source="tool",
+        resume_mode="same_context",
+        enabled=True,
+        metadata={},
+    )
+    cooldown_path = tmp_path / "cooldowns.json"
+    _set_session_cooldown(path=cooldown_path, session_id="active-a", cooldown_seconds=60.0)
+
+    captured: list[list[str]] = []
+
+    def _fake_run(cmd, check, capture_output, text, timeout):  # noqa: ANN001
+        captured.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("agent_sandbox.host_heartbeat_worker.subprocess.run", _fake_run)
+    runtime = SimpleNamespace(
+        sessions=SimpleNamespace(read_all=lambda: sessions),
+        wake_store=wake_store,
+        audit=_CapturingAudit(),
+    )
+    resume_script = tmp_path / "resume_issue_agent.sh"
+    resume_script.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    resume_script.chmod(0o755)
+    worker = HostHeartbeatWorker(
+        config=SimpleNamespace(
+            host_heartbeat_http_timeout_seconds=0.1,
+            host_heartbeat_poll_interval_seconds=30.0,
+            host_heartbeat_jitter_seconds=0.0,
+            host_heartbeat_cooldown_seconds=10.0,
+            host_heartbeat_stream_conflict_policy="fanout",
+            host_heartbeat_session_cooldown_path=cooldown_path,
+            host_busy_check_script_path=tmp_path / "check_busy.sh",
+            host_resume_script_path=resume_script,
+            host_heartbeat_pr_resume_prompt="Static preamble.",
+            host_heartbeat_scheduled_wake_prefix_text="Scheduled prefix.",
+            host_heartbeat_discord_resume_prompt="discord wake",
+            host_heartbeat_vm_user="agent",
+            host_heartbeat_wake_state_path=tmp_path / "wake-state.json",
+            host_heartbeat_resume_timeout_seconds=12.0,
+            pr_map_path=tmp_path / "missing-pr-map.json",
+        ),
+        runtime=runtime,
+        feedback_worker=_DummyFeedbackWorker(),
+        adapters={"github": object()},
+    )
+
+    worker.run_once()
+
+    assert captured == []
+    raw = wake_store.read_raw()
+    assert raw["requests"]["wake-once-1"]["enabled"] is True

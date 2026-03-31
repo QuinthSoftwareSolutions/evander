@@ -130,6 +130,32 @@ Workers tab edits `config/host-heartbeat/config.json` for the `host-heartbeat` w
 | `host_heartbeat_schedule_max_active_total` | `config/host-heartbeat/config.json.example` | `src/agent_sandbox/config.py` / admin config surfaces (optional scheduling guardrail). |
 | `host_heartbeat_schedule_min_interval_seconds` | `config/host-heartbeat/config.json.example` | `src/agent_sandbox/config.py` / admin config surfaces (optional scheduling guardrail). |
 
+### Wake scheduling examples
+
+- One-time (MCP `schedule_resume`) payload shape:
+
+```json
+{
+  "session_id": "issue-11-session",
+  "resume_at": "2026-04-01T10:30:00Z",
+  "prompt": "Resume pending feedback triage.",
+  "resume_mode": "same_context",
+  "source": "mcp_schedule_resume"
+}
+```
+
+- Recurring cron schedule (host CLI):
+
+```bash
+agent-sandbox-cli wake-schedules create \
+  --runtime-dir runtime \
+  --session-id issue-11-session \
+  --cron "*/15 * * * *" \
+  --prompt "Periodic wake: check unread feedback." \
+  --mode new_context \
+  --source admin_cli
+```
+
 ## Root issue setup and git automation config
 
 The retired git automation env file used to collect these values. They now come from
