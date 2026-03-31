@@ -3405,6 +3405,7 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
         self,
         issue_identifier: str,
         *,
+        model: str | None = None,
         repo_source: str | None = None,
         vm_user: str = "agent",
         start_agent: bool = True,
@@ -3434,6 +3435,7 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
             )
         return self.create_issue_vm(
             issue=issue.yaml_path,
+            model=model,
             repo_source=repo_source or issue.repo_source,
             vm_user=vm_user,
             start_agent=start_agent,
