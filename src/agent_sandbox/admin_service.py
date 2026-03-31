@@ -1957,6 +1957,20 @@ git -C "${{TARGET_DIR}}" config agent-sandbox.sessionId "${{SESSION_ID}}"
             message=f"Updated allowed tools for session {session_id}",
         )
 
+    def set_session_model(self, target: str, model: str) -> SessionActionResult:
+        session_id, manifest = _resolve_session_target(target, self.runtime.sessions.read_all())
+        normalized_model = str(model).strip()
+        if not normalized_model:
+            raise ValueError("model must be non-empty")
+        manifest.model = normalized_model
+        self.runtime.sessions.put(session_id, manifest)
+        return SessionActionResult(
+            success=True,
+            session_id=session_id,
+            action="set_session_model",
+            message=f"Updated model for session {session_id}",
+        )
+
     def list_vms(
         self,
         *,

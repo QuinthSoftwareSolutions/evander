@@ -298,6 +298,7 @@ def test_list_sessions_filters_active_and_expired(tmp_path: Path) -> None:
         SessionManifest(
             session_id="issue-123-active",
             vm_id="vm-123",
+            model="gpt-5.4",
             allowed_tools=[],
             created_at=datetime(2026, 3, 25, 9, 0, tzinfo=UTC),
             expires_at=datetime.now(UTC) + timedelta(hours=1),
@@ -322,6 +323,7 @@ def test_list_sessions_filters_active_and_expired(tmp_path: Path) -> None:
     assert [summary.session_id for summary in expired] == ["issue-123-expired"]
     assert [summary.session_id for summary in all_sessions] == ["issue-123-expired", "issue-123-active"]
     assert active[0].issue_number == "123"
+    assert active[0].model == "gpt-5.4"
     assert active[0].is_expired is False
     assert expired[0].is_expired is True
 
@@ -1117,6 +1119,43 @@ def test_set_session_allowed_tools_updates_manifest(tmp_path: Path) -> None:
     assert result.session_id == "issue-13302-session"
     assert updated is not None
     assert updated.allowed_tools == [ToolName.COMPLETE_ISSUE, ToolName.APPROVAL_CHECK]
+
+
+def test_set_session_model_updates_manifest(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.sessions.put(
+        "issue-13303-session",
+        SessionManifest(
+            session_id="issue-13303-session",
+            vm_id="vm-13303",
+            allowed_tools=[ToolName.CLAIM_NEXT_ISSUE],
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+        ),
+    )
+
+    result = service.set_session_model("13303", "  gpt-5.5  ")
+
+    updated = service.runtime.sessions.get("issue-13303-session")
+    assert result.success is True
+    assert result.session_id == "issue-13303-session"
+    assert updated is not None
+    assert updated.model == "gpt-5.5"
+
+
+def test_set_session_model_rejects_empty_value(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.sessions.put(
+        "issue-13304-session",
+        SessionManifest(
+            session_id="issue-13304-session",
+            vm_id="vm-13304",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="model must be non-empty"):
+        service.set_session_model("13304", "   ")
 
 
 def test_list_background_workers_reads_systemd_state(tmp_path: Path, monkeypatch) -> None:
