@@ -60,6 +60,21 @@ def test_require_tool_rejects_unknown_tool(tmp_path: Path) -> None:
         raise AssertionError("Expected PolicyError")
 
 
+def test_require_tool_schedule_resume_requires_vm_binding(tmp_path: Path) -> None:
+    engine = make_engine(tmp_path)
+    engine.session_store.put(
+        "s1",
+        SessionManifest(
+            session_id="s1",
+            allowed_tools=[ToolName.SCHEDULE_RESUME],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+
+    with pytest.raises(PolicyError, match="requires a session with a VM binding"):
+        engine.require_tool("s1", ToolName.SCHEDULE_RESUME)
+
+
 def test_require_approved_rejects_payload_mismatch(tmp_path: Path) -> None:
     engine = make_engine(tmp_path)
     approval = ApprovalRequest(

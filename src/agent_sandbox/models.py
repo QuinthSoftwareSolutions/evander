@@ -40,6 +40,7 @@ class ToolName(str, Enum):
     HAS_PENDING_DISCORD_MESSAGES = "has_pending_discord_messages"
     LIST_UNREAD_DISCORD_MESSAGES = "list_unread_discord_messages"
     LIST_ALL_DISCORD_MESSAGES = "list_all_discord_messages"
+    SCHEDULE_RESUME = "schedule_resume"
 
 
 class ApprovalStatus(str, Enum):
@@ -474,6 +475,39 @@ class PostPrFeedbackReplyResponse(BaseModel):
     reply_id: str | None = None
     reply_url: str | None = None
     idempotency_key: str | None = None
+
+
+class ScheduleResumeRequest(BaseModel):
+    session_id: str = Field(min_length=1)
+    resume_at: datetime
+    prompt: str = Field(min_length=1)
+    request_id: str | None = None
+    source: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("resume_at")
+    @classmethod
+    def validate_resume_at_utc(cls, value: datetime) -> datetime:
+        if value.tzinfo is None:
+            raise ValueError("resume_at must include timezone information")
+        return value.astimezone(UTC)
+
+
+class ScheduledResumeEntry(BaseModel):
+    session_id: str = Field(min_length=1)
+    resume_at: datetime
+    prompt: str = Field(min_length=1)
+    request_id: str | None = None
+    source: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=utc_now)
+
+
+class ScheduleResumeResponse(BaseModel):
+    session_id: str
+    resume_at: datetime
+    scheduled: bool = True
+    request_id: str | None = None
 
 
 def digest_payload(payload: dict[str, Any]) -> str:

@@ -150,7 +150,7 @@ class GatewayConfig(BaseModel):
         ]
     )
     redacted_keys: set[str] = Field(
-        default_factory=lambda: {"body", "body_text", "authorization", "token"}
+        default_factory=lambda: {"body", "body_text", "prompt", "authorization", "token"}
     )
 
     @field_validator(

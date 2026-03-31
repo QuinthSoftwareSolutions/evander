@@ -1742,6 +1742,81 @@ def test_list_unread_feedback_returns_items_and_audits_result_count(tmp_path: Pa
     assert event["result"] == {"count": 1, "next_cursor": "2026-01-01T00:00:00Z"}
 
 
+def test_schedule_resume_persists_request_and_audits_success(tmp_path: Path) -> None:
+    context = make_context(tmp_path)
+    context.sessions.put(
+        "session-1",
+        SessionManifest(
+            session_id="session-1",
+            vm_id="vm-real",
+            allowed_tools=[ToolName.SCHEDULE_RESUME],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    server = create_server(context)
+
+    result = call_tool(
+        server,
+        "schedule_resume",
+        {
+            "session_id": "session-1",
+            "resume_at": "2026-04-01T10:30:00Z",
+            "prompt": "Continue working through unread feedback.",
+            "request_id": "wake-123",
+            "source": "heartbeat-worker",
+            "metadata": {"trace_id": "trace-1"},
+        },
+    )
+
+    assert result == {
+        "session_id": "session-1",
+        "resume_at": "2026-04-01T10:30:00Z",
+        "scheduled": True,
+        "request_id": "wake-123",
+    }
+    stored = json.loads((tmp_path / "scheduled-resume-requests.json").read_text(encoding="utf-8"))
+    assert stored["session-1"]["resume_at"] == "2026-04-01T10:30:00Z"
+    assert stored["session-1"]["prompt"] == "Continue working through unread feedback."
+    assert stored["session-1"]["source"] == "heartbeat-worker"
+    assert stored["session-1"]["metadata"] == {"trace_id": "trace-1"}
+
+    event = read_audit_events(context.config.audit_log_path)[-1]
+    assert event["tool_name"] == ToolName.SCHEDULE_RESUME.value
+    assert event["decision"] == "allowed"
+    assert event["args"]["prompt"] == "<redacted>"
+    assert event["result"] == {
+        "session_id": "session-1",
+        "resume_at": "2026-04-01T10:30:00Z",
+        "request_id": "wake-123",
+        "scheduled": True,
+    }
+
+
+def test_schedule_resume_rejects_non_utc_timestamps(tmp_path: Path) -> None:
+    context = make_context(tmp_path)
+    context.sessions.put(
+        "session-1",
+        SessionManifest(
+            session_id="session-1",
+            vm_id="vm-real",
+            allowed_tools=[ToolName.SCHEDULE_RESUME],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    server = create_server(context)
+
+    with pytest.raises(ToolError, match="timezone information"):
+        call_tool(
+            server,
+            "schedule_resume",
+            {
+                "session_id": "session-1",
+                "resume_at": "2026-04-01T10:30:00",
+                "prompt": "Continue",
+            },
+        )
+
+
 def test_list_all_feedback_returns_history_including_already_read_items(tmp_path: Path) -> None:
     context = make_context(tmp_path)
     context.sessions.put(

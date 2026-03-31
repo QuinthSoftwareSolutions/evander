@@ -64,6 +64,8 @@ class PolicyEngine:
         session = self.get_session(session_id)
         if tool_name not in session.allowed_tools:
             raise PolicyError(f"Tool {tool_name.value} is not allowed for session {session_id}")
+        if tool_name == ToolName.SCHEDULE_RESUME and not str(session.vm_id or "").strip():
+            raise PolicyError(f"Tool {tool_name.value} requires a session with a VM binding")
         if tool_name in {
             ToolName.HAS_PENDING_FEEDBACK,
             ToolName.LIST_UNREAD_FEEDBACK,

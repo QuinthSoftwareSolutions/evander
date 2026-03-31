@@ -26,12 +26,16 @@ from .models import (
     ListUnreadDiscordMessagesRequest,
     ListUnreadFeedbackRequest,
     PostPrFeedbackReplyRequest,
+    ScheduleResumeRequest,
+    ScheduleResumeResponse,
+    ScheduledResumeEntry,
     TeamsMessageEnvelope,
     ToolName,
 )
 from .policy import PolicyError
 from .runtime import RuntimeContext, build_runtime
 from .services import normalize_pr_feedback_provider
+from .storage import JsonStore
 
 logger = logging.getLogger(__name__)
 
@@ -300,6 +304,9 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 result={"error": error, "error_class": error_class},
             )
         )
+
+    def scheduled_resume_store() -> JsonStore[ScheduledResumeEntry]:
+        return JsonStore(context.config.runtime_dir / "scheduled-resume-requests.json", ScheduledResumeEntry)
 
     @server.tool()
     def list_issues(
@@ -838,6 +845,91 @@ def create_server(context: RuntimeContext) -> FastMCP:
             audit_failure(
                 session_id,
                 ToolName.LIST_ALL_FEEDBACK,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
+    def schedule_resume(
+        session_id: str | None = None,
+        resume_at: str = "",
+        prompt: str = "",
+        request_id: str | None = None,
+        source: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        resolved_session_id = _resolve_session_id_from_context(
+            session_id, ctx, transport_session_map=transport_session_map
+        )
+        args = {
+            "session_id": resolved_session_id,
+            "resume_at": resume_at,
+            "prompt": prompt,
+            "request_id": request_id,
+            "source": source,
+            "metadata": metadata or {},
+        }
+        try:
+            request = ScheduleResumeRequest(
+                session_id=resolved_session_id,
+                resume_at=resume_at,
+                prompt=prompt,
+                request_id=request_id.strip() if isinstance(request_id, str) else None,
+                source=source.strip() if isinstance(source, str) else None,
+                metadata=metadata or {},
+            )
+            args = request.model_dump(mode="json")
+            context.policy.require_tool(resolved_session_id, ToolName.SCHEDULE_RESUME)
+            store = scheduled_resume_store()
+            store.put(
+                request.session_id,
+                ScheduledResumeEntry(
+                    session_id=request.session_id,
+                    resume_at=request.resume_at,
+                    prompt=request.prompt,
+                    request_id=request.request_id,
+                    source=request.source,
+                    metadata=request.metadata,
+                ),
+            )
+            result = ScheduleResumeResponse(
+                session_id=request.session_id,
+                resume_at=request.resume_at,
+                request_id=request.request_id,
+            ).model_dump(mode="json")
+            audit_success(
+                resolved_session_id,
+                ToolName.SCHEDULE_RESUME,
+                args,
+                {
+                    "session_id": request.session_id,
+                    "resume_at": result["resume_at"],
+                    "request_id": request.request_id,
+                    "scheduled": True,
+                },
+            )
+            return result
+        except PolicyError as exc:
+            audit_failure(resolved_session_id, ToolName.SCHEDULE_RESUME, args, str(exc))
+            raise
+        except ValueError as exc:
+            audit_failure(
+                resolved_session_id,
+                ToolName.SCHEDULE_RESUME,
+                args,
+                str(exc),
+                decision="error",
+                error_class="validation_error",
+            )
+            raise
+        except Exception as exc:
+            audit_failure(
+                resolved_session_id,
+                ToolName.SCHEDULE_RESUME,
                 args,
                 str(exc),
                 decision="error",
