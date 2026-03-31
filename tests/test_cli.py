@@ -1234,6 +1234,7 @@ def test_create_vm_creates_manifest_before_invoking_launch_flow(tmp_path: Path, 
     assert captured_kwargs["kwargs"] == {
         "vm_name": "lab-vm",
         "session_id": "lab-session",
+        "model": None,
         "repo_source": "/src/repo",
         "vm_user": "agent",
         "ttl_hours": None,
@@ -3035,6 +3036,13 @@ def test_resume_agent_invokes_script_with_message_and_issue_number(tmp_path: Pat
 
     init_result = runner.invoke(app, ["init-state", "--config", str(config_path)])
     assert init_result.exit_code == 0
+    assert (
+        runner.invoke(
+            app,
+            ["create-session", "--config", str(config_path), "--vm-id", "vm-12305", "--model", "gpt-5.2-codex", "issue-12305-session"],
+        ).exit_code
+        == 0
+    )
 
     def fake_run(
         cmd: list[str],
@@ -3074,6 +3082,13 @@ def test_resume_agent_observe_invokes_script_with_tail_options(tmp_path: Path, m
 
     init_result = runner.invoke(app, ["init-state", "--config", str(config_path)])
     assert init_result.exit_code == 0
+    assert (
+        runner.invoke(
+            app,
+            ["create-session", "--config", str(config_path), "--vm-id", "vm-12305", "--model", "gpt-5.2-codex", "issue-12305-session"],
+        ).exit_code
+        == 0
+    )
 
     def fake_run(cmd: list[str], check: bool) -> subprocess.CompletedProcess[str]:
         nonlocal captured_cmd
@@ -3103,6 +3118,43 @@ def test_resume_agent_observe_invokes_script_with_tail_options(tmp_path: Path, m
     assert captured_cmd[4] == "--host-control-state-path"
     assert captured_cmd[5].endswith("/runtime/host-agent-control-state.json")
     assert captured_cmd[6:] == ["--observe", "25"]
+
+
+def test_set_session_model_updates_manifest(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+
+    assert runner.invoke(app, ["init-state", "--config", str(config_path)]).exit_code == 0
+    assert runner.invoke(app, ["create-session", "--config", str(config_path), "session-1"]).exit_code == 0
+
+    result = runner.invoke(
+        app,
+        ["set-session-model", "--config", str(config_path), "--model", "gpt-5.3-codex", "session-1"],
+    )
+
+    assert result.exit_code == 0
+    sessions = json.loads((tmp_path / "runtime" / "sessions.json").read_text(encoding="utf-8"))
+    assert sessions["session-1"]["model"] == "gpt-5.3-codex"
+
+
+def test_set_session_model_clear_removes_override(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+
+    assert runner.invoke(app, ["init-state", "--config", str(config_path)]).exit_code == 0
+    assert (
+        runner.invoke(app, ["create-session", "--config", str(config_path), "--model", "gpt-5.3-codex", "session-1"]).exit_code
+        == 0
+    )
+
+    result = runner.invoke(
+        app,
+        ["set-session-model", "--config", str(config_path), "--clear", "session-1"],
+    )
+
+    assert result.exit_code == 0
+    sessions = json.loads((tmp_path / "runtime" / "sessions.json").read_text(encoding="utf-8"))
+    assert sessions["session-1"]["model"] is None
 
 
 def test_seed_discord_channel_creates_seed_entry_and_reports_cursor(tmp_path: Path) -> None:
