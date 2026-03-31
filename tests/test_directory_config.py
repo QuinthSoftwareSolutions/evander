@@ -403,7 +403,13 @@ def test_directory_config_store_validates_ado_worker_and_issue_setup_domains(tmp
     issue_payload = config_store.write(
         team.path,
         domain="issue_setup",
-        payload={"git_root": "/tmp/git", "git_host": "10.1.2.3", "git_user": "agent", "git_ssh_alias": "agent-git"},
+        payload={
+            "git_root": "/tmp/git",
+            "git_host": "10.1.2.3",
+            "git_user": "agent",
+            "git_ssh_alias": "agent-git",
+            "default_model": "gpt-5.3-codex",
+        },
     )
 
     assert worker_payload == {
@@ -416,6 +422,7 @@ def test_directory_config_store_validates_ado_worker_and_issue_setup_domains(tmp
         "git_host": "10.1.2.3",
         "git_user": "agent",
         "git_ssh_alias": "agent-git",
+        "default_model": "gpt-5.3-codex",
     }
 
 

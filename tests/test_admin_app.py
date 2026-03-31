@@ -79,6 +79,7 @@ def test_config_field_kind_uses_multiline_editor_for_prompt_fields() -> None:
 
 def test_config_field_kind_supports_issue_setup_fields() -> None:
     assert admin_app._config_field_kind("git_root") == ("text", ())
+    assert admin_app._config_field_kind("default_model") == ("text", ())
     assert admin_app._config_field_kind("enable_guest_heartbeat") == ("bool", ())
 
 
@@ -471,6 +472,90 @@ def test_update_vm_action_bar_shows_destroy_for_non_issue_vm() -> None:
     assert window.enable_agent_button.visible is False
     assert window.disable_agent_button.visible is False
     assert window.resume_agent_button.visible is False
+
+
+def test_update_session_action_bar_populates_session_model_controls() -> None:
+    class DummyEdit:
+        def __init__(self) -> None:
+            self.enabled = None
+            self.value = ""
+
+        def setEnabled(self, value: bool) -> None:
+            self.enabled = value
+
+        def setText(self, value: str) -> None:
+            self.value = value
+
+    class DummyButton:
+        def __init__(self) -> None:
+            self.enabled = None
+            self.visible = False
+
+        def setEnabled(self, value: bool) -> None:
+            self.enabled = value
+
+        def show(self) -> None:
+            self.visible = True
+
+        def hide(self) -> None:
+            self.visible = False
+
+    class DummyLabel:
+        def __init__(self) -> None:
+            self.text = ""
+
+        def setText(self, value: str) -> None:
+            self.text = value
+
+    window = SimpleNamespace(
+        selected_session_summary=lambda: SimpleNamespace(
+            session_id="session-1",
+            model="gpt-5.3-codex",
+            allowed_tools=[],
+        ),
+        session_selection_hint=DummyLabel(),
+        renew_session_button=DummyButton(),
+        revoke_session_button=DummyButton(),
+        delete_session_button=DummyButton(),
+        session_model_edit=DummyEdit(),
+        save_session_model_button=DummyButton(),
+        session_model_status_label=DummyLabel(),
+        save_session_tools_button=DummyButton(),
+        session_tools_checkboxes={},
+    )
+
+    admin_app.MainWindow.update_session_action_bar(window)
+
+    assert window.session_selection_hint.text == "Selected: session-1"
+    assert window.session_model_edit.enabled is True
+    assert window.session_model_edit.value == "gpt-5.3-codex"
+    assert window.save_session_model_button.enabled is True
+    assert window.session_model_status_label.text == ""
+
+
+def test_handle_save_selected_session_model_requires_non_empty_input() -> None:
+    class DummyEdit:
+        def text(self) -> str:
+            return "   "
+
+    class DummyLabel:
+        def __init__(self) -> None:
+            self.text = ""
+
+        def setText(self, value: str) -> None:
+            self.text = value
+
+    window = SimpleNamespace(
+        selected_session_summary=lambda: SimpleNamespace(session_id="session-1"),
+        session_model_edit=DummyEdit(),
+        session_model_status_label=DummyLabel(),
+        run_action=lambda *args, **kwargs: None,
+        service=SimpleNamespace(set_session_model=object()),
+    )
+
+    admin_app.MainWindow.handle_save_selected_session_model(window)
+
+    assert window.session_model_status_label.text == "Model is required."
 
 
 def test_show_new_vm_dialog_calls_generic_create_vm(monkeypatch) -> None:

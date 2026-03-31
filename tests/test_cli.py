@@ -463,6 +463,7 @@ def test_migrate_issue_setup_env_to_root_materializes_root_domain_file(tmp_path:
                 "AGENT_SANDBOX_GIT_HOST=10.1.2.3",
                 "AGENT_SANDBOX_GIT_USER=gitbot",
                 "AGENT_SANDBOX_GIT_SSH_ALIAS=issue-git",
+                "AGENT_DEFAULT_MODEL=gpt-5.3-codex",
                 "AGENT_POST_EXEC_VERIFICATION_PROMPT=verify everything",
                 "ENABLE_GUEST_HEARTBEAT=1",
                 "GUEST_HEARTBEAT_PROMPT=continue working",
@@ -488,6 +489,7 @@ def test_migrate_issue_setup_env_to_root_materializes_root_domain_file(tmp_path:
     runtime_dir = tmp_path / "runtime"
     payload = json.loads((runtime_dir / "directory-config" / "root" / "issue-setup.json").read_text(encoding="utf-8"))
     assert payload == {
+        "default_model": "gpt-5.3-codex",
         "enable_guest_heartbeat": True,
         "git_host": "10.1.2.3",
         "git_root": "/tmp/git-remotes",
@@ -580,6 +582,7 @@ def test_migrate_issue_setup_env_to_root_imports_env_file_and_env_overrides(tmp_
                 'AGENT_SANDBOX_GIT_HOST="10.55.0.1"',
                 'AGENT_SANDBOX_GIT_USER="env-file-user"',
                 'AGENT_SANDBOX_GIT_SSH_ALIAS="env-file-alias"',
+                'AGENT_DEFAULT_MODEL="gpt-5.2-codex"',
                 'AGENT_POST_EXEC_VERIFICATION_PROMPT="verify from file"',
             ]
         )
@@ -610,10 +613,68 @@ def test_migrate_issue_setup_env_to_root_imports_env_file_and_env_overrides(tmp_
     assert payload["git_host"] == "10.55.0.1"
     assert payload["git_user"] == "env-file-user"
     assert payload["git_ssh_alias"] == "env-file-alias"
+    assert payload["default_model"] == "gpt-5.2-codex"
     assert payload["post_exec_verification_prompt"] == "verify from file"
     assert payload["enable_guest_heartbeat"] is True
     assert payload["guest_heartbeat_prompt"] == "continue from env"
     assert payload["issue_setup_azure_devops_pr_pat_env"] == "AZURE_DEVOPS_PR_PAT"
+
+
+def test_create_session_uses_directory_issue_setup_default_model_when_model_not_provided(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path, enable_directory_scoped_config=True)
+    runner = CliRunner()
+
+    assert runner.invoke(app, ["init-state", "--config", str(config_path)]).exit_code == 0
+    assert runner.invoke(
+        app,
+        ["directories", "create", "--config", str(config_path), "--parent", "root", "team"],
+    ).exit_code == 0
+    assert runner.invoke(
+        app,
+        [
+            "directories",
+            "config-set",
+            "--config",
+            str(config_path),
+            "--domain",
+            "issue_setup",
+            "root/team",
+            '{"default_model": "gpt-5.3-codex"}',
+        ],
+    ).exit_code == 0
+
+    result = runner.invoke(
+        app,
+        ["create-session", "--config", str(config_path), "--directory", "root/team", "team-session"],
+    )
+
+    assert result.exit_code == 0
+    sessions = json.loads((tmp_path / "runtime" / "sessions.json").read_text(encoding="utf-8"))
+    assert sessions["team-session"]["model"] == "gpt-5.3-codex"
+
+
+def test_resume_agent_fails_when_model_unresolved_for_session(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+
+    assert runner.invoke(app, ["init-state", "--config", str(config_path)]).exit_code == 0
+    assert runner.invoke(app, ["create-session", "--config", str(config_path), "--vm-id", "vm-12305", "issue-12305-session"]).exit_code == 0
+
+    result = runner.invoke(
+        app,
+        [
+            "resume-agent",
+            "12305",
+            "--config",
+            str(config_path),
+            "--message",
+            "Continue from the failing restore",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "Cannot resolve AGENT_MODEL" in result.output
+    assert "missing session.model and missing issue_setup.default_model" in result.output
 
 
 def test_directories_cli_supports_crud_and_show(tmp_path: Path) -> None:

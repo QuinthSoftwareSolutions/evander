@@ -945,6 +945,56 @@ def test_create_issue_vm_uses_issue_setup_fallback_env_when_domain_missing(tmp_p
     assert captured_env["AGENT_POST_EXEC_VERIFICATION_PROMPT"] == "verify from env"
 
 
+def test_resolve_agent_model_prefers_session_model_over_issue_setup_default(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.write_directory_domain_config("root", "issue_setup", {"default_model": "gpt-5.2-codex"})
+    manifest = SessionManifest(
+        session_id="session-1",
+        vm_id="vm-123",
+        directory_path="root",
+        allowed_tools=[],
+        model="gpt-5.3-codex",
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    service.runtime.sessions.put(manifest.session_id, manifest)
+
+    resolved = service._resolve_agent_model_for_session("session-1")
+
+    assert resolved == "gpt-5.3-codex"
+
+
+def test_resolve_agent_model_uses_issue_setup_default_when_session_model_missing(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.write_directory_domain_config("root", "issue_setup", {"default_model": "gpt-5.2-codex"})
+    manifest = SessionManifest(
+        session_id="session-1",
+        vm_id="vm-123",
+        directory_path="root",
+        allowed_tools=[],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    service.runtime.sessions.put(manifest.session_id, manifest)
+
+    resolved = service._resolve_agent_model_for_session("session-1")
+
+    assert resolved == "gpt-5.2-codex"
+
+
+def test_resolve_agent_model_fails_when_session_and_issue_setup_models_missing(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    manifest = SessionManifest(
+        session_id="session-1",
+        vm_id="vm-123",
+        directory_path="root",
+        allowed_tools=[],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    service.runtime.sessions.put(manifest.session_id, manifest)
+
+    with pytest.raises(ValueError, match="missing session.model and missing issue_setup.default_model"):
+        service._resolve_agent_model_for_session("session-1")
+
+
 def test_create_issue_vm_never_uses_pat_secret_as_env_var_name(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.delenv("AGENT_SANDBOX_AZURE_DEVOPS_PR_PAT_ENV", raising=False)
     monkeypatch.setenv("AZURE_DEVOPS_PR_PAT", "super-secret-pat")
