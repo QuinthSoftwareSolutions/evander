@@ -1774,11 +1774,13 @@ def test_schedule_resume_persists_request_and_audits_success(tmp_path: Path) -> 
         "scheduled": True,
         "request_id": "wake-123",
     }
-    stored = json.loads((tmp_path / "scheduled-resume-requests.json").read_text(encoding="utf-8"))
-    assert stored["session-1"]["resume_at"] == "2026-04-01T10:30:00Z"
-    assert stored["session-1"]["prompt"] == "Continue working through unread feedback."
-    assert stored["session-1"]["source"] == "heartbeat-worker"
-    assert stored["session-1"]["metadata"] == {"trace_id": "trace-1"}
+    stored = json.loads((tmp_path / "wake-requests-store.json").read_text(encoding="utf-8"))
+    saved_request = stored["requests"]["wake-123"]
+    assert saved_request["session_id"] == "session-1"
+    assert saved_request["schedule"]["resume_at"] == "2026-04-01T10:30:00Z"
+    assert saved_request["resume_prompt"]["prompt"] == "Continue working through unread feedback."
+    assert saved_request["source"] == "heartbeat-worker"
+    assert saved_request["resume_prompt"]["metadata"] == {"trace_id": "trace-1"}
 
     event = read_audit_events(context.config.audit_log_path)[-1]
     assert event["tool_name"] == ToolName.SCHEDULE_RESUME.value

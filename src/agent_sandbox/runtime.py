@@ -42,6 +42,7 @@ from .services import (
     TeamsService,
 )
 from .storage import JsonStore
+from .wake_store import WakeRequestStore
 
 
 @dataclass(slots=True)
@@ -65,6 +66,7 @@ class RuntimeContext:
     email_cursors: DurableCursorStore
     discord_commands: JsonStore[DiscordCommandEnvelope]
     teams_messages: JsonStore[TeamsMessageEnvelope]
+    wake_store: WakeRequestStore
 
     def resolve_provider_config_for_session(self, session_id: str) -> GatewayConfig:
         return self.provider_config.resolve_for_session_id(session_id)
@@ -138,6 +140,7 @@ def build_runtime(config: GatewayConfig) -> RuntimeContext:
     discord_commands = JsonStore(config.discord_command_store_path, DiscordCommandEnvelope)
     teams_messages = JsonStore(config.teams_message_store_path, TeamsMessageEnvelope)
     discord_inbox_service = DiscordInboxService(config.runtime_dir / "discord-inbox-store.json")
+    wake_store = WakeRequestStore(config.runtime_dir / "wake-requests-store.json")
     root_provider_config = provider_config.resolve_for_directory("root")
     discord_service = _build_discord_service(root_provider_config, discord_commands, sessions, policy_config)
     teams_service = _build_teams_service(root_provider_config, teams_messages, sessions)
@@ -165,6 +168,7 @@ def build_runtime(config: GatewayConfig) -> RuntimeContext:
         email_cursors=email_cursors,
         discord_commands=discord_commands,
         teams_messages=teams_messages,
+        wake_store=wake_store,
     )
 
 

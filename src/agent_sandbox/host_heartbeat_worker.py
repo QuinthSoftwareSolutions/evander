@@ -27,7 +27,7 @@ from .pr_feedback_worker import (
 )
 from .runtime import RuntimeContext, build_runtime
 from .worker_directory_context import WorkerDirectoryContextResolver, log_shadow_context
-from .models import DirectoryPath
+from .models import DirectoryPath, WakeDispatchRecord, WakeResumePromptPayload
 
 logger = logging.getLogger(__name__)
 
@@ -585,6 +585,7 @@ class HostHeartbeatWorker:
     def _resume_binding(self, binding: StreamSessionBinding, *, worker_config: GatewayConfig) -> None:
         if not binding.vm_id:
             return
+        resume_prompt = self._build_resume_prompt(binding, worker_config=worker_config)
         script_path = worker_config.host_resume_script_path
         if not script_path.exists():
             logger.warning(
@@ -597,7 +598,7 @@ class HostHeartbeatWorker:
         cmd = [
             str(script_path),
             "--prompt",
-            self._build_resume_prompt(binding, worker_config=worker_config),
+            resume_prompt,
             "--vm-name",
             binding.vm_id,
             "--session-id",
@@ -627,6 +628,18 @@ class HostHeartbeatWorker:
                 binding.vm_id,
                 exc_info=True,
             )
+            self.runtime.wake_store.record_dispatch(
+                WakeDispatchRecord(
+                    dispatch_id=f"hb-{int(time.time() * 1_000_000)}-{binding.session_id}",
+                    session_id=binding.session_id,
+                    status="failed",
+                    resume_prompt=WakeResumePromptPayload(prompt=resume_prompt),
+                    resume_mode="same_context",
+                    source="host_heartbeat_worker",
+                    metadata={"vm_id": binding.vm_id, "source": binding.source},
+                    error="resume script invocation failed",
+                )
+            )
             return
         except subprocess.TimeoutExpired:
             logger.warning(
@@ -636,6 +649,22 @@ class HostHeartbeatWorker:
                 binding.vm_id,
                 worker_config.host_heartbeat_resume_timeout_seconds,
             )
+            self.runtime.wake_store.record_dispatch(
+                WakeDispatchRecord(
+                    dispatch_id=f"hb-{int(time.time() * 1_000_000)}-{binding.session_id}",
+                    session_id=binding.session_id,
+                    status="timed_out",
+                    resume_prompt=WakeResumePromptPayload(prompt=resume_prompt),
+                    resume_mode="same_context",
+                    source="host_heartbeat_worker",
+                    metadata={
+                        "vm_id": binding.vm_id,
+                        "source": binding.source,
+                        "timeout_seconds": worker_config.host_heartbeat_resume_timeout_seconds,
+                    },
+                    error="resume script timed out",
+                )
+            )
             return
 
         if completed.returncode == 0:
@@ -643,6 +672,17 @@ class HostHeartbeatWorker:
                 "Host heartbeat wake dispatched session_id=%s vm_id=%s",
                 binding.session_id,
                 binding.vm_id,
+            )
+            self.runtime.wake_store.record_dispatch(
+                WakeDispatchRecord(
+                    dispatch_id=f"hb-{int(time.time() * 1_000_000)}-{binding.session_id}",
+                    session_id=binding.session_id,
+                    status="dispatched",
+                    resume_prompt=WakeResumePromptPayload(prompt=resume_prompt),
+                    resume_mode="same_context",
+                    source="host_heartbeat_worker",
+                    metadata={"vm_id": binding.vm_id, "source": binding.source},
+                )
             )
             return
         logger.warning(
@@ -652,6 +692,24 @@ class HostHeartbeatWorker:
             completed.returncode,
             (completed.stdout or "").strip(),
             (completed.stderr or "").strip(),
+        )
+        self.runtime.wake_store.record_dispatch(
+            WakeDispatchRecord(
+                dispatch_id=f"hb-{int(time.time() * 1_000_000)}-{binding.session_id}",
+                session_id=binding.session_id,
+                status="failed",
+                resume_prompt=WakeResumePromptPayload(prompt=resume_prompt),
+                resume_mode="same_context",
+                source="host_heartbeat_worker",
+                metadata={
+                    "vm_id": binding.vm_id,
+                    "source": binding.source,
+                    "exit_code": completed.returncode,
+                    "stdout": (completed.stdout or "").strip(),
+                    "stderr": (completed.stderr or "").strip(),
+                },
+                error=(completed.stderr or "").strip() or f"exit_code={completed.returncode}",
+            )
         )
 
     def _collect_stream_mappings(
