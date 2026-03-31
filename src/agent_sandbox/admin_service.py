@@ -3247,6 +3247,7 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
         *,
         issue: str,
         session_id: str | None = None,
+        model: str | None = None,
         repo_source: str | None = None,
         vm_user: str = "agent",
         ttl_hours: int | None = None,
@@ -3318,6 +3319,14 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
             email_mailboxes=email_mailboxes or [],
             email_folders=email_folders or [],
         )
+        normalized_model = (model or "").strip() or None
+        if normalized_model is not None:
+            manifest.model = normalized_model
+        else:
+            try:
+                manifest.model = self._resolve_agent_model_for_session(manifest)
+            except ValueError:
+                manifest.model = None
         self.runtime.sessions.put(resolved_session_id, manifest)
 
         def _issue_vm_failure(message: str) -> VmActionResult:
@@ -3428,6 +3437,7 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
         *,
         vm_name: str,
         session_id: str | None = None,
+        model: str | None = None,
         repo_source: str | None = None,
         vm_user: str = "agent",
         ttl_hours: int | None = None,
@@ -3489,6 +3499,14 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
             email_mailboxes=email_mailboxes or [],
             email_folders=email_folders or [],
         )
+        normalized_model = (model or "").strip() or None
+        if normalized_model is not None:
+            manifest.model = normalized_model
+        else:
+            try:
+                manifest.model = self._resolve_agent_model_for_session(manifest)
+            except ValueError:
+                manifest.model = None
         self.runtime.sessions.put(resolved_session_id, manifest)
 
         root_dir = Path(__file__).resolve().parents[2]
