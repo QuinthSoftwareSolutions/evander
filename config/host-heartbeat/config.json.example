@@ -12,5 +12,9 @@
   "host_heartbeat_wake_state_path": null,
   "host_heartbeat_vm_user": "agent",
   "host_heartbeat_resume_timeout_seconds": 1200,
-  "host_heartbeat_stream_conflict_policy": "fanout"
+  "host_heartbeat_stream_conflict_policy": "fanout",
+  "host_heartbeat_scheduled_wake_prefix_text": "You have unread PR comments. Please fetch them with list_unread_feedback.",
+  "host_heartbeat_schedule_max_active_per_session": null,
+  "host_heartbeat_schedule_max_active_total": null,
+  "host_heartbeat_schedule_min_interval_seconds": null
 }

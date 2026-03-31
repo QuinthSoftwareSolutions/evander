@@ -95,6 +95,7 @@ def test_config_field_kind_supports_host_heartbeat_worker_global_fields() -> Non
     assert admin_app._config_field_kind("host_busy_check_script_path") == ("text", ())
     assert admin_app._config_field_kind("host_heartbeat_wake_state_path") == ("text", ())
     assert admin_app._config_field_kind("host_heartbeat_directory_paths") == ("string_list", ())
+    assert admin_app._config_field_kind("host_heartbeat_scheduled_wake_prefix_text") == ("text", ())
 
 
 def test_directory_config_domains_include_ado_worker_and_issue_setup_tabs() -> None:

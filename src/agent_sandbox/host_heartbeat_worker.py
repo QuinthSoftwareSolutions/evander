@@ -714,7 +714,13 @@ class HostHeartbeatWorker:
         ).strip()
 
     def _build_scheduled_resume_prompt(self, *, worker_config: GatewayConfig, requested_prompt: str) -> str:
-        preamble = self._pr_resume_prompt(worker_config)
+        preamble = str(
+            getattr(
+                worker_config,
+                "host_heartbeat_scheduled_wake_prefix_text",
+                self._pr_resume_prompt(worker_config),
+            )
+        ).strip()
         cleaned_requested = requested_prompt.strip()
         if preamble and cleaned_requested:
             return f"{preamble} {cleaned_requested}"

@@ -137,6 +137,12 @@ class GatewayConfig(BaseModel):
     host_heartbeat_vm_user: str = "agent"
     host_heartbeat_resume_timeout_seconds: float = Field(default=1200.0, gt=0)
     host_heartbeat_stream_conflict_policy: Literal["fanout", "reject"] = "fanout"
+    host_heartbeat_scheduled_wake_prefix_text: str = (
+        "You have unread PR comments. Please fetch them with list_unread_feedback."
+    )
+    host_heartbeat_schedule_max_active_per_session: int | None = Field(default=None, ge=1)
+    host_heartbeat_schedule_max_active_total: int | None = Field(default=None, ge=1)
+    host_heartbeat_schedule_min_interval_seconds: float | None = Field(default=None, gt=0)
     pr_map_path: Path = Path("/var/lib/agent-sandbox/pr-map.json")
     email_mailboxes: list[MailboxConfig] = Field(
         default_factory=lambda: [
@@ -314,6 +320,12 @@ class HostHeartbeatWorkerGlobalConfig(BaseModel):
     host_heartbeat_vm_user: str = "agent"
     host_heartbeat_resume_timeout_seconds: float = Field(default=1200.0, gt=0)
     host_heartbeat_stream_conflict_policy: Literal["fanout", "reject"] = "fanout"
+    host_heartbeat_scheduled_wake_prefix_text: str = (
+        "You have unread PR comments. Please fetch them with list_unread_feedback."
+    )
+    host_heartbeat_schedule_max_active_per_session: int | None = Field(default=None, ge=1)
+    host_heartbeat_schedule_max_active_total: int | None = Field(default=None, ge=1)
+    host_heartbeat_schedule_min_interval_seconds: float | None = Field(default=None, gt=0)
 
     @field_validator("host_heartbeat_directory_paths", mode="before")
     @classmethod

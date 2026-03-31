@@ -125,6 +125,10 @@ Workers tab edits `config/host-heartbeat/config.json` for the `host-heartbeat` w
 | `host_heartbeat_vm_user` | `config/host-heartbeat/config.json.example` | `src/agent_sandbox/host_heartbeat_worker.py`. |
 | `host_heartbeat_resume_timeout_seconds` | `config/host-heartbeat/config.json.example` | `src/agent_sandbox/host_heartbeat_worker.py`. |
 | `host_heartbeat_stream_conflict_policy` | `config/host-heartbeat/config.json.example` | `src/agent_sandbox/host_heartbeat_worker.py`. |
+| `host_heartbeat_scheduled_wake_prefix_text` | `config/host-heartbeat/config.json.example` | `src/agent_sandbox/host_heartbeat_worker.py` (applied as `prefix + scheduled_prompt` for MCP-scheduled wakes). |
+| `host_heartbeat_schedule_max_active_per_session` | `config/host-heartbeat/config.json.example` | `src/agent_sandbox/config.py` / admin config surfaces (optional scheduling guardrail). |
+| `host_heartbeat_schedule_max_active_total` | `config/host-heartbeat/config.json.example` | `src/agent_sandbox/config.py` / admin config surfaces (optional scheduling guardrail). |
+| `host_heartbeat_schedule_min_interval_seconds` | `config/host-heartbeat/config.json.example` | `src/agent_sandbox/config.py` / admin config surfaces (optional scheduling guardrail). |
 
 ## Root issue setup and git automation config
 
