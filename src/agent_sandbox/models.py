@@ -479,33 +479,116 @@ class PostPrFeedbackReplyResponse(BaseModel):
 
 class ScheduleResumeRequest(BaseModel):
     session_id: str = Field(min_length=1)
-    resume_at: datetime
+    resume_at: datetime | None = None
+    cron: str | None = None
     prompt: str = Field(min_length=1)
+    resume_mode: str = Field(default="same_context")
+    enabled: bool = True
     request_id: str | None = None
     source: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("resume_at")
     @classmethod
-    def validate_resume_at_utc(cls, value: datetime) -> datetime:
+    def validate_resume_at_utc(cls, value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
         if value.tzinfo is None:
             raise ValueError("resume_at must include timezone information")
         return value.astimezone(UTC)
 
+    @field_validator("resume_mode")
+    @classmethod
+    def validate_resume_mode(cls, value: str) -> str:
+        normalized = value.strip()
+        if normalized not in {"same_context", "new_context"}:
+            raise ValueError("resume_mode must be one of: same_context, new_context")
+        return normalized
 
-class ScheduledResumeEntry(BaseModel):
-    session_id: str = Field(min_length=1)
-    resume_at: datetime
+    def model_post_init(self, __context: Any) -> None:
+        has_resume_at = self.resume_at is not None
+        has_cron = bool((self.cron or "").strip())
+        if has_resume_at == has_cron:
+            raise ValueError("exactly one schedule definition must be provided: resume_at or cron")
+
+
+class WakeScheduleDefinition(BaseModel):
+    resume_at: datetime | None = None
+    cron: str | None = None
+
+    @field_validator("resume_at")
+    @classmethod
+    def validate_resume_at(cls, value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            raise ValueError("resume_at must include timezone information")
+        return value.astimezone(UTC)
+
+    def model_post_init(self, __context: Any) -> None:
+        has_resume_at = self.resume_at is not None
+        has_cron = bool((self.cron or "").strip())
+        if has_resume_at == has_cron:
+            raise ValueError("exactly one schedule definition must be provided: resume_at or cron")
+
+
+class WakeResumePromptPayload(BaseModel):
     prompt: str = Field(min_length=1)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class WakeScheduledRequest(BaseModel):
+    request_id: str = Field(min_length=1)
+    session_id: str = Field(min_length=1)
+    schedule: WakeScheduleDefinition
+    resume_prompt: WakeResumePromptPayload
+    resume_mode: str = Field(default="same_context")
+    enabled: bool = True
+    source: str | None = None
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+    last_dispatched_at: datetime | None = None
+    next_run_at: datetime | None = None
+
+    @field_validator("resume_mode")
+    @classmethod
+    def validate_resume_mode(cls, value: str) -> str:
+        normalized = value.strip()
+        if normalized not in {"same_context", "new_context"}:
+            raise ValueError("resume_mode must be one of: same_context, new_context")
+        return normalized
+
+
+class WakeDispatchRecord(BaseModel):
+    dispatch_id: str = Field(min_length=1)
     request_id: str | None = None
+    session_id: str = Field(min_length=1)
+    status: str = Field(min_length=1)
+    resume_prompt: WakeResumePromptPayload
+    resume_mode: str = Field(default="same_context")
+    scheduled_for: datetime | None = None
+    dispatched_at: datetime = Field(default_factory=utc_now)
     source: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+    error: str | None = None
+
+
+class WakeMessageEnvelope(BaseModel):
+    message_id: str = Field(min_length=1)
+    session_id: str = Field(min_length=1)
+    request_id: str | None = None
+    dispatch_id: str | None = None
+    status: str = Field(min_length=1)
+    resume_prompt: WakeResumePromptPayload
+    resume_mode: str = Field(default="same_context")
     created_at: datetime = Field(default_factory=utc_now)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class ScheduleResumeResponse(BaseModel):
     session_id: str
-    resume_at: datetime
+    resume_at: datetime | None = None
+    cron: str | None = None
     scheduled: bool = True
     request_id: str | None = None
 
