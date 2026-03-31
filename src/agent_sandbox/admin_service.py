@@ -1445,6 +1445,11 @@ class AdminService:
             f"issue_setup.default_model for directory '{directory_path}' (or an inherited parent)."
         )
 
+    def resolve_agent_model_for_target(self, target: str) -> str:
+        sessions = self.runtime.sessions.read_all()
+        resolved_session_id, _ = _resolve_session_target(target, sessions)
+        return self._resolve_agent_model_for_session(resolved_session_id)
+
     def _build_setup_issue_vm_invocation(
         self,
         *,

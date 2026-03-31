@@ -4,7 +4,7 @@ set -euo pipefail
 . "${HOME}/.profile" >/dev/null 2>&1 || true
 
 AGENT_PROVIDER="${AGENT_PROVIDER:-codex}"
-AGENT_MODEL="${AGENT_MODEL:-gpt-5.4}"
+AGENT_MODEL="${AGENT_MODEL:-}"
 AGENT_SANDBOX_GUEST_HEARTBEAT_PROMPT="${AGENT_SANDBOX_GUEST_HEARTBEAT_PROMPT:-Resume work for this session. Check for pending feedback first, then continue the most recent task.}"
 
 LIB_DIR="${HOME}/.config/agent-sandbox/agent-runner-lib"
@@ -63,6 +63,11 @@ if [[ -f "${LOG_DIR}/codex-resume-last.state" ]]; then
   fi
 fi
 shopt -u nullglob
+
+if [[ -z "${AGENT_MODEL:-}" ]]; then
+  echo "AGENT_MODEL is required for session-bound Codex execution. Set AGENT_MODEL before running heartbeat_cycle.sh." >&2
+  exit 1
+fi
 
 printf '%s\n' "--last" > "${RESUME_HINT_FILE}"
 

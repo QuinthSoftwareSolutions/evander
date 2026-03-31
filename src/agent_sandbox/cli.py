@@ -2124,6 +2124,11 @@ def resume_agent(
     normalized = target.strip()
     cfg = _load_runtime_config_from_option(config)
     runtime = build_runtime(cfg)
+    admin = AdminService(runtime=runtime, config=cfg)
+    try:
+        agent_model = admin.resolve_agent_model_for_target(normalized)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
     script_path = Path(__file__).resolve().parents[2] / "scripts" / "resume_issue_agent.sh"
     if normalized.isdigit() or (normalized.startswith("vm-") and normalized[3:].isdigit()):
         issue_number = _resolve_issue_number_or_raise(target)
@@ -2167,13 +2172,14 @@ def resume_agent(
         reason="resume-agent-command",
     )
     if observe:
-        completed = subprocess.run(cmd, check=False)
+        completed = subprocess.run(cmd, check=False, env=os.environ | {"AGENT_MODEL": agent_model})
     else:
         completed = subprocess.run(
             cmd,
             check=False,
             capture_output=True,
             text=True,
+            env=os.environ | {"AGENT_MODEL": agent_model},
         )
     if completed.returncode == 0:
         runtime.audit.log_decision(
