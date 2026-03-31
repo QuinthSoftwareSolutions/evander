@@ -431,6 +431,72 @@ def test_list_issues_exposes_rejection_reason_from_metadata(
     ]
 
 
+def test_get_issue_passes_through_backend_payload(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = make_context(tmp_path)
+    context.sessions.put(
+        "session-1",
+        SessionManifest(
+            session_id="session-1",
+            directory_path="root/team-a",
+            allowed_tools=[ToolName.GET_ISSUE],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    captured: dict[str, object] = {}
+
+    class StubAdminService:
+        def __init__(self, runtime_dir: Path) -> None:
+            captured["runtime_dir"] = runtime_dir
+
+        def get_issue(
+            self,
+            issue_id: str,
+            *,
+            include_remote_comments: bool = True,
+            sync_proxy_cache: bool = True,
+        ) -> dict[str, object]:
+            captured["payload"] = {
+                "issue_id": issue_id,
+                "include_remote_comments": include_remote_comments,
+                "sync_proxy_cache": sync_proxy_cache,
+            }
+            return {
+                "issue_id": "local-42",
+                "issue_number": "42",
+                "source_type": "local",
+                "title": "Rejected issue",
+                "state": "Closed",
+                "reason": "Out of scope",
+                "rejection_reason": "Out of scope",
+            }
+
+    monkeypatch.setattr("agent_sandbox.gateway.AdminService", StubAdminService)
+    server = create_server(context)
+
+    result = call_tool(
+        server,
+        "get_issue",
+        {
+            "session_id": "session-1",
+            "issue_id": "42",
+            "include_remote_comments": False,
+            "sync_proxy_cache": False,
+        },
+    )
+
+    assert captured["runtime_dir"] == context.config.runtime_dir
+    assert captured["payload"] == {
+        "issue_id": "42",
+        "include_remote_comments": False,
+        "sync_proxy_cache": False,
+    }
+    assert result["issue_number"] == "42"
+    assert result["rejection_reason"] == "Out of scope"
+
+
 def test_discord_post_status_posts_to_allowlisted_channel(tmp_path: Path) -> None:
     context = make_context(tmp_path)
     context.sessions.put(
@@ -503,6 +569,30 @@ def test_list_issues_requires_tool_permission(tmp_path: Path) -> None:
             server.call_tool(
                 "list_issues",
                 {"session_id": "session-1"},
+            )
+        )
+
+
+def test_get_issue_requires_tool_permission(tmp_path: Path) -> None:
+    context = make_context(tmp_path)
+    context.sessions.put(
+        "session-1",
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    server = create_server(context)
+
+    with pytest.raises(ToolError, match="not allowed"):
+        asyncio.run(
+            server.call_tool(
+                "get_issue",
+                {
+                    "session_id": "session-1",
+                    "issue_id": "42",
+                },
             )
         )
 
@@ -879,6 +969,7 @@ def test_get_agent_status_maps_backend_state(tmp_path: Path, monkeypatch: pytest
         "session-1",
         SessionManifest(
             session_id="session-1",
+            directory_path="root/team-a",
             vm_id="vm-123",
             allowed_tools=[ToolName.GET_AGENT_STATUS],
             expires_at=datetime.now(UTC) + timedelta(hours=1),
@@ -890,8 +981,20 @@ def test_get_agent_status_maps_backend_state(tmp_path: Path, monkeypatch: pytest
         def __init__(self, runtime_dir: Path) -> None:
             captured["runtime_dir"] = runtime_dir
 
-        def list_vms(self, *, include_inactive: bool, vm_user: str) -> list[SimpleNamespace]:
-            captured["list_args"] = {"include_inactive": include_inactive, "vm_user": vm_user}
+        def list_vms(
+            self,
+            *,
+            include_inactive: bool,
+            vm_user: str,
+            directory_path: str | None = None,
+            direct_only: bool = False,
+        ) -> list[SimpleNamespace]:
+            captured["list_args"] = {
+                "include_inactive": include_inactive,
+                "vm_user": vm_user,
+                "directory_path": directory_path,
+                "direct_only": direct_only,
+            }
             return [
                 SimpleNamespace(
                     vm_name="vm-123",
@@ -909,10 +1012,119 @@ def test_get_agent_status_maps_backend_state(tmp_path: Path, monkeypatch: pytest
     result = call_tool(server, "get_agent_status", {"session_id": "session-1", "vm_name": "vm-123"})
 
     assert captured["runtime_dir"] == context.config.runtime_dir
-    assert captured["list_args"] == {"include_inactive": True, "vm_user": "agent"}
+    assert captured["list_args"] == {
+        "include_inactive": True,
+        "vm_user": "agent",
+        "directory_path": "root/team-a",
+        "direct_only": True,
+    }
     assert result["status"] == "active"
     assert result["agent_state"] == "running"
     assert result["last_state_update_at"] == "2026-03-29T12:00:00+00:00"
+
+
+def test_get_agent_status_allows_same_directory_peer_vm(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    context = make_context(tmp_path)
+    context.sessions.put(
+        "session-1",
+        SessionManifest(
+            session_id="session-1",
+            directory_path="root/team-a",
+            vm_id="vm-self",
+            allowed_tools=[ToolName.GET_AGENT_STATUS],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+
+    class StubAdminService:
+        def __init__(self, _runtime_dir: Path) -> None:
+            pass
+
+        def list_vms(
+            self,
+            *,
+            include_inactive: bool,
+            vm_user: str,
+            directory_path: str | None = None,
+            direct_only: bool = False,
+        ) -> list[SimpleNamespace]:
+            assert include_inactive is True
+            assert vm_user == "agent"
+            assert directory_path == "root/team-a"
+            assert direct_only is True
+            return [
+                SimpleNamespace(
+                    vm_name="vm-self",
+                    agent_state="running",
+                    libvirt_state="running",
+                    ip_address="10.0.0.10",
+                    agent_repo_names=["repo-a"],
+                    last_state_update_at=datetime(2026, 3, 29, 12, 0, tzinfo=UTC),
+                ),
+                SimpleNamespace(
+                    vm_name="vm-peer",
+                    agent_state="idle",
+                    libvirt_state="running",
+                    ip_address="10.0.0.11",
+                    agent_repo_names=["repo-b"],
+                    last_state_update_at=datetime(2026, 3, 29, 12, 5, tzinfo=UTC),
+                ),
+            ]
+
+    monkeypatch.setattr("agent_sandbox.gateway.AdminService", StubAdminService)
+    server = create_server(context)
+
+    result = call_tool(server, "get_agent_status", {"session_id": "session-1", "vm_name": "vm-peer"})
+
+    assert result["vm_name"] == "vm-peer"
+    assert result["status"] == "idle"
+
+
+def test_get_agent_status_rejects_cross_directory_vm(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    context = make_context(tmp_path)
+    context.sessions.put(
+        "session-1",
+        SessionManifest(
+            session_id="session-1",
+            directory_path="root/team-a",
+            vm_id="vm-self",
+            allowed_tools=[ToolName.GET_AGENT_STATUS],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+
+    class StubAdminService:
+        def __init__(self, _runtime_dir: Path) -> None:
+            pass
+
+        def list_vms(
+            self,
+            *,
+            include_inactive: bool,
+            vm_user: str,
+            directory_path: str | None = None,
+            direct_only: bool = False,
+        ) -> list[SimpleNamespace]:
+            assert include_inactive is True
+            assert vm_user == "agent"
+            assert directory_path == "root/team-a"
+            assert direct_only is True
+            return [
+                SimpleNamespace(
+                    vm_name="vm-self",
+                    agent_state="running",
+                    libvirt_state="running",
+                    ip_address="10.0.0.10",
+                    agent_repo_names=["repo-a"],
+                    last_state_update_at=datetime(2026, 3, 29, 12, 0, tzinfo=UTC),
+                )
+            ]
+
+    monkeypatch.setattr("agent_sandbox.gateway.AdminService", StubAdminService)
+    server = create_server(context)
+
+    with pytest.raises(ToolError, match="outside the session directory scope 'root/team-a'"):
+        asyncio.run(server.call_tool("get_agent_status", {"session_id": "session-1", "vm_name": "vm-other"}))
 
 
 def test_get_agent_logs_returns_tail_from_service(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -921,7 +1133,8 @@ def test_get_agent_logs_returns_tail_from_service(tmp_path: Path, monkeypatch: p
         "session-1",
         SessionManifest(
             session_id="session-1",
-            vm_id="vm-123",
+            directory_path="root/team-a",
+            vm_id="vm-self",
             allowed_tools=[ToolName.GET_AGENT_LOGS],
             expires_at=datetime.now(UTC) + timedelta(hours=1),
         ),
@@ -931,6 +1144,31 @@ def test_get_agent_logs_returns_tail_from_service(tmp_path: Path, monkeypatch: p
     class StubAdminService:
         def __init__(self, runtime_dir: Path) -> None:
             captured["runtime_dir"] = runtime_dir
+
+        def list_vms(
+            self,
+            *,
+            include_inactive: bool,
+            vm_user: str,
+            directory_path: str | None = None,
+            direct_only: bool = False,
+        ) -> list[SimpleNamespace]:
+            captured["list_args"] = {
+                "include_inactive": include_inactive,
+                "vm_user": vm_user,
+                "directory_path": directory_path,
+                "direct_only": direct_only,
+            }
+            return [
+                SimpleNamespace(
+                    vm_name="vm-peer",
+                    agent_state="running",
+                    libvirt_state="running",
+                    ip_address="10.0.0.12",
+                    agent_repo_names=["repo-a"],
+                    last_state_update_at=datetime(2026, 3, 29, 12, 0, tzinfo=UTC),
+                )
+            ]
 
         def get_agent_log_snapshot(
             self, target: str, *, lines: int, repo_name: str | None, vm_user: str
@@ -949,12 +1187,18 @@ def test_get_agent_logs_returns_tail_from_service(tmp_path: Path, monkeypatch: p
     result = call_tool(
         server,
         "get_agent_logs",
-        {"session_id": "session-1", "vm_name": "vm-123", "lines": 20, "repo_name": "repo-a"},
+        {"session_id": "session-1", "vm_name": "vm-peer", "lines": 20, "repo_name": "repo-a"},
     )
 
     assert captured["runtime_dir"] == context.config.runtime_dir
+    assert captured["list_args"] == {
+        "include_inactive": True,
+        "vm_user": "agent",
+        "directory_path": "root/team-a",
+        "direct_only": True,
+    }
     assert captured["payload"] == {
-        "target": "vm-123",
+        "target": "vm-peer",
         "lines": 20,
         "repo_name": "repo-a",
         "vm_user": "agent",

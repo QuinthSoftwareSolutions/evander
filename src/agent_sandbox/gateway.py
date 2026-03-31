@@ -231,6 +231,36 @@ def _filter_teams_messages_for_session(
     return messages, denied_count, next_cursor
 
 
+def _visible_vm_summaries_for_session(
+    context: RuntimeContext,
+    session: Any,
+    *,
+    vm_user: str,
+) -> list[Any]:
+    return AdminService(context.config.runtime_dir).list_vms(
+        include_inactive=True,
+        vm_user=vm_user,
+        directory_path=session.directory_path,
+        direct_only=True,
+    )
+
+
+def _require_vm_visible_in_session_directory(
+    context: RuntimeContext,
+    session: Any,
+    *,
+    vm_name: str,
+    vm_user: str,
+) -> Any:
+    summaries = _visible_vm_summaries_for_session(context, session, vm_user=vm_user)
+    summary = next((item for item in summaries if item.vm_name == vm_name), None)
+    if summary is None:
+        raise PolicyError(
+            f"VM '{vm_name}' is outside the session directory scope '{session.directory_path}'."
+        )
+    return summary
+
+
 def create_server(context: RuntimeContext) -> FastMCP:
     server = FastMCP(
         "Agent Sandbox Gateway",
@@ -350,6 +380,55 @@ def create_server(context: RuntimeContext) -> FastMCP:
             audit_failure(
                 session_id,
                 ToolName.LIST_ISSUES,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
+    def get_issue(
+        issue_id: str,
+        include_remote_comments: bool = True,
+        sync_proxy_cache: bool = True,
+        *,
+        session_id: str | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        session_id = _resolve_session_id_from_context(session_id, ctx, transport_session_map=transport_session_map)
+        args = {
+            "session_id": session_id,
+            "issue_id": issue_id,
+            "include_remote_comments": include_remote_comments,
+            "sync_proxy_cache": sync_proxy_cache,
+        }
+        try:
+            session = context.policy.require_tool(session_id, ToolName.GET_ISSUE)
+            result = AdminService(context.config.runtime_dir).get_issue(
+                issue_id,
+                include_remote_comments=include_remote_comments,
+                sync_proxy_cache=sync_proxy_cache,
+            )
+            audit_success(
+                session_id,
+                ToolName.GET_ISSUE,
+                args,
+                {
+                    "issue_number": result.get("issue_number"),
+                    "source_type": result.get("source_type"),
+                    "state": result.get("state"),
+                    "directory_path": session.directory_path,
+                },
+            )
+            return result
+        except PolicyError as exc:
+            audit_failure(session_id, ToolName.GET_ISSUE, args, str(exc))
+            raise
+        except Exception as exc:
+            audit_failure(
+                session_id,
+                ToolName.GET_ISSUE,
                 args,
                 str(exc),
                 decision="error",
@@ -658,24 +737,23 @@ def create_server(context: RuntimeContext) -> FastMCP:
         }
         try:
             session = context.policy.require_tool(resolved_session_id, ToolName.GET_AGENT_STATUS)
-            if session.vm_id and session.vm_id != vm_name:
-                raise ToolError(f"VM '{vm_name}' is not allowlisted for session '{resolved_session_id}'.")
-            summaries = AdminService(context.config.runtime_dir).list_vms(include_inactive=True, vm_user=vm_user)
-            summary = next((item for item in summaries if item.vm_name == vm_name), None)
-            if summary is None:
-                payload = {"vm_name": vm_name, "status": "unknown", "agent_state": "unknown"}
-            else:
-                payload = {
-                    "vm_name": vm_name,
-                    "status": _normalize_agent_status(summary.agent_state),
-                    "agent_state": summary.agent_state,
-                    "libvirt_state": summary.libvirt_state,
-                    "ip_address": summary.ip_address,
-                    "agent_repo_names": summary.agent_repo_names,
-                    "last_state_update_at": (
-                        summary.last_state_update_at.isoformat() if summary.last_state_update_at else None
-                    ),
-                }
+            summary = _require_vm_visible_in_session_directory(
+                context,
+                session,
+                vm_name=vm_name,
+                vm_user=vm_user,
+            )
+            payload = {
+                "vm_name": vm_name,
+                "status": _normalize_agent_status(summary.agent_state),
+                "agent_state": summary.agent_state,
+                "libvirt_state": summary.libvirt_state,
+                "ip_address": summary.ip_address,
+                "agent_repo_names": summary.agent_repo_names,
+                "last_state_update_at": (
+                    summary.last_state_update_at.isoformat() if summary.last_state_update_at else None
+                ),
+            }
             audit_success(
                 resolved_session_id,
                 ToolName.GET_AGENT_STATUS,
@@ -721,8 +799,12 @@ def create_server(context: RuntimeContext) -> FastMCP:
         try:
             context.policy.require_tool(resolved_session_id, ToolName.GET_AGENT_LOGS)
             session = context.policy.get_session(resolved_session_id)
-            if session.vm_id and session.vm_id != vm_name:
-                raise ToolError(f"VM '{vm_name}' is not allowlisted for session '{resolved_session_id}'.")
+            _require_vm_visible_in_session_directory(
+                context,
+                session,
+                vm_name=vm_name,
+                vm_user=vm_user,
+            )
             safe_lines = max(1, min(lines, 1000))
             logs = AdminService(context.config.runtime_dir).get_agent_log_snapshot(
                 vm_name,
@@ -1242,6 +1324,54 @@ def create_server(context: RuntimeContext) -> FastMCP:
             audit_failure(
                 session_id,
                 ToolName.TEAMS_GET_MESSAGES,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
+    def teams_post_status(
+        session_id: str,
+        channel_target: str,
+        message: str,
+        thread_id: str | None = None,
+    ) -> dict[str, Any]:
+        args = {
+            "session_id": session_id,
+            "channel_target": channel_target,
+            "message": message,
+            "thread_id": thread_id,
+        }
+        try:
+            session = context.policy.require_tool(session_id, ToolName.TEAMS_POST_STATUS)
+            normalized_target = context.policy.require_teams_channel_target(session, channel_target)
+            result = context.teams_service_for_session(session_id).post_status(
+                message,
+                normalized_target,
+                session_id,
+                thread_id=thread_id,
+            )
+            audit_success(session_id, ToolName.TEAMS_POST_STATUS, args, result)
+            return result
+        except PolicyError as exc:
+            audit_failure(session_id, ToolName.TEAMS_POST_STATUS, args, str(exc))
+            raise
+        except httpx.HTTPError as exc:
+            audit_failure(
+                session_id,
+                ToolName.TEAMS_POST_STATUS,
+                args,
+                str(exc),
+                decision="error",
+                error_class="adapter_http_error",
+            )
+            raise
+        except Exception as exc:
+            audit_failure(
+                session_id,
+                ToolName.TEAMS_POST_STATUS,
                 args,
                 str(exc),
                 decision="error",

@@ -1297,6 +1297,23 @@ def test_issue_actions_use_local_behavior_for_non_proxy_issue(tmp_path: Path) ->
     assert read_result["comments"][-1]["text"] == "hello local"
 
 
+def test_get_issue_returns_full_local_record_for_closed_issue(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    issue = service.create_local_issue(title="Closed task", body="only local")
+    service.update_issue(issue.issue_number, state="Closed", fields={"Reason": "Out of scope"})
+
+    result = service.get_issue(issue.issue_number)
+
+    assert result["issue_id"] == issue.issue_id
+    assert result["issue_number"] == issue.issue_number
+    assert result["source_type"] == "local"
+    assert result["directory_path"] == "root"
+    assert result["state"] == "Closed"
+    assert result["reason"] == "Out of scope"
+    assert result["rejection_reason"] == "Out of scope"
+    assert result["yaml_path"] == issue.yaml_path
+
+
 def test_create_local_issue_defaults_to_new_state(tmp_path: Path) -> None:
     service = AdminService(write_config(tmp_path))
 
@@ -1571,6 +1588,40 @@ def test_issue_actions_forward_proxy_issues_and_sync_cache(tmp_path: Path) -> No
     update_call = next(kwargs for name, kwargs in calls if name == "update")
     assert comment_call["remote_issue_id"] == issue.issue_number
     assert update_call["state"] == "Resolved"
+
+
+def test_get_issue_retains_local_metadata_for_proxy_issue(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    issue = service.create_local_issue(
+        title="Proxy issue",
+        body="from remote",
+        yaml_path=str(_write_proxy_issue_yaml(tmp_path)),
+    )
+
+    class _Adapter:
+        provider_name = "azure_devops"
+
+        def read_issue(self, **kwargs):
+            return {
+                "provider": "azure_devops",
+                "remote_issue_id": kwargs["remote_issue_id"],
+                "title": "Remote title",
+                "description": "Remote description",
+                "state": "Closed",
+                "comments": [],
+                "fields": {"Reason": "Remote reject"},
+            }
+
+    service.issue_service.adapters["azure_devops"] = _Adapter()
+
+    result = service.get_issue(issue.issue_number, include_remote_comments=True, sync_proxy_cache=True)
+
+    assert result["issue_id"] == issue.issue_id
+    assert result["issue_number"] == issue.issue_number
+    assert result["source_type"] == "proxy"
+    assert result["directory_path"] == issue.directory_path
+    assert result["yaml_path"] == issue.yaml_path
+    assert result["state"] == "Closed"
 
 
 def test_proxy_identifier_rejects_ambiguous_ado_work_item_ids_across_projects(tmp_path: Path) -> None:

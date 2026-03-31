@@ -101,6 +101,14 @@ class DiscordService(Protocol):
 class TeamsService(Protocol):
     def get_messages(self, since_cursor: str | None = None) -> list["TeamsMessageEnvelope"]: ...
 
+    def post_status(
+        self,
+        message: str,
+        channel_target: str,
+        session_id: str,
+        thread_id: str | None = None,
+    ) -> dict[str, Any]: ...
+
 
 class StubDiscordService:
     def __init__(self, command_store: JsonStore[DiscordCommandEnvelope]) -> None:
@@ -430,6 +438,25 @@ class StubTeamsService:
         ordered = _sorted_teams_messages({message.cursor: message for message in messages})
         return _filter_teams_messages_since_cursor(ordered, since_cursor)
 
+    def post_status(
+        self,
+        message: str,
+        channel_target: str,
+        session_id: str,
+        thread_id: str | None = None,
+    ) -> dict[str, Any]:
+        team_id, channel_id = _parse_teams_channel_target(channel_target)
+        normalized_thread_id = str(thread_id or "").strip() or None
+        return {
+            "status": "stubbed",
+            "channel_target": f"{team_id}/{channel_id}",
+            "team_id": team_id,
+            "channel_id": channel_id,
+            "thread_id": normalized_thread_id,
+            "session_id": session_id,
+            "message_preview": message[:120],
+        }
+
 
 class GraphTeamsService:
     def __init__(
@@ -481,6 +508,7 @@ class GraphTeamsService:
         url: str,
         *,
         params: dict[str, Any] | None = None,
+        json: dict[str, Any] | None = None,
     ) -> httpx.Response:
         start_time = time.monotonic()
         attempt = 0
@@ -492,6 +520,7 @@ class GraphTeamsService:
                     url,
                     headers=self._headers(),
                     params=params,
+                    json=json,
                     timeout=self.timeout_seconds,
                 )
                 response.raise_for_status()
@@ -533,12 +562,35 @@ class GraphTeamsService:
                 return candidate
         return "unknown"
 
-    def _to_envelope(self, payload: dict[str, Any], *, team_id: str, channel_id: str) -> TeamsMessageEnvelope:
+    def _to_envelope(
+        self,
+        payload: dict[str, Any],
+        *,
+        team_id: str,
+        channel_id: str,
+        source: str = "teams_graph_api",
+        session_id: str | None = None,
+        reply_to_id: str | None = None,
+    ) -> TeamsMessageEnvelope:
         message_id = str(payload.get("id") or "").strip()
-        thread_id = str(payload.get("replyToId") or message_id).strip() or None
+        resolved_reply_to_id = str(payload.get("replyToId") or reply_to_id or "").strip() or None
+        thread_id = resolved_reply_to_id or message_id or None
         cursor = f"{team_id}/{channel_id}/{message_id}"
         body = payload.get("body") or {}
         author_id = self._author_id(payload)
+        metadata = {
+            "source": source,
+            "team_id": team_id,
+            "channel_id": channel_id,
+            "thread_id": thread_id,
+            "author_id": author_id,
+            "reply_to_id": resolved_reply_to_id,
+            "web_url": str(payload.get("webUrl") or "").strip() or None,
+            "content_type": str(body.get("contentType") or "").strip() or None,
+            "message": payload,
+        }
+        if session_id is not None:
+            metadata["session_id"] = session_id
         return TeamsMessageEnvelope(
             cursor=cursor,
             message_id=message_id,
@@ -548,17 +600,7 @@ class GraphTeamsService:
             thread_id=thread_id,
             content=str(body.get("content") or ""),
             created_at=_parse_graph_datetime(str(payload.get("createdDateTime") or "")),
-            metadata={
-                "source": "teams_graph_api",
-                "team_id": team_id,
-                "channel_id": channel_id,
-                "thread_id": thread_id,
-                "author_id": author_id,
-                "reply_to_id": str(payload.get("replyToId") or "").strip() or None,
-                "web_url": str(payload.get("webUrl") or "").strip() or None,
-                "content_type": str(body.get("contentType") or "").strip() or None,
-                "message": payload,
-            },
+            metadata=metadata,
         )
 
     def _iter_channel_messages(
@@ -606,6 +648,57 @@ class GraphTeamsService:
 
         ordered = _sorted_teams_messages(messages)
         return _filter_teams_messages_since_cursor(ordered, since_cursor)
+
+    def post_status(
+        self,
+        message: str,
+        channel_target: str,
+        session_id: str,
+        thread_id: str | None = None,
+    ) -> dict[str, Any]:
+        team_id, channel_id = _parse_teams_channel_target(channel_target)
+        normalized_thread_id = str(thread_id or "").strip() or None
+        encoded_team_id = quote(team_id, safe="")
+        encoded_channel_id = quote(channel_id, safe="")
+        if normalized_thread_id is None:
+            url = (
+                f"{self.api_base_url}/teams/{encoded_team_id}/channels/{encoded_channel_id}/messages"
+            )
+        else:
+            url = (
+                f"{self.api_base_url}/teams/{encoded_team_id}/channels/{encoded_channel_id}/messages/"
+                f"{quote(normalized_thread_id, safe='')}/replies"
+            )
+
+        with httpx.Client(timeout=self.timeout_seconds) as client:
+            response = self._request_with_retries(
+                client,
+                "POST",
+                url,
+                json={"body": {"content": message, "contentType": "text"}},
+            )
+            payload = response.json()
+
+        envelope = self._to_envelope(
+            payload,
+            team_id=team_id,
+            channel_id=channel_id,
+            source="teams_graph_api_status",
+            session_id=session_id,
+            reply_to_id=normalized_thread_id,
+        )
+        self.message_store.put(envelope.cursor, envelope)
+        return {
+            "status": "posted",
+            "channel_target": f"{team_id}/{channel_id}",
+            "team_id": team_id,
+            "channel_id": channel_id,
+            "thread_id": envelope.thread_id,
+            "reply_to_message_id": normalized_thread_id,
+            "session_id": session_id,
+            "message_id": envelope.message_id,
+            "web_url": envelope.metadata.get("web_url"),
+        }
 
 
 class DiscordInboxService:
