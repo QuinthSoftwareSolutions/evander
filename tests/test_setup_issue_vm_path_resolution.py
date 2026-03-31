@@ -26,12 +26,16 @@ def _prepare_sandbox(tmp_path: Path) -> tuple[Path, Path, Path]:
 
     source_script = Path(__file__).resolve().parents[1] / "scripts" / "setup_issue_vm.sh"
     source_bootstrap_codex = Path(__file__).resolve().parents[1] / "scripts" / "bootstrap_codex_vm.sh"
+    source_bootstrap_copilot = Path(__file__).resolve().parents[1] / "scripts" / "bootstrap_copilot_vm.sh"
     setup_script = scripts_dir / "setup_issue_vm.sh"
     setup_script.write_text(source_script.read_text(encoding="utf-8"), encoding="utf-8")
     os.chmod(setup_script, 0o755)
     bootstrap_codex_script = scripts_dir / "bootstrap_codex_vm.sh"
     bootstrap_codex_script.write_text(source_bootstrap_codex.read_text(encoding="utf-8"), encoding="utf-8")
     os.chmod(bootstrap_codex_script, 0o755)
+    bootstrap_copilot_script = scripts_dir / "bootstrap_copilot_vm.sh"
+    bootstrap_copilot_script.write_text(source_bootstrap_copilot.read_text(encoding="utf-8"), encoding="utf-8")
+    os.chmod(bootstrap_copilot_script, 0o755)
 
     source_agent_pr_note = (
         Path(__file__).resolve().parents[1] / "scripts" / "guest" / "agent_pr_note.sh"
@@ -47,6 +51,9 @@ def _prepare_sandbox(tmp_path: Path) -> tuple[Path, Path, Path]:
     source_runner_codex_lib = (
         Path(__file__).resolve().parents[1] / "scripts" / "lib" / "agent_runner_codex.sh"
     )
+    source_runner_copilot_lib = (
+        Path(__file__).resolve().parents[1] / "scripts" / "lib" / "agent_runner_copilot.sh"
+    )
     source_state_lib = Path(__file__).resolve().parents[1] / "scripts" / "lib" / "agent_state.sh"
     source_runtime_config_lib = Path(__file__).resolve().parents[1] / "scripts" / "lib" / "runtime_config.sh"
     (lib_dir / "agent_runner.sh").write_text(source_runner_lib.read_text(encoding="utf-8"), encoding="utf-8")
@@ -56,6 +63,10 @@ def _prepare_sandbox(tmp_path: Path) -> tuple[Path, Path, Path]:
     )
     (lib_dir / "agent_runner_codex.sh").write_text(
         source_runner_codex_lib.read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    (lib_dir / "agent_runner_copilot.sh").write_text(
+        source_runner_copilot_lib.read_text(encoding="utf-8"),
         encoding="utf-8",
     )
     (lib_dir / "agent_state.sh").write_text(
@@ -234,12 +245,30 @@ def test_setup_issue_vm_rejects_missing_provider_assets(tmp_path: Path) -> None:
     prewarm_target.write_text("", encoding="utf-8")
 
     env = _base_env(tmp_path, fake_bin)
+    env["AGENT_PROVIDER"] = "missing-provider"
+
+    result = _run_setup(setup_script, env, prewarm_target)
+
+    assert result.returncode == 1
+    assert "Unsupported AGENT_PROVIDER 'missing-provider': missing runner adapter" in result.stderr
+
+
+def test_setup_issue_vm_accepts_copilot_provider_assets(tmp_path: Path) -> None:
+    _, setup_script, fake_bin = _prepare_sandbox(tmp_path)
+    prewarm_target = tmp_path / "project.slnx"
+    prewarm_target.write_text("", encoding="utf-8")
+
+    git_root = tmp_path / "git-remotes"
+    git_root.mkdir()
+
+    env = _base_env(tmp_path, fake_bin)
+    env["AGENT_SANDBOX_GIT_ROOT"] = str(git_root)
     env["AGENT_PROVIDER"] = "copilot"
 
     result = _run_setup(setup_script, env, prewarm_target)
 
     assert result.returncode == 1
-    assert "Unsupported AGENT_PROVIDER 'copilot': missing runner adapter" in result.stderr
+    assert "VM already exists: vm-14084" in result.stderr
 
 
 def test_setup_issue_vm_default_session_id_includes_issue_number() -> None:

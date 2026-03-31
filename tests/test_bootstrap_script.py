@@ -36,6 +36,25 @@ def test_bootstrap_script_enforces_codex_config_and_placeholder_key() -> None:
     assert 'systemctl --user enable --now agent-heartbeat.timer' in script
 
 
+def test_bootstrap_copilot_script_writes_mcp_config_and_auth_guidance() -> None:
+    script = (ROOT / "scripts" / "bootstrap_copilot_vm.sh").read_text(encoding="utf-8")
+
+    assert "command -v copilot" in script
+    assert 'cat > ~/.copilot/config.json <<CONFIG' in script
+    assert 'cat > ~/.copilot/mcp-config.json <<CONFIG' in script
+    assert '"mcpServers": {' in script
+    assert '"agent_sandbox": {' in script
+    assert '"type": "http"' in script
+    assert 'COPILOT_GATEWAY_URL="${AGENT_SANDBOX_GATEWAY_URL:-http://192.168.250.1:8000/mcp}"' in script
+    assert 'if [ -n "${AGENT_SANDBOX_SESSION_ID:-}" ]; then' in script
+    assert 'COPILOT_GATEWAY_URL="${COPILOT_GATEWAY_URL}?session_id=${AGENT_SANDBOX_SESSION_ID}"' in script
+    assert 'export COPILOT_HOME="${COPILOT_HOME:-$HOME/.copilot}"' in script
+    assert "copilot version" in script
+    assert "COPILOT_GITHUB_TOKEN" in script
+    assert "GH_TOKEN" in script
+    assert "GITHUB_TOKEN" in script
+
+
 def test_launch_script_can_derive_public_key_from_private_key() -> None:
     script = (ROOT / "scripts" / "launch_agent_vm.sh").read_text(encoding="utf-8")
 

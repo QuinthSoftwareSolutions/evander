@@ -25,7 +25,7 @@ Install these packages on the Ubuntu host before using the scripts:
 8. Download the Ubuntu cloud image with `sudo ./scripts/create_base_vm.sh`.
 9. Create a session manifest with `agent-sandbox-cli create-session`.
 10. Launch a VM with `sudo ./scripts/launch_agent_vm.sh`.
-10. Optionally bootstrap a provider runtime in the guest (for Codex, use `./scripts/bootstrap_codex_vm.sh <vm-name>`).
+10. Optionally bootstrap a provider runtime in the guest (for example `./scripts/bootstrap_codex_vm.sh <vm-name>` or `./scripts/bootstrap_copilot_vm.sh <vm-name>`).
 11. Optionally bootstrap a Python repo into a guest-local virtualenv with `./scripts/bootstrap_python_vm.sh <vm-name> <host-checkout-root> <guest-repo-root>`.
 12. Optionally install the host `.NET` SDK into the guest with `./scripts/bootstrap_dotnet_vm.sh <vm-name>`.
 13. Optionally prewarm the shared host NuGet cache with `./scripts/prewarm_nuget_cache.sh <path> [more paths...]`.
@@ -153,6 +153,13 @@ Storage layout for directory config:
 - `./scripts/bootstrap_codex_vm.sh <vm-name>` copies the vendored Linux Codex binary from the host into `~/bin/codex` for the guest user and verifies Codex.
 - The bootstrap script writes `~/.codex/config.toml` with the relay-aware configuration, `model = "gpt-5.4"`, `model_reasoning_effort = "high"`, and `personality = "pragmatic"`, preferring explicit `LLM_BASE_URL` and otherwise reading `AGENT_SANDBOX_LLM_BASE_URL` from `~/.agent/config.env`; it also registers the host MCP gateway as `[mcp_servers.agent_sandbox]` using `AGENT_SANDBOX_GATEWAY_URL` and, when the host session manifest is available, mirrors that session's `allowed_tools` into `enabled_tools` so Codex only discovers the MCP tools that session may use. It then appends the placeholder-key shell hook plus `~/bin` PATH entry to both `~/.profile` and `~/.bashrc`.
 - The bootstrap script repairs `/home/agent` ownership first, so it also works against VMs created before the home directory ownership fix.
+
+### GitHub Copilot CLI provider bootstrap
+
+- `./scripts/bootstrap_copilot_vm.sh <vm-name>` copies the host `copilot` binary into `~/bin/copilot` for the guest user and verifies `copilot version`.
+- The bootstrap script writes `~/.copilot/config.json` with provider-local defaults and `~/.copilot/mcp-config.json` so Copilot CLI can reach the host MCP gateway as `agent_sandbox`, including the active `session_id` query string when present.
+- The bootstrap script appends `~/bin` and `COPILOT_HOME=~/.copilot` to both `~/.profile` and `~/.bashrc`.
+- Authentication is intentionally not copied into the guest. For non-interactive use, provide `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, or `GITHUB_TOKEN`, or run `copilot login` interactively after bootstrap.
 
 ## VM Python Bootstrap
 
@@ -387,9 +394,9 @@ without exposing provider credentials in the VM.
 - Agent control state is mirrored on the host in `runtime/host-agent-control-state.json`; the host heartbeat worker checks that file before probing or resuming a session so disabled agents stay ignored even when their VMs are powered off.
 - The host worker reads session manifests through runtime state and writes provider feedback/cursors to `runtime/pr-feedback-store.json`.
 - Guests no longer run `agent-heartbeat.service` or `agent-heartbeat.timer` by default.
-- `scripts/bootstrap_codex_vm.sh` defaults `ENABLE_GUEST_HEARTBEAT=0`, which disables the guest timer on bootstrap.
-- Set `ENABLE_GUEST_HEARTBEAT=1` to install and enable `agent-heartbeat.timer` inside the guest.
-  The timer resumes via `codex exec resume --last` and accepts `GUEST_HEARTBEAT_PROMPT` to override the guest wake prompt.
+- Provider bootstrap scripts default `ENABLE_GUEST_HEARTBEAT=0`, which disables the guest timer on bootstrap.
+- Set `ENABLE_GUEST_HEARTBEAT=1` during bootstrap to install and enable `agent-heartbeat.timer` inside the guest.
+  The timer resumes via the configured provider adapter and accepts `GUEST_HEARTBEAT_PROMPT` to override the guest wake prompt.
 - Migration note for existing VMs: run `systemctl --user disable --now agent-heartbeat.timer || true` to keep host-only wake behavior.
 
 ### Failure handling

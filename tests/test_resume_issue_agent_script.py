@@ -19,6 +19,7 @@ def _prepare_script(tmp_path: Path) -> tuple[Path, Path]:
     source_runner_lib = root / "scripts" / "lib" / "agent_runner.sh"
     source_provider_assets_lib = root / "scripts" / "lib" / "agent_provider_assets.sh"
     source_runner_codex_lib = root / "scripts" / "lib" / "agent_runner_codex.sh"
+    source_runner_copilot_lib = root / "scripts" / "lib" / "agent_runner_copilot.sh"
     source_state_lib = root / "scripts" / "lib" / "agent_state.sh"
 
     sandbox_root = tmp_path / "sandbox"
@@ -44,6 +45,11 @@ def _prepare_script(tmp_path: Path) -> tuple[Path, Path]:
     )
     runner_codex_lib_path = lib_dir / "agent_runner_codex.sh"
     runner_codex_lib_path.write_text(source_runner_codex_lib.read_text(encoding="utf-8"), encoding="utf-8")
+    runner_copilot_lib_path = lib_dir / "agent_runner_copilot.sh"
+    runner_copilot_lib_path.write_text(
+        source_runner_copilot_lib.read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
     state_lib_path = lib_dir / "agent_state.sh"
     state_lib_path.write_text(source_state_lib.read_text(encoding="utf-8"), encoding="utf-8")
 
@@ -261,7 +267,7 @@ def test_resume_issue_agent_rejects_missing_provider_adapter(tmp_path: Path) -> 
     env = os.environ.copy()
     env["PATH"] = f"{fake_bin}:{env['PATH']}"
     env["SSH_PRIVATE_KEY_PATH"] = str(private_key)
-    env["AGENT_PROVIDER"] = "copilot"
+    env["AGENT_PROVIDER"] = "missing-provider"
     env["USER"] = env.get("USER", "root")
 
     result = subprocess.run(
@@ -273,7 +279,79 @@ def test_resume_issue_agent_rejects_missing_provider_adapter(tmp_path: Path) -> 
     )
 
     assert result.returncode == 1
-    assert "Unsupported AGENT_PROVIDER 'copilot': missing runner adapter" in result.stderr
+    assert "Unsupported AGENT_PROVIDER 'missing-provider': missing runner adapter" in result.stderr
+
+
+def test_resume_issue_agent_accepts_copilot_provider_when_adapter_exists(tmp_path: Path) -> None:
+    script_path, fake_bin = _prepare_script(tmp_path)
+    private_key = tmp_path / "id_ed25519"
+    private_key.write_text("PRIVATE\n", encoding="utf-8")
+    ssh_log = tmp_path / "ssh.log"
+    _write_fake_sudo(fake_bin / "sudo")
+
+    _write_executable(
+        fake_bin / "virsh",
+        """#!/usr/bin/env bash
+set -euo pipefail
+cmd="${1:-}"
+shift || true
+
+case "${cmd}" in
+  dominfo)
+    [[ "${1:-}" == "vm-14084" ]] || exit 1
+    cat <<'EOF'
+Id:             7
+Name:           vm-14084
+State:          running
+EOF
+    ;;
+  domifaddr)
+    [[ "${1:-}" == "vm-14084" ]] || exit 1
+    printf 'vnet0 52:54:00:00:00:01 ipv4 192.168.122.11/24\\n'
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+""",
+    )
+
+    _write_executable(
+        fake_bin / "ssh",
+        f"""#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> "{ssh_log}"
+if [[ "${{@: -1}}" == "true" ]]; then
+  exit 0
+fi
+cat > /dev/null
+printf 'resumed pid=456 log=/home/agent/.agent-sandbox/agent-ExampleIndustryAPP.log\\n'
+exit 0
+""",
+    )
+
+    env = os.environ.copy()
+    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+    env["SSH_PRIVATE_KEY_PATH"] = str(private_key)
+    env["AGENT_PROVIDER"] = "copilot"
+    env["USER"] = env.get("USER", "root")
+
+    result = subprocess.run(
+        [str(script_path), "Resume work now", "14084"],
+        text=True,
+        capture_output=True,
+        env=env,
+        check=True,
+    )
+
+    assert result.stdout == (
+        "Agent resumed for vm-14084 "
+        "(resumed pid=456 log=/home/agent/.agent-sandbox/agent-ExampleIndustryAPP.log).\n"
+    )
+    run_call = next(
+        call for call in ssh_log.read_text(encoding="utf-8").splitlines() if "PROMPT_B64=" in call
+    )
+    assert "AGENT_PROVIDER='copilot'" in run_call
 
 
 def test_resume_issue_agent_tracks_explicit_state_lifecycle() -> None:

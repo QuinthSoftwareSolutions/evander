@@ -114,7 +114,7 @@ Directory-scoped config is rooted at `root`:
    By default, the launch script injects your host `~/.ssh/id_ed25519.pub` key into the guest and exposes a host-side LLM base URL of `http://192.168.250.1:11434/v1`. Override with `SSH_PUBLIC_KEY_FILE=...`, `SSH_PRIVATE_KEY_PATH=...`, or `LLM_BASE_URL=...` if needed.
    It also creates a shared host NuGet cache under `/var/lib/libvirt/images/agent-sandbox/nuget-cache/global-packages` and mounts it read-only into the guest at `/opt/agent-sandbox/nuget-cache-ro` via `virtiofs`.
    New VMs default to a `20G` virtual disk; override with `DISK_SIZE_GB=...` before launch if needed.
-   New VMs receive provider-neutral baseline config (`/etc/agent-sandbox/session.env` and `/home/agent/.agent/config.env`) plus a shell profile hook; Codex-specific config is written later by `bootstrap_codex_vm.sh`.
+   New VMs receive provider-neutral baseline config (`/etc/agent-sandbox/session.env` and `/home/agent/.agent/config.env`) plus a shell profile hook; provider-specific config is written later by `bootstrap_codex_vm.sh` or `bootstrap_copilot_vm.sh`.
    Host-side guest SSH commands cache guest host keys in `~/.ssh/agent-sandbox-known_hosts` keyed by VM name, so repeated `list-vms`, bootstrap, and `agent-sandbox-cli ssh` calls stay quiet while preserving normal SSH host-key warnings.
    To see all currently running VMs together with live guest agent status, run `agent-sandbox-cli list-vms`.
 
@@ -122,6 +122,7 @@ Directory-scoped config is rooted at `root`:
 
    ```bash
    ./scripts/bootstrap_codex_vm.sh vm-real
+   ./scripts/bootstrap_copilot_vm.sh vm-real
    ```
 
    By default, orchestration uses provider-neutral agent run state under `/home/agent/.agent-sandbox` (`agent-*.state`, `agent-*.pid`, `agent-*.log`).
@@ -129,6 +130,10 @@ Directory-scoped config is rooted at `root`:
    ### Codex provider bootstrap
 
    This copies the vendored Linux Codex binary from the host install into the guest user's `~/bin`, writes `~/.codex/config.toml` to use the host relay with `model = "gpt-5.4"`, `model_reasoning_effort = "high"`, and `personality = "pragmatic"`, registers the host MCP gateway as `agent_sandbox`, mirrors the session manifest's `allowed_tools` into `enabled_tools` when available, prefers `LLM_BASE_URL` and otherwise falls back to `~/.agent/config.env`, ensures the placeholder API-key shell hook exists, and verifies `codex --version`.
+
+   ### GitHub Copilot CLI provider bootstrap
+
+   This copies the host `copilot` binary into the guest user's `~/bin`, writes `~/.copilot/mcp-config.json` so Copilot CLI can reach the host MCP gateway as `agent_sandbox`, sets `COPILOT_HOME` to `~/.copilot`, and verifies `copilot version`. Authentication is not copied into the guest; provide `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, or `GITHUB_TOKEN`, or run `copilot login` interactively after bootstrap.
 
 9. Optionally install the host `.NET` SDK into the VM:
 
@@ -589,7 +594,7 @@ Use this when you want the guest to wake only for new review feedback and post t
 ### Setup steps
 
 1. Include PR feedback tools/stream metadata in the session manifest (same `session_id` the guest uses).
-2. Bootstrap Codex in the guest (`./scripts/bootstrap_codex_vm.sh <vm-name>`).
+2. Bootstrap a provider runtime in the guest (`./scripts/bootstrap_codex_vm.sh <vm-name>` or `./scripts/bootstrap_copilot_vm.sh <vm-name>`).
 3. Run the host heartbeat worker service:
    `sudo systemctl start agent-sandbox-host-heartbeat.service`.
    Common lifecycle commands:
@@ -607,19 +612,19 @@ Use this when you want the guest to wake only for new review feedback and post t
   and `host_heartbeat_cooldown_seconds`.
 - Feedback polling happens once per configured directory on the host and updates the shared host feedback store.
 - Guests consume pending feedback via MCP tools by default.
-- `scripts/bootstrap_codex_vm.sh` defaults to `ENABLE_GUEST_HEARTBEAT=0`, which keeps
+- Provider bootstrap scripts default `ENABLE_GUEST_HEARTBEAT=0`, which keeps
   `agent-heartbeat.timer` disabled for new guests.
-- Set `ENABLE_GUEST_HEARTBEAT=1` to install and enable an optional guest-local resume timer.
-  The timer uses the same `codex exec resume --last` path as the host resume flow and accepts
+- Set `ENABLE_GUEST_HEARTBEAT=1` during bootstrap to install and enable an optional guest-local resume timer.
+  The timer uses the same provider adapter path as the host resume flow and accepts
   `GUEST_HEARTBEAT_PROMPT` to override the resume prompt per agent.
 - Migration note for existing VMs: disable any previously enabled guest timer if you want host-only wakeups:
 - Agent enable/disable control is now mirrored in host state at `runtime/host-agent-control-state.json`,
   so the host heartbeat worker can continue ignoring disabled agents even while their VMs are shut down.
 - Guests consume pending feedback via MCP tools by default.
-- `scripts/bootstrap_codex_vm.sh` defaults to `ENABLE_GUEST_HEARTBEAT=0`, which keeps
+- Provider bootstrap scripts default `ENABLE_GUEST_HEARTBEAT=0`, which keeps
   `agent-heartbeat.timer` disabled for new guests.
-- Set `ENABLE_GUEST_HEARTBEAT=1` to install and enable an optional guest-local resume timer.
-  The timer uses the same `codex exec resume --last` path as the host resume flow and accepts
+- Set `ENABLE_GUEST_HEARTBEAT=1` during bootstrap to install and enable an optional guest-local resume timer.
+  The timer uses the same provider adapter path as the host resume flow and accepts
   `GUEST_HEARTBEAT_PROMPT` to override the resume prompt per agent.
 - Migration note for existing VMs: disable any previously enabled guest timer if you want host-only wakeups:
   `systemctl --user disable --now agent-heartbeat.timer || true`.
