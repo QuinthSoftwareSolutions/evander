@@ -42,6 +42,10 @@ def test_bootstrap_copilot_script_writes_mcp_config_and_auth_guidance() -> None:
     assert "command -v copilot" in script
     assert 'cat > ~/.copilot/config.json <<CONFIG' in script
     assert 'cat > ~/.copilot/mcp-config.json <<CONFIG' in script
+    assert 'cat > ~/bin/gh <<SHIM' in script
+    assert 'COPILOT_HOST_AUTH_URL="${COPILOT_GATEWAY_BASE_URL}/copilot-auth/token"' in script
+    assert '"X-Agent-Sandbox-Session-Id": session_id' in script
+    assert "gh auth token" in script
     assert '"mcpServers": {' in script
     assert '"agent_sandbox": {' in script
     assert '"type": "http"' in script
@@ -50,6 +54,7 @@ def test_bootstrap_copilot_script_writes_mcp_config_and_auth_guidance() -> None:
     assert 'COPILOT_GATEWAY_URL="${COPILOT_GATEWAY_URL}?session_id=${AGENT_SANDBOX_SESSION_ID}"' in script
     assert 'export COPILOT_HOME="${COPILOT_HOME:-$HOME/.copilot}"' in script
     assert "copilot version" in script
+    assert "host gateway" in script
     assert "COPILOT_GITHUB_TOKEN" in script
     assert "GH_TOKEN" in script
     assert "GITHUB_TOKEN" in script

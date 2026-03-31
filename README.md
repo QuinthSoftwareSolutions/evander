@@ -133,7 +133,7 @@ Directory-scoped config is rooted at `root`:
 
    ### GitHub Copilot CLI provider bootstrap
 
-   This copies the host `copilot` binary into the guest user's `~/bin`, writes `~/.copilot/mcp-config.json` so Copilot CLI can reach the host MCP gateway as `agent_sandbox`, sets `COPILOT_HOME` to `~/.copilot`, and verifies `copilot version`. Authentication is not copied into the guest; provide `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, or `GITHUB_TOKEN`, or run `copilot login` interactively after bootstrap.
+   This copies the host `copilot` binary into the guest user's `~/bin`, writes `~/.copilot/mcp-config.json` so Copilot CLI can reach the host MCP gateway as `agent_sandbox`, installs a guest `gh` shim that serves `gh auth token` from a host gateway endpoint using the active `session_id`, sets `COPILOT_HOME` to `~/.copilot`, and verifies `copilot version`. The long-lived GitHub token stays on the host in the effective `github_token_env` provider setting and is not persisted in the guest. If you intentionally set `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, or `GITHUB_TOKEN`, or run `copilot login`, those methods still take precedence over the host-mediated `gh` fallback.
 
 9. Optionally install the host `.NET` SDK into the VM:
 

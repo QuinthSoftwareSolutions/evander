@@ -350,6 +350,8 @@ These are not primarily defined in `*.env.example` but are explicit configuratio
 For issue setup, `AGENT_SANDBOX_GIT_*` and `AGENT_POST_EXEC_VERIFICATION_PROMPT` are now
 read from the root `issue_setup` directory config when present, with host environment variables
 still acting as overrides. `AGENT_SANDBOX_AZURE_DEVOPS_PR_PAT_ENV` remains a provider-level setting.
+GitHub Copilot CLI host-mediated auth also uses the effective provider `github_token_env` on the
+host when the guest `gh` shim calls `/copilot-auth/token`.
 
 ---
 

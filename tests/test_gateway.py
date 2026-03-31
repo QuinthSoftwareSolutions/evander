@@ -4,9 +4,15 @@ from types import SimpleNamespace
 import asyncio
 import pytest
 from mcp.server.fastmcp.exceptions import ToolError
+from starlette.testclient import TestClient
 
 from agent_sandbox.config import GatewayConfig
-from agent_sandbox.gateway import _filter_discord_commands_for_session, _resolve_session_id_from_context, create_server
+from agent_sandbox.gateway import (
+    _filter_discord_commands_for_session,
+    _resolve_session_id_from_context,
+    create_app,
+    create_server,
+)
 from agent_sandbox.models import DiscordCommandEnvelope, SessionManifest, ToolName
 from agent_sandbox.policy import PolicyError
 from agent_sandbox.runtime import build_runtime
@@ -182,3 +188,100 @@ def test_schedule_resume_enforces_tool_policy_and_validates_args(tmp_path) -> No
                 },
             )
         )
+
+
+def test_gateway_app_exposes_host_mediated_copilot_auth(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GITHUB_TOKEN", "github_pat_test")
+    context = build_runtime(
+        GatewayConfig(
+            runtime_dir=tmp_path,
+            audit_log_path=tmp_path / "audit.jsonl",
+            session_store_path=tmp_path / "sessions.json",
+            approval_store_path=tmp_path / "approvals.json",
+            draft_store_path=tmp_path / "drafts.json",
+            email_store_path=tmp_path / "emails.json",
+            discord_command_store_path=tmp_path / "discord.json",
+        )
+    )
+    context.sessions.put(
+        "session-1",
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+
+    client = TestClient(create_app(context))
+    response = client.get("/copilot-auth/token", headers={"x-agent-sandbox-session-id": "session-1"})
+
+    assert response.status_code == 200
+    assert response.text == "github_pat_test"
+    assert response.headers["cache-control"] == "no-store"
+
+
+def test_gateway_app_rejects_missing_or_expired_copilot_auth_session(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GITHUB_TOKEN", "github_pat_test")
+    context = build_runtime(
+        GatewayConfig(
+            runtime_dir=tmp_path,
+            audit_log_path=tmp_path / "audit.jsonl",
+            session_store_path=tmp_path / "sessions.json",
+            approval_store_path=tmp_path / "approvals.json",
+            draft_store_path=tmp_path / "drafts.json",
+            email_store_path=tmp_path / "emails.json",
+            discord_command_store_path=tmp_path / "discord.json",
+        )
+    )
+    context.sessions.put(
+        "expired-session",
+        SessionManifest(
+            session_id="expired-session",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) - timedelta(minutes=1),
+        ),
+    )
+
+    client = TestClient(create_app(context))
+
+    missing_response = client.get("/copilot-auth/token")
+    expired_response = client.get(
+        "/copilot-auth/token",
+        headers={"x-agent-sandbox-session-id": "expired-session"},
+    )
+
+    assert missing_response.status_code == 403
+    assert missing_response.json()["error"] == "session_id is required"
+    assert expired_response.status_code == 403
+    assert expired_response.json()["error"] == "Expired session: expired-session"
+
+
+def test_gateway_app_reports_missing_host_token_for_copilot_auth(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    context = build_runtime(
+        GatewayConfig(
+            runtime_dir=tmp_path,
+            audit_log_path=tmp_path / "audit.jsonl",
+            session_store_path=tmp_path / "sessions.json",
+            approval_store_path=tmp_path / "approvals.json",
+            draft_store_path=tmp_path / "drafts.json",
+            email_store_path=tmp_path / "emails.json",
+            discord_command_store_path=tmp_path / "discord.json",
+        )
+    )
+    context.sessions.put(
+        "session-1",
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+
+    client = TestClient(create_app(context))
+    response = client.get("/copilot-auth/token", headers={"x-agent-sandbox-session-id": "session-1"})
+
+    assert response.status_code == 503
+    assert response.json()["error"] == "Host environment variable GITHUB_TOKEN is not set."

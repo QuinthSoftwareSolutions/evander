@@ -6,7 +6,7 @@ show_help() {
 Usage: bootstrap_copilot_vm.sh <vm-name> [vm-user]
 
 Copy the host GitHub Copilot CLI into a guest VM and configure it to use the host
-MCP gateway.
+MCP gateway plus host-mediated GitHub authentication fallback.
 
 Arguments:
   vm-name   libvirt domain name.
@@ -121,6 +121,8 @@ COPILOT_GATEWAY_URL="${AGENT_SANDBOX_GATEWAY_URL:-http://192.168.250.1:8000/mcp}
 if [ -n "${AGENT_SANDBOX_SESSION_ID:-}" ]; then
   COPILOT_GATEWAY_URL="${COPILOT_GATEWAY_URL}?session_id=${AGENT_SANDBOX_SESSION_ID}"
 fi
+COPILOT_GATEWAY_BASE_URL="$(python3 -c 'import os; from urllib.parse import urlsplit, urlunsplit; raw = os.environ.get("AGENT_SANDBOX_GATEWAY_URL", "http://192.168.250.1:8000/mcp"); parts = urlsplit(raw); print(urlunsplit((parts.scheme, parts.netloc, "", "", "")))')"
+COPILOT_HOST_AUTH_URL="${COPILOT_GATEWAY_BASE_URL}/copilot-auth/token"
 cat > ~/.copilot/config.json <<CONFIG
 {
   "alt_screen": false
@@ -137,6 +139,63 @@ cat > ~/.copilot/mcp-config.json <<CONFIG
   }
 }
 CONFIG
+cat > ~/bin/gh <<SHIM
+#!/usr/bin/env bash
+set -euo pipefail
+
+copilot_host_auth_token() {
+  python3 - "\${COPILOT_HOST_AUTH_URL}" "\${AGENT_SANDBOX_SESSION_ID:-}" <<'PY'
+import sys
+import urllib.error
+import urllib.request
+
+url = sys.argv[1]
+session_id = sys.argv[2].strip()
+if not session_id:
+    print("AGENT_SANDBOX_SESSION_ID is not set for host-mediated Copilot auth.", file=sys.stderr)
+    raise SystemExit(1)
+request = urllib.request.Request(
+    url,
+    headers={
+        "Accept": "text/plain",
+        "X-Agent-Sandbox-Session-Id": session_id,
+    },
+)
+try:
+    with urllib.request.urlopen(request, timeout=30) as response:
+        sys.stdout.write(response.read().decode("utf-8"))
+except urllib.error.HTTPError as exc:
+    body = exc.read().decode("utf-8", errors="replace").strip()
+    if body:
+        print(body, file=sys.stderr)
+    else:
+        print(f"Host-mediated Copilot auth failed with HTTP {exc.code}.", file=sys.stderr)
+    raise SystemExit(1)
+PY
+}
+
+if [[ "\${1:-}" == "auth" && "\${2:-}" == "token" ]]; then
+  copilot_host_auth_token
+  exit 0
+fi
+
+if [[ "\${1:-}" == "auth" && "\${2:-}" == "status" ]]; then
+  if copilot_host_auth_token >/dev/null; then
+    printf 'github.com\\n'
+    printf '  ✓ Logged in to github.com via agent-sandbox host auth\\n'
+    exit 0
+  fi
+  exit 1
+fi
+
+if [[ -x /usr/bin/gh ]]; then
+  exec /usr/bin/gh "\$@"
+fi
+
+echo "This guest gh shim only supports 'gh auth token' and 'gh auth status' for Copilot auth fallback." >&2
+exit 1
+SHIM
+chmod +x ~/bin/gh
 
 append_shell_setup() {
   local target="$1"
@@ -155,7 +214,8 @@ export PATH="$HOME/bin:$PATH"
 export COPILOT_HOME="${COPILOT_HOME:-$HOME/.copilot}"
 copilot version
 
-echo "Authenticate Copilot CLI with COPILOT_GITHUB_TOKEN, GH_TOKEN, or GITHUB_TOKEN, or run 'copilot login'."
+echo "Host-mediated Copilot auth is available through the guest gh shim and the host gateway."
+echo "COPILOT_GITHUB_TOKEN, GH_TOKEN, GITHUB_TOKEN, or 'copilot login' still override the gh fallback if you set them intentionally."
 echo "Host heartbeat worker is now responsible for feedback wakeups by default."
 EOF
 

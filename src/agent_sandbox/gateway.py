@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 from inspect import Parameter, signature
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,8 @@ from mcp.server.fastmcp.exceptions import ToolError
 from starlette.applications import Starlette
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
+from starlette.responses import JSONResponse, PlainTextResponse
+from starlette.routing import Mount, Route
 import uvicorn
 
 from .bootstrap import load_runtime_gateway_config, resolve_runtime_dir
@@ -167,6 +170,16 @@ def _resolve_session_id_from_context(
         if candidate:
             return candidate
     raise ToolError("session_id is required")
+
+
+def _resolve_session_id_from_request(request: Request) -> str:
+    candidate = str(request.headers.get("x-agent-sandbox-session-id") or "").strip()
+    if candidate:
+        return candidate
+    candidate = str(request.query_params.get("session_id") or "").strip()
+    if candidate:
+        return candidate
+    raise PolicyError("session_id is required")
 
 
 def _filter_discord_commands_for_session(
@@ -1611,6 +1624,79 @@ def _bootstrap_runtime_config(*, legacy_config_path: Path | None = None) -> Gate
     )
 
 
+def create_app(context: RuntimeContext) -> Starlette:
+    server = create_server(context)
+    mcp_app = server.streamable_http_app()
+
+    async def copilot_auth_token(request: Request) -> PlainTextResponse | JSONResponse:
+        session_id: str | None = None
+        vm_id: str | None = None
+        try:
+            session_id = _resolve_session_id_from_request(request)
+            session = context.policy.get_session(session_id)
+            vm_id = session.vm_id
+            resolved_config = context.resolve_provider_config_for_session(session_id)
+            env_var_name = str(resolved_config.github_token_env or "").strip()
+            if not env_var_name:
+                raise RuntimeError("github_token_env is not configured for Copilot host auth")
+            token = os.environ.get(env_var_name, "").strip()
+            if not token:
+                context.audit.log_decision(
+                    event_type="copilot_auth_request",
+                    session_id=session_id,
+                    vm_id=vm_id,
+                    decision="error",
+                    reason=f"missing host token env {env_var_name}",
+                    args={"env_var": env_var_name},
+                    result={},
+                )
+                return JSONResponse(
+                    {"error": f"Host environment variable {env_var_name} is not set."},
+                    status_code=503,
+                )
+            context.audit.log_decision(
+                event_type="copilot_auth_request",
+                session_id=session_id,
+                vm_id=vm_id,
+                decision="allowed",
+                args={"env_var": env_var_name},
+                result={"status": "issued"},
+            )
+            return PlainTextResponse(token, headers={"Cache-Control": "no-store"})
+        except PolicyError as exc:
+            context.audit.log_decision(
+                event_type="copilot_auth_request",
+                session_id=session_id,
+                vm_id=vm_id,
+                decision="denied",
+                reason=str(exc),
+                args={},
+                result={},
+            )
+            return JSONResponse({"error": str(exc)}, status_code=403)
+        except Exception as exc:
+            context.audit.log_decision(
+                event_type="copilot_auth_request",
+                session_id=session_id,
+                vm_id=vm_id,
+                decision="error",
+                reason=str(exc),
+                args={},
+                result={},
+            )
+            return JSONResponse({"error": str(exc)}, status_code=500)
+
+    app = Starlette(
+        debug=False,
+        routes=[
+            Route("/copilot-auth/token", copilot_auth_token, methods=["GET"]),
+            Mount("/", app=mcp_app),
+        ],
+    )
+    _install_mcp_http_logging(app)
+    return app
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the Agent Sandbox MCP gateway.")
     parser.add_argument(
@@ -1627,9 +1713,7 @@ def main() -> None:
     legacy_config_path = Path(args.legacy_config) if args.legacy_config else None
     config = _bootstrap_runtime_config(legacy_config_path=legacy_config_path)
     context = build_runtime(config)
-    server = create_server(context)
-    app = server.streamable_http_app()
-    _install_mcp_http_logging(app)
+    app = create_app(context)
     uvicorn.run(
         app,
         host=config.host,
