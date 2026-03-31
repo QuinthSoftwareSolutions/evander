@@ -47,7 +47,7 @@ Environment:
   RESUME_COMMAND_TIMEOUT_SECONDS
                                End-to-end timeout for worker-mode resume command. Default: 900
   AGENT_PROVIDER               Agent runner provider. Default: codex
-  AGENT_MODEL                  Model passed to `agent_runner_resume_last`. Default: gpt-5.4
+  AGENT_MODEL                  Model passed to guest agent runner commands. Required.
 USAGE
 }
 
@@ -340,10 +340,15 @@ if ! parse_args "$@"; then
 fi
 
 AGENT_PROVIDER="${AGENT_PROVIDER:-codex}"
-AGENT_MODEL="${AGENT_MODEL:-gpt-5.4}"
+AGENT_MODEL="${AGENT_MODEL:-}"
 VM_WAIT_IP_TIMEOUT_SECONDS="${VM_WAIT_IP_TIMEOUT_SECONDS:-180}"
 VM_WAIT_SSH_TIMEOUT_SECONDS="${VM_WAIT_SSH_TIMEOUT_SECONDS:-180}"
 RESUME_COMMAND_TIMEOUT_SECONDS="${RESUME_COMMAND_TIMEOUT_SECONDS:-900}"
+
+if [[ -z "${AGENT_MODEL:-}" ]]; then
+  echo "AGENT_MODEL is required for session-bound Codex execution. Set AGENT_MODEL in the host invocation environment." >&2
+  exit "${EXIT_USAGE}"
+fi
 
 if ! resolve_private_key_path; then
   echo "Missing SSH private key: ${SSH_PRIVATE_KEY_PATH:-unset}" >&2
