@@ -132,6 +132,17 @@ This sequence minimizes payload volume when there is no new feedback and support
   - optionally coupled with explicit host acknowledgment/update call
 - Sessions are isolated: cursor `A` for session `X` is never reused for session `Y`.
 
+### Scheduled wake dispatch model
+
+- Scheduled wake requests are persisted in host runtime state (`wake-requests-store.json`) as request + dispatch history records.
+- A schedule can be either:
+  - one-time (`resume_at` UTC timestamp), or
+  - recurring (`cron` expression).
+- Due schedules are dispatched by the host heartbeat loop, not by guests directly.
+- Prompt composition for scheduled wakes is:
+  - `host_heartbeat_scheduled_wake_prefix_text + requested_prompt`.
+- MCP-created schedules are restricted to `resume_mode=same_context`; admin-created schedules may also use `new_context`.
+
 ### Failure behavior
 
 - **Provider API unavailable:** keep current cursor, log failure, retry next cadence with bounded backoff/jitter; do not skip forward.

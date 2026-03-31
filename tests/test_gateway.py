@@ -1,12 +1,15 @@
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
+import asyncio
 import pytest
 from mcp.server.fastmcp.exceptions import ToolError
 
-from agent_sandbox.gateway import _filter_discord_commands_for_session, _resolve_session_id_from_context
+from agent_sandbox.config import GatewayConfig
+from agent_sandbox.gateway import _filter_discord_commands_for_session, _resolve_session_id_from_context, create_server
 from agent_sandbox.models import DiscordCommandEnvelope, SessionManifest, ToolName
 from agent_sandbox.policy import PolicyError
+from agent_sandbox.runtime import build_runtime
 
 
 def _command(command_id: str, *, source: str) -> DiscordCommandEnvelope:
@@ -106,3 +109,76 @@ def test_resolve_session_id_from_context_requires_value() -> None:
 
     with pytest.raises(ToolError, match="session_id is required"):
         _resolve_session_id_from_context(None, ctx)
+
+
+def test_create_server_registers_schedule_resume_tool(tmp_path) -> None:
+    context = build_runtime(
+        GatewayConfig(
+            runtime_dir=tmp_path,
+            audit_log_path=tmp_path / "audit.jsonl",
+            session_store_path=tmp_path / "sessions.json",
+            approval_store_path=tmp_path / "approvals.json",
+            draft_store_path=tmp_path / "drafts.json",
+            email_store_path=tmp_path / "emails.json",
+            discord_command_store_path=tmp_path / "discord.json",
+        )
+    )
+    server = create_server(context)
+
+    assert "schedule_resume" in server._tool_manager.list_tools()
+
+
+def test_schedule_resume_enforces_tool_policy_and_validates_args(tmp_path) -> None:
+    context = build_runtime(
+        GatewayConfig(
+            runtime_dir=tmp_path,
+            audit_log_path=tmp_path / "audit.jsonl",
+            session_store_path=tmp_path / "sessions.json",
+            approval_store_path=tmp_path / "approvals.json",
+            draft_store_path=tmp_path / "drafts.json",
+            email_store_path=tmp_path / "emails.json",
+            discord_command_store_path=tmp_path / "discord.json",
+        )
+    )
+    context.sessions.put(
+        "session-1",
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    server = create_server(context)
+
+    with pytest.raises(PolicyError):
+        asyncio.run(
+            server.call_tool(
+                "schedule_resume",
+                {
+                    "session_id": "session-1",
+                    "resume_at": "2026-04-01T10:30:00Z",
+                    "prompt": "continue",
+                },
+            )
+        )
+
+    context.sessions.put(
+        "session-1",
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[ToolName.SCHEDULE_RESUME],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    with pytest.raises(ToolError, match="exactly one schedule definition"):
+        asyncio.run(
+            server.call_tool(
+                "schedule_resume",
+                {
+                    "session_id": "session-1",
+                    "resume_at": "2026-04-01T10:30:00Z",
+                    "cron": "*/5 * * * *",
+                    "prompt": "continue",
+                },
+            )
+        )

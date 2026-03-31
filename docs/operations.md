@@ -379,6 +379,11 @@ without exposing provider credentials in the VM.
 - `host_heartbeat_pr_resume_prompt` and `host_heartbeat_discord_resume_prompt` remain directory-scoped in `heartbeat.json`.
 - The host heartbeat worker runs one pass per configured directory and resolves the effective PR/Discord wake prompt text from that directory's config before dispatching a resume.
 - MCP-triggered scheduled resumes are always dispatched with `resume_mode=same_context`.
+- Wake schedule CRUD is available in the CLI under `wake-schedules`:
+  - create one-time wake: `agent-sandbox-cli wake-schedules create --runtime-dir runtime --session-id issue-11-session --resume-at 2026-04-01T10:30:00Z --prompt "Resume pending work."`
+  - create recurring wake: `agent-sandbox-cli wake-schedules create --runtime-dir runtime --session-id issue-11-session --cron "*/10 * * * *" --prompt "Periodic check-in." --mode new_context`
+  - edit existing wake: `agent-sandbox-cli wake-schedules edit <request-id> --cron "*/15 * * * *" --prompt "Updated prompt"`
+  - delete wake: `agent-sandbox-cli wake-schedules delete <request-id>`
 - Agent control state is mirrored on the host in `runtime/host-agent-control-state.json`; the host heartbeat worker checks that file before probing or resuming a session so disabled agents stay ignored even when their VMs are powered off.
 - The host worker reads session manifests through runtime state and writes provider feedback/cursors to `runtime/pr-feedback-store.json`.
 - Guests no longer run `agent-heartbeat.service` or `agent-heartbeat.timer` by default.

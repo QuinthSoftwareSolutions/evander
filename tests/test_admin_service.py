@@ -2038,6 +2038,33 @@ def test_edit_wake_schedule_rejects_new_context_for_mcp_source(tmp_path: Path) -
         service.edit_wake_schedule(created.request_id, resume_mode="new_context")
 
 
+def test_create_wake_schedule_rejects_new_context_for_mcp_source(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    with pytest.raises(ValueError, match="MCP scheduling only supports"):
+        service.create_wake_schedule(
+            session_id="issue-1-session",
+            prompt="Resume now",
+            resume_at=datetime.now(UTC) + timedelta(hours=1),
+            source="mcp_schedule_resume",
+            resume_mode="new_context",
+        )
+
+
+def test_list_wake_schedules_filters_disabled_entries(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    created = service.create_wake_schedule(
+        session_id="issue-1-session",
+        prompt="Resume now",
+        cron="*/5 * * * *",
+        source="admin_cli",
+    )
+    service.edit_wake_schedule(created.request_id, enabled=False)
+
+    schedules = service.list_wake_schedules(session_id="issue-1-session", include_disabled=False)
+
+    assert schedules == []
+
+
 def _write_proxy_issue_yaml(
     tmp_path: Path,
     *,

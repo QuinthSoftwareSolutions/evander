@@ -599,6 +599,34 @@ Use this when you want the guest to wake only for new review feedback and post t
 - Migration note for existing VMs: disable any previously enabled guest timer if you want host-only wakeups:
   `systemctl --user disable --now agent-heartbeat.timer || true`.
 
+### Scheduled wake examples (one-time + cron)
+
+- One-time wake via MCP tool (`schedule_resume`):
+
+  ```json
+  {
+    "session_id": "issue-11-session",
+    "resume_at": "2026-04-01T10:30:00Z",
+    "prompt": "Check unread feedback and continue implementation.",
+    "resume_mode": "same_context",
+    "source": "mcp_schedule_resume"
+  }
+  ```
+
+- Recurring cron wake via host CLI:
+
+  ```bash
+  agent-sandbox-cli wake-schedules create \
+    --runtime-dir runtime \
+    --session-id issue-11-session \
+    --cron "*/15 * * * *" \
+    --prompt "Periodic wake: check unread feedback and keep the branch moving." \
+    --mode new_context \
+    --source admin_cli
+  ```
+
+- MCP-sourced schedules enforce `resume_mode=same_context`; `new_context` is valid for admin/CLI-created schedules.
+
 ### Troubleshooting
 
 - **Run consolidated status first:** start with a host snapshot before debugging individual services.

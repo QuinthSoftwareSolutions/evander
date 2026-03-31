@@ -3339,3 +3339,79 @@ def test_wake_schedules_create_rejects_invalid_cron(tmp_path: Path) -> None:
     )
     assert result.exit_code != 0
     assert "Invalid cron expression" in result.stdout
+
+
+def test_wake_schedules_edit_and_delete_round_trip(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+    create_result = runner.invoke(
+        app,
+        [
+            "wake-schedules",
+            "create",
+            "--config",
+            str(config_path),
+            "--session-id",
+            "issue-11-session",
+            "--prompt",
+            "Resume from queue.",
+            "--resume-at",
+            "2026-04-01T10:30:00Z",
+        ],
+    )
+    assert create_result.exit_code == 0
+    request_id = json.loads(create_result.stdout)["request_id"]
+
+    edit_result = runner.invoke(
+        app,
+        [
+            "wake-schedules",
+            "edit",
+            request_id,
+            "--config",
+            str(config_path),
+            "--cron",
+            "*/15 * * * *",
+            "--mode",
+            "new_context",
+            "--prompt",
+            "Updated prompt",
+        ],
+    )
+    assert edit_result.exit_code == 0
+    edited_payload = json.loads(edit_result.stdout)
+    assert edited_payload["cron"] == "*/15 * * * *"
+    assert edited_payload["resume_mode"] == "new_context"
+
+    delete_result = runner.invoke(
+        app,
+        ["wake-schedules", "delete", request_id, "--config", str(config_path)],
+    )
+    assert delete_result.exit_code == 0
+    assert f"Deleted wake schedule {request_id}" in delete_result.stdout
+
+
+def test_wake_schedules_create_enforces_mcp_mode_rules(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "wake-schedules",
+            "create",
+            "--config",
+            str(config_path),
+            "--session-id",
+            "issue-11-session",
+            "--prompt",
+            "Resume from queue.",
+            "--resume-at",
+            "2026-04-01T10:30:00Z",
+            "--source",
+            "mcp_tool",
+            "--mode",
+            "new_context",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "MCP scheduling only supports" in result.stdout
