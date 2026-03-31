@@ -119,6 +119,7 @@ exit 0
     env["PATH"] = f"{fake_bin}:{env['PATH']}"
     env["SSH_PRIVATE_KEY_PATH"] = str(private_key)
     env["USER"] = env.get("USER", "root")
+    env["AGENT_MODEL"] = "gpt-5.3-codex"
 
     result = subprocess.run(
         [str(script_path), "Resume work now", "14084"],
@@ -136,7 +137,7 @@ exit 0
     assert any("agent@192.168.122.11 true" in call for call in ssh_calls)
     run_call = next(call for call in ssh_calls if "PROMPT_B64=" in call)
     assert "agent@192.168.122.11" in run_call
-    assert "AGENT_MODEL='gpt-5.4'" in run_call
+    assert "AGENT_MODEL='gpt-5.3-codex'" in run_call
     assert "bash -s" in run_call
 
 
@@ -197,6 +198,7 @@ cat > /dev/null
     env["PATH"] = f"{fake_bin}:{env['PATH']}"
     env["SSH_PRIVATE_KEY_PATH"] = str(private_key)
     env["USER"] = env.get("USER", "root")
+    env["AGENT_MODEL"] = "gpt-5.3-codex"
 
     result = subprocess.run(
         [str(script_path), "Resume work now", "14084", "agent", "--observe", "25"],
@@ -212,6 +214,30 @@ cat > /dev/null
     assert any("LINES='25' bash -s" in call for call in tail_calls)
     ssh_calls = ssh_log.read_text(encoding="utf-8").splitlines()
     assert any("agent@192.168.122.11 true" in call for call in ssh_calls)
+
+
+def test_resume_issue_agent_requires_explicit_agent_model(tmp_path: Path) -> None:
+    script_path, fake_bin = _prepare_script(tmp_path)
+    private_key = tmp_path / "id_ed25519"
+    private_key.write_text("PRIVATE\n", encoding="utf-8")
+    _write_fake_sudo(fake_bin / "sudo")
+
+    env = os.environ.copy()
+    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+    env["SSH_PRIVATE_KEY_PATH"] = str(private_key)
+    env["USER"] = env.get("USER", "root")
+    env.pop("AGENT_MODEL", None)
+
+    result = subprocess.run(
+        [str(script_path), "Resume work now", "14084"],
+        text=True,
+        capture_output=True,
+        env=env,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert "AGENT_MODEL is required for session-bound Codex execution" in result.stderr
 
 
 def test_resume_issue_agent_reports_missing_vm(tmp_path: Path) -> None:
