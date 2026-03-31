@@ -8,7 +8,7 @@ import random
 import subprocess
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -27,7 +27,7 @@ from .pr_feedback_worker import (
 )
 from .runtime import RuntimeContext, build_runtime
 from .worker_directory_context import WorkerDirectoryContextResolver, log_shadow_context
-from .models import DirectoryPath, WakeDispatchRecord, WakeResumePromptPayload
+from .models import DirectoryPath, WakeDispatchRecord, WakeResumePromptPayload, WakeScheduledRequest
 
 logger = logging.getLogger(__name__)
 
@@ -217,6 +217,7 @@ class HostHeartbeatWorker:
 
     def run_once(self) -> HeartbeatCycleResult:
         worker_config = self._root_worker_config()
+        self._dispatch_scheduled_wakes(now_utc=datetime.now(UTC), worker_config=worker_config)
         configured_directory_paths = self._configured_directory_paths(self.worker_config or self.config)
         discovered_feedback = 0
         streams_polled = 0
@@ -314,6 +315,136 @@ class HostHeartbeatWorker:
             streams_polled=streams_polled,
             next_sleep_seconds=next_sleep_seconds,
         )
+
+    def _dispatch_scheduled_wakes(self, *, now_utc: datetime, worker_config: GatewayConfig) -> None:
+        wake_store = getattr(self.runtime, "wake_store", None)
+        if wake_store is None:
+            return
+        sessions_by_id = self.runtime.sessions.read_all()
+        for request in _load_due_wake_requests(wake_store=wake_store, now_utc=now_utc):
+            session = sessions_by_id.get(request.session_id)
+            source = "scheduled_cron" if (request.schedule.cron or "").strip() else "scheduled_once"
+            if session is None or session.expires_at <= now_utc:
+                self._log_audit_decision(
+                    event_type=AuditEventType.BUSY_SKIP,
+                    session_id=request.session_id,
+                    decision="skipped",
+                    reason="session-invalid",
+                    args={"source": source, "request_id": request.request_id},
+                )
+                continue
+            binding = StreamSessionBinding(
+                session_id=session.session_id,
+                vm_id=session.vm_id,
+                source=source,
+                directory_path=session.directory_path,
+            )
+            scoped_config = self._resolve_worker_config_for_binding(binding)
+            if self._binding_is_host_disabled(binding):
+                self._log_audit_decision(
+                    event_type=AuditEventType.BUSY_SKIP,
+                    session_id=binding.session_id,
+                    vm_id=binding.vm_id,
+                    decision="skipped",
+                    reason="agent-disabled",
+                    args={"source": source, "request_id": request.request_id},
+                )
+                continue
+            if _is_session_in_cooldown(
+                path=scoped_config.host_heartbeat_session_cooldown_path,
+                session_id=binding.session_id,
+            ):
+                self._log_audit_decision(
+                    event_type=AuditEventType.BUSY_SKIP,
+                    session_id=binding.session_id,
+                    vm_id=binding.vm_id,
+                    decision="skipped",
+                    reason="session-cooldown",
+                    args={"source": source, "request_id": request.request_id},
+                )
+                continue
+            if not binding.vm_id:
+                self._log_audit_decision(
+                    event_type=AuditEventType.BUSY_SKIP,
+                    session_id=binding.session_id,
+                    decision="skipped",
+                    reason="vm-unbound",
+                    args={"source": source, "request_id": request.request_id},
+                )
+                continue
+            agent_state = _probe_agent_dispatch_state(
+                session_id=binding.session_id,
+                vm_id=binding.vm_id,
+                script_path=scoped_config.host_busy_check_script_path,
+            )
+            if agent_state == "busy":
+                _set_session_cooldown(
+                    path=scoped_config.host_heartbeat_session_cooldown_path,
+                    session_id=binding.session_id,
+                    cooldown_seconds=scoped_config.host_heartbeat_cooldown_seconds,
+                )
+                self._log_audit_decision(
+                    event_type=AuditEventType.BUSY_SKIP,
+                    session_id=binding.session_id,
+                    vm_id=binding.vm_id,
+                    decision="skipped",
+                    reason="agent-busy",
+                    args={"source": source, "request_id": request.request_id},
+                )
+                continue
+            if agent_state == "unavailable":
+                self._log_audit_decision(
+                    event_type=AuditEventType.BUSY_SKIP,
+                    session_id=binding.session_id,
+                    vm_id=binding.vm_id,
+                    decision="skipped",
+                    reason="agent-unavailable",
+                    args={"source": source, "request_id": request.request_id},
+                )
+                continue
+            dispatch = self._resume_binding(
+                binding,
+                worker_config=scoped_config,
+                override_prompt=self._build_scheduled_resume_prompt(
+                    worker_config=scoped_config,
+                    requested_prompt=request.resume_prompt.prompt,
+                ),
+                dispatch_source=source,
+                request_id=request.request_id,
+                scheduled_for=request.next_run_at or request.schedule.resume_at,
+                wake_metadata={"schedule_cron": request.schedule.cron},
+            )
+            _set_session_cooldown(
+                path=scoped_config.host_heartbeat_session_cooldown_path,
+                session_id=binding.session_id,
+                cooldown_seconds=scoped_config.host_heartbeat_cooldown_seconds,
+            )
+            if dispatch is not None:
+                self._log_audit_decision(
+                    event_type=AuditEventType.RESUME_SUCCEEDED if dispatch.status == "dispatched" else AuditEventType.RESUME_FAILED,
+                    session_id=binding.session_id,
+                    vm_id=binding.vm_id,
+                    decision="completed" if dispatch.status == "dispatched" else "failed",
+                    reason=dispatch.status,
+                    args={"source": source, "request_id": request.request_id},
+                    result={"status": dispatch.status},
+                )
+            if (request.schedule.cron or "").strip():
+                _advance_cron_wake_request(
+                    wake_store=wake_store,
+                    request=request,
+                    now_utc=now_utc,
+                    mark_consumed=False,
+                    was_dispatched=bool(dispatch and dispatch.status == "dispatched"),
+                )
+            elif dispatch is not None and dispatch.status == "dispatched":
+                _advance_cron_wake_request(
+                    wake_store=wake_store,
+                    request=request,
+                    now_utc=now_utc,
+                    mark_consumed=True,
+                    was_dispatched=True,
+                )
 
     def _record_busy_skips(self, *, stream: FeedbackStream, bindings: list[StreamSessionBinding]) -> None:
         for binding in bindings:
@@ -582,10 +713,30 @@ class HostHeartbeatWorker:
             )
         ).strip()
 
-    def _resume_binding(self, binding: StreamSessionBinding, *, worker_config: GatewayConfig) -> None:
+    def _build_scheduled_resume_prompt(self, *, worker_config: GatewayConfig, requested_prompt: str) -> str:
+        preamble = self._pr_resume_prompt(worker_config)
+        cleaned_requested = requested_prompt.strip()
+        if preamble and cleaned_requested:
+            return f"{preamble} {cleaned_requested}"
+        if preamble:
+            return preamble
+        return cleaned_requested
+
+    def _resume_binding(
+        self,
+        binding: StreamSessionBinding,
+        *,
+        worker_config: GatewayConfig,
+        override_prompt: str | None = None,
+        dispatch_source: str = "host_heartbeat_worker",
+        request_id: str | None = None,
+        scheduled_for: datetime | None = None,
+        wake_metadata: dict[str, Any] | None = None,
+    ) -> WakeDispatchRecord | None:
         if not binding.vm_id:
             return
-        resume_prompt = self._build_resume_prompt(binding, worker_config=worker_config)
+        wake_store = getattr(self.runtime, "wake_store", None)
+        resume_prompt = override_prompt or self._build_resume_prompt(binding, worker_config=worker_config)
         script_path = worker_config.host_resume_script_path
         if not script_path.exists():
             logger.warning(
@@ -594,7 +745,7 @@ class HostHeartbeatWorker:
                 binding.session_id,
                 binding.vm_id,
             )
-            return
+            return None
         cmd = [
             str(script_path),
             "--prompt",
@@ -628,19 +779,21 @@ class HostHeartbeatWorker:
                 binding.vm_id,
                 exc_info=True,
             )
-            self.runtime.wake_store.record_dispatch(
-                WakeDispatchRecord(
-                    dispatch_id=f"hb-{int(time.time() * 1_000_000)}-{binding.session_id}",
-                    session_id=binding.session_id,
-                    status="failed",
-                    resume_prompt=WakeResumePromptPayload(prompt=resume_prompt),
-                    resume_mode="same_context",
-                    source="host_heartbeat_worker",
-                    metadata={"vm_id": binding.vm_id, "source": binding.source},
-                    error="resume script invocation failed",
-                )
+            dispatch_record = WakeDispatchRecord(
+                dispatch_id=f"hb-{int(time.time() * 1_000_000)}-{binding.session_id}",
+                request_id=request_id,
+                session_id=binding.session_id,
+                status="failed",
+                resume_prompt=WakeResumePromptPayload(prompt=resume_prompt),
+                resume_mode="same_context",
+                scheduled_for=scheduled_for,
+                source=dispatch_source,
+                metadata={"vm_id": binding.vm_id, "source": binding.source, **(wake_metadata or {})},
+                error="resume script invocation failed",
             )
-            return
+            if wake_store is not None:
+                wake_store.record_dispatch(dispatch_record)
+            return dispatch_record
         except subprocess.TimeoutExpired:
             logger.warning(
                 "Resume script timed out path=%s session_id=%s vm_id=%s timeout_seconds=%.3f",
@@ -649,23 +802,26 @@ class HostHeartbeatWorker:
                 binding.vm_id,
                 worker_config.host_heartbeat_resume_timeout_seconds,
             )
-            self.runtime.wake_store.record_dispatch(
-                WakeDispatchRecord(
-                    dispatch_id=f"hb-{int(time.time() * 1_000_000)}-{binding.session_id}",
-                    session_id=binding.session_id,
-                    status="timed_out",
-                    resume_prompt=WakeResumePromptPayload(prompt=resume_prompt),
-                    resume_mode="same_context",
-                    source="host_heartbeat_worker",
-                    metadata={
-                        "vm_id": binding.vm_id,
-                        "source": binding.source,
-                        "timeout_seconds": worker_config.host_heartbeat_resume_timeout_seconds,
-                    },
-                    error="resume script timed out",
-                )
+            dispatch_record = WakeDispatchRecord(
+                dispatch_id=f"hb-{int(time.time() * 1_000_000)}-{binding.session_id}",
+                request_id=request_id,
+                session_id=binding.session_id,
+                status="timed_out",
+                resume_prompt=WakeResumePromptPayload(prompt=resume_prompt),
+                resume_mode="same_context",
+                scheduled_for=scheduled_for,
+                source=dispatch_source,
+                metadata={
+                    "vm_id": binding.vm_id,
+                    "source": binding.source,
+                    "timeout_seconds": worker_config.host_heartbeat_resume_timeout_seconds,
+                    **(wake_metadata or {}),
+                },
+                error="resume script timed out",
             )
-            return
+            if wake_store is not None:
+                wake_store.record_dispatch(dispatch_record)
+            return dispatch_record
 
         if completed.returncode == 0:
             logger.info(
@@ -673,18 +829,20 @@ class HostHeartbeatWorker:
                 binding.session_id,
                 binding.vm_id,
             )
-            self.runtime.wake_store.record_dispatch(
-                WakeDispatchRecord(
-                    dispatch_id=f"hb-{int(time.time() * 1_000_000)}-{binding.session_id}",
-                    session_id=binding.session_id,
-                    status="dispatched",
-                    resume_prompt=WakeResumePromptPayload(prompt=resume_prompt),
-                    resume_mode="same_context",
-                    source="host_heartbeat_worker",
-                    metadata={"vm_id": binding.vm_id, "source": binding.source},
-                )
+            dispatch_record = WakeDispatchRecord(
+                dispatch_id=f"hb-{int(time.time() * 1_000_000)}-{binding.session_id}",
+                request_id=request_id,
+                session_id=binding.session_id,
+                status="dispatched",
+                resume_prompt=WakeResumePromptPayload(prompt=resume_prompt),
+                resume_mode="same_context",
+                scheduled_for=scheduled_for,
+                source=dispatch_source,
+                metadata={"vm_id": binding.vm_id, "source": binding.source, **(wake_metadata or {})},
             )
-            return
+            if wake_store is not None:
+                wake_store.record_dispatch(dispatch_record)
+            return dispatch_record
         logger.warning(
             "Host heartbeat wake failed session_id=%s vm_id=%s exit_code=%s stdout=%s stderr=%s",
             binding.session_id,
@@ -693,24 +851,28 @@ class HostHeartbeatWorker:
             (completed.stdout or "").strip(),
             (completed.stderr or "").strip(),
         )
-        self.runtime.wake_store.record_dispatch(
-            WakeDispatchRecord(
-                dispatch_id=f"hb-{int(time.time() * 1_000_000)}-{binding.session_id}",
-                session_id=binding.session_id,
-                status="failed",
-                resume_prompt=WakeResumePromptPayload(prompt=resume_prompt),
-                resume_mode="same_context",
-                source="host_heartbeat_worker",
-                metadata={
-                    "vm_id": binding.vm_id,
-                    "source": binding.source,
-                    "exit_code": completed.returncode,
-                    "stdout": (completed.stdout or "").strip(),
-                    "stderr": (completed.stderr or "").strip(),
-                },
-                error=(completed.stderr or "").strip() or f"exit_code={completed.returncode}",
-            )
+        dispatch_record = WakeDispatchRecord(
+            dispatch_id=f"hb-{int(time.time() * 1_000_000)}-{binding.session_id}",
+            request_id=request_id,
+            session_id=binding.session_id,
+            status="failed",
+            resume_prompt=WakeResumePromptPayload(prompt=resume_prompt),
+            resume_mode="same_context",
+            scheduled_for=scheduled_for,
+            source=dispatch_source,
+            metadata={
+                "vm_id": binding.vm_id,
+                "source": binding.source,
+                "exit_code": completed.returncode,
+                "stdout": (completed.stdout or "").strip(),
+                "stderr": (completed.stderr or "").strip(),
+                **(wake_metadata or {}),
+            },
+            error=(completed.stderr or "").strip() or f"exit_code={completed.returncode}",
         )
+        if wake_store is not None:
+            wake_store.record_dispatch(dispatch_record)
+        return dispatch_record
 
     def _collect_stream_mappings(
         self,
@@ -981,6 +1143,128 @@ def _load_pr_map_entries(path: Path) -> dict[tuple[str, str, str], dict[str, Any
             continue
         entries[(provider, repo, pr_id)] = raw_entry
     return entries
+
+
+def _load_due_wake_requests(*, wake_store: Any, now_utc: datetime) -> list[WakeScheduledRequest]:
+    payload = wake_store.read_raw()
+    raw_requests = payload.get("requests", {})
+    if not isinstance(raw_requests, dict):
+        return []
+    due: list[WakeScheduledRequest] = []
+    for raw_value in raw_requests.values():
+        if not isinstance(raw_value, dict):
+            continue
+        request = _parse_wake_request(raw_value)
+        if request is None or not request.enabled:
+            continue
+        next_run_at = request.next_run_at
+        if next_run_at is None:
+            cron = (request.schedule.cron or "").strip()
+            if cron:
+                next_run_at = _next_cron_time(cron, now_utc - timedelta(minutes=1))
+                if next_run_at is not None:
+                    request.next_run_at = next_run_at
+                    request.updated_at = now_utc
+                    wake_store.upsert_request(request)
+        if next_run_at is None or next_run_at > now_utc:
+            continue
+        due.append(request)
+    due.sort(key=lambda request: request.next_run_at or request.created_at)
+    return due
+
+
+def _advance_cron_wake_request(
+    *,
+    wake_store: Any,
+    request: WakeScheduledRequest,
+    now_utc: datetime,
+    mark_consumed: bool,
+    was_dispatched: bool,
+) -> None:
+    request.last_dispatched_at = now_utc if was_dispatched else request.last_dispatched_at
+    request.updated_at = now_utc
+    if mark_consumed:
+        request.enabled = False
+        request.next_run_at = None
+        wake_store.upsert_request(request)
+        return
+    cron = (request.schedule.cron or "").strip()
+    if not cron:
+        wake_store.upsert_request(request)
+        return
+    next_base = request.next_run_at or now_utc
+    request.next_run_at = _next_cron_time(cron, next_base)
+    wake_store.upsert_request(request)
+
+
+def _parse_wake_request(raw_value: dict[str, Any]) -> WakeScheduledRequest | None:
+    try:
+        return WakeScheduledRequest.model_validate(raw_value)
+    except Exception:
+        logger.warning("Skipping invalid wake request entry=%r", raw_value, exc_info=True)
+        return None
+
+
+def _next_cron_time(expression: str, base: datetime) -> datetime | None:
+    fields = expression.split()
+    if len(fields) != 5:
+        return None
+    minute_values = _parse_cron_field(fields[0], 0, 59)
+    hour_values = _parse_cron_field(fields[1], 0, 23)
+    day_values = _parse_cron_field(fields[2], 1, 31)
+    month_values = _parse_cron_field(fields[3], 1, 12)
+    weekday_values = _parse_cron_field(fields[4], 0, 6)
+    if any(value is None for value in (minute_values, hour_values, day_values, month_values, weekday_values)):
+        return None
+    assert minute_values is not None
+    assert hour_values is not None
+    assert day_values is not None
+    assert month_values is not None
+    assert weekday_values is not None
+    candidate = base.astimezone(UTC).replace(second=0, microsecond=0) + timedelta(minutes=1)
+    deadline = candidate + timedelta(days=366)
+    while candidate <= deadline:
+        cron_weekday = (candidate.weekday() + 1) % 7
+        if (
+            candidate.minute in minute_values
+            and candidate.hour in hour_values
+            and candidate.day in day_values
+            and candidate.month in month_values
+            and cron_weekday in weekday_values
+        ):
+            return candidate
+        candidate += timedelta(minutes=1)
+    return None
+
+
+def _parse_cron_field(token: str, lower: int, upper: int) -> set[int] | None:
+    normalized = token.strip()
+    if not normalized:
+        return None
+    if normalized == "*":
+        return set(range(lower, upper + 1))
+    values: set[int] = set()
+    for chunk in normalized.split(","):
+        part = chunk.strip()
+        if not part:
+            return None
+        if part.startswith("*/"):
+            try:
+                step = int(part[2:])
+            except ValueError:
+                return None
+            if step <= 0:
+                return None
+            values.update(range(lower, upper + 1, step))
+            continue
+        try:
+            value = int(part)
+        except ValueError:
+            return None
+        if value < lower or value > upper:
+            return None
+        values.add(value)
+    return values
 
 
 def _probe_agent_dispatch_state(*, session_id: str, vm_id: str, script_path: Path) -> str:

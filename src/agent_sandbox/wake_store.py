@@ -56,7 +56,7 @@ class WakeRequestStore:
                     request = WakeScheduledRequest.model_validate(raw_request)
                     request.last_dispatched_at = dispatch.dispatched_at
                     request.updated_at = datetime.now(UTC)
-                    if request.schedule.resume_at is not None:
+                    if request.schedule.resume_at is not None and dispatch.status == "dispatched":
                         request.next_run_at = None
                         request.enabled = False
                     requests[dispatch.request_id] = request.model_dump(mode="json")
