@@ -1121,6 +1121,10 @@ def _default_vm_session_id(vm_name: str) -> str:
     return f"{normalized}-{_utc_now():%Y%m%dT%H%M%SZ}-{os.getpid()}"
 
 
+def _copilot_host_auth_enabled() -> bool:
+    return str(os.environ.get("AGENT_PROVIDER", "")).strip().lower() == "copilot"
+
+
 def _build_issue_session_manifest(
     *,
     policy: EffectivePolicyConfig,
@@ -1159,6 +1163,11 @@ def _build_issue_session_manifest(
         if policy.email_send_enabled:
             allowed_tools.append(ToolName.EMAIL_SEND_APPROVED)
 
+    metadata = {"issue_number": issue_number} if issue_number is not None else {}
+    if _copilot_host_auth_enabled():
+        allowed_tools.append(ToolName.COPILOT_HOST_AUTH)
+        metadata["agent_provider"] = "copilot"
+
     return SessionManifest(
         session_id=session_id,
         vm_id=vm_id,
@@ -1172,7 +1181,7 @@ def _build_issue_session_manifest(
         email_draft_domain_allowlist=policy.email_draft_domain_allowlist,
         email_send_enabled=policy.email_send_enabled,
         expires_at=_utc_now() + _resolve_session_ttl(policy, ttl_hours),
-        metadata={"issue_number": issue_number} if issue_number is not None else {},
+        metadata=metadata,
     )
 
 

@@ -43,6 +43,7 @@ class ToolName(str, Enum):
     LIST_UNREAD_DISCORD_MESSAGES = "list_unread_discord_messages"
     LIST_ALL_DISCORD_MESSAGES = "list_all_discord_messages"
     SCHEDULE_RESUME = "schedule_resume"
+    COPILOT_HOST_AUTH = "copilot_host_auth"
 
 
 class ApprovalStatus(str, Enum):

@@ -1488,21 +1488,26 @@ def _build_issue_session_manifest(
     directory_path: str,
     ttl_hours: int,
 ) -> SessionManifest:
+    allowed_tools = [
+        ToolName.APPROVAL_SUBMIT,
+        ToolName.APPROVAL_CHECK,
+    ]
+    metadata: dict[str, object] = {}
+    if str(os.environ.get("AGENT_PROVIDER", "")).strip().lower() == "copilot":
+        allowed_tools.append(ToolName.COPILOT_HOST_AUTH)
+        metadata["agent_provider"] = "copilot"
     return SessionManifest(
         session_id=session_id,
         vm_id=vm_id,
         directory_path=directory_path,
-        allowed_tools=[
-            ToolName.APPROVAL_SUBMIT,
-            ToolName.APPROVAL_CHECK,
-        ],
+        allowed_tools=allowed_tools,
         email_mailbox_allowlist=policy.email_mailbox_allowlist,
         email_folder_allowlist_by_mailbox=policy.email_folder_allowlist_by_mailbox,
         email_draft_recipient_allowlist=policy.email_draft_recipient_allowlist,
         email_draft_domain_allowlist=policy.email_draft_domain_allowlist,
         email_send_enabled=policy.email_send_enabled,
         expires_at=datetime.now(UTC) + timedelta(hours=ttl_hours),
-        metadata={},
+        metadata=metadata,
     )
 
 

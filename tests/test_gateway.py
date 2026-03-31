@@ -1,4 +1,5 @@
 from datetime import UTC, datetime, timedelta
+import json
 from types import SimpleNamespace
 
 import asyncio
@@ -207,7 +208,7 @@ def test_gateway_app_exposes_host_mediated_copilot_auth(tmp_path, monkeypatch: p
         "session-1",
         SessionManifest(
             session_id="session-1",
-            allowed_tools=[],
+            allowed_tools=[ToolName.COPILOT_HOST_AUTH],
             expires_at=datetime.now(UTC) + timedelta(hours=1),
         ),
     )
@@ -220,7 +221,7 @@ def test_gateway_app_exposes_host_mediated_copilot_auth(tmp_path, monkeypatch: p
     assert response.headers["cache-control"] == "no-store"
 
 
-def test_gateway_app_rejects_missing_or_expired_copilot_auth_session(
+def test_gateway_app_rejects_missing_unauthorized_or_expired_copilot_auth_session(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("GITHUB_TOKEN", "github_pat_test")
@@ -236,6 +237,14 @@ def test_gateway_app_rejects_missing_or_expired_copilot_auth_session(
         )
     )
     context.sessions.put(
+        "active-session",
+        SessionManifest(
+            session_id="active-session",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    context.sessions.put(
         "expired-session",
         SessionManifest(
             session_id="expired-session",
@@ -247,6 +256,10 @@ def test_gateway_app_rejects_missing_or_expired_copilot_auth_session(
     client = TestClient(create_app(context))
 
     missing_response = client.get("/copilot-auth/token")
+    unauthorized_response = client.get(
+        "/copilot-auth/token",
+        headers={"x-agent-sandbox-session-id": "active-session"},
+    )
     expired_response = client.get(
         "/copilot-auth/token",
         headers={"x-agent-sandbox-session-id": "expired-session"},
@@ -254,8 +267,22 @@ def test_gateway_app_rejects_missing_or_expired_copilot_auth_session(
 
     assert missing_response.status_code == 403
     assert missing_response.json()["error"] == "session_id is required"
+    assert unauthorized_response.status_code == 403
+    assert unauthorized_response.json()["error"] == "Tool copilot_host_auth is not allowed for session active-session"
     assert expired_response.status_code == 403
     assert expired_response.json()["error"] == "Expired session: expired-session"
+    audit_events = [
+        json.loads(line)
+        for line in (tmp_path / "audit.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert any(
+        event["event_type"] == "copilot_auth_request"
+        and event["session_id"] == "active-session"
+        and event["decision"] == "denied"
+        and "copilot_host_auth" in event["reason"]
+        for event in audit_events
+    )
 
 
 def test_gateway_app_reports_missing_host_token_for_copilot_auth(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -275,7 +302,7 @@ def test_gateway_app_reports_missing_host_token_for_copilot_auth(tmp_path, monke
         "session-1",
         SessionManifest(
             session_id="session-1",
-            allowed_tools=[],
+            allowed_tools=[ToolName.COPILOT_HOST_AUTH],
             expires_at=datetime.now(UTC) + timedelta(hours=1),
         ),
     )

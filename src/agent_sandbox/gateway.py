@@ -1633,7 +1633,7 @@ def create_app(context: RuntimeContext) -> Starlette:
         vm_id: str | None = None
         try:
             session_id = _resolve_session_id_from_request(request)
-            session = context.policy.get_session(session_id)
+            session = context.policy.require_tool(session_id, ToolName.COPILOT_HOST_AUTH)
             vm_id = session.vm_id
             resolved_config = context.resolve_provider_config_for_session(session_id)
             env_var_name = str(resolved_config.github_token_env or "").strip()
