@@ -43,6 +43,17 @@ class WakeRequestStore:
                 return None
             return WakeScheduledRequest.model_validate(raw_request)
 
+    def delete_request(self, request_id: str) -> bool:
+        with self._lock:
+            payload = self._read_raw()
+            requests = payload.get("requests")
+            if not isinstance(requests, dict) or request_id not in requests:
+                return False
+            requests.pop(request_id, None)
+            self._compact(payload)
+            self._atomic_write(payload)
+            return True
+
     def record_dispatch(self, dispatch: WakeDispatchRecord) -> None:
         with self._lock:
             payload = self._read_raw()
