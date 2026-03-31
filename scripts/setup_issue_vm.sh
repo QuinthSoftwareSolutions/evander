@@ -25,11 +25,11 @@ Usage: setup_issue_vm.sh [--dry-run] [--python] [--dotnet] [--nuget] [--mssql [-
 Run the common issue-VM bring-up flow in one command:
   1. optionally prewarm the shared NuGet cache on the host
   2. launch the issue VM
-  3. bootstrap Codex and selected optional guest toolchains
+  3. bootstrap the selected agent provider and optional guest toolchains
   4. configure passwordless Git access and create the issue mirror
   5. clone the mirrored repo into the guest user's home directory
   6. write a task file into the repo root for long-running agent sessions
-  7. start a Codex issue-resolution run inside the guest by default
+  7. start an issue-resolution run inside the guest by default
 
 Arguments:
   issue-number|issue-yaml
@@ -207,6 +207,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # shellcheck source=lib/runtime_config.sh
 source "${SCRIPT_DIR}/lib/runtime_config.sh"
+# shellcheck source=lib/agent_provider_assets.sh
+source "${SCRIPT_DIR}/lib/agent_provider_assets.sh"
 load_issue_setup_config
 
 DEFAULT_REPO_SOURCE="${AGENT_SANDBOX_DEFAULT_REPO_SOURCE:-${ROOT_DIR}}"
@@ -225,7 +227,18 @@ DEFAULT_POST_EXEC_VERIFICATION_PROMPT="Before concluding, verify whether you com
 POST_EXEC_VERIFICATION_PROMPT="${AGENT_POST_EXEC_VERIFICATION_PROMPT:-${DEFAULT_POST_EXEC_VERIFICATION_PROMPT}}"
 POST_EXEC_VERIFICATION_PROMPT_B64="$(printf '%s' "${POST_EXEC_VERIFICATION_PROMPT}" | python3 -c 'import base64,sys; print(base64.b64encode(sys.stdin.buffer.read()).decode())')"
 AGENT_RUNNER_LIB_B64="$(base64 -w0 "${SCRIPT_DIR}/lib/agent_runner.sh")"
-AGENT_RUNNER_CODEX_LIB_B64="$(base64 -w0 "${SCRIPT_DIR}/lib/agent_runner_codex.sh")"
+AGENT_RUNNER_PROVIDER_LIB_NAME="$(agent_provider_runner_lib_name "${AGENT_PROVIDER}")"
+AGENT_RUNNER_PROVIDER_LIB_PATH="$(agent_provider_runner_lib_path "${SCRIPT_DIR}/lib" "${AGENT_PROVIDER}")"
+if [[ ! -f "${AGENT_RUNNER_PROVIDER_LIB_PATH}" ]]; then
+  echo "Unsupported AGENT_PROVIDER '${AGENT_PROVIDER}': missing runner adapter ${AGENT_RUNNER_PROVIDER_LIB_PATH}" >&2
+  exit 1
+fi
+AGENT_RUNNER_PROVIDER_LIB_B64="$(base64 -w0 "${AGENT_RUNNER_PROVIDER_LIB_PATH}")"
+AGENT_BOOTSTRAP_SCRIPT_PATH="$(agent_provider_bootstrap_script_path "${SCRIPT_DIR}" "${AGENT_PROVIDER}")"
+if [[ ! -f "${AGENT_BOOTSTRAP_SCRIPT_PATH}" ]]; then
+  echo "Unsupported AGENT_PROVIDER '${AGENT_PROVIDER}': missing bootstrap script ${AGENT_BOOTSTRAP_SCRIPT_PATH}" >&2
+  exit 1
+fi
 AGENT_STATE_LIB_B64="$(base64 -w0 "${SCRIPT_DIR}/lib/agent_state.sh")"
 AGENT_PR_NOTE_HELPER_B64="$(
   python3 - "${ROOT_DIR}/scripts/guest/agent_pr_note.sh" <<'PY'
@@ -470,8 +483,8 @@ log_step "wait_for_ssh"
 vm_network_wait_for_ssh "${VM_NAME}" "${VM_IP}" "${VM_USER}" "${SSH_PRIVATE_KEY_PATH}" "${VM_WAIT_SSH_TIMEOUT_SECONDS}"
 echo "Guest SSH is ready on ${VM_USER}@${VM_IP}"
 mapfile -t SSH_OPTS < <(guest_ssh_options "${VM_NAME}" "${VM_IP}" "${SSH_PRIVATE_KEY_PATH}" "${CALLER_HOME}")
-log_step "bootstrap_codex"
-"${SCRIPT_DIR}/bootstrap_codex_vm.sh" "${VM_NAME}" "${VM_USER}"
+log_step "bootstrap_${AGENT_PROVIDER}"
+"${AGENT_BOOTSTRAP_SCRIPT_PATH}" "${VM_NAME}" "${VM_USER}"
 if (( BOOTSTRAP_DOTNET )); then
   log_step "bootstrap_dotnet"
   "${SCRIPT_DIR}/bootstrap_dotnet_vm.sh" "${VM_NAME}" "${VM_USER}"
@@ -664,13 +677,13 @@ if (( START_AGENT )); then
   ssh \
     "${SSH_OPTS[@]}" \
     "${VM_USER}@${VM_IP}" \
-    "GUEST_REPO_NAME='${GUEST_REPO_NAME}' AGENT_PROVIDER='${AGENT_PROVIDER}' AGENT_MODEL='${AGENT_MODEL}' POST_EXEC_VERIFICATION_PROMPT_B64='${POST_EXEC_VERIFICATION_PROMPT_B64}' AGENT_RUNNER_LIB_B64='${AGENT_RUNNER_LIB_B64}' AGENT_RUNNER_CODEX_LIB_B64='${AGENT_RUNNER_CODEX_LIB_B64}' AGENT_STATE_LIB_B64='${AGENT_STATE_LIB_B64}' BOOTSTRAP_PYTHON='${BOOTSTRAP_PYTHON}' BOOTSTRAP_DOTNET='${BOOTSTRAP_DOTNET}' BOOTSTRAP_NUGET='${BOOTSTRAP_NUGET}' bash -s" <<'START_AGENT_EOF'
+    "GUEST_REPO_NAME='${GUEST_REPO_NAME}' AGENT_PROVIDER='${AGENT_PROVIDER}' AGENT_MODEL='${AGENT_MODEL}' POST_EXEC_VERIFICATION_PROMPT_B64='${POST_EXEC_VERIFICATION_PROMPT_B64}' AGENT_RUNNER_LIB_B64='${AGENT_RUNNER_LIB_B64}' AGENT_RUNNER_PROVIDER_LIB_NAME='${AGENT_RUNNER_PROVIDER_LIB_NAME}' AGENT_RUNNER_PROVIDER_LIB_B64='${AGENT_RUNNER_PROVIDER_LIB_B64}' AGENT_STATE_LIB_B64='${AGENT_STATE_LIB_B64}' BOOTSTRAP_PYTHON='${BOOTSTRAP_PYTHON}' BOOTSTRAP_DOTNET='${BOOTSTRAP_DOTNET}' BOOTSTRAP_NUGET='${BOOTSTRAP_NUGET}' bash -s" <<'START_AGENT_EOF'
 set -euo pipefail
 . ~/.profile
 AGENT_RUNNER_TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "${AGENT_RUNNER_TMP_DIR}"' EXIT
 printf '%s' "${AGENT_RUNNER_LIB_B64}" | base64 -d > "${AGENT_RUNNER_TMP_DIR}/agent_runner.sh"
-printf '%s' "${AGENT_RUNNER_CODEX_LIB_B64}" | base64 -d > "${AGENT_RUNNER_TMP_DIR}/agent_runner_codex.sh"
+printf '%s' "${AGENT_RUNNER_PROVIDER_LIB_B64}" | base64 -d > "${AGENT_RUNNER_TMP_DIR}/${AGENT_RUNNER_PROVIDER_LIB_NAME}"
 # shellcheck source=/dev/null
 source "${AGENT_RUNNER_TMP_DIR}/agent_runner.sh"
 
@@ -678,7 +691,7 @@ TARGET_DIR="$HOME/${GUEST_REPO_NAME}"
 LOG_DIR="$HOME/.agent-sandbox"
 mkdir -p "${LOG_DIR}/lib"
 printf '%s' "${AGENT_RUNNER_LIB_B64}" | base64 -d > "${LOG_DIR}/lib/agent_runner.sh"
-printf '%s' "${AGENT_RUNNER_CODEX_LIB_B64}" | base64 -d > "${LOG_DIR}/lib/agent_runner_codex.sh"
+printf '%s' "${AGENT_RUNNER_PROVIDER_LIB_B64}" | base64 -d > "${LOG_DIR}/lib/${AGENT_RUNNER_PROVIDER_LIB_NAME}"
 printf '%s' "${AGENT_STATE_LIB_B64}" | base64 -d > "${LOG_DIR}/lib/agent_state.sh"
 LOG_PATH="${LOG_DIR}/agent-${GUEST_REPO_NAME}.log"
 PID_PATH="${LOG_DIR}/agent-${GUEST_REPO_NAME}.pid"
@@ -700,7 +713,7 @@ mkdir -p "${LOG_DIR}"
 if [[ -f "${PID_PATH}" ]]; then
   EXISTING_PID="$(cat "${PID_PATH}")"
   if [[ -n "${EXISTING_PID}" ]] && kill -0 "${EXISTING_PID}" >/dev/null 2>&1; then
-    echo "Codex already running in guest with PID ${EXISTING_PID}" >&2
+    echo "Agent already running in guest with PID ${EXISTING_PID}" >&2
     exit 1
   fi
 fi

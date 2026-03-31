@@ -174,6 +174,8 @@ fi
 
 # shellcheck source=lib/vm_network.sh
 source "${SCRIPT_DIR}/lib/vm_network.sh"
+# shellcheck source=lib/agent_provider_assets.sh
+source "${SCRIPT_DIR}/lib/agent_provider_assets.sh"
 
 run_launch_vm() {
   local -a env_args=(
@@ -204,8 +206,14 @@ echo "Guest IPv4 detected: ${VM_IP}"
 log_step "wait_for_ssh"
 vm_network_wait_for_ssh "${VM_NAME}" "${VM_IP}" "${VM_USER}" "${SSH_PRIVATE_KEY_PATH}" "${VM_WAIT_SSH_TIMEOUT_SECONDS}"
 echo "Guest SSH is ready on ${VM_USER}@${VM_IP}"
-log_step "bootstrap_codex"
-"${SCRIPT_DIR}/bootstrap_codex_vm.sh" "${VM_NAME}" "${VM_USER}"
+AGENT_PROVIDER="${AGENT_PROVIDER:-codex}"
+AGENT_BOOTSTRAP_SCRIPT_PATH="$(agent_provider_bootstrap_script_path "${SCRIPT_DIR}" "${AGENT_PROVIDER}")"
+if [[ ! -f "${AGENT_BOOTSTRAP_SCRIPT_PATH}" ]]; then
+  echo "Unsupported AGENT_PROVIDER '${AGENT_PROVIDER}': missing bootstrap script ${AGENT_BOOTSTRAP_SCRIPT_PATH}" >&2
+  exit 1
+fi
+log_step "bootstrap_${AGENT_PROVIDER}"
+"${AGENT_BOOTSTRAP_SCRIPT_PATH}" "${VM_NAME}" "${VM_USER}"
 if (( BOOTSTRAP_DOTNET )); then
   log_step "bootstrap_dotnet"
   "${SCRIPT_DIR}/bootstrap_dotnet_vm.sh" "${VM_NAME}" "${VM_USER}"

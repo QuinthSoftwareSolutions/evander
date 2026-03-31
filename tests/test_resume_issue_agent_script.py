@@ -17,6 +17,7 @@ def _prepare_script(tmp_path: Path) -> tuple[Path, Path]:
     source_lib = root / "scripts" / "lib" / "vm_network.sh"
     source_guest_ssh_lib = root / "scripts" / "lib" / "guest_ssh.sh"
     source_runner_lib = root / "scripts" / "lib" / "agent_runner.sh"
+    source_provider_assets_lib = root / "scripts" / "lib" / "agent_provider_assets.sh"
     source_runner_codex_lib = root / "scripts" / "lib" / "agent_runner_codex.sh"
     source_state_lib = root / "scripts" / "lib" / "agent_state.sh"
 
@@ -36,6 +37,11 @@ def _prepare_script(tmp_path: Path) -> tuple[Path, Path]:
     guest_ssh_lib_path.write_text(source_guest_ssh_lib.read_text(encoding="utf-8"), encoding="utf-8")
     runner_lib_path = lib_dir / "agent_runner.sh"
     runner_lib_path.write_text(source_runner_lib.read_text(encoding="utf-8"), encoding="utf-8")
+    provider_assets_lib_path = lib_dir / "agent_provider_assets.sh"
+    provider_assets_lib_path.write_text(
+        source_provider_assets_lib.read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
     runner_codex_lib_path = lib_dir / "agent_runner_codex.sh"
     runner_codex_lib_path.write_text(source_runner_codex_lib.read_text(encoding="utf-8"), encoding="utf-8")
     state_lib_path = lib_dir / "agent_state.sh"
@@ -246,6 +252,30 @@ exit 1
     assert result.stderr.strip() == "VM not found: vm-14084"
 
 
+def test_resume_issue_agent_rejects_missing_provider_adapter(tmp_path: Path) -> None:
+    script_path, fake_bin = _prepare_script(tmp_path)
+    private_key = tmp_path / "id_ed25519"
+    private_key.write_text("PRIVATE\n", encoding="utf-8")
+    _write_fake_sudo(fake_bin / "sudo")
+
+    env = os.environ.copy()
+    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+    env["SSH_PRIVATE_KEY_PATH"] = str(private_key)
+    env["AGENT_PROVIDER"] = "copilot"
+    env["USER"] = env.get("USER", "root")
+
+    result = subprocess.run(
+        [str(script_path), "Resume work now", "14084"],
+        text=True,
+        capture_output=True,
+        env=env,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "Unsupported AGENT_PROVIDER 'copilot': missing runner adapter" in result.stderr
+
+
 def test_resume_issue_agent_tracks_explicit_state_lifecycle() -> None:
     script_text = (Path(__file__).resolve().parents[1] / "scripts" / "resume_issue_agent.sh").read_text(
         encoding="utf-8"
@@ -255,6 +285,10 @@ def test_resume_issue_agent_tracks_explicit_state_lifecycle() -> None:
     assert 'RUN_LOG_FILE="${LOG_DIR}/agent-${RESOLVED_REPO_NAME}.log"' in script_text
     assert 'PID_FILE="${LOG_DIR}/agent-${RESOLVED_REPO_NAME}.pid"' in script_text
     assert 'STATE_PATH="${LOG_DIR}/agent-${RESOLVED_REPO_NAME}.state"' in script_text
+    assert 'AGENT_RUNNER_PROVIDER_LIB_NAME="$(agent_provider_runner_lib_name "${AGENT_PROVIDER}")"' in script_text
+    assert 'AGENT_RUNNER_PROVIDER_LIB_B64' in script_text
+    assert 'printf \'%s\' "${AGENT_RUNNER_PROVIDER_LIB_B64}" | base64 -d > "${LOG_DIR}/lib/${AGENT_RUNNER_PROVIDER_LIB_NAME}"' in script_text
+    assert "AGENT_RUNNER_CODEX_LIB_B64" not in script_text
     assert 'ensure_agent_enabled' in script_text
     assert 'write_state "running" "resume"' in script_text
     assert 'trap on_exit_write_idle EXIT' in script_text
@@ -262,7 +296,6 @@ def test_resume_issue_agent_tracks_explicit_state_lifecycle() -> None:
     assert 'AGENT_STATE_REPO_NAME="${AGENT_STATE_REPO_NAME}" \\' in script_text
     assert 'AGENT_STATE_LIB_B64' in script_text
     assert 'printf \'%s\' "${AGENT_RUNNER_LIB_B64}" | base64 -d > "${LOG_DIR}/lib/agent_runner.sh"' in script_text
-    assert 'printf \'%s\' "${AGENT_RUNNER_CODEX_LIB_B64}" | base64 -d > "${LOG_DIR}/lib/agent_runner_codex.sh"' in script_text
     assert 'nohup env \\' in script_text
     assert '. "$HOME/.agent-sandbox/lib/agent_runner.sh"' in script_text
     assert 'STATE_PATH="${LOG_DIR}/codex-resume-last.state"' in script_text

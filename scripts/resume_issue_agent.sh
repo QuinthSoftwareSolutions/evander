@@ -325,8 +325,9 @@ parse_args() {
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/vm_network.sh
 source "${SCRIPT_DIR}/lib/vm_network.sh"
+# shellcheck source=lib/agent_provider_assets.sh
+source "${SCRIPT_DIR}/lib/agent_provider_assets.sh"
 AGENT_RUNNER_LIB_B64="$(base64 -w0 "${SCRIPT_DIR}/lib/agent_runner.sh")"
-AGENT_RUNNER_CODEX_LIB_B64="$(base64 -w0 "${SCRIPT_DIR}/lib/agent_runner_codex.sh")"
 AGENT_STATE_LIB_B64="$(base64 -w0 "${SCRIPT_DIR}/lib/agent_state.sh")"
 
 if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
@@ -341,6 +342,13 @@ fi
 
 AGENT_PROVIDER="${AGENT_PROVIDER:-codex}"
 AGENT_MODEL="${AGENT_MODEL:-gpt-5.4}"
+AGENT_RUNNER_PROVIDER_LIB_NAME="$(agent_provider_runner_lib_name "${AGENT_PROVIDER}")"
+AGENT_RUNNER_PROVIDER_LIB_PATH="$(agent_provider_runner_lib_path "${SCRIPT_DIR}/lib" "${AGENT_PROVIDER}")"
+if [[ ! -f "${AGENT_RUNNER_PROVIDER_LIB_PATH}" ]]; then
+  echo "Unsupported AGENT_PROVIDER '${AGENT_PROVIDER}': missing runner adapter ${AGENT_RUNNER_PROVIDER_LIB_PATH}" >&2
+  exit 1
+fi
+AGENT_RUNNER_PROVIDER_LIB_B64="$(base64 -w0 "${AGENT_RUNNER_PROVIDER_LIB_PATH}")"
 VM_WAIT_IP_TIMEOUT_SECONDS="${VM_WAIT_IP_TIMEOUT_SECONDS:-180}"
 VM_WAIT_SSH_TIMEOUT_SECONDS="${VM_WAIT_SSH_TIMEOUT_SECONDS:-180}"
 RESUME_COMMAND_TIMEOUT_SECONDS="${RESUME_COMMAND_TIMEOUT_SECONDS:-900}"
@@ -393,7 +401,7 @@ if (( WORKER_MODE )); then
     set +e
     ssh "${SSH_FLAGS[@]}" \
       "${VM_USER}@${VM_IP}" \
-      "PROMPT_B64='${PROMPT_B64}' SESSION_ID='${SESSION_ID}' AGENT_BRANCH_SUFFIX='${VM_NAME}' AGENT_PROVIDER='${AGENT_PROVIDER}' AGENT_MODEL='${AGENT_MODEL}' RESUME_MODE='${RESUME_MODE}' HOST_CONTROL_STATUS='${HOST_CONTROL_STATUS}' AGENT_RUNNER_LIB_B64='${AGENT_RUNNER_LIB_B64}' AGENT_RUNNER_CODEX_LIB_B64='${AGENT_RUNNER_CODEX_LIB_B64}' AGENT_STATE_LIB_B64='${AGENT_STATE_LIB_B64}' bash -s" <<'REMOTE'
+      "PROMPT_B64='${PROMPT_B64}' SESSION_ID='${SESSION_ID}' AGENT_BRANCH_SUFFIX='${VM_NAME}' AGENT_PROVIDER='${AGENT_PROVIDER}' AGENT_MODEL='${AGENT_MODEL}' RESUME_MODE='${RESUME_MODE}' HOST_CONTROL_STATUS='${HOST_CONTROL_STATUS}' AGENT_RUNNER_LIB_B64='${AGENT_RUNNER_LIB_B64}' AGENT_RUNNER_PROVIDER_LIB_NAME='${AGENT_RUNNER_PROVIDER_LIB_NAME}' AGENT_RUNNER_PROVIDER_LIB_B64='${AGENT_RUNNER_PROVIDER_LIB_B64}' AGENT_STATE_LIB_B64='${AGENT_STATE_LIB_B64}' bash -s" <<'REMOTE'
 set -euo pipefail
 
 cd "${HOME}"
@@ -439,7 +447,7 @@ resolve_primary_agent_paths() {
 AGENT_RUNNER_TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "${AGENT_RUNNER_TMP_DIR}"' EXIT
 printf '%s' "${AGENT_RUNNER_LIB_B64}" | base64 -d > "${AGENT_RUNNER_TMP_DIR}/agent_runner.sh"
-printf '%s' "${AGENT_RUNNER_CODEX_LIB_B64}" | base64 -d > "${AGENT_RUNNER_TMP_DIR}/agent_runner_codex.sh"
+printf '%s' "${AGENT_RUNNER_PROVIDER_LIB_B64}" | base64 -d > "${AGENT_RUNNER_TMP_DIR}/${AGENT_RUNNER_PROVIDER_LIB_NAME}"
 printf '%s' "${AGENT_STATE_LIB_B64}" | base64 -d > "${AGENT_RUNNER_TMP_DIR}/agent_state.sh"
 # shellcheck source=/dev/null
 source "${AGENT_RUNNER_TMP_DIR}/agent_runner.sh"
@@ -462,7 +470,7 @@ PROMPT="$(python3 -c 'import base64, os; print(base64.b64decode(os.environ["PROM
 
 mkdir -p "${LOG_DIR}/lib"
 printf '%s' "${AGENT_RUNNER_LIB_B64}" | base64 -d > "${LOG_DIR}/lib/agent_runner.sh"
-printf '%s' "${AGENT_RUNNER_CODEX_LIB_B64}" | base64 -d > "${LOG_DIR}/lib/agent_runner_codex.sh"
+printf '%s' "${AGENT_RUNNER_PROVIDER_LIB_B64}" | base64 -d > "${LOG_DIR}/lib/${AGENT_RUNNER_PROVIDER_LIB_NAME}"
 printf '%s' "${AGENT_STATE_LIB_B64}" | base64 -d > "${LOG_DIR}/lib/agent_state.sh"
 
 if [[ -n "${HOST_CONTROL_STATUS}" ]]; then
@@ -556,7 +564,7 @@ REMOTE
   timeout --foreground "${RESUME_COMMAND_TIMEOUT_SECONDS}s" \
     ssh "${SSH_FLAGS[@]}" \
     "${VM_USER}@${VM_IP}" \
-    "PROMPT_B64='${PROMPT_B64}' SESSION_ID='${SESSION_ID}' AGENT_BRANCH_SUFFIX='${VM_NAME}' AGENT_PROVIDER='${AGENT_PROVIDER}' AGENT_MODEL='${AGENT_MODEL}' RESUME_MODE='${RESUME_MODE}' HOST_CONTROL_STATUS='${HOST_CONTROL_STATUS}' AGENT_RUNNER_LIB_B64='${AGENT_RUNNER_LIB_B64}' AGENT_RUNNER_CODEX_LIB_B64='${AGENT_RUNNER_CODEX_LIB_B64}' AGENT_STATE_LIB_B64='${AGENT_STATE_LIB_B64}' bash -s" <<'REMOTE'
+    "PROMPT_B64='${PROMPT_B64}' SESSION_ID='${SESSION_ID}' AGENT_BRANCH_SUFFIX='${VM_NAME}' AGENT_PROVIDER='${AGENT_PROVIDER}' AGENT_MODEL='${AGENT_MODEL}' RESUME_MODE='${RESUME_MODE}' HOST_CONTROL_STATUS='${HOST_CONTROL_STATUS}' AGENT_RUNNER_LIB_B64='${AGENT_RUNNER_LIB_B64}' AGENT_RUNNER_PROVIDER_LIB_NAME='${AGENT_RUNNER_PROVIDER_LIB_NAME}' AGENT_RUNNER_PROVIDER_LIB_B64='${AGENT_RUNNER_PROVIDER_LIB_B64}' AGENT_STATE_LIB_B64='${AGENT_STATE_LIB_B64}' bash -s" <<'REMOTE'
 set -euo pipefail
 
 cd "${HOME}"
@@ -602,7 +610,7 @@ resolve_primary_agent_paths() {
 AGENT_RUNNER_TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "${AGENT_RUNNER_TMP_DIR}"' EXIT
 printf '%s' "${AGENT_RUNNER_LIB_B64}" | base64 -d > "${AGENT_RUNNER_TMP_DIR}/agent_runner.sh"
-printf '%s' "${AGENT_RUNNER_CODEX_LIB_B64}" | base64 -d > "${AGENT_RUNNER_TMP_DIR}/agent_runner_codex.sh"
+printf '%s' "${AGENT_RUNNER_PROVIDER_LIB_B64}" | base64 -d > "${AGENT_RUNNER_TMP_DIR}/${AGENT_RUNNER_PROVIDER_LIB_NAME}"
 printf '%s' "${AGENT_STATE_LIB_B64}" | base64 -d > "${AGENT_RUNNER_TMP_DIR}/agent_state.sh"
 # shellcheck source=/dev/null
 source "${AGENT_RUNNER_TMP_DIR}/agent_runner.sh"
@@ -673,7 +681,7 @@ fi
 resume_output="$(
   ssh "${SSH_FLAGS[@]}" \
     "${VM_USER}@${VM_IP}" \
-    "PROMPT_B64='${PROMPT_B64}' SESSION_ID='${SESSION_ID}' AGENT_BRANCH_SUFFIX='${VM_NAME}' AGENT_PROVIDER='${AGENT_PROVIDER}' AGENT_MODEL='${AGENT_MODEL}' RESUME_MODE='${RESUME_MODE}' HOST_CONTROL_STATUS='${HOST_CONTROL_STATUS}' AGENT_RUNNER_LIB_B64='${AGENT_RUNNER_LIB_B64}' AGENT_RUNNER_CODEX_LIB_B64='${AGENT_RUNNER_CODEX_LIB_B64}' AGENT_STATE_LIB_B64='${AGENT_STATE_LIB_B64}' bash -s" <<'REMOTE'
+    "PROMPT_B64='${PROMPT_B64}' SESSION_ID='${SESSION_ID}' AGENT_BRANCH_SUFFIX='${VM_NAME}' AGENT_PROVIDER='${AGENT_PROVIDER}' AGENT_MODEL='${AGENT_MODEL}' RESUME_MODE='${RESUME_MODE}' HOST_CONTROL_STATUS='${HOST_CONTROL_STATUS}' AGENT_RUNNER_LIB_B64='${AGENT_RUNNER_LIB_B64}' AGENT_RUNNER_PROVIDER_LIB_NAME='${AGENT_RUNNER_PROVIDER_LIB_NAME}' AGENT_RUNNER_PROVIDER_LIB_B64='${AGENT_RUNNER_PROVIDER_LIB_B64}' AGENT_STATE_LIB_B64='${AGENT_STATE_LIB_B64}' bash -s" <<'REMOTE'
 set -euo pipefail
 
 cd "${HOME}"
@@ -719,7 +727,7 @@ resolve_primary_agent_paths() {
 AGENT_RUNNER_TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "${AGENT_RUNNER_TMP_DIR}"' EXIT
 printf '%s' "${AGENT_RUNNER_LIB_B64}" | base64 -d > "${AGENT_RUNNER_TMP_DIR}/agent_runner.sh"
-printf '%s' "${AGENT_RUNNER_CODEX_LIB_B64}" | base64 -d > "${AGENT_RUNNER_TMP_DIR}/agent_runner_codex.sh"
+printf '%s' "${AGENT_RUNNER_PROVIDER_LIB_B64}" | base64 -d > "${AGENT_RUNNER_TMP_DIR}/${AGENT_RUNNER_PROVIDER_LIB_NAME}"
 printf '%s' "${AGENT_STATE_LIB_B64}" | base64 -d > "${AGENT_RUNNER_TMP_DIR}/agent_state.sh"
 # shellcheck source=/dev/null
 source "${AGENT_RUNNER_TMP_DIR}/agent_runner.sh"
@@ -743,7 +751,7 @@ PROMPT="$(python3 -c 'import base64, os; print(base64.b64decode(os.environ["PROM
 
 mkdir -p "${LOG_DIR}/lib"
 printf '%s' "${AGENT_RUNNER_LIB_B64}" | base64 -d > "${LOG_DIR}/lib/agent_runner.sh"
-printf '%s' "${AGENT_RUNNER_CODEX_LIB_B64}" | base64 -d > "${LOG_DIR}/lib/agent_runner_codex.sh"
+printf '%s' "${AGENT_RUNNER_PROVIDER_LIB_B64}" | base64 -d > "${LOG_DIR}/lib/${AGENT_RUNNER_PROVIDER_LIB_NAME}"
 printf '%s' "${AGENT_STATE_LIB_B64}" | base64 -d > "${LOG_DIR}/lib/agent_state.sh"
 
 if [[ -n "${HOST_CONTROL_STATUS}" ]]; then
@@ -777,7 +785,7 @@ write_state() {
 if [[ -f "${PID_FILE}" ]]; then
   EXISTING_PID="$(cat "${PID_FILE}")"
   if [[ -n "${EXISTING_PID}" ]] && kill -0 "${EXISTING_PID}" >/dev/null 2>&1; then
-    echo "Codex already running in guest with PID ${EXISTING_PID}" >&2
+    echo "Agent already running in guest with PID ${EXISTING_PID}" >&2
     exit 1
   fi
 fi
