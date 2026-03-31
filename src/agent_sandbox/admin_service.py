@@ -109,6 +109,7 @@ class EffectiveIssueSetupConfig(BaseModel):
     git_host: str
     git_user: str
     git_ssh_alias: str
+    default_model: str | None = None
     post_exec_verification_prompt: str | None = None
     enable_guest_heartbeat: bool = False
     guest_heartbeat_prompt: str = (
@@ -1402,6 +1403,7 @@ class AdminService:
                 "git_host": str(effective.get("git_host") or "192.168.250.1"),
                 "git_user": str(effective.get("git_user") or os.environ.get("USER", "agent")),
                 "git_ssh_alias": str(effective.get("git_ssh_alias") or "agent-sandbox-git-host"),
+                "default_model": str(effective.get("default_model") or "").strip() or None,
                 "post_exec_verification_prompt": effective.get("post_exec_verification_prompt"),
                 "enable_guest_heartbeat": bool(effective.get("enable_guest_heartbeat", False)),
                 "guest_heartbeat_prompt": str(
@@ -1410,6 +1412,37 @@ class AdminService:
                 ),
                 "issue_setup_azure_devops_pr_pat_env": issue_setup_pat_env,
             }
+        )
+
+    def _resolve_agent_model_for_session(self, session_or_id: SessionManifest | str) -> str:
+        if isinstance(session_or_id, SessionManifest):
+            session = session_or_id
+            session_id = session.session_id
+        else:
+            session_id = str(session_or_id).strip()
+            if not session_id:
+                raise ValueError(
+                    "Cannot resolve AGENT_MODEL: missing session id. Provide a valid session id or SessionManifest."
+                )
+            session = self.runtime.sessions.get(session_id)
+            if session is None:
+                raise ValueError(
+                    f"Cannot resolve AGENT_MODEL for session '{session_id}': session not found. "
+                    "Remediation: create the session first or pass a SessionManifest with session.model set."
+                )
+        directory_path = session.directory_path
+        session_model = str(session.model or "").strip()
+        if session_model:
+            return session_model
+        issue_setup = self._resolve_issue_setup(directory_path, root_dir=self.project_dir)
+        default_model = str(issue_setup.default_model or "").strip()
+        if default_model:
+            return default_model
+        raise ValueError(
+            f"Cannot resolve AGENT_MODEL for session '{session_id}' in directory '{directory_path}': "
+            "missing session.model and missing issue_setup.default_model. "
+            f"Remediation: set session.model for session '{session_id}' or configure "
+            f"issue_setup.default_model for directory '{directory_path}' (or an inherited parent)."
         )
 
     def _build_setup_issue_vm_invocation(
@@ -1433,6 +1466,7 @@ class AdminService:
         vm_defaults: EffectiveVmDefaultsConfig,
         issue_setup: EffectiveIssueSetupConfig,
     ) -> tuple[list[str], dict[str, str]]:
+        agent_model = self._resolve_agent_model_for_session(session_id)
         cmd = [str(setup_script)]
         if not start_agent:
             cmd.append("--dry-run")
@@ -1469,6 +1503,7 @@ class AdminService:
                 "AGENT_SANDBOX_GIT_HOST": issue_setup.git_host,
                 "AGENT_SANDBOX_GIT_USER": issue_setup.git_user,
                 "AGENT_SANDBOX_GIT_SSH_ALIAS": issue_setup.git_ssh_alias,
+                "AGENT_MODEL": agent_model,
                 "ENABLE_GUEST_HEARTBEAT": "1" if issue_setup.enable_guest_heartbeat else "0",
                 "GUEST_HEARTBEAT_PROMPT": issue_setup.guest_heartbeat_prompt,
                 "AGENT_SANDBOX_AZURE_DEVOPS_PR_PAT_ENV": issue_setup.issue_setup_azure_devops_pr_pat_env,
@@ -2210,9 +2245,9 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
             message=f"Timed out waiting for {vm_name} to shut down after {timeout_seconds}s",
         )
 
-    def _run_script(self, script_name: str, args: list[str]) -> VmActionResult:
+    def _run_script(self, script_name: str, args: list[str], *, env: dict[str, str] | None = None) -> VmActionResult:
         script_path = Path(__file__).resolve().parents[2] / "scripts" / script_name
-        completed = _run_subprocess([str(script_path), *args], capture_output=True, text=True)
+        completed = _run_subprocess([str(script_path), *args], capture_output=True, text=True, env=env)
         vm_name = ""
         if "--vm-name" in args:
             try:
@@ -2246,10 +2281,22 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
         )
 
     def resume_agent(self, target: str, prompt: str, *, vm_user: str = "agent") -> VmActionResult:
-        vm_name = _resolve_vm_name_from_target(target, self.runtime.sessions.read_all())
+        sessions = self.runtime.sessions.read_all()
+        vm_name = _resolve_vm_name_from_target(target, sessions)
+        try:
+            _, manifest = _resolve_session_target(target, sessions)
+            model = self._resolve_agent_model_for_session(manifest)
+        except ValueError as exc:
+            return VmActionResult(
+                success=False,
+                vm_name=vm_name,
+                action="resume_issue_agent",
+                message=str(exc),
+            )
         return self._run_script(
             "resume_issue_agent.sh",
             ["--prompt", prompt, "--vm-name", vm_name, "--vm-user", vm_user, "--host-control-state-path", str(self.config.host_agent_control_state_path)],
+            env=os.environ | {"AGENT_MODEL": model},
         )
 
     def list_local_issues(
