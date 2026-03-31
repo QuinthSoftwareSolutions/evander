@@ -3338,7 +3338,7 @@ def test_wake_schedules_create_rejects_invalid_cron(tmp_path: Path) -> None:
         ],
     )
     assert result.exit_code != 0
-    assert "Invalid cron expression" in result.stdout
+    assert "Invalid cron expression" in result.output
 
 
 def test_wake_schedules_edit_and_delete_round_trip(tmp_path: Path) -> None:
@@ -3414,4 +3414,4 @@ def test_wake_schedules_create_enforces_mcp_mode_rules(tmp_path: Path) -> None:
         ],
     )
     assert result.exit_code != 0
-    assert "MCP scheduling only supports" in result.stdout
+    assert "MCP scheduling only supports" in result.output

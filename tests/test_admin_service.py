@@ -2025,6 +2025,80 @@ def test_create_wake_schedule_rejects_invalid_cron(tmp_path: Path) -> None:
         )
 
 
+def test_create_wake_schedule_enforces_max_active_per_session(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.config.host_heartbeat_schedule_max_active_per_session = 1
+    service.create_wake_schedule(
+        session_id="issue-1-session",
+        prompt="Resume now",
+        cron="*/5 * * * *",
+    )
+
+    with pytest.raises(ValueError, match="max_active_per_session=1"):
+        service.create_wake_schedule(
+            session_id="issue-1-session",
+            prompt="Resume again",
+            cron="*/10 * * * *",
+        )
+
+
+def test_create_wake_schedule_enforces_max_active_total(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.config.host_heartbeat_schedule_max_active_total = 1
+    service.create_wake_schedule(
+        session_id="issue-1-session",
+        prompt="Resume now",
+        cron="*/5 * * * *",
+    )
+
+    with pytest.raises(ValueError, match="max_active_total=1"):
+        service.create_wake_schedule(
+            session_id="issue-2-session",
+            prompt="Resume another",
+            cron="*/10 * * * *",
+        )
+
+
+def test_create_wake_schedule_enforces_min_interval(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.config.host_heartbeat_schedule_min_interval_seconds = 600
+
+    with pytest.raises(ValueError, match="minimum=600s actual=300s"):
+        service.create_wake_schedule(
+            session_id="issue-1-session",
+            prompt="Resume now",
+            cron="*/5 * * * *",
+        )
+
+
+def test_edit_wake_schedule_enforces_guardrails_when_enabling_or_tightening_cron(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.config.host_heartbeat_schedule_max_active_per_session = 1
+    service.config.host_heartbeat_schedule_min_interval_seconds = 600
+    created = service.create_wake_schedule(
+        session_id="issue-1-session",
+        prompt="Resume later",
+        cron="*/15 * * * *",
+        enabled=False,
+    )
+    service.create_wake_schedule(
+        session_id="issue-1-session",
+        prompt="Existing active",
+        cron="*/20 * * * *",
+    )
+
+    with pytest.raises(ValueError, match="max_active_per_session=1"):
+        service.edit_wake_schedule(created.request_id, enabled=True)
+
+    other = service.create_wake_schedule(
+        session_id="issue-2-session",
+        prompt="Safe interval",
+        cron="*/15 * * * *",
+    )
+    with pytest.raises(ValueError, match="minimum=600s actual=300s"):
+        service.edit_wake_schedule(other.request_id, cron="*/5 * * * *")
+
+
 def test_edit_wake_schedule_rejects_new_context_for_mcp_source(tmp_path: Path) -> None:
     service = AdminService(write_config(tmp_path))
     created = service.create_wake_schedule(

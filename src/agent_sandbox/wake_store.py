@@ -102,21 +102,33 @@ class WakeRequestStore:
         metadata: dict[str, Any],
     ) -> WakeScheduledRequest:
         now = datetime.now(UTC)
-        normalized_request_id = request_id or f"wake-{uuid4().hex}"
-        request = WakeScheduledRequest(
-            request_id=normalized_request_id,
-            session_id=session_id,
-            schedule=schedule,
-            resume_prompt=WakeResumePromptPayload(prompt=prompt, metadata=metadata),
-            resume_mode=resume_mode,
-            enabled=enabled,
-            source=source,
-            created_at=now,
-            updated_at=now,
-            next_run_at=schedule.resume_at,
-        )
-        self.upsert_request(request)
-        return request
+        with self._lock:
+            payload = self._read_raw()
+            requests = payload.setdefault("requests", {})
+            if request_id:
+                normalized_request_id = request_id
+                if normalized_request_id in requests:
+                    raise ValueError(f"Wake request already exists: {normalized_request_id}")
+            else:
+                normalized_request_id = f"wake-{uuid4().hex}"
+                while normalized_request_id in requests:
+                    normalized_request_id = f"wake-{uuid4().hex}"
+            request = WakeScheduledRequest(
+                request_id=normalized_request_id,
+                session_id=session_id,
+                schedule=schedule,
+                resume_prompt=WakeResumePromptPayload(prompt=prompt, metadata=metadata),
+                resume_mode=resume_mode,
+                enabled=enabled,
+                source=source,
+                created_at=now,
+                updated_at=now,
+                next_run_at=schedule.resume_at,
+            )
+            requests[request.request_id] = request.model_dump(mode="json")
+            self._compact(payload)
+            self._atomic_write(payload)
+            return request
 
     def read_raw(self) -> dict[str, Any]:
         with self._lock:

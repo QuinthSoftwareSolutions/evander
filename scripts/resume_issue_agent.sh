@@ -29,6 +29,7 @@ Options:
   --vm-name NAME              Explicit libvirt domain name.
   --session-id ID             Session identifier for host-worker logs/state.
   --vm-user USER              Guest user to connect as. Default: agent
+  --resume-mode MODE          Resume mode: same_context or new_context. Default: same_context
   --worker-mode               Disable TTY allocation and run non-interactive worker mode.
   --dispatch-only             In worker mode, dispatch the guest resume in the background and
                               return after launch instead of waiting for completion.
@@ -190,6 +191,7 @@ parse_args() {
   VM_NAME=""
   SESSION_ID=""
   VM_USER="agent"
+  RESUME_MODE="same_context"
   WORKER_MODE=0
   DISPATCH_ONLY=0
   HOST_STATE_FILE=""
@@ -255,6 +257,10 @@ parse_args() {
           VM_USER="${2:-}"
           shift 2
           ;;
+        --resume-mode)
+          RESUME_MODE="${2:-}"
+          shift 2
+          ;;
         --worker-mode)
           WORKER_MODE=1
           shift
@@ -295,6 +301,10 @@ parse_args() {
   fi
 
   if [[ -z "${PROMPT}" || -z "${VM_NAME}" ]]; then
+    return 1
+  fi
+  if [[ "${RESUME_MODE}" != "same_context" && "${RESUME_MODE}" != "new_context" ]]; then
+    echo "resume mode must be same_context or new_context: ${RESUME_MODE}" >&2
     return 1
   fi
   if ! [[ "${OBSERVE_LINES}" =~ ^[1-9][0-9]*$ ]]; then
@@ -383,7 +393,7 @@ if (( WORKER_MODE )); then
     set +e
     ssh "${SSH_FLAGS[@]}" \
       "${VM_USER}@${VM_IP}" \
-      "PROMPT_B64='${PROMPT_B64}' SESSION_ID='${SESSION_ID}' AGENT_BRANCH_SUFFIX='${VM_NAME}' AGENT_PROVIDER='${AGENT_PROVIDER}' AGENT_MODEL='${AGENT_MODEL}' HOST_CONTROL_STATUS='${HOST_CONTROL_STATUS}' AGENT_RUNNER_LIB_B64='${AGENT_RUNNER_LIB_B64}' AGENT_RUNNER_CODEX_LIB_B64='${AGENT_RUNNER_CODEX_LIB_B64}' AGENT_STATE_LIB_B64='${AGENT_STATE_LIB_B64}' bash -s" <<'REMOTE'
+      "PROMPT_B64='${PROMPT_B64}' SESSION_ID='${SESSION_ID}' AGENT_BRANCH_SUFFIX='${VM_NAME}' AGENT_PROVIDER='${AGENT_PROVIDER}' AGENT_MODEL='${AGENT_MODEL}' RESUME_MODE='${RESUME_MODE}' HOST_CONTROL_STATUS='${HOST_CONTROL_STATUS}' AGENT_RUNNER_LIB_B64='${AGENT_RUNNER_LIB_B64}' AGENT_RUNNER_CODEX_LIB_B64='${AGENT_RUNNER_CODEX_LIB_B64}' AGENT_STATE_LIB_B64='${AGENT_STATE_LIB_B64}' bash -s" <<'REMOTE'
 set -euo pipefail
 
 cd "${HOME}"
@@ -495,6 +505,7 @@ nohup env \
   AGENT_BRANCH_SUFFIX="${AGENT_BRANCH_SUFFIX}" \
   AGENT_PROVIDER="${AGENT_PROVIDER}" \
   AGENT_MODEL="${AGENT_MODEL}" \
+  RESUME_MODE="${RESUME_MODE}" \
   PROMPT="${PROMPT}" \
   RUN_LOG_FILE="${RUN_LOG_FILE}" \
   STATE_PATH="${STATE_PATH}" \
@@ -509,11 +520,25 @@ ensure_agent_enabled
 write_state "running" "resume"
 trap on_exit_write_idle EXIT
 
-agent_runner_resume_last \
-  --dangerously-bypass-approvals-and-sandbox \
-  --skip-git-repo-check \
-  --model "${AGENT_MODEL}" \
-  "${PROMPT}"
+if [[ "${RESUME_MODE}" == "new_context" ]]; then
+  TARGET_DIR="${HOME}"
+  if [[ -n "${AGENT_STATE_REPO_NAME}" && "${AGENT_STATE_REPO_NAME}" != "resume-last" && -d "${HOME}/${AGENT_STATE_REPO_NAME}" ]]; then
+    TARGET_DIR="${HOME}/${AGENT_STATE_REPO_NAME}"
+  fi
+  agent_runner_exec \
+    -s danger-full-access \
+    --dangerously-bypass-approvals-and-sandbox \
+    --skip-git-repo-check \
+    --model "${AGENT_MODEL}" \
+    -C "${TARGET_DIR}" \
+    "${PROMPT}"
+else
+  agent_runner_resume_last \
+    --dangerously-bypass-approvals-and-sandbox \
+    --skip-git-repo-check \
+    --model "${AGENT_MODEL}" \
+    "${PROMPT}"
+fi
 ' >>"${RUN_LOG_FILE}" 2>&1 < /dev/null &
 REMOTE
     resume_exit_code="$?"
@@ -531,7 +556,7 @@ REMOTE
   timeout --foreground "${RESUME_COMMAND_TIMEOUT_SECONDS}s" \
     ssh "${SSH_FLAGS[@]}" \
     "${VM_USER}@${VM_IP}" \
-    "PROMPT_B64='${PROMPT_B64}' SESSION_ID='${SESSION_ID}' AGENT_BRANCH_SUFFIX='${VM_NAME}' AGENT_PROVIDER='${AGENT_PROVIDER}' AGENT_MODEL='${AGENT_MODEL}' HOST_CONTROL_STATUS='${HOST_CONTROL_STATUS}' AGENT_RUNNER_LIB_B64='${AGENT_RUNNER_LIB_B64}' AGENT_RUNNER_CODEX_LIB_B64='${AGENT_RUNNER_CODEX_LIB_B64}' AGENT_STATE_LIB_B64='${AGENT_STATE_LIB_B64}' bash -s" <<'REMOTE'
+    "PROMPT_B64='${PROMPT_B64}' SESSION_ID='${SESSION_ID}' AGENT_BRANCH_SUFFIX='${VM_NAME}' AGENT_PROVIDER='${AGENT_PROVIDER}' AGENT_MODEL='${AGENT_MODEL}' RESUME_MODE='${RESUME_MODE}' HOST_CONTROL_STATUS='${HOST_CONTROL_STATUS}' AGENT_RUNNER_LIB_B64='${AGENT_RUNNER_LIB_B64}' AGENT_RUNNER_CODEX_LIB_B64='${AGENT_RUNNER_CODEX_LIB_B64}' AGENT_STATE_LIB_B64='${AGENT_STATE_LIB_B64}' bash -s" <<'REMOTE'
 set -euo pipefail
 
 cd "${HOME}"
@@ -606,12 +631,27 @@ ensure_agent_enabled
 write_state "running" "resume"
 trap on_exit_write_idle EXIT
 
-agent_runner_resume_last \
-  --dangerously-bypass-approvals-and-sandbox \
-  --skip-git-repo-check \
-  --model "${AGENT_MODEL}" \
-  "${PROMPT}" \
-  2>&1 | tee -a "${RUN_LOG_FILE}"
+if [[ "${RESUME_MODE}" == "new_context" ]]; then
+  TARGET_DIR="${HOME}"
+  if [[ -n "${AGENT_STATE_REPO_NAME}" && "${AGENT_STATE_REPO_NAME}" != "resume-last" && -d "${HOME}/${AGENT_STATE_REPO_NAME}" ]]; then
+    TARGET_DIR="${HOME}/${AGENT_STATE_REPO_NAME}"
+  fi
+  agent_runner_exec \
+    -s danger-full-access \
+    --dangerously-bypass-approvals-and-sandbox \
+    --skip-git-repo-check \
+    --model "${AGENT_MODEL}" \
+    -C "${TARGET_DIR}" \
+    "${PROMPT}" \
+    2>&1 | tee -a "${RUN_LOG_FILE}"
+else
+  agent_runner_resume_last \
+    --dangerously-bypass-approvals-and-sandbox \
+    --skip-git-repo-check \
+    --model "${AGENT_MODEL}" \
+    "${PROMPT}" \
+    2>&1 | tee -a "${RUN_LOG_FILE}"
+fi
 REMOTE
   resume_exit_code="$?"
   set -e
@@ -633,7 +673,7 @@ fi
 resume_output="$(
   ssh "${SSH_FLAGS[@]}" \
     "${VM_USER}@${VM_IP}" \
-    "PROMPT_B64='${PROMPT_B64}' SESSION_ID='${SESSION_ID}' AGENT_BRANCH_SUFFIX='${VM_NAME}' AGENT_PROVIDER='${AGENT_PROVIDER}' AGENT_MODEL='${AGENT_MODEL}' HOST_CONTROL_STATUS='${HOST_CONTROL_STATUS}' AGENT_RUNNER_LIB_B64='${AGENT_RUNNER_LIB_B64}' AGENT_RUNNER_CODEX_LIB_B64='${AGENT_RUNNER_CODEX_LIB_B64}' AGENT_STATE_LIB_B64='${AGENT_STATE_LIB_B64}' bash -s" <<'REMOTE'
+    "PROMPT_B64='${PROMPT_B64}' SESSION_ID='${SESSION_ID}' AGENT_BRANCH_SUFFIX='${VM_NAME}' AGENT_PROVIDER='${AGENT_PROVIDER}' AGENT_MODEL='${AGENT_MODEL}' RESUME_MODE='${RESUME_MODE}' HOST_CONTROL_STATUS='${HOST_CONTROL_STATUS}' AGENT_RUNNER_LIB_B64='${AGENT_RUNNER_LIB_B64}' AGENT_RUNNER_CODEX_LIB_B64='${AGENT_RUNNER_CODEX_LIB_B64}' AGENT_STATE_LIB_B64='${AGENT_STATE_LIB_B64}' bash -s" <<'REMOTE'
 set -euo pipefail
 
 cd "${HOME}"
@@ -749,6 +789,7 @@ nohup env \
   AGENT_BRANCH_SUFFIX="${AGENT_BRANCH_SUFFIX}" \
   AGENT_PROVIDER="${AGENT_PROVIDER}" \
   AGENT_MODEL="${AGENT_MODEL}" \
+  RESUME_MODE="${RESUME_MODE}" \
   PROMPT="${PROMPT}" \
   RUN_LOG_FILE="${RUN_LOG_FILE}" \
   STATE_PATH="${STATE_PATH}" \
@@ -763,11 +804,25 @@ ensure_agent_enabled
 write_state "running" "resume"
 trap on_exit_write_idle EXIT
 
-agent_runner_resume_last \
-  --dangerously-bypass-approvals-and-sandbox \
-  --skip-git-repo-check \
-  --model "${AGENT_MODEL}" \
-  "${PROMPT}"
+if [[ "${RESUME_MODE}" == "new_context" ]]; then
+  TARGET_DIR="${HOME}"
+  if [[ -n "${AGENT_STATE_REPO_NAME}" && "${AGENT_STATE_REPO_NAME}" != "resume-last" && -d "${HOME}/${AGENT_STATE_REPO_NAME}" ]]; then
+    TARGET_DIR="${HOME}/${AGENT_STATE_REPO_NAME}"
+  fi
+  agent_runner_exec \
+    -s danger-full-access \
+    --dangerously-bypass-approvals-and-sandbox \
+    --skip-git-repo-check \
+    --model "${AGENT_MODEL}" \
+    -C "${TARGET_DIR}" \
+    "${PROMPT}"
+else
+  agent_runner_resume_last \
+    --dangerously-bypass-approvals-and-sandbox \
+    --skip-git-repo-check \
+    --model "${AGENT_MODEL}" \
+    "${PROMPT}"
+fi
 ' >>"${RUN_LOG_FILE}" 2>&1 < /dev/null &
 
 AGENT_PID=$!

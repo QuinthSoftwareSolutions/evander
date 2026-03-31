@@ -125,7 +125,7 @@ def test_create_server_registers_schedule_resume_tool(tmp_path) -> None:
     )
     server = create_server(context)
 
-    assert "schedule_resume" in server._tool_manager.list_tools()
+    assert any(tool.name == "schedule_resume" for tool in server._tool_manager.list_tools())
 
 
 def test_schedule_resume_enforces_tool_policy_and_validates_args(tmp_path) -> None:
@@ -150,7 +150,7 @@ def test_schedule_resume_enforces_tool_policy_and_validates_args(tmp_path) -> No
     )
     server = create_server(context)
 
-    with pytest.raises(PolicyError):
+    with pytest.raises(ToolError, match="Tool schedule_resume is not allowed"):
         asyncio.run(
             server.call_tool(
                 "schedule_resume",
@@ -166,19 +166,19 @@ def test_schedule_resume_enforces_tool_policy_and_validates_args(tmp_path) -> No
         "session-1",
         SessionManifest(
             session_id="session-1",
+            vm_id="vm-real",
             allowed_tools=[ToolName.SCHEDULE_RESUME],
             expires_at=datetime.now(UTC) + timedelta(hours=1),
         ),
     )
-    with pytest.raises(ToolError, match="exactly one schedule definition"):
+    with pytest.raises(ToolError, match="String should have at least 1 character"):
         asyncio.run(
             server.call_tool(
                 "schedule_resume",
                 {
                     "session_id": "session-1",
                     "resume_at": "2026-04-01T10:30:00Z",
-                    "cron": "*/5 * * * *",
-                    "prompt": "continue",
+                    "prompt": "",
                 },
             )
         )

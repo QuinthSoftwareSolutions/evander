@@ -1771,6 +1771,7 @@ def test_schedule_resume_persists_request_and_audits_success(tmp_path: Path) -> 
     assert result == {
         "session_id": "session-1",
         "resume_at": "2026-04-01T10:30:00Z",
+        "cron": None,
         "scheduled": True,
         "request_id": "wake-123",
     }

@@ -6,6 +6,7 @@ from pathlib import Path
 
 from agent_sandbox.models import WakeDispatchRecord, WakeResumePromptPayload, WakeScheduleDefinition
 from agent_sandbox.wake_store import WakeRequestStore
+import pytest
 
 
 def test_schedule_resume_request_persists_expected_shape(tmp_path: Path) -> None:
@@ -59,6 +60,34 @@ def test_record_dispatch_updates_request_and_appends_message(tmp_path: Path) -> 
     assert payload["requests"]["wake-1"]["last_dispatched_at"] == "2026-04-01T10:31:00Z"
     assert payload["dispatches"]["dispatch-1"]["status"] == "dispatched"
     assert payload["messages"]["wake:dispatch-1"]["session_id"] == "session-1"
+
+
+def test_schedule_resume_request_rejects_duplicate_request_id(tmp_path: Path) -> None:
+    store = WakeRequestStore(tmp_path / "wake-store.json")
+    schedule = WakeScheduleDefinition(resume_at=datetime(2026, 4, 1, 10, 30, tzinfo=UTC))
+
+    store.schedule_resume_request(
+        session_id="session-1",
+        prompt="Resume work.",
+        schedule=schedule,
+        request_id="wake-1",
+        source="gateway-tool",
+        resume_mode="same_context",
+        enabled=True,
+        metadata={},
+    )
+
+    with pytest.raises(ValueError, match="Wake request already exists: wake-1"):
+        store.schedule_resume_request(
+            session_id="session-2",
+            prompt="Overwrite attempt.",
+            schedule=schedule,
+            request_id="wake-1",
+            source="gateway-tool",
+            resume_mode="same_context",
+            enabled=True,
+            metadata={},
+        )
 
 
 def test_compaction_removes_old_disabled_requests_and_messages(tmp_path: Path) -> None:

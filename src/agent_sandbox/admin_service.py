@@ -173,6 +173,79 @@ def _require_valid_cron(cron: str) -> str:
     return normalized
 
 
+def _parse_cron_field(token: str, lower: int, upper: int) -> set[int] | None:
+    normalized = token.strip()
+    if not normalized:
+        return None
+    if normalized == "*":
+        return set(range(lower, upper + 1))
+    values: set[int] = set()
+    for chunk in normalized.split(","):
+        part = chunk.strip()
+        if not part:
+            return None
+        if part.startswith("*/"):
+            try:
+                step = int(part[2:])
+            except ValueError:
+                return None
+            if step <= 0:
+                return None
+            values.update(range(lower, upper + 1, step))
+            continue
+        try:
+            value = int(part)
+        except ValueError:
+            return None
+        if value < lower or value > upper:
+            return None
+        values.add(value)
+    return values
+
+
+def _next_cron_time(expression: str, base: datetime) -> datetime | None:
+    fields = expression.split()
+    if len(fields) != 5:
+        return None
+    minute_values = _parse_cron_field(fields[0], 0, 59)
+    hour_values = _parse_cron_field(fields[1], 0, 23)
+    day_values = _parse_cron_field(fields[2], 1, 31)
+    month_values = _parse_cron_field(fields[3], 1, 12)
+    weekday_values = _parse_cron_field(fields[4], 0, 6)
+    if any(value is None for value in (minute_values, hour_values, day_values, month_values, weekday_values)):
+        return None
+    assert minute_values is not None
+    assert hour_values is not None
+    assert day_values is not None
+    assert month_values is not None
+    assert weekday_values is not None
+    candidate = base.astimezone(UTC).replace(second=0, microsecond=0) + timedelta(minutes=1)
+    deadline = candidate + timedelta(days=366)
+    while candidate <= deadline:
+        cron_weekday = (candidate.weekday() + 1) % 7
+        if (
+            candidate.minute in minute_values
+            and candidate.hour in hour_values
+            and candidate.day in day_values
+            and candidate.month in month_values
+            and cron_weekday in weekday_values
+        ):
+            return candidate
+        candidate += timedelta(minutes=1)
+    return None
+
+
+def _cron_min_interval_seconds(expression: str) -> float | None:
+    base = _utc_now().replace(second=0, microsecond=0) - timedelta(minutes=1)
+    first = _next_cron_time(expression, base)
+    if first is None:
+        return None
+    second = _next_cron_time(expression, first)
+    if second is None:
+        return None
+    return (second - first).total_seconds()
+
+
 def _normalize_local_issue_state(state: str | None, *, allow_empty: bool = False) -> str | None:
     normalized = str(state or "").strip()
     if not normalized:
@@ -1635,6 +1708,56 @@ git -C "${{TARGET_DIR}}" config agent-sandbox.sessionId "${{SESSION_ID}}"
         schedules.sort(key=lambda item: str(item.get("updated_at") or ""), reverse=True)
         return schedules
 
+    def _active_wake_requests(self, *, exclude_request_id: str | None = None) -> list[WakeScheduledRequest]:
+        payload = self.runtime.wake_store.read_raw()
+        raw_requests = payload.get("requests", {})
+        if not isinstance(raw_requests, dict):
+            return []
+        active: list[WakeScheduledRequest] = []
+        for raw_value in raw_requests.values():
+            if not isinstance(raw_value, dict):
+                continue
+            request = WakeScheduledRequest.model_validate(raw_value)
+            if exclude_request_id and request.request_id == exclude_request_id:
+                continue
+            if request.enabled:
+                active.append(request)
+        return active
+
+    def _enforce_wake_schedule_guardrails(
+        self,
+        *,
+        session_id: str,
+        schedule: WakeScheduleDefinition,
+        enabled: bool,
+        exclude_request_id: str | None = None,
+    ) -> None:
+        if not enabled:
+            return
+        active_requests = self._active_wake_requests(exclude_request_id=exclude_request_id)
+        max_active_per_session = self.config.host_heartbeat_schedule_max_active_per_session
+        if max_active_per_session is not None:
+            active_for_session = sum(1 for request in active_requests if request.session_id == session_id)
+            if active_for_session >= max_active_per_session:
+                raise ValueError(
+                    "Wake schedule limit reached for session "
+                    f"{session_id}: max_active_per_session={max_active_per_session}"
+                )
+        max_active_total = self.config.host_heartbeat_schedule_max_active_total
+        if max_active_total is not None and len(active_requests) >= max_active_total:
+            raise ValueError(f"Wake schedule limit reached: max_active_total={max_active_total}")
+        min_interval_seconds = self.config.host_heartbeat_schedule_min_interval_seconds
+        cron = str(schedule.cron or "").strip()
+        if min_interval_seconds is not None and cron:
+            actual_interval_seconds = _cron_min_interval_seconds(cron)
+            if actual_interval_seconds is None:
+                raise ValueError(f"Unable to determine cron interval for schedule: {cron}")
+            if actual_interval_seconds < min_interval_seconds:
+                raise ValueError(
+                    "Recurring wake schedule interval is too short: "
+                    f"minimum={min_interval_seconds:g}s actual={actual_interval_seconds:g}s"
+                )
+
     def create_wake_schedule(
         self,
         *,
@@ -1659,8 +1782,14 @@ git -C "${{TARGET_DIR}}" config agent-sandbox.sessionId "${{SESSION_ID}}"
         if cron is not None and str(cron).strip():
             normalized_cron = _require_valid_cron(str(cron))
         schedule = WakeScheduleDefinition(resume_at=resume_at, cron=normalized_cron)
+        normalized_session_id = session_id.strip()
+        self._enforce_wake_schedule_guardrails(
+            session_id=normalized_session_id,
+            schedule=schedule,
+            enabled=bool(enabled),
+        )
         return self.runtime.wake_store.schedule_resume_request(
-            session_id=session_id.strip(),
+            session_id=normalized_session_id,
             prompt=normalized_prompt,
             schedule=schedule,
             request_id=request_id.strip() if isinstance(request_id, str) and request_id.strip() else None,
@@ -1701,6 +1830,13 @@ git -C "${{TARGET_DIR}}" config agent-sandbox.sessionId "${{SESSION_ID}}"
         else:
             updated_schedule = existing.schedule
 
+        updated_enabled = existing.enabled if enabled is None else bool(enabled)
+        self._enforce_wake_schedule_guardrails(
+            session_id=existing.session_id,
+            schedule=updated_schedule,
+            enabled=updated_enabled,
+            exclude_request_id=existing.request_id,
+        )
         existing.schedule = updated_schedule
         existing.resume_prompt.prompt = updated_prompt
         existing.resume_mode = updated_mode
