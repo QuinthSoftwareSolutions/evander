@@ -3281,3 +3281,61 @@ def test_host_heartbeat_once_runs_single_cycle(tmp_path: Path, monkeypatch) -> N
     assert calls == ["run_once_with_lock"]
     assert "streams=3" in result.output
     assert "discovered=1" in result.output
+
+
+def test_wake_schedules_create_and_list(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+
+    create_result = runner.invoke(
+        app,
+        [
+            "wake-schedules",
+            "create",
+            "--config",
+            str(config_path),
+            "--session-id",
+            "issue-11-session",
+            "--prompt",
+            "Resume from queue.",
+            "--cron",
+            "*/10 * * * *",
+            "--mode",
+            "new_context",
+        ],
+    )
+    assert create_result.exit_code == 0
+    created_payload = json.loads(create_result.stdout)
+    assert created_payload["resume_mode"] == "new_context"
+
+    list_result = runner.invoke(
+        app,
+        ["wake-schedules", "list", "--config", str(config_path), "--session-id", "issue-11-session"],
+    )
+    assert list_result.exit_code == 0
+    listed_payload = json.loads(list_result.stdout)
+    assert len(listed_payload) == 1
+    assert listed_payload[0]["cron"] == "*/10 * * * *"
+    assert listed_payload[0]["last_dispatch"] is None
+
+
+def test_wake_schedules_create_rejects_invalid_cron(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "wake-schedules",
+            "create",
+            "--config",
+            str(config_path),
+            "--session-id",
+            "issue-11-session",
+            "--prompt",
+            "Resume from queue.",
+            "--cron",
+            "* *",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "Invalid cron expression" in result.stdout

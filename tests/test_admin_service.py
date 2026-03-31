@@ -1999,6 +1999,45 @@ def test_destroy_vm_prunes_generic_sessions_and_feedback_state(tmp_path: Path, m
     assert "removed_pr_map_entries=1" in result.message
 
 
+def test_create_and_list_wake_schedules_include_last_dispatch(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.create_wake_schedule(
+        session_id="issue-1-session",
+        prompt="Resume now",
+        cron="*/5 * * * *",
+        source="admin_cli",
+        resume_mode="new_context",
+    )
+    schedules = service.list_wake_schedules(session_id="issue-1-session")
+    assert len(schedules) == 1
+    assert schedules[0]["cron"] == "*/5 * * * *"
+    assert schedules[0]["resume_mode"] == "new_context"
+    assert schedules[0]["last_dispatch"] is None
+
+
+def test_create_wake_schedule_rejects_invalid_cron(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    with pytest.raises(ValueError, match="Invalid cron expression"):
+        service.create_wake_schedule(
+            session_id="issue-1-session",
+            prompt="Resume now",
+            cron="* *",
+        )
+
+
+def test_edit_wake_schedule_rejects_new_context_for_mcp_source(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    created = service.create_wake_schedule(
+        session_id="issue-1-session",
+        prompt="Resume now",
+        resume_at=datetime.now(UTC) + timedelta(hours=1),
+        source="mcp_tool",
+        resume_mode="same_context",
+    )
+    with pytest.raises(ValueError, match="MCP scheduling only supports"):
+        service.edit_wake_schedule(created.request_id, resume_mode="new_context")
+
+
 def _write_proxy_issue_yaml(
     tmp_path: Path,
     *,

@@ -55,6 +55,8 @@ from .models import (
     ToolName,
     VmActionResult,
     VmSummary,
+    WakeScheduledRequest,
+    WakeScheduleDefinition,
     WorkerActionResult,
     WorkerSummary,
 )
@@ -130,6 +132,45 @@ class WorkerGlobalConfigWritePayload(BaseModel):
 
 def _utc_now() -> datetime:
     return datetime.now(UTC)
+
+
+def _normalize_resume_mode(value: str | None) -> str:
+    normalized = str(value or "").strip() or "same_context"
+    if normalized not in {"same_context", "new_context"}:
+        raise ValueError("resume_mode must be one of: same_context, new_context")
+    return normalized
+
+
+def _require_valid_cron(cron: str) -> str:
+    normalized = " ".join(part.strip() for part in str(cron).split())
+    fields = normalized.split(" ")
+    if len(fields) != 5:
+        raise ValueError(
+            "Invalid cron expression. Expected 5 fields (minute hour day month weekday), "
+            "for example: '*/15 * * * *'."
+        )
+    ranges = ((0, 59), (0, 23), (1, 31), (1, 12), (0, 6))
+    for index, token in enumerate(fields):
+        lower, upper = ranges[index]
+        for chunk in token.split(","):
+            part = chunk.strip()
+            if not part:
+                raise ValueError(f"Invalid cron field #{index + 1}: empty value.")
+            if part == "*":
+                continue
+            if part.startswith("*/"):
+                step_text = part[2:]
+                if not step_text.isdigit() or int(step_text) <= 0:
+                    raise ValueError(f"Invalid cron field #{index + 1}: invalid step value {part!r}.")
+                continue
+            if not part.isdigit():
+                raise ValueError(f"Invalid cron field #{index + 1}: expected integer, '*', or step, got {part!r}.")
+            number = int(part)
+            if number < lower or number > upper:
+                raise ValueError(
+                    f"Invalid cron field #{index + 1}: value {number} out of range {lower}-{upper}."
+                )
+    return normalized
 
 
 def _normalize_local_issue_state(state: str | None, *, allow_empty: bool = False) -> str | None:
@@ -1530,6 +1571,154 @@ git -C "${{TARGET_DIR}}" config agent-sandbox.sessionId "${{SESSION_ID}}"
                 )
             )
         return summaries
+
+    def list_wake_schedules(
+        self,
+        *,
+        session_id: str | None = None,
+        include_disabled: bool = True,
+    ) -> list[dict[str, Any]]:
+        payload = self.runtime.wake_store.read_raw()
+        raw_requests = payload.get("requests")
+        raw_dispatches = payload.get("dispatches")
+        if not isinstance(raw_requests, dict):
+            return []
+        latest_dispatch_by_request_id: dict[str, dict[str, Any]] = {}
+        if isinstance(raw_dispatches, dict):
+            for raw_value in raw_dispatches.values():
+                if not isinstance(raw_value, dict):
+                    continue
+                dispatch_request_id = str(raw_value.get("request_id") or "").strip()
+                if not dispatch_request_id:
+                    continue
+                dispatched_at = str(raw_value.get("dispatched_at") or "")
+                current = latest_dispatch_by_request_id.get(dispatch_request_id)
+                if current is None or dispatched_at > str(current.get("dispatched_at") or ""):
+                    latest_dispatch_by_request_id[dispatch_request_id] = raw_value
+
+        schedules: list[dict[str, Any]] = []
+        for raw_value in raw_requests.values():
+            if not isinstance(raw_value, dict):
+                continue
+            request = WakeScheduledRequest.model_validate(raw_value)
+            if session_id and request.session_id != session_id:
+                continue
+            if not include_disabled and not request.enabled:
+                continue
+            dispatch = latest_dispatch_by_request_id.get(request.request_id)
+            schedules.append(
+                {
+                    "request_id": request.request_id,
+                    "session_id": request.session_id,
+                    "resume_at": request.schedule.resume_at,
+                    "cron": request.schedule.cron,
+                    "prompt": request.resume_prompt.prompt,
+                    "resume_mode": request.resume_mode,
+                    "enabled": request.enabled,
+                    "source": request.source,
+                    "created_at": request.created_at,
+                    "updated_at": request.updated_at,
+                    "last_dispatched_at": request.last_dispatched_at,
+                    "next_run_at": request.next_run_at,
+                    "last_dispatch": (
+                        {
+                            "dispatch_id": dispatch.get("dispatch_id"),
+                            "status": dispatch.get("status"),
+                            "error": dispatch.get("error"),
+                            "dispatched_at": dispatch.get("dispatched_at"),
+                        }
+                        if dispatch is not None
+                        else None
+                    ),
+                }
+            )
+        schedules.sort(key=lambda item: str(item.get("updated_at") or ""), reverse=True)
+        return schedules
+
+    def create_wake_schedule(
+        self,
+        *,
+        session_id: str,
+        prompt: str,
+        resume_at: datetime | None = None,
+        cron: str | None = None,
+        resume_mode: str = "same_context",
+        enabled: bool = True,
+        request_id: str | None = None,
+        source: str | None = "admin_cli",
+        metadata: dict[str, Any] | None = None,
+    ) -> WakeScheduledRequest:
+        normalized_prompt = str(prompt or "").strip()
+        if not normalized_prompt:
+            raise ValueError("prompt cannot be empty")
+        normalized_resume_mode = _normalize_resume_mode(resume_mode)
+        normalized_source = str(source or "admin_cli").strip() or "admin_cli"
+        if normalized_source.startswith("mcp") and normalized_resume_mode != "same_context":
+            raise ValueError("MCP scheduling only supports resume_mode='same_context'.")
+        normalized_cron = None
+        if cron is not None and str(cron).strip():
+            normalized_cron = _require_valid_cron(str(cron))
+        schedule = WakeScheduleDefinition(resume_at=resume_at, cron=normalized_cron)
+        return self.runtime.wake_store.schedule_resume_request(
+            session_id=session_id.strip(),
+            prompt=normalized_prompt,
+            schedule=schedule,
+            request_id=request_id.strip() if isinstance(request_id, str) and request_id.strip() else None,
+            source=normalized_source,
+            resume_mode=normalized_resume_mode,
+            enabled=bool(enabled),
+            metadata=metadata or {},
+        )
+
+    def edit_wake_schedule(
+        self,
+        request_id: str,
+        *,
+        resume_at: datetime | None = None,
+        cron: str | None = None,
+        prompt: str | None = None,
+        resume_mode: str | None = None,
+        enabled: bool | None = None,
+    ) -> WakeScheduledRequest:
+        existing = self.runtime.wake_store.get_request(request_id.strip())
+        if existing is None:
+            raise ValueError(f"Wake schedule not found: {request_id}")
+        updated_prompt = existing.resume_prompt.prompt if prompt is None else str(prompt).strip()
+        if not updated_prompt:
+            raise ValueError("prompt cannot be empty")
+        updated_mode = existing.resume_mode if resume_mode is None else _normalize_resume_mode(resume_mode)
+        if str(existing.source or "").strip().startswith("mcp") and updated_mode != "same_context":
+            raise ValueError("MCP scheduling only supports resume_mode='same_context'.")
+        resume_changed = resume_at is not None
+        cron_changed = cron is not None
+        if resume_changed and cron_changed:
+            raise ValueError("Provide only one of resume_at or cron when editing a schedule.")
+        if resume_changed:
+            updated_schedule = WakeScheduleDefinition(resume_at=resume_at, cron=None)
+        elif cron_changed:
+            normalized_cron = _require_valid_cron(str(cron)) if str(cron).strip() else None
+            updated_schedule = WakeScheduleDefinition(resume_at=None, cron=normalized_cron)
+        else:
+            updated_schedule = existing.schedule
+
+        existing.schedule = updated_schedule
+        existing.resume_prompt.prompt = updated_prompt
+        existing.resume_mode = updated_mode
+        if enabled is not None:
+            existing.enabled = bool(enabled)
+        existing.updated_at = _utc_now()
+        if existing.schedule.resume_at is not None:
+            existing.next_run_at = existing.schedule.resume_at
+        elif cron_changed:
+            existing.next_run_at = _utc_now()
+        self.runtime.wake_store.upsert_request(existing)
+        return existing
+
+    def delete_wake_schedule(self, request_id: str) -> bool:
+        normalized = request_id.strip()
+        if not normalized:
+            raise ValueError("request_id cannot be empty")
+        return self.runtime.wake_store.delete_request(normalized)
 
     def renew_session(self, target: str, *, extension: str = "1d") -> SessionActionResult:
         session_id, manifest = _resolve_session_target(target, self.runtime.sessions.read_all())

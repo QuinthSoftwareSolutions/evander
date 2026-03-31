@@ -2239,6 +2239,38 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             self._apply_session_refresh,
         )
 
+    def list_wake_schedules_for_selected_directory(self) -> list[dict[str, object]]:
+        sessions = self.service.list_sessions(
+            include_expired=True,
+            directory_path=self._selected_directory_path,
+            direct_only=True,
+        )
+        schedules: list[dict[str, object]] = []
+        for session in sessions:
+            schedules.extend(self.service.list_wake_schedules(session_id=session.session_id))
+        schedules.sort(key=lambda item: str(item.get("updated_at") or ""), reverse=True)
+        return schedules
+
+    def create_wake_schedule(
+        self,
+        *,
+        session_id: str,
+        prompt: str,
+        resume_at: datetime | None = None,
+        cron: str | None = None,
+        resume_mode: str = "same_context",
+    ) -> None:
+        self.run_action(
+            f"Create wake schedule for {session_id}",
+            self.service.create_wake_schedule,
+            session_id=session_id,
+            prompt=prompt,
+            resume_at=resume_at,
+            cron=cron,
+            resume_mode=resume_mode,
+            source="admin_ui",
+        )
+
     def _restore_selected_directory(self) -> None:
         stored = self.settings.value("selected_directory", "root")
         self._set_selected_directory(str(stored or "root"), refresh=False)
