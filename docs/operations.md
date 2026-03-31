@@ -372,8 +372,13 @@ without exposing provider credentials in the VM.
   - `host_heartbeat_vm_user`
   - `host_heartbeat_resume_timeout_seconds`
   - `host_heartbeat_stream_conflict_policy`
+  - `host_heartbeat_scheduled_wake_prefix_text` (applied as `prefix + scheduled prompt` for MCP-triggered schedule dispatches)
+  - `host_heartbeat_schedule_max_active_per_session` (optional scheduling guardrail)
+  - `host_heartbeat_schedule_max_active_total` (optional scheduling guardrail)
+  - `host_heartbeat_schedule_min_interval_seconds` (optional scheduling guardrail)
 - `host_heartbeat_pr_resume_prompt` and `host_heartbeat_discord_resume_prompt` remain directory-scoped in `heartbeat.json`.
 - The host heartbeat worker runs one pass per configured directory and resolves the effective PR/Discord wake prompt text from that directory's config before dispatching a resume.
+- MCP-triggered scheduled resumes are always dispatched with `resume_mode=same_context`.
 - Agent control state is mirrored on the host in `runtime/host-agent-control-state.json`; the host heartbeat worker checks that file before probing or resuming a session so disabled agents stay ignored even when their VMs are powered off.
 - The host worker reads session manifests through runtime state and writes provider feedback/cursors to `runtime/pr-feedback-store.json`.
 - Guests no longer run `agent-heartbeat.service` or `agent-heartbeat.timer` by default.

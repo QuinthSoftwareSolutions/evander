@@ -1332,6 +1332,7 @@ def test_run_once_dispatches_due_scheduled_wake_and_consumes_one_time_request(tm
             host_busy_check_script_path=tmp_path / "check_busy.sh",
             host_resume_script_path=resume_script,
             host_heartbeat_pr_resume_prompt="Static preamble.",
+            host_heartbeat_scheduled_wake_prefix_text="Scheduled prefix.",
             host_heartbeat_discord_resume_prompt="discord wake",
             host_heartbeat_vm_user="agent",
             host_heartbeat_wake_state_path=tmp_path / "wake-state.json",
@@ -1347,7 +1348,7 @@ def test_run_once_dispatches_due_scheduled_wake_and_consumes_one_time_request(tm
 
     assert len(captured) == 1
     prompt = captured[0][captured[0].index("--prompt") + 1]
-    assert prompt == "Static preamble. User scheduled prompt"
+    assert prompt == "Scheduled prefix. User scheduled prompt"
     raw = wake_store.read_raw()
     assert raw["requests"]["wake-once-1"]["enabled"] is False
     assert raw["requests"]["wake-once-1"]["next_run_at"] is None

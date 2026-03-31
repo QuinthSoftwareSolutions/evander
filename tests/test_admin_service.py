@@ -594,9 +594,14 @@ def test_admin_service_reads_and_writes_host_heartbeat_worker_global_config(tmp_
             "host_heartbeat_vm_user": "worker",
             "host_heartbeat_resume_timeout_seconds": 600.0,
             "host_heartbeat_stream_conflict_policy": "reject",
+            "host_heartbeat_scheduled_wake_prefix_text": "Scheduled wake prefix.",
+            "host_heartbeat_schedule_max_active_per_session": 3,
+            "host_heartbeat_schedule_max_active_total": 20,
+            "host_heartbeat_schedule_min_interval_seconds": 120.0,
         },
     )
     assert write_result.config["host_heartbeat_stream_conflict_policy"] == "reject"
+    assert write_result.config["host_heartbeat_scheduled_wake_prefix_text"] == "Scheduled wake prefix."
 
     config_path = tmp_path / "config" / "host-heartbeat" / "config.json"
     payload = json.loads(config_path.read_text(encoding="utf-8"))
@@ -604,10 +609,14 @@ def test_admin_service_reads_and_writes_host_heartbeat_worker_global_config(tmp_
     assert payload["host_heartbeat_poll_interval_seconds"] == 12.5
     assert payload["host_heartbeat_stream_conflict_policy"] == "reject"
     assert payload["host_heartbeat_vm_user"] == "worker"
+    assert payload["host_heartbeat_schedule_max_active_per_session"] == 3
+    assert payload["host_heartbeat_schedule_max_active_total"] == 20
+    assert payload["host_heartbeat_schedule_min_interval_seconds"] == 120.0
 
     reread = service.read_worker_global_config("host-heartbeat")
     assert reread.config["host_heartbeat_directory_paths"] == ["root/team-a", "root/team-b"]
     assert reread.config["host_heartbeat_stream_conflict_policy"] == "reject"
+    assert reread.config["host_heartbeat_scheduled_wake_prefix_text"] == "Scheduled wake prefix."
 
 
 def test_admin_service_reads_and_writes_discord_ingest_worker_global_config(tmp_path: Path) -> None:

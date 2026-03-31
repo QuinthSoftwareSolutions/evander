@@ -734,6 +734,18 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
         "How the heartbeat worker handles one PR feedback stream matching multiple sessions: "
         "'fanout' polls anyway, 'reject' skips that stream."
     ),
+    "host_heartbeat_scheduled_wake_prefix_text": (
+        "Static text prepended to MCP-scheduled resume prompts before dispatch (prefix + scheduled prompt)."
+    ),
+    "host_heartbeat_schedule_max_active_per_session": (
+        "Optional guardrail: maximum number of active scheduled wake requests allowed per session."
+    ),
+    "host_heartbeat_schedule_max_active_total": (
+        "Optional guardrail: maximum number of active scheduled wake requests allowed across all sessions."
+    ),
+    "host_heartbeat_schedule_min_interval_seconds": (
+        "Optional guardrail: minimum allowed interval, in seconds, between scheduled runs for recurring wakes."
+    ),
     "host_heartbeat_vm_user": (
         "Guest username passed to the resume script when reconnecting to a VM."
     ),
@@ -799,6 +811,10 @@ WORKER_GLOBAL_CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
     "host_heartbeat_vm_user": "Guest username passed to the host resume script.",
     "host_heartbeat_resume_timeout_seconds": "Timeout in seconds for the host resume script invocation.",
     "host_heartbeat_stream_conflict_policy": "How the host heartbeat worker handles one PR feedback stream matching multiple sessions.",
+    "host_heartbeat_scheduled_wake_prefix_text": "Static text prepended to MCP-scheduled resume prompts before dispatch.",
+    "host_heartbeat_schedule_max_active_per_session": "Optional cap on active scheduled wake requests per session.",
+    "host_heartbeat_schedule_max_active_total": "Optional cap on active scheduled wake requests across all sessions.",
+    "host_heartbeat_schedule_min_interval_seconds": "Optional minimum allowed interval for recurring scheduled wakes.",
     "jitter_seconds": "Random delay added to each issue orchestrator sleep interval.",
     "cooldown_seconds": "Minimum cooldown before the issue orchestrator retries the same session.",
     "lock_path": "Single-instance lock file for the issue orchestrator worker.",

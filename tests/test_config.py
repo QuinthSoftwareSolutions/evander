@@ -162,6 +162,9 @@ def test_host_heartbeat_worker_global_config_defaults_follow_runtime_dir() -> No
     assert str(config.host_heartbeat_session_cooldown_path) == "/tmp/agent-sandbox-runtime/host-heartbeat-session-cooldown.json"
     assert str(config.host_heartbeat_wake_state_path) == "/tmp/agent-sandbox-runtime/host-heartbeat-wake-state.json"
     assert config.host_heartbeat_directory_paths == []
+    assert config.host_heartbeat_schedule_max_active_per_session is None
+    assert config.host_heartbeat_schedule_max_active_total is None
+    assert config.host_heartbeat_schedule_min_interval_seconds is None
 
 
 def test_host_heartbeat_worker_global_config_directory_paths_are_normalized() -> None:
