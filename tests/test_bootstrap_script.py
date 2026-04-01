@@ -44,6 +44,8 @@ def test_bootstrap_copilot_script_writes_mcp_config_and_auth_guidance() -> None:
     assert 'cat > ~/.copilot/mcp-config.json <<CONFIG' in script
     assert 'cat > ~/bin/gh <<SHIM' in script
     assert 'COPILOT_HOST_AUTH_URL="${COPILOT_GATEWAY_BASE_URL}/copilot-auth/token"' in script
+    assert 'python3 - "${COPILOT_HOST_AUTH_URL}" "\\${AGENT_SANDBOX_SESSION_ID:-}" <<\'PY\'' in script
+    assert '"\\${COPILOT_HOST_AUTH_URL}"' not in script
     assert '"X-Agent-Sandbox-Session-Id": session_id' in script
     assert "gh auth token" in script
     assert '"mcpServers": {' in script

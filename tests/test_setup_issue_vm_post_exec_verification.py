@@ -35,6 +35,8 @@ def test_setup_vm_selects_provider_bootstrap_script() -> None:
 
     assert 'source "${SCRIPT_DIR}/lib/agent_provider_assets.sh"' in setup_vm
     assert 'AGENT_BOOTSTRAP_SCRIPT_PATH="$(agent_provider_bootstrap_script_path "${SCRIPT_DIR}" "${AGENT_PROVIDER}")"' in setup_vm
+    assert setup_vm.index('AGENT_BOOTSTRAP_SCRIPT_PATH="$(agent_provider_bootstrap_script_path "${SCRIPT_DIR}" "${AGENT_PROVIDER}")"') < setup_vm.index('log_step "launch_vm"')
+    assert "Unsupported AGENT_PROVIDER" in setup_vm
     assert 'log_step "bootstrap_${AGENT_PROVIDER}"' in setup_vm
     assert '"${AGENT_BOOTSTRAP_SCRIPT_PATH}" "${VM_NAME}" "${VM_USER}"' in setup_vm
     assert '"${SCRIPT_DIR}/bootstrap_codex_vm.sh" "${VM_NAME}" "${VM_USER}"' not in setup_vm

@@ -144,7 +144,7 @@ cat > ~/bin/gh <<SHIM
 set -euo pipefail
 
 copilot_host_auth_token() {
-  python3 - "\${COPILOT_HOST_AUTH_URL}" "\${AGENT_SANDBOX_SESSION_ID:-}" <<'PY'
+  python3 - "${COPILOT_HOST_AUTH_URL}" "\${AGENT_SANDBOX_SESSION_ID:-}" <<'PY'
 import sys
 import urllib.error
 import urllib.request
