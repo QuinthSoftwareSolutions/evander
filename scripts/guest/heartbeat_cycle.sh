@@ -6,6 +6,7 @@ set -euo pipefail
 AGENT_PROVIDER="${AGENT_PROVIDER:-codex}"
 AGENT_MODEL="${AGENT_MODEL:-}"
 AGENT_SANDBOX_GUEST_HEARTBEAT_PROMPT="${AGENT_SANDBOX_GUEST_HEARTBEAT_PROMPT:-Resume work for this session. Check for pending feedback first, then continue the most recent task.}"
+HEARTBEAT_ENV_FILE="${HOME}/.config/agent-sandbox/guest-heartbeat.env"
 
 LIB_DIR="${HOME}/.config/agent-sandbox/agent-runner-lib"
 
@@ -16,6 +17,14 @@ fi
 
 # shellcheck source=/dev/null
 source "${LIB_DIR}/agent_runner.sh"
+
+if [[ -z "${AGENT_MODEL:-}" && -f "${HEARTBEAT_ENV_FILE}" ]]; then
+  set -a
+  # shellcheck source=/dev/null
+  . "${HEARTBEAT_ENV_FILE}"
+  set +a
+  AGENT_MODEL="${AGENT_MODEL:-}"
+fi
 
 LOG_DIR="${HOME}/.agent-sandbox"
 RUN_LOG_FILE="${LOG_DIR}/codex-heartbeat-run.log"
@@ -65,7 +74,7 @@ fi
 shopt -u nullglob
 
 if [[ -z "${AGENT_MODEL:-}" ]]; then
-  echo "AGENT_MODEL is required for session-bound Codex execution. Set AGENT_MODEL before running heartbeat_cycle.sh." >&2
+  echo "AGENT_MODEL is required for session-bound Codex execution. Set AGENT_MODEL before running heartbeat_cycle.sh or persist it in ${HEARTBEAT_ENV_FILE}." >&2
   exit 1
 fi
 

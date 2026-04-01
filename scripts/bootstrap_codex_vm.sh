@@ -16,6 +16,7 @@ Environment:
   SSH_KEY_PATH    Private key matching the guest authorized key.
   HOST_CODEX_ROOT Host Codex package root.
   LLM_BASE_URL    Guest OpenAI-compatible base URL. Overrides ~/.agent/config.env when set.
+  AGENT_MODEL     Model persisted for guest heartbeat resume runs when enabled.
   ENABLE_GUEST_HEARTBEAT Install and enable the guest heartbeat timer (0/1, default: 0).
   GUEST_HEARTBEAT_PROMPT Prompt passed to `codex exec resume --last` from the guest timer.
 EOF
@@ -47,6 +48,7 @@ fi
 HOST_CODEX_ROOT="${HOST_CODEX_ROOT:-${CALLER_HOME}/.nvm/versions/node/v24.14.0/lib/node_modules/@openai/codex}"
 VENDOR_DIR="${HOST_CODEX_ROOT}/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl"
 LLM_BASE_URL="${LLM_BASE_URL:-}"
+AGENT_MODEL="${AGENT_MODEL:-}"
 ENABLE_GUEST_HEARTBEAT="${ENABLE_GUEST_HEARTBEAT:-0}"
 GUEST_HEARTBEAT_PROMPT="${GUEST_HEARTBEAT_PROMPT:-Resume work for this session. Check for pending feedback first, then continue the most recent task.}"
 SSH_OPTS=(
@@ -172,7 +174,7 @@ if [[ "${ENABLE_GUEST_HEARTBEAT}" == "1" ]]; then
       "${ROOT_DIR}/scripts/lib/agent_runner_codex.sh" \
       "${VM_USER}@${VM_IP}:~/.config/agent-sandbox/"
 
-    ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "GUEST_HEARTBEAT_PROMPT_B64='${GUEST_HEARTBEAT_PROMPT_B64}' bash -s" <<'EOF'
+    ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "GUEST_HEARTBEAT_PROMPT_B64='${GUEST_HEARTBEAT_PROMPT_B64}' AGENT_MODEL='${AGENT_MODEL}' bash -s" <<'EOF'
       set -euo pipefail
       mkdir -p ~/.config/systemd/user ~/.config/agent-sandbox/agent-runner-lib
       mv ~/.config/agent-sandbox/heartbeat_cycle.sh ~/.config/systemd/user/heartbeat_cycle.sh
@@ -182,6 +184,7 @@ if [[ "${ENABLE_GUEST_HEARTBEAT}" == "1" ]]; then
       mv ~/.config/agent-sandbox/agent_runner_codex.sh ~/.config/agent-sandbox/agent-runner-lib/agent_runner_codex.sh
       chmod +x ~/.config/systemd/user/heartbeat_cycle.sh
       cat > ~/.config/agent-sandbox/guest-heartbeat.env <<HEARTBEAT_ENV
+AGENT_MODEL=$(python3 -c 'import os, shlex; print(shlex.quote(os.environ.get("AGENT_MODEL", "")))')
 AGENT_SANDBOX_GUEST_HEARTBEAT_PROMPT=$(python3 -c 'import base64, os, shlex; print(shlex.quote(base64.b64decode(os.environ["GUEST_HEARTBEAT_PROMPT_B64"]).decode("utf-8")))')
 HEARTBEAT_ENV
       systemctl --user daemon-reload
