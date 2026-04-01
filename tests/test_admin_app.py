@@ -513,6 +513,18 @@ def test_update_session_action_bar_populates_session_model_controls() -> None:
             model="gpt-5.3-codex",
             allowed_tools=[],
         ),
+        _session_model_dirty=False,
+        _session_model_bound_session_id=None,
+        _session_model_server_value="",
+        _session_tools_dirty=False,
+        _session_tools_bound_session_id=None,
+        _session_tools_server_values=set(),
+        _sync_session_model_editor=lambda session_id, model_value: admin_app.MainWindow._sync_session_model_editor(
+            window, session_id, model_value
+        ),
+        _sync_session_tools_editor=lambda session_id, allowed_tools: admin_app.MainWindow._sync_session_tools_editor(
+            window, session_id, allowed_tools
+        ),
         session_selection_hint=DummyLabel(),
         renew_session_button=DummyButton(),
         revoke_session_button=DummyButton(),
@@ -531,6 +543,314 @@ def test_update_session_action_bar_populates_session_model_controls() -> None:
     assert window.session_model_edit.value == "gpt-5.3-codex"
     assert window.save_session_model_button.enabled is True
     assert window.session_model_status_label.text == ""
+
+
+def test_update_session_action_bar_preserves_dirty_model_input_for_same_session() -> None:
+    class DummyEdit:
+        def __init__(self) -> None:
+            self.enabled = None
+            self.value = "gpt-5.4-mini-CANARY"
+
+        def setEnabled(self, value: bool) -> None:
+            self.enabled = value
+
+        def setText(self, value: str) -> None:
+            self.value = value
+
+    class DummyButton:
+        def __init__(self) -> None:
+            self.enabled = None
+            self.visible = False
+
+        def setEnabled(self, value: bool) -> None:
+            self.enabled = value
+
+        def show(self) -> None:
+            self.visible = True
+
+        def hide(self) -> None:
+            self.visible = False
+
+    class DummyLabel:
+        def __init__(self) -> None:
+            self.text = ""
+
+        def setText(self, value: str) -> None:
+            self.text = value
+
+    window = SimpleNamespace(
+        selected_session_summary=lambda: SimpleNamespace(
+            session_id="session-1",
+            model="gpt-5.3-codex",
+            allowed_tools=[],
+        ),
+        _session_model_dirty=True,
+        _session_model_bound_session_id="session-1",
+        _session_model_server_value="gpt-5.3-codex",
+        _session_tools_dirty=False,
+        _session_tools_bound_session_id="session-1",
+        _session_tools_server_values=set(),
+        _sync_session_model_editor=lambda session_id, model_value: admin_app.MainWindow._sync_session_model_editor(
+            window, session_id, model_value
+        ),
+        _sync_session_tools_editor=lambda session_id, allowed_tools: admin_app.MainWindow._sync_session_tools_editor(
+            window, session_id, allowed_tools
+        ),
+        session_selection_hint=DummyLabel(),
+        renew_session_button=DummyButton(),
+        revoke_session_button=DummyButton(),
+        delete_session_button=DummyButton(),
+        session_model_edit=DummyEdit(),
+        save_session_model_button=DummyButton(),
+        session_model_status_label=DummyLabel(),
+        save_session_tools_button=DummyButton(),
+        session_tools_checkboxes={},
+    )
+
+    admin_app.MainWindow.update_session_action_bar(window)
+
+    assert window.session_model_edit.value == "gpt-5.4-mini-CANARY"
+    assert window._session_model_server_value == "gpt-5.3-codex"
+    assert window._session_model_dirty is True
+
+
+def test_update_session_action_bar_replaces_model_input_when_session_changes() -> None:
+    class DummyEdit:
+        def __init__(self) -> None:
+            self.enabled = None
+            self.value = "unsaved-value"
+
+        def setEnabled(self, value: bool) -> None:
+            self.enabled = value
+
+        def setText(self, value: str) -> None:
+            self.value = value
+
+    class DummyButton:
+        def __init__(self) -> None:
+            self.enabled = None
+            self.visible = False
+
+        def setEnabled(self, value: bool) -> None:
+            self.enabled = value
+
+        def show(self) -> None:
+            self.visible = True
+
+        def hide(self) -> None:
+            self.visible = False
+
+    class DummyLabel:
+        def __init__(self) -> None:
+            self.text = ""
+
+        def setText(self, value: str) -> None:
+            self.text = value
+
+    window = SimpleNamespace(
+        selected_session_summary=lambda: SimpleNamespace(
+            session_id="session-2",
+            model="gpt-5.4-mini",
+            allowed_tools=[],
+        ),
+        _session_model_dirty=True,
+        _session_model_bound_session_id="session-1",
+        _session_model_server_value="gpt-5.3-codex",
+        _session_tools_dirty=False,
+        _session_tools_bound_session_id="session-1",
+        _session_tools_server_values=set(),
+        _sync_session_model_editor=lambda session_id, model_value: admin_app.MainWindow._sync_session_model_editor(
+            window, session_id, model_value
+        ),
+        _sync_session_tools_editor=lambda session_id, allowed_tools: admin_app.MainWindow._sync_session_tools_editor(
+            window, session_id, allowed_tools
+        ),
+        session_selection_hint=DummyLabel(),
+        renew_session_button=DummyButton(),
+        revoke_session_button=DummyButton(),
+        delete_session_button=DummyButton(),
+        session_model_edit=DummyEdit(),
+        save_session_model_button=DummyButton(),
+        session_model_status_label=DummyLabel(),
+        save_session_tools_button=DummyButton(),
+        session_tools_checkboxes={},
+    )
+
+    admin_app.MainWindow.update_session_action_bar(window)
+
+    assert window.session_model_edit.value == "gpt-5.4-mini"
+    assert window._session_model_bound_session_id == "session-2"
+    assert window._session_model_dirty is False
+
+
+def test_update_session_action_bar_preserves_dirty_tool_checkboxes_for_same_session() -> None:
+    class DummyEdit:
+        def __init__(self) -> None:
+            self.enabled = None
+            self.value = ""
+
+        def setEnabled(self, value: bool) -> None:
+            self.enabled = value
+
+        def setText(self, value: str) -> None:
+            self.value = value
+
+    class DummyButton:
+        def __init__(self) -> None:
+            self.enabled = None
+            self.visible = False
+
+        def setEnabled(self, value: bool) -> None:
+            self.enabled = value
+
+        def show(self) -> None:
+            self.visible = True
+
+        def hide(self) -> None:
+            self.visible = False
+
+    class DummyLabel:
+        def __init__(self) -> None:
+            self.text = ""
+
+        def setText(self, value: str) -> None:
+            self.text = value
+
+    class DummyCheckbox:
+        def __init__(self, checked: bool) -> None:
+            self.enabled = None
+            self.checked = checked
+
+        def setEnabled(self, value: bool) -> None:
+            self.enabled = value
+
+        def setChecked(self, value: bool) -> None:
+            self.checked = value
+
+        def isChecked(self) -> bool:
+            return self.checked
+
+    checkbox = DummyCheckbox(True)
+    window = SimpleNamespace(
+        selected_session_summary=lambda: SimpleNamespace(
+            session_id="session-1",
+            model="gpt-5.3-codex",
+            allowed_tools=[],
+        ),
+        _session_model_dirty=False,
+        _session_model_bound_session_id="session-1",
+        _session_model_server_value="gpt-5.3-codex",
+        _session_tools_dirty=True,
+        _session_tools_bound_session_id="session-1",
+        _session_tools_server_values=set(),
+        _sync_session_model_editor=lambda session_id, model_value: admin_app.MainWindow._sync_session_model_editor(
+            window, session_id, model_value
+        ),
+        _sync_session_tools_editor=lambda session_id, allowed_tools: admin_app.MainWindow._sync_session_tools_editor(
+            window, session_id, allowed_tools
+        ),
+        session_selection_hint=DummyLabel(),
+        renew_session_button=DummyButton(),
+        revoke_session_button=DummyButton(),
+        delete_session_button=DummyButton(),
+        session_model_edit=DummyEdit(),
+        save_session_model_button=DummyButton(),
+        session_model_status_label=DummyLabel(),
+        save_session_tools_button=DummyButton(),
+        session_tools_checkboxes={admin_app.ToolName.APPROVAL_CHECK: checkbox},
+    )
+
+    admin_app.MainWindow.update_session_action_bar(window)
+
+    assert checkbox.checked is True
+    assert checkbox.enabled is True
+    assert window._session_tools_server_values == set()
+    assert window._session_tools_dirty is True
+
+
+def test_update_session_action_bar_replaces_tool_checkboxes_when_session_changes() -> None:
+    class DummyEdit:
+        def __init__(self) -> None:
+            self.enabled = None
+            self.value = ""
+
+        def setEnabled(self, value: bool) -> None:
+            self.enabled = value
+
+        def setText(self, value: str) -> None:
+            self.value = value
+
+    class DummyButton:
+        def __init__(self) -> None:
+            self.enabled = None
+            self.visible = False
+
+        def setEnabled(self, value: bool) -> None:
+            self.enabled = value
+
+        def show(self) -> None:
+            self.visible = True
+
+        def hide(self) -> None:
+            self.visible = False
+
+    class DummyLabel:
+        def __init__(self) -> None:
+            self.text = ""
+
+        def setText(self, value: str) -> None:
+            self.text = value
+
+    class DummyCheckbox:
+        def __init__(self, checked: bool) -> None:
+            self.enabled = None
+            self.checked = checked
+
+        def setEnabled(self, value: bool) -> None:
+            self.enabled = value
+
+        def setChecked(self, value: bool) -> None:
+            self.checked = value
+
+        def isChecked(self) -> bool:
+            return self.checked
+
+    checkbox = DummyCheckbox(False)
+    window = SimpleNamespace(
+        selected_session_summary=lambda: SimpleNamespace(
+            session_id="session-2",
+            model="gpt-5.3-codex",
+            allowed_tools=[admin_app.ToolName.APPROVAL_CHECK.value],
+        ),
+        _session_model_dirty=False,
+        _session_model_bound_session_id="session-2",
+        _session_model_server_value="gpt-5.3-codex",
+        _session_tools_dirty=True,
+        _session_tools_bound_session_id="session-1",
+        _session_tools_server_values=set(),
+        _sync_session_model_editor=lambda session_id, model_value: admin_app.MainWindow._sync_session_model_editor(
+            window, session_id, model_value
+        ),
+        _sync_session_tools_editor=lambda session_id, allowed_tools: admin_app.MainWindow._sync_session_tools_editor(
+            window, session_id, allowed_tools
+        ),
+        session_selection_hint=DummyLabel(),
+        renew_session_button=DummyButton(),
+        revoke_session_button=DummyButton(),
+        delete_session_button=DummyButton(),
+        session_model_edit=DummyEdit(),
+        save_session_model_button=DummyButton(),
+        session_model_status_label=DummyLabel(),
+        save_session_tools_button=DummyButton(),
+        session_tools_checkboxes={admin_app.ToolName.APPROVAL_CHECK: checkbox},
+    )
+
+    admin_app.MainWindow.update_session_action_bar(window)
+
+    assert checkbox.checked is True
+    assert window._session_tools_bound_session_id == "session-2"
+    assert window._session_tools_server_values == {admin_app.ToolName.APPROVAL_CHECK.value}
+    assert window._session_tools_dirty is False
 
 
 def test_handle_save_selected_session_model_requires_non_empty_input() -> None:

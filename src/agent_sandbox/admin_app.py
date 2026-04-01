@@ -1124,11 +1124,18 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self.session_detail_view.setPlaceholderText("Select a session to see its full details.")
         self.session_model_edit = QLineEdit()
         self.session_model_edit.setPlaceholderText("Required to start/resume agent")
+        self._session_model_dirty = False
+        self._session_model_bound_session_id: str | None = None
+        self._session_model_server_value = ""
+        self.session_model_edit.textEdited.connect(self._mark_session_model_dirty)
         self.save_session_model_button = QPushButton("Save Model")
         _set_standard_icon(self.save_session_model_button, "SP_DialogSaveButton")
         self.save_session_model_button.clicked.connect(self.handle_save_selected_session_model)
         self.session_model_status_label = QLabel("")
         self.session_model_status_label.setWordWrap(True)
+        self._session_tools_dirty = False
+        self._session_tools_bound_session_id: str | None = None
+        self._session_tools_server_values: set[str] = set()
         self.session_tools_checkboxes: dict[ToolName, QCheckBox] = {}
         self.worker_log_view = QTextEdit()
         self.worker_log_view.setReadOnly(True)
@@ -1419,6 +1426,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         tools_scroll_layout.setContentsMargins(4, 4, 4, 4)
         for tool in ToolName:
             checkbox = QCheckBox(tool.value)
+            checkbox.toggled.connect(self._mark_session_tools_dirty)
             self.session_tools_checkboxes[tool] = checkbox
             tools_scroll_layout.addWidget(checkbox)
         tools_scroll_layout.addStretch(1)
@@ -3035,6 +3043,12 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             self.delete_session_button.hide()
             self.session_model_edit.setEnabled(False)
             self.session_model_edit.setText("")
+            self._session_model_dirty = False
+            self._session_model_bound_session_id = None
+            self._session_model_server_value = ""
+            self._session_tools_dirty = False
+            self._session_tools_bound_session_id = None
+            self._session_tools_server_values = set()
             self.save_session_model_button.setEnabled(False)
             self.session_model_status_label.setText("")
             self.save_session_tools_button.setEnabled(False)
@@ -3048,14 +3062,12 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self.revoke_session_button.show()
         self.delete_session_button.show()
         self.session_model_edit.setEnabled(True)
-        self.session_model_edit.setText(str(summary.model or ""))
+        self._sync_session_model_editor(summary.session_id, str(summary.model or ""))
         self.save_session_model_button.setEnabled(True)
-        self.session_model_status_label.setText("")
+        if not self._session_model_dirty:
+            self.session_model_status_label.setText("")
         self.save_session_tools_button.setEnabled(True)
-        allowed_tool_set = set(summary.allowed_tools)
-        for tool_name, checkbox in self.session_tools_checkboxes.items():
-            checkbox.setEnabled(True)
-            checkbox.setChecked(tool_name in allowed_tool_set)
+        self._sync_session_tools_editor(summary.session_id, set(summary.allowed_tools))
 
     def refresh_selected_session_details(self) -> None:
         summary = self.selected_session_summary()
@@ -3151,7 +3163,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             self.service.set_session_allowed_tools,
             summary.session_id,
             selected_tools,
-            on_success=self.refresh_sessions,
+            on_success=lambda: self._handle_session_tools_save_success(summary.session_id, selected_tools),
         )
 
     def handle_save_selected_session_model(self) -> None:
@@ -3168,8 +3180,50 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             self.service.set_session_model,
             summary.session_id,
             model,
-            on_success=self.refresh_sessions,
+            on_success=lambda: self._handle_session_model_save_success(summary.session_id, model),
         )
+
+    def _mark_session_model_dirty(self, _text: str) -> None:
+        self._session_model_dirty = True
+
+    def _mark_session_tools_dirty(self, _checked: bool) -> None:
+        self._session_tools_dirty = True
+
+    def _sync_session_model_editor(self, session_id: str, model_value: str) -> None:
+        self._session_model_server_value = model_value
+        if self._session_model_bound_session_id != session_id:
+            self._session_model_bound_session_id = session_id
+            self._session_model_dirty = False
+            self.session_model_edit.setText(model_value)
+            return
+        if not self._session_model_dirty:
+            self.session_model_edit.setText(model_value)
+
+    def _handle_session_model_save_success(self, session_id: str, model_value: str) -> None:
+        self._session_model_bound_session_id = session_id
+        self._session_model_server_value = model_value
+        self._session_model_dirty = False
+        self.session_model_status_label.setText("")
+        self.refresh_sessions()
+
+    def _sync_session_tools_editor(self, session_id: str, allowed_tools: set[str]) -> None:
+        self._session_tools_server_values = set(allowed_tools)
+        should_apply = self._session_tools_bound_session_id != session_id or not self._session_tools_dirty
+        self._session_tools_bound_session_id = session_id
+        if not should_apply:
+            for checkbox in self.session_tools_checkboxes.values():
+                checkbox.setEnabled(True)
+            return
+        self._session_tools_dirty = False
+        for tool_name, checkbox in self.session_tools_checkboxes.items():
+            checkbox.setEnabled(True)
+            checkbox.setChecked(tool_name.value in allowed_tools)
+
+    def _handle_session_tools_save_success(self, session_id: str, selected_tools: list[str]) -> None:
+        self._session_tools_bound_session_id = session_id
+        self._session_tools_server_values = set(selected_tools)
+        self._session_tools_dirty = False
+        self.refresh_sessions()
 
     def selected_worker_summary(self):
         row = self.worker_table.currentRow()

@@ -794,6 +794,78 @@ def test_wake_bindings_uses_directory_workers_override_for_resume_command(tmp_pa
     assert "--host-state-file" in cmd and str(tmp_path / "wake-state-root.json") in cmd
 
 
+def test_wake_bindings_resolves_agent_model_for_resume_script_env(tmp_path, monkeypatch) -> None:
+    now = datetime.now(UTC)
+    session = _build_manifest(
+        "active-a",
+        expires_at=now + timedelta(hours=2),
+        metadata={"pr_feedback_streams": [{"provider": "github", "repo": "org/repo", "pr_id": "17"}]},
+    )
+    session.directory_path = "root/team-a"
+    sessions = {"active-a": session}
+
+    class _FeedbackWorker:
+        store = SimpleNamespace(has_unread_feedback=lambda **kwargs: True)
+
+        def poll_once(self, **kwargs):  # noqa: ANN003
+            return [object()]
+
+    captured_env: dict[str, str] = {}
+
+    def _fake_run(cmd, **kwargs):  # noqa: ANN001
+        env = kwargs.get("env")
+        assert env is not None
+        captured_env.update(env)
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("agent_sandbox.host_heartbeat_worker._probe_agent_dispatch_state", lambda **kwargs: "idle")
+    monkeypatch.setattr("agent_sandbox.host_heartbeat_worker.subprocess.run", _fake_run)
+    monkeypatch.delenv("AGENT_MODEL", raising=False)
+
+    config = _build_directory_scoped_gateway_config(tmp_path)
+    config.host_heartbeat_vm_user = "agent"
+    config.host_heartbeat_pr_resume_prompt = "team prompt"
+    config.host_heartbeat_discord_resume_prompt = "global discord prompt"
+    config.host_heartbeat_wake_state_path = tmp_path / "wake-state-root.json"
+    config.host_heartbeat_resume_timeout_seconds = 12.0
+    config.host_busy_check_script_path = tmp_path / "check_busy_root.sh"
+    config.host_heartbeat_session_cooldown_path = tmp_path / "cooldowns-root.json"
+    config.host_heartbeat_cooldown_seconds = 10.0
+    directory_store = DirectoryStore(config.directories_store_path)
+    directory_service = DirectoryService(directory_store)
+    team_a = directory_service.create(parent="root", name="team-a")
+    config_store = DirectoryConfigStore(directory_store, runtime_dir=config.runtime_dir)
+    config_store.ensure_root()
+    runtime = SimpleNamespace(
+        sessions=SimpleNamespace(read_all=lambda: sessions, get=sessions.get),
+        directories=directory_store,
+        audit=_DummyAudit(),
+    )
+    resume_script = tmp_path / "resume_issue_agent.sh"
+    resume_script.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    resume_script.chmod(0o755)
+    config.host_resume_script_path = resume_script
+    config_store.write(
+        team_a.path,
+        domain="issue_setup",
+        payload={
+            "default_model": "gpt-5.4",
+        },
+    )
+
+    worker = HostHeartbeatWorker(
+        config=config,
+        runtime=runtime,
+        feedback_worker=_FeedbackWorker(),
+        adapters={"github": object()},
+    )
+
+    worker.run_once()
+
+    assert captured_env["AGENT_MODEL"] == "gpt-5.4"
+    assert "PATH" in captured_env
+
+
 def test_wake_bindings_invokes_resume_script_with_discord_prompt_when_discord_is_pending(
     tmp_path, monkeypatch
 ) -> None:

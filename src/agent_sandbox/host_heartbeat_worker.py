@@ -15,6 +15,7 @@ from typing import Any
 import httpx
 
 from .agent_control import AgentControlStore
+from .admin_service import resolve_agent_model_for_manifest, resolve_effective_issue_setup_config
 from .audit import AuditEventType
 from .config import GatewayConfig, HostHeartbeatWorkerGlobalConfig
 from .provider_config import ProviderConfigResolver
@@ -773,14 +774,17 @@ class HostHeartbeatWorker:
         host_control_state_path = getattr(self.config, "host_agent_control_state_path", None)
         if host_control_state_path is not None:
             cmd.extend(["--host-control-state-path", str(host_control_state_path)])
+        run_kwargs: dict[str, Any] = {
+            "check": False,
+            "capture_output": True,
+            "text": True,
+            "timeout": worker_config.host_heartbeat_resume_timeout_seconds,
+        }
+        agent_model = self._resolve_agent_model_for_binding(binding)
+        if agent_model:
+            run_kwargs["env"] = os.environ | {"AGENT_MODEL": agent_model}
         try:
-            completed = subprocess.run(
-                cmd,
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=worker_config.host_heartbeat_resume_timeout_seconds,
-            )
+            completed = subprocess.run(cmd, **run_kwargs)
         except OSError:
             logger.warning(
                 "Resume script invocation failed path=%s session_id=%s vm_id=%s",
@@ -883,6 +887,44 @@ class HostHeartbeatWorker:
         if wake_store is not None:
             wake_store.record_dispatch(dispatch_record)
         return dispatch_record
+
+    def _resolve_agent_model_for_binding(self, binding: StreamSessionBinding) -> str | None:
+        session_store = getattr(self.runtime, "sessions", None)
+        session = None
+        if session_store is not None:
+            get_session = getattr(session_store, "get", None)
+            if callable(get_session):
+                session = get_session(binding.session_id)
+            else:
+                read_all = getattr(session_store, "read_all", None)
+                if callable(read_all):
+                    session = read_all().get(binding.session_id)
+        if session is None:
+            return os.environ.get("AGENT_MODEL") or None
+        if not hasattr(self.runtime, "directories"):
+            session_model = str(getattr(session, "model", "") or "").strip()
+            if session_model:
+                return session_model
+            return os.environ.get("AGENT_MODEL") or None
+        try:
+            issue_setup = resolve_effective_issue_setup_config(
+                config=self.config,
+                runtime=self.runtime,
+                directory_path=session.directory_path,
+                root_dir=Path(__file__).resolve().parents[2],
+            )
+            return resolve_agent_model_for_manifest(session, issue_setup=issue_setup)
+        except ValueError as exc:
+            logger.warning(
+                "Cannot resolve AGENT_MODEL for heartbeat wake session_id=%s vm_id=%s error=%s",
+                binding.session_id,
+                binding.vm_id,
+                exc,
+            )
+            session_model = str(getattr(session, "model", "") or "").strip()
+            if session_model:
+                return session_model
+            return os.environ.get("AGENT_MODEL") or None
 
     def _collect_stream_mappings(
         self,
