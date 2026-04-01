@@ -31,7 +31,10 @@ def test_bootstrap_script_enforces_codex_config_and_placeholder_key() -> None:
     assert "append_shell_setup ~/.profile" in script
     assert "append_shell_setup ~/.bashrc" in script
     assert 'ENABLE_GUEST_HEARTBEAT="${ENABLE_GUEST_HEARTBEAT:-0}"' in script
+    assert 'AGENT_MODEL="${AGENT_MODEL:-}"' in script
     assert 'GUEST_HEARTBEAT_PROMPT="${GUEST_HEARTBEAT_PROMPT:-Resume work for this session.' in script
+    assert "AGENT_MODEL='${AGENT_MODEL}' bash -s" in script
+    assert 'AGENT_MODEL=$(python3 -c \'import os, shlex; print(shlex.quote(os.environ.get("AGENT_MODEL", "")))\')' in script
     assert 'systemctl --user disable --now agent-heartbeat.timer' in script
     assert 'systemctl --user enable --now agent-heartbeat.timer' in script
 
@@ -85,6 +88,8 @@ def test_guest_heartbeat_assets_exist() -> None:
     timer = (root / "agent-heartbeat.timer").read_text(encoding="utf-8")
 
     assert 'AGENT_SANDBOX_GUEST_HEARTBEAT_PROMPT="${AGENT_SANDBOX_GUEST_HEARTBEAT_PROMPT:-' in cycle_script
+    assert 'HEARTBEAT_ENV_FILE="${HOME}/.config/agent-sandbox/guest-heartbeat.env"' in cycle_script
+    assert '. "${HEARTBEAT_ENV_FILE}"' in cycle_script
     assert "agent_runner_resume_last" in cycle_script
     assert "agent-*.state" in cycle_script
     assert "codex-resume-last.state" in cycle_script

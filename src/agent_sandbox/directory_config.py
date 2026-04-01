@@ -134,6 +134,7 @@ DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
             "git_host",
             "git_user",
             "git_ssh_alias",
+            "default_model",
             "post_exec_verification_prompt",
             "enable_guest_heartbeat",
             "guest_heartbeat_prompt",
@@ -175,6 +176,7 @@ class IssueSetupDirectoryConfig(BaseModel):
     git_host: str | None = None
     git_user: str | None = None
     git_ssh_alias: str | None = None
+    default_model: str | None = None
     post_exec_verification_prompt: str | None = None
     enable_guest_heartbeat: bool | None = None
     guest_heartbeat_prompt: str | None = None
@@ -186,6 +188,7 @@ class EffectiveIssueSetupDirectoryConfig(BaseModel):
     git_host: str
     git_user: str
     git_ssh_alias: str
+    default_model: str | None = None
     post_exec_verification_prompt: str | None = None
     enable_guest_heartbeat: bool
     guest_heartbeat_prompt: str
@@ -263,6 +266,7 @@ def get_domain_base_config(config: GatewayConfig, domain: str) -> dict[str, Any]
             "git_host": os.environ.get("AGENT_SANDBOX_GIT_HOST", "").strip() or "192.168.250.1",
             "git_user": os.environ.get("AGENT_SANDBOX_GIT_USER", "").strip() or os.environ.get("USER", "agent"),
             "git_ssh_alias": os.environ.get("AGENT_SANDBOX_GIT_SSH_ALIAS", "").strip() or "agent-sandbox-git-host",
+            "default_model": os.environ.get("AGENT_DEFAULT_MODEL", "").strip() or None,
             "enable_guest_heartbeat": (
                 os.environ.get("ENABLE_GUEST_HEARTBEAT", "").strip().lower() in {"1", "true", "yes", "on"}
             ),

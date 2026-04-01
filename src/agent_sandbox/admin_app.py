@@ -269,6 +269,8 @@ class CreateVmDialog(QDialog):  # type: ignore[misc]
         form = QFormLayout()
 
         self.repo_source_edit = QLineEdit(repo_source or "")
+        self.model_edit = QLineEdit()
+        self.model_edit.setPlaceholderText("Optional; uses directory default when empty")
         self.python_checkbox = QCheckBox("Bootstrap Python")
         self.dotnet_checkbox = QCheckBox("Bootstrap .NET")
         self.nuget_checkbox = QCheckBox("Bootstrap NuGet")
@@ -299,6 +301,7 @@ class CreateVmDialog(QDialog):  # type: ignore[misc]
         self.start_agent_checkbox.setChecked(True)
 
         form.addRow("Repo source", self.repo_source_edit)
+        form.addRow("Model", self.model_edit)
         form.addRow("", self.python_checkbox)
         form.addRow("", self.dotnet_checkbox)
         form.addRow("", self.nuget_checkbox)
@@ -328,6 +331,7 @@ class CreateVmDialog(QDialog):  # type: ignore[misc]
         mssql_init_root = self.mssql_init_root_edit.text().strip() or None
         return {
             "repo_source": self.repo_source_edit.text().strip() or None,
+            "model": self.model_edit.text().strip() or None,
             "python": self.python_checkbox.isChecked(),
             "dotnet": self.dotnet_checkbox.isChecked(),
             "nuget": nuget if self.nuget_checkbox.isChecked() else None,
@@ -352,6 +356,8 @@ class CreateStandaloneVmDialog(QDialog):  # type: ignore[misc]
         self.session_id_edit.setPlaceholderText("Optional; generated when empty")
         self.repo_source_edit = QLineEdit()
         self.repo_source_edit.setPlaceholderText("/path/to/repo or git@host:repo.git")
+        self.model_edit = QLineEdit()
+        self.model_edit.setPlaceholderText("Optional; uses directory default when empty")
         self.python_checkbox = QCheckBox("Bootstrap Python")
         self.dotnet_checkbox = QCheckBox("Bootstrap .NET")
         self.nuget_checkbox = QCheckBox("Bootstrap NuGet")
@@ -380,6 +386,7 @@ class CreateStandaloneVmDialog(QDialog):  # type: ignore[misc]
         form.addRow("VM name", self.vm_name_edit)
         form.addRow("Session ID", self.session_id_edit)
         form.addRow("Repo source", self.repo_source_edit)
+        form.addRow("Model", self.model_edit)
         form.addRow("", self.python_checkbox)
         form.addRow("", self.python_hint_label)
         form.addRow("", self.dotnet_checkbox)
@@ -412,6 +419,7 @@ class CreateStandaloneVmDialog(QDialog):  # type: ignore[misc]
             "vm_name": self.vm_name_edit.text().strip(),
             "session_id": self.session_id_edit.text().strip() or None,
             "repo_source": self.repo_source_edit.text().strip() or None,
+            "model": self.model_edit.text().strip() or None,
             "python": self.python_checkbox.isChecked(),
             "dotnet": self.dotnet_checkbox.isChecked(),
             "nuget": self.nuget_checkbox.isChecked(),
@@ -675,6 +683,9 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
     "issue_setup_azure_devops_pr_pat_env": (
         "Optional override for the Azure DevOps PR PAT env-var name used by issue setup and PR scripts."
     ),
+    "default_model": (
+        "Default agent model for sessions in this directory when no per-session model override is set."
+    ),
     "pr_template_markdown": (
         "Markdown boilerplate prepended to automated PR descriptions for this directory."
     ),
@@ -910,7 +921,10 @@ def _worker_global_config_tooltip(field_name: str) -> str:
 def _directory_config_tab_field_sources(tab_key: str) -> tuple[tuple[str, str], ...]:
     if tab_key == "discord":
         return _DISCORD_CONFIG_FIELDS
-    return tuple((tab_key, field_name) for field_name in sorted(DIRECTORY_CONFIG_DOMAIN_FIELDS[tab_key]))
+    field_names = set(DIRECTORY_CONFIG_DOMAIN_FIELDS[tab_key])
+    if tab_key == "issue_setup":
+        field_names.add("default_model")
+    return tuple((tab_key, field_name) for field_name in sorted(field_names))
 
 
 def _directory_config_tab_underlying_domains(tab_key: str) -> tuple[str, ...]:
@@ -1108,6 +1122,13 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self.session_detail_view = QTextEdit()
         self.session_detail_view.setReadOnly(True)
         self.session_detail_view.setPlaceholderText("Select a session to see its full details.")
+        self.session_model_edit = QLineEdit()
+        self.session_model_edit.setPlaceholderText("Required to start/resume agent")
+        self.save_session_model_button = QPushButton("Save Model")
+        _set_standard_icon(self.save_session_model_button, "SP_DialogSaveButton")
+        self.save_session_model_button.clicked.connect(self.handle_save_selected_session_model)
+        self.session_model_status_label = QLabel("")
+        self.session_model_status_label.setWordWrap(True)
         self.session_tools_checkboxes: dict[ToolName, QCheckBox] = {}
         self.worker_log_view = QTextEdit()
         self.worker_log_view.setReadOnly(True)
@@ -1244,6 +1265,9 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             self.vm_action_bar.addWidget(button)
         vm_toolbar.addLayout(self.vm_action_bar)
         vm_layout.addLayout(vm_toolbar)
+        self.vm_inline_validation_label = QLabel("")
+        self.vm_inline_validation_label.setWordWrap(True)
+        vm_layout.addWidget(self.vm_inline_validation_label)
         vm_splitter = QSplitter(Qt.Orientation.Vertical)
         self.vm_splitter = vm_splitter
         vm_splitter.addWidget(self.vm_table)
@@ -1383,6 +1407,10 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         session_tools_widget = QWidget()
         session_tools_layout = QVBoxLayout(session_tools_widget)
         session_tools_layout.setContentsMargins(0, 0, 0, 0)
+        session_tools_layout.addWidget(QLabel("Model"))
+        session_tools_layout.addWidget(self.session_model_edit)
+        session_tools_layout.addWidget(self.save_session_model_button)
+        session_tools_layout.addWidget(self.session_model_status_label)
         session_tools_layout.addWidget(QLabel("Allowed tools"))
         tools_scroll = QScrollArea()
         tools_scroll.setWidgetResizable(True)
@@ -1520,17 +1548,35 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
     def _show_action_error_dialog(self, message: str) -> None:
         self._show_read_only_text_dialog(title="Action Failed", text=message)
 
+    def _set_vm_inline_validation_text(self, message: str) -> None:
+        label = getattr(self, "vm_inline_validation_label", None)
+        if label is not None:
+            label.setText(message)
+
     def _handle_action_success(self, label: str, result, on_success, worker: _ActionWorker) -> None:
         self._discard_worker(worker)
         if getattr(result, "success", True) is False:
             message = getattr(result, "message", str(result))
             self.append_log(f"{label} failed: {message}")
+            if (
+                (label.startswith("Start ") or label.startswith("Resume "))
+                and "missing session.model" in message
+                and "issue_setup.default_model" in message
+            ):
+                MainWindow._set_vm_inline_validation_text(self, message)
+            else:
+                MainWindow._set_vm_inline_validation_text(self, "")
             self._update_privilege_status()
             self._refresh_visible_data(manual=True)
             self.refresh_issues()
             self.refresh_approvals()
             self.refresh_workers()
-            self._show_action_error_dialog(message)
+            if not (
+                (label.startswith("Start ") or label.startswith("Resume "))
+                and "missing session.model" in message
+                and "issue_setup.default_model" in message
+            ):
+                self._show_action_error_dialog(message)
             return
         message = getattr(result, "message", str(result))
         self.append_log(f"{label}: {message}")
@@ -1653,6 +1699,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         summary = self.selected_vm_summary()
         if summary is None:
             self.vm_selection_hint.setText("No VM selected")
+            MainWindow._set_vm_inline_validation_text(self, "")
             self.vm_selection_hint.show()
             for button in (
                 self.start_vm_button,
@@ -1666,6 +1713,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             return
 
         self.vm_selection_hint.setText(f"Selected: {summary.vm_name}")
+        MainWindow._set_vm_inline_validation_text(self, "")
         self.vm_selection_hint.show()
         self.start_vm_button.setVisible(summary.libvirt_state != "running")
         self.shutdown_vm_button.setVisible(summary.libvirt_state == "running")
@@ -1748,6 +1796,11 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         summary = self.selected_vm_summary()
         if summary is None:
             return
+        validation_error = self._validate_vm_model_configuration(summary)
+        if validation_error:
+            self.vm_inline_validation_label.setText(validation_error)
+            return
+        self.vm_inline_validation_label.setText("")
         self.run_action(f"Start {summary.vm_name}", self.service.start_vm, summary.vm_name)
 
     def handle_shutdown_selected_vm(self) -> None:
@@ -1809,6 +1862,10 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         )
 
     def resume_vm(self, summary) -> None:
+        validation_error = self._validate_vm_model_configuration(summary)
+        if validation_error:
+            self.vm_inline_validation_label.setText(validation_error)
+            return
         prompt, accepted = QInputDialog.getMultiLineText(
             self,
             f"Resume {summary.vm_name}",
@@ -1817,11 +1874,37 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         )
         if not accepted or not prompt.strip():
             return
+        self.vm_inline_validation_label.setText("")
         self.run_action(
             f"Resume {summary.vm_name}",
             self.service.resume_agent,
             summary.vm_name,
             prompt.strip(),
+        )
+
+    def _validate_vm_model_configuration(self, summary) -> str | None:
+        session_ids = [str(session_id).strip() for session_id in getattr(summary, "session_ids", []) if str(session_id).strip()]
+        if not session_ids:
+            return None
+        session_lookup = {
+            item.session_id: item
+            for item in [*self._active_session_summaries, *self._expired_session_summaries]
+        }
+        effective_result = self.service.compute_directory_effective_config(self._selected_directory_path, "issue_setup")
+        default_model = None
+        if effective_result.ok and effective_result.data is not None:
+            default_model = str(effective_result.data.resolution.effective_config.get("default_model") or "").strip() or None
+        missing_sessions = [
+            session_id
+            for session_id in session_ids
+            if not str(getattr(session_lookup.get(session_id), "model", "") or "").strip() and not default_model
+        ]
+        if not missing_sessions:
+            return None
+        joined_sessions = ", ".join(missing_sessions)
+        return (
+            "Cannot start/resume agent: missing session model and missing issue_setup.default_model. "
+            f"Set a model for session(s): {joined_sessions}, or configure issue_setup.default_model."
         )
 
     def refresh_issues(self) -> None:
@@ -2950,6 +3033,10 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             self.renew_session_button.hide()
             self.revoke_session_button.hide()
             self.delete_session_button.hide()
+            self.session_model_edit.setEnabled(False)
+            self.session_model_edit.setText("")
+            self.save_session_model_button.setEnabled(False)
+            self.session_model_status_label.setText("")
             self.save_session_tools_button.setEnabled(False)
             for checkbox in self.session_tools_checkboxes.values():
                 checkbox.setEnabled(False)
@@ -2960,6 +3047,10 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self.renew_session_button.show()
         self.revoke_session_button.show()
         self.delete_session_button.show()
+        self.session_model_edit.setEnabled(True)
+        self.session_model_edit.setText(str(summary.model or ""))
+        self.save_session_model_button.setEnabled(True)
+        self.session_model_status_label.setText("")
         self.save_session_tools_button.setEnabled(True)
         allowed_tool_set = set(summary.allowed_tools)
         for tool_name, checkbox in self.session_tools_checkboxes.items():
@@ -3060,6 +3151,23 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             self.service.set_session_allowed_tools,
             summary.session_id,
             selected_tools,
+            on_success=self.refresh_sessions,
+        )
+
+    def handle_save_selected_session_model(self) -> None:
+        summary = self.selected_session_summary()
+        if summary is None:
+            return
+        model = self.session_model_edit.text().strip()
+        if not model:
+            self.session_model_status_label.setText("Model is required.")
+            return
+        self.session_model_status_label.setText("")
+        self.run_action(
+            f"Update model for {summary.session_id}",
+            self.service.set_session_model,
+            summary.session_id,
+            model,
             on_success=self.refresh_sessions,
         )
 

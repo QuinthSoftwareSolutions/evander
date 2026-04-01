@@ -298,6 +298,7 @@ def test_list_sessions_filters_active_and_expired(tmp_path: Path) -> None:
         SessionManifest(
             session_id="issue-123-active",
             vm_id="vm-123",
+            model="gpt-5.4",
             allowed_tools=[],
             created_at=datetime(2026, 3, 25, 9, 0, tzinfo=UTC),
             expires_at=datetime.now(UTC) + timedelta(hours=1),
@@ -322,6 +323,7 @@ def test_list_sessions_filters_active_and_expired(tmp_path: Path) -> None:
     assert [summary.session_id for summary in expired] == ["issue-123-expired"]
     assert [summary.session_id for summary in all_sessions] == ["issue-123-expired", "issue-123-active"]
     assert active[0].issue_number == "123"
+    assert active[0].model == "gpt-5.4"
     assert active[0].is_expired is False
     assert expired[0].is_expired is True
 
@@ -683,6 +685,7 @@ def test_create_issue_vm_uses_directory_vm_defaults_overlay_for_guest_env(tmp_pa
         session_id="issue-123-session",
         directory_path=team_path,
         start_agent=False,
+        model="gpt-5.2-codex",
     )
 
     assert result.success is True
@@ -720,6 +723,7 @@ def test_create_issue_vm_uses_issue_directory_when_called_with_yaml_path(tmp_pat
         issue=issue.yaml_path,
         session_id="issue-1-session",
         start_agent=False,
+        model="gpt-5.2-codex",
     )
 
     manifest = service.runtime.sessions.get("issue-1-session")
@@ -818,6 +822,7 @@ def test_create_issue_vm_uses_yaml_path_owner_when_issue_number_is_ambiguous(tmp
         issue=project_a_issue.yaml_path,
         session_id="issue-42-session",
         start_agent=False,
+        model="gpt-5.2-codex",
     )
 
     manifest = service.runtime.sessions.get("issue-42-session")
@@ -860,6 +865,7 @@ def test_create_issue_vm_uses_issue_setup_domain_for_setup_env(tmp_path: Path, m
         session_id="issue-124-session",
         directory_path=team_path,
         start_agent=False,
+        model="gpt-5.2-codex",
     )
 
     assert result.success is True
@@ -904,6 +910,7 @@ def test_create_issue_vm_uses_issue_setup_azure_pat_override(tmp_path: Path, mon
         session_id="issue-125-session",
         directory_path=team_path,
         start_agent=False,
+        model="gpt-5.2-codex",
     )
 
     assert result.success is True
@@ -932,6 +939,7 @@ def test_create_issue_vm_uses_issue_setup_fallback_env_when_domain_missing(tmp_p
         session_id="issue-126-session",
         directory_path="root",
         start_agent=False,
+        model="gpt-5.2-codex",
     )
 
     assert result.success is True
@@ -941,6 +949,56 @@ def test_create_issue_vm_uses_issue_setup_fallback_env_when_domain_missing(tmp_p
     assert captured_env["AGENT_SANDBOX_GIT_SSH_ALIAS"] == "env-git"
     assert captured_env["AGENT_SANDBOX_AZURE_DEVOPS_PR_PAT_ENV"] == "ENV_PAT_NAME"
     assert captured_env["AGENT_POST_EXEC_VERIFICATION_PROMPT"] == "verify from env"
+
+
+def test_resolve_agent_model_prefers_session_model_over_issue_setup_default(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.write_directory_domain_config("root", "issue_setup", {"default_model": "gpt-5.2-codex"})
+    manifest = SessionManifest(
+        session_id="session-1",
+        vm_id="vm-123",
+        directory_path="root",
+        allowed_tools=[],
+        model="gpt-5.3-codex",
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    service.runtime.sessions.put(manifest.session_id, manifest)
+
+    resolved = service._resolve_agent_model_for_session("session-1")
+
+    assert resolved == "gpt-5.3-codex"
+
+
+def test_resolve_agent_model_uses_issue_setup_default_when_session_model_missing(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.write_directory_domain_config("root", "issue_setup", {"default_model": "gpt-5.2-codex"})
+    manifest = SessionManifest(
+        session_id="session-1",
+        vm_id="vm-123",
+        directory_path="root",
+        allowed_tools=[],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    service.runtime.sessions.put(manifest.session_id, manifest)
+
+    resolved = service._resolve_agent_model_for_session("session-1")
+
+    assert resolved == "gpt-5.2-codex"
+
+
+def test_resolve_agent_model_fails_when_session_and_issue_setup_models_missing(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    manifest = SessionManifest(
+        session_id="session-1",
+        vm_id="vm-123",
+        directory_path="root",
+        allowed_tools=[],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    service.runtime.sessions.put(manifest.session_id, manifest)
+
+    with pytest.raises(ValueError, match="missing session.model and missing issue_setup.default_model"):
+        service._resolve_agent_model_for_session("session-1")
 
 
 def test_create_issue_vm_never_uses_pat_secret_as_env_var_name(tmp_path: Path, monkeypatch) -> None:
@@ -961,6 +1019,7 @@ def test_create_issue_vm_never_uses_pat_secret_as_env_var_name(tmp_path: Path, m
         session_id="issue-127-session",
         directory_path="root",
         start_agent=False,
+        model="gpt-5.2-codex",
     )
 
     assert result.success is True
@@ -980,6 +1039,7 @@ def test_create_issue_vm_deletes_session_when_setup_fails_before_vm_exists(tmp_p
         issue=issue.issue_number,
         session_id="issue-1-session",
         start_agent=False,
+        model="gpt-5.2-codex",
     )
 
     assert result.success is False
@@ -1003,6 +1063,7 @@ def test_create_issue_vm_deletes_session_when_dominfo_probe_fails(tmp_path: Path
         issue=issue.issue_number,
         session_id="issue-1-session",
         start_agent=False,
+        model="gpt-5.2-codex",
     )
 
     assert result.success is False
@@ -1117,6 +1178,43 @@ def test_set_session_allowed_tools_updates_manifest(tmp_path: Path) -> None:
     assert result.session_id == "issue-13302-session"
     assert updated is not None
     assert updated.allowed_tools == [ToolName.COMPLETE_ISSUE, ToolName.APPROVAL_CHECK]
+
+
+def test_set_session_model_updates_manifest(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.sessions.put(
+        "issue-13303-session",
+        SessionManifest(
+            session_id="issue-13303-session",
+            vm_id="vm-13303",
+            allowed_tools=[ToolName.CLAIM_NEXT_ISSUE],
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+        ),
+    )
+
+    result = service.set_session_model("13303", "  gpt-5.5  ")
+
+    updated = service.runtime.sessions.get("issue-13303-session")
+    assert result.success is True
+    assert result.session_id == "issue-13303-session"
+    assert updated is not None
+    assert updated.model == "gpt-5.5"
+
+
+def test_set_session_model_rejects_empty_value(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.sessions.put(
+        "issue-13304-session",
+        SessionManifest(
+            session_id="issue-13304-session",
+            vm_id="vm-13304",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="model must be non-empty"):
+        service.set_session_model("13304", "   ")
 
 
 def test_list_background_workers_reads_systemd_state(tmp_path: Path, monkeypatch) -> None:
@@ -1682,7 +1780,7 @@ def test_create_issue_vm_accepts_unified_proxy_identifier(tmp_path: Path, monkey
 
     monkeypatch.setattr("agent_sandbox.admin_service.subprocess.run", _fake_run)
 
-    result = service.create_issue_vm(issue="proxy:ado/77", start_agent=False)
+    result = service.create_issue_vm(issue="proxy:ado/77", start_agent=False, model="gpt-5.2-codex")
 
     assert result.success is True
     assert captured["cmd"][0].endswith("setup_issue_vm.sh")

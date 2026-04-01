@@ -47,7 +47,7 @@ Environment:
   RESUME_COMMAND_TIMEOUT_SECONDS
                                End-to-end timeout for worker-mode resume command. Default: 900
   AGENT_PROVIDER               Agent runner provider. Default: codex
-  AGENT_MODEL                  Model passed to `agent_runner_resume_last`. Default: gpt-5.4
+  AGENT_MODEL                  Model passed to guest agent runner commands. Required.
 USAGE
 }
 
@@ -341,7 +341,7 @@ if ! parse_args "$@"; then
 fi
 
 AGENT_PROVIDER="${AGENT_PROVIDER:-codex}"
-AGENT_MODEL="${AGENT_MODEL:-gpt-5.4}"
+AGENT_MODEL="${AGENT_MODEL:-}"
 AGENT_RUNNER_PROVIDER_LIB_NAME="$(agent_provider_runner_lib_name "${AGENT_PROVIDER}")"
 AGENT_RUNNER_PROVIDER_LIB_PATH="$(agent_provider_runner_lib_path "${SCRIPT_DIR}/lib" "${AGENT_PROVIDER}")"
 if [[ ! -f "${AGENT_RUNNER_PROVIDER_LIB_PATH}" ]]; then
@@ -371,6 +371,11 @@ if [[ "${HOST_CONTROL_STATUS}" == "disabled" ]]; then
   echo "Agent is disabled for ${VM_NAME}." >&2
   write_host_state_attempt "${HOST_STATE_FILE}" "${SESSION_ID}" "error" "agent-disabled"
   exit "${EXIT_RESUME_FAILED}"
+fi
+
+if [[ "${AGENT_PROVIDER}" == "codex" && -z "${AGENT_MODEL:-}" ]]; then
+  echo "AGENT_MODEL is required for session-bound Codex execution. Set AGENT_MODEL in the host invocation environment." >&2
+  exit "${EXIT_USAGE}"
 fi
 
 VM_STATE="$(vm_network_domain_state "${VM_NAME}")"

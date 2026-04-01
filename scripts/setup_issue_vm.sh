@@ -49,7 +49,7 @@ Arguments:
 
 Environment:
   AGENT_PROVIDER              Agent runner provider. Default: codex
-  AGENT_MODEL                 Model to run inside the guest. Default: gpt-5.4
+  AGENT_MODEL                 Model to run inside the guest. Required when starting agent commands.
   AGENT_POST_EXEC_VERIFICATION_PROMPT
                               Optional prompt used for one follow-up
                               `agent_runner_resume_last` verification pass
@@ -222,7 +222,7 @@ VM_WAIT_SSH_TIMEOUT_SECONDS="${VM_WAIT_SSH_TIMEOUT_SECONDS:-180}"
 SSH_PRIVATE_KEY_PATH="${SSH_PRIVATE_KEY_PATH:-${CALLER_HOME}/.ssh/id_ed25519}"
 ISSUE_FILE=""
 AGENT_PROVIDER="${AGENT_PROVIDER:-codex}"
-AGENT_MODEL="${AGENT_MODEL:-gpt-5.4}"
+AGENT_MODEL="${AGENT_MODEL:-}"
 DEFAULT_POST_EXEC_VERIFICATION_PROMPT="Before concluding, verify whether you completed all required checklist items. Confirm (or explicitly list gaps for): (1) appropriate unit tests for your code changes, (2) documentation updates for behavioral or operational changes, and (3) a markdown PR summary maintained with 'git agent-pr-note'. If anything is missing, complete it now. If you make any changes during this checklist pass, push them before concluding. A successful 'git push-agent' refreshes and pushes refs/notes/agent-pr together with your latest work."
 POST_EXEC_VERIFICATION_PROMPT="${AGENT_POST_EXEC_VERIFICATION_PROMPT:-${DEFAULT_POST_EXEC_VERIFICATION_PROMPT}}"
 POST_EXEC_VERIFICATION_PROMPT_B64="$(printf '%s' "${POST_EXEC_VERIFICATION_PROMPT}" | python3 -c 'import base64,sys; print(base64.b64encode(sys.stdin.buffer.read()).decode())')"
@@ -249,6 +249,13 @@ from pathlib import Path
 print(base64.b64encode(Path(sys.argv[1]).read_bytes()).decode())
 PY
 )"
+
+require_agent_model() {
+  if [[ -z "${AGENT_MODEL:-}" ]]; then
+    echo "AGENT_MODEL is required for session-bound Codex execution. Set AGENT_MODEL in the host invocation environment." >&2
+    exit 1
+  fi
+}
 
 read_issue_number_from_yaml() {
   python3 - "$1" <<'PY'
@@ -673,6 +680,7 @@ print(text, end="")
 PY
 
 if (( START_AGENT )); then
+  require_agent_model
   log_step "start_agent"
   ssh \
     "${SSH_OPTS[@]}" \

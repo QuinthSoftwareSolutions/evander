@@ -18,7 +18,7 @@ import typer
 from pydantic import ValidationError
 from typer.core import TyperGroup
 
-from .admin_service import AdminService
+from .admin_service import AdminService, resolve_agent_model_for_manifest, resolve_effective_issue_setup_config
 from .audit import AuditEventType
 from .ado_issue_worker import run_worker_command
 from .bootstrap import (
@@ -1315,6 +1315,10 @@ def create_session(
         typer.Option("--email-folder", help="Allowlisted email folder."),
     ] = None,
     ttl_hours: Annotated[int | None, typer.Option("--ttl-hours", help="Session time to live in hours.")] = None,
+    model: Annotated[
+        str | None,
+        typer.Option("--model", help="Agent model override for this session."),
+    ] = None,
 ) -> None:
     cfg = _load_runtime_config_from_option(config)
     runtime = build_runtime(cfg)
@@ -1354,6 +1358,20 @@ def create_session(
     if str(os.environ.get("AGENT_PROVIDER", "")).strip().lower() == "copilot":
         manifest.allowed_tools.append(ToolName.COPILOT_HOST_AUTH)
         manifest.metadata["agent_provider"] = "copilot"
+    normalized_model = (model or "").strip() or None
+    if normalized_model is not None:
+        manifest.model = normalized_model
+    else:
+        try:
+            issue_setup = resolve_effective_issue_setup_config(
+                config=cfg,
+                runtime=runtime,
+                directory_path=normalized_directory,
+                root_dir=_project_dir_for_config_option(config),
+            )
+            manifest.model = resolve_agent_model_for_manifest(manifest, issue_setup=issue_setup)
+        except ValueError:
+            manifest.model = None
     if manifest.email_send_enabled:
         manifest.allowed_tools.append(ToolName.EMAIL_SEND_APPROVED)
     runtime.sessions.put(session_id, manifest)
@@ -2133,6 +2151,19 @@ def resume_agent(
     normalized = target.strip()
     cfg = _load_runtime_config_from_option(config)
     runtime = build_runtime(cfg)
+    admin = AdminService(config)
+    sessions = runtime.sessions.read_all()
+    try:
+        resolved_session_id, _ = _resolve_session_target(normalized, sessions)
+    except typer.BadParameter as exc:
+        raise typer.BadParameter(
+            f"Cannot resolve resume target {target!r} to a session. "
+            "Use a session id, issue number, or vm name with an existing session."
+        ) from exc
+    try:
+        agent_model = admin.resolve_agent_model_for_target(resolved_session_id)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
     script_path = Path(__file__).resolve().parents[2] / "scripts" / "resume_issue_agent.sh"
     if normalized.isdigit() or (normalized.startswith("vm-") and normalized[3:].isdigit()):
         issue_number = _resolve_issue_number_or_raise(target)
@@ -2163,38 +2194,39 @@ def resume_agent(
 
     runtime.audit.log_decision(
         event_type=AuditEventType.VM_START_ATTEMPTED,
-        session_id=target,
+        session_id=resolved_session_id,
         vm_id=vm_name,
         decision="attempted",
         reason="resume-agent-command",
     )
     runtime.audit.log_decision(
         event_type=AuditEventType.RESUME_ATTEMPTED,
-        session_id=target,
+        session_id=resolved_session_id,
         vm_id=vm_name,
         decision="attempted",
         reason="resume-agent-command",
     )
     if observe:
-        completed = subprocess.run(cmd, check=False)
+        completed = subprocess.run(cmd, check=False, env=os.environ | {"AGENT_MODEL": agent_model})
     else:
         completed = subprocess.run(
             cmd,
             check=False,
             capture_output=True,
             text=True,
+            env=os.environ | {"AGENT_MODEL": agent_model},
         )
     if completed.returncode == 0:
         runtime.audit.log_decision(
             event_type=AuditEventType.VM_START_SUCCEEDED,
-            session_id=target,
+            session_id=resolved_session_id,
             vm_id=vm_name,
             decision="succeeded",
             reason="resume-script-success",
         )
         runtime.audit.log_decision(
             event_type=AuditEventType.RESUME_SUCCEEDED,
-            session_id=target,
+            session_id=resolved_session_id,
             vm_id=vm_name,
             decision="succeeded",
             reason="resume-script-success",
@@ -2204,7 +2236,7 @@ def resume_agent(
     reason = f"resume-script-exit-{completed.returncode}"
     runtime.audit.log_decision(
         event_type=AuditEventType.VM_START_FAILED,
-        session_id=target,
+        session_id=resolved_session_id,
         vm_id=vm_name,
         decision="failed",
         reason=reason,
@@ -2212,7 +2244,7 @@ def resume_agent(
     )
     runtime.audit.log_decision(
         event_type=AuditEventType.RESUME_FAILED,
-        session_id=target,
+        session_id=resolved_session_id,
         vm_id=vm_name,
         decision="failed",
         reason=reason,
@@ -2281,6 +2313,10 @@ def create_vm(
     playwright: Annotated[
         bool, typer.Option("--playwright", help="Bootstrap the host-seeded Playwright runtime into the guest.")
     ] = False,
+    model: Annotated[
+        str | None,
+        typer.Option("--model", help="Agent model override for the created session."),
+    ] = None,
 ) -> None:
     if mssql_init_root is not None and not mssql:
         raise typer.BadParameter("--mssql-init-root requires --mssql.")
@@ -2301,6 +2337,7 @@ def create_vm(
         mssql_init_root=mssql_init_root,
         playwright=playwright,
         directory_path=directory_path,
+        model=model,
     )
     _echo_action_result_or_exit(result)
 
@@ -2390,6 +2427,10 @@ def create_issue_vm(
             help="Start the guest agent run after setup.",
         ),
     ] = True,
+    model: Annotated[
+        str | None,
+        typer.Option("--model", help="Agent model override for the created session."),
+    ] = None,
 ) -> None:
     if mssql_init_root is not None and not mssql:
         raise typer.BadParameter("--mssql-init-root requires --mssql.")
@@ -2413,8 +2454,42 @@ def create_issue_vm(
         frontend_host_checkout=frontend_host_checkout,
         frontend_install_roots=frontend_install_root,
         start_agent=start_agent,
+        model=model,
     )
     _echo_action_result_or_exit(result)
+
+
+@app.command(
+    "set-session-model",
+    rich_help_panel="Sessions and Feedback",
+    short_help="Set or clear a session model override.",
+)
+def set_session_model(
+    target: str,
+    model: Annotated[
+        str,
+        typer.Option("--model", help="Model to persist. Use an empty value with --clear to remove."),
+    ] = "",
+    clear: Annotated[
+        bool,
+        typer.Option("--clear", help="Clear the session model so directory defaults apply at invocation."),
+    ] = False,
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
+) -> None:
+    if not clear and not model.strip():
+        raise typer.BadParameter("Provide --model with a non-empty value, or pass --clear.")
+    if clear and model.strip():
+        raise typer.BadParameter("Use either --model or --clear, not both.")
+    cfg = _load_runtime_config_from_option(config)
+    runtime = build_runtime(cfg)
+    sessions = runtime.sessions.read_all()
+    session_id, manifest = _resolve_session_target(target, sessions)
+    manifest.model = None if clear else model.strip()
+    runtime.sessions.put(session_id, manifest)
+    if clear:
+        typer.echo(f"Cleared model override for session {session_id}")
+        return
+    typer.echo(f"Set model override for session {session_id} to {manifest.model}")
 
 
 @app.command(

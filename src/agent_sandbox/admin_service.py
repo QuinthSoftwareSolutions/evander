@@ -33,7 +33,7 @@ from .directory_config import (
     get_domain_base_config,
     validate_effective_domain_payload,
 )
-from .directories import DirectoryStore
+from .directories import DirectoryService, DirectoryStore
 from .host_config import DEFAULT_RUNTIME_DIR
 from .bootstrap import resolve_runtime_dir
 from .ownership import DirectoryOwnershipQueries
@@ -109,12 +109,88 @@ class EffectiveIssueSetupConfig(BaseModel):
     git_host: str
     git_user: str
     git_ssh_alias: str
+    default_model: str | None = None
     post_exec_verification_prompt: str | None = None
     enable_guest_heartbeat: bool = False
     guest_heartbeat_prompt: str = (
         "Resume work for this session. Check for pending feedback first, then continue the most recent task."
     )
     issue_setup_azure_devops_pr_pat_env: str = "AZURE_DEVOPS_PR_PAT"
+
+
+def resolve_effective_issue_setup_config(
+    *,
+    config,
+    runtime: RuntimeContext,
+    directory_path: str,
+    root_dir: Path,
+) -> EffectiveIssueSetupConfig:
+    resolver = DirectoryConfigResolver(
+        DirectoryService(runtime.directories),
+        base_gateway_config=config,
+        config_store=DirectoryConfigStore(runtime.directories, runtime_dir=config.runtime_dir),
+    )
+    resolution = resolver.resolve_domain(
+        directory_path,
+        domain="issue_setup",
+        base_config=get_domain_base_config(config, "issue_setup"),
+        validator=lambda candidate: validate_effective_domain_payload("issue_setup", candidate),
+    )
+    effective = resolution.effective_config
+    provider_config = ProviderConfigResolver(
+        config,
+        directory_store=runtime.directories,
+        session_store=runtime.sessions,
+    ).resolve_for_directory(directory_path)
+    provider_pat_env = provider_config.azure_devops_pr_pat_env.strip() or "AZURE_DEVOPS_PR_PAT"
+    issue_setup_pat_env_raw = effective.get("issue_setup_azure_devops_pr_pat_env")
+    issue_setup_pat_env = (
+        str(issue_setup_pat_env_raw).strip()
+        if isinstance(issue_setup_pat_env_raw, str)
+        else ""
+    ) or provider_pat_env
+    if not issue_setup_pat_env:
+        raise ValueError(
+            "Missing env-var name for Azure DevOps PR PAT lookup. "
+            "Set issue_setup_azure_devops_pr_pat_env or providers.azure_devops_pr_pat_env."
+        )
+    return EffectiveIssueSetupConfig.model_validate(
+        {
+            "git_root": str(effective.get("git_root") or _resolve_git_root(root_dir)),
+            "git_host": str(effective.get("git_host") or "192.168.250.1"),
+            "git_user": str(effective.get("git_user") or os.environ.get("USER", "agent")),
+            "git_ssh_alias": str(effective.get("git_ssh_alias") or "agent-sandbox-git-host"),
+            "default_model": str(effective.get("default_model") or "").strip() or None,
+            "post_exec_verification_prompt": effective.get("post_exec_verification_prompt"),
+            "enable_guest_heartbeat": bool(effective.get("enable_guest_heartbeat", False)),
+            "guest_heartbeat_prompt": str(
+                effective.get("guest_heartbeat_prompt")
+                or "Resume work for this session. Check for pending feedback first, then continue the most recent task."
+            ),
+            "issue_setup_azure_devops_pr_pat_env": issue_setup_pat_env,
+        }
+    )
+
+
+def resolve_agent_model_for_manifest(
+    session: SessionManifest,
+    *,
+    issue_setup: EffectiveIssueSetupConfig,
+) -> str:
+    session_id = session.session_id
+    directory_path = session.directory_path
+    session_model = str(session.model or "").strip()
+    if session_model:
+        return session_model
+    default_model = str(issue_setup.default_model or "").strip()
+    if default_model:
+        return default_model
+    raise ValueError(
+        f"Cannot resolve AGENT_MODEL for session '{session_id}' in directory '{directory_path}': "
+        "missing session.model and missing issue_setup.default_model. "
+        f"Remediation: set session.model for session '{session_id}' or configure "
+        f"issue_setup.default_model for directory '{directory_path}' (or an inherited parent)."
+    )
 
 
 class WorkerGlobalConfigPayload(BaseModel):
@@ -1376,50 +1452,36 @@ class AdminService:
         return resolver.resolve_for_directory(directory_path)
 
     def _resolve_issue_setup(self, directory_path: str, *, root_dir: Path) -> EffectiveIssueSetupConfig:
-        resolver = DirectoryConfigResolver(
-            self.directory_admin._directories,
-            base_gateway_config=self.config,
-            config_store=DirectoryConfigStore(self.runtime.directories, runtime_dir=self.config.runtime_dir),
+        return resolve_effective_issue_setup_config(
+            config=self.config,
+            runtime=self.runtime,
+            directory_path=directory_path,
+            root_dir=root_dir,
         )
-        resolution = resolver.resolve_domain(
-            directory_path,
-            domain="issue_setup",
-            base_config=get_domain_base_config(self.config, "issue_setup"),
-            validator=lambda candidate: validate_effective_domain_payload("issue_setup", candidate),
-        )
-        effective = resolution.effective_config
-        provider_config = ProviderConfigResolver(
-            self.config,
-            directory_store=self.runtime.directories,
-            session_store=self.runtime.sessions,
-        ).resolve_for_directory(directory_path)
-        provider_pat_env = provider_config.azure_devops_pr_pat_env.strip() or "AZURE_DEVOPS_PR_PAT"
-        issue_setup_pat_env_raw = effective.get("issue_setup_azure_devops_pr_pat_env")
-        issue_setup_pat_env = (
-            str(issue_setup_pat_env_raw).strip()
-            if isinstance(issue_setup_pat_env_raw, str)
-            else ""
-        ) or provider_pat_env
-        if not issue_setup_pat_env:
-            raise ValueError(
-                "Missing env-var name for Azure DevOps PR PAT lookup. "
-                "Set issue_setup_azure_devops_pr_pat_env or providers.azure_devops_pr_pat_env."
-            )
-        return EffectiveIssueSetupConfig.model_validate(
-            {
-                "git_root": str(effective.get("git_root") or _resolve_git_root(root_dir)),
-                "git_host": str(effective.get("git_host") or "192.168.250.1"),
-                "git_user": str(effective.get("git_user") or os.environ.get("USER", "agent")),
-                "git_ssh_alias": str(effective.get("git_ssh_alias") or "agent-sandbox-git-host"),
-                "post_exec_verification_prompt": effective.get("post_exec_verification_prompt"),
-                "enable_guest_heartbeat": bool(effective.get("enable_guest_heartbeat", False)),
-                "guest_heartbeat_prompt": str(
-                    effective.get("guest_heartbeat_prompt")
-                    or "Resume work for this session. Check for pending feedback first, then continue the most recent task."
-                ),
-                "issue_setup_azure_devops_pr_pat_env": issue_setup_pat_env,
-            }
-        )
+
+    def _resolve_agent_model_for_session(self, session_or_id: SessionManifest | str) -> str:
+        if isinstance(session_or_id, SessionManifest):
+            session = session_or_id
+            session_id = session.session_id
+        else:
+            session_id = str(session_or_id).strip()
+            if not session_id:
+                raise ValueError(
+                    "Cannot resolve AGENT_MODEL: missing session id. Provide a valid session id or SessionManifest."
+                )
+            session = self.runtime.sessions.get(session_id)
+            if session is None:
+                raise ValueError(
+                    f"Cannot resolve AGENT_MODEL for session '{session_id}': session not found. "
+                    "Remediation: create the session first or pass a SessionManifest with session.model set."
+                )
+        issue_setup = self._resolve_issue_setup(session.directory_path, root_dir=self.project_dir)
+        return resolve_agent_model_for_manifest(session, issue_setup=issue_setup)
+
+    def resolve_agent_model_for_target(self, target: str) -> str:
+        sessions = self.runtime.sessions.read_all()
+        resolved_session_id, _ = _resolve_session_target(target, sessions)
+        return self._resolve_agent_model_for_session(resolved_session_id)
 
     def _build_setup_issue_vm_invocation(
         self,
@@ -1442,6 +1504,7 @@ class AdminService:
         vm_defaults: EffectiveVmDefaultsConfig,
         issue_setup: EffectiveIssueSetupConfig,
     ) -> tuple[list[str], dict[str, str]]:
+        agent_model = self._resolve_agent_model_for_session(session_id)
         cmd = [str(setup_script)]
         if not start_agent:
             cmd.append("--dry-run")
@@ -1478,6 +1541,7 @@ class AdminService:
                 "AGENT_SANDBOX_GIT_HOST": issue_setup.git_host,
                 "AGENT_SANDBOX_GIT_USER": issue_setup.git_user,
                 "AGENT_SANDBOX_GIT_SSH_ALIAS": issue_setup.git_ssh_alias,
+                "AGENT_MODEL": agent_model,
                 "ENABLE_GUEST_HEARTBEAT": "1" if issue_setup.enable_guest_heartbeat else "0",
                 "GUEST_HEARTBEAT_PROMPT": issue_setup.guest_heartbeat_prompt,
                 "AGENT_SANDBOX_AZURE_DEVOPS_PR_PAT_ENV": issue_setup.issue_setup_azure_devops_pr_pat_env,
@@ -1926,6 +1990,20 @@ git -C "${{TARGET_DIR}}" config agent-sandbox.sessionId "${{SESSION_ID}}"
             message=f"Updated allowed tools for session {session_id}",
         )
 
+    def set_session_model(self, target: str, model: str) -> SessionActionResult:
+        session_id, manifest = _resolve_session_target(target, self.runtime.sessions.read_all())
+        normalized_model = str(model).strip()
+        if not normalized_model:
+            raise ValueError("model must be non-empty")
+        manifest.model = normalized_model
+        self.runtime.sessions.put(session_id, manifest)
+        return SessionActionResult(
+            success=True,
+            session_id=session_id,
+            action="set_session_model",
+            message=f"Updated model for session {session_id}",
+        )
+
     def list_vms(
         self,
         *,
@@ -2219,9 +2297,9 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
             message=f"Timed out waiting for {vm_name} to shut down after {timeout_seconds}s",
         )
 
-    def _run_script(self, script_name: str, args: list[str]) -> VmActionResult:
+    def _run_script(self, script_name: str, args: list[str], *, env: dict[str, str] | None = None) -> VmActionResult:
         script_path = Path(__file__).resolve().parents[2] / "scripts" / script_name
-        completed = _run_subprocess([str(script_path), *args], capture_output=True, text=True)
+        completed = _run_subprocess([str(script_path), *args], capture_output=True, text=True, env=env)
         vm_name = ""
         if "--vm-name" in args:
             try:
@@ -2255,10 +2333,22 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
         )
 
     def resume_agent(self, target: str, prompt: str, *, vm_user: str = "agent") -> VmActionResult:
-        vm_name = _resolve_vm_name_from_target(target, self.runtime.sessions.read_all())
+        sessions = self.runtime.sessions.read_all()
+        vm_name = _resolve_vm_name_from_target(target, sessions)
+        try:
+            _, manifest = _resolve_session_target(target, sessions)
+            model = self._resolve_agent_model_for_session(manifest)
+        except ValueError as exc:
+            return VmActionResult(
+                success=False,
+                vm_name=vm_name,
+                action="resume_issue_agent",
+                message=str(exc),
+            )
         return self._run_script(
             "resume_issue_agent.sh",
             ["--prompt", prompt, "--vm-name", vm_name, "--vm-user", vm_user, "--host-control-state-path", str(self.config.host_agent_control_state_path)],
+            env=os.environ | {"AGENT_MODEL": model},
         )
 
     def list_local_issues(
@@ -3198,6 +3288,7 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
         *,
         issue: str,
         session_id: str | None = None,
+        model: str | None = None,
         repo_source: str | None = None,
         vm_user: str = "agent",
         ttl_hours: int | None = None,
@@ -3269,6 +3360,14 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
             email_mailboxes=email_mailboxes or [],
             email_folders=email_folders or [],
         )
+        normalized_model = (model or "").strip() or None
+        if normalized_model is not None:
+            manifest.model = normalized_model
+        else:
+            try:
+                manifest.model = self._resolve_agent_model_for_session(manifest)
+            except ValueError:
+                manifest.model = None
         self.runtime.sessions.put(resolved_session_id, manifest)
 
         def _issue_vm_failure(message: str) -> VmActionResult:
@@ -3333,6 +3432,7 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
         self,
         issue_identifier: str,
         *,
+        model: str | None = None,
         repo_source: str | None = None,
         vm_user: str = "agent",
         start_agent: bool = True,
@@ -3362,6 +3462,7 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
             )
         return self.create_issue_vm(
             issue=issue.yaml_path,
+            model=model,
             repo_source=repo_source or issue.repo_source,
             vm_user=vm_user,
             start_agent=start_agent,
@@ -3379,6 +3480,7 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
         *,
         vm_name: str,
         session_id: str | None = None,
+        model: str | None = None,
         repo_source: str | None = None,
         vm_user: str = "agent",
         ttl_hours: int | None = None,
@@ -3440,6 +3542,14 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
             email_mailboxes=email_mailboxes or [],
             email_folders=email_folders or [],
         )
+        normalized_model = (model or "").strip() or None
+        if normalized_model is not None:
+            manifest.model = normalized_model
+        else:
+            try:
+                manifest.model = self._resolve_agent_model_for_session(manifest)
+            except ValueError:
+                manifest.model = None
         self.runtime.sessions.put(resolved_session_id, manifest)
 
         root_dir = Path(__file__).resolve().parents[2]
