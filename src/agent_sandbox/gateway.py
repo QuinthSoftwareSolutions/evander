@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import logging
 import os
 from inspect import Parameter, signature
@@ -1686,12 +1687,21 @@ def create_app(context: RuntimeContext) -> Starlette:
             )
             return JSONResponse({"error": str(exc)}, status_code=500)
 
+    @contextlib.asynccontextmanager
+    async def lifespan(app: Starlette):
+        # Starlette does not automatically run lifespan handlers for mounted sub-apps.
+        # The FastMCP streamable HTTP transport requires its lifespan to initialize the
+        # session manager task group before any /mcp request is served.
+        async with mcp_app.router.lifespan_context(mcp_app):
+            yield
+
     app = Starlette(
         debug=False,
         routes=[
             Route("/copilot-auth/token", copilot_auth_token, methods=["GET"]),
             Mount("/", app=mcp_app),
         ],
+        lifespan=lifespan,
     )
     _install_mcp_http_logging(app)
     return app

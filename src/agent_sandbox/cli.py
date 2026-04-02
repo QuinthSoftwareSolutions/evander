@@ -434,6 +434,10 @@ def _matching_issue_session_ids(issue_number: str, sessions: dict[str, SessionMa
     return matches
 
 
+def _matching_vm_session_ids(vm_name: str, sessions: dict[str, SessionManifest]) -> set[str]:
+    return {session_id for session_id, session in sessions.items() if session.vm_id == vm_name}
+
+
 def _parse_session_extension(value: str | None) -> timedelta:
     raw_value = (value or "1d").strip().lower()
     match = re.fullmatch(r"(\d+)([hd])", raw_value)
@@ -470,12 +474,7 @@ def _resolve_session_target(target: str, sessions: dict[str, SessionManifest]) -
     issue_number = _extract_issue_number(normalized)
     if issue_number is not None:
         matching_ids.update(_matching_issue_session_ids(issue_number, sessions))
-    if normalized.startswith("vm-"):
-        matching_ids.update(
-            session_id
-            for session_id, session in sessions.items()
-            if session.vm_id == normalized
-        )
+    matching_ids.update(_matching_vm_session_ids(normalized, sessions))
 
     if not matching_ids:
         raise typer.BadParameter(f"Unknown session target: {target}")

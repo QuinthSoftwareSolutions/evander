@@ -234,6 +234,51 @@ def test_list_vms_marks_inactive_vm_disabled_from_host_control_state(tmp_path: P
     assert summaries[0].agent_state == "disabled"
 
 
+def test_resume_agent_accepts_vm_name_without_vm_prefix(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.sessions.put(
+        "agent-sandbox-receptionist-vm-20260330T112127Z-1353036",
+        SessionManifest(
+            session_id="agent-sandbox-receptionist-vm-20260330T112127Z-1353036",
+            vm_id="agent-sandbox-receptionist-vm",
+            model="gpt-5.4",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+
+    captured: dict[str, object] = {}
+
+    def fake_run_script(script_name: str, args: list[str], env: dict[str, str] | None = None):
+        captured["script_name"] = script_name
+        captured["args"] = args
+        captured["env"] = env
+        return admin_service.VmActionResult(
+            success=True,
+            vm_name="agent-sandbox-receptionist-vm",
+            action="resume_issue_agent",
+            message="ok",
+        )
+
+    monkeypatch.setattr(service, "_run_script", fake_run_script)
+
+    result = service.resume_agent("agent-sandbox-receptionist-vm", "Resume now")
+
+    assert result.success is True
+    assert captured["script_name"] == "resume_issue_agent.sh"
+    assert captured["args"] == [
+        "--prompt",
+        "Resume now",
+        "--vm-name",
+        "agent-sandbox-receptionist-vm",
+        "--vm-user",
+        "agent",
+        "--host-control-state-path",
+        str(service.config.host_agent_control_state_path),
+    ]
+    assert captured["env"]["AGENT_MODEL"] == "gpt-5.4"
+
+
 def test_probe_agent_state_accepts_codex_resume_state(tmp_path: Path, monkeypatch) -> None:
     write_config(tmp_path)
     monkeypatch.setattr("agent_sandbox.admin_service._resolve_private_key_path", lambda: Path("/tmp/test-key"))

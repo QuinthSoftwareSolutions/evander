@@ -554,12 +554,7 @@ def _resolve_session_target(target: str, sessions: dict[str, SessionManifest]) -
     issue_number = _extract_issue_number(normalized)
     if issue_number is not None:
         matching_ids.update(_matching_issue_session_ids(issue_number, sessions))
-    if normalized.startswith("vm-"):
-        matching_ids.update(
-            session_id
-            for session_id, session in sessions.items()
-            if session.vm_id == normalized
-        )
+    matching_ids.update(_matching_vm_session_ids(normalized, sessions))
 
     if not matching_ids:
         raise ValueError(f"Unknown session target: {target}")

@@ -3203,6 +3203,69 @@ def test_resume_agent_observe_invokes_script_with_tail_options(tmp_path: Path, m
     assert captured_cmd[6:] == ["--observe", "25"]
 
 
+def test_resume_agent_accepts_vm_name_without_vm_prefix(tmp_path: Path, monkeypatch) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+    captured_cmd: list[str] = []
+
+    assert runner.invoke(app, ["init-state", "--config", str(config_path)]).exit_code == 0
+    assert (
+        runner.invoke(
+            app,
+            [
+                "create-session",
+                "--config",
+                str(config_path),
+                "--vm-id",
+                "agent-sandbox-receptionist-vm",
+                "--model",
+                "gpt-5.4",
+                "agent-sandbox-receptionist-vm-20260330T112127Z-1353036",
+            ],
+        ).exit_code
+        == 0
+    )
+
+    def fake_run(
+        cmd: list[str],
+        check: bool,
+        capture_output: bool,
+        text: bool,
+        env: dict[str, str],
+    ) -> subprocess.CompletedProcess[str]:
+        nonlocal captured_cmd
+        captured_cmd = cmd
+        assert env["AGENT_MODEL"] == "gpt-5.4"
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("agent_sandbox.cli.subprocess.run", fake_run)
+
+    result = runner.invoke(
+        app,
+        [
+            "resume-agent",
+            "agent-sandbox-receptionist-vm",
+            "--config",
+            str(config_path),
+            "--message",
+            "Continue from Discord",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured_cmd[0].endswith("/scripts/resume_issue_agent.sh")
+    assert captured_cmd[1:] == [
+        "--prompt",
+        "Continue from Discord",
+        "--vm-name",
+        "agent-sandbox-receptionist-vm",
+        "--vm-user",
+        "agent",
+        "--host-control-state-path",
+        str(tmp_path / "runtime" / "host-agent-control-state.json"),
+    ]
+
+
 def test_set_session_model_updates_manifest(tmp_path: Path) -> None:
     config_path = write_config(tmp_path)
     runner = CliRunner()

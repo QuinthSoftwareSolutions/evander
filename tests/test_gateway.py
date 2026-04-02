@@ -1,5 +1,6 @@
 from datetime import UTC, datetime, timedelta
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import asyncio
@@ -312,3 +313,28 @@ def test_gateway_app_reports_missing_host_token_for_copilot_auth(tmp_path, monke
 
     assert response.status_code == 503
     assert response.json()["error"] == "Host environment variable GITHUB_TOKEN is not set."
+
+
+def test_gateway_app_runs_mounted_mcp_lifespan_on_startup(tmp_path: Path) -> None:
+    context = build_runtime(
+        GatewayConfig(
+            runtime_dir=tmp_path,
+            audit_log_path=tmp_path / "audit.jsonl",
+            session_store_path=tmp_path / "sessions.json",
+            approval_store_path=tmp_path / "approvals.json",
+            draft_store_path=tmp_path / "drafts.json",
+            email_store_path=tmp_path / "emails.json",
+            discord_command_store_path=tmp_path / "discord.json",
+        )
+    )
+
+    app = create_app(context)
+    mounted_app = next(route.app for route in app.routes if getattr(route, "path", None) == "")
+    mcp_session_manager = mounted_app.router.routes[0].endpoint.session_manager
+
+    assert mcp_session_manager._task_group is None
+
+    with TestClient(app):
+        assert mcp_session_manager._task_group is not None
+
+    assert mcp_session_manager._task_group is None
