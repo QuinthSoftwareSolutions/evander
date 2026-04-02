@@ -788,6 +788,22 @@ environment variables:
 - `AGENT_SANDBOX_PR_BODY_MAX_BYTES` (optional, default `60000`): hard byte cap applied to the
   composed PR body before creating/updating the PR.
 
+PR creation behavior is also directory-scoped via `ado-worker.json` overlays:
+
+- `create_prs_automatically` (default `true`): when `false`, hook automation still promotes and
+  pushes review branches but skips `--create-pr`.
+- `create_prs_as_draft` (default `false`): when `true`, Azure DevOps PRs are opened as drafts.
+
+Optional host-wide runtime overrides are available:
+
+- `AGENT_SANDBOX_AUTO_CREATE_PRS` to force-enable/disable PR creation across all directories.
+- `AGENT_SANDBOX_CREATE_PRS_AS_DRAFT` to force draft vs ready-for-review for Azure DevOps PRs.
+
+Per-session overrides are supported through session metadata in `runtime/sessions.json`:
+
+- top-level metadata keys: `create_prs_automatically`, `create_prs_as_draft`
+- or nested metadata object: `pr_automation.create_prs_automatically`, `pr_automation.create_prs_as_draft`
+
 To migrate the legacy repo-level `config/pr-template.md` into the root directory-scoped template,
 run:
 

@@ -443,6 +443,7 @@ def test_migrate_ado_worker_env_to_root_materializes_root_domain_file(tmp_path: 
         "ado_project_or_solution": "/tmp/Example.slnx",
         "ado_repo_source": "/tmp/repo",
         "ado_team_filters": [],
+        "create_prs_automatically": True,
         "create_prs_as_draft": False,
     }
     directories_payload = json.loads((runtime_dir / "directories.json").read_text(encoding="utf-8"))

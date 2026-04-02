@@ -14,6 +14,13 @@ Arguments:
 
 Configuration:
   Uses environment variables and root config-derived defaults.
+  Directory-scoped ado_worker config supports:
+    - create_prs_automatically (default true)
+    - create_prs_as_draft (default false)
+  Per-session metadata may also override both settings.
+  Optional host-wide overrides:
+    - AGENT_SANDBOX_AUTO_CREATE_PRS
+    - AGENT_SANDBOX_CREATE_PRS_AS_DRAFT
 EOF
 }
 
@@ -45,6 +52,8 @@ PR_BODY_DIR="${AGENT_SANDBOX_PR_BODY_DIR:-${ROOT_DIR}/runtime/pr-body}"
 PR_FIXED_BODY_FILE="${AGENT_SANDBOX_PR_FIXED_BODY_FILE:-}"
 PR_BODY_MAX_BYTES="${AGENT_SANDBOX_PR_BODY_MAX_BYTES:-60000}"
 PR_TEMPLATE_LEGACY_FILE="${ROOT_DIR}/config/pr-template.md"
+AUTO_CREATE_PRS_OVERRIDE="${AGENT_SANDBOX_AUTO_CREATE_PRS:-}"
+DRAFT_PRS_OVERRIDE="${AGENT_SANDBOX_CREATE_PRS_AS_DRAFT:-}"
 
 mkdir -p "$(dirname "${EVENT_LOG}")"
 mkdir -p "${PR_BODY_DIR}"
@@ -240,6 +249,107 @@ extract_session_id() {
   return 1
 }
 
+resolve_pr_automation_settings() {
+  local session_id="$1"
+  local python_bin="${ROOT_DIR}/.venv/bin/python"
+  if [[ ! -x "${python_bin}" ]]; then
+    python_bin="python3"
+  fi
+
+  RUNTIME_DIR_PATH="${RUNTIME_DIR}" \
+  SESSION_ID_VALUE="${session_id}" \
+  AUTO_CREATE_OVERRIDE_VALUE="${AUTO_CREATE_PRS_OVERRIDE}" \
+  DRAFT_OVERRIDE_VALUE="${DRAFT_PRS_OVERRIDE}" \
+    "${python_bin}" - <<'PY'
+import json
+import os
+from pathlib import Path, PurePosixPath
+
+runtime_dir = Path(os.environ["RUNTIME_DIR_PATH"])
+session_id = os.environ.get("SESSION_ID_VALUE", "").strip()
+auto_create_override = os.environ.get("AUTO_CREATE_OVERRIDE_VALUE", "").strip()
+draft_override = os.environ.get("DRAFT_OVERRIDE_VALUE", "").strip()
+
+directory_path = "root"
+session_metadata: dict[str, object] = {}
+sessions_path = runtime_dir / "sessions.json"
+if session_id and sessions_path.exists():
+    try:
+        sessions_payload = json.loads(sessions_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        sessions_payload = {}
+    if isinstance(sessions_payload, dict):
+        session_payload = sessions_payload.get(session_id)
+        if isinstance(session_payload, dict):
+            candidate_directory_path = str(session_payload.get("directory_path") or "").strip()
+            if candidate_directory_path:
+                directory_path = candidate_directory_path
+            raw_metadata = session_payload.get("metadata")
+            if isinstance(raw_metadata, dict):
+                session_metadata = raw_metadata
+
+segments = [segment for segment in PurePosixPath(directory_path).parts if segment not in {"", "."}]
+if not segments or segments[0] != "root":
+    segments = ["root"]
+
+def parse_bool(value: object) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off", ""}:
+            return False
+    return None
+
+create_prs_automatically = True
+create_prs_as_draft = False
+
+directory_config_root = runtime_dir / "directory-config"
+for index in range(1, len(segments) + 1):
+    candidate = directory_config_root.joinpath(*segments[:index], "ado-worker.json")
+    if not candidate.exists():
+        continue
+    try:
+        payload = json.loads(candidate.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        continue
+    if not isinstance(payload, dict):
+        continue
+    auto_value = parse_bool(payload.get("create_prs_automatically"))
+    if auto_value is not None:
+        create_prs_automatically = auto_value
+    draft_value = parse_bool(payload.get("create_prs_as_draft"))
+    if draft_value is not None:
+        create_prs_as_draft = draft_value
+
+session_auto_value = parse_bool(session_metadata.get("create_prs_automatically"))
+if session_auto_value is not None:
+    create_prs_automatically = session_auto_value
+session_draft_value = parse_bool(session_metadata.get("create_prs_as_draft"))
+if session_draft_value is not None:
+    create_prs_as_draft = session_draft_value
+automation_payload = session_metadata.get("pr_automation")
+if isinstance(automation_payload, dict):
+    nested_auto = parse_bool(automation_payload.get("create_prs_automatically"))
+    if nested_auto is not None:
+        create_prs_automatically = nested_auto
+    nested_draft = parse_bool(automation_payload.get("create_prs_as_draft"))
+    if nested_draft is not None:
+        create_prs_as_draft = nested_draft
+
+override_auto = parse_bool(auto_create_override)
+if override_auto is not None:
+    create_prs_automatically = override_auto
+override_draft = parse_bool(draft_override)
+if override_draft is not None:
+    create_prs_as_draft = override_draft
+
+print(f"{1 if create_prs_automatically else 0} {1 if create_prs_as_draft else 0}", end="")
+PY
+}
+
 derive_local_notes_ref() {
   local bare_repo_path="$1"
   local repo_name
@@ -303,6 +413,9 @@ process_agent_branch() {
   local body_truncated
   local body_size_bytes
   local pr_output
+  local pr_automation
+  local create_prs_automatically
+  local create_prs_as_draft
 
   review_branch="$(derive_review_branch "${agent_branch}")"
   session_id="$(extract_session_id "${agent_branch}" || true)"
@@ -360,7 +473,19 @@ process_agent_branch() {
     enforce_pr_body_size_limit "${pr_body_file}" "${PR_BODY_MAX_BYTES}"
   fi
 
-  PR_ARGS=(--create-pr)
+  pr_automation="$(resolve_pr_automation_settings "${session_id:-}" 2>/dev/null || printf '1 0')"
+  create_prs_automatically="$(printf '%s' "${pr_automation}" | awk '{print $1}')"
+  create_prs_as_draft="$(printf '%s' "${pr_automation}" | awk '{print $2}')"
+
+  PR_ARGS=()
+  if [[ "${create_prs_automatically}" == "1" ]]; then
+    PR_ARGS+=(--create-pr)
+  fi
+  if [[ "${create_prs_as_draft}" == "1" ]]; then
+    PR_ARGS+=(--draft)
+  else
+    PR_ARGS+=(--no-draft)
+  fi
   if [[ -n "${BASE_BRANCH}" ]]; then
     PR_ARGS+=(--base "${BASE_BRANCH}")
   fi
@@ -373,9 +498,15 @@ process_agent_branch() {
   PR_ARGS+=("${TRUSTED_REPO_PATH}" "${review_branch}")
 
   if pr_output="$(AGENT_SANDBOX_CANONICAL_ORIGIN_URL="${CANONICAL_ORIGIN_URL}" "${SCRIPT_DIR}/open_agent_pr.sh" "${PR_ARGS[@]}" 2>&1)"; then
-    notify_event \
-      "Agent branch promoted and PR prepared" \
-      "repo=$(basename "${TRUSTED_REPO_PATH}") branch=${review_branch} session_id=${session_id:-unknown} used_fixed_body=${USED_FIXED_BODY} used_agent_note=${USED_AGENT_NOTE} body_truncated=${body_truncated} ${pr_output}"
+    if [[ "${create_prs_automatically}" == "1" ]]; then
+      notify_event \
+        "Agent branch promoted and PR prepared" \
+        "repo=$(basename "${TRUSTED_REPO_PATH}") branch=${review_branch} session_id=${session_id:-unknown} create_prs_as_draft=${create_prs_as_draft} used_fixed_body=${USED_FIXED_BODY} used_agent_note=${USED_AGENT_NOTE} body_truncated=${body_truncated} ${pr_output}"
+    else
+      notify_event \
+        "Agent branch promoted (PR creation disabled)" \
+        "repo=$(basename "${TRUSTED_REPO_PATH}") branch=${review_branch} session_id=${session_id:-unknown} create_prs_as_draft=${create_prs_as_draft} used_fixed_body=${USED_FIXED_BODY} used_agent_note=${USED_AGENT_NOTE} body_truncated=${body_truncated} ${pr_output}"
+    fi
   else
     notify_event \
       "Agent branch promoted but PR automation failed" \

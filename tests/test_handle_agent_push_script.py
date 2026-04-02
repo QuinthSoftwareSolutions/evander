@@ -133,6 +133,8 @@ def _run_handle_push(
     pr_body_max_bytes: int | None = None,
     notes_fetch_fail: bool = False,
     notes_read_fail: bool = False,
+    ado_worker_config: dict[str, object] | None = None,
+    session_metadata: dict[str, object] | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], Path, Path]:
     root = Path(__file__).resolve().parents[1]
     source_script = root / "scripts" / "handle_agent_push.sh"
@@ -163,7 +165,7 @@ def _run_handle_push(
     bare_repo.mkdir()
 
     runtime_dir = sandbox_root / "runtime"
-    if directory_template is not None or session_directory_path is not None:
+    if directory_template is not None or session_directory_path is not None or ado_worker_config is not None:
         runtime_dir.mkdir(parents=True, exist_ok=True)
         if session_directory_path is not None:
             (runtime_dir / "sessions.json").write_text(
@@ -171,6 +173,7 @@ def _run_handle_push(
                     {
                         "session-123": {
                             "directory_path": session_directory_path,
+                            "metadata": session_metadata or {},
                         }
                     },
                     indent=2,
@@ -185,6 +188,15 @@ def _run_handle_push(
             template_path.mkdir(parents=True, exist_ok=True)
             (template_path / "pr-template.json").write_text(
                 json.dumps({"pr_template_markdown": directory_template}, indent=2, sort_keys=True),
+                encoding="utf-8",
+            )
+        if ado_worker_config is not None:
+            ado_path = runtime_dir / "directory-config"
+            for segment in (session_directory_path or "root").split("/"):
+                ado_path /= segment
+            ado_path.mkdir(parents=True, exist_ok=True)
+            (ado_path / "ado-worker.json").write_text(
+                json.dumps(ado_worker_config, indent=2, sort_keys=True),
                 encoding="utf-8",
             )
 
@@ -234,6 +246,13 @@ def _extract_body_file_path(args_log: Path) -> str | None:
         if token == "--body-file":
             return latest[index + 1]
     return None
+
+
+def _latest_invocation(args_log: Path) -> list[str]:
+    entries = [line.strip() for line in args_log.read_text(encoding="utf-8").splitlines() if line.strip()]
+    arg_lines = [line for line in entries if not line.startswith("AZURE_DEVOPS_PR_PAT=")]
+    assert arg_lines, "open_agent_pr.sh was not invoked"
+    return arg_lines[-1].split()
 
 
 def test_handle_agent_push_body_file_cases(tmp_path: Path) -> None:
@@ -378,3 +397,48 @@ def test_handle_agent_push_loads_repo_secrets_env(tmp_path: Path) -> None:
 
     log_lines = args_log.read_text(encoding="utf-8").splitlines()
     assert "AZURE_DEVOPS_PR_PAT=from-secrets-env" in log_lines
+
+
+def test_handle_agent_push_can_disable_automatic_pr_creation_per_directory(tmp_path: Path) -> None:
+    _, args_log, event_log = _run_handle_push(
+        tmp_path,
+        note_content="Agent note body",
+        fixed_body=None,
+        session_directory_path="root/team",
+        ado_worker_config={"create_prs_automatically": False},
+    )
+
+    invocation = _latest_invocation(args_log)
+    assert "--create-pr" not in invocation
+    assert "--no-draft" in invocation
+    log_text = event_log.read_text(encoding="utf-8")
+    assert "Agent branch promoted (PR creation disabled)" in log_text
+
+
+def test_handle_agent_push_passes_draft_toggle_from_directory_config(tmp_path: Path) -> None:
+    _, args_log, _ = _run_handle_push(
+        tmp_path,
+        note_content="Agent note body",
+        fixed_body=None,
+        session_directory_path="root/team",
+        ado_worker_config={"create_prs_as_draft": True},
+    )
+
+    invocation = _latest_invocation(args_log)
+    assert "--create-pr" in invocation
+    assert "--draft" in invocation
+
+
+def test_handle_agent_push_session_metadata_overrides_directory_settings(tmp_path: Path) -> None:
+    _, args_log, _ = _run_handle_push(
+        tmp_path,
+        note_content="Agent note body",
+        fixed_body=None,
+        session_directory_path="root/team",
+        ado_worker_config={"create_prs_automatically": False, "create_prs_as_draft": False},
+        session_metadata={"pr_automation": {"create_prs_automatically": True, "create_prs_as_draft": True}},
+    )
+
+    invocation = _latest_invocation(args_log)
+    assert "--create-pr" in invocation
+    assert "--draft" in invocation

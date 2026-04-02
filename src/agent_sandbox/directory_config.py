@@ -116,6 +116,7 @@ DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
             "ado_project_or_solution",
             "ado_prewarm_target",
             "ado_repo_source",
+            "create_prs_automatically",
             "create_prs_as_draft",
             "ado_bootstrap_dotnet",
             "ado_bootstrap_nuget",
@@ -159,6 +160,7 @@ class AdoWorkerDirectoryConfig(BaseModel):
     ado_project_or_solution: str = ""
     ado_prewarm_target: str | None = None
     ado_repo_source: str | None = None
+    create_prs_automatically: bool = True
     create_prs_as_draft: bool = False
     ado_bootstrap_dotnet: bool = True
     ado_bootstrap_nuget: bool = True

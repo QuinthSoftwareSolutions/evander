@@ -160,6 +160,15 @@ guest pushes to `refs/heads/agents/<session-id>/<branch>` can trigger host-side 
 - append an event to `runtime/agent-events.log`
 - attempt a desktop notification with `notify-send`
 
+Directory-scoped `ado-worker.json` controls this behavior per directory:
+
+- `create_prs_automatically` (default `true`) toggles whether the hook opens/updates upstream PRs.
+- `create_prs_as_draft` (default `false`) toggles Azure DevOps draft PR creation.
+
+You can also override both values per session via `runtime/sessions.json` metadata using either
+top-level keys (`create_prs_automatically`, `create_prs_as_draft`) or
+`metadata.pr_automation.{create_prs_automatically,create_prs_as_draft}`.
+
 ### PR body assembly from Git notes
 
 Host-side PR automation reads agent-authored markdown summaries from the dedicated notes ref
