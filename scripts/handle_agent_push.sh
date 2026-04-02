@@ -52,8 +52,18 @@ PR_BODY_DIR="${AGENT_SANDBOX_PR_BODY_DIR:-${ROOT_DIR}/runtime/pr-body}"
 PR_FIXED_BODY_FILE="${AGENT_SANDBOX_PR_FIXED_BODY_FILE:-}"
 PR_BODY_MAX_BYTES="${AGENT_SANDBOX_PR_BODY_MAX_BYTES:-60000}"
 PR_TEMPLATE_LEGACY_FILE="${ROOT_DIR}/config/pr-template.md"
-AUTO_CREATE_PRS_OVERRIDE="${AGENT_SANDBOX_AUTO_CREATE_PRS:-}"
-DRAFT_PRS_OVERRIDE="${AGENT_SANDBOX_CREATE_PRS_AS_DRAFT:-}"
+AUTO_CREATE_PRS_OVERRIDE=""
+AUTO_CREATE_PRS_OVERRIDE_SET=0
+if [[ -v AGENT_SANDBOX_AUTO_CREATE_PRS ]]; then
+  AUTO_CREATE_PRS_OVERRIDE="${AGENT_SANDBOX_AUTO_CREATE_PRS}"
+  AUTO_CREATE_PRS_OVERRIDE_SET=1
+fi
+DRAFT_PRS_OVERRIDE=""
+DRAFT_PRS_OVERRIDE_SET=0
+if [[ -v AGENT_SANDBOX_CREATE_PRS_AS_DRAFT ]]; then
+  DRAFT_PRS_OVERRIDE="${AGENT_SANDBOX_CREATE_PRS_AS_DRAFT}"
+  DRAFT_PRS_OVERRIDE_SET=1
+fi
 
 mkdir -p "$(dirname "${EVENT_LOG}")"
 mkdir -p "${PR_BODY_DIR}"
@@ -258,7 +268,9 @@ resolve_pr_automation_settings() {
 
   RUNTIME_DIR_PATH="${RUNTIME_DIR}" \
   SESSION_ID_VALUE="${session_id}" \
+  AUTO_CREATE_OVERRIDE_IS_SET="${AUTO_CREATE_PRS_OVERRIDE_SET}" \
   AUTO_CREATE_OVERRIDE_VALUE="${AUTO_CREATE_PRS_OVERRIDE}" \
+  DRAFT_OVERRIDE_IS_SET="${DRAFT_PRS_OVERRIDE_SET}" \
   DRAFT_OVERRIDE_VALUE="${DRAFT_PRS_OVERRIDE}" \
     "${python_bin}" - <<'PY'
 import json
@@ -267,8 +279,12 @@ from pathlib import Path, PurePosixPath
 
 runtime_dir = Path(os.environ["RUNTIME_DIR_PATH"])
 session_id = os.environ.get("SESSION_ID_VALUE", "").strip()
-auto_create_override = os.environ.get("AUTO_CREATE_OVERRIDE_VALUE", "").strip()
-draft_override = os.environ.get("DRAFT_OVERRIDE_VALUE", "").strip()
+auto_create_override = None
+if os.environ.get("AUTO_CREATE_OVERRIDE_IS_SET") == "1":
+    auto_create_override = os.environ.get("AUTO_CREATE_OVERRIDE_VALUE", "").strip()
+draft_override = None
+if os.environ.get("DRAFT_OVERRIDE_IS_SET") == "1":
+    draft_override = os.environ.get("DRAFT_OVERRIDE_VALUE", "").strip()
 
 directory_path = "root"
 session_metadata: dict[str, object] = {}

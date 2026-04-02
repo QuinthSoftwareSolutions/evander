@@ -135,6 +135,8 @@ def _run_handle_push(
     notes_read_fail: bool = False,
     ado_worker_config: dict[str, object] | None = None,
     session_metadata: dict[str, object] | None = None,
+    auto_create_prs_override: str | None = None,
+    create_prs_as_draft_override: str | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], Path, Path]:
     root = Path(__file__).resolve().parents[1]
     source_script = root / "scripts" / "handle_agent_push.sh"
@@ -211,6 +213,10 @@ def _run_handle_push(
         env["FAKE_NOTE_CONTENT"] = note_content
     if pr_body_max_bytes is not None:
         env["AGENT_SANDBOX_PR_BODY_MAX_BYTES"] = str(pr_body_max_bytes)
+    if auto_create_prs_override is not None:
+        env["AGENT_SANDBOX_AUTO_CREATE_PRS"] = auto_create_prs_override
+    if create_prs_as_draft_override is not None:
+        env["AGENT_SANDBOX_CREATE_PRS_AS_DRAFT"] = create_prs_as_draft_override
 
     fixed_body_file = tmp_path / "fixed.md"
     if fixed_body is not None:
@@ -442,3 +448,34 @@ def test_handle_agent_push_session_metadata_overrides_directory_settings(tmp_pat
     invocation = _latest_invocation(args_log)
     assert "--create-pr" in invocation
     assert "--draft" in invocation
+
+
+def test_handle_agent_push_unset_global_override_does_not_disable_directory_settings(tmp_path: Path) -> None:
+    _, args_log, _ = _run_handle_push(
+        tmp_path,
+        note_content="Agent note body",
+        fixed_body=None,
+        session_directory_path="root/team",
+        ado_worker_config={"create_prs_automatically": True, "create_prs_as_draft": True},
+    )
+
+    invocation = _latest_invocation(args_log)
+    assert "--create-pr" in invocation
+    assert "--draft" in invocation
+
+
+def test_handle_agent_push_explicit_global_override_can_disable_pr_creation(tmp_path: Path) -> None:
+    _, args_log, event_log = _run_handle_push(
+        tmp_path,
+        note_content="Agent note body",
+        fixed_body=None,
+        session_directory_path="root/team",
+        ado_worker_config={"create_prs_automatically": True},
+        auto_create_prs_override="false",
+    )
+
+    invocation = _latest_invocation(args_log)
+    assert "--create-pr" not in invocation
+    assert "--no-draft" in invocation
+    log_text = event_log.read_text(encoding="utf-8")
+    assert "Agent branch promoted (PR creation disabled)" in log_text
