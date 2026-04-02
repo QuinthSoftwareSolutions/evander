@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from .agent_control import AgentControlStore
-from .admin_service import AdminService
+from .admin_service import AdminService, resolve_agent_model_for_manifest, resolve_effective_issue_setup_config
 from .config import GatewayConfig, IssueOrchestratorWorkerGlobalConfig
 from .directory_config import (
     DirectoryConfigResolver,
@@ -284,13 +284,19 @@ class IssueOrchestratorWorker:
         ]
         if getattr(self.config, "host_agent_control_state_path", None) is not None:
             cmd.extend(["--host-control-state-path", str(self.config.host_agent_control_state_path)])
+        run_kwargs = {
+            "check": False,
+            "capture_output": True,
+            "text": True,
+            "timeout": self.worker_config.resume_timeout_seconds,
+        }
+        agent_model = self._resolve_agent_model_for_session(session)
+        if agent_model:
+            run_kwargs["env"] = os.environ | {"AGENT_MODEL": agent_model}
         try:
             completed = subprocess.run(
                 cmd,
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=self.worker_config.resume_timeout_seconds,
+                **run_kwargs,
             )
         except (OSError, subprocess.TimeoutExpired):
             logger.warning(
@@ -312,6 +318,33 @@ class IssueOrchestratorWorker:
             return False
         logger.info("Issue orchestrator wake dispatched session_id=%s vm_id=%s", session.session_id, session.vm_id)
         return True
+
+    def _resolve_agent_model_for_session(self, session: SessionManifest) -> str | None:
+        runtime = getattr(self, "runtime", None)
+        if runtime is None or not hasattr(runtime, "directories"):
+            session_model = str(getattr(session, "model", "") or "").strip()
+            if session_model:
+                return session_model
+            return os.environ.get("AGENT_MODEL") or None
+        try:
+            issue_setup = resolve_effective_issue_setup_config(
+                config=self.config,
+                runtime=runtime,
+                directory_path=session.directory_path,
+                root_dir=Path(__file__).resolve().parents[2],
+            )
+            return resolve_agent_model_for_manifest(session, issue_setup=issue_setup)
+        except ValueError as exc:
+            logger.warning(
+                "Cannot resolve AGENT_MODEL for issue orchestrator wake session_id=%s vm_id=%s error=%s",
+                session.session_id,
+                session.vm_id,
+                exc,
+            )
+            session_model = str(getattr(session, "model", "") or "").strip()
+            if session_model:
+                return session_model
+            return os.environ.get("AGENT_MODEL") or None
 
 
 def _worker_global_config_path(project_dir: Path) -> Path:
