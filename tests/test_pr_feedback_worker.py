@@ -5,11 +5,16 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
+import httpx
+import pytest
+
 from agent_sandbox.audit import AuditLogger
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.pr_feedback_worker import (
     AzureDevOpsFeedbackAdapter,
     FeedbackEnvelope,
+    FeedbackProviderAuthError,
+    FeedbackProviderConfigurationError,
     GitHubFeedbackAdapter,
     PrFeedbackStore,
     PullRequestFeedbackWorker,
@@ -192,7 +197,7 @@ def test_github_mapping_review_event_filters_cursor() -> None:
 
 
 def test_ado_mapping_thread_edge_cases() -> None:
-    adapter = AzureDevOpsFeedbackAdapter("https://dev.azure.com/example", "proj")
+    adapter = AzureDevOpsFeedbackAdapter("https://dev.azure.com/example", "proj", pat="test-pat")
 
     class FakeResponse:
         def raise_for_status(self) -> None:
@@ -244,7 +249,7 @@ def test_ado_mapping_thread_edge_cases() -> None:
 
 
 def test_ado_mapping_skips_system_review_state_change_comments_and_advances_cursor() -> None:
-    adapter = AzureDevOpsFeedbackAdapter("https://dev.azure.com/example", "proj")
+    adapter = AzureDevOpsFeedbackAdapter("https://dev.azure.com/example", "proj", pat="test-pat")
 
     class FakeResponse:
         def raise_for_status(self) -> None:
@@ -285,7 +290,7 @@ def test_ado_mapping_skips_system_review_state_change_comments_and_advances_curs
 
 
 def test_ado_mapping_skips_reviewer_membership_and_vote_events() -> None:
-    adapter = AzureDevOpsFeedbackAdapter("https://dev.azure.com/example", "proj")
+    adapter = AzureDevOpsFeedbackAdapter("https://dev.azure.com/example", "proj", pat="test-pat")
 
     class FakeResponse:
         def raise_for_status(self) -> None:
@@ -411,6 +416,46 @@ def test_ado_adapter_sends_basic_auth_header_when_pat_configured() -> None:
     assert captured_headers == [
         {"Authorization": f"Basic {base64.b64encode(b':ado-test-pat').decode('ascii')}"}
     ]
+
+
+def test_ado_adapter_requires_pat_env_when_pat_missing() -> None:
+    adapter = AzureDevOpsFeedbackAdapter(
+        "https://dev.azure.com/example",
+        "proj",
+        pat=None,
+        pat_env_name="TEAM_ADO_PAT",
+    )
+
+    class FakeClient:
+        def get(self, *args: object, **kwargs: object):  # noqa: ANN003
+            raise AssertionError("client.get should not be called without a PAT")
+
+    with pytest.raises(FeedbackProviderConfigurationError, match="TEAM_ADO_PAT"):
+        adapter.poll(client=FakeClient(), repo="repo-1", pr_id="101", cursor=None)
+
+
+def test_ado_adapter_raises_auth_error_on_401() -> None:
+    adapter = AzureDevOpsFeedbackAdapter(
+        "https://dev.azure.com/example",
+        "proj",
+        pat="ado-test-pat",
+        pat_env_name="TEAM_ADO_PAT",
+    )
+
+    class FakeResponse:
+        status_code = 401
+
+        def raise_for_status(self) -> None:
+            request = httpx.Request("GET", "https://dev.azure.com/example/proj/_apis/git/repositories/repo-1/pullRequests/101/threads")
+            response = httpx.Response(401, request=request)
+            raise httpx.HTTPStatusError("401 Unauthorized", request=request, response=response)
+
+    class FakeClient:
+        def get(self, *args: object, **kwargs: object) -> FakeResponse:
+            return FakeResponse()
+
+    with pytest.raises(FeedbackProviderAuthError, match="TEAM_ADO_PAT"):
+        adapter.poll(client=FakeClient(), repo="repo-1", pr_id="101", cursor=None)
 
 
 def test_ado_adapter_normalizes_composite_repo_identifier() -> None:

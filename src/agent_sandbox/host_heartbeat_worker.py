@@ -22,6 +22,8 @@ from .provider_config import ProviderConfigResolver
 from .pr_feedback_worker import (
     AzureDevOpsFeedbackAdapter,
     FeedbackProviderAdapter,
+    FeedbackProviderAuthError,
+    FeedbackProviderConfigurationError,
     GitHubFeedbackAdapter,
     PullRequestFeedbackWorker,
     build_pr_feedback_worker,
@@ -179,6 +181,7 @@ class HostHeartbeatWorker:
                 organization_url=resolved_config.azure_devops_organization_url,
                 project=resolved_config.azure_devops_project,
                 pat=azure_pat,
+                pat_env_name=resolved_config.azure_devops_pr_pat_env,
             )
         return self.adapters.get(provider)
 
@@ -274,6 +277,16 @@ class HostHeartbeatWorker:
                                     ],
                                     adapter=adapter,
                                 )
+                            except (FeedbackProviderConfigurationError, FeedbackProviderAuthError) as exc:
+                                logger.warning(
+                                    "Host heartbeat stream poll skipped provider=%s repo=%s pr=%s directory_path=%s reason=%s",
+                                    stream.provider,
+                                    stream.repo,
+                                    stream.pr_id,
+                                    binding_group[0].directory_path or "root",
+                                    exc,
+                                )
+                                continue
                             except Exception:
                                 logger.warning(
                                     "Host heartbeat stream poll failed provider=%s repo=%s pr=%s directory_path=%s",
@@ -1467,6 +1480,7 @@ def build_host_heartbeat_worker(config: GatewayConfig, *, project_dir: Path | No
             organization_url=root_provider_config.azure_devops_organization_url,
             project=root_provider_config.azure_devops_project,
             pat=azure_pat,
+            pat_env_name=root_provider_config.azure_devops_pr_pat_env,
         ),
     }
     feedback_worker = build_pr_feedback_worker(effective_config.runtime_dir, adapters=adapters, gateway_config=effective_config)

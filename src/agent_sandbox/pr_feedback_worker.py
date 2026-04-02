@@ -46,6 +46,14 @@ class ProviderPollResult:
     next_cursor: str | None
 
 
+class FeedbackProviderConfigurationError(RuntimeError):
+    """Raised when a feedback provider cannot poll due to local configuration."""
+
+
+class FeedbackProviderAuthError(RuntimeError):
+    """Raised when a feedback provider rejects the configured credentials."""
+
+
 class PrFeedbackStore:
     """Atomic JSON-backed store for feedback, provider cursors, and session read cursors."""
 
@@ -386,10 +394,18 @@ class GitHubFeedbackAdapter:
 class AzureDevOpsFeedbackAdapter:
     provider_name = "azure_devops"
 
-    def __init__(self, organization_url: str, project: str, pat: str | None = None) -> None:
+    def __init__(
+        self,
+        organization_url: str,
+        project: str,
+        pat: str | None = None,
+        *,
+        pat_env_name: str = "AZURE_DEVOPS_PR_PAT",
+    ) -> None:
         self.organization_url = organization_url.rstrip("/")
         self.project = project
         self.pat = pat.strip() if pat else None
+        self.pat_env_name = pat_env_name.strip() or "AZURE_DEVOPS_PR_PAT"
 
     def _headers(self) -> dict[str, str]:
         if not self.pat:
@@ -405,13 +421,26 @@ class AzureDevOpsFeedbackAdapter:
         pr_id: str,
         cursor: str | None,
     ) -> ProviderPollResult:
+        if not self.pat:
+            raise FeedbackProviderConfigurationError(
+                "Azure DevOps feedback polling requires a PAT in "
+                f"environment variable {self.pat_env_name!r}."
+            )
         repo_identifier = _normalize_azure_devops_repo_identifier(repo)
         url = (
             f"{self.organization_url}/{self.project}/_apis/git/repositories/{repo_identifier}/"
             f"pullRequests/{pr_id}/threads"
         )
         response = client.get(url, params={"api-version": "7.1"}, headers=self._headers())
-        response.raise_for_status()
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 401:
+                raise FeedbackProviderAuthError(
+                    "Azure DevOps feedback polling was rejected with 401 Unauthorized. "
+                    f"Check environment variable {self.pat_env_name!r}."
+                ) from exc
+            raise
         payload = response.json()
         threads = payload.get("value", []) if isinstance(payload, dict) else []
         cursor_dt = _parse_dt(cursor) if cursor else None
