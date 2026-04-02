@@ -15,6 +15,8 @@ Arguments:
 
 Options:
   --create-pr         Open an upstream PR after pushing.
+  --draft             Force Azure DevOps PR creation in draft mode.
+  --no-draft          Force Azure DevOps PR creation as ready-for-review.
   --provider <name>   PR provider: auto, github, azure_devops. Default: auto.
   --base <branch>     Base branch for the PR. Default: repository default branch.
   --session-id <id>   Session id for mapping metadata. Defaults to branch-derived value.
@@ -29,6 +31,7 @@ Configuration:
   AGENT_SANDBOX_AZURE_DEVOPS_PR_PAT_ENV).
   Directory-scoped ado_worker config may set create_prs_as_draft=true so new Azure DevOps
   PRs open as drafts for that session's directory.
+  AGENT_SANDBOX_CREATE_PRS_AS_DRAFT can force draft behavior globally for this invocation.
   If a PR is created and a session id is available, the script also attaches the
   PR feedback stream to that session through agent-sandbox-cli.
 EOF
@@ -48,6 +51,7 @@ USE_FILL=1
 PROVIDER="auto"
 SESSION_ID=""
 WORK_ITEM_ID=""
+DRAFT_OVERRIDE=""
 POSITIONAL=()
 
 while [[ $# -gt 0 ]]; do
@@ -58,6 +62,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --create-pr)
       CREATE_PR=1
+      shift
+      ;;
+    --draft)
+      DRAFT_OVERRIDE="1"
+      shift
+      ;;
+    --no-draft)
+      DRAFT_OVERRIDE="0"
       shift
       ;;
     --provider)
@@ -280,10 +292,14 @@ refresh_remote_branch_tracking_ref() {
 
 resolve_create_prs_as_draft() {
   local session_id="$1"
+  local draft_override="${2:-}"
   local runtime_dir="${AGENT_SANDBOX_RUNTIME_DIR:-${ROOT_DIR}/runtime}"
+  local env_override="${AGENT_SANDBOX_CREATE_PRS_AS_DRAFT:-}"
 
   RUNTIME_DIR_PATH="${runtime_dir}" \
   SESSION_ID_VALUE="${session_id}" \
+  DRAFT_OVERRIDE_VALUE="${draft_override}" \
+  DRAFT_OVERRIDE_ENV_VALUE="${env_override}" \
   python3 - <<'PY'
 import json
 import os
@@ -291,7 +307,10 @@ from pathlib import Path, PurePosixPath
 
 runtime_dir = Path(os.environ["RUNTIME_DIR_PATH"])
 session_id = os.environ.get("SESSION_ID_VALUE", "").strip()
+draft_override = os.environ.get("DRAFT_OVERRIDE_VALUE", "").strip()
+env_override = os.environ.get("DRAFT_OVERRIDE_ENV_VALUE", "").strip()
 directory_path = "root"
+session_metadata: dict[str, object] = {}
 sessions_path = runtime_dir / "sessions.json"
 
 if session_id and sessions_path.exists():
@@ -305,12 +324,27 @@ if session_id and sessions_path.exists():
             candidate_directory_path = str(session_payload.get("directory_path") or "").strip()
             if candidate_directory_path:
                 directory_path = candidate_directory_path
+            raw_metadata = session_payload.get("metadata")
+            if isinstance(raw_metadata, dict):
+                session_metadata = raw_metadata
 
 segments = [segment for segment in PurePosixPath(directory_path).parts if segment not in {"", "."}]
 if not segments or segments[0] != "root":
     segments = ["root"]
 
 create_prs_as_draft = False
+
+for override in (draft_override, env_override):
+    if not override:
+        continue
+    normalized = override.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        print("1", end="")
+        raise SystemExit(0)
+    if normalized in {"0", "false", "no", "off", ""}:
+        print("0", end="")
+        raise SystemExit(0)
+
 directory_config_root = runtime_dir / "directory-config"
 for index in range(1, len(segments) + 1):
     candidate = directory_config_root.joinpath(*segments[:index], "ado-worker.json")
@@ -332,6 +366,26 @@ for index in range(1, len(segments) + 1):
             create_prs_as_draft = True
         elif normalized in {"0", "false", "no", "off", ""}:
             create_prs_as_draft = False
+
+def parse_bool(value: object) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off", ""}:
+            return False
+    return None
+
+session_draft_value = parse_bool(session_metadata.get("create_prs_as_draft"))
+if session_draft_value is not None:
+    create_prs_as_draft = session_draft_value
+automation_payload = session_metadata.get("pr_automation")
+if isinstance(automation_payload, dict):
+    nested_draft = parse_bool(automation_payload.get("create_prs_as_draft"))
+    if nested_draft is not None:
+        create_prs_as_draft = nested_draft
 
 print("1" if create_prs_as_draft else "0", end="")
 PY
@@ -638,7 +692,7 @@ if [[ -z "${WORK_ITEM_ID}" && -n "${SESSION_ID}" ]]; then
   WORK_ITEM_ID="$(extract_issue_number "${SESSION_ID}" || true)"
 fi
 
-CREATE_PRS_AS_DRAFT="$(resolve_create_prs_as_draft "${SESSION_ID}")"
+CREATE_PRS_AS_DRAFT="$(resolve_create_prs_as_draft "${SESSION_ID}" "${DRAFT_OVERRIDE}")"
 if [[ -n "${WORK_ITEM_ID}" && ! "${WORK_ITEM_ID}" =~ ^[0-9]+$ ]]; then
   echo "Work item id must be numeric: ${WORK_ITEM_ID}" >&2
   exit 1
