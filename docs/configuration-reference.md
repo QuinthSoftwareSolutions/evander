@@ -130,6 +130,20 @@ Workers tab edits `config/host-heartbeat/config.json` for the `host-heartbeat` w
 | `host_heartbeat_schedule_max_active_total` | `config/host-heartbeat/config.json.example` | `src/agent_sandbox/config.py` / admin config surfaces (optional scheduling guardrail). |
 | `host_heartbeat_schedule_min_interval_seconds` | `config/host-heartbeat/config.json.example` | `src/agent_sandbox/config.py` / admin config surfaces (optional scheduling guardrail). |
 
+## `config/trigger-orchestrator/config.json`
+
+This JSON file stores the trigger orchestrator worker's global settings.
+
+| Parameter | Found in | Consumed by |
+|---|---|---|
+| `runtime_dir` | `config/trigger-orchestrator/config.json` | `src/agent_sandbox/config.py` runtime path defaults for trigger orchestrator state files. |
+| `poll_interval_seconds` | `config/trigger-orchestrator/config.json` | Trigger orchestrator worker polling cadence. |
+| `jitter_seconds` | `config/trigger-orchestrator/config.json` | Trigger orchestrator worker jitter between cycles. |
+| `lock_path` | `config/trigger-orchestrator/config.json` | Trigger orchestrator single-instance lock file path. |
+| `event_queue_store_path` | `config/trigger-orchestrator/config.json` | Trigger orchestrator persisted event queue store path. |
+| `event_queue_cursor_store_path` | `config/trigger-orchestrator/config.json` | Trigger orchestrator event queue cursor/checkpoint store path. |
+| `triggers` | `config/trigger-orchestrator/config.json` | Trigger orchestrator trigger definition list (`src/agent_sandbox/triggers/models.py`). |
+
 ### Wake scheduling examples
 
 - One-time (MCP `schedule_resume`) payload shape:
