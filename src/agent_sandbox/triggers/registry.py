@@ -6,6 +6,13 @@ from collections.abc import Callable, Mapping
 from agent_sandbox.provider_config import ProviderConfigResolver
 from agent_sandbox.triggers.models import TriggerDefinitionDiscriminated, TriggerType
 from agent_sandbox.triggers.providers.base import TriggerProviderBase, TriggerRuntimeContext
+from agent_sandbox.triggers.providers.cron import CronTriggerProvider
+from agent_sandbox.triggers.providers.discord_new_message import DiscordNewMessageTriggerProvider
+from agent_sandbox.triggers.providers.email_new_message import EmailNewMessageTriggerProvider
+from agent_sandbox.triggers.providers.git_push import GitPushTriggerProvider
+from agent_sandbox.triggers.providers.pull_request_new_feedback import PullRequestNewFeedbackTriggerProvider
+from agent_sandbox.triggers.providers.ticket_changed import TicketChangedTriggerProvider
+from agent_sandbox.triggers.providers.ticket_created import TicketCreatedTriggerProvider
 
 TriggerProviderClass = type[TriggerProviderBase]
 
@@ -15,13 +22,13 @@ class NoopTriggerProvider(TriggerProviderBase):
 
 
 DEFAULT_TRIGGER_PROVIDER_REGISTRY: dict[TriggerType, TriggerProviderClass] = {
-    "trigger:cron": NoopTriggerProvider,
-    "trigger:ticket:created": NoopTriggerProvider,
-    "trigger:ticket:changed": NoopTriggerProvider,
-    "trigger:discord:new-message": NoopTriggerProvider,
-    "trigger:email:new-message": NoopTriggerProvider,
-    "trigger:pull-request:new-feedback": NoopTriggerProvider,
-    "trigger:git:push": NoopTriggerProvider,
+    "trigger:cron": CronTriggerProvider,
+    "trigger:ticket:created": TicketCreatedTriggerProvider,
+    "trigger:ticket:changed": TicketChangedTriggerProvider,
+    "trigger:discord:new-message": DiscordNewMessageTriggerProvider,
+    "trigger:email:new-message": EmailNewMessageTriggerProvider,
+    "trigger:pull-request:new-feedback": PullRequestNewFeedbackTriggerProvider,
+    "trigger:git:push": GitPushTriggerProvider,
 }
 
 

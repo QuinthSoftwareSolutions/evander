@@ -54,6 +54,21 @@ def test_pr_feedback_trigger_requires_org_url_for_ado() -> None:
         )
 
 
+
+
+def test_pr_feedback_trigger_accepts_local_provider() -> None:
+    trigger = PullRequestNewFeedbackTriggerDefinition.model_validate(
+        {
+            "id": "t-4",
+            "display_name": "Local PR feedback",
+            "type": "trigger:pull-request:new-feedback",
+            "provider": "local",
+        }
+    )
+
+    assert trigger.provider == "local"
+
+
 def test_trigger_event_envelope_accepts_normalized_payload() -> None:
     event = TriggerEvent.model_validate(
         {
