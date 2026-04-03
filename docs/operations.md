@@ -613,6 +613,37 @@ sudo systemctl status agent-sandbox-issue-orchestrator.service
 sudo journalctl -u agent-sandbox-issue-orchestrator.service -f
 ```
 
+## Host-Side Trigger Orchestrator
+
+- The scaffold includes `agent-sandbox-trigger-orchestrator`, a singleton host worker that polls
+  configured triggers and persists trigger events to a durable queue.
+- Global worker config lives at `config/trigger-orchestrator/config.json`.
+- Runtime defaults (when config fields are null/omitted):
+  - queue: `runtime/trigger-orchestrator-events.json`
+  - cursor: `runtime/trigger-orchestrator-cursors.json`
+  - lock: `runtime/trigger-orchestrator.lock`
+
+Run one cycle for validation/debug:
+
+```bash
+agent-sandbox-trigger-orchestrator --runtime-dir runtime --once --log-level DEBUG
+```
+
+Run continuously under systemd:
+
+```bash
+sudo systemctl start agent-sandbox-trigger-orchestrator.service
+sudo systemctl status agent-sandbox-trigger-orchestrator.service
+sudo journalctl -u agent-sandbox-trigger-orchestrator.service -f
+```
+
+Git hook ingestion path:
+
+- `scripts/handle_git_push_trigger.sh <bare-repo-path>` is intended for bare repo
+  `post-receive` hooks.
+- It reads `<old> <new> <ref>` updates from stdin, matches configured `trigger:git:push`
+  triggers, and appends deduplicated pending records into the same orchestrator queue.
+
 ## Systemd Services
 
 Install persistent host services with a validation-first flow:
