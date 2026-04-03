@@ -36,9 +36,11 @@ def test_install_systemd_units_preflight_checks_for_mssql_worker_password_when_e
     assert 'config/ado-worker/config.json' in text
     assert 'runtime/directory-config/root/ado-worker.json' in text
     assert 'config/issue-orchestrator/config.json' in text
+    assert 'config/trigger-orchestrator/config.json' in text
     assert 'secrets.env' in text
     assert 'config/ado-worker.env' not in text
     assert 'agent-sandbox-issue-orchestrator.service' in text
+    assert 'agent-sandbox-trigger-orchestrator.service' in text
 
 
 def test_install_systemd_units_no_longer_requires_removed_per_service_env_files() -> None:
@@ -69,6 +71,9 @@ def test_service_templates_use_optional_shared_secrets_env() -> None:
     orchestrator = (repo / "systemd" / "agent-sandbox-issue-orchestrator.service.template").read_text(
         encoding="utf-8"
     )
+    trigger_orchestrator = (
+        repo / "systemd" / "agent-sandbox-trigger-orchestrator.service.template"
+    ).read_text(encoding="utf-8")
 
     assert "EnvironmentFile=-__PROJECT_DIR__/config/gateway.env" in gateway
     assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in gateway
@@ -92,3 +97,7 @@ def test_service_templates_use_optional_shared_secrets_env() -> None:
     assert "--log-level ${ISSUE_ORCHESTRATOR_LOG_LEVEL}" in orchestrator
     assert "ExecStart=__PROJECT_DIR__/.venv/bin/agent-sandbox-issue-orchestrator" in orchestrator
     assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in orchestrator
+    assert "Environment=TRIGGER_ORCHESTRATOR_LOG_LEVEL=INFO" in trigger_orchestrator
+    assert "--log-level ${TRIGGER_ORCHESTRATOR_LOG_LEVEL}" in trigger_orchestrator
+    assert "agent-sandbox-cli trigger-orchestrator" in trigger_orchestrator
+    assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in trigger_orchestrator

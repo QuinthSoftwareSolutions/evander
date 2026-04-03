@@ -31,6 +31,7 @@ from .config import GatewayConfig, load_config
 from .directories import DirectoryService
 from .host_heartbeat_worker import build_host_heartbeat_worker
 from .issue_orchestrator import build_issue_orchestrator_worker
+from .trigger_orchestrator import build_trigger_orchestrator_worker
 from .host_config import DEFAULT_RUNTIME_DIR
 from .migrations import (
     migrate_ado_worker_env_to_root,
@@ -2913,6 +2914,41 @@ def host_heartbeat(
         typer.echo(
             f"Host heartbeat cycle complete streams={result.streams_polled} "
             f"discovered={result.discovered_feedback} sleep_seconds={result.next_sleep_seconds:.3f}"
+        )
+        return
+
+    worker.run_forever()
+
+
+@app.command(
+    "trigger-orchestrator",
+    rich_help_panel="Background Workers",
+    short_help="Run the trigger orchestrator worker.",
+)
+def trigger_orchestrator(
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
+    run_once: Annotated[
+        bool,
+        typer.Option("--once", help="Run a single trigger orchestrator cycle and exit."),
+    ] = False,
+    log_level: Annotated[str, typer.Option("--log-level", help="Python logging level.")] = "INFO",
+) -> None:
+    logging_level = getattr(logging, log_level.upper(), None)
+    if not isinstance(logging_level, int):
+        raise typer.BadParameter(f"Invalid --log-level value: {log_level}")
+    logging.basicConfig(
+        level=logging_level,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+
+    cfg = _load_runtime_config_from_option(config)
+    worker = build_trigger_orchestrator_worker(cfg, project_dir=_project_dir_for_config_option(config))
+    if run_once:
+        result = worker.run_once_with_lock()
+        typer.echo(
+            f"Trigger orchestrator cycle complete triggers={result.configured_triggers} "
+            f"discovered={result.events_discovered} published={result.events_published} "
+            f"sleep_seconds={result.next_sleep_seconds:.3f}"
         )
         return
 
