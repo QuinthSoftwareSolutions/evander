@@ -212,7 +212,7 @@ def test_trigger_orchestrator_worker_global_config_defaults_follow_runtime_dir()
     assert str(config.lock_path) == "/tmp/agent-sandbox-runtime/trigger-orchestrator.lock"
     assert (
         str(config.event_queue_store_path)
-        == "/tmp/agent-sandbox-runtime/trigger-orchestrator-events.jsonl"
+        == "/tmp/agent-sandbox-runtime/trigger-orchestrator-events.json"
     )
     assert (
         str(config.event_queue_cursor_store_path)
