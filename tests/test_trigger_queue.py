@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+import json
 
 from agent_sandbox.triggers.models import TriggerEvent
 from agent_sandbox.triggers.queue import TriggerEventQueue
@@ -34,6 +35,29 @@ def test_publish_honors_idempotency_key(tmp_path) -> None:
 
     assert second.event_id == first.event_id
     assert [item.event_id for item in queue.list_pending()] == ["evt-1"]
+
+
+def test_publish_normalizes_blank_idempotency_key(tmp_path) -> None:
+    queue = TriggerEventQueue(tmp_path / "events.json")
+
+    first = queue.publish(_event(event_id="evt-1"), idempotency_key="   ")
+    second = queue.publish(_event(event_id="evt-2"), idempotency_key=None)
+
+    assert first.event_id != second.event_id
+    assert [item.event_id for item in queue.list_pending()] == ["evt-1", "evt-2"]
+
+
+def test_queue_persists_records_on_disk(tmp_path) -> None:
+    queue_path = tmp_path / "events.json"
+    queue = TriggerEventQueue(queue_path)
+    queue.publish(_event(event_id="evt-1"))
+
+    raw = json.loads(queue_path.read_text(encoding="utf-8"))
+    assert "evt-1" in raw
+    assert raw["evt-1"]["delivery_state"] == "pending"
+
+    reloaded = TriggerEventQueue(queue_path)
+    assert [item.event_id for item in reloaded.list_pending()] == ["evt-1"]
 
 
 def test_list_pending_filters_and_ordering(tmp_path) -> None:

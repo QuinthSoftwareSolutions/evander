@@ -4,6 +4,7 @@ import pytest
 from pydantic import TypeAdapter
 
 from agent_sandbox.triggers.models import (
+    GitPushTriggerDefinition,
     PullRequestNewFeedbackTriggerDefinition,
     TriggerDefinitionDiscriminated,
     TriggerEvent,
@@ -50,6 +51,45 @@ def test_pr_feedback_trigger_requires_org_url_for_ado() -> None:
                 "display_name": "PR feedback",
                 "type": "trigger:pull-request:new-feedback",
                 "provider": "ado",
+            }
+        )
+
+
+def test_git_push_trigger_requires_repo_path() -> None:
+    with pytest.raises(ValueError, match="path_to_repo"):
+        GitPushTriggerDefinition.model_validate(
+            {
+                "id": "t-3b",
+                "display_name": "Git push",
+                "type": "trigger:git:push",
+            }
+        )
+
+
+def test_email_trigger_requires_account_and_mailboxes() -> None:
+    adapter = TypeAdapter(TriggerDefinitionDiscriminated)
+
+    with pytest.raises(ValueError, match="account_identifier"):
+        adapter.validate_python(
+            {
+                "id": "t-2b",
+                "display_name": "Email",
+                "type": "trigger:email:new-message",
+                "provider": "gmail",
+                "mailbox_ids": ["inbox"],
+                "auth_secret_refs": {"access_token": "EMAIL_ACCESS_TOKEN"},
+            }
+        )
+
+    with pytest.raises(ValueError, match="mailbox_ids"):
+        adapter.validate_python(
+            {
+                "id": "t-2c",
+                "display_name": "Email",
+                "type": "trigger:email:new-message",
+                "provider": "gmail",
+                "account_identifier": "ops@example.com",
+                "auth_secret_refs": {"access_token": "EMAIL_ACCESS_TOKEN"},
             }
         )
 

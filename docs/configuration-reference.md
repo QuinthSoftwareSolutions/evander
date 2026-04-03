@@ -147,6 +147,61 @@ trigger inheritance model is introduced.
 | `event_queue_cursor_store_path` | `config/trigger-orchestrator/config.json` | Trigger orchestrator event queue cursor/checkpoint store path. |
 | `triggers` | `config/trigger-orchestrator/config.json` | Trigger orchestrator trigger definition list (`src/agent_sandbox/triggers/models.py`). |
 
+### Trigger definition schema keys
+
+Each trigger entry requires the shared envelope keys:
+
+- `id` (string, required, unique across all triggers)
+- `display_name` (string, required)
+- `type` (required discriminator)
+
+Type-specific keys:
+
+| `type` | Required keys | Optional keys |
+|---|---|---|
+| `trigger:cron` | `expression` | — |
+| `trigger:ticket:created` | `directories` | — |
+| `trigger:ticket:changed` | `directories` | — |
+| `trigger:discord:new-message` | `discord_bot_token_env` | `channel_ids`, `user_ids` |
+| `trigger:email:new-message` | `provider`, `account_identifier`, `mailbox_ids` | `auth_secret_refs` |
+| `trigger:pull-request:new-feedback` | `provider` | `organization_url`, `project` (but `organization_url` becomes required when `provider=ado`) |
+| `trigger:git:push` | `path_to_repo` | — |
+
+Example:
+
+```json
+{
+  "runtime_dir": "runtime",
+  "poll_interval_seconds": 30,
+  "jitter_seconds": 5,
+  "triggers": [
+    {
+      "id": "cron-15m",
+      "display_name": "Every 15 minutes",
+      "type": "trigger:cron",
+      "expression": "*/15 * * * *"
+    },
+    {
+      "id": "mailbox-ops",
+      "display_name": "Ops inbox",
+      "type": "trigger:email:new-message",
+      "provider": "graph",
+      "account_identifier": "ops@example.com",
+      "mailbox_ids": ["primary"],
+      "auth_secret_refs": {
+        "access_token": "GRAPH_ACCESS_TOKEN"
+      }
+    },
+    {
+      "id": "repo-main",
+      "display_name": "Repo push",
+      "type": "trigger:git:push",
+      "path_to_repo": "/var/lib/git/my-repo.git"
+    }
+  ]
+}
+```
+
 ### Wake scheduling examples
 
 - One-time (MCP `schedule_resume`) payload shape:
