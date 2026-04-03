@@ -18,7 +18,7 @@ TriggerType = Literal[
 ]
 
 EmailProvider = Literal["json_store", "gmail", "graph"]
-PrFeedbackProvider = Literal["github", "ado"]
+PrFeedbackProvider = Literal["local", "github", "ado"]
 
 
 class TriggerDefinition(BaseModel):
@@ -185,8 +185,8 @@ def validate_email_provider(value: object) -> str:
 
 def validate_pr_feedback_provider(value: object) -> str:
     normalized = str(value).strip().lower()
-    if normalized not in {"github", "ado"}:
+    if normalized not in {"local", "github", "ado"}:
         raise ValueError(
-            f"Unsupported pull-request feedback provider: {normalized!r}. Allowed providers: ado, github"
+            f"Unsupported pull-request feedback provider: {normalized!r}. Allowed providers: ado, github, local"
         )
     return normalized
