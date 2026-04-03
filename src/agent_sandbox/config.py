@@ -443,7 +443,7 @@ class TriggerOrchestratorWorkerGlobalConfig(BaseModel):
         if self.lock_path is None:
             self.lock_path = self.runtime_dir / "trigger-orchestrator.lock"
         if self.event_queue_store_path is None:
-            self.event_queue_store_path = self.runtime_dir / "trigger-orchestrator-events.jsonl"
+            self.event_queue_store_path = self.runtime_dir / "trigger-orchestrator-events.json"
         if self.event_queue_cursor_store_path is None:
             self.event_queue_cursor_store_path = self.runtime_dir / "trigger-orchestrator-cursors.json"
         return self
