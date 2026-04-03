@@ -439,6 +439,15 @@ class TriggerOrchestratorWorkerGlobalConfig(BaseModel):
     triggers: list[TriggerDefinitionDiscriminated] = Field(default_factory=list)
 
     @model_validator(mode="after")
+    def validate_unique_trigger_ids(self) -> TriggerOrchestratorWorkerGlobalConfig:
+        trigger_ids = [trigger.id for trigger in self.triggers]
+        duplicates = sorted(trigger_id for trigger_id, count in Counter(trigger_ids).items() if count > 1)
+        if duplicates:
+            duplicate_list = ", ".join(duplicates)
+            raise ValueError(f"Duplicate trigger IDs are not allowed: {duplicate_list}")
+        return self
+
+    @model_validator(mode="after")
     def apply_runtime_path_defaults(self) -> TriggerOrchestratorWorkerGlobalConfig:
         if self.lock_path is None:
             self.lock_path = self.runtime_dir / "trigger-orchestrator.lock"

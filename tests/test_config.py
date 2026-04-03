@@ -236,3 +236,25 @@ def test_trigger_orchestrator_worker_global_config_accepts_discriminated_trigger
     )
 
     assert config.triggers[0].type == "trigger:cron"
+
+
+def test_trigger_orchestrator_worker_global_config_rejects_duplicate_trigger_ids() -> None:
+    with pytest.raises(ValueError, match="Duplicate trigger IDs are not allowed"):
+        TriggerOrchestratorWorkerGlobalConfig.model_validate(
+            {
+                "triggers": [
+                    {
+                        "id": "cron-15m",
+                        "display_name": "Every 15 minutes",
+                        "type": "trigger:cron",
+                        "expression": "*/15 * * * *",
+                    },
+                    {
+                        "id": "cron-15m",
+                        "display_name": "Every 30 minutes",
+                        "type": "trigger:cron",
+                        "expression": "*/30 * * * *",
+                    },
+                ]
+            }
+        )
