@@ -643,6 +643,9 @@ Git hook ingestion path:
   `post-receive` hooks.
 - It reads `<old> <new> <ref>` updates from stdin, matches configured `trigger:git:push`
   triggers, and appends deduplicated pending records into the same orchestrator queue.
+- Run `PYTHONPATH=src python -m pytest -q tests/test_trigger_conformance_suite.py` for full
+  trigger contract regression coverage and the generated conformance report (see
+  `docs/trigger-conformance.md`).
 
 ## Systemd Services
 
