@@ -701,6 +701,91 @@ def test_admin_service_reads_and_writes_discord_ingest_worker_global_config(tmp_
     assert reread.config["backoff_seconds"] == 45.0
 
 
+def test_admin_service_can_read_and_mutate_trigger_orchestrator_triggers_by_id(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+
+    read_result = service.read_worker_global_config("trigger-orchestrator")
+    assert read_result.exists is False
+    assert read_result.path == str(tmp_path / "config" / "trigger-orchestrator" / "config.json")
+    assert read_result.config["triggers"] == []
+
+    added = service.upsert_trigger_config(
+        "cron-15m",
+        {
+            "display_name": "Every 15 minutes",
+            "type": "trigger:cron",
+            "expression": "*/15 * * * *",
+        },
+    )
+    assert added.operation == "added"
+    assert added.config["triggers"][0]["id"] == "cron-15m"
+
+    updated = service.upsert_trigger_config(
+        "cron-15m",
+        {
+            "display_name": "Every 30 minutes",
+            "type": "trigger:cron",
+            "expression": "*/30 * * * *",
+        },
+    )
+    assert updated.operation == "updated"
+    assert updated.config["triggers"] == [
+        {
+            "id": "cron-15m",
+            "display_name": "Every 30 minutes",
+            "type": "trigger:cron",
+            "expression": "*/30 * * * *",
+        }
+    ]
+
+    removed = service.delete_trigger_config("cron-15m")
+    assert removed.operation == "deleted"
+    assert removed.config["triggers"] == []
+
+
+def test_admin_service_rejects_duplicate_trigger_ids_with_safe_error_message(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+
+    with pytest.raises(ValueError, match="Duplicate trigger IDs are not allowed: dup"):
+        service.write_worker_global_config(
+            "trigger-orchestrator",
+            {
+                "runtime_dir": str(tmp_path / "runtime"),
+                "triggers": [
+                    {
+                        "id": "dup",
+                        "display_name": "First",
+                        "type": "trigger:cron",
+                        "expression": "*/15 * * * *",
+                    },
+                    {
+                        "id": "dup",
+                        "display_name": "Second",
+                        "type": "trigger:cron",
+                        "expression": "*/30 * * * *",
+                    },
+                ],
+            },
+        )
+
+    with pytest.raises(ValueError) as excinfo:
+        service.upsert_trigger_config(
+            "email-invalid",
+            {
+                "display_name": "Bad email provider",
+                "type": "trigger:email:new-message",
+                "provider": "not-real",
+                "account_identifier": "acct",
+                "mailbox_ids": ["inbox"],
+                "auth_secret_refs": {"token": "VERY_SECRET_TOKEN"},
+            },
+        )
+    message = str(excinfo.value)
+    assert "Invalid trigger config:" in message
+    assert "Unsupported email provider" in message
+    assert "VERY_SECRET_TOKEN" not in message
+
+
 def test_create_issue_vm_uses_directory_vm_defaults_overlay_for_guest_env(tmp_path: Path, monkeypatch) -> None:
     service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
     create_result = service.create_directory_child("root", "team")

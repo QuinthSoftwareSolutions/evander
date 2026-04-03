@@ -14,7 +14,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, TypeAdapter, ValidationError
 import yaml
 
 from .agent_control import AgentControlStore
@@ -25,6 +25,7 @@ from .config import (
     GatewayConfig,
     HostHeartbeatWorkerGlobalConfig,
     IssueOrchestratorWorkerGlobalConfig,
+    TriggerOrchestratorWorkerGlobalConfig,
 )
 from .directory_admin import DirectoryAdminService
 from .directory_config import (
@@ -62,12 +63,14 @@ from .models import (
 )
 from .runtime import RuntimeContext, build_runtime
 from .storage import JsonStore
+from .triggers.models import TriggerDefinitionDiscriminated
 
 _WORKER_DEFINITIONS: tuple[tuple[str, str, str], ...] = (
     ("ado", "ADO Worker", "agent-sandbox-ado-worker.service"),
     ("discord-ingest", "Discord Ingest Worker", "agent-sandbox-discord-ingest.service"),
     ("host-heartbeat", "Host Heartbeat Worker", "agent-sandbox-host-heartbeat.service"),
     ("issue-orchestrator", "Issue Orchestrator Worker", "agent-sandbox-issue-orchestrator.service"),
+    ("trigger-orchestrator", "Trigger Orchestrator Worker", "agent-sandbox-trigger-orchestrator.service"),
 )
 
 _WORKER_GLOBAL_CONFIG_PATHS: dict[str, str] = {
@@ -75,6 +78,7 @@ _WORKER_GLOBAL_CONFIG_PATHS: dict[str, str] = {
     "discord-ingest": "config/discord-ingest/config.json",
     "host-heartbeat": "config/host-heartbeat/config.json",
     "issue-orchestrator": "config/issue-orchestrator/config.json",
+    "trigger-orchestrator": "config/trigger-orchestrator/config.json",
 }
 
 _WORKER_GLOBAL_CONFIG_MODELS: dict[str, type[BaseModel]] = {
@@ -82,6 +86,7 @@ _WORKER_GLOBAL_CONFIG_MODELS: dict[str, type[BaseModel]] = {
     "discord-ingest": DiscordIngestWorkerGlobalConfig,
     "host-heartbeat": HostHeartbeatWorkerGlobalConfig,
     "issue-orchestrator": IssueOrchestratorWorkerGlobalConfig,
+    "trigger-orchestrator": TriggerOrchestratorWorkerGlobalConfig,
 }
 ISSUE_STATES: tuple[str, ...] = ("New", "Approved", "Committed", "In Progress", "Completed", "Closed")
 _ISSUE_STATE_SET = set(ISSUE_STATES)
@@ -204,6 +209,27 @@ class WorkerGlobalConfigWritePayload(BaseModel):
     worker_id: str
     path: str
     config: dict[str, object]
+
+
+class TriggerConfigMutationPayload(BaseModel):
+    worker_id: str = "trigger-orchestrator"
+    trigger_id: str
+    operation: str
+    path: str
+    config: dict[str, object]
+
+
+_TRIGGER_DEFINITION_ADAPTER = TypeAdapter(TriggerDefinitionDiscriminated)
+
+
+def _safe_validation_error(exc: ValidationError, *, context: str) -> ValueError:
+    details: list[str] = []
+    for item in exc.errors(include_input=False):
+        location = ".".join(str(part) for part in item.get("loc", ()))
+        message = str(item.get("msg", "invalid value"))
+        details.append(f"{location}: {message}" if location else message)
+    suffix = "; ".join(details) if details else "invalid value"
+    return ValueError(f"{context}: {suffix}")
 
 
 def _utc_now() -> datetime:
@@ -2744,6 +2770,12 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
     def write_worker_global_config(self, worker_id: str, payload: dict[str, object]):
         return self._write_worker_global_config(worker_id, payload)
 
+    def upsert_trigger_config(self, trigger_id: str, payload: dict[str, object]) -> TriggerConfigMutationPayload:
+        return self._upsert_trigger_config(trigger_id, payload)
+
+    def delete_trigger_config(self, trigger_id: str) -> TriggerConfigMutationPayload:
+        return self._delete_trigger_config(trigger_id)
+
     def _worker_global_config_path(self, worker_id: str) -> Path | None:
         relative = _WORKER_GLOBAL_CONFIG_PATHS.get(worker_id)
         if relative is None:
@@ -2771,10 +2803,82 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
         if path is None:
             raise ValueError(f"Unknown worker: {worker_id}")
         model = _WORKER_GLOBAL_CONFIG_MODELS[worker_id]
-        config = model.model_validate(payload).model_dump(mode="json")
+        try:
+            config = model.model_validate(payload).model_dump(mode="json")
+        except ValidationError as exc:
+            raise _safe_validation_error(exc, context=f"Invalid {worker_id} worker config") from exc
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(config, indent=2, sort_keys=True), encoding="utf-8")
         return WorkerGlobalConfigWritePayload(worker_id=worker_id, path=str(path), config=config)
+
+    def _upsert_trigger_config(self, trigger_id: str, payload: dict[str, object]) -> TriggerConfigMutationPayload:
+        normalized_trigger_id = str(trigger_id).strip()
+        if not normalized_trigger_id:
+            raise ValueError("trigger_id is required")
+        normalized_payload = dict(payload)
+        payload_trigger_id = str(normalized_payload.get("id", "")).strip()
+        if payload_trigger_id and payload_trigger_id != normalized_trigger_id:
+            raise ValueError("trigger_id must match payload.id when payload.id is provided")
+        normalized_payload["id"] = normalized_trigger_id
+        try:
+            validated_trigger = _TRIGGER_DEFINITION_ADAPTER.validate_python(normalized_payload)
+        except ValidationError as exc:
+            raise _safe_validation_error(exc, context="Invalid trigger config") from exc
+        normalized_payload = validated_trigger.model_dump(mode="json")
+
+        current = self._read_worker_global_config("trigger-orchestrator")
+        config = dict(current.config)
+        existing_triggers_raw = config.get("triggers", [])
+        if not isinstance(existing_triggers_raw, list):
+            raise ValueError("Invalid trigger-orchestrator config: triggers must be a JSON array.")
+        existing_triggers = [entry for entry in existing_triggers_raw if isinstance(entry, dict)]
+        replacing = False
+        for index, existing in enumerate(existing_triggers):
+            existing_id = str(existing.get("id", "")).strip()
+            if existing_id == normalized_trigger_id:
+                existing_triggers[index] = normalized_payload
+                replacing = True
+                break
+        if not replacing:
+            existing_triggers.append(normalized_payload)
+        config["triggers"] = existing_triggers
+        write_result = self._write_worker_global_config("trigger-orchestrator", config)
+        return TriggerConfigMutationPayload(
+            trigger_id=normalized_trigger_id,
+            operation="updated" if replacing else "added",
+            path=write_result.path,
+            config=write_result.config,
+        )
+
+    def _delete_trigger_config(self, trigger_id: str) -> TriggerConfigMutationPayload:
+        normalized_trigger_id = str(trigger_id).strip()
+        if not normalized_trigger_id:
+            raise ValueError("trigger_id is required")
+        current = self._read_worker_global_config("trigger-orchestrator")
+        config = dict(current.config)
+        triggers_raw = config.get("triggers", [])
+        if not isinstance(triggers_raw, list):
+            raise ValueError("Invalid trigger-orchestrator config: triggers must be a JSON array.")
+        filtered = []
+        removed = False
+        for entry in triggers_raw:
+            if not isinstance(entry, dict):
+                continue
+            entry_id = str(entry.get("id", "")).strip()
+            if entry_id == normalized_trigger_id:
+                removed = True
+                continue
+            filtered.append(entry)
+        if not removed:
+            raise ValueError(f"Trigger not found: {normalized_trigger_id}")
+        config["triggers"] = filtered
+        write_result = self._write_worker_global_config("trigger-orchestrator", config)
+        return TriggerConfigMutationPayload(
+            trigger_id=normalized_trigger_id,
+            operation="deleted",
+            path=write_result.path,
+            config=write_result.config,
+        )
 
     def _next_local_issue_number(self) -> str:
         current = 0

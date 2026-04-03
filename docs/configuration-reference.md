@@ -133,6 +133,9 @@ Workers tab edits `config/host-heartbeat/config.json` for the `host-heartbeat` w
 ## `config/trigger-orchestrator/config.json`
 
 This JSON file stores the trigger orchestrator worker's global settings.
+Trigger definitions are currently global (host-wide) and are **not** directory-scoped; this keeps
+provider secret resolution and cross-directory event ingestion centralized until a directory-resolved
+trigger inheritance model is introduced.
 
 | Parameter | Found in | Consumed by |
 |---|---|---|
