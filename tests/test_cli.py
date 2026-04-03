@@ -110,6 +110,7 @@ def test_help_groups_commands_by_panel_then_alphabetically() -> None:
     assert "create-issue-vm" in output and "Create and bootstrap an issue VM." in output
     assert "create-vm" in output and "Create and bootstrap a standalone VM." in output
     assert "host-heartbeat" in output and "Run the host heartbeat worker." in output
+    assert "trigger-orchestrator" in output and "Run the trigger orchestrator worker." in output
 
 
 def test_init_state_creates_directories_store_with_root(tmp_path: Path) -> None:
@@ -3451,6 +3452,42 @@ def test_status_uses_root_vm_defaults_overlay_for_health_endpoints(tmp_path: Pat
     assert ("gateway", "http://10.0.0.5:9000/mcp") in checked_urls
     assert ("openai_relay", "http://127.0.0.2:12000/healthz") in checked_urls
 
+
+
+
+def test_trigger_orchestrator_once_runs_single_cycle(tmp_path: Path, monkeypatch) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+    calls: list[str] = []
+
+    class _FakeWorker:
+        def run_once_with_lock(self):
+            calls.append("run_once_with_lock")
+            return SimpleNamespace(
+                configured_triggers=2,
+                events_discovered=5,
+                events_published=4,
+                next_sleep_seconds=17.25,
+            )
+
+        def run_once(self):
+            raise AssertionError("run_once should not be called directly in --once mode")
+
+        def run_forever(self) -> None:
+            raise AssertionError("run_forever should not be called in --once mode")
+
+    monkeypatch.setattr("agent_sandbox.cli.build_trigger_orchestrator_worker", lambda cfg, **kwargs: _FakeWorker())
+
+    result = runner.invoke(
+        app,
+        ["trigger-orchestrator", "--config", str(config_path), "--once", "--log-level", "DEBUG"],
+    )
+
+    assert result.exit_code == 0
+    assert calls == ["run_once_with_lock"]
+    assert "triggers=2" in result.output
+    assert "discovered=5" in result.output
+    assert "published=4" in result.output
 
 def test_host_heartbeat_once_runs_single_cycle(tmp_path: Path, monkeypatch) -> None:
     config_path = write_config(tmp_path)

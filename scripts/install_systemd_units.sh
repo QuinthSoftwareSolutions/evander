@@ -269,6 +269,9 @@ run_preflight_checks() {
   check_file \
     "${ROOT_DIR}/config/issue-orchestrator/config.json" \
     "Copy config/issue-orchestrator/config.json.example to config/issue-orchestrator/config.json."
+  check_file \
+    "${ROOT_DIR}/config/trigger-orchestrator/config.json" \
+    "Copy config/trigger-orchestrator/config.json.example to config/trigger-orchestrator/config.json."
 
   check_env_var_in_file "${ROOT_DIR}/config/firewall.env" "ALLOWED_TCP_PORTS" "Set ALLOWED_TCP_PORTS in config/firewall.env."
   if [[ -f "${ROOT_DIR}/runtime/directory-config/root/ado-worker.json" ]]; then
@@ -361,6 +364,10 @@ render_unit \
   "${ROOT_DIR}/systemd/agent-sandbox-issue-orchestrator.service.template" \
   "${SYSTEMD_DIR}/agent-sandbox-issue-orchestrator.service"
 
+render_unit \
+  "${ROOT_DIR}/systemd/agent-sandbox-trigger-orchestrator.service.template" \
+  "${SYSTEMD_DIR}/agent-sandbox-trigger-orchestrator.service"
+
 systemctl daemon-reload
 systemctl enable agent-sandbox-gateway.service
 systemctl enable agent-sandbox-openai-relay.service
@@ -370,6 +377,7 @@ systemctl enable agent-sandbox-ado-worker.service
 systemctl enable agent-sandbox-discord-ingest.service
 systemctl enable agent-sandbox-host-heartbeat.service
 systemctl enable agent-sandbox-issue-orchestrator.service
+systemctl enable agent-sandbox-trigger-orchestrator.service
 
 cat <<EOF
 Installed systemd units:
@@ -381,14 +389,16 @@ Installed systemd units:
   agent-sandbox-discord-ingest.service
   agent-sandbox-host-heartbeat.service
   agent-sandbox-issue-orchestrator.service
+  agent-sandbox-trigger-orchestrator.service
 
 Next steps:
   1. Populate ${ROOT_DIR}/runtime/directory-config/root/ado-worker.json via the root directory config migration commands.
   2. Populate ${ROOT_DIR}/config/ado-worker/config.json via the Admin GUI if you want to override worker defaults.
-  3. Populate ${ROOT_DIR}/config/issue-orchestrator/config.json from the example file if you want to enable the new orchestrator scaffold.
-  4. Export the required host secrets in the service manager environment, or source ${ROOT_DIR}/secrets.env if you keep one there.
-  5. Optionally edit ${ROOT_DIR}/config/firewall.env to change allowed host ports.
-  6. Start services:
+  3. Populate ${ROOT_DIR}/config/issue-orchestrator/config.json from the example file if you want to enable the issue orchestrator scaffold.
+  4. Populate ${ROOT_DIR}/config/trigger-orchestrator/config.json from the example file if you want to enable the trigger orchestrator scaffold.
+  5. Export the required host secrets in the service manager environment, or source ${ROOT_DIR}/secrets.env if you keep one there.
+  6. Optionally edit ${ROOT_DIR}/config/firewall.env to change allowed host ports.
+  7. Start services:
      sudo systemctl start agent-sandbox-firewall.service
      sudo systemctl start agent-sandbox-gateway.service
      sudo systemctl start agent-sandbox-openai-relay.service
@@ -397,4 +407,5 @@ Next steps:
      sudo systemctl start agent-sandbox-discord-ingest.service
      sudo systemctl start agent-sandbox-host-heartbeat.service
      sudo systemctl start agent-sandbox-issue-orchestrator.service
+     sudo systemctl start agent-sandbox-trigger-orchestrator.service
 EOF
