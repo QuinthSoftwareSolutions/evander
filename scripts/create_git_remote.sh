@@ -40,6 +40,7 @@ GIT_HOST="${AGENT_SANDBOX_GIT_HOST:-192.168.250.1}"
 GIT_USER="${AGENT_SANDBOX_GIT_USER:-${USER}}"
 GIT_SSH_ALIAS="${AGENT_SANDBOX_GIT_SSH_ALIAS:-agent-sandbox-git-host}"
 HOOK_SCRIPT="${ROOT_DIR}/scripts/handle_agent_push.sh"
+TRIGGER_HOOK_SCRIPT="${ROOT_DIR}/scripts/handle_git_push_trigger.sh"
 
 case "${REPO_NAME}" in
   *.git) REPO_DIR="${GIT_ROOT}/${REPO_NAME}" ;;
@@ -62,10 +63,26 @@ LOG_FILE="\${LOG_DIR}/$(basename "${REPO_DIR}").post-receive.log"
 mkdir -p "\${LOG_DIR}"
 {
   printf '=== %s post-receive start ===\n' "\$(date -Iseconds)"
-  if "${HOOK_SCRIPT}" "${REPO_DIR}"; then
+  updates_file="\$(mktemp)"
+  cat > "\${updates_file}"
+
+  trigger_status=0
+  if [[ -x "${TRIGGER_HOOK_SCRIPT}" ]]; then
+    if cat "\${updates_file}" | "${TRIGGER_HOOK_SCRIPT}" "${REPO_DIR}"; then
+      trigger_status=0
+    else
+      trigger_status=\$?
+    fi
+  fi
+
+  if cat "\${updates_file}" | "${HOOK_SCRIPT}" "${REPO_DIR}"; then
     status=0
   else
     status=\$?
+  fi
+  rm -f "\${updates_file}"
+  if [[ "\${trigger_status}" -ne 0 ]]; then
+    status="\${trigger_status}"
   fi
   printf '=== %s post-receive exit=%s ===\n' "\$(date -Iseconds)" "\${status}"
   exit "\${status}"

@@ -79,6 +79,40 @@ trusted host clone by `mirror_issue_repo.sh`, that hook can automatically promot
 `agents/...` branches, push a review branch to `origin`, create or reuse the upstream PR, and emit
 a host-side notification.
 
+The same hook now also invokes `scripts/handle_git_push_trigger.sh`, which reads each
+`<old-sha> <new-sha> <ref-name>` update from `stdin`, resolves configured
+`trigger:git:push` entries whose `path_to_repo` matches that bare repository path, and enqueues
+trigger events to the trigger orchestrator queue. For each matching branch update, the helper
+publishes payload fields:
+
+- `branch_name` (derived from `refs/heads/<branch>`)
+- `commit_hash` (the new head SHA from post-receive input)
+
+### Installing the trigger helper manually
+
+If you manage a bare repo outside `create_git_remote.sh`, install a post-receive hook that pipes
+the same post-receive update stream into `handle_git_push_trigger.sh`:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+cat | /home/jonathan/agent-sandbox/scripts/handle_git_push_trigger.sh /path/to/repo.git
+```
+
+Optional environment override:
+
+- `AGENT_SANDBOX_TRIGGER_ORCHESTRATOR_CONFIG` points to a non-default trigger orchestrator config
+  JSON file (default: `config/trigger-orchestrator/config.json` under repo root).
+
+### Security boundary for trigger hooks
+
+- The post-receive helper treats pushed refs as untrusted input and only emits structured queue
+  events (`branch_name`, `commit_hash`) for configured repositories.
+- Trigger routing is constrained to repo paths explicitly listed in
+  `config/trigger-orchestrator/config.json` (`trigger:git:push` + `path_to_repo`).
+- The hook does **not** execute code from the pushed branch; it only appends metadata to the local
+  host queue store for the orchestrator worker.
+
 Mirror runs emit an audit summary including source mode, effective default/base branch, and source
 commit SHA used for the mirror update.
 

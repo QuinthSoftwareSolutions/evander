@@ -28,6 +28,7 @@ SCRIPTS = [
     "check_session_vm_busy.sh",
     "git_ssh_command_wrapper.sh",
     "handle_agent_push.sh",
+    "handle_git_push_trigger.sh",
     "mirror_issue_repo.sh",
     "prewarm_nuget_cache.sh",
     "resume_issue_agent.sh",
