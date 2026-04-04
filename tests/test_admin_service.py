@@ -708,6 +708,7 @@ def test_admin_service_can_read_and_mutate_trigger_orchestrator_triggers_by_id(t
     assert read_result.exists is False
     assert read_result.path == str(tmp_path / "config" / "trigger-orchestrator" / "config.json")
     assert read_result.config["triggers"] == []
+    assert read_result.config["effects"] == []
 
     added = service.upsert_trigger_config(
         "cron-15m",
@@ -741,6 +742,55 @@ def test_admin_service_can_read_and_mutate_trigger_orchestrator_triggers_by_id(t
     removed = service.delete_trigger_config("cron-15m")
     assert removed.operation == "deleted"
     assert removed.config["triggers"] == []
+
+
+def test_admin_service_can_read_and_mutate_trigger_orchestrator_effects_by_id(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.upsert_trigger_config(
+        "cron-15m",
+        {
+            "display_name": "Every 15 minutes",
+            "type": "trigger:cron",
+            "expression": "*/15 * * * *",
+        },
+    )
+
+    added = service.upsert_effect_config(
+        "prompt-agent",
+        {
+            "display_name": "Prompt agent",
+            "type": "effect:agent:prompt",
+            "upstream_id": "cron-15m",
+            "prompt": "Summarize",
+        },
+    )
+    assert added.operation == "added"
+    assert added.config["effects"][0]["id"] == "prompt-agent"
+
+    updated = service.upsert_effect_config(
+        "prompt-agent",
+        {
+            "display_name": "Prompt agent updated",
+            "type": "effect:agent:prompt",
+            "upstream_id": "cron-15m",
+            "prompt": "Summarize latest",
+        },
+    )
+    assert updated.operation == "updated"
+    assert updated.config["effects"] == [
+        {
+            "id": "prompt-agent",
+            "display_name": "Prompt agent updated",
+            "type": "effect:agent:prompt",
+            "upstream_id": "cron-15m",
+            "prompt": "Summarize latest",
+            "output_mode": "immediate",
+        }
+    ]
+
+    removed = service.delete_effect_config("prompt-agent")
+    assert removed.operation == "deleted"
+    assert removed.config["effects"] == []
 
 
 def test_admin_service_rejects_duplicate_trigger_ids_with_safe_error_message(tmp_path: Path) -> None:
