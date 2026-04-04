@@ -8,6 +8,7 @@
 - A host-side OpenAI relay that keeps the API key on the host and exposes an OpenAI-compatible endpoint to guests
 - A host-side NuGet relay that proxies nuget.org and private Azure Artifacts feeds for guests
 - A host-side Azure DevOps backlog worker that polls tagged work items and drives `setup_issue_vm.sh`
+- A host-side trigger orchestrator that polls provider triggers and persists durable queue events for downstream workers/hooks
 - A host-side shared NuGet cache that can be mounted read-only into guests for faster cold restores
 - File-backed session, approval, audit, and draft storage for local development
 - A small CLI for bootstrapping state and creating session manifests
@@ -206,6 +207,27 @@ sudo systemctl start agent-sandbox-openai-relay.service
 sudo systemctl start agent-sandbox-nuget-relay.service
 sudo systemctl start agent-sandbox-ado-worker.service
 sudo systemctl start agent-sandbox-host-heartbeat.service
+```
+
+### Trigger orchestrator
+
+The scaffold includes `agent-sandbox-trigger-orchestrator`, a host-side worker that:
+
+- validates and loads trigger definitions from `config/trigger-orchestrator/config.json`
+- polls provider-specific trigger implementations (`cron`, `ticket`, `discord`, `email`, `pull-request`, `git`)
+- persists discovered events into a durable queue (`runtime/trigger-orchestrator-events.json` by default)
+- records per-trigger cursor/checkpoint metadata (`runtime/trigger-orchestrator-cursors.json` by default)
+
+One-shot cycle execution is supported for ops/debugging:
+
+```bash
+agent-sandbox-trigger-orchestrator --runtime-dir runtime --once --log-level INFO
+```
+
+For continuous operation, run the systemd unit:
+
+```bash
+sudo systemctl start agent-sandbox-trigger-orchestrator.service
 ```
 
 The generated units run as your user where appropriate. Runtime settings come from runtime/root

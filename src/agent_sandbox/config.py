@@ -19,6 +19,7 @@ from pydantic import (
 )
 
 from .models import DirectoryPath
+from .triggers.models import TriggerDefinitionDiscriminated
 
 _HTTP_URL_ADAPTER = TypeAdapter(AnyHttpUrl)
 
@@ -425,6 +426,35 @@ class DiscordIngestWorkerGlobalConfig(BaseModel):
     def apply_runtime_path_defaults(self) -> DiscordIngestWorkerGlobalConfig:
         if self.lock_path is None:
             self.lock_path = self.runtime_dir / "discord-ingest.lock"
+        return self
+
+
+class TriggerOrchestratorWorkerGlobalConfig(BaseModel):
+    runtime_dir: Path = Path("runtime")
+    poll_interval_seconds: float = Field(default=30.0, gt=0)
+    jitter_seconds: float = Field(default=5.0, ge=0)
+    lock_path: Path | None = None
+    event_queue_store_path: Path | None = None
+    event_queue_cursor_store_path: Path | None = None
+    triggers: list[TriggerDefinitionDiscriminated] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_unique_trigger_ids(self) -> TriggerOrchestratorWorkerGlobalConfig:
+        trigger_ids = [trigger.id for trigger in self.triggers]
+        duplicates = sorted(trigger_id for trigger_id, count in Counter(trigger_ids).items() if count > 1)
+        if duplicates:
+            duplicate_list = ", ".join(duplicates)
+            raise ValueError(f"Duplicate trigger IDs are not allowed: {duplicate_list}")
+        return self
+
+    @model_validator(mode="after")
+    def apply_runtime_path_defaults(self) -> TriggerOrchestratorWorkerGlobalConfig:
+        if self.lock_path is None:
+            self.lock_path = self.runtime_dir / "trigger-orchestrator.lock"
+        if self.event_queue_store_path is None:
+            self.event_queue_store_path = self.runtime_dir / "trigger-orchestrator-events.json"
+        if self.event_queue_cursor_store_path is None:
+            self.event_queue_cursor_store_path = self.runtime_dir / "trigger-orchestrator-cursors.json"
         return self
 
 

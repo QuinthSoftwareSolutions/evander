@@ -160,6 +160,24 @@ This sequence minimizes payload volume when there is no new feedback and support
 - Guest has access only to MCP tool interfaces over the private VM network.
 - The host heartbeat loop exchanges only policy-filtered feedback records and cursor metadata, never upstream provider secrets.
 
+## Trigger Orchestrator Ownership Boundary
+
+Trigger ingestion is intentionally split so queue ownership stays centralized while provider-specific
+logic remains isolated:
+
+- `agent-sandbox-trigger-orchestrator` owns:
+  - loading/validating global trigger config (`config/trigger-orchestrator/config.json`)
+  - provider polling cadence + single-instance locking
+  - durable event queue persistence (`trigger-orchestrator-events.json`)
+  - cursor/checkpoint snapshots (`trigger-orchestrator-cursors.json`)
+- Provider workers/hooks own:
+  - provider-specific fetch/filter semantics (Discord/email/PR/etc.)
+  - provider-side cursor semantics
+  - git hook emission path for `trigger:git:push` (post-receive -> queue append)
+
+This boundary keeps trigger transport and idempotent persistence in one host-owned queue while
+allowing each provider integration to evolve independently.
+
 ## Planned Next Integrations
 
 - Discord integration now uses a provider-backed bot API adapter (`discord_backend: bot_api`) while

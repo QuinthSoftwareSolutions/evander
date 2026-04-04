@@ -130,6 +130,78 @@ Workers tab edits `config/host-heartbeat/config.json` for the `host-heartbeat` w
 | `host_heartbeat_schedule_max_active_total` | `config/host-heartbeat/config.json.example` | `src/agent_sandbox/config.py` / admin config surfaces (optional scheduling guardrail). |
 | `host_heartbeat_schedule_min_interval_seconds` | `config/host-heartbeat/config.json.example` | `src/agent_sandbox/config.py` / admin config surfaces (optional scheduling guardrail). |
 
+## `config/trigger-orchestrator/config.json`
+
+This JSON file stores the trigger orchestrator worker's global settings.
+Trigger definitions are currently global (host-wide) and are **not** directory-scoped; this keeps
+provider secret resolution and cross-directory event ingestion centralized until a directory-resolved
+trigger inheritance model is introduced.
+
+| Parameter | Found in | Consumed by |
+|---|---|---|
+| `runtime_dir` | `config/trigger-orchestrator/config.json` | `src/agent_sandbox/config.py` runtime path defaults for trigger orchestrator state files. |
+| `poll_interval_seconds` | `config/trigger-orchestrator/config.json` | Trigger orchestrator worker polling cadence. |
+| `jitter_seconds` | `config/trigger-orchestrator/config.json` | Trigger orchestrator worker jitter between cycles. |
+| `lock_path` | `config/trigger-orchestrator/config.json` | Trigger orchestrator single-instance lock file path. |
+| `event_queue_store_path` | `config/trigger-orchestrator/config.json` | Trigger orchestrator persisted event queue store path. |
+| `event_queue_cursor_store_path` | `config/trigger-orchestrator/config.json` | Trigger orchestrator event queue cursor/checkpoint store path. |
+| `triggers` | `config/trigger-orchestrator/config.json` | Trigger orchestrator trigger definition list (`src/agent_sandbox/triggers/models.py`). |
+
+### Trigger definition schema keys
+
+Each trigger entry requires the shared envelope keys:
+
+- `id` (string, required, unique across all triggers)
+- `display_name` (string, required)
+- `type` (required discriminator)
+
+Type-specific keys:
+
+| `type` | Required keys | Optional keys |
+|---|---|---|
+| `trigger:cron` | `expression` | — |
+| `trigger:ticket:created` | `directories` | — |
+| `trigger:ticket:changed` | `directories` | — |
+| `trigger:discord:new-message` | `discord_bot_token_env` | `channel_ids`, `user_ids` |
+| `trigger:email:new-message` | `provider`, `account_identifier`, `mailbox_ids` | `auth_secret_refs` |
+| `trigger:pull-request:new-feedback` | `provider` | `organization_url`, `project` (but `organization_url` becomes required when `provider=ado`) |
+| `trigger:git:push` | `path_to_repo` | — |
+
+Example:
+
+```json
+{
+  "runtime_dir": "runtime",
+  "poll_interval_seconds": 30,
+  "jitter_seconds": 5,
+  "triggers": [
+    {
+      "id": "cron-15m",
+      "display_name": "Every 15 minutes",
+      "type": "trigger:cron",
+      "expression": "*/15 * * * *"
+    },
+    {
+      "id": "mailbox-ops",
+      "display_name": "Ops inbox",
+      "type": "trigger:email:new-message",
+      "provider": "graph",
+      "account_identifier": "ops@example.com",
+      "mailbox_ids": ["primary"],
+      "auth_secret_refs": {
+        "access_token": "GRAPH_ACCESS_TOKEN"
+      }
+    },
+    {
+      "id": "repo-main",
+      "display_name": "Repo push",
+      "type": "trigger:git:push",
+      "path_to_repo": "/var/lib/git/my-repo.git"
+    }
+  ]
+}
+```
+
 ### Wake scheduling examples
 
 - One-time (MCP `schedule_resume`) payload shape:

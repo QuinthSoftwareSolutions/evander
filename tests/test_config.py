@@ -5,6 +5,7 @@ from agent_sandbox.config import (
     DiscordIngestWorkerGlobalConfig,
     GatewayConfig,
     HostHeartbeatWorkerGlobalConfig,
+    TriggerOrchestratorWorkerGlobalConfig,
 )
 
 
@@ -202,3 +203,58 @@ def test_ado_worker_global_config_defaults_include_dedicated_pat_env_name() -> N
 def test_directory_scoped_config_flag_defaults_to_disabled() -> None:
     config = GatewayConfig.model_validate({})
     assert config.enable_directory_scoped_config is False
+
+
+def test_trigger_orchestrator_worker_global_config_defaults_follow_runtime_dir() -> None:
+    config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {"runtime_dir": "/tmp/agent-sandbox-runtime"}
+    )
+    assert str(config.lock_path) == "/tmp/agent-sandbox-runtime/trigger-orchestrator.lock"
+    assert (
+        str(config.event_queue_store_path)
+        == "/tmp/agent-sandbox-runtime/trigger-orchestrator-events.json"
+    )
+    assert (
+        str(config.event_queue_cursor_store_path)
+        == "/tmp/agent-sandbox-runtime/trigger-orchestrator-cursors.json"
+    )
+    assert config.triggers == []
+
+
+def test_trigger_orchestrator_worker_global_config_accepts_discriminated_triggers() -> None:
+    config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "triggers": [
+                {
+                    "id": "cron-15m",
+                    "display_name": "Every 15 minutes",
+                    "type": "trigger:cron",
+                    "expression": "*/15 * * * *",
+                }
+            ]
+        }
+    )
+
+    assert config.triggers[0].type == "trigger:cron"
+
+
+def test_trigger_orchestrator_worker_global_config_rejects_duplicate_trigger_ids() -> None:
+    with pytest.raises(ValueError, match="Duplicate trigger IDs are not allowed"):
+        TriggerOrchestratorWorkerGlobalConfig.model_validate(
+            {
+                "triggers": [
+                    {
+                        "id": "cron-15m",
+                        "display_name": "Every 15 minutes",
+                        "type": "trigger:cron",
+                        "expression": "*/15 * * * *",
+                    },
+                    {
+                        "id": "cron-15m",
+                        "display_name": "Every 30 minutes",
+                        "type": "trigger:cron",
+                        "expression": "*/30 * * * *",
+                    },
+                ]
+            }
+        )

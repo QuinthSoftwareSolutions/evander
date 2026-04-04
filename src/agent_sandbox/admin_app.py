@@ -16,6 +16,7 @@ from .config import (
     GatewayConfig,
     HostHeartbeatWorkerGlobalConfig,
     IssueOrchestratorWorkerGlobalConfig,
+    TriggerOrchestratorWorkerGlobalConfig,
 )
 from .directory_config import (
     AdoWorkerDirectoryConfig,
@@ -843,6 +844,7 @@ WORKER_GLOBAL_CONFIG_MODELS: dict[str, type[BaseModel]] = {
     "ado": AdoWorkerGlobalConfig,
     "host-heartbeat": HostHeartbeatWorkerGlobalConfig,
     "issue-orchestrator": IssueOrchestratorWorkerGlobalConfig,
+    "trigger-orchestrator": TriggerOrchestratorWorkerGlobalConfig,
 }
 
 
@@ -863,6 +865,7 @@ def _config_field_kind(field_name: str) -> tuple[str, tuple[Any, ...]]:
         GatewayConfig.model_fields,
         AdoWorkerGlobalConfig.model_fields,
         HostHeartbeatWorkerGlobalConfig.model_fields,
+        TriggerOrchestratorWorkerGlobalConfig.model_fields,
         AdoWorkerDirectoryConfig.model_fields,
         IssueSetupDirectoryConfig.model_fields,
         PrTemplateDirectoryConfig.model_fields,
