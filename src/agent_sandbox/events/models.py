@@ -183,11 +183,32 @@ class EffectDefinition(WorkflowNodeDefinition):
 class VmCreateEffectDefinition(EffectDefinition):
     type: Literal["effect:vm:create"]
     vm_name: ConfigValue | None = None
+    session_id: ConfigValue | None = None
+    model: ConfigValue | None = None
+    repo_source: ConfigValue | None = None
+    vm_user: ConfigValue | None = None
+    ttl_hours: ConfigValue | None = None
+    discord_channels: list[str] | None = None
+    email_mailboxes: list[str] | None = None
+    email_folders: list[str] | None = None
+    python: ConfigValue | None = None
+    dotnet: ConfigValue | None = None
+    nuget: ConfigValue | None = None
+    mssql: ConfigValue | None = None
+    mssql_init_root: ConfigValue | None = None
+    playwright: ConfigValue | None = None
+    directory_path: ConfigValue | None = None
 
 
 class AgentPromptEffectDefinition(EffectDefinition):
     type: Literal["effect:agent:prompt"]
+    target: ConfigValue | None = None
+    session_id: ConfigValue | None = None
+    vm_name: ConfigValue | None = None
     prompt: ConfigValue
+    vm_user: ConfigValue | None = None
+    resume_thread_id: ConfigValue | None = None
+    output_mode: Literal["immediate", "on_completion"] = "immediate"
 
 
 EffectDefinitionDiscriminated = Annotated[
