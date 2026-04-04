@@ -238,8 +238,59 @@ def test_trigger_orchestrator_worker_global_config_accepts_discriminated_trigger
     assert config.triggers[0].type == "trigger:cron"
 
 
+
+
+def test_trigger_orchestrator_worker_global_config_accepts_effects() -> None:
+    config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "triggers": [
+                {
+                    "id": "cron-15m",
+                    "display_name": "Every 15 minutes",
+                    "type": "trigger:cron",
+                    "expression": "*/15 * * * *",
+                }
+            ],
+            "effects": [
+                {
+                    "id": "prompt-agent",
+                    "display_name": "Prompt agent",
+                    "type": "effect:agent:prompt",
+                    "upstream_id": "cron-15m",
+                    "prompt": "Summarize $(branch)",
+                }
+            ],
+        }
+    )
+
+    assert config.effects[0].type == "effect:agent:prompt"
+
+
+def test_trigger_orchestrator_worker_global_config_rejects_duplicate_ids_across_graph() -> None:
+    with pytest.raises(ValueError, match="Duplicate workflow IDs are not allowed"):
+        TriggerOrchestratorWorkerGlobalConfig.model_validate(
+            {
+                "triggers": [
+                    {
+                        "id": "node-1",
+                        "display_name": "Every 15 minutes",
+                        "type": "trigger:cron",
+                        "expression": "*/15 * * * *",
+                    },
+                ],
+                "effects": [
+                    {
+                        "id": "node-1",
+                        "display_name": "Prompt agent",
+                        "type": "effect:agent:prompt",
+                        "upstream_id": "trigger-2",
+                        "prompt": "Summarize",
+                    }
+                ],
+            }
+        )
 def test_trigger_orchestrator_worker_global_config_rejects_duplicate_trigger_ids() -> None:
-    with pytest.raises(ValueError, match="Duplicate trigger IDs are not allowed"):
+    with pytest.raises(ValueError, match="Duplicate workflow IDs are not allowed"):
         TriggerOrchestratorWorkerGlobalConfig.model_validate(
             {
                 "triggers": [

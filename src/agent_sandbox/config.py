@@ -19,7 +19,7 @@ from pydantic import (
 )
 
 from .models import DirectoryPath
-from .triggers.models import TriggerDefinitionDiscriminated
+from .events.models import EffectDefinitionDiscriminated, TriggerDefinitionDiscriminated
 
 _HTTP_URL_ADAPTER = TypeAdapter(AnyHttpUrl)
 
@@ -437,14 +437,15 @@ class TriggerOrchestratorWorkerGlobalConfig(BaseModel):
     event_queue_store_path: Path | None = None
     event_queue_cursor_store_path: Path | None = None
     triggers: list[TriggerDefinitionDiscriminated] = Field(default_factory=list)
+    effects: list[EffectDefinitionDiscriminated] = Field(default_factory=list)
 
     @model_validator(mode="after")
-    def validate_unique_trigger_ids(self) -> TriggerOrchestratorWorkerGlobalConfig:
-        trigger_ids = [trigger.id for trigger in self.triggers]
-        duplicates = sorted(trigger_id for trigger_id, count in Counter(trigger_ids).items() if count > 1)
+    def validate_unique_workflow_ids(self) -> TriggerOrchestratorWorkerGlobalConfig:
+        workflow_ids = [node.id for node in [*self.triggers, *self.effects]]
+        duplicates = sorted(node_id for node_id, count in Counter(workflow_ids).items() if count > 1)
         if duplicates:
             duplicate_list = ", ".join(duplicates)
-            raise ValueError(f"Duplicate trigger IDs are not allowed: {duplicate_list}")
+            raise ValueError(f"Duplicate workflow IDs are not allowed: {duplicate_list}")
         return self
 
     @model_validator(mode="after")

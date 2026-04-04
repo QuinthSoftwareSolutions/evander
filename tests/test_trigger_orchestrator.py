@@ -6,7 +6,7 @@ from pathlib import Path
 
 from agent_sandbox.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
 from agent_sandbox.trigger_orchestrator import TriggerOrchestratorCycleResult, TriggerOrchestratorWorker, main
-from agent_sandbox.triggers.models import TriggerEvent
+from agent_sandbox.events.models import TriggerEvent
 
 
 class _StaticProvider:

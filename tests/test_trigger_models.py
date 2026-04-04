@@ -3,12 +3,15 @@ from datetime import datetime, timezone
 import pytest
 from pydantic import TypeAdapter
 
-from agent_sandbox.triggers.models import (
+from agent_sandbox.events.models import (
+    AgentPromptEffectDefinition,
+    EffectDefinitionDiscriminated,
     GitPushTriggerDefinition,
     PullRequestNewFeedbackTriggerDefinition,
     TriggerDefinitionDiscriminated,
     TriggerEvent,
 )
+
 
 
 def test_ticket_created_trigger_normalizes_directories() -> None:
@@ -121,3 +124,31 @@ def test_trigger_event_envelope_accepts_normalized_payload() -> None:
     )
 
     assert event.payload == {"branch": "main"}
+
+
+def test_effect_requires_non_self_upstream() -> None:
+    with pytest.raises(ValueError, match="effect cannot reference itself as upstream"):
+        AgentPromptEffectDefinition.model_validate(
+            {
+                "id": "effect-1",
+                "display_name": "Prompt agent",
+                "type": "effect:agent:prompt",
+                "upstream_id": "effect-1",
+                "prompt": "hello",
+            }
+        )
+
+
+def test_effect_discriminated_union_accepts_output_reference_interpolation() -> None:
+    adapter = TypeAdapter(EffectDefinitionDiscriminated)
+    effect = adapter.validate_python(
+        {
+            "id": "effect-2",
+            "display_name": "Prompt agent",
+            "type": "effect:agent:prompt",
+            "upstream_id": "trigger-1",
+            "prompt": "Build summary for $(ticket_id)",
+        }
+    )
+
+    assert effect.type == "effect:agent:prompt"

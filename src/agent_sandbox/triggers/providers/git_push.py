@@ -5,7 +5,7 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 
-from agent_sandbox.triggers.models import GitPushTriggerDefinition, TriggerEvent
+from agent_sandbox.events.models import GitPushTriggerDefinition, TriggerEvent
 from agent_sandbox.triggers.providers.base import TriggerHookHandler, TriggerProviderBase
 
 

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from agent_sandbox.config import GatewayConfig
-from agent_sandbox.triggers.models import CronTriggerDefinition
+from agent_sandbox.events.models import CronTriggerDefinition
 from agent_sandbox.triggers.providers.base import TriggerProviderBase
 from agent_sandbox.triggers.registry import (
     DEFAULT_TRIGGER_PROVIDER_REGISTRY,

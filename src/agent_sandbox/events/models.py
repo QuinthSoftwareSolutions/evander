@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, TypeAlias
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, StringConstraints, field_validator, model_validator
 
 from agent_sandbox.models import DirectoryPath
 
@@ -17,13 +17,41 @@ TriggerType = Literal[
     "trigger:git:push",
 ]
 
+EffectType = Literal["effect:vm:create", "effect:agent:prompt"]
+
 EmailProvider = Literal["json_store", "gmail", "graph"]
 PrFeedbackProvider = Literal["local", "github", "ado"]
 
+OutputName = Annotated[str, StringConstraints(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")]
+OutputReferenceString = Annotated[str, StringConstraints(pattern=r"^\$\([A-Za-z_][A-Za-z0-9_]*\)$")]
+InterpolatedString = Annotated[str, StringConstraints(pattern=r".*\$\([A-Za-z_][A-Za-z0-9_]*\).*")]
 
-class TriggerDefinition(BaseModel):
-    id: str = Field(min_length=1)
-    display_name: str = Field(min_length=1)
+ConfigScalarValue: TypeAlias = str | int | float | bool | None
+ConfigValue: TypeAlias = (
+    ConfigScalarValue
+    | OutputReferenceString
+    | InterpolatedString
+    | list["ConfigValue"]
+    | dict[str, "ConfigValue"]
+)
+
+
+class WorkflowNodeDefinition(BaseModel):
+    id: str
+    display_name: str
+    type: str
+    outputs: dict[str, dict[str, Any]] | None = None
+
+    @field_validator("id", "display_name", mode="before")
+    @classmethod
+    def normalize_non_empty_fields(cls, value: object, info) -> str:
+        text = str(value).strip()
+        if not text:
+            raise ValueError(f"{info.field_name} must be a non-empty string")
+        return text
+
+
+class TriggerDefinition(WorkflowNodeDefinition):
     type: TriggerType
 
 
@@ -129,6 +157,41 @@ TriggerDefinitionDiscriminated = Annotated[
     | EmailNewMessageTriggerDefinition
     | PullRequestNewFeedbackTriggerDefinition
     | GitPushTriggerDefinition,
+    Field(discriminator="type"),
+]
+
+
+class EffectDefinition(WorkflowNodeDefinition):
+    type: EffectType
+    upstream_id: str
+
+    @field_validator("upstream_id", mode="before")
+    @classmethod
+    def normalize_upstream_id(cls, value: object) -> str:
+        text = str(value).strip()
+        if not text:
+            raise ValueError("upstream_id must be a non-empty string")
+        return text
+
+    @model_validator(mode="after")
+    def validate_upstream_not_self(self) -> "EffectDefinition":
+        if self.upstream_id == self.id:
+            raise ValueError("effect cannot reference itself as upstream")
+        return self
+
+
+class VmCreateEffectDefinition(EffectDefinition):
+    type: Literal["effect:vm:create"]
+    vm_name: ConfigValue | None = None
+
+
+class AgentPromptEffectDefinition(EffectDefinition):
+    type: Literal["effect:agent:prompt"]
+    prompt: ConfigValue
+
+
+EffectDefinitionDiscriminated = Annotated[
+    VmCreateEffectDefinition | AgentPromptEffectDefinition,
     Field(discriminator="type"),
 ]
 

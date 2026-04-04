@@ -63,7 +63,7 @@ from .models import (
 )
 from .runtime import RuntimeContext, build_runtime
 from .storage import JsonStore
-from .triggers.models import TriggerDefinitionDiscriminated
+from .events.models import TriggerDefinitionDiscriminated
 
 _WORKER_DEFINITIONS: tuple[tuple[str, str, str], ...] = (
     ("ado", "ADO Worker", "agent-sandbox-ado-worker.service"),

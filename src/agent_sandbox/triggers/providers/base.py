@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from agent_sandbox.config import GatewayConfig
-from agent_sandbox.triggers.models import TriggerDefinitionDiscriminated, TriggerEvent
+from agent_sandbox.events.models import TriggerDefinitionDiscriminated, TriggerEvent
 
 
 TriggerHookHandler = Callable[[TriggerEvent], None]
