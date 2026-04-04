@@ -71,9 +71,9 @@ class EffectOrchestratorWorker:
         self.worker_config = worker_config
         self.runtime = runtime
         self.event_queue = TriggerEventQueue(worker_config.event_queue_store_path)
-        self.execution_store_path = self.config.runtime_dir / "effect-orchestrator-executions.json"
+        self.execution_store_path = worker_config.effect_execution_store_path
         self.execution_store = JsonExecutionStore(self.execution_store_path)
-        self.cursor_path = self.config.runtime_dir / "effect-orchestrator-cursors.json"
+        self.cursor_path = worker_config.effect_cursor_store_path
         self._executor = ThreadPoolExecutor(
             max_workers=max(1, min(32, max(1, (os.cpu_count() or 1) * 4))),
             thread_name_prefix="effect-orchestrator",
@@ -87,12 +87,12 @@ class EffectOrchestratorWorker:
         )
 
     def run_forever(self) -> None:
-        with _single_instance_lock(self.worker_config.lock_path.with_name("effect-orchestrator.lock")):
+        with _single_instance_lock(self.worker_config.effect_lock_path):
             logger.info(
                 "Effect orchestrator started poll_interval=%.3f jitter=%.3f lock=%s",
                 self.worker_config.poll_interval_seconds,
                 self.worker_config.jitter_seconds,
-                self.worker_config.lock_path,
+                self.worker_config.effect_lock_path,
             )
             while True:
                 try:
@@ -117,7 +117,7 @@ class EffectOrchestratorWorker:
                 time.sleep(result.next_sleep_seconds)
 
     def run_once_with_lock(self) -> EffectOrchestratorCycleResult:
-        with _single_instance_lock(self.worker_config.lock_path.with_name("effect-orchestrator.lock")):
+        with _single_instance_lock(self.worker_config.effect_lock_path):
             return self.run_once()
 
     def run_once(self) -> EffectOrchestratorCycleResult:

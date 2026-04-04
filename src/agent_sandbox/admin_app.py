@@ -838,6 +838,13 @@ WORKER_GLOBAL_CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
     "wake_state_path": "Host-side JSON state file written by issue orchestrator resume attempts.",
     "vm_user": "Guest username passed to the issue orchestrator resume script.",
     "resume_timeout_seconds": "Timeout in seconds for an issue orchestrator resume invocation.",
+    "event_queue_store_path": "JSON queue file used by trigger/effect orchestration to persist pending events.",
+    "event_queue_cursor_store_path": "JSON cursor state file written by the trigger orchestrator to track poll progress.",
+    "effect_execution_store_path": "JSON execution log for effect-orchestrator runs and idempotency keys.",
+    "effect_cursor_store_path": "JSON cursor state file written by the effect orchestrator while consuming queued events.",
+    "effect_lock_path": "Single-instance lock file for the effect orchestrator worker loop.",
+    "triggers": "Configured trigger definitions for the trigger orchestrator graph.",
+    "effects": "Configured effect definitions for the trigger/effect orchestration graph.",
 }
 
 WORKER_GLOBAL_CONFIG_MODELS: dict[str, type[BaseModel]] = {
