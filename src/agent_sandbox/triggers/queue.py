@@ -58,6 +58,14 @@ class TriggerEventQueue:
             self._store.write_all(items)
             return created
 
+    def contains(self, event_id: str) -> bool:
+        normalized_event_id = event_id.strip()
+        if not normalized_event_id:
+            return False
+
+        with self._lock:
+            return normalized_event_id in self._store.read_all()
+
     def list_pending(
         self,
         *,

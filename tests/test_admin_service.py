@@ -1395,6 +1395,17 @@ def test_list_background_workers_reads_systemd_state(tmp_path: Path, monkeypatch
             "ExecMainCode": "1",
             "ExecMainStatus": "0",
         },
+        "agent-sandbox-trigger-orchestrator.service": {
+            "ActiveState": "active",
+            "SubState": "running",
+            "Result": "success",
+            "UnitFileState": "enabled",
+            "Description": "Trigger orchestrator worker",
+            "MainPID": "789",
+            "LoadState": "loaded",
+            "ExecMainCode": "1",
+            "ExecMainStatus": "0",
+        },
     }
     monkeypatch.setattr("agent_sandbox.admin_service._systemctl_show", lambda unit: payloads[unit])
 
@@ -1405,6 +1416,7 @@ def test_list_background_workers_reads_systemd_state(tmp_path: Path, monkeypatch
         "discord-ingest",
         "host-heartbeat",
         "issue-orchestrator",
+        "trigger-orchestrator",
     ]
     assert summaries[0].running is True
     assert summaries[0].failed is False
@@ -1419,6 +1431,9 @@ def test_list_background_workers_reads_systemd_state(tmp_path: Path, monkeypatch
     assert summaries[3].running is False
     assert summaries[3].failed is False
     assert summaries[3].unit_file_state == "disabled"
+    assert summaries[4].running is True
+    assert summaries[4].failed is False
+    assert summaries[4].main_pid == 789
 
 
 def test_list_background_workers_marks_unavailable_when_systemctl_fails(tmp_path: Path, monkeypatch) -> None:

@@ -102,8 +102,9 @@ class TriggerOrchestratorWorker:
             discovered_for_trigger = len(events)
             events_discovered += discovered_for_trigger
             for event in events:
+                already_queued = self.event_queue.contains(event.event_id)
                 record = self.event_queue.publish(event)
-                if record.event_id == event.event_id:
+                if not already_queued and record.event_id == event.event_id:
                     events_published += 1
 
             self._update_cursor_state(

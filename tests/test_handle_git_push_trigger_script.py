@@ -164,3 +164,59 @@ def test_handle_git_push_trigger_is_idempotent_for_repeated_updates(tmp_path: Pa
     assert second.returncode == 0, second.stderr
     queue_payload = json.loads(queue_path.read_text(encoding="utf-8"))
     assert list(queue_payload.keys()) == [f"git-main:main:{'1' * 40}"]
+
+
+def test_handle_git_push_trigger_resolves_relative_queue_paths_from_config_dir(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    script = root / "scripts" / "handle_git_push_trigger.sh"
+
+    repo_path = (tmp_path / "git-remotes" / "sample.git").resolve()
+    repo_path.mkdir(parents=True)
+    config_dir = tmp_path / "orchestrator"
+    config_dir.mkdir()
+    config_path = config_dir / "trigger-config.json"
+    queue_path = config_dir / "runtime" / "trigger-orchestrator-events.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "runtime_dir": "runtime",
+                "triggers": [
+                    {
+                        "id": "git-main",
+                        "display_name": "Git main",
+                        "type": "trigger:git:push",
+                        "path_to_repo": str(repo_path),
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    bare_repo_cwd = tmp_path / "hook-cwd.git"
+    bare_repo_cwd.mkdir()
+
+    result = subprocess.run(
+        [str(script), str(repo_path)],
+        input=f"{'0' * 40} {'1' * 40} refs/heads/main\n",
+        text=True,
+        capture_output=True,
+        env={
+            **os.environ,
+            "AGENT_SANDBOX_TRIGGER_ORCHESTRATOR_CONFIG": str(config_path),
+        },
+        cwd=bare_repo_cwd,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert queue_path.exists()
+    assert not (bare_repo_cwd / "runtime" / "trigger-orchestrator-events.json").exists()
+
+
+def test_importing_config_does_not_require_trigger_registry() -> None:
+    from agent_sandbox.config import GatewayConfig
+
+    config = GatewayConfig()
+
+    assert config.runtime_dir == Path("/var/lib/agent-sandbox")

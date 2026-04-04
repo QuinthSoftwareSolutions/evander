@@ -65,6 +65,13 @@ def _load_config(path: Path) -> dict:
     return {}
 
 
+def _resolve_config_path(value: object, *, config_path: Path) -> Path:
+    path = Path(str(value)).expanduser()
+    if not path.is_absolute():
+        path = config_path.parent / path
+    return path.resolve()
+
+
 def _branch_name(ref_name: str) -> str | None:
     normalized = ref_name.strip()
     prefix = "refs/heads/"
@@ -82,10 +89,10 @@ def main() -> int:
     config_path = Path(sys.argv[2]).expanduser().resolve()
     updates_path = Path(sys.argv[3]).expanduser().resolve()
     config = _load_config(config_path)
-    runtime_dir = Path(config.get("runtime_dir", "runtime")).expanduser().resolve()
+    runtime_dir = _resolve_config_path(config.get("runtime_dir", "runtime"), config_path=config_path)
     queue_path = config.get("event_queue_store_path")
     if queue_path:
-        queue_store_path = Path(str(queue_path)).expanduser().resolve()
+        queue_store_path = _resolve_config_path(queue_path, config_path=config_path)
     else:
         queue_store_path = runtime_dir / "trigger-orchestrator-events.json"
 
