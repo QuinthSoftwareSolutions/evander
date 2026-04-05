@@ -224,7 +224,12 @@ Type-specific keys:
 |---|---|---|
 | `gate:filter` | `predicate` | `outputs` |
 | `gate:map` | `mapping` | `outputs` |
-| `gate:merge` | `sources`, `merge_strategy` | `outputs`, `conflict_policy` |
+| `gate:merge` | _none beyond envelope_ | `outputs` |
+
+`gate:merge` uses Reactive Extensions `merge` semantics: every inbound event is forwarded as it
+arrives. When `outputs` is declared, the gate projects each inbound payload to that shared key set.
+The runtime also records the latest inbound payload seen from each upstream source in the gate
+execution log for debugging.
 
 Edge wiring records connect upstream node ids to downstream node ids and replace any node-local
 `upstream_id` field.
@@ -338,9 +343,10 @@ Merge graph:
       "display_name": "Merge PR and ticket payloads",
       "type": "gate:merge",
       "gate_type": "merge",
-      "sources": ["ticket-created", "pr-feedback"],
-      "merge_strategy": "latest-wins",
-      "conflict_policy": "fail_on_conflict"
+      "outputs": {
+        "session_id": { "type": "string" },
+        "ticket_number": { "type": "integer" }
+      }
     }
   ],
   "edges": [
@@ -378,8 +384,9 @@ Mixed graph:
       "display_name": "Merge inbox and PR context",
       "type": "gate:merge",
       "gate_type": "merge",
-      "sources": ["filter-inbox", "pr-feedback"],
-      "merge_strategy": "latest-wins"
+      "outputs": {
+        "session_id": { "type": "string" }
+      }
     }
   ],
   "edges": [

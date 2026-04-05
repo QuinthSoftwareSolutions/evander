@@ -198,8 +198,9 @@ Execution model:
 2. Gate execution consumes upstream events through declared edges.
 3. `gate:filter` nodes either forward or suppress an event.
 4. `gate:map` nodes transform payload shape and can rename or derive outputs.
-5. `gate:merge` nodes wait for all required inbound inputs, reconcile them into one payload, and
-   publish the merged result downstream.
+5. `gate:merge` nodes behave like a Reactive Extensions `merge`: each inbound event is forwarded
+   independently as it arrives, while the gate records the latest payload seen from every upstream
+   source for debugging and conflict inspection.
 6. Effects consume the post-gate payload and still resolve `$(output_name)` bindings against the
    upstream event payload.
 7. On success, the effect publishes a completion event whose `trigger_id` is the effect id so
@@ -217,12 +218,9 @@ Safety/idempotency guarantees:
 
 Gate execution state is intentionally explicit:
 
-- `waiting_for_inputs`: a merge has not yet received all required upstream payloads.
-- `running`: the gate is actively evaluating.
-- `passed`: the gate forwarded data downstream unchanged or with a trivial projection.
-- `filtered`: a filter gate suppressed the event.
-- `merged`: a merge gate produced a consolidated payload.
-- `failed`: evaluation, binding, or merge resolution failed.
+- `succeeded`: the gate emitted a downstream event.
+- `dropped`: a filter gate suppressed the event.
+- `failed`: evaluation, binding, or merge projection failed.
 - `skipped`: the node was bypassed because of a validation or cycle guard.
 
 ## Planned Next Integrations

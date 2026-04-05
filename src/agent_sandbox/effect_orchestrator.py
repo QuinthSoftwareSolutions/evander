@@ -159,6 +159,7 @@ class EffectOrchestratorWorker:
             admin_service=AdminService(config.runtime_dir),
             env=dict(os.environ),
         )
+        self.event_queue.reset_inflight()
 
     def run_forever(self) -> None:
         with _single_instance_lock(self.lock_path):
@@ -217,7 +218,7 @@ class EffectOrchestratorWorker:
             execution_count = self._process_event_record(queue_record, graph=graph)
             effect_executions_started += execution_count
             events_processed += 1
-            self.event_queue.mark_delivered(queue_record.event_id)
+            self._update_event_delivery_state(queue_record.event_id)
             _update_cursor_payload(cursor_payload, queue_record)
 
         _save_cursor_payload(self.cursor_path, cursor_payload)
@@ -276,6 +277,18 @@ class EffectOrchestratorWorker:
         idempotency_key = _execution_idempotency_key(queue_record.event_id, effect.id)
         existing = self.execution_store.find_by_idempotency_key(idempotency_key)
         if existing is not None:
+            if existing.status == "running":
+                with self._inflight_lock:
+                    if idempotency_key in self._inflight:
+                        return False
+                future = self._executor.submit(
+                    self._execute_provider,
+                    effect=effect,
+                    resolved_config=dict(existing.resolved_config),
+                )
+                with self._inflight_lock:
+                    self._inflight[idempotency_key] = future
+                return True
             return False
         with self._inflight_lock:
             if idempotency_key in self._inflight:
@@ -498,8 +511,24 @@ class EffectOrchestratorWorker:
                 record.error = str(exc)
             record.finished_at = finished_at
             self.execution_store.put(record)
+            self._update_event_delivery_state(record.event_id)
 
         return completed_count, published_count
+
+    def _update_event_delivery_state(self, event_id: str) -> None:
+        if self._event_has_inflight_effects(event_id):
+            self.event_queue.mark_inflight(event_id)
+            return
+        self.event_queue.mark_delivered(event_id)
+
+    def _event_has_inflight_effects(self, event_id: str) -> bool:
+        for record in self.execution_store.read_all().values():
+            if record.event_id != event_id:
+                continue
+            if record.status != "running":
+                continue
+            return True
+        return False
 
     def _publish_completion_event_from_record(
         self,

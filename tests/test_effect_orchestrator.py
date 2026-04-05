@@ -204,6 +204,8 @@ def test_effect_orchestrator_dispatches_without_waiting_for_long_effect(tmp_path
     execution_payload = json.loads((runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8"))
     only = next(iter(execution_payload.values()))
     assert only["status"] == "running"
+    queue_payload = json.loads(worker_config.event_queue_store_path.read_text(encoding="utf-8"))
+    assert queue_payload["event-long-1"]["delivery_state"] == "inflight"
 
     block_event.set()
     only = None
@@ -217,6 +219,62 @@ def test_effect_orchestrator_dispatches_without_waiting_for_long_effect(tmp_path
 
     assert only is not None
     assert only["status"] == "succeeded"
+    queue_payload = json.loads(worker_config.event_queue_store_path.read_text(encoding="utf-8"))
+    assert queue_payload["event-long-1"]["delivery_state"] == "delivered"
+
+
+def test_effect_orchestrator_retries_running_effect_after_restart(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {"id": "trigger-1", "display_name": "Tick", "type": "trigger:cron", "expression": "* * * * *"}
+            ],
+            "effects": [
+                {"id": "effect-1", "display_name": "Long", "type": "effect:agent:prompt", "prompt": "hello"}
+            ],
+            "edges": [_edge("trigger-1", "effect-1")],
+        }
+    )
+    block_event = Event()
+    first_worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    first_worker.provider_factory = _Factory({"effect-1": {"done": True}}, wait_on_by_effect_id={"effect-1": block_event})
+    first_worker.event_queue.publish(
+        TriggerEvent(
+            event_id="event-restart-1",
+            trigger_id="trigger-1",
+            trigger_type="trigger:cron",
+            occurred_at=datetime(2026, 4, 4, 12, 0, tzinfo=timezone.utc),
+            payload={},
+        )
+    )
+
+    first_worker.run_once()
+    queue_payload = json.loads(worker_config.event_queue_store_path.read_text(encoding="utf-8"))
+    assert queue_payload["event-restart-1"]["delivery_state"] == "inflight"
+
+    restarted_worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    restarted_worker.provider_factory = _Factory({"effect-1": {"done": True}})
+
+    for _ in range(5):
+        restarted_worker.run_once()
+        execution_payload = json.loads((runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8"))
+        only = next(iter(execution_payload.values()))
+        if only["status"] == "succeeded":
+            break
+        time.sleep(0.01)
+
+    block_event.set()
+    execution_payload = json.loads((runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8"))
+    only = next(iter(execution_payload.values()))
+    assert only["status"] == "succeeded"
+    queue_payload = json.loads(worker_config.event_queue_store_path.read_text(encoding="utf-8"))
+    assert queue_payload["event-restart-1"]["delivery_state"] == "delivered"
+    assert any(item["trigger_id"] == "effect-1" for item in queue_payload.values())
 
 
 def test_effect_orchestrator_records_binding_resolution_failure_and_advances_queue(tmp_path: Path) -> None:

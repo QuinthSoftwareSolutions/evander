@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 from agent_sandbox.storage import JsonStore
 from agent_sandbox.events.models import TriggerEvent
 
-DeliveryState = Literal["pending", "delivered"]
+DeliveryState = Literal["pending", "inflight", "delivered"]
 
 
 class TriggerQueueRecord(BaseModel):
@@ -20,6 +20,7 @@ class TriggerQueueRecord(BaseModel):
     occurred_at: datetime
     payload: dict[str, Any] = Field(default_factory=dict)
     delivery_state: DeliveryState = "pending"
+    inflight_at: datetime | None = None
     delivered_at: datetime | None = None
     idempotency_key: str | None = None
 
@@ -104,10 +105,47 @@ class TriggerEventQueue:
                 return True
 
             record.delivery_state = "delivered"
+            record.inflight_at = None
             record.delivered_at = delivered_at or datetime.now(UTC)
             items[normalized_event_id] = record
             self._store.write_all(items)
             return True
+
+    def mark_inflight(self, event_id: str, *, inflight_at: datetime | None = None) -> bool:
+        normalized_event_id = event_id.strip()
+        if not normalized_event_id:
+            return False
+
+        with self._lock:
+            items = self._store.read_all()
+            record = items.get(normalized_event_id)
+            if record is None:
+                return False
+            if record.delivery_state == "delivered":
+                return False
+
+            record.delivery_state = "inflight"
+            record.inflight_at = inflight_at or datetime.now(UTC)
+            record.delivered_at = None
+            items[normalized_event_id] = record
+            self._store.write_all(items)
+            return True
+
+    def reset_inflight(self) -> int:
+        reset_count = 0
+        with self._lock:
+            items = self._store.read_all()
+            for event_id, record in items.items():
+                if record.delivery_state != "inflight":
+                    continue
+                record.delivery_state = "pending"
+                record.inflight_at = None
+                record.delivered_at = None
+                items[event_id] = record
+                reset_count += 1
+            if reset_count > 0:
+                self._store.write_all(items)
+        return reset_count
 
     @staticmethod
     def _normalize_idempotency_key(value: str | None) -> str | None:

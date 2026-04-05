@@ -79,3 +79,20 @@ def test_mark_delivered_updates_state(tmp_path) -> None:
     assert queue.mark_delivered("evt-missing") is False
 
     assert queue.list_pending() == []
+
+
+def test_mark_inflight_and_reset_inflight(tmp_path) -> None:
+    queue = TriggerEventQueue(tmp_path / "events.json")
+    queue.publish(_event(event_id="evt-1"))
+
+    assert queue.mark_inflight("evt-1") is True
+    payload = json.loads((tmp_path / "events.json").read_text(encoding="utf-8"))
+    assert payload["evt-1"]["delivery_state"] == "inflight"
+    assert payload["evt-1"]["inflight_at"] is not None
+    assert queue.list_pending() == []
+
+    assert queue.reset_inflight() == 1
+    payload = json.loads((tmp_path / "events.json").read_text(encoding="utf-8"))
+    assert payload["evt-1"]["delivery_state"] == "pending"
+    assert payload["evt-1"]["inflight_at"] is None
+    assert [item.event_id for item in queue.list_pending()] == ["evt-1"]

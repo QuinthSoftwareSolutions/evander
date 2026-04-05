@@ -63,14 +63,11 @@ The workflow orchestrators share runtime state under `runtime/` (or your configu
 - `gate-orchestrator-cursors.json`: gate-worker cursor/checkpoint data.
 - `trigger-orchestrator.lock` / `gate-orchestrator.lock`: single-instance lock files.
 
-Gate execution state is useful when debugging fan-in:
+Gate execution state is useful when debugging workflow gates:
 
-- `waiting_for_inputs`: a merge gate has not yet received every inbound payload.
-- `running`: the gate is actively evaluating.
-- `passed`: the gate forwarded data downstream.
-- `filtered`: the gate intentionally suppressed the event.
-- `merged`: the gate emitted a consolidated payload.
-- `failed`: the gate hit a validation, binding, or merge error.
+- `succeeded`: the gate emitted a downstream event.
+- `dropped`: a filter gate intentionally suppressed the event.
+- `failed`: the gate hit a validation, binding, or merge projection error.
 - `skipped`: the gate was bypassed because of a validation or cycle guard.
 
 Troubleshooting checklist:
@@ -82,16 +79,17 @@ Troubleshooting checklist:
 2. **Bindings fail with missing output references**
    - Check upstream node `outputs` declarations and the actual upstream payload keys.
    - Exact `$(name)` and embedded `"...$(name)..."` both require the referenced key to exist.
-3. **Merge gate never completes**
-   - Confirm every inbound edge to the merge gate is present and the `sources` list matches those
-     upstream node ids.
-   - Confirm the merge gate is receiving new payloads rather than reprocessing the same stale input
-     event id.
+3. **Merge gate output is not being emitted**
+   - Confirm the merge gate has at least one inbound edge and that the configured edges point at
+     the upstream node ids you expect to observe.
+   - Remember that `gate:merge` follows Reactive Extensions `merge` semantics: each inbound event
+     is forwarded as it arrives, and the execution record snapshots the latest payload per source
+     for inspection.
 4. **Merge output looks incomplete or wrong**
-   - Inspect `gate-orchestrator-executions.json` for the recorded `resolved_config`, inbound inputs,
-     and final `outputs`.
-   - Verify the configured `merge_strategy` and `conflict_policy` match the intended precedence
-     rule.
+   - Inspect `gate-orchestrator-executions.json` for the recorded `resolved_config`, the latest
+     inbound payload remembered for each source, and the emitted `outputs` for the specific event.
+   - Verify the configured shared `outputs` projection matches the keys that should be forwarded
+     from each inbound event.
 5. **Unexpected duplicate behavior**
    - Check idempotency collisions in `gate-orchestrator-executions.json` using
      `idempotency_key=<event_id>::<node_id>`.

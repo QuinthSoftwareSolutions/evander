@@ -50,9 +50,14 @@ PYTHONPATH="${ROOT_DIR}/src${PYTHONPATH:+:${PYTHONPATH}}" \
 from __future__ import annotations
 
 import json
+import os
 import sys
+import tempfile
+import time
 from datetime import datetime, timezone
+from contextlib import contextmanager
 from pathlib import Path
+import fcntl
 
 def _resolve_repo(path_text: str) -> Path:
     return Path(path_text).expanduser().resolve()
@@ -79,6 +84,18 @@ def _branch_name(ref_name: str) -> str | None:
         return None
     branch = normalized.removeprefix(prefix).strip()
     return branch or None
+
+
+@contextmanager
+def _locked_queue(path: Path):
+    lock_path = path.with_name(f"{path.name}.lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 def main() -> int:
@@ -112,49 +129,67 @@ def main() -> int:
         return 0
 
     queue_store_path.parent.mkdir(parents=True, exist_ok=True)
-    if queue_store_path.exists():
-        try:
-            queue_payload = json.loads(queue_store_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+    with _locked_queue(queue_store_path):
+        hold_seconds = float(os.environ.get("AGENT_SANDBOX_TRIGGER_QUEUE_LOCK_HOLD_SECONDS", "0") or "0")
+        if hold_seconds > 0:
+            time.sleep(hold_seconds)
+        if queue_store_path.exists():
+            try:
+                queue_payload = json.loads(queue_store_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                queue_payload = {}
+            if not isinstance(queue_payload, dict):
+                queue_payload = {}
+        else:
             queue_payload = {}
-        if not isinstance(queue_payload, dict):
-            queue_payload = {}
-    else:
-        queue_payload = {}
 
-    for raw_line in updates_path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line:
-            continue
-        parts = line.split(maxsplit=2)
-        if len(parts) != 3:
-            continue
-        old_rev, new_rev, ref_name = parts
-        branch_name = _branch_name(ref_name)
-        if branch_name is None:
-            continue
-
-        now = datetime.now(timezone.utc).isoformat()
-        for trigger in git_push_triggers:
-            trigger_id = str(trigger["id"]).strip()
-            event_id = f"{trigger_id}:{branch_name}:{new_rev}"
-            if event_id in queue_payload:
+        for raw_line in updates_path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line:
                 continue
-            queue_payload[event_id] = {
-                "event_id": event_id,
-                "trigger_id": trigger_id,
-                "trigger_type": "trigger:git:push",
-                "occurred_at": now,
-                "payload": {
-                    "branch_name": branch_name,
-                    "commit_hash": new_rev,
-                },
-                "delivery_state": "pending",
-                "delivered_at": None,
-                "idempotency_key": None,
-            }
+            parts = line.split(maxsplit=2)
+            if len(parts) != 3:
+                continue
+            old_rev, new_rev, ref_name = parts
+            branch_name = _branch_name(ref_name)
+            if branch_name is None:
+                continue
 
-    queue_store_path.write_text(json.dumps(queue_payload, indent=2, sort_keys=True), encoding="utf-8")
+            now = datetime.now(timezone.utc).isoformat()
+            for trigger in git_push_triggers:
+                trigger_id = str(trigger["id"]).strip()
+                event_id = f"{trigger_id}:{branch_name}:{new_rev}"
+                if event_id in queue_payload:
+                    continue
+                queue_payload[event_id] = {
+                    "event_id": event_id,
+                    "trigger_id": trigger_id,
+                    "trigger_type": "trigger:git:push",
+                    "occurred_at": now,
+                    "payload": {
+                        "branch_name": branch_name,
+                        "commit_hash": new_rev,
+                    },
+                    "delivery_state": "pending",
+                    "inflight_at": None,
+                    "delivered_at": None,
+                    "idempotency_key": None,
+                }
+
+        temp_fd, temp_path = tempfile.mkstemp(
+            prefix=f"{queue_store_path.name}.",
+            suffix=".tmp",
+            dir=str(queue_store_path.parent),
+        )
+        try:
+            with os.fdopen(temp_fd, "w", encoding="utf-8") as handle:
+                json.dump(queue_payload, handle, indent=2, sort_keys=True)
+            os.replace(temp_path, queue_store_path)
+        finally:
+            try:
+                os.unlink(temp_path)
+            except FileNotFoundError:
+                pass
 
     return 0
 
