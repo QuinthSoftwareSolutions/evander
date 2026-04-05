@@ -3,7 +3,9 @@ import {
   applyNodeChanges,
   Background,
   Controls,
+  Handle,
   MiniMap,
+  Position,
   ReactFlow,
   type Connection,
   type Edge,
@@ -36,9 +38,13 @@ function WorkflowNodeCard({ data, selected }: NodeProps) {
   const nodeData = data as GraphNodeData;
   return (
     <div className={`node-card node-${nodeData.kind}${selected ? " selected" : ""}`}>
-      <div className="node-kind">{nodeData.kind}</div>
-      <div className="node-title">{nodeData.displayName}</div>
-      <div className="node-id">{nodeData.id}</div>
+      <Handle type="target" position={Position.Left} className="workflow-handle" />
+      <div className="node-drag-surface">
+        <div className="node-kind">{nodeData.kind}</div>
+        <div className="node-title">{nodeData.displayName}</div>
+        <div className="node-id">{nodeData.id}</div>
+      </div>
+      <Handle type="source" position={Position.Right} className="workflow-handle" />
     </div>
   );
 }
@@ -157,6 +163,24 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
   return { id, display_name: "New node", type };
 }
 
+function slugifyNodeType(type: string): string {
+  return type.replace(/[^a-zA-Z0-9]+/g, "-").replace(/^-+|-+$/g, "").toLowerCase() || "node";
+}
+
+function generateNodeId(config: WorkflowConfig, kind: WorkflowNodeKind, type: string): string {
+  const existingIds = new Set(
+    [...config.triggers, ...config.gates, ...config.effects].map((node) => node.id),
+  );
+  const base = `${kind}-${slugifyNodeType(type).replace(`${kind}-`, "")}`;
+  let index = 1;
+  let candidate = `${base}-${index}`;
+  while (existingIds.has(candidate)) {
+    index += 1;
+    candidate = `${base}-${index}`;
+  }
+  return candidate;
+}
+
 function nodeById(config: WorkflowConfig, nodeId: string): WorkflowNodeConfig | undefined {
   return [...config.triggers, ...config.gates, ...config.effects].find((node) => node.id === nodeId);
 }
@@ -214,6 +238,8 @@ export default function App() {
   const [document, setDocument] = useState<WorkflowEditorDocument | null>(null);
   const [flowNodes, setFlowNodes] = useState<Node<GraphNodeData>[]>([]);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [inspectorNodeId, setInspectorNodeId] = useState("");
+  const [inspectorDisplayName, setInspectorDisplayName] = useState("");
   const [inspectorJson, setInspectorJson] = useState("{}");
   const [error, setError] = useState<string | null>(null);
   const [saveState, setSaveState] = useState<SaveState>("idle");
@@ -236,9 +262,13 @@ export default function App() {
 
   useEffect(() => {
     if (!selectedNode) {
+      setInspectorNodeId("");
+      setInspectorDisplayName("");
       setInspectorJson("{}");
       return;
     }
+    setInspectorNodeId(selectedNode.id);
+    setInspectorDisplayName(selectedNode.display_name);
     const { id: _id, display_name: _displayName, type: _type, ...extras } = selectedNode;
     setInspectorJson(JSON.stringify(extras, null, 2));
   }, [selectedNode]);
@@ -272,21 +302,15 @@ export default function App() {
 
   function addNode(kind: WorkflowNodeKind, type: string) {
     if (!document) return;
-    const rawId = window.prompt(`New ${kind} id`);
-    const id = rawId?.trim();
-    if (!id) return;
-    if (nodeById(document.config, id)) {
-      setError(`Node ${id} already exists.`);
-      return;
-    }
     const nextConfig = cloneConfig(document.config);
-    nextConfig[kindCollectionKey(kind)].push(createDefaultNode(kind, type, id));
+    const node = createDefaultNode(kind, type, generateNodeId(nextConfig, kind, type));
+    nextConfig[kindCollectionKey(kind)].push(node);
     const nextLayout = cloneLayout(document.layout);
-    nextLayout.nodes[id] = fallbackPosition(
+    nextLayout.nodes[node.id] = fallbackPosition(
       nextConfig.triggers.length + nextConfig.gates.length + nextConfig.effects.length - 1,
     );
     patchDocument(nextConfig, nextLayout);
-    setSelectedNodeId(id);
+    setSelectedNodeId(node.id);
     setError(null);
   }
 
@@ -310,11 +334,13 @@ export default function App() {
     if (!document || !selectedNode) return;
     try {
       const parsed = JSON.parse(inspectorJson) as Record<string, unknown>;
-      const rawId = window.prompt("Node id", selectedNode.id)?.trim() ?? selectedNode.id;
-      const rawName =
-        window.prompt("Display name", selectedNode.display_name)?.trim() ?? selectedNode.display_name;
+      const rawId = inspectorNodeId.trim();
+      const rawName = inspectorDisplayName.trim();
       if (!rawId) throw new Error("Node id is required.");
       if (!rawName) throw new Error("Display name is required.");
+      if (rawId !== selectedNode.id && nodeById(document.config, rawId)) {
+        throw new Error(`Node ${rawId} already exists.`);
+      }
       const nextNode = {
         id: rawId,
         display_name: rawName,
@@ -448,6 +474,17 @@ export default function App() {
               <div>{selectedNode.type}</div>
               <div>{selectedNode.id}</div>
             </div>
+            <label className="inspector-label">
+              <span>Node id</span>
+              <input value={inspectorNodeId} onChange={(event) => setInspectorNodeId(event.target.value)} />
+            </label>
+            <label className="inspector-label">
+              <span>Display name</span>
+              <input
+                value={inspectorDisplayName}
+                onChange={(event) => setInspectorDisplayName(event.target.value)}
+              />
+            </label>
             <textarea value={inspectorJson} onChange={(event) => setInspectorJson(event.target.value)} rows={18} />
             <button className="primary" onClick={applyInspectorChanges}>
               Apply node changes

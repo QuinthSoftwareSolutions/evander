@@ -98,13 +98,33 @@ textarea {
   color: #fff6f1;
 }
 
+.inspector-label {
+  display: block;
+  margin-bottom: 0.75rem;
+}
+
+.inspector-label span {
+  display: block;
+  margin-bottom: 0.28rem;
+  font-size: 0.84rem;
+  color: #6b563f;
+}
+
+.inspector-label input,
 .sidebar textarea {
   width: 100%;
   padding: 0.8rem;
   border: 1px solid rgba(59, 46, 29, 0.16);
   border-radius: 12px;
-  resize: vertical;
   background: #fffaf2;
+}
+
+.inspector-label input {
+  padding: 0.65rem 0.8rem;
+}
+
+.sidebar textarea {
+  resize: vertical;
 }
 
 .path-note,
@@ -136,8 +156,39 @@ textarea {
   background: #fffdf8;
 }
 
+.node-drag-surface {
+  cursor: grab;
+}
+
+.node-drag-surface:active {
+  cursor: grabbing;
+}
+
 .node-card.selected {
   outline: 2px solid #1c7f74;
+}
+
+.workflow-handle {
+  width: 14px;
+  height: 14px;
+  border: 2px solid #fff7eb;
+  background: #23594f;
+  box-shadow: 0 0 0 2px rgba(35, 89, 79, 0.18);
+}
+
+.node-trigger .workflow-handle {
+  background: #9f6a21;
+  box-shadow: 0 0 0 2px rgba(159, 106, 33, 0.16);
+}
+
+.node-gate .workflow-handle {
+  background: #2d7b46;
+  box-shadow: 0 0 0 2px rgba(45, 123, 70, 0.16);
+}
+
+.node-effect .workflow-handle {
+  background: #2d5fa8;
+  box-shadow: 0 0 0 2px rgba(45, 95, 168, 0.16);
 }
 
 .node-trigger {
