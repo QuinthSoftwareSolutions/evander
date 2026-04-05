@@ -40,6 +40,9 @@ def test_default_registry_includes_all_known_effect_types() -> None:
     assert set(DEFAULT_EFFECT_PROVIDER_REGISTRY) == {
         "effect:vm:create",
         "effect:agent:prompt",
+        "effect:vm:exec",
+        "effect:vm:copy-files",
+        "effect:pr:create",
     }
 
 
@@ -76,6 +79,7 @@ def test_vm_create_provider_returns_required_outputs() -> None:
         display_name="Create VM",
         type="effect:vm:create",
         vm_name="lab-vm",
+        labels={"workflow": "issue-worker", "role": "issue"},
         dotnet=True,
     )
     admin_service = _AdminServiceStub(create_vm_calls=[], resume_calls=[])
@@ -87,9 +91,11 @@ def test_vm_create_provider_returns_required_outputs() -> None:
     assert output == {
         "session_id": "session-lab-vm",
         "vm_name": "lab-vm",
+        "labels": {"workflow": "issue-worker", "role": "issue"},
         "succeeded": True,
     }
     assert admin_service.create_vm_calls[0]["directory_path"] == "root/team-a"
+    assert admin_service.create_vm_calls[0]["labels"] == {"workflow": "issue-worker", "role": "issue"}
     assert admin_service.create_vm_calls[0]["dotnet"] is True
 
 

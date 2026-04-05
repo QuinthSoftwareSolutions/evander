@@ -9,7 +9,10 @@ from agent_sandbox.provider_config import ProviderConfigResolver
 
 from .providers.agent_prompt import AgentPromptEffectProvider
 from .providers.base import EffectProviderBase, EffectRuntimeContext
+from .providers.pr_create import PrCreateEffectProvider
+from .providers.vm_copy_files import VmCopyFilesEffectProvider
 from .providers.vm_create import VmCreateEffectProvider
+from .providers.vm_exec import VmExecEffectProvider
 
 EffectProviderClass = type[EffectProviderBase]
 
@@ -21,6 +24,9 @@ class NoopEffectProvider(EffectProviderBase):
 DEFAULT_EFFECT_PROVIDER_REGISTRY: dict[EffectType, EffectProviderClass] = {
     "effect:vm:create": VmCreateEffectProvider,
     "effect:agent:prompt": AgentPromptEffectProvider,
+    "effect:vm:exec": VmExecEffectProvider,
+    "effect:vm:copy-files": VmCopyFilesEffectProvider,
+    "effect:pr:create": PrCreateEffectProvider,
 }
 
 

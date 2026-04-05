@@ -6,6 +6,7 @@ from collections.abc import Callable, Mapping
 from agent_sandbox.provider_config import ProviderConfigResolver
 from agent_sandbox.events.models import TriggerDefinitionDiscriminated, TriggerType
 from agent_sandbox.triggers.providers.base import TriggerProviderBase, TriggerRuntimeContext
+from agent_sandbox.triggers.providers.agent_run_completed import AgentRunCompletedTriggerProvider
 from agent_sandbox.triggers.providers.cron import CronTriggerProvider
 from agent_sandbox.triggers.providers.discord_new_message import DiscordNewMessageTriggerProvider
 from agent_sandbox.triggers.providers.email_new_message import EmailNewMessageTriggerProvider
@@ -29,6 +30,7 @@ DEFAULT_TRIGGER_PROVIDER_REGISTRY: dict[TriggerType, TriggerProviderClass] = {
     "trigger:email:new-message": EmailNewMessageTriggerProvider,
     "trigger:pull-request:new-feedback": PullRequestNewFeedbackTriggerProvider,
     "trigger:git:push": GitPushTriggerProvider,
+    "trigger:agent:run:completed": AgentRunCompletedTriggerProvider,
 }
 
 
@@ -54,11 +56,13 @@ class TriggerProviderFactory:
         provider_config_resolver: ProviderConfigResolver,
         *,
         registry: TriggerProviderRegistry | None = None,
+        admin_service: object | None = None,
         env: Mapping[str, str] | None = None,
         secret_resolver: Callable[[str], str | None] | None = None,
     ) -> None:
         self.provider_config_resolver = provider_config_resolver
         self.registry = registry or TriggerProviderRegistry()
+        self.admin_service = admin_service
         self.env = env or dict(os.environ)
         self.secret_resolver = secret_resolver
 
@@ -72,6 +76,7 @@ class TriggerProviderFactory:
         resolved_config = self.provider_config_resolver.resolve_for_directory(directory_path)
         runtime_context = TriggerRuntimeContext(
             resolved_config=resolved_config,
+            admin_service=self.admin_service,
             env=self.env,
             secret_resolver=self.secret_resolver,
             metadata={"directory_path": directory_path or "root"},

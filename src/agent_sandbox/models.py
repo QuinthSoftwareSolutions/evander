@@ -168,6 +168,7 @@ class VmSummary(BaseModel):
     vm_name: str
     issue_number: str | None = None
     session_ids: list[str] = Field(default_factory=list)
+    labels: dict[str, str] = Field(default_factory=dict)
     directory_paths: list[str] = Field(default_factory=list)
     libvirt_state: str
     ip_address: str | None = None

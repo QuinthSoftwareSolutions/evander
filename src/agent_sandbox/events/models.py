@@ -16,10 +16,17 @@ TriggerType = Literal[
     "trigger:email:new-message",
     "trigger:pull-request:new-feedback",
     "trigger:git:push",
+    "trigger:agent:run:completed",
 ]
 
 GateType = Literal["gate:filter", "gate:map", "gate:merge"]
-EffectType = Literal["effect:vm:create", "effect:agent:prompt"]
+EffectType = Literal[
+    "effect:vm:create",
+    "effect:agent:prompt",
+    "effect:vm:exec",
+    "effect:vm:copy-files",
+    "effect:pr:create",
+]
 
 EmailProvider = Literal["json_store", "gmail", "graph"]
 PrFeedbackProvider = Literal["local", "github", "ado"]
@@ -152,6 +159,11 @@ class GitPushTriggerDefinition(TriggerDefinition):
     path_to_repo: str = Field(min_length=1)
 
 
+class AgentRunCompletedTriggerDefinition(TriggerDefinition):
+    type: Literal["trigger:agent:run:completed"]
+    vm_user: str | None = "agent"
+
+
 TriggerDefinitionDiscriminated = Annotated[
     CronTriggerDefinition
     | TicketCreatedTriggerDefinition
@@ -159,7 +171,8 @@ TriggerDefinitionDiscriminated = Annotated[
     | DiscordNewMessageTriggerDefinition
     | EmailNewMessageTriggerDefinition
     | PullRequestNewFeedbackTriggerDefinition
-    | GitPushTriggerDefinition,
+    | GitPushTriggerDefinition
+    | AgentRunCompletedTriggerDefinition,
     Field(discriminator="type"),
 ]
 
@@ -211,6 +224,7 @@ class VmCreateEffectDefinition(EffectDefinition):
     type: Literal["effect:vm:create"]
     vm_name: ConfigValue | None = None
     session_id: ConfigValue | None = None
+    labels: ConfigValue | None = None
     model: ConfigValue | None = None
     repo_source: ConfigValue | None = None
     vm_user: ConfigValue | None = None
@@ -238,8 +252,67 @@ class AgentPromptEffectDefinition(EffectDefinition):
     output_mode: Literal["immediate", "on_completion"] = "immediate"
 
 
+class VmExecEffectDefinition(EffectDefinition):
+    type: Literal["effect:vm:exec"]
+    target: ConfigValue | None = None
+    session_id: ConfigValue | None = None
+    vm_name: ConfigValue | None = None
+    vm_user: ConfigValue | None = None
+    command: ConfigValue
+    working_directory: ConfigValue | None = None
+    environment: ConfigValue | None = None
+    stdin: ConfigValue | None = None
+    timeout_seconds: ConfigValue | None = None
+    check: ConfigValue | None = True
+
+
+class VmCopyFilesItemDefinition(BaseModel):
+    source_path: ConfigValue | None = None
+    content: ConfigValue | None = None
+    destination_path: ConfigValue
+    mode: ConfigValue | None = None
+    overwrite: ConfigValue | None = True
+
+    @model_validator(mode="after")
+    def validate_source_or_content(self) -> "VmCopyFilesItemDefinition":
+        if self.source_path is None and self.content is None:
+            raise ValueError("either source_path or content is required")
+        if self.source_path is not None and self.content is not None:
+            raise ValueError("source_path and content are mutually exclusive")
+        return self
+
+
+class VmCopyFilesEffectDefinition(EffectDefinition):
+    type: Literal["effect:vm:copy-files"]
+    target: ConfigValue | None = None
+    session_id: ConfigValue | None = None
+    vm_name: ConfigValue | None = None
+    vm_user: ConfigValue | None = None
+    files: list[VmCopyFilesItemDefinition]
+
+
+class PrCreateEffectDefinition(EffectDefinition):
+    type: Literal["effect:pr:create"]
+    host_repo_path: ConfigValue
+    local_branch: ConfigValue | None = None
+    origin_branch: ConfigValue | None = None
+    provider: ConfigValue | None = None
+    base_branch: ConfigValue | None = None
+    session_id: ConfigValue | None = None
+    work_item_id: ConfigValue | None = None
+    title: ConfigValue | None = None
+    body: ConfigValue | None = None
+    body_file: ConfigValue | None = None
+    draft: ConfigValue | None = None
+    fill: ConfigValue | None = True
+
+
 EffectDefinitionDiscriminated = Annotated[
-    VmCreateEffectDefinition | AgentPromptEffectDefinition,
+    VmCreateEffectDefinition
+    | AgentPromptEffectDefinition
+    | VmExecEffectDefinition
+    | VmCopyFilesEffectDefinition
+    | PrCreateEffectDefinition,
     Field(discriminator="type"),
 ]
 

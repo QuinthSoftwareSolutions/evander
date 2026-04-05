@@ -16,6 +16,7 @@ class VmCreateEffectProvider(EffectProviderBase):
         payload = {
             "vm_name": effect.vm_name,
             "session_id": effect.session_id,
+            "labels": effect.labels,
             "model": effect.model,
             "repo_source": effect.repo_source,
             "vm_user": effect.vm_user,
@@ -47,6 +48,7 @@ class VmCreateEffectProvider(EffectProviderBase):
         result = context.admin_service.create_vm(
             vm_name=vm_name,
             session_id=session_id,
+            labels=self._as_string_mapping(payload.get("labels")),
             model=self._normalize_optional_string(payload.get("model")),
             repo_source=self._normalize_optional_string(payload.get("repo_source")),
             vm_user=vm_user,
@@ -67,6 +69,7 @@ class VmCreateEffectProvider(EffectProviderBase):
         return {
             "session_id": resolved_session_id,
             "vm_name": result.vm_name or vm_name,
+            "labels": self._as_string_mapping(payload.get("labels")) or {},
             "succeeded": bool(result.success),
         }
 
@@ -102,4 +105,20 @@ class VmCreateEffectProvider(EffectProviderBase):
         if not isinstance(value, (list, tuple)):
             return None
         normalized = [str(item).strip() for item in value if str(item).strip()]
+        return normalized or None
+
+    @staticmethod
+    def _as_string_mapping(value: Any) -> dict[str, str] | None:
+        if value is None:
+            return None
+        if not isinstance(value, Mapping):
+            return None
+        normalized: dict[str, str] = {}
+        for raw_key, raw_value in value.items():
+            key = str(raw_key).strip()
+            if not key or raw_value is None:
+                continue
+            mapped_value = str(raw_value).strip()
+            if mapped_value:
+                normalized[key] = mapped_value
         return normalized or None

@@ -80,6 +80,7 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
             "display_name": "Create VM",
             "type": "effect:vm:create",
             "vm_name": "issue-$(ticket_number)",
+            "labels": {"workflow": "issue-worker"},
         }
     )
     prompt = adapter.validate_python(
@@ -90,9 +91,44 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
             "prompt": "Continue $(session_id)",
         }
     )
+    vm_exec = adapter.validate_python(
+        {
+            "id": "effect-exec",
+            "display_name": "Exec",
+            "type": "effect:vm:exec",
+            "vm_name": "vm-1",
+            "command": ["pwd"],
+        }
+    )
+    vm_copy = adapter.validate_python(
+        {
+            "id": "effect-copy",
+            "display_name": "Copy",
+            "type": "effect:vm:copy-files",
+            "vm_name": "vm-1",
+            "files": [
+                {
+                    "destination_path": "/tmp/example.txt",
+                    "content": "hello",
+                }
+            ],
+        }
+    )
+    pr_create = adapter.validate_python(
+        {
+            "id": "effect-pr",
+            "display_name": "Create PR",
+            "type": "effect:pr:create",
+            "host_repo_path": "/repo",
+        }
+    )
 
     assert vm.type == "effect:vm:create"
+    assert vm.labels == {"workflow": "issue-worker"}
     assert prompt.type == "effect:agent:prompt"
+    assert vm_exec.type == "effect:vm:exec"
+    assert vm_copy.type == "effect:vm:copy-files"
+    assert pr_create.type == "effect:pr:create"
     assert prompt.prompt == "Continue $(session_id)"
 
     _record_result(
@@ -100,7 +136,7 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
         requirement_id="schema:supported-effect-types",
         status="pass",
         coverage=["schema validation coverage"],
-        details="Both supported effect types validate with required envelope fields.",
+        details="All supported effect types validate with their required envelope fields.",
     )
 
 

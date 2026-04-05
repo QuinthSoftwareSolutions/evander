@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
+from .admin_service import AdminService
 from .provider_config import ProviderConfigResolver
 from .runtime import RuntimeContext, build_runtime
 from .events.models import TriggerDefinitionDiscriminated
@@ -43,6 +44,7 @@ class TriggerOrchestratorWorker:
         self.event_queue = TriggerEventQueue(worker_config.event_queue_store_path)
         self.provider_factory = TriggerProviderFactory(
             ProviderConfigResolver(config),
+            admin_service=AdminService(config.runtime_dir),
             env=dict(os.environ),
         )
 

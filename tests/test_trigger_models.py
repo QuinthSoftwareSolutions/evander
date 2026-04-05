@@ -5,9 +5,11 @@ from pydantic import TypeAdapter
 
 from agent_sandbox.events.models import (
     AgentPromptEffectDefinition,
+    AgentRunCompletedTriggerDefinition,
     ConfigValue,
     EffectDefinitionDiscriminated,
     GitPushTriggerDefinition,
+    PrCreateEffectDefinition,
     PullRequestNewFeedbackTriggerDefinition,
     TriggerDefinitionDiscriminated,
     TriggerEvent,
@@ -125,6 +127,8 @@ def test_trigger_event_envelope_accepts_normalized_payload() -> None:
     )
 
     assert event.payload == {"branch": "main"}
+
+
 def test_effect_discriminated_union_accepts_output_reference_interpolation() -> None:
     adapter = TypeAdapter(EffectDefinitionDiscriminated)
     effect = adapter.validate_python(
@@ -137,6 +141,108 @@ def test_effect_discriminated_union_accepts_output_reference_interpolation() -> 
     )
 
     assert effect.type == "effect:agent:prompt"
+
+
+def test_agent_run_completed_trigger_accepts_default_vm_user() -> None:
+    trigger = AgentRunCompletedTriggerDefinition.model_validate(
+        {
+            "id": "t-agent-done",
+            "display_name": "Agent completed",
+            "type": "trigger:agent:run:completed",
+        }
+    )
+
+    assert trigger.vm_user == "agent"
+
+
+def test_vm_exec_effect_accepts_command_list() -> None:
+    adapter = TypeAdapter(EffectDefinitionDiscriminated)
+    effect = adapter.validate_python(
+        {
+            "id": "effect-exec",
+            "display_name": "Exec",
+            "type": "effect:vm:exec",
+            "vm_name": "vm-1",
+            "command": ["python3", "--version"],
+        }
+    )
+
+    assert effect.type == "effect:vm:exec"
+
+
+def test_vm_create_effect_accepts_labels_mapping() -> None:
+    adapter = TypeAdapter(EffectDefinitionDiscriminated)
+    effect = adapter.validate_python(
+        {
+            "id": "effect-vm",
+            "display_name": "Create VM",
+            "type": "effect:vm:create",
+            "vm_name": "vm-1",
+            "labels": {
+                "workflow": "issue-worker",
+                "ticket_id": "$(ticket_id)",
+            },
+        }
+    )
+
+    assert effect.type == "effect:vm:create"
+    assert effect.labels == {"workflow": "issue-worker", "ticket_id": "$(ticket_id)"}
+
+
+def test_vm_copy_files_effect_requires_exactly_one_source_kind() -> None:
+    adapter = TypeAdapter(EffectDefinitionDiscriminated)
+    with pytest.raises(ValueError, match="either source_path or content is required"):
+        adapter.validate_python(
+            {
+                "id": "effect-copy",
+                "display_name": "Copy",
+                "type": "effect:vm:copy-files",
+                "vm_name": "vm-1",
+                "files": [{"destination_path": "/tmp/example.txt"}],
+            }
+        )
+
+
+def test_pr_create_effect_requires_host_repo_path() -> None:
+    effect = PrCreateEffectDefinition.model_validate(
+        {
+            "id": "effect-pr",
+            "display_name": "Create PR",
+            "type": "effect:pr:create",
+            "host_repo_path": "/repo",
+        }
+    )
+
+    assert effect.host_repo_path == "/repo"
+
+    with pytest.raises(ValueError, match="Field required"):
+        PrCreateEffectDefinition.model_validate(
+            {
+                "id": "effect-pr-missing-path",
+                "display_name": "Create PR",
+                "type": "effect:pr:create",
+            }
+        )
+
+
+def test_vm_copy_files_effect_rejects_mixed_source_kinds() -> None:
+    adapter = TypeAdapter(EffectDefinitionDiscriminated)
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        adapter.validate_python(
+            {
+                "id": "effect-copy",
+                "display_name": "Copy",
+                "type": "effect:vm:copy-files",
+                "vm_name": "vm-1",
+                "files": [
+                    {
+                        "destination_path": "/tmp/example.txt",
+                        "source_path": "/tmp/src.txt",
+                        "content": "hello",
+                    }
+                ],
+            }
+        )
 
 
 def test_config_value_adapter_accepts_nested_binding_structures() -> None:

@@ -5,6 +5,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+from agent_sandbox.admin_service import AdminService
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.events.models import TriggerDefinitionDiscriminated, TriggerEvent
 
@@ -21,6 +22,7 @@ class TriggerRuntimeContext:
     """
 
     resolved_config: GatewayConfig
+    admin_service: AdminService | None = None
     env: Mapping[str, str] = field(default_factory=lambda: dict(os.environ))
     secret_resolver: Callable[[str], str | None] | None = None
     metadata: Mapping[str, Any] = field(default_factory=dict)

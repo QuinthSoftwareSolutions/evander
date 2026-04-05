@@ -2020,6 +2020,7 @@ def test_create_vm_launches_generic_vm_and_bootstraps_selected_toolchains(tmp_pa
     result = service.create_vm(
         vm_name="lab-vm",
         session_id="lab-session",
+        labels={"workflow": "issue-worker", "agent_role": "issue"},
         dotnet=True,
         nuget=True,
         playwright=True,
@@ -2048,8 +2049,38 @@ def test_create_vm_launches_generic_vm_and_bootstraps_selected_toolchains(tmp_pa
     assert manifest is not None
     assert manifest.vm_id == "lab-vm"
     assert manifest.directory_path == team_path
-    assert manifest.metadata == {}
+    assert manifest.metadata == {"labels": {"workflow": "issue-worker", "agent_role": "issue"}}
     assert result.message == "ok:setup_vm.sh"
+
+
+def test_list_vms_surfaces_shared_session_labels(tmp_path: Path, monkeypatch: Any) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.sessions.put(
+        "session-1",
+        SessionManifest.model_validate(
+            {
+                "session_id": "session-1",
+                "vm_id": "lab-vm",
+                "directory_path": "root",
+                "allowed_tools": [],
+                "expires_at": "2099-01-01T00:00:00Z",
+                "metadata": {"labels": {"workflow": "issue-worker", "agent_role": "issue"}},
+            }
+        ),
+    )
+
+    monkeypatch.setattr("agent_sandbox.admin_service._virsh_lines", lambda args: ["lab-vm"])
+    monkeypatch.setattr("agent_sandbox.admin_service._dominfo_field", lambda vm_name, field_name: "running")
+    monkeypatch.setattr("agent_sandbox.admin_service._resolve_vm_ip", lambda vm_name: "192.0.2.10")
+    monkeypatch.setattr(
+        "agent_sandbox.admin_service._probe_agent_state",
+        lambda vm_name, vm_ip, vm_user: ("idle", ["sample-repo"], datetime(2026, 4, 5, 12, 0, tzinfo=UTC)),
+    )
+
+    summaries = service.list_vms()
+
+    assert len(summaries) == 1
+    assert summaries[0].labels == {"workflow": "issue-worker", "agent_role": "issue"}
 
 
 def test_create_vm_with_repo_source_clones_repo_and_bootstraps_python(tmp_path: Path, monkeypatch: Any) -> None:

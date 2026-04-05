@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -1082,6 +1084,39 @@ def _ssh_options(vm_name: str, vm_ip: str, ssh_private_key_path: Path) -> list[s
     ]
 
 
+def _resolve_vm_ssh_access(vm_name: str, vm_user: str, *, timeout_seconds: int = 180) -> tuple[str, Path]:
+    vm_ip = _resolve_vm_ip(vm_name)
+    if vm_ip is None:
+        vm_ip = _wait_for_vm_ip(vm_name, timeout_seconds=timeout_seconds)
+    if vm_ip is None:
+        raise RuntimeError(f"Timed out waiting for an IP address for VM '{vm_name}'.")
+    _wait_for_vm_ssh(vm_name, vm_ip, vm_user, timeout_seconds=timeout_seconds)
+    ssh_private_key_path = _resolve_private_key_path()
+    if ssh_private_key_path is None:
+        raise RuntimeError(
+            "Missing SSH private key. Set SSH_PRIVATE_KEY_PATH to the private key that matches the VM's authorized key."
+        )
+    return vm_ip, ssh_private_key_path
+
+
+def _remote_shell_script(
+    *,
+    command: str | list[str],
+    working_directory: str | None = None,
+    environment: dict[str, str] | None = None,
+) -> str:
+    script_lines = ["set -euo pipefail"]
+    for key, value in sorted((environment or {}).items()):
+        script_lines.append(f"export {key}={shlex.quote(value)}")
+    if working_directory:
+        script_lines.append(f"cd {shlex.quote(working_directory)}")
+    if isinstance(command, str):
+        script_lines.append(command)
+    else:
+        script_lines.append(shlex.join(command))
+    return "\n".join(script_lines) + "\n"
+
+
 def _probe_agent_state(vm_name: str, vm_ip: str, vm_user: str) -> tuple[str, list[str], datetime | None]:
     ssh_private_key_path = _resolve_private_key_path()
     if ssh_private_key_path is None:
@@ -1295,6 +1330,20 @@ def _matching_vm_session_ids(vm_name: str, sessions: dict[str, SessionManifest])
     return {session_id for session_id, session in sessions.items() if session.vm_id == vm_name}
 
 
+def _normalize_session_labels(value: object) -> dict[str, str]:
+    if not isinstance(value, dict):
+        return {}
+    normalized: dict[str, str] = {}
+    for raw_key, raw_value in value.items():
+        key = str(raw_key).strip()
+        if not key or raw_value is None:
+            continue
+        mapped_value = str(raw_value).strip()
+        if mapped_value:
+            normalized[key] = mapped_value
+    return normalized
+
+
 def _pkexec_env_command(base_cmd: list[str], env: dict[str, str], allowed_keys: tuple[str, ...]) -> list[str]:
     cmd = ["pkexec", "env"]
     for key in allowed_keys:
@@ -1464,6 +1513,29 @@ class AdminService:
             if session.vm_id:
                 mapping.setdefault(session.vm_id, set()).add(session.directory_path)
         return {vm_id: sorted(paths) for vm_id, paths in mapping.items()}
+
+    def _labels_by_vm(self) -> dict[str, dict[str, str]]:
+        mapping: dict[str, dict[str, str] | None] = {}
+        sessions = self.runtime.sessions.read_all()
+        for session_id in sorted(sessions):
+            session = sessions[session_id]
+            if not session.vm_id:
+                continue
+            labels = _normalize_session_labels(session.metadata.get("labels"))
+            current = mapping.get(session.vm_id)
+            if current is None:
+                mapping[session.vm_id] = dict(labels)
+                continue
+            mapping[session.vm_id] = {
+                key: value
+                for key, value in current.items()
+                if labels.get(key) == value
+            }
+        return {
+            vm_id: labels
+            for vm_id, labels in mapping.items()
+            if labels
+        }
 
     def _normalize_directory_path(self, directory_path: str | None) -> str:
         if not directory_path:
@@ -2045,6 +2117,7 @@ git -C "${{TARGET_DIR}}" config agent-sandbox.sessionId "${{SESSION_ID}}"
     ) -> list[VmSummary]:
         vm_names = _virsh_lines(["list", "--all" if include_inactive else "--state-running", "--name"])
         session_ids_by_vm = self._session_ids_by_vm()
+        labels_by_vm = self._labels_by_vm()
         directory_paths_by_vm = self._directory_paths_by_vm()
         normalized_directory_path = self._normalize_directory_path(directory_path)
         owned_vm_ids = self._direct_owned_entity_ids(normalized_directory_path, kind="vm") if direct_only else set()
@@ -2079,6 +2152,7 @@ git -C "${{TARGET_DIR}}" config agent-sandbox.sessionId "${{SESSION_ID}}"
                     vm_name=vm_name,
                     issue_number=_extract_issue_number(vm_name),
                     session_ids=session_ids_by_vm.get(vm_name, []),
+                    labels=labels_by_vm.get(vm_name, {}),
                     directory_paths=vm_directory_paths,
                     libvirt_state=libvirt_state,
                     ip_address=ip_address,
@@ -2380,6 +2454,269 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
             ["--prompt", prompt, "--vm-name", vm_name, "--vm-user", vm_user, "--host-control-state-path", str(self.config.host_agent_control_state_path)],
             env=os.environ | {"AGENT_MODEL": model},
         )
+
+    def vm_exec(
+        self,
+        target: str,
+        *,
+        command: str | list[str],
+        vm_user: str = "agent",
+        working_directory: str | None = None,
+        environment: dict[str, str] | None = None,
+        stdin: str | None = None,
+        timeout_seconds: float | None = None,
+        check: bool = True,
+    ) -> dict[str, Any]:
+        sessions = self.runtime.sessions.read_all()
+        vm_name = _resolve_vm_name_from_target(target, sessions)
+        vm_ip, ssh_private_key_path = _resolve_vm_ssh_access(vm_name, vm_user)
+        remote_script = _remote_shell_script(
+            command=command,
+            working_directory=working_directory,
+            environment=environment,
+        )
+        completed = _run_subprocess(
+            ["ssh", *_ssh_options(vm_name, vm_ip, ssh_private_key_path), f"{vm_user}@{vm_ip}", "bash", "-s"],
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+            input=f"{remote_script}{stdin or ''}",
+        )
+        stdout = completed.stdout or ""
+        stderr = completed.stderr or ""
+        success = completed.returncode == 0 or not check
+        message = (stderr or stdout).strip() or f"vm_exec exited with code {completed.returncode}"
+        return {
+            "success": success,
+            "vm_name": vm_name,
+            "action": "vm_exec",
+            "message": message,
+            "exit_code": completed.returncode,
+            "stdout": stdout,
+            "stderr": stderr,
+        }
+
+    def vm_copy_files(
+        self,
+        target: str,
+        *,
+        files: list[dict[str, Any]],
+        vm_user: str = "agent",
+    ) -> dict[str, Any]:
+        sessions = self.runtime.sessions.read_all()
+        vm_name = _resolve_vm_name_from_target(target, sessions)
+        vm_ip, ssh_private_key_path = _resolve_vm_ssh_access(vm_name, vm_user)
+        copied_paths: list[str] = []
+
+        for index, file_spec in enumerate(files):
+            destination_path = str(file_spec.get("destination_path") or "").strip()
+            if not destination_path:
+                raise ValueError(f"files[{index}] destination_path is required")
+            source_path_raw = file_spec.get("source_path")
+            content_raw = file_spec.get("content")
+            if bool(source_path_raw) == bool(content_raw):
+                raise ValueError(f"files[{index}] must provide exactly one of source_path or content")
+            overwrite = bool(file_spec.get("overwrite", True))
+            mode = str(file_spec.get("mode") or "").strip()
+            parent_path = str(Path(destination_path).parent)
+            prelude = [
+                "set -euo pipefail",
+                f"mkdir -p {shlex.quote(parent_path)}",
+            ]
+            if not overwrite:
+                prelude.append(f"if [ -e {shlex.quote(destination_path)} ]; then exit 17; fi")
+            prep_script = "\n".join(prelude) + "\n"
+
+            if source_path_raw:
+                source_path = Path(str(source_path_raw)).expanduser().resolve()
+                if not source_path.exists():
+                    raise ValueError(f"files[{index}] source_path does not exist: {source_path}")
+                if source_path.is_dir():
+                    completed = _run_subprocess(
+                        [
+                            "ssh",
+                            *_ssh_options(vm_name, vm_ip, ssh_private_key_path),
+                            f"{vm_user}@{vm_ip}",
+                            "bash",
+                            "-s",
+                        ],
+                        capture_output=True,
+                        text=True,
+                        input=prep_script,
+                    )
+                    if completed.returncode != 0:
+                        raise RuntimeError((completed.stderr or completed.stdout or "").strip() or "remote directory prep failed")
+                    scp_result = _run_subprocess(
+                        [
+                            "scp",
+                            "-r",
+                            *_ssh_options(vm_name, vm_ip, ssh_private_key_path),
+                            str(source_path),
+                            f"{vm_user}@{vm_ip}:{destination_path}",
+                        ],
+                        capture_output=True,
+                        text=True,
+                    )
+                    if scp_result.returncode != 0:
+                        raise RuntimeError((scp_result.stderr or scp_result.stdout or "").strip() or "scp failed")
+                    if mode:
+                        chmod_result = _run_subprocess(
+                            ["ssh", *_ssh_options(vm_name, vm_ip, ssh_private_key_path), f"{vm_user}@{vm_ip}", "chmod", "-R", mode, destination_path],
+                            capture_output=True,
+                            text=True,
+                        )
+                        if chmod_result.returncode != 0:
+                            raise RuntimeError((chmod_result.stderr or chmod_result.stdout or "").strip() or "chmod failed")
+                else:
+                    completed = _run_subprocess(
+                        [
+                            "ssh",
+                            *_ssh_options(vm_name, vm_ip, ssh_private_key_path),
+                            f"{vm_user}@{vm_ip}",
+                            "bash",
+                            "-s",
+                        ],
+                        capture_output=True,
+                        text=True,
+                        input=prep_script,
+                    )
+                    if completed.returncode != 0:
+                        raise RuntimeError((completed.stderr or completed.stdout or "").strip() or "remote file prep failed")
+                    scp_result = _run_subprocess(
+                        [
+                            "scp",
+                            *_ssh_options(vm_name, vm_ip, ssh_private_key_path),
+                            str(source_path),
+                            f"{vm_user}@{vm_ip}:{destination_path}",
+                        ],
+                        capture_output=True,
+                        text=True,
+                    )
+                    if scp_result.returncode != 0:
+                        raise RuntimeError((scp_result.stderr or scp_result.stdout or "").strip() or "scp failed")
+                    if mode:
+                        chmod_result = _run_subprocess(
+                            ["ssh", *_ssh_options(vm_name, vm_ip, ssh_private_key_path), f"{vm_user}@{vm_ip}", "chmod", mode, destination_path],
+                            capture_output=True,
+                            text=True,
+                        )
+                        if chmod_result.returncode != 0:
+                            raise RuntimeError((chmod_result.stderr or chmod_result.stdout or "").strip() or "chmod failed")
+            else:
+                content_text = str(content_raw if content_raw is not None else "")
+                encoded_content = base64.b64encode(content_text.encode("utf-8")).decode("ascii")
+                remote_script = "\n".join(
+                    prelude
+                    + [
+                        f"python3 - <<'PY'\nimport base64\nfrom pathlib import Path\nPath({destination_path!r}).write_bytes(base64.b64decode({encoded_content!r}))\nPY"
+                    ]
+                    + ([f"chmod {shlex.quote(mode)} {shlex.quote(destination_path)}"] if mode else [])
+                ) + "\n"
+                completed = _run_subprocess(
+                    ["ssh", *_ssh_options(vm_name, vm_ip, ssh_private_key_path), f"{vm_user}@{vm_ip}", "bash", "-s"],
+                    capture_output=True,
+                    text=True,
+                    input=remote_script,
+                )
+                if completed.returncode != 0:
+                    if completed.returncode == 17:
+                        raise RuntimeError(f"Destination already exists: {destination_path}")
+                    raise RuntimeError((completed.stderr or completed.stdout or "").strip() or "remote content write failed")
+            copied_paths.append(destination_path)
+
+        message = f"Copied {len(copied_paths)} path(s) into {vm_name}"
+        return {
+            "success": True,
+            "vm_name": vm_name,
+            "action": "vm_copy_files",
+            "message": message,
+            "copied_count": len(copied_paths),
+            "copied_paths": copied_paths,
+        }
+
+    def pr_create(
+        self,
+        *,
+        host_repo_path: str,
+        local_branch: str | None = None,
+        origin_branch: str | None = None,
+        provider: str | None = None,
+        base_branch: str | None = None,
+        session_id: str | None = None,
+        work_item_id: str | None = None,
+        title: str | None = None,
+        body: str | None = None,
+        body_file: str | None = None,
+        draft: bool | None = None,
+        fill: bool = True,
+    ) -> dict[str, Any]:
+        if body and body_file:
+            raise ValueError("Provide either body or body_file, not both")
+
+        script_path = self.project_dir / "scripts" / "open_agent_pr.sh"
+        cmd = [str(script_path), "--create-pr"]
+        if draft is True:
+            cmd.append("--draft")
+        elif draft is False:
+            cmd.append("--no-draft")
+        if provider:
+            cmd.extend(["--provider", provider])
+        if base_branch:
+            cmd.extend(["--base", base_branch])
+        if session_id:
+            cmd.extend(["--session-id", session_id])
+        if work_item_id:
+            cmd.extend(["--work-item-id", work_item_id])
+        if title:
+            cmd.extend(["--title", title])
+        if not fill:
+            cmd.append("--no-fill")
+
+        body_file_path: Path | None = None
+        try:
+            if body is not None:
+                tmp = tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".md", delete=False)
+                with tmp:
+                    tmp.write(body)
+                body_file_path = Path(tmp.name)
+                cmd.extend(["--body-file", str(body_file_path)])
+            elif body_file:
+                cmd.extend(["--body-file", body_file])
+
+            cmd.append(host_repo_path)
+            if local_branch:
+                cmd.append(local_branch)
+            if origin_branch:
+                cmd.append(origin_branch)
+
+            completed = _run_subprocess(cmd, capture_output=True, text=True)
+            stdout = completed.stdout or ""
+            stderr = completed.stderr or ""
+            if completed.returncode != 0:
+                raise RuntimeError((stderr or stdout).strip() or f"open_agent_pr.sh exited with code {completed.returncode}")
+
+            result_payload: dict[str, Any] = {}
+            for line in stdout.splitlines():
+                if not line.startswith("AGENT_PR_RESULT "):
+                    continue
+                raw_json = line.removeprefix("AGENT_PR_RESULT ").strip()
+                parsed = json.loads(raw_json)
+                if isinstance(parsed, dict):
+                    result_payload = parsed
+                    break
+
+            message = (stderr or stdout).strip() or "PR prepared"
+            return {
+                "success": True,
+                "action": "pr_create",
+                "message": message,
+                "stdout": stdout,
+                "stderr": stderr,
+                **result_payload,
+            }
+        finally:
+            if body_file_path is not None:
+                body_file_path.unlink(missing_ok=True)
 
     def list_local_issues(
         self,
@@ -3691,6 +4028,7 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
         *,
         vm_name: str,
         session_id: str | None = None,
+        labels: dict[str, str] | None = None,
         model: str | None = None,
         repo_source: str | None = None,
         vm_user: str = "agent",
@@ -3753,6 +4091,10 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
             email_mailboxes=email_mailboxes or [],
             email_folders=email_folders or [],
         )
+        normalized_labels = _normalize_session_labels(labels or {})
+        if normalized_labels:
+            manifest.metadata = dict(manifest.metadata)
+            manifest.metadata["labels"] = normalized_labels
         normalized_model = (model or "").strip() or None
         if normalized_model is not None:
             manifest.model = normalized_model
