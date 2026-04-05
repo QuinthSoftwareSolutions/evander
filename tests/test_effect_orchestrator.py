@@ -96,7 +96,7 @@ def test_effect_orchestrator_executes_gate_and_effect_chain(tmp_path: Path) -> N
     worker.provider_factory = _Factory(
         {
             "effect-1": {"session_id": "session-123"},
-            "effect-2": {"thread_id": "thread-1", "succeeded": True},
+            "effect-2": {"thread_id": "thread-1", "success": True},
         }
     )
 

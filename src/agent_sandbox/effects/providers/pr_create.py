@@ -38,10 +38,7 @@ class PrCreateEffectProvider(EffectProviderBase):
             fill=self._resolve_fill(payload),
         )
         output = self._coerce_result(result)
-        if "success" in output and "succeeded" not in output:
-            output["succeeded"] = bool(output["success"])
-        if "succeeded" in output and "success" not in output:
-            output["success"] = bool(output["succeeded"])
+        output.setdefault("success", False)
         return output
 
     def _effect_payload(self) -> dict[str, Any]:

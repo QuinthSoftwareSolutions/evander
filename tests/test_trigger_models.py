@@ -189,6 +189,35 @@ def test_vm_create_effect_accepts_labels_mapping() -> None:
     assert effect.labels == {"workflow": "issue-worker", "ticket_id": "$(ticket_id)"}
 
 
+def test_vm_start_effect_accepts_session_target() -> None:
+    adapter = TypeAdapter(EffectDefinitionDiscriminated)
+    effect = adapter.validate_python(
+        {
+            "id": "effect-start",
+            "display_name": "Start VM",
+            "type": "effect:vm:start",
+            "session_id": "session-1",
+        }
+    )
+
+    assert effect.type == "effect:vm:start"
+
+
+def test_vm_stop_effect_accepts_timeout_override() -> None:
+    adapter = TypeAdapter(EffectDefinitionDiscriminated)
+    effect = adapter.validate_python(
+        {
+            "id": "effect-stop",
+            "display_name": "Stop VM",
+            "type": "effect:vm:stop",
+            "vm_name": "vm-1",
+            "timeout_seconds": 120,
+        }
+    )
+
+    assert effect.type == "effect:vm:stop"
+
+
 def test_vm_copy_files_effect_requires_exactly_one_source_kind() -> None:
     adapter = TypeAdapter(EffectDefinitionDiscriminated)
     with pytest.raises(ValueError, match="either source_path or content is required"):

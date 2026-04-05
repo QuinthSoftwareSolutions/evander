@@ -183,7 +183,6 @@ def test_vm_exec_provider_returns_failure_result_when_check_is_disabled(tmp_path
     )
 
     assert result["success"] is False
-    assert result["succeeded"] is False
     assert result["exit_code"] == 7
     assert result["stdout"] == "out"
     assert result["stderr"] == "err"

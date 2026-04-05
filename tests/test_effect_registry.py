@@ -39,6 +39,8 @@ class _RecordingProvider(EffectProviderBase):
 def test_default_registry_includes_all_known_effect_types() -> None:
     assert set(DEFAULT_EFFECT_PROVIDER_REGISTRY) == {
         "effect:vm:create",
+        "effect:vm:start",
+        "effect:vm:stop",
         "effect:agent:prompt",
         "effect:vm:exec",
         "effect:vm:copy-files",
@@ -92,7 +94,7 @@ def test_vm_create_provider_returns_required_outputs() -> None:
         "session_id": "session-lab-vm",
         "vm_name": "lab-vm",
         "labels": {"workflow": "issue-worker", "role": "issue"},
-        "succeeded": True,
+        "success": True,
     }
     assert admin_service.create_vm_calls[0]["directory_path"] == "root/team-a"
     assert admin_service.create_vm_calls[0]["labels"] == {"workflow": "issue-worker", "role": "issue"}
@@ -116,6 +118,6 @@ def test_agent_prompt_provider_emits_thread_id() -> None:
     output = provider.execute()
 
     assert output["thread_id"] == "thread-123"
-    assert output["succeeded"] is True
+    assert output["success"] is True
     assert output["output_mode"] == "on_completion"
     assert admin_service.resume_calls[0]["target"] == "session-42"

@@ -88,7 +88,6 @@ def test_pr_create_provider_calls_admin_service_with_normalized_arguments(tmp_pa
         }
     ]
     assert result["success"] is True
-    assert result["succeeded"] is True
     assert result["action"] == "pr_create"
     assert result["message"] == "Created PR"
     assert result["pr_id"] == "123"

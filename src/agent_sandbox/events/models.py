@@ -22,6 +22,8 @@ TriggerType = Literal[
 GateType = Literal["gate:filter", "gate:map", "gate:merge"]
 EffectType = Literal[
     "effect:vm:create",
+    "effect:vm:start",
+    "effect:vm:stop",
     "effect:agent:prompt",
     "effect:vm:exec",
     "effect:vm:copy-files",
@@ -252,6 +254,21 @@ class AgentPromptEffectDefinition(EffectDefinition):
     output_mode: Literal["immediate", "on_completion"] = "immediate"
 
 
+class VmStartEffectDefinition(EffectDefinition):
+    type: Literal["effect:vm:start"]
+    target: ConfigValue | None = None
+    session_id: ConfigValue | None = None
+    vm_name: ConfigValue | None = None
+
+
+class VmStopEffectDefinition(EffectDefinition):
+    type: Literal["effect:vm:stop"]
+    target: ConfigValue | None = None
+    session_id: ConfigValue | None = None
+    vm_name: ConfigValue | None = None
+    timeout_seconds: ConfigValue | None = None
+
+
 class VmExecEffectDefinition(EffectDefinition):
     type: Literal["effect:vm:exec"]
     target: ConfigValue | None = None
@@ -309,6 +326,8 @@ class PrCreateEffectDefinition(EffectDefinition):
 
 EffectDefinitionDiscriminated = Annotated[
     VmCreateEffectDefinition
+    | VmStartEffectDefinition
+    | VmStopEffectDefinition
     | AgentPromptEffectDefinition
     | VmExecEffectDefinition
     | VmCopyFilesEffectDefinition

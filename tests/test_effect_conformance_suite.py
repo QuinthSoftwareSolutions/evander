@@ -83,6 +83,23 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
             "labels": {"workflow": "issue-worker"},
         }
     )
+    vm_start = adapter.validate_python(
+        {
+            "id": "effect-start",
+            "display_name": "Start",
+            "type": "effect:vm:start",
+            "session_id": "session-1",
+        }
+    )
+    vm_stop = adapter.validate_python(
+        {
+            "id": "effect-stop",
+            "display_name": "Stop",
+            "type": "effect:vm:stop",
+            "vm_name": "vm-1",
+            "timeout_seconds": 90,
+        }
+    )
     prompt = adapter.validate_python(
         {
             "id": "effect-prompt",
@@ -125,6 +142,8 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
 
     assert vm.type == "effect:vm:create"
     assert vm.labels == {"workflow": "issue-worker"}
+    assert vm_start.type == "effect:vm:start"
+    assert vm_stop.type == "effect:vm:stop"
     assert prompt.type == "effect:agent:prompt"
     assert vm_exec.type == "effect:vm:exec"
     assert vm_copy.type == "effect:vm:copy-files"
