@@ -841,6 +841,73 @@ def test_admin_service_rejects_duplicate_trigger_ids_with_safe_error_message(tmp
     assert "VERY_SECRET_TOKEN" not in message
 
 
+def test_workflow_editor_document_round_trips_config_and_separate_layout(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+
+    save_result = service.save_workflow_editor_document(
+        config={
+            "runtime_dir": str(tmp_path / "runtime"),
+            "triggers": [
+                {
+                    "id": "cron-15m",
+                    "display_name": "Every 15 minutes",
+                    "type": "trigger:cron",
+                    "expression": "*/15 * * * *",
+                }
+            ],
+            "effects": [
+                {
+                    "id": "prompt-agent",
+                    "display_name": "Prompt agent",
+                    "type": "effect:agent:prompt",
+                    "prompt": "Summarize",
+                }
+            ],
+            "edges": [{"source_id": "cron-15m", "target_id": "prompt-agent"}],
+        },
+        layout={
+            "nodes": {
+                "cron-15m": {"x": 120, "y": 80},
+                "prompt-agent": {"x": 440, "y": 80},
+            }
+        },
+    )
+
+    assert Path(save_result.config_path).exists()
+    assert Path(save_result.layout_path).exists()
+    persisted_layout = json.loads(Path(save_result.layout_path).read_text(encoding="utf-8"))
+    assert persisted_layout == {
+        "nodes": {
+            "cron-15m": {"x": 120.0, "y": 80.0},
+            "prompt-agent": {"x": 440.0, "y": 80.0},
+        }
+    }
+
+    reread = service.read_workflow_editor_document()
+    assert reread.config["edges"] == [{"source_id": "cron-15m", "target_id": "prompt-agent"}]
+    assert reread.layout == persisted_layout
+
+
+def test_workflow_editor_validation_rejects_unknown_layout_nodes(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+
+    with pytest.raises(ValueError, match="Workflow layout references unknown node IDs: missing-node"):
+        service.validate_workflow_editor_document(
+            config={
+                "runtime_dir": str(tmp_path / "runtime"),
+                "triggers": [
+                    {
+                        "id": "cron-15m",
+                        "display_name": "Every 15 minutes",
+                        "type": "trigger:cron",
+                        "expression": "*/15 * * * *",
+                    }
+                ],
+            },
+            layout={"nodes": {"missing-node": {"x": 1, "y": 2}}},
+        )
+
+
 def test_create_issue_vm_uses_directory_vm_defaults_overlay_for_guest_env(tmp_path: Path, monkeypatch) -> None:
     service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
     create_result = service.create_directory_child("root", "team")

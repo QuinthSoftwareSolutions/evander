@@ -12,3 +12,5 @@ config/host-heartbeat/config.json
 secrets.env
 secrets (Copy).env
 tasks/
+frontend/workflow-editor/node_modules/
+frontend/workflow-editor/tsconfig.tsbuildinfo

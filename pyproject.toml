@@ -37,6 +37,7 @@ agent-sandbox-discord-ingest = "agent_sandbox.discord_ingest_worker:main"
 agent-sandbox-issue-orchestrator = "agent_sandbox.issue_orchestrator:main"
 agent-sandbox-cli = "agent_sandbox.cli:app"
 agent-sandbox-admin = "agent_sandbox.admin_app:main"
+agent-sandbox-admin-web = "agent_sandbox.admin_web:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

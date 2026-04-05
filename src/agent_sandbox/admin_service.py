@@ -16,7 +16,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, TypeAdapter, ValidationError
+from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 import yaml
 
 from .agent_control import AgentControlStore
@@ -65,7 +65,7 @@ from .models import (
 )
 from .runtime import RuntimeContext, build_runtime
 from .storage import JsonStore
-from .events.models import EffectDefinitionDiscriminated, TriggerDefinitionDiscriminated
+from .events.models import EdgeDefinition, EffectDefinitionDiscriminated, GateDefinitionDiscriminated, TriggerDefinitionDiscriminated
 
 _WORKER_DEFINITIONS: tuple[tuple[str, str, str], ...] = (
     ("ado", "ADO Worker", "agent-sandbox-ado-worker.service"),
@@ -229,8 +229,43 @@ class EffectConfigMutationPayload(BaseModel):
     config: dict[str, object]
 
 
+class WorkflowEditorNodeLayout(BaseModel):
+    x: float
+    y: float
+
+
+class WorkflowEditorLayoutDocument(BaseModel):
+    nodes: dict[str, WorkflowEditorNodeLayout] = Field(default_factory=dict)
+
+
+class WorkflowEditorDocumentPayload(BaseModel):
+    worker_id: str = "trigger-orchestrator"
+    config_path: str
+    layout_path: str
+    config_exists: bool
+    layout_exists: bool
+    config: dict[str, object]
+    layout: dict[str, object]
+
+
+class WorkflowEditorValidationPayload(BaseModel):
+    worker_id: str = "trigger-orchestrator"
+    config: dict[str, object]
+    layout: dict[str, object]
+
+
+class WorkflowEditorSavePayload(BaseModel):
+    worker_id: str = "trigger-orchestrator"
+    config_path: str
+    layout_path: str
+    config: dict[str, object]
+    layout: dict[str, object]
+
+
 _TRIGGER_DEFINITION_ADAPTER = TypeAdapter(TriggerDefinitionDiscriminated)
+_GATE_DEFINITION_ADAPTER = TypeAdapter(GateDefinitionDiscriminated)
 _EFFECT_DEFINITION_ADAPTER = TypeAdapter(EffectDefinitionDiscriminated)
+_EDGE_DEFINITION_ADAPTER = TypeAdapter(EdgeDefinition)
 
 
 def _safe_validation_error(exc: ValidationError, *, context: str) -> ValueError:
@@ -3116,6 +3151,25 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
     def write_worker_global_config(self, worker_id: str, payload: dict[str, object]):
         return self._write_worker_global_config(worker_id, payload)
 
+    def read_workflow_editor_document(self) -> WorkflowEditorDocumentPayload:
+        return self._read_workflow_editor_document()
+
+    def validate_workflow_editor_document(
+        self,
+        *,
+        config: dict[str, object],
+        layout: dict[str, object] | None = None,
+    ) -> WorkflowEditorValidationPayload:
+        return self._validate_workflow_editor_document(config=config, layout=layout)
+
+    def save_workflow_editor_document(
+        self,
+        *,
+        config: dict[str, object],
+        layout: dict[str, object] | None = None,
+    ) -> WorkflowEditorSavePayload:
+        return self._save_workflow_editor_document(config=config, layout=layout)
+
     def upsert_trigger_config(self, trigger_id: str, payload: dict[str, object]) -> TriggerConfigMutationPayload:
         return self._upsert_trigger_config(trigger_id, payload)
 
@@ -3147,21 +3201,133 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
             model = _WORKER_GLOBAL_CONFIG_MODELS[worker_id]
             raw = model.model_validate(self.config.model_dump(mode="json")).model_dump(mode="json", exclude_none=True)
         model = _WORKER_GLOBAL_CONFIG_MODELS[worker_id]
-        config = model.model_validate(raw).model_dump(mode="json", exclude_none=True)
+        config = self._validate_worker_global_config_payload(worker_id, raw)
         return WorkerGlobalConfigPayload(worker_id=worker_id, path=str(path), exists=exists, config=config)
 
     def _write_worker_global_config(self, worker_id: str, payload: dict[str, object]) -> WorkerGlobalConfigWritePayload:
         path = self._worker_global_config_path(worker_id)
         if path is None:
             raise ValueError(f"Unknown worker: {worker_id}")
-        model = _WORKER_GLOBAL_CONFIG_MODELS[worker_id]
-        try:
-            config = model.model_validate(payload).model_dump(mode="json", exclude_none=True)
-        except ValidationError as exc:
-            raise _safe_validation_error(exc, context=f"Invalid {worker_id} worker config") from exc
+        config = self._validate_worker_global_config_payload(worker_id, payload)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(config, indent=2, sort_keys=True), encoding="utf-8")
         return WorkerGlobalConfigWritePayload(worker_id=worker_id, path=str(path), config=config)
+
+    def _validate_worker_global_config_payload(self, worker_id: str, payload: dict[str, object]) -> dict[str, object]:
+        model = _WORKER_GLOBAL_CONFIG_MODELS[worker_id]
+        try:
+            return model.model_validate(payload).model_dump(mode="json", exclude_none=True)
+        except ValidationError as exc:
+            raise _safe_validation_error(exc, context=f"Invalid {worker_id} worker config") from exc
+
+    def _workflow_editor_layout_path(self) -> Path:
+        return self.project_dir / "config" / "trigger-orchestrator" / "layout.json"
+
+    def _read_workflow_editor_document(self) -> WorkflowEditorDocumentPayload:
+        config_payload = self._read_worker_global_config("trigger-orchestrator")
+        layout_path = self._workflow_editor_layout_path()
+        layout_exists = layout_path.exists()
+        raw_layout: dict[str, object]
+        if layout_exists:
+            loaded_layout = json.loads(layout_path.read_text(encoding="utf-8"))
+            if not isinstance(loaded_layout, dict):
+                raise ValueError(f"workflow layout file {layout_path} must contain a JSON object")
+            raw_layout = loaded_layout
+        else:
+            raw_layout = {}
+        layout = self._validate_workflow_editor_layout(
+            raw_layout,
+            node_ids=self._collect_workflow_node_ids(config_payload.config),
+            allow_unknown_nodes=True,
+        )
+        return WorkflowEditorDocumentPayload(
+            config_path=config_payload.path,
+            layout_path=str(layout_path),
+            config_exists=config_payload.exists,
+            layout_exists=layout_exists,
+            config=config_payload.config,
+            layout=layout,
+        )
+
+    def _validate_workflow_editor_document(
+        self,
+        *,
+        config: dict[str, object],
+        layout: dict[str, object] | None = None,
+    ) -> WorkflowEditorValidationPayload:
+        normalized_config = self._validate_worker_global_config_payload("trigger-orchestrator", config)
+        normalized_layout = self._validate_workflow_editor_layout(
+            layout or {},
+            node_ids=self._collect_workflow_node_ids(normalized_config),
+        )
+        return WorkflowEditorValidationPayload(config=normalized_config, layout=normalized_layout)
+
+    def _save_workflow_editor_document(
+        self,
+        *,
+        config: dict[str, object],
+        layout: dict[str, object] | None = None,
+    ) -> WorkflowEditorSavePayload:
+        validation = self._validate_workflow_editor_document(config=config, layout=layout)
+        config_path = self._worker_global_config_path("trigger-orchestrator")
+        if config_path is None:
+            raise ValueError("Unknown worker: trigger-orchestrator")
+        layout_path = self._workflow_editor_layout_path()
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        layout_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(json.dumps(validation.config, indent=2, sort_keys=True), encoding="utf-8")
+        layout_path.write_text(json.dumps(validation.layout, indent=2, sort_keys=True), encoding="utf-8")
+        return WorkflowEditorSavePayload(
+            config_path=str(config_path),
+            layout_path=str(layout_path),
+            config=validation.config,
+            layout=validation.layout,
+        )
+
+    def _collect_workflow_node_ids(self, config: dict[str, object]) -> set[str]:
+        node_ids: set[str] = set()
+        for collection_name, adapter in (
+            ("triggers", _TRIGGER_DEFINITION_ADAPTER),
+            ("gates", _GATE_DEFINITION_ADAPTER),
+            ("effects", _EFFECT_DEFINITION_ADAPTER),
+        ):
+            entries = config.get(collection_name, [])
+            if not isinstance(entries, list):
+                continue
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                node = adapter.validate_python(entry)
+                node_ids.add(node.id)
+        return node_ids
+
+    def _validate_workflow_editor_layout(
+        self,
+        payload: dict[str, object],
+        *,
+        node_ids: set[str],
+        allow_unknown_nodes: bool = False,
+    ) -> dict[str, object]:
+        candidate = dict(payload)
+        if "nodes" not in candidate:
+            candidate = {"nodes": candidate.get("nodes", {}) if payload else {}}
+        try:
+            document = WorkflowEditorLayoutDocument.model_validate(candidate)
+        except ValidationError as exc:
+            raise _safe_validation_error(exc, context="Invalid workflow editor layout") from exc
+        normalized_nodes: dict[str, dict[str, float]] = {}
+        unknown_node_ids: list[str] = []
+        for node_id, position in document.nodes.items():
+            if node_id not in node_ids:
+                if allow_unknown_nodes:
+                    continue
+                unknown_node_ids.append(node_id)
+                continue
+            normalized_nodes[node_id] = {"x": position.x, "y": position.y}
+        if unknown_node_ids:
+            unknown_list = ", ".join(sorted(unknown_node_ids))
+            raise ValueError(f"Workflow layout references unknown node IDs: {unknown_list}")
+        return {"nodes": normalized_nodes}
 
     def _upsert_trigger_config(self, trigger_id: str, payload: dict[str, object]) -> TriggerConfigMutationPayload:
         normalized_trigger_id = str(trigger_id).strip()

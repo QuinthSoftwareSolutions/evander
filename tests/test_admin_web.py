@@ -1,0 +1,105 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+from starlette.testclient import TestClient
+
+from agent_sandbox.admin_service import AdminService
+from agent_sandbox.admin_web import create_app
+
+
+def write_config(tmp_path: Path) -> Path:
+    runtime_dir = tmp_path / "runtime"
+    config_path = tmp_path / "gateway.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                f'runtime_dir: "{runtime_dir}"',
+                f'audit_log_path: "{runtime_dir / "audit.jsonl"}"',
+                f'session_store_path: "{runtime_dir / "sessions.json"}"',
+                f'approval_store_path: "{runtime_dir / "approvals.json"}"',
+                f'draft_store_path: "{runtime_dir / "drafts.json"}"',
+                f'email_store_path: "{runtime_dir / "emails.json"}"',
+                f'discord_command_store_path: "{runtime_dir / "discord_commands.json"}"',
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return config_path
+
+
+def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
+    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+
+    response = client.get("/api/workflow-editor/document")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["worker_id"] == "trigger-orchestrator"
+    assert payload["config"]["triggers"] == []
+    assert payload["layout"] == {"nodes": {}}
+
+
+def test_admin_web_validates_and_saves_workflow_editor_document(tmp_path: Path) -> None:
+    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    payload = {
+        "config": {
+            "runtime_dir": str(tmp_path / "runtime"),
+            "triggers": [
+                {
+                    "id": "cron-15m",
+                    "display_name": "Every 15 minutes",
+                    "type": "trigger:cron",
+                    "expression": "*/15 * * * *",
+                }
+            ],
+            "effects": [
+                {
+                    "id": "prompt-agent",
+                    "display_name": "Prompt agent",
+                    "type": "effect:agent:prompt",
+                    "prompt": "Summarize",
+                }
+            ],
+            "edges": [{"source_id": "cron-15m", "target_id": "prompt-agent"}],
+        },
+        "layout": {
+            "nodes": {
+                "cron-15m": {"x": 100, "y": 50},
+                "prompt-agent": {"x": 300, "y": 50},
+            }
+        },
+    }
+
+    validate_response = client.post("/api/workflow-editor/validate", json=payload)
+    save_response = client.put("/api/workflow-editor/document", json=payload)
+
+    assert validate_response.status_code == 200
+    assert save_response.status_code == 200
+    assert save_response.json()["layout"]["nodes"]["prompt-agent"] == {"x": 300.0, "y": 50.0}
+    assert (tmp_path / "config" / "trigger-orchestrator" / "layout.json").exists()
+
+
+def test_admin_web_returns_400_for_invalid_workflow_editor_payload(tmp_path: Path) -> None:
+    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+
+    response = client.post(
+        "/api/workflow-editor/validate",
+        json={
+            "config": {
+                "runtime_dir": str(tmp_path / "runtime"),
+                "triggers": [
+                    {
+                        "id": "cron-15m",
+                        "display_name": "Every 15 minutes",
+                        "type": "trigger:cron",
+                        "expression": "*/15 * * * *",
+                    }
+                ],
+            },
+            "layout": {"nodes": {"missing-node": {"x": 1, "y": 2}}},
+        },
+    )
+
+    assert response.status_code == 400
+    assert "unknown node IDs" in response.json()["error"]
