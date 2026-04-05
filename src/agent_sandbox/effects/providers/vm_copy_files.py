@@ -29,8 +29,7 @@ class VmCopyFilesEffectProvider(EffectProviderBase):
             if not isinstance(result, Mapping):
                 raise RuntimeError("AdminService.vm_copy_files must return a mapping")
             normalized = dict(result)
-            normalized.setdefault("success", bool(normalized.get("succeeded", False)))
-            normalized.setdefault("succeeded", bool(normalized.get("success", False)))
+            normalized.setdefault("success", False)
             normalized.setdefault("action", "vm_copy_files")
             normalized.setdefault("target", target)
             normalized.setdefault("vm_user", vm_user)
@@ -86,7 +85,6 @@ class VmCopyFilesEffectProvider(EffectProviderBase):
         message = f"Copied {len(copied_paths)} file(s) to {vm_name}"
         return {
             "success": True,
-            "succeeded": True,
             "action": "vm_copy_files",
             "message": message,
             "target": target,

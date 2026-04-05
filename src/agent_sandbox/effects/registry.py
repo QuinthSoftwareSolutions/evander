@@ -13,6 +13,8 @@ from .providers.pr_create import PrCreateEffectProvider
 from .providers.vm_copy_files import VmCopyFilesEffectProvider
 from .providers.vm_create import VmCreateEffectProvider
 from .providers.vm_exec import VmExecEffectProvider
+from .providers.vm_start import VmStartEffectProvider
+from .providers.vm_stop import VmStopEffectProvider
 
 EffectProviderClass = type[EffectProviderBase]
 
@@ -23,6 +25,8 @@ class NoopEffectProvider(EffectProviderBase):
 
 DEFAULT_EFFECT_PROVIDER_REGISTRY: dict[EffectType, EffectProviderClass] = {
     "effect:vm:create": VmCreateEffectProvider,
+    "effect:vm:start": VmStartEffectProvider,
+    "effect:vm:stop": VmStopEffectProvider,
     "effect:agent:prompt": AgentPromptEffectProvider,
     "effect:vm:exec": VmExecEffectProvider,
     "effect:vm:copy-files": VmCopyFilesEffectProvider,

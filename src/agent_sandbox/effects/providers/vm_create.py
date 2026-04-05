@@ -70,7 +70,7 @@ class VmCreateEffectProvider(EffectProviderBase):
             "session_id": resolved_session_id,
             "vm_name": result.vm_name or vm_name,
             "labels": self._as_string_mapping(payload.get("labels")) or {},
-            "succeeded": bool(result.success),
+            "success": bool(result.success),
         }
 
     def _effect(self) -> VmCreateEffectDefinition:

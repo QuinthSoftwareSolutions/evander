@@ -256,7 +256,12 @@ Type-specific keys:
 | `type` | Required keys | Optional keys |
 |---|---|---|
 | `effect:vm:create` | _none beyond envelope_ | `vm_name`, `session_id`, `model`, `repo_source`, `vm_user`, `ttl_hours`, `discord_channels`, `email_mailboxes`, `email_folders`, `python`, `dotnet`, `nuget`, `mssql`, `mssql_init_root`, `playwright`, `directory_path`, `outputs` |
+| `effect:vm:start` | _none beyond envelope_ | `target`, `session_id`, `vm_name`, `outputs` |
+| `effect:vm:stop` | _none beyond envelope_ | `target`, `session_id`, `vm_name`, `timeout_seconds`, `outputs` |
 | `effect:agent:prompt` | `prompt` | `target`, `session_id`, `vm_name`, `vm_user`, `resume_thread_id`, `output_mode`, `outputs` |
+| `effect:vm:exec` | `command` | `target`, `session_id`, `vm_name`, `vm_user`, `working_directory`, `environment`, `stdin`, `timeout_seconds`, `check`, `outputs` |
+| `effect:vm:copy-files` | `files` | `target`, `session_id`, `vm_name`, `vm_user`, `outputs` |
+| `effect:pr:create` | `host_repo_path` | `local_branch`, `origin_branch`, `provider`, `base_branch`, `session_id`, `work_item_id`, `title`, `body`, `body_file`, `draft`, `fill`, `outputs` |
 
 Effect schema envelope example:
 

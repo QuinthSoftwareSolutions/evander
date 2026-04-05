@@ -38,7 +38,7 @@ class AgentPromptEffectProvider(EffectProviderBase):
             thread_id = self._normalize_optional_string(payload.get("session_id")) or target
         return {
             "thread_id": thread_id,
-            "succeeded": bool(result.success),
+            "success": bool(result.success),
             "output_mode": output_mode,
         }
 

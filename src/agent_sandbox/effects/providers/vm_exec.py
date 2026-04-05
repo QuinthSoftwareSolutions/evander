@@ -40,8 +40,7 @@ class VmExecEffectProvider(EffectProviderBase):
             payload = dict(result)
             payload.setdefault("vm_name", vm_name)
             payload.setdefault("action", "vm_exec")
-            payload.setdefault("success", bool(payload.get("succeeded", False)))
-            payload.setdefault("succeeded", bool(payload.get("success", False)))
+            payload.setdefault("success", False)
             payload.setdefault("stdout", "")
             payload.setdefault("stderr", "")
             payload.setdefault("exit_code", 0 if payload.get("success") else 1)
@@ -165,7 +164,6 @@ class VmExecEffectProvider(EffectProviderBase):
             raise RuntimeError(stderr.strip() or stdout.strip() or f"VM command failed with exit code {completed.returncode}")
         return {
             "success": success,
-            "succeeded": success,
             "vm_name": vm_name,
             "session_id": session_id,
             "action": "vm_exec",
