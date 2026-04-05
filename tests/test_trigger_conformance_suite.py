@@ -13,7 +13,7 @@ from pydantic import TypeAdapter
 from agent_sandbox.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
 from agent_sandbox.models import DiscordMessageEnvelope, EmailMessage, LocalIssueRecord, PrFeedbackItem
 from agent_sandbox.trigger_orchestrator import TriggerOrchestratorWorker
-from agent_sandbox.triggers.models import TriggerDefinitionDiscriminated
+from agent_sandbox.events.models import TriggerDefinitionDiscriminated
 from agent_sandbox.triggers.providers.base import TriggerRuntimeContext
 from agent_sandbox.triggers.providers.cron import CronTriggerProvider
 from agent_sandbox.triggers.providers.discord_new_message import DiscordNewMessageTriggerProvider
@@ -726,7 +726,7 @@ def test_conformance_orchestrator_integration_locking_jitter_and_idempotency(
 
     class _Provider:
         def poll(self):
-            from agent_sandbox.triggers.models import TriggerEvent
+            from agent_sandbox.events.models import TriggerEvent
 
             return [TriggerEvent.model_validate(event_payload)]
 

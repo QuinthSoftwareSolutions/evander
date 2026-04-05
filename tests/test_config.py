@@ -218,6 +218,15 @@ def test_trigger_orchestrator_worker_global_config_defaults_follow_runtime_dir()
         str(config.event_queue_cursor_store_path)
         == "/tmp/agent-sandbox-runtime/trigger-orchestrator-cursors.json"
     )
+    assert (
+        str(config.effect_execution_store_path)
+        == "/tmp/agent-sandbox-runtime/effect-orchestrator-executions.json"
+    )
+    assert (
+        str(config.effect_cursor_store_path)
+        == "/tmp/agent-sandbox-runtime/effect-orchestrator-cursors.json"
+    )
+    assert str(config.effect_lock_path) == "/tmp/agent-sandbox-runtime/effect-orchestrator.lock"
     assert config.triggers == []
 
 
@@ -238,6 +247,65 @@ def test_trigger_orchestrator_worker_global_config_accepts_discriminated_trigger
     assert config.triggers[0].type == "trigger:cron"
 
 
+
+
+def test_trigger_orchestrator_worker_global_config_accepts_effects() -> None:
+    config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "triggers": [
+                {
+                    "id": "cron-15m",
+                    "display_name": "Every 15 minutes",
+                    "type": "trigger:cron",
+                    "expression": "*/15 * * * *",
+                }
+            ],
+            "effects": [
+                {
+                    "id": "prompt-agent",
+                    "display_name": "Prompt agent",
+                    "type": "effect:agent:prompt",
+                    "upstream_id": "cron-15m",
+                    "prompt": "Summarize $(branch)",
+                }
+            ],
+        }
+    )
+
+    assert config.effects[0].type == "effect:agent:prompt"
+
+
+def test_trigger_orchestrator_worker_global_config_rejects_duplicate_ids_across_graph() -> None:
+    with pytest.raises(ValueError, match="Trigger and effect IDs must be globally unique: node-1"):
+        TriggerOrchestratorWorkerGlobalConfig.model_validate(
+            {
+                "triggers": [
+                    {
+                        "id": "node-1",
+                        "display_name": "Every 15 minutes",
+                        "type": "trigger:cron",
+                        "expression": "*/15 * * * *",
+                    },
+                    {
+                        "id": "trigger-2",
+                        "display_name": "Every 30 minutes",
+                        "type": "trigger:cron",
+                        "expression": "*/30 * * * *",
+                    },
+                ],
+                "effects": [
+                    {
+                        "id": "node-1",
+                        "display_name": "Prompt agent",
+                        "type": "effect:agent:prompt",
+                        "upstream_id": "trigger-2",
+                        "prompt": "Summarize",
+                    }
+                ],
+            }
+        )
+
+
 def test_trigger_orchestrator_worker_global_config_rejects_duplicate_trigger_ids() -> None:
     with pytest.raises(ValueError, match="Duplicate trigger IDs are not allowed"):
         TriggerOrchestratorWorkerGlobalConfig.model_validate(
@@ -256,5 +324,62 @@ def test_trigger_orchestrator_worker_global_config_rejects_duplicate_trigger_ids
                         "expression": "*/30 * * * *",
                     },
                 ]
+            }
+        )
+
+
+def test_trigger_orchestrator_worker_global_config_rejects_duplicate_effect_ids() -> None:
+    with pytest.raises(ValueError, match="Duplicate effect IDs are not allowed"):
+        TriggerOrchestratorWorkerGlobalConfig.model_validate(
+            {
+                "triggers": [
+                    {
+                        "id": "trigger-1",
+                        "display_name": "Every 15 minutes",
+                        "type": "trigger:cron",
+                        "expression": "*/15 * * * *",
+                    }
+                ],
+                "effects": [
+                    {
+                        "id": "effect-dup",
+                        "display_name": "Prompt agent",
+                        "type": "effect:agent:prompt",
+                        "upstream_id": "trigger-1",
+                        "prompt": "Summarize",
+                    },
+                    {
+                        "id": "effect-dup",
+                        "display_name": "Prompt agent again",
+                        "type": "effect:agent:prompt",
+                        "upstream_id": "trigger-1",
+                        "prompt": "Summarize",
+                    },
+                ],
+            }
+        )
+
+
+def test_trigger_orchestrator_worker_global_config_rejects_unknown_effect_upstream_id() -> None:
+    with pytest.raises(ValueError, match="Effect upstream IDs must reference existing trigger/effect IDs: missing-id"):
+        TriggerOrchestratorWorkerGlobalConfig.model_validate(
+            {
+                "triggers": [
+                    {
+                        "id": "trigger-1",
+                        "display_name": "Every 15 minutes",
+                        "type": "trigger:cron",
+                        "expression": "*/15 * * * *",
+                    }
+                ],
+                "effects": [
+                    {
+                        "id": "effect-1",
+                        "display_name": "Prompt agent",
+                        "type": "effect:agent:prompt",
+                        "upstream_id": "missing-id",
+                        "prompt": "Summarize",
+                    }
+                ],
             }
         )

@@ -4,7 +4,7 @@ import os
 from collections.abc import Callable, Mapping
 
 from agent_sandbox.provider_config import ProviderConfigResolver
-from agent_sandbox.triggers.models import TriggerDefinitionDiscriminated, TriggerType
+from agent_sandbox.events.models import TriggerDefinitionDiscriminated, TriggerType
 from agent_sandbox.triggers.providers.base import TriggerProviderBase, TriggerRuntimeContext
 from agent_sandbox.triggers.providers.cron import CronTriggerProvider
 from agent_sandbox.triggers.providers.discord_new_message import DiscordNewMessageTriggerProvider

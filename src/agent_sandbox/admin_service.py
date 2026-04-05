@@ -63,7 +63,7 @@ from .models import (
 )
 from .runtime import RuntimeContext, build_runtime
 from .storage import JsonStore
-from .triggers.models import TriggerDefinitionDiscriminated
+from .events.models import EffectDefinitionDiscriminated, TriggerDefinitionDiscriminated
 
 _WORKER_DEFINITIONS: tuple[tuple[str, str, str], ...] = (
     ("ado", "ADO Worker", "agent-sandbox-ado-worker.service"),
@@ -219,7 +219,16 @@ class TriggerConfigMutationPayload(BaseModel):
     config: dict[str, object]
 
 
+class EffectConfigMutationPayload(BaseModel):
+    worker_id: str = "trigger-orchestrator"
+    effect_id: str
+    operation: str
+    path: str
+    config: dict[str, object]
+
+
 _TRIGGER_DEFINITION_ADAPTER = TypeAdapter(TriggerDefinitionDiscriminated)
+_EFFECT_DEFINITION_ADAPTER = TypeAdapter(EffectDefinitionDiscriminated)
 
 
 def _safe_validation_error(exc: ValidationError, *, context: str) -> ValueError:
@@ -2776,6 +2785,12 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
     def delete_trigger_config(self, trigger_id: str) -> TriggerConfigMutationPayload:
         return self._delete_trigger_config(trigger_id)
 
+    def upsert_effect_config(self, effect_id: str, payload: dict[str, object]) -> EffectConfigMutationPayload:
+        return self._upsert_effect_config(effect_id, payload)
+
+    def delete_effect_config(self, effect_id: str) -> EffectConfigMutationPayload:
+        return self._delete_effect_config(effect_id)
+
     def _worker_global_config_path(self, worker_id: str) -> Path | None:
         relative = _WORKER_GLOBAL_CONFIG_PATHS.get(worker_id)
         if relative is None:
@@ -2793,9 +2808,9 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
                 raise ValueError(f"worker config file {path} must contain a JSON object")
         else:
             model = _WORKER_GLOBAL_CONFIG_MODELS[worker_id]
-            raw = model.model_validate(self.config.model_dump(mode="json")).model_dump(mode="json")
+            raw = model.model_validate(self.config.model_dump(mode="json")).model_dump(mode="json", exclude_none=True)
         model = _WORKER_GLOBAL_CONFIG_MODELS[worker_id]
-        config = model.model_validate(raw).model_dump(mode="json")
+        config = model.model_validate(raw).model_dump(mode="json", exclude_none=True)
         return WorkerGlobalConfigPayload(worker_id=worker_id, path=str(path), exists=exists, config=config)
 
     def _write_worker_global_config(self, worker_id: str, payload: dict[str, object]) -> WorkerGlobalConfigWritePayload:
@@ -2804,7 +2819,7 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
             raise ValueError(f"Unknown worker: {worker_id}")
         model = _WORKER_GLOBAL_CONFIG_MODELS[worker_id]
         try:
-            config = model.model_validate(payload).model_dump(mode="json")
+            config = model.model_validate(payload).model_dump(mode="json", exclude_none=True)
         except ValidationError as exc:
             raise _safe_validation_error(exc, context=f"Invalid {worker_id} worker config") from exc
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -2824,7 +2839,7 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
             validated_trigger = _TRIGGER_DEFINITION_ADAPTER.validate_python(normalized_payload)
         except ValidationError as exc:
             raise _safe_validation_error(exc, context="Invalid trigger config") from exc
-        normalized_payload = validated_trigger.model_dump(mode="json")
+        normalized_payload = validated_trigger.model_dump(mode="json", exclude_none=True)
 
         current = self._read_worker_global_config("trigger-orchestrator")
         config = dict(current.config)
@@ -2875,6 +2890,75 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
         write_result = self._write_worker_global_config("trigger-orchestrator", config)
         return TriggerConfigMutationPayload(
             trigger_id=normalized_trigger_id,
+            operation="deleted",
+            path=write_result.path,
+            config=write_result.config,
+        )
+
+    def _upsert_effect_config(self, effect_id: str, payload: dict[str, object]) -> EffectConfigMutationPayload:
+        normalized_effect_id = str(effect_id).strip()
+        if not normalized_effect_id:
+            raise ValueError("effect_id is required")
+        normalized_payload = dict(payload)
+        payload_effect_id = str(normalized_payload.get("id", "")).strip()
+        if payload_effect_id and payload_effect_id != normalized_effect_id:
+            raise ValueError("effect_id must match payload.id when payload.id is provided")
+        normalized_payload["id"] = normalized_effect_id
+        try:
+            validated_effect = _EFFECT_DEFINITION_ADAPTER.validate_python(normalized_payload)
+        except ValidationError as exc:
+            raise _safe_validation_error(exc, context="Invalid effect config") from exc
+        normalized_payload = validated_effect.model_dump(mode="json", exclude_none=True)
+
+        current = self._read_worker_global_config("trigger-orchestrator")
+        config = dict(current.config)
+        existing_effects_raw = config.get("effects", [])
+        if not isinstance(existing_effects_raw, list):
+            raise ValueError("Invalid trigger-orchestrator config: effects must be a JSON array.")
+        existing_effects = [entry for entry in existing_effects_raw if isinstance(entry, dict)]
+        replacing = False
+        for index, existing in enumerate(existing_effects):
+            existing_id = str(existing.get("id", "")).strip()
+            if existing_id == normalized_effect_id:
+                existing_effects[index] = normalized_payload
+                replacing = True
+                break
+        if not replacing:
+            existing_effects.append(normalized_payload)
+        config["effects"] = existing_effects
+        write_result = self._write_worker_global_config("trigger-orchestrator", config)
+        return EffectConfigMutationPayload(
+            effect_id=normalized_effect_id,
+            operation="updated" if replacing else "added",
+            path=write_result.path,
+            config=write_result.config,
+        )
+
+    def _delete_effect_config(self, effect_id: str) -> EffectConfigMutationPayload:
+        normalized_effect_id = str(effect_id).strip()
+        if not normalized_effect_id:
+            raise ValueError("effect_id is required")
+        current = self._read_worker_global_config("trigger-orchestrator")
+        config = dict(current.config)
+        effects_raw = config.get("effects", [])
+        if not isinstance(effects_raw, list):
+            raise ValueError("Invalid trigger-orchestrator config: effects must be a JSON array.")
+        filtered = []
+        removed = False
+        for entry in effects_raw:
+            if not isinstance(entry, dict):
+                continue
+            entry_id = str(entry.get("id", "")).strip()
+            if entry_id == normalized_effect_id:
+                removed = True
+                continue
+            filtered.append(entry)
+        if not removed:
+            raise ValueError(f"Effect not found: {normalized_effect_id}")
+        config["effects"] = filtered
+        write_result = self._write_worker_global_config("trigger-orchestrator", config)
+        return EffectConfigMutationPayload(
+            effect_id=normalized_effect_id,
             operation="deleted",
             path=write_result.path,
             config=write_result.config,

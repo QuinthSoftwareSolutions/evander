@@ -13,7 +13,7 @@ from typing import Any
 from .config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
 from .provider_config import ProviderConfigResolver
 from .runtime import RuntimeContext, build_runtime
-from .triggers.models import TriggerDefinitionDiscriminated
+from .events.models import TriggerDefinitionDiscriminated
 from .triggers.queue import TriggerEventQueue
 from .triggers.registry import TriggerProviderFactory
 from .host_heartbeat_worker import _single_instance_lock

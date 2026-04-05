@@ -1,0 +1,105 @@
+from __future__ import annotations
+
+from collections.abc import Mapping
+from typing import Any
+
+from agent_sandbox.events.models import VmCreateEffectDefinition
+
+from .base import EffectProviderBase
+
+
+class VmCreateEffectProvider(EffectProviderBase):
+    def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        effect = self._effect()
+        context = self._context()
+
+        payload = {
+            "vm_name": effect.vm_name,
+            "session_id": effect.session_id,
+            "model": effect.model,
+            "repo_source": effect.repo_source,
+            "vm_user": effect.vm_user,
+            "ttl_hours": effect.ttl_hours,
+            "discord_channels": effect.discord_channels,
+            "email_mailboxes": effect.email_mailboxes,
+            "email_folders": effect.email_folders,
+            "python": effect.python,
+            "dotnet": effect.dotnet,
+            "nuget": effect.nuget,
+            "mssql": effect.mssql,
+            "mssql_init_root": effect.mssql_init_root,
+            "playwright": effect.playwright,
+            "directory_path": effect.directory_path,
+        }
+        if resolved_config:
+            payload.update(dict(resolved_config))
+
+        vm_name = str(payload.get("vm_name") or "").strip()
+        if not vm_name:
+            raise ValueError("effect:vm:create requires vm_name")
+
+        session_id = self._normalize_optional_string(payload.get("session_id"))
+        vm_user = self._normalize_optional_string(payload.get("vm_user")) or "agent"
+        directory_path = self._normalize_optional_string(payload.get("directory_path")) or str(
+            context.metadata.get("directory_path") or "root"
+        )
+
+        result = context.admin_service.create_vm(
+            vm_name=vm_name,
+            session_id=session_id,
+            model=self._normalize_optional_string(payload.get("model")),
+            repo_source=self._normalize_optional_string(payload.get("repo_source")),
+            vm_user=vm_user,
+            ttl_hours=self._as_int_or_none(payload.get("ttl_hours")),
+            discord_channels=self._as_string_list(payload.get("discord_channels")),
+            email_mailboxes=self._as_string_list(payload.get("email_mailboxes")),
+            email_folders=self._as_string_list(payload.get("email_folders")),
+            python=bool(payload.get("python", False)),
+            dotnet=bool(payload.get("dotnet", False)),
+            nuget=bool(payload.get("nuget", False)),
+            mssql=bool(payload.get("mssql", False)),
+            mssql_init_root=self._normalize_optional_string(payload.get("mssql_init_root")),
+            playwright=bool(payload.get("playwright", False)),
+            directory_path=directory_path,
+        )
+
+        resolved_session_id = session_id or f"session-{vm_name}"
+        return {
+            "session_id": resolved_session_id,
+            "vm_name": result.vm_name or vm_name,
+            "succeeded": bool(result.success),
+        }
+
+    def _effect(self) -> VmCreateEffectDefinition:
+        if not isinstance(self.effect_definition, VmCreateEffectDefinition):
+            raise RuntimeError("VmCreateEffectProvider initialized with a non-vm-create effect definition")
+        return self.effect_definition
+
+    def _context(self):
+        if self.runtime_context is None:
+            raise RuntimeError("VmCreateEffectProvider has no runtime context")
+        return self.runtime_context
+
+    @staticmethod
+    def _normalize_optional_string(value: Any) -> str | None:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+    @staticmethod
+    def _as_int_or_none(value: Any) -> int | None:
+        if value is None or value == "":
+            return None
+        return int(value)
+
+    @staticmethod
+    def _as_string_list(value: Any) -> list[str] | None:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            value = [value]
+        if not isinstance(value, (list, tuple)):
+            return None
+        normalized = [str(item).strip() for item in value if str(item).strip()]
+        return normalized or None

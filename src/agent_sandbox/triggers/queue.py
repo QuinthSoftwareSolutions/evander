@@ -8,7 +8,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from agent_sandbox.storage import JsonStore
-from agent_sandbox.triggers.models import TriggerEvent, TriggerType
+from agent_sandbox.events.models import TriggerEvent, TriggerType
 
 DeliveryState = Literal["pending", "delivered"]
 

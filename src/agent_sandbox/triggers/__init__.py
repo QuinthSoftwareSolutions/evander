@@ -1,4 +1,5 @@
-from .models import TriggerDefinitionDiscriminated, TriggerEvent
+from agent_sandbox.events.models import TriggerDefinitionDiscriminated, TriggerEvent
+
 from .queue import TriggerEventQueue, TriggerQueueRecord
 
 __all__ = [

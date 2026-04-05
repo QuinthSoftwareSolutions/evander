@@ -19,7 +19,7 @@ from pydantic import (
 )
 
 from .models import DirectoryPath
-from .triggers.models import TriggerDefinitionDiscriminated
+from .events.models import EffectDefinitionDiscriminated, TriggerDefinitionDiscriminated
 
 _HTTP_URL_ADAPTER = TypeAdapter(AnyHttpUrl)
 
@@ -436,15 +436,45 @@ class TriggerOrchestratorWorkerGlobalConfig(BaseModel):
     lock_path: Path | None = None
     event_queue_store_path: Path | None = None
     event_queue_cursor_store_path: Path | None = None
+    effect_execution_store_path: Path | None = None
+    effect_cursor_store_path: Path | None = None
+    effect_lock_path: Path | None = None
     triggers: list[TriggerDefinitionDiscriminated] = Field(default_factory=list)
+    effects: list[EffectDefinitionDiscriminated] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_unique_trigger_ids(self) -> TriggerOrchestratorWorkerGlobalConfig:
-        trigger_ids = [trigger.id for trigger in self.triggers]
-        duplicates = sorted(trigger_id for trigger_id, count in Counter(trigger_ids).items() if count > 1)
+        duplicates = sorted(node_id for node_id, count in Counter(trigger.id for trigger in self.triggers).items() if count > 1)
         if duplicates:
             duplicate_list = ", ".join(duplicates)
             raise ValueError(f"Duplicate trigger IDs are not allowed: {duplicate_list}")
+        return self
+
+    @model_validator(mode="after")
+    def validate_unique_effect_ids(self) -> TriggerOrchestratorWorkerGlobalConfig:
+        duplicates = sorted(node_id for node_id, count in Counter(effect.id for effect in self.effects).items() if count > 1)
+        if duplicates:
+            duplicate_list = ", ".join(duplicates)
+            raise ValueError(f"Duplicate effect IDs are not allowed: {duplicate_list}")
+        return self
+
+    @model_validator(mode="after")
+    def validate_unique_graph_node_ids(self) -> TriggerOrchestratorWorkerGlobalConfig:
+        trigger_ids = {trigger.id for trigger in self.triggers}
+        effect_ids = {effect.id for effect in self.effects}
+        duplicates = sorted(trigger_ids & effect_ids)
+        if duplicates:
+            duplicate_list = ", ".join(duplicates)
+            raise ValueError(f"Trigger and effect IDs must be globally unique: {duplicate_list}")
+        return self
+
+    @model_validator(mode="after")
+    def validate_effect_upstream_references(self) -> TriggerOrchestratorWorkerGlobalConfig:
+        known_ids = {trigger.id for trigger in self.triggers} | {effect.id for effect in self.effects}
+        missing = sorted({effect.upstream_id for effect in self.effects if effect.upstream_id not in known_ids})
+        if missing:
+            missing_list = ", ".join(missing)
+            raise ValueError(f"Effect upstream IDs must reference existing trigger/effect IDs: {missing_list}")
         return self
 
     @model_validator(mode="after")
@@ -455,6 +485,12 @@ class TriggerOrchestratorWorkerGlobalConfig(BaseModel):
             self.event_queue_store_path = self.runtime_dir / "trigger-orchestrator-events.json"
         if self.event_queue_cursor_store_path is None:
             self.event_queue_cursor_store_path = self.runtime_dir / "trigger-orchestrator-cursors.json"
+        if self.effect_execution_store_path is None:
+            self.effect_execution_store_path = self.runtime_dir / "effect-orchestrator-executions.json"
+        if self.effect_cursor_store_path is None:
+            self.effect_cursor_store_path = self.runtime_dir / "effect-orchestrator-cursors.json"
+        if self.effect_lock_path is None:
+            self.effect_lock_path = self.runtime_dir / "effect-orchestrator.lock"
         return self
 
 

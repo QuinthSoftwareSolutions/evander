@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 
 from agent_sandbox.models import LocalIssueRecord
 from agent_sandbox.storage import JsonStore
-from agent_sandbox.triggers.models import TicketCreatedTriggerDefinition, TriggerEvent
+from agent_sandbox.events.models import TicketCreatedTriggerDefinition, TriggerEvent
 from agent_sandbox.triggers.providers._cursor_state import TriggerCursorStore
 from agent_sandbox.triggers.providers.base import TriggerProviderBase
 

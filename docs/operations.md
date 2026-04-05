@@ -51,6 +51,35 @@ Before debugging individual scripts or services, run the consolidated host statu
 The status output reports config load status, runtime store path permissions, key systemd unit states,
 gateway/relay endpoint reachability, and active/expired session summary.
 
+## Trigger/Effect Runtime Files and Troubleshooting
+
+The trigger/effect orchestrators share runtime state under `runtime/` (or your configured
+`runtime_dir`):
+
+- `trigger-orchestrator-events.json`: durable queue of trigger and effect-completion events.
+- `trigger-orchestrator-cursors.json`: trigger-worker cursors/checkpoints.
+- `effect-orchestrator-executions.json`: effect execution log (status, idempotency key, resolved config, outputs, errors).
+- `effect-orchestrator-cursors.json`: effect-worker cursor/checkpoint data.
+- `trigger-orchestrator.lock` / `effect-orchestrator.lock`: single-instance lock files.
+
+Troubleshooting checklist:
+
+1. **No effects running**
+   - Confirm `effects` entries exist and each `upstream_id` references an existing trigger/effect id.
+   - Confirm pending source events exist in `trigger-orchestrator-events.json`.
+2. **Bindings fail with missing output references**
+   - Check upstream node `outputs` declarations and the actual upstream payload keys.
+   - Exact `$(name)` and embedded `"...$(name)..."` both require the referenced key to exist.
+3. **Unexpected duplicate behavior**
+   - Check idempotency collisions in `effect-orchestrator-executions.json` using
+     `idempotency_key=<event_id>::<effect_id>`.
+4. **Downstream chain never starts**
+   - Check upstream execution record status; `failed`/`skipped` records do not publish completion
+     events for further chaining.
+5. **Cycle-like configs**
+   - Direct cycles are marked `skipped` with `error: cycle_detected`; break the loop by changing
+     `upstream_id` relationships.
+
 ## Desktop Operator Console
 
 For a host-local desktop GUI on Ubuntu, install the optional desktop extra:

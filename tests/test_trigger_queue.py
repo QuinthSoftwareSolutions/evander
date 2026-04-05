@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 import json
 
-from agent_sandbox.triggers.models import TriggerEvent
+from agent_sandbox.events.models import TriggerEvent
 from agent_sandbox.triggers.queue import TriggerEventQueue
 
 

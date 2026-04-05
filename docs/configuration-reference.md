@@ -146,6 +146,10 @@ trigger inheritance model is introduced.
 | `event_queue_store_path` | `config/trigger-orchestrator/config.json` | Trigger orchestrator persisted event queue store path. |
 | `event_queue_cursor_store_path` | `config/trigger-orchestrator/config.json` | Trigger orchestrator event queue cursor/checkpoint store path. |
 | `triggers` | `config/trigger-orchestrator/config.json` | Trigger orchestrator trigger definition list (`src/agent_sandbox/triggers/models.py`). |
+| `effect_execution_store_path` | `config/trigger-orchestrator/config.json` | Effect orchestrator execution log path (idempotency keys, resolved config snapshots, outputs, failures). |
+| `effect_cursor_store_path` | `config/trigger-orchestrator/config.json` | Effect orchestrator cursor/checkpoint path. |
+| `effect_lock_path` | `config/trigger-orchestrator/config.json` | Effect orchestrator single-instance lock file path. |
+| `effects` | `config/trigger-orchestrator/config.json` | Effect definition list (`src/agent_sandbox/events/models.py`). |
 
 ### Trigger definition schema keys
 
@@ -197,6 +201,67 @@ Example:
       "display_name": "Repo push",
       "type": "trigger:git:push",
       "path_to_repo": "/var/lib/git/my-repo.git"
+    }
+  ]
+}
+```
+
+### Effect definition schema keys
+
+Each effect entry requires the shared envelope keys:
+
+- `id` (string, required, unique across all effects)
+- `display_name` (string, required)
+- `type` (required discriminator)
+- `upstream_id` (string, required; must reference an existing trigger/effect id and cannot self-reference)
+
+Type-specific keys:
+
+| `type` | Required keys | Optional keys |
+|---|---|---|
+| `effect:vm:create` | _none beyond envelope_ | `vm_name`, `session_id`, `model`, `repo_source`, `vm_user`, `ttl_hours`, `discord_channels`, `email_mailboxes`, `email_folders`, `python`, `dotnet`, `nuget`, `mssql`, `mssql_init_root`, `playwright`, `directory_path`, `outputs` |
+| `effect:agent:prompt` | `prompt` | `target`, `session_id`, `vm_name`, `vm_user`, `resume_thread_id`, `output_mode`, `outputs` |
+
+Effect schema envelope example:
+
+```json
+{
+  "id": "effect-provision",
+  "display_name": "Provision VM for ticket",
+  "type": "effect:vm:create",
+  "upstream_id": "ticket-created",
+  "vm_name": "issue-$(ticket_number)",
+  "outputs": {
+    "session_id": { "type": "string" }
+  }
+}
+```
+
+### Binding/interpolation examples (`$(output_name)`)
+
+- Exact output reference (type-preserving): `"session_id": "$(session_id)"`
+- Embedded string interpolation (stringified): `"prompt": "Continue $(ticket_number) in $(session_id)"`
+
+```json
+{
+  "effects": [
+    {
+      "id": "effect-provision",
+      "display_name": "Create VM",
+      "type": "effect:vm:create",
+      "upstream_id": "ticket-created",
+      "vm_name": "issue-$(ticket_number)",
+      "outputs": {
+        "session_id": { "type": "string" }
+      }
+    },
+    {
+      "id": "effect-resume",
+      "display_name": "Resume agent",
+      "type": "effect:agent:prompt",
+      "upstream_id": "effect-provision",
+      "session_id": "$(session_id)",
+      "prompt": "Continue ticket $(ticket_number) in session $(session_id)"
     }
   ]
 }
