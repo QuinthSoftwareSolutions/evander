@@ -68,6 +68,10 @@ class _Factory:
         return _OutputProvider(self.outputs_by_effect_id.get(effect.id, {}))
 
 
+def _edge(source_id: str, target_id: str) -> dict[str, str]:
+    return {"source_id": source_id, "target_id": target_id}
+
+
 def test_effect_schema_validation_accepts_supported_types(report_collector: dict[str, Any]) -> None:
     adapter = _effect_adapter()
     vm = adapter.validate_python(
@@ -75,7 +79,6 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
             "id": "effect-vm",
             "display_name": "Create VM",
             "type": "effect:vm:create",
-            "upstream_id": "trigger-1",
             "vm_name": "issue-$(ticket_number)",
         }
     )
@@ -84,7 +87,6 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
             "id": "effect-prompt",
             "display_name": "Prompt",
             "type": "effect:agent:prompt",
-            "upstream_id": "effect-vm",
             "prompt": "Continue $(session_id)",
         }
     )
@@ -104,22 +106,12 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
 
 def test_effect_schema_validation_rejects_missing_required_fields(report_collector: dict[str, Any]) -> None:
     adapter = _effect_adapter()
-    with pytest.raises(ValueError, match="upstream_id"):
-        adapter.validate_python(
-            {
-                "id": "effect-missing-upstream",
-                "display_name": "Missing",
-                "type": "effect:vm:create",
-            }
-        )
-
     with pytest.raises(ValueError, match="prompt"):
         adapter.validate_python(
             {
                 "id": "effect-missing-prompt",
                 "display_name": "Missing prompt",
                 "type": "effect:agent:prompt",
-                "upstream_id": "trigger-1",
             }
         )
 
@@ -128,7 +120,7 @@ def test_effect_schema_validation_rejects_missing_required_fields(report_collect
         requirement_id="schema:required-fields",
         status="pass",
         coverage=["schema validation coverage"],
-        details="Missing upstream_id and prompt emit explicit validation failures.",
+        details="Missing prompt emits an explicit validation failure.",
     )
 
 
@@ -142,7 +134,6 @@ def test_effect_provider_registration_and_factory_build(tmp_path: Path, report_c
             "id": "effect-provider",
             "display_name": "Provider",
             "type": "effect:agent:prompt",
-            "upstream_id": "trigger-1",
             "prompt": "hello",
         }
     )
@@ -190,7 +181,6 @@ def test_effect_binding_resolution_and_chained_output_propagation(tmp_path: Path
                     "id": "effect-1",
                     "display_name": "Provision",
                     "type": "effect:vm:create",
-                    "upstream_id": "trigger-1",
                     "vm_name": "vm-$(ticket_number)",
                     "outputs": {"session_id": {"type": "string"}},
                 },
@@ -198,10 +188,13 @@ def test_effect_binding_resolution_and_chained_output_propagation(tmp_path: Path
                     "id": "effect-2",
                     "display_name": "Prompt",
                     "type": "effect:agent:prompt",
-                    "upstream_id": "effect-1",
                     "session_id": "$(session_id)",
                     "prompt": "Resume session $(session_id)",
                 },
+            ],
+            "edges": [
+                _edge("trigger-1", "effect-1"),
+                _edge("effect-1", "effect-2"),
             ],
         }
     )
@@ -267,22 +260,12 @@ def test_effect_queue_and_execution_idempotency(tmp_path: Path, report_collector
             "poll_interval_seconds": 1,
             "jitter_seconds": 0,
             "triggers": [
-                {
-                    "id": "trigger-1",
-                    "display_name": "Tick",
-                    "type": "trigger:cron",
-                    "expression": "* * * * *",
-                }
+                {"id": "trigger-1", "display_name": "Tick", "type": "trigger:cron", "expression": "* * * * *"}
             ],
             "effects": [
-                {
-                    "id": "effect-1",
-                    "display_name": "Once",
-                    "type": "effect:agent:prompt",
-                    "upstream_id": "trigger-1",
-                    "prompt": "go",
-                }
+                {"id": "effect-1", "display_name": "Once", "type": "effect:agent:prompt", "prompt": "go"}
             ],
+            "edges": [_edge("trigger-1", "effect-1")],
         }
     )
     worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
@@ -291,7 +274,6 @@ def test_effect_queue_and_execution_idempotency(tmp_path: Path, report_collector
 
     for _ in range(4):
         worker.run_once()
-    # Duplicate same event/effect idempotency key should not re-dispatch.
     worker.event_queue.publish(event)
     for _ in range(4):
         worker.run_once()
@@ -334,10 +316,10 @@ def test_effect_regression_missing_upstream_output_reference_records_failed_exec
                         "id": "effect-1",
                         "display_name": "Bad binding",
                         "type": "effect:agent:prompt",
-                        "upstream_id": "trigger-1",
                         "prompt": "missing $(session_id)",
                     }
                 ],
+                "edges": [_edge("trigger-1", "effect-1")],
             }
         ),
         runtime=None,  # type: ignore[arg-type]
@@ -382,22 +364,12 @@ def test_effect_regression_provider_execution_failure_records_failed_status(
                 "poll_interval_seconds": 1,
                 "jitter_seconds": 0,
                 "triggers": [
-                    {
-                        "id": "trigger-1",
-                        "display_name": "Tick",
-                        "type": "trigger:cron",
-                        "expression": "* * * * *",
-                    }
+                    {"id": "trigger-1", "display_name": "Tick", "type": "trigger:cron", "expression": "* * * * *"}
                 ],
                 "effects": [
-                    {
-                        "id": "effect-1",
-                        "display_name": "Fail",
-                        "type": "effect:agent:prompt",
-                        "upstream_id": "trigger-1",
-                        "prompt": "boom",
-                    }
+                    {"id": "effect-1", "display_name": "Fail", "type": "effect:agent:prompt", "prompt": "boom"}
                 ],
+                "edges": [_edge("trigger-1", "effect-1")],
             }
         ),
         runtime=None,  # type: ignore[arg-type]
@@ -440,21 +412,10 @@ def test_effect_regression_cycle_detection_skips_execution(tmp_path: Path, repor
                 "poll_interval_seconds": 1,
                 "jitter_seconds": 0,
                 "effects": [
-                    {
-                        "id": "effect-a",
-                        "display_name": "A",
-                        "type": "effect:agent:prompt",
-                        "upstream_id": "effect-b",
-                        "prompt": "A",
-                    },
-                    {
-                        "id": "effect-b",
-                        "display_name": "B",
-                        "type": "effect:agent:prompt",
-                        "upstream_id": "effect-a",
-                        "prompt": "B",
-                    },
+                    {"id": "effect-a", "display_name": "A", "type": "effect:agent:prompt", "prompt": "A"},
+                    {"id": "effect-b", "display_name": "B", "type": "effect:agent:prompt", "prompt": "B"},
                 ],
+                "edges": [_edge("effect-b", "effect-a"), _edge("effect-a", "effect-b")],
             }
         ),
         runtime=None,  # type: ignore[arg-type]
@@ -464,7 +425,7 @@ def test_effect_regression_cycle_detection_skips_execution(tmp_path: Path, repor
         TriggerEvent(
             event_id="event-cycle",
             trigger_id="effect-a",
-            trigger_type="trigger:cron",
+            trigger_type="effect:agent:prompt",
             occurred_at=datetime(2026, 4, 4, 12, 0, tzinfo=timezone.utc),
             payload={},
         )
@@ -475,7 +436,7 @@ def test_effect_regression_cycle_detection_skips_execution(tmp_path: Path, repor
     payload = json.loads((runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8"))
     record = next(iter(payload.values()))
     assert record["status"] == "skipped"
-    assert record["error"].startswith("max_depth_exceeded:")
+    assert record["error"] == "cycle_detected"
 
     _record_result(
         report_collector,

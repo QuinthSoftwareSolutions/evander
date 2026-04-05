@@ -48,7 +48,6 @@ def test_factory_initializes_provider_with_runtime_context() -> None:
         id="effect-1",
         display_name="Prompt",
         type="effect:agent:prompt",
-        upstream_id="trigger-1",
         prompt="hello",
         session_id="session-1",
     )
@@ -76,7 +75,6 @@ def test_vm_create_provider_returns_required_outputs() -> None:
         id="effect-vm",
         display_name="Create VM",
         type="effect:vm:create",
-        upstream_id="trigger-1",
         vm_name="lab-vm",
         dotnet=True,
     )
@@ -100,7 +98,6 @@ def test_agent_prompt_provider_emits_thread_id() -> None:
         id="effect-prompt",
         display_name="Prompt",
         type="effect:agent:prompt",
-        upstream_id="effect-vm",
         prompt="continue",
         session_id="session-42",
         resume_thread_id="thread-123",

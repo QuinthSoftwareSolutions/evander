@@ -79,3 +79,53 @@ def test_malformed_reference_raises_in_strict_mode() -> None:
             declared_upstream_output_names={"ticket_id"},
             strict_validation=True,
         )
+
+
+def test_map_template_bindings_resolve_nested_mapping_values() -> None:
+    raw = {
+        "map": {
+            "template": {
+                "title": "Ticket $(ticket_id)",
+                "summary": "Resume $(session_id)",
+            },
+            "match": {
+                "kind": "$(kind)",
+                "labels": ["priority", "$(priority)"],
+            },
+        }
+    }
+
+    result = resolve_effect_config_bindings(
+        raw,
+        upstream_payload={
+            "ticket_id": 42,
+            "session_id": "session-7",
+            "kind": "incident",
+            "priority": "high",
+        },
+        declared_upstream_output_names={"ticket_id", "session_id", "kind", "priority"},
+    )
+
+    assert result.resolved_config == {
+        "map": {
+            "template": {
+                "title": "Ticket 42",
+                "summary": "Resume session-7",
+            },
+            "match": {
+                "kind": "incident",
+                "labels": ["priority", "high"],
+            },
+        }
+    }
+    assert result.trace.consumed_output_keys == ("kind", "priority", "session_id", "ticket_id")
+
+
+def test_map_template_bindings_fail_strictly_when_output_is_missing() -> None:
+    with pytest.raises(BindingResolutionError, match="not found"):
+        resolve_effect_config_bindings(
+            {"map": {"template": "Ticket $(missing_key)"}},
+            upstream_payload={"ticket_id": 1},
+            declared_upstream_output_names={"ticket_id", "missing_key"},
+            strict_validation=True,
+        )

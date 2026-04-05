@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import Counter
 from ipaddress import ip_network
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import yaml
 from pydantic import (
@@ -19,7 +19,13 @@ from pydantic import (
 )
 
 from .models import DirectoryPath
-from .events.models import EffectDefinitionDiscriminated, TriggerDefinitionDiscriminated
+from .events.models import (
+    EdgeDefinition,
+    EffectDefinitionDiscriminated,
+    GateDefinitionDiscriminated,
+    TriggerDefinitionDiscriminated,
+)
+from .workflow_graph import build_inbound_edge_index, index_declared_outputs, merge_declared_output_intersection
 
 _HTTP_URL_ADAPTER = TypeAdapter(AnyHttpUrl)
 
@@ -436,45 +442,88 @@ class TriggerOrchestratorWorkerGlobalConfig(BaseModel):
     lock_path: Path | None = None
     event_queue_store_path: Path | None = None
     event_queue_cursor_store_path: Path | None = None
+    gate_execution_store_path: Path | None = None
+    gate_cursor_store_path: Path | None = None
     effect_execution_store_path: Path | None = None
     effect_cursor_store_path: Path | None = None
     effect_lock_path: Path | None = None
     triggers: list[TriggerDefinitionDiscriminated] = Field(default_factory=list)
+    gates: list[GateDefinitionDiscriminated] = Field(default_factory=list)
+    edges: list[EdgeDefinition] = Field(default_factory=list)
     effects: list[EffectDefinitionDiscriminated] = Field(default_factory=list)
 
     @model_validator(mode="after")
-    def validate_unique_trigger_ids(self) -> TriggerOrchestratorWorkerGlobalConfig:
-        duplicates = sorted(node_id for node_id, count in Counter(trigger.id for trigger in self.triggers).items() if count > 1)
-        if duplicates:
-            duplicate_list = ", ".join(duplicates)
-            raise ValueError(f"Duplicate trigger IDs are not allowed: {duplicate_list}")
-        return self
-
-    @model_validator(mode="after")
-    def validate_unique_effect_ids(self) -> TriggerOrchestratorWorkerGlobalConfig:
-        duplicates = sorted(node_id for node_id, count in Counter(effect.id for effect in self.effects).items() if count > 1)
-        if duplicates:
-            duplicate_list = ", ".join(duplicates)
-            raise ValueError(f"Duplicate effect IDs are not allowed: {duplicate_list}")
-        return self
-
-    @model_validator(mode="after")
     def validate_unique_graph_node_ids(self) -> TriggerOrchestratorWorkerGlobalConfig:
-        trigger_ids = {trigger.id for trigger in self.triggers}
-        effect_ids = {effect.id for effect in self.effects}
-        duplicates = sorted(trigger_ids & effect_ids)
+        node_ids = [node.id for node in self.triggers] + [node.id for node in self.gates] + [
+            node.id for node in self.effects
+        ]
+        duplicates = sorted(node_id for node_id, count in Counter(node_ids).items() if count > 1)
         if duplicates:
             duplicate_list = ", ".join(duplicates)
-            raise ValueError(f"Trigger and effect IDs must be globally unique: {duplicate_list}")
+            raise ValueError(f"Node IDs must be globally unique across triggers, gates, and effects: {duplicate_list}")
         return self
 
     @model_validator(mode="after")
-    def validate_effect_upstream_references(self) -> TriggerOrchestratorWorkerGlobalConfig:
-        known_ids = {trigger.id for trigger in self.triggers} | {effect.id for effect in self.effects}
-        missing = sorted({effect.upstream_id for effect in self.effects if effect.upstream_id not in known_ids})
-        if missing:
-            missing_list = ", ".join(missing)
-            raise ValueError(f"Effect upstream IDs must reference existing trigger/effect IDs: {missing_list}")
+    def validate_graph_edges(self) -> TriggerOrchestratorWorkerGlobalConfig:
+        nodes_by_id = {node.id: node for node in (*self.triggers, *self.gates, *self.effects)}
+        node_outputs = index_declared_outputs(self.triggers, self.gates, self.effects)
+        inbound_edges = build_inbound_edge_index(self.edges)
+
+        missing_endpoints: list[str] = []
+        self_edges: list[str] = []
+        for edge in self.edges:
+            source_known = edge.source_id in nodes_by_id
+            target_known = edge.target_id in nodes_by_id
+            if edge.source_id == edge.target_id:
+                self_edges.append(edge.source_id)
+            if not source_known:
+                missing_endpoints.append(edge.source_id)
+            if not target_known:
+                missing_endpoints.append(edge.target_id)
+
+        missing_endpoints = sorted(set(missing_endpoints))
+        if missing_endpoints:
+            missing_list = ", ".join(missing_endpoints)
+            raise ValueError(f"Edge endpoints must reference existing node IDs: {missing_list}")
+
+        self_edges = sorted(set(self_edges))
+        if self_edges:
+            self_edge_list = ", ".join(self_edges)
+            raise ValueError(f"Edges cannot connect a node to itself: {self_edge_list}")
+
+        inbound_errors: list[str] = []
+        for node in self.triggers:
+            inbound_count = len(inbound_edges.get(node.id, ()))
+            if inbound_count != 0:
+                inbound_errors.append(f"trigger {node.id} must have 0 inbound edges, found {inbound_count}")
+        for gate in self.gates:
+            inbound_count = len(inbound_edges.get(gate.id, ()))
+            if gate.type == "gate:filter" and inbound_count != 1:
+                inbound_errors.append(f"gate:filter {gate.id} must have exactly 1 inbound edge, found {inbound_count}")
+            elif gate.type == "gate:map" and inbound_count != 1:
+                inbound_errors.append(f"gate:map {gate.id} must have exactly 1 inbound edge, found {inbound_count}")
+            elif gate.type == "gate:merge" and inbound_count < 1:
+                inbound_errors.append(f"gate:merge {gate.id} must have at least 1 inbound edge, found {inbound_count}")
+        for effect in self.effects:
+            inbound_count = len(inbound_edges.get(effect.id, ()))
+            if inbound_count != 1:
+                inbound_errors.append(f"effect {effect.id} must have exactly 1 inbound edge, found {inbound_count}")
+        if inbound_errors:
+            raise ValueError("; ".join(inbound_errors))
+
+        for gate in self.gates:
+            upstream_ids = [edge.source_id for edge in inbound_edges.get(gate.id, ())]
+            if gate.type == "gate:filter":
+                upstream_outputs = node_outputs.get(upstream_ids[0], {})
+                if gate.outputs != upstream_outputs:
+                    raise ValueError(f"gate:filter {gate.id} outputs must match its single upstream outputs")
+            elif gate.type == "gate:merge":
+                upstream_outputs = [node_outputs.get(upstream_id, {}) for upstream_id in upstream_ids]
+                expected_outputs = merge_declared_output_intersection(*upstream_outputs)
+                if gate.outputs != expected_outputs:
+                    raise ValueError(
+                        f"gate:merge {gate.id} outputs must equal the compatible intersection of upstream outputs"
+                    )
         return self
 
     @model_validator(mode="after")
@@ -485,6 +534,10 @@ class TriggerOrchestratorWorkerGlobalConfig(BaseModel):
             self.event_queue_store_path = self.runtime_dir / "trigger-orchestrator-events.json"
         if self.event_queue_cursor_store_path is None:
             self.event_queue_cursor_store_path = self.runtime_dir / "trigger-orchestrator-cursors.json"
+        if self.gate_execution_store_path is None:
+            self.gate_execution_store_path = self.runtime_dir / "gate-orchestrator-executions.json"
+        if self.gate_cursor_store_path is None:
+            self.gate_cursor_store_path = self.runtime_dir / "gate-orchestrator-cursors.json"
         if self.effect_execution_store_path is None:
             self.effect_execution_store_path = self.runtime_dir / "effect-orchestrator-executions.json"
         if self.effect_cursor_store_path is None:

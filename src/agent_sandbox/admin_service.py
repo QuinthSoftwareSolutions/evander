@@ -2900,6 +2900,7 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
         if not normalized_effect_id:
             raise ValueError("effect_id is required")
         normalized_payload = dict(payload)
+        normalized_source_id = str(normalized_payload.pop("source_id", "")).strip()
         payload_effect_id = str(normalized_payload.get("id", "")).strip()
         if payload_effect_id and payload_effect_id != normalized_effect_id:
             raise ValueError("effect_id must match payload.id when payload.id is provided")
@@ -2916,6 +2917,10 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
         if not isinstance(existing_effects_raw, list):
             raise ValueError("Invalid trigger-orchestrator config: effects must be a JSON array.")
         existing_effects = [entry for entry in existing_effects_raw if isinstance(entry, dict)]
+        existing_edges_raw = config.get("edges", [])
+        if not isinstance(existing_edges_raw, list):
+            existing_edges_raw = []
+        existing_edges = [entry for entry in existing_edges_raw if isinstance(entry, dict)]
         replacing = False
         for index, existing in enumerate(existing_effects):
             existing_id = str(existing.get("id", "")).strip()
@@ -2925,7 +2930,18 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
                 break
         if not replacing:
             existing_effects.append(normalized_payload)
+
+        filtered_edges: list[dict[str, object]] = []
+        for edge in existing_edges:
+            source_id = str(edge.get("source_id", "")).strip()
+            target_id = str(edge.get("target_id", "")).strip()
+            if target_id == normalized_effect_id:
+                continue
+            filtered_edges.append(edge)
+        if normalized_source_id:
+            filtered_edges.append({"source_id": normalized_source_id, "target_id": normalized_effect_id})
         config["effects"] = existing_effects
+        config["edges"] = filtered_edges
         write_result = self._write_worker_global_config("trigger-orchestrator", config)
         return EffectConfigMutationPayload(
             effect_id=normalized_effect_id,
@@ -2955,7 +2971,19 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
             filtered.append(entry)
         if not removed:
             raise ValueError(f"Effect not found: {normalized_effect_id}")
+        edges_raw = config.get("edges", [])
+        filtered_edges = []
+        if isinstance(edges_raw, list):
+            for entry in edges_raw:
+                if not isinstance(entry, dict):
+                    continue
+                source_id = str(entry.get("source_id", "")).strip()
+                target_id = str(entry.get("target_id", "")).strip()
+                if source_id == normalized_effect_id or target_id == normalized_effect_id:
+                    continue
+                filtered_edges.append(entry)
         config["effects"] = filtered
+        config["edges"] = filtered_edges
         write_result = self._write_worker_global_config("trigger-orchestrator", config)
         return EffectConfigMutationPayload(
             effect_id=normalized_effect_id,

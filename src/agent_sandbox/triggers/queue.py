@@ -8,7 +8,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from agent_sandbox.storage import JsonStore
-from agent_sandbox.events.models import TriggerEvent, TriggerType
+from agent_sandbox.events.models import TriggerEvent
 
 DeliveryState = Literal["pending", "delivered"]
 
@@ -16,7 +16,7 @@ DeliveryState = Literal["pending", "delivered"]
 class TriggerQueueRecord(BaseModel):
     event_id: str = Field(min_length=1)
     trigger_id: str = Field(min_length=1)
-    trigger_type: TriggerType
+    trigger_type: str
     occurred_at: datetime
     payload: dict[str, Any] = Field(default_factory=dict)
     delivery_state: DeliveryState = "pending"
@@ -70,7 +70,7 @@ class TriggerEventQueue:
         self,
         *,
         trigger_id: str | None = None,
-        trigger_type: TriggerType | None = None,
+        trigger_type: str | None = None,
         limit: int | None = None,
     ) -> list[TriggerQueueRecord]:
         if limit is not None and limit <= 0:

@@ -6,29 +6,56 @@ import logging
 import os
 import random
 import time
+from copy import deepcopy
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import RLock
-from typing import Any
+from typing import Any, Generic, TypeVar
 
 from pydantic import BaseModel, Field
 
 from .admin_service import AdminService
 from .config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
-from .effects.binding import BindingResolutionError, resolve_effect_config_bindings
 from .effects.registry import EffectProviderFactory
-from .events.models import EffectDefinitionDiscriminated, TriggerDefinitionDiscriminated, TriggerEvent
+from .events.models import (
+    EffectDefinitionDiscriminated,
+    GateDefinitionDiscriminated,
+    TriggerDefinitionDiscriminated,
+    TriggerEvent,
+)
+from .gate_runtime import (
+    GateRuntimeError,
+    filter_payload_matches,
+    require_object_payload,
+)
 from .host_heartbeat_worker import _single_instance_lock
 from .provider_config import ProviderConfigResolver
 from .runtime import RuntimeContext, build_runtime
 from .triggers.queue import TriggerEventQueue, TriggerQueueRecord
+from .workflow_binding import (
+    BindingResolutionError,
+    resolve_effect_config_bindings,
+    resolve_gate_map_bindings,
+    resolve_workflow_bindings,
+)
+from .workflow_graph import (
+    WorkflowGraphCycleError,
+    build_downstream_index,
+    build_inbound_edge_index,
+    compute_downstream_depth,
+    index_declared_outputs,
+    would_form_cycle,
+)
 
 logger = logging.getLogger(__name__)
 
 _MAX_GRAPH_DEPTH = 16
 _MAX_EVENTS_PER_CYCLE = 200
+
+WorkflowNodeDefinition = TriggerDefinitionDiscriminated | GateDefinitionDiscriminated | EffectDefinitionDiscriminated
+TRecord = TypeVar("TRecord", bound=BaseModel)
 
 
 class EffectExecutionRecord(BaseModel):
@@ -48,6 +75,38 @@ class EffectExecutionRecord(BaseModel):
     published_event_id: str | None = None
     error: str | None = None
     completion_event_enqueued_at: datetime | None = None
+
+
+class GateExecutionRecord(BaseModel):
+    execution_id: str = Field(min_length=1)
+    idempotency_key: str = Field(min_length=1)
+    event_id: str = Field(min_length=1)
+    source_node_id: str = Field(min_length=1)
+    source_trigger_type: str = Field(min_length=1)
+    gate_id: str = Field(min_length=1)
+    gate_type: str = Field(min_length=1)
+    status: str = Field(min_length=1)
+    started_at: datetime
+    finished_at: datetime
+    resolved_config_hash: str = Field(min_length=1)
+    resolved_config: dict[str, Any] = Field(default_factory=dict)
+    outputs: dict[str, Any] = Field(default_factory=dict)
+    inputs_by_source: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    input_event_ids_by_source: dict[str, str] = Field(default_factory=dict)
+    input_occurred_at_by_source: dict[str, datetime] = Field(default_factory=dict)
+    published_event_id: str | None = None
+    error: str | None = None
+    completion_event_enqueued_at: datetime | None = None
+
+
+@dataclass(frozen=True)
+class ExecutionGraph:
+    nodes_by_id: dict[str, WorkflowNodeDefinition]
+    gates_by_id: dict[str, GateDefinitionDiscriminated]
+    effects_by_id: dict[str, EffectDefinitionDiscriminated]
+    downstream_index: dict[str, tuple[str, ...]]
+    inbound_index: dict[str, tuple[Any, ...]]
+    declared_outputs: dict[str, dict[str, Any]]
 
 
 @dataclass(frozen=True)
@@ -71,9 +130,24 @@ class EffectOrchestratorWorker:
         self.worker_config = worker_config
         self.runtime = runtime
         self.event_queue = TriggerEventQueue(worker_config.event_queue_store_path)
+        self.lock_path = _resolve_worker_path(
+            worker_config,
+            "gate_lock_path",
+            fallback=worker_config.effect_lock_path or (worker_config.runtime_dir / "effect-orchestrator.lock"),
+        )
+        self.cursor_path = _resolve_worker_path(
+            worker_config,
+            "gate_cursor_store_path",
+            fallback=worker_config.effect_cursor_store_path or (worker_config.runtime_dir / "effect-orchestrator-cursors.json"),
+        )
         self.execution_store_path = worker_config.effect_execution_store_path
         self.execution_store = JsonExecutionStore(self.execution_store_path)
-        self.cursor_path = worker_config.effect_cursor_store_path
+        self.gate_execution_store_path = _resolve_worker_path(
+            worker_config,
+            "gate_execution_store_path",
+            fallback=worker_config.runtime_dir / "gate-orchestrator-executions.json",
+        )
+        self.gate_execution_store = JsonGateExecutionStore(self.gate_execution_store_path)
         self._executor = ThreadPoolExecutor(
             max_workers=max(1, min(32, max(1, (os.cpu_count() or 1) * 4))),
             thread_name_prefix="effect-orchestrator",
@@ -87,18 +161,18 @@ class EffectOrchestratorWorker:
         )
 
     def run_forever(self) -> None:
-        with _single_instance_lock(self.worker_config.effect_lock_path):
+        with _single_instance_lock(self.lock_path):
             logger.info(
-                "Effect orchestrator started poll_interval=%.3f jitter=%.3f lock=%s",
+                "Workflow orchestrator started poll_interval=%.3f jitter=%.3f lock=%s",
                 self.worker_config.poll_interval_seconds,
                 self.worker_config.jitter_seconds,
-                self.worker_config.effect_lock_path,
+                self.lock_path,
             )
             while True:
                 try:
                     result = self.run_once()
                 except Exception:
-                    logger.exception("Effect orchestrator cycle failed")
+                    logger.exception("Workflow orchestrator cycle failed")
                     time.sleep(
                         _compute_backoff_sleep_seconds(
                             poll_interval_seconds=self.worker_config.poll_interval_seconds,
@@ -107,7 +181,7 @@ class EffectOrchestratorWorker:
                     )
                     continue
                 logger.debug(
-                    "Effect orchestrator cycle complete pending=%d processed=%d executed=%d published=%d sleep_seconds=%.3f",
+                    "Workflow orchestrator cycle complete pending=%d processed=%d executed=%d published=%d sleep_seconds=%.3f",
                     result.pending_events_scanned,
                     result.events_processed,
                     result.effect_executions,
@@ -117,7 +191,7 @@ class EffectOrchestratorWorker:
                 time.sleep(result.next_sleep_seconds)
 
     def run_once_with_lock(self) -> EffectOrchestratorCycleResult:
-        with _single_instance_lock(self.worker_config.effect_lock_path):
+        with _single_instance_lock(self.lock_path):
             return self.run_once()
 
     def run_once(self) -> EffectOrchestratorCycleResult:
@@ -128,8 +202,7 @@ class EffectOrchestratorWorker:
         effect_executions_completed = 0
         completion_events_published = 0
 
-        indexed_effects = _index_effects_by_upstream(self.worker_config.effects)
-        node_outputs = _index_declared_outputs(self.worker_config.triggers, self.worker_config.effects)
+        graph = _build_execution_graph(self.worker_config)
 
         completed_count, published_count = self._reap_completed_futures()
         effect_executions_completed += completed_count
@@ -141,11 +214,7 @@ class EffectOrchestratorWorker:
                 break
             pending_events_scanned += 1
             queue_record = pending[0]
-            execution_count = self._process_event_record(
-                queue_record,
-                indexed_effects=indexed_effects,
-                node_outputs=node_outputs,
-            )
+            execution_count = self._process_event_record(queue_record, graph=graph)
             effect_executions_started += execution_count
             events_processed += 1
             self.event_queue.mark_delivered(queue_record.event_id)
@@ -165,38 +234,34 @@ class EffectOrchestratorWorker:
             next_sleep_seconds=next_sleep_seconds,
         )
 
-    def _process_event_record(
-        self,
-        queue_record: TriggerQueueRecord,
-        *,
-        indexed_effects: dict[str, list[EffectDefinitionDiscriminated]],
-        node_outputs: dict[str, set[str]],
-    ) -> int:
-        source_node_id = queue_record.trigger_id
-        downstream_effects = indexed_effects.get(source_node_id, [])
-        if not downstream_effects:
+    def _process_event_record(self, queue_record: TriggerQueueRecord, *, graph: ExecutionGraph) -> int:
+        downstream_node_ids = graph.downstream_index.get(queue_record.trigger_id, ())
+        if not downstream_node_ids:
             return 0
 
         execution_count = 0
-        for effect in downstream_effects:
-            if _would_form_cycle(source_node_id=source_node_id, effect=effect):
-                self._write_skipped_record(
-                    queue_record=queue_record,
-                    effect=effect,
-                    reason="cycle_detected",
-                )
+        for target_node_id in downstream_node_ids:
+            node = graph.nodes_by_id.get(target_node_id)
+            if node is None:
+                continue
+            if would_form_cycle(queue_record.trigger_id, target_node_id, graph.downstream_index):
+                self._write_skipped_node_record(queue_record=queue_record, node=node, reason="cycle_detected")
                 continue
 
-            depth = _compute_depth(effect, indexed_effects)
+            depth = _compute_depth(target_node_id, graph.downstream_index)
             if depth > _MAX_GRAPH_DEPTH:
-                self._write_skipped_record(
+                self._write_skipped_node_record(
                     queue_record=queue_record,
-                    effect=effect,
+                    node=node,
                     reason=f"max_depth_exceeded:{depth}",
                 )
                 continue
 
-            if self._dispatch_effect(queue_record, effect=effect, node_outputs=node_outputs):
+            if target_node_id in graph.gates_by_id:
+                self._execute_gate(queue_record, gate=graph.gates_by_id[target_node_id], graph=graph)
+                continue
+
+            if self._dispatch_effect(queue_record, effect=graph.effects_by_id[target_node_id], graph=graph):
                 execution_count += 1
 
         return execution_count
@@ -206,7 +271,7 @@ class EffectOrchestratorWorker:
         queue_record: TriggerQueueRecord,
         *,
         effect: EffectDefinitionDiscriminated,
-        node_outputs: dict[str, set[str]],
+        graph: ExecutionGraph,
     ) -> bool:
         idempotency_key = _execution_idempotency_key(queue_record.event_id, effect.id)
         existing = self.execution_store.find_by_idempotency_key(idempotency_key)
@@ -217,7 +282,9 @@ class EffectOrchestratorWorker:
                 return False
 
         started_at = datetime.now(UTC)
-        upstream_output_names = node_outputs.get(effect.upstream_id, set()) or set(queue_record.payload.keys())
+        upstream_output_names = set(graph.declared_outputs.get(queue_record.trigger_id, {}).keys()) or set(
+            queue_record.payload.keys()
+        )
         raw_effect_config = _extract_effect_config(effect)
         try:
             resolved = resolve_effect_config_bindings(
@@ -227,7 +294,7 @@ class EffectOrchestratorWorker:
                 strict_validation=True,
             )
         except BindingResolutionError as exc:
-            self._write_failed_record(
+            self._write_failed_effect_record(
                 queue_record=queue_record,
                 effect=effect,
                 started_at=started_at,
@@ -235,8 +302,8 @@ class EffectOrchestratorWorker:
                 error=str(exc),
             )
             return False
+
         resolved_config = resolved.resolved_config if isinstance(resolved.resolved_config, dict) else {}
-        resolved_config_hash = _json_sha256(resolved_config)
         record = EffectExecutionRecord(
             execution_id=f"exec-{hashlib.sha1(idempotency_key.encode('utf-8')).hexdigest()[:16]}",
             idempotency_key=idempotency_key,
@@ -248,7 +315,7 @@ class EffectOrchestratorWorker:
             status="running",
             started_at=started_at,
             finished_at=started_at,
-            resolved_config_hash=resolved_config_hash,
+            resolved_config_hash=_json_sha256(resolved_config),
             resolved_config=resolved_config,
             outputs={},
         )
@@ -257,6 +324,140 @@ class EffectOrchestratorWorker:
         with self._inflight_lock:
             self._inflight[idempotency_key] = future
         return True
+
+    def _execute_gate(
+        self,
+        queue_record: TriggerQueueRecord,
+        *,
+        gate: GateDefinitionDiscriminated,
+        graph: ExecutionGraph,
+    ) -> None:
+        idempotency_key = _execution_idempotency_key(queue_record.event_id, gate.id)
+        if self.gate_execution_store.find_by_idempotency_key(idempotency_key) is not None:
+            return
+
+        started_at = datetime.now(UTC)
+        upstream_output_names = set(graph.declared_outputs.get(queue_record.trigger_id, {}).keys()) or set(
+            queue_record.payload.keys()
+        )
+        inputs_by_source = {queue_record.trigger_id: dict(queue_record.payload)}
+        input_event_ids_by_source = {queue_record.trigger_id: queue_record.event_id}
+        input_occurred_at_by_source = {queue_record.trigger_id: queue_record.occurred_at}
+
+        try:
+            if gate.type == "gate:filter":
+                resolved = resolve_workflow_bindings(
+                    gate.match,
+                    queue_record.payload,
+                    upstream_output_names,
+                    strict_validation=True,
+                )
+                resolved_match = resolved.resolved_config
+                resolved_config = {"match": resolved_match}
+                if filter_payload_matches(resolved_match, queue_record.payload):
+                    outputs = dict(queue_record.payload)
+                    self._write_gate_record(
+                        queue_record=queue_record,
+                        gate=gate,
+                        status="succeeded",
+                        started_at=started_at,
+                        resolved_config=resolved_config,
+                        outputs=outputs,
+                        inputs_by_source=inputs_by_source,
+                        input_event_ids_by_source=input_event_ids_by_source,
+                        input_occurred_at_by_source=input_occurred_at_by_source,
+                        publish_completion_event=True,
+                    )
+                    return
+
+                self._write_gate_record(
+                    queue_record=queue_record,
+                    gate=gate,
+                    status="dropped",
+                    started_at=started_at,
+                    resolved_config=resolved_config,
+                    outputs={},
+                    inputs_by_source=inputs_by_source,
+                    input_event_ids_by_source=input_event_ids_by_source,
+                    input_occurred_at_by_source=input_occurred_at_by_source,
+                )
+                return
+
+            if gate.type == "gate:map":
+                resolved = resolve_gate_map_bindings(
+                    gate.template,
+                    queue_record.payload,
+                    upstream_output_names,
+                    strict_validation=True,
+                )
+                outputs = require_object_payload(resolved.resolved_config, gate_type="gate:map")
+                self._write_gate_record(
+                    queue_record=queue_record,
+                    gate=gate,
+                    status="succeeded",
+                    started_at=started_at,
+                    resolved_config={"template": outputs},
+                    outputs=outputs,
+                    inputs_by_source=inputs_by_source,
+                    input_event_ids_by_source=input_event_ids_by_source,
+                    input_occurred_at_by_source=input_occurred_at_by_source,
+                    publish_completion_event=True,
+                )
+                return
+
+            self._execute_merge_gate(
+                queue_record=queue_record,
+                gate=gate,
+                graph=graph,
+                started_at=started_at,
+            )
+        except (BindingResolutionError, GateRuntimeError) as exc:
+            self._write_gate_record(
+                queue_record=queue_record,
+                gate=gate,
+                status="failed",
+                started_at=started_at,
+                resolved_config={},
+                outputs={},
+                inputs_by_source=inputs_by_source,
+                input_event_ids_by_source=input_event_ids_by_source,
+                input_occurred_at_by_source=input_occurred_at_by_source,
+                error=str(exc),
+            )
+
+    def _execute_merge_gate(
+        self,
+        *,
+        queue_record: TriggerQueueRecord,
+        gate: GateDefinitionDiscriminated,
+        graph: ExecutionGraph,
+        started_at: datetime,
+    ) -> None:
+        previous = self.gate_execution_store.find_latest_by_gate_id(gate.id)
+        inputs_by_source = deepcopy(previous.inputs_by_source) if previous is not None else {}
+        input_event_ids_by_source = dict(previous.input_event_ids_by_source) if previous is not None else {}
+        input_occurred_at_by_source = dict(previous.input_occurred_at_by_source) if previous is not None else {}
+
+        inputs_by_source[queue_record.trigger_id] = dict(queue_record.payload)
+        input_event_ids_by_source[queue_record.trigger_id] = queue_record.event_id
+        input_occurred_at_by_source[queue_record.trigger_id] = queue_record.occurred_at
+
+        required_source_ids = tuple(_edge_source_id(edge) for edge in graph.inbound_index.get(gate.id, ()))
+        shared_output_keys = tuple(sorted((gate.outputs or {}).keys()))
+        resolved_config = {"shared_output_keys": list(shared_output_keys)}
+        outputs = {key: queue_record.payload[key] for key in shared_output_keys if key in queue_record.payload}
+        self._write_gate_record(
+            queue_record=queue_record,
+            gate=gate,
+            status="succeeded",
+            started_at=started_at,
+            resolved_config=resolved_config,
+            outputs=outputs,
+            inputs_by_source=inputs_by_source,
+            input_event_ids_by_source=input_event_ids_by_source,
+            input_occurred_at_by_source=input_occurred_at_by_source,
+            publish_completion_event=True,
+        )
 
     def _execute_provider(self, *, effect: EffectDefinitionDiscriminated, resolved_config: dict[str, Any]) -> dict[str, Any]:
         provider = self.provider_factory.build(effect)
@@ -306,28 +507,74 @@ class EffectOrchestratorWorker:
         record: EffectExecutionRecord,
         outputs: dict[str, Any],
     ) -> str:
-        completion_event_id = _completion_event_id(parent_event_id=record.event_id, effect_id=record.effect_id)
+        completion_event_id = _completion_event_id(
+            parent_event_id=record.event_id,
+            node_id=record.effect_id,
+            prefix="effect",
+        )
         completion_event = TriggerEvent(
             event_id=completion_event_id,
             trigger_id=record.effect_id,
-            trigger_type=record.source_trigger_type,
+            trigger_type=record.effect_type,
             occurred_at=datetime.now(UTC),
             payload=outputs,
         )
         self.event_queue.publish(completion_event, idempotency_key=record.idempotency_key)
         return completion_event_id
 
-    def _write_skipped_record(self, *, queue_record: TriggerQueueRecord, effect: EffectDefinitionDiscriminated, reason: str) -> None:
-        self._write_terminal_record(
+    def _publish_gate_completion_event_from_record(
+        self,
+        *,
+        record: GateExecutionRecord,
+        outputs: dict[str, Any],
+    ) -> str:
+        completion_event_id = _completion_event_id(
+            parent_event_id=record.event_id,
+            node_id=record.gate_id,
+            prefix="gate",
+        )
+        completion_event = TriggerEvent(
+            event_id=completion_event_id,
+            trigger_id=record.gate_id,
+            trigger_type=record.gate_type,
+            occurred_at=datetime.now(UTC),
+            payload=outputs,
+        )
+        self.event_queue.publish(completion_event, idempotency_key=record.idempotency_key)
+        return completion_event_id
+
+    def _write_skipped_node_record(
+        self,
+        *,
+        queue_record: TriggerQueueRecord,
+        node: WorkflowNodeDefinition,
+        reason: str,
+    ) -> None:
+        if _is_gate(node):
+            self._write_gate_record(
+                queue_record=queue_record,
+                gate=node,
+                status="skipped",
+                started_at=datetime.now(UTC),
+                resolved_config={},
+                outputs={},
+                inputs_by_source={queue_record.trigger_id: dict(queue_record.payload)},
+                input_event_ids_by_source={queue_record.trigger_id: queue_record.event_id},
+                input_occurred_at_by_source={queue_record.trigger_id: queue_record.occurred_at},
+                error=reason,
+            )
+            return
+
+        self._write_terminal_effect_record(
             queue_record=queue_record,
-            effect=effect,
+            effect=node,
             status="skipped",
             started_at=datetime.now(UTC),
             resolved_config={},
             error=reason,
         )
 
-    def _write_failed_record(
+    def _write_failed_effect_record(
         self,
         *,
         queue_record: TriggerQueueRecord,
@@ -336,7 +583,7 @@ class EffectOrchestratorWorker:
         resolved_config: dict[str, Any],
         error: str,
     ) -> None:
-        self._write_terminal_record(
+        self._write_terminal_effect_record(
             queue_record=queue_record,
             effect=effect,
             status="failed",
@@ -345,7 +592,7 @@ class EffectOrchestratorWorker:
             error=error,
         )
 
-    def _write_terminal_record(
+    def _write_terminal_effect_record(
         self,
         *,
         queue_record: TriggerQueueRecord,
@@ -377,40 +624,106 @@ class EffectOrchestratorWorker:
         )
         self.execution_store.put(record)
 
+    def _write_gate_record(
+        self,
+        *,
+        queue_record: TriggerQueueRecord,
+        gate: GateDefinitionDiscriminated,
+        status: str,
+        started_at: datetime,
+        resolved_config: dict[str, Any],
+        outputs: dict[str, Any],
+        inputs_by_source: dict[str, dict[str, Any]],
+        input_event_ids_by_source: dict[str, str],
+        input_occurred_at_by_source: dict[str, datetime],
+        error: str | None = None,
+        publish_completion_event: bool = False,
+    ) -> None:
+        idempotency_key = _execution_idempotency_key(queue_record.event_id, gate.id)
+        if self.gate_execution_store.find_by_idempotency_key(idempotency_key) is not None:
+            return
+        finished_at = datetime.now(UTC)
+        record = GateExecutionRecord(
+            execution_id=f"gate-{hashlib.sha1(idempotency_key.encode('utf-8')).hexdigest()[:16]}",
+            idempotency_key=idempotency_key,
+            event_id=queue_record.event_id,
+            source_node_id=queue_record.trigger_id,
+            source_trigger_type=queue_record.trigger_type,
+            gate_id=gate.id,
+            gate_type=gate.type,
+            status=status,
+            started_at=started_at,
+            finished_at=finished_at,
+            resolved_config_hash=_json_sha256(resolved_config),
+            resolved_config=resolved_config,
+            outputs=outputs,
+            inputs_by_source=inputs_by_source,
+            input_event_ids_by_source=input_event_ids_by_source,
+            input_occurred_at_by_source=input_occurred_at_by_source,
+            error=error,
+        )
+        if publish_completion_event:
+            record.published_event_id = self._publish_gate_completion_event_from_record(record=record, outputs=outputs)
+            record.completion_event_enqueued_at = finished_at
+        self.gate_execution_store.put(record)
 
-class JsonExecutionStore:
-    def __init__(self, path: Path) -> None:
+
+class _JsonRecordStore(Generic[TRecord]):
+    def __init__(self, path: Path, model: type[TRecord]) -> None:
         self.path = path
+        self.model = model
         self._lock = RLock()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         if not self.path.exists():
             self.path.write_text("{}", encoding="utf-8")
 
-    def read_all(self) -> dict[str, EffectExecutionRecord]:
+    def read_all(self) -> dict[str, TRecord]:
         with self._lock:
-            payload = json.loads(self.path.read_text(encoding="utf-8"))
-            if not isinstance(payload, dict):
-                return {}
-            return {key: EffectExecutionRecord.model_validate(value) for key, value in payload.items()}
+            payload = self._read_payload()
+            return {key: self.model.model_validate(value) for key, value in payload.items()}
 
-    def put(self, record: EffectExecutionRecord) -> None:
+    def put(self, record: TRecord) -> None:
         with self._lock:
-            payload = json.loads(self.path.read_text(encoding="utf-8"))
-            if not isinstance(payload, dict):
-                payload = {}
-            payload[record.execution_id] = record.model_dump(mode="json")
+            payload = self._read_payload()
+            payload[getattr(record, "execution_id")] = record.model_dump(mode="json")
             self.path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
 
-    def find_by_idempotency_key(self, idempotency_key: str) -> EffectExecutionRecord | None:
+    def find_by_idempotency_key(self, idempotency_key: str) -> TRecord | None:
         with self._lock:
-            payload = json.loads(self.path.read_text(encoding="utf-8"))
-            if not isinstance(payload, dict):
-                return None
-            for value in payload.values():
-                record = EffectExecutionRecord.model_validate(value)
-                if record.idempotency_key == idempotency_key:
+            for value in self._read_payload().values():
+                record = self.model.model_validate(value)
+                if getattr(record, "idempotency_key") == idempotency_key:
                     return record
         return None
+
+    def _read_payload(self) -> dict[str, Any]:
+        payload = json.loads(self.path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            return {}
+        return payload
+
+
+class JsonExecutionStore(_JsonRecordStore[EffectExecutionRecord]):
+    def __init__(self, path: Path) -> None:
+        super().__init__(path, EffectExecutionRecord)
+
+
+class JsonGateExecutionStore(_JsonRecordStore[GateExecutionRecord]):
+    def __init__(self, path: Path) -> None:
+        super().__init__(path, GateExecutionRecord)
+
+    def find_latest_by_gate_id(self, gate_id: str) -> GateExecutionRecord | None:
+        latest: GateExecutionRecord | None = None
+        for record in self.read_all().values():
+            if record.gate_id != gate_id:
+                continue
+            if latest is None or (record.finished_at, record.started_at, record.execution_id) > (
+                latest.finished_at,
+                latest.started_at,
+                latest.execution_id,
+            ):
+                latest = record
+        return latest
 
 
 def build_effect_orchestrator_worker(
@@ -464,63 +777,69 @@ def main() -> None:
     worker.run_forever()
 
 
-def _index_effects_by_upstream(effects: list[EffectDefinitionDiscriminated]) -> dict[str, list[EffectDefinitionDiscriminated]]:
-    indexed: dict[str, list[EffectDefinitionDiscriminated]] = {}
-    for effect in effects:
-        indexed.setdefault(effect.upstream_id, []).append(effect)
-    for nodes in indexed.values():
-        nodes.sort(key=lambda effect: effect.id)
-    return indexed
+def _build_execution_graph(worker_config: TriggerOrchestratorWorkerGlobalConfig) -> ExecutionGraph:
+    nodes_by_id: dict[str, WorkflowNodeDefinition] = {
+        node.id: node for node in (*worker_config.triggers, *worker_config.gates, *worker_config.effects)
+    }
+    edges = list(worker_config.edges)
 
-
-def _index_declared_outputs(
-    triggers: list[TriggerDefinitionDiscriminated],
-    effects: list[EffectDefinitionDiscriminated],
-) -> dict[str, set[str]]:
-    outputs: dict[str, set[str]] = {}
-    for node in [*triggers, *effects]:
-        declared = set((node.outputs or {}).keys())
-        outputs[node.id] = declared
-    return outputs
+    return ExecutionGraph(
+        nodes_by_id=nodes_by_id,
+        gates_by_id={gate.id: gate for gate in worker_config.gates},
+        effects_by_id={effect.id: effect for effect in worker_config.effects},
+        downstream_index=build_downstream_index(edges),
+        inbound_index=build_inbound_edge_index(edges),
+        declared_outputs=index_declared_outputs(worker_config.triggers, worker_config.gates, worker_config.effects),
+    )
 
 
 def _extract_effect_config(effect: EffectDefinitionDiscriminated) -> dict[str, Any]:
     payload = effect.model_dump(mode="json")
-    for field_name in ("id", "display_name", "type", "upstream_id", "outputs"):
+    for field_name in ("id", "display_name", "type", "outputs"):
         payload.pop(field_name, None)
     return payload
 
 
-def _execution_idempotency_key(event_id: str, effect_id: str) -> str:
-    return f"{event_id}::{effect_id}"
+def _execution_idempotency_key(event_id: str, node_id: str) -> str:
+    return f"{event_id}::{node_id}"
 
 
-def _completion_event_id(*, parent_event_id: str, effect_id: str) -> str:
-    return f"effect:{effect_id}:{hashlib.sha1(parent_event_id.encode('utf-8')).hexdigest()[:12]}"
+def _completion_event_id(*, parent_event_id: str, node_id: str, prefix: str) -> str:
+    return f"{prefix}:{node_id}:{hashlib.sha1(parent_event_id.encode('utf-8')).hexdigest()[:12]}"
 
 
 def _json_sha256(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
-def _compute_depth(
-    effect: EffectDefinitionDiscriminated,
-    indexed_effects: dict[str, list[EffectDefinitionDiscriminated]],
-    *,
-    _seen: set[str] | None = None,
-) -> int:
-    seen = set(_seen or set())
-    if effect.id in seen:
+def _compute_depth(node_id: str, downstream_index: dict[str, tuple[str, ...]]) -> int:
+    try:
+        return compute_downstream_depth(node_id, downstream_index)
+    except WorkflowGraphCycleError:
         return _MAX_GRAPH_DEPTH + 1
-    seen.add(effect.id)
-    downstream = indexed_effects.get(effect.id, [])
-    if not downstream:
-        return 1
-    return 1 + max(_compute_depth(node, indexed_effects, _seen=seen) for node in downstream)
 
 
-def _would_form_cycle(*, source_node_id: str, effect: EffectDefinitionDiscriminated) -> bool:
-    return source_node_id == effect.id or effect.upstream_id == effect.id
+def _is_gate(node: WorkflowNodeDefinition) -> bool:
+    return str(getattr(node, "type", "")).startswith("gate:")
+
+
+def _edge_source_id(edge: Any) -> str:
+    for field_name in ("source_id",):
+        if isinstance(edge, dict):
+            value = edge.get(field_name)
+        else:
+            value = getattr(edge, field_name, None)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    raise ValueError(f"workflow edge is missing a source id: {edge!r}")
+
+
+def _resolve_worker_path(worker_config: TriggerOrchestratorWorkerGlobalConfig, attribute: str, *, fallback: Path) -> Path:
+    value = getattr(worker_config, attribute, None)
+    return Path(value) if value is not None else Path(fallback)
 
 
 def _compute_next_sleep_seconds(*, poll_interval_seconds: float, jitter_seconds: float) -> float:

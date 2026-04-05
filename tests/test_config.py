@@ -219,6 +219,14 @@ def test_trigger_orchestrator_worker_global_config_defaults_follow_runtime_dir()
         == "/tmp/agent-sandbox-runtime/trigger-orchestrator-cursors.json"
     )
     assert (
+        str(config.gate_execution_store_path)
+        == "/tmp/agent-sandbox-runtime/gate-orchestrator-executions.json"
+    )
+    assert (
+        str(config.gate_cursor_store_path)
+        == "/tmp/agent-sandbox-runtime/gate-orchestrator-cursors.json"
+    )
+    assert (
         str(config.effect_execution_store_path)
         == "/tmp/agent-sandbox-runtime/effect-orchestrator-executions.json"
     )
@@ -265,18 +273,57 @@ def test_trigger_orchestrator_worker_global_config_accepts_effects() -> None:
                     "id": "prompt-agent",
                     "display_name": "Prompt agent",
                     "type": "effect:agent:prompt",
-                    "upstream_id": "cron-15m",
                     "prompt": "Summarize $(branch)",
                 }
             ],
+            "edges": [{"source_id": "cron-15m", "target_id": "prompt-agent"}],
         }
     )
 
     assert config.effects[0].type == "effect:agent:prompt"
 
 
+def test_trigger_orchestrator_worker_global_config_accepts_multiple_effect_edges_from_one_source() -> None:
+    config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Every 15 minutes",
+                    "type": "trigger:cron",
+                    "expression": "*/15 * * * *",
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-a",
+                    "display_name": "First downstream node",
+                    "type": "effect:agent:prompt",
+                    "prompt": "First $(ticket_id)",
+                },
+                {
+                    "id": "effect-b",
+                    "display_name": "Second downstream node",
+                    "type": "effect:agent:prompt",
+                    "prompt": "Second $(ticket_id)",
+                },
+            ],
+            "edges": [
+                {"source_id": "trigger-1", "target_id": "effect-a"},
+                {"source_id": "trigger-1", "target_id": "effect-b"},
+            ],
+        }
+    )
+
+    assert [effect.id for effect in config.effects] == ["effect-a", "effect-b"]
+    assert [(edge.source_id, edge.target_id) for edge in config.edges] == [
+        ("trigger-1", "effect-a"),
+        ("trigger-1", "effect-b"),
+    ]
+
+
 def test_trigger_orchestrator_worker_global_config_rejects_duplicate_ids_across_graph() -> None:
-    with pytest.raises(ValueError, match="Trigger and effect IDs must be globally unique: node-1"):
+    with pytest.raises(ValueError, match="Node IDs must be globally unique across triggers, gates, and effects: node-1"):
         TriggerOrchestratorWorkerGlobalConfig.model_validate(
             {
                 "triggers": [
@@ -298,16 +345,16 @@ def test_trigger_orchestrator_worker_global_config_rejects_duplicate_ids_across_
                         "id": "node-1",
                         "display_name": "Prompt agent",
                         "type": "effect:agent:prompt",
-                        "upstream_id": "trigger-2",
                         "prompt": "Summarize",
                     }
                 ],
+                "edges": [{"source_id": "trigger-2", "target_id": "node-1"}],
             }
         )
 
 
 def test_trigger_orchestrator_worker_global_config_rejects_duplicate_trigger_ids() -> None:
-    with pytest.raises(ValueError, match="Duplicate trigger IDs are not allowed"):
+    with pytest.raises(ValueError, match="Node IDs must be globally unique across triggers, gates, and effects: cron-15m"):
         TriggerOrchestratorWorkerGlobalConfig.model_validate(
             {
                 "triggers": [
@@ -329,7 +376,7 @@ def test_trigger_orchestrator_worker_global_config_rejects_duplicate_trigger_ids
 
 
 def test_trigger_orchestrator_worker_global_config_rejects_duplicate_effect_ids() -> None:
-    with pytest.raises(ValueError, match="Duplicate effect IDs are not allowed"):
+    with pytest.raises(ValueError, match="Node IDs must be globally unique across triggers, gates, and effects: effect-dup"):
         TriggerOrchestratorWorkerGlobalConfig.model_validate(
             {
                 "triggers": [
@@ -345,23 +392,22 @@ def test_trigger_orchestrator_worker_global_config_rejects_duplicate_effect_ids(
                         "id": "effect-dup",
                         "display_name": "Prompt agent",
                         "type": "effect:agent:prompt",
-                        "upstream_id": "trigger-1",
                         "prompt": "Summarize",
                     },
                     {
                         "id": "effect-dup",
                         "display_name": "Prompt agent again",
                         "type": "effect:agent:prompt",
-                        "upstream_id": "trigger-1",
                         "prompt": "Summarize",
                     },
                 ],
+                "edges": [{"source_id": "trigger-1", "target_id": "effect-dup"}],
             }
         )
 
 
-def test_trigger_orchestrator_worker_global_config_rejects_unknown_effect_upstream_id() -> None:
-    with pytest.raises(ValueError, match="Effect upstream IDs must reference existing trigger/effect IDs: missing-id"):
+def test_trigger_orchestrator_worker_global_config_rejects_unknown_effect_edge_source() -> None:
+    with pytest.raises(ValueError, match="Edge endpoints must reference existing node IDs: missing-id"):
         TriggerOrchestratorWorkerGlobalConfig.model_validate(
             {
                 "triggers": [
@@ -377,9 +423,9 @@ def test_trigger_orchestrator_worker_global_config_rejects_unknown_effect_upstre
                         "id": "effect-1",
                         "display_name": "Prompt agent",
                         "type": "effect:agent:prompt",
-                        "upstream_id": "missing-id",
                         "prompt": "Summarize",
                     }
                 ],
+                "edges": [{"source_id": "missing-id", "target_id": "effect-1"}],
             }
         )

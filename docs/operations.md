@@ -51,34 +51,53 @@ Before debugging individual scripts or services, run the consolidated host statu
 The status output reports config load status, runtime store path permissions, key systemd unit states,
 gateway/relay endpoint reachability, and active/expired session summary.
 
-## Trigger/Effect Runtime Files and Troubleshooting
+## Workflow Runtime Files and Troubleshooting
 
-The trigger/effect orchestrators share runtime state under `runtime/` (or your configured
+The workflow orchestrators share runtime state under `runtime/` (or your configured
 `runtime_dir`):
 
-- `trigger-orchestrator-events.json`: durable queue of trigger and effect-completion events.
+- `trigger-orchestrator-events.json`: durable queue of trigger and completion events.
 - `trigger-orchestrator-cursors.json`: trigger-worker cursors/checkpoints.
-- `effect-orchestrator-executions.json`: effect execution log (status, idempotency key, resolved config, outputs, errors).
-- `effect-orchestrator-cursors.json`: effect-worker cursor/checkpoint data.
-- `trigger-orchestrator.lock` / `effect-orchestrator.lock`: single-instance lock files.
+- `gate-orchestrator-executions.json`: gate execution log with idempotency key, gate type, state,
+  resolved config, outputs, and merge errors.
+- `gate-orchestrator-cursors.json`: gate-worker cursor/checkpoint data.
+- `trigger-orchestrator.lock` / `gate-orchestrator.lock`: single-instance lock files.
+
+Gate execution state is useful when debugging fan-in:
+
+- `waiting_for_inputs`: a merge gate has not yet received every inbound payload.
+- `running`: the gate is actively evaluating.
+- `passed`: the gate forwarded data downstream.
+- `filtered`: the gate intentionally suppressed the event.
+- `merged`: the gate emitted a consolidated payload.
+- `failed`: the gate hit a validation, binding, or merge error.
+- `skipped`: the gate was bypassed because of a validation or cycle guard.
 
 Troubleshooting checklist:
 
-1. **No effects running**
-   - Confirm `effects` entries exist and each `upstream_id` references an existing trigger/effect id.
+1. **No downstream nodes running**
+   - Confirm `triggers`, `gates`, and `effects` exist, and confirm there is at least one edge from
+     the upstream node that should start the flow.
    - Confirm pending source events exist in `trigger-orchestrator-events.json`.
 2. **Bindings fail with missing output references**
    - Check upstream node `outputs` declarations and the actual upstream payload keys.
    - Exact `$(name)` and embedded `"...$(name)..."` both require the referenced key to exist.
-3. **Unexpected duplicate behavior**
-   - Check idempotency collisions in `effect-orchestrator-executions.json` using
-     `idempotency_key=<event_id>::<effect_id>`.
-4. **Downstream chain never starts**
-   - Check upstream execution record status; `failed`/`skipped` records do not publish completion
-     events for further chaining.
-5. **Cycle-like configs**
+3. **Merge gate never completes**
+   - Confirm every inbound edge to the merge gate is present and the `sources` list matches those
+     upstream node ids.
+   - Confirm the merge gate is receiving new payloads rather than reprocessing the same stale input
+     event id.
+4. **Merge output looks incomplete or wrong**
+   - Inspect `gate-orchestrator-executions.json` for the recorded `resolved_config`, inbound inputs,
+     and final `outputs`.
+   - Verify the configured `merge_strategy` and `conflict_policy` match the intended precedence
+     rule.
+5. **Unexpected duplicate behavior**
+   - Check idempotency collisions in `gate-orchestrator-executions.json` using
+     `idempotency_key=<event_id>::<node_id>`.
+6. **Cycle-like configs**
    - Direct cycles are marked `skipped` with `error: cycle_detected`; break the loop by changing
-     `upstream_id` relationships.
+     the edge wiring between nodes.
 
 ## Desktop Operator Console
 

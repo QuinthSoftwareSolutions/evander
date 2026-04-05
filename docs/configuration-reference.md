@@ -132,10 +132,11 @@ Workers tab edits `config/host-heartbeat/config.json` for the `host-heartbeat` w
 
 ## `config/trigger-orchestrator/config.json`
 
-This JSON file stores the trigger orchestrator worker's global settings.
+This JSON file stores the workflow orchestrator worker's global settings.
 Trigger definitions are currently global (host-wide) and are **not** directory-scoped; this keeps
 provider secret resolution and cross-directory event ingestion centralized until a directory-resolved
-trigger inheritance model is introduced.
+workflow inheritance model is introduced. Triggers, gates, and effects all live in the same graph
+config, with explicit edges describing routing between node ids.
 
 | Parameter | Found in | Consumed by |
 |---|---|---|
@@ -146,10 +147,12 @@ trigger inheritance model is introduced.
 | `event_queue_store_path` | `config/trigger-orchestrator/config.json` | Trigger orchestrator persisted event queue store path. |
 | `event_queue_cursor_store_path` | `config/trigger-orchestrator/config.json` | Trigger orchestrator event queue cursor/checkpoint store path. |
 | `triggers` | `config/trigger-orchestrator/config.json` | Trigger orchestrator trigger definition list (`src/agent_sandbox/triggers/models.py`). |
-| `effect_execution_store_path` | `config/trigger-orchestrator/config.json` | Effect orchestrator execution log path (idempotency keys, resolved config snapshots, outputs, failures). |
-| `effect_cursor_store_path` | `config/trigger-orchestrator/config.json` | Effect orchestrator cursor/checkpoint path. |
-| `effect_lock_path` | `config/trigger-orchestrator/config.json` | Effect orchestrator single-instance lock file path. |
-| `effects` | `config/trigger-orchestrator/config.json` | Effect definition list (`src/agent_sandbox/events/models.py`). |
+| `gate_execution_store_path` | `config/trigger-orchestrator/config.json` | Gate execution log path (idempotency keys, merge state, resolved config snapshots, outputs, failures). |
+| `gate_cursor_store_path` | `config/trigger-orchestrator/config.json` | Gate orchestrator cursor/checkpoint path. |
+| `gate_lock_path` | `config/trigger-orchestrator/config.json` | Gate orchestrator single-instance lock file path. |
+| `effects` | `config/trigger-orchestrator/config.json` | Effect definition list (`src/agent_sandbox/events/models.py`). Effects no longer take `upstream_id`; they are wired with edges. |
+| `gates` | `config/trigger-orchestrator/config.json` | Gate definition list (filter/map/merge nodes). |
+| `edges` | `config/trigger-orchestrator/config.json` | Explicit graph wiring between triggers, gates, and effects. |
 
 ### Trigger definition schema keys
 
@@ -206,6 +209,35 @@ Example:
 }
 ```
 
+### Gate definition schema keys
+
+Each gate entry requires the shared envelope keys:
+
+- `id` (string, required, unique across all gates)
+- `display_name` (string, required)
+- `type` (required discriminator)
+- `gate_type` (string, required; one of `filter`, `map`, `merge`)
+
+Type-specific keys:
+
+| `type` | Required keys | Optional keys |
+|---|---|---|
+| `gate:filter` | `predicate` | `outputs` |
+| `gate:map` | `mapping` | `outputs` |
+| `gate:merge` | `sources`, `merge_strategy` | `outputs`, `conflict_policy` |
+
+Edge wiring records connect upstream node ids to downstream node ids and replace any node-local
+`upstream_id` field.
+
+Example edge shape:
+
+```json
+{
+  "from": "ticket-created",
+  "to": "effect-provision"
+}
+```
+
 ### Effect definition schema keys
 
 Each effect entry requires the shared envelope keys:
@@ -213,7 +245,6 @@ Each effect entry requires the shared envelope keys:
 - `id` (string, required, unique across all effects)
 - `display_name` (string, required)
 - `type` (required discriminator)
-- `upstream_id` (string, required; must reference an existing trigger/effect id and cannot self-reference)
 
 Type-specific keys:
 
@@ -229,7 +260,6 @@ Effect schema envelope example:
   "id": "effect-provision",
   "display_name": "Provision VM for ticket",
   "type": "effect:vm:create",
-  "upstream_id": "ticket-created",
   "vm_name": "issue-$(ticket_number)",
   "outputs": {
     "session_id": { "type": "string" }
@@ -237,35 +267,135 @@ Effect schema envelope example:
 }
 ```
 
-### Binding/interpolation examples (`$(output_name)`)
+### Graph examples
 
-- Exact output reference (type-preserving): `"session_id": "$(session_id)"`
-- Embedded string interpolation (stringified): `"prompt": "Continue $(ticket_number) in $(session_id)"`
+Filter graph:
 
 ```json
 {
+  "triggers": [
+    {
+      "id": "ticket-created",
+      "display_name": "Ticket created",
+      "type": "trigger:ticket:created",
+      "directories": ["root/team-a"]
+    }
+  ],
+  "gates": [
+    {
+      "id": "high-priority-only",
+      "display_name": "High priority only",
+      "type": "gate:filter",
+      "gate_type": "filter",
+      "predicate": "$(priority) >= 2"
+    }
+  ],
   "effects": [
     {
       "id": "effect-provision",
       "display_name": "Create VM",
       "type": "effect:vm:create",
-      "upstream_id": "ticket-created",
-      "vm_name": "issue-$(ticket_number)",
-      "outputs": {
-        "session_id": { "type": "string" }
-      }
-    },
-    {
-      "id": "effect-resume",
-      "display_name": "Resume agent",
-      "type": "effect:agent:prompt",
-      "upstream_id": "effect-provision",
-      "session_id": "$(session_id)",
-      "prompt": "Continue ticket $(ticket_number) in session $(session_id)"
+      "vm_name": "issue-$(ticket_number)"
     }
+  ],
+  "edges": [
+    {"from": "ticket-created", "to": "high-priority-only"},
+    {"from": "high-priority-only", "to": "effect-provision"}
   ]
 }
 ```
+
+Map graph:
+
+```json
+{
+  "gates": [
+    {
+      "id": "normalize-ticket",
+      "display_name": "Normalize ticket fields",
+      "type": "gate:map",
+      "gate_type": "map",
+      "mapping": {
+        "session_id": "$(ticket_session_id)",
+        "ticket_number": "$(ticket_id)"
+      }
+    }
+  ],
+  "edges": [
+    {"from": "ticket-created", "to": "normalize-ticket"},
+    {"from": "normalize-ticket", "to": "effect-resume"}
+  ]
+}
+```
+
+Merge graph:
+
+```json
+{
+  "gates": [
+    {
+      "id": "merge-pr-and-ticket",
+      "display_name": "Merge PR and ticket payloads",
+      "type": "gate:merge",
+      "gate_type": "merge",
+      "sources": ["ticket-created", "pr-feedback"],
+      "merge_strategy": "latest-wins",
+      "conflict_policy": "fail_on_conflict"
+    }
+  ],
+  "edges": [
+    {"from": "ticket-created", "to": "merge-pr-and-ticket"},
+    {"from": "pr-feedback", "to": "merge-pr-and-ticket"},
+    {"from": "merge-pr-and-ticket", "to": "effect-resume"}
+  ]
+}
+```
+
+Mixed graph:
+
+```json
+{
+  "gates": [
+    {
+      "id": "filter-inbox",
+      "display_name": "Filter inbox events",
+      "type": "gate:filter",
+      "gate_type": "filter",
+      "predicate": "$(folder) == \"inbox\""
+    },
+    {
+      "id": "map-inbox",
+      "display_name": "Map inbox fields",
+      "type": "gate:map",
+      "gate_type": "map",
+      "mapping": {
+        "session_id": "$(thread_session_id)",
+        "ticket_number": "$(issue_number)"
+      }
+    },
+    {
+      "id": "merge-context",
+      "display_name": "Merge inbox and PR context",
+      "type": "gate:merge",
+      "gate_type": "merge",
+      "sources": ["filter-inbox", "pr-feedback"],
+      "merge_strategy": "latest-wins"
+    }
+  ],
+  "edges": [
+    {"from": "email-new-message", "to": "filter-inbox"},
+    {"from": "filter-inbox", "to": "map-inbox"},
+    {"from": "map-inbox", "to": "merge-context"},
+    {"from": "pr-feedback", "to": "merge-context"},
+    {"from": "merge-context", "to": "effect-resume"}
+  ]
+}
+```
+
+### Binding/interpolation examples (`$(output_name)`)
+
+- Exact output reference (type-preserving): `"session_id": "$(session_id)"`
+- Embedded string interpolation (stringified): `"prompt": "Continue $(ticket_number) in $(session_id)"`
 
 ### Wake scheduling examples
 

@@ -18,6 +18,7 @@ TriggerType = Literal[
     "trigger:git:push",
 ]
 
+GateType = Literal["gate:filter", "gate:map", "gate:merge"]
 EffectType = Literal["effect:vm:create", "effect:agent:prompt"]
 
 EmailProvider = Literal["json_store", "gmail", "graph"]
@@ -163,23 +164,47 @@ TriggerDefinitionDiscriminated = Annotated[
 ]
 
 
+class GateDefinition(WorkflowNodeDefinition):
+    type: GateType
+    outputs: dict[str, dict[str, Any]]
+
+
+class GateFilterDefinition(GateDefinition):
+    type: Literal["gate:filter"]
+    match: ConfigValue
+
+    @field_validator("match")
+    @classmethod
+    def validate_match_is_object(cls, value: ConfigValue) -> ConfigValue:
+        if not isinstance(value, dict):
+            raise ValueError("gate:filter match must be a JSON object")
+        return value
+
+
+class GateMapDefinition(GateDefinition):
+    type: Literal["gate:map"]
+    template: ConfigValue
+
+    @field_validator("template")
+    @classmethod
+    def validate_template_is_object(cls, value: ConfigValue) -> ConfigValue:
+        if not isinstance(value, dict):
+            raise ValueError("gate:map template must be a JSON object")
+        return value
+
+
+class GateMergeDefinition(GateDefinition):
+    type: Literal["gate:merge"]
+
+
+GateDefinitionDiscriminated = Annotated[
+    GateFilterDefinition | GateMapDefinition | GateMergeDefinition,
+    Field(discriminator="type"),
+]
+
+
 class EffectDefinition(WorkflowNodeDefinition):
     type: EffectType
-    upstream_id: str
-
-    @field_validator("upstream_id", mode="before")
-    @classmethod
-    def normalize_upstream_id(cls, value: object) -> str:
-        text = str(value).strip()
-        if not text:
-            raise ValueError("upstream_id must be a non-empty string")
-        return text
-
-    @model_validator(mode="after")
-    def validate_upstream_not_self(self) -> "EffectDefinition":
-        if self.upstream_id == self.id:
-            raise ValueError("effect cannot reference itself as upstream")
-        return self
 
 
 class VmCreateEffectDefinition(EffectDefinition):
@@ -219,10 +244,26 @@ EffectDefinitionDiscriminated = Annotated[
 ]
 
 
+class EdgeDefinition(BaseModel):
+    source_id: str
+    target_id: str
+
+    @field_validator("source_id", "target_id", mode="before")
+    @classmethod
+    def normalize_node_id(cls, value: object, info) -> str:
+        text = str(value).strip()
+        if not text:
+            raise ValueError(f"{info.field_name} must be a non-empty string")
+        return text
+
+
+WorkflowNodeType = TriggerType | GateType | EffectType
+
+
 class TriggerEvent(BaseModel):
     event_id: str = Field(min_length=1)
     trigger_id: str = Field(min_length=1)
-    trigger_type: TriggerType
+    trigger_type: WorkflowNodeType | str
     occurred_at: datetime
     payload: dict[str, Any] = Field(default_factory=dict)
 

@@ -178,32 +178,52 @@ logic remains isolated:
 This boundary keeps trigger transport and idempotent persistence in one host-owned queue while
 allowing each provider integration to evolve independently.
 
-## Event Graph + Effect Chaining Semantics
+## Workflow Graph + Edge Semantics
 
-The trigger/effect runtime forms a directed graph over node ids:
+The workflow runtime now treats `trigger`, `gate`, and `effect` as first-class node kinds. Wiring
+is edge-based:
 
 - trigger nodes: `triggers[*].id`
+- gate nodes: `gates[*].id`
 - effect nodes: `effects[*].id`
-- effect edges: `effect.upstream_id -> effect.id`
+- edges: explicit graph wiring records that connect upstream node ids to downstream node ids
+
+Effects no longer carry `upstream_id`. A node's inbound dependencies come only from edges, which
+makes fan-out, fan-in, and mixed graphs visible in the config instead of being implied by a single
+parent pointer.
 
 Execution model:
 
 1. Trigger orchestrator publishes source events to the shared queue.
-2. Effect orchestrator consumes pending queue records and finds downstream effects by `upstream_id`.
-3. Each effect run resolves `$(output_name)` bindings against the upstream event payload.
-4. On success, the effect publishes a completion event whose `trigger_id` is the effect id.
-5. Downstream effects can chain from that completion event and consume its outputs.
+2. Gate execution consumes upstream events through declared edges.
+3. `gate:filter` nodes either forward or suppress an event.
+4. `gate:map` nodes transform payload shape and can rename or derive outputs.
+5. `gate:merge` nodes wait for all required inbound inputs, reconcile them into one payload, and
+   publish the merged result downstream.
+6. Effects consume the post-gate payload and still resolve `$(output_name)` bindings against the
+   upstream event payload.
+7. On success, the effect publishes a completion event whose `trigger_id` is the effect id so
+   downstream edges can continue the chain.
 
 Safety/idempotency guarantees:
 
-- Each event/effect pair uses a stable idempotency key (`<event_id>::<effect_id>`), so retries do
-  not re-run completed work.
-- Effect execution records persist status (`running`, `succeeded`, `failed`, `skipped`) plus
-  resolved config and output snapshots.
-- Immediate cycles are skipped (`cycle_detected`) and deep chains are bounded by a max graph depth
-  guard.
-- Failed effects do not emit completion events, so downstream edges only activate after successful
-  upstream execution.
+- Each event/node pair uses a stable idempotency key (`<event_id>::<node_id>`), so retries do not
+  re-run completed work.
+- Gate and effect execution records persist state plus resolved config and output snapshots.
+- Immediate cycles are rejected or skipped as `cycle_detected`, and deep chains are bounded by a
+  max graph depth guard.
+- Filtered or failed nodes do not emit completion events, so downstream edges only activate after
+  successful upstream execution.
+
+Gate execution state is intentionally explicit:
+
+- `waiting_for_inputs`: a merge has not yet received all required upstream payloads.
+- `running`: the gate is actively evaluating.
+- `passed`: the gate forwarded data downstream unchanged or with a trivial projection.
+- `filtered`: a filter gate suppressed the event.
+- `merged`: a merge gate produced a consolidated payload.
+- `failed`: evaluation, binding, or merge resolution failed.
+- `skipped`: the node was bypassed because of a validation or cycle guard.
 
 ## Planned Next Integrations
 
