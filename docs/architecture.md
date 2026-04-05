@@ -178,6 +178,33 @@ logic remains isolated:
 This boundary keeps trigger transport and idempotent persistence in one host-owned queue while
 allowing each provider integration to evolve independently.
 
+## Event Graph + Effect Chaining Semantics
+
+The trigger/effect runtime forms a directed graph over node ids:
+
+- trigger nodes: `triggers[*].id`
+- effect nodes: `effects[*].id`
+- effect edges: `effect.upstream_id -> effect.id`
+
+Execution model:
+
+1. Trigger orchestrator publishes source events to the shared queue.
+2. Effect orchestrator consumes pending queue records and finds downstream effects by `upstream_id`.
+3. Each effect run resolves `$(output_name)` bindings against the upstream event payload.
+4. On success, the effect publishes a completion event whose `trigger_id` is the effect id.
+5. Downstream effects can chain from that completion event and consume its outputs.
+
+Safety/idempotency guarantees:
+
+- Each event/effect pair uses a stable idempotency key (`<event_id>::<effect_id>`), so retries do
+  not re-run completed work.
+- Effect execution records persist status (`running`, `succeeded`, `failed`, `skipped`) plus
+  resolved config and output snapshots.
+- Immediate cycles are skipped (`cycle_detected`) and deep chains are bounded by a max graph depth
+  guard.
+- Failed effects do not emit completion events, so downstream edges only activate after successful
+  upstream execution.
+
 ## Planned Next Integrations
 
 - Discord integration now uses a provider-backed bot API adapter (`discord_backend: bot_api`) while
