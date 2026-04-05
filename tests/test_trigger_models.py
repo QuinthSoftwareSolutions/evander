@@ -5,6 +5,7 @@ from pydantic import TypeAdapter
 
 from agent_sandbox.events.models import (
     AgentPromptEffectDefinition,
+    ConfigValue,
     EffectDefinitionDiscriminated,
     GitPushTriggerDefinition,
     PullRequestNewFeedbackTriggerDefinition,
@@ -152,3 +153,19 @@ def test_effect_discriminated_union_accepts_output_reference_interpolation() -> 
     )
 
     assert effect.type == "effect:agent:prompt"
+
+
+def test_config_value_adapter_accepts_nested_binding_structures() -> None:
+    value = TypeAdapter(ConfigValue).validate_python(
+        {
+            "session_id": "$(session_id)",
+            "prompt": "Continue $(session_id)",
+            "metadata": [{"ticket": "$(ticket_id)"}, True, None],
+        }
+    )
+
+    assert value == {
+        "session_id": "$(session_id)",
+        "prompt": "Continue $(session_id)",
+        "metadata": [{"ticket": "$(ticket_id)"}, True, None],
+    }

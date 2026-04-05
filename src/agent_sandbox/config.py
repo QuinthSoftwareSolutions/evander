@@ -459,6 +459,16 @@ class TriggerOrchestratorWorkerGlobalConfig(BaseModel):
         return self
 
     @model_validator(mode="after")
+    def validate_unique_graph_node_ids(self) -> TriggerOrchestratorWorkerGlobalConfig:
+        trigger_ids = {trigger.id for trigger in self.triggers}
+        effect_ids = {effect.id for effect in self.effects}
+        duplicates = sorted(trigger_ids & effect_ids)
+        if duplicates:
+            duplicate_list = ", ".join(duplicates)
+            raise ValueError(f"Trigger and effect IDs must be globally unique: {duplicate_list}")
+        return self
+
+    @model_validator(mode="after")
     def validate_effect_upstream_references(self) -> TriggerOrchestratorWorkerGlobalConfig:
         known_ids = {trigger.id for trigger in self.triggers} | {effect.id for effect in self.effects}
         missing = sorted({effect.upstream_id for effect in self.effects if effect.upstream_id not in known_ids})

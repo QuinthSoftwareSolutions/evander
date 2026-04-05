@@ -206,7 +206,85 @@ def test_effect_orchestrator_dispatches_without_waiting_for_long_effect(tmp_path
     assert only["status"] == "running"
 
     block_event.set()
-    worker.run_once()
-    execution_payload = json.loads((runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8"))
-    only = next(iter(execution_payload.values()))
+    only = None
+    for _ in range(5):
+        worker.run_once()
+        execution_payload = json.loads((runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8"))
+        only = next(iter(execution_payload.values()))
+        if only["status"] == "succeeded":
+            break
+        time.sleep(0.01)
+
+    assert only is not None
     assert only["status"] == "succeeded"
+
+
+def test_effect_orchestrator_records_binding_resolution_failure_and_advances_queue(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Tick",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                    "outputs": {"ticket_id": {"type": "integer"}},
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-bad",
+                    "display_name": "Bad binding",
+                    "type": "effect:agent:prompt",
+                    "upstream_id": "trigger-1",
+                    "prompt": "missing $(session_id)",
+                },
+                {
+                    "id": "effect-good",
+                    "display_name": "Good binding",
+                    "type": "effect:agent:prompt",
+                    "upstream_id": "trigger-1",
+                    "prompt": "ticket $(ticket_id)",
+                },
+            ],
+        }
+    )
+    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    worker.provider_factory = _Factory({"effect-good": {"ok": True}})
+
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="event-bad",
+            trigger_id="trigger-1",
+            trigger_type="trigger:cron",
+            occurred_at=datetime(2026, 4, 4, 12, 0, tzinfo=timezone.utc),
+            payload={"ticket_id": 7},
+        )
+    )
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="event-good",
+            trigger_id="trigger-1",
+            trigger_type="trigger:cron",
+            occurred_at=datetime(2026, 4, 4, 12, 1, tzinfo=timezone.utc),
+            payload={"ticket_id": 8},
+        )
+    )
+
+    for _ in range(4):
+        worker.run_once()
+
+    execution_payload = json.loads((runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8"))
+    by_event_and_effect = {(item["event_id"], item["effect_id"]): item for item in execution_payload.values()}
+
+    failed = by_event_and_effect[("event-bad", "effect-bad")]
+    assert failed["status"] == "failed"
+    assert "not declared by upstream node" in failed["error"]
+
+    succeeded = by_event_and_effect[("event-good", "effect-good")]
+    assert succeeded["status"] == "succeeded"

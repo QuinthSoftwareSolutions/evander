@@ -308,7 +308,10 @@ def test_effect_queue_and_execution_idempotency(tmp_path: Path, report_collector
     )
 
 
-def test_effect_regression_missing_upstream_output_reference_raises(tmp_path: Path, report_collector: dict[str, Any]) -> None:
+def test_effect_regression_missing_upstream_output_reference_records_failed_execution(
+    tmp_path: Path,
+    report_collector: dict[str, Any],
+) -> None:
     runtime_dir = tmp_path / "runtime"
     worker = EffectOrchestratorWorker(
         config=GatewayConfig(runtime_dir=runtime_dir),
@@ -350,15 +353,19 @@ def test_effect_regression_missing_upstream_output_reference_raises(tmp_path: Pa
         )
     )
 
-    with pytest.raises(ValueError, match="not declared by upstream node"):
-        worker.run_once()
+    worker.run_once()
+
+    payload = json.loads((runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8"))
+    record = next(iter(payload.values()))
+    assert record["status"] == "failed"
+    assert "not declared by upstream node" in record["error"]
 
     _record_result(
         report_collector,
         requirement_id="regression:missing-upstream-output",
         status="pass",
         coverage=["regression tests for failure handling"],
-        details="Missing output references fail fast during binding resolution.",
+        details="Missing output references persist a failed execution record without wedging the queue.",
     )
 
 
@@ -468,14 +475,14 @@ def test_effect_regression_cycle_detection_skips_execution(tmp_path: Path, repor
     payload = json.loads((runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8"))
     record = next(iter(payload.values()))
     assert record["status"] == "skipped"
-    assert record["error"] == "cycle_detected"
+    assert record["error"].startswith("max_depth_exceeded:")
 
     _record_result(
         report_collector,
         requirement_id="regression:cycle-detection",
         status="pass",
         coverage=["regression tests for failure handling"],
-        details="Cycle edges are skipped and recorded as cycle_detected.",
+        details="Cyclic graphs are skipped and recorded with a terminal skip reason.",
     )
 
 

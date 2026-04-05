@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 
 from .admin_service import AdminService
 from .config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
-from .effects.binding import resolve_effect_config_bindings
+from .effects.binding import BindingResolutionError, resolve_effect_config_bindings
 from .effects.registry import EffectProviderFactory
 from .events.models import EffectDefinitionDiscriminated, TriggerDefinitionDiscriminated, TriggerEvent
 from .host_heartbeat_worker import _single_instance_lock
@@ -219,12 +219,22 @@ class EffectOrchestratorWorker:
         started_at = datetime.now(UTC)
         upstream_output_names = node_outputs.get(effect.upstream_id, set()) or set(queue_record.payload.keys())
         raw_effect_config = _extract_effect_config(effect)
-        resolved = resolve_effect_config_bindings(
-            raw_effect_config,
-            upstream_payload=queue_record.payload,
-            declared_upstream_output_names=upstream_output_names,
-            strict_validation=True,
-        )
+        try:
+            resolved = resolve_effect_config_bindings(
+                raw_effect_config,
+                upstream_payload=queue_record.payload,
+                declared_upstream_output_names=upstream_output_names,
+                strict_validation=True,
+            )
+        except BindingResolutionError as exc:
+            self._write_failed_record(
+                queue_record=queue_record,
+                effect=effect,
+                started_at=started_at,
+                resolved_config={},
+                error=str(exc),
+            )
+            return False
         resolved_config = resolved.resolved_config if isinstance(resolved.resolved_config, dict) else {}
         resolved_config_hash = _json_sha256(resolved_config)
         record = EffectExecutionRecord(
@@ -308,10 +318,47 @@ class EffectOrchestratorWorker:
         return completion_event_id
 
     def _write_skipped_record(self, *, queue_record: TriggerQueueRecord, effect: EffectDefinitionDiscriminated, reason: str) -> None:
+        self._write_terminal_record(
+            queue_record=queue_record,
+            effect=effect,
+            status="skipped",
+            started_at=datetime.now(UTC),
+            resolved_config={},
+            error=reason,
+        )
+
+    def _write_failed_record(
+        self,
+        *,
+        queue_record: TriggerQueueRecord,
+        effect: EffectDefinitionDiscriminated,
+        started_at: datetime,
+        resolved_config: dict[str, Any],
+        error: str,
+    ) -> None:
+        self._write_terminal_record(
+            queue_record=queue_record,
+            effect=effect,
+            status="failed",
+            started_at=started_at,
+            resolved_config=resolved_config,
+            error=error,
+        )
+
+    def _write_terminal_record(
+        self,
+        *,
+        queue_record: TriggerQueueRecord,
+        effect: EffectDefinitionDiscriminated,
+        status: str,
+        started_at: datetime,
+        resolved_config: dict[str, Any],
+        error: str,
+    ) -> None:
         idempotency_key = _execution_idempotency_key(queue_record.event_id, effect.id)
         if self.execution_store.find_by_idempotency_key(idempotency_key) is not None:
             return
-        now = datetime.now(UTC)
+        finished_at = datetime.now(UTC)
         record = EffectExecutionRecord(
             execution_id=f"exec-{hashlib.sha1(idempotency_key.encode('utf-8')).hexdigest()[:16]}",
             idempotency_key=idempotency_key,
@@ -320,13 +367,13 @@ class EffectOrchestratorWorker:
             source_trigger_type=queue_record.trigger_type,
             effect_id=effect.id,
             effect_type=effect.type,
-            status="skipped",
-            started_at=now,
-            finished_at=now,
-            resolved_config_hash=_json_sha256({}),
-            resolved_config={},
+            status=status,
+            started_at=started_at,
+            finished_at=finished_at,
+            resolved_config_hash=_json_sha256(resolved_config),
+            resolved_config=resolved_config,
             outputs={},
-            error=reason,
+            error=error,
         )
         self.execution_store.put(record)
 

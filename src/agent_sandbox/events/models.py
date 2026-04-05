@@ -4,6 +4,7 @@ from datetime import datetime
 from typing import Annotated, Any, Literal, TypeAlias
 
 from pydantic import BaseModel, Field, StringConstraints, field_validator, model_validator
+from typing_extensions import TypeAliasType
 
 from agent_sandbox.models import DirectoryPath
 
@@ -27,12 +28,13 @@ OutputReferenceString = Annotated[str, StringConstraints(pattern=r"^\$\([A-Za-z_
 InterpolatedString = Annotated[str, StringConstraints(pattern=r".*\$\([A-Za-z_][A-Za-z0-9_]*\).*")]
 
 ConfigScalarValue: TypeAlias = str | int | float | bool | None
-ConfigValue: TypeAlias = (
+ConfigValue = TypeAliasType(
+    "ConfigValue",
     ConfigScalarValue
     | OutputReferenceString
     | InterpolatedString
     | list["ConfigValue"]
-    | dict[str, "ConfigValue"]
+    | dict[str, "ConfigValue"],
 )
 
 

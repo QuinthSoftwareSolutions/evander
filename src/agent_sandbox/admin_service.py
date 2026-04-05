@@ -2808,9 +2808,9 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
                 raise ValueError(f"worker config file {path} must contain a JSON object")
         else:
             model = _WORKER_GLOBAL_CONFIG_MODELS[worker_id]
-            raw = model.model_validate(self.config.model_dump(mode="json")).model_dump(mode="json")
+            raw = model.model_validate(self.config.model_dump(mode="json")).model_dump(mode="json", exclude_none=True)
         model = _WORKER_GLOBAL_CONFIG_MODELS[worker_id]
-        config = model.model_validate(raw).model_dump(mode="json")
+        config = model.model_validate(raw).model_dump(mode="json", exclude_none=True)
         return WorkerGlobalConfigPayload(worker_id=worker_id, path=str(path), exists=exists, config=config)
 
     def _write_worker_global_config(self, worker_id: str, payload: dict[str, object]) -> WorkerGlobalConfigWritePayload:
@@ -2819,7 +2819,7 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
             raise ValueError(f"Unknown worker: {worker_id}")
         model = _WORKER_GLOBAL_CONFIG_MODELS[worker_id]
         try:
-            config = model.model_validate(payload).model_dump(mode="json")
+            config = model.model_validate(payload).model_dump(mode="json", exclude_none=True)
         except ValidationError as exc:
             raise _safe_validation_error(exc, context=f"Invalid {worker_id} worker config") from exc
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -2839,7 +2839,7 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
             validated_trigger = _TRIGGER_DEFINITION_ADAPTER.validate_python(normalized_payload)
         except ValidationError as exc:
             raise _safe_validation_error(exc, context="Invalid trigger config") from exc
-        normalized_payload = validated_trigger.model_dump(mode="json")
+        normalized_payload = validated_trigger.model_dump(mode="json", exclude_none=True)
 
         current = self._read_worker_global_config("trigger-orchestrator")
         config = dict(current.config)
@@ -2908,7 +2908,7 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
             validated_effect = _EFFECT_DEFINITION_ADAPTER.validate_python(normalized_payload)
         except ValidationError as exc:
             raise _safe_validation_error(exc, context="Invalid effect config") from exc
-        normalized_payload = validated_effect.model_dump(mode="json")
+        normalized_payload = validated_effect.model_dump(mode="json", exclude_none=True)
 
         current = self._read_worker_global_config("trigger-orchestrator")
         config = dict(current.config)

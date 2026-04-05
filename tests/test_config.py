@@ -276,7 +276,7 @@ def test_trigger_orchestrator_worker_global_config_accepts_effects() -> None:
 
 
 def test_trigger_orchestrator_worker_global_config_rejects_duplicate_ids_across_graph() -> None:
-    with pytest.raises(ValueError, match="Effect upstream IDs must reference existing trigger/effect IDs"):
+    with pytest.raises(ValueError, match="Trigger and effect IDs must be globally unique: node-1"):
         TriggerOrchestratorWorkerGlobalConfig.model_validate(
             {
                 "triggers": [
@@ -285,6 +285,12 @@ def test_trigger_orchestrator_worker_global_config_rejects_duplicate_ids_across_
                         "display_name": "Every 15 minutes",
                         "type": "trigger:cron",
                         "expression": "*/15 * * * *",
+                    },
+                    {
+                        "id": "trigger-2",
+                        "display_name": "Every 30 minutes",
+                        "type": "trigger:cron",
+                        "expression": "*/30 * * * *",
                     },
                 ],
                 "effects": [
@@ -298,6 +304,8 @@ def test_trigger_orchestrator_worker_global_config_rejects_duplicate_ids_across_
                 ],
             }
         )
+
+
 def test_trigger_orchestrator_worker_global_config_rejects_duplicate_trigger_ids() -> None:
     with pytest.raises(ValueError, match="Duplicate trigger IDs are not allowed"):
         TriggerOrchestratorWorkerGlobalConfig.model_validate(
