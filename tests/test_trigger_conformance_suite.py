@@ -229,7 +229,7 @@ def test_conformance_schema_rejects_invalid_configs_with_explicit_errors(
 
 
 def test_conformance_schema_rejects_duplicate_trigger_ids(report_collector: dict[str, Any]) -> None:
-    with pytest.raises(ValueError, match="Node IDs must be globally unique across triggers, gates, and effects"):
+    with pytest.raises(ValueError, match="Node IDs must be globally unique across triggers, gates, effects, and queries"):
         TriggerOrchestratorWorkerGlobalConfig.model_validate(
             {
                 "runtime_dir": "runtime",

@@ -800,7 +800,7 @@ def test_admin_service_rejects_duplicate_trigger_ids_with_safe_error_message(tmp
 
     with pytest.raises(
         ValueError,
-        match="Node IDs must be globally unique across triggers, gates, and effects: dup",
+        match="Node IDs must be globally unique across triggers, gates, effects, and queries: dup",
     ):
         service.write_worker_global_config(
             "trigger-orchestrator",

@@ -22,6 +22,7 @@ from .effects.registry import EffectProviderFactory
 from .events.models import (
     EffectDefinitionDiscriminated,
     GateDefinitionDiscriminated,
+    QueryDefinitionDiscriminated,
     TriggerDefinitionDiscriminated,
     TriggerEvent,
 )
@@ -32,6 +33,7 @@ from .gate_runtime import (
 )
 from .host_heartbeat_worker import _single_instance_lock
 from .provider_config import ProviderConfigResolver
+from .queries.registry import QueryProviderFactory
 from .runtime import RuntimeContext, build_runtime
 from .triggers.queue import TriggerEventQueue, TriggerQueueRecord
 from .workflow_binding import (
@@ -55,7 +57,9 @@ _MAX_GRAPH_DEPTH = 16
 _MAX_EVENTS_PER_CYCLE = 200
 _NODE_OUTPUTS_CONTEXT_KEY = "__node_outputs"
 
-WorkflowNodeDefinition = TriggerDefinitionDiscriminated | GateDefinitionDiscriminated | EffectDefinitionDiscriminated
+WorkflowNodeDefinition = (
+    TriggerDefinitionDiscriminated | GateDefinitionDiscriminated | EffectDefinitionDiscriminated | QueryDefinitionDiscriminated
+)
 TRecord = TypeVar("TRecord", bound=BaseModel)
 
 
@@ -107,6 +111,7 @@ class ExecutionGraph:
     nodes_by_id: dict[str, WorkflowNodeDefinition]
     gates_by_id: dict[str, GateDefinitionDiscriminated]
     effects_by_id: dict[str, EffectDefinitionDiscriminated]
+    queries_by_id: dict[str, QueryDefinitionDiscriminated]
     downstream_index: dict[str, tuple[str, ...]]
     inbound_index: dict[str, tuple[Any, ...]]
     declared_outputs: dict[str, dict[str, Any]]
@@ -158,6 +163,11 @@ class EffectOrchestratorWorker:
         self._inflight: dict[str, Future[dict[str, Any]]] = {}
         self._inflight_lock = RLock()
         self.provider_factory = EffectProviderFactory(
+            ProviderConfigResolver(config),
+            admin_service=AdminService(config.runtime_dir),
+            env=dict(os.environ),
+        )
+        self.query_provider_factory = QueryProviderFactory(
             ProviderConfigResolver(config),
             admin_service=AdminService(config.runtime_dir),
             env=dict(os.environ),
@@ -265,10 +275,96 @@ class EffectOrchestratorWorker:
                 self._execute_gate(queue_record, gate=graph.gates_by_id[target_node_id], graph=graph)
                 continue
 
-            if self._dispatch_effect(queue_record, effect=graph.effects_by_id[target_node_id], graph=graph):
+            if target_node_id in graph.effects_by_id and self._dispatch_effect(
+                queue_record,
+                effect=graph.effects_by_id[target_node_id],
+                graph=graph,
+            ):
+                execution_count += 1
+                continue
+
+            if target_node_id in graph.queries_by_id and self._dispatch_query(
+                queue_record,
+                query=graph.queries_by_id[target_node_id],
+                graph=graph,
+            ):
                 execution_count += 1
 
         return execution_count
+
+    def _dispatch_query(
+        self,
+        queue_record: TriggerQueueRecord,
+        *,
+        query: QueryDefinitionDiscriminated,
+        graph: ExecutionGraph,
+    ) -> bool:
+        idempotency_key = _execution_idempotency_key(queue_record.event_id, query.id)
+        existing = self.execution_store.find_by_idempotency_key(idempotency_key)
+        if existing is not None:
+            if existing.status == "running":
+                with self._inflight_lock:
+                    if idempotency_key in self._inflight:
+                        return False
+                future = self._executor.submit(
+                    self._execute_query_provider,
+                    query=query,
+                    resolved_config=dict(existing.resolved_config),
+                )
+                with self._inflight_lock:
+                    self._inflight[idempotency_key] = future
+                return True
+            return False
+        with self._inflight_lock:
+            if idempotency_key in self._inflight:
+                return False
+
+        started_at = datetime.now(UTC)
+        upstream_payload = _node_output_context_from_payload(
+            queue_record.payload,
+            source_node_id=queue_record.trigger_id,
+        )
+        upstream_output_names = _declared_upstream_output_names(graph=graph, upstream_payload=upstream_payload)
+        raw_query_config = _extract_query_config(query)
+        try:
+            resolved = resolve_effect_config_bindings(
+                raw_query_config,
+                upstream_payload=upstream_payload,
+                declared_upstream_output_names=upstream_output_names,
+                strict_validation=True,
+            )
+        except BindingResolutionError as exc:
+            self._write_failed_effect_record(
+                queue_record=queue_record,
+                effect=query,
+                started_at=started_at,
+                resolved_config={},
+                error=str(exc),
+            )
+            return False
+
+        resolved_config = resolved.resolved_config if isinstance(resolved.resolved_config, dict) else {}
+        record = EffectExecutionRecord(
+            execution_id=f"exec-{hashlib.sha1(idempotency_key.encode('utf-8')).hexdigest()[:16]}",
+            idempotency_key=idempotency_key,
+            event_id=queue_record.event_id,
+            source_node_id=queue_record.trigger_id,
+            source_trigger_type=queue_record.trigger_type,
+            effect_id=query.id,
+            effect_type=query.type,
+            status="running",
+            started_at=started_at,
+            finished_at=started_at,
+            resolved_config_hash=_json_sha256(resolved_config),
+            resolved_config=resolved_config,
+            input_payload=dict(queue_record.payload),
+            outputs={},
+        )
+        self.execution_store.put(record)
+        future = self._executor.submit(self._execute_query_provider, query=query, resolved_config=resolved_config)
+        with self._inflight_lock:
+            self._inflight[idempotency_key] = future
+        return True
 
     def _dispatch_effect(
         self,
@@ -484,6 +580,15 @@ class EffectOrchestratorWorker:
         provider = self.provider_factory.build(effect)
         return dict(provider.execute(resolved_config=resolved_config) or {})
 
+    def _execute_query_provider(
+        self,
+        *,
+        query: QueryDefinitionDiscriminated,
+        resolved_config: dict[str, Any],
+    ) -> dict[str, Any]:
+        provider = self.query_provider_factory.build(query)
+        return dict(provider.execute(resolved_config=resolved_config) or {})
+
     def _reap_completed_futures(self) -> tuple[int, int]:
         completed_count = 0
         published_count = 0
@@ -627,7 +732,7 @@ class EffectOrchestratorWorker:
         self,
         *,
         queue_record: TriggerQueueRecord,
-        effect: EffectDefinitionDiscriminated,
+        effect: EffectDefinitionDiscriminated | QueryDefinitionDiscriminated,
         started_at: datetime,
         resolved_config: dict[str, Any],
         error: str,
@@ -645,7 +750,7 @@ class EffectOrchestratorWorker:
         self,
         *,
         queue_record: TriggerQueueRecord,
-        effect: EffectDefinitionDiscriminated,
+        effect: EffectDefinitionDiscriminated | QueryDefinitionDiscriminated,
         status: str,
         started_at: datetime,
         resolved_config: dict[str, Any],
@@ -830,7 +935,8 @@ def main() -> None:
 
 def _build_execution_graph(worker_config: TriggerOrchestratorWorkerGlobalConfig) -> ExecutionGraph:
     nodes_by_id: dict[str, WorkflowNodeDefinition] = {
-        node.id: node for node in (*worker_config.triggers, *worker_config.gates, *worker_config.effects)
+        node.id: node
+        for node in (*worker_config.triggers, *worker_config.gates, *worker_config.effects, *worker_config.queries)
     }
     edges = list(worker_config.edges)
 
@@ -838,14 +944,27 @@ def _build_execution_graph(worker_config: TriggerOrchestratorWorkerGlobalConfig)
         nodes_by_id=nodes_by_id,
         gates_by_id={gate.id: gate for gate in worker_config.gates},
         effects_by_id={effect.id: effect for effect in worker_config.effects},
+        queries_by_id={query.id: query for query in worker_config.queries},
         downstream_index=build_downstream_index(edges),
         inbound_index=build_inbound_edge_index(edges),
-        declared_outputs=index_declared_outputs(worker_config.triggers, worker_config.gates, worker_config.effects),
+        declared_outputs=index_declared_outputs(
+            worker_config.triggers,
+            worker_config.gates,
+            worker_config.effects,
+            worker_config.queries,
+        ),
     )
 
 
 def _extract_effect_config(effect: EffectDefinitionDiscriminated) -> dict[str, Any]:
     payload = effect.model_dump(mode="json")
+    for field_name in ("id", "display_name", "type", "outputs"):
+        payload.pop(field_name, None)
+    return payload
+
+
+def _extract_query_config(query: QueryDefinitionDiscriminated) -> dict[str, Any]:
+    payload = query.model_dump(mode="json")
     for field_name in ("id", "display_name", "type", "outputs"):
         payload.pop(field_name, None)
     return payload
