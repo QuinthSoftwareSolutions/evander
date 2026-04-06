@@ -5,6 +5,7 @@ import logging
 import os
 import random
 import time
+from uuid import uuid4
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -104,10 +105,19 @@ class TriggerOrchestratorWorker:
             discovered_for_trigger = len(events)
             events_discovered += discovered_for_trigger
             for event in events:
+                trace_id = _normalize_trace_id(event.trace_id)
+                event = event.model_copy(update={"trace_id": trace_id})
                 already_queued = self.event_queue.contains(event.event_id)
                 record = self.event_queue.publish(event)
                 if not already_queued and record.event_id == event.event_id:
                     events_published += 1
+                    logger.debug(
+                        "Trigger event published trigger_id=%s trigger_type=%s event_id=%s trace_id=%s",
+                        trigger.id,
+                        trigger.type,
+                        event.event_id,
+                        trace_id,
+                    )
 
             self._update_cursor_state(
                 cursor_payload,
@@ -167,6 +177,13 @@ class TriggerOrchestratorWorker:
 
 def _worker_global_config_path(project_dir: Path) -> Path:
     return project_dir / "config" / "trigger-orchestrator" / "config.json"
+
+
+def _normalize_trace_id(value: str | None) -> str:
+    if value is None:
+        return str(uuid4())
+    normalized = value.strip()
+    return normalized or str(uuid4())
 
 
 def _load_trigger_orchestrator_worker_global_config(

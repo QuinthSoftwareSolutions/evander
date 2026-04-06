@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from uuid import uuid4
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import RLock
@@ -17,6 +18,7 @@ class TriggerQueueRecord(BaseModel):
     event_id: str = Field(min_length=1)
     trigger_id: str = Field(min_length=1)
     trigger_type: str
+    trace_id: str = Field(default_factory=lambda: str(uuid4()), min_length=1)
     occurred_at: datetime
     payload: dict[str, Any] = Field(default_factory=dict)
     delivery_state: DeliveryState = "pending"
@@ -35,6 +37,7 @@ class TriggerEventQueue:
 
     def publish(self, event: TriggerEvent, *, idempotency_key: str | None = None) -> TriggerQueueRecord:
         normalized_key = self._normalize_idempotency_key(idempotency_key)
+        trace_id = self._normalize_trace_id(event.trace_id)
         with self._lock:
             items = self._store.read_all()
             if normalized_key is not None:
@@ -49,6 +52,7 @@ class TriggerEventQueue:
                 event_id=event.event_id,
                 trigger_id=event.trigger_id,
                 trigger_type=event.trigger_type,
+                trace_id=trace_id,
                 occurred_at=event.occurred_at,
                 payload=event.payload,
                 delivery_state="pending",
@@ -153,3 +157,10 @@ class TriggerEventQueue:
             return None
         normalized = value.strip()
         return normalized or None
+
+    @staticmethod
+    def _normalize_trace_id(value: str | None) -> str:
+        if value is None:
+            return str(uuid4())
+        normalized = value.strip()
+        return normalized or str(uuid4())

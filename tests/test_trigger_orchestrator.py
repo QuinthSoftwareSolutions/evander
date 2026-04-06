@@ -53,6 +53,7 @@ def test_trigger_orchestrator_run_once_publishes_and_updates_cursor(tmp_path: Pa
 
     queue_payload = json.loads(worker_config.event_queue_store_path.read_text(encoding="utf-8"))
     assert list(queue_payload.keys()) == ["event-1"]
+    assert queue_payload["event-1"]["trace_id"]
     cursor_payload = json.loads(worker_config.event_queue_cursor_store_path.read_text(encoding="utf-8"))
     assert cursor_payload["triggers"]["cron-1"]["last_event_id"] == "event-1"
 
