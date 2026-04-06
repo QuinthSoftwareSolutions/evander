@@ -98,6 +98,56 @@ textarea {
   color: #fff6f1;
 }
 
+.create-group {
+  border: 1px solid rgba(91, 67, 37, 0.14);
+  border-radius: 16px;
+  background: rgba(255, 250, 241, 0.78);
+}
+
+.create-group + .create-group {
+  margin-top: 0.8rem;
+}
+
+.create-group-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.85rem 0.95rem;
+  cursor: pointer;
+  list-style: none;
+  font-family: "Avenir Next Condensed", "Franklin Gothic Medium", sans-serif;
+  font-size: 0.95rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #4e3b25;
+}
+
+.create-group-summary::-webkit-details-marker {
+  display: none;
+}
+
+.create-group-count {
+  min-width: 1.9rem;
+  padding: 0.18rem 0.5rem;
+  border-radius: 999px;
+  background: rgba(91, 67, 37, 0.1);
+  text-align: center;
+  font-size: 0.72rem;
+}
+
+.create-group-description {
+  margin: 0;
+  padding: 0 0.95rem 0.8rem;
+  color: #6b563f;
+  font-size: 0.9rem;
+  line-height: 1.4;
+}
+
+.create-group-actions {
+  padding: 0 0.7rem 0.2rem;
+}
+
 .inspector-label {
   display: block;
   margin-bottom: 0.75rem;
@@ -191,6 +241,11 @@ textarea {
   box-shadow: 0 0 0 2px rgba(45, 95, 168, 0.16);
 }
 
+.node-query .workflow-handle {
+  background: #7b4aa8;
+  box-shadow: 0 0 0 2px rgba(123, 74, 168, 0.18);
+}
+
 .node-trigger {
   background: linear-gradient(145deg, #fff4de, #fffaf0);
 }
@@ -201,6 +256,10 @@ textarea {
 
 .node-effect {
   background: linear-gradient(145deg, #eaf1ff, #fbfdff);
+}
+
+.node-query {
+  background: linear-gradient(145deg, #f5ecff, #fdf9ff);
 }
 
 .node-title {

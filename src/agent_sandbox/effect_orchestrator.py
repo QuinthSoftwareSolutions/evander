@@ -22,7 +22,9 @@ from .effects.registry import EffectProviderFactory
 from .events.models import (
     EffectDefinitionDiscriminated,
     GateDefinitionDiscriminated,
+    NODE_OUTPUTS_CONTEXT_KEY,
     QueryDefinitionDiscriminated,
+    validate_output_mapping_keys,
     TriggerDefinitionDiscriminated,
     TriggerEvent,
 )
@@ -55,8 +57,6 @@ logger = logging.getLogger(__name__)
 
 _MAX_GRAPH_DEPTH = 16
 _MAX_EVENTS_PER_CYCLE = 200
-_NODE_OUTPUTS_CONTEXT_KEY = "__node_outputs"
-
 WorkflowNodeDefinition = (
     TriggerDefinitionDiscriminated | GateDefinitionDiscriminated | EffectDefinitionDiscriminated | QueryDefinitionDiscriminated
 )
@@ -991,7 +991,7 @@ def _execution_idempotency_key(event_id: str, node_id: str) -> str:
 
 
 def _node_output_context_from_payload(payload: dict[str, Any], *, source_node_id: str) -> dict[str, dict[str, Any]]:
-    raw_context = payload.get(_NODE_OUTPUTS_CONTEXT_KEY)
+    raw_context = payload.get(NODE_OUTPUTS_CONTEXT_KEY)
     if isinstance(raw_context, dict):
         context: dict[str, dict[str, Any]] = {}
         for node_id, node_payload in raw_context.items():
@@ -1001,7 +1001,7 @@ def _node_output_context_from_payload(payload: dict[str, Any], *, source_node_id
         if context:
             return context
 
-    flat_payload = {key: value for key, value in payload.items() if key != _NODE_OUTPUTS_CONTEXT_KEY}
+    flat_payload = {key: value for key, value in payload.items() if key != NODE_OUTPUTS_CONTEXT_KEY}
     return {source_node_id: flat_payload}
 
 
@@ -1025,14 +1025,18 @@ def _payload_with_node_output_context(
     outputs: dict[str, Any],
     reset_context: bool,
 ) -> dict[str, Any]:
+    validate_output_mapping_keys(
+        outputs,
+        context=f"{completed_node_id} runtime outputs",
+    )
     payload = dict(outputs)
     inherited_context = _node_output_context_from_payload(source_payload, source_node_id=source_node_id)
     if reset_context:
-        payload[_NODE_OUTPUTS_CONTEXT_KEY] = {completed_node_id: dict(outputs)}
+        payload[NODE_OUTPUTS_CONTEXT_KEY] = {completed_node_id: dict(outputs)}
         return payload
     merged_context = {node_id: dict(node_payload) for node_id, node_payload in inherited_context.items()}
     merged_context[completed_node_id] = dict(outputs)
-    payload[_NODE_OUTPUTS_CONTEXT_KEY] = merged_context
+    payload[NODE_OUTPUTS_CONTEXT_KEY] = merged_context
     return payload
 
 

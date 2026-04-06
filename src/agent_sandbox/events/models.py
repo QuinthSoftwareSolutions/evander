@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from collections.abc import Mapping
 from typing import Annotated, Any, Literal, TypeAlias
 
 from pydantic import BaseModel, Field, StringConstraints, field_validator, model_validator
@@ -35,6 +36,8 @@ QueryType = Literal[
 
 EmailProvider = Literal["json_store", "gmail", "graph"]
 PrFeedbackProvider = Literal["local", "github", "ado"]
+NODE_OUTPUTS_CONTEXT_KEY = "__node_outputs"
+RESERVED_OUTPUT_NAMES = frozenset({NODE_OUTPUTS_CONTEXT_KEY})
 
 OutputName = Annotated[str, StringConstraints(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")]
 OutputReferenceString = Annotated[str, StringConstraints(pattern=r"^\$\([A-Za-z_][A-Za-z0-9_]*\)$")]
@@ -64,6 +67,15 @@ class WorkflowNodeDefinition(BaseModel):
         if not text:
             raise ValueError(f"{info.field_name} must be a non-empty string")
         return text
+
+    @model_validator(mode="after")
+    def validate_declared_output_names(self) -> "WorkflowNodeDefinition":
+        if self.outputs is not None:
+            validate_output_mapping_keys(
+                self.outputs,
+                context=f"{self.type} {self.id} declared outputs",
+            )
+        return self
 
 
 class TriggerDefinition(WorkflowNodeDefinition):
@@ -378,6 +390,14 @@ class TriggerEvent(BaseModel):
     occurred_at: datetime
     payload: dict[str, Any] = Field(default_factory=dict)
     trace_id: str | None = Field(default=None, min_length=1)
+
+
+def validate_output_mapping_keys(payload: Mapping[str, Any], *, context: str) -> None:
+    reserved = tuple(sorted(name for name in payload if name in RESERVED_OUTPUT_NAMES))
+    if not reserved:
+        return
+    reserved_list = ", ".join(reserved)
+    raise ValueError(f"{context} must not use reserved output name(s): {reserved_list}")
 
 
 def normalize_directory_paths(value: object) -> object:

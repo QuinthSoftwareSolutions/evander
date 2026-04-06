@@ -15,7 +15,7 @@ from .config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
 from .admin_service import AdminService
 from .provider_config import ProviderConfigResolver
 from .runtime import RuntimeContext, build_runtime
-from .events.models import TriggerDefinitionDiscriminated
+from .events.models import TriggerDefinitionDiscriminated, validate_output_mapping_keys
 from .triggers.queue import TriggerEventQueue
 from .triggers.registry import TriggerProviderFactory
 from .host_heartbeat_worker import _single_instance_lock
@@ -107,6 +107,20 @@ class TriggerOrchestratorWorker:
             for event in events:
                 trace_id = _normalize_trace_id(event.trace_id)
                 event = event.model_copy(update={"trace_id": trace_id})
+                try:
+                    validate_output_mapping_keys(
+                        event.payload,
+                        context=f"{trigger.type} {trigger.id} runtime outputs",
+                    )
+                except ValueError:
+                    logger.exception(
+                        "Trigger event rejected trigger_id=%s trigger_type=%s event_id=%s trace_id=%s",
+                        trigger.id,
+                        trigger.type,
+                        event.event_id,
+                        trace_id,
+                    )
+                    continue
                 already_queued = self.event_queue.contains(event.event_id)
                 record = self.event_queue.publish(event)
                 if not already_queued and record.event_id == event.event_id:

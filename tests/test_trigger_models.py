@@ -129,6 +129,21 @@ def test_trigger_event_envelope_accepts_normalized_payload() -> None:
     assert event.payload == {"branch": "main"}
 
 
+def test_declared_outputs_reject_reserved_output_name() -> None:
+    adapter = TypeAdapter(TriggerDefinitionDiscriminated)
+
+    with pytest.raises(ValueError, match="reserved output name"):
+        adapter.validate_python(
+            {
+                "id": "t-reserved",
+                "display_name": "Reserved output",
+                "type": "trigger:cron",
+                "expression": "* * * * *",
+                "outputs": {"__node_outputs": {"type": "object"}},
+            }
+        )
+
+
 def test_effect_discriminated_union_accepts_output_reference_interpolation() -> None:
     adapter = TypeAdapter(EffectDefinitionDiscriminated)
     effect = adapter.validate_python(

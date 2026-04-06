@@ -1,9 +1,18 @@
 {
+  "edges": [],
+  "effect_cursor_store_path": "runtime/effect-orchestrator-cursors.json",
+  "effect_execution_store_path": "runtime/effect-orchestrator-executions.json",
+  "effect_lock_path": "runtime/effect-orchestrator.lock",
+  "effects": [],
+  "event_queue_cursor_store_path": "runtime/trigger-orchestrator-cursors.json",
+  "event_queue_store_path": "runtime/trigger-orchestrator-events.json",
+  "gate_cursor_store_path": "runtime/gate-orchestrator-cursors.json",
+  "gate_execution_store_path": "runtime/gate-orchestrator-executions.json",
+  "gates": [],
+  "jitter_seconds": 5.0,
+  "lock_path": "runtime/trigger-orchestrator.lock",
+  "poll_interval_seconds": 30.0,
+  "queries": [],
   "runtime_dir": "runtime",
-  "poll_interval_seconds": 30,
-  "jitter_seconds": 5,
-  "lock_path": null,
-  "event_queue_store_path": null,
-  "event_queue_cursor_store_path": null,
   "triggers": []
 }

@@ -84,3 +84,40 @@ def test_trigger_orchestrator_main_once_uses_single_cycle(monkeypatch, tmp_path:
 
     output = capsys.readouterr().out.strip()
     assert "Trigger orchestrator cycle complete triggers=2 discovered=3 published=2" in output
+
+
+def test_trigger_orchestrator_rejects_reserved_runtime_output_name(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "cron-1",
+                    "display_name": "Every minute",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+        }
+    )
+    worker = TriggerOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    event = TriggerEvent(
+        event_id="event-1",
+        trigger_id="cron-1",
+        trigger_type="trigger:cron",
+        occurred_at=datetime(2026, 4, 3, 12, 0, tzinfo=UTC),
+        payload={"__node_outputs": "forbidden"},
+    )
+    worker.provider_factory.build = lambda trigger: _StaticProvider([event])  # type: ignore[assignment]
+
+    result = worker.run_once()
+
+    assert result.configured_triggers == 1
+    assert result.events_discovered == 1
+    assert result.events_published == 0
+    queue_payload = json.loads(worker_config.event_queue_store_path.read_text(encoding="utf-8"))
+    assert queue_payload == {}

@@ -183,6 +183,62 @@ def test_effect_orchestrator_executes_query_nodes(tmp_path: Path) -> None:
     assert record["outputs"] == {"state_code": "running"}
 
 
+def test_effect_orchestrator_rejects_reserved_runtime_output_name(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Tick",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                    "outputs": {"ticket_id": {"type": "integer"}},
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-1",
+                    "display_name": "Provision",
+                    "type": "effect:vm:create",
+                    "vm_name": "vm-$(trigger-1.ticket_id)",
+                }
+            ],
+            "edges": [
+                _edge("trigger-1", "effect-1"),
+            ],
+        }
+    )
+    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    worker.provider_factory = _Factory({"effect-1": {"__node_outputs": "forbidden"}})
+
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="event-1",
+            trigger_id="trigger-1",
+            trigger_type="trigger:cron",
+            occurred_at=datetime(2026, 4, 4, 12, 0, tzinfo=timezone.utc),
+            payload={"ticket_id": 123},
+            trace_id="trace-1",
+        )
+    )
+
+    for _ in range(4):
+        worker.run_once()
+
+    effect_payload = json.loads((runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8"))
+    record = next(iter(effect_payload.values()))
+    assert record["status"] == "failed"
+    assert "reserved output name" in record["error"]
+
+    queue_payload = json.loads(worker_config.event_queue_store_path.read_text(encoding="utf-8"))
+    assert set(queue_payload.keys()) == {"event-1"}
+
+
 def test_effect_orchestrator_preserves_upstream_payload_across_multi_hop_chain(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
