@@ -107,6 +107,7 @@ def test_effect_orchestrator_executes_gate_and_effect_chain(tmp_path: Path) -> N
             trigger_type="trigger:cron",
             occurred_at=datetime(2026, 4, 4, 12, 0, tzinfo=timezone.utc),
             payload={"ticket_id": 123},
+            trace_id="trace-1",
         )
     )
 
@@ -124,6 +125,7 @@ def test_effect_orchestrator_executes_gate_and_effect_chain(tmp_path: Path) -> N
     assert any(item["trigger_id"] == "gate-1" for item in queue_payload.values())
     assert any(item["trigger_id"] == "effect-1" for item in queue_payload.values())
     assert any(item["trigger_id"] == "effect-2" for item in queue_payload.values())
+    assert {item["trace_id"] for item in queue_payload.values()} == {"trace-1"}
 
 
 def test_effect_orchestrator_executes_query_nodes(tmp_path: Path) -> None:

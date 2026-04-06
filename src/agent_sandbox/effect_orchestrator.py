@@ -67,6 +67,7 @@ class EffectExecutionRecord(BaseModel):
     execution_id: str = Field(min_length=1)
     idempotency_key: str = Field(min_length=1)
     event_id: str = Field(min_length=1)
+    trace_id: str = Field(min_length=1)
     source_node_id: str = Field(min_length=1)
     source_trigger_type: str = Field(min_length=1)
     effect_id: str = Field(min_length=1)
@@ -87,6 +88,7 @@ class GateExecutionRecord(BaseModel):
     execution_id: str = Field(min_length=1)
     idempotency_key: str = Field(min_length=1)
     event_id: str = Field(min_length=1)
+    trace_id: str = Field(min_length=1)
     source_node_id: str = Field(min_length=1)
     source_trigger_type: str = Field(min_length=1)
     gate_id: str = Field(min_length=1)
@@ -250,6 +252,13 @@ class EffectOrchestratorWorker:
 
     def _process_event_record(self, queue_record: TriggerQueueRecord, *, graph: ExecutionGraph) -> int:
         downstream_node_ids = graph.downstream_index.get(queue_record.trigger_id, ())
+        logger.debug(
+            "Processing workflow event event_id=%s trace_id=%s source_node_id=%s downstream_nodes=%d",
+            queue_record.event_id,
+            queue_record.trace_id,
+            queue_record.trigger_id,
+            len(downstream_node_ids),
+        )
         if not downstream_node_ids:
             return 0
 
@@ -348,6 +357,7 @@ class EffectOrchestratorWorker:
             execution_id=f"exec-{hashlib.sha1(idempotency_key.encode('utf-8')).hexdigest()[:16]}",
             idempotency_key=idempotency_key,
             event_id=queue_record.event_id,
+            trace_id=queue_record.trace_id,
             source_node_id=queue_record.trigger_id,
             source_trigger_type=queue_record.trigger_type,
             effect_id=query.id,
@@ -422,6 +432,7 @@ class EffectOrchestratorWorker:
             execution_id=f"exec-{hashlib.sha1(idempotency_key.encode('utf-8')).hexdigest()[:16]}",
             idempotency_key=idempotency_key,
             event_id=queue_record.event_id,
+            trace_id=queue_record.trace_id,
             source_node_id=queue_record.trigger_id,
             source_trigger_type=queue_record.trigger_type,
             effect_id=effect.id,
@@ -615,8 +626,9 @@ class EffectOrchestratorWorker:
                 published_count += 1
             except Exception as exc:  # noqa: BLE001
                 logger.exception(
-                    "Effect execution failed event_id=%s effect_id=%s effect_type=%s",
+                    "Effect execution failed event_id=%s trace_id=%s effect_id=%s effect_type=%s",
                     record.event_id,
+                    record.trace_id,
                     record.effect_id,
                     record.effect_type,
                 )
@@ -659,6 +671,7 @@ class EffectOrchestratorWorker:
             trigger_id=record.effect_id,
             trigger_type=record.effect_type,
             occurred_at=datetime.now(UTC),
+            trace_id=record.trace_id,
             payload=_payload_with_node_output_context(
                 source_payload=record.input_payload,
                 source_node_id=record.source_node_id,
@@ -686,6 +699,7 @@ class EffectOrchestratorWorker:
             trigger_id=record.gate_id,
             trigger_type=record.gate_type,
             occurred_at=datetime.now(UTC),
+            trace_id=record.trace_id,
             payload=_payload_with_node_output_context(
                 source_payload=record.input_payload,
                 source_node_id=record.source_node_id,
@@ -764,6 +778,7 @@ class EffectOrchestratorWorker:
             execution_id=f"exec-{hashlib.sha1(idempotency_key.encode('utf-8')).hexdigest()[:16]}",
             idempotency_key=idempotency_key,
             event_id=queue_record.event_id,
+            trace_id=queue_record.trace_id,
             source_node_id=queue_record.trigger_id,
             source_trigger_type=queue_record.trigger_type,
             effect_id=effect.id,
@@ -802,6 +817,7 @@ class EffectOrchestratorWorker:
             execution_id=f"gate-{hashlib.sha1(idempotency_key.encode('utf-8')).hexdigest()[:16]}",
             idempotency_key=idempotency_key,
             event_id=queue_record.event_id,
+            trace_id=queue_record.trace_id,
             source_node_id=queue_record.trigger_id,
             source_trigger_type=queue_record.trigger_type,
             gate_id=gate.id,

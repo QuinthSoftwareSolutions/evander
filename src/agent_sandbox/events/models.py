@@ -377,6 +377,7 @@ class TriggerEvent(BaseModel):
     trigger_type: WorkflowNodeType | str
     occurred_at: datetime
     payload: dict[str, Any] = Field(default_factory=dict)
+    trace_id: str | None = Field(default=None, min_length=1)
 
 
 def normalize_directory_paths(value: object) -> object:

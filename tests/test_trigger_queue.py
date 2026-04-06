@@ -23,8 +23,19 @@ def test_publish_and_list_pending(tmp_path) -> None:
     published = queue.publish(_event(event_id="evt-1"))
 
     assert published.delivery_state == "pending"
+    assert published.trace_id
     pending = queue.list_pending()
     assert [item.event_id for item in pending] == ["evt-1"]
+
+
+def test_publish_preserves_trace_id_when_provided(tmp_path) -> None:
+    queue = TriggerEventQueue(tmp_path / "events.json")
+
+    published = queue.publish(
+        _event(event_id="evt-1").model_copy(update={"trace_id": "trace-123"}),
+    )
+
+    assert published.trace_id == "trace-123"
 
 
 def test_publish_honors_idempotency_key(tmp_path) -> None:
