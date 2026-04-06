@@ -4,6 +4,8 @@ from .pr_create import PrCreateEffectProvider
 from .vm_copy_files import VmCopyFilesEffectProvider
 from .vm_create import VmCreateEffectProvider
 from .vm_exec import VmExecEffectProvider
+from .vm_start import VmStartEffectProvider
+from .vm_stop import VmStopEffectProvider
 
 __all__ = [
     "AgentPromptEffectProvider",
@@ -14,4 +16,6 @@ __all__ = [
     "VmCopyFilesEffectProvider",
     "VmCreateEffectProvider",
     "VmExecEffectProvider",
+    "VmStartEffectProvider",
+    "VmStopEffectProvider",
 ]
