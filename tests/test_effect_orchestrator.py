@@ -126,6 +126,61 @@ def test_effect_orchestrator_executes_gate_and_effect_chain(tmp_path: Path) -> N
     assert any(item["trigger_id"] == "effect-2" for item in queue_payload.values())
 
 
+def test_effect_orchestrator_executes_query_nodes(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Tick",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                    "outputs": {"session_id": {"type": "string"}},
+                }
+            ],
+            "queries": [
+                {
+                    "id": "query-1",
+                    "display_name": "VM run state",
+                    "type": "query:vm:run-state",
+                    "session_id": "$(trigger-1.session_id)",
+                    "outputs": {"state_code": {"type": "string"}},
+                }
+            ],
+            "edges": [
+                _edge("trigger-1", "query-1"),
+            ],
+        }
+    )
+    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    worker.query_provider_factory = _Factory({"query-1": {"state_code": "running"}})
+
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="event-query-1",
+            trigger_id="trigger-1",
+            trigger_type="trigger:cron",
+            occurred_at=datetime(2026, 4, 4, 12, 0, tzinfo=timezone.utc),
+            payload={"session_id": "session-123"},
+        )
+    )
+
+    for _ in range(4):
+        worker.run_once()
+
+    effect_payload = json.loads((runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8"))
+    record = next(iter(effect_payload.values()))
+    assert record["effect_id"] == "query-1"
+    assert record["effect_type"] == "query:vm:run-state"
+    assert record["status"] == "succeeded"
+    assert record["outputs"] == {"state_code": "running"}
+
+
 def test_effect_orchestrator_preserves_upstream_payload_across_multi_hop_chain(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)

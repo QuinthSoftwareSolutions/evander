@@ -1,4 +1,4 @@
-export type WorkflowNodeKind = "trigger" | "gate" | "effect";
+export type WorkflowNodeKind = "trigger" | "gate" | "effect" | "query";
 
 export type WorkflowNodeConfig = {
   id: string;
@@ -27,6 +27,7 @@ export type WorkflowConfig = {
   triggers: WorkflowNodeConfig[];
   gates: WorkflowNodeConfig[];
   effects: WorkflowNodeConfig[];
+  queries: WorkflowNodeConfig[];
   edges: WorkflowEdge[];
   [key: string]: unknown;
 };

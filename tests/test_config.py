@@ -283,6 +283,33 @@ def test_trigger_orchestrator_worker_global_config_accepts_effects() -> None:
     assert config.effects[0].type == "effect:agent:prompt"
 
 
+def test_trigger_orchestrator_worker_global_config_accepts_queries() -> None:
+    config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "triggers": [
+                {
+                    "id": "cron-15m",
+                    "display_name": "Every 15 minutes",
+                    "type": "trigger:cron",
+                    "expression": "*/15 * * * *",
+                }
+            ],
+            "queries": [
+                {
+                    "id": "query-state",
+                    "display_name": "VM run state",
+                    "type": "query:vm:run-state",
+                    "session_id": "session-1",
+                    "outputs": {"state_code": {"type": "string"}},
+                }
+            ],
+            "edges": [{"source_id": "cron-15m", "target_id": "query-state"}],
+        }
+    )
+
+    assert config.queries[0].type == "query:vm:run-state"
+
+
 def test_trigger_orchestrator_worker_global_config_accepts_multiple_effect_edges_from_one_source() -> None:
     config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
         {
@@ -323,7 +350,7 @@ def test_trigger_orchestrator_worker_global_config_accepts_multiple_effect_edges
 
 
 def test_trigger_orchestrator_worker_global_config_rejects_duplicate_ids_across_graph() -> None:
-    with pytest.raises(ValueError, match="Node IDs must be globally unique across triggers, gates, and effects: node-1"):
+    with pytest.raises(ValueError, match="Node IDs must be globally unique across triggers, gates, effects, and queries: node-1"):
         TriggerOrchestratorWorkerGlobalConfig.model_validate(
             {
                 "triggers": [
@@ -354,7 +381,7 @@ def test_trigger_orchestrator_worker_global_config_rejects_duplicate_ids_across_
 
 
 def test_trigger_orchestrator_worker_global_config_rejects_duplicate_trigger_ids() -> None:
-    with pytest.raises(ValueError, match="Node IDs must be globally unique across triggers, gates, and effects: cron-15m"):
+    with pytest.raises(ValueError, match="Node IDs must be globally unique across triggers, gates, effects, and queries: cron-15m"):
         TriggerOrchestratorWorkerGlobalConfig.model_validate(
             {
                 "triggers": [
@@ -376,7 +403,7 @@ def test_trigger_orchestrator_worker_global_config_rejects_duplicate_trigger_ids
 
 
 def test_trigger_orchestrator_worker_global_config_rejects_duplicate_effect_ids() -> None:
-    with pytest.raises(ValueError, match="Node IDs must be globally unique across triggers, gates, and effects: effect-dup"):
+    with pytest.raises(ValueError, match="Node IDs must be globally unique across triggers, gates, effects, and queries: effect-dup"):
         TriggerOrchestratorWorkerGlobalConfig.model_validate(
             {
                 "triggers": [

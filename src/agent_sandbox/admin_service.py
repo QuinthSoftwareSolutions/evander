@@ -65,7 +65,13 @@ from .models import (
 )
 from .runtime import RuntimeContext, build_runtime
 from .storage import JsonStore
-from .events.models import EdgeDefinition, EffectDefinitionDiscriminated, GateDefinitionDiscriminated, TriggerDefinitionDiscriminated
+from .events.models import (
+    EdgeDefinition,
+    EffectDefinitionDiscriminated,
+    GateDefinitionDiscriminated,
+    QueryDefinitionDiscriminated,
+    TriggerDefinitionDiscriminated,
+)
 
 _WORKER_DEFINITIONS: tuple[tuple[str, str, str], ...] = (
     ("ado", "ADO Worker", "agent-sandbox-ado-worker.service"),
@@ -265,6 +271,7 @@ class WorkflowEditorSavePayload(BaseModel):
 _TRIGGER_DEFINITION_ADAPTER = TypeAdapter(TriggerDefinitionDiscriminated)
 _GATE_DEFINITION_ADAPTER = TypeAdapter(GateDefinitionDiscriminated)
 _EFFECT_DEFINITION_ADAPTER = TypeAdapter(EffectDefinitionDiscriminated)
+_QUERY_DEFINITION_ADAPTER = TypeAdapter(QueryDefinitionDiscriminated)
 _EDGE_DEFINITION_ADAPTER = TypeAdapter(EdgeDefinition)
 
 
@@ -3290,6 +3297,7 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
             ("triggers", _TRIGGER_DEFINITION_ADAPTER),
             ("gates", _GATE_DEFINITION_ADAPTER),
             ("effects", _EFFECT_DEFINITION_ADAPTER),
+            ("queries", _QUERY_DEFINITION_ADAPTER),
         ):
             entries = config.get(collection_name, [])
             if not isinstance(entries, list):

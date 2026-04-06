@@ -29,6 +29,9 @@ EffectType = Literal[
     "effect:vm:copy-files",
     "effect:pr:create",
 ]
+QueryType = Literal[
+    "query:vm:run-state",
+]
 
 EmailProvider = Literal["json_store", "gmail", "graph"]
 PrFeedbackProvider = Literal["local", "github", "ado"]
@@ -349,7 +352,23 @@ class EdgeDefinition(BaseModel):
         return text
 
 
-WorkflowNodeType = TriggerType | GateType | EffectType
+class QueryDefinition(WorkflowNodeDefinition):
+    type: QueryType
+
+
+class VmRunStateQueryDefinition(QueryDefinition):
+    type: Literal["query:vm:run-state"]
+    session_id: ConfigValue | None = None
+    vm_name: ConfigValue | None = None
+
+
+QueryDefinitionDiscriminated = Annotated[
+    VmRunStateQueryDefinition,
+    Field(discriminator="type"),
+]
+
+
+WorkflowNodeType = TriggerType | GateType | EffectType | QueryType
 
 
 class TriggerEvent(BaseModel):
