@@ -96,6 +96,7 @@ def test_vm_copy_files_provider_copies_inline_and_host_files(tmp_path: Path) -> 
                     "source_path": None,
                     "destination_path": "/home/agent/inline.txt",
                     "content": "inline payload",
+                    "content_format": None,
                     "mode": "0644",
                     "overwrite": True,
                 },
@@ -103,6 +104,7 @@ def test_vm_copy_files_provider_copies_inline_and_host_files(tmp_path: Path) -> 
                     "source_path": str(source_path),
                     "destination_path": "/home/agent/source.txt",
                     "content": None,
+                    "content_format": None,
                     "mode": None,
                     "overwrite": False,
                 },
@@ -161,6 +163,67 @@ def test_vm_copy_files_provider_resolves_vm_by_session_id(tmp_path: Path) -> Non
                     "source_path": None,
                     "destination_path": "/home/agent/hello.txt",
                     "content": "hello",
+                    "content_format": None,
+                    "mode": None,
+                    "overwrite": True,
+                }
+            ],
+            "vm_user": "agent",
+        }
+    ]
+
+
+def test_vm_copy_files_provider_serializes_object_content_as_yaml(tmp_path: Path) -> None:
+    admin_service = _AdminServiceStub(
+        [
+            VmSummary(
+                vm_name="lab-vm-2",
+                session_ids=["session-abc"],
+                directory_paths=["root/team-a"],
+                libvirt_state="running",
+                ip_address="192.0.2.22",
+                agent_state="omitted",
+            )
+        ],
+        vm_copy_files_result={
+            "success": True,
+            "vm_name": "lab-vm-2",
+            "action": "vm_copy_files",
+            "message": "Copied 1 path(s) into lab-vm-2",
+            "copied_count": 1,
+            "copied_paths": ["/home/agent/repo/AGENT_TASK.yaml"],
+        },
+    )
+    context = _build_context(tmp_path, admin_service)
+    provider = VmCopyFilesEffectProvider()
+    provider.initialize(effect_definition=SimpleNamespace(id="copy-files"), runtime_context=context)
+
+    provider.execute(
+        resolved_config={
+            "session_id": "session-abc",
+            "files": [
+                {
+                    "destination_path": "/home/agent/repo/AGENT_TASK.yaml",
+                    "content": {
+                        "issue_number": "14084",
+                        "name": "Sample issue",
+                        "tags": ["bug", "urgent"],
+                    },
+                    "content_format": "yaml",
+                }
+            ],
+        }
+    )
+
+    assert admin_service.calls == [
+        {
+            "target": "session-abc",
+            "files": [
+                {
+                    "source_path": None,
+                    "destination_path": "/home/agent/repo/AGENT_TASK.yaml",
+                    "content": "issue_number: '14084'\nname: Sample issue\ntags:\n- bug\n- urgent\n",
+                    "content_format": "yaml",
                     "mode": None,
                     "overwrite": True,
                 }

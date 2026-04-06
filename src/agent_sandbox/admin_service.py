@@ -71,7 +71,9 @@ from .events.models import (
     GateDefinitionDiscriminated,
     QueryDefinitionDiscriminated,
     TriggerDefinitionDiscriminated,
+    effective_node_output_schema,
 )
+from .workflow_graph import build_inbound_edge_index, merge_declared_output_intersection
 
 _WORKER_DEFINITIONS: tuple[tuple[str, str, str], ...] = (
     ("ado", "ADO Worker", "agent-sandbox-ado-worker.service"),
@@ -268,11 +270,389 @@ class WorkflowEditorSavePayload(BaseModel):
     layout: dict[str, object]
 
 
+class WorkflowEditorFieldOption(BaseModel):
+    value: str
+    label: str
+
+
+class WorkflowEditorFieldDefinition(BaseModel):
+    key: str
+    label: str
+    kind: str
+    required: bool = False
+    bindable: bool = False
+    read_only: bool = False
+    description: str | None = None
+    placeholder: str | None = None
+    options: list[WorkflowEditorFieldOption] = Field(default_factory=list)
+    item_fields: list["WorkflowEditorFieldDefinition"] = Field(default_factory=list)
+
+
+class WorkflowEditorNodeCatalogEntry(BaseModel):
+    kind: str
+    type: str
+    label: str
+    fields: list[WorkflowEditorFieldDefinition] = Field(default_factory=list)
+
+
+class WorkflowEditorCatalogPayload(BaseModel):
+    worker_id: str = "trigger-orchestrator"
+    nodes: list[WorkflowEditorNodeCatalogEntry]
+
+
 _TRIGGER_DEFINITION_ADAPTER = TypeAdapter(TriggerDefinitionDiscriminated)
 _GATE_DEFINITION_ADAPTER = TypeAdapter(GateDefinitionDiscriminated)
 _EFFECT_DEFINITION_ADAPTER = TypeAdapter(EffectDefinitionDiscriminated)
 _QUERY_DEFINITION_ADAPTER = TypeAdapter(QueryDefinitionDiscriminated)
 _EDGE_DEFINITION_ADAPTER = TypeAdapter(EdgeDefinition)
+
+
+def _field_option(value: str, label: str | None = None) -> WorkflowEditorFieldOption:
+    return WorkflowEditorFieldOption(value=value, label=label or value)
+
+
+def _field(
+    key: str,
+    label: str,
+    kind: str,
+    *,
+    required: bool = False,
+    bindable: bool = False,
+    read_only: bool = False,
+    description: str | None = None,
+    placeholder: str | None = None,
+    options: list[WorkflowEditorFieldOption] | None = None,
+    item_fields: list[WorkflowEditorFieldDefinition] | None = None,
+) -> WorkflowEditorFieldDefinition:
+    return WorkflowEditorFieldDefinition(
+        key=key,
+        label=label,
+        kind=kind,
+        required=required,
+        bindable=bindable,
+        read_only=read_only,
+        description=description,
+        placeholder=placeholder,
+        options=options or [],
+        item_fields=item_fields or [],
+    )
+
+
+_WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
+    WorkflowEditorNodeCatalogEntry(
+        kind="trigger",
+        type="trigger:cron",
+        label="Cron",
+        fields=[
+            _field("expression", "Cron expression", "string", required=True, placeholder="*/15 * * * *"),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="trigger",
+        type="trigger:ticket:created",
+        label="Ticket created",
+        fields=[
+            _field("directories", "Directories", "string_list", required=True, placeholder="root"),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="trigger",
+        type="trigger:ticket:changed",
+        label="Ticket changed",
+        fields=[
+            _field("directories", "Directories", "string_list", required=True, placeholder="root"),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="trigger",
+        type="trigger:discord:new-message",
+        label="Discord message",
+        fields=[
+            _field("discord_bot_token_env", "Bot token env var", "string", required=True),
+            _field("channel_ids", "Channel IDs", "string_list"),
+            _field("user_ids", "User IDs", "string_list"),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="trigger",
+        type="trigger:email:new-message",
+        label="Email message",
+        fields=[
+            _field(
+                "provider",
+                "Provider",
+                "enum",
+                required=True,
+                options=[_field_option("json_store", "JSON store"), _field_option("gmail", "Gmail"), _field_option("graph", "Microsoft Graph")],
+            ),
+            _field("account_identifier", "Account identifier", "string", required=True),
+            _field("mailbox_ids", "Mailbox IDs", "string_list", required=True),
+            _field("auth_secret_refs", "Auth secret refs", "json"),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="trigger",
+        type="trigger:pull-request:new-feedback",
+        label="PR feedback",
+        fields=[
+            _field(
+                "provider",
+                "Provider",
+                "enum",
+                required=True,
+                options=[_field_option("local", "Local"), _field_option("github", "GitHub"), _field_option("ado", "Azure DevOps")],
+            ),
+            _field("organization_url", "Organization URL", "string"),
+            _field("project", "Project", "string"),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="trigger",
+        type="trigger:git:push",
+        label="Git push",
+        fields=[
+            _field("path_to_repo", "Repository path", "string", required=True),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="trigger",
+        type="trigger:agent:run:completed",
+        label="Agent run completed",
+        fields=[
+            _field("vm_user", "VM user", "string"),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="gate",
+        type="gate:filter",
+        label="Filter",
+        fields=[
+            _field(
+                "match",
+                "Match",
+                "json",
+                bindable=True,
+                description="Recursive subset match against the immediate incoming payload. Mutually exclusive with When.",
+            ),
+            _field(
+                "when",
+                "When",
+                "json",
+                bindable=True,
+                description="Structured predicate using bindings, for example {\"all\":[{\"left\":\"$(effect-1.success)\",\"equals\":true}]}. Mutually exclusive with Match.",
+            ),
+            _field(
+                "outputs",
+                "Outputs",
+                "json",
+                read_only=True,
+                description="Derived from the single upstream node and validated automatically.",
+            ),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="gate",
+        type="gate:map",
+        label="Map",
+        fields=[
+            _field("template", "Template", "json", required=True, bindable=True),
+            _field(
+                "outputs",
+                "Outputs",
+                "json",
+                read_only=True,
+                description="Derived from the top-level keys in the map template.",
+            ),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="gate",
+        type="gate:merge",
+        label="Merge",
+        fields=[
+            _field(
+                "outputs",
+                "Outputs",
+                "json",
+                read_only=True,
+                description="Derived from the compatible intersection of upstream outputs.",
+            ),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="gate",
+        type="gate:await-agent",
+        label="Await agent",
+        fields=[
+            _field(
+                "completion_trigger_id",
+                "Completion trigger ID",
+                "string",
+                required=True,
+                description="ID of a root trigger:agent:run:completed node that emits agent completion events.",
+            ),
+            _field(
+                "outputs",
+                "Outputs",
+                "json",
+                read_only=True,
+                description="Derived from the configured completion trigger.",
+            ),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="effect",
+        type="effect:vm:create",
+        label="VM create",
+        fields=[
+            _field("vm_name", "VM name", "string", bindable=True),
+            _field("session_id", "Session ID", "string", bindable=True),
+            _field("labels", "Labels", "json", bindable=True),
+            _field("model", "Model", "string", bindable=True),
+            _field("repo_source", "Repo source", "string", bindable=True),
+            _field("vm_user", "VM user", "string", bindable=True),
+            _field("ttl_hours", "TTL hours", "number", bindable=True),
+            _field("discord_channels", "Discord channels", "string_list"),
+            _field("email_mailboxes", "Email mailboxes", "string_list"),
+            _field("email_folders", "Email folders", "string_list"),
+            _field("python", "Python", "boolean", bindable=True),
+            _field("dotnet", "Dotnet", "boolean", bindable=True),
+            _field("nuget", "NuGet", "boolean", bindable=True),
+            _field("mssql", "MSSQL", "boolean", bindable=True),
+            _field("mssql_init_root", "MSSQL init root", "string", bindable=True),
+            _field("playwright", "Playwright", "boolean", bindable=True),
+            _field("directory_path", "Directory path", "string", bindable=True),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="effect",
+        type="effect:vm:start",
+        label="VM start",
+        fields=[
+            _field("target", "Target", "string", bindable=True),
+            _field("session_id", "Session ID", "string", bindable=True),
+            _field("vm_name", "VM name", "string", bindable=True),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="effect",
+        type="effect:vm:stop",
+        label="VM stop",
+        fields=[
+            _field("target", "Target", "string", bindable=True),
+            _field("session_id", "Session ID", "string", bindable=True),
+            _field("vm_name", "VM name", "string", bindable=True),
+            _field("timeout_seconds", "Timeout seconds", "number", bindable=True),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="effect",
+        type="effect:agent:prompt",
+        label="Agent prompt",
+        fields=[
+            _field("target", "Target", "string", bindable=True),
+            _field("session_id", "Session ID", "string", bindable=True),
+            _field("vm_name", "VM name", "string", bindable=True),
+            _field("prompt", "Prompt", "string", required=True, bindable=True),
+            _field("vm_user", "VM user", "string", bindable=True),
+            _field("resume_thread_id", "Resume thread ID", "string", bindable=True),
+            _field(
+                "output_mode",
+                "Output mode",
+                "enum",
+                options=[_field_option("immediate", "Immediate"), _field_option("on_completion", "On completion")],
+            ),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="effect",
+        type="effect:vm:exec",
+        label="VM exec",
+        fields=[
+            _field("target", "Target", "string", bindable=True),
+            _field("session_id", "Session ID", "string", bindable=True),
+            _field("vm_name", "VM name", "string", bindable=True),
+            _field("vm_user", "VM user", "string", bindable=True),
+            _field("command", "Command", "string", required=True, bindable=True),
+            _field("working_directory", "Working directory", "string", bindable=True),
+            _field("environment", "Environment", "json", bindable=True),
+            _field("stdin", "Stdin", "string", bindable=True),
+            _field("timeout_seconds", "Timeout seconds", "number", bindable=True),
+            _field("check", "Check exit code", "boolean", bindable=True),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="effect",
+        type="effect:vm:copy-files",
+        label="VM copy files",
+        fields=[
+            _field("target", "Target", "string", bindable=True),
+            _field("session_id", "Session ID", "string", bindable=True),
+            _field("vm_name", "VM name", "string", bindable=True),
+            _field("vm_user", "VM user", "string", bindable=True),
+            _field(
+                "files",
+                "Files",
+                "object_list",
+                required=True,
+                item_fields=[
+                    _field("source_path", "Source path", "string", bindable=True),
+                    _field(
+                        "source_format",
+                        "Source format",
+                        "enum",
+                        options=[
+                            _field_option("file", "File"),
+                            _field_option("template", "Template"),
+                        ],
+                    ),
+                    _field("content", "Content", "string", bindable=True),
+                    _field(
+                        "content_format",
+                        "Content format",
+                        "enum",
+                        options=[
+                            _field_option("text", "Text"),
+                            _field_option("json", "JSON"),
+                            _field_option("yaml", "YAML"),
+                        ],
+                    ),
+                    _field("destination_path", "Destination path", "string", required=True, bindable=True),
+                    _field("mode", "Mode", "string", bindable=True),
+                    _field("overwrite", "Overwrite", "boolean", bindable=True),
+                ],
+            ),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="effect",
+        type="effect:pr:create",
+        label="PR create",
+        fields=[
+            _field("host_repo_path", "Host repo path", "string", required=True, bindable=True),
+            _field("local_branch", "Local branch", "string", bindable=True),
+            _field("origin_branch", "Origin branch", "string", bindable=True),
+            _field("provider", "Provider", "string", bindable=True),
+            _field("base_branch", "Base branch", "string", bindable=True),
+            _field("session_id", "Session ID", "string", bindable=True),
+            _field("work_item_id", "Work item ID", "string", bindable=True),
+            _field("title", "Title", "string", bindable=True),
+            _field("body", "Body", "string", bindable=True),
+            _field("body_file", "Body file", "string", bindable=True),
+            _field("draft", "Draft", "boolean", bindable=True),
+            _field("fill", "Fill", "boolean", bindable=True),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="query",
+        type="query:vm:run-state",
+        label="VM run state",
+        fields=[
+            _field("session_id", "Session ID", "string", bindable=True),
+            _field("vm_name", "VM name", "string", bindable=True),
+        ],
+    ),
+)
 
 
 def _safe_validation_error(exc: ValidationError, *, context: str) -> ValueError:
@@ -1159,7 +1539,7 @@ def _remote_shell_script(
     return "\n".join(script_lines) + "\n"
 
 
-def _probe_agent_state(vm_name: str, vm_ip: str, vm_user: str) -> tuple[str, list[str], datetime | None]:
+def _probe_agent_state(vm_name: str, vm_ip: str, vm_user: str) -> tuple[str, list[str], datetime | None, str | None]:
     ssh_private_key_path = _resolve_private_key_path()
     if ssh_private_key_path is None:
         return "unknown", [], None
@@ -1224,14 +1604,17 @@ fi
 shopt -s nullglob
 active_entries=()
 newest_updated_at="${control_updated_at}"
+newest_dispatch_id=""
 found_any_state=0
 for state_path in "${LOG_DIR}"/agent-*.state; do
   found_any_state=1
   status="$(read_state_value "${state_path}" "status" || true)"
   updated_at="$(read_state_value "${state_path}" "updated_at" || true)"
+  dispatch_id="$(read_state_value "${state_path}" "dispatch_id" || true)"
   pid="$(read_state_value "${state_path}" "pid" || true)"
   if [[ -n "${updated_at}" && ( -z "${newest_updated_at}" || "${updated_at}" > "${newest_updated_at}" ) ]]; then
     newest_updated_at="${updated_at}"
+    newest_dispatch_id="${dispatch_id}"
   fi
   if [[ "${status}" != "running" ]]; then
     continue
@@ -1249,9 +1632,11 @@ if [[ -f "${codex_state_path}" ]]; then
   found_any_state=1
   status="$(read_state_value "${codex_state_path}" "status" || true)"
   updated_at="$(read_state_value "${codex_state_path}" "updated_at" || true)"
+  dispatch_id="$(read_state_value "${codex_state_path}" "dispatch_id" || true)"
   pid="$(read_state_value "${codex_state_path}" "pid" || true)"
   if [[ -n "${updated_at}" && ( -z "${newest_updated_at}" || "${updated_at}" > "${newest_updated_at}" ) ]]; then
     newest_updated_at="${updated_at}"
+    newest_dispatch_id="${dispatch_id}"
   fi
   if [[ "${status}" == "running" ]] && ( state_is_fresh "${updated_at}" || is_active_agent_pid "${pid}" ); then
     active_entries+=("codex-heartbeat")
@@ -1262,16 +1647,19 @@ shopt -u nullglob
 if [[ ${#active_entries[@]} -gt 0 ]]; then
   repos_json="$(printf '%s\n' "${active_entries[@]}" | python3 -c 'import json,sys; print(json.dumps([line.strip() for line in sys.stdin if line.strip()]))')"
   updated_json="$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1] or None))' "${newest_updated_at}")"
-  printf '{"state":"running","repos":%s,"updated_at":%s}\n' "${repos_json}" "${updated_json}"
+  dispatch_json="$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1] or None))' "${newest_dispatch_id}")"
+  printf '{"state":"running","repos":%s,"updated_at":%s,"dispatch_id":%s}\n' "${repos_json}" "${updated_json}" "${dispatch_json}"
   exit 0
 fi
 
 if [[ "${found_any_state}" == "1" || -n "${control_updated_at}" ]]; then
-  printf '{"state":"idle","repos":[],"updated_at":%s}\n' "$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1] or None))' "${newest_updated_at}")"
+  printf '{"state":"idle","repos":[],"updated_at":%s,"dispatch_id":%s}\n' \
+    "$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1] or None))' "${newest_updated_at}")" \
+    "$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1] or None))' "${newest_dispatch_id}")"
   exit 0
 fi
 
-printf '{"state":"not_started","repos":[],"updated_at":null}\n'
+printf '{"state":"not_started","repos":[],"updated_at":null,"dispatch_id":null}\n'
 """
 
     result = _run_subprocess(
@@ -1282,16 +1670,17 @@ printf '{"state":"not_started","repos":[],"updated_at":null}\n'
         input=remote_script,
     )
     if result.returncode != 0:
-        return "unknown", [], None
+        return "unknown", [], None, None
     try:
         payload = json.loads((result.stdout or "").strip() or "{}")
     except json.JSONDecodeError:
-        return "unknown", [], None
+        return "unknown", [], None, None
     updated_at = payload.get("updated_at")
     return (
         str(payload.get("state") or "unknown"),
         [str(item) for item in payload.get("repos", []) if str(item).strip()],
         datetime.fromisoformat(updated_at) if isinstance(updated_at, str) and updated_at else None,
+        str(payload.get("dispatch_id")).strip() if payload.get("dispatch_id") is not None and str(payload.get("dispatch_id")).strip() else None,
     )
 
 
@@ -2188,7 +2577,7 @@ git -C "${{TARGET_DIR}}" config agent-sandbox.sessionId "${{SESSION_ID}}"
                 repo_names = []
                 updated_at = None
             else:
-                agent_state, repo_names, updated_at = _probe_agent_state(vm_name, ip_address, vm_user)
+                agent_state, repo_names, updated_at, dispatch_id = _probe_agent_state(vm_name, ip_address, vm_user)
             summaries.append(
                 VmSummary(
                     vm_name=vm_name,
@@ -2201,6 +2590,7 @@ git -C "${{TARGET_DIR}}" config agent-sandbox.sessionId "${{SESSION_ID}}"
                     agent_state=agent_state,
                     agent_repo_names=repo_names,
                     last_state_update_at=updated_at,
+                    dispatch_id=dispatch_id if libvirt_state == "running" and not omit_state and ip_address else None,
                 )
             )
         return summaries
@@ -2478,7 +2868,14 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
             ["--state", "disable", "--vm-name", vm_name, "--vm-user", vm_user, "--host-state-path", str(self.config.host_agent_control_state_path)],
         )
 
-    def resume_agent(self, target: str, prompt: str, *, vm_user: str = "agent") -> VmActionResult:
+    def resume_agent(
+        self,
+        target: str,
+        prompt: str,
+        *,
+        vm_user: str = "agent",
+        dispatch_id: str | None = None,
+    ) -> VmActionResult:
         sessions = self.runtime.sessions.read_all()
         vm_name = _resolve_vm_name_from_target(target, sessions)
         try:
@@ -2493,7 +2890,17 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
             )
         return self._run_script(
             "resume_issue_agent.sh",
-            ["--prompt", prompt, "--vm-name", vm_name, "--vm-user", vm_user, "--host-control-state-path", str(self.config.host_agent_control_state_path)],
+            [
+                "--prompt",
+                prompt,
+                "--vm-name",
+                vm_name,
+                "--vm-user",
+                vm_user,
+                "--host-control-state-path",
+                str(self.config.host_agent_control_state_path),
+                *(["--dispatch-id", dispatch_id] if dispatch_id else []),
+            ],
             env=os.environ | {"AGENT_MODEL": model},
         )
 
@@ -3161,6 +3568,9 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
     def read_workflow_editor_document(self) -> WorkflowEditorDocumentPayload:
         return self._read_workflow_editor_document()
 
+    def read_workflow_editor_catalog(self) -> WorkflowEditorCatalogPayload:
+        return self._read_workflow_editor_catalog()
+
     def validate_workflow_editor_document(
         self,
         *,
@@ -3256,13 +3666,17 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
             layout=layout,
         )
 
+    def _read_workflow_editor_catalog(self) -> WorkflowEditorCatalogPayload:
+        return WorkflowEditorCatalogPayload(nodes=list(_WORKFLOW_EDITOR_NODE_CATALOG))
+
     def _validate_workflow_editor_document(
         self,
         *,
         config: dict[str, object],
         layout: dict[str, object] | None = None,
     ) -> WorkflowEditorValidationPayload:
-        normalized_config = self._validate_worker_global_config_payload("trigger-orchestrator", config)
+        normalized_candidate = self._normalize_workflow_editor_config(config)
+        normalized_config = self._validate_worker_global_config_payload("trigger-orchestrator", normalized_candidate)
         normalized_layout = self._validate_workflow_editor_layout(
             layout or {},
             node_ids=self._collect_workflow_node_ids(normalized_config),
@@ -3308,6 +3722,72 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
                 node = adapter.validate_python(entry)
                 node_ids.add(node.id)
         return node_ids
+
+    def _normalize_workflow_editor_config(self, payload: dict[str, object]) -> dict[str, object]:
+        candidate = json.loads(json.dumps(payload))
+        if not isinstance(candidate, dict):
+            return payload
+
+        triggers = candidate.get("triggers")
+        gates = candidate.get("gates")
+        effects = candidate.get("effects")
+        queries = candidate.get("queries")
+        edges = candidate.get("edges")
+        if triggers is None:
+            triggers = []
+            candidate["triggers"] = triggers
+        if gates is None:
+            gates = []
+            candidate["gates"] = gates
+        if effects is None:
+            effects = []
+            candidate["effects"] = effects
+        if queries is None:
+            queries = []
+            candidate["queries"] = queries
+        if edges is None:
+            edges = []
+            candidate["edges"] = edges
+        if not isinstance(triggers, list) or not isinstance(gates, list) or not isinstance(effects, list) or not isinstance(queries, list):
+            return candidate
+        if not isinstance(edges, list):
+            return candidate
+
+        nodes_by_id: dict[str, dict[str, object]] = {}
+        for group in (triggers, gates, effects, queries):
+            for node in group:
+                if not isinstance(node, dict):
+                    continue
+                node_id = str(node.get("id") or "").strip()
+                if node_id:
+                    nodes_by_id[node_id] = node
+
+        inbound = build_inbound_edge_index(edges)
+        for gate in gates:
+            if not isinstance(gate, dict):
+                continue
+            gate_type = str(gate.get("type") or "").strip()
+            gate_id = str(gate.get("id") or "").strip()
+            upstream_edges = inbound.get(gate_id, ())
+            upstream_ids = [str(edge.get("source_id") or "").strip() for edge in upstream_edges if isinstance(edge, dict)]
+            if gate_type == "gate:filter":
+                upstream_node = nodes_by_id.get(upstream_ids[0]) if upstream_ids else None
+                gate["outputs"] = effective_node_output_schema(upstream_node) if upstream_node is not None else {}
+            elif gate_type == "gate:map":
+                gate["outputs"] = effective_node_output_schema(gate)
+            elif gate_type == "gate:await-agent":
+                completion_trigger_id = str(gate.get("completion_trigger_id") or "").strip()
+                completion_trigger = nodes_by_id.get(completion_trigger_id)
+                gate["outputs"] = effective_node_output_schema(completion_trigger) if completion_trigger is not None else {}
+            elif gate_type == "gate:merge":
+                upstream_outputs = [
+                    effective_node_output_schema(nodes_by_id[upstream_id])
+                    for upstream_id in upstream_ids
+                    if upstream_id in nodes_by_id
+                ]
+                gate["outputs"] = merge_declared_output_intersection(*upstream_outputs) if upstream_outputs else {}
+
+        return candidate
 
     def _validate_workflow_editor_layout(
         self,

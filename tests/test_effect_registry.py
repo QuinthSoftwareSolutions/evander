@@ -27,8 +27,8 @@ class _AdminServiceStub:
         self.create_vm_calls.append(kwargs)
         return VmActionResult(success=True, vm_name=str(kwargs["vm_name"]), action="create_vm", message="ok")
 
-    def resume_agent(self, *, target: str, prompt: str, vm_user: str = "agent"):
-        self.resume_calls.append({"target": target, "prompt": prompt, "vm_user": vm_user})
+    def resume_agent(self, *, target: str, prompt: str, vm_user: str = "agent", dispatch_id: str | None = None):
+        self.resume_calls.append({"target": target, "prompt": prompt, "vm_user": vm_user, "dispatch_id": dispatch_id})
         return VmActionResult(success=True, vm_name=target, action="resume_issue_agent", message="ok")
 
 
@@ -117,7 +117,9 @@ def test_agent_prompt_provider_emits_thread_id() -> None:
     provider = factory.build(effect)
     output = provider.execute()
 
+    assert output["dispatch_id"].startswith("dispatch-effect-prompt-")
     assert output["thread_id"] == "thread-123"
     assert output["success"] is True
     assert output["output_mode"] == "on_completion"
     assert admin_service.resume_calls[0]["target"] == "session-42"
+    assert admin_service.resume_calls[0]["dispatch_id"] == output["dispatch_id"]

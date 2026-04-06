@@ -30,6 +30,7 @@ from .events.models import (
 )
 from .gate_runtime import (
     GateRuntimeError,
+    filter_when_matches,
     filter_payload_matches,
     require_object_payload,
 )
@@ -37,6 +38,7 @@ from .host_heartbeat_worker import _single_instance_lock
 from .provider_config import ProviderConfigResolver
 from .queries.registry import QueryProviderFactory
 from .runtime import RuntimeContext, build_runtime
+from .storage import JsonStore
 from .triggers.queue import TriggerEventQueue, TriggerQueueRecord
 from .workflow_binding import (
     BindingResolutionError,
@@ -108,6 +110,16 @@ class GateExecutionRecord(BaseModel):
     completion_event_enqueued_at: datetime | None = None
 
 
+class AwaitAgentPendingRecord(BaseModel):
+    gate_id: str = Field(min_length=1)
+    dispatch_id: str = Field(min_length=1)
+    prompt_event_id: str = Field(min_length=1)
+    prompt_source_node_id: str = Field(min_length=1)
+    trace_id: str = Field(min_length=1)
+    payload: dict[str, Any] = Field(default_factory=dict)
+    occurred_at: datetime
+
+
 @dataclass(frozen=True)
 class ExecutionGraph:
     nodes_by_id: dict[str, WorkflowNodeDefinition]
@@ -158,6 +170,7 @@ class EffectOrchestratorWorker:
             fallback=worker_config.runtime_dir / "gate-orchestrator-executions.json",
         )
         self.gate_execution_store = JsonGateExecutionStore(self.gate_execution_store_path)
+        self.await_agent_store = JsonStore(worker_config.runtime_dir / "await-agent-pending.json", AwaitAgentPendingRecord)
         self._executor = ThreadPoolExecutor(
             max_workers=max(1, min(32, max(1, (os.cpu_count() or 1) * 4))),
             thread_name_prefix="effect-orchestrator",
@@ -259,9 +272,6 @@ class EffectOrchestratorWorker:
             queue_record.trigger_id,
             len(downstream_node_ids),
         )
-        if not downstream_node_ids:
-            return 0
-
         execution_count = 0
         for target_node_id in downstream_node_ids:
             node = graph.nodes_by_id.get(target_node_id)
@@ -298,6 +308,14 @@ class EffectOrchestratorWorker:
                 graph=graph,
             ):
                 execution_count += 1
+
+        if queue_record.trigger_type == "trigger:agent:run:completed":
+            for gate in graph.gates_by_id.values():
+                if getattr(gate, "type", "") != "gate:await-agent":
+                    continue
+                if getattr(gate, "completion_trigger_id", "") != queue_record.trigger_id:
+                    continue
+                self._execute_await_agent_completion(queue_record=queue_record, gate=gate)
 
         return execution_count
 
@@ -340,6 +358,12 @@ class EffectOrchestratorWorker:
                 raw_query_config,
                 upstream_payload=upstream_payload,
                 declared_upstream_output_names=upstream_output_names,
+                system_value_resolver=_system_value_resolver(
+                    started_at=started_at,
+                    trace_id=queue_record.trace_id,
+                    event_id=queue_record.event_id,
+                    node_id=query.id,
+                ),
                 strict_validation=True,
             )
         except BindingResolutionError as exc:
@@ -415,6 +439,12 @@ class EffectOrchestratorWorker:
                 raw_effect_config,
                 upstream_payload=upstream_payload,
                 declared_upstream_output_names=upstream_output_names,
+                system_value_resolver=_system_value_resolver(
+                    started_at=started_at,
+                    trace_id=queue_record.trace_id,
+                    event_id=queue_record.event_id,
+                    node_id=effect.id,
+                ),
                 strict_validation=True,
             )
         except BindingResolutionError as exc:
@@ -428,6 +458,28 @@ class EffectOrchestratorWorker:
             return False
 
         resolved_config = resolved.resolved_config if isinstance(resolved.resolved_config, dict) else {}
+        try:
+            resolved_config = _prepare_effect_resolved_config(
+                effect=effect,
+                resolved_config=resolved_config,
+                upstream_payload=upstream_payload,
+                declared_upstream_output_names=upstream_output_names,
+                system_value_resolver=_system_value_resolver(
+                    started_at=started_at,
+                    trace_id=queue_record.trace_id,
+                    event_id=queue_record.event_id,
+                    node_id=effect.id,
+                ),
+            )
+        except (BindingResolutionError, OSError, ValueError) as exc:
+            self._write_failed_effect_record(
+                queue_record=queue_record,
+                effect=effect,
+                started_at=started_at,
+                resolved_config=resolved_config,
+                error=str(exc),
+            )
+            return False
         record = EffectExecutionRecord(
             execution_id=f"exec-{hashlib.sha1(idempotency_key.encode('utf-8')).hexdigest()[:16]}",
             idempotency_key=idempotency_key,
@@ -474,16 +526,30 @@ class EffectOrchestratorWorker:
 
         try:
             if gate.type == "gate:filter":
+                raw_filter_config = gate.when if gate.when is not None else gate.match
                 resolved = resolve_workflow_bindings(
-                    gate.match,
+                    raw_filter_config,
                     upstream_payload,
                     upstream_output_names,
+                    system_value_resolver=_system_value_resolver(
+                        started_at=started_at,
+                        trace_id=queue_record.trace_id,
+                        event_id=queue_record.event_id,
+                        node_id=gate.id,
+                    ),
                     strict_validation=True,
                 )
-                resolved_match = resolved.resolved_config
-                resolved_config = {"match": resolved_match}
-                if filter_payload_matches(resolved_match, queue_record.payload):
-                    outputs = dict(queue_record.payload)
+                resolved_filter = resolved.resolved_config
+                resolved_config = {"when": resolved_filter} if gate.when is not None else {"match": resolved_filter}
+                matches = (
+                    filter_when_matches(resolved_filter)
+                    if gate.when is not None
+                    else filter_payload_matches(resolved_filter, queue_record.payload)
+                )
+                if matches:
+                    outputs = {
+                        key: value for key, value in queue_record.payload.items() if key != NODE_OUTPUTS_CONTEXT_KEY
+                    }
                     self._write_gate_record(
                         queue_record=queue_record,
                         gate=gate,
@@ -516,6 +582,12 @@ class EffectOrchestratorWorker:
                     gate.template,
                     upstream_payload,
                     upstream_output_names,
+                    system_value_resolver=_system_value_resolver(
+                        started_at=started_at,
+                        trace_id=queue_record.trace_id,
+                        event_id=queue_record.event_id,
+                        node_id=gate.id,
+                    ),
                     strict_validation=True,
                 )
                 outputs = require_object_payload(resolved.resolved_config, gate_type="gate:map")
@@ -531,6 +603,10 @@ class EffectOrchestratorWorker:
                     input_occurred_at_by_source=input_occurred_at_by_source,
                     publish_completion_event=True,
                 )
+                return
+
+            if gate.type == "gate:await-agent":
+                self._register_await_agent_prompt(queue_record=queue_record, gate=gate)
                 return
 
             self._execute_merge_gate(
@@ -586,6 +662,97 @@ class EffectOrchestratorWorker:
             input_occurred_at_by_source=input_occurred_at_by_source,
             publish_completion_event=True,
         )
+
+    def _register_await_agent_prompt(
+        self,
+        *,
+        queue_record: TriggerQueueRecord,
+        gate: GateDefinitionDiscriminated,
+    ) -> None:
+        started_at = datetime.now(UTC)
+        dispatch_id = str(queue_record.payload.get("dispatch_id") or "").strip()
+        if not dispatch_id:
+            self._write_gate_record(
+                queue_record=queue_record,
+                gate=gate,
+                status="failed",
+                started_at=started_at,
+                resolved_config={},
+                outputs={},
+                inputs_by_source={queue_record.trigger_id: dict(queue_record.payload)},
+                input_event_ids_by_source={queue_record.trigger_id: queue_record.event_id},
+                input_occurred_at_by_source={queue_record.trigger_id: queue_record.occurred_at},
+                error="gate:await-agent requires upstream effect output dispatch_id",
+            )
+            return
+
+        key = f"{gate.id}:{dispatch_id}"
+        self.await_agent_store.put(
+            key,
+            AwaitAgentPendingRecord(
+                gate_id=gate.id,
+                dispatch_id=dispatch_id,
+                prompt_event_id=queue_record.event_id,
+                prompt_source_node_id=queue_record.trigger_id,
+                trace_id=queue_record.trace_id,
+                payload=dict(queue_record.payload),
+                occurred_at=queue_record.occurred_at,
+            ),
+        )
+        self._write_gate_record(
+            queue_record=queue_record,
+            gate=gate,
+            status="waiting",
+            started_at=started_at,
+            resolved_config={"dispatch_id": dispatch_id, "completion_trigger_id": getattr(gate, "completion_trigger_id", None)},
+            outputs={},
+            inputs_by_source={queue_record.trigger_id: dict(queue_record.payload)},
+            input_event_ids_by_source={queue_record.trigger_id: queue_record.event_id},
+            input_occurred_at_by_source={queue_record.trigger_id: queue_record.occurred_at},
+        )
+
+    def _execute_await_agent_completion(
+        self,
+        *,
+        queue_record: TriggerQueueRecord,
+        gate: GateDefinitionDiscriminated,
+    ) -> None:
+        started_at = datetime.now(UTC)
+        dispatch_id = str(queue_record.payload.get("dispatch_id") or "").strip()
+        if not dispatch_id:
+            return
+        key = f"{gate.id}:{dispatch_id}"
+        pending = self.await_agent_store.get(key)
+        if pending is None:
+            return
+
+        outputs = {
+            key_name: value
+            for key_name, value in queue_record.payload.items()
+            if key_name != NODE_OUTPUTS_CONTEXT_KEY
+        }
+        self._write_gate_record(
+            queue_record=queue_record,
+            gate=gate,
+            status="succeeded",
+            started_at=started_at,
+            resolved_config={"dispatch_id": dispatch_id, "completion_trigger_id": getattr(gate, "completion_trigger_id", None)},
+            outputs=outputs,
+            inputs_by_source={
+                pending.prompt_source_node_id: dict(pending.payload),
+                queue_record.trigger_id: dict(queue_record.payload),
+            },
+            input_event_ids_by_source={
+                pending.prompt_source_node_id: pending.prompt_event_id,
+                queue_record.trigger_id: queue_record.event_id,
+            },
+            input_occurred_at_by_source={
+                pending.prompt_source_node_id: pending.occurred_at,
+                queue_record.trigger_id: queue_record.occurred_at,
+            },
+            publish_completion_event=True,
+        )
+        self.await_agent_store.delete(key)
 
     def _execute_provider(self, *, effect: EffectDefinitionDiscriminated, resolved_config: dict[str, Any]) -> dict[str, Any]:
         provider = self.provider_factory.build(effect)
@@ -1017,6 +1184,38 @@ def _declared_upstream_output_names(
     return declared
 
 
+def _system_value_resolver(
+    *,
+    started_at: datetime,
+    trace_id: str | None,
+    event_id: str,
+    node_id: str,
+):
+    def _resolve(path: str) -> Any:
+        normalized = str(path).strip()
+        if normalized == "now.utc_timestamp":
+            return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        if normalized == "now.utc_timestamp_compact":
+            return datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        if normalized == "now.unix_seconds":
+            return int(time.time())
+        if normalized == "execution.trace_id":
+            return trace_id or ""
+        if normalized == "execution.event_id":
+            return event_id
+        if normalized == "execution.node_id":
+            return node_id
+        if normalized == "execution.started_at":
+            return started_at.astimezone(UTC).isoformat().replace("+00:00", "Z")
+        if normalized == "execution.started_at_compact":
+            return started_at.astimezone(UTC).strftime("%Y%m%dT%H%M%SZ")
+        if normalized == "unique.compact":
+            return f"{datetime.now(UTC).strftime('%Y%m%dT%H%M%S%fZ')}-{random.randint(0, 999999):06d}"
+        raise BindingResolutionError(f"Unknown system binding {normalized!r}")
+
+    return _resolve
+
+
 def _payload_with_node_output_context(
     *,
     source_payload: dict[str, Any],
@@ -1042,6 +1241,51 @@ def _payload_with_node_output_context(
 
 def _completion_event_id(*, parent_event_id: str, node_id: str, prefix: str) -> str:
     return f"{prefix}:{node_id}:{hashlib.sha1(parent_event_id.encode('utf-8')).hexdigest()[:12]}"
+
+
+def _prepare_effect_resolved_config(
+    *,
+    effect: EffectDefinitionDiscriminated,
+    resolved_config: dict[str, Any],
+    upstream_payload: dict[str, dict[str, Any]],
+    declared_upstream_output_names: dict[str, set[str] | list[str] | tuple[str, ...]],
+    system_value_resolver,
+) -> dict[str, Any]:
+    if effect.type != "effect:vm:copy-files":
+        return resolved_config
+    next_config = deepcopy(resolved_config)
+    raw_files = next_config.get("files")
+    if not isinstance(raw_files, list):
+        return next_config
+    for index, raw_entry in enumerate(raw_files):
+        if not isinstance(raw_entry, dict):
+            continue
+        source_format = str(raw_entry.get("source_format") or "").strip().lower()
+        if source_format not in {"", "file", "template"}:
+            raise ValueError(f"effect:vm:copy-files files[{index}] source_format must be one of: file, template")
+        if source_format != "template":
+            continue
+        source_path = str(raw_entry.get("source_path") or "").strip()
+        if not source_path:
+            raise ValueError(f"effect:vm:copy-files files[{index}] source_path is required for template sources")
+        template_path = Path(source_path).expanduser().resolve()
+        if not template_path.exists():
+            raise ValueError(f"effect:vm:copy-files template source does not exist: {template_path}")
+        if template_path.is_dir():
+            raise ValueError(f"effect:vm:copy-files template source must be a file: {template_path}")
+        template_text = template_path.read_text(encoding="utf-8")
+        rendered = resolve_workflow_bindings(
+            template_text,
+            upstream_payload=upstream_payload,
+            declared_upstream_output_names=declared_upstream_output_names,
+            system_value_resolver=system_value_resolver,
+            strict_validation=True,
+        ).resolved_config
+        if not isinstance(rendered, str):
+            raise ValueError(f"effect:vm:copy-files template source must resolve to text: {template_path}")
+        raw_entry["content"] = rendered
+        raw_entry.pop("source_path", None)
+    return next_config
 
 
 def _json_sha256(value: Any) -> str:

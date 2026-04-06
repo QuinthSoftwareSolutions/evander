@@ -67,6 +67,7 @@ def test_agent_run_completed_emits_once_on_running_to_idle_transition(tmp_path: 
                     ip_address="192.0.2.15",
                     agent_state="idle",
                     last_state_update_at=updated_at,
+                    dispatch_id="dispatch-123",
                 )
             ],
             [
@@ -101,5 +102,6 @@ def test_agent_run_completed_emits_once_on_running_to_idle_transition(tmp_path: 
     assert event.payload["session_ids"] == ["session-1"]
     assert event.payload["labels"] == {"workflow": "issue-worker", "agent_role": "issue"}
     assert event.payload["last_state_update_at"] == "2026-04-05T12:00:00Z"
+    assert event.payload["dispatch_id"] == "dispatch-123"
     assert admin_service.calls[0]["directory_path"] == "root/team-a"
     assert admin_service.calls[0]["vm_user"] == "agent"

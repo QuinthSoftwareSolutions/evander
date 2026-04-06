@@ -706,6 +706,381 @@ def test_filter_gate_drops_non_matching_payload(tmp_path: Path) -> None:
     assert not any(item["trigger_id"] == "gate-filter" for item in queue_payload.values())
 
 
+def test_filter_gate_when_can_match_ancestor_effect_outputs(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Tick",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+            "gates": [
+                {
+                    "id": "gate-filter",
+                    "display_name": "Create succeeded",
+                    "type": "gate:filter",
+                    "outputs": {
+                        "session_id": {"type": "string"},
+                        "vm_name": {"type": "string"},
+                        "labels": {"type": "object"},
+                        "success": {"type": "boolean"},
+                    },
+                    "when": {
+                        "all": [
+                            {"left": "$(effect-1.success)", "equals": True},
+                            {"left": "$(effect-1.session_id)", "is_not_null": True},
+                        ]
+                    },
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-1",
+                    "display_name": "Create VM",
+                    "type": "effect:vm:create",
+                    "vm_name": "vm-1",
+                },
+                {
+                    "id": "effect-2",
+                    "display_name": "Prompt",
+                    "type": "effect:agent:prompt",
+                    "session_id": "$(effect-1.session_id)",
+                    "prompt": "Continue $(effect-1.session_id)",
+                },
+            ],
+            "edges": [
+                _edge("trigger-1", "effect-1"),
+                _edge("effect-1", "gate-filter"),
+                _edge("gate-filter", "effect-2"),
+            ],
+        }
+    )
+    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    worker.provider_factory = _Factory(
+        {
+            "effect-1": {"session_id": "session-123", "success": True},
+            "effect-2": {"thread_id": "thread-1", "success": True},
+        }
+    )
+
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="event-when-pass",
+            trigger_id="trigger-1",
+            trigger_type="trigger:cron",
+            occurred_at=datetime(2026, 4, 4, 12, 0, tzinfo=timezone.utc),
+            payload={},
+            trace_id="trace-when-pass",
+        )
+    )
+
+    for _ in range(6):
+        worker.run_once()
+
+    gate_payload = json.loads((runtime_dir / "gate-orchestrator-executions.json").read_text(encoding="utf-8"))
+    gate_record = next(iter(gate_payload.values()))
+    assert gate_record["status"] == "succeeded"
+    assert gate_record["resolved_config"]["when"]["all"][0]["left"] is True
+    assert gate_record["resolved_config"]["when"]["all"][1]["left"] == "session-123"
+
+    effect_payload = json.loads((runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8"))
+    assert {item["effect_id"] for item in effect_payload.values()} == {"effect-1", "effect-2"}
+
+
+def test_filter_gate_when_drops_payload_when_predicate_is_false(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Tick",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+            "gates": [
+                {
+                    "id": "gate-filter",
+                    "display_name": "Create succeeded",
+                    "type": "gate:filter",
+                    "outputs": {
+                        "session_id": {"type": "string"},
+                        "vm_name": {"type": "string"},
+                        "labels": {"type": "object"},
+                        "success": {"type": "boolean"},
+                    },
+                    "when": {"all": [{"left": "$(effect-1.success)", "equals": True}]},
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-1",
+                    "display_name": "Create VM",
+                    "type": "effect:vm:create",
+                    "vm_name": "vm-1",
+                },
+                {
+                    "id": "effect-2",
+                    "display_name": "Prompt",
+                    "type": "effect:agent:prompt",
+                    "session_id": "$(effect-1.session_id)",
+                    "prompt": "Continue $(effect-1.session_id)",
+                },
+            ],
+            "edges": [
+                _edge("trigger-1", "effect-1"),
+                _edge("effect-1", "gate-filter"),
+                _edge("gate-filter", "effect-2"),
+            ],
+        }
+    )
+    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    worker.provider_factory = _Factory(
+        {
+            "effect-1": {"session_id": "session-123", "success": False},
+            "effect-2": {"thread_id": "thread-1", "success": True},
+        }
+    )
+
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="event-when-drop",
+            trigger_id="trigger-1",
+            trigger_type="trigger:cron",
+            occurred_at=datetime(2026, 4, 4, 12, 0, tzinfo=timezone.utc),
+            payload={},
+            trace_id="trace-when-drop",
+        )
+    )
+
+    for _ in range(6):
+        worker.run_once()
+
+    gate_payload = json.loads((runtime_dir / "gate-orchestrator-executions.json").read_text(encoding="utf-8"))
+    gate_record = next(iter(gate_payload.values()))
+    assert gate_record["status"] == "dropped"
+
+    effect_payload = json.loads((runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8"))
+    assert {item["effect_id"] for item in effect_payload.values()} == {"effect-1"}
+
+
+def test_vm_copy_files_template_source_renders_bindings_before_dispatch(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    template_path = tmp_path / "guest-AGENTS.md.tmpl"
+    template_path.write_text(
+        "VM: $(effect-1.vm_name)\nIssue: $(trigger-1.ticket.issue_number)\nStarted: $(system.execution.started_at_compact)\n",
+        encoding="utf-8",
+    )
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Ticket created",
+                    "type": "trigger:ticket:created",
+                    "directories": ["root/team-a"],
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-1",
+                    "display_name": "Create VM",
+                    "type": "effect:vm:create",
+                    "vm_name": "vm-issue-$(trigger-1.ticket.issue_number)",
+                },
+                {
+                    "id": "effect-2",
+                    "display_name": "Copy files",
+                    "type": "effect:vm:copy-files",
+                    "target": "$(effect-1.session_id)",
+                    "files": [
+                        {
+                            "source_path": str(template_path),
+                            "source_format": "template",
+                            "destination_path": "/home/agent/AGENTS.md",
+                            "overwrite": True,
+                        }
+                    ],
+                },
+            ],
+            "edges": [
+                _edge("trigger-1", "effect-1"),
+                _edge("effect-1", "effect-2"),
+            ],
+        }
+    )
+    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    worker.provider_factory = _Factory(
+        {
+            "effect-1": {"session_id": "session-123", "vm_name": "vm-issue-14084", "success": True},
+            "effect-2": {"success": True},
+        }
+    )
+
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="event-template-copy",
+            trigger_id="trigger-1",
+            trigger_type="trigger:ticket:created",
+            occurred_at=datetime(2026, 4, 4, 12, 0, tzinfo=timezone.utc),
+            payload={"ticket": {"issue_number": "14084"}},
+            trace_id="trace-template-copy",
+        )
+    )
+
+    for _ in range(6):
+        worker.run_once()
+
+    effect_payload = json.loads((runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8"))
+    copy_record = next(item for item in effect_payload.values() if item["effect_id"] == "effect-2")
+    rendered_file = copy_record["resolved_config"]["files"][0]
+    assert "source_path" not in rendered_file
+    assert rendered_file["content"].startswith("VM: vm-issue-14084\nIssue: 14084\nStarted: 2026")
+    assert rendered_file["destination_path"] == "/home/agent/AGENTS.md"
+
+
+def test_await_agent_gate_releases_follow_up_on_matching_completion(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Tick",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                },
+                {
+                    "id": "agent-complete",
+                    "display_name": "Agent completed",
+                    "type": "trigger:agent:run:completed",
+                    "vm_user": "agent",
+                },
+            ],
+            "gates": [
+                {
+                    "id": "await-agent-1",
+                    "display_name": "Await agent",
+                    "type": "gate:await-agent",
+                    "completion_trigger_id": "agent-complete",
+                    "outputs": {},
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-1",
+                    "display_name": "Prompt",
+                    "type": "effect:agent:prompt",
+                    "session_id": "session-42",
+                    "prompt": "Continue main task",
+                },
+                {
+                    "id": "effect-2",
+                    "display_name": "Post exec",
+                    "type": "effect:agent:prompt",
+                    "session_id": "session-42",
+                    "prompt": "Write post-exec summary for $(await-agent-1.vm_name)",
+                },
+            ],
+            "edges": [
+                _edge("trigger-1", "effect-1"),
+                _edge("effect-1", "await-agent-1"),
+                _edge("await-agent-1", "effect-2"),
+            ],
+        }
+    )
+    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    worker.provider_factory = _Factory(
+        {
+            "effect-1": {
+                "dispatch_id": "dispatch-effect-1-abc123",
+                "thread_id": "thread-1",
+                "success": True,
+                "output_mode": "immediate",
+            },
+            "effect-2": {
+                "dispatch_id": "dispatch-effect-2-def456",
+                "thread_id": "thread-2",
+                "success": True,
+                "output_mode": "immediate",
+            },
+        }
+    )
+
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="event-await-start",
+            trigger_id="trigger-1",
+            trigger_type="trigger:cron",
+            occurred_at=datetime(2026, 4, 4, 12, 0, tzinfo=timezone.utc),
+            payload={},
+            trace_id="trace-await",
+        )
+    )
+
+    for _ in range(4):
+        worker.run_once()
+
+    before_completion = json.loads((runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8"))
+    assert {item["effect_id"] for item in before_completion.values()} == {"effect-1"}
+
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="event-agent-complete",
+            trigger_id="agent-complete",
+            trigger_type="trigger:agent:run:completed",
+            occurred_at=datetime(2026, 4, 4, 12, 5, tzinfo=timezone.utc),
+            payload={
+                "dispatch_id": "dispatch-effect-1-abc123",
+                "vm_name": "vm-issue-42",
+                "session_ids": ["session-42"],
+                "labels": {},
+                "directory_paths": ["root/team-a"],
+                "agent_repo_names": ["repo-a"],
+                "libvirt_state": "running",
+                "agent_state": "idle",
+                "previous_agent_state": "running",
+                "transition": {"from": "running", "to": "idle"},
+                "last_state_update_at": "2026-04-04T12:05:00Z",
+                "scope": {"directory_path": "root/team-a", "vm_name": "vm-issue-42", "session_id": "session-42", "vm_user": "agent"},
+                "ip_address": "192.0.2.10",
+                "vm": {"vm_name": "vm-issue-42"},
+            },
+            trace_id="trace-await",
+        )
+    )
+
+    for _ in range(6):
+        worker.run_once()
+
+    effect_payload = json.loads((runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8"))
+    assert {item["effect_id"] for item in effect_payload.values()} == {"effect-1", "effect-2"}
+
+    gate_payload = json.loads((runtime_dir / "gate-orchestrator-executions.json").read_text(encoding="utf-8"))
+    assert any(item["gate_id"] == "await-agent-1" and item["status"] == "succeeded" for item in gate_payload.values())
+
+
 def test_map_gate_records_failed_status_on_unresolved_reference(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)

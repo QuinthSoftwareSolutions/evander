@@ -83,6 +83,13 @@ def create_app(service: AdminService) -> Starlette:
             return JSONResponse({"error": str(exc)}, status_code=400)
         return JSONResponse(document.model_dump(mode="json"))
 
+    async def get_catalog(_: Request) -> JSONResponse:
+        try:
+            catalog = service.read_workflow_editor_catalog()
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        return JSONResponse(catalog.model_dump(mode="json"))
+
     async def validate_document(request: Request) -> JSONResponse:
         try:
             payload = await _json_body(request)
@@ -111,6 +118,7 @@ def create_app(service: AdminService) -> Starlette:
     routes = [
         Route("/healthz", health, methods=["GET"]),
         Route("/api/workflow-editor/document", get_document, methods=["GET"]),
+        Route("/api/workflow-editor/catalog", get_catalog, methods=["GET"]),
         Route("/api/workflow-editor/validate", validate_document, methods=["POST"]),
         Route("/api/workflow-editor/document", save_document, methods=["PUT"]),
     ]

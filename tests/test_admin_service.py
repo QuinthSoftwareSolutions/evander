@@ -209,7 +209,7 @@ def test_list_vms_collects_session_and_agent_state(tmp_path: Path, monkeypatch) 
     )
     monkeypatch.setattr(
         "agent_sandbox.admin_service._probe_agent_state",
-        lambda vm_name, vm_ip, vm_user: ("running", ["repo-one"], datetime.now(UTC)),
+        lambda vm_name, vm_ip, vm_user: ("running", ["repo-one"], datetime.now(UTC), None),
     )
 
     summaries = service.list_vms(include_inactive=True)
@@ -297,11 +297,12 @@ def test_probe_agent_state_accepts_codex_resume_state(tmp_path: Path, monkeypatc
 
     monkeypatch.setattr("agent_sandbox.admin_service._run_subprocess", _fake_run_subprocess)
 
-    state, repos, updated_at = admin_service._probe_agent_state("bug-finder-vm", "192.168.122.11", "agent")
+    state, repos, updated_at, dispatch_id = admin_service._probe_agent_state("bug-finder-vm", "192.168.122.11", "agent")
 
     assert state == "running"
     assert repos == ["codex-heartbeat"]
     assert updated_at == datetime(2026, 3, 29, 12, 6, 53, tzinfo=UTC)
+    assert dispatch_id is None
     remote_script = str(captured["input"])
     assert 'codex_state_path="${LOG_DIR}/codex-resume-last.state"' in remote_script
     assert 'active_entries+=("codex-heartbeat")' in remote_script
@@ -906,6 +907,59 @@ def test_workflow_editor_validation_rejects_unknown_layout_nodes(tmp_path: Path)
             },
             layout={"nodes": {"missing-node": {"x": 1, "y": 2}}},
         )
+
+
+def test_workflow_editor_validation_derives_filter_outputs_server_side(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+
+    result = service.validate_workflow_editor_document(
+        config={
+            "runtime_dir": str(tmp_path / "runtime"),
+            "triggers": [
+                {
+                    "id": "cron-15m",
+                    "display_name": "Every 15 minutes",
+                    "type": "trigger:cron",
+                    "expression": "*/15 * * * *",
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-vm-create-1",
+                    "display_name": "Create VM",
+                    "type": "effect:vm:create",
+                    "vm_name": "vm-1",
+                }
+            ],
+            "gates": [
+                {
+                    "id": "gate-filter-1",
+                    "display_name": "Check if successfully created",
+                    "type": "gate:filter",
+                    "outputs": {},
+                    "when": {
+                        "all": [
+                            {"left": "$(effect-vm-create-1.success)", "equals": True},
+                            {"left": "$(effect-vm-create-1.session_id)", "is_not_null": True},
+                        ]
+                    },
+                }
+            ],
+            "edges": [
+                {"source_id": "cron-15m", "target_id": "effect-vm-create-1"},
+                {"source_id": "effect-vm-create-1", "target_id": "gate-filter-1"},
+            ],
+        },
+        layout={},
+    )
+
+    gate = next(item for item in result.config["gates"] if item["id"] == "gate-filter-1")
+    assert gate["outputs"] == {
+        "session_id": {"type": "string"},
+        "vm_name": {"type": "string"},
+        "labels": {"type": "object"},
+        "success": {"type": "boolean"},
+    }
 
 
 def test_create_issue_vm_uses_directory_vm_defaults_overlay_for_guest_env(tmp_path: Path, monkeypatch) -> None:
@@ -2141,7 +2195,7 @@ def test_list_vms_surfaces_shared_session_labels(tmp_path: Path, monkeypatch: An
     monkeypatch.setattr("agent_sandbox.admin_service._resolve_vm_ip", lambda vm_name: "192.0.2.10")
     monkeypatch.setattr(
         "agent_sandbox.admin_service._probe_agent_state",
-        lambda vm_name, vm_ip, vm_user: ("idle", ["sample-repo"], datetime(2026, 4, 5, 12, 0, tzinfo=UTC)),
+        lambda vm_name, vm_ip, vm_user: ("idle", ["sample-repo"], datetime(2026, 4, 5, 12, 0, tzinfo=UTC), None),
     )
 
     summaries = service.list_vms()

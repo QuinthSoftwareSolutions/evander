@@ -61,3 +61,20 @@ def test_declared_output_index_and_schema_intersection_cover_nodes_and_raw_maps(
         {"shared": {"type": "string"}, "session_id": {"type": "string"}},
         {"shared": {"type": "string"}, "route": {"type": "string"}},
     ) == {"shared": {"type": "string"}}
+
+
+def test_declared_output_index_includes_intrinsic_and_derived_outputs() -> None:
+    nodes = [
+        {"id": "trigger-1", "type": "trigger:ticket:created", "directories": ["root"]},
+        {"id": "gate-1", "type": "gate:map", "template": {"vm_name": "vm-$(trigger-1.ticket)", "count": 1}},
+        {"id": "effect-1", "type": "effect:vm:create"},
+        {"id": "query-1", "type": "query:vm:run-state"},
+    ]
+
+    indexed = index_declared_outputs(nodes)
+
+    assert indexed["trigger-1"]["ticket"]["type"] == "object"
+    assert indexed["trigger-1"]["ticket"]["properties"]["issue_number"] == {"type": "string"}
+    assert indexed["gate-1"] == {"vm_name": {"type": "string"}, "count": {"type": "integer"}}
+    assert indexed["effect-1"]["session_id"] == {"type": "string"}
+    assert indexed["query-1"]["state_code"] == {"type": "string"}

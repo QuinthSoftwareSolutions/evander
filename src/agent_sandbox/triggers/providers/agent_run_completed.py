@@ -249,6 +249,8 @@ class AgentRunCompletedTriggerProvider(TriggerProviderBase):
         }
         if summary.ip_address is not None:
             payload["ip_address"] = summary.ip_address
+        if summary.dispatch_id is not None:
+            payload["dispatch_id"] = summary.dispatch_id
         return TriggerEvent(
             event_id=event_id,
             trigger_id=trigger_id,

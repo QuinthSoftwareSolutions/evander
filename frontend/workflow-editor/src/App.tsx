@@ -18,7 +18,9 @@ import "@xyflow/react/dist/style.css";
 import {
   type WorkflowConfig,
   type WorkflowEdge,
+  type WorkflowEditorCatalog,
   type WorkflowEditorDocument,
+  type WorkflowEditorFieldDefinition,
   type WorkflowLayout,
   type WorkflowNodeConfig,
   type WorkflowNodeKind,
@@ -33,35 +35,27 @@ type GraphNodeData = {
 
 type SaveState = "idle" | "saving" | "saved";
 
-type NodeCatalogEntry = {
-  kind: WorkflowNodeKind;
-  type: string;
+type BindingOption = {
+  value: string;
   label: string;
 };
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
-
-const NODE_CATALOG: ReadonlyArray<NodeCatalogEntry> = [
-  { kind: "trigger", type: "trigger:cron", label: "Cron" },
-  { kind: "trigger", type: "trigger:ticket:created", label: "Ticket created" },
-  { kind: "trigger", type: "trigger:ticket:changed", label: "Ticket changed" },
-  { kind: "trigger", type: "trigger:discord:new-message", label: "Discord message" },
-  { kind: "trigger", type: "trigger:email:new-message", label: "Email message" },
-  { kind: "trigger", type: "trigger:pull-request:new-feedback", label: "PR feedback" },
-  { kind: "trigger", type: "trigger:git:push", label: "Git push" },
-  { kind: "trigger", type: "trigger:agent:run:completed", label: "Agent run completed" },
-  { kind: "gate", type: "gate:filter", label: "Filter" },
-  { kind: "gate", type: "gate:map", label: "Map" },
-  { kind: "gate", type: "gate:merge", label: "Merge" },
-  { kind: "effect", type: "effect:vm:create", label: "VM create" },
-  { kind: "effect", type: "effect:vm:start", label: "VM start" },
-  { kind: "effect", type: "effect:vm:stop", label: "VM stop" },
-  { kind: "effect", type: "effect:agent:prompt", label: "Agent prompt" },
-  { kind: "effect", type: "effect:vm:exec", label: "VM exec" },
-  { kind: "effect", type: "effect:vm:copy-files", label: "VM copy files" },
-  { kind: "effect", type: "effect:pr:create", label: "PR create" },
-  { kind: "query", type: "query:vm:run-state", label: "VM run state" },
+const SYSTEM_BINDING_OPTIONS: ReadonlyArray<BindingOption> = [
+  { value: "$(system.now.utc_timestamp)", label: "[System] now.utc_timestamp" },
+  { value: "$(system.now.utc_timestamp_compact)", label: "[System] now.utc_timestamp_compact" },
+  { value: "$(system.now.unix_seconds)", label: "[System] now.unix_seconds" },
+  { value: "$(system.execution.trace_id)", label: "[System] execution.trace_id" },
+  { value: "$(system.execution.event_id)", label: "[System] execution.event_id" },
+  { value: "$(system.execution.node_id)", label: "[System] execution.node_id" },
+  { value: "$(system.execution.started_at)", label: "[System] execution.started_at" },
+  { value: "$(system.execution.started_at_compact)", label: "[System] execution.started_at_compact" },
+  { value: "$(system.unique.compact)", label: "[System] unique.compact" },
 ];
+
+const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
+const BINDING_EXACT_RE = /^\$\(([A-Za-z0-9][A-Za-z0-9_-]*)\.([A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*)\)$/;
+const VM_COPY_TARGET_KEYS = ["target", "session_id", "vm_name"] as const;
+type VmCopyTargetKey = (typeof VM_COPY_TARGET_KEYS)[number];
 
 const NODE_GROUPS: ReadonlyArray<{
   kind: WorkflowNodeKind;
@@ -105,6 +99,10 @@ function emptyConfig(): WorkflowConfig {
 
 function emptyLayout(): WorkflowLayout {
   return { nodes: {} };
+}
+
+function emptyCatalog(): WorkflowEditorCatalog {
+  return { worker_id: "trigger-orchestrator", nodes: [] };
 }
 
 function nodeCollections(config: WorkflowConfig) {
@@ -226,13 +224,16 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
     return { id, display_name: "Agent run completed", type, vm_user: "agent" };
   }
   if (kind === "gate" && type === "gate:filter") {
-    return { id, display_name: "New filter", type, outputs: {}, match: {} };
+    return { id, display_name: "New filter", type, outputs: {} };
   }
   if (kind === "gate" && type === "gate:map") {
     return { id, display_name: "New map", type, outputs: {}, template: {} };
   }
   if (kind === "gate" && type === "gate:merge") {
     return { id, display_name: "New merge", type, outputs: {} };
+  }
+  if (kind === "gate" && type === "gate:await-agent") {
+    return { id, display_name: "Await agent", type, outputs: {}, completion_trigger_id: "" };
   }
   if (kind === "effect" && type === "effect:agent:prompt") {
     return { id, display_name: "New prompt", type, prompt: "Describe the next action." };
@@ -343,25 +344,490 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   return payload as T;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isExactBindingValue(value: unknown): value is string {
+  return typeof value === "string" && BINDING_EXACT_RE.test(value);
+}
+
+function hasBindingToken(value: unknown): boolean {
+  return typeof value === "string" && value.includes("$(");
+}
+
+function formatJson(value: unknown, fallback = "{}"): string {
+  if (value === undefined) return fallback;
+  return JSON.stringify(value, null, 2);
+}
+
+function getCatalogEntry(catalog: WorkflowEditorCatalog, type: string) {
+  return catalog.nodes.find((entry) => entry.type === type);
+}
+
+function directUpstreamNodeIds(config: WorkflowConfig, targetId: string): string[] {
+  return config.edges.filter((edge) => edge.target_id === targetId).map((edge) => edge.source_id);
+}
+
+function declaredOutputsForNode(node: WorkflowNodeConfig | undefined, config?: WorkflowConfig): Record<string, unknown> {
+  if (!node) return {};
+  const schema: Record<string, unknown> = {};
+  const derivedOnlyTypes = new Set(["gate:filter", "gate:merge", "gate:await-agent"]);
+  const staticSchemas: Record<string, Record<string, unknown>> = {
+    "trigger:ticket:created": {
+      ticket: {
+        type: "object",
+        properties: {
+          issue_id: { type: "string" },
+          issue_number: { type: "string" },
+          title: { type: "string" },
+          body: { type: "string" },
+          description: { type: "string" },
+          reason: { type: "string" },
+          rejection_reason: { type: "string" },
+          yaml_path: { type: "string" },
+          directory_path: { type: "string" },
+          repo_source: { type: "string" },
+          source_type: { type: "string" },
+          tags: { type: "array", items: { type: "string" } },
+          state: { type: "string" },
+          url: { type: "string" },
+          comments: { type: "array" },
+          source: { type: "string" },
+          metadata: { type: "object" },
+          created_at: { type: "string" },
+          updated_at: { type: "string" },
+        },
+      },
+    },
+    "trigger:ticket:changed": {
+      ticket: {
+        type: "object",
+        properties: {
+          issue_id: { type: "string" },
+          issue_number: { type: "string" },
+          title: { type: "string" },
+          body: { type: "string" },
+          description: { type: "string" },
+          reason: { type: "string" },
+          rejection_reason: { type: "string" },
+          yaml_path: { type: "string" },
+          directory_path: { type: "string" },
+          repo_source: { type: "string" },
+          source_type: { type: "string" },
+          tags: { type: "array", items: { type: "string" } },
+          state: { type: "string" },
+          url: { type: "string" },
+          comments: { type: "array" },
+          source: { type: "string" },
+          metadata: { type: "object" },
+          created_at: { type: "string" },
+          updated_at: { type: "string" },
+        },
+      },
+    },
+    "trigger:discord:new-message": {
+      message: {
+        type: "object",
+        properties: {
+          message_id: { type: "string" },
+          channel_id: { type: "string" },
+          author_id: { type: "string" },
+          author_name: { type: "string" },
+          content: { type: "string" },
+          created_at: { type: "string" },
+          in_reply_to: { type: "string" },
+          raw: { type: "object" },
+        },
+      },
+    },
+    "trigger:email:new-message": {
+      message: {
+        type: "object",
+        properties: {
+          mailbox_id: { type: "string" },
+          provider: { type: "string" },
+          folder: { type: "string" },
+          message_id: { type: "string" },
+          thread_id: { type: "string" },
+          sender: { type: "string" },
+          recipients: { type: "array", items: { type: "string" } },
+          received_at: { type: "string" },
+          unread: { type: "boolean" },
+          body_snippet: { type: "string" },
+          metadata: { type: "object" },
+        },
+      },
+    },
+    "trigger:pull-request:new-feedback": {
+      pr: {
+        type: "object",
+        properties: {
+          provider: { type: "string" },
+          repo: { type: "string" },
+          pr_id: { type: "string" },
+        },
+      },
+      feedback: {
+        type: "object",
+        properties: {
+          feedback_id: { type: "string" },
+          provider: { type: "string" },
+          repo: { type: "string" },
+          pr_id: { type: "string" },
+          thread_id: { type: "string" },
+          comment_id: { type: "string" },
+          author: { type: "string" },
+          body: { type: "string" },
+          file_path: { type: "string" },
+          line: { type: "integer" },
+          created_at: { type: "string" },
+          in_reply_to: { type: "string" },
+          resolved: { type: "boolean" },
+        },
+      },
+    },
+    "trigger:git:push": {
+      branch_name: { type: "string" },
+      commit_hash: { type: "string" },
+      old_commit_hash: { type: "string" },
+      ref_name: { type: "string" },
+      repo_path: { type: "string" },
+    },
+    "trigger:agent:run:completed": {
+      vm: {
+        type: "object",
+        properties: {
+          vm_name: { type: "string" },
+          issue_number: { type: "string" },
+          session_ids: { type: "array", items: { type: "string" } },
+          labels: { type: "object" },
+          directory_paths: { type: "array", items: { type: "string" } },
+          libvirt_state: { type: "string" },
+          ip_address: { type: "string" },
+          agent_state: { type: "string" },
+          agent_repo_names: { type: "array", items: { type: "string" } },
+          last_state_update_at: { type: "string" },
+        },
+      },
+      vm_name: { type: "string" },
+      session_ids: { type: "array" },
+      labels: { type: "object" },
+      directory_paths: { type: "array" },
+      agent_repo_names: { type: "array" },
+      libvirt_state: { type: "string" },
+      agent_state: { type: "string" },
+      previous_agent_state: { type: "string" },
+      transition: {
+        type: "object",
+        properties: {
+          from: { type: "string" },
+          to: { type: "string" },
+        },
+      },
+      last_state_update_at: { type: "string" },
+      dispatch_id: { type: "string" },
+      scope: {
+        type: "object",
+        properties: {
+          directory_path: { type: "string" },
+          vm_name: { type: "string" },
+          session_id: { type: "string" },
+          vm_user: { type: "string" },
+        },
+      },
+      ip_address: { type: "string" },
+    },
+    "effect:vm:create": {
+      session_id: { type: "string" },
+      vm_name: { type: "string" },
+      labels: { type: "object" },
+      success: { type: "boolean" },
+    },
+    "effect:vm:start": {
+      success: { type: "boolean" },
+      action: { type: "string" },
+      target: { type: "string" },
+      vm_name: { type: "string" },
+      message: { type: "string" },
+    },
+    "effect:vm:stop": {
+      success: { type: "boolean" },
+      action: { type: "string" },
+      target: { type: "string" },
+      vm_name: { type: "string" },
+      message: { type: "string" },
+    },
+    "effect:agent:prompt": {
+      dispatch_id: { type: "string" },
+      thread_id: { type: "string" },
+      success: { type: "boolean" },
+      output_mode: { type: "string" },
+    },
+    "effect:vm:exec": {
+      success: { type: "boolean" },
+      vm_name: { type: "string" },
+      session_id: { type: "string" },
+      action: { type: "string" },
+      message: { type: "string" },
+      exit_code: { type: "integer" },
+      stdout: { type: "string" },
+      stderr: { type: "string" },
+    },
+    "effect:vm:copy-files": {
+      success: { type: "boolean" },
+      action: { type: "string" },
+      message: { type: "string" },
+      target: { type: "string" },
+      vm_name: { type: "string" },
+      vm_ip: { type: "string" },
+      vm_user: { type: "string" },
+      directory_path: { type: "string" },
+      copied_count: { type: "integer" },
+      copied_paths: { type: "array" },
+      file_count: { type: "integer" },
+      copied_files: { type: "array" },
+    },
+    "effect:pr:create": {
+      success: { type: "boolean" },
+      action: { type: "string" },
+      message: { type: "string" },
+      pr_id: { type: "string" },
+      pr_url: { type: "string" },
+    },
+    "query:vm:run-state": {
+      vm_name: { type: "string" },
+      session_ids: { type: "array" },
+      libvirt_state: { type: "string" },
+      state_code: { type: "string" },
+      is_running: { type: "boolean" },
+      is_terminal: { type: "boolean" },
+    },
+  };
+  Object.assign(schema, staticSchemas[node.type] ?? {});
+  if (node.type === "gate:map" && isRecord(node.template)) {
+    for (const key of Object.keys(node.template)) {
+      schema[key] = { type: "string" };
+    }
+    return schema;
+  }
+  if (node.type === "gate:await-agent") {
+    return declaredOutputsForNode(
+      config ? nodeById(config, String(node.completion_trigger_id || "")) : undefined,
+      config,
+    );
+  }
+  if (derivedOnlyTypes.has(node.type)) return schema;
+  if (isRecord(node.outputs)) {
+    Object.assign(schema, node.outputs);
+  }
+  return schema;
+}
+
+function mergeDeclaredOutputIntersection(outputs: Record<string, unknown>[]): Record<string, unknown> {
+  if (outputs.length === 0) return {};
+  const sharedKeys = new Set(Object.keys(outputs[0]));
+  for (const current of outputs.slice(1)) {
+    for (const key of [...sharedKeys]) {
+      if (!(key in current)) {
+        sharedKeys.delete(key);
+        continue;
+      }
+      if (JSON.stringify(outputs[0][key]) !== JSON.stringify(current[key])) {
+        sharedKeys.delete(key);
+      }
+    }
+  }
+  const merged: Record<string, unknown> = {};
+  for (const key of Object.keys(outputs[0])) {
+    if (sharedKeys.has(key)) merged[key] = outputs[0][key];
+  }
+  return merged;
+}
+
+function normalizeDerivedNodeFields(config: WorkflowConfig): WorkflowConfig {
+  const nextConfig = cloneConfig(config);
+  for (const gate of nextConfig.gates ?? []) {
+    const upstreamIds = directUpstreamNodeIds(nextConfig, gate.id);
+    if (gate.type === "gate:filter") {
+      gate.outputs = declaredOutputsForNode(nodeById(nextConfig, upstreamIds[0] ?? ""), nextConfig);
+    } else if (gate.type === "gate:map") {
+      gate.outputs = declaredOutputsForNode(gate, nextConfig);
+    } else if (gate.type === "gate:await-agent") {
+      gate.outputs = declaredOutputsForNode(
+        nodeById(nextConfig, typeof gate.completion_trigger_id === "string" ? gate.completion_trigger_id : ""),
+        nextConfig,
+      );
+    } else if (gate.type === "gate:merge") {
+      gate.outputs = mergeDeclaredOutputIntersection(
+        upstreamIds.map((nodeId) => declaredOutputsForNode(nodeById(nextConfig, nodeId), nextConfig)),
+      );
+    }
+  }
+  return nextConfig;
+}
+
+function collectAncestorNodeIds(config: WorkflowConfig, nodeId: string): string[] {
+  const inboundByTarget = new Map<string, string[]>();
+  for (const edge of config.edges) {
+    const current = inboundByTarget.get(edge.target_id) ?? [];
+    current.push(edge.source_id);
+    inboundByTarget.set(edge.target_id, current);
+  }
+  const ordered: string[] = [];
+  const queue = [...(inboundByTarget.get(nodeId) ?? [])];
+  const seen = new Set<string>();
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    if (seen.has(current)) continue;
+    seen.add(current);
+    ordered.push(current);
+    queue.push(...(inboundByTarget.get(current) ?? []));
+  }
+  return ordered;
+}
+
+function upstreamBindingOptions(config: WorkflowConfig, nodeId: string): BindingOption[] {
+  const options: BindingOption[] = [...SYSTEM_BINDING_OPTIONS];
+  const seen = new Set<string>();
+  for (const option of SYSTEM_BINDING_OPTIONS) {
+    seen.add(option.label.replace(/^\[System\] /, ""));
+    seen.add(option.value);
+  }
+  for (const upstreamNodeId of collectAncestorNodeIds(config, nodeId)) {
+    const outputs = declaredOutputsForNode(nodeById(config, upstreamNodeId), config);
+    for (const outputName of Object.keys(outputs)) {
+      for (const outputPath of flattenOutputPaths(outputName, outputs[outputName])) {
+        const ref = `${upstreamNodeId}.${outputPath}`;
+        if (seen.has(`$(${ref})`)) continue;
+        seen.add(`$(${ref})`);
+        options.push({ value: `$(${ref})`, label: ref });
+      }
+    }
+  }
+  return options;
+}
+
+function flattenOutputPaths(prefix: string, schema: unknown): string[] {
+  const paths = [prefix];
+  if (!isRecord(schema)) return paths;
+  const schemaType = typeof schema.type === "string" ? schema.type : "";
+  if (schemaType === "object" && isRecord(schema.properties)) {
+    for (const [key, childSchema] of Object.entries(schema.properties)) {
+      const childKey = key.trim();
+      if (!childKey) continue;
+      for (const childPath of flattenOutputPaths(`${prefix}.${childKey}`, childSchema)) {
+        paths.push(childPath);
+      }
+    }
+  }
+  if (schemaType === "array" && schema.items !== undefined) {
+    for (const childPath of flattenOutputPaths(`${prefix}.0`, schema.items)) {
+      paths.push(childPath);
+    }
+  }
+  return paths;
+}
+
+function fieldValueMode(field: WorkflowEditorFieldDefinition, value: unknown): "literal" | "bind" | "template" {
+  if (!field.bindable) return "literal";
+  if (isExactBindingValue(value)) return "bind";
+  if (field.kind === "string" && hasBindingToken(value)) return "template";
+  return "literal";
+}
+
+function parseJsonDraft(text: string, fallback: unknown): unknown {
+  const trimmed = text.trim();
+  if (!trimmed) return fallback;
+  return JSON.parse(trimmed) as unknown;
+}
+
+function removeUndefinedValues(value: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(value).filter(([, entry]) => entry !== undefined));
+}
+
+function renderBindingSelect(
+  field: WorkflowEditorFieldDefinition,
+  bindingOptions: BindingOption[],
+  value: unknown,
+  onChange: (nextValue: string) => void,
+) {
+  const stringValue = typeof value === "string" ? value : "";
+  const hasPresetOption = bindingOptions.some((option) => option.value === stringValue);
+  return (
+    <div className="binding-editor">
+      <label className="field-inline">
+        <span>Suggested upstream output</span>
+        <select
+          value={hasPresetOption ? stringValue : ""}
+          onChange={(event) => {
+            if (event.target.value) onChange(event.target.value);
+          }}
+          disabled={bindingOptions.length === 0}
+        >
+          <option value="">{bindingOptions.length === 0 ? "No suggested outputs available" : "Select output"}</option>
+          {bindingOptions.map((option) => (
+            <option key={`${field.key}-${option.value}`} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="field-inline">
+        <span>Binding reference</span>
+        <input
+          value={stringValue}
+          placeholder="$(node.output.path)"
+          onChange={(event) => onChange(event.target.value)}
+        />
+      </label>
+    </div>
+  );
+}
+
+function insertBindingReference(currentValue: unknown, bindingReference: string): string {
+  const text = typeof currentValue === "string" ? currentValue : "";
+  const trimmedReference = bindingReference.trim();
+  if (!trimmedReference) return text;
+  if (!text.trim()) return trimmedReference;
+  return `${text}${trimmedReference}`;
+}
+
+function activeVmCopyTargetKey(values: Record<string, unknown>): VmCopyTargetKey {
+  if (typeof values.session_id === "string" && values.session_id.trim()) return "session_id";
+  if (typeof values.vm_name === "string" && values.vm_name.trim()) return "vm_name";
+  return "target";
+}
+
 export default function App() {
   const appShellRef = useRef<HTMLDivElement | null>(null);
   const [document, setDocument] = useState<WorkflowEditorDocument | null>(null);
+  const [catalog, setCatalog] = useState<WorkflowEditorCatalog>(emptyCatalog());
   const [flowNodes, setFlowNodes] = useState<Node<GraphNodeData>[]>([]);
   const [flowEdges, setFlowEdges] = useState<Edge[]>([]);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [inspectorNodeId, setInspectorNodeId] = useState("");
   const [inspectorDisplayName, setInspectorDisplayName] = useState("");
-  const [inspectorJson, setInspectorJson] = useState("{}");
+  const [inspectorKnownValues, setInspectorKnownValues] = useState<Record<string, unknown>>({});
+  const [inspectorUnknownValues, setInspectorUnknownValues] = useState<Record<string, unknown>>({});
+  const [inspectorJsonDrafts, setInspectorJsonDrafts] = useState<Record<string, string>>({});
+  const [inspectorFieldModes, setInspectorFieldModes] = useState<Record<string, "literal" | "bind" | "template">>({});
+  const [rawJsonDraft, setRawJsonDraft] = useState("{}");
   const [error, setError] = useState<string | null>(null);
   const [saveState, setSaveState] = useState<SaveState>("idle");
 
   useEffect(() => {
-    fetchJson<WorkflowEditorDocument>("/api/workflow-editor/document")
-      .then((payload) => {
-        setDocument(payload);
-        setFlowNodes(buildNodes(payload.config, payload.layout));
-        setFlowEdges(buildEdges(payload.config));
+    Promise.all([
+      fetchJson<WorkflowEditorDocument>("/api/workflow-editor/document"),
+      fetchJson<WorkflowEditorCatalog>("/api/workflow-editor/catalog"),
+    ])
+      .then(([payload, catalogPayload]) => {
+        const normalizedConfig = normalizeDerivedNodeFields(payload.config);
+        setCatalog(catalogPayload);
+        setDocument({ ...payload, config: normalizedConfig });
+        setFlowNodes(buildNodes(normalizedConfig, payload.layout));
+        setFlowEdges(buildEdges(normalizedConfig));
       })
       .catch((reason: unknown) => {
         setError(reason instanceof Error ? reason.message : String(reason));
@@ -371,22 +837,52 @@ export default function App() {
   const config = document?.config ?? emptyConfig();
   const layout = document?.layout ?? emptyLayout();
   const selectedNode = selectedNodeId ? nodeById(config, selectedNodeId) : undefined;
+  const selectedCatalogEntry = selectedNode ? getCatalogEntry(catalog, selectedNode.type) : undefined;
   const selectedEdge = selectedEdgeId
     ? config.edges.find((edge) => `${edge.source_id}->${edge.target_id}` === selectedEdgeId)
     : undefined;
+  const selectedNodeBindingOptions = selectedNode ? upstreamBindingOptions(config, selectedNode.id) : [];
+  const vmCopyTargetKey = activeVmCopyTargetKey(inspectorKnownValues);
+  const inspectorFields = (() => {
+    if (!selectedCatalogEntry) return [];
+    if (selectedNode?.type !== "effect:vm:copy-files") return selectedCatalogEntry.fields;
+    return selectedCatalogEntry.fields.filter((field) => !VM_COPY_TARGET_KEYS.includes(field.key as VmCopyTargetKey));
+  })();
+  const vmCopyTargetField = selectedCatalogEntry?.fields.find((field) => field.key === vmCopyTargetKey)
+    ?? selectedCatalogEntry?.fields.find((field) => field.key === "target");
 
   useEffect(() => {
     if (!selectedNode) {
       setInspectorNodeId("");
       setInspectorDisplayName("");
-      setInspectorJson("{}");
+      setInspectorKnownValues({});
+      setInspectorUnknownValues({});
+      setInspectorJsonDrafts({});
+      setInspectorFieldModes({});
+      setRawJsonDraft("{}");
       return;
+    }
+    const { id: _id, display_name: _displayName, type: _type, ...extras } = selectedNode;
+    const knownFieldKeys = new Set((selectedCatalogEntry?.fields ?? []).map((field) => field.key));
+    const nextKnownValues = Object.fromEntries(Object.entries(extras).filter(([key]) => knownFieldKeys.has(key)));
+    const nextUnknownValues = Object.fromEntries(Object.entries(extras).filter(([key]) => !knownFieldKeys.has(key)));
+    const nextJsonDrafts: Record<string, string> = {};
+    const nextFieldModes: Record<string, "literal" | "bind" | "template"> = {};
+    for (const field of selectedCatalogEntry?.fields ?? []) {
+      nextFieldModes[field.key] = fieldValueMode(field, nextKnownValues[field.key]);
+      if (field.kind !== "json") continue;
+      nextJsonDrafts[field.key] = nextKnownValues[field.key] === undefined
+        ? (field.required || field.key === "outputs" ? "{}" : "")
+        : formatJson(nextKnownValues[field.key], field.required || field.key === "outputs" ? "{}" : "");
     }
     setInspectorNodeId(selectedNode.id);
     setInspectorDisplayName(selectedNode.display_name);
-    const { id: _id, display_name: _displayName, type: _type, ...extras } = selectedNode;
-    setInspectorJson(JSON.stringify(extras, null, 2));
-  }, [selectedNode]);
+    setInspectorKnownValues(nextKnownValues);
+    setInspectorUnknownValues(nextUnknownValues);
+    setInspectorJsonDrafts(nextJsonDrafts);
+    setInspectorFieldModes(nextFieldModes);
+    setRawJsonDraft(JSON.stringify(extras, null, 2));
+  }, [selectedNode, selectedCatalogEntry]);
 
   useEffect(() => {
     if (!selectedEdgeId) return;
@@ -395,14 +891,15 @@ export default function App() {
 
   function patchDocument(nextConfig: WorkflowConfig, nextLayout: WorkflowLayout) {
     if (!document) return;
+    const normalizedConfig = normalizeDerivedNodeFields(nextConfig);
     const nextDocument = {
       ...document,
-      config: nextConfig,
+      config: normalizedConfig,
       layout: nextLayout,
     };
     setDocument(nextDocument);
-    setFlowNodes(buildNodes(nextConfig, nextLayout));
-    setFlowEdges(buildEdges(nextConfig));
+    setFlowNodes(buildNodes(normalizedConfig, nextLayout));
+    setFlowEdges(buildEdges(normalizedConfig));
     setSaveState("idle");
   }
 
@@ -430,6 +927,7 @@ export default function App() {
     if (
       target instanceof HTMLInputElement ||
       target instanceof HTMLTextAreaElement ||
+      target instanceof HTMLSelectElement ||
       (target instanceof HTMLElement && target.isContentEditable)
     ) {
       return;
@@ -477,14 +975,10 @@ export default function App() {
   function deleteSelectedNode() {
     if (!document || !selectedNodeId) return;
     const nextConfig = cloneConfig(document.config);
-    nextConfig.triggers ??= [];
-    nextConfig.gates ??= [];
-    nextConfig.effects ??= [];
-    nextConfig.queries ??= [];
-    nextConfig.triggers = nextConfig.triggers.filter((node) => node.id !== selectedNodeId);
-    nextConfig.gates = nextConfig.gates.filter((node) => node.id !== selectedNodeId);
-    nextConfig.effects = nextConfig.effects.filter((node) => node.id !== selectedNodeId);
-    nextConfig.queries = nextConfig.queries.filter((node) => node.id !== selectedNodeId);
+    nextConfig.triggers = (nextConfig.triggers ?? []).filter((node) => node.id !== selectedNodeId);
+    nextConfig.gates = (nextConfig.gates ?? []).filter((node) => node.id !== selectedNodeId);
+    nextConfig.effects = (nextConfig.effects ?? []).filter((node) => node.id !== selectedNodeId);
+    nextConfig.queries = (nextConfig.queries ?? []).filter((node) => node.id !== selectedNodeId);
     nextConfig.edges = nextConfig.edges.filter(
       (edge) => edge.source_id !== selectedNodeId && edge.target_id !== selectedNodeId,
     );
@@ -499,7 +993,6 @@ export default function App() {
   function applyInspectorChanges() {
     if (!document || !selectedNode) return;
     try {
-      const parsed = JSON.parse(inspectorJson) as Record<string, unknown>;
       const rawId = inspectorNodeId.trim();
       const rawName = inspectorDisplayName.trim();
       if (!rawId) throw new Error("Node id is required.");
@@ -507,17 +1000,30 @@ export default function App() {
       if (rawId !== selectedNode.id && nodeById(document.config, rawId)) {
         throw new Error(`Node ${rawId} already exists.`);
       }
-      const nextNode = {
+    const nextKnownValues = { ...inspectorKnownValues };
+      if (selectedNode.type === "effect:vm:copy-files") {
+        const activeTargetKey = activeVmCopyTargetKey(nextKnownValues);
+        for (const key of VM_COPY_TARGET_KEYS) {
+          if (key !== activeTargetKey) {
+            delete nextKnownValues[key];
+          }
+        }
+      }
+      for (const field of selectedCatalogEntry?.fields ?? []) {
+        if (field.kind !== "json") continue;
+        if (isExactBindingValue(nextKnownValues[field.key])) continue;
+        if (field.read_only) continue;
+        const fallbackValue = field.required ? {} : undefined;
+        nextKnownValues[field.key] = parseJsonDraft(inspectorJsonDrafts[field.key] ?? "", fallbackValue);
+      }
+      const nextNode = removeUndefinedValues({
         id: rawId,
         display_name: rawName,
         type: selectedNode.type,
-        ...parsed,
-      };
+        ...inspectorUnknownValues,
+        ...nextKnownValues,
+      }) as WorkflowNodeConfig;
       const nextConfig = cloneConfig(document.config);
-      nextConfig.triggers ??= [];
-      nextConfig.gates ??= [];
-      nextConfig.effects ??= [];
-      nextConfig.queries ??= [];
       const collectionName = kindCollectionKey(nodeKindFromType(selectedNode.type));
       nextConfig[collectionName] = nextConfig[collectionName].map((node) =>
         node.id === selectedNode.id ? nextNode : node,
@@ -606,36 +1112,567 @@ export default function App() {
     }
   }
 
+  function updateKnownField(key: string, value: unknown) {
+    setInspectorKnownValues((current) => {
+      const next = { ...current, [key]: value };
+      if (selectedNode?.type === "gate:filter") {
+        if (key === "match" && value !== undefined && value !== null && value !== "") {
+          delete next.when;
+        }
+        if (key === "when" && value !== undefined && value !== null && value !== "") {
+          delete next.match;
+        }
+      }
+      return next;
+    });
+    if (selectedNode?.type === "gate:filter") {
+      setInspectorJsonDrafts((current) => {
+        if (key === "match" && value !== undefined && value !== null && value !== "") {
+          return { ...current, when: "" };
+        }
+        if (key === "when" && value !== undefined && value !== null && value !== "") {
+          return { ...current, match: "" };
+        }
+        return current;
+      });
+    }
+  }
+
+  function updateFieldMode(key: string, mode: "literal" | "bind" | "template") {
+    setInspectorFieldModes((current) => ({ ...current, [key]: mode }));
+  }
+
+  function updateVmCopyTargetKey(nextKey: VmCopyTargetKey) {
+    const currentKey = activeVmCopyTargetKey(inspectorKnownValues);
+    const currentValue = inspectorKnownValues[currentKey];
+    const currentMode = inspectorFieldModes[currentKey]
+      ?? (vmCopyTargetField ? fieldValueMode(vmCopyTargetField, currentValue) : "literal");
+    setInspectorKnownValues((current) => {
+      const next = { ...current };
+      for (const key of VM_COPY_TARGET_KEYS) {
+        delete next[key];
+      }
+      if (currentValue !== undefined && currentValue !== "") {
+        next[nextKey] = currentValue;
+      }
+      return next;
+    });
+    setInspectorFieldModes((current) => {
+      const next = { ...current };
+      for (const key of VM_COPY_TARGET_KEYS) {
+        delete next[key];
+      }
+      next[nextKey] = currentMode;
+      return next;
+    });
+  }
+
+  function renderVmCopyTargetField() {
+    if (selectedNode?.type !== "effect:vm:copy-files" || !vmCopyTargetField) return null;
+    const value = inspectorKnownValues[vmCopyTargetKey];
+    const mode = inspectorFieldModes[vmCopyTargetKey] ?? fieldValueMode(vmCopyTargetField, value);
+    const isDisabled = vmCopyTargetField.read_only;
+    return (
+      <div className="inspector-field" key="vm-copy-target">
+        <div className="field-toolbar">
+          <div className="field-header">
+            <span>Target</span>
+          </div>
+          {renderModeSelect(vmCopyTargetField, mode, (nextMode) => {
+            updateFieldMode(vmCopyTargetKey, nextMode);
+            if (nextMode === "bind") {
+              updateKnownField(vmCopyTargetKey, selectedNodeBindingOptions[0]?.value ?? "");
+            } else if (nextMode === "template") {
+              updateKnownField(vmCopyTargetKey, typeof value === "string" ? value : "");
+            } else {
+              updateKnownField(vmCopyTargetKey, isExactBindingValue(value) ? "" : value ?? "");
+            }
+          }, isDisabled)}
+        </div>
+        <label className="inspector-field">
+          <div className="field-toolbar">
+            <div className="field-header">
+              <span>Target type</span>
+            </div>
+          </div>
+          <select
+            value={vmCopyTargetKey}
+            onChange={(event) => updateVmCopyTargetKey(event.target.value as VmCopyTargetKey)}
+            disabled={isDisabled}
+          >
+            <option value="target">Generic target</option>
+            <option value="session_id">Session ID</option>
+            <option value="vm_name">VM name</option>
+          </select>
+        </label>
+        {mode === "bind"
+          ? renderBindingSelect(vmCopyTargetField, selectedNodeBindingOptions, value, (nextValue) => updateKnownField(vmCopyTargetKey, nextValue))
+          : mode === "template"
+            ? (
+              <div className="template-editor">
+                <label className="field-inline">
+                  <span>Insert output</span>
+                  <select
+                    value=""
+                    onChange={(event) => {
+                      const nextValue = event.target.value;
+                      if (!nextValue) return;
+                      updateKnownField(vmCopyTargetKey, insertBindingReference(value, nextValue));
+                      event.target.value = "";
+                    }}
+                    disabled={selectedNodeBindingOptions.length === 0 || isDisabled}
+                  >
+                    <option value="">
+                      {selectedNodeBindingOptions.length === 0 ? "No outputs available" : "Insert output reference"}
+                    </option>
+                    {selectedNodeBindingOptions.map((option) => (
+                      <option key={`vm-copy-target-template-${option.value}`} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <input
+                  value={typeof value === "string" ? value : ""}
+                  placeholder={
+                    vmCopyTargetKey === "session_id"
+                      ? "Session ID or binding"
+                      : vmCopyTargetKey === "vm_name"
+                        ? "VM name or binding"
+                        : "VM name, session ID, or binding"
+                  }
+                  onChange={(event) => updateKnownField(vmCopyTargetKey, event.target.value)}
+                  disabled={isDisabled}
+                />
+              </div>
+            )
+          : (
+            <input
+              value={typeof value === "string" ? value : ""}
+              placeholder={
+                vmCopyTargetKey === "session_id"
+                  ? "Session ID"
+                  : vmCopyTargetKey === "vm_name"
+                    ? "VM name"
+                    : "VM name or session ID"
+              }
+              onChange={(event) => updateKnownField(vmCopyTargetKey, event.target.value)}
+              disabled={isDisabled}
+            />
+          )}
+      </div>
+    );
+  }
+
+  function renderModeSelect(
+    field: WorkflowEditorFieldDefinition,
+    mode: "literal" | "bind" | "template",
+    onChange: (nextMode: "literal" | "bind" | "template") => void,
+    disabled: boolean,
+  ) {
+    return (
+      <label className="mode-select">
+        <select value={mode} onChange={(event) => onChange(event.target.value as "literal" | "bind" | "template")} disabled={disabled}>
+          <option value="literal">Literal</option>
+          {field.bindable ? <option value="bind">Bind</option> : null}
+          {field.bindable && field.kind === "string" ? <option value="template">Template</option> : null}
+        </select>
+      </label>
+    );
+  }
+
+  function updateStringListField(key: string, value: string) {
+    const nextItems = value
+      .split("\n")
+      .map((item) => item.trim())
+      .filter(Boolean);
+    updateKnownField(key, nextItems);
+  }
+
+  function updateObjectListItem(fieldKey: string, index: number, key: string, value: unknown) {
+    setInspectorKnownValues((current) => {
+      const currentItems = Array.isArray(current[fieldKey]) ? [...(current[fieldKey] as unknown[])] : [];
+      const currentItem = isRecord(currentItems[index]) ? { ...currentItems[index] } : {};
+      if (value === undefined || value === "") {
+        delete currentItem[key];
+      } else {
+        currentItem[key] = value;
+      }
+      currentItems[index] = currentItem;
+      return { ...current, [fieldKey]: currentItems };
+    });
+  }
+
+  function addObjectListItem(key: string, field: WorkflowEditorFieldDefinition) {
+    setInspectorKnownValues((current) => {
+      const currentItems = Array.isArray(current[key]) ? [...current[key]] : [];
+      const nextItem = Object.fromEntries(
+        field.item_fields
+          .filter((itemField) => itemField.required)
+          .map((itemField) => [itemField.key, itemField.kind === "boolean" ? false : ""]),
+      );
+      currentItems.push(nextItem);
+      return { ...current, [key]: currentItems };
+    });
+  }
+
+  function removeObjectListItem(key: string, index: number) {
+    setInspectorKnownValues((current) => {
+      const currentItems = Array.isArray(current[key]) ? [...current[key]] : [];
+      currentItems.splice(index, 1);
+      return { ...current, [key]: currentItems };
+    });
+  }
+
+  function renderField(field: WorkflowEditorFieldDefinition) {
+    const value = inspectorKnownValues[field.key];
+    const mode = inspectorFieldModes[field.key] ?? fieldValueMode(field, value);
+    const isDisabled = field.read_only;
+
+    if (field.kind === "string") {
+      return (
+        <div key={field.key} className="inspector-field">
+          <div className="field-toolbar">
+            <div className="field-header">
+              <span>{field.label}</span>
+            </div>
+            {renderModeSelect(field, mode, (nextMode) => {
+              updateFieldMode(field.key, nextMode);
+              if (nextMode === "bind") {
+                updateKnownField(field.key, selectedNodeBindingOptions[0]?.value ?? "");
+              } else if (nextMode === "template") {
+                updateKnownField(field.key, typeof value === "string" ? value : "");
+              } else {
+                updateKnownField(field.key, isExactBindingValue(value) ? "" : value ?? "");
+              }
+            }, isDisabled)}
+          </div>
+          {field.description ? <p className="field-description">{field.description}</p> : null}
+          {mode === "bind"
+            ? renderBindingSelect(field, selectedNodeBindingOptions, value, (nextValue) => updateKnownField(field.key, nextValue))
+            : mode === "template"
+              ? (
+                <div className="template-editor">
+                  <label className="field-inline">
+                    <span>Insert output</span>
+                    <select
+                      value=""
+                      onChange={(event) => {
+                        const nextValue = event.target.value;
+                        if (!nextValue) return;
+                        updateKnownField(field.key, insertBindingReference(value, nextValue));
+                        event.target.value = "";
+                      }}
+                      disabled={selectedNodeBindingOptions.length === 0 || isDisabled}
+                    >
+                      <option value="">
+                        {selectedNodeBindingOptions.length === 0 ? "No outputs available" : "Insert output reference"}
+                      </option>
+                      {selectedNodeBindingOptions.map((option) => (
+                        <option key={`${field.key}-template-${option.value}`} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <input
+                    value={typeof value === "string" ? value : ""}
+                    placeholder={field.placeholder ?? "Use $(node.output.path) inside the text"}
+                    onChange={(event) => updateKnownField(field.key, event.target.value)}
+                    disabled={isDisabled}
+                  />
+                </div>
+              )
+            : (
+              <input
+                value={typeof value === "string" ? value : ""}
+                placeholder={field.placeholder ?? ""}
+                onChange={(event) => updateKnownField(field.key, event.target.value)}
+                disabled={isDisabled}
+              />
+            )}
+        </div>
+      );
+    }
+
+    if (field.kind === "number") {
+      return (
+        <div key={field.key} className="inspector-field">
+          <div className="field-toolbar">
+            <div className="field-header">
+              <span>{field.label}</span>
+            </div>
+            {renderModeSelect(field, mode, (nextMode) => {
+              updateFieldMode(field.key, nextMode);
+              if (nextMode === "bind") {
+                updateKnownField(field.key, selectedNodeBindingOptions[0]?.value ?? "");
+              } else {
+                updateKnownField(field.key, typeof value === "number" ? value : undefined);
+              }
+            }, isDisabled)}
+          </div>
+          {field.description ? <p className="field-description">{field.description}</p> : null}
+          {mode === "bind"
+            ? renderBindingSelect(field, selectedNodeBindingOptions, value, (nextValue) => updateKnownField(field.key, nextValue))
+            : (
+              <input
+                type="number"
+                value={typeof value === "number" ? value : ""}
+                onChange={(event) => {
+                  const nextValue = event.target.value;
+                  updateKnownField(field.key, nextValue === "" ? undefined : Number(nextValue));
+                }}
+                disabled={isDisabled}
+              />
+            )}
+        </div>
+      );
+    }
+
+    if (field.kind === "boolean") {
+      return (
+        <div key={field.key} className="inspector-field">
+          <div className="field-toolbar">
+            <div className="field-header">
+              <span>{field.label}</span>
+            </div>
+            {renderModeSelect(field, mode, (nextMode) => {
+              updateFieldMode(field.key, nextMode);
+              if (nextMode === "bind") {
+                updateKnownField(field.key, selectedNodeBindingOptions[0]?.value ?? "");
+              } else {
+                updateKnownField(field.key, Boolean(value));
+              }
+            }, isDisabled)}
+          </div>
+          {field.description ? <p className="field-description">{field.description}</p> : null}
+          {mode === "bind"
+            ? renderBindingSelect(field, selectedNodeBindingOptions, value, (nextValue) => updateKnownField(field.key, nextValue))
+            : (
+              <label className="checkbox-row">
+                <input
+                  type="checkbox"
+                  checked={typeof value === "boolean" ? value : false}
+                  onChange={(event) => updateKnownField(field.key, event.target.checked)}
+                  disabled={isDisabled}
+                />
+                <span>{typeof value === "boolean" && value ? "Enabled" : "Disabled"}</span>
+              </label>
+            )}
+        </div>
+      );
+    }
+
+    if (field.kind === "enum") {
+      return (
+        <label key={field.key} className="inspector-field">
+          <div className="field-toolbar">
+            <div className="field-header">
+              <span>{field.label}</span>
+            </div>
+          </div>
+          {field.description ? <p className="field-description">{field.description}</p> : null}
+          <select
+            value={typeof value === "string" ? value : ""}
+            onChange={(event) => updateKnownField(field.key, event.target.value)}
+            disabled={isDisabled}
+          >
+            <option value="">Select</option>
+            {field.options.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
+      );
+    }
+
+    if (field.kind === "string_list") {
+      const listValue = Array.isArray(value) ? value.map((item) => String(item)).join("\n") : "";
+      return (
+        <label key={field.key} className="inspector-field">
+          <div className="field-toolbar">
+            <div className="field-header">
+              <span>{field.label}</span>
+            </div>
+          </div>
+          {field.description ? <p className="field-description">{field.description}</p> : null}
+          <textarea
+            value={listValue}
+            rows={4}
+            placeholder={field.placeholder ?? "One value per line"}
+            onChange={(event) => updateStringListField(field.key, event.target.value)}
+            disabled={isDisabled}
+          />
+        </label>
+      );
+    }
+
+    if (field.kind === "json") {
+      return (
+        <div key={field.key} className="inspector-field">
+          <div className="field-toolbar">
+            <div className="field-header">
+              <span>{field.label}</span>
+            </div>
+            {renderModeSelect(field, mode, (nextMode) => {
+              updateFieldMode(field.key, nextMode);
+              if (nextMode === "bind") {
+                updateKnownField(field.key, selectedNodeBindingOptions[0]?.value ?? "");
+              } else {
+                updateKnownField(field.key, undefined);
+              }
+            }, isDisabled)}
+          </div>
+          {field.description ? <p className="field-description">{field.description}</p> : null}
+          {mode === "bind"
+            ? renderBindingSelect(field, selectedNodeBindingOptions, value, (nextValue) => updateKnownField(field.key, nextValue))
+            : (
+              <textarea
+                value={inspectorJsonDrafts[field.key] ?? ""}
+                rows={field.key === "outputs" ? 5 : 8}
+                onChange={(event) =>
+                  setInspectorJsonDrafts((current) => ({ ...current, [field.key]: event.target.value }))
+                }
+                disabled={isDisabled}
+              />
+            )}
+        </div>
+      );
+    }
+
+    if (field.kind === "object_list") {
+      const items = Array.isArray(value) ? value : [];
+      return (
+        <div key={field.key} className="inspector-field">
+          <div className="field-toolbar">
+            <div className="field-header">
+              <span>{field.label}</span>
+            </div>
+          </div>
+          {items.map((item, index) => {
+            const itemValue = isRecord(item) ? item : {};
+            return (
+              <div key={`${field.key}-${index}`} className="object-list-item">
+                <div className="object-list-title">
+                  <span>Item {index + 1}</span>
+                  <button type="button" className="subtle-button" onClick={() => removeObjectListItem(field.key, index)}>
+                    Remove
+                  </button>
+                </div>
+                {field.item_fields.map((itemField) => {
+                  const currentValue = itemValue[itemField.key];
+                  const currentMode = fieldValueMode(itemField, currentValue);
+                  return (
+                    <div key={itemField.key} className="nested-field">
+                      <div className="field-toolbar">
+                        <div className="field-header">
+                          <span>{itemField.label}</span>
+                        </div>
+                        {itemField.bindable ? (
+                          <label className="mode-select">
+                            <span>Mode</span>
+                            <select
+                              value={currentMode}
+                              onChange={(event) => {
+                                const nextMode = event.target.value as "literal" | "bind";
+                                if (nextMode === "bind") {
+                                  updateObjectListItem(field.key, index, itemField.key, selectedNodeBindingOptions[0]?.value ?? "");
+                                } else {
+                                  updateObjectListItem(field.key, index, itemField.key, "");
+                                }
+                              }}
+                            >
+                              <option value="literal">Literal</option>
+                              <option value="bind">Bind</option>
+                            </select>
+                          </label>
+                        ) : null}
+                      </div>
+                      {currentMode === "bind"
+                        ? renderBindingSelect(itemField, selectedNodeBindingOptions, currentValue, (nextValue) =>
+                            updateObjectListItem(field.key, index, itemField.key, nextValue),
+                          )
+                        : itemField.kind === "enum"
+                          ? (
+                            <select
+                              value={typeof currentValue === "string" ? currentValue : ""}
+                              onChange={(event) => updateObjectListItem(field.key, index, itemField.key, event.target.value)}
+                            >
+                              <option value="">Select</option>
+                              {itemField.options.map((option) => (
+                                <option key={`${field.key}-${index}-${itemField.key}-${option.value}`} value={option.value}>
+                                  {option.label}
+                                </option>
+                              ))}
+                            </select>
+                          )
+                        : itemField.kind === "boolean"
+                          ? (
+                            <label className="checkbox-row">
+                              <input
+                                type="checkbox"
+                                checked={typeof currentValue === "boolean" ? currentValue : false}
+                                onChange={(event) => updateObjectListItem(field.key, index, itemField.key, event.target.checked)}
+                              />
+                              <span>{typeof currentValue === "boolean" && currentValue ? "Enabled" : "Disabled"}</span>
+                            </label>
+                          )
+                          : (
+                            <input
+                              value={typeof currentValue === "string" ? currentValue : ""}
+                              onChange={(event) => updateObjectListItem(field.key, index, itemField.key, event.target.value)}
+                            />
+                          )}
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })}
+          <button type="button" className="subtle-button" onClick={() => addObjectListItem(field.key, field)}>
+            Add item
+          </button>
+        </div>
+      );
+    }
+
+    return null;
+  }
+
+  const createEntriesByKind = NODE_GROUPS.map((group) => ({
+    ...group,
+    entries: catalog.nodes.filter((entry) => entry.kind === group.kind),
+  }));
+
   return (
     <div className="app-shell" ref={appShellRef} tabIndex={-1} onKeyDown={handleAppShellKeyDown}>
       <aside className="sidebar">
         <div className="sidebar-section">
           <div className="eyebrow">Workflow editor</div>
           <h1>Trigger graph</h1>
-          <p>Drag nodes, connect edges, and edit full node config in the inspector.</p>
+          <p>Drag nodes, connect edges, and edit typed node config with literals or upstream bindings.</p>
         </div>
 
         <div className="sidebar-section">
           <div className="section-label">Create</div>
-          {NODE_GROUPS.map((group) => {
-            const entries = NODE_CATALOG.filter((entry) => entry.kind === group.kind);
-            return (
-              <details key={group.kind} className="create-group" open={group.kind === "trigger"}>
-                <summary className="create-group-summary">
-                  <span>{group.label}</span>
-                  <span className="create-group-count">{entries.length}</span>
-                </summary>
-                <p className="create-group-description">{group.description}</p>
-                <div className="create-group-actions">
-                  {entries.map((entry) => (
-                    <button key={entry.type} onClick={() => addNode(entry.kind, entry.type)}>
-                      {entry.label}
-                    </button>
-                  ))}
-                </div>
-              </details>
-            );
-          })}
+          {createEntriesByKind.map((group) => (
+            <details key={group.kind} className="create-group" open={group.kind === "trigger"}>
+              <summary className="create-group-summary">
+                <span>{group.label}</span>
+                <span className="create-group-count">{group.entries.length}</span>
+              </summary>
+              <p className="create-group-description">{group.description}</p>
+              <div className="create-group-actions">
+                {group.entries.map((entry) => (
+                  <button key={entry.type} onClick={() => addNode(entry.kind, entry.type)}>
+                    {entry.label}
+                  </button>
+                ))}
+              </div>
+            </details>
+          ))}
         </div>
 
         <div className="sidebar-section">
@@ -644,6 +1681,7 @@ export default function App() {
           <button className="primary" onClick={() => void saveDocument()}>
             {saveState === "saving" ? "Saving..." : "Save workflow"}
           </button>
+          {error ? <div className="error-box save-error-box">{error}</div> : null}
           {document ? (
             <div className="path-note">
               <div>{document.config_path}</div>
@@ -670,7 +1708,18 @@ export default function App() {
                 onChange={(event) => setInspectorDisplayName(event.target.value)}
               />
             </label>
-            <textarea value={inspectorJson} onChange={(event) => setInspectorJson(event.target.value)} rows={18} />
+
+            {renderVmCopyTargetField()}
+            {inspectorFields.map((field) => renderField(field))}
+
+            {Object.keys(inspectorUnknownValues).length > 0 ? (
+              <details className="raw-json-panel">
+                <summary>Additional raw JSON</summary>
+                <p className="field-description">These keys are preserved because they are not in the current catalog.</p>
+                <textarea value={rawJsonDraft} rows={8} readOnly />
+              </details>
+            ) : null}
+
             <button className="primary" onClick={applyInspectorChanges}>
               Apply node changes
             </button>

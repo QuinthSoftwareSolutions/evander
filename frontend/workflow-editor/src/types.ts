@@ -49,3 +49,33 @@ export type WorkflowEditorValidation = {
   config: WorkflowConfig;
   layout: WorkflowLayout;
 };
+
+export type WorkflowEditorFieldOption = {
+  value: string;
+  label: string;
+};
+
+export type WorkflowEditorFieldDefinition = {
+  key: string;
+  label: string;
+  kind: "string" | "number" | "boolean" | "enum" | "string_list" | "json" | "object_list";
+  required: boolean;
+  bindable: boolean;
+  read_only: boolean;
+  description?: string | null;
+  placeholder?: string | null;
+  options: WorkflowEditorFieldOption[];
+  item_fields: WorkflowEditorFieldDefinition[];
+};
+
+export type WorkflowEditorNodeCatalogEntry = {
+  kind: WorkflowNodeKind;
+  type: string;
+  label: string;
+  fields: WorkflowEditorFieldDefinition[];
+};
+
+export type WorkflowEditorCatalog = {
+  worker_id: string;
+  nodes: WorkflowEditorNodeCatalogEntry[];
+};

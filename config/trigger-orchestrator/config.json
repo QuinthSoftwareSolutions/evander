@@ -1,18 +1,112 @@
 {
-  "edges": [],
+  "edges": [
+    {
+      "source_id": "trigger-ticket-created-1",
+      "target_id": "effect-vm-create-1"
+    },
+    {
+      "source_id": "effect-vm-create-1",
+      "target_id": "gate-filter-1"
+    },
+    {
+      "source_id": "gate-filter-1",
+      "target_id": "effect-vm-copy-files-1"
+    }
+  ],
   "effect_cursor_store_path": "runtime/effect-orchestrator-cursors.json",
   "effect_execution_store_path": "runtime/effect-orchestrator-executions.json",
   "effect_lock_path": "runtime/effect-orchestrator.lock",
-  "effects": [],
+  "effects": [
+    {
+      "directory_path": "root/example-industry/app",
+      "display_name": "Create Issue VM",
+      "dotnet": true,
+      "id": "effect-vm-create-1",
+      "labels": {
+        "vm-type": "issue"
+      },
+      "model": "gpt-5.4",
+      "mssql": true,
+      "nuget": true,
+      "playwright": true,
+      "repo_source": "/home/jonathan/Documents/Repos/ExampleIndustryAPP",
+      "session_id": "issue-$(trigger-ticket-created-1.ticket.issue_number)-root-example-industry-app-$(system.now.utc_timestamp_compact)-$(system.unique.compact)",
+      "ttl_hours": 48,
+      "type": "effect:vm:create",
+      "vm_name": "vm-issue-$(trigger-ticket-created-1.ticket.issue_number)",
+      "vm_user": "agent"
+    },
+    {
+      "display_name": "Copy files into VM",
+      "files": [
+        {
+          "destination_path": "/home/agent/AGENTS.md",
+          "overwrite": true,
+          "source_path": "/home/jonathan/agent-sandbox/templates/guest-AGENTS.md.tmpl"
+        },
+        {
+          "content": "$(trigger-ticket-created-1.ticket)",
+          "content_format": "yaml",
+          "destination_path": "/home/agent/ExampleIndustryAPP/AGENT_TASK.yaml",
+          "overwrite": true
+        }
+      ],
+      "id": "effect-vm-copy-files-1",
+      "target": "$(effect-vm-create-1.session_id)",
+      "type": "effect:vm:copy-files",
+      "vm_user": "agent"
+    }
+  ],
   "event_queue_cursor_store_path": "runtime/trigger-orchestrator-cursors.json",
   "event_queue_store_path": "runtime/trigger-orchestrator-events.json",
   "gate_cursor_store_path": "runtime/gate-orchestrator-cursors.json",
   "gate_execution_store_path": "runtime/gate-orchestrator-executions.json",
-  "gates": [],
+  "gates": [
+    {
+      "display_name": "Verify successful creation",
+      "id": "gate-filter-1",
+      "outputs": {
+        "labels": {
+          "type": "object"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "success": {
+          "type": "boolean"
+        },
+        "vm_name": {
+          "type": "string"
+        }
+      },
+      "type": "gate:filter",
+      "when": {
+        "all": [
+          {
+            "equals": true,
+            "left": "$(effect-vm-create-1.success)"
+          },
+          {
+            "is_not_null": true,
+            "left": "$(effect-vm-create-1.session_id)"
+          }
+        ]
+      }
+    }
+  ],
   "jitter_seconds": 5.0,
   "lock_path": "runtime/trigger-orchestrator.lock",
   "poll_interval_seconds": 30.0,
   "queries": [],
   "runtime_dir": "runtime",
-  "triggers": []
+  "triggers": [
+    {
+      "directories": [
+        "root/example-industry/app"
+      ],
+      "display_name": "Ticket created",
+      "id": "trigger-ticket-created-1",
+      "type": "trigger:ticket:created"
+    }
+  ]
 }

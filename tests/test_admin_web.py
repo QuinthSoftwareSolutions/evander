@@ -32,12 +32,20 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
     client = TestClient(create_app(AdminService(write_config(tmp_path))))
 
     response = client.get("/api/workflow-editor/document")
+    catalog_response = client.get("/api/workflow-editor/catalog")
 
     assert response.status_code == 200
+    assert catalog_response.status_code == 200
     payload = response.json()
+    catalog_payload = catalog_response.json()
     assert payload["worker_id"] == "trigger-orchestrator"
     assert payload["config"]["triggers"] == []
     assert payload["layout"] == {"nodes": {}}
+    assert any(node["type"] == "effect:vm:exec" for node in catalog_payload["nodes"])
+    vm_exec = next(node for node in catalog_payload["nodes"] if node["type"] == "effect:vm:exec")
+    assert any(field["key"] == "command" and field["bindable"] for field in vm_exec["fields"])
+    ticket_created = next(node for node in catalog_payload["nodes"] if node["type"] == "trigger:ticket:created")
+    assert all(field["key"] != "outputs" for field in ticket_created["fields"])
 
 
 def test_admin_web_validates_and_saves_workflow_editor_document(tmp_path: Path) -> None:
