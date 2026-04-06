@@ -53,6 +53,7 @@ logger = logging.getLogger(__name__)
 
 _MAX_GRAPH_DEPTH = 16
 _MAX_EVENTS_PER_CYCLE = 200
+_NODE_OUTPUTS_CONTEXT_KEY = "__node_outputs"
 
 WorkflowNodeDefinition = TriggerDefinitionDiscriminated | GateDefinitionDiscriminated | EffectDefinitionDiscriminated
 TRecord = TypeVar("TRecord", bound=BaseModel)
@@ -71,6 +72,7 @@ class EffectExecutionRecord(BaseModel):
     finished_at: datetime
     resolved_config_hash: str = Field(min_length=1)
     resolved_config: dict[str, Any] = Field(default_factory=dict)
+    input_payload: dict[str, Any] = Field(default_factory=dict)
     outputs: dict[str, Any] = Field(default_factory=dict)
     published_event_id: str | None = None
     error: str | None = None
@@ -90,6 +92,7 @@ class GateExecutionRecord(BaseModel):
     finished_at: datetime
     resolved_config_hash: str = Field(min_length=1)
     resolved_config: dict[str, Any] = Field(default_factory=dict)
+    input_payload: dict[str, Any] = Field(default_factory=dict)
     outputs: dict[str, Any] = Field(default_factory=dict)
     inputs_by_source: dict[str, dict[str, Any]] = Field(default_factory=dict)
     input_event_ids_by_source: dict[str, str] = Field(default_factory=dict)
@@ -295,14 +298,16 @@ class EffectOrchestratorWorker:
                 return False
 
         started_at = datetime.now(UTC)
-        upstream_output_names = set(graph.declared_outputs.get(queue_record.trigger_id, {}).keys()) or set(
-            queue_record.payload.keys()
+        upstream_payload = _node_output_context_from_payload(
+            queue_record.payload,
+            source_node_id=queue_record.trigger_id,
         )
+        upstream_output_names = _declared_upstream_output_names(graph=graph, upstream_payload=upstream_payload)
         raw_effect_config = _extract_effect_config(effect)
         try:
             resolved = resolve_effect_config_bindings(
                 raw_effect_config,
-                upstream_payload=queue_record.payload,
+                upstream_payload=upstream_payload,
                 declared_upstream_output_names=upstream_output_names,
                 strict_validation=True,
             )
@@ -330,6 +335,7 @@ class EffectOrchestratorWorker:
             finished_at=started_at,
             resolved_config_hash=_json_sha256(resolved_config),
             resolved_config=resolved_config,
+            input_payload=dict(queue_record.payload),
             outputs={},
         )
         self.execution_store.put(record)
@@ -350,9 +356,11 @@ class EffectOrchestratorWorker:
             return
 
         started_at = datetime.now(UTC)
-        upstream_output_names = set(graph.declared_outputs.get(queue_record.trigger_id, {}).keys()) or set(
-            queue_record.payload.keys()
+        upstream_payload = _node_output_context_from_payload(
+            queue_record.payload,
+            source_node_id=queue_record.trigger_id,
         )
+        upstream_output_names = _declared_upstream_output_names(graph=graph, upstream_payload=upstream_payload)
         inputs_by_source = {queue_record.trigger_id: dict(queue_record.payload)}
         input_event_ids_by_source = {queue_record.trigger_id: queue_record.event_id}
         input_occurred_at_by_source = {queue_record.trigger_id: queue_record.occurred_at}
@@ -361,7 +369,7 @@ class EffectOrchestratorWorker:
             if gate.type == "gate:filter":
                 resolved = resolve_workflow_bindings(
                     gate.match,
-                    queue_record.payload,
+                    upstream_payload,
                     upstream_output_names,
                     strict_validation=True,
                 )
@@ -399,7 +407,7 @@ class EffectOrchestratorWorker:
             if gate.type == "gate:map":
                 resolved = resolve_gate_map_bindings(
                     gate.template,
-                    queue_record.payload,
+                    upstream_payload,
                     upstream_output_names,
                     strict_validation=True,
                 )
@@ -546,7 +554,13 @@ class EffectOrchestratorWorker:
             trigger_id=record.effect_id,
             trigger_type=record.effect_type,
             occurred_at=datetime.now(UTC),
-            payload=outputs,
+            payload=_payload_with_node_output_context(
+                source_payload=record.input_payload,
+                source_node_id=record.source_node_id,
+                completed_node_id=record.effect_id,
+                outputs=outputs,
+                reset_context=False,
+            ),
         )
         self.event_queue.publish(completion_event, idempotency_key=record.idempotency_key)
         return completion_event_id
@@ -567,7 +581,13 @@ class EffectOrchestratorWorker:
             trigger_id=record.gate_id,
             trigger_type=record.gate_type,
             occurred_at=datetime.now(UTC),
-            payload=outputs,
+            payload=_payload_with_node_output_context(
+                source_payload=record.input_payload,
+                source_node_id=record.source_node_id,
+                completed_node_id=record.gate_id,
+                outputs=outputs,
+                reset_context=record.gate_type == "gate:merge",
+            ),
         )
         self.event_queue.publish(completion_event, idempotency_key=record.idempotency_key)
         return completion_event_id
@@ -648,6 +668,7 @@ class EffectOrchestratorWorker:
             finished_at=finished_at,
             resolved_config_hash=_json_sha256(resolved_config),
             resolved_config=resolved_config,
+            input_payload=dict(queue_record.payload),
             outputs={},
             error=error,
         )
@@ -685,6 +706,7 @@ class EffectOrchestratorWorker:
             finished_at=finished_at,
             resolved_config_hash=_json_sha256(resolved_config),
             resolved_config=resolved_config,
+            input_payload=dict(queue_record.payload),
             outputs=outputs,
             inputs_by_source=inputs_by_source,
             input_event_ids_by_source=input_event_ids_by_source,
@@ -831,6 +853,52 @@ def _extract_effect_config(effect: EffectDefinitionDiscriminated) -> dict[str, A
 
 def _execution_idempotency_key(event_id: str, node_id: str) -> str:
     return f"{event_id}::{node_id}"
+
+
+def _node_output_context_from_payload(payload: dict[str, Any], *, source_node_id: str) -> dict[str, dict[str, Any]]:
+    raw_context = payload.get(_NODE_OUTPUTS_CONTEXT_KEY)
+    if isinstance(raw_context, dict):
+        context: dict[str, dict[str, Any]] = {}
+        for node_id, node_payload in raw_context.items():
+            if not isinstance(node_id, str) or not isinstance(node_payload, dict):
+                continue
+            context[node_id] = dict(node_payload)
+        if context:
+            return context
+
+    flat_payload = {key: value for key, value in payload.items() if key != _NODE_OUTPUTS_CONTEXT_KEY}
+    return {source_node_id: flat_payload}
+
+
+def _declared_upstream_output_names(
+    *,
+    graph: ExecutionGraph,
+    upstream_payload: dict[str, dict[str, Any]],
+) -> dict[str, set[str]]:
+    declared: dict[str, set[str]] = {}
+    for node_id, node_payload in upstream_payload.items():
+        declared_keys = set(graph.declared_outputs.get(node_id, {}).keys())
+        declared[node_id] = declared_keys | set(node_payload.keys())
+    return declared
+
+
+def _payload_with_node_output_context(
+    *,
+    source_payload: dict[str, Any],
+    source_node_id: str,
+    completed_node_id: str,
+    outputs: dict[str, Any],
+    reset_context: bool,
+) -> dict[str, Any]:
+    payload = dict(outputs)
+    inherited_context = _node_output_context_from_payload(source_payload, source_node_id=source_node_id)
+    if reset_context:
+        payload[_NODE_OUTPUTS_CONTEXT_KEY] = {completed_node_id: dict(outputs)}
+        return payload
+    merged_context = {node_id: dict(node_payload) for node_id, node_payload in inherited_context.items()}
+    merged_context[completed_node_id] = dict(outputs)
+    payload[_NODE_OUTPUTS_CONTEXT_KEY] = merged_context
+    return payload
 
 
 def _completion_event_id(*, parent_event_id: str, node_id: str, prefix: str) -> str:

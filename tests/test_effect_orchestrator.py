@@ -65,7 +65,7 @@ def test_effect_orchestrator_executes_gate_and_effect_chain(tmp_path: Path) -> N
                     "id": "gate-1",
                     "display_name": "Transform",
                     "type": "gate:map",
-                    "template": {"vm_name": "vm-$(ticket_id)"},
+                    "template": {"vm_name": "vm-$(trigger-1.ticket_id)"},
                     "outputs": {"vm_name": {"type": "string"}},
                 }
             ],
@@ -74,15 +74,15 @@ def test_effect_orchestrator_executes_gate_and_effect_chain(tmp_path: Path) -> N
                     "id": "effect-1",
                     "display_name": "Provision",
                     "type": "effect:vm:create",
-                    "vm_name": "$(vm_name)",
+                    "vm_name": "$(gate-1.vm_name)",
                     "outputs": {"session_id": {"type": "string"}},
                 },
                 {
                     "id": "effect-2",
                     "display_name": "Prompt",
                     "type": "effect:agent:prompt",
-                    "session_id": "$(session_id)",
-                    "prompt": "Continue $(session_id)",
+                    "session_id": "$(effect-1.session_id)",
+                    "prompt": "Continue $(effect-1.session_id)",
                 },
             ],
             "edges": [
@@ -124,6 +124,146 @@ def test_effect_orchestrator_executes_gate_and_effect_chain(tmp_path: Path) -> N
     assert any(item["trigger_id"] == "gate-1" for item in queue_payload.values())
     assert any(item["trigger_id"] == "effect-1" for item in queue_payload.values())
     assert any(item["trigger_id"] == "effect-2" for item in queue_payload.values())
+
+
+def test_effect_orchestrator_preserves_upstream_payload_across_multi_hop_chain(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Tick",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                    "outputs": {"ticket_id": {"type": "integer"}},
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-1",
+                    "display_name": "Build vm name",
+                    "type": "effect:agent:prompt",
+                    "prompt": "ticket $(trigger-1.ticket_id)",
+                    "outputs": {"vm_name": {"type": "string"}},
+                },
+                {
+                    "id": "effect-2",
+                    "display_name": "Build session",
+                    "type": "effect:agent:prompt",
+                    "prompt": "vm $(effect-1.vm_name)",
+                    "outputs": {"session_id": {"type": "string"}},
+                },
+                {
+                    "id": "effect-3",
+                    "display_name": "Cross-hop binding",
+                    "type": "effect:agent:prompt",
+                    "prompt": "ticket $(trigger-1.ticket_id) session $(effect-2.session_id)",
+                },
+            ],
+            "edges": [
+                _edge("trigger-1", "effect-1"),
+                _edge("effect-1", "effect-2"),
+                _edge("effect-2", "effect-3"),
+            ],
+        }
+    )
+    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    worker.provider_factory = _Factory(
+        {
+            "effect-1": {"vm_name": "vm-101"},
+            "effect-2": {"session_id": "session-101"},
+            "effect-3": {"ok": True},
+        }
+    )
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="event-chain-1",
+            trigger_id="trigger-1",
+            trigger_type="trigger:cron",
+            occurred_at=datetime(2026, 4, 4, 12, 0, tzinfo=timezone.utc),
+            payload={"ticket_id": 101},
+        )
+    )
+
+    for _ in range(8):
+        worker.run_once()
+
+    execution_payload = json.loads((runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8"))
+    by_effect = {item["effect_id"]: item for item in execution_payload.values()}
+    assert by_effect["effect-1"]["status"] == "succeeded"
+    assert by_effect["effect-2"]["status"] == "succeeded"
+    assert by_effect["effect-3"]["status"] == "succeeded"
+    assert by_effect["effect-3"]["resolved_config"]["prompt"] == "ticket 101 session session-101"
+
+
+def test_effect_orchestrator_supports_disambiguated_references_for_same_key_name(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Tick",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                    "outputs": {"ticket_id": {"type": "integer"}},
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-1",
+                    "display_name": "Emit same key name",
+                    "type": "effect:agent:prompt",
+                    "prompt": "ticket $(trigger-1.ticket_id)",
+                    "outputs": {"ticket_id": {"type": "integer"}},
+                },
+                {
+                    "id": "effect-2",
+                    "display_name": "Uses both values",
+                    "type": "effect:agent:prompt",
+                    "prompt": "original $(trigger-1.ticket_id) updated $(effect-1.ticket_id)",
+                },
+            ],
+            "edges": [
+                _edge("trigger-1", "effect-1"),
+                _edge("effect-1", "effect-2"),
+            ],
+        }
+    )
+    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    worker.provider_factory = _Factory(
+        {
+            "effect-1": {"ticket_id": 999},
+            "effect-2": {"ok": True},
+        }
+    )
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="event-disambiguated-1",
+            trigger_id="trigger-1",
+            trigger_type="trigger:cron",
+            occurred_at=datetime(2026, 4, 4, 12, 0, tzinfo=timezone.utc),
+            payload={"ticket_id": 101},
+        )
+    )
+
+    for _ in range(6):
+        worker.run_once()
+
+    execution_payload = json.loads((runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8"))
+    by_effect = {item["effect_id"]: item for item in execution_payload.values()}
+    assert by_effect["effect-1"]["status"] == "succeeded"
+    assert by_effect["effect-2"]["status"] == "succeeded"
+    assert by_effect["effect-2"]["resolved_config"]["prompt"] == "original 101 updated 999"
 
 
 def test_effect_orchestrator_depth_protection_skips_cyclic_graph(tmp_path: Path) -> None:
@@ -299,13 +439,13 @@ def test_effect_orchestrator_records_binding_resolution_failure_and_advances_que
                     "id": "effect-bad",
                     "display_name": "Bad binding",
                     "type": "effect:agent:prompt",
-                    "prompt": "missing $(session_id)",
+                    "prompt": "missing $(trigger-1.session_id)",
                 },
                 {
                     "id": "effect-good",
                     "display_name": "Good binding",
                     "type": "effect:agent:prompt",
-                    "prompt": "ticket $(ticket_id)",
+                    "prompt": "ticket $(trigger-1.ticket_id)",
                 },
             ],
             "edges": [
@@ -372,7 +512,7 @@ def test_filter_gate_forwards_matching_payload_with_recursive_subset_match(tmp_p
                     "id": "effect-1",
                     "display_name": "Prompt",
                     "type": "effect:agent:prompt",
-                    "prompt": "state $(state)",
+                    "prompt": "state $(gate-filter.state)",
                 }
             ],
             "edges": [
@@ -473,7 +613,7 @@ def test_map_gate_records_failed_status_on_unresolved_reference(tmp_path: Path) 
                     "id": "gate-map",
                     "display_name": "Map",
                     "type": "gate:map",
-                    "template": {"session_id": "$(session_id)"},
+                    "template": {"session_id": "$(trigger-1.session_id)"},
                     "outputs": {"session_id": {"type": "string"}},
                 }
             ],
@@ -482,7 +622,7 @@ def test_map_gate_records_failed_status_on_unresolved_reference(tmp_path: Path) 
                     "id": "effect-1",
                     "display_name": "Prompt",
                     "type": "effect:agent:prompt",
-                    "prompt": "session $(session_id)",
+                    "prompt": "session $(gate-map.session_id)",
                 }
             ],
             "edges": [
@@ -551,7 +691,7 @@ def test_merge_gate_re_emits_shared_payload_keys(tmp_path: Path) -> None:
                     "id": "effect-1",
                     "display_name": "Prompt",
                     "type": "effect:agent:prompt",
-                    "prompt": "shared $(shared)",
+                    "prompt": "shared $(gate-merge.shared)",
                 }
             ],
             "edges": [
