@@ -600,6 +600,9 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
     "create_prs_as_draft": (
         "When enabled, new Azure DevOps pull requests opened for this directory are created as drafts."
     ),
+    "ado_setup_vms": (
+        "Enable or disable VM setup in the legacy ADO worker for this directory while still allowing Azure issue ingestion."
+    ),
     "ado_bootstrap_dotnet": (
         "Enable or disable dotnet/bootstrap steps in setup_issue_vm.sh for ADO worker-created VMs."
     ),

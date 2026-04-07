@@ -19,16 +19,17 @@ SSH into a VM and request a guest agent resume command from the guest user's hom
 directory.
 
 Arguments (legacy positional mode):
-  prompt        Prompt passed to `agent_runner_resume_last`.
+  prompt        Prompt passed to the guest agent runner.
   issue-number  Issue identifier used to derive the VM name.
   vm-user       Guest user to connect as. Default: agent
 
 Options:
-  --prompt TEXT               Prompt passed to `agent_runner_resume_last`.
+  --prompt TEXT               Prompt passed to the guest agent runner.
   --issue-number NUMBER       Issue identifier used to derive VM name (`vm-<issue-number>`).
   --vm-name NAME              Explicit libvirt domain name.
   --session-id ID             Session identifier for host-worker logs/state.
   --dispatch-id ID            Correlation identifier written into the guest agent state file.
+  --resume-thread-id ID       Resume a specific agent thread/session id instead of starting a new one.
   --vm-user USER              Guest user to connect as. Default: agent
   --resume-mode MODE          Resume mode: same_context or new_context. Default: same_context
   --worker-mode               Disable TTY allocation and run non-interactive worker mode.
@@ -192,6 +193,7 @@ parse_args() {
   VM_NAME=""
   SESSION_ID=""
   DISPATCH_ID=""
+  RESUME_THREAD_ID=""
   VM_USER="agent"
   RESUME_MODE="same_context"
   WORKER_MODE=0
@@ -257,6 +259,10 @@ parse_args() {
           ;;
         --dispatch-id)
           DISPATCH_ID="${2:-}"
+          shift 2
+          ;;
+        --resume-thread-id)
+          RESUME_THREAD_ID="${2:-}"
           shift 2
           ;;
         --vm-user)
@@ -412,8 +418,7 @@ if (( WORKER_MODE )); then
     set +e
     ssh "${SSH_FLAGS[@]}" \
       "${VM_USER}@${VM_IP}" \
-      "PROMPT_B64='${PROMPT_B64}' SESSION_ID='${SESSION_ID}' AGENT_BRANCH_SUFFIX='${VM_NAME}' AGENT_PROVIDER='${AGENT_PROVIDER}' AGENT_MODEL='${AGENT_MODEL}' RESUME_MODE='${RESUME_MODE}' HOST_CONTROL_STATUS='${HOST_CONTROL_STATUS}' AGENT_RUNNER_LIB_B64='${AGENT_RUNNER_LIB_B64}' AGENT_RUNNER_PROVIDER_LIB_NAME='${AGENT_RUNNER_PROVIDER_LIB_NAME}' AGENT_RUNNER_PROVIDER_LIB_B64='${AGENT_RUNNER_PROVIDER_LIB_B64}' AGENT_STATE_LIB_B64='${AGENT_STATE_LIB_B64}' bash -s" <<'REMOTE'
-      "PROMPT_B64='${PROMPT_B64}' SESSION_ID='${SESSION_ID}' DISPATCH_ID='${DISPATCH_ID}' AGENT_BRANCH_SUFFIX='${VM_NAME}' AGENT_PROVIDER='${AGENT_PROVIDER}' AGENT_MODEL='${AGENT_MODEL}' RESUME_MODE='${RESUME_MODE}' HOST_CONTROL_STATUS='${HOST_CONTROL_STATUS}' AGENT_RUNNER_LIB_B64='${AGENT_RUNNER_LIB_B64}' AGENT_RUNNER_PROVIDER_LIB_NAME='${AGENT_RUNNER_PROVIDER_LIB_NAME}' AGENT_RUNNER_PROVIDER_LIB_B64='${AGENT_RUNNER_PROVIDER_LIB_B64}' AGENT_STATE_LIB_B64='${AGENT_STATE_LIB_B64}' bash -s" <<'REMOTE'
+      "PROMPT_B64='${PROMPT_B64}' SESSION_ID='${SESSION_ID}' DISPATCH_ID='${DISPATCH_ID}' RESUME_THREAD_ID='${RESUME_THREAD_ID}' AGENT_BRANCH_SUFFIX='${VM_NAME}' AGENT_PROVIDER='${AGENT_PROVIDER}' AGENT_MODEL='${AGENT_MODEL}' RESUME_MODE='${RESUME_MODE}' HOST_CONTROL_STATUS='${HOST_CONTROL_STATUS}' AGENT_RUNNER_LIB_B64='${AGENT_RUNNER_LIB_B64}' AGENT_RUNNER_PROVIDER_LIB_NAME='${AGENT_RUNNER_PROVIDER_LIB_NAME}' AGENT_RUNNER_PROVIDER_LIB_B64='${AGENT_RUNNER_PROVIDER_LIB_B64}' AGENT_STATE_LIB_B64='${AGENT_STATE_LIB_B64}' bash -s" <<'REMOTE'
 set -euo pipefail
 
 cd "${HOME}"
@@ -527,6 +532,7 @@ nohup env \
   AGENT_PROVIDER="${AGENT_PROVIDER}" \
   AGENT_MODEL="${AGENT_MODEL}" \
   RESUME_MODE="${RESUME_MODE}" \
+  RESUME_THREAD_ID="${RESUME_THREAD_ID}" \
   PROMPT="${PROMPT}" \
   RUN_LOG_FILE="${RUN_LOG_FILE}" \
   STATE_PATH="${STATE_PATH}" \
@@ -541,7 +547,14 @@ ensure_agent_enabled
 write_state "running" "resume"
 trap on_exit_write_idle EXIT
 
-if [[ "${RESUME_MODE}" == "new_context" ]]; then
+if [[ -n "${RESUME_THREAD_ID:-}" ]]; then
+  agent_runner_resume_thread \
+    "${RESUME_THREAD_ID}" \
+    --dangerously-bypass-approvals-and-sandbox \
+    --skip-git-repo-check \
+    --model "${AGENT_MODEL}" \
+    "${PROMPT}"
+elif [[ "${RESUME_MODE}" == "new_context" ]]; then
   TARGET_DIR="${HOME}"
   if [[ -n "${AGENT_STATE_REPO_NAME}" && "${AGENT_STATE_REPO_NAME}" != "resume-last" && -d "${HOME}/${AGENT_STATE_REPO_NAME}" ]]; then
     TARGET_DIR="${HOME}/${AGENT_STATE_REPO_NAME}"
@@ -577,7 +590,7 @@ REMOTE
   timeout --foreground "${RESUME_COMMAND_TIMEOUT_SECONDS}s" \
     ssh "${SSH_FLAGS[@]}" \
     "${VM_USER}@${VM_IP}" \
-    "PROMPT_B64='${PROMPT_B64}' SESSION_ID='${SESSION_ID}' DISPATCH_ID='${DISPATCH_ID}' AGENT_BRANCH_SUFFIX='${VM_NAME}' AGENT_PROVIDER='${AGENT_PROVIDER}' AGENT_MODEL='${AGENT_MODEL}' RESUME_MODE='${RESUME_MODE}' HOST_CONTROL_STATUS='${HOST_CONTROL_STATUS}' AGENT_RUNNER_LIB_B64='${AGENT_RUNNER_LIB_B64}' AGENT_RUNNER_PROVIDER_LIB_NAME='${AGENT_RUNNER_PROVIDER_LIB_NAME}' AGENT_RUNNER_PROVIDER_LIB_B64='${AGENT_RUNNER_PROVIDER_LIB_B64}' AGENT_STATE_LIB_B64='${AGENT_STATE_LIB_B64}' bash -s" <<'REMOTE'
+    "PROMPT_B64='${PROMPT_B64}' SESSION_ID='${SESSION_ID}' DISPATCH_ID='${DISPATCH_ID}' RESUME_THREAD_ID='${RESUME_THREAD_ID}' AGENT_BRANCH_SUFFIX='${VM_NAME}' AGENT_PROVIDER='${AGENT_PROVIDER}' AGENT_MODEL='${AGENT_MODEL}' RESUME_MODE='${RESUME_MODE}' HOST_CONTROL_STATUS='${HOST_CONTROL_STATUS}' AGENT_RUNNER_LIB_B64='${AGENT_RUNNER_LIB_B64}' AGENT_RUNNER_PROVIDER_LIB_NAME='${AGENT_RUNNER_PROVIDER_LIB_NAME}' AGENT_RUNNER_PROVIDER_LIB_B64='${AGENT_RUNNER_PROVIDER_LIB_B64}' AGENT_STATE_LIB_B64='${AGENT_STATE_LIB_B64}' bash -s" <<'REMOTE'
 set -euo pipefail
 
 cd "${HOME}"
@@ -653,7 +666,15 @@ ensure_agent_enabled
 write_state "running" "resume"
 trap on_exit_write_idle EXIT
 
-if [[ "${RESUME_MODE}" == "new_context" ]]; then
+if [[ -n "${RESUME_THREAD_ID:-}" ]]; then
+  agent_runner_resume_thread \
+    "${RESUME_THREAD_ID}" \
+    --dangerously-bypass-approvals-and-sandbox \
+    --skip-git-repo-check \
+    --model "${AGENT_MODEL}" \
+    "${PROMPT}" \
+    2>&1 | tee -a "${RUN_LOG_FILE}"
+elif [[ "${RESUME_MODE}" == "new_context" ]]; then
   TARGET_DIR="${HOME}"
   if [[ -n "${AGENT_STATE_REPO_NAME}" && "${AGENT_STATE_REPO_NAME}" != "resume-last" && -d "${HOME}/${AGENT_STATE_REPO_NAME}" ]]; then
     TARGET_DIR="${HOME}/${AGENT_STATE_REPO_NAME}"
@@ -695,7 +716,7 @@ fi
 resume_output="$(
   ssh "${SSH_FLAGS[@]}" \
     "${VM_USER}@${VM_IP}" \
-    "PROMPT_B64='${PROMPT_B64}' SESSION_ID='${SESSION_ID}' DISPATCH_ID='${DISPATCH_ID}' AGENT_BRANCH_SUFFIX='${VM_NAME}' AGENT_PROVIDER='${AGENT_PROVIDER}' AGENT_MODEL='${AGENT_MODEL}' RESUME_MODE='${RESUME_MODE}' HOST_CONTROL_STATUS='${HOST_CONTROL_STATUS}' AGENT_RUNNER_LIB_B64='${AGENT_RUNNER_LIB_B64}' AGENT_RUNNER_PROVIDER_LIB_NAME='${AGENT_RUNNER_PROVIDER_LIB_NAME}' AGENT_RUNNER_PROVIDER_LIB_B64='${AGENT_RUNNER_PROVIDER_LIB_B64}' AGENT_STATE_LIB_B64='${AGENT_STATE_LIB_B64}' bash -s" <<'REMOTE'
+    "PROMPT_B64='${PROMPT_B64}' SESSION_ID='${SESSION_ID}' DISPATCH_ID='${DISPATCH_ID}' RESUME_THREAD_ID='${RESUME_THREAD_ID}' AGENT_BRANCH_SUFFIX='${VM_NAME}' AGENT_PROVIDER='${AGENT_PROVIDER}' AGENT_MODEL='${AGENT_MODEL}' RESUME_MODE='${RESUME_MODE}' HOST_CONTROL_STATUS='${HOST_CONTROL_STATUS}' AGENT_RUNNER_LIB_B64='${AGENT_RUNNER_LIB_B64}' AGENT_RUNNER_PROVIDER_LIB_NAME='${AGENT_RUNNER_PROVIDER_LIB_NAME}' AGENT_RUNNER_PROVIDER_LIB_B64='${AGENT_RUNNER_PROVIDER_LIB_B64}' AGENT_STATE_LIB_B64='${AGENT_STATE_LIB_B64}' bash -s" <<'REMOTE'
 set -euo pipefail
 
 cd "${HOME}"
@@ -810,6 +831,7 @@ printf '%s\n' "--last" >"${RESUME_HINT_FILE}"
 nohup env \
   SESSION_ID="${SESSION_ID}" \
   AGENT_DISPATCH_ID="${DISPATCH_ID}" \
+  RESUME_THREAD_ID="${RESUME_THREAD_ID}" \
   AGENT_BRANCH_SUFFIX="${AGENT_BRANCH_SUFFIX}" \
   AGENT_PROVIDER="${AGENT_PROVIDER}" \
   AGENT_MODEL="${AGENT_MODEL}" \
@@ -828,7 +850,14 @@ ensure_agent_enabled
 write_state "running" "resume"
 trap on_exit_write_idle EXIT
 
-if [[ "${RESUME_MODE}" == "new_context" ]]; then
+if [[ -n "${RESUME_THREAD_ID:-}" ]]; then
+  agent_runner_resume_thread \
+    "${RESUME_THREAD_ID}" \
+    --dangerously-bypass-approvals-and-sandbox \
+    --skip-git-repo-check \
+    --model "${AGENT_MODEL}" \
+    "${PROMPT}"
+elif [[ "${RESUME_MODE}" == "new_context" ]]; then
   TARGET_DIR="${HOME}"
   if [[ -n "${AGENT_STATE_REPO_NAME}" && "${AGENT_STATE_REPO_NAME}" != "resume-last" && -d "${HOME}/${AGENT_STATE_REPO_NAME}" ]]; then
     TARGET_DIR="${HOME}/${AGENT_STATE_REPO_NAME}"
@@ -851,9 +880,43 @@ fi
 
 AGENT_PID=$!
 printf '%s\n' "${AGENT_PID}" >"${PID_FILE}"
+THREAD_ID_RESULT="${RESUME_THREAD_ID:-}"
+if [[ -z "${THREAD_ID_RESULT}" && "${AGENT_PROVIDER}" == "codex" && "${RESUME_MODE}" == "new_context" ]]; then
+  for _ in $(seq 1 150); do
+    if [[ -f "${RUN_LOG_FILE}" ]]; then
+      THREAD_ID_RESULT="$(awk -F': ' '/^session id: / {print $2; exit}' "${RUN_LOG_FILE}" | tr -d '\r' || true)"
+      if [[ -n "${THREAD_ID_RESULT}" ]]; then
+        break
+      fi
+    fi
+    sleep 0.1
+  done
+fi
+if [[ -n "${THREAD_ID_RESULT}" ]]; then
+  printf 'thread_id=%s\n' "${THREAD_ID_RESULT}"
+fi
 printf 'resumed pid=%s log=%s\n' "${AGENT_PID}" "${RUN_LOG_FILE}"
 REMOTE
 )"
+
+THREAD_ID_OUTPUT=""
+RESUME_SUMMARY=""
+while IFS= read -r line; do
+  [[ -z "${line}" ]] && continue
+  if [[ "${line}" == thread_id=* ]]; then
+    THREAD_ID_OUTPUT="${line#thread_id=}"
+    continue
+  fi
+  if [[ -z "${RESUME_SUMMARY}" ]]; then
+    RESUME_SUMMARY="${line}"
+  else
+    RESUME_SUMMARY="${RESUME_SUMMARY}; ${line}"
+  fi
+done <<< "${resume_output}"
+
+if [[ -n "${THREAD_ID_OUTPUT}" ]]; then
+  printf 'thread_id=%s\n' "${THREAD_ID_OUTPUT}"
+fi
 
 if (( OBSERVE )); then
   exec ssh "${SSH_FLAGS[@]}" \
@@ -909,7 +972,7 @@ REMOTE
 fi
 
 printf 'Agent resumed for %s' "${VM_NAME}"
-if [[ -n "${resume_output}" ]]; then
-  printf ' (%s)' "${resume_output}"
+if [[ -n "${RESUME_SUMMARY}" ]]; then
+  printf ' (%s)' "${RESUME_SUMMARY}"
 fi
 printf '.\n'

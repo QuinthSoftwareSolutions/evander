@@ -23,6 +23,7 @@ from agent_sandbox.triggers.providers.pull_request_new_feedback import PullReque
 from agent_sandbox.triggers.providers.ticket_changed import TicketChangedTriggerProvider
 from agent_sandbox.triggers.providers.ticket_created import TicketCreatedTriggerProvider
 from agent_sandbox.triggers.queue import TriggerEventQueue
+from agent_sandbox.pr_feedback_worker import AzureDevOpsFeedbackAdapter
 
 
 REPORT_ENV_VAR = "AGENT_SANDBOX_TRIGGER_CONFORMANCE_REPORT"
@@ -133,10 +134,10 @@ def _trigger_adapter() -> TypeAdapter[TriggerDefinitionDiscriminated]:
                 "id": "git",
                 "display_name": "Git",
                 "type": "trigger:git:push",
-                "path_to_repo": "/tmp/repo.git",
+                "path_glob": "/tmp/*.git",
             },
             "trigger:git:push",
-            "path_to_repo",
+            "path_glob",
         ),
     ],
 )
@@ -204,7 +205,7 @@ def test_conformance_schema_accepts_required_trigger_shapes(
                 "display_name": "Git",
                 "type": "trigger:git:push",
             },
-            "path_to_repo",
+            "path_to_repo or path_glob",
             "trigger:git:push",
         ),
     ],
@@ -625,6 +626,39 @@ def test_conformance_pr_provider_modes_and_git_push_contract(
     assert len(events) == 1
     assert set(events[0].payload.keys()) == {"pr", "feedback"}
 
+    (runtime_dir / "pr-map.json").write_text(
+        json.dumps(
+            {
+                "entries": {
+                    "local:org/repo:10": {
+                        "provider": "local",
+                        "repo": "org/repo",
+                        "pr_id": "10",
+                        "session_id": "session-10",
+                        "directory_path": "root",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    pr_provider_with_mapping = PullRequestNewFeedbackTriggerProvider()
+    pr_provider_with_mapping.initialize(
+        _trigger_adapter().validate_python(
+            {
+                "id": "pr-local-mapped",
+                "display_name": "PR Local Mapped",
+                "type": "trigger:pull-request:new-feedback",
+                "provider": "local",
+            }
+        ),
+        _build_runtime_context(runtime_dir),
+    )
+    mapped_events = pr_provider_with_mapping.poll()
+    assert len(mapped_events) == 1
+    assert mapped_events[0].payload["session_id"] == "session-10"
+
     repo = tmp_path / "repo.git"
     repo.mkdir(parents=True)
     git_provider = GitPushTriggerProvider()
@@ -634,7 +668,7 @@ def test_conformance_pr_provider_modes_and_git_push_contract(
                 "id": "git-trigger",
                 "display_name": "Git",
                 "type": "trigger:git:push",
-                "path_to_repo": str(repo),
+                "path_glob": str(repo.parent / "*.git"),
             }
         ),
         _build_runtime_context(runtime_dir),
@@ -649,6 +683,7 @@ def test_conformance_pr_provider_modes_and_git_push_contract(
     assert git_event is not None
     assert git_event.payload["branch_name"] == "main"
     assert git_event.payload["commit_hash"] == "a" * 40
+    assert git_event.payload["repo_name"] == "repo"
 
     # Non-local provider mode should use adapter path; patch adapter/streams to avoid network.
     pr_remote = PullRequestNewFeedbackTriggerProvider()
@@ -689,6 +724,34 @@ def test_conformance_pr_provider_modes_and_git_push_contract(
         coverage=["provider behavior correctness", "event/output contract verification"],
         details="PR feedback trigger exercises local and github modes; git push emits branch/hash contract.",
     )
+
+
+def test_pr_feedback_trigger_ado_adapter_uses_trigger_org_and_project(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    provider = PullRequestNewFeedbackTriggerProvider()
+    provider.initialize(
+        _trigger_adapter().validate_python(
+            {
+                "id": "pr-ado",
+                "display_name": "PR ADO",
+                "type": "trigger:pull-request:new-feedback",
+                "provider": "ado",
+                "organization_url": "https://dev.azure.com/example-org",
+                "project": "Example Project",
+            }
+        ),
+        _build_runtime_context(
+            runtime_dir,
+            env={"AZURE_DEVOPS_PR_PAT": "secret-pat"},
+        ),
+    )
+
+    adapter = provider._build_adapter("ado")
+
+    assert isinstance(adapter, AzureDevOpsFeedbackAdapter)
+    assert adapter.organization_url == "https://dev.azure.com/example-org"
+    assert adapter.project == "Example Project"
+    assert adapter.pat == "secret-pat"
 
 
 def test_conformance_orchestrator_integration_locking_jitter_and_idempotency(

@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import time
+import uuid
 from pathlib import Path
 
 
@@ -59,7 +60,10 @@ def test_handle_git_push_trigger_enqueues_matching_branch_updates(tmp_path: Path
     assert list(queue_payload.keys()) == [f"git-main:main:{'1' * 40}"]
     record = queue_payload[f"git-main:main:{'1' * 40}"]
     assert record["trigger_type"] == "trigger:git:push"
-    assert record["payload"] == {"branch_name": "main", "commit_hash": "1" * 40}
+    assert record["payload"]["branch_name"] == "main"
+    assert record["payload"]["commit_hash"] == "1" * 40
+    assert record["payload"]["repo_name"] == "sample"
+    assert record["payload"]["repo_path"] == str(repo_path)
 
 
 def test_handle_git_push_trigger_ignores_non_matching_repo(tmp_path: Path) -> None:
@@ -82,7 +86,7 @@ def test_handle_git_push_trigger_ignores_non_matching_repo(tmp_path: Path) -> No
                         "id": "git-main",
                         "display_name": "Git main",
                         "type": "trigger:git:push",
-                        "path_to_repo": str(configured_repo_path),
+                        "path_glob": str(configured_repo_path.parent / "configured*.git"),
                     }
                 ],
             }
@@ -106,6 +110,61 @@ def test_handle_git_push_trigger_ignores_non_matching_repo(tmp_path: Path) -> No
     assert result.returncode == 0, result.stderr
     if queue_path.exists():
         assert json.loads(queue_path.read_text(encoding="utf-8")) == {}
+
+
+def test_handle_git_push_trigger_emits_repo_metadata_and_session_id(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    script = root / "scripts" / "handle_git_push_trigger.sh"
+
+    repo_path = (tmp_path / "git-remotes" / "sample.git").resolve()
+    subprocess.run(["git", "init", "--bare", str(repo_path)], check=True, capture_output=True, text=True)
+    subprocess.run(["git", f"--git-dir={repo_path}", "config", "agent-sandbox.trustedRepoPath", "/trusted/repo"], check=True)
+    subprocess.run(["git", f"--git-dir={repo_path}", "config", "agent-sandbox.baseBranch", "main"], check=True)
+    subprocess.run(
+        ["git", f"--git-dir={repo_path}", "config", "agent-sandbox.canonicalOriginUrl", "https://example.com/org/repo.git"],
+        check=True,
+    )
+    queue_path = tmp_path / "runtime" / "trigger-events.json"
+    config_path = tmp_path / "trigger-config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "runtime_dir": str(tmp_path / "runtime"),
+                "event_queue_store_path": str(queue_path),
+                "triggers": [
+                    {
+                        "id": "git-main",
+                        "display_name": "Git main",
+                        "type": "trigger:git:push",
+                        "path_glob": str(repo_path.parent / "*.git"),
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [str(script), str(repo_path)],
+        input=f"{'0' * 40} {'1' * 40} refs/heads/agents/session-1/topic-branch\n",
+        text=True,
+        capture_output=True,
+        env={
+            **os.environ,
+            "AGENT_SANDBOX_TRIGGER_ORCHESTRATOR_CONFIG": str(config_path),
+        },
+        cwd=root,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    queue_payload = json.loads(queue_path.read_text(encoding="utf-8"))
+    record = queue_payload[f"git-main:agents/session-1/topic-branch:{'1' * 40}"]
+    assert record["payload"]["session_id"] == "session-1"
+    assert record["payload"]["review_branch"] == "review/session-1/topic-branch"
+    assert record["payload"]["trusted_repo_path"] == "/trusted/repo"
+    assert record["payload"]["base_branch"] == "main"
+    assert record["payload"]["canonical_origin_url"] == "https://example.com/org/repo.git"
 
 
 def test_handle_git_push_trigger_is_idempotent_for_repeated_updates(tmp_path: Path) -> None:
@@ -213,6 +272,68 @@ def test_handle_git_push_trigger_resolves_relative_queue_paths_from_config_dir(t
     assert result.returncode == 0, result.stderr
     assert queue_path.exists()
     assert not (bare_repo_cwd / "runtime" / "trigger-orchestrator-events.json").exists()
+
+
+def test_handle_git_push_trigger_resolves_relative_queue_paths_from_project_root_for_repo_config(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    script = root / "scripts" / "handle_git_push_trigger.sh"
+
+    repo_path = (tmp_path / "git-remotes" / "sample.git").resolve()
+    repo_path.mkdir(parents=True)
+
+    config_dir = root / "config" / "trigger-orchestrator"
+    config_path = config_dir / f"test-trigger-config-{uuid.uuid4().hex}.json"
+    relative_queue = Path(".tmp-trigger-tests") / f"{config_path.stem}-events.json"
+    project_queue_path = root / relative_queue
+    config_dir_queue_path = config_dir / relative_queue
+
+    config_path.write_text(
+        json.dumps(
+            {
+                "runtime_dir": "runtime",
+                "event_queue_store_path": str(relative_queue),
+                "triggers": [
+                    {
+                        "id": "git-main",
+                        "display_name": "Git main",
+                        "type": "trigger:git:push",
+                        "path_to_repo": str(repo_path),
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    try:
+        if project_queue_path.exists():
+            project_queue_path.unlink()
+        if config_dir_queue_path.exists():
+            config_dir_queue_path.unlink()
+
+        result = subprocess.run(
+            [str(script), str(repo_path)],
+            input=f"{'0' * 40} {'1' * 40} refs/heads/main\n",
+            text=True,
+            capture_output=True,
+            env={
+                **os.environ,
+                "AGENT_SANDBOX_TRIGGER_ORCHESTRATOR_CONFIG": str(config_path),
+            },
+            cwd=root,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert project_queue_path.exists()
+        assert not config_dir_queue_path.exists()
+    finally:
+        config_path.unlink(missing_ok=True)
+        project_queue_path.unlink(missing_ok=True)
+        try:
+            project_queue_path.parent.rmdir()
+        except OSError:
+            pass
 
 
 def test_handle_git_push_trigger_serializes_concurrent_queue_updates(tmp_path: Path) -> None:

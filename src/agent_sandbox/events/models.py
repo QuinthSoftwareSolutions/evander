@@ -28,10 +28,14 @@ EffectType = Literal[
     "effect:agent:prompt",
     "effect:vm:exec",
     "effect:vm:copy-files",
+    "effect:session:update-metadata",
+    "effect:git:promote-agent-branch",
     "effect:pr:create",
 ]
 QueryType = Literal[
     "query:vm:run-state",
+    "query:git:pr-note",
+    "query:session-context",
 ]
 
 EmailProvider = Literal["json_store", "gmail", "graph"]
@@ -173,7 +177,24 @@ class PullRequestNewFeedbackTriggerDefinition(TriggerDefinition):
 
 class GitPushTriggerDefinition(TriggerDefinition):
     type: Literal["trigger:git:push"]
-    path_to_repo: str = Field(min_length=1)
+    path_to_repo: str | None = None
+    path_glob: str | None = None
+
+    @field_validator("path_to_repo", "path_glob", mode="before")
+    @classmethod
+    def normalize_optional_path_field(cls, value: object) -> object:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+    @model_validator(mode="after")
+    def validate_repo_selector(self) -> "GitPushTriggerDefinition":
+        if not self.path_to_repo and not self.path_glob:
+            raise ValueError("trigger:git:push requires path_to_repo or path_glob")
+        if self.path_to_repo and self.path_glob:
+            raise ValueError("trigger:git:push path_to_repo and path_glob are mutually exclusive")
+        return self
 
 
 class AgentRunCompletedTriggerDefinition(TriggerDefinition):
@@ -242,7 +263,7 @@ class GateMergeDefinition(GateDefinition):
 
 class GateAwaitAgentDefinition(GateDefinition):
     type: Literal["gate:await-agent"]
-    completion_trigger_id: str = Field(min_length=1)
+    completion_trigger_id: str | None = None
 
 
 GateDefinitionDiscriminated = Annotated[
@@ -264,6 +285,7 @@ class VmCreateEffectDefinition(EffectDefinition):
     repo_source: ConfigValue | None = None
     vm_user: ConfigValue | None = None
     ttl_hours: ConfigValue | None = None
+    allowed_tools: list[str] | None = None
     discord_channels: list[str] | None = None
     email_mailboxes: list[str] | None = None
     email_folders: list[str] | None = None
@@ -273,6 +295,9 @@ class VmCreateEffectDefinition(EffectDefinition):
     mssql: ConfigValue | None = None
     mssql_init_root: ConfigValue | None = None
     playwright: ConfigValue | None = None
+    frontend_deps: ConfigValue | None = None
+    frontend_host_checkout: ConfigValue | None = None
+    frontend_install_roots: ConfigValue | None = None
     directory_path: ConfigValue | None = None
 
 
@@ -343,6 +368,46 @@ class VmCopyFilesEffectDefinition(EffectDefinition):
     files: list[VmCopyFilesItemDefinition]
 
 
+class SessionUpdateMetadataEffectDefinition(EffectDefinition):
+    type: Literal["effect:session:update-metadata"]
+    target: ConfigValue | None = None
+    session_id: ConfigValue | None = None
+    vm_name: ConfigValue | None = None
+    metadata: ConfigValue
+
+    @field_validator("metadata")
+    @classmethod
+    def validate_metadata_is_object(cls, value: ConfigValue) -> ConfigValue:
+        if not isinstance(value, Mapping):
+            raise ValueError("effect:session:update-metadata metadata must be a JSON object")
+        return value
+
+    @model_validator(mode="after")
+    def validate_target_selector(self) -> "SessionUpdateMetadataEffectDefinition":
+        selectors = [self.target, self.session_id, self.vm_name]
+        if not any(value is not None for value in selectors):
+            raise ValueError("effect:session:update-metadata requires target, session_id, or vm_name")
+        return self
+
+
+class GitPromoteAgentBranchEffectDefinition(EffectDefinition):
+    type: Literal["effect:git:promote-agent-branch"]
+    host_repo_path: ConfigValue
+    bare_repo_path: ConfigValue | None = None
+    bare_repo_name: ConfigValue | None = None
+    agent_branch: ConfigValue
+    review_branch: ConfigValue | None = None
+    remote_name: ConfigValue | None = None
+
+    @model_validator(mode="after")
+    def validate_bare_repo_selector(self) -> "GitPromoteAgentBranchEffectDefinition":
+        if self.bare_repo_path is None and self.bare_repo_name is None:
+            raise ValueError("effect:git:promote-agent-branch requires bare_repo_path or bare_repo_name")
+        if self.bare_repo_path is not None and self.bare_repo_name is not None:
+            raise ValueError("effect:git:promote-agent-branch bare_repo_path and bare_repo_name are mutually exclusive")
+        return self
+
+
 class PrCreateEffectDefinition(EffectDefinition):
     type: Literal["effect:pr:create"]
     host_repo_path: ConfigValue
@@ -366,6 +431,8 @@ EffectDefinitionDiscriminated = Annotated[
     | AgentPromptEffectDefinition
     | VmExecEffectDefinition
     | VmCopyFilesEffectDefinition
+    | SessionUpdateMetadataEffectDefinition
+    | GitPromoteAgentBranchEffectDefinition
     | PrCreateEffectDefinition,
     Field(discriminator="type"),
 ]
@@ -394,8 +461,30 @@ class VmRunStateQueryDefinition(QueryDefinition):
     vm_name: ConfigValue | None = None
 
 
+class GitPrNoteQueryDefinition(QueryDefinition):
+    type: Literal["query:git:pr-note"]
+    host_repo_path: ConfigValue
+    local_branch: ConfigValue
+    remote_name: ConfigValue | None = None
+    notes_ref: ConfigValue | None = None
+
+
+class SessionContextQueryDefinition(QueryDefinition):
+    type: Literal["query:session-context"]
+    target: ConfigValue | None = None
+    session_id: ConfigValue | None = None
+    vm_name: ConfigValue | None = None
+
+    @model_validator(mode="after")
+    def validate_target_selector(self) -> "SessionContextQueryDefinition":
+        selectors = [self.target, self.session_id, self.vm_name]
+        if not any(value is not None for value in selectors):
+            raise ValueError("query:session-context requires target, session_id, or vm_name")
+        return self
+
+
 QueryDefinitionDiscriminated = Annotated[
-    VmRunStateQueryDefinition,
+    VmRunStateQueryDefinition | GitPrNoteQueryDefinition | SessionContextQueryDefinition,
     Field(discriminator="type"),
 ]
 
@@ -499,6 +588,7 @@ _STATIC_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
         }
     },
     "trigger:pull-request:new-feedback": {
+        "session_id": {"type": "string"},
         "pr": {
             "type": "object",
             "properties": {
@@ -532,6 +622,12 @@ _STATIC_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
         "old_commit_hash": {"type": "string"},
         "ref_name": {"type": "string"},
         "repo_path": {"type": "string"},
+        "repo_name": {"type": "string"},
+        "session_id": {"type": "string"},
+        "review_branch": {"type": "string"},
+        "trusted_repo_path": {"type": "string"},
+        "base_branch": {"type": "string"},
+        "canonical_origin_url": {"type": "string"},
     },
     "trigger:agent:run:completed": {
         "vm": {
@@ -582,6 +678,9 @@ _STATIC_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
         "vm_name": {"type": "string"},
         "labels": {"type": "object"},
         "success": {"type": "boolean"},
+        "target_dir": {"type": "string"},
+        "guest_repo_name": {"type": "string"},
+        "remote_url": {"type": "string"},
     },
     "effect:vm:start": {
         "success": {"type": "boolean"},
@@ -627,6 +726,25 @@ _STATIC_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
         "file_count": {"type": "integer"},
         "copied_files": {"type": "array"},
     },
+    "effect:session:update-metadata": {
+        "success": {"type": "boolean"},
+        "action": {"type": "string"},
+        "message": {"type": "string"},
+        "session_id": {"type": "string"},
+        "vm_name": {"type": "string"},
+        "directory_path": {"type": "string"},
+        "metadata": {"type": "object"},
+    },
+    "effect:git:promote-agent-branch": {
+        "success": {"type": "boolean"},
+        "action": {"type": "string"},
+        "message": {"type": "string"},
+        "host_repo_path": {"type": "string"},
+        "bare_repo_path": {"type": "string"},
+        "agent_branch": {"type": "string"},
+        "review_branch": {"type": "string"},
+        "remote_name": {"type": "string"},
+    },
     "effect:pr:create": {
         "success": {"type": "boolean"},
         "action": {"type": "string"},
@@ -641,6 +759,25 @@ _STATIC_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
         "state_code": {"type": "string"},
         "is_running": {"type": "boolean"},
         "is_terminal": {"type": "boolean"},
+    },
+    "query:git:pr-note": {
+        "body": {"type": "string"},
+        "has_note": {"type": "boolean"},
+        "local_branch": {"type": "string"},
+        "host_repo_path": {"type": "string"},
+        "notes_ref": {"type": "string"},
+        "local_notes_ref": {"type": "string"},
+        "remote_name": {"type": "string"},
+        "commit_sha": {"type": "string"},
+    },
+    "query:session-context": {
+        "session_id": {"type": "string"},
+        "vm_name": {"type": "string"},
+        "directory_path": {"type": "string"},
+        "metadata": {"type": "object"},
+        "created_at": {"type": "string"},
+        "expires_at": {"type": "string"},
+        "model": {"type": "string"},
     },
 }
 
@@ -663,7 +800,9 @@ def _validate_filter_when_node(value: Any, *, path: str) -> None:
 
     logical_keys = tuple(key for key in ("all", "any", "not") if key in value)
     operator_keys = tuple(
-        key for key in ("equals", "not_equals", "in", "not_in", "is_null", "is_not_null") if key in value
+        key
+        for key in ("equals", "not_equals", "in", "not_in", "is_null", "is_not_null", "starts_with", "ends_with", "contains")
+        if key in value
     )
 
     if logical_keys:
@@ -681,7 +820,9 @@ def _validate_filter_when_node(value: Any, *, path: str) -> None:
         return
 
     if not operator_keys:
-        raise ValueError(f"{path} must contain a logical operator or one of: equals, in, is_not_null, is_null, not_equals, not_in")
+        raise ValueError(
+            f"{path} must contain a logical operator or one of: contains, ends_with, equals, in, is_not_null, is_null, not_equals, not_in, starts_with"
+        )
     if len(operator_keys) != 1:
         raise ValueError(f"{path} must contain exactly one comparison operator")
     if "left" not in value:
@@ -694,6 +835,10 @@ def _validate_filter_when_node(value: Any, *, path: str) -> None:
     if operator in {"is_null", "is_not_null"}:
         if operator_value is not True:
             raise ValueError(f"{path}.{operator} must be true")
+        return
+    if operator in {"starts_with", "ends_with", "contains"}:
+        if not isinstance(operator_value, str):
+            raise ValueError(f"{path}.{operator} must be a string")
 
 
 

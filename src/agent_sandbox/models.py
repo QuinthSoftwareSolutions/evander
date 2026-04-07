@@ -183,6 +183,10 @@ class VmActionResult(BaseModel):
     vm_name: str
     action: str
     message: str
+    thread_id: str | None = None
+    target_dir: str | None = None
+    guest_repo_name: str | None = None
+    remote_url: str | None = None
 
 
 class WorkerSummary(BaseModel):

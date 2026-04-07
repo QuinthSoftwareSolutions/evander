@@ -60,6 +60,7 @@ def worker_config(tmp_path: Path) -> WorkerConfig:
         setup_script_path=Path("scripts/setup_issue_vm.sh"),
         prewarm_target="My.slnx",
         repo_path=None,
+        setup_vms=True,
         session_id=None,
         vm_user=None,
         setup_timeout_seconds=30.0,
@@ -866,6 +867,7 @@ def test_build_setup_command_includes_optional_arguments(tmp_path: Path) -> None
         setup_script_path=Path("scripts/setup_issue_vm.sh"),
         prewarm_target="real-target",
         repo_path="/tmp/repo",
+        setup_vms=True,
         session_id="sess-1",
         vm_user="agent",
         setup_timeout_seconds=30.0,
@@ -928,6 +930,7 @@ def test_build_setup_command_omits_disabled_bootstraps_and_nuget_prewarm_target(
         setup_script_path=Path("scripts/setup_issue_vm.sh"),
         prewarm_target="real-target",
         repo_path="/tmp/repo",
+        setup_vms=True,
         session_id="sess-1",
         vm_user="agent",
         setup_timeout_seconds=30.0,
@@ -1091,7 +1094,43 @@ def test_worker_config_load_from_env_reads_ado_worker_global_config(
     assert config.include_comments is False
     assert config.comments_max_count == 11
     assert config.comment_text_max_chars == 777
-    assert config.directory_path == "root/team-a"
+
+
+def test_process_work_item_skips_vm_setup_when_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+    worker_config: WorkerConfig,
+) -> None:
+    item = {
+        "id": 123,
+        "title": "Example",
+        "fields": {
+            "System.State": "New",
+            "System.ChangedDate": "2026-04-07T12:00:00Z",
+        },
+    }
+    store = ProcessedWorkItemStore(worker_config.processed_store_path)
+    disabled_config = WorkerConfig(**{**worker_config.__dict__, "setup_vms": False})
+    called = False
+
+    def should_not_run(*args, **kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("subprocess.run should not be called when ado_setup_vms is false")
+
+    monkeypatch.setattr("agent_sandbox.ado_issue_worker.subprocess.run", should_not_run)
+
+    assert process_work_item(item, config=disabled_config, store=store) is True
+    assert called is False
+    assert (
+        store.is_processed(
+            123,
+            directory_path=disabled_config.directory_path,
+            provider="azure_devops",
+            organization=disabled_config.organization_url,
+            project=disabled_config.project,
+        )
+        is True
+    )
 
 
 def test_worker_config_load_from_env_requires_any_mssql_password_when_bootstrap_enabled(

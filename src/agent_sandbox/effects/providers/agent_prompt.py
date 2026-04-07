@@ -34,10 +34,17 @@ class AgentPromptEffectProvider(EffectProviderBase):
             raise ValueError(f"Unsupported output_mode: {output_mode}")
 
         dispatch_id = self._make_dispatch_id(effect_id=effect.id)
-        result = context.admin_service.resume_agent(target=target, prompt=prompt, vm_user=vm_user, dispatch_id=dispatch_id)
-        thread_id = self._normalize_optional_string(payload.get("resume_thread_id"))
+        resume_thread_id = self._normalize_optional_string(payload.get("resume_thread_id"))
+        result = context.admin_service.resume_agent(
+            target=target,
+            prompt=prompt,
+            vm_user=vm_user,
+            dispatch_id=dispatch_id,
+            resume_thread_id=resume_thread_id,
+        )
+        thread_id = self._normalize_optional_string(getattr(result, "thread_id", None))
         if not thread_id:
-            thread_id = self._normalize_optional_string(payload.get("session_id")) or target
+            raise RuntimeError("effect:agent:prompt did not receive a thread_id from resume_agent")
         return {
             "dispatch_id": dispatch_id,
             "thread_id": thread_id,

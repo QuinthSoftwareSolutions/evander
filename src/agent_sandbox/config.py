@@ -541,12 +541,7 @@ class TriggerOrchestratorWorkerGlobalConfig(BaseModel):
                 upstream_node = nodes_by_id[upstream_ids[0]]
                 if upstream_node.type != "effect:agent:prompt":
                     raise ValueError(f"gate:await-agent {gate.id} inbound edge must come from effect:agent:prompt")
-                completion_trigger = nodes_by_id.get(gate.completion_trigger_id)
-                if completion_trigger is None or completion_trigger.type != "trigger:agent:run:completed":
-                    raise ValueError(
-                        f"gate:await-agent {gate.id} completion_trigger_id must reference trigger:agent:run:completed"
-                    )
-                completion_outputs = effective_node_output_schema(completion_trigger)
+                completion_outputs = effective_node_output_schema({"type": "trigger:agent:run:completed"})
                 if gate.outputs is None:
                     gate.outputs = completion_outputs
                 actual_outputs = dict(gate.outputs or {})
@@ -554,9 +549,7 @@ class TriggerOrchestratorWorkerGlobalConfig(BaseModel):
                     gate.outputs = completion_outputs
                     actual_outputs = completion_outputs
                 if actual_outputs != completion_outputs:
-                    raise ValueError(
-                        f"gate:await-agent {gate.id} outputs must match trigger {gate.completion_trigger_id} outputs"
-                    )
+                    raise ValueError(f"gate:await-agent {gate.id} outputs must match agent completion outputs")
             elif gate.type == "gate:merge":
                 upstream_outputs = [node_outputs.get(upstream_id, {}) for upstream_id in upstream_ids]
                 expected_outputs = merge_declared_output_intersection(*upstream_outputs)

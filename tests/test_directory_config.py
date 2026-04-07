@@ -397,6 +397,7 @@ def test_directory_config_store_validates_ado_worker_and_issue_setup_domains(tmp
         payload={
             "ado_project_or_solution": "/tmp/Example.slnx",
             "ado_repo_source": "/tmp/repo",
+            "ado_setup_vms": False,
             "ado_bootstrap_mssql": False,
         },
     )
@@ -415,6 +416,7 @@ def test_directory_config_store_validates_ado_worker_and_issue_setup_domains(tmp
     assert worker_payload == {
         "ado_project_or_solution": "/tmp/Example.slnx",
         "ado_repo_source": "/tmp/repo",
+        "ado_setup_vms": False,
         "ado_bootstrap_mssql": False,
     }
     assert issue_payload == {

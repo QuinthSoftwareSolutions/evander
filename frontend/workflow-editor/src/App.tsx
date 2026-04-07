@@ -41,21 +41,21 @@ type BindingOption = {
 };
 
 const SYSTEM_BINDING_OPTIONS: ReadonlyArray<BindingOption> = [
-  { value: "$(system.now.utc_timestamp)", label: "[System] now.utc_timestamp" },
-  { value: "$(system.now.utc_timestamp_compact)", label: "[System] now.utc_timestamp_compact" },
-  { value: "$(system.now.unix_seconds)", label: "[System] now.unix_seconds" },
-  { value: "$(system.execution.trace_id)", label: "[System] execution.trace_id" },
-  { value: "$(system.execution.event_id)", label: "[System] execution.event_id" },
-  { value: "$(system.execution.node_id)", label: "[System] execution.node_id" },
-  { value: "$(system.execution.started_at)", label: "[System] execution.started_at" },
-  { value: "$(system.execution.started_at_compact)", label: "[System] execution.started_at_compact" },
-  { value: "$(system.unique.compact)", label: "[System] unique.compact" },
+  { value: "${{system.now.utc_timestamp}}", label: "[System] now.utc_timestamp" },
+  { value: "${{system.now.utc_timestamp_compact}}", label: "[System] now.utc_timestamp_compact" },
+  { value: "${{system.now.unix_seconds}}", label: "[System] now.unix_seconds" },
+  { value: "${{system.execution.trace_id}}", label: "[System] execution.trace_id" },
+  { value: "${{system.execution.event_id}}", label: "[System] execution.event_id" },
+  { value: "${{system.execution.node_id}}", label: "[System] execution.node_id" },
+  { value: "${{system.execution.started_at}}", label: "[System] execution.started_at" },
+  { value: "${{system.execution.started_at_compact}}", label: "[System] execution.started_at_compact" },
+  { value: "${{system.unique.compact}}", label: "[System] unique.compact" },
 ];
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
-const BINDING_EXACT_RE = /^\$\(([A-Za-z0-9][A-Za-z0-9_-]*)\.([A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*)\)$/;
-const VM_COPY_TARGET_KEYS = ["target", "session_id", "vm_name"] as const;
-type VmCopyTargetKey = (typeof VM_COPY_TARGET_KEYS)[number];
+const BINDING_EXACT_RE = /^\$\{\{([A-Za-z0-9][A-Za-z0-9_-]*)\.([A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*)\}\}$/;
+const EFFECT_TARGET_KEYS = ["target", "session_id", "vm_name"] as const;
+type EffectTargetKey = (typeof EFFECT_TARGET_KEYS)[number];
 
 const NODE_GROUPS: ReadonlyArray<{
   kind: WorkflowNodeKind;
@@ -103,6 +103,14 @@ function emptyLayout(): WorkflowLayout {
 
 function emptyCatalog(): WorkflowEditorCatalog {
   return { worker_id: "trigger-orchestrator", nodes: [] };
+}
+
+function agentRunCompletedSchemaNode(): WorkflowNodeConfig {
+  return {
+    id: "__agent-run-completed__",
+    display_name: "Agent run completed",
+    type: "trigger:agent:run:completed",
+  };
 }
 
 function nodeCollections(config: WorkflowConfig) {
@@ -175,6 +183,34 @@ function buildEdges(config: WorkflowConfig): Edge[] {
   }));
 }
 
+function renderStringInput(
+  field: WorkflowEditorFieldDefinition,
+  value: unknown,
+  onChange: (nextValue: string) => void,
+  disabled: boolean,
+  fallbackPlaceholder: string,
+) {
+  if (field.multiline) {
+    return (
+      <textarea
+        value={typeof value === "string" ? value : ""}
+        rows={6}
+        placeholder={field.placeholder ?? fallbackPlaceholder}
+        onChange={(event) => onChange(event.target.value)}
+        disabled={disabled}
+      />
+    );
+  }
+  return (
+    <input
+      value={typeof value === "string" ? value : ""}
+      placeholder={field.placeholder ?? fallbackPlaceholder}
+      onChange={(event) => onChange(event.target.value)}
+      disabled={disabled}
+    />
+  );
+}
+
 function cloneConfig(config: WorkflowConfig): WorkflowConfig {
   return JSON.parse(JSON.stringify(config)) as WorkflowConfig;
 }
@@ -218,7 +254,7 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
     return { id, display_name: "PR feedback", type, provider: "local" };
   }
   if (kind === "trigger" && type === "trigger:git:push") {
-    return { id, display_name: "Git push", type, path_to_repo: "/path/to/repo.git" };
+    return { id, display_name: "Git push", type, path_glob: "/path/to/git-remotes/*.git" };
   }
   if (kind === "trigger" && type === "trigger:agent:run:completed") {
     return { id, display_name: "Agent run completed", type, vm_user: "agent" };
@@ -233,13 +269,13 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
     return { id, display_name: "New merge", type, outputs: {} };
   }
   if (kind === "gate" && type === "gate:await-agent") {
-    return { id, display_name: "Await agent", type, outputs: {}, completion_trigger_id: "" };
+    return { id, display_name: "Await agent", type, outputs: {} };
   }
   if (kind === "effect" && type === "effect:agent:prompt") {
     return { id, display_name: "New prompt", type, prompt: "Describe the next action." };
   }
   if (kind === "effect" && type === "effect:vm:create") {
-    return { id, display_name: "New VM effect", type };
+    return { id, display_name: "New VM effect", type, frontend_install_roots: [] };
   }
   if (kind === "effect" && type === "effect:vm:start") {
     return { id, display_name: "VM start", type };
@@ -258,11 +294,45 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
       files: [{ destination_path: "/tmp/example.txt", content: "example" }],
     };
   }
+  if (kind === "effect" && type === "effect:session:update-metadata") {
+    return {
+      id,
+      display_name: "Update session metadata",
+      type,
+      metadata: {},
+    };
+  }
+  if (kind === "effect" && type === "effect:git:promote-agent-branch") {
+    return {
+      id,
+      display_name: "Promote agent branch",
+      type,
+      host_repo_path: "/path/to/trusted/repo",
+      bare_repo_path: "/path/to/git-remotes/sample.git",
+      agent_branch: "agents/session-1/topic",
+    };
+  }
   if (kind === "effect" && type === "effect:pr:create") {
     return { id, display_name: "New PR effect", type, host_repo_path: "/path/to/repo" };
   }
   if (kind === "query" && type === "query:vm:run-state") {
     return { id, display_name: "VM run state", type };
+  }
+  if (kind === "query" && type === "query:git:pr-note") {
+    return {
+      id,
+      display_name: "Git PR note",
+      type,
+      host_repo_path: "/path/to/trusted/repo",
+      local_branch: "review/session-1/topic",
+    };
+  }
+  if (kind === "query" && type === "query:session-context") {
+    return {
+      id,
+      display_name: "Session context",
+      type,
+    };
   }
   return { id, display_name: "New node", type };
 }
@@ -353,7 +423,7 @@ function isExactBindingValue(value: unknown): value is string {
 }
 
 function hasBindingToken(value: unknown): boolean {
-  return typeof value === "string" && value.includes("$(");
+  return typeof value === "string" && value.includes("${{");
 }
 
 function formatJson(value: unknown, fallback = "{}"): string {
@@ -460,6 +530,7 @@ function declaredOutputsForNode(node: WorkflowNodeConfig | undefined, config?: W
       },
     },
     "trigger:pull-request:new-feedback": {
+      session_id: { type: "string" },
       pr: {
         type: "object",
         properties: {
@@ -493,6 +564,12 @@ function declaredOutputsForNode(node: WorkflowNodeConfig | undefined, config?: W
       old_commit_hash: { type: "string" },
       ref_name: { type: "string" },
       repo_path: { type: "string" },
+      repo_name: { type: "string" },
+      session_id: { type: "string" },
+      review_branch: { type: "string" },
+      trusted_repo_path: { type: "string" },
+      base_branch: { type: "string" },
+      canonical_origin_url: { type: "string" },
     },
     "trigger:agent:run:completed": {
       vm: {
@@ -543,6 +620,9 @@ function declaredOutputsForNode(node: WorkflowNodeConfig | undefined, config?: W
       vm_name: { type: "string" },
       labels: { type: "object" },
       success: { type: "boolean" },
+      target_dir: { type: "string" },
+      guest_repo_name: { type: "string" },
+      remote_url: { type: "string" },
     },
     "effect:vm:start": {
       success: { type: "boolean" },
@@ -588,6 +668,25 @@ function declaredOutputsForNode(node: WorkflowNodeConfig | undefined, config?: W
       file_count: { type: "integer" },
       copied_files: { type: "array" },
     },
+    "effect:session:update-metadata": {
+      success: { type: "boolean" },
+      action: { type: "string" },
+      message: { type: "string" },
+      session_id: { type: "string" },
+      vm_name: { type: "string" },
+      directory_path: { type: "string" },
+      metadata: { type: "object" },
+    },
+    "effect:git:promote-agent-branch": {
+      success: { type: "boolean" },
+      action: { type: "string" },
+      message: { type: "string" },
+      host_repo_path: { type: "string" },
+      bare_repo_path: { type: "string" },
+      agent_branch: { type: "string" },
+      review_branch: { type: "string" },
+      remote_name: { type: "string" },
+    },
     "effect:pr:create": {
       success: { type: "boolean" },
       action: { type: "string" },
@@ -603,6 +702,25 @@ function declaredOutputsForNode(node: WorkflowNodeConfig | undefined, config?: W
       is_running: { type: "boolean" },
       is_terminal: { type: "boolean" },
     },
+    "query:git:pr-note": {
+      body: { type: "string" },
+      has_note: { type: "boolean" },
+      local_branch: { type: "string" },
+      host_repo_path: { type: "string" },
+      notes_ref: { type: "string" },
+      local_notes_ref: { type: "string" },
+      remote_name: { type: "string" },
+      commit_sha: { type: "string" },
+    },
+    "query:session-context": {
+      session_id: { type: "string" },
+      vm_name: { type: "string" },
+      directory_path: { type: "string" },
+      metadata: { type: "object" },
+      created_at: { type: "string" },
+      expires_at: { type: "string" },
+      model: { type: "string" },
+    },
   };
   Object.assign(schema, staticSchemas[node.type] ?? {});
   if (node.type === "gate:map" && isRecord(node.template)) {
@@ -613,7 +731,7 @@ function declaredOutputsForNode(node: WorkflowNodeConfig | undefined, config?: W
   }
   if (node.type === "gate:await-agent") {
     return declaredOutputsForNode(
-      config ? nodeById(config, String(node.completion_trigger_id || "")) : undefined,
+      agentRunCompletedSchemaNode(),
       config,
     );
   }
@@ -654,10 +772,8 @@ function normalizeDerivedNodeFields(config: WorkflowConfig): WorkflowConfig {
     } else if (gate.type === "gate:map") {
       gate.outputs = declaredOutputsForNode(gate, nextConfig);
     } else if (gate.type === "gate:await-agent") {
-      gate.outputs = declaredOutputsForNode(
-        nodeById(nextConfig, typeof gate.completion_trigger_id === "string" ? gate.completion_trigger_id : ""),
-        nextConfig,
-      );
+      delete gate.completion_trigger_id;
+      gate.outputs = declaredOutputsForNode(agentRunCompletedSchemaNode(), nextConfig);
     } else if (gate.type === "gate:merge") {
       gate.outputs = mergeDeclaredOutputIntersection(
         upstreamIds.map((nodeId) => declaredOutputsForNode(nodeById(nextConfig, nodeId), nextConfig)),
@@ -699,9 +815,9 @@ function upstreamBindingOptions(config: WorkflowConfig, nodeId: string): Binding
     for (const outputName of Object.keys(outputs)) {
       for (const outputPath of flattenOutputPaths(outputName, outputs[outputName])) {
         const ref = `${upstreamNodeId}.${outputPath}`;
-        if (seen.has(`$(${ref})`)) continue;
-        seen.add(`$(${ref})`);
-        options.push({ value: `$(${ref})`, label: ref });
+        if (seen.has(`\${{${ref}}}`)) continue;
+        seen.add(`\${{${ref}}}`);
+        options.push({ value: `\${{${ref}}}`, label: ref });
       }
     }
   }
@@ -777,7 +893,7 @@ function renderBindingSelect(
         <span>Binding reference</span>
         <input
           value={stringValue}
-          placeholder="$(node.output.path)"
+          placeholder="${{node.output.path}}"
           onChange={(event) => onChange(event.target.value)}
         />
       </label>
@@ -793,7 +909,7 @@ function insertBindingReference(currentValue: unknown, bindingReference: string)
   return `${text}${trimmedReference}`;
 }
 
-function activeVmCopyTargetKey(values: Record<string, unknown>): VmCopyTargetKey {
+function activeEffectTargetKey(values: Record<string, unknown>): EffectTargetKey {
   if (typeof values.session_id === "string" && values.session_id.trim()) return "session_id";
   if (typeof values.vm_name === "string" && values.vm_name.trim()) return "vm_name";
   return "target";
@@ -812,6 +928,7 @@ export default function App() {
   const [inspectorKnownValues, setInspectorKnownValues] = useState<Record<string, unknown>>({});
   const [inspectorUnknownValues, setInspectorUnknownValues] = useState<Record<string, unknown>>({});
   const [inspectorJsonDrafts, setInspectorJsonDrafts] = useState<Record<string, string>>({});
+  const [inspectorStringListDrafts, setInspectorStringListDrafts] = useState<Record<string, string>>({});
   const [inspectorFieldModes, setInspectorFieldModes] = useState<Record<string, "literal" | "bind" | "template">>({});
   const [rawJsonDraft, setRawJsonDraft] = useState("{}");
   const [error, setError] = useState<string | null>(null);
@@ -842,13 +959,18 @@ export default function App() {
     ? config.edges.find((edge) => `${edge.source_id}->${edge.target_id}` === selectedEdgeId)
     : undefined;
   const selectedNodeBindingOptions = selectedNode ? upstreamBindingOptions(config, selectedNode.id) : [];
-  const vmCopyTargetKey = activeVmCopyTargetKey(inspectorKnownValues);
+  const hasCollapsedTargetUi =
+    selectedNode?.type === "effect:vm:copy-files" ||
+    selectedNode?.type === "effect:agent:prompt" ||
+    selectedNode?.type === "effect:session:update-metadata" ||
+    selectedNode?.type === "query:session-context";
+  const effectTargetKey = activeEffectTargetKey(inspectorKnownValues);
   const inspectorFields = (() => {
     if (!selectedCatalogEntry) return [];
-    if (selectedNode?.type !== "effect:vm:copy-files") return selectedCatalogEntry.fields;
-    return selectedCatalogEntry.fields.filter((field) => !VM_COPY_TARGET_KEYS.includes(field.key as VmCopyTargetKey));
+    if (!hasCollapsedTargetUi) return selectedCatalogEntry.fields;
+    return selectedCatalogEntry.fields.filter((field) => !EFFECT_TARGET_KEYS.includes(field.key as EffectTargetKey));
   })();
-  const vmCopyTargetField = selectedCatalogEntry?.fields.find((field) => field.key === vmCopyTargetKey)
+  const effectTargetField = selectedCatalogEntry?.fields.find((field) => field.key === effectTargetKey)
     ?? selectedCatalogEntry?.fields.find((field) => field.key === "target");
 
   useEffect(() => {
@@ -858,6 +980,7 @@ export default function App() {
       setInspectorKnownValues({});
       setInspectorUnknownValues({});
       setInspectorJsonDrafts({});
+      setInspectorStringListDrafts({});
       setInspectorFieldModes({});
       setRawJsonDraft("{}");
       return;
@@ -867,6 +990,7 @@ export default function App() {
     const nextKnownValues = Object.fromEntries(Object.entries(extras).filter(([key]) => knownFieldKeys.has(key)));
     const nextUnknownValues = Object.fromEntries(Object.entries(extras).filter(([key]) => !knownFieldKeys.has(key)));
     const nextJsonDrafts: Record<string, string> = {};
+    const nextStringListDrafts: Record<string, string> = {};
     const nextFieldModes: Record<string, "literal" | "bind" | "template"> = {};
     for (const field of selectedCatalogEntry?.fields ?? []) {
       nextFieldModes[field.key] = fieldValueMode(field, nextKnownValues[field.key]);
@@ -875,11 +999,18 @@ export default function App() {
         ? (field.required || field.key === "outputs" ? "{}" : "")
         : formatJson(nextKnownValues[field.key], field.required || field.key === "outputs" ? "{}" : "");
     }
+    for (const field of selectedCatalogEntry?.fields ?? []) {
+      if (field.kind !== "string_list") continue;
+      nextStringListDrafts[field.key] = Array.isArray(nextKnownValues[field.key])
+        ? (nextKnownValues[field.key] as unknown[]).map((item) => String(item)).join("\n")
+        : "";
+    }
     setInspectorNodeId(selectedNode.id);
     setInspectorDisplayName(selectedNode.display_name);
     setInspectorKnownValues(nextKnownValues);
     setInspectorUnknownValues(nextUnknownValues);
     setInspectorJsonDrafts(nextJsonDrafts);
+    setInspectorStringListDrafts(nextStringListDrafts);
     setInspectorFieldModes(nextFieldModes);
     setRawJsonDraft(JSON.stringify(extras, null, 2));
   }, [selectedNode, selectedCatalogEntry]);
@@ -1001,9 +1132,9 @@ export default function App() {
         throw new Error(`Node ${rawId} already exists.`);
       }
     const nextKnownValues = { ...inspectorKnownValues };
-      if (selectedNode.type === "effect:vm:copy-files") {
-        const activeTargetKey = activeVmCopyTargetKey(nextKnownValues);
-        for (const key of VM_COPY_TARGET_KEYS) {
+      if (hasCollapsedTargetUi) {
+        const activeTargetKey = activeEffectTargetKey(nextKnownValues);
+        for (const key of EFFECT_TARGET_KEYS) {
           if (key !== activeTargetKey) {
             delete nextKnownValues[key];
           }
@@ -1015,6 +1146,13 @@ export default function App() {
         if (field.read_only) continue;
         const fallbackValue = field.required ? {} : undefined;
         nextKnownValues[field.key] = parseJsonDraft(inspectorJsonDrafts[field.key] ?? "", fallbackValue);
+      }
+      for (const field of selectedCatalogEntry?.fields ?? []) {
+        if (field.kind !== "string_list") continue;
+        nextKnownValues[field.key] = (inspectorStringListDrafts[field.key] ?? "")
+          .split("\n")
+          .map((item) => item.trim())
+          .filter(Boolean);
       }
       const nextNode = removeUndefinedValues({
         id: rawId,
@@ -1142,14 +1280,14 @@ export default function App() {
     setInspectorFieldModes((current) => ({ ...current, [key]: mode }));
   }
 
-  function updateVmCopyTargetKey(nextKey: VmCopyTargetKey) {
-    const currentKey = activeVmCopyTargetKey(inspectorKnownValues);
+  function updateEffectTargetKey(nextKey: EffectTargetKey) {
+    const currentKey = activeEffectTargetKey(inspectorKnownValues);
     const currentValue = inspectorKnownValues[currentKey];
     const currentMode = inspectorFieldModes[currentKey]
-      ?? (vmCopyTargetField ? fieldValueMode(vmCopyTargetField, currentValue) : "literal");
+      ?? (effectTargetField ? fieldValueMode(effectTargetField, currentValue) : "literal");
     setInspectorKnownValues((current) => {
       const next = { ...current };
-      for (const key of VM_COPY_TARGET_KEYS) {
+      for (const key of EFFECT_TARGET_KEYS) {
         delete next[key];
       }
       if (currentValue !== undefined && currentValue !== "") {
@@ -1159,7 +1297,7 @@ export default function App() {
     });
     setInspectorFieldModes((current) => {
       const next = { ...current };
-      for (const key of VM_COPY_TARGET_KEYS) {
+      for (const key of EFFECT_TARGET_KEYS) {
         delete next[key];
       }
       next[nextKey] = currentMode;
@@ -1167,37 +1305,44 @@ export default function App() {
     });
   }
 
-  function renderVmCopyTargetField() {
-    if (selectedNode?.type !== "effect:vm:copy-files" || !vmCopyTargetField) return null;
-    const value = inspectorKnownValues[vmCopyTargetKey];
-    const mode = inspectorFieldModes[vmCopyTargetKey] ?? fieldValueMode(vmCopyTargetField, value);
-    const isDisabled = vmCopyTargetField.read_only;
+  function renderEffectTargetField() {
+    if (!hasCollapsedTargetUi || !effectTargetField) return null;
+    const value = inspectorKnownValues[effectTargetKey];
+    const mode = inspectorFieldModes[effectTargetKey] ?? fieldValueMode(effectTargetField, value);
+    const isDisabled = effectTargetField.read_only;
+    const targetTypeLabel = selectedNode?.type === "effect:agent:prompt" ? "Prompt target type" : "Target type";
+    const targetPlaceholder =
+      effectTargetKey === "session_id"
+        ? "Session ID"
+        : effectTargetKey === "vm_name"
+          ? "VM name"
+          : "VM name or session ID";
     return (
-      <div className="inspector-field" key="vm-copy-target">
+      <div className="inspector-field" key="effect-target">
         <div className="field-toolbar">
           <div className="field-header">
             <span>Target</span>
           </div>
-          {renderModeSelect(vmCopyTargetField, mode, (nextMode) => {
-            updateFieldMode(vmCopyTargetKey, nextMode);
+          {renderModeSelect(effectTargetField, mode, (nextMode) => {
+            updateFieldMode(effectTargetKey, nextMode);
             if (nextMode === "bind") {
-              updateKnownField(vmCopyTargetKey, selectedNodeBindingOptions[0]?.value ?? "");
+              updateKnownField(effectTargetKey, selectedNodeBindingOptions[0]?.value ?? "");
             } else if (nextMode === "template") {
-              updateKnownField(vmCopyTargetKey, typeof value === "string" ? value : "");
+              updateKnownField(effectTargetKey, typeof value === "string" ? value : "");
             } else {
-              updateKnownField(vmCopyTargetKey, isExactBindingValue(value) ? "" : value ?? "");
+              updateKnownField(effectTargetKey, isExactBindingValue(value) ? "" : value ?? "");
             }
           }, isDisabled)}
         </div>
         <label className="inspector-field">
           <div className="field-toolbar">
             <div className="field-header">
-              <span>Target type</span>
+              <span>{targetTypeLabel}</span>
             </div>
           </div>
           <select
-            value={vmCopyTargetKey}
-            onChange={(event) => updateVmCopyTargetKey(event.target.value as VmCopyTargetKey)}
+            value={effectTargetKey}
+            onChange={(event) => updateEffectTargetKey(event.target.value as EffectTargetKey)}
             disabled={isDisabled}
           >
             <option value="target">Generic target</option>
@@ -1206,7 +1351,7 @@ export default function App() {
           </select>
         </label>
         {mode === "bind"
-          ? renderBindingSelect(vmCopyTargetField, selectedNodeBindingOptions, value, (nextValue) => updateKnownField(vmCopyTargetKey, nextValue))
+          ? renderBindingSelect(effectTargetField, selectedNodeBindingOptions, value, (nextValue) => updateKnownField(effectTargetKey, nextValue))
           : mode === "template"
             ? (
               <div className="template-editor">
@@ -1217,7 +1362,7 @@ export default function App() {
                     onChange={(event) => {
                       const nextValue = event.target.value;
                       if (!nextValue) return;
-                      updateKnownField(vmCopyTargetKey, insertBindingReference(value, nextValue));
+                      updateKnownField(effectTargetKey, insertBindingReference(value, nextValue));
                       event.target.value = "";
                     }}
                     disabled={selectedNodeBindingOptions.length === 0 || isDisabled}
@@ -1234,14 +1379,8 @@ export default function App() {
                 </label>
                 <input
                   value={typeof value === "string" ? value : ""}
-                  placeholder={
-                    vmCopyTargetKey === "session_id"
-                      ? "Session ID or binding"
-                      : vmCopyTargetKey === "vm_name"
-                        ? "VM name or binding"
-                        : "VM name, session ID, or binding"
-                  }
-                  onChange={(event) => updateKnownField(vmCopyTargetKey, event.target.value)}
+                  placeholder={`${targetPlaceholder} or binding`}
+                  onChange={(event) => updateKnownField(effectTargetKey, event.target.value)}
                   disabled={isDisabled}
                 />
               </div>
@@ -1249,14 +1388,8 @@ export default function App() {
           : (
             <input
               value={typeof value === "string" ? value : ""}
-              placeholder={
-                vmCopyTargetKey === "session_id"
-                  ? "Session ID"
-                  : vmCopyTargetKey === "vm_name"
-                    ? "VM name"
-                    : "VM name or session ID"
-              }
-              onChange={(event) => updateKnownField(vmCopyTargetKey, event.target.value)}
+              placeholder={targetPlaceholder}
+              onChange={(event) => updateKnownField(effectTargetKey, event.target.value)}
               disabled={isDisabled}
             />
           )}
@@ -1282,11 +1415,7 @@ export default function App() {
   }
 
   function updateStringListField(key: string, value: string) {
-    const nextItems = value
-      .split("\n")
-      .map((item) => item.trim())
-      .filter(Boolean);
-    updateKnownField(key, nextItems);
+    setInspectorStringListDrafts((current) => ({ ...current, [key]: value }));
   }
 
   function updateObjectListItem(fieldKey: string, index: number, key: string, value: unknown) {
@@ -1375,21 +1504,23 @@ export default function App() {
                       ))}
                     </select>
                   </label>
-                  <input
-                    value={typeof value === "string" ? value : ""}
-                    placeholder={field.placeholder ?? "Use $(node.output.path) inside the text"}
-                    onChange={(event) => updateKnownField(field.key, event.target.value)}
-                    disabled={isDisabled}
-                  />
+                  {renderStringInput(
+                    field,
+                    value,
+                    (nextValue) => updateKnownField(field.key, nextValue),
+                    isDisabled,
+                    "Use ${{node.output.path}} inside the text",
+                  )}
                 </div>
               )
             : (
-              <input
-                value={typeof value === "string" ? value : ""}
-                placeholder={field.placeholder ?? ""}
-                onChange={(event) => updateKnownField(field.key, event.target.value)}
-                disabled={isDisabled}
-              />
+              renderStringInput(
+                field,
+                value,
+                (nextValue) => updateKnownField(field.key, nextValue),
+                isDisabled,
+                "",
+              )
             )}
         </div>
       );
@@ -1489,7 +1620,8 @@ export default function App() {
     }
 
     if (field.kind === "string_list") {
-      const listValue = Array.isArray(value) ? value.map((item) => String(item)).join("\n") : "";
+      const listValue = inspectorStringListDrafts[field.key]
+        ?? (Array.isArray(value) ? value.map((item) => String(item)).join("\n") : "");
       return (
         <label key={field.key} className="inspector-field">
           <div className="field-toolbar">
@@ -1709,7 +1841,7 @@ export default function App() {
               />
             </label>
 
-            {renderVmCopyTargetField()}
+            {renderEffectTargetField()}
             {inspectorFields.map((field) => renderField(field))}
 
             {Object.keys(inspectorUnknownValues).length > 0 ? (

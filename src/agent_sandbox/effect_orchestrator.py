@@ -17,6 +17,7 @@ from typing import Any, Generic, TypeVar
 from pydantic import BaseModel, Field
 
 from .admin_service import AdminService
+from .agent_completion_watcher import build_agent_run_completed_event
 from .config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
 from .effects.registry import EffectProviderFactory
 from .events.models import (
@@ -59,6 +60,7 @@ logger = logging.getLogger(__name__)
 
 _MAX_GRAPH_DEPTH = 16
 _MAX_EVENTS_PER_CYCLE = 200
+_AWAIT_AGENT_STALE_GRACE_SECONDS = 120
 WorkflowNodeDefinition = (
     TriggerDefinitionDiscriminated | GateDefinitionDiscriminated | EffectDefinitionDiscriminated | QueryDefinitionDiscriminated
 )
@@ -223,6 +225,31 @@ class EffectOrchestratorWorker:
         with _single_instance_lock(self.lock_path):
             return self.run_once()
 
+    def force_complete_await_agent(self, dispatch_id: str) -> bool:
+        normalized_dispatch_id = str(dispatch_id or "").strip()
+        if not normalized_dispatch_id:
+            raise ValueError("dispatch_id is required")
+        _key, pending = next(
+            (
+                (record_key, record)
+                for record_key, record in self.await_agent_store.read_all().items()
+                if record.dispatch_id == normalized_dispatch_id
+            ),
+            (None, None),
+        )
+        if pending is None:
+            return False
+        graph = _build_execution_graph(self.worker_config)
+        completed = self._complete_pending_await_agent_directly(
+            pending=pending,
+            gate=graph.gates_by_id.get(pending.gate_id),
+            log_skips=True,
+            key=_key,
+        )
+        if completed:
+            self.run_once_with_lock()
+        return completed
+
     def run_once(self) -> EffectOrchestratorCycleResult:
         cursor_payload = _load_cursor_payload(self.cursor_path)
         pending_events_scanned = 0
@@ -232,6 +259,8 @@ class EffectOrchestratorWorker:
         completion_events_published = 0
 
         graph = _build_execution_graph(self.worker_config)
+        self._reconcile_await_agent_pending(graph=graph)
+        completion_events_published += self._complete_pending_await_agent_gates_directly(graph=graph)
 
         completed_count, published_count = self._reap_completed_futures()
         effect_executions_completed += completed_count
@@ -312,8 +341,6 @@ class EffectOrchestratorWorker:
         if queue_record.trigger_type == "trigger:agent:run:completed":
             for gate in graph.gates_by_id.values():
                 if getattr(gate, "type", "") != "gate:await-agent":
-                    continue
-                if getattr(gate, "completion_trigger_id", "") != queue_record.trigger_id:
                     continue
                 self._execute_await_agent_completion(queue_record=queue_record, gate=gate)
 
@@ -731,8 +758,26 @@ class EffectOrchestratorWorker:
             for key_name, value in queue_record.payload.items()
             if key_name != NODE_OUTPUTS_CONTEXT_KEY
         }
+        merged_payload = _payload_with_node_output_context(
+            source_payload=pending.payload,
+            source_node_id=pending.prompt_source_node_id,
+            completed_node_id=queue_record.trigger_id,
+            outputs=outputs,
+            reset_context=False,
+        )
+        merged_queue_record = TriggerQueueRecord(
+            event_id=queue_record.event_id,
+            trigger_id=queue_record.trigger_id,
+            trigger_type=queue_record.trigger_type,
+            trace_id=queue_record.trace_id,
+            occurred_at=queue_record.occurred_at,
+            payload=merged_payload,
+            delivery_state=queue_record.delivery_state,
+            delivered_at=queue_record.delivered_at,
+            idempotency_key=queue_record.idempotency_key,
+        )
         self._write_gate_record(
-            queue_record=queue_record,
+            queue_record=merged_queue_record,
             gate=gate,
             status="succeeded",
             started_at=started_at,
@@ -753,6 +798,254 @@ class EffectOrchestratorWorker:
             publish_completion_event=True,
         )
         self.await_agent_store.delete(key)
+
+    def _reconcile_await_agent_pending(self, *, graph: ExecutionGraph) -> None:
+        pending_by_key = self.await_agent_store.read_all()
+        if not pending_by_key:
+            return
+
+        try:
+            summaries = self._list_vm_summaries_for_await_agent_reconciliation()
+        except Exception:
+            logger.exception("Await-agent reconciliation failed while listing VMs")
+            return
+
+        summaries_by_vm_name: dict[str, list[Any]] = {}
+        summaries_by_session_id: dict[str, list[Any]] = {}
+        for summary in summaries:
+            vm_name = str(getattr(summary, "vm_name", "") or "").strip()
+            if vm_name:
+                summaries_by_vm_name.setdefault(vm_name, []).append(summary)
+            for session_id in getattr(summary, "session_ids", []) or ():
+                normalized_session_id = str(session_id or "").strip()
+                if normalized_session_id:
+                    summaries_by_session_id.setdefault(normalized_session_id, []).append(summary)
+
+        now = datetime.now(UTC)
+        for key, pending in pending_by_key.items():
+            if pending.gate_id not in graph.gates_by_id:
+                logger.info(
+                    "Removing stale await-agent record with missing gate key=%s gate_id=%s dispatch_id=%s",
+                    key,
+                    pending.gate_id,
+                    pending.dispatch_id,
+                )
+                self.await_agent_store.delete(key)
+                continue
+
+            if (now - pending.occurred_at).total_seconds() < _AWAIT_AGENT_STALE_GRACE_SECONDS:
+                continue
+
+            session_id, vm_name = _await_agent_pending_target(pending)
+            candidate_summaries: list[Any] = []
+            if session_id:
+                candidate_summaries.extend(summaries_by_session_id.get(session_id, ()))
+            if vm_name:
+                candidate_summaries.extend(summaries_by_vm_name.get(vm_name, ()))
+            if not candidate_summaries:
+                logger.info(
+                    "Keeping await-agent record with no matching VM summary key=%s dispatch_id=%s session_id=%s vm_name=%s",
+                    key,
+                    pending.dispatch_id,
+                    session_id,
+                    vm_name,
+                )
+                continue
+
+            matches_active_dispatch = any(
+                str(getattr(summary, "dispatch_id", "") or "").strip() == pending.dispatch_id
+                and str(getattr(summary, "agent_state", "") or "").strip() == "running"
+                for summary in candidate_summaries
+            )
+            if matches_active_dispatch:
+                continue
+
+            has_replaced_or_unavailable_summary = any(
+                (
+                    str(getattr(summary, "dispatch_id", "") or "").strip()
+                    and str(getattr(summary, "dispatch_id", "") or "").strip() != pending.dispatch_id
+                )
+                or str(getattr(summary, "libvirt_state", "") or "").strip() != "running"
+                for summary in candidate_summaries
+            )
+            if has_replaced_or_unavailable_summary:
+                logger.info(
+                    "Removing stale await-agent record after replaced or unavailable VM state key=%s dispatch_id=%s session_id=%s vm_name=%s",
+                    key,
+                    pending.dispatch_id,
+                    session_id,
+                    vm_name,
+                )
+                self.await_agent_store.delete(key)
+
+    def _complete_pending_await_agent_gates_directly(self, *, graph: ExecutionGraph) -> int:
+        pending_by_key = self.await_agent_store.read_all()
+        if not pending_by_key:
+            return 0
+
+        completed = 0
+        for key, pending in pending_by_key.items():
+            gate = graph.gates_by_id.get(pending.gate_id)
+            if gate is None:
+                continue
+            if self._complete_pending_await_agent_directly(pending=pending, gate=gate, log_skips=True, key=key):
+                completed += 1
+        return completed
+
+    def _complete_pending_await_agent_directly(
+        self,
+        *,
+        pending: AwaitAgentPendingRecord,
+        gate: GateDefinitionDiscriminated | None,
+        log_skips: bool = False,
+        key: str | None = None,
+    ) -> bool:
+        if gate is None or getattr(gate, "type", "") != "gate:await-agent":
+            return False
+        event = self._build_completion_event_for_pending(pending, log_skips=log_skips, key=key)
+        if event is None:
+            return False
+        queue_record = TriggerQueueRecord(
+            event_id=event.event_id,
+            trigger_id=event.trigger_id,
+            trigger_type=event.trigger_type,
+            trace_id=event.trace_id or pending.trace_id,
+            occurred_at=event.occurred_at,
+            payload=event.payload,
+            delivery_state="delivered",
+            delivered_at=datetime.now(UTC),
+            idempotency_key=f"__await-agent-completion__:{pending.dispatch_id}",
+        )
+        self._execute_await_agent_completion(queue_record=queue_record, gate=gate)
+        return self.await_agent_store.get(f"{pending.gate_id}:{pending.dispatch_id}") is None
+
+    def _build_completion_event_for_pending(
+        self,
+        pending: AwaitAgentPendingRecord,
+        *,
+        log_skips: bool = False,
+        key: str | None = None,
+    ) -> TriggerEvent | None:
+        try:
+            summaries = self._list_vm_summaries_for_await_agent_reconciliation()
+        except Exception:
+            logger.exception("Await-agent completion publish failed while listing VMs dispatch_id=%s", pending.dispatch_id)
+            return None
+
+        session_id, vm_name = _await_agent_pending_target(pending)
+        if not vm_name:
+            if log_skips:
+                logger.info(
+                    "Await-agent completion publish skipped missing_vm_name key=%s dispatch_id=%s session_id=%s",
+                    key,
+                    pending.dispatch_id,
+                    session_id,
+                )
+            return None
+        matching_summary = self._match_completion_summary(
+            summaries=summaries,
+            pending=pending,
+            vm_name=vm_name,
+            session_id=session_id,
+        )
+        if matching_summary is None:
+            if log_skips:
+                candidate_summaries = [
+                    {
+                        "vm_name": str(getattr(summary, "vm_name", "") or "").strip() or None,
+                        "session_ids": list(getattr(summary, "session_ids", []) or []),
+                        "agent_state": str(getattr(summary, "agent_state", "") or "").strip() or None,
+                        "dispatch_id": str(getattr(summary, "dispatch_id", "") or "").strip() or None,
+                        "libvirt_state": str(getattr(summary, "libvirt_state", "") or "").strip() or None,
+                    }
+                    for summary in summaries
+                    if str(getattr(summary, "vm_name", "") or "").strip() == vm_name
+                ]
+                logger.info(
+                    "Await-agent completion publish skipped no_matching_summary key=%s dispatch_id=%s vm_name=%s session_id=%s candidates=%s",
+                    key,
+                    pending.dispatch_id,
+                    vm_name,
+                    session_id,
+                    candidate_summaries,
+                )
+            return None
+        agent_state = str(getattr(matching_summary, "agent_state", "") or "").strip()
+        if agent_state == "running":
+            if log_skips:
+                logger.info(
+                    "Await-agent completion publish skipped still_running key=%s dispatch_id=%s vm_name=%s",
+                    key,
+                    pending.dispatch_id,
+                    vm_name,
+                )
+            return None
+
+        event = build_agent_run_completed_event(
+            trigger_id="__await-agent-completion__",
+            dispatch_id=pending.dispatch_id,
+            vm_user="agent",
+            summary=matching_summary,
+            session_id=session_id,
+            directory_path=(getattr(matching_summary, "directory_paths", None) or [None])[0],
+        )
+        if log_skips:
+            logger.info(
+                "Await-agent completion event prepared key=%s dispatch_id=%s vm_name=%s agent_state=%s event_id=%s",
+                key,
+                pending.dispatch_id,
+                vm_name,
+                agent_state,
+                event.event_id,
+            )
+        return event
+
+    @staticmethod
+    def _match_completion_summary(
+        *,
+        summaries: list[Any],
+        pending: AwaitAgentPendingRecord,
+        vm_name: str,
+        session_id: str | None,
+    ) -> Any | None:
+        exact_match = next(
+            (
+                summary
+                for summary in summaries
+                if str(getattr(summary, "vm_name", "") or "").strip() == vm_name
+                and str(getattr(summary, "dispatch_id", "") or "").strip() == pending.dispatch_id
+            ),
+            None,
+        )
+        if exact_match is not None:
+            return exact_match
+        if not session_id:
+            return None
+        return next(
+            (
+                summary
+                for summary in summaries
+                if str(getattr(summary, "vm_name", "") or "").strip() == vm_name
+                and session_id in {str(item or "").strip() for item in (getattr(summary, "session_ids", []) or [])}
+                and not str(getattr(summary, "dispatch_id", "") or "").strip()
+                and str(getattr(summary, "agent_state", "") or "").strip() != "running"
+            ),
+            None,
+        )
+
+    def _list_vm_summaries_for_await_agent_reconciliation(self) -> list[Any]:
+        admin_service = getattr(self.provider_factory, "admin_service", None)
+        if admin_service is None:
+            return []
+        return list(
+            admin_service.list_vms(
+                include_inactive=True,
+                omit_state=False,
+                vm_user="agent",
+                directory_path=None,
+                direct_only=False,
+            )
+        )
 
     def _execute_provider(self, *, effect: EffectDefinitionDiscriminated, resolved_config: dict[str, Any]) -> dict[str, Any]:
         provider = self.provider_factory.build(effect)
@@ -788,6 +1081,10 @@ class EffectOrchestratorWorker:
                 published_event_id = self._publish_completion_event_from_record(record=record, outputs=outputs)
                 record.status = "succeeded"
                 record.outputs = outputs
+                if outputs.get("success") is False:
+                    message = outputs.get("message")
+                    if isinstance(message, str) and message.strip():
+                        record.error = message.strip()
                 record.published_event_id = published_event_id
                 record.completion_event_enqueued_at = finished_at
                 published_count += 1
@@ -1353,6 +1650,20 @@ def _load_trigger_orchestrator_worker_global_config(
     if not isinstance(raw, dict):
         raise ValueError(f"worker config file {path} must contain a JSON object")
     return TriggerOrchestratorWorkerGlobalConfig.model_validate({**base_payload, **raw})
+
+
+def _await_agent_pending_target(pending: AwaitAgentPendingRecord) -> tuple[str | None, str | None]:
+    node_outputs = pending.payload.get(NODE_OUTPUTS_CONTEXT_KEY)
+    if not isinstance(node_outputs, dict):
+        return None, None
+
+    vm_create_output = node_outputs.get("effect-vm-create-1")
+    if not isinstance(vm_create_output, dict):
+        return None, None
+
+    session_id = str(vm_create_output.get("session_id") or "").strip() or None
+    vm_name = str(vm_create_output.get("vm_name") or "").strip() or None
+    return session_id, vm_name
 
 
 def _load_cursor_payload(path: Path) -> dict[str, Any]:

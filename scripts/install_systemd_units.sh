@@ -365,6 +365,10 @@ render_unit \
   "${SYSTEMD_DIR}/agent-sandbox-issue-orchestrator.service"
 
 render_unit \
+  "${ROOT_DIR}/systemd/agent-sandbox-effect-orchestrator.service.template" \
+  "${SYSTEMD_DIR}/agent-sandbox-effect-orchestrator.service"
+
+render_unit \
   "${ROOT_DIR}/systemd/agent-sandbox-trigger-orchestrator.service.template" \
   "${SYSTEMD_DIR}/agent-sandbox-trigger-orchestrator.service"
 
@@ -377,6 +381,7 @@ systemctl enable agent-sandbox-ado-worker.service
 systemctl enable agent-sandbox-discord-ingest.service
 systemctl enable agent-sandbox-host-heartbeat.service
 systemctl enable agent-sandbox-issue-orchestrator.service
+systemctl enable agent-sandbox-effect-orchestrator.service
 systemctl enable agent-sandbox-trigger-orchestrator.service
 
 cat <<EOF
@@ -389,6 +394,7 @@ Installed systemd units:
   agent-sandbox-discord-ingest.service
   agent-sandbox-host-heartbeat.service
   agent-sandbox-issue-orchestrator.service
+  agent-sandbox-effect-orchestrator.service
   agent-sandbox-trigger-orchestrator.service
 
 Next steps:
@@ -407,5 +413,6 @@ Next steps:
      sudo systemctl start agent-sandbox-discord-ingest.service
      sudo systemctl start agent-sandbox-host-heartbeat.service
      sudo systemctl start agent-sandbox-issue-orchestrator.service
+     sudo systemctl start agent-sandbox-effect-orchestrator.service
      sudo systemctl start agent-sandbox-trigger-orchestrator.service
 EOF

@@ -111,3 +111,114 @@ def test_admin_web_returns_400_for_invalid_workflow_editor_payload(tmp_path: Pat
 
     assert response.status_code == 400
     assert "unknown node IDs" in response.json()["error"]
+
+
+def test_admin_web_load_normalizes_stale_filter_outputs(tmp_path: Path) -> None:
+    config_root = tmp_path / "config" / "trigger-orchestrator"
+    config_root.mkdir(parents=True, exist_ok=True)
+    (config_root / "config.json").write_text(
+        """
+{
+  "runtime_dir": "runtime",
+  "triggers": [
+    {
+      "id": "trigger-ticket-created-1",
+      "display_name": "Ticket created",
+      "type": "trigger:ticket:created",
+      "directories": ["root/team-a"]
+    }
+  ],
+  "gates": [
+    {
+      "id": "gate-filter-1",
+      "display_name": "Verify successful creation",
+      "type": "gate:filter",
+      "outputs": {
+        "session_id": {"type": "string"},
+        "vm_name": {"type": "string"},
+        "labels": {"type": "object"},
+        "success": {"type": "boolean"}
+      },
+      "when": {
+        "all": [
+          {"left": "${{effect-vm-create-1.success}}", "equals": true}
+        ]
+      }
+    }
+  ],
+  "effects": [
+    {
+      "id": "effect-vm-create-1",
+      "display_name": "Create Issue VM",
+      "type": "effect:vm:create",
+      "vm_name": "vm-1"
+    }
+  ],
+  "queries": [],
+  "edges": [
+    {"source_id": "trigger-ticket-created-1", "target_id": "effect-vm-create-1"},
+    {"source_id": "effect-vm-create-1", "target_id": "gate-filter-1"}
+  ]
+}
+""".strip(),
+        encoding="utf-8",
+    )
+
+    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    response = client.get("/api/workflow-editor/document")
+
+    assert response.status_code == 200
+    outputs = response.json()["config"]["gates"][0]["outputs"]
+    assert outputs["target_dir"] == {"type": "string"}
+    assert outputs["guest_repo_name"] == {"type": "string"}
+    assert outputs["remote_url"] == {"type": "string"}
+
+
+def test_admin_web_load_normalizes_await_agent_outputs_without_completion_trigger(tmp_path: Path) -> None:
+    config_root = tmp_path / "config" / "trigger-orchestrator"
+    config_root.mkdir(parents=True, exist_ok=True)
+    (config_root / "config.json").write_text(
+        """
+{
+  "runtime_dir": "runtime",
+  "triggers": [
+    {
+      "id": "trigger-cron-1",
+      "display_name": "Tick",
+      "type": "trigger:cron",
+      "expression": "* * * * *"
+    }
+  ],
+  "gates": [
+    {
+      "id": "gate-await-agent-1",
+      "display_name": "Await agent",
+      "type": "gate:await-agent",
+      "outputs": {}
+    }
+  ],
+  "effects": [
+    {
+      "id": "effect-agent-prompt-1",
+      "display_name": "Prompt agent",
+      "type": "effect:agent:prompt",
+      "session_id": "session-1",
+      "prompt": "Continue"
+    }
+  ],
+  "queries": [],
+  "edges": [
+    { "source_id": "trigger-cron-1", "target_id": "effect-agent-prompt-1" },
+    { "source_id": "effect-agent-prompt-1", "target_id": "gate-await-agent-1" }
+  ]
+}
+""".strip(),
+        encoding="utf-8",
+    )
+
+    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    response = client.get("/api/workflow-editor/document")
+
+    assert response.status_code == 200
+    gate = response.json()["config"]["gates"][0]
+    assert gate["outputs"]["dispatch_id"] == {"type": "string"}

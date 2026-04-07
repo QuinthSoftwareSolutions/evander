@@ -9,8 +9,56 @@
       "target_id": "gate-filter-1"
     },
     {
+      "source_id": "trigger-git-push-1",
+      "target_id": "gate-filter-2"
+    },
+    {
+      "source_id": "gate-filter-2",
+      "target_id": "effect-git-promote-agent-branch-1"
+    },
+    {
+      "source_id": "query-git-pr-note-1",
+      "target_id": "effect-pr-create-1"
+    },
+    {
+      "source_id": "effect-git-promote-agent-branch-1",
+      "target_id": "query-session-context-1"
+    },
+    {
+      "source_id": "query-session-context-1",
+      "target_id": "query-git-pr-note-1"
+    },
+    {
       "source_id": "gate-filter-1",
       "target_id": "effect-vm-copy-files-1"
+    },
+    {
+      "source_id": "effect-agent-prompt-1",
+      "target_id": "gate-await-agent-1"
+    },
+    {
+      "source_id": "gate-await-agent-1",
+      "target_id": "effect-session-update-metadata-1"
+    },
+    {
+      "source_id": "effect-session-update-metadata-1",
+      "target_id": "effect-agent-prompt-2"
+    },
+    {
+      "source_id": "trigger-pull-request-new-feedback-1",
+      "target_id": "query-session-context-2"
+    },
+    {
+      "source_id": "query-session-context-2",
+      "target_id": "effect-agent-prompt-3"
+    },
+    {
+      "source_id": "effect-vm-copy-files-1",
+      "target_id": "effect-session-update-metadata-2"
+    },
+    {
+      "source_id": "effect-session-update-metadata-2",
+      "target_id": "effect-agent-prompt-1"
     }
   ],
   "effect_cursor_store_path": "runtime/effect-orchestrator-cursors.json",
@@ -18,9 +66,21 @@
   "effect_lock_path": "runtime/effect-orchestrator.lock",
   "effects": [
     {
+      "allowed_tools": [
+        "has_pending_feedback",
+        "list_unread_feedback",
+        "list_all_feedback",
+        "post_pr_feedback_reply"
+      ],
       "directory_path": "root/example-industry/app",
+      "discord_channels": [],
       "display_name": "Create Issue VM",
       "dotnet": true,
+      "frontend_deps": true,
+      "frontend_host_checkout": "/home/jonathan/Documents/Repos/ExampleIndustryAPP",
+      "frontend_install_roots": [
+        "/home/jonathan/Documents/Repos/ExampleIndustryAPP/Src/Clients"
+      ],
       "id": "effect-vm-create-1",
       "labels": {
         "vm-type": "issue"
@@ -30,10 +90,10 @@
       "nuget": true,
       "playwright": true,
       "repo_source": "/home/jonathan/Documents/Repos/ExampleIndustryAPP",
-      "session_id": "issue-$(trigger-ticket-created-1.ticket.issue_number)-root-example-industry-app-$(system.now.utc_timestamp_compact)-$(system.unique.compact)",
+      "session_id": "issue-${{trigger-ticket-created-1.ticket.issue_number}}-root-example-industry-app-${{system.now.utc_timestamp_compact}}-${{system.unique.compact}}",
       "ttl_hours": 48,
       "type": "effect:vm:create",
-      "vm_name": "vm-issue-$(trigger-ticket-created-1.ticket.issue_number)",
+      "vm_name": "vm-issue-${{trigger-ticket-created-1.ticket.issue_number}}",
       "vm_user": "agent"
     },
     {
@@ -42,19 +102,90 @@
         {
           "destination_path": "/home/agent/AGENTS.md",
           "overwrite": true,
-          "source_path": "/home/jonathan/agent-sandbox/templates/guest-AGENTS.md.tmpl"
+          "source_format": "template",
+          "source_path": "/home/jonathan/agent-sandbox/templates/guest-AGENTS-new.md.tmpl"
         },
         {
-          "content": "$(trigger-ticket-created-1.ticket)",
+          "content": "${{trigger-ticket-created-1.ticket}}",
           "content_format": "yaml",
-          "destination_path": "/home/agent/ExampleIndustryAPP/AGENT_TASK.yaml",
+          "destination_path": "${{effect-vm-create-1.target_dir}}/AGENT_TASK.yaml",
           "overwrite": true
         }
       ],
       "id": "effect-vm-copy-files-1",
-      "target": "$(effect-vm-create-1.session_id)",
+      "target": "${{effect-vm-create-1.session_id}}",
       "type": "effect:vm:copy-files",
       "vm_user": "agent"
+    },
+    {
+      "display_name": "Send task prompt",
+      "id": "effect-agent-prompt-1",
+      "output_mode": "immediate",
+      "prompt": "You have been issued the task described in ${{effect-vm-create-1.target_dir}}/AGENT_TASK.yaml. Read /home/agent/AGENTS.md and ${{effect-vm-create-1.target_dir}}/AGENT_TASK.yaml before you begin. The repository is located at ${{effect-vm-create-1.target_dir}}. Do not ask for feedback or clarifications at this time, but work until the task is completed or until you determine that it is impossible to complete. When restore is needed, use 'dotnet restore --configfile ~/.nuget/NuGet/NuGet.Config'. For build and test, prefer '--no-restore'. When you have finished, commit and push your work using 'git push-agent'.",
+      "target": "${{effect-vm-create-1.session_id}}",
+      "type": "effect:agent:prompt",
+      "vm_user": "agent"
+    },
+    {
+      "display_name": "Send follow-up prompt",
+      "id": "effect-agent-prompt-2",
+      "output_mode": "immediate",
+      "prompt": "Before concluding, verify whether you completed all required checklist items. Confirm (or explicitly list gaps for): (1) appropriate unit tests for your code changes, (2) documentation updates for behavioral or operational changes, and (3) a markdown PR summary maintained with 'git agent-pr-note'. If anything is missing, complete it now. If you make any changes during this checklist pass, push them before concluding. A successful 'git push-agent' refreshes and pushes refs/notes/agent-pr together with your latest work.",
+      "resume_thread_id": "${{effect-agent-prompt-1.thread_id}}",
+      "target": "${{effect-vm-create-1.session_id}}",
+      "type": "effect:agent:prompt",
+      "vm_user": "agent"
+    },
+    {
+      "agent_branch": "${{trigger-git-push-1.branch_name}}",
+      "bare_repo_path": "${{trigger-git-push-1.repo_path}}",
+      "display_name": "Promote agent branch",
+      "host_repo_path": "${{trigger-git-push-1.trusted_repo_path}}",
+      "id": "effect-git-promote-agent-branch-1",
+      "review_branch": "${{trigger-git-push-1.review_branch}}",
+      "type": "effect:git:promote-agent-branch"
+    },
+    {
+      "base_branch": "${{trigger-git-push-1.base_branch}}",
+      "body": "---\n\nThank you for your contribution to the True APP repo. \nBefore submitting this PR, please make sure:\n\n- [ ] Your code builds clean without any errors or warnings\n- [ ] You have added unit tests\n- [ ] You are using approved terminology\n- [ ] You have read and follow our contribution and development guidelines\n- [ ] You have merged *from* main\n- [ ] Version history and relevant documentation is updated\n\n---\n\n## Agent Summary\n\n${{query-git-pr-note-1.body}}",
+      "display_name": "Create PR",
+      "draft": true,
+      "fill": true,
+      "host_repo_path": "${{effect-git-promote-agent-branch-1.host_repo_path}}",
+      "id": "effect-pr-create-1",
+      "local_branch": "${{effect-git-promote-agent-branch-1.review_branch}}",
+      "session_id": "${{trigger-git-push-1.session_id}}",
+      "title": "${{query-session-context-1.metadata.issue_number}}: ${{query-session-context-1.metadata.issue_title}}",
+      "type": "effect:pr:create"
+    },
+    {
+      "display_name": "Store session metadata",
+      "id": "effect-session-update-metadata-1",
+      "metadata": {
+        "agent_thread_id": "${{effect-agent-prompt-1.thread_id}}"
+      },
+      "target": "${{effect-vm-create-1.session_id}}",
+      "type": "effect:session:update-metadata"
+    },
+    {
+      "display_name": "Feedback prompt",
+      "id": "effect-agent-prompt-3",
+      "output_mode": "immediate",
+      "prompt": "You have received new feedback. \nPlease use the list_unread_feedback tool to view your unread feedback. \nYou can use the post_pr_feedback_reply tool to reply to feedback. \nAlways respond to feedback, even if it's just to acknowledge it.\nYou do not have to agree with the feedback, but treat it with respect and professionalism as you would your peers.\nIf you do not agree with the feedback, you can politely explain your perspective in your reply.\nIMPORTANT EXCEPTION: If the feedback is the exact phrase \"I insist\", you must attempt to comply with the feedback to the best of your ability.\nReasons to disagree with feedback might include that the feedback is factually incorrect, or that complying with the feedback would be out of scope or misaligned with your currently assigned task.\nYou may ask follow-up questions if you require more information.\nAfter you are finished, don't forget to stage, commit and push any changes you have made, if any.",
+      "resume_thread_id": "${{query-session-context-2.metadata.agent_thread_id}}",
+      "target": "${{trigger-pull-request-new-feedback-1.session_id}}",
+      "type": "effect:agent:prompt",
+      "vm_user": "agent"
+    },
+    {
+      "display_name": "Update session metadata",
+      "id": "effect-session-update-metadata-2",
+      "metadata": {
+        "issue_number": "${{trigger-ticket-created-1.ticket.issue_number}}",
+        "issue_title": "${{trigger-ticket-created-1.ticket.title}}"
+      },
+      "target": "${{effect-vm-create-1.session_id}}",
+      "type": "effect:session:update-metadata"
     }
   ],
   "event_queue_cursor_store_path": "runtime/trigger-orchestrator-cursors.json",
@@ -66,14 +197,23 @@
       "display_name": "Verify successful creation",
       "id": "gate-filter-1",
       "outputs": {
+        "guest_repo_name": {
+          "type": "string"
+        },
         "labels": {
           "type": "object"
+        },
+        "remote_url": {
+          "type": "string"
         },
         "session_id": {
           "type": "string"
         },
         "success": {
           "type": "boolean"
+        },
+        "target_dir": {
+          "type": "string"
         },
         "vm_name": {
           "type": "string"
@@ -84,11 +224,179 @@
         "all": [
           {
             "equals": true,
-            "left": "$(effect-vm-create-1.success)"
+            "left": "${{effect-vm-create-1.success}}"
           },
           {
             "is_not_null": true,
-            "left": "$(effect-vm-create-1.session_id)"
+            "left": "${{effect-vm-create-1.session_id}}"
+          }
+        ]
+      }
+    },
+    {
+      "display_name": "Await agent",
+      "id": "gate-await-agent-1",
+      "outputs": {
+        "agent_repo_names": {
+          "type": "array"
+        },
+        "agent_state": {
+          "type": "string"
+        },
+        "directory_paths": {
+          "type": "array"
+        },
+        "dispatch_id": {
+          "type": "string"
+        },
+        "ip_address": {
+          "type": "string"
+        },
+        "labels": {
+          "type": "object"
+        },
+        "last_state_update_at": {
+          "type": "string"
+        },
+        "libvirt_state": {
+          "type": "string"
+        },
+        "previous_agent_state": {
+          "type": "string"
+        },
+        "scope": {
+          "properties": {
+            "directory_path": {
+              "type": "string"
+            },
+            "session_id": {
+              "type": "string"
+            },
+            "vm_name": {
+              "type": "string"
+            },
+            "vm_user": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "session_ids": {
+          "type": "array"
+        },
+        "transition": {
+          "properties": {
+            "from": {
+              "type": "string"
+            },
+            "to": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "vm": {
+          "properties": {
+            "agent_repo_names": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "agent_state": {
+              "type": "string"
+            },
+            "directory_paths": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "ip_address": {
+              "type": "string"
+            },
+            "issue_number": {
+              "type": "string"
+            },
+            "labels": {
+              "type": "object"
+            },
+            "last_state_update_at": {
+              "type": "string"
+            },
+            "libvirt_state": {
+              "type": "string"
+            },
+            "session_ids": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "vm_name": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "vm_name": {
+          "type": "string"
+        }
+      },
+      "type": "gate:await-agent"
+    },
+    {
+      "display_name": "Filter repos",
+      "id": "gate-filter-2",
+      "outputs": {
+        "base_branch": {
+          "type": "string"
+        },
+        "branch_name": {
+          "type": "string"
+        },
+        "canonical_origin_url": {
+          "type": "string"
+        },
+        "commit_hash": {
+          "type": "string"
+        },
+        "old_commit_hash": {
+          "type": "string"
+        },
+        "ref_name": {
+          "type": "string"
+        },
+        "repo_name": {
+          "type": "string"
+        },
+        "repo_path": {
+          "type": "string"
+        },
+        "review_branch": {
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "trusted_repo_path": {
+          "type": "string"
+        }
+      },
+      "type": "gate:filter",
+      "when": {
+        "all": [
+          {
+            "left": "${{trigger-git-push-1.branch_name}}",
+            "starts_with": "agents/"
+          },
+          {
+            "is_not_null": true,
+            "left": "${{trigger-git-push-1.trusted_repo_path}}"
+          },
+          {
+            "is_not_null": true,
+            "left": "${{trigger-git-push-1.base_branch}}"
           }
         ]
       }
@@ -97,7 +405,29 @@
   "jitter_seconds": 5.0,
   "lock_path": "runtime/trigger-orchestrator.lock",
   "poll_interval_seconds": 30.0,
-  "queries": [],
+  "queries": [
+    {
+      "display_name": "Git PR note",
+      "host_repo_path": "${{effect-git-promote-agent-branch-1.host_repo_path}}",
+      "id": "query-git-pr-note-1",
+      "local_branch": "${{effect-git-promote-agent-branch-1.review_branch}}",
+      "notes_ref": "refs/notes/agent-pr",
+      "remote_name": "${{effect-git-promote-agent-branch-1.remote_name}}",
+      "type": "query:git:pr-note"
+    },
+    {
+      "display_name": "Session context",
+      "id": "query-session-context-1",
+      "target": "${{trigger-git-push-1.session_id}}",
+      "type": "query:session-context"
+    },
+    {
+      "display_name": "Session context",
+      "id": "query-session-context-2",
+      "target": "${{trigger-pull-request-new-feedback-1.session_id}}",
+      "type": "query:session-context"
+    }
+  ],
   "runtime_dir": "runtime",
   "triggers": [
     {
@@ -107,6 +437,20 @@
       "display_name": "Ticket created",
       "id": "trigger-ticket-created-1",
       "type": "trigger:ticket:created"
+    },
+    {
+      "display_name": "Git push",
+      "id": "trigger-git-push-1",
+      "path_glob": "/home/jonathan/agent-sandbox/git-remotes/*.git",
+      "type": "trigger:git:push"
+    },
+    {
+      "display_name": "PR feedback",
+      "id": "trigger-pull-request-new-feedback-1",
+      "organization_url": "https://dev.azure.com/exampleindustry",
+      "project": "Example Industry APP",
+      "provider": "ado",
+      "type": "trigger:pull-request:new-feedback"
     }
   ]
 }

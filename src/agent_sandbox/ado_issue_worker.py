@@ -229,6 +229,7 @@ class WorkerConfig:
     setup_script_path: Path
     prewarm_target: str
     repo_path: str | None
+    setup_vms: bool
     session_id: str | None
     vm_user: str | None
     setup_timeout_seconds: float
@@ -344,6 +345,12 @@ def _resolve_worker_config_for_directory(
         ado_worker_config,
         env_name="ADO_REPO_PATH",
     )
+    setup_vms = _domain_bool_with_env_override(
+        "ado_setup_vms",
+        ado_worker_config,
+        env_name=None,
+        default=True,
+    )
     bootstrap_dotnet = _domain_bool_with_env_override(
         "ado_bootstrap_dotnet",
         ado_worker_config,
@@ -445,6 +452,7 @@ def _resolve_worker_config_for_directory(
         setup_script_path=worker_runtime_config.setup_script_path,
         prewarm_target=prewarm_target,
         repo_path=repo_path,
+        setup_vms=setup_vms,
         session_id=session_id,
         vm_user=vm_user,
         setup_timeout_seconds=worker_runtime_config.setup_timeout_seconds,
@@ -651,10 +659,10 @@ def _domain_bool_with_env_override(
     field_name: str,
     domain_config: dict[str, Any],
     *,
-    env_name: str,
+    env_name: str | None,
     default: bool,
 ) -> bool:
-    if _is_env_set(env_name):
+    if env_name is not None and _is_env_set(env_name):
         _log_deprecated_env_override(field_name, env_name)
         return _bool_env(env_name, default)
     value = domain_config.get(field_name, default)
@@ -1634,6 +1642,23 @@ def process_work_item(
     ):
         logging.info("work_item=%s skipped=already_processed issue_id=%s", work_item_id, record.issue_id)
         return False
+
+    if not config.setup_vms:
+        output_snippet = "VM setup disabled by ado_setup_vms=false"
+        store.mark_processed(
+            work_item_id=work_item_id,
+            yaml_path=yaml_path,
+            script_exit_code=0,
+            output_snippet=output_snippet,
+            directory_path=config.directory_path,
+            provider="azure_devops",
+            organization=config.organization_url,
+            project=config.project,
+            issue_id=record.issue_id,
+        )
+        logging.info("work_item=%s skipped=vm_setup_disabled issue_id=%s", work_item_id, record.issue_id)
+        logging.info("work_item=%s processed yaml=%s", work_item_id, yaml_path)
+        return True
 
     session_id = _resolve_session_id(config, work_item_id)
     _ensure_issue_session_manifest(

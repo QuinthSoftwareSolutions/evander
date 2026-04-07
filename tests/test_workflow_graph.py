@@ -66,7 +66,7 @@ def test_declared_output_index_and_schema_intersection_cover_nodes_and_raw_maps(
 def test_declared_output_index_includes_intrinsic_and_derived_outputs() -> None:
     nodes = [
         {"id": "trigger-1", "type": "trigger:ticket:created", "directories": ["root"]},
-        {"id": "gate-1", "type": "gate:map", "template": {"vm_name": "vm-$(trigger-1.ticket)", "count": 1}},
+        {"id": "gate-1", "type": "gate:map", "template": {"vm_name": "vm-${{trigger-1.ticket}}", "count": 1}},
         {"id": "effect-1", "type": "effect:vm:create"},
         {"id": "query-1", "type": "query:vm:run-state"},
     ]

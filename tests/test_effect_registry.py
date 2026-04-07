@@ -27,9 +27,31 @@ class _AdminServiceStub:
         self.create_vm_calls.append(kwargs)
         return VmActionResult(success=True, vm_name=str(kwargs["vm_name"]), action="create_vm", message="ok")
 
-    def resume_agent(self, *, target: str, prompt: str, vm_user: str = "agent", dispatch_id: str | None = None):
-        self.resume_calls.append({"target": target, "prompt": prompt, "vm_user": vm_user, "dispatch_id": dispatch_id})
-        return VmActionResult(success=True, vm_name=target, action="resume_issue_agent", message="ok")
+    def resume_agent(
+        self,
+        *,
+        target: str,
+        prompt: str,
+        vm_user: str = "agent",
+        dispatch_id: str | None = None,
+        resume_thread_id: str | None = None,
+    ):
+        self.resume_calls.append(
+            {
+                "target": target,
+                "prompt": prompt,
+                "vm_user": vm_user,
+                "dispatch_id": dispatch_id,
+                "resume_thread_id": resume_thread_id,
+            }
+        )
+        return VmActionResult(
+            success=True,
+            vm_name=target,
+            action="resume_issue_agent",
+            message="ok",
+            thread_id=resume_thread_id or "thread-new-123",
+        )
 
 
 class _RecordingProvider(EffectProviderBase):
@@ -44,6 +66,8 @@ def test_default_registry_includes_all_known_effect_types() -> None:
         "effect:agent:prompt",
         "effect:vm:exec",
         "effect:vm:copy-files",
+        "effect:session:update-metadata",
+        "effect:git:promote-agent-branch",
         "effect:pr:create",
     }
 
@@ -95,10 +119,70 @@ def test_vm_create_provider_returns_required_outputs() -> None:
         "vm_name": "lab-vm",
         "labels": {"workflow": "issue-worker", "role": "issue"},
         "success": True,
+        "message": "ok",
+        "target_dir": None,
+        "guest_repo_name": None,
+        "remote_url": None,
     }
     assert admin_service.create_vm_calls[0]["directory_path"] == "root/team-a"
     assert admin_service.create_vm_calls[0]["labels"] == {"workflow": "issue-worker", "role": "issue"}
     assert admin_service.create_vm_calls[0]["dotnet"] is True
+
+
+def test_vm_create_provider_passes_through_repo_outputs() -> None:
+    effect = VmCreateEffectDefinition(
+        id="effect-vm",
+        display_name="Create VM",
+        type="effect:vm:create",
+        vm_name="lab-vm",
+        session_id="session-lab-vm",
+        repo_source="/tmp/repo",
+    )
+    admin_service = _AdminServiceStub(create_vm_calls=[], resume_calls=[])
+
+    def fake_create_vm(**kwargs):
+        admin_service.create_vm_calls.append(kwargs)
+        return VmActionResult(
+            success=True,
+            vm_name=str(kwargs["vm_name"]),
+            action="create_vm",
+            message="ok",
+            target_dir="/home/agent/RepoName",
+            guest_repo_name="RepoName",
+            remote_url="ssh://agent-sandbox-git-host/home/git/remotes/RepoName.git",
+        )
+
+    admin_service.create_vm = fake_create_vm  # type: ignore[method-assign]
+    factory = EffectProviderFactory(provider_config_resolver=_ResolverStub(), admin_service=admin_service)
+
+    provider = factory.build(effect, directory_path="root/team-a")
+    output = provider.execute()
+
+    assert output["target_dir"] == "/home/agent/RepoName"
+    assert output["guest_repo_name"] == "RepoName"
+    assert output["remote_url"] == "ssh://agent-sandbox-git-host/home/git/remotes/RepoName.git"
+
+
+def test_vm_create_provider_passes_frontend_deps_fields() -> None:
+    effect = VmCreateEffectDefinition(
+        id="effect-vm",
+        display_name="Create VM",
+        type="effect:vm:create",
+        vm_name="lab-vm",
+        repo_source="/tmp/repo",
+        frontend_deps=True,
+        frontend_host_checkout="/tmp/checkout",
+        frontend_install_roots=["/tmp/checkout/Src/Clients"],
+    )
+    admin_service = _AdminServiceStub(create_vm_calls=[], resume_calls=[])
+    factory = EffectProviderFactory(provider_config_resolver=_ResolverStub(), admin_service=admin_service)
+
+    provider = factory.build(effect, directory_path="root/team-a")
+    provider.execute()
+
+    assert admin_service.create_vm_calls[0]["frontend_deps"] is True
+    assert admin_service.create_vm_calls[0]["frontend_host_checkout"] == "/tmp/checkout"
+    assert admin_service.create_vm_calls[0]["frontend_install_roots"] == ["/tmp/checkout/Src/Clients"]
 
 
 def test_agent_prompt_provider_emits_thread_id() -> None:
@@ -123,3 +207,22 @@ def test_agent_prompt_provider_emits_thread_id() -> None:
     assert output["output_mode"] == "on_completion"
     assert admin_service.resume_calls[0]["target"] == "session-42"
     assert admin_service.resume_calls[0]["dispatch_id"] == output["dispatch_id"]
+    assert admin_service.resume_calls[0]["resume_thread_id"] == "thread-123"
+
+
+def test_agent_prompt_provider_starts_new_thread_when_resume_thread_id_missing() -> None:
+    effect = AgentPromptEffectDefinition(
+        id="effect-prompt",
+        display_name="Prompt",
+        type="effect:agent:prompt",
+        prompt="continue",
+        session_id="session-42",
+    )
+    admin_service = _AdminServiceStub(create_vm_calls=[], resume_calls=[])
+    factory = EffectProviderFactory(provider_config_resolver=_ResolverStub(), admin_service=admin_service)
+
+    provider = factory.build(effect)
+    output = provider.execute()
+
+    assert output["thread_id"] == "thread-new-123"
+    assert admin_service.resume_calls[0]["resume_thread_id"] is None

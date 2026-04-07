@@ -8,6 +8,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import fcntl
@@ -80,6 +81,7 @@ _WORKER_DEFINITIONS: tuple[tuple[str, str, str], ...] = (
     ("discord-ingest", "Discord Ingest Worker", "agent-sandbox-discord-ingest.service"),
     ("host-heartbeat", "Host Heartbeat Worker", "agent-sandbox-host-heartbeat.service"),
     ("issue-orchestrator", "Issue Orchestrator Worker", "agent-sandbox-issue-orchestrator.service"),
+    ("effect-orchestrator", "Effect Orchestrator Worker", "agent-sandbox-effect-orchestrator.service"),
     ("trigger-orchestrator", "Trigger Orchestrator Worker", "agent-sandbox-trigger-orchestrator.service"),
 )
 
@@ -88,6 +90,7 @@ _WORKER_GLOBAL_CONFIG_PATHS: dict[str, str] = {
     "discord-ingest": "config/discord-ingest/config.json",
     "host-heartbeat": "config/host-heartbeat/config.json",
     "issue-orchestrator": "config/issue-orchestrator/config.json",
+    "effect-orchestrator": "config/trigger-orchestrator/config.json",
     "trigger-orchestrator": "config/trigger-orchestrator/config.json",
 }
 
@@ -96,6 +99,7 @@ _WORKER_GLOBAL_CONFIG_MODELS: dict[str, type[BaseModel]] = {
     "discord-ingest": DiscordIngestWorkerGlobalConfig,
     "host-heartbeat": HostHeartbeatWorkerGlobalConfig,
     "issue-orchestrator": IssueOrchestratorWorkerGlobalConfig,
+    "effect-orchestrator": TriggerOrchestratorWorkerGlobalConfig,
     "trigger-orchestrator": TriggerOrchestratorWorkerGlobalConfig,
 }
 ISSUE_STATES: tuple[str, ...] = ("New", "Approved", "Committed", "In Progress", "Completed", "Closed")
@@ -282,6 +286,7 @@ class WorkflowEditorFieldDefinition(BaseModel):
     required: bool = False
     bindable: bool = False
     read_only: bool = False
+    multiline: bool = False
     description: str | None = None
     placeholder: str | None = None
     options: list[WorkflowEditorFieldOption] = Field(default_factory=list)
@@ -319,6 +324,7 @@ def _field(
     required: bool = False,
     bindable: bool = False,
     read_only: bool = False,
+    multiline: bool = False,
     description: str | None = None,
     placeholder: str | None = None,
     options: list[WorkflowEditorFieldOption] | None = None,
@@ -331,6 +337,7 @@ def _field(
         required=required,
         bindable=bindable,
         read_only=read_only,
+        multiline=multiline,
         description=description,
         placeholder=placeholder,
         options=options or [],
@@ -411,7 +418,8 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         type="trigger:git:push",
         label="Git push",
         fields=[
-            _field("path_to_repo", "Repository path", "string", required=True),
+            _field("path_to_repo", "Repository path", "string", description="Exact bare-repo path. Mutually exclusive with Repository glob."),
+            _field("path_glob", "Repository glob", "string", description="Glob pattern for matching multiple bare repos, for example /path/to/git-remotes/*.git."),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(
@@ -439,7 +447,7 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "When",
                 "json",
                 bindable=True,
-                description="Structured predicate using bindings, for example {\"all\":[{\"left\":\"$(effect-1.success)\",\"equals\":true}]}. Mutually exclusive with Match.",
+                description="Structured predicate using bindings, for example {\"all\":[{\"left\":\"${{effect-1.success}}\",\"equals\":true}]} or {\"left\":\"${{trigger-1.branch_name}}\",\"starts_with\":\"agents/\"}. Mutually exclusive with Match.",
             ),
             _field(
                 "outputs",
@@ -485,18 +493,11 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         label="Await agent",
         fields=[
             _field(
-                "completion_trigger_id",
-                "Completion trigger ID",
-                "string",
-                required=True,
-                description="ID of a root trigger:agent:run:completed node that emits agent completion events.",
-            ),
-            _field(
                 "outputs",
                 "Outputs",
                 "json",
                 read_only=True,
-                description="Derived from the configured completion trigger.",
+                description="Derived from agent completion events.",
             ),
         ],
     ),
@@ -512,6 +513,12 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("repo_source", "Repo source", "string", bindable=True),
             _field("vm_user", "VM user", "string", bindable=True),
             _field("ttl_hours", "TTL hours", "number", bindable=True),
+            _field(
+                "allowed_tools",
+                "Allowed tools",
+                "string_list",
+                description="Additional MCP tools to allow for the created session.",
+            ),
             _field("discord_channels", "Discord channels", "string_list"),
             _field("email_mailboxes", "Email mailboxes", "string_list"),
             _field("email_folders", "Email folders", "string_list"),
@@ -521,6 +528,9 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("mssql", "MSSQL", "boolean", bindable=True),
             _field("mssql_init_root", "MSSQL init root", "string", bindable=True),
             _field("playwright", "Playwright", "boolean", bindable=True),
+            _field("frontend_deps", "Frontend deps", "boolean", bindable=True),
+            _field("frontend_host_checkout", "Frontend host checkout", "string", bindable=True),
+            _field("frontend_install_roots", "Frontend install roots", "string_list"),
             _field("directory_path", "Directory path", "string", bindable=True),
         ],
     ),
@@ -553,15 +563,9 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("target", "Target", "string", bindable=True),
             _field("session_id", "Session ID", "string", bindable=True),
             _field("vm_name", "VM name", "string", bindable=True),
-            _field("prompt", "Prompt", "string", required=True, bindable=True),
+            _field("prompt", "Prompt", "string", required=True, bindable=True, multiline=True),
             _field("vm_user", "VM user", "string", bindable=True),
             _field("resume_thread_id", "Resume thread ID", "string", bindable=True),
-            _field(
-                "output_mode",
-                "Output mode",
-                "enum",
-                options=[_field_option("immediate", "Immediate"), _field_option("on_completion", "On completion")],
-            ),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(
@@ -576,7 +580,7 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("command", "Command", "string", required=True, bindable=True),
             _field("working_directory", "Working directory", "string", bindable=True),
             _field("environment", "Environment", "json", bindable=True),
-            _field("stdin", "Stdin", "string", bindable=True),
+            _field("stdin", "Stdin", "string", bindable=True, multiline=True),
             _field("timeout_seconds", "Timeout seconds", "number", bindable=True),
             _field("check", "Check exit code", "boolean", bindable=True),
         ],
@@ -626,6 +630,30 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
     ),
     WorkflowEditorNodeCatalogEntry(
         kind="effect",
+        type="effect:session:update-metadata",
+        label="Session update metadata",
+        fields=[
+            _field("target", "Target", "string", bindable=True),
+            _field("session_id", "Session ID", "string", bindable=True),
+            _field("vm_name", "VM name", "string", bindable=True),
+            _field("metadata", "Metadata", "json", required=True, bindable=True),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="effect",
+        type="effect:git:promote-agent-branch",
+        label="Promote agent branch",
+        fields=[
+            _field("host_repo_path", "Host repo path", "string", required=True, bindable=True),
+            _field("bare_repo_path", "Bare repo path", "string", bindable=True),
+            _field("bare_repo_name", "Bare repo name", "string", bindable=True),
+            _field("agent_branch", "Agent branch", "string", required=True, bindable=True),
+            _field("review_branch", "Review branch", "string", bindable=True),
+            _field("remote_name", "Remote name", "string", bindable=True),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="effect",
         type="effect:pr:create",
         label="PR create",
         fields=[
@@ -637,7 +665,7 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("session_id", "Session ID", "string", bindable=True),
             _field("work_item_id", "Work item ID", "string", bindable=True),
             _field("title", "Title", "string", bindable=True),
-            _field("body", "Body", "string", bindable=True),
+            _field("body", "Body", "string", bindable=True, multiline=True),
             _field("body_file", "Body file", "string", bindable=True),
             _field("draft", "Draft", "boolean", bindable=True),
             _field("fill", "Fill", "boolean", bindable=True),
@@ -648,6 +676,27 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         type="query:vm:run-state",
         label="VM run state",
         fields=[
+            _field("session_id", "Session ID", "string", bindable=True),
+            _field("vm_name", "VM name", "string", bindable=True),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="query",
+        type="query:git:pr-note",
+        label="Git PR note",
+        fields=[
+            _field("host_repo_path", "Host repo path", "string", required=True, bindable=True),
+            _field("local_branch", "Local branch", "string", required=True, bindable=True),
+            _field("remote_name", "Remote name", "string", bindable=True),
+            _field("notes_ref", "Notes ref", "string", bindable=True),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="query",
+        type="query:session-context",
+        label="Session context",
+        fields=[
+            _field("target", "Target", "string", bindable=True),
             _field("session_id", "Session ID", "string", bindable=True),
             _field("vm_name", "VM name", "string", bindable=True),
         ],
@@ -1308,7 +1357,15 @@ def _resolve_host_python_with_pip() -> str:
 
 
 def _run_virsh(args: list[str]) -> subprocess.CompletedProcess[str]:
-    commands = [["virsh", *args], ["sudo", "-n", "virsh", *args]]
+    # These VMs are managed under the system libvirt daemon. Service processes may
+    # not inherit LIBVIRT_DEFAULT_URI/XDG_RUNTIME_DIR, so prefer an explicit
+    # connection target before falling back to ambient virsh behavior.
+    commands = [
+        ["virsh", "-c", "qemu:///system", *args],
+        ["sudo", "-n", "virsh", "-c", "qemu:///system", *args],
+        ["virsh", *args],
+        ["sudo", "-n", "virsh", *args],
+    ]
     last_result: subprocess.CompletedProcess[str] | None = None
     for cmd in commands:
         try:
@@ -1705,13 +1762,14 @@ def _build_issue_session_manifest(
     issue_number: str | None,
     directory_path: str,
     ttl_hours: int | None,
+    extra_allowed_tools: list[str | ToolName] | None = None,
     discord_channels: list[str],
     email_mailboxes: list[str],
     email_folders: list[str],
 ) -> SessionManifest:
-    allowed_tools: list[ToolName] = [ToolName.APPROVAL_SUBMIT, ToolName.APPROVAL_CHECK]
+    resolved_allowed_tools: list[ToolName] = [ToolName.APPROVAL_SUBMIT, ToolName.APPROVAL_CHECK]
     if discord_channels:
-        allowed_tools.extend(
+        resolved_allowed_tools.extend(
             [
                 ToolName.DISCORD_GET_COMMANDS,
                 ToolName.DISCORD_POST_STATUS,
@@ -1729,22 +1787,30 @@ def _build_issue_session_manifest(
         else []
     )
     if email_requested:
-        allowed_tools.extend(
+        resolved_allowed_tools.extend(
             [ToolName.EMAIL_LIST_UNREAD, ToolName.EMAIL_GET_MESSAGE, ToolName.EMAIL_CREATE_DRAFT]
         )
         if policy.email_send_enabled:
-            allowed_tools.append(ToolName.EMAIL_SEND_APPROVED)
+            resolved_allowed_tools.append(ToolName.EMAIL_SEND_APPROVED)
 
     metadata = {"issue_number": issue_number} if issue_number is not None else {}
     if _copilot_host_auth_enabled():
-        allowed_tools.append(ToolName.COPILOT_HOST_AUTH)
+        resolved_allowed_tools.append(ToolName.COPILOT_HOST_AUTH)
         metadata["agent_provider"] = "copilot"
+
+    if extra_allowed_tools:
+        seen = set(resolved_allowed_tools)
+        for tool in _normalize_allowed_tools(extra_allowed_tools):
+            if tool in seen:
+                continue
+            seen.add(tool)
+            resolved_allowed_tools.append(tool)
 
     return SessionManifest(
         session_id=session_id,
         vm_id=vm_id,
         directory_path=directory_path,
-        allowed_tools=list(dict.fromkeys(allowed_tools)),
+        allowed_tools=list(dict.fromkeys(resolved_allowed_tools)),
         discord_channel_allowlist=discord_channels,
         email_folder_allowlist=resolved_email_folders,
         email_mailbox_allowlist=resolved_email_mailboxes,
@@ -1775,6 +1841,18 @@ def _normalize_session_labels(value: object) -> dict[str, str]:
     return normalized
 
 
+def _normalize_allowed_tools(value: list[str | ToolName]) -> list[ToolName]:
+    normalized_tools: list[ToolName] = []
+    seen: set[ToolName] = set()
+    for tool in value:
+        normalized_tool = tool if isinstance(tool, ToolName) else ToolName(str(tool).strip())
+        if normalized_tool in seen:
+            continue
+        seen.add(normalized_tool)
+        normalized_tools.append(normalized_tool)
+    return normalized_tools
+
+
 def _pkexec_env_command(base_cmd: list[str], env: dict[str, str], allowed_keys: tuple[str, ...]) -> list[str]:
     cmd = ["pkexec", "env"]
     for key in allowed_keys:
@@ -1783,6 +1861,21 @@ def _pkexec_env_command(base_cmd: list[str], env: dict[str, str], allowed_keys: 
             cmd.append(f"{key}={value}")
     cmd.extend(base_cmd)
     return cmd
+
+
+def _sudo_env_command(base_cmd: list[str], env: dict[str, str], allowed_keys: tuple[str, ...]) -> list[str]:
+    preserved_keys = [key for key in allowed_keys if env.get(key)]
+    cmd = ["sudo", "-n"]
+    if preserved_keys:
+        cmd.append(f"--preserve-env={','.join(preserved_keys)}")
+    cmd.extend(base_cmd)
+    return cmd
+
+
+def _can_prompt_for_privileges() -> bool:
+    if sys.stdin is not None and sys.stdin.isatty():
+        return True
+    return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
 
 
 class PrivilegedHelperSession:
@@ -2125,8 +2218,45 @@ class AdminService:
         )
         if fetch_result.returncode != 0:
             raise RuntimeError((fetch_result.stderr or fetch_result.stdout or "").strip() or f"Failed to mirror repo into {bare_repo_path}")
+        trusted_repo_result = _run_subprocess(
+            ["git", f"--git-dir={bare_repo_path}", "config", "agent-sandbox.trustedRepoPath", resolved_repo_path],
+            capture_output=True,
+            text=True,
+        )
+        if trusted_repo_result.returncode != 0:
+            raise RuntimeError(
+                (trusted_repo_result.stderr or trusted_repo_result.stdout or "").strip()
+                or f"Failed to record trusted repo path for {bare_repo_path}"
+            )
+        canonical_origin_result = _run_subprocess(
+            ["git", "-C", resolved_repo_path, "remote", "get-url", "origin"],
+            capture_output=True,
+            text=True,
+        )
+        canonical_origin_url = (canonical_origin_result.stdout or "").strip() if canonical_origin_result.returncode == 0 else ""
+        if canonical_origin_url:
+            canonical_config_result = _run_subprocess(
+                ["git", f"--git-dir={bare_repo_path}", "config", "agent-sandbox.canonicalOriginUrl", canonical_origin_url],
+                capture_output=True,
+                text=True,
+            )
+            if canonical_config_result.returncode != 0:
+                raise RuntimeError(
+                    (canonical_config_result.stderr or canonical_config_result.stdout or "").strip()
+                    or f"Failed to record canonical origin URL for {bare_repo_path}"
+                )
         default_base_branch = _default_base_branch_for_repo(resolved_repo_path)
         if default_base_branch:
+            base_branch_config_result = _run_subprocess(
+                ["git", f"--git-dir={bare_repo_path}", "config", "agent-sandbox.baseBranch", default_base_branch],
+                capture_output=True,
+                text=True,
+            )
+            if base_branch_config_result.returncode != 0:
+                raise RuntimeError(
+                    (base_branch_config_result.stderr or base_branch_config_result.stdout or "").strip()
+                    or f"Failed to record base branch for {bare_repo_path}"
+                )
             symbolic_ref_result = _run_subprocess(
                 [
                     "git",
@@ -2875,12 +3005,16 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
         *,
         vm_user: str = "agent",
         dispatch_id: str | None = None,
+        resume_thread_id: str | None = None,
     ) -> VmActionResult:
         sessions = self.runtime.sessions.read_all()
         vm_name = _resolve_vm_name_from_target(target, sessions)
+        session_id: str | None = None
+        directory_path: str | None = None
         try:
-            _, manifest = _resolve_session_target(target, sessions)
+            session_id, manifest = _resolve_session_target(target, sessions)
             model = self._resolve_agent_model_for_session(manifest)
+            directory_path = manifest.directory_path
         except ValueError as exc:
             return VmActionResult(
                 success=False,
@@ -2888,20 +3022,88 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
                 action="resume_issue_agent",
                 message=str(exc),
             )
-        return self._run_script(
-            "resume_issue_agent.sh",
-            [
-                "--prompt",
-                prompt,
-                "--vm-name",
-                vm_name,
-                "--vm-user",
-                vm_user,
-                "--host-control-state-path",
-                str(self.config.host_agent_control_state_path),
-                *(["--dispatch-id", dispatch_id] if dispatch_id else []),
-            ],
-            env=os.environ | {"AGENT_MODEL": model},
+        script_path = Path(__file__).resolve().parents[2] / "scripts" / "resume_issue_agent.sh"
+        args = [
+            str(script_path),
+            "--prompt",
+            prompt,
+            "--vm-name",
+            vm_name,
+            "--vm-user",
+            vm_user,
+            "--host-control-state-path",
+            str(self.config.host_agent_control_state_path),
+            *(["--dispatch-id", dispatch_id] if dispatch_id else []),
+            *(["--resume-thread-id", resume_thread_id] if resume_thread_id else ["--resume-mode", "new_context"]),
+        ]
+        completed = _run_subprocess(args, capture_output=True, text=True, env=os.environ | {"AGENT_MODEL": model})
+        stdout = completed.stdout or ""
+        stderr = completed.stderr or ""
+        thread_id: str | None = None
+        message_lines: list[str] = []
+        for line in stdout.splitlines():
+            if line.startswith("thread_id="):
+                candidate = line.partition("=")[2].strip()
+                if candidate:
+                    thread_id = candidate
+                continue
+            message_lines.append(line)
+        message = "\n".join(line for line in message_lines if line.strip()).strip() or stderr.strip()
+        if completed.returncode == 0 and dispatch_id:
+            self._spawn_agent_completion_watcher(
+                vm_name=vm_name,
+                dispatch_id=dispatch_id,
+                vm_user=vm_user,
+                session_id=session_id,
+                directory_path=directory_path,
+            )
+        return VmActionResult(
+            success=completed.returncode == 0,
+            vm_name=vm_name,
+            action="resume_issue_agent",
+            message=message or f"resume_issue_agent.sh exited with code {completed.returncode}",
+            thread_id=thread_id,
+        )
+
+    def _spawn_agent_completion_watcher(
+        self,
+        *,
+        vm_name: str,
+        dispatch_id: str,
+        vm_user: str,
+        session_id: str | None,
+        directory_path: str | None,
+    ) -> None:
+        watcher_cmd = [
+            sys.executable,
+            "-m",
+            "agent_sandbox.agent_completion_watcher",
+            "--runtime-dir",
+            str(self.config.runtime_dir),
+            "--vm-name",
+            vm_name,
+            "--dispatch-id",
+            dispatch_id,
+            "--vm-user",
+            vm_user,
+            "--poll-interval-seconds",
+            "1.0",
+            "--timeout-seconds",
+            "172800",
+        ]
+        if session_id:
+            watcher_cmd.extend(["--session-id", session_id])
+        if directory_path:
+            watcher_cmd.extend(["--directory-path", directory_path])
+        subprocess.Popen(
+            watcher_cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+            cwd=str(self.project_dir),
+            env=os.environ.copy(),
+            text=True,
         )
 
     def vm_exec(
@@ -3166,6 +3368,178 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
         finally:
             if body_file_path is not None:
                 body_file_path.unlink(missing_ok=True)
+
+    def promote_agent_branch(
+        self,
+        *,
+        host_repo_path: str,
+        bare_repo_path: str | None = None,
+        bare_repo_name: str | None = None,
+        agent_branch: str,
+        review_branch: str | None = None,
+        remote_name: str | None = None,
+    ) -> dict[str, Any]:
+        if not bare_repo_path and not bare_repo_name:
+            raise ValueError("Provide either bare_repo_path or bare_repo_name")
+        if bare_repo_path and bare_repo_name:
+            raise ValueError("Provide either bare_repo_path or bare_repo_name, not both")
+
+        script_path = self.project_dir / "scripts" / "promote_agent_branch.sh"
+        cmd = [str(script_path)]
+        if remote_name:
+            cmd.extend(["--remote-name", remote_name])
+        cmd.append(host_repo_path)
+        cmd.append(bare_repo_path or bare_repo_name or "")
+        cmd.append(agent_branch)
+        if review_branch:
+            cmd.append(review_branch)
+
+        completed = _run_subprocess(cmd, capture_output=True, text=True)
+        stdout = completed.stdout or ""
+        stderr = completed.stderr or ""
+        if completed.returncode != 0:
+            raise RuntimeError((stderr or stdout).strip() or f"promote_agent_branch.sh exited with code {completed.returncode}")
+
+        resolved_review_branch = review_branch or self._derive_review_branch(agent_branch)
+        message = (stderr or stdout).strip() or "Agent branch promoted"
+        return {
+            "success": True,
+            "action": "git_promote_agent_branch",
+            "message": message,
+            "stdout": stdout,
+            "stderr": stderr,
+            "host_repo_path": host_repo_path,
+            "bare_repo_path": bare_repo_path or bare_repo_name,
+            "agent_branch": agent_branch,
+            "review_branch": resolved_review_branch,
+            "remote_name": remote_name or "agent-dropbox",
+        }
+
+    @staticmethod
+    def _derive_review_branch(agent_branch: str) -> str:
+        normalized = str(agent_branch).strip()
+        if normalized.startswith("agents/") and normalized.count("/") >= 2:
+            return f"review/{normalized.removeprefix('agents/')}"
+        return f"review/{normalized.removeprefix('refs/heads/')}"
+
+    def git_pr_note_query(
+        self,
+        *,
+        host_repo_path: str,
+        local_branch: str,
+        remote_name: str | None = None,
+        notes_ref: str | None = None,
+    ) -> dict[str, Any]:
+        resolved_remote_name = (remote_name or "").strip() or "agent-dropbox"
+        resolved_notes_ref = (notes_ref or "").strip() or "refs/notes/agent-pr"
+
+        remote_url_result = _run_subprocess(
+            ["git", "-C", host_repo_path, "remote", "get-url", resolved_remote_name],
+            capture_output=True,
+            text=True,
+        )
+        if remote_url_result.returncode != 0:
+            raise RuntimeError(
+                (remote_url_result.stderr or remote_url_result.stdout or "").strip()
+                or f"Failed to resolve remote URL for {resolved_remote_name}"
+            )
+        remote_url = (remote_url_result.stdout or "").strip()
+        local_notes_ref = self._derive_local_pr_notes_ref(remote_url)
+
+        fetch_result = _run_subprocess(
+            [
+                "git",
+                "-C",
+                host_repo_path,
+                "fetch",
+                resolved_remote_name,
+                f"+{resolved_notes_ref}:{local_notes_ref}",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        if fetch_result.returncode != 0:
+            return {
+                "body": None,
+                "has_note": False,
+                "local_branch": local_branch,
+                "host_repo_path": host_repo_path,
+                "notes_ref": resolved_notes_ref,
+                "local_notes_ref": local_notes_ref,
+                "remote_name": resolved_remote_name,
+                "commit_sha": None,
+            }
+
+        rev_parse_result = _run_subprocess(
+            ["git", "-C", host_repo_path, "rev-parse", local_branch],
+            capture_output=True,
+            text=True,
+        )
+        if rev_parse_result.returncode != 0:
+            raise RuntimeError(
+                (rev_parse_result.stderr or rev_parse_result.stdout or "").strip()
+                or f"Failed to resolve branch {local_branch}"
+            )
+        commit_sha = (rev_parse_result.stdout or "").strip()
+
+        note_result = _run_subprocess(
+            ["git", "-C", host_repo_path, "notes", f"--ref={local_notes_ref}", "show", commit_sha],
+            capture_output=True,
+            text=True,
+        )
+        if note_result.returncode != 0:
+            body = None
+            has_note = False
+        else:
+            body = (note_result.stdout or "").strip() or None
+            has_note = body is not None
+
+        return {
+            "body": body,
+            "has_note": has_note,
+            "local_branch": local_branch,
+            "host_repo_path": host_repo_path,
+            "notes_ref": resolved_notes_ref,
+            "local_notes_ref": local_notes_ref,
+            "remote_name": resolved_remote_name,
+            "commit_sha": commit_sha,
+        }
+
+    def session_update_metadata(self, *, target: str, metadata: Mapping[str, Any]) -> dict[str, Any]:
+        session_id, manifest = _resolve_session_target(target, self.runtime.sessions.read_all())
+        merged_metadata = dict(manifest.metadata)
+        merged_metadata.update(dict(metadata))
+        updated_manifest = manifest.model_copy(update={"metadata": merged_metadata})
+        self.runtime.sessions.put(session_id, updated_manifest)
+        return {
+            "success": True,
+            "action": "session_update_metadata",
+            "message": f"Updated metadata for {session_id}",
+            "session_id": session_id,
+            "vm_name": updated_manifest.vm_id,
+            "directory_path": updated_manifest.directory_path,
+            "metadata": dict(updated_manifest.metadata),
+        }
+
+    def session_context_query(self, *, target: str) -> dict[str, Any]:
+        session_id, manifest = _resolve_session_target(target, self.runtime.sessions.read_all())
+        return {
+            "session_id": session_id,
+            "vm_name": manifest.vm_id,
+            "directory_path": manifest.directory_path,
+            "metadata": dict(manifest.metadata),
+            "created_at": manifest.created_at.isoformat(),
+            "expires_at": manifest.expires_at.isoformat(),
+            "model": manifest.model,
+        }
+
+    @staticmethod
+    def _derive_local_pr_notes_ref(remote_url: str) -> str:
+        repo_name = Path(remote_url.strip()).name
+        if repo_name.endswith(".git"):
+            repo_name = repo_name[:-4]
+        repo_name = re.sub(r"[^a-z0-9._-]+", "-", repo_name.lower()).strip("-") or "bare-repo"
+        return f"refs/notes/agent-pr-cache/{repo_name}"
 
     def list_local_issues(
         self,
@@ -3641,7 +4015,19 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
         return self.project_dir / "config" / "trigger-orchestrator" / "layout.json"
 
     def _read_workflow_editor_document(self) -> WorkflowEditorDocumentPayload:
-        config_payload = self._read_worker_global_config("trigger-orchestrator")
+        config_path = self._worker_global_config_path("trigger-orchestrator")
+        if config_path is None:
+            raise ValueError("Unknown worker: trigger-orchestrator")
+        config_exists = config_path.exists()
+        if config_exists:
+            raw_config = json.loads(config_path.read_text(encoding="utf-8"))
+            if not isinstance(raw_config, dict):
+                raise ValueError(f"worker config file {config_path} must contain a JSON object")
+        else:
+            model = _WORKER_GLOBAL_CONFIG_MODELS["trigger-orchestrator"]
+            raw_config = model.model_validate(self.config.model_dump(mode="json")).model_dump(mode="json", exclude_none=True)
+        normalized_candidate = self._normalize_workflow_editor_config(raw_config)
+        normalized_config = self._validate_worker_global_config_payload("trigger-orchestrator", normalized_candidate)
         layout_path = self._workflow_editor_layout_path()
         layout_exists = layout_path.exists()
         raw_layout: dict[str, object]
@@ -3654,15 +4040,15 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
             raw_layout = {}
         layout = self._validate_workflow_editor_layout(
             raw_layout,
-            node_ids=self._collect_workflow_node_ids(config_payload.config),
+            node_ids=self._collect_workflow_node_ids(normalized_config),
             allow_unknown_nodes=True,
         )
         return WorkflowEditorDocumentPayload(
-            config_path=config_payload.path,
+            config_path=str(config_path),
             layout_path=str(layout_path),
-            config_exists=config_payload.exists,
+            config_exists=config_exists,
             layout_exists=layout_exists,
-            config=config_payload.config,
+            config=normalized_config,
             layout=layout,
         )
 
@@ -3776,9 +4162,8 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
             elif gate_type == "gate:map":
                 gate["outputs"] = effective_node_output_schema(gate)
             elif gate_type == "gate:await-agent":
-                completion_trigger_id = str(gate.get("completion_trigger_id") or "").strip()
-                completion_trigger = nodes_by_id.get(completion_trigger_id)
-                gate["outputs"] = effective_node_output_schema(completion_trigger) if completion_trigger is not None else {}
+                gate.pop("completion_trigger_id", None)
+                gate["outputs"] = effective_node_output_schema({"type": "trigger:agent:run:completed"})
             elif gate_type == "gate:merge":
                 upstream_outputs = [
                     effective_node_output_schema(nodes_by_id[upstream_id])
@@ -4687,6 +5072,7 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
         repo_source: str | None = None,
         vm_user: str = "agent",
         ttl_hours: int | None = None,
+        allowed_tools: list[str | ToolName] | None = None,
         discord_channels: list[str] | None = None,
         email_mailboxes: list[str] | None = None,
         email_folders: list[str] | None = None,
@@ -4696,6 +5082,9 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
         mssql: bool = False,
         mssql_init_root: str | None = None,
         playwright: bool = False,
+        frontend_deps: bool = False,
+        frontend_host_checkout: str | None = None,
+        frontend_install_roots: list[str] | None = None,
         directory_path: str = "root",
     ) -> VmActionResult:
         resolved_vm_name = vm_name.strip()
@@ -4726,6 +5115,21 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
                 action="create_vm",
                 message="repo_source is required when Python bootstrap is enabled.",
             )
+        if frontend_deps and not (repo_source or "").strip():
+            return VmActionResult(
+                success=False,
+                vm_name=resolved_vm_name,
+                action="create_vm",
+                message="repo_source is required when frontend dependency bootstrap is enabled.",
+            )
+        normalized_frontend_install_roots = [item.strip() for item in (frontend_install_roots or []) if item and item.strip()]
+        if frontend_deps and not normalized_frontend_install_roots:
+            return VmActionResult(
+                success=False,
+                vm_name=resolved_vm_name,
+                action="create_vm",
+                message="frontend_install_roots is required when frontend dependency bootstrap is enabled.",
+            )
         if mssql and not os.environ.get("MSSQL_SA_PASSWORD", "").strip():
             return VmActionResult(
                 success=False,
@@ -4741,6 +5145,7 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
             issue_number=None,
             directory_path=normalized_directory_path,
             ttl_hours=ttl_hours,
+            extra_allowed_tools=allowed_tools,
             discord_channels=discord_channels or [],
             email_mailboxes=email_mailboxes or [],
             email_folders=email_folders or [],
@@ -4764,13 +5169,18 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
         issue_setup = self._resolve_issue_setup(normalized_directory_path, root_dir=root_dir)
         setup_script = root_dir / "scripts" / "setup_vm.sh"
         python_script = root_dir / "scripts" / "bootstrap_python_vm.sh"
+        frontend_deps_script = root_dir / "scripts" / "bootstrap_frontend_deps_vm.sh"
         run_env = os.environ.copy()
         run_env.update(vm_defaults.guest_environment())
+        if manifest.model:
+            run_env["AGENT_MODEL"] = manifest.model
 
         try:
             resolved_repo_path: str | None = None
             resolved_repo_name: str | None = None
             guest_repo_root: str | None = None
+            guest_remote_url: str | None = None
+            resolved_frontend_host_checkout: str | None = None
             vm_ip: str | None = None
             helper = self._privileged_helper if self.use_privileged_helper else None
             if helper is not None and not helper.is_running():
@@ -4799,30 +5209,40 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
                     str(response.get("stderr") or ""),
                 )
             else:
-                launch_step = _pkexec_env_command(
+                allowed_env_keys = (
+                    "SSH_PUBLIC_KEY_FILE",
+                    "SSH_PRIVATE_KEY_PATH",
+                    "GATEWAY_URL",
+                    "LLM_BASE_URL",
+                    "AGENT_MODEL",
+                    "NUGET_RELAY_BASE_URL",
+                    "AGENT_SANDBOX_RUNTIME_DIR",
+                    "VM_STORAGE_DIR",
+                    "SHARED_NUGET_CACHE_DIR",
+                    "SHARED_NUGET_CACHE_TAG",
+                    "SHARED_NUGET_CACHE_MODE",
+                    "RAM_MB",
+                    "VCPUS",
+                    "DISK_SIZE_GB",
+                    "VM_WAIT_IP_TIMEOUT_SECONDS",
+                    "VM_WAIT_SSH_TIMEOUT_SECONDS",
+                    "MSSQL_SA_PASSWORD",
+                )
+                launch_step = _sudo_env_command(
                     [str(setup_script), *setup_args],
                     run_env,
-                    (
-                        "SSH_PUBLIC_KEY_FILE",
-                        "SSH_PRIVATE_KEY_PATH",
-                        "GATEWAY_URL",
-                        "LLM_BASE_URL",
-                        "NUGET_RELAY_BASE_URL",
-                        "AGENT_SANDBOX_RUNTIME_DIR",
-                        "VM_STORAGE_DIR",
-                        "SHARED_NUGET_CACHE_DIR",
-                        "SHARED_NUGET_CACHE_TAG",
-                        "SHARED_NUGET_CACHE_MODE",
-                        "RAM_MB",
-                        "VCPUS",
-                        "DISK_SIZE_GB",
-                        "VM_WAIT_IP_TIMEOUT_SECONDS",
-                        "VM_WAIT_SSH_TIMEOUT_SECONDS",
-                        "MSSQL_SA_PASSWORD",
-                    ),
+                    allowed_env_keys,
                 )
                 completed = _run_subprocess(launch_step, capture_output=True, text=True, env=run_env)
                 message = _combined_process_message(completed.stdout, completed.stderr)
+                if completed.returncode != 0 and _can_prompt_for_privileges():
+                    launch_step = _pkexec_env_command(
+                        [str(setup_script), *setup_args],
+                        run_env,
+                        allowed_env_keys,
+                    )
+                    completed = _run_subprocess(launch_step, capture_output=True, text=True, env=run_env)
+                    message = _combined_process_message(completed.stdout, completed.stderr)
                 if completed.returncode != 0:
                     raise RuntimeError(message or f"{setup_script.name} exited with code {completed.returncode}")
             messages: list[str] = []
@@ -4837,6 +5257,7 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
 
             if (repo_source or "").strip():
                 resolved_repo_path, resolved_repo_name = self._resolve_repo_source(repo_source.strip())
+                resolved_frontend_host_checkout = frontend_host_checkout.strip() if frontend_host_checkout and frontend_host_checkout.strip() else resolved_repo_path
                 self._sync_repo_into_bare_remote(resolved_repo_name, resolved_repo_path, issue_setup=issue_setup)
                 guest_repo_root = self._clone_repo_into_vm(
                     vm_name=resolved_vm_name,
@@ -4846,6 +5267,28 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
                     issue_setup=issue_setup,
                     vm_ip=vm_ip,
                 )
+                guest_remote_url = f"ssh://{issue_setup.git_ssh_alias}{issue_setup.git_root}/{resolved_repo_name}.git"
+            if frontend_deps:
+                if not resolved_frontend_host_checkout:
+                    raise RuntimeError("Frontend dependency bootstrap requires a host checkout root.")
+                completed = _run_subprocess(
+                    [
+                        str(frontend_deps_script),
+                        "--vm-user",
+                        vm_user,
+                        resolved_vm_name,
+                        resolved_frontend_host_checkout,
+                        *normalized_frontend_install_roots,
+                    ],
+                    capture_output=True,
+                    text=True,
+                    env=run_env,
+                )
+                message = _combined_process_message(completed.stdout, completed.stderr)
+                if completed.returncode != 0:
+                    raise RuntimeError(message or f"{frontend_deps_script.name} exited with code {completed.returncode}")
+                if message:
+                    messages.append(message)
             if python:
                 if not resolved_repo_path or not guest_repo_root:
                     raise RuntimeError("Python bootstrap requires a resolved guest repo checkout.")
@@ -4881,7 +5324,15 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
             )
 
         summary = messages[-1] if messages else f"Created VM {resolved_vm_name}"
-        return VmActionResult(success=True, vm_name=resolved_vm_name, action="create_vm", message=summary)
+        return VmActionResult(
+            success=True,
+            vm_name=resolved_vm_name,
+            action="create_vm",
+            message=summary,
+            target_dir=guest_repo_root,
+            guest_repo_name=resolved_repo_name,
+            remote_url=guest_remote_url,
+        )
 
     def destroy_vm(self, target: str) -> VmActionResult:
         vm_name = target.strip()

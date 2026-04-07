@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from agent_sandbox.config import GatewayConfig
-from agent_sandbox.events.models import VmRunStateQueryDefinition
+from agent_sandbox.events.models import GitPrNoteQueryDefinition, SessionContextQueryDefinition, VmRunStateQueryDefinition
 from agent_sandbox.models import VmSummary
 from agent_sandbox.queries.providers.base import QueryProviderBase
 from agent_sandbox.queries.registry import (
@@ -21,10 +21,19 @@ class _ResolverStub:
 @dataclass
 class _AdminServiceStub:
     vms: list[VmSummary]
+    pr_note_result: dict[str, object] | None = None
+    pr_note_calls: list[dict[str, object]] | None = None
 
     def list_vms(self, *, include_inactive: bool = True, omit_state: bool = False):
         del include_inactive, omit_state
         return list(self.vms)
+
+    def git_pr_note_query(self, **kwargs):
+        if self.pr_note_calls is not None:
+            self.pr_note_calls.append(kwargs)
+        if self.pr_note_result is None:
+            raise RuntimeError("pr_note_result not configured")
+        return dict(self.pr_note_result)
 
 
 class _RecordingProvider(QueryProviderBase):
@@ -32,7 +41,7 @@ class _RecordingProvider(QueryProviderBase):
 
 
 def test_default_registry_includes_known_query_types() -> None:
-    assert set(DEFAULT_QUERY_PROVIDER_REGISTRY) == {"query:vm:run-state"}
+    assert set(DEFAULT_QUERY_PROVIDER_REGISTRY) == {"query:vm:run-state", "query:git:pr-note", "query:session-context"}
 
 
 def test_factory_initializes_query_provider_with_runtime_context() -> None:
@@ -83,3 +92,73 @@ def test_vm_run_state_query_provider_returns_expected_state_code() -> None:
 
     assert output["state_code"] == "running"
     assert output["is_running"] is True
+
+
+def test_git_pr_note_query_provider_returns_note_body(tmp_path: Path) -> None:
+    query = GitPrNoteQueryDefinition(
+        id="query-pr-note",
+        display_name="PR note",
+        type="query:git:pr-note",
+        host_repo_path="/repo",
+        local_branch="review/session-1/topic",
+    )
+    admin_service = _AdminServiceStub(
+        vms=[],
+        pr_note_result={
+            "body": "Agent note body",
+            "has_note": True,
+            "local_branch": "review/session-1/topic",
+            "host_repo_path": "/repo",
+            "notes_ref": "refs/notes/agent-pr",
+            "local_notes_ref": "refs/notes/agent-pr-cache/repo",
+            "remote_name": "agent-dropbox",
+            "commit_sha": "a" * 40,
+        },
+        pr_note_calls=[],
+    )
+
+    factory = QueryProviderFactory(provider_config_resolver=_ResolverStub(), admin_service=admin_service)
+    provider = factory.build(query)
+    output = provider.execute(resolved_config={"remote_name": " agent-dropbox "})
+
+    assert admin_service.pr_note_calls == [
+        {
+            "host_repo_path": "/repo",
+            "local_branch": "review/session-1/topic",
+            "remote_name": "agent-dropbox",
+            "notes_ref": None,
+        }
+    ]
+    assert output["has_note"] is True
+    assert output["body"] == "Agent note body"
+
+
+def test_session_context_query_provider_returns_metadata(tmp_path: Path) -> None:
+    query = SessionContextQueryDefinition(
+        id="query-session",
+        display_name="Session context",
+        type="query:session-context",
+        session_id="session-1",
+    )
+    admin_service = _AdminServiceStub(
+        vms=[],
+        pr_note_result=None,
+        pr_note_calls=[],
+    )
+    calls: list[dict[str, object]] = []
+    admin_service.session_context_query = lambda **kwargs: calls.append(kwargs) or {  # type: ignore[attr-defined]
+        "session_id": "session-1",
+        "vm_name": "vm-1",
+        "directory_path": "root/team-a",
+        "metadata": {"issue_number": "14084", "issue_title": "Fix APP"},
+        "created_at": "2026-04-07T10:00:00+00:00",
+        "expires_at": "2026-04-09T10:00:00+00:00",
+        "model": "gpt-5.4",
+    }
+
+    factory = QueryProviderFactory(provider_config_resolver=_ResolverStub(), admin_service=admin_service)
+    provider = factory.build(query)
+    output = provider.execute()
+
+    assert calls == [{"target": "session-1"}]
+    assert output["metadata"]["issue_number"] == "14084"

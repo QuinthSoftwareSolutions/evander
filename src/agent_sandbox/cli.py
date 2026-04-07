@@ -31,6 +31,7 @@ from .config import GatewayConfig, load_config
 from .directories import DirectoryService
 from .host_heartbeat_worker import build_host_heartbeat_worker
 from .issue_orchestrator import build_issue_orchestrator_worker
+from .effect_orchestrator import build_effect_orchestrator_worker
 from .trigger_orchestrator import build_trigger_orchestrator_worker
 from .host_config import DEFAULT_RUNTIME_DIR
 from .migrations import (
@@ -2884,6 +2885,31 @@ def wake_schedule_delete(
     typer.echo(f"Deleted wake schedule {request_id}")
 
 
+
+
+@app.command(
+    "force-complete-await-agent",
+    rich_help_panel="Background Workers",
+    short_help="Force-complete a waiting await-agent dispatch using current VM state.",
+)
+def force_complete_await_agent(
+    dispatch_id: str,
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
+    log_level: Annotated[str, typer.Option("--log-level", help="Python logging level.")] = "INFO",
+) -> None:
+    logging_level = getattr(logging, log_level.upper(), None)
+    if not isinstance(logging_level, int):
+        raise typer.BadParameter(f"Invalid --log-level value: {log_level}")
+    logging.basicConfig(
+        level=logging_level,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+
+    cfg = _load_runtime_config_from_option(config)
+    worker = build_effect_orchestrator_worker(cfg, project_dir=_project_dir_for_config_option(config))
+    if not worker.force_complete_await_agent(dispatch_id):
+        raise typer.BadParameter(f"Unable to force-complete await-agent dispatch: {dispatch_id}")
+    typer.echo(f"Force-completed await-agent dispatch {dispatch_id}")
 
 
 @app.command(

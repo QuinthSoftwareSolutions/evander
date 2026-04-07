@@ -62,6 +62,7 @@ export type WorkflowEditorFieldDefinition = {
   required: boolean;
   bindable: boolean;
   read_only: boolean;
+  multiline: boolean;
   description?: string | null;
   placeholder?: string | null;
   options: WorkflowEditorFieldOption[];

@@ -34,6 +34,11 @@ agent_runner_resume_last() {
   agent_runner_"$(agent_runner_provider)"_resume_last "$@"
 }
 
+agent_runner_resume_thread() {
+  agent_runner_load_provider || return 1
+  agent_runner_"$(agent_runner_provider)"_resume_thread "$@"
+}
+
 agent_runner_binary_name() {
   agent_runner_load_provider || return 1
   agent_runner_"$(agent_runner_provider)"_binary_name

@@ -65,6 +65,18 @@ def filter_when_matches(predicate: Any) -> bool:
         return left in _require_membership_container(predicate["in"], operator_name="in")
     if "not_in" in predicate:
         return left not in _require_membership_container(predicate["not_in"], operator_name="not_in")
+    if "starts_with" in predicate:
+        return _require_string_operand(left, operator_name="starts_with").startswith(
+            _require_string_operand(predicate["starts_with"], operator_name="starts_with")
+        )
+    if "ends_with" in predicate:
+        return _require_string_operand(left, operator_name="ends_with").endswith(
+            _require_string_operand(predicate["ends_with"], operator_name="ends_with")
+        )
+    if "contains" in predicate:
+        return _require_string_operand(predicate["contains"], operator_name="contains") in _require_string_operand(
+            left, operator_name="contains"
+        )
     raise GateRuntimeError("gate:filter when predicate must define a supported comparison operator")
 
 
@@ -78,6 +90,12 @@ def _require_membership_container(value: Any, *, operator_name: str) -> list[Any
     if isinstance(value, (list, tuple, set)):
         return value
     raise GateRuntimeError(f"gate:filter when.{operator_name} must resolve to an array")
+
+
+def _require_string_operand(value: Any, *, operator_name: str) -> str:
+    if isinstance(value, str):
+        return value
+    raise GateRuntimeError(f"gate:filter when.{operator_name} requires string operands")
 
 
 def merged_payload_from_sources(

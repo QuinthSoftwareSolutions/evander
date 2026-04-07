@@ -6,10 +6,10 @@ from dataclasses import dataclass
 from typing import Any
 
 _OUTPUT_REF_EXACT_RE = re.compile(
-    r"^\$\(([A-Za-z0-9][A-Za-z0-9_-]*)\.([A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*)\)$"
+    r"^\$\{\{([A-Za-z0-9][A-Za-z0-9_-]*)\.([A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*)\}\}$"
 )
 _OUTPUT_REF_ANY_RE = re.compile(
-    r"\$\(([A-Za-z0-9][A-Za-z0-9_-]*)\.([A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*)\)"
+    r"\$\{\{([A-Za-z0-9][A-Za-z0-9_-]*)\.([A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*)\}\}"
 )
 _OUTPUT_REF_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*\.[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$")
 
@@ -37,7 +37,7 @@ def resolve_workflow_bindings(
     system_value_resolver: Callable[[str], Any] | None = None,
     strict_validation: bool = True,
 ) -> BindingResolutionResult:
-    """Resolve `$(node_id.key)` and nested `$(node_id.key.path)` bindings against upstream payload values."""
+    """Resolve `${{node_id.key}}` and nested `${{node_id.key.path}}` bindings against upstream payload values."""
 
     declared_names = {node_id: set(output_names) for node_id, output_names in declared_upstream_output_names.items()}
     consumed: set[str] = set()
@@ -66,42 +66,42 @@ def resolve_workflow_bindings(
         return _OUTPUT_REF_ANY_RE.sub(_replace, text)
 
     def _validate_malformed_patterns(text: str) -> None:
-        if "$" not in text:
+        if "${{" not in text:
             return
         index = 0
         while True:
-            start = text.find("$(", index)
+            start = text.find("${{", index)
             if start == -1:
                 return
-            end = text.find(")", start + 2)
+            end = text.find("}}", start + 3)
             if end == -1:
                 if strict_validation:
                     raise BindingResolutionError(f"Malformed output reference in string: {text!r}")
                 return
-            name = text[start + 2 : end]
+            name = text[start + 3 : end]
             if not _OUTPUT_REF_NAME_RE.fullmatch(name):
                 if strict_validation:
                     raise BindingResolutionError(f"Malformed output reference in string: {text!r}")
-                index = end + 1
+                index = end + 2
                 continue
-            index = end + 1
+            index = end + 2
 
     def _consume_output(node_id: str, output_path: str) -> Any:
         output_ref = f"{node_id}.{output_path}"
         output_segments = tuple(segment for segment in output_path.split(".") if segment)
         if not output_segments:
-            raise BindingResolutionError(f"Malformed output reference in string: '$({output_ref})'")
+            raise BindingResolutionError(f"Malformed output reference in string: '${{{{{output_ref}}}}}'")
         if node_id == "system":
             if system_value_resolver is None:
                 if strict_validation:
                     raise BindingResolutionError(f"Output reference node {node_id!r} is not available in this upstream path")
-                return f"$({output_ref})"
+                return f"${{{{{output_ref}}}}}"
             try:
                 resolved_value = system_value_resolver(output_path)
             except Exception as exc:  # noqa: BLE001
                 if strict_validation:
                     raise BindingResolutionError(str(exc)) from exc
-                return f"$({output_ref})"
+                return f"${{{{{output_ref}}}}}"
             consumed.add(output_ref)
             return resolved_value
         output_name = output_segments[0]
@@ -115,7 +115,7 @@ def resolve_workflow_bindings(
         except BindingResolutionError:
             if strict_validation:
                 raise
-            return f"$({output_ref})"
+            return f"${{{{{output_ref}}}}}"
         consumed.add(output_ref)
         return resolved_value
 

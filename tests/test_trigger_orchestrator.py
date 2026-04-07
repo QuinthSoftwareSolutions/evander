@@ -121,3 +121,71 @@ def test_trigger_orchestrator_rejects_reserved_runtime_output_name(tmp_path: Pat
     assert result.events_published == 0
     queue_payload = json.loads(worker_config.event_queue_store_path.read_text(encoding="utf-8"))
     assert queue_payload == {}
+
+
+def test_trigger_orchestrator_synthesizes_agent_completion_trigger_for_await_gate(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "cron-1",
+                    "display_name": "Every minute",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+            "gates": [
+                {
+                    "id": "await-agent-1",
+                    "display_name": "Await agent",
+                    "type": "gate:await-agent",
+                    "outputs": {},
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-1",
+                    "display_name": "Prompt",
+                    "type": "effect:agent:prompt",
+                    "session_id": "session-1",
+                    "prompt": "Continue",
+                }
+            ],
+            "edges": [
+                {"source_id": "cron-1", "target_id": "effect-1"},
+                {"source_id": "effect-1", "target_id": "await-agent-1"},
+            ],
+        }
+    )
+    worker = TriggerOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+
+    def build_provider(trigger):
+        if trigger.type == "trigger:agent:run:completed":
+            return _StaticProvider(
+                [
+                    TriggerEvent(
+                        event_id="event-agent-complete",
+                        trigger_id=trigger.id,
+                        trigger_type=trigger.type,
+                        occurred_at=datetime(2026, 4, 3, 12, 5, tzinfo=UTC),
+                        payload={"dispatch_id": "dispatch-1"},
+                    )
+                ]
+            )
+        return _StaticProvider([])
+
+    worker.provider_factory.build = build_provider  # type: ignore[assignment]
+
+    result = worker.run_once()
+
+    assert result.configured_triggers == 2
+    assert result.events_discovered == 1
+    assert result.events_published == 1
+    queue_payload = json.loads(worker_config.event_queue_store_path.read_text(encoding="utf-8"))
+    assert queue_payload["event-agent-complete"]["trigger_type"] == "trigger:agent:run:completed"
+    assert queue_payload["event-agent-complete"]["trigger_id"] == worker._AWAIT_AGENT_COMPLETION_TRIGGER_ID

@@ -8,6 +8,8 @@ from agent_sandbox.events.models import QueryDefinitionDiscriminated, QueryType
 from agent_sandbox.provider_config import ProviderConfigResolver
 
 from .providers.base import QueryProviderBase, QueryRuntimeContext
+from .providers.git_pr_note import GitPrNoteQueryProvider
+from .providers.session_context import SessionContextQueryProvider
 from .providers.vm_run_state import VmRunStateQueryProvider
 
 QueryProviderClass = type[QueryProviderBase]
@@ -15,6 +17,8 @@ QueryProviderClass = type[QueryProviderBase]
 
 DEFAULT_QUERY_PROVIDER_REGISTRY: dict[QueryType, QueryProviderClass] = {
     "query:vm:run-state": VmRunStateQueryProvider,
+    "query:git:pr-note": GitPrNoteQueryProvider,
+    "query:session-context": SessionContextQueryProvider,
 }
 
 

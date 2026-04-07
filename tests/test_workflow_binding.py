@@ -8,8 +8,8 @@ from agent_sandbox.workflow_binding import resolve_gate_map_bindings, resolve_wo
 
 def test_workflow_binding_resolution_matches_effect_compatibility_path() -> None:
     raw = {
-        "prompt": "Ticket $(trigger_1.ticket_id)",
-        "nested": ["$(effect_1.session_id)", {"name": "$(gate_1.vm_name)"}],
+        "prompt": "Ticket ${{trigger_1.ticket_id}}",
+        "nested": ["${{effect_1.session_id}}", {"name": "${{gate_1.vm_name}}"}],
     }
     upstream = {
         "trigger_1": {"ticket_id": 42},
@@ -36,14 +36,14 @@ def test_workflow_binding_resolution_matches_effect_compatibility_path() -> None
 def test_workflow_binding_resolution_rejects_undeclared_and_malformed_references() -> None:
     with pytest.raises(BindingResolutionError, match="not declared"):
         resolve_workflow_bindings(
-            {"prompt": "$(trigger_1.missing)"},
+            {"prompt": "${{trigger_1.missing}}"},
             {"trigger_1": {"present": "ok"}},
             {"trigger_1": {"present"}},
         )
 
     with pytest.raises(BindingResolutionError, match="Malformed"):
         resolve_workflow_bindings(
-            {"prompt": "$(trigger_1.missing"},
+            {"prompt": "${{trigger_1.missing"},
             {"trigger_1": {"missing": "x"}},
             {"trigger_1": {"missing"}},
         )
@@ -51,9 +51,9 @@ def test_workflow_binding_resolution_rejects_undeclared_and_malformed_references
 
 def test_workflow_binding_resolution_supports_nested_object_and_list_paths() -> None:
     raw = {
-        "issue_number": "$(trigger-ticket-created-1.ticket.issue_number)",
-        "first_tag": "$(trigger-ticket-created-1.ticket.tags.0)",
-        "prompt": "Issue $(trigger-ticket-created-1.ticket.issue_number)",
+        "issue_number": "${{trigger-ticket-created-1.ticket.issue_number}}",
+        "first_tag": "${{trigger-ticket-created-1.ticket.tags.0}}",
+        "prompt": "Issue ${{trigger-ticket-created-1.ticket.issue_number}}",
     }
     upstream = {
         "trigger-ticket-created-1": {
@@ -95,8 +95,8 @@ def test_workflow_binding_resolution_supports_system_values() -> None:
 
     result = resolve_workflow_bindings(
         {
-            "session_id": "issue-$(trigger_1.ticket_id)-$(system.now.utc_timestamp_compact)-$(system.unique.compact)",
-            "metadata": "$(system.execution.event_id)",
+            "session_id": "issue-${{trigger_1.ticket_id}}-${{system.now.utc_timestamp_compact}}-${{system.unique.compact}}",
+            "metadata": "${{system.execution.event_id}}",
         },
         {"trigger_1": {"ticket_id": 42}},
         {"trigger_1": {"ticket_id"}},

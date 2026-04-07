@@ -21,6 +21,7 @@ class VmCreateEffectProvider(EffectProviderBase):
             "repo_source": effect.repo_source,
             "vm_user": effect.vm_user,
             "ttl_hours": effect.ttl_hours,
+            "allowed_tools": effect.allowed_tools,
             "discord_channels": effect.discord_channels,
             "email_mailboxes": effect.email_mailboxes,
             "email_folders": effect.email_folders,
@@ -30,6 +31,9 @@ class VmCreateEffectProvider(EffectProviderBase):
             "mssql": effect.mssql,
             "mssql_init_root": effect.mssql_init_root,
             "playwright": effect.playwright,
+            "frontend_deps": effect.frontend_deps,
+            "frontend_host_checkout": effect.frontend_host_checkout,
+            "frontend_install_roots": effect.frontend_install_roots,
             "directory_path": effect.directory_path,
         }
         if resolved_config:
@@ -53,6 +57,7 @@ class VmCreateEffectProvider(EffectProviderBase):
             repo_source=self._normalize_optional_string(payload.get("repo_source")),
             vm_user=vm_user,
             ttl_hours=self._as_int_or_none(payload.get("ttl_hours")),
+            allowed_tools=self._as_string_list(payload.get("allowed_tools")),
             discord_channels=self._as_string_list(payload.get("discord_channels")),
             email_mailboxes=self._as_string_list(payload.get("email_mailboxes")),
             email_folders=self._as_string_list(payload.get("email_folders")),
@@ -62,6 +67,9 @@ class VmCreateEffectProvider(EffectProviderBase):
             mssql=bool(payload.get("mssql", False)),
             mssql_init_root=self._normalize_optional_string(payload.get("mssql_init_root")),
             playwright=bool(payload.get("playwright", False)),
+            frontend_deps=bool(payload.get("frontend_deps", False)),
+            frontend_host_checkout=self._normalize_optional_string(payload.get("frontend_host_checkout")),
+            frontend_install_roots=self._as_string_list(payload.get("frontend_install_roots")),
             directory_path=directory_path,
         )
 
@@ -71,6 +79,10 @@ class VmCreateEffectProvider(EffectProviderBase):
             "vm_name": result.vm_name or vm_name,
             "labels": self._as_string_mapping(payload.get("labels")) or {},
             "success": bool(result.success),
+            "message": self._normalize_optional_string(getattr(result, "message", None)),
+            "target_dir": self._normalize_optional_string(getattr(result, "target_dir", None)),
+            "guest_repo_name": self._normalize_optional_string(getattr(result, "guest_repo_name", None)),
+            "remote_url": self._normalize_optional_string(getattr(result, "remote_url", None)),
         }
 
     def _effect(self) -> VmCreateEffectDefinition:

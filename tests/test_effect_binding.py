@@ -7,11 +7,11 @@ from agent_sandbox.effects.binding import BindingResolutionError, resolve_effect
 
 def test_resolve_nested_object_and_list_bindings() -> None:
     raw = {
-        "vm": "$(effect_1.vm_name)",
+        "vm": "${{effect_1.vm_name}}",
         "metadata": {
-            "ticket": "$(trigger_1.ticket_id)",
-            "labels": ["priority", "$(trigger_1.priority)"],
-            "message": "Ticket $(trigger_1.ticket_id): $(trigger_1.title)",
+            "ticket": "${{trigger_1.ticket_id}}",
+            "labels": ["priority", "${{trigger_1.priority}}"],
+            "message": "Ticket ${{trigger_1.ticket_id}}: ${{trigger_1.title}}",
         },
     }
 
@@ -63,7 +63,7 @@ def test_scalar_passthrough_without_bindings() -> None:
 def test_missing_output_reference_raises_in_strict_mode() -> None:
     with pytest.raises(BindingResolutionError, match="not found"):
         resolve_effect_config_bindings(
-            {"prompt": "Hello $(trigger_1.missing_key)"},
+            {"prompt": "Hello ${{trigger_1.missing_key}}"},
             upstream_payload={"trigger_1": {"present": "ok"}},
             declared_upstream_output_names={"trigger_1": {"present", "missing_key"}},
             strict_validation=True,
@@ -72,7 +72,7 @@ def test_missing_output_reference_raises_in_strict_mode() -> None:
 
 def test_mixed_literal_and_substitution_coerces_to_string() -> None:
     result = resolve_effect_config_bindings(
-        {"prompt": "Ticket $(trigger_1.ticket_id) in $(trigger_1.repo)"},
+        {"prompt": "Ticket ${{trigger_1.ticket_id}} in ${{trigger_1.repo}}"},
         upstream_payload={"trigger_1": {"ticket_id": 42, "repo": "agent-orchestrator"}},
         declared_upstream_output_names={"trigger_1": {"ticket_id", "repo"}},
     )
@@ -84,7 +84,7 @@ def test_mixed_literal_and_substitution_coerces_to_string() -> None:
 def test_malformed_reference_raises_in_strict_mode() -> None:
     with pytest.raises(BindingResolutionError, match="Malformed"):
         resolve_effect_config_bindings(
-            {"prompt": "Hello $(trigger_1.ticket_id"},
+            {"prompt": "Hello ${{trigger_1.ticket_id"},
             upstream_payload={"trigger_1": {"ticket_id": 1}},
             declared_upstream_output_names={"trigger_1": {"ticket_id"}},
             strict_validation=True,
@@ -95,12 +95,12 @@ def test_map_template_bindings_resolve_nested_mapping_values() -> None:
     raw = {
         "map": {
             "template": {
-                "title": "Ticket $(trigger_1.ticket_id)",
-                "summary": "Resume $(effect_1.session_id)",
+                "title": "Ticket ${{trigger_1.ticket_id}}",
+                "summary": "Resume ${{effect_1.session_id}}",
             },
             "match": {
-                "kind": "$(trigger_1.kind)",
-                "labels": ["priority", "$(trigger_1.priority)"],
+                "kind": "${{trigger_1.kind}}",
+                "labels": ["priority", "${{trigger_1.priority}}"],
             },
         }
     }
@@ -140,7 +140,7 @@ def test_map_template_bindings_resolve_nested_mapping_values() -> None:
 def test_map_template_bindings_fail_strictly_when_output_is_missing() -> None:
     with pytest.raises(BindingResolutionError, match="not found"):
         resolve_effect_config_bindings(
-            {"map": {"template": "Ticket $(trigger_1.missing_key)"}},
+            {"map": {"template": "Ticket ${{trigger_1.missing_key}}"}},
             upstream_payload={"trigger_1": {"ticket_id": 1}},
             declared_upstream_output_names={"trigger_1": {"ticket_id", "missing_key"}},
             strict_validation=True,
