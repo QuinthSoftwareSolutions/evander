@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import shlex
 import subprocess
@@ -7,6 +8,8 @@ import tempfile
 from collections.abc import Mapping, Sequence
 from pathlib import Path, PurePosixPath
 from typing import Any
+
+import yaml
 
 from agent_sandbox.admin_service import _resolve_private_key_path, _ssh_options
 
@@ -290,6 +293,7 @@ class VmCopyFilesEffectProvider(EffectProviderBase):
             if (source_path is None) == (content is None):
                 raise ValueError("effect:vm:copy-files entries require exactly one of source_path or content")
             mode = self._normalize_optional_string(raw_entry.get("mode"))
+            content_format = self._normalize_content_format(raw_entry.get("content_format"))
             overwrite = raw_entry.get("overwrite")
             if overwrite is None:
                 overwrite = True
@@ -299,7 +303,8 @@ class VmCopyFilesEffectProvider(EffectProviderBase):
                 {
                     "source_path": source_path,
                     "destination_path": destination_path,
-                    "content": content,
+                    "content": self._render_inline_content(content, content_format=content_format) if content is not None else None,
+                    "content_format": content_format,
                     "mode": mode,
                     "overwrite": overwrite,
                 }
@@ -332,6 +337,27 @@ class VmCopyFilesEffectProvider(EffectProviderBase):
         if not all(char in "01234567" for char in mode):
             raise ValueError(f"effect:vm:copy-files mode must be octal digits: {mode!r}")
         return mode
+
+    @staticmethod
+    def _normalize_content_format(value: Any) -> str | None:
+        if value is None:
+            return None
+        text = str(value).strip().lower()
+        if not text:
+            return None
+        if text not in {"text", "json", "yaml"}:
+            raise ValueError(f"effect:vm:copy-files content_format must be one of: text, json, yaml")
+        return text
+
+    @classmethod
+    def _render_inline_content(cls, content: Any, *, content_format: str | None) -> Any:
+        if content_format in (None, "text"):
+            return content
+        if content_format == "json":
+            return json.dumps(content, indent=2, ensure_ascii=False)
+        if content_format == "yaml":
+            return yaml.safe_dump(content, sort_keys=False, allow_unicode=True)
+        raise ValueError(f"Unsupported content_format: {content_format}")
 
     @staticmethod
     def _normalize_optional_string(value: Any) -> str | None:

@@ -8,9 +8,14 @@ from agent_sandbox.events.models import (
     AgentRunCompletedTriggerDefinition,
     ConfigValue,
     EffectDefinitionDiscriminated,
+    GateDefinitionDiscriminated,
+    GitPromoteAgentBranchEffectDefinition,
     GitPushTriggerDefinition,
+    IssueUpdateStateEffectDefinition,
     PrCreateEffectDefinition,
     PullRequestNewFeedbackTriggerDefinition,
+    SessionContextQueryDefinition,
+    SessionUpdateMetadataEffectDefinition,
     TriggerDefinitionDiscriminated,
     TriggerEvent,
 )
@@ -61,13 +66,26 @@ def test_pr_feedback_trigger_requires_org_url_for_ado() -> None:
         )
 
 
-def test_git_push_trigger_requires_repo_path() -> None:
-    with pytest.raises(ValueError, match="path_to_repo"):
+def test_git_push_trigger_requires_repo_path_or_glob() -> None:
+    with pytest.raises(ValueError, match="path_to_repo or path_glob"):
         GitPushTriggerDefinition.model_validate(
             {
                 "id": "t-3b",
                 "display_name": "Git push",
                 "type": "trigger:git:push",
+            }
+        )
+
+
+def test_git_push_trigger_rejects_both_repo_path_and_glob() -> None:
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        GitPushTriggerDefinition.model_validate(
+            {
+                "id": "t-3c",
+                "display_name": "Git push",
+                "type": "trigger:git:push",
+                "path_to_repo": "/tmp/repo.git",
+                "path_glob": "/tmp/*.git",
             }
         )
 
@@ -115,6 +133,37 @@ def test_pr_feedback_trigger_accepts_local_provider() -> None:
     assert trigger.provider == "local"
 
 
+def test_await_agent_gate_requires_session_id_or_vm_name() -> None:
+    adapter = TypeAdapter(GateDefinitionDiscriminated)
+
+    with pytest.raises(ValueError, match="gate:await-agent requires session_id or vm_name"):
+        adapter.validate_python(
+            {
+                "id": "g-1",
+                "display_name": "Await agent",
+                "type": "gate:await-agent",
+                "outputs": {},
+            }
+        )
+
+
+def test_await_agent_gate_accepts_single_selector() -> None:
+    adapter = TypeAdapter(GateDefinitionDiscriminated)
+
+    gate = adapter.validate_python(
+        {
+            "id": "g-2",
+            "display_name": "Await agent",
+            "type": "gate:await-agent",
+            "session_id": "${{effect-1.session_id}}",
+            "outputs": {},
+        }
+    )
+
+    assert gate.session_id == "${{effect-1.session_id}}"
+    assert gate.vm_name is None
+
+
 def test_trigger_event_envelope_accepts_normalized_payload() -> None:
     event = TriggerEvent.model_validate(
         {
@@ -129,6 +178,21 @@ def test_trigger_event_envelope_accepts_normalized_payload() -> None:
     assert event.payload == {"branch": "main"}
 
 
+def test_declared_outputs_reject_reserved_output_name() -> None:
+    adapter = TypeAdapter(TriggerDefinitionDiscriminated)
+
+    with pytest.raises(ValueError, match="reserved output name"):
+        adapter.validate_python(
+            {
+                "id": "t-reserved",
+                "display_name": "Reserved output",
+                "type": "trigger:cron",
+                "expression": "* * * * *",
+                "outputs": {"__node_outputs": {"type": "object"}},
+            }
+        )
+
+
 def test_effect_discriminated_union_accepts_output_reference_interpolation() -> None:
     adapter = TypeAdapter(EffectDefinitionDiscriminated)
     effect = adapter.validate_python(
@@ -136,11 +200,13 @@ def test_effect_discriminated_union_accepts_output_reference_interpolation() -> 
             "id": "effect-2",
             "display_name": "Prompt agent",
             "type": "effect:agent:prompt",
-            "prompt": "Build summary for $(ticket_id)",
+            "prompt": "Build summary for ${{trigger.ticket_id}}",
+            "model": "${{trigger.model}}",
         }
     )
 
     assert effect.type == "effect:agent:prompt"
+    assert effect.model == "${{trigger.model}}"
 
 
 def test_agent_run_completed_trigger_accepts_default_vm_user() -> None:
@@ -180,13 +246,29 @@ def test_vm_create_effect_accepts_labels_mapping() -> None:
             "vm_name": "vm-1",
             "labels": {
                 "workflow": "issue-worker",
-                "ticket_id": "$(ticket_id)",
+                "ticket_id": "${{trigger.ticket_id}}",
             },
         }
     )
 
     assert effect.type == "effect:vm:create"
-    assert effect.labels == {"workflow": "issue-worker", "ticket_id": "$(ticket_id)"}
+    assert effect.labels == {"workflow": "issue-worker", "ticket_id": "${{trigger.ticket_id}}"}
+
+
+def test_vm_create_effect_accepts_allowed_tools_list() -> None:
+    adapter = TypeAdapter(EffectDefinitionDiscriminated)
+    effect = adapter.validate_python(
+        {
+            "id": "effect-vm-tools",
+            "display_name": "Create VM",
+            "type": "effect:vm:create",
+            "vm_name": "vm-1",
+            "allowed_tools": ["list_unread_feedback", "post_pr_feedback_reply"],
+        }
+    )
+
+    assert effect.type == "effect:vm:create"
+    assert effect.allowed_tools == ["list_unread_feedback", "post_pr_feedback_reply"]
 
 
 def test_vm_start_effect_accepts_session_target() -> None:
@@ -254,6 +336,67 @@ def test_pr_create_effect_requires_host_repo_path() -> None:
         )
 
 
+def test_git_promote_agent_branch_effect_requires_repo_and_branch_fields() -> None:
+    effect = GitPromoteAgentBranchEffectDefinition.model_validate(
+        {
+            "id": "effect-promote",
+            "display_name": "Promote branch",
+            "type": "effect:git:promote-agent-branch",
+            "host_repo_path": "/repo",
+            "bare_repo_path": "/git-remotes/repo.git",
+            "agent_branch": "agents/session-1/topic",
+        }
+    )
+
+    assert effect.host_repo_path == "/repo"
+    assert effect.agent_branch == "agents/session-1/topic"
+
+    with pytest.raises(ValueError, match="bare_repo_path or bare_repo_name"):
+        GitPromoteAgentBranchEffectDefinition.model_validate(
+            {
+                "id": "effect-promote-missing-bare",
+                "display_name": "Promote branch",
+                "type": "effect:git:promote-agent-branch",
+                "host_repo_path": "/repo",
+                "agent_branch": "agents/session-1/topic",
+            }
+        )
+
+
+def test_session_update_metadata_effect_and_session_context_query_validate() -> None:
+    state_effect = IssueUpdateStateEffectDefinition.model_validate(
+        {
+            "id": "effect-issue-state",
+            "display_name": "Mark issue in progress",
+            "type": "effect:issue:update-state",
+            "issue_id": "14084",
+            "state": "In Progress",
+        }
+    )
+    effect = SessionUpdateMetadataEffectDefinition.model_validate(
+        {
+            "id": "effect-session-meta",
+            "display_name": "Store issue metadata",
+            "type": "effect:session:update-metadata",
+            "session_id": "session-1",
+            "metadata": {"issue_number": "14084"},
+        }
+    )
+    query = SessionContextQueryDefinition.model_validate(
+        {
+            "id": "query-session-context",
+            "display_name": "Session context",
+            "type": "query:session-context",
+            "session_id": "session-1",
+        }
+    )
+
+    assert state_effect.issue_id == "14084"
+    assert state_effect.state == "In Progress"
+    assert effect.metadata == {"issue_number": "14084"}
+    assert query.session_id == "session-1"
+
+
 def test_vm_copy_files_effect_rejects_mixed_source_kinds() -> None:
     adapter = TypeAdapter(EffectDefinitionDiscriminated)
     with pytest.raises(ValueError, match="mutually exclusive"):
@@ -277,14 +420,14 @@ def test_vm_copy_files_effect_rejects_mixed_source_kinds() -> None:
 def test_config_value_adapter_accepts_nested_binding_structures() -> None:
     value = TypeAdapter(ConfigValue).validate_python(
         {
-            "session_id": "$(session_id)",
-            "prompt": "Continue $(session_id)",
-            "metadata": [{"ticket": "$(ticket_id)"}, True, None],
+            "session_id": "${{node.session_id}}",
+            "prompt": "Continue ${{node.session_id}}",
+            "metadata": [{"ticket": "${{trigger.ticket_id}}"}, True, None],
         }
     )
 
     assert value == {
-        "session_id": "$(session_id)",
-        "prompt": "Continue $(session_id)",
-        "metadata": [{"ticket": "$(ticket_id)"}, True, None],
+        "session_id": "${{node.session_id}}",
+        "prompt": "Continue ${{node.session_id}}",
+        "metadata": [{"ticket": "${{trigger.ticket_id}}"}, True, None],
     }

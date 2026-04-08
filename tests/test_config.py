@@ -238,6 +238,244 @@ def test_trigger_orchestrator_worker_global_config_defaults_follow_runtime_dir()
     assert config.triggers == []
 
 
+def test_trigger_orchestrator_filter_gate_accepts_when_predicates() -> None:
+    config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": "/tmp/agent-sandbox-runtime",
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Tick",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+            "gates": [
+                {
+                    "id": "gate-filter",
+                    "display_name": "VM create succeeded",
+                    "type": "gate:filter",
+                    "outputs": {
+                        "guest_repo_name": {"type": "string"},
+                        "session_id": {"type": "string"},
+                        "labels": {"type": "object"},
+                        "remote_url": {"type": "string"},
+                        "success": {"type": "boolean"},
+                        "target_dir": {"type": "string"},
+                        "vm_name": {"type": "string"},
+                    },
+                    "when": {
+                        "all": [
+                            {"left": "${{effect-1.success}}", "equals": True},
+                            {"left": "${{effect-1.session_id}}", "is_not_null": True},
+                        ]
+                    },
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-1",
+                    "display_name": "Create VM",
+                    "type": "effect:vm:create",
+                    "vm_name": "vm-1",
+                }
+            ],
+            "edges": [
+                {"source_id": "trigger-1", "target_id": "effect-1"},
+                {"source_id": "effect-1", "target_id": "gate-filter"},
+            ],
+        }
+    )
+
+    assert config.gates[0].when == {
+        "all": [
+            {"left": "${{effect-1.success}}", "equals": True},
+            {"left": "${{effect-1.session_id}}", "is_not_null": True},
+        ]
+    }
+
+
+def test_trigger_orchestrator_filter_gate_rejects_match_and_when_together() -> None:
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        TriggerOrchestratorWorkerGlobalConfig.model_validate(
+            {
+                "runtime_dir": "/tmp/agent-sandbox-runtime",
+                "triggers": [
+                    {
+                        "id": "trigger-1",
+                        "display_name": "Tick",
+                        "type": "trigger:cron",
+                        "expression": "* * * * *",
+                    }
+                ],
+                "gates": [
+                    {
+                        "id": "gate-filter",
+                        "display_name": "Invalid filter",
+                        "type": "gate:filter",
+                        "outputs": {},
+                        "match": {"success": True},
+                        "when": {"all": [{"left": "${{effect-1.success}}", "equals": True}]},
+                    }
+                ],
+                "effects": [],
+                "edges": [],
+            }
+        )
+
+
+def test_trigger_orchestrator_filter_gate_accepts_string_operators() -> None:
+    config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": "/tmp/agent-sandbox-runtime",
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Git push",
+                    "type": "trigger:git:push",
+                    "path_glob": "/tmp/*.git",
+                }
+            ],
+            "gates": [
+                {
+                    "id": "gate-filter",
+                    "display_name": "Agent branch only",
+                    "type": "gate:filter",
+                    "outputs": {
+                        "branch_name": {"type": "string"},
+                        "commit_hash": {"type": "string"},
+                        "old_commit_hash": {"type": "string"},
+                        "ref_name": {"type": "string"},
+                        "repo_path": {"type": "string"},
+                        "repo_name": {"type": "string"},
+                        "session_id": {"type": "string"},
+                        "review_branch": {"type": "string"},
+                        "trusted_repo_path": {"type": "string"},
+                        "base_branch": {"type": "string"},
+                        "canonical_origin_url": {"type": "string"},
+                    },
+                    "when": {
+                        "all": [
+                            {"left": "${{trigger-1.branch_name}}", "starts_with": "agents/"},
+                            {"left": "${{trigger-1.repo_path}}", "ends_with": ".git"},
+                            {"left": "${{trigger-1.branch_name}}", "contains": "/"},
+                        ]
+                    },
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-1",
+                    "display_name": "Prompt",
+                    "type": "effect:agent:prompt",
+                    "session_id": "session-1",
+                    "prompt": "continue",
+                }
+            ],
+            "edges": [
+                {"source_id": "trigger-1", "target_id": "gate-filter"},
+                {"source_id": "gate-filter", "target_id": "effect-1"},
+            ],
+        }
+    )
+
+    assert config.gates[0].when == {
+        "all": [
+            {"left": "${{trigger-1.branch_name}}", "starts_with": "agents/"},
+            {"left": "${{trigger-1.repo_path}}", "ends_with": ".git"},
+            {"left": "${{trigger-1.branch_name}}", "contains": "/"},
+        ]
+    }
+
+
+def test_trigger_orchestrator_await_agent_gate_accepts_completion_trigger_reference() -> None:
+    config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": "/tmp/agent-sandbox-runtime",
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Tick",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                },
+                {
+                    "id": "agent-complete",
+                    "display_name": "Agent completed",
+                    "type": "trigger:agent:run:completed",
+                },
+            ],
+            "gates": [
+                {
+                    "id": "await-agent-1",
+                    "display_name": "Await agent",
+                    "type": "gate:await-agent",
+                    "completion_trigger_id": "agent-complete",
+                    "session_id": "session-1",
+                    "outputs": {},
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-prompt",
+                    "display_name": "Prompt",
+                    "type": "effect:agent:prompt",
+                    "session_id": "session-1",
+                    "prompt": "continue",
+                }
+            ],
+            "edges": [
+                {"source_id": "trigger-1", "target_id": "effect-prompt"},
+                {"source_id": "effect-prompt", "target_id": "await-agent-1"},
+            ],
+        }
+    )
+
+    assert config.gates[0].type == "gate:await-agent"
+    assert config.gates[0].outputs["dispatch_id"] == {"type": "string"}
+
+
+def test_trigger_orchestrator_await_agent_gate_accepts_linear_flow_without_completion_trigger() -> None:
+    config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": "/tmp/agent-sandbox-runtime",
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Tick",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                },
+            ],
+            "gates": [
+                {
+                    "id": "await-agent-1",
+                    "display_name": "Await agent",
+                    "type": "gate:await-agent",
+                    "session_id": "session-1",
+                    "outputs": {},
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-prompt",
+                    "display_name": "Prompt",
+                    "type": "effect:agent:prompt",
+                    "session_id": "session-1",
+                    "prompt": "continue",
+                }
+            ],
+            "edges": [
+                {"source_id": "trigger-1", "target_id": "effect-prompt"},
+                {"source_id": "effect-prompt", "target_id": "await-agent-1"},
+            ],
+        }
+    )
+
+    assert config.gates[0].type == "gate:await-agent"
+    assert config.gates[0].outputs["dispatch_id"] == {"type": "string"}
+
+
 def test_trigger_orchestrator_worker_global_config_accepts_discriminated_triggers() -> None:
     config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
         {
@@ -273,7 +511,7 @@ def test_trigger_orchestrator_worker_global_config_accepts_effects() -> None:
                     "id": "prompt-agent",
                     "display_name": "Prompt agent",
                     "type": "effect:agent:prompt",
-                    "prompt": "Summarize $(branch)",
+                    "prompt": "Summarize ${{trigger.branch}}",
                 }
             ],
             "edges": [{"source_id": "cron-15m", "target_id": "prompt-agent"}],
@@ -281,6 +519,33 @@ def test_trigger_orchestrator_worker_global_config_accepts_effects() -> None:
     )
 
     assert config.effects[0].type == "effect:agent:prompt"
+
+
+def test_trigger_orchestrator_worker_global_config_accepts_queries() -> None:
+    config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "triggers": [
+                {
+                    "id": "cron-15m",
+                    "display_name": "Every 15 minutes",
+                    "type": "trigger:cron",
+                    "expression": "*/15 * * * *",
+                }
+            ],
+            "queries": [
+                {
+                    "id": "query-state",
+                    "display_name": "VM run state",
+                    "type": "query:vm:run-state",
+                    "session_id": "session-1",
+                    "outputs": {"state_code": {"type": "string"}},
+                }
+            ],
+            "edges": [{"source_id": "cron-15m", "target_id": "query-state"}],
+        }
+    )
+
+    assert config.queries[0].type == "query:vm:run-state"
 
 
 def test_trigger_orchestrator_worker_global_config_accepts_multiple_effect_edges_from_one_source() -> None:
@@ -299,13 +564,13 @@ def test_trigger_orchestrator_worker_global_config_accepts_multiple_effect_edges
                     "id": "effect-a",
                     "display_name": "First downstream node",
                     "type": "effect:agent:prompt",
-                    "prompt": "First $(ticket_id)",
+                    "prompt": "First ${{trigger.ticket_id}}",
                 },
                 {
                     "id": "effect-b",
                     "display_name": "Second downstream node",
                     "type": "effect:agent:prompt",
-                    "prompt": "Second $(ticket_id)",
+                    "prompt": "Second ${{trigger.ticket_id}}",
                 },
             ],
             "edges": [
@@ -323,7 +588,7 @@ def test_trigger_orchestrator_worker_global_config_accepts_multiple_effect_edges
 
 
 def test_trigger_orchestrator_worker_global_config_rejects_duplicate_ids_across_graph() -> None:
-    with pytest.raises(ValueError, match="Node IDs must be globally unique across triggers, gates, and effects: node-1"):
+    with pytest.raises(ValueError, match="Node IDs must be globally unique across triggers, gates, effects, and queries: node-1"):
         TriggerOrchestratorWorkerGlobalConfig.model_validate(
             {
                 "triggers": [
@@ -354,7 +619,7 @@ def test_trigger_orchestrator_worker_global_config_rejects_duplicate_ids_across_
 
 
 def test_trigger_orchestrator_worker_global_config_rejects_duplicate_trigger_ids() -> None:
-    with pytest.raises(ValueError, match="Node IDs must be globally unique across triggers, gates, and effects: cron-15m"):
+    with pytest.raises(ValueError, match="Node IDs must be globally unique across triggers, gates, effects, and queries: cron-15m"):
         TriggerOrchestratorWorkerGlobalConfig.model_validate(
             {
                 "triggers": [
@@ -376,7 +641,7 @@ def test_trigger_orchestrator_worker_global_config_rejects_duplicate_trigger_ids
 
 
 def test_trigger_orchestrator_worker_global_config_rejects_duplicate_effect_ids() -> None:
-    with pytest.raises(ValueError, match="Node IDs must be globally unique across triggers, gates, and effects: effect-dup"):
+    with pytest.raises(ValueError, match="Node IDs must be globally unique across triggers, gates, effects, and queries: effect-dup"):
         TriggerOrchestratorWorkerGlobalConfig.model_validate(
             {
                 "triggers": [

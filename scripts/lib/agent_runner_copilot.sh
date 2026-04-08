@@ -123,6 +123,16 @@ agent_runner_copilot_resume_last() {
   _agent_runner_copilot_run resume "$@"
 }
 
+agent_runner_copilot_resume_thread() {
+  local thread_id="${1:-}"
+  if [[ -z "${thread_id}" ]]; then
+    echo "Missing thread id for copilot provider resume." >&2
+    return 1
+  fi
+  echo "The copilot provider does not support resuming a specific thread id." >&2
+  return 1
+}
+
 agent_runner_copilot_binary_name() {
   printf 'copilot\n'
 }

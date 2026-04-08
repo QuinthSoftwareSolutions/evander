@@ -27,6 +27,7 @@ def test_bootstrap_script_enforces_codex_config_and_placeholder_key() -> None:
     assert 'if [ -f /etc/agent-sandbox/session.env ]; then' in script
     assert 'export OPENAI_API_KEY="${OPENAI_API_KEY:-relay-placeholder}"' in script
     assert 'if [ -n "${AGENT_SANDBOX_SESSION_ID:-}" ]; then' in script
+    assert 'CODEX_LLM_BASE_URL="${CODEX_LLM_BASE_URL%/}/session/${AGENT_SANDBOX_SESSION_ID}"' in script
     assert 'CODEX_GATEWAY_URL="${CODEX_GATEWAY_URL}?session_id=${AGENT_SANDBOX_SESSION_ID}"' in script
     assert "append_shell_setup ~/.profile" in script
     assert "append_shell_setup ~/.bashrc" in script

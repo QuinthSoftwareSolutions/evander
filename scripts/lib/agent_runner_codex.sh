@@ -8,6 +8,12 @@ agent_runner_codex_resume_last() {
   codex exec resume --last "$@"
 }
 
+agent_runner_codex_resume_thread() {
+  local thread_id="$1"
+  shift
+  codex exec resume "${thread_id}" "$@"
+}
+
 agent_runner_codex_binary_name() {
   printf 'codex\n'
 }

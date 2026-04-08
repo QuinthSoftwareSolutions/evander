@@ -27,10 +27,75 @@ def filter_payload_matches(match_value: Any, payload: Any) -> bool:
     return payload == match_value
 
 
+def filter_when_matches(predicate: Any) -> bool:
+    if not isinstance(predicate, Mapping):
+        raise GateRuntimeError("gate:filter when must resolve to a JSON object")
+
+    if "all" in predicate:
+        values = predicate["all"]
+        if not isinstance(values, list) or not values:
+            raise GateRuntimeError("gate:filter when.all must resolve to a non-empty array")
+        return all(filter_when_matches(item) for item in values)
+
+    if "any" in predicate:
+        values = predicate["any"]
+        if not isinstance(values, list) or not values:
+            raise GateRuntimeError("gate:filter when.any must resolve to a non-empty array")
+        return any(filter_when_matches(item) for item in values)
+
+    if "not" in predicate:
+        return not filter_when_matches(predicate["not"])
+
+    if "left" not in predicate:
+        raise GateRuntimeError("gate:filter when predicate must define left")
+    left = predicate["left"]
+    if "equals" in predicate:
+        return left == predicate["equals"]
+    if "not_equals" in predicate:
+        return left != predicate["not_equals"]
+    if "is_null" in predicate:
+        if predicate["is_null"] is not True:
+            raise GateRuntimeError("gate:filter when.is_null must resolve to true")
+        return left is None
+    if "is_not_null" in predicate:
+        if predicate["is_not_null"] is not True:
+            raise GateRuntimeError("gate:filter when.is_not_null must resolve to true")
+        return left is not None
+    if "in" in predicate:
+        return left in _require_membership_container(predicate["in"], operator_name="in")
+    if "not_in" in predicate:
+        return left not in _require_membership_container(predicate["not_in"], operator_name="not_in")
+    if "starts_with" in predicate:
+        return _require_string_operand(left, operator_name="starts_with").startswith(
+            _require_string_operand(predicate["starts_with"], operator_name="starts_with")
+        )
+    if "ends_with" in predicate:
+        return _require_string_operand(left, operator_name="ends_with").endswith(
+            _require_string_operand(predicate["ends_with"], operator_name="ends_with")
+        )
+    if "contains" in predicate:
+        return _require_string_operand(predicate["contains"], operator_name="contains") in _require_string_operand(
+            left, operator_name="contains"
+        )
+    raise GateRuntimeError("gate:filter when predicate must define a supported comparison operator")
+
+
 def require_object_payload(value: Any, *, gate_type: str) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         raise GateRuntimeError(f"{gate_type} must resolve to an object payload")
     return dict(value)
+
+
+def _require_membership_container(value: Any, *, operator_name: str) -> list[Any] | tuple[Any, ...] | set[Any]:
+    if isinstance(value, (list, tuple, set)):
+        return value
+    raise GateRuntimeError(f"gate:filter when.{operator_name} must resolve to an array")
+
+
+def _require_string_operand(value: Any, *, operator_name: str) -> str:
+    if isinstance(value, str):
+        return value
+    raise GateRuntimeError(f"gate:filter when.{operator_name} requires string operands")
 
 
 def merged_payload_from_sources(

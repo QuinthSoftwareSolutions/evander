@@ -42,7 +42,7 @@ def test_main_uses_repo_local_runtime_dir_by_default(monkeypatch) -> None:
         admin_app.main()
 
     assert exc.value.code == 0
-    assert captured["runtime_dir"] == Path("runtime")
+    assert captured["runtime_dir"] == Path(admin_app.__file__).resolve().parents[2] / "runtime"
 
 
 def test_main_accepts_runtime_dir_override(monkeypatch, tmp_path: Path) -> None:

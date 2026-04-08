@@ -4,15 +4,17 @@ __pycache__/
 runtime/
 *.pyc
 *.egg-info/
+.codex
 git-remotes/
 config/nuget-relay.env
 config/host-heartbeat.env
 config/ado-worker/config.json
 config/host-heartbeat/config.json
 config/trigger-orchestrator/layout.json
-config/trigger-orchestrator/config.json
+node_modules
 secrets.env
 secrets (Copy).env
 tasks/
 frontend/workflow-editor/node_modules/
 frontend/workflow-editor/tsconfig.tsbuildinfo
+**/dist/*

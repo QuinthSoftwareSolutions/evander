@@ -201,7 +201,7 @@ Execution model:
 5. `gate:merge` nodes behave like a Reactive Extensions `merge`: each inbound event is forwarded
    independently as it arrives, while the gate records the latest payload seen from every upstream
    source for debugging and conflict inspection.
-6. Effects consume the post-gate payload and still resolve `$(output_name)` bindings against the
+6. Effects consume the post-gate payload and still resolve `${{node.output_name}}` bindings against the
    upstream event payload.
 7. On success, the effect publishes a completion event whose `trigger_id` is the effect id so
    downstream edges can continue the chain.

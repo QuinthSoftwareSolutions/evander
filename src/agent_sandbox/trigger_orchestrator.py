@@ -5,6 +5,7 @@ import logging
 import os
 import random
 import time
+from uuid import uuid4
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -14,7 +15,7 @@ from .config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
 from .admin_service import AdminService
 from .provider_config import ProviderConfigResolver
 from .runtime import RuntimeContext, build_runtime
-from .events.models import TriggerDefinitionDiscriminated
+from .events.models import AgentRunCompletedTriggerDefinition, TriggerDefinitionDiscriminated, validate_output_mapping_keys
 from .triggers.queue import TriggerEventQueue
 from .triggers.registry import TriggerProviderFactory
 from .host_heartbeat_worker import _single_instance_lock
@@ -31,6 +32,8 @@ class TriggerOrchestratorCycleResult:
 
 
 class TriggerOrchestratorWorker:
+    _AWAIT_AGENT_COMPLETION_TRIGGER_ID = "__await-agent-completion__"
+
     def __init__(
         self,
         *,
@@ -82,12 +85,13 @@ class TriggerOrchestratorWorker:
             return self.run_once()
 
     def run_once(self) -> TriggerOrchestratorCycleResult:
-        providers = self._load_configured_providers()
+        configured_triggers = self._configured_triggers()
+        providers = self._load_configured_providers(configured_triggers)
         events_discovered = 0
         events_published = 0
         cursor_payload = _load_cursor_payload(self.worker_config.event_queue_cursor_store_path)
 
-        for trigger in self.worker_config.triggers:
+        for trigger in configured_triggers:
             provider = providers.get(trigger.id)
             if provider is None:
                 continue
@@ -104,10 +108,33 @@ class TriggerOrchestratorWorker:
             discovered_for_trigger = len(events)
             events_discovered += discovered_for_trigger
             for event in events:
+                trace_id = _normalize_trace_id(event.trace_id)
+                event = event.model_copy(update={"trace_id": trace_id})
+                try:
+                    validate_output_mapping_keys(
+                        event.payload,
+                        context=f"{trigger.type} {trigger.id} runtime outputs",
+                    )
+                except ValueError:
+                    logger.exception(
+                        "Trigger event rejected trigger_id=%s trigger_type=%s event_id=%s trace_id=%s",
+                        trigger.id,
+                        trigger.type,
+                        event.event_id,
+                        trace_id,
+                    )
+                    continue
                 already_queued = self.event_queue.contains(event.event_id)
                 record = self.event_queue.publish(event)
                 if not already_queued and record.event_id == event.event_id:
                     events_published += 1
+                    logger.debug(
+                        "Trigger event published trigger_id=%s trigger_type=%s event_id=%s trace_id=%s",
+                        trigger.id,
+                        trigger.type,
+                        event.event_id,
+                        trace_id,
+                    )
 
             self._update_cursor_state(
                 cursor_payload,
@@ -122,15 +149,32 @@ class TriggerOrchestratorWorker:
             jitter_seconds=self.worker_config.jitter_seconds,
         )
         return TriggerOrchestratorCycleResult(
-            configured_triggers=len(self.worker_config.triggers),
+            configured_triggers=len(configured_triggers),
             events_discovered=events_discovered,
             events_published=events_published,
             next_sleep_seconds=next_sleep_seconds,
         )
 
-    def _load_configured_providers(self) -> dict[str, Any]:
+    def _configured_triggers(self) -> list[TriggerDefinitionDiscriminated]:
+        triggers = list(self.worker_config.triggers)
+        has_await_agent = any(getattr(gate, "type", "") == "gate:await-agent" for gate in self.worker_config.gates)
+        has_explicit_completion_trigger = any(
+            getattr(trigger, "type", "") == "trigger:agent:run:completed" for trigger in triggers
+        )
+        if has_await_agent and not has_explicit_completion_trigger:
+            triggers.append(
+                AgentRunCompletedTriggerDefinition(
+                    id=self._AWAIT_AGENT_COMPLETION_TRIGGER_ID,
+                    display_name="Await agent completion",
+                    type="trigger:agent:run:completed",
+                    vm_user="agent",
+                )
+            )
+        return triggers
+
+    def _load_configured_providers(self, triggers: list[TriggerDefinitionDiscriminated]) -> dict[str, Any]:
         providers: dict[str, Any] = {}
-        for trigger in self.worker_config.triggers:
+        for trigger in triggers:
             try:
                 providers[trigger.id] = self.provider_factory.build(trigger)
             except Exception:
@@ -167,6 +211,13 @@ class TriggerOrchestratorWorker:
 
 def _worker_global_config_path(project_dir: Path) -> Path:
     return project_dir / "config" / "trigger-orchestrator" / "config.json"
+
+
+def _normalize_trace_id(value: str | None) -> str:
+    if value is None:
+        return str(uuid4())
+    normalized = value.strip()
+    return normalized or str(uuid4())
 
 
 def _load_trigger_orchestrator_worker_global_config(

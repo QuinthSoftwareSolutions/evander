@@ -78,7 +78,7 @@ Troubleshooting checklist:
    - Confirm pending source events exist in `trigger-orchestrator-events.json`.
 2. **Bindings fail with missing output references**
    - Check upstream node `outputs` declarations and the actual upstream payload keys.
-   - Exact `$(name)` and embedded `"...$(name)..."` both require the referenced key to exist.
+   - Exact `${{node.output_name}}` and embedded `"...${{node.output_name}}..."` both require the referenced key to exist.
 3. **Merge gate output is not being emitted**
    - Confirm the merge gate has at least one inbound edge and that the configured edges point at
      the upstream node ids you expect to observe.

@@ -1,5 +1,6 @@
 from .agent_prompt import AgentPromptEffectProvider
 from .base import EffectProvider, EffectProviderBase, EffectRuntimeContext
+from .issue_update_state import IssueUpdateStateEffectProvider
 from .pr_create import PrCreateEffectProvider
 from .vm_copy_files import VmCopyFilesEffectProvider
 from .vm_create import VmCreateEffectProvider
@@ -12,6 +13,7 @@ __all__ = [
     "EffectProvider",
     "EffectProviderBase",
     "EffectRuntimeContext",
+    "IssueUpdateStateEffectProvider",
     "PrCreateEffectProvider",
     "VmCopyFilesEffectProvider",
     "VmCreateEffectProvider",

@@ -4,6 +4,8 @@ from collections import defaultdict, deque
 from collections.abc import Iterable, Mapping
 from typing import Any
 
+from .events.models import effective_node_output_schema
+
 
 class WorkflowGraphError(ValueError):
     """Raised when workflow graph helpers encounter invalid input."""
@@ -177,23 +179,7 @@ def _node_id(node: Any) -> str:
 
 
 def _node_outputs(node: Any) -> Mapping[str, Any]:
-    if isinstance(node, Mapping):
-        for key in _NODE_OUTPUTS_KEYS:
-            value = node.get(key)
-            if value is None:
-                return {}
-            if isinstance(value, Mapping):
-                return value
-            raise WorkflowGraphError(f"workflow node outputs must be a mapping: {node!r}")
-        return {}
-    for key in _NODE_OUTPUTS_KEYS:
-        value = getattr(node, key, None)
-        if value is None:
-            return {}
-        if isinstance(value, Mapping):
-            return value
-        raise WorkflowGraphError(f"workflow node outputs must be a mapping: {node!r}")
-    return {}
+    return effective_node_output_schema(node)
 
 
 def _edge_endpoint(edge: Any, keys: tuple[str, ...]) -> str:

@@ -69,6 +69,9 @@ write_state() {
     printf "repo=%s\n" "${AGENT_STATE_REPO_NAME}"
     printf "pid=%s\n" "$$"
     printf "updated_at=%s\n" "${now}"
+    if [[ -n "${AGENT_DISPATCH_ID:-}" ]]; then
+      printf "dispatch_id=%s\n" "${AGENT_DISPATCH_ID}"
+    fi
     if [[ -n "${exit_code}" ]]; then
       printf "exit_code=%s\n" "${exit_code}"
     fi

@@ -265,6 +265,16 @@ case "${{target}}" in
 esac
 """,
     )
+    _write_executable(
+        fake_bin / "sudo",
+        """#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "-n" ]]; then
+  shift
+fi
+exec "$@"
+""",
+    )
 
     env = os.environ.copy()
     env["PATH"] = f"{fake_bin}:{env['PATH']}"

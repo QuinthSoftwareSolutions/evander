@@ -26,7 +26,7 @@ from .directory_config import (
     PrTemplateDirectoryConfig,
 )
 from .models import ApprovalStatus, ToolName
-ADMIN_APP_DEFAULT_RUNTIME_DIR = Path("runtime")
+ADMIN_APP_DEFAULT_RUNTIME_DIR = Path(__file__).resolve().parents[2] / "runtime"
 _ACTIVE_ISSUE_FILTER_LABEL = "Active"
 _ALL_ISSUE_FILTER_LABEL = "All"
 _INACTIVE_ISSUE_STATES = frozenset({"Completed", "Closed"})
@@ -599,6 +599,9 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
     ),
     "create_prs_as_draft": (
         "When enabled, new Azure DevOps pull requests opened for this directory are created as drafts."
+    ),
+    "ado_setup_vms": (
+        "Enable or disable VM setup in the legacy ADO worker for this directory while still allowing Azure issue ingestion."
     ),
     "ado_bootstrap_dotnet": (
         "Enable or disable dotnet/bootstrap steps in setup_issue_vm.sh for ADO worker-created VMs."

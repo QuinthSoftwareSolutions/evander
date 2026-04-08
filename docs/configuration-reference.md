@@ -261,6 +261,7 @@ Type-specific keys:
 | `effect:agent:prompt` | `prompt` | `target`, `session_id`, `vm_name`, `vm_user`, `resume_thread_id`, `output_mode`, `outputs` |
 | `effect:vm:exec` | `command` | `target`, `session_id`, `vm_name`, `vm_user`, `working_directory`, `environment`, `stdin`, `timeout_seconds`, `check`, `outputs` |
 | `effect:vm:copy-files` | `files` | `target`, `session_id`, `vm_name`, `vm_user`, `outputs` |
+| `effect:issue:update-state` | `issue_id`, `state` | `sync_proxy_cache`, `outputs` |
 | `effect:pr:create` | `host_repo_path` | `local_branch`, `origin_branch`, `provider`, `base_branch`, `session_id`, `work_item_id`, `title`, `body`, `body_file`, `draft`, `fill`, `outputs` |
 
 Effect schema envelope example:
@@ -270,7 +271,7 @@ Effect schema envelope example:
   "id": "effect-provision",
   "display_name": "Provision VM for ticket",
   "type": "effect:vm:create",
-  "vm_name": "issue-$(ticket_number)",
+  "vm_name": "issue-${{trigger.ticket_number}}",
   "outputs": {
     "session_id": { "type": "string" }
   }
@@ -297,7 +298,7 @@ Filter graph:
       "display_name": "High priority only",
       "type": "gate:filter",
       "gate_type": "filter",
-      "predicate": "$(priority) >= 2"
+      "predicate": "${{trigger.priority}} >= 2"
     }
   ],
   "effects": [
@@ -305,7 +306,7 @@ Filter graph:
       "id": "effect-provision",
       "display_name": "Create VM",
       "type": "effect:vm:create",
-      "vm_name": "issue-$(ticket_number)"
+      "vm_name": "issue-${{trigger.ticket_number}}"
     }
   ],
   "edges": [
@@ -326,8 +327,8 @@ Map graph:
       "type": "gate:map",
       "gate_type": "map",
       "mapping": {
-        "session_id": "$(ticket_session_id)",
-        "ticket_number": "$(ticket_id)"
+        "session_id": "${{trigger.ticket_session_id}}",
+        "ticket_number": "${{trigger.ticket_id}}"
       }
     }
   ],
@@ -372,7 +373,7 @@ Mixed graph:
       "display_name": "Filter inbox events",
       "type": "gate:filter",
       "gate_type": "filter",
-      "predicate": "$(folder) == \"inbox\""
+      "predicate": "${{trigger.folder}} == \"inbox\""
     },
     {
       "id": "map-inbox",
@@ -380,8 +381,8 @@ Mixed graph:
       "type": "gate:map",
       "gate_type": "map",
       "mapping": {
-        "session_id": "$(thread_session_id)",
-        "ticket_number": "$(issue_number)"
+        "session_id": "${{trigger.thread_session_id}}",
+        "ticket_number": "${{trigger.issue_number}}"
       }
     },
     {
@@ -404,10 +405,10 @@ Mixed graph:
 }
 ```
 
-### Binding/interpolation examples (`$(output_name)`)
+### Binding/interpolation examples (`${{node.output_name}}`)
 
-- Exact output reference (type-preserving): `"session_id": "$(session_id)"`
-- Embedded string interpolation (stringified): `"prompt": "Continue $(ticket_number) in $(session_id)"`
+- Exact output reference (type-preserving): `"session_id": "${{node.session_id}}"`
+- Embedded string interpolation (stringified): `"prompt": "Continue ${{trigger.ticket_number}} in ${{node.session_id}}"`
 
 ### Wake scheduling examples
 

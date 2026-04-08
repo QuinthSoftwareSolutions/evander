@@ -279,6 +279,12 @@ git_with_push_auth() {
   fi
 }
 
+remote_url_or_empty() {
+  local repo_path="$1"
+  local remote_name="$2"
+  git -C "${repo_path}" remote get-url "${remote_name}" 2>/dev/null || true
+}
+
 refresh_remote_branch_tracking_ref() {
   local repo_path="$1"
   local remote_name="$2"
@@ -612,6 +618,12 @@ if [[ "${PUSH_PROVIDER}" == "azure_devops" ]]; then
     HTTPS_ORIGIN_URL="$(azure_https_origin_url "${ORIGIN_URL}")"
     if [[ -n "${HTTPS_ORIGIN_URL}" ]]; then
       PUSH_REMOTE_URL="${HTTPS_ORIGIN_URL}"
+      if [[ "${PR_REMOTE_NAME}" == "origin" ]]; then
+        EXISTING_PR_REMOTE_URL="$(remote_url_or_empty "${HOST_REPO_PATH}" "agent-sandbox-pr-origin")"
+        if [[ "${EXISTING_PR_REMOTE_URL}" == "${HTTPS_ORIGIN_URL}" ]]; then
+          PR_REMOTE_NAME="agent-sandbox-pr-origin"
+        fi
+      fi
     fi
     AZURE_AUTH_HEADER="Authorization: Basic $(printf ':%s' "${AZURE_PAT_ENV_VALUE}" | base64 | tr -d '\n')"
   fi

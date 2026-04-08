@@ -23,7 +23,9 @@ from .events.models import (
     EdgeDefinition,
     EffectDefinitionDiscriminated,
     GateDefinitionDiscriminated,
+    QueryDefinitionDiscriminated,
     TriggerDefinitionDiscriminated,
+    effective_node_output_schema,
 )
 from .workflow_graph import build_inbound_edge_index, index_declared_outputs, merge_declared_output_intersection
 
@@ -451,22 +453,28 @@ class TriggerOrchestratorWorkerGlobalConfig(BaseModel):
     gates: list[GateDefinitionDiscriminated] = Field(default_factory=list)
     edges: list[EdgeDefinition] = Field(default_factory=list)
     effects: list[EffectDefinitionDiscriminated] = Field(default_factory=list)
+    queries: list[QueryDefinitionDiscriminated] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_unique_graph_node_ids(self) -> TriggerOrchestratorWorkerGlobalConfig:
-        node_ids = [node.id for node in self.triggers] + [node.id for node in self.gates] + [
-            node.id for node in self.effects
-        ]
+        node_ids = (
+            [node.id for node in self.triggers]
+            + [node.id for node in self.gates]
+            + [node.id for node in self.effects]
+            + [node.id for node in self.queries]
+        )
         duplicates = sorted(node_id for node_id, count in Counter(node_ids).items() if count > 1)
         if duplicates:
             duplicate_list = ", ".join(duplicates)
-            raise ValueError(f"Node IDs must be globally unique across triggers, gates, and effects: {duplicate_list}")
+            raise ValueError(
+                f"Node IDs must be globally unique across triggers, gates, effects, and queries: {duplicate_list}"
+            )
         return self
 
     @model_validator(mode="after")
     def validate_graph_edges(self) -> TriggerOrchestratorWorkerGlobalConfig:
-        nodes_by_id = {node.id: node for node in (*self.triggers, *self.gates, *self.effects)}
-        node_outputs = index_declared_outputs(self.triggers, self.gates, self.effects)
+        nodes_by_id = {node.id: node for node in (*self.triggers, *self.gates, *self.effects, *self.queries)}
+        node_outputs = index_declared_outputs(self.triggers, self.gates, self.effects, self.queries)
         inbound_edges = build_inbound_edge_index(self.edges)
 
         missing_endpoints: list[str] = []
@@ -504,10 +512,16 @@ class TriggerOrchestratorWorkerGlobalConfig(BaseModel):
                 inbound_errors.append(f"gate:map {gate.id} must have exactly 1 inbound edge, found {inbound_count}")
             elif gate.type == "gate:merge" and inbound_count < 1:
                 inbound_errors.append(f"gate:merge {gate.id} must have at least 1 inbound edge, found {inbound_count}")
+            elif gate.type == "gate:await-agent" and inbound_count != 1:
+                inbound_errors.append(f"gate:await-agent {gate.id} must have exactly 1 inbound edge, found {inbound_count}")
         for effect in self.effects:
             inbound_count = len(inbound_edges.get(effect.id, ()))
             if inbound_count != 1:
                 inbound_errors.append(f"effect {effect.id} must have exactly 1 inbound edge, found {inbound_count}")
+        for query in self.queries:
+            inbound_count = len(inbound_edges.get(query.id, ()))
+            if inbound_count != 1:
+                inbound_errors.append(f"query {query.id} must have exactly 1 inbound edge, found {inbound_count}")
         if inbound_errors:
             raise ValueError("; ".join(inbound_errors))
 
@@ -515,12 +529,37 @@ class TriggerOrchestratorWorkerGlobalConfig(BaseModel):
             upstream_ids = [edge.source_id for edge in inbound_edges.get(gate.id, ())]
             if gate.type == "gate:filter":
                 upstream_outputs = node_outputs.get(upstream_ids[0], {})
-                if gate.outputs != upstream_outputs:
+                if gate.outputs is None:
+                    gate.outputs = upstream_outputs
+                actual_outputs = dict(gate.outputs or {})
+                if not actual_outputs:
+                    gate.outputs = upstream_outputs
+                    actual_outputs = upstream_outputs
+                if actual_outputs != upstream_outputs:
                     raise ValueError(f"gate:filter {gate.id} outputs must match its single upstream outputs")
+            elif gate.type == "gate:await-agent":
+                upstream_node = nodes_by_id[upstream_ids[0]]
+                if upstream_node.type != "effect:agent:prompt":
+                    raise ValueError(f"gate:await-agent {gate.id} inbound edge must come from effect:agent:prompt")
+                completion_outputs = effective_node_output_schema({"type": "trigger:agent:run:completed"})
+                if gate.outputs is None:
+                    gate.outputs = completion_outputs
+                actual_outputs = dict(gate.outputs or {})
+                if not actual_outputs:
+                    gate.outputs = completion_outputs
+                    actual_outputs = completion_outputs
+                if actual_outputs != completion_outputs:
+                    raise ValueError(f"gate:await-agent {gate.id} outputs must match agent completion outputs")
             elif gate.type == "gate:merge":
                 upstream_outputs = [node_outputs.get(upstream_id, {}) for upstream_id in upstream_ids]
                 expected_outputs = merge_declared_output_intersection(*upstream_outputs)
-                if gate.outputs != expected_outputs:
+                if gate.outputs is None:
+                    gate.outputs = expected_outputs
+                actual_outputs = dict(gate.outputs or {})
+                if not actual_outputs:
+                    gate.outputs = expected_outputs
+                    actual_outputs = expected_outputs
+                if actual_outputs != expected_outputs:
                     raise ValueError(
                         f"gate:merge {gate.id} outputs must equal the compatible intersection of upstream outputs"
                     )

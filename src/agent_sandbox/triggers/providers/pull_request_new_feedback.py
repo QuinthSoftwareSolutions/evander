@@ -16,11 +16,15 @@ from agent_sandbox.triggers.providers.base import TriggerProviderBase
 class PullRequestNewFeedbackTriggerProvider(TriggerProviderBase):
     def poll(self) -> list[TriggerEvent]:
         trigger = self._trigger()
+        if trigger.provider == "ado":
+            return []
         cursor_store = self._cursor_store()
         state = cursor_store.get(trigger.id)
         state_cursors = state.get("stream_cursors", {})
         if not isinstance(state_cursors, dict):
             state_cursors = {}
+        previous_cursors = dict(state_cursors)
+        pr_sessions = self._load_pr_sessions()
 
         streams = self._load_streams(trigger.provider)
         discovered: list[tuple[dict[str, str], PrFeedbackItem]] = []
@@ -37,7 +41,7 @@ class PullRequestNewFeedbackTriggerProvider(TriggerProviderBase):
                         continue
                     stream = {"provider": item.provider, "repo": item.repo, "pr_id": item.pr_id}
                     key = _stream_key(item.provider, item.repo, item.pr_id)
-                    cursor = _parse_dt(state_cursors.get(key))
+                    cursor = _parse_dt(previous_cursors.get(key))
                     if cursor is not None and item.created_at <= cursor:
                         continue
                     discovered.append((stream, item))
@@ -66,7 +70,7 @@ class PullRequestNewFeedbackTriggerProvider(TriggerProviderBase):
                             )
                         )
                     if result.next_cursor:
-                        state_cursors[stream_key] = result.next_cursor
+                        state_cursors[stream_key] = _latest_cursor(state_cursors.get(stream_key), result.next_cursor)
 
         discovered.sort(key=lambda item: item[1].created_at)
 
@@ -74,7 +78,7 @@ class PullRequestNewFeedbackTriggerProvider(TriggerProviderBase):
         for stream, feedback in discovered:
             provider_name = stream["provider"]
             stream_key = _stream_key(provider_name, stream["repo"], stream["pr_id"])
-            previous = _parse_dt(state_cursors.get(stream_key))
+            previous = _parse_dt(previous_cursors.get(stream_key))
             if previous is not None and feedback.created_at <= previous:
                 continue
             occurred_at = feedback.created_at.astimezone(UTC)
@@ -89,10 +93,18 @@ class PullRequestNewFeedbackTriggerProvider(TriggerProviderBase):
                     payload={
                         "pr": stream,
                         "feedback": feedback.model_dump(mode="json"),
-                    },
+                    }
+                    | (
+                        {"session_id": pr_sessions.get((provider_name, stream["repo"], stream["pr_id"]))}
+                        if pr_sessions.get((provider_name, stream["repo"], stream["pr_id"]))
+                        else {}
+                    ),
                 )
             )
-            state_cursors[stream_key] = occurred_at.isoformat().replace("+00:00", "Z")
+            state_cursors[stream_key] = _latest_cursor(
+                state_cursors.get(stream_key),
+                occurred_at.isoformat().replace("+00:00", "Z"),
+            )
 
         cursor_store.put(trigger.id, {"stream_cursors": state_cursors})
         return events
@@ -111,6 +123,7 @@ class PullRequestNewFeedbackTriggerProvider(TriggerProviderBase):
         return self.trigger_definition
 
     def _build_adapter(self, provider: str):
+        trigger = self._trigger()
         if provider == "github":
             token = self.runtime_context.env.get(self.runtime_context.resolved_config.github_token_env, "").strip()
             return GitHubFeedbackAdapter(token=token)
@@ -118,8 +131,8 @@ class PullRequestNewFeedbackTriggerProvider(TriggerProviderBase):
             pat_env_name = self.runtime_context.resolved_config.azure_devops_pr_pat_env
             pat = self.runtime_context.env.get(pat_env_name, "").strip()
             return AzureDevOpsFeedbackAdapter(
-                organization_url=self.runtime_context.resolved_config.azure_devops_organization_url,
-                project=self.runtime_context.resolved_config.azure_devops_project,
+                organization_url=trigger.organization_url or self.runtime_context.resolved_config.azure_devops_organization_url,
+                project=trigger.project or self.runtime_context.resolved_config.azure_devops_project,
                 pat=pat,
                 pat_env_name=pat_env_name,
             )
@@ -153,6 +166,35 @@ class PullRequestNewFeedbackTriggerProvider(TriggerProviderBase):
             streams[key] = {"provider": row_provider, "repo": repo, "pr_id": pr_id}
         return list(streams.values())
 
+    def _load_pr_sessions(self) -> dict[tuple[str, str, str], str]:
+        path = self.runtime_context.resolved_config.pr_map_path
+        if not path.exists():
+            return {}
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        entries = payload.get("entries")
+        if not isinstance(entries, dict):
+            return {}
+
+        sessions: dict[tuple[str, str, str], str] = {}
+        directory_scope = str(self.runtime_context.metadata.get("directory_path") or "root")
+        for raw in entries.values():
+            if not isinstance(raw, dict):
+                continue
+            provider = str(raw.get("provider", "")).strip()
+            repo = str(raw.get("repo", "")).strip()
+            pr_id = str(raw.get("pr_id", "")).strip()
+            session_id = str(raw.get("session_id", "")).strip()
+            directory_path = str(raw.get("directory_path", "root")).strip() or "root"
+            if not provider or not repo or not pr_id or not session_id:
+                continue
+            if directory_scope and not (directory_path == directory_scope or directory_path.startswith(f"{directory_scope}/")):
+                continue
+            sessions[(provider, repo, pr_id)] = session_id
+        return sessions
+
     @staticmethod
     def _provider_name_for_trigger(provider: str) -> str:
         if provider == "ado":
@@ -170,3 +212,16 @@ def _parse_dt(value: object) -> datetime | None:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=UTC)
     return parsed.astimezone(UTC)
+
+
+def _latest_cursor(*values: object) -> str | None:
+    latest: datetime | None = None
+    latest_raw: str | None = None
+    for value in values:
+        parsed = _parse_dt(value)
+        if parsed is None:
+            continue
+        if latest is None or parsed > latest:
+            latest = parsed
+            latest_raw = str(value)
+    return latest_raw

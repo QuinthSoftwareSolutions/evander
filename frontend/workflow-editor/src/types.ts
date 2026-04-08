@@ -1,4 +1,4 @@
-export type WorkflowNodeKind = "trigger" | "gate" | "effect";
+export type WorkflowNodeKind = "trigger" | "gate" | "effect" | "query";
 
 export type WorkflowNodeConfig = {
   id: string;
@@ -27,6 +27,7 @@ export type WorkflowConfig = {
   triggers: WorkflowNodeConfig[];
   gates: WorkflowNodeConfig[];
   effects: WorkflowNodeConfig[];
+  queries: WorkflowNodeConfig[];
   edges: WorkflowEdge[];
   [key: string]: unknown;
 };
@@ -47,4 +48,65 @@ export type WorkflowEditorDocument = {
 export type WorkflowEditorValidation = {
   config: WorkflowConfig;
   layout: WorkflowLayout;
+};
+
+export type WorkflowEditorFieldOption = {
+  value: string;
+  label: string;
+};
+
+export type WorkflowEditorFieldDefinition = {
+  key: string;
+  label: string;
+  kind: "string" | "number" | "boolean" | "enum" | "string_list" | "json" | "object_list";
+  required: boolean;
+  bindable: boolean;
+  read_only: boolean;
+  multiline: boolean;
+  description?: string | null;
+  placeholder?: string | null;
+  options: WorkflowEditorFieldOption[];
+  item_fields: WorkflowEditorFieldDefinition[];
+};
+
+export type WorkflowEditorNodeCatalogEntry = {
+  kind: WorkflowNodeKind;
+  type: string;
+  label: string;
+  fields: WorkflowEditorFieldDefinition[];
+};
+
+export type WorkflowEditorCatalog = {
+  worker_id: string;
+  nodes: WorkflowEditorNodeCatalogEntry[];
+};
+
+export type WorkflowRunNodeActivity = {
+  node_id: string;
+  status: string;
+  count: number;
+  source?: string | null;
+  started_at?: string | null;
+  finished_at?: string | null;
+  dispatch_id?: string | null;
+};
+
+export type WorkflowRunSummary = {
+  event_id: string;
+  trace_id?: string | null;
+  source_node_id?: string | null;
+  source_trigger_type?: string | null;
+  delivery_state?: string | null;
+  occurred_at?: string | null;
+  latest_activity_at?: string | null;
+  active_nodes: WorkflowRunNodeActivity[];
+};
+
+export type WorkflowNodeActivityCounts = Record<string, number>;
+
+export type WorkflowRunSnapshot = {
+  worker_id: string;
+  generated_at: string;
+  runs: WorkflowRunSummary[];
+  node_activity: Record<string, WorkflowNodeActivityCounts>;
 };

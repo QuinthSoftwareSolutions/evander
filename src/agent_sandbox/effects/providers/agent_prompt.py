@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from typing import Any
+from uuid import uuid4
 
 from agent_sandbox.events.models import AgentPromptEffectDefinition
 
@@ -18,6 +19,7 @@ class AgentPromptEffectProvider(EffectProviderBase):
             "session_id": effect.session_id,
             "vm_name": effect.vm_name,
             "prompt": effect.prompt,
+            "model": effect.model,
             "vm_user": effect.vm_user,
             "resume_thread_id": effect.resume_thread_id,
             "output_mode": effect.output_mode,
@@ -28,15 +30,26 @@ class AgentPromptEffectProvider(EffectProviderBase):
         prompt = self._require_string(payload.get("prompt"), field_name="prompt")
         target = self._resolve_target(payload)
         vm_user = self._normalize_optional_string(payload.get("vm_user")) or "agent"
+        model = self._normalize_optional_string(payload.get("model"))
         output_mode = self._normalize_optional_string(payload.get("output_mode")) or "immediate"
         if output_mode not in {"immediate", "on_completion"}:
             raise ValueError(f"Unsupported output_mode: {output_mode}")
 
-        result = context.admin_service.resume_agent(target=target, prompt=prompt, vm_user=vm_user)
-        thread_id = self._normalize_optional_string(payload.get("resume_thread_id"))
+        dispatch_id = self._make_dispatch_id(effect_id=effect.id)
+        resume_thread_id = self._normalize_optional_string(payload.get("resume_thread_id"))
+        result = context.admin_service.resume_agent(
+            target=target,
+            prompt=prompt,
+            model=model,
+            vm_user=vm_user,
+            dispatch_id=dispatch_id,
+            resume_thread_id=resume_thread_id,
+        )
+        thread_id = self._normalize_optional_string(getattr(result, "thread_id", None))
         if not thread_id:
-            thread_id = self._normalize_optional_string(payload.get("session_id")) or target
+            raise RuntimeError("effect:agent:prompt did not receive a thread_id from resume_agent")
         return {
+            "dispatch_id": dispatch_id,
             "thread_id": thread_id,
             "success": bool(result.success),
             "output_mode": output_mode,
@@ -77,3 +90,7 @@ class AgentPromptEffectProvider(EffectProviderBase):
         if not text:
             raise ValueError(f"{field_name} is required")
         return text
+
+    @staticmethod
+    def _make_dispatch_id(*, effect_id: str) -> str:
+        return f"dispatch-{effect_id}-{uuid4().hex[:12]}"

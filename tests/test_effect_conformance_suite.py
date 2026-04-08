@@ -79,7 +79,7 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
             "id": "effect-vm",
             "display_name": "Create VM",
             "type": "effect:vm:create",
-            "vm_name": "issue-$(ticket_number)",
+            "vm_name": "issue-${{trigger_1.ticket_number}}",
             "labels": {"workflow": "issue-worker"},
         }
     )
@@ -105,7 +105,7 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
             "id": "effect-prompt",
             "display_name": "Prompt",
             "type": "effect:agent:prompt",
-            "prompt": "Continue $(session_id)",
+            "prompt": "Continue ${{effect_1.session_id}}",
         }
     )
     vm_exec = adapter.validate_python(
@@ -131,6 +131,25 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
             ],
         }
     )
+    issue_state = adapter.validate_python(
+        {
+            "id": "effect-issue-state",
+            "display_name": "Update issue state",
+            "type": "effect:issue:update-state",
+            "issue_id": "14084",
+            "state": "In Progress",
+        }
+    )
+    promote = adapter.validate_python(
+        {
+            "id": "effect-promote",
+            "display_name": "Promote branch",
+            "type": "effect:git:promote-agent-branch",
+            "host_repo_path": "/repo",
+            "bare_repo_path": "/git-remotes/repo.git",
+            "agent_branch": "agents/session-1/topic",
+        }
+    )
     pr_create = adapter.validate_python(
         {
             "id": "effect-pr",
@@ -147,8 +166,10 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
     assert prompt.type == "effect:agent:prompt"
     assert vm_exec.type == "effect:vm:exec"
     assert vm_copy.type == "effect:vm:copy-files"
+    assert issue_state.type == "effect:issue:update-state"
+    assert promote.type == "effect:git:promote-agent-branch"
     assert pr_create.type == "effect:pr:create"
-    assert prompt.prompt == "Continue $(session_id)"
+    assert prompt.prompt == "Continue ${{effect_1.session_id}}"
 
     _record_result(
         report_collector,
@@ -236,15 +257,15 @@ def test_effect_binding_resolution_and_chained_output_propagation(tmp_path: Path
                     "id": "effect-1",
                     "display_name": "Provision",
                     "type": "effect:vm:create",
-                    "vm_name": "vm-$(ticket_number)",
+                    "vm_name": "vm-${{trigger-1.ticket_number}}",
                     "outputs": {"session_id": {"type": "string"}},
                 },
                 {
                     "id": "effect-2",
                     "display_name": "Prompt",
                     "type": "effect:agent:prompt",
-                    "session_id": "$(session_id)",
-                    "prompt": "Resume session $(session_id)",
+                    "session_id": "${{effect-1.session_id}}",
+                    "prompt": "Resume session ${{effect-1.session_id}}",
                 },
             ],
             "edges": [
@@ -371,7 +392,7 @@ def test_effect_regression_missing_upstream_output_reference_records_failed_exec
                         "id": "effect-1",
                         "display_name": "Bad binding",
                         "type": "effect:agent:prompt",
-                        "prompt": "missing $(session_id)",
+                        "prompt": "missing ${{trigger-1.session_id}}",
                     }
                 ],
                 "edges": [_edge("trigger-1", "effect-1")],

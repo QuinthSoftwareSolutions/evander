@@ -18,6 +18,7 @@ class ToolName(str, Enum):
     CREATE_LOCAL_ISSUE = "create_local_issue"
     LIST_ISSUES = "list_issues"
     GET_ISSUE = "get_issue"
+    SET_ISSUE_PLAN = "set_issue_plan"
     APPROVE_ISSUE = "approve_issue"
     COMMIT_ISSUE = "commit_issue"
     REJECT_ISSUE = "reject_issue"
@@ -175,6 +176,7 @@ class VmSummary(BaseModel):
     agent_state: str
     agent_repo_names: list[str] = Field(default_factory=list)
     last_state_update_at: datetime | None = None
+    dispatch_id: str | None = None
 
 
 class VmActionResult(BaseModel):
@@ -182,6 +184,10 @@ class VmActionResult(BaseModel):
     vm_name: str
     action: str
     message: str
+    thread_id: str | None = None
+    target_dir: str | None = None
+    guest_repo_name: str | None = None
+    remote_url: str | None = None
 
 
 class WorkerSummary(BaseModel):
