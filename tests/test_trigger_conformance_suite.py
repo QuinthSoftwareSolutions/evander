@@ -702,7 +702,7 @@ def test_conformance_pr_provider_modes_and_git_push_contract(
     class _PollResult:
         def __init__(self) -> None:
             self.feedback = []
-            self.next_cursor = "cursor-1"
+            self.next_cursor = "2026-04-08T05:33:41.433000Z"
 
     class _Adapter:
         def poll(self, **_kwargs):
@@ -752,6 +752,57 @@ def test_pr_feedback_trigger_ado_adapter_uses_trigger_org_and_project(tmp_path: 
     assert adapter.organization_url == "https://dev.azure.com/example-org"
     assert adapter.project == "Example Project"
     assert adapter.pat == "secret-pat"
+
+
+def test_pr_feedback_trigger_github_emits_new_feedback_before_advancing_cursor(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    provider = PullRequestNewFeedbackTriggerProvider()
+    provider.initialize(
+        _trigger_adapter().validate_python(
+            {
+                "id": "pr-gh",
+                "display_name": "PR GitHub",
+                "type": "trigger:pull-request:new-feedback",
+                "provider": "github",
+            }
+        ),
+        _build_runtime_context(runtime_dir, env={"GITHUB_TOKEN": "secret"}),
+    )
+
+    class _PollResult:
+        def __init__(self) -> None:
+            self.feedback = [
+                PrFeedbackItem(
+                    feedback_id="github:comment:1",
+                    provider="github",
+                    repo="org/repo",
+                    pr_id="11",
+                    author="reviewer",
+                    body="Needs changes",
+                    created_at=datetime(2026, 4, 8, 5, 33, 41, 433000, tzinfo=timezone.utc),
+                )
+            ]
+            self.next_cursor = "2026-04-08T05:33:41.433000Z"
+
+    class _Adapter:
+        def poll(self, **_kwargs):
+            return _PollResult()
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(provider, "_build_adapter", lambda _provider: _Adapter())
+    monkeypatch.setattr(
+        provider,
+        "_load_streams",
+        lambda _provider: [{"provider": "github", "repo": "org/repo", "pr_id": "11"}],
+    )
+    try:
+        events = provider.poll()
+    finally:
+        monkeypatch.undo()
+
+    assert len(events) == 1
+    assert events[0].payload["pr"] == {"provider": "github", "repo": "org/repo", "pr_id": "11"}
+    assert events[0].payload["feedback"]["feedback_id"] == "github:comment:1"
 
 
 def test_conformance_orchestrator_integration_locking_jitter_and_idempotency(

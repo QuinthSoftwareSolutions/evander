@@ -16,11 +16,14 @@ from agent_sandbox.triggers.providers.base import TriggerProviderBase
 class PullRequestNewFeedbackTriggerProvider(TriggerProviderBase):
     def poll(self) -> list[TriggerEvent]:
         trigger = self._trigger()
+        if trigger.provider == "ado":
+            return []
         cursor_store = self._cursor_store()
         state = cursor_store.get(trigger.id)
         state_cursors = state.get("stream_cursors", {})
         if not isinstance(state_cursors, dict):
             state_cursors = {}
+        previous_cursors = dict(state_cursors)
         pr_sessions = self._load_pr_sessions()
 
         streams = self._load_streams(trigger.provider)
@@ -38,7 +41,7 @@ class PullRequestNewFeedbackTriggerProvider(TriggerProviderBase):
                         continue
                     stream = {"provider": item.provider, "repo": item.repo, "pr_id": item.pr_id}
                     key = _stream_key(item.provider, item.repo, item.pr_id)
-                    cursor = _parse_dt(state_cursors.get(key))
+                    cursor = _parse_dt(previous_cursors.get(key))
                     if cursor is not None and item.created_at <= cursor:
                         continue
                     discovered.append((stream, item))
@@ -67,7 +70,7 @@ class PullRequestNewFeedbackTriggerProvider(TriggerProviderBase):
                             )
                         )
                     if result.next_cursor:
-                        state_cursors[stream_key] = result.next_cursor
+                        state_cursors[stream_key] = _latest_cursor(state_cursors.get(stream_key), result.next_cursor)
 
         discovered.sort(key=lambda item: item[1].created_at)
 
@@ -75,7 +78,7 @@ class PullRequestNewFeedbackTriggerProvider(TriggerProviderBase):
         for stream, feedback in discovered:
             provider_name = stream["provider"]
             stream_key = _stream_key(provider_name, stream["repo"], stream["pr_id"])
-            previous = _parse_dt(state_cursors.get(stream_key))
+            previous = _parse_dt(previous_cursors.get(stream_key))
             if previous is not None and feedback.created_at <= previous:
                 continue
             occurred_at = feedback.created_at.astimezone(UTC)
@@ -98,7 +101,10 @@ class PullRequestNewFeedbackTriggerProvider(TriggerProviderBase):
                     ),
                 )
             )
-            state_cursors[stream_key] = occurred_at.isoformat().replace("+00:00", "Z")
+            state_cursors[stream_key] = _latest_cursor(
+                state_cursors.get(stream_key),
+                occurred_at.isoformat().replace("+00:00", "Z"),
+            )
 
         cursor_store.put(trigger.id, {"stream_cursors": state_cursors})
         return events
@@ -206,3 +212,16 @@ def _parse_dt(value: object) -> datetime | None:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=UTC)
     return parsed.astimezone(UTC)
+
+
+def _latest_cursor(*values: object) -> str | None:
+    latest: datetime | None = None
+    latest_raw: str | None = None
+    for value in values:
+        parsed = _parse_dt(value)
+        if parsed is None:
+            continue
+        if latest is None or parsed > latest:
+            latest = parsed
+            latest_raw = str(value)
+    return latest_raw

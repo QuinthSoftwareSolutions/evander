@@ -261,6 +261,7 @@ Type-specific keys:
 | `effect:agent:prompt` | `prompt` | `target`, `session_id`, `vm_name`, `vm_user`, `resume_thread_id`, `output_mode`, `outputs` |
 | `effect:vm:exec` | `command` | `target`, `session_id`, `vm_name`, `vm_user`, `working_directory`, `environment`, `stdin`, `timeout_seconds`, `check`, `outputs` |
 | `effect:vm:copy-files` | `files` | `target`, `session_id`, `vm_name`, `vm_user`, `outputs` |
+| `effect:issue:update-state` | `issue_id`, `state` | `sync_proxy_cache`, `outputs` |
 | `effect:pr:create` | `host_repo_path` | `local_branch`, `origin_branch`, `provider`, `base_branch`, `session_id`, `work_item_id`, `title`, `body`, `body_file`, `draft`, `fill`, `outputs` |
 
 Effect schema envelope example:

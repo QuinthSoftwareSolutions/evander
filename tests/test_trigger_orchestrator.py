@@ -144,6 +144,7 @@ def test_trigger_orchestrator_synthesizes_agent_completion_trigger_for_await_gat
                     "id": "await-agent-1",
                     "display_name": "Await agent",
                     "type": "gate:await-agent",
+                    "session_id": "session-1",
                     "outputs": {},
                 }
             ],

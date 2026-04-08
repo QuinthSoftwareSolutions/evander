@@ -118,6 +118,8 @@ class AwaitAgentPendingRecord(BaseModel):
     prompt_event_id: str = Field(min_length=1)
     prompt_source_node_id: str = Field(min_length=1)
     trace_id: str = Field(min_length=1)
+    session_id: str | None = None
+    vm_name: str | None = None
     payload: dict[str, Any] = Field(default_factory=dict)
     occurred_at: datetime
 
@@ -339,6 +341,7 @@ class EffectOrchestratorWorker:
                 execution_count += 1
 
         if queue_record.trigger_type == "trigger:agent:run:completed":
+            self._complete_waiting_agent_prompt_effects(queue_record=queue_record)
             for gate in graph.gates_by_id.values():
                 if getattr(gate, "type", "") != "gate:await-agent":
                     continue
@@ -633,7 +636,26 @@ class EffectOrchestratorWorker:
                 return
 
             if gate.type == "gate:await-agent":
-                self._register_await_agent_prompt(queue_record=queue_record, gate=gate)
+                resolved = resolve_workflow_bindings(
+                    {
+                        "session_id": gate.session_id,
+                        "vm_name": gate.vm_name,
+                    },
+                    upstream_payload,
+                    upstream_output_names,
+                    system_value_resolver=_system_value_resolver(
+                        started_at=started_at,
+                        trace_id=queue_record.trace_id,
+                        event_id=queue_record.event_id,
+                        node_id=gate.id,
+                    ),
+                    strict_validation=True,
+                )
+                self._register_await_agent_prompt(
+                    queue_record=queue_record,
+                    gate=gate,
+                    resolved_config=require_object_payload(resolved.resolved_config, gate_type="gate:await-agent"),
+                )
                 return
 
             self._execute_merge_gate(
@@ -695,21 +717,38 @@ class EffectOrchestratorWorker:
         *,
         queue_record: TriggerQueueRecord,
         gate: GateDefinitionDiscriminated,
+        resolved_config: dict[str, Any],
     ) -> None:
         started_at = datetime.now(UTC)
         dispatch_id = str(queue_record.payload.get("dispatch_id") or "").strip()
+        session_id = str(resolved_config.get("session_id") or "").strip() or None
+        vm_name = str(resolved_config.get("vm_name") or "").strip() or None
         if not dispatch_id:
             self._write_gate_record(
                 queue_record=queue_record,
                 gate=gate,
                 status="failed",
                 started_at=started_at,
-                resolved_config={},
+                resolved_config=resolved_config,
                 outputs={},
                 inputs_by_source={queue_record.trigger_id: dict(queue_record.payload)},
                 input_event_ids_by_source={queue_record.trigger_id: queue_record.event_id},
                 input_occurred_at_by_source={queue_record.trigger_id: queue_record.occurred_at},
                 error="gate:await-agent requires upstream effect output dispatch_id",
+            )
+            return
+        if session_id is None and vm_name is None:
+            self._write_gate_record(
+                queue_record=queue_record,
+                gate=gate,
+                status="failed",
+                started_at=started_at,
+                resolved_config=resolved_config,
+                outputs={},
+                inputs_by_source={queue_record.trigger_id: dict(queue_record.payload)},
+                input_event_ids_by_source={queue_record.trigger_id: queue_record.event_id},
+                input_occurred_at_by_source={queue_record.trigger_id: queue_record.occurred_at},
+                error="gate:await-agent requires resolved session_id or vm_name",
             )
             return
 
@@ -722,6 +761,8 @@ class EffectOrchestratorWorker:
                 prompt_event_id=queue_record.event_id,
                 prompt_source_node_id=queue_record.trigger_id,
                 trace_id=queue_record.trace_id,
+                session_id=session_id,
+                vm_name=vm_name,
                 payload=dict(queue_record.payload),
                 occurred_at=queue_record.occurred_at,
             ),
@@ -731,7 +772,11 @@ class EffectOrchestratorWorker:
             gate=gate,
             status="waiting",
             started_at=started_at,
-            resolved_config={"dispatch_id": dispatch_id, "completion_trigger_id": getattr(gate, "completion_trigger_id", None)},
+            resolved_config={
+                **resolved_config,
+                "dispatch_id": dispatch_id,
+                "completion_trigger_id": getattr(gate, "completion_trigger_id", None),
+            },
             outputs={},
             inputs_by_source={queue_record.trigger_id: dict(queue_record.payload)},
             input_event_ids_by_source={queue_record.trigger_id: queue_record.event_id},
@@ -842,6 +887,7 @@ class EffectOrchestratorWorker:
                 candidate_summaries.extend(summaries_by_session_id.get(session_id, ()))
             if vm_name:
                 candidate_summaries.extend(summaries_by_vm_name.get(vm_name, ()))
+            session_id, vm_name = _await_agent_pending_target(pending, summaries=candidate_summaries)
             if not candidate_summaries:
                 logger.info(
                     "Keeping await-agent record with no matching VM summary key=%s dispatch_id=%s session_id=%s vm_name=%s",
@@ -932,7 +978,7 @@ class EffectOrchestratorWorker:
             logger.exception("Await-agent completion publish failed while listing VMs dispatch_id=%s", pending.dispatch_id)
             return None
 
-        session_id, vm_name = _await_agent_pending_target(pending)
+        session_id, vm_name = _await_agent_pending_target(pending, summaries=summaries)
         if not vm_name:
             if log_skips:
                 logger.info(
@@ -1078,6 +1124,15 @@ class EffectOrchestratorWorker:
             finished_at = datetime.now(UTC)
             try:
                 outputs = dict(future.result() or {})
+                if self._effect_waits_for_completion(record=record, outputs=outputs):
+                    record.status = "waiting"
+                    record.outputs = outputs
+                    record.published_event_id = None
+                    record.completion_event_enqueued_at = None
+                    record.finished_at = finished_at
+                    self.execution_store.put(record)
+                    self._update_event_delivery_state(record.event_id)
+                    continue
                 published_event_id = self._publish_completion_event_from_record(record=record, outputs=outputs)
                 record.status = "succeeded"
                 record.outputs = outputs
@@ -1103,6 +1158,45 @@ class EffectOrchestratorWorker:
             self._update_event_delivery_state(record.event_id)
 
         return completed_count, published_count
+
+    @staticmethod
+    def _effect_waits_for_completion(*, record: EffectExecutionRecord, outputs: dict[str, Any]) -> bool:
+        if record.effect_type != "effect:agent:prompt":
+            return False
+        if outputs.get("success") is False:
+            return False
+        if str(outputs.get("output_mode") or "").strip() != "on_completion":
+            return False
+        return bool(str(outputs.get("dispatch_id") or "").strip())
+
+    def _complete_waiting_agent_prompt_effects(self, *, queue_record: TriggerQueueRecord) -> int:
+        dispatch_id = str(queue_record.payload.get("dispatch_id") or "").strip()
+        if not dispatch_id:
+            return 0
+
+        finalized = 0
+        for record in self.execution_store.read_all().values():
+            if record.effect_type != "effect:agent:prompt" or record.status != "waiting":
+                continue
+            record_dispatch_id = str(record.outputs.get("dispatch_id") or "").strip()
+            if record_dispatch_id != dispatch_id:
+                continue
+
+            finished_at = datetime.now(UTC)
+            merged_outputs = {
+                **record.outputs,
+                **{key: value for key, value in queue_record.payload.items() if key != NODE_OUTPUTS_CONTEXT_KEY},
+            }
+            published_event_id = self._publish_completion_event_from_record(record=record, outputs=merged_outputs)
+            record.status = "succeeded"
+            record.outputs = merged_outputs
+            record.published_event_id = published_event_id
+            record.completion_event_enqueued_at = finished_at
+            record.finished_at = finished_at
+            self.execution_store.put(record)
+            self._update_event_delivery_state(record.event_id)
+            finalized += 1
+        return finalized
 
     def _update_event_delivery_state(self, event_id: str) -> None:
         if self._event_has_inflight_effects(event_id):
@@ -1652,17 +1746,37 @@ def _load_trigger_orchestrator_worker_global_config(
     return TriggerOrchestratorWorkerGlobalConfig.model_validate({**base_payload, **raw})
 
 
-def _await_agent_pending_target(pending: AwaitAgentPendingRecord) -> tuple[str | None, str | None]:
-    node_outputs = pending.payload.get(NODE_OUTPUTS_CONTEXT_KEY)
-    if not isinstance(node_outputs, dict):
-        return None, None
+def _await_agent_pending_target(
+    pending: AwaitAgentPendingRecord,
+    *,
+    summaries: list[Any] | None = None,
+) -> tuple[str | None, str | None]:
+    session_id = str(pending.session_id or "").strip() or None
+    vm_name = str(pending.vm_name or "").strip() or None
+    if not summaries:
+        return session_id, vm_name
 
-    vm_create_output = node_outputs.get("effect-vm-create-1")
-    if not isinstance(vm_create_output, dict):
-        return None, None
-
-    session_id = str(vm_create_output.get("session_id") or "").strip() or None
-    vm_name = str(vm_create_output.get("vm_name") or "").strip() or None
+    if session_id is None and vm_name is not None:
+        session_id = next(
+            (
+                str(session or "").strip()
+                for summary in summaries
+                if str(getattr(summary, "vm_name", "") or "").strip() == vm_name
+                for session in (getattr(summary, "session_ids", []) or [])
+                if str(session or "").strip()
+            ),
+            None,
+        )
+    if vm_name is None and session_id is not None:
+        vm_name = next(
+            (
+                str(getattr(summary, "vm_name", "") or "").strip()
+                for summary in summaries
+                if session_id in {str(item or "").strip() for item in (getattr(summary, "session_ids", []) or [])}
+                and str(getattr(summary, "vm_name", "") or "").strip()
+            ),
+            None,
+        )
     return session_id, vm_name
 
 

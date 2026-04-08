@@ -8,6 +8,7 @@ import {
   MiniMap,
   Position,
   ReactFlow,
+  type ReactFlowInstance,
   type Connection,
   type Edge,
   type Node,
@@ -18,12 +19,16 @@ import "@xyflow/react/dist/style.css";
 import {
   type WorkflowConfig,
   type WorkflowEdge,
+  type WorkflowNodeActivityCounts,
   type WorkflowEditorCatalog,
   type WorkflowEditorDocument,
   type WorkflowEditorFieldDefinition,
   type WorkflowLayout,
   type WorkflowNodeConfig,
   type WorkflowNodeKind,
+  type WorkflowRunNodeActivity,
+  type WorkflowRunSnapshot,
+  type WorkflowRunSummary,
 } from "./types";
 
 type GraphNodeData = {
@@ -31,6 +36,9 @@ type GraphNodeData = {
   displayName: string;
   kind: WorkflowNodeKind;
   type: string;
+  activeRunCount: number;
+  dominantStatus: string | null;
+  statusLabel: string | null;
 };
 
 type SaveState = "idle" | "saving" | "saved";
@@ -68,13 +76,27 @@ const NODE_GROUPS: ReadonlyArray<{
   { kind: "query", label: "Queries", description: "Read workflow state without producing a side effect." },
 ];
 
+const RUNTIME_POLL_INTERVAL_MS = 5000;
+const NODE_STATUS_ORDER = ["running", "waiting", "inflight", "pending"] as const;
+
 function WorkflowNodeCard({ data, selected }: NodeProps) {
   const nodeData = data as GraphNodeData;
   return (
-    <div className={`node-card node-${nodeData.kind}${selected ? " selected" : ""}`}>
+    <div
+      className={`node-card node-${nodeData.kind}${selected ? " selected" : ""}${
+        nodeData.dominantStatus ? ` runtime-${nodeData.dominantStatus}` : ""
+      }`}
+    >
       <Handle type="target" position={Position.Left} className="workflow-handle" />
       <div className="node-drag-surface">
-        <div className="node-kind">{nodeData.kind}</div>
+        <div className="node-heading">
+          <div className="node-kind">{nodeData.kind}</div>
+          {nodeData.activeRunCount > 0 && nodeData.statusLabel ? (
+            <div className={`node-runtime-badge status-${nodeData.dominantStatus ?? "active"}`}>
+              {nodeData.statusLabel}
+            </div>
+          ) : null}
+        </div>
         <div className="node-title">{nodeData.displayName}</div>
         <div className="node-id">{nodeData.id}</div>
       </div>
@@ -150,7 +172,29 @@ function inboundLimit(node: WorkflowNodeConfig): number | null {
   return 1;
 }
 
-function buildNodes(config: WorkflowConfig, layout: WorkflowLayout): Node<GraphNodeData>[] {
+function dominantNodeStatus(activity: WorkflowNodeActivityCounts | undefined): string | null {
+  if (!activity) return null;
+  for (const status of NODE_STATUS_ORDER) {
+    if ((activity[status] ?? 0) > 0) return status;
+  }
+  const [fallback] = Object.keys(activity);
+  return fallback ?? null;
+}
+
+function nodeStatusLabel(activity: WorkflowNodeActivityCounts | undefined): string | null {
+  if (!activity) return null;
+  const status = dominantNodeStatus(activity);
+  if (!status) return null;
+  const count = Object.values(activity).reduce((total, value) => total + value, 0);
+  return `${count} ${status}`;
+}
+
+function buildNodes(
+  config: WorkflowConfig,
+  layout: WorkflowLayout,
+  nodeActivity: Record<string, WorkflowNodeActivityCounts> = {},
+  currentPositions: Record<string, { x: number; y: number }> = {},
+): Node<GraphNodeData>[] {
   const collections = nodeCollections(config);
   const ordered = [
     ...collections.triggers,
@@ -160,7 +204,8 @@ function buildNodes(config: WorkflowConfig, layout: WorkflowLayout): Node<GraphN
   ];
   return ordered.map((node, index) => {
     const kind = nodeKindFromType(node.type);
-    const position = layout.nodes[node.id] ?? fallbackPosition(index);
+    const position = currentPositions[node.id] ?? layout.nodes[node.id] ?? fallbackPosition(index);
+    const activity = nodeActivity[node.id];
     return {
       id: node.id,
       type: "workflowNode",
@@ -170,6 +215,9 @@ function buildNodes(config: WorkflowConfig, layout: WorkflowLayout): Node<GraphN
         displayName: node.display_name,
         kind,
         type: node.type,
+        activeRunCount: Object.values(activity ?? {}).reduce((total, value) => total + value, 0),
+        dominantStatus: dominantNodeStatus(activity),
+        statusLabel: nodeStatusLabel(activity),
       },
     };
   });
@@ -412,6 +460,22 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
     throw new Error(String(payload.error));
   }
   return payload as T;
+}
+
+function currentPositionsFromNodes(nodes: Node<GraphNodeData>[]): Record<string, { x: number; y: number }> {
+  return Object.fromEntries(nodes.map((node) => [node.id, node.position]));
+}
+
+function formatRuntimeTimestamp(value: string | null | undefined): string {
+  if (!value) return "Unknown time";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString();
+}
+
+function summarizeRunNode(activity: WorkflowRunNodeActivity): string {
+  const countLabel = activity.count > 1 ? ` x${activity.count}` : "";
+  return `${activity.node_id} ${activity.status}${countLabel}`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -917,10 +981,13 @@ function activeEffectTargetKey(values: Record<string, unknown>): EffectTargetKey
 
 export default function App() {
   const appShellRef = useRef<HTMLDivElement | null>(null);
+  const hasAutoFitRef = useRef(false);
   const [document, setDocument] = useState<WorkflowEditorDocument | null>(null);
   const [catalog, setCatalog] = useState<WorkflowEditorCatalog>(emptyCatalog());
+  const [runSnapshot, setRunSnapshot] = useState<WorkflowRunSnapshot | null>(null);
   const [flowNodes, setFlowNodes] = useState<Node<GraphNodeData>[]>([]);
   const [flowEdges, setFlowEdges] = useState<Edge[]>([]);
+  const [flowInstance, setFlowInstance] = useState<ReactFlowInstance | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [inspectorNodeId, setInspectorNodeId] = useState("");
@@ -938,12 +1005,14 @@ export default function App() {
     Promise.all([
       fetchJson<WorkflowEditorDocument>("/api/workflow-editor/document"),
       fetchJson<WorkflowEditorCatalog>("/api/workflow-editor/catalog"),
+      fetchJson<WorkflowRunSnapshot>("/api/workflow-editor/runs"),
     ])
-      .then(([payload, catalogPayload]) => {
+      .then(([payload, catalogPayload, runSnapshotPayload]) => {
         const normalizedConfig = normalizeDerivedNodeFields(payload.config);
         setCatalog(catalogPayload);
+        setRunSnapshot(runSnapshotPayload);
         setDocument({ ...payload, config: normalizedConfig });
-        setFlowNodes(buildNodes(normalizedConfig, payload.layout));
+        setFlowNodes(buildNodes(normalizedConfig, payload.layout, runSnapshotPayload.node_activity));
         setFlowEdges(buildEdges(normalizedConfig));
       })
       .catch((reason: unknown) => {
@@ -951,8 +1020,43 @@ export default function App() {
       });
   }, []);
 
+  useEffect(() => {
+    const intervalId = window.setInterval(() => {
+      fetchJson<WorkflowRunSnapshot>("/api/workflow-editor/runs")
+        .then((payload) => {
+          setRunSnapshot(payload);
+        })
+        .catch(() => {
+          // Keep the last snapshot visible when the polling request fails.
+        });
+    }, RUNTIME_POLL_INTERVAL_MS);
+    return () => window.clearInterval(intervalId);
+  }, []);
+
+  useEffect(() => {
+    if (!document) return;
+    setFlowNodes((currentNodes) =>
+      buildNodes(
+        document.config,
+        document.layout,
+        runSnapshot?.node_activity ?? {},
+        currentPositionsFromNodes(currentNodes),
+      ),
+    );
+    setFlowEdges(buildEdges(document.config));
+  }, [document, runSnapshot]);
+
+  useEffect(() => {
+    if (!flowInstance || flowNodes.length === 0 || hasAutoFitRef.current) return;
+    queueMicrotask(() => {
+      flowInstance.fitView({ padding: 0.2 });
+      hasAutoFitRef.current = true;
+    });
+  }, [flowInstance, flowNodes, flowEdges]);
+
   const config = document?.config ?? emptyConfig();
   const layout = document?.layout ?? emptyLayout();
+  const activeRuns = runSnapshot?.runs ?? [];
   const selectedNode = selectedNodeId ? nodeById(config, selectedNodeId) : undefined;
   const selectedCatalogEntry = selectedNode ? getCatalogEntry(catalog, selectedNode.type) : undefined;
   const selectedEdge = selectedEdgeId
@@ -1029,8 +1133,6 @@ export default function App() {
       layout: nextLayout,
     };
     setDocument(nextDocument);
-    setFlowNodes(buildNodes(normalizedConfig, nextLayout));
-    setFlowEdges(buildEdges(normalizedConfig));
     setSaveState("idle");
   }
 
@@ -1783,9 +1885,43 @@ export default function App() {
       <aside className="sidebar">
         <div className="sidebar-section">
           <div className="eyebrow">Workflow editor</div>
-          <h1>Trigger graph</h1>
+          <h1>Workflow editor</h1>
           <p>Drag nodes, connect edges, and edit typed node config with literals or upstream bindings.</p>
         </div>
+
+        <details className="sidebar-section current-runs-section">
+          <summary className="current-runs-summary">
+            <span className="section-label current-runs-label">Current runs</span>
+            <span className="current-runs-count">{activeRuns.length}</span>
+          </summary>
+          <p className="runtime-summary">
+            {activeRuns.length === 0
+              ? "No active workflow runs."
+              : `${activeRuns.length} active ${activeRuns.length === 1 ? "run" : "runs"} on the graph.`}
+          </p>
+          <div className="runtime-runs">
+            {activeRuns.map((run: WorkflowRunSummary) => (
+              <div key={run.event_id} className="runtime-run-card">
+                <div className="runtime-run-header">
+                  <div className="runtime-run-event">{run.event_id}</div>
+                  <div className={`runtime-run-state state-${run.delivery_state ?? "active"}`}>
+                    {run.delivery_state ?? "active"}
+                  </div>
+                </div>
+                <div className="runtime-run-meta">
+                  Last activity {formatRuntimeTimestamp(run.latest_activity_at ?? run.occurred_at)}
+                </div>
+                <div className="runtime-run-nodes">
+                  {run.active_nodes.map((activity, index) => (
+                    <div key={`${run.event_id}-${activity.node_id}-${activity.status}-${index}`} className="runtime-run-node">
+                      {summarizeRunNode(activity)}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </details>
 
         <div className="sidebar-section">
           <div className="section-label">Create</div>
@@ -1882,6 +2018,7 @@ export default function App() {
           nodes={flowNodes}
           edges={flowEdges}
           nodeTypes={nodeTypes}
+          onInit={setFlowInstance}
           onNodesChange={updateNodePositions}
           onEdgesChange={updateEdgeChanges}
           onNodeClick={(_, node) => {

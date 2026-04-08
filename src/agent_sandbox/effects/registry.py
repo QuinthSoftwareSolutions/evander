@@ -10,6 +10,7 @@ from agent_sandbox.provider_config import ProviderConfigResolver
 from .providers.agent_prompt import AgentPromptEffectProvider
 from .providers.base import EffectProviderBase, EffectRuntimeContext
 from .providers.git_promote_agent_branch import GitPromoteAgentBranchEffectProvider
+from .providers.issue_update_state import IssueUpdateStateEffectProvider
 from .providers.pr_create import PrCreateEffectProvider
 from .providers.session_update_metadata import SessionUpdateMetadataEffectProvider
 from .providers.vm_copy_files import VmCopyFilesEffectProvider
@@ -32,6 +33,7 @@ DEFAULT_EFFECT_PROVIDER_REGISTRY: dict[EffectType, EffectProviderClass] = {
     "effect:agent:prompt": AgentPromptEffectProvider,
     "effect:vm:exec": VmExecEffectProvider,
     "effect:vm:copy-files": VmCopyFilesEffectProvider,
+    "effect:issue:update-state": IssueUpdateStateEffectProvider,
     "effect:session:update-metadata": SessionUpdateMetadataEffectProvider,
     "effect:git:promote-agent-branch": GitPromoteAgentBranchEffectProvider,
     "effect:pr:create": PrCreateEffectProvider,

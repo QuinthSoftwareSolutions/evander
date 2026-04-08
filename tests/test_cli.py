@@ -443,6 +443,7 @@ def test_migrate_ado_worker_env_to_root_materializes_root_domain_file(tmp_path: 
         "ado_prewarm_target": "/tmp/Prewarm.slnx",
         "ado_project_or_solution": "/tmp/Example.slnx",
         "ado_repo_source": "/tmp/repo",
+        "ado_setup_vms": True,
         "ado_team_filters": [],
         "create_prs_automatically": True,
         "create_prs_as_draft": False,

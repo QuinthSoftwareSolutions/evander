@@ -746,6 +746,137 @@ printf '%s\\n' "$*" >> "{attach_log}"
     assert "WORK_ITEM_ID=14084" in logged
 
 
+def test_open_agent_pr_uses_existing_https_helper_remote_for_azure_push(tmp_path: Path) -> None:
+    script = Path(__file__).resolve().parents[1] / "scripts/open_agent_pr.sh"
+    host_repo = tmp_path / "repo"
+    host_repo.mkdir()
+    (host_repo / ".git").mkdir()
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    git_log = tmp_path / "git.log"
+    attach_log = tmp_path / "attach.log"
+
+    (fake_bin / "git").write_text(
+        f"""#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> "{git_log}"
+args=("$@")
+if [[ "${{args[0]}}" == "-C" ]]; then
+  args=("${{args[@]:2}}")
+fi
+while [[ "${{args[0]:-}}" == "-c" ]]; do
+  args=("${{args[@]:2}}")
+done
+case "${{args[0]:-}}" in
+  rev-parse)
+    ;;
+  remote)
+    if [[ "${{args[1]:-}}" == "get-url" && "${{args[2]:-}}" == "origin" ]]; then
+      echo "git@ssh.dev.azure.com:v3/example-org/example-project/example-repo"
+    elif [[ "${{args[1]:-}}" == "get-url" && "${{args[2]:-}}" == "agent-sandbox-pr-origin" ]]; then
+      echo "https://dev.azure.com/example-org/example-project/_git/example-repo"
+    else
+      echo "unexpected git remote invocation: $*" >&2
+      exit 1
+    fi
+    ;;
+  push)
+    ;;
+  symbolic-ref)
+    echo "agent-sandbox-pr-origin/main"
+    ;;
+  log)
+    echo "Latest commit title"
+    ;;
+  ls-remote)
+    exit 2
+    ;;
+  fetch)
+    ;;
+  *)
+    echo "unexpected git invocation: $*" >&2
+    exit 1
+    ;;
+esac
+""",
+        encoding="utf-8",
+    )
+    (fake_bin / "python3").write_text(
+        f"""#!/usr/bin/env bash
+set -euo pipefail
+script="$(cat)"
+
+if [[ -n "${{ORIGIN_URL_INPUT:-}}" ]]; then
+  printf '%s' "https://dev.azure.com/example-org/example-project/_git/example-repo"
+  exit 0
+fi
+
+if [[ -n "${{RUNTIME_DIR_PATH:-}}" ]]; then
+  printf '%s' "${{script}}" | "{sys.executable}" - "$@"
+  exit 0
+fi
+
+if [[ -n "${{MAP_PATH:-}}" ]]; then
+  mkdir -p "$(dirname "${{MAP_PATH}}")"
+  printf '{{"version":1,"entries":{{}}}}\\n' > "${{MAP_PATH}}"
+  exit 0
+fi
+
+if [[ -n "${{PROVIDER:-}}" && -n "${{PR_URL:-}}" && -n "${{PR_ID:-}}" && -n "${{ORIGIN_BRANCH:-}}" ]]; then
+  printf '{{"provider":"%s","pr_url":"%s","pr_id":"%s","origin_branch":"%s","base_branch":"%s","session_id":"%s","work_item_id":"%s"}}\\n' \\
+    "${{PROVIDER}}" "${{PR_URL}}" "${{PR_ID}}" "${{ORIGIN_BRANCH}}" "${{BASE_BRANCH}}" "${{SESSION_ID:-}}" "${{WORK_ITEM_ID:-}}"
+  exit 0
+fi
+
+if [[ -n "${{AZURE_RESULT:-}}" ]]; then
+  if [[ "${{script}}" == *'payload.get("pr_url"'* ]]; then
+    printf '%s' "https://dev.azure.com/example-org/example-project/_git/example-repo/pullrequest/42"
+  else
+    printf '%s' "42"
+  fi
+  exit 0
+fi
+
+if [[ -n "${{ORIGIN_URL:-}}" ]]; then
+  printf '%s' "example-org/example-project/example-repo"
+  exit 0
+fi
+
+exit 1
+""",
+        encoding="utf-8",
+    )
+    (fake_bin / "agent-sandbox-cli").write_text(
+        f"""#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> "{attach_log}"
+""",
+        encoding="utf-8",
+    )
+    os.chmod(fake_bin / "git", 0o755)
+    os.chmod(fake_bin / "python3", 0o755)
+    os.chmod(fake_bin / "agent-sandbox-cli", 0o755)
+
+    env = os.environ.copy()
+    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+    env["AGENT_SANDBOX_PR_MAP_PATH"] = str(tmp_path / "runtime" / "pr-map.json")
+    env["AGENT_SANDBOX_CLI_BIN"] = str(fake_bin / "agent-sandbox-cli")
+    env["AZURE_DEVOPS_PR_PAT"] = "test-pat"
+
+    result = subprocess.run(
+        [str(script), "--create-pr", "--provider", "azure_devops", str(host_repo), "review/issue-123/work"],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    assert "Pushed review/issue-123/work to agent-sandbox-pr-origin/feature/issue-123" in result.stdout
+    git_commands = git_log.read_text(encoding="utf-8")
+    assert "push agent-sandbox-pr-origin review/issue-123/work:refs/heads/feature/issue-123" in git_commands
+
+
 def test_open_agent_pr_creates_azure_draft_pr_from_directory_config(tmp_path: Path) -> None:
     script = Path(__file__).resolve().parents[1] / "scripts/open_agent_pr.sh"
     host_repo = tmp_path / "repo"

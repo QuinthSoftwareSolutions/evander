@@ -27,21 +27,24 @@ class GitPushTriggerProvider(TriggerProviderBase):
         trigger = self._trigger()
         if not git_push_trigger_matches_repo(trigger, repo_path):
             return None
-        payload = build_git_push_payload(repo_path=repo_path, old_rev=old_rev, new_rev=new_rev, ref_name=ref_name)
-        if payload is None:
+        payloads = build_git_push_payloads(repo_path=repo_path, old_rev=old_rev, new_rev=new_rev, ref_name=ref_name)
+        if not payloads:
             return None
 
         occurred_at = datetime.now(UTC)
-        event = TriggerEvent(
-            event_id=f"{trigger.id}:{payload['branch_name']}:{new_rev}",
-            trigger_id=trigger.id,
-            trigger_type=trigger.type,
-            occurred_at=occurred_at,
-            payload=payload,
-        )
-        for handler in self._handlers:
-            handler(event)
-        return event
+        events: list[TriggerEvent] = []
+        for payload in payloads:
+            event = TriggerEvent(
+                event_id=f"{trigger.id}:{payload['branch_name']}:{payload.get('event_hash') or new_rev}",
+                trigger_id=trigger.id,
+                trigger_type=trigger.type,
+                occurred_at=occurred_at,
+                payload=payload,
+            )
+            events.append(event)
+            for handler in self._handlers:
+                handler(event)
+        return events[0] if events else None
 
     def _trigger(self) -> GitPushTriggerDefinition:
         if not isinstance(self.trigger_definition, GitPushTriggerDefinition):
@@ -65,13 +68,29 @@ def git_push_trigger_matches_repo(trigger: GitPushTriggerDefinition | dict[str, 
 
 
 def build_git_push_payload(*, repo_path: str, old_rev: str, new_rev: str, ref_name: str) -> dict[str, Any] | None:
+    payloads = build_git_push_payloads(repo_path=repo_path, old_rev=old_rev, new_rev=new_rev, ref_name=ref_name)
+    if not payloads:
+        return None
+    return payloads[0]
+
+
+def build_git_push_payloads(*, repo_path: str, old_rev: str, new_rev: str, ref_name: str) -> list[dict[str, Any]]:
     normalized_repo = str(Path(repo_path).expanduser().resolve())
     branch_name = _branch_name_from_ref(ref_name)
-    if branch_name is None:
-        return None
+    if branch_name is not None:
+        return [_build_branch_payload(normalized_repo=normalized_repo, branch_name=branch_name, old_rev=old_rev, new_rev=new_rev, ref_name=ref_name)]
+
+    if ref_name.strip() == "refs/notes/agent-pr":
+        return _build_note_push_payloads(normalized_repo=normalized_repo, old_rev=old_rev, new_rev=new_rev, ref_name=ref_name)
+
+    return []
+
+
+def _build_branch_payload(*, normalized_repo: str, branch_name: str, old_rev: str, new_rev: str, ref_name: str) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "branch_name": branch_name,
         "commit_hash": new_rev,
+        "event_hash": new_rev,
         "old_commit_hash": old_rev,
         "ref_name": ref_name,
         "repo_path": normalized_repo,
@@ -110,6 +129,88 @@ def _derive_review_branch(branch_name: str) -> str:
     if normalized.startswith("agents/") and normalized.count("/") >= 2:
         return f"review/{normalized.removeprefix('agents/')}"
     return f"review/{normalized}"
+
+
+def _build_note_push_payloads(*, normalized_repo: str, old_rev: str, new_rev: str, ref_name: str) -> list[dict[str, Any]]:
+    repo_path = Path(normalized_repo)
+    changed_targets = _list_changed_note_targets(repo_path=repo_path, old_rev=old_rev, new_rev=new_rev)
+    if not changed_targets:
+        return []
+
+    branches = _list_agent_branch_tips(repo_path)
+    payloads: list[dict[str, Any]] = []
+    for branch_name, tip_sha in branches:
+        if tip_sha not in changed_targets:
+            continue
+        payload = _build_branch_payload(
+            normalized_repo=normalized_repo,
+            branch_name=branch_name,
+            old_rev=old_rev,
+            new_rev=tip_sha,
+            ref_name=ref_name,
+        )
+        payload["event_hash"] = new_rev
+        payload["note_target_commit_hash"] = tip_sha
+        payload["note_ref_new_rev"] = new_rev
+        payload["note_ref_old_rev"] = old_rev
+        payloads.append(payload)
+    return payloads
+
+
+def _list_changed_note_targets(*, repo_path: Path, old_rev: str, new_rev: str) -> set[str]:
+    zero_sha = "0" * 40
+    if new_rev == zero_sha:
+        return set()
+
+    if old_rev == zero_sha:
+        completed = subprocess.run(
+            ["git", f"--git-dir={repo_path}", "ls-tree", "-r", "--name-only", new_rev],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    else:
+        completed = subprocess.run(
+            ["git", f"--git-dir={repo_path}", "diff-tree", "--no-commit-id", "--name-only", "-r", old_rev, new_rev],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    if completed.returncode != 0:
+        return set()
+    targets: set[str] = set()
+    for raw_path in completed.stdout.splitlines():
+        target = _note_target_from_path(raw_path)
+        if target:
+            targets.add(target)
+    return targets
+
+
+def _note_target_from_path(path_text: str) -> str | None:
+    normalized = path_text.strip().replace("/", "")
+    if len(normalized) != 40:
+        return None
+    if any(char not in "0123456789abcdefABCDEF" for char in normalized):
+        return None
+    return normalized.lower()
+
+
+def _list_agent_branch_tips(repo_path: Path) -> list[tuple[str, str]]:
+    completed = subprocess.run(
+        ["git", f"--git-dir={repo_path}", "for-each-ref", "--format=%(refname:strip=2) %(objectname)", "refs/heads/agents"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        return []
+    branches: list[tuple[str, str]] = []
+    for line in completed.stdout.splitlines():
+        branch_name, _, object_name = line.strip().partition(" ")
+        if not branch_name or not object_name:
+            continue
+        branches.append((branch_name, object_name.strip()))
+    return branches
 
 
 def _load_repo_metadata(repo_path: Path) -> dict[str, str]:

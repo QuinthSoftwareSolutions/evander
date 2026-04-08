@@ -8,8 +8,10 @@ from agent_sandbox.events.models import (
     AgentRunCompletedTriggerDefinition,
     ConfigValue,
     EffectDefinitionDiscriminated,
+    GateDefinitionDiscriminated,
     GitPromoteAgentBranchEffectDefinition,
     GitPushTriggerDefinition,
+    IssueUpdateStateEffectDefinition,
     PrCreateEffectDefinition,
     PullRequestNewFeedbackTriggerDefinition,
     SessionContextQueryDefinition,
@@ -131,6 +133,37 @@ def test_pr_feedback_trigger_accepts_local_provider() -> None:
     assert trigger.provider == "local"
 
 
+def test_await_agent_gate_requires_session_id_or_vm_name() -> None:
+    adapter = TypeAdapter(GateDefinitionDiscriminated)
+
+    with pytest.raises(ValueError, match="gate:await-agent requires session_id or vm_name"):
+        adapter.validate_python(
+            {
+                "id": "g-1",
+                "display_name": "Await agent",
+                "type": "gate:await-agent",
+                "outputs": {},
+            }
+        )
+
+
+def test_await_agent_gate_accepts_single_selector() -> None:
+    adapter = TypeAdapter(GateDefinitionDiscriminated)
+
+    gate = adapter.validate_python(
+        {
+            "id": "g-2",
+            "display_name": "Await agent",
+            "type": "gate:await-agent",
+            "session_id": "${{effect-1.session_id}}",
+            "outputs": {},
+        }
+    )
+
+    assert gate.session_id == "${{effect-1.session_id}}"
+    assert gate.vm_name is None
+
+
 def test_trigger_event_envelope_accepts_normalized_payload() -> None:
     event = TriggerEvent.model_validate(
         {
@@ -168,10 +201,12 @@ def test_effect_discriminated_union_accepts_output_reference_interpolation() -> 
             "display_name": "Prompt agent",
             "type": "effect:agent:prompt",
             "prompt": "Build summary for ${{trigger.ticket_id}}",
+            "model": "${{trigger.model}}",
         }
     )
 
     assert effect.type == "effect:agent:prompt"
+    assert effect.model == "${{trigger.model}}"
 
 
 def test_agent_run_completed_trigger_accepts_default_vm_user() -> None:
@@ -329,6 +364,15 @@ def test_git_promote_agent_branch_effect_requires_repo_and_branch_fields() -> No
 
 
 def test_session_update_metadata_effect_and_session_context_query_validate() -> None:
+    state_effect = IssueUpdateStateEffectDefinition.model_validate(
+        {
+            "id": "effect-issue-state",
+            "display_name": "Mark issue in progress",
+            "type": "effect:issue:update-state",
+            "issue_id": "14084",
+            "state": "In Progress",
+        }
+    )
     effect = SessionUpdateMetadataEffectDefinition.model_validate(
         {
             "id": "effect-session-meta",
@@ -347,6 +391,8 @@ def test_session_update_metadata_effect_and_session_context_query_validate() -> 
         }
     )
 
+    assert state_effect.issue_id == "14084"
+    assert state_effect.state == "In Progress"
     assert effect.metadata == {"issue_number": "14084"}
     assert query.session_id == "session-1"
 

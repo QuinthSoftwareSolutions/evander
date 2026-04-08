@@ -828,6 +828,11 @@ fi
 
 printf '%s\n' "--last" >"${RESUME_HINT_FILE}"
 
+RUN_LOG_START_SIZE=0
+if [[ -f "${RUN_LOG_FILE}" ]]; then
+  RUN_LOG_START_SIZE="$(wc -c < "${RUN_LOG_FILE}" | tr -d '[:space:]')"
+fi
+
 nohup env \
   SESSION_ID="${SESSION_ID}" \
   AGENT_DISPATCH_ID="${DISPATCH_ID}" \
@@ -884,7 +889,11 @@ THREAD_ID_RESULT="${RESUME_THREAD_ID:-}"
 if [[ -z "${THREAD_ID_RESULT}" && "${AGENT_PROVIDER}" == "codex" && "${RESUME_MODE}" == "new_context" ]]; then
   for _ in $(seq 1 150); do
     if [[ -f "${RUN_LOG_FILE}" ]]; then
-      THREAD_ID_RESULT="$(awk -F': ' '/^session id: / {print $2; exit}' "${RUN_LOG_FILE}" | tr -d '\r' || true)"
+      THREAD_ID_RESULT="$(
+        tail -c "+$((RUN_LOG_START_SIZE + 1))" "${RUN_LOG_FILE}" 2>/dev/null \
+          | awk -F': ' '/^session id: / {thread_id=$2} END {print thread_id}' \
+          | tr -d '\r' || true
+      )"
       if [[ -n "${THREAD_ID_RESULT}" ]]; then
         break
       fi

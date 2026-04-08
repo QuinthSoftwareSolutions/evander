@@ -307,6 +307,97 @@ select {
   line-height: 1.45;
 }
 
+.runtime-summary {
+  font-size: 0.87rem;
+  color: #6a5740;
+  line-height: 1.45;
+}
+
+.current-runs-section {
+  overflow: hidden;
+}
+
+.current-runs-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.8rem;
+  cursor: pointer;
+  list-style: none;
+}
+
+.current-runs-summary::-webkit-details-marker {
+  display: none;
+}
+
+.current-runs-label {
+  margin-bottom: 0;
+}
+
+.current-runs-count {
+  min-width: 1.9rem;
+  padding: 0.18rem 0.5rem;
+  border-radius: 999px;
+  background: rgba(91, 67, 37, 0.1);
+  text-align: center;
+  font-size: 0.72rem;
+  color: #5f4c36;
+}
+
+.runtime-runs {
+  display: grid;
+  gap: 0.75rem;
+  margin-top: 0.8rem;
+}
+
+.runtime-run-card {
+  padding: 0.8rem 0.9rem;
+  border: 1px solid rgba(91, 67, 37, 0.14);
+  border-radius: 14px;
+  background: rgba(255, 248, 236, 0.7);
+}
+
+.runtime-run-header,
+.node-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.runtime-run-event {
+  font-family: "SFMono-Regular", "Consolas", monospace;
+  font-size: 0.8rem;
+  color: #4c3d2c;
+}
+
+.runtime-run-state,
+.node-runtime-badge {
+  padding: 0.2rem 0.5rem;
+  border-radius: 999px;
+  font-family: "Avenir Next Condensed", "Franklin Gothic Medium", sans-serif;
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.runtime-run-meta {
+  margin-top: 0.4rem;
+  font-size: 0.8rem;
+  color: #725e48;
+}
+
+.runtime-run-nodes {
+  display: grid;
+  gap: 0.35rem;
+  margin-top: 0.55rem;
+}
+
+.runtime-run-node {
+  font-size: 0.82rem;
+  color: #473928;
+}
+
 .error-box {
   padding: 0.9rem 1rem;
   border-radius: 14px;
@@ -327,6 +418,13 @@ select {
   border: 1px solid rgba(49, 39, 24, 0.14);
   box-shadow: 0 14px 36px rgba(48, 38, 25, 0.14);
   background: #fffdf8;
+}
+
+.node-card.runtime-running,
+.node-card.runtime-waiting,
+.node-card.runtime-inflight,
+.node-card.runtime-pending {
+  border-width: 2px;
 }
 
 .node-drag-surface {
@@ -383,6 +481,48 @@ select {
 
 .node-query {
   background: linear-gradient(145deg, #f5ecff, #fdf9ff);
+}
+
+.node-card.runtime-running {
+  box-shadow: 0 0 0 3px rgba(30, 128, 95, 0.14), 0 18px 42px rgba(48, 38, 25, 0.18);
+}
+
+.node-card.runtime-waiting {
+  box-shadow: 0 0 0 3px rgba(178, 126, 24, 0.14), 0 18px 42px rgba(48, 38, 25, 0.18);
+}
+
+.node-card.runtime-inflight,
+.node-card.runtime-pending {
+  box-shadow: 0 0 0 3px rgba(45, 95, 168, 0.12), 0 18px 42px rgba(48, 38, 25, 0.18);
+}
+
+.status-running,
+.state-running {
+  background: #dff5e7;
+  color: #1f6a3f;
+}
+
+.status-waiting,
+.state-waiting {
+  background: #faedcb;
+  color: #8a5a00;
+}
+
+.status-inflight,
+.state-inflight {
+  background: #e2ecff;
+  color: #2456a0;
+}
+
+.status-pending,
+.state-pending {
+  background: #f4e7d7;
+  color: #7d5d34;
+}
+
+.state-active {
+  background: #ece7df;
+  color: #5c4d3b;
 }
 
 .node-title {

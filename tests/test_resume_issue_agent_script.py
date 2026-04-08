@@ -410,6 +410,10 @@ def test_resume_issue_agent_tracks_explicit_state_lifecycle() -> None:
     assert 'write_agent_control_state "${HOST_CONTROL_STATUS}" "host-sync"' in script_text
     assert 'LOG_PATH="${LOG_DIR}/agent-${RESOLVED_REPO_NAME}.log"' in script_text
     assert 'LOG_PATH="${LOG_DIR}/codex-heartbeat-run.log"' in script_text
+    assert 'RUN_LOG_START_SIZE=0' in script_text
+    assert 'RUN_LOG_START_SIZE="$(wc -c < "${RUN_LOG_FILE}" | tr -d ' in script_text
+    assert 'tail -c "+$((RUN_LOG_START_SIZE + 1))" "${RUN_LOG_FILE}" 2>/dev/null' in script_text
+    assert """awk -F': ' '/^session id: / {thread_id=$2} END {print thread_id}'""" in script_text
 
 
 def test_resume_issue_agent_worker_mode_starts_vm_and_skips_tty(tmp_path: Path) -> None:

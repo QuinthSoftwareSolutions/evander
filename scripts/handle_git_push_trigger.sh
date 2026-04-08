@@ -59,7 +59,7 @@ from contextlib import contextmanager
 from pathlib import Path
 import fcntl
 
-from agent_sandbox.triggers.providers.git_push import build_git_push_payload, git_push_trigger_matches_repo
+from agent_sandbox.triggers.providers.git_push import build_git_push_payloads, git_push_trigger_matches_repo
 
 def _resolve_repo(path_text: str) -> Path:
     return Path(path_text).expanduser().resolve()
@@ -160,32 +160,34 @@ def main() -> int:
             if len(parts) != 3:
                 continue
             old_rev, new_rev, ref_name = parts
-            payload = build_git_push_payload(
+            payloads = build_git_push_payloads(
                 repo_path=str(repo_path),
                 old_rev=old_rev,
                 new_rev=new_rev,
                 ref_name=ref_name,
             )
-            if payload is None:
+            if not payloads:
                 continue
 
             now = datetime.now(timezone.utc).isoformat()
-            for trigger in git_push_triggers:
-                trigger_id = str(trigger["id"]).strip()
-                event_id = f"{trigger_id}:{payload['branch_name']}:{new_rev}"
-                if event_id in queue_payload:
-                    continue
-                queue_payload[event_id] = {
-                    "event_id": event_id,
-                    "trigger_id": trigger_id,
-                    "trigger_type": "trigger:git:push",
-                    "occurred_at": now,
-                    "payload": payload,
-                    "delivery_state": "pending",
-                    "inflight_at": None,
-                    "delivered_at": None,
-                    "idempotency_key": None,
-                }
+            for payload in payloads:
+                event_hash = str(payload.get("event_hash") or new_rev)
+                for trigger in git_push_triggers:
+                    trigger_id = str(trigger["id"]).strip()
+                    event_id = f"{trigger_id}:{payload['branch_name']}:{event_hash}"
+                    if event_id in queue_payload:
+                        continue
+                    queue_payload[event_id] = {
+                        "event_id": event_id,
+                        "trigger_id": trigger_id,
+                        "trigger_type": "trigger:git:push",
+                        "occurred_at": now,
+                        "payload": payload,
+                        "delivery_state": "pending",
+                        "inflight_at": None,
+                        "delivered_at": None,
+                        "idempotency_key": None,
+                    }
 
         temp_fd, temp_path = tempfile.mkstemp(
             prefix=f"{queue_store_path.name}.",

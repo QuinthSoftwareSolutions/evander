@@ -19,6 +19,7 @@ class AgentPromptEffectProvider(EffectProviderBase):
             "session_id": effect.session_id,
             "vm_name": effect.vm_name,
             "prompt": effect.prompt,
+            "model": effect.model,
             "vm_user": effect.vm_user,
             "resume_thread_id": effect.resume_thread_id,
             "output_mode": effect.output_mode,
@@ -29,6 +30,7 @@ class AgentPromptEffectProvider(EffectProviderBase):
         prompt = self._require_string(payload.get("prompt"), field_name="prompt")
         target = self._resolve_target(payload)
         vm_user = self._normalize_optional_string(payload.get("vm_user")) or "agent"
+        model = self._normalize_optional_string(payload.get("model"))
         output_mode = self._normalize_optional_string(payload.get("output_mode")) or "immediate"
         if output_mode not in {"immediate", "on_completion"}:
             raise ValueError(f"Unsupported output_mode: {output_mode}")
@@ -38,6 +40,7 @@ class AgentPromptEffectProvider(EffectProviderBase):
         result = context.admin_service.resume_agent(
             target=target,
             prompt=prompt,
+            model=model,
             vm_user=vm_user,
             dispatch_id=dispatch_id,
             resume_thread_id=resume_thread_id,

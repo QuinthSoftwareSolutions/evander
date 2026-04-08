@@ -80,3 +80,33 @@ export type WorkflowEditorCatalog = {
   worker_id: string;
   nodes: WorkflowEditorNodeCatalogEntry[];
 };
+
+export type WorkflowRunNodeActivity = {
+  node_id: string;
+  status: string;
+  count: number;
+  source?: string | null;
+  started_at?: string | null;
+  finished_at?: string | null;
+  dispatch_id?: string | null;
+};
+
+export type WorkflowRunSummary = {
+  event_id: string;
+  trace_id?: string | null;
+  source_node_id?: string | null;
+  source_trigger_type?: string | null;
+  delivery_state?: string | null;
+  occurred_at?: string | null;
+  latest_activity_at?: string | null;
+  active_nodes: WorkflowRunNodeActivity[];
+};
+
+export type WorkflowNodeActivityCounts = Record<string, number>;
+
+export type WorkflowRunSnapshot = {
+  worker_id: string;
+  generated_at: string;
+  runs: WorkflowRunSummary[];
+  node_activity: Record<string, WorkflowNodeActivityCounts>;
+};

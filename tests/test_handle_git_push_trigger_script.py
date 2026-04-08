@@ -167,6 +167,88 @@ def test_handle_git_push_trigger_emits_repo_metadata_and_session_id(tmp_path: Pa
     assert record["payload"]["canonical_origin_url"] == "https://example.com/org/repo.git"
 
 
+def test_handle_git_push_trigger_enqueues_notes_only_update_for_matching_agent_branch_tip(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    script = root / "scripts" / "handle_git_push_trigger.sh"
+
+    repo_path = (tmp_path / "git-remotes" / "sample.git").resolve()
+    worktree = (tmp_path / "worktree").resolve()
+    subprocess.run(["git", "init", "--bare", str(repo_path)], check=True, capture_output=True, text=True)
+    subprocess.run(["git", "init", str(worktree)], check=True, capture_output=True, text=True)
+    subprocess.run(["git", "-C", str(worktree), "config", "user.name", "Test User"], check=True)
+    subprocess.run(["git", "-C", str(worktree), "config", "user.email", "test@example.com"], check=True)
+    subprocess.run(["git", "-C", str(worktree), "remote", "add", "origin", str(repo_path)], check=True)
+    subprocess.run(["git", f"--git-dir={repo_path}", "config", "agent-sandbox.trustedRepoPath", "/trusted/repo"], check=True)
+    subprocess.run(["git", f"--git-dir={repo_path}", "config", "agent-sandbox.baseBranch", "main"], check=True)
+
+    (worktree / "hello.txt").write_text("Hello World", encoding="utf-8")
+    subprocess.run(["git", "-C", str(worktree), "add", "hello.txt"], check=True)
+    subprocess.run(["git", "-C", str(worktree), "commit", "-m", "Initial"], check=True, capture_output=True, text=True)
+    tip_sha = subprocess.run(
+        ["git", "-C", str(worktree), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    subprocess.run(
+        ["git", "-C", str(worktree), "push", "origin", "HEAD:refs/heads/agents/session-1/topic"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(["git", "-C", str(worktree), "notes", "--ref=agent-pr", "add", "-m", "Summary", "HEAD"], check=True)
+    old_notes_rev = "0" * 40
+    subprocess.run(["git", "-C", str(worktree), "push", "origin", "refs/notes/agent-pr"], check=True, capture_output=True, text=True)
+    new_notes_rev = subprocess.run(
+        ["git", f"--git-dir={repo_path}", "rev-parse", "refs/notes/agent-pr"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    queue_path = tmp_path / "runtime" / "trigger-events.json"
+    config_path = tmp_path / "trigger-config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "runtime_dir": str(tmp_path / "runtime"),
+                "event_queue_store_path": str(queue_path),
+                "triggers": [
+                    {
+                        "id": "git-main",
+                        "display_name": "Git main",
+                        "type": "trigger:git:push",
+                        "path_to_repo": str(repo_path),
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [str(script), str(repo_path)],
+        input=f"{old_notes_rev} {new_notes_rev} refs/notes/agent-pr\n",
+        text=True,
+        capture_output=True,
+        env={
+            **os.environ,
+            "AGENT_SANDBOX_TRIGGER_ORCHESTRATOR_CONFIG": str(config_path),
+        },
+        cwd=root,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    queue_payload = json.loads(queue_path.read_text(encoding="utf-8"))
+    record = queue_payload[f"git-main:agents/session-1/topic:{new_notes_rev}"]
+    assert record["payload"]["branch_name"] == "agents/session-1/topic"
+    assert record["payload"]["session_id"] == "session-1"
+    assert record["payload"]["review_branch"] == "review/session-1/topic"
+    assert record["payload"]["commit_hash"] == tip_sha
+    assert record["payload"]["note_ref_new_rev"] == new_notes_rev
+
+
 def test_handle_git_push_trigger_is_idempotent_for_repeated_updates(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[1]
     script = root / "scripts" / "handle_git_push_trigger.sh"

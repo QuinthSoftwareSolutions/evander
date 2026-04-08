@@ -32,6 +32,7 @@ class _AdminServiceStub:
         *,
         target: str,
         prompt: str,
+        model: str | None = None,
         vm_user: str = "agent",
         dispatch_id: str | None = None,
         resume_thread_id: str | None = None,
@@ -40,6 +41,7 @@ class _AdminServiceStub:
             {
                 "target": target,
                 "prompt": prompt,
+                "model": model,
                 "vm_user": vm_user,
                 "dispatch_id": dispatch_id,
                 "resume_thread_id": resume_thread_id,
@@ -66,6 +68,7 @@ def test_default_registry_includes_all_known_effect_types() -> None:
         "effect:agent:prompt",
         "effect:vm:exec",
         "effect:vm:copy-files",
+        "effect:issue:update-state",
         "effect:session:update-metadata",
         "effect:git:promote-agent-branch",
         "effect:pr:create",
@@ -208,6 +211,24 @@ def test_agent_prompt_provider_emits_thread_id() -> None:
     assert admin_service.resume_calls[0]["target"] == "session-42"
     assert admin_service.resume_calls[0]["dispatch_id"] == output["dispatch_id"]
     assert admin_service.resume_calls[0]["resume_thread_id"] == "thread-123"
+
+
+def test_agent_prompt_provider_passes_model_override() -> None:
+    effect = AgentPromptEffectDefinition(
+        id="effect-prompt",
+        display_name="Prompt",
+        type="effect:agent:prompt",
+        prompt="continue",
+        session_id="session-42",
+        model="gpt-5.4",
+    )
+    admin_service = _AdminServiceStub(create_vm_calls=[], resume_calls=[])
+    factory = EffectProviderFactory(provider_config_resolver=_ResolverStub(), admin_service=admin_service)
+
+    provider = factory.build(effect)
+    provider.execute()
+
+    assert admin_service.resume_calls[0]["model"] == "gpt-5.4"
 
 
 def test_agent_prompt_provider_starts_new_thread_when_resume_thread_id_missing() -> None:

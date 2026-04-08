@@ -411,6 +411,7 @@ def test_trigger_orchestrator_await_agent_gate_accepts_completion_trigger_refere
                     "display_name": "Await agent",
                     "type": "gate:await-agent",
                     "completion_trigger_id": "agent-complete",
+                    "session_id": "session-1",
                     "outputs": {},
                 }
             ],
@@ -451,6 +452,7 @@ def test_trigger_orchestrator_await_agent_gate_accepts_linear_flow_without_compl
                     "id": "await-agent-1",
                     "display_name": "Await agent",
                     "type": "gate:await-agent",
+                    "session_id": "session-1",
                     "outputs": {},
                 }
             ],

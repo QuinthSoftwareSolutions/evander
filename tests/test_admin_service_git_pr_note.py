@@ -58,3 +58,40 @@ def test_admin_service_git_pr_note_query_returns_has_note_false_when_note_missin
 
     assert result["has_note"] is False
     assert result["body"] is None
+
+
+def test_admin_service_git_pr_note_query_falls_back_to_recent_first_parent_commit(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    service = AdminService(runtime_dir)
+
+    def _fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        if cmd[:6] == ["git", "-C", "/repo", "remote", "get-url", "agent-dropbox"]:
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="/git-remotes/sample.git\n", stderr="")
+        if cmd[:5] == ["git", "-C", "/repo", "fetch", "agent-dropbox"]:
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+        if cmd[:5] == ["git", "-C", "/repo", "rev-parse", "review/session-1/topic"]:
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout=f"{'a'*40}\n", stderr="")
+        if cmd[:7] == ["git", "-C", "/repo", "rev-list", "--first-parent", "--max-count=25", "review/session-1/topic"]:
+            return subprocess.CompletedProcess(
+                args=cmd,
+                returncode=0,
+                stdout=f"{'a'*40}\n{'b'*40}\n",
+                stderr="",
+            )
+        if cmd[:5] == ["git", "-C", "/repo", "notes", "--ref=refs/notes/agent-pr-cache/sample"]:
+            target_sha = cmd[-1]
+            if target_sha == "a" * 40:
+                return subprocess.CompletedProcess(args=cmd, returncode=1, stdout="", stderr="missing")
+            if target_sha == "b" * 40:
+                return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="Recovered agent note\n", stderr="")
+        return subprocess.CompletedProcess(args=cmd, returncode=1, stdout="", stderr="unexpected")
+
+    monkeypatch.setattr("agent_sandbox.admin_service.subprocess.run", _fake_run)
+
+    result = service.git_pr_note_query(host_repo_path="/repo", local_branch="review/session-1/topic")
+
+    assert result["has_note"] is True
+    assert result["body"] == "Recovered agent note"

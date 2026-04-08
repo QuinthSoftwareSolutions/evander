@@ -380,6 +380,39 @@ def test_resume_agent_passes_explicit_resume_thread_id(tmp_path: Path, monkeypat
     assert "receptionist-session" in watcher["cmd"]
 
 
+def test_resume_agent_uses_explicit_model_override(tmp_path: Path, monkeypatch) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.sessions.put(
+        "receptionist-session",
+        SessionManifest(
+            session_id="receptionist-session",
+            vm_id="agent-sandbox-receptionist-vm",
+            expires_at=datetime(2026, 4, 7, 12, 0, tzinfo=UTC),
+            allowed_tools=[],
+            model="gpt-5.2-codex",
+        ),
+    )
+
+    captured: dict[str, object] = {}
+
+    def fake_run_subprocess(cmd: list[str], **kwargs: object):
+        captured["cmd"] = cmd
+        captured["env"] = kwargs.get("env")
+        return subprocess.CompletedProcess(cmd, 0, stdout="thread_id=thread-model-1\nok\n", stderr="")
+
+    monkeypatch.setattr("agent_sandbox.admin_service._run_subprocess", fake_run_subprocess)
+
+    result = service.resume_agent(
+        "agent-sandbox-receptionist-vm",
+        "Resume now",
+        model="gpt-5.4",
+    )
+
+    assert result.success is True
+    assert result.thread_id == "thread-model-1"
+    assert captured["env"]["AGENT_MODEL"] == "gpt-5.4"
+
+
 def test_probe_agent_state_accepts_codex_resume_state(tmp_path: Path, monkeypatch) -> None:
     write_config(tmp_path)
     monkeypatch.setattr("agent_sandbox.admin_service._resolve_private_key_path", lambda: Path("/tmp/test-key"))
@@ -988,6 +1021,51 @@ def test_workflow_editor_document_round_trips_config_and_separate_layout(tmp_pat
     reread = service.read_workflow_editor_document()
     assert reread.config["edges"] == [{"source_id": "cron-15m", "target_id": "prompt-agent"}]
     assert reread.layout == persisted_layout
+
+
+def test_workflow_editor_document_uses_runtime_parent_as_project_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    config_root = tmp_path / "config" / "trigger-orchestrator"
+    config_root.mkdir(parents=True, exist_ok=True)
+    (config_root / "config.json").write_text(
+        json.dumps(
+            {
+                "runtime_dir": str(runtime_dir),
+                "triggers": [
+                    {
+                        "id": "cron-15m",
+                        "display_name": "Every 15 minutes",
+                        "type": "trigger:cron",
+                        "expression": "*/15 * * * *",
+                    }
+                ],
+                "gates": [],
+                "effects": [],
+                "queries": [],
+                "edges": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (config_root / "layout.json").write_text(
+        json.dumps({"nodes": {"cron-15m": {"x": 42, "y": 12}}}),
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(REPO_ROOT.parent)
+
+    service = AdminService(runtime_dir)
+    document = service.read_workflow_editor_document()
+
+    assert document.config_exists is True
+    assert document.layout_exists is True
+    assert document.config_path == str(config_root / "config.json")
+    assert document.layout_path == str(config_root / "layout.json")
+    assert document.config["triggers"][0]["id"] == "cron-15m"
+    assert document.layout["nodes"]["cron-15m"] == {"x": 42.0, "y": 12.0}
 
 
 def test_workflow_editor_validation_rejects_unknown_layout_nodes(tmp_path: Path) -> None:
@@ -2429,6 +2507,44 @@ def test_create_vm_with_repo_source_clones_repo_and_bootstraps_python(tmp_path: 
     assert python_runs[0][0][1:] == ["--vm-user", "agent", "lab-vm", "/src/repo", "/home/agent/sample-repo"]
     assert python_runs[0][1] is not None
     assert python_runs[0][1]["HOST_PYTHON_BIN"] == str(REPO_ROOT / ".venv" / "bin" / "python")
+
+
+def test_create_vm_with_repo_source_installs_agent_push_and_pr_note_helpers(tmp_path: Path, monkeypatch: Any) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    captured_ssh_input: list[str] = []
+
+    monkeypatch.setattr("agent_sandbox.admin_service._dominfo_field", lambda vm_name, field_name: None)
+    monkeypatch.setattr("agent_sandbox.admin_service._resolve_vm_ip", lambda vm_name: "192.168.250.10")
+    monkeypatch.setattr("agent_sandbox.admin_service._resolve_private_key_path", lambda: Path("/tmp/test-key"))
+
+    def _fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        if cmd[0].endswith("resolve_repo_source.sh") and "--path-only" in cmd:
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="/src/repo\n", stderr="")
+        if cmd[0].endswith("resolve_repo_source.sh") and "--name-only" in cmd:
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="sample-repo\n", stderr="")
+        if cmd[:5] == ["git", "-C", "/src/repo", "symbolic-ref", "--quiet"]:
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="origin/main\n", stderr="")
+        if cmd[:4] == ["git", "-C", "/src/repo", "branch"]:
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="main\n", stderr="")
+        if cmd[0] == "ssh":
+            captured_ssh_input.append(str(kwargs.get("input") or ""))
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="ok", stderr="")
+
+    monkeypatch.setattr("agent_sandbox.admin_service.subprocess.run", _fake_run)
+
+    result = service.create_vm(
+        vm_name="lab-vm",
+        session_id="issue-14724-lab-session",
+        repo_source="/src/repo",
+    )
+
+    assert result.success is True
+    assert captured_ssh_input
+    remote_script = captured_ssh_input[-1]
+    assert "config alias.agent-pr-note" in remote_script
+    assert "agent-pr-note\" ensure-head" in remote_script
+    assert "refs/notes/agent-pr" in remote_script
+    assert "config agent-sandbox.branchSuffix" in remote_script
 
 
 def test_create_vm_merges_additional_allowed_tools_into_session_manifest(tmp_path: Path, monkeypatch: Any) -> None:

@@ -128,18 +128,17 @@ else
   git -C "${HOST_REPO_PATH}" remote add "${REMOTE_NAME}" "${EXPECTED_URL}"
 fi
 
-if git -C "${HOST_REPO_PATH}" show-ref --verify --quiet "refs/heads/${REVIEW_BRANCH}"; then
-  echo "Local review branch already exists: ${REVIEW_BRANCH}" >&2
-  echo "Choose a different review branch name or delete it manually after review." >&2
-  exit 1
-fi
-
 FETCH_REF="refs/heads/${AGENT_BRANCH}"
 git -C "${HOST_REPO_PATH}" fetch "${REMOTE_NAME}" "${FETCH_REF}"
-git -C "${HOST_REPO_PATH}" switch -c "${REVIEW_BRANCH}" FETCH_HEAD >/dev/null
+if git -C "${HOST_REPO_PATH}" show-ref --verify --quiet "refs/heads/${REVIEW_BRANCH}"; then
+  git -C "${HOST_REPO_PATH}" switch -C "${REVIEW_BRANCH}" FETCH_HEAD >/dev/null
+  echo "Refreshed local review branch: ${REVIEW_BRANCH}"
+else
+  git -C "${HOST_REPO_PATH}" switch -c "${REVIEW_BRANCH}" FETCH_HEAD >/dev/null
+  echo "Created local review branch: ${REVIEW_BRANCH}"
+fi
 
 echo "Fetched ${AGENT_BRANCH} from ${REMOTE_NAME}"
-echo "Created local review branch: ${REVIEW_BRANCH}"
 echo
 echo "Next steps:"
 echo "  cd ${HOST_REPO_PATH}"

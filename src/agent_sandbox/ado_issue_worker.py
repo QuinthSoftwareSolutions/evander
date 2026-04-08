@@ -19,7 +19,8 @@ import httpx
 import yaml
 
 from .bootstrap import load_runtime_gateway_config, resolve_project_dir
-from .config import GatewayConfig
+from .audit import AuditEventType, AuditLogger
+from .config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
 from .directories import DirectoryService, DirectoryStore
 from .directory_config import (
     DirectoryConfigResolver,
@@ -27,11 +28,17 @@ from .directory_config import (
     get_domain_base_config,
     validate_effective_domain_payload,
 )
-from .models import DirectoryPath, LocalIssueRecord, RemoteIssueReference, SessionManifest, ToolName
+from .events.models import PullRequestNewFeedbackTriggerDefinition, TriggerEvent
+from .models import DirectoryPath, LocalIssueRecord, PrFeedbackItem, RemoteIssueReference, SessionManifest, ToolName
+from .pr_feedback_worker import AzureDevOpsFeedbackAdapter, FeedbackEnvelope, PrFeedbackStore, _stream_key
 from .policy_config import EffectivePolicyConfig
 from .provider_config import ProviderConfigResolver
 from .runtime import build_runtime
+from .services import _normalize_ignored_feedback_payload
 from .storage import JsonStore
+from .triggers.providers._cursor_state import TriggerCursorStore
+from .triggers.providers.pull_request_new_feedback import _parse_dt
+from .triggers.queue import TriggerEventQueue
 from .vm_defaults_config import VmDefaultsConfigResolver
 from .worker_directory_context import WorkerDirectoryContextResolver, log_shadow_context
 
@@ -1809,6 +1816,242 @@ def _processed_store_for_runtime() -> ProcessedWorkItemStore:
     return ProcessedWorkItemStore(worker_runtime_config.processed_store_path)
 
 
+def _trigger_orchestrator_config_path(config: WorkerConfig) -> Path:
+    legacy_config_path = config.legacy_config_path or config.gateway_config_path
+    if legacy_config_path is not None:
+        project_dir = resolve_project_dir(legacy_config_path=legacy_config_path)
+    else:
+        project_dir = config.runtime_dir.parent
+    return project_dir / "config" / "trigger-orchestrator" / "config.json"
+
+
+def _load_ado_pr_feedback_triggers(config: WorkerConfig) -> list[PullRequestNewFeedbackTriggerDefinition]:
+    config_path = _trigger_orchestrator_config_path(config)
+    if not config_path.exists():
+        return []
+    raw = json.loads(config_path.read_text(encoding="utf-8"))
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(raw)
+    return [
+        trigger
+        for trigger in worker_config.triggers
+        if isinstance(trigger, PullRequestNewFeedbackTriggerDefinition) and trigger.provider == "ado"
+    ]
+
+
+def _load_ado_pr_feedback_session_bindings(
+    *,
+    runtime_dir: Path,
+    pr_map_path: Path,
+    directory_path: str,
+) -> dict[tuple[str, str], dict[str, str]]:
+    if not pr_map_path.exists():
+        return {}
+    try:
+        payload = json.loads(pr_map_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    entries = payload.get("entries")
+    if not isinstance(entries, dict):
+        return {}
+
+    session_directory_paths: dict[str, str] = {}
+    session_vm_ids: dict[str, str] = {}
+    sessions_path = runtime_dir / "sessions.json"
+    if sessions_path.exists():
+        try:
+            sessions_payload = json.loads(sessions_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            sessions_payload = {}
+        if isinstance(sessions_payload, dict):
+            for session_id, raw_session in sessions_payload.items():
+                if not isinstance(raw_session, dict):
+                    continue
+                normalized_session_id = str(session_id).strip()
+                normalized_directory_path = str(raw_session.get("directory_path", "root")).strip() or "root"
+                normalized_vm_id = str(raw_session.get("vm_id", "")).strip()
+                if normalized_session_id:
+                    session_directory_paths[normalized_session_id] = normalized_directory_path
+                    if normalized_vm_id:
+                        session_vm_ids[normalized_session_id] = normalized_vm_id
+
+    bindings: dict[tuple[str, str], dict[str, str]] = {}
+    for raw in entries.values():
+        if not isinstance(raw, dict):
+            continue
+        provider = str(raw.get("provider", "")).strip()
+        repo = str(raw.get("repo", "")).strip()
+        pr_id = str(raw.get("pr_id", "")).strip()
+        session_id = str(raw.get("session_id", "")).strip()
+        mapped_directory_path = str(raw.get("directory_path", "")).strip() or session_directory_paths.get(session_id, "root")
+        if provider != "azure_devops" or not repo or not pr_id:
+            continue
+        if directory_path and not (
+            mapped_directory_path == directory_path or mapped_directory_path.startswith(f"{directory_path}/")
+        ):
+            continue
+        bindings[(repo, pr_id)] = {
+            "provider": provider,
+            "repo": repo,
+            "pr_id": pr_id,
+            "session_id": session_id,
+            "vm_id": session_vm_ids.get(session_id, ""),
+        }
+    return bindings
+
+
+def _latest_cursor_value(*values: str | None) -> str | None:
+    latest: datetime | None = None
+    latest_raw: str | None = None
+    for value in values:
+        parsed = _parse_dt(value)
+        if parsed is None:
+            continue
+        if latest is None or parsed > latest:
+            latest = parsed
+            latest_raw = value
+    return latest_raw
+
+
+def _publish_directory_pr_feedback_events(
+    *,
+    client: httpx.Client,
+    config: WorkerConfig,
+    runtime_gateway_config: GatewayConfig,
+    directory_path: str,
+) -> int:
+    triggers = _load_ado_pr_feedback_triggers(config)
+    if not triggers:
+        return 0
+
+    bindings = _load_ado_pr_feedback_session_bindings(
+        runtime_dir=config.runtime_dir,
+        pr_map_path=runtime_gateway_config.pr_map_path,
+        directory_path=directory_path,
+    )
+    if not bindings:
+        return 0
+
+    pat_env_name = runtime_gateway_config.azure_devops_pr_pat_env
+    pat = os.environ.get(pat_env_name, "").strip()
+    if not pat:
+        _LOG.debug(
+            "Skipping Azure PR feedback polling for directory=%s because %s is unset",
+            directory_path,
+            pat_env_name,
+        )
+        return 0
+
+    cursor_store = TriggerCursorStore(config.runtime_dir / "trigger-cursors-pr-feedback.json")
+    event_queue = TriggerEventQueue(config.runtime_dir / "trigger-orchestrator-events.json")
+    feedback_store = PrFeedbackStore(config.runtime_dir / "pr-feedback-store.json")
+    audit_logger = AuditLogger(config.runtime_dir / "audit.log")
+    ignored_feedback_ids = _read_ignored_feedback_ids(config.runtime_dir / "ignored-feedback-ids.json")
+    published_count = 0
+
+    for trigger in triggers:
+        adapter = AzureDevOpsFeedbackAdapter(
+            organization_url=trigger.organization_url or config.organization_url,
+            project=trigger.project or config.project,
+            pat=pat,
+            pat_env_name=pat_env_name,
+        )
+        state = cursor_store.get(trigger.id)
+        state_cursors = state.get("stream_cursors", {})
+        if not isinstance(state_cursors, dict):
+            state_cursors = {}
+        previous_cursors = dict(state_cursors)
+        next_cursors = dict(state_cursors)
+        discovered: list[tuple[dict[str, str], PrFeedbackItem]] = []
+
+        for repo, pr_id in sorted(bindings.keys()):
+            stream_key = _stream_key("azure_devops", repo, pr_id)
+            result = adapter.poll(
+                client=client,
+                repo=repo,
+                pr_id=pr_id,
+                cursor=previous_cursors.get(stream_key),
+            )
+            for envelope in result.feedback:
+                discovered.append(
+                    (
+                        {
+                            "provider": envelope.provider,
+                            "repo": envelope.repo,
+                            "pr_id": envelope.pr_id,
+                        },
+                        PrFeedbackItem.model_validate(envelope.model_dump(mode="json")),
+                    )
+                )
+            next_cursors[stream_key] = _latest_cursor_value(next_cursors.get(stream_key), result.next_cursor)
+
+        discovered.sort(key=lambda item: item[1].created_at)
+        for stream, feedback in discovered:
+            stream_key = _stream_key(stream["provider"], stream["repo"], stream["pr_id"])
+            previous = _parse_dt(previous_cursors.get(stream_key))
+            if previous is not None and feedback.created_at <= previous:
+                continue
+
+            binding = bindings.get((stream["repo"], stream["pr_id"]))
+            stored = feedback_store.add_feedback_if_new(
+                FeedbackEnvelope.model_validate(feedback.model_dump(mode="json"))
+            )
+            next_cursors[stream_key] = _latest_cursor_value(
+                next_cursors.get(stream_key),
+                feedback.created_at.astimezone(UTC).isoformat().replace("+00:00", "Z"),
+            )
+            feedback_store.set_cursor(stream_key, next_cursors[stream_key])
+            if feedback.feedback_id in ignored_feedback_ids:
+                continue
+            if stored:
+                audit_logger.log_decision(
+                    event_type=AuditEventType.FEEDBACK_DETECTED,
+                    session_id=binding["session_id"] if binding and binding.get("session_id") else None,
+                    vm_id=binding["vm_id"] if binding and binding.get("vm_id") else None,
+                    provider=feedback.provider,
+                    repo=feedback.repo,
+                    pr_id=feedback.pr_id,
+                    decision="detected",
+                    reason="new-feedback",
+                    args={
+                        "feedback": feedback.model_dump(mode="json"),
+                        "stream_bindings": [binding] if binding else [],
+                    },
+                )
+            event = TriggerEvent(
+                event_id=f"{trigger.id}:{stream['provider']}:{stream['repo']}:{stream['pr_id']}:{feedback.feedback_id}",
+                trigger_id=trigger.id,
+                trigger_type=trigger.type,
+                occurred_at=feedback.created_at.astimezone(UTC),
+                payload={
+                    "pr": stream,
+                    "feedback": feedback.model_dump(mode="json"),
+                }
+                | ({"session_id": binding["session_id"]} if binding and binding.get("session_id") else {}),
+            )
+            already_queued = event_queue.contains(event.event_id)
+            record = event_queue.publish(event)
+            if not already_queued and record.event_id == event.event_id:
+                published_count += 1
+        cursor_store.put(trigger.id, {"stream_cursors": next_cursors})
+
+    return published_count
+
+
+def _read_ignored_feedback_ids(path: Path) -> set[str]:
+    if not path.exists():
+        return set()
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    normalized_payload, feedback_ids, changed = _normalize_ignored_feedback_payload(payload)
+    if changed:
+        temp_path = path.with_suffix(f"{path.suffix}.tmp")
+        temp_path.write_text(
+            json.dumps(normalized_payload, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+        temp_path.replace(path)
+    return feedback_ids
+
+
 def run_worker(config: WorkerConfig) -> None:
     pat = _require_env(config.pat_env_var_name)
     auth_header = _build_auth_header(pat)
@@ -1824,6 +2067,12 @@ def run_worker(config: WorkerConfig) -> None:
                     logging.info("cycle skipped=no_directories")
                 for directory_path in config.directories:
                     try:
+                        _publish_directory_pr_feedback_events(
+                            client=client,
+                            config=config,
+                            runtime_gateway_config=runtime_gateway_config,
+                            directory_path=directory_path,
+                        )
                         _poll_and_process_directory(
                             client=client,
                             config=config,

@@ -28,6 +28,7 @@ EffectType = Literal[
     "effect:agent:prompt",
     "effect:vm:exec",
     "effect:vm:copy-files",
+    "effect:issue:update-state",
     "effect:session:update-metadata",
     "effect:git:promote-agent-branch",
     "effect:pr:create",
@@ -264,6 +265,15 @@ class GateMergeDefinition(GateDefinition):
 class GateAwaitAgentDefinition(GateDefinition):
     type: Literal["gate:await-agent"]
     completion_trigger_id: str | None = None
+    session_id: ConfigValue | None = None
+    vm_name: ConfigValue | None = None
+
+    @model_validator(mode="after")
+    def validate_target_selector(self) -> "GateAwaitAgentDefinition":
+        selectors = [self.session_id, self.vm_name]
+        if not any(value is not None for value in selectors):
+            raise ValueError("gate:await-agent requires session_id or vm_name")
+        return self
 
 
 GateDefinitionDiscriminated = Annotated[
@@ -307,6 +317,7 @@ class AgentPromptEffectDefinition(EffectDefinition):
     session_id: ConfigValue | None = None
     vm_name: ConfigValue | None = None
     prompt: ConfigValue
+    model: ConfigValue | None = None
     vm_user: ConfigValue | None = None
     resume_thread_id: ConfigValue | None = None
     output_mode: Literal["immediate", "on_completion"] = "immediate"
@@ -366,6 +377,13 @@ class VmCopyFilesEffectDefinition(EffectDefinition):
     vm_name: ConfigValue | None = None
     vm_user: ConfigValue | None = None
     files: list[VmCopyFilesItemDefinition]
+
+
+class IssueUpdateStateEffectDefinition(EffectDefinition):
+    type: Literal["effect:issue:update-state"]
+    issue_id: ConfigValue
+    state: ConfigValue
+    sync_proxy_cache: ConfigValue | None = True
 
 
 class SessionUpdateMetadataEffectDefinition(EffectDefinition):
@@ -431,6 +449,7 @@ EffectDefinitionDiscriminated = Annotated[
     | AgentPromptEffectDefinition
     | VmExecEffectDefinition
     | VmCopyFilesEffectDefinition
+    | IssueUpdateStateEffectDefinition
     | SessionUpdateMetadataEffectDefinition
     | GitPromoteAgentBranchEffectDefinition
     | PrCreateEffectDefinition,
@@ -725,6 +744,15 @@ _STATIC_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
         "copied_paths": {"type": "array"},
         "file_count": {"type": "integer"},
         "copied_files": {"type": "array"},
+    },
+    "effect:issue:update-state": {
+        "success": {"type": "boolean"},
+        "issue_number": {"type": "string"},
+        "source_type": {"type": "string"},
+        "updated": {"type": "boolean"},
+        "state": {"type": "string"},
+        "provider": {"type": "string"},
+        "remote_issue_id": {"type": "string"},
     },
     "effect:session:update-metadata": {
         "success": {"type": "boolean"},

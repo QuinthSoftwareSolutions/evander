@@ -26,7 +26,7 @@ from .directory_config import (
     PrTemplateDirectoryConfig,
 )
 from .models import ApprovalStatus, ToolName
-ADMIN_APP_DEFAULT_RUNTIME_DIR = Path("runtime")
+ADMIN_APP_DEFAULT_RUNTIME_DIR = Path(__file__).resolve().parents[2] / "runtime"
 _ACTIVE_ISSUE_FILTER_LABEL = "Active"
 _ALL_ISSUE_FILTER_LABEL = "All"
 _INACTIVE_ISSUE_STATES = frozenset({"Completed", "Closed"})

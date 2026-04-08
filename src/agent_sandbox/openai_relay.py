@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlencode
 
 import httpx
 import uvicorn
@@ -41,9 +42,16 @@ HOP_BY_HOP_HEADERS = {
 
 
 class OpenAIRelay:
-    def __init__(self, config: GatewayConfig, transport: httpx.AsyncBaseTransport | None = None) -> None:
+    def __init__(
+        self,
+        config: GatewayConfig,
+        transport: httpx.AsyncBaseTransport | None = None,
+        *,
+        provider_config_resolver: ProviderConfigResolver | None = None,
+    ) -> None:
         self.config = config
         self.transport = transport
+        self.provider_config_resolver = provider_config_resolver or ProviderConfigResolver(config)
         self.stream_started_count = 0
         self.stream_clean_end_count = 0
         self.stream_transport_terminated_count = 0
@@ -62,17 +70,26 @@ class OpenAIRelay:
             )
 
         async def proxy(request: Request) -> Response:
-            api_key = os.environ.get(relay.config.openai_api_key_env)
+            try:
+                resolved_config = relay._resolve_request_config(request)
+            except ValueError as exc:
+                return JSONResponse({"error": str(exc)}, status_code=400)
+
+            api_key = os.environ.get(resolved_config.openai_api_key_env)
             if not api_key:
                 return JSONResponse(
                     {
-                        "error": f"Host environment variable {relay.config.openai_api_key_env} is not set."
+                        "error": f"Host environment variable {resolved_config.openai_api_key_env} is not set."
                     },
                     status_code=503,
                 )
 
             upstream_path = request.path_params["path"]
-            upstream_url = f"{relay.config.openai_api_base_url.rstrip('/')}/{upstream_path}"
+            upstream_url = relay._upstream_http_url(
+                base_url=resolved_config.openai_api_base_url,
+                upstream_path=upstream_path,
+                query_items=request.query_params.multi_items(),
+            )
             request_body = await request.body()
 
             headers = {
@@ -89,10 +106,11 @@ class OpenAIRelay:
                     upstream_url=upstream_url,
                     headers=headers,
                     request_body=request_body,
+                    timeout_seconds=resolved_config.openai_relay_timeout_seconds,
                 )
 
             async with httpx.AsyncClient(
-                timeout=relay.config.openai_relay_timeout_seconds,
+                timeout=resolved_config.openai_relay_timeout_seconds,
                 transport=relay.transport,
             ) as client:
                 upstream_response = await client.request(
@@ -109,13 +127,23 @@ class OpenAIRelay:
                 )
 
         async def websocket_proxy(websocket: WebSocket) -> None:
-            api_key = os.environ.get(relay.config.openai_api_key_env)
+            try:
+                resolved_config = relay._resolve_websocket_config(websocket)
+            except ValueError as exc:
+                await websocket.close(code=1008, reason=str(exc))
+                return
+
+            api_key = os.environ.get(resolved_config.openai_api_key_env)
             if not api_key:
                 await websocket.close(code=1011, reason="missing upstream API key")
                 return
 
             upstream_path = websocket.path_params["path"]
-            upstream_url = relay._upstream_websocket_url(websocket, upstream_path)
+            upstream_url = relay._upstream_websocket_url(
+                base_url=resolved_config.openai_api_base_url,
+                upstream_path=upstream_path,
+                query_items=websocket.query_params.multi_items(),
+            )
             headers = {
                 key: value
                 for key, value in websocket.headers.items()
@@ -124,7 +152,11 @@ class OpenAIRelay:
             }
             headers["authorization"] = f"Bearer {api_key}"
 
-            async with relay._connect_upstream_websocket(upstream_url, headers=headers) as upstream:
+            async with relay._connect_upstream_websocket(
+                upstream_url,
+                headers=headers,
+                timeout_seconds=resolved_config.openai_relay_timeout_seconds,
+            ) as upstream:
                 await websocket.accept()
                 await relay._proxy_websocket_traffic(websocket, upstream)
 
@@ -132,7 +164,9 @@ class OpenAIRelay:
             debug=False,
             routes=[
                 Route("/healthz", health, methods=["GET"]),
+                Route("/v1/session/{session_id}/{path:path}", proxy, methods=["GET", "POST", "PUT", "PATCH", "DELETE"]),
                 Route("/v1/{path:path}", proxy, methods=["GET", "POST", "PUT", "PATCH", "DELETE"]),
+                WebSocketRoute("/v1/session/{session_id}/{path:path}", websocket_proxy),
                 WebSocketRoute("/v1/{path:path}", websocket_proxy),
             ],
         )
@@ -143,6 +177,7 @@ class OpenAIRelay:
         upstream_url: str,
         headers: dict[str, str],
         request_body: bytes,
+        timeout_seconds: float,
     ) -> StreamingResponse:
         self.stream_started_count += 1
         stream_id = self.stream_started_count
@@ -158,7 +193,7 @@ class OpenAIRelay:
         )
 
         client = httpx.AsyncClient(
-            timeout=self.config.openai_relay_timeout_seconds,
+            timeout=timeout_seconds,
             transport=self.transport,
         )
         upstream_stream = client.stream(
@@ -230,6 +265,63 @@ class OpenAIRelay:
             if key.lower() not in HOP_BY_HOP_HEADERS
         }
 
+    def _resolve_request_config(self, request: Request) -> GatewayConfig:
+        session_id = self._session_id_from_path_params(request.path_params) or self._require_session_id(
+            request.query_params.multi_items()
+        )
+        resolved_config = self.provider_config_resolver.resolve_for_session_id(session_id)
+        self._log_resolved_api_key_env(
+            session_id=session_id,
+            request_kind="http",
+            path=request.url.path,
+            api_key_env=resolved_config.openai_api_key_env,
+        )
+        return resolved_config
+
+    def _resolve_websocket_config(self, websocket: WebSocket) -> GatewayConfig:
+        session_id = self._session_id_from_path_params(websocket.path_params) or self._require_session_id(
+            websocket.query_params.multi_items()
+        )
+        resolved_config = self.provider_config_resolver.resolve_for_session_id(session_id)
+        self._log_resolved_api_key_env(
+            session_id=session_id,
+            request_kind="websocket",
+            path=websocket.url.path,
+            api_key_env=resolved_config.openai_api_key_env,
+        )
+        return resolved_config
+
+    @staticmethod
+    def _log_resolved_api_key_env(*, session_id: str, request_kind: str, path: str, api_key_env: str) -> None:
+        logger.warning(
+            "relay_resolved_api_key_env session_id=%s request_kind=%s path=%s api_key_env=%s",
+            session_id,
+            request_kind,
+            path,
+            api_key_env,
+        )
+
+    @staticmethod
+    def _session_id_from_path_params(path_params: dict[str, Any]) -> str | None:
+        session_id = str(path_params.get("session_id") or "").strip()
+        return session_id or None
+
+    @staticmethod
+    def _require_session_id(query_items: list[tuple[str, str]]) -> str:
+        for key, value in query_items:
+            if key != "session_id":
+                continue
+            session_id = value.strip()
+            if session_id:
+                return session_id
+            raise ValueError("session_id query parameter must not be empty")
+        raise ValueError("session_id query parameter is required")
+
+    @staticmethod
+    def _filtered_query_string(query_items: list[tuple[str, str]]) -> str:
+        filtered = [(key, value) for key, value in query_items if key != "session_id"]
+        return urlencode(filtered, doseq=True)
+
     @staticmethod
     def _websocket_base_url(base_url: str) -> str:
         if base_url.startswith("https://"):
@@ -238,16 +330,26 @@ class OpenAIRelay:
             return f"ws://{base_url[len('http://'):]}"
         return base_url
 
-    def _upstream_websocket_url(self, websocket: WebSocket, upstream_path: str) -> str:
-        base_url = self._websocket_base_url(self.config.openai_api_base_url.rstrip("/"))
+    @classmethod
+    def _upstream_http_url(cls, *, base_url: str, upstream_path: str, query_items: list[tuple[str, str]]) -> str:
+        upstream_url = f"{base_url.rstrip('/')}/{upstream_path}"
+        filtered_query = cls._filtered_query_string(query_items)
+        if filtered_query:
+            upstream_url = f"{upstream_url}?{filtered_query}"
+        return upstream_url
+
+    @classmethod
+    def _upstream_websocket_url(cls, *, base_url: str, upstream_path: str, query_items: list[tuple[str, str]]) -> str:
+        base_url = cls._websocket_base_url(base_url.rstrip("/"))
         upstream_url = f"{base_url}/{upstream_path}"
-        if websocket.url.query:
-            upstream_url = f"{upstream_url}?{websocket.url.query}"
+        filtered_query = cls._filtered_query_string(query_items)
+        if filtered_query:
+            upstream_url = f"{upstream_url}?{filtered_query}"
         return upstream_url
 
     @asynccontextmanager
     async def _connect_upstream_websocket(
-        self, upstream_url: str, *, headers: dict[str, str]
+        self, upstream_url: str, *, headers: dict[str, str], timeout_seconds: float
     ) -> AsyncIterator[Any]:
         try:
             import websockets
@@ -259,8 +361,8 @@ class OpenAIRelay:
         async with websockets.connect(
             upstream_url,
             additional_headers=headers,
-            open_timeout=self.config.openai_relay_timeout_seconds,
-            close_timeout=self.config.openai_relay_timeout_seconds,
+            open_timeout=timeout_seconds,
+            close_timeout=timeout_seconds,
         ) as upstream:
             yield upstream
 
@@ -328,8 +430,11 @@ class OpenAIRelay:
 
 
 def create_app(config: GatewayConfig, transport: httpx.AsyncBaseTransport | None = None) -> Starlette:
-    resolved_config = ProviderConfigResolver(config).resolve_for_directory("root")
-    return OpenAIRelay(resolved_config, transport=transport).create_app()
+    return OpenAIRelay(
+        config,
+        transport=transport,
+        provider_config_resolver=ProviderConfigResolver(config),
+    ).create_app()
 
 
 def _project_root() -> Path:

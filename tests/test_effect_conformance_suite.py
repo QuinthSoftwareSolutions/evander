@@ -131,6 +131,15 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
             ],
         }
     )
+    issue_state = adapter.validate_python(
+        {
+            "id": "effect-issue-state",
+            "display_name": "Update issue state",
+            "type": "effect:issue:update-state",
+            "issue_id": "14084",
+            "state": "In Progress",
+        }
+    )
     promote = adapter.validate_python(
         {
             "id": "effect-promote",
@@ -157,6 +166,7 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
     assert prompt.type == "effect:agent:prompt"
     assert vm_exec.type == "effect:vm:exec"
     assert vm_copy.type == "effect:vm:copy-files"
+    assert issue_state.type == "effect:issue:update-state"
     assert promote.type == "effect:git:promote-agent-branch"
     assert pr_create.type == "effect:pr:create"
     assert prompt.prompt == "Continue ${{effect_1.session_id}}"

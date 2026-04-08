@@ -274,6 +274,34 @@ class WorkflowEditorSavePayload(BaseModel):
     layout: dict[str, object]
 
 
+class WorkflowRunNodeActivityPayload(BaseModel):
+    node_id: str
+    status: str
+    count: int = 1
+    source: str | None = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    dispatch_id: str | None = None
+
+
+class WorkflowRunSummaryPayload(BaseModel):
+    event_id: str
+    trace_id: str | None = None
+    source_node_id: str | None = None
+    source_trigger_type: str | None = None
+    delivery_state: str | None = None
+    occurred_at: datetime | None = None
+    latest_activity_at: datetime | None = None
+    active_nodes: list[WorkflowRunNodeActivityPayload] = Field(default_factory=list)
+
+
+class WorkflowRunSnapshotPayload(BaseModel):
+    worker_id: str = "trigger-orchestrator"
+    generated_at: datetime
+    runs: list[WorkflowRunSummaryPayload] = Field(default_factory=list)
+    node_activity: dict[str, dict[str, int]] = Field(default_factory=dict)
+
+
 class WorkflowEditorFieldOption(BaseModel):
     value: str
     label: str
@@ -310,6 +338,38 @@ _GATE_DEFINITION_ADAPTER = TypeAdapter(GateDefinitionDiscriminated)
 _EFFECT_DEFINITION_ADAPTER = TypeAdapter(EffectDefinitionDiscriminated)
 _QUERY_DEFINITION_ADAPTER = TypeAdapter(QueryDefinitionDiscriminated)
 _EDGE_DEFINITION_ADAPTER = TypeAdapter(EdgeDefinition)
+
+
+def _module_project_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
+def _resolve_project_dir_for_admin_service(
+    *,
+    runtime_dir: Path,
+    legacy_config_path: Path | None,
+) -> Path:
+    if legacy_config_path is not None:
+        return resolve_project_dir(legacy_config_path=legacy_config_path)
+    runtime_root = runtime_dir.expanduser()
+    if not runtime_root.is_absolute():
+        repo_relative_runtime = _module_project_root() / runtime_root
+        if repo_relative_runtime.exists() or (repo_relative_runtime.parent / "config").exists():
+            runtime_root = repo_relative_runtime
+        else:
+            runtime_root = runtime_root.resolve()
+    else:
+        runtime_root = runtime_root.resolve()
+    if runtime_root.name == "runtime":
+        return runtime_root.parent
+    return runtime_root.parent if runtime_root.parent != runtime_root else runtime_root
+
+
+def _guest_agent_pr_note_helper_b64(project_dir: Path) -> str:
+    helper_path = project_dir / "scripts" / "guest" / "agent_pr_note.sh"
+    if not helper_path.exists():
+        helper_path = _module_project_root() / "scripts" / "guest" / "agent_pr_note.sh"
+    return base64.b64encode(helper_path.read_bytes()).decode("ascii")
 
 
 def _field_option(value: str, label: str | None = None) -> WorkflowEditorFieldOption:
@@ -564,8 +624,19 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("session_id", "Session ID", "string", bindable=True),
             _field("vm_name", "VM name", "string", bindable=True),
             _field("prompt", "Prompt", "string", required=True, bindable=True, multiline=True),
+            _field("model", "Model", "string", bindable=True),
             _field("vm_user", "VM user", "string", bindable=True),
             _field("resume_thread_id", "Resume thread ID", "string", bindable=True),
+            _field(
+                "output_mode",
+                "Output mode",
+                "string",
+                bindable=True,
+                options=[
+                    _field_option("immediate", "Immediate"),
+                    _field_option("on_completion", "On completion"),
+                ],
+            ),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(
@@ -626,6 +697,16 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                     _field("overwrite", "Overwrite", "boolean", bindable=True),
                 ],
             ),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="effect",
+        type="effect:issue:update-state",
+        label="Issue update state",
+        fields=[
+            _field("issue_id", "Issue ID", "string", required=True, bindable=True),
+            _field("state", "State", "string", required=True, bindable=True),
+            _field("sync_proxy_cache", "Sync proxy cache", "boolean", bindable=True),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(
@@ -716,6 +797,90 @@ def _safe_validation_error(exc: ValidationError, *, context: str) -> ValueError:
 
 def _utc_now() -> datetime:
     return datetime.now(UTC)
+
+
+def _coerce_optional_string(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _coerce_optional_datetime(value: object) -> datetime | None:
+    if isinstance(value, datetime):
+        return value.astimezone(UTC) if value.tzinfo is not None else value.replace(tzinfo=UTC)
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed.astimezone(UTC) if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+
+
+def _read_json_object(path: Path | None) -> dict[str, object]:
+    if path is None or not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _resolve_path_setting(*, base_dir: Path, value: object | None, fallback: Path) -> Path:
+    if value is None:
+        candidate = fallback
+    elif isinstance(value, Path):
+        candidate = value
+    else:
+        text = str(value).strip()
+        candidate = Path(text) if text else fallback
+    candidate = candidate.expanduser()
+    if candidate.is_absolute():
+        return candidate.resolve()
+    return (base_dir / candidate).resolve()
+
+
+def _merge_run_node_activity(items: object) -> list[WorkflowRunNodeActivityPayload]:
+    if not isinstance(items, list):
+        return []
+    merged: dict[tuple[str, str], WorkflowRunNodeActivityPayload] = {}
+    for item in items:
+        try:
+            activity = item if isinstance(item, WorkflowRunNodeActivityPayload) else WorkflowRunNodeActivityPayload.model_validate(item)
+        except ValidationError:
+            continue
+        key = (activity.node_id, activity.status)
+        existing = merged.get(key)
+        if existing is None:
+            merged[key] = activity.model_copy(deep=True)
+            continue
+        existing.count += activity.count
+        if existing.started_at is None or (
+            activity.started_at is not None and activity.started_at < existing.started_at
+        ):
+            existing.started_at = activity.started_at
+        if existing.finished_at is None or (
+            activity.finished_at is not None and activity.finished_at > existing.finished_at
+        ):
+            existing.finished_at = activity.finished_at
+        if existing.source is None and activity.source is not None:
+            existing.source = activity.source
+        if existing.dispatch_id is None and activity.dispatch_id is not None:
+            existing.dispatch_id = activity.dispatch_id
+    order = {"running": 0, "waiting": 1, "inflight": 2, "pending": 3}
+    return sorted(
+        merged.values(),
+        key=lambda item: (
+            order.get(item.status, 99),
+            -(item.count or 0),
+            item.node_id,
+        ),
+    )
 
 
 def _normalize_resume_mode(value: str | None) -> str:
@@ -1963,7 +2128,10 @@ class AdminService:
             candidate_runtime = resolve_runtime_dir(legacy_config_path=explicit_legacy)
         self.runtime_dir = candidate_runtime
         self.legacy_config_path = explicit_legacy
-        self.project_dir = resolve_project_dir(legacy_config_path=self.legacy_config_path)
+        self.project_dir = _resolve_project_dir_for_admin_service(
+            runtime_dir=self.runtime_dir,
+            legacy_config_path=self.legacy_config_path,
+        )
         bootstrap_config = load_host_bootstrap_config(
             runtime_dir=self.runtime_dir,
             legacy_config_path=self.legacy_config_path,
@@ -2308,15 +2476,19 @@ class AdminService:
 
         remote_url = f"ssh://{issue_setup.git_ssh_alias}{issue_setup.git_root}/{repo_name}.git"
         guest_repo_root = f"/home/{vm_user}/{repo_name}"
+        agent_pr_note_helper_b64 = _guest_agent_pr_note_helper_b64(self.project_dir)
         issue_config_line = ""
         if issue_number:
             issue_config_line = f'git -C "${{TARGET_DIR}}" config agent-sandbox.issueNumber "{issue_number}"\n'
+        branch_suffix_line = 'git -C "${TARGET_DIR}" config agent-sandbox.branchSuffix "${VM_NAME}"\n'
         remote_script = f"""
 set -euo pipefail
 . ~/.profile
 TARGET_DIR="{guest_repo_root}"
 REMOTE_URL="{remote_url}"
 SESSION_ID="{session_id}"
+VM_NAME="{vm_name}"
+AGENT_PR_NOTE_HELPER_B64="{agent_pr_note_helper_b64}"
 if [[ -e "${{TARGET_DIR}}" ]]; then
   echo "Guest repo path already exists: ${{TARGET_DIR}}" >&2
   exit 1
@@ -2326,7 +2498,19 @@ git -C "${{TARGET_DIR}}" remote add agent "${{REMOTE_URL}}"
 git -C "${{TARGET_DIR}}" config user.name "Truman Bot"
 git -C "${{TARGET_DIR}}" config user.email "truman@quinth.se"
 git -C "${{TARGET_DIR}}" config agent-sandbox.sessionId "${{SESSION_ID}}"
-{issue_config_line}git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_ID:-$(git config --get agent-sandbox.sessionId || true)}}; if [ -z "${{session_id}}" ]; then echo "SESSION_ID is not set; refusing ambiguous agent push." >&2; return 1; fi; expected_issue_number=$(git config --get agent-sandbox.issueNumber || true); if [ -n "${{expected_issue_number}}" ]; then case "${{session_id}}" in issue-${{expected_issue_number}}|issue-${{expected_issue_number}}-*) ;; *) echo "SESSION_ID (${{session_id}}) does not match expected issue ${{expected_issue_number}}; refusing agent push." >&2; return 1 ;; esac; fi; branch=$(git rev-parse --abbrev-ref HEAD); git push agent HEAD:refs/heads/agents/${{session_id}}/${{branch}}; }}; f'
+{issue_config_line}{branch_suffix_line}install -d -m 0755 "${{TARGET_DIR}}/.agent-sandbox/bin"
+python3 - "${{TARGET_DIR}}/.agent-sandbox/bin/agent-pr-note" "${{AGENT_PR_NOTE_HELPER_B64}}" <<'PY'
+import base64
+import os
+import sys
+from pathlib import Path
+
+target_path = Path(sys.argv[1])
+target_path.write_bytes(base64.b64decode(sys.argv[2]))
+os.chmod(target_path, 0o755)
+PY
+git -C "${{TARGET_DIR}}" config alias.agent-pr-note '!f(){{ repo_root=$(git rev-parse --show-toplevel); "${{repo_root}}/.agent-sandbox/bin/agent-pr-note" "$@"; }}; f'
+git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_ID:-$(git config --get agent-sandbox.sessionId || true)}}; if [ -z "${{session_id}}" ]; then echo "SESSION_ID is not set; refusing ambiguous agent push." >&2; return 1; fi; expected_issue_number=$(git config --get agent-sandbox.issueNumber || true); if [ -n "${{expected_issue_number}}" ]; then case "${{session_id}}" in issue-${{expected_issue_number}}|issue-${{expected_issue_number}}-*) ;; *) echo "SESSION_ID (${{session_id}}) does not match expected issue ${{expected_issue_number}}; refusing agent push." >&2; return 1 ;; esac; fi; suffix_source=${{AGENT_BRANCH_SUFFIX:-$(git config --get agent-sandbox.branchSuffix || true)}}; if [ -z "${{suffix_source}}" ]; then suffix_source=${{HOSTNAME:-}}; fi; suffix=$(printf "%s" "${{suffix_source}}" | tr "[:upper:]" "[:lower:]" | tr -cs "a-z0-9._-" "-" | sed "s/^-*//;s/-*$//"); if [ -z "${{suffix}}" ]; then echo "AGENT_BRANCH_SUFFIX/HOSTNAME is empty; refusing ambiguous agent push." >&2; return 1; fi; repo_root=$(git rev-parse --show-toplevel); "${{repo_root}}/.agent-sandbox/bin/agent-pr-note" ensure-head; branch=$(git rev-parse --abbrev-ref HEAD); git push agent HEAD:refs/heads/agents/${{session_id}}/${{branch}}-${{suffix}} refs/notes/agent-pr; }}; f'
 """
         ssh_result = _run_subprocess(
             ["ssh", *_ssh_options(vm_name, vm_ip, ssh_private_key_path), f"{vm_user}@{vm_ip}", "bash", "-s"],
@@ -3003,6 +3187,7 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
         target: str,
         prompt: str,
         *,
+        model: str | None = None,
         vm_user: str = "agent",
         dispatch_id: str | None = None,
         resume_thread_id: str | None = None,
@@ -3013,7 +3198,7 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
         directory_path: str | None = None
         try:
             session_id, manifest = _resolve_session_target(target, sessions)
-            model = self._resolve_agent_model_for_session(manifest)
+            resolved_model = str(model or "").strip() or self._resolve_agent_model_for_session(manifest)
             directory_path = manifest.directory_path
         except ValueError as exc:
             return VmActionResult(
@@ -3036,7 +3221,7 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
             *(["--dispatch-id", dispatch_id] if dispatch_id else []),
             *(["--resume-thread-id", resume_thread_id] if resume_thread_id else ["--resume-mode", "new_context"]),
         ]
-        completed = _run_subprocess(args, capture_output=True, text=True, env=os.environ | {"AGENT_MODEL": model})
+        completed = _run_subprocess(args, capture_output=True, text=True, env=os.environ | {"AGENT_MODEL": resolved_model})
         stdout = completed.stdout or ""
         stderr = completed.stderr or ""
         thread_id: str | None = None
@@ -3479,20 +3664,43 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
             raise RuntimeError(
                 (rev_parse_result.stderr or rev_parse_result.stdout or "").strip()
                 or f"Failed to resolve branch {local_branch}"
-            )
+        )
         commit_sha = (rev_parse_result.stdout or "").strip()
 
-        note_result = _run_subprocess(
-            ["git", "-C", host_repo_path, "notes", f"--ref={local_notes_ref}", "show", commit_sha],
-            capture_output=True,
-            text=True,
-        )
-        if note_result.returncode != 0:
-            body = None
-            has_note = False
-        else:
-            body = (note_result.stdout or "").strip() or None
-            has_note = body is not None
+        def read_note(target_sha: str) -> str | None:
+            note_result = _run_subprocess(
+                ["git", "-C", host_repo_path, "notes", f"--ref={local_notes_ref}", "show", target_sha],
+                capture_output=True,
+                text=True,
+            )
+            if note_result.returncode != 0:
+                return None
+            return (note_result.stdout or "").strip() or None
+
+        body = read_note(commit_sha)
+        if body is None:
+            rev_list_result = _run_subprocess(
+                [
+                    "git",
+                    "-C",
+                    host_repo_path,
+                    "rev-list",
+                    "--first-parent",
+                    "--max-count=25",
+                    local_branch,
+                ],
+                capture_output=True,
+                text=True,
+            )
+            if rev_list_result.returncode == 0:
+                for candidate_sha in (line.strip() for line in (rev_list_result.stdout or "").splitlines()):
+                    if not candidate_sha or candidate_sha == commit_sha:
+                        continue
+                    body = read_note(candidate_sha)
+                    if body is not None:
+                        break
+
+        has_note = body is not None
 
         return {
             "body": body,
@@ -3961,6 +4169,9 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
     ) -> WorkflowEditorSavePayload:
         return self._save_workflow_editor_document(config=config, layout=layout)
 
+    def read_workflow_run_snapshot(self) -> WorkflowRunSnapshotPayload:
+        return self._read_workflow_run_snapshot()
+
     def upsert_trigger_config(self, trigger_id: str, payload: dict[str, object]) -> TriggerConfigMutationPayload:
         return self._upsert_trigger_config(trigger_id, payload)
 
@@ -4089,6 +4300,206 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
             layout_path=str(layout_path),
             config=validation.config,
             layout=validation.layout,
+        )
+
+    def _read_workflow_run_snapshot(self) -> WorkflowRunSnapshotPayload:
+        worker_config = self._read_worker_global_config("trigger-orchestrator").config
+        runtime_dir = _resolve_path_setting(
+            base_dir=self.project_dir,
+            value=worker_config.get("runtime_dir"),
+            fallback=self.config.runtime_dir,
+        )
+        event_queue_store_path = _resolve_path_setting(
+            base_dir=self.project_dir,
+            value=worker_config.get("event_queue_store_path"),
+            fallback=runtime_dir / "trigger-orchestrator-events.json",
+        )
+        effect_execution_store_path = _resolve_path_setting(
+            base_dir=self.project_dir,
+            value=worker_config.get("effect_execution_store_path"),
+            fallback=runtime_dir / "effect-orchestrator-executions.json",
+        )
+        gate_execution_store_path = _resolve_path_setting(
+            base_dir=self.project_dir,
+            value=worker_config.get("gate_execution_store_path"),
+            fallback=runtime_dir / "gate-orchestrator-executions.json",
+        )
+        runs_by_event: dict[str, dict[str, object]] = {}
+        node_activity: dict[str, dict[str, int]] = {}
+
+        def ensure_run(event_id: str) -> dict[str, object]:
+            existing = runs_by_event.get(event_id)
+            if existing is not None:
+                return existing
+            created: dict[str, object] = {
+                "event_id": event_id,
+                "active_nodes": [],
+            }
+            runs_by_event[event_id] = created
+            return created
+
+        def register_node_activity(
+            *,
+            event_id: str,
+            node_id: str,
+            status: str,
+            source: str,
+            trace_id: str | None = None,
+            source_node_id: str | None = None,
+            source_trigger_type: str | None = None,
+            delivery_state: str | None = None,
+            occurred_at: datetime | None = None,
+            started_at: datetime | None = None,
+            finished_at: datetime | None = None,
+            dispatch_id: str | None = None,
+        ) -> None:
+            normalized_node_id = str(node_id or "").strip()
+            if not normalized_node_id:
+                return
+            run = ensure_run(event_id)
+            if trace_id and not run.get("trace_id"):
+                run["trace_id"] = trace_id
+            if source_node_id and not run.get("source_node_id"):
+                run["source_node_id"] = source_node_id
+            if source_trigger_type and not run.get("source_trigger_type"):
+                run["source_trigger_type"] = source_trigger_type
+            if delivery_state and not run.get("delivery_state"):
+                run["delivery_state"] = delivery_state
+            if occurred_at is not None and run.get("occurred_at") is None:
+                run["occurred_at"] = occurred_at
+            latest_activity_at = max(
+                (value for value in (finished_at, started_at, occurred_at) if value is not None),
+                default=None,
+            )
+            previous_latest = run.get("latest_activity_at")
+            if latest_activity_at is not None and (
+                not isinstance(previous_latest, datetime) or latest_activity_at > previous_latest
+            ):
+                run["latest_activity_at"] = latest_activity_at
+            active_nodes = run.setdefault("active_nodes", [])
+            assert isinstance(active_nodes, list)
+            active_nodes.append(
+                WorkflowRunNodeActivityPayload(
+                    node_id=normalized_node_id,
+                    status=status,
+                    source=source,
+                    started_at=started_at,
+                    finished_at=finished_at,
+                    dispatch_id=dispatch_id,
+                )
+            )
+            node_status_counts = node_activity.setdefault(normalized_node_id, {})
+            node_status_counts[status] = node_status_counts.get(status, 0) + 1
+
+        queue_payload = _read_json_object(event_queue_store_path)
+        for event_id, raw_record in queue_payload.items():
+            if not isinstance(raw_record, dict):
+                continue
+            delivery_state = str(raw_record.get("delivery_state") or "").strip()
+            if delivery_state == "delivered":
+                continue
+            normalized_event_id = str(raw_record.get("event_id") or event_id).strip()
+            source_node_id = str(raw_record.get("trigger_id") or "").strip()
+            register_node_activity(
+                event_id=normalized_event_id,
+                node_id=source_node_id,
+                status=delivery_state or "pending",
+                source="queue",
+                trace_id=_coerce_optional_string(raw_record.get("trace_id")),
+                source_node_id=source_node_id,
+                source_trigger_type=_coerce_optional_string(raw_record.get("trigger_type")),
+                delivery_state=delivery_state or None,
+                occurred_at=_coerce_optional_datetime(raw_record.get("occurred_at")),
+                started_at=_coerce_optional_datetime(raw_record.get("inflight_at")),
+                finished_at=_coerce_optional_datetime(raw_record.get("delivered_at")),
+            )
+
+        execution_payload = _read_json_object(effect_execution_store_path)
+        for execution_id, raw_record in execution_payload.items():
+            if not isinstance(raw_record, dict):
+                continue
+            status = str(raw_record.get("status") or "").strip()
+            if status not in {"running", "waiting"}:
+                continue
+            event_id = str(raw_record.get("event_id") or execution_id).strip()
+            node_id = str(raw_record.get("effect_id") or "").strip()
+            register_node_activity(
+                event_id=event_id,
+                node_id=node_id,
+                status=status,
+                source="effect_execution",
+                trace_id=_coerce_optional_string(raw_record.get("trace_id")),
+                source_node_id=_coerce_optional_string(raw_record.get("source_node_id")),
+                source_trigger_type=_coerce_optional_string(raw_record.get("source_trigger_type")),
+                started_at=_coerce_optional_datetime(raw_record.get("started_at")),
+                finished_at=_coerce_optional_datetime(raw_record.get("finished_at")),
+            )
+
+        gate_payload = _read_json_object(gate_execution_store_path)
+        for execution_id, raw_record in gate_payload.items():
+            if not isinstance(raw_record, dict):
+                continue
+            status = str(raw_record.get("status") or "").strip()
+            if status not in {"running", "waiting"}:
+                continue
+            event_id = str(raw_record.get("event_id") or execution_id).strip()
+            node_id = str(raw_record.get("gate_id") or "").strip()
+            register_node_activity(
+                event_id=event_id,
+                node_id=node_id,
+                status=status,
+                source="gate_execution",
+                trace_id=_coerce_optional_string(raw_record.get("trace_id")),
+                source_node_id=_coerce_optional_string(raw_record.get("source_node_id")),
+                source_trigger_type=_coerce_optional_string(raw_record.get("source_trigger_type")),
+                started_at=_coerce_optional_datetime(raw_record.get("started_at")),
+                finished_at=_coerce_optional_datetime(raw_record.get("finished_at")),
+            )
+
+        await_agent_payload = _read_json_object(runtime_dir / "await-agent-pending.json")
+        for record_key, raw_record in await_agent_payload.items():
+            if not isinstance(raw_record, dict):
+                continue
+            gate_id = str(raw_record.get("gate_id") or "").strip()
+            dispatch_id = _coerce_optional_string(raw_record.get("dispatch_id"))
+            trace_id = _coerce_optional_string(raw_record.get("trace_id"))
+            prompt_event_id = _coerce_optional_string(raw_record.get("prompt_event_id")) or record_key
+            register_node_activity(
+                event_id=prompt_event_id,
+                node_id=gate_id,
+                status="waiting",
+                source="await_agent",
+                trace_id=trace_id,
+                source_node_id=_coerce_optional_string(raw_record.get("prompt_source_node_id")),
+                source_trigger_type="trigger:agent:run:completed",
+                started_at=_coerce_optional_datetime(raw_record.get("occurred_at")),
+                dispatch_id=dispatch_id,
+            )
+
+        runs = [
+            WorkflowRunSummaryPayload.model_validate(
+                {
+                    **payload,
+                    "active_nodes": _merge_run_node_activity(
+                        payload.get("active_nodes", []),
+                    ),
+                }
+            )
+            for payload in runs_by_event.values()
+            if payload.get("active_nodes")
+        ]
+        runs.sort(
+            key=lambda run: (
+                run.latest_activity_at or datetime.min.replace(tzinfo=UTC),
+                run.occurred_at or datetime.min.replace(tzinfo=UTC),
+                run.event_id,
+            ),
+            reverse=True,
+        )
+        return WorkflowRunSnapshotPayload(
+            generated_at=_utc_now(),
+            runs=runs,
+            node_activity={node_id: dict(sorted(counts.items())) for node_id, counts in sorted(node_activity.items())},
         )
 
     def _collect_workflow_node_ids(self, config: dict[str, object]) -> set[str]:
