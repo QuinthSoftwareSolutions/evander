@@ -11,6 +11,8 @@ config/host-heartbeat.env
 config/ado-worker/config.json
 config/host-heartbeat/config.json
 config/trigger-orchestrator/layout.json
+/.tmp-trigger-tests/
+/config/trigger-orchestrator/.tmp-trigger-tests/
 node_modules
 secrets.env
 secrets (Copy).env
