@@ -59,6 +59,9 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
     ]
     ticket_created = next(node for node in catalog_payload["nodes"] if node["type"] == "trigger:ticket:created")
     assert all(field["key"] != "outputs" for field in ticket_created["fields"])
+    await_agent = next(node for node in catalog_payload["nodes"] if node["type"] == "gate:await-agent")
+    assert [field["key"] for field in await_agent["fields"]] == ["session_id", "vm_name", "outputs"]
+    assert all(field["bindable"] for field in await_agent["fields"][:2])
 
 
 def test_admin_web_validates_and_saves_workflow_editor_document(tmp_path: Path) -> None:

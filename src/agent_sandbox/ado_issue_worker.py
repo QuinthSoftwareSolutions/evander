@@ -1826,11 +1826,9 @@ def _trigger_orchestrator_config_path(config: WorkerConfig) -> Path:
 
 
 def _load_ado_pr_feedback_triggers(config: WorkerConfig) -> list[PullRequestNewFeedbackTriggerDefinition]:
-    config_path = _trigger_orchestrator_config_path(config)
-    if not config_path.exists():
+    worker_config = _load_trigger_orchestrator_worker_config(config)
+    if worker_config is None:
         return []
-    raw = json.loads(config_path.read_text(encoding="utf-8"))
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(raw)
     return [
         trigger
         for trigger in worker_config.triggers
@@ -1838,6 +1836,12 @@ def _load_ado_pr_feedback_triggers(config: WorkerConfig) -> list[PullRequestNewF
     ]
 
 
+def _load_trigger_orchestrator_worker_config(config: WorkerConfig) -> TriggerOrchestratorWorkerGlobalConfig | None:
+    config_path = _trigger_orchestrator_config_path(config)
+    if not config_path.exists():
+        return None
+    raw = json.loads(config_path.read_text(encoding="utf-8"))
+    return TriggerOrchestratorWorkerGlobalConfig.model_validate(raw)
 def _load_ado_pr_feedback_session_bindings(
     *,
     runtime_dir: Path,
@@ -1942,7 +1946,11 @@ def _publish_directory_pr_feedback_events(
         return 0
 
     cursor_store = TriggerCursorStore(config.runtime_dir / "trigger-cursors-pr-feedback.json")
-    event_queue = TriggerEventQueue(config.runtime_dir / "trigger-orchestrator-events.json")
+    trigger_worker_config = _load_trigger_orchestrator_worker_config(config)
+    event_queue = TriggerEventQueue(
+        (trigger_worker_config.event_queue_store_path if trigger_worker_config is not None else None)
+        or config.runtime_dir / "trigger-orchestrator-events.json"
+    )
     feedback_store = PrFeedbackStore(config.runtime_dir / "pr-feedback-store.json")
     audit_logger = AuditLogger(config.runtime_dir / "audit.log")
     ignored_feedback_ids = _read_ignored_feedback_ids(config.runtime_dir / "ignored-feedback-ids.json")

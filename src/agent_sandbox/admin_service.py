@@ -553,6 +553,22 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         label="Await agent",
         fields=[
             _field(
+                "session_id",
+                "Session ID",
+                "string",
+                bindable=True,
+                description="Select the session to watch. Provide either Session ID or VM name.",
+                placeholder="session-id",
+            ),
+            _field(
+                "vm_name",
+                "VM name",
+                "string",
+                bindable=True,
+                description="Optional alternative selector when Session ID is unavailable.",
+                placeholder="vm-name",
+            ),
+            _field(
                 "outputs",
                 "Outputs",
                 "json",
@@ -3276,6 +3292,13 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
             "--timeout-seconds",
             "172800",
         ]
+        trigger_worker_config = self._read_worker_global_config("trigger-orchestrator").config
+        event_queue_store_path = _resolve_path_setting(
+            base_dir=self.project_dir,
+            value=trigger_worker_config.get("event_queue_store_path"),
+            fallback=self.config.runtime_dir / "trigger-orchestrator-events.json",
+        )
+        watcher_cmd.extend(["--event-queue-store-path", str(event_queue_store_path)])
         if session_id:
             watcher_cmd.extend(["--session-id", session_id])
         if directory_path:

@@ -317,7 +317,7 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
     return { id, display_name: "New merge", type, outputs: {} };
   }
   if (kind === "gate" && type === "gate:await-agent") {
-    return { id, display_name: "Await agent", type, outputs: {} };
+    return { id, display_name: "Await agent", type, session_id: "session-id", outputs: {} };
   }
   if (kind === "effect" && type === "effect:agent:prompt") {
     return { id, display_name: "New prompt", type, prompt: "Describe the next action." };

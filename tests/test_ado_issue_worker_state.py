@@ -2420,7 +2420,106 @@ def test_publish_directory_pr_feedback_events_skips_ignored_feedback_ids(
     )
     assert unread.feedback == []
 
+def test_publish_directory_pr_feedback_events_uses_configured_trigger_queue_path(
+    worker_config: WorkerConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent_sandbox import ado_issue_worker as ado_worker
 
+    queue_path = worker_config.runtime_dir / "custom-trigger-events.json"
+    trigger_worker_config = ado_worker.TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": str(worker_config.runtime_dir),
+            "event_queue_store_path": str(queue_path),
+            "triggers": [
+                {
+                    "id": "trigger-pr-feedback",
+                    "display_name": "PR feedback",
+                    "type": "trigger:pull-request:new-feedback",
+                    "provider": "ado",
+                    "organization_url": "https://dev.azure.com/example-org",
+                    "project": "Example Project",
+                }
+            ],
+        }
+    )
+    (worker_config.runtime_dir / "sessions.json").write_text(
+        json.dumps(
+            {
+                "session-6070": {
+                    "session_id": "session-6070",
+                    "directory_path": "root/team-a",
+                    "allowed_tools": [],
+                    "expires_at": "2026-04-09T00:00:00Z",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    pr_map_path = worker_config.runtime_dir / "pr-map.json"
+    pr_map_path.write_text(
+        json.dumps(
+            {
+                "entries": {
+                    "azure_devops:org/repo:6070": {
+                        "provider": "azure_devops",
+                        "repo": "org/repo",
+                        "pr_id": "6070",
+                        "session_id": "session-6070",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    runtime_gateway_config = ado_worker.GatewayConfig.model_validate(
+        {
+            "runtime_dir": str(worker_config.runtime_dir),
+            "session_store_path": str(worker_config.runtime_dir / "sessions.json"),
+            "approval_store_path": str(worker_config.runtime_dir / "approvals.json"),
+            "draft_store_path": str(worker_config.runtime_dir / "drafts.json"),
+            "email_store_path": str(worker_config.runtime_dir / "emails.json"),
+            "discord_command_store_path": str(worker_config.runtime_dir / "discord_commands.json"),
+            "audit_log_path": str(worker_config.runtime_dir / "audit.jsonl"),
+            "pr_map_path": str(pr_map_path),
+            "azure_devops_pr_pat_env": "AZURE_DEVOPS_PR_PAT",
+        }
+    )
+    monkeypatch.setenv("AZURE_DEVOPS_PR_PAT", "secret-pat")
+    monkeypatch.setattr(ado_worker, "_load_trigger_orchestrator_worker_config", lambda _config: trigger_worker_config)
+
+    def fake_poll(self, *, client, repo, pr_id, cursor):
+        return SimpleNamespace(
+            feedback=[
+                FeedbackEnvelope(
+                    feedback_id="azure_devops:thread_comment:30830:1",
+                    provider="azure_devops",
+                    repo="org/repo",
+                    pr_id="6070",
+                    thread_id="30830",
+                    comment_id="1",
+                    author="jonathan",
+                    body="Please fix this",
+                    created_at="2026-04-08T05:33:41.433000Z",
+                )
+            ],
+            next_cursor="2026-04-08T05:33:41.433000Z",
+        )
+
+    monkeypatch.setattr(ado_worker.AzureDevOpsFeedbackAdapter, "poll", fake_poll)
+
+    with httpx.Client() as client:
+        published = _publish_directory_pr_feedback_events(
+            client=client,
+            config=WorkerConfig(**{**worker_config.__dict__, "directory_path": "root/team-a"}),
+            runtime_gateway_config=runtime_gateway_config,
+            directory_path="root/team-a",
+        )
+
+    assert published == 1
+    queue = TriggerEventQueue(queue_path)
+    events = queue.list_pending(trigger_id="trigger-pr-feedback")
+    assert len(events) == 1
 def test_resolve_directory_worker_config_uses_each_directorys_own_project_or_solution(
     worker_config: WorkerConfig,
 ) -> None:

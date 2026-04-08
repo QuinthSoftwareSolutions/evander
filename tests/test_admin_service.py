@@ -376,6 +376,7 @@ def test_resume_agent_passes_explicit_resume_thread_id(tmp_path: Path, monkeypat
     ]
     assert "--dispatch-id" in watcher["cmd"]
     assert "dispatch-keep-1" in watcher["cmd"]
+    assert "--event-queue-store-path" in watcher["cmd"]
     assert "--session-id" in watcher["cmd"]
     assert "receptionist-session" in watcher["cmd"]
 
