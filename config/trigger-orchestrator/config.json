@@ -207,7 +207,7 @@
       "id": "effect-agent-prompt-4",
       "model": "gpt-5.4",
       "output_mode": "on_completion",
-      "prompt": "You have been issued the task described in ${{effect-vm-create-1.target_dir}}/AGENT_TASK.yaml. Read /home/agent/AGENTS.md and ${{effect-vm-create-1.target_dir}}/AGENT_TASK.yaml before you begin. The repository is located at ${{effect-vm-create-1.target_dir}}. Do not write any code or perform the task, but study the code, understand the assignment, then generate a plan with clearly scoped and well-defined sub-tasks and update AGENT_TASK.yaml with it.",
+      "prompt": "You have been issued the task described in ${{effect-vm-create-1.target_dir}}/AGENT_TASK.yaml. Read /home/agent/AGENTS.md and ${{effect-vm-create-1.target_dir}}/AGENT_TASK.yaml before you begin. The repository is located at ${{effect-vm-create-1.target_dir}}. Do not write any code or perform the task, but study the code, understand the assignment, then generate a plan with clearly scoped and well-defined sub-tasks and update AGENT_TASK.yaml with it. \nAdd a new \"plan\" array to the yaml file, with string elements describing your planned solution step-by-step.\nAvoid overcomplicating your solution, do not add anything to the assignment or expand the scope. Your job is to clarify the assignment and find the most parsimonious solution that is robust and solves the problem at hand.",
       "target": "${{effect-vm-create-1.session_id}}",
       "type": "effect:agent:prompt",
       "vm_user": "agent"

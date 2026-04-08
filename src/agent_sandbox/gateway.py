@@ -506,6 +506,49 @@ def create_server(context: RuntimeContext) -> FastMCP:
             raise
 
     @server.tool()
+    def set_issue_plan(
+        issue_id: str,
+        steps: list[str],
+        *,
+        session_id: str | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        session_id = _resolve_session_id_from_context(session_id, ctx, transport_session_map=transport_session_map)
+        args = {
+            "session_id": session_id,
+            "issue_id": issue_id,
+            "steps": steps,
+        }
+        try:
+            session = context.policy.require_tool(session_id, ToolName.SET_ISSUE_PLAN)
+            result = AdminService(context.config.runtime_dir).set_issue_plan(issue_id, steps)
+            audit_success(
+                session_id,
+                ToolName.SET_ISSUE_PLAN,
+                args,
+                {
+                    "issue_number": result.get("issue_number"),
+                    "source_type": result.get("source_type"),
+                    "step_count": result.get("step_count"),
+                    "directory_path": session.directory_path,
+                },
+            )
+            return result
+        except PolicyError as exc:
+            audit_failure(session_id, ToolName.SET_ISSUE_PLAN, args, str(exc))
+            raise
+        except Exception as exc:
+            audit_failure(
+                session_id,
+                ToolName.SET_ISSUE_PLAN,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
     def approve_issue(
         issue_id: str,
         priority: str | None = None,

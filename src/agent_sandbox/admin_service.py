@@ -4884,6 +4884,11 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
             payload["fields"] = fields
         else:
             payload.pop("fields", None)
+        metadata_steps = issue.metadata.get("steps") if isinstance(issue.metadata, dict) else None
+        if isinstance(metadata_steps, list) and all(isinstance(step, str) for step in metadata_steps):
+            payload["steps"] = list(metadata_steps)
+        else:
+            payload.pop("steps", None)
         if updated_at is not None:
             payload["updated_at"] = updated_at.isoformat()
         yaml_path.parent.mkdir(parents=True, exist_ok=True)
@@ -4963,6 +4968,11 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
                     for comment in list(yaml_payload.get("comments") or [])
                     if isinstance(comment, dict)
                 ]
+                raw_steps = yaml_payload.get("steps")
+                if isinstance(raw_steps, list):
+                    normalized_steps = [str(step).strip() for step in raw_steps if str(step).strip()]
+                    if normalized_steps:
+                        merged_metadata["steps"] = normalized_steps
                 if not title:
                     parsed_title = yaml_payload.get("title")
                     normalized_title = str(parsed_title or "").strip() if isinstance(parsed_title, str) else ""
@@ -5162,6 +5172,29 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
         sync_proxy_cache: bool = True,
     ) -> dict[str, object]:
         return self.add_issue_comment(issue_number, comment, sync_proxy_cache=sync_proxy_cache)
+
+    def set_issue_plan(
+        self,
+        issue_id: str,
+        steps: list[str],
+    ) -> dict[str, object]:
+        normalized_steps = [str(step).strip() for step in steps if str(step).strip()]
+        if not normalized_steps:
+            raise ValueError("steps must contain at least one non-empty item")
+
+        issue = self._resolve_local_issue_record(issue_id)
+        issue.metadata = dict(issue.metadata)
+        issue.metadata["steps"] = normalized_steps
+        issue.updated_at = _utc_now()
+        self.local_issue_store.put(issue.issue_id, issue)
+        self._write_local_issue_yaml(issue, updated_at=issue.updated_at)
+        return {
+            "issue_number": issue.issue_number,
+            "source_type": "local",
+            "updated": True,
+            "steps": normalized_steps,
+            "step_count": len(normalized_steps),
+        }
 
     def set_issue_state(
         self,

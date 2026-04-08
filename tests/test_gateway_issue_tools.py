@@ -82,3 +82,63 @@ def test_get_issue_requires_permission_in_gateway_issue_tools(tmp_path: Path) ->
 
     with pytest.raises(ToolError, match="not allowed"):
         asyncio.run(server.call_tool("get_issue", {"session_id": "session-1", "issue_id": "42"}))
+
+
+def test_set_issue_plan_updates_issue_metadata(tmp_path: Path) -> None:
+    context = make_context(tmp_path)
+    context.sessions.put(
+        "session-1",
+        SessionManifest(
+            session_id="session-1",
+            directory_path="root",
+            allowed_tools=[ToolName.SET_ISSUE_PLAN, ToolName.GET_ISSUE],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    server = create_server(context)
+    admin = AdminService(context.config.runtime_dir)
+    created = admin.create_local_issue(title="Planned issue", body="x")
+
+    result = call_tool(
+        server,
+        "set_issue_plan",
+        {
+            "session_id": "session-1",
+            "issue_id": created.issue_number,
+            "steps": ["Inspect code", "Write patch"],
+        },
+    )
+    reread = call_tool(
+        server,
+        "get_issue",
+        {
+            "session_id": "session-1",
+            "issue_id": created.issue_number,
+        },
+    )
+
+    assert result["updated"] is True
+    assert result["step_count"] == 2
+    assert reread["metadata"]["steps"] == ["Inspect code", "Write patch"]
+
+
+def test_set_issue_plan_requires_permission(tmp_path: Path) -> None:
+    context = make_context(tmp_path)
+    context.sessions.put(
+        "session-1",
+        SessionManifest(
+            session_id="session-1",
+            directory_path="root",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    server = create_server(context)
+
+    with pytest.raises(ToolError, match="not allowed"):
+        asyncio.run(
+            server.call_tool(
+                "set_issue_plan",
+                {"session_id": "session-1", "issue_id": "42", "steps": ["Inspect code"]},
+            )
+        )

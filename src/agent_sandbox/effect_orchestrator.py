@@ -263,6 +263,7 @@ class EffectOrchestratorWorker:
         graph = _build_execution_graph(self.worker_config)
         self._reconcile_await_agent_pending(graph=graph)
         completion_events_published += self._complete_pending_await_agent_gates_directly(graph=graph)
+        completion_events_published += self._complete_waiting_agent_prompt_effects_directly()
 
         completed_count, published_count = self._reap_completed_futures()
         effect_executions_completed += completed_count
@@ -1197,6 +1198,140 @@ class EffectOrchestratorWorker:
             self._update_event_delivery_state(record.event_id)
             finalized += 1
         return finalized
+
+    def _complete_waiting_agent_prompt_effects_directly(self) -> int:
+        waiting_records = [
+            record
+            for record in self.execution_store.read_all().values()
+            if record.effect_type == "effect:agent:prompt" and record.status == "waiting"
+        ]
+        if not waiting_records:
+            return 0
+
+        try:
+            summaries = self._list_vm_summaries_for_await_agent_reconciliation()
+        except Exception:
+            logger.exception("Waiting agent-prompt reconciliation failed while listing VMs")
+            return 0
+
+        completed = 0
+        for record in waiting_records:
+            queue_record = self._build_completion_queue_record_for_waiting_agent_prompt(record=record, summaries=summaries)
+            if queue_record is None:
+                continue
+            if self._complete_waiting_agent_prompt_effects(queue_record=queue_record):
+                completed += 1
+        return completed
+
+    def _build_completion_queue_record_for_waiting_agent_prompt(
+        self,
+        *,
+        record: EffectExecutionRecord,
+        summaries: list[Any],
+    ) -> TriggerQueueRecord | None:
+        dispatch_id = str(record.outputs.get("dispatch_id") or "").strip()
+        if not dispatch_id:
+            return None
+
+        session_id, vm_name = self._waiting_agent_prompt_target(record=record)
+        matching_summary = self._match_waiting_agent_prompt_summary(
+            summaries=summaries,
+            dispatch_id=dispatch_id,
+            session_id=session_id,
+            vm_name=vm_name,
+            record=record,
+        )
+        if matching_summary is None:
+            return None
+        if str(getattr(matching_summary, "agent_state", "") or "").strip() == "running":
+            return None
+
+        completion_event = build_agent_run_completed_event(
+            trigger_id="__await-agent-completion__",
+            dispatch_id=dispatch_id,
+            vm_user=str(record.resolved_config.get("vm_user") or "agent"),
+            summary=matching_summary,
+            session_id=session_id,
+            directory_path=(getattr(matching_summary, "directory_paths", None) or [None])[0],
+        )
+        return TriggerQueueRecord(
+            event_id=completion_event.event_id,
+            trigger_id=completion_event.trigger_id,
+            trigger_type=completion_event.trigger_type,
+            trace_id=completion_event.trace_id or record.trace_id,
+            occurred_at=completion_event.occurred_at,
+            payload=completion_event.payload,
+            delivery_state="delivered",
+            delivered_at=datetime.now(UTC),
+            idempotency_key=f"__await-agent-completion__:{dispatch_id}",
+        )
+
+    @staticmethod
+    def _waiting_agent_prompt_target(record: EffectExecutionRecord) -> tuple[str | None, str | None]:
+        session_id = str(record.resolved_config.get("session_id") or "").strip() or None
+        vm_name = str(record.resolved_config.get("vm_name") or "").strip() or None
+        target = str(record.resolved_config.get("target") or "").strip() or None
+        if target and vm_name is None and target.startswith("vm-"):
+            vm_name = target
+        if target and session_id is None and not target.startswith("vm-"):
+            session_id = target
+        return session_id, vm_name
+
+    @staticmethod
+    def _match_waiting_agent_prompt_summary(
+        *,
+        summaries: list[Any],
+        dispatch_id: str,
+        session_id: str | None,
+        vm_name: str | None,
+        record: EffectExecutionRecord,
+    ) -> Any | None:
+        exact_match = next(
+            (
+                summary
+                for summary in summaries
+                if str(getattr(summary, "dispatch_id", "") or "").strip() == dispatch_id
+                and (vm_name is None or str(getattr(summary, "vm_name", "") or "").strip() == vm_name)
+                and (
+                    session_id is None
+                    or session_id in {str(item or "").strip() for item in (getattr(summary, "session_ids", []) or [])}
+                )
+            ),
+            None,
+        )
+        if exact_match is not None:
+            return exact_match
+
+        if (datetime.now(UTC) - record.finished_at).total_seconds() < _AWAIT_AGENT_STALE_GRACE_SECONDS:
+            return None
+
+        if vm_name is not None:
+            vm_match = next(
+                (
+                    summary
+                    for summary in summaries
+                    if str(getattr(summary, "vm_name", "") or "").strip() == vm_name
+                    and not str(getattr(summary, "dispatch_id", "") or "").strip()
+                    and str(getattr(summary, "agent_state", "") or "").strip() != "running"
+                ),
+                None,
+            )
+            if vm_match is not None:
+                return vm_match
+
+        if session_id is None:
+            return None
+
+        return next(
+            (
+                summary
+                for summary in summaries
+                if session_id in {str(item or "").strip() for item in (getattr(summary, "session_ids", []) or [])}
+                and not str(getattr(summary, "dispatch_id", "") or "").strip()
+                and str(getattr(summary, "agent_state", "") or "").strip() != "running"
+            ),
+            None,
+        )
 
     def _update_event_delivery_state(self, event_id: str) -> None:
         if self._event_has_inflight_effects(event_id):
