@@ -19,6 +19,7 @@ from agent_sandbox.services import (
     StubDiscordService,
     StubTeamsService,
 )
+from agent_sandbox.teams_auth import JsonTeamsIdentityCredentialStore, TeamsAuthCredentials
 
 
 def make_config(tmp_path: Path, **kwargs: object) -> GatewayConfig:
@@ -99,6 +100,22 @@ def test_build_runtime_uses_graph_teams_backend_when_token_is_present(
 ) -> None:
     monkeypatch.setenv("GRAPH_TEAMS_ACCESS_TOKEN", "graph-token")
     config = make_config(tmp_path, teams_backend="graph_api")
+
+    runtime = build_runtime(config)
+
+    assert isinstance(runtime.teams_service, GraphTeamsService)
+
+
+def test_build_runtime_supports_delegated_teams_backend_without_static_env_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("GRAPH_TEAMS_ACCESS_TOKEN", raising=False)
+    config = make_config(
+        tmp_path,
+        teams_backend="delegated_graph_api",
+        teams_delegated_identity_id="root-identity",
+        teams_delegated_client_id="client-123",
+    )
 
     runtime = build_runtime(config)
 
@@ -340,6 +357,54 @@ def test_runtime_teams_service_for_session_uses_directory_provider_override_and_
 
     assert isinstance(teams_service, GraphTeamsService)
     assert teams_service.token == "team-a-token"
+    assert teams_service._allowed_channel_targets() == ["team-a/channel-1"]
+
+
+def test_runtime_teams_service_for_session_uses_directory_delegated_credentials(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("GRAPH_TEAMS_ACCESS_TOKEN", raising=False)
+    config = make_config(tmp_path, teams_backend="stub")
+    directories = DirectoryService(DirectoryStore(config.directories_store_path))
+    team = directories.create(parent="root", name="team")
+    write_provider_overlay(
+        config,
+        team.path,
+        {
+            "teams_backend": "delegated_graph_api",
+            "teams_delegated_identity_id": "team-identity",
+            "teams_delegated_client_id": "client-123",
+        },
+    )
+    JsonTeamsIdentityCredentialStore(
+        tmp_path / "teams-delegated-credentials.json",
+        "team-identity",
+    ).save(
+        TeamsAuthCredentials(
+            client_id="client-123",
+            tenant_id="tenant-abc",
+            access_token="delegated-team-token",
+            refresh_token="refresh-token",
+            scopes=["offline_access"],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    runtime = build_runtime(config)
+    runtime.sessions.put(
+        "session-team",
+        SessionManifest(
+            session_id="session-team",
+            directory_path=team.path,
+            allowed_tools=[ToolName.TEAMS_GET_MESSAGES],
+            teams_channel_allowlist=["team-a/channel-1"],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+
+    teams_service = runtime.teams_service_for_session("session-team")
+
+    assert isinstance(teams_service, GraphTeamsService)
+    assert teams_service._headers()["Authorization"] == "Bearer delegated-team-token"
     assert teams_service._allowed_channel_targets() == ["team-a/channel-1"]
 
 

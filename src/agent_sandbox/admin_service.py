@@ -66,6 +66,13 @@ from .models import (
 )
 from .runtime import RuntimeContext, build_runtime
 from .storage import JsonStore
+from .teams_auth import (
+    DeviceCodeLoginSession,
+    JsonTeamsIdentityCredentialStore,
+    MicrosoftDeviceCodeAuthConfig,
+    TeamsAuthCredentials,
+    TeamsDeviceCodeTokenProvider,
+)
 from .events.models import (
     EdgeDefinition,
     EffectDefinitionDiscriminated,
@@ -2268,6 +2275,137 @@ class AdminService:
     @property
     def directory_scoped_config_enabled(self) -> bool:
         return self.config.enable_directory_scoped_config
+
+    def _normalize_directory_reference(self, reference: str | None) -> str:
+        directory_service = DirectoryService(self.runtime.directories)
+        return directory_service.show(reference or "root").directory.path
+
+    def _teams_auth_provider_for_directory(
+        self,
+        directory_path: str | None,
+    ) -> tuple[str, GatewayConfig, str, TeamsDeviceCodeTokenProvider]:
+        normalized_directory = self._normalize_directory_reference(directory_path)
+        resolved_config = self.runtime.provider_config.resolve_for_directory(normalized_directory)
+        if resolved_config.teams_backend != "delegated_graph_api":
+            raise ValueError(
+                f"Directory '{normalized_directory}' is not configured for delegated Teams auth "
+                f"(teams_backend={resolved_config.teams_backend!r})."
+            )
+        identity_id = str(resolved_config.teams_delegated_identity_id or "").strip()
+        if not identity_id:
+            raise ValueError(
+                f"Directory '{normalized_directory}' is missing teams_delegated_identity_id."
+            )
+        client_id = str(resolved_config.teams_delegated_client_id or "").strip()
+        if not client_id:
+            raise ValueError(
+                f"Directory '{normalized_directory}' is missing teams_delegated_client_id."
+            )
+        provider = TeamsDeviceCodeTokenProvider(
+            MicrosoftDeviceCodeAuthConfig(
+                client_id=client_id,
+                tenant_id=resolved_config.teams_delegated_tenant_id,
+                scopes=resolved_config.teams_delegated_scopes,
+                authority_base_url=resolved_config.teams_delegated_authority_base_url,
+                timeout_seconds=resolved_config.teams_timeout_seconds,
+            ),
+            JsonTeamsIdentityCredentialStore(
+                resolved_config.teams_delegated_credential_store_path,
+                identity_id,
+            ),
+        )
+        return normalized_directory, resolved_config, identity_id, provider
+
+    def _teams_auth_payload(
+        self,
+        *,
+        directory_path: str,
+        config: GatewayConfig,
+        identity_id: str,
+        credentials: TeamsAuthCredentials | None,
+    ) -> dict[str, object]:
+        return {
+            "directory_path": directory_path,
+            "identity_id": identity_id,
+            "backend": config.teams_backend,
+            "authenticated": credentials is not None,
+            "status": "authenticated" if credentials is not None else "reauth-required",
+            "account_identifier": identity_id,
+            "tenant_id": config.teams_delegated_tenant_id,
+            "scopes": list(config.teams_delegated_scopes),
+            "expires_at": credentials.expires_at if credentials is not None else None,
+            "issued_at": credentials.issued_at if credentials is not None else None,
+            "store_path": str(config.teams_delegated_credential_store_path),
+        }
+
+    def teams_auth_login(self, *, directory: str = "root") -> DeviceCodeLoginSession:
+        normalized_directory, config, identity_id, provider = self._teams_auth_provider_for_directory(directory)
+        session = provider.begin_device_code_login()
+        metadata = dict(session.metadata)
+        metadata.update(
+            {
+                "directory_path": normalized_directory,
+                "identity_id": identity_id,
+                "store_path": str(config.teams_delegated_credential_store_path),
+            }
+        )
+        return session.model_copy(update={"metadata": metadata})
+
+    def teams_auth_complete_login(
+        self,
+        login_session: DeviceCodeLoginSession,
+        *,
+        directory: str = "root",
+        timeout_seconds: float | None = None,
+    ) -> dict[str, object]:
+        normalized_directory, config, identity_id, provider = self._teams_auth_provider_for_directory(directory)
+        credentials = provider.complete_device_code_login(login_session, timeout_seconds=timeout_seconds)
+        return self._teams_auth_payload(
+            directory_path=normalized_directory,
+            config=config,
+            identity_id=identity_id,
+            credentials=credentials,
+        )
+
+    def teams_auth_status(self, *, directory: str = "root") -> dict[str, object]:
+        normalized_directory, config, identity_id, provider = self._teams_auth_provider_for_directory(directory)
+        return self._teams_auth_payload(
+            directory_path=normalized_directory,
+            config=config,
+            identity_id=identity_id,
+            credentials=provider.load_credentials(),
+        )
+
+    def teams_auth_logout(self, *, directory: str = "root") -> dict[str, object]:
+        normalized_directory, config, identity_id, provider = self._teams_auth_provider_for_directory(directory)
+        provider.clear_credentials()
+        return {
+            "directory_path": normalized_directory,
+            "identity_id": identity_id,
+            "backend": config.teams_backend,
+            "status": "logged_out",
+            "authenticated": False,
+            "store_path": str(config.teams_delegated_credential_store_path),
+        }
+
+    def teams_auth_list(self) -> list[dict[str, object]]:
+        directory_service = DirectoryService(self.runtime.directories)
+        directory_paths = ["root", *[item.path for item in directory_service.list_descendants("root")]]
+        entries: list[dict[str, object]] = []
+        for directory_path in directory_paths:
+            resolved_config = self.runtime.provider_config.resolve_for_directory(directory_path)
+            if resolved_config.teams_backend != "delegated_graph_api":
+                continue
+            _, config, identity_id, provider = self._teams_auth_provider_for_directory(directory_path)
+            entries.append(
+                self._teams_auth_payload(
+                    directory_path=directory_path,
+                    config=config,
+                    identity_id=identity_id,
+                    credentials=provider.load_credentials(),
+                )
+            )
+        return entries
 
     def unlock_privileged_operations(self) -> str:
         helper = self._privileged_helper

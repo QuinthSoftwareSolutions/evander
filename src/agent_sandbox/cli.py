@@ -7,7 +7,7 @@ import os
 import re
 import shutil
 import subprocess
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, is_dataclass
 from datetime import datetime, timedelta, timezone
 from itertools import count
 from pathlib import Path
@@ -72,10 +72,19 @@ class GroupedHelpTyperGroup(TyperGroup):
 app = typer.Typer(help="Utilities for the agent sandbox host control plane.", cls=GroupedHelpTyperGroup)
 directories_app = typer.Typer(help="Directory management and directory-scoped config inspection.")
 wake_schedules_app = typer.Typer(help="Manage scheduled wake requests.")
+teams_auth_app = typer.Typer(help="Manage delegated Teams auth.")
 app.add_typer(directories_app, name="directories")
 app.add_typer(wake_schedules_app, name="wake-schedules")
+app.add_typer(teams_auth_app, name="teams-auth", rich_help_panel="Sessions and Feedback")
 
 CLI_DEFAULT_RUNTIME_DIR = Path("runtime")
+DirectoryOption = Annotated[
+    str,
+    typer.Option(
+        "--directory",
+        help="Directory path for delegated Teams auth operations.",
+    ),
+]
 
 ConfigOption = Annotated[
     Path,
@@ -262,6 +271,170 @@ def _echo_admin_result_or_exit(result, *, success_message: str | None = None) ->
     errors = getattr(result, "errors", []) or []
     message = errors[0].message if errors else "operation failed"
     raise typer.BadParameter(message)
+
+
+_TEAMS_AUTH_SUMMARY_FIELDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("Status", ("status", "state")),
+    ("Backend", ("backend", "auth_backend", "provider")),
+    ("Signed in", ("signed_in", "authenticated", "is_authenticated")),
+    ("Account", ("account", "account_identifier", "user", "user_principal_name", "username", "email")),
+    ("Tenant", ("tenant", "tenant_id", "tenant_name")),
+    ("Authority", ("authority", "issuer", "environment")),
+    ("Scopes", ("scopes", "permissions")),
+    ("Expires at", ("expires_at", "expires", "expires_on")),
+    ("Created at", ("created_at", "created")),
+    ("Updated at", ("updated_at", "updated")),
+    ("Verification URI", ("verification_uri", "verification_url", "login_uri")),
+    ("Verification URI complete", ("verification_uri_complete",)),
+    ("User code", ("user_code",)),
+    ("Device code", ("device_code",)),
+    ("Message", ("message", "instructions")),
+    ("Store path", ("store_path", "path")),
+)
+
+
+def _teams_auth_is_sensitive_key(key: str) -> bool:
+    normalized = re.sub(r"[^a-z0-9]+", "", key.casefold())
+    return any(
+        marker in normalized
+        for marker in (
+            "access",
+            "refresh",
+            "token",
+            "secret",
+            "password",
+            "cookie",
+            "authorization",
+            "clientsecret",
+            "idtoken",
+        )
+    )
+
+
+def _teams_auth_result_payload(result: object) -> object:
+    for attribute in ("data", "payload", "result"):
+        value = getattr(result, attribute, None)
+        if value is not None:
+            return value
+    return result
+
+
+def _teams_auth_normalize_value(value: object) -> object:
+    if hasattr(value, "model_dump") and callable(getattr(value, "model_dump")):
+        return value.model_dump(mode="json")
+    if is_dataclass(value):
+        return asdict(value)
+    return value
+
+
+def _teams_auth_redact(value: object) -> object:
+    normalized = _teams_auth_normalize_value(value)
+    if isinstance(normalized, dict):
+        return {
+            key: "<redacted>" if _teams_auth_is_sensitive_key(str(key)) else _teams_auth_redact(item)
+            for key, item in normalized.items()
+        }
+    if isinstance(normalized, list):
+        return [_teams_auth_redact(item) for item in normalized]
+    if isinstance(normalized, tuple):
+        return [_teams_auth_redact(item) for item in normalized]
+    return normalized
+
+
+def _teams_auth_scalar_text(value: object) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return "yes" if value else "no"
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return str(value)
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, str):
+        text = value.strip()
+        return text or None
+    if isinstance(value, list):
+        items = [_teams_auth_scalar_text(item) for item in value]
+        filtered = [item for item in items if item]
+        return ", ".join(filtered) if filtered else None
+    return str(value)
+
+
+def _teams_auth_extract_fields(payload: object) -> list[tuple[str, str]]:
+    if not isinstance(payload, dict):
+        return []
+
+    rows: list[tuple[str, str]] = []
+    for label, keys in _TEAMS_AUTH_SUMMARY_FIELDS:
+        for key in keys:
+            if key not in payload:
+                continue
+            text = _teams_auth_scalar_text(payload.get(key))
+            if text:
+                rows.append((label, text))
+                break
+    return rows
+
+
+def _teams_auth_print_payload(title: str, payload: object) -> None:
+    normalized = _teams_auth_normalize_value(payload)
+    typer.echo(title)
+    if normalized is None:
+        typer.echo("Completed successfully.")
+        return
+    if isinstance(normalized, list):
+        if not normalized:
+            typer.echo("No Teams auth entries found.")
+            return
+        typer.echo(f"Entries: {len(normalized)}")
+        for index, item in enumerate(normalized, start=1):
+            item_payload = _teams_auth_normalize_value(item)
+            rows = _teams_auth_extract_fields(item_payload) if isinstance(item_payload, dict) else []
+            if rows:
+                typer.echo(f"- Entry {index}")
+                for label, value in rows:
+                    typer.echo(f"  {label:<24} {value}")
+                continue
+            typer.echo(f"- Entry {index}")
+            typer.echo(json.dumps(_teams_auth_redact(item_payload), indent=2, sort_keys=True))
+        return
+
+    rows = _teams_auth_extract_fields(normalized) if isinstance(normalized, dict) else []
+    if rows:
+        for label, value in rows:
+            typer.echo(f"{label:<24} {value}")
+        remaining: dict[str, object] = {}
+        if isinstance(normalized, dict):
+            known_keys = {key for _, keys in _TEAMS_AUTH_SUMMARY_FIELDS for key in keys if key in normalized}
+            remaining = {key: value for key, value in normalized.items() if key not in known_keys}
+        if remaining:
+            typer.echo("Details")
+            typer.echo(json.dumps(_teams_auth_redact(remaining), indent=2, sort_keys=True))
+        return
+
+    typer.echo(json.dumps(_teams_auth_redact(normalized), indent=2, sort_keys=True))
+
+
+def _teams_auth_service(config: ConfigOption) -> AdminService:
+    return AdminService(config)
+
+
+def _teams_auth_call(service: AdminService, action: str, **kwargs: object) -> object:
+    method = getattr(service, f"teams_auth_{action}", None)
+    if not callable(method):
+        raise typer.BadParameter(
+            f"Teams auth {action} is unavailable in this build. "
+            f"Expected AdminService.teams_auth_{action}()."
+        )
+    return method(**kwargs)
+
+
+def _teams_auth_emit_result(title: str, result: object) -> None:
+    if hasattr(result, "ok") and getattr(result, "ok") is False:
+        _echo_admin_result_or_exit(result)
+        return
+    payload = _teams_auth_result_payload(result)
+    _teams_auth_print_payload(title, payload)
 
 
 def _load_heartbeat_summary(audit_log_path: Path, *, max_events: int = 400) -> HeartbeatSummary:
@@ -1292,6 +1465,46 @@ def status(config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR, as_json: Annotated[bo
             ]
         )
     )
+
+
+@teams_auth_app.command("login", short_help="Start delegated Teams auth device-code flow.")
+def teams_auth_login(
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
+    directory: DirectoryOption = "root",
+) -> None:
+    service = _teams_auth_service(config)
+    login_session = _teams_auth_call(service, "login", directory=directory)
+    _teams_auth_emit_result("Teams auth login", login_session)
+    result = _teams_auth_call(service, "complete_login", directory=directory, login_session=login_session)
+    typer.echo("")
+    _teams_auth_emit_result("Teams auth status", result)
+
+
+@teams_auth_app.command("status", short_help="Show delegated Teams auth status.")
+def teams_auth_status(
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
+    directory: DirectoryOption = "root",
+) -> None:
+    service = _teams_auth_service(config)
+    result = _teams_auth_call(service, "status", directory=directory)
+    _teams_auth_emit_result("Teams auth status", result)
+
+
+@teams_auth_app.command("logout", short_help="Clear delegated Teams auth state.")
+def teams_auth_logout(
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
+    directory: DirectoryOption = "root",
+) -> None:
+    service = _teams_auth_service(config)
+    result = _teams_auth_call(service, "logout", directory=directory)
+    _teams_auth_emit_result("Teams auth logout", result)
+
+
+@teams_auth_app.command("list", short_help="List delegated Teams auth entries.")
+def teams_auth_list(config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR) -> None:
+    service = _teams_auth_service(config)
+    result = _teams_auth_call(service, "list")
+    _teams_auth_emit_result("Teams auth entries", result)
 
 
 @app.command(

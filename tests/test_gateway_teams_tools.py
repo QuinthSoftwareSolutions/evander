@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import asyncio
 import json
 from datetime import UTC, datetime, timedelta
@@ -13,6 +11,7 @@ from agent_sandbox.config import GatewayConfig
 from agent_sandbox.gateway import create_server
 from agent_sandbox.models import SessionManifest, TeamsMessageEnvelope, ToolName
 from agent_sandbox.runtime import build_runtime
+from agent_sandbox.teams_auth import JsonTeamsIdentityCredentialStore
 
 
 class FakeTeamsService:
@@ -46,7 +45,7 @@ class FakeTeamsService:
         }
 
 
-def make_context(tmp_path: Path):
+def make_context(tmp_path: Path, **kwargs: object):
     config = GatewayConfig(
         runtime_dir=tmp_path,
         audit_log_path=tmp_path / "audit.jsonl",
@@ -55,9 +54,9 @@ def make_context(tmp_path: Path):
         draft_store_path=tmp_path / "drafts.json",
         email_store_path=tmp_path / "emails.json",
         discord_command_store_path=tmp_path / "discord.json",
+        **kwargs,
     )
     return build_runtime(config)
-
 
 def call_tool(server, name: str, arguments: dict[str, object]):
     result = asyncio.run(server.call_tool(name, arguments))
@@ -228,3 +227,50 @@ def test_teams_post_status_audits_adapter_http_error(tmp_path: Path) -> None:
         "error": "teams timeout",
         "error_class": "adapter_http_error",
     }
+
+
+def test_teams_get_messages_fails_clearly_when_delegated_credentials_are_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("GRAPH_TEAMS_ACCESS_TOKEN", raising=False)
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        audit_log_path=tmp_path / "audit.jsonl",
+        session_store_path=tmp_path / "sessions.json",
+        approval_store_path=tmp_path / "approvals.json",
+        draft_store_path=tmp_path / "drafts.json",
+        email_store_path=tmp_path / "emails.json",
+        discord_command_store_path=tmp_path / "discord.json",
+        teams_backend="delegated_graph_api",
+        teams_delegated_identity_id="root-identity",
+        teams_delegated_client_id="client-123",
+    )
+    context = build_runtime(config)
+    JsonTeamsIdentityCredentialStore(
+        config.teams_delegated_credential_store_path,
+        "root-identity",
+    ).clear()
+    context.sessions.put(
+        "session-1",
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[ToolName.TEAMS_GET_MESSAGES],
+            teams_channel_allowlist=["team-a/channel-1"],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    server = create_server(context)
+
+    with pytest.raises(ToolError, match="No Teams delegated credentials are available"):
+        asyncio.run(
+            server.call_tool(
+                "teams_get_messages",
+                {"session_id": "session-1"},
+            )
+        )
+
+    events = read_audit_events(context.config.audit_log_path)
+    assert events[-1]["decision"] == "error"
+    assert events[-1]["tool_name"] == "teams_get_messages"
+    assert events[-1]["result"]["error_class"] == "adapter_http_error"

@@ -321,6 +321,47 @@ class DraftMessage(BaseModel):
     created_at: datetime = Field(default_factory=utc_now)
 
 
+class TeamsDelegatedAuthBinding(BaseModel):
+    identity_id: str | None = None
+    account_identifier: str | None = None
+    tenant_id: str | None = None
+
+    @field_validator("identity_id", "account_identifier", "tenant_id", mode="before")
+    @classmethod
+    def normalize_optional_strings(cls, value: object) -> object:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+
+class TeamsDelegatedCredential(BaseModel):
+    identity_id: str
+    account_identifier: str | None = None
+    tenant_id: str | None = None
+    access_token: str
+    refresh_token: str | None = None
+    expires_at: datetime | None = None
+    scopes: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("identity_id", "access_token", mode="before")
+    @classmethod
+    def normalize_required_strings(cls, value: object) -> object:
+        text = str(value).strip() if value is not None else ""
+        if not text:
+            raise ValueError("value cannot be empty")
+        return text
+
+    @field_validator("account_identifier", "tenant_id", "refresh_token", mode="before")
+    @classmethod
+    def normalize_optional_strings(cls, value: object) -> object:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+
 class ApprovalDecisionRecord(BaseModel):
     status: ApprovalStatus
     approver: str | None = None

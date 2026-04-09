@@ -209,6 +209,30 @@ Storage layout for directory config:
 - The bootstrap script appends `~/bin` and `COPILOT_HOME=~/.copilot` to both `~/.profile` and `~/.bashrc`.
 - Host-mediated auth reads the effective provider `github_token_env` on the host. That environment variable must contain a GitHub token that can satisfy Copilot CLI requests. Guest-side `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, `GITHUB_TOKEN`, or `copilot login` still override the host-mediated `gh` fallback if you set them intentionally.
 
+### Microsoft Teams delegated auth
+
+- Teams access is host-side and delegated. Use the host CLI device code flow to sign in, and keep
+  the resulting credential on the host only.
+- Bind each directory to the intended Teams identity through per-directory Teams identity binding
+  in directory-scoped provider config. Subdirectories inherit the binding, so different directory
+  trees can point at different Teams accounts without guest-side secrets.
+- Preferred delegated provider config keys are:
+  - `teams_backend: delegated_graph_api`
+  - `teams_delegated_identity_id`
+  - `teams_delegated_client_id`
+  - optional `teams_delegated_tenant_id`, `teams_delegated_scopes`,
+    `teams_delegated_authority_base_url`, and `teams_delegated_credential_store_path`
+- Use the host CLI for delegated auth lifecycle:
+  - `agent-sandbox-cli teams-auth login --directory <directory-path>`
+  - `agent-sandbox-cli teams-auth status --directory <directory-path>`
+  - `agent-sandbox-cli teams-auth logout --directory <directory-path>`
+  - `agent-sandbox-cli teams-auth list`
+- The legacy static env-token mode remains supported for compatibility. In that mode,
+  `teams_graph_access_token_env` names the host environment variable that holds the token.
+- Do not place Teams credentials in cloud-init, session manifests, or guest shell profiles.
+- Guests never need direct Microsoft Graph credentials or internet access; Teams API access
+  happens only in the host-side gateway process.
+
 ## VM Python Bootstrap
 
 - `./scripts/bootstrap_python_vm.sh <vm-name> <host-checkout-root> <guest-repo-root>` builds a temporary host wheelhouse from the repo's `pyproject.toml`, copies it into the guest, creates a repo-local `.venv`, and installs the repo with dev dependencies offline.

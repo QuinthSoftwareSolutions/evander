@@ -109,8 +109,112 @@ def test_help_groups_commands_by_panel_then_alphabetically() -> None:
     assert "Backfill missing directory ownership fields" in output
     assert "create-issue-vm" in output and "Create and bootstrap an issue VM." in output
     assert "create-vm" in output and "Create and bootstrap a standalone VM." in output
+    assert "teams-auth" in output
     assert "host-heartbeat" in output and "Run the host heartbeat worker." in output
     assert "trigger-orchestrator" in output and "Run the trigger orchestrator worker." in output
+
+
+def test_teams_auth_help_exposes_subcommands() -> None:
+    runner = CliRunner()
+
+    result = runner.invoke(app, ["teams-auth", "--help"])
+
+    assert result.exit_code == 0
+    output = result.output
+    assert "login" in output
+    assert "status" in output
+    assert "logout" in output
+    assert "list" in output
+
+
+def test_teams_auth_commands_use_admin_service_and_redact_tokens(tmp_path: Path, monkeypatch) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+    calls: list[str] = []
+
+    class FakeAdminService:
+        def __init__(self, config) -> None:
+            self.config = config
+
+        def teams_auth_login(self, *, directory="root"):
+            calls.append("login")
+            return {
+                "status": "device_code_pending",
+                "message": "Go to https://microsoft.com/devicelogin and enter code ABCD-EFGH",
+                "verification_uri": "https://microsoft.com/devicelogin",
+                "user_code": "ABCD-EFGH",
+                "access_token": "should-not-leak",
+                "refresh_token": "should-not-leak-either",
+            }
+
+        def teams_auth_complete_login(self, login_session, *, directory="root"):
+            calls.append("complete_login")
+            return {
+                "status": "authenticated",
+                "backend": "delegated_graph_api",
+                "account_identifier": "alice@example.com",
+                "tenant_id": "contoso",
+                "expires_at": "2026-05-01T12:00:00Z",
+                "access_token": "should-not-leak",
+            }
+
+        def teams_auth_status(self, *, directory="root"):
+            calls.append("status")
+            return {
+                "status": "authenticated",
+                "backend": "delegated_graph_api",
+                "account_identifier": "alice@example.com",
+                "tenant_id": "contoso",
+                "expires_at": "2026-05-01T12:00:00Z",
+                "access_token": "should-not-leak",
+            }
+
+        def teams_auth_list(self):
+            calls.append("list")
+            return [
+                {
+                    "status": "authenticated",
+                    "account": "alice@example.com",
+                    "tenant": "contoso",
+                    "refresh_token": "should-not-leak",
+                },
+                {
+                    "status": "expired",
+                    "account": "bob@example.com",
+                    "tenant": "fabrikam",
+                },
+            ]
+
+        def teams_auth_logout(self, *, directory="root"):
+            calls.append("logout")
+            return None
+
+    monkeypatch.setattr("agent_sandbox.cli.AdminService", FakeAdminService)
+
+    login_result = runner.invoke(app, ["teams-auth", "login", "--config", str(config_path)])
+    status_result = runner.invoke(app, ["teams-auth", "status", "--config", str(config_path)])
+    list_result = runner.invoke(app, ["teams-auth", "list", "--config", str(config_path)])
+    logout_result = runner.invoke(app, ["teams-auth", "logout", "--config", str(config_path)])
+
+    assert login_result.exit_code == 0
+    assert "ABCD-EFGH" in login_result.output
+    assert "should-not-leak" not in login_result.output
+    assert "<redacted>" in login_result.output
+    assert "alice@example.com" in login_result.output
+
+    assert status_result.exit_code == 0
+    assert "alice@example.com" in status_result.output
+    assert "delegated_graph_api" in status_result.output
+    assert "should-not-leak" not in status_result.output
+
+    assert list_result.exit_code == 0
+    assert "Entries: 2" in list_result.output
+    assert "bob@example.com" in list_result.output
+    assert "should-not-leak" not in list_result.output
+
+    assert logout_result.exit_code == 0
+    assert "Completed successfully." in logout_result.output
+    assert calls == ["login", "complete_login", "status", "list", "logout"]
 
 
 def test_init_state_creates_directories_store_with_root(tmp_path: Path) -> None:

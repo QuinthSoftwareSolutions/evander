@@ -42,6 +42,11 @@ from .services import (
     TeamsService,
 )
 from .storage import JsonStore
+from .teams_auth import (
+    JsonTeamsIdentityCredentialStore,
+    MicrosoftDeviceCodeAuthConfig,
+    TeamsDeviceCodeTokenProvider,
+)
 from .wake_store import WakeRequestStore
 
 
@@ -105,6 +110,9 @@ class RuntimeContext:
     def teams_service_for_session(self, session_id: str) -> TeamsService:
         if not isinstance(self.teams_service, (StubTeamsService, GraphTeamsService)):
             return self.teams_service
+        session = self.sessions.get(session_id)
+        if session is None:
+            raise ValueError(f"unknown session: {session_id}")
         resolved_config = self.resolve_provider_config_for_session(session_id)
         if resolved_config == self.config:
             return self.teams_service
@@ -112,6 +120,7 @@ class RuntimeContext:
             resolved_config,
             self.teams_messages,
             self.sessions,
+            directory_path=session.directory_path,
             allowed_channel_targets_provider=lambda: _resolve_allowed_teams_channel_targets_for_session(
                 self.sessions,
                 session_id,
@@ -143,7 +152,12 @@ def build_runtime(config: GatewayConfig) -> RuntimeContext:
     wake_store = WakeRequestStore(config.runtime_dir / "wake-requests-store.json")
     root_provider_config = provider_config.resolve_for_directory("root")
     discord_service = _build_discord_service(root_provider_config, discord_commands, sessions, policy_config)
-    teams_service = _build_teams_service(root_provider_config, teams_messages, sessions)
+    teams_service = _build_teams_service(
+        root_provider_config,
+        teams_messages,
+        sessions,
+        directory_path="root",
+    )
 
     return RuntimeContext(
         config=config,
@@ -289,6 +303,7 @@ def _build_teams_service(
     message_store: JsonStore[TeamsMessageEnvelope],
     sessions: JsonStore[SessionManifest],
     *,
+    directory_path: str | None = None,
     allowed_channel_targets_provider: Callable[[], list[str]] | None = None,
 ) -> TeamsService:
     if config.teams_backend == "stub":
@@ -296,9 +311,7 @@ def _build_teams_service(
     if config.teams_backend == "graph_api":
         env_var_name = config.teams_graph_access_token_env.strip()
         if not env_var_name:
-            raise RuntimeError(
-                "teams backend 'graph_api' requires config.teams_graph_access_token_env to be set"
-            )
+            raise RuntimeError("teams backend 'graph_api' requires config.teams_graph_access_token_env to be set")
         token = os.environ.get(env_var_name, "").strip()
         if not token:
             raise RuntimeError(
@@ -317,9 +330,45 @@ def _build_teams_service(
             allowed_channel_targets_provider=allowed_channel_targets_provider
             or (lambda: _resolve_allowed_teams_channel_targets(sessions)),
         )
+    if config.teams_backend == "delegated_graph_api":
+        token_provider = _build_delegated_teams_token_provider(config)
+        return GraphTeamsService(
+            message_store,
+            token_provider=token_provider.get_bearer_token,
+            api_base_url=config.teams_graph_api_base_url,
+            poll_limit=config.teams_poll_limit,
+            timeout_seconds=config.teams_timeout_seconds,
+            retry_count=config.teams_retry_count,
+            retry_base_backoff_seconds=config.teams_retry_base_backoff_seconds,
+            retry_max_backoff_seconds=config.teams_retry_max_backoff_seconds,
+            allowed_channel_targets_provider=allowed_channel_targets_provider
+            or (lambda: _resolve_allowed_teams_channel_targets(sessions)),
+        )
     raise RuntimeError(
-        f"Unsupported teams backend {config.teams_backend!r}. Expected one of: 'stub', 'graph_api'."
+        f"Unsupported teams backend {config.teams_backend!r}. Expected one of: 'stub', 'graph_api', 'delegated_graph_api'."
     )
+
+
+def _build_delegated_teams_token_provider(config: GatewayConfig) -> TeamsDeviceCodeTokenProvider:
+    identity_id = str(config.teams_delegated_identity_id or "").strip()
+    if not identity_id:
+        raise RuntimeError("teams backend 'delegated_graph_api' requires teams_delegated_identity_id")
+    client_id = str(config.teams_delegated_client_id or "").strip()
+    if not client_id:
+        raise RuntimeError("teams backend 'delegated_graph_api' requires teams_delegated_client_id")
+
+    auth_config = MicrosoftDeviceCodeAuthConfig(
+        client_id=client_id,
+        tenant_id=config.teams_delegated_tenant_id,
+        scopes=config.teams_delegated_scopes,
+        authority_base_url=config.teams_delegated_authority_base_url,
+        timeout_seconds=config.teams_timeout_seconds,
+    )
+    credential_store = JsonTeamsIdentityCredentialStore(
+        config.teams_delegated_credential_store_path,
+        identity_id,
+    )
+    return TeamsDeviceCodeTokenProvider(auth_config, credential_store)
 
 
 def _build_pr_reply_service(config: GatewayConfig) -> PrReplyService:

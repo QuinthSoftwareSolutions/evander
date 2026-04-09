@@ -540,7 +540,26 @@ See [live-smoke-tests.md](/home/jonathan/agent-sandbox/docs/live-smoke-tests.md)
 
 ## Teams Adapter Configuration
 
-- Teams access is host-side. Configure the gateway with:
+- Teams access is host-side. The preferred operator flow is to sign in on the host with the CLI
+  device code flow and keep the delegated credential on the host only.
+- Bind each directory subtree to the intended Teams identity through per-directory Teams identity
+  binding in directory-scoped provider config. Sessions below that subtree inherit the binding, so
+  different teams can use different host-managed identities without guest-side secrets.
+- Preferred delegated configuration:
+  - `teams_backend: delegated_graph_api`
+  - `teams_delegated_identity_id: <DIRECTORY_BOUND_IDENTITY>`
+  - `teams_delegated_client_id: <ENTRA_APP_CLIENT_ID>`
+  - optional `teams_delegated_tenant_id`, `teams_delegated_scopes`,
+    `teams_delegated_authority_base_url`, and `teams_delegated_credential_store_path`
+- Start delegated auth on the host with:
+  - `agent-sandbox-cli teams-auth login --directory <directory-path>`
+- Inspect or clear delegated auth on the host with:
+  - `agent-sandbox-cli teams-auth status --directory <directory-path>`
+  - `agent-sandbox-cli teams-auth logout --directory <directory-path>`
+  - `agent-sandbox-cli teams-auth list`
+- The gateway still supports the legacy static env-token mode for compatibility. If you use it,
+  `teams_graph_access_token_env` names the host environment variable that holds the token.
+- Configure the gateway with:
   - `teams_backend: graph_api`
   - `teams_graph_access_token_env: <ENV_VAR_NAME>`
   - optional `teams_graph_api_base_url` when you need a non-default Graph endpoint

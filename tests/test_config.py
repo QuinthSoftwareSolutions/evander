@@ -80,6 +80,12 @@ def test_unique_email_mailbox_ids_pass_validation_with_alias_fields() -> None:
     ]
 
 
+def test_teams_graph_access_token_env_defaults_to_compatibility_name() -> None:
+    config = GatewayConfig.model_validate({})
+
+    assert config.teams_graph_access_token_env == "GRAPH_TEAMS_ACCESS_TOKEN"
+
+
 @pytest.mark.parametrize(
     ("field_name", "value"),
     [
@@ -203,6 +209,27 @@ def test_ado_worker_global_config_defaults_include_dedicated_pat_env_name() -> N
 def test_directory_scoped_config_flag_defaults_to_disabled() -> None:
     config = GatewayConfig.model_validate({})
     assert config.enable_directory_scoped_config is False
+
+
+def test_teams_delegated_credential_store_path_follows_runtime_dir_default() -> None:
+    config = GatewayConfig.model_validate({"runtime_dir": "/tmp/agent-sandbox-runtime"})
+    assert str(config.teams_delegated_credential_store_path) == (
+        "/tmp/agent-sandbox-runtime/teams-delegated-credentials.json"
+    )
+
+
+def test_teams_backend_accepts_delegated_graph_api_when_identity_is_bound() -> None:
+    config = GatewayConfig.model_validate(
+        {
+            "teams_backend": "delegated_graph_api",
+            "teams_delegated_identity_id": " team-a ",
+            "teams_delegated_client_id": " client-123 ",
+        }
+    )
+
+    assert config.teams_backend == "delegated_graph_api"
+    assert config.teams_delegated_identity_id == "team-a"
+    assert config.teams_delegated_client_id == "client-123"
 
 
 def test_trigger_orchestrator_worker_global_config_defaults_follow_runtime_dir() -> None:
@@ -563,6 +590,42 @@ def test_trigger_orchestrator_for_gate_rejects_missing_done_edge() -> None:
                 ],
             }
         )
+
+
+def test_trigger_orchestrator_allows_orphaned_draft_subgraphs() -> None:
+    config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": "/tmp/agent-sandbox-runtime",
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Tick",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+            "gates": [
+                {
+                    "id": "for-1",
+                    "display_name": "Draft loop",
+                    "type": "gate:for",
+                    "items": ["a", "b"],
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-body",
+                    "display_name": "Body",
+                    "type": "effect:vm:exec",
+                    "target": "session-1",
+                    "command": "echo body",
+                }
+            ],
+            "edges": [],
+        }
+    )
+
+    assert config.gates[0].type == "gate:for"
 
 
 def test_trigger_orchestrator_worker_global_config_accepts_discriminated_triggers() -> None:

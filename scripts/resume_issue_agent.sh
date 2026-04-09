@@ -372,6 +372,11 @@ if ! resolve_private_key_path; then
   exit "${EXIT_MISSING_SSH_KEY}"
 fi
 
+if [[ "${AGENT_PROVIDER}" == "codex" && -z "${AGENT_MODEL:-}" ]]; then
+  echo "AGENT_MODEL is required for session-bound Codex execution. Set AGENT_MODEL in the host invocation environment." >&2
+  exit "${EXIT_USAGE}"
+fi
+
 if ! vm_network_vm_exists "${VM_NAME}"; then
   echo "VM not found: ${VM_NAME}" >&2
   write_host_state_attempt "${HOST_STATE_FILE}" "${SESSION_ID}" "error" "vm-not-found"

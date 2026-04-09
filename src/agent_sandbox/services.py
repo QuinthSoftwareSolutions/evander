@@ -110,6 +110,10 @@ class TeamsService(Protocol):
     ) -> dict[str, Any]: ...
 
 
+class TeamsAuthenticationError(httpx.HTTPError):
+    """Raised when Teams delegated or static credentials cannot be resolved."""
+
+
 class StubDiscordService:
     def __init__(self, command_store: JsonStore[DiscordCommandEnvelope]) -> None:
         self.command_store = command_store
@@ -463,7 +467,8 @@ class GraphTeamsService:
         self,
         message_store: JsonStore[TeamsMessageEnvelope],
         *,
-        token: str,
+        token: str | None = None,
+        token_provider: Callable[[], str] | None = None,
         api_base_url: str,
         poll_limit: int,
         timeout_seconds: float,
@@ -473,7 +478,8 @@ class GraphTeamsService:
         allowed_channel_targets_provider: Callable[[], list[str]] = lambda: [],
     ) -> None:
         self.message_store = message_store
-        self.token = token
+        self.token = str(token or "").strip()
+        self.token_provider = token_provider or (lambda: self.token)
         self.api_base_url = api_base_url.rstrip("/")
         self.poll_limit = poll_limit
         self.timeout_seconds = timeout_seconds
@@ -486,9 +492,21 @@ class GraphTeamsService:
         )
         self.allowed_channel_targets_provider = allowed_channel_targets_provider
 
+    def _resolve_token(self) -> str:
+        try:
+            token = str(self.token_provider() or "").strip()
+        except TeamsAuthenticationError:
+            raise
+        except Exception as exc:
+            raise TeamsAuthenticationError(str(exc)) from exc
+        if not token:
+            raise TeamsAuthenticationError("Teams Graph access token provider returned an empty token.")
+        self.token = token
+        return token
+
     def _headers(self) -> dict[str, str]:
         return {
-            "Authorization": f"Bearer {self.token}",
+            "Authorization": f"Bearer {self._resolve_token()}",
             "Content-Type": "application/json",
         }
 

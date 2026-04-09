@@ -596,7 +596,7 @@ Supported directory config domains:
 | Domain file | Purpose | YAML fields allowed |
 |---|---|---|
 | `policy.json` | Session/policy defaults and operator restrictions | `approval_ttl_seconds`, `default_session_ttl_seconds`, Discord/email allowlists, `email_send_enabled`, `pr_reply_require_approval`, `redacted_keys` |
-| `providers.json` | Upstream/provider endpoints and credentials-by-reference | Discord, OpenAI, NuGet, GitHub, Azure DevOps |
+| `providers.json` | Upstream/provider endpoints and credentials-by-reference | Discord, OpenAI, NuGet, GitHub, Azure DevOps, Teams |
 | `email.json` | Mailbox provider definitions and email provider runtime settings | `email_mailboxes`, `email_provider_timeout_seconds` |
 | `heartbeat.json` | Host heartbeat worker behavior | `host_heartbeat_pr_resume_prompt`, `host_heartbeat_discord_resume_prompt` |
 | `ado-worker.json` | Azure DevOps backlog worker setup/bootstrap behavior | `ado_area_filters`, `ado_team_filters`, `ado_project_or_solution`, `ado_prewarm_target`, `ado_repo_source`, `create_prs_automatically`, `create_prs_as_draft`, `ado_bootstrap_*`, `ado_mssql_sa_password_env`, frontend bootstrap fields |
@@ -617,6 +617,22 @@ Inheritance path:
 - `runtime/directory-config/root/*.json` is the top of the directory-scoped inheritance chain
 - provenance metadata records which directory last set each effective value
 
+Teams delegated auth follows the same host-side model. The preferred operator flow is to sign in on
+the host with device code flow and keep the credential host-only. Directory-scoped `providers.json`
+overlays can bind a subtree to that host-managed Teams identity, while the legacy static env-token
+mode remains supported for compatibility through `teams_graph_access_token_env` (default
+`GRAPH_TEAMS_ACCESS_TOKEN`).
+
+Key delegated Teams provider settings now include:
+
+- `teams_backend: delegated_graph_api`
+- `teams_delegated_identity_id`
+- `teams_delegated_client_id`
+- optional `teams_delegated_tenant_id`
+- optional `teams_delegated_scopes`
+- optional `teams_delegated_authority_base_url`
+- optional `teams_delegated_credential_store_path`
+
 ## 4) Additional env vars consumed directly in code paths
 
 These are not primarily defined in `*.env.example` but are explicit configuration points in code:
@@ -626,6 +642,7 @@ These are not primarily defined in `*.env.example` but are explicit configuratio
 | `AGENT_SANDBOX_GIT_ROOT` | `src/agent_sandbox/cli.py` | `agent-sandbox` CLI git-remote helpers (`resolve_git_root`). |
 | `MSSQL_SA_PASSWORD` | `src/agent_sandbox/cli.py`, `scripts/setup_issue_vm.sh`, bootstrap scripts | Required when MSSQL bootstrap paths are enabled. |
 | Provider mailbox tokens (`GMAIL_*_ACCESS_TOKEN`, `GRAPH_*_ACCESS_TOKEN`, etc.) | Referenced indirectly in effective root directory config under `auth_secret_refs.access_token` | `src/agent_sandbox/runtime.py`, `src/agent_sandbox/email/gmail_provider.py`, `src/agent_sandbox/email/graph_provider.py`. |
+| Teams delegated Graph token env name (`teams_graph_access_token_env`, default `GRAPH_TEAMS_ACCESS_TOKEN`) | Referenced indirectly in effective provider config under `teams_graph_access_token_env` | `src/agent_sandbox/runtime.py`, `src/agent_sandbox/services.py`. |
 
 For issue setup, `AGENT_SANDBOX_GIT_*`, `AGENT_DEFAULT_MODEL`, and `AGENT_POST_EXEC_VERIFICATION_PROMPT` are now
 read from the root `issue_setup` directory config when present, with host environment variables

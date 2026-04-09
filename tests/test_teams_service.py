@@ -7,7 +7,7 @@ import httpx
 import pytest
 
 from agent_sandbox.models import TeamsMessageEnvelope
-from agent_sandbox.services import GraphTeamsService, StubTeamsService
+from agent_sandbox.services import GraphTeamsService, StubTeamsService, TeamsAuthenticationError
 from agent_sandbox.storage import JsonStore
 
 
@@ -84,6 +84,41 @@ def test_graph_teams_service_polls_allowlisted_channels_and_flattens_replies(
     assert requests[0].url.params.get("$expand") == "replies"
 
 
+def test_graph_teams_service_uses_token_provider_for_requests(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[httpx.Request] = []
+    token_calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={"value": []},
+            request=request,
+        )
+
+    transport = httpx.MockTransport(handler)
+    patch_httpx_client(monkeypatch, transport)
+    store = JsonStore(tmp_path / "teams.json", TeamsMessageEnvelope)
+    service = GraphTeamsService(
+        store,
+        token_provider=lambda: token_calls.append("called") or "delegated-token",
+        api_base_url="https://graph.microsoft.com/v1.0",
+        poll_limit=25,
+        timeout_seconds=5.0,
+        allowed_channel_targets_provider=lambda: ["team-a/channel-1"],
+    )
+
+    messages = service.get_messages()
+
+    assert messages == []
+    assert token_calls == ["called"]
+    assert requests[0].headers["Authorization"] == "Bearer delegated-token"
+    assert service.token == "delegated-token"
+
+
 def test_graph_teams_service_follows_pagination_for_channel_messages(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -150,6 +185,25 @@ def test_graph_teams_service_follows_pagination_for_channel_messages(
     assert requests[0].url.params.get("$top") == "1"
     assert requests[1].url.params.get("$skiptoken") == "page-2"
     assert requests[1].url.params.get("$top") is None
+
+
+def test_graph_teams_service_fails_clearly_when_token_provider_cannot_resolve_token(
+    tmp_path: Path,
+) -> None:
+    store = JsonStore(tmp_path / "teams.json", TeamsMessageEnvelope)
+    service = GraphTeamsService(
+        store,
+        token_provider=lambda: (_ for _ in ()).throw(
+            TeamsAuthenticationError("No delegated Teams credential found for session 'session-1'")
+        ),
+        api_base_url="https://graph.microsoft.com/v1.0",
+        poll_limit=25,
+        timeout_seconds=5.0,
+        allowed_channel_targets_provider=lambda: ["team-a/channel-1"],
+    )
+
+    with pytest.raises(TeamsAuthenticationError, match="No delegated Teams credential found"):
+        service.get_messages()
 
 
 def test_stub_teams_service_filters_by_cursor(tmp_path: Path) -> None:
