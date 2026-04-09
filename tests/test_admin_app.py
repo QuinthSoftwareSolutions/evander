@@ -405,6 +405,28 @@ def test_format_issue_details_includes_reason_when_present() -> None:
     assert "Description:" in formatted
 
 
+def test_format_issue_details_includes_metadata_when_present() -> None:
+    issue = SimpleNamespace(
+        issue_number="14424",
+        title="Planner test",
+        state="In Progress",
+        directory_path="root/example-industry/app",
+        repo_source="/tmp/repo",
+        yaml_path="runtime/issues/issue-14424.yaml",
+        reason=None,
+        description="",
+        body="",
+        metadata={"state": "In Progress", "steps": ["Analyze", "Implement"]},
+    )
+
+    formatted = admin_app._format_issue_details(issue)
+
+    assert "Metadata:" in formatted
+    assert '"steps": [' in formatted
+    assert '"Analyze"' in formatted
+    assert '"Implement"' in formatted
+
+
 def test_refresh_selected_issue_detail_clears_when_no_issue_selected() -> None:
     class DummyTextEdit:
         def __init__(self) -> None:

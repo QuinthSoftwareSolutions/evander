@@ -48,6 +48,16 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
     assert any(node["type"] == "effect:vm:exec" for node in catalog_payload["nodes"])
     vm_exec = next(node for node in catalog_payload["nodes"] if node["type"] == "effect:vm:exec")
     assert any(field["key"] == "command" and field["bindable"] for field in vm_exec["fields"])
+    vm_delete = next(node for node in catalog_payload["nodes"] if node["type"] == "effect:vm:delete-files")
+    assert [field["key"] for field in vm_delete["fields"]] == [
+        "target",
+        "session_id",
+        "vm_name",
+        "vm_user",
+        "paths",
+        "recursive",
+        "missing_ok",
+    ]
     issue_state = next(node for node in catalog_payload["nodes"] if node["type"] == "effect:issue:update-state")
     assert [field["key"] for field in issue_state["fields"]] == ["issue_id", "state", "sync_proxy_cache"]
     agent_prompt = next(node for node in catalog_payload["nodes"] if node["type"] == "effect:agent:prompt")
@@ -62,6 +72,13 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
     await_agent = next(node for node in catalog_payload["nodes"] if node["type"] == "gate:await-agent")
     assert [field["key"] for field in await_agent["fields"]] == ["session_id", "vm_name", "outputs"]
     assert all(field["bindable"] for field in await_agent["fields"][:2])
+    for_gate = next(node for node in catalog_payload["nodes"] if node["type"] == "gate:for")
+    assert for_gate["output_ports"] == [
+        {"key": "body", "label": "Body", "description": "Loop body path while items remain."},
+        {"key": "done", "label": "Done", "description": "Exit path after the final item."},
+    ]
+    issue_get = next(node for node in catalog_payload["nodes"] if node["type"] == "query:issue:get")
+    assert [field["key"] for field in issue_get["fields"]] == ["issue_id"]
 
 
 def test_admin_web_validates_and_saves_workflow_editor_document(tmp_path: Path) -> None:
@@ -432,3 +449,64 @@ def test_admin_web_load_normalizes_await_agent_outputs_without_completion_trigge
     assert response.status_code == 200
     gate = response.json()["config"]["gates"][0]
     assert gate["outputs"]["dispatch_id"] == {"type": "string"}
+
+
+def test_admin_web_load_normalizes_for_gate_outputs(tmp_path: Path) -> None:
+    config_root = tmp_path / "config" / "trigger-orchestrator"
+    config_root.mkdir(parents=True, exist_ok=True)
+    (config_root / "config.json").write_text(
+        """
+{
+  "runtime_dir": "runtime",
+  "triggers": [
+    {
+      "id": "trigger-cron-1",
+      "display_name": "Tick",
+      "type": "trigger:cron",
+      "expression": "* * * * *"
+    }
+  ],
+  "gates": [
+    {
+      "id": "gate-for-1",
+      "display_name": "For",
+      "type": "gate:for",
+      "items": ["a", "b"],
+      "outputs": {}
+    }
+  ],
+  "effects": [
+    {
+      "id": "effect-body-1",
+      "display_name": "Body",
+      "type": "effect:vm:exec",
+      "target": "session-1",
+      "command": "echo body"
+    },
+    {
+      "id": "effect-done-1",
+      "display_name": "Done",
+      "type": "effect:vm:exec",
+      "target": "session-1",
+      "command": "echo done"
+    }
+  ],
+  "queries": [],
+  "edges": [
+    { "source_id": "trigger-cron-1", "target_id": "gate-for-1" },
+    { "source_id": "gate-for-1", "source_port": "body", "target_id": "effect-body-1" },
+    { "source_id": "gate-for-1", "source_port": "done", "target_id": "effect-done-1" },
+    { "source_id": "effect-body-1", "target_id": "gate-for-1", "allow_cycle": true }
+  ]
+}
+""".strip(),
+        encoding="utf-8",
+    )
+
+    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    response = client.get("/api/workflow-editor/document")
+
+    assert response.status_code == 200
+    gate = response.json()["config"]["gates"][0]
+    assert gate["outputs"]["current_index"] == {"type": "integer"}
+    assert gate["outputs"]["item_count"] == {"type": "integer"}

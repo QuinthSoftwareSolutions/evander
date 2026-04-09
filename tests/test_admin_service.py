@@ -1918,7 +1918,11 @@ def test_set_issue_plan_updates_local_issue_metadata_and_yaml(tmp_path: Path) ->
     service = AdminService(write_config(tmp_path))
     issue = service.create_local_issue(title="Planned", body="only local")
 
-    result = service.set_issue_plan(issue.issue_number, ["Analyze repo", "Implement fix", "Verify tests"])
+    result = service.set_issue_plan(
+        issue.issue_number,
+        ["Analyze repo", "Implement fix", "Verify tests"],
+        summary="Understand the repo, make the fix, and verify the outcome.",
+    )
     read_result = service.read_issue(issue.issue_number)
     yaml_text = Path(issue.yaml_path).read_text(encoding="utf-8")
 
@@ -1926,8 +1930,11 @@ def test_set_issue_plan_updates_local_issue_metadata_and_yaml(tmp_path: Path) ->
     assert result["updated"] is True
     assert result["step_count"] == 3
     assert result["steps"] == ["Analyze repo", "Implement fix", "Verify tests"]
+    assert result["summary"] == "Understand the repo, make the fix, and verify the outcome."
     assert read_result["metadata"]["steps"] == ["Analyze repo", "Implement fix", "Verify tests"]
+    assert read_result["metadata"]["plan_summary"] == "Understand the repo, make the fix, and verify the outcome."
     assert "steps:" in yaml_text
+    assert "plan_summary:" in yaml_text
     assert "- Analyze repo" in yaml_text
 
 
@@ -1937,6 +1944,20 @@ def test_set_issue_plan_rejects_empty_steps(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="steps must contain at least one non-empty item"):
         service.set_issue_plan(issue.issue_number, ["", "   "])
+
+
+def test_set_issue_plan_clears_existing_summary_when_omitted(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    issue = service.create_local_issue(title="Planned", body="only local")
+
+    service.set_issue_plan(issue.issue_number, ["Analyze repo"], summary="Original summary")
+    result = service.set_issue_plan(issue.issue_number, ["Implement fix"])
+    read_result = service.read_issue(issue.issue_number)
+    yaml_text = Path(issue.yaml_path).read_text(encoding="utf-8")
+
+    assert result["summary"] is None
+    assert "plan_summary" not in read_result["metadata"]
+    assert "plan_summary:" not in yaml_text
 
 
 def test_get_issue_returns_full_local_record_for_closed_issue(tmp_path: Path) -> None:

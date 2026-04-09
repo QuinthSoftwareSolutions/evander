@@ -509,6 +509,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
     def set_issue_plan(
         issue_id: str,
         steps: list[str],
+        summary: str | None = None,
         *,
         session_id: str | None = None,
         ctx: Context | None = None,
@@ -518,10 +519,11 @@ def create_server(context: RuntimeContext) -> FastMCP:
             "session_id": session_id,
             "issue_id": issue_id,
             "steps": steps,
+            "summary": summary,
         }
         try:
             session = context.policy.require_tool(session_id, ToolName.SET_ISSUE_PLAN)
-            result = AdminService(context.config.runtime_dir).set_issue_plan(issue_id, steps)
+            result = AdminService(context.config.runtime_dir).set_issue_plan(issue_id, steps, summary=summary)
             audit_success(
                 session_id,
                 ToolName.SET_ISSUE_PLAN,
@@ -530,6 +532,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
                     "issue_number": result.get("issue_number"),
                     "source_type": result.get("source_type"),
                     "step_count": result.get("step_count"),
+                    "has_summary": bool(result.get("summary")),
                     "directory_path": session.directory_path,
                 },
             )

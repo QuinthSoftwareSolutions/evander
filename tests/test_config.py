@@ -476,6 +476,95 @@ def test_trigger_orchestrator_await_agent_gate_accepts_linear_flow_without_compl
     assert config.gates[0].outputs["dispatch_id"] == {"type": "string"}
 
 
+def test_trigger_orchestrator_for_gate_accepts_body_done_ports_and_cycle_return() -> None:
+    config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": "/tmp/agent-sandbox-runtime",
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Tick",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                    "outputs": {"steps": {"type": "array"}},
+                }
+            ],
+            "gates": [
+                {
+                    "id": "for-1",
+                    "display_name": "Iterate steps",
+                    "type": "gate:for",
+                    "items": "${{trigger-1.steps}}",
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-body",
+                    "display_name": "Body",
+                    "type": "effect:vm:exec",
+                    "target": "session-1",
+                    "command": "echo body",
+                },
+                {
+                    "id": "effect-done",
+                    "display_name": "Done",
+                    "type": "effect:vm:exec",
+                    "target": "session-1",
+                    "command": "echo done",
+                },
+            ],
+            "edges": [
+                {"source_id": "trigger-1", "target_id": "for-1"},
+                {"source_id": "for-1", "source_port": "body", "target_id": "effect-body"},
+                {"source_id": "for-1", "source_port": "done", "target_id": "effect-done"},
+                {"source_id": "effect-body", "target_id": "for-1", "allow_cycle": True},
+            ],
+        }
+    )
+
+    assert config.gates[0].type == "gate:for"
+    assert config.gates[0].outputs["current_index"] == {"type": "integer"}
+    assert config.gates[0].outputs["is_done"] == {"type": "boolean"}
+
+
+def test_trigger_orchestrator_for_gate_rejects_missing_done_edge() -> None:
+    with pytest.raises(ValueError, match="gate:for for-1 must have exactly 1 outbound done edge"):
+        TriggerOrchestratorWorkerGlobalConfig.model_validate(
+            {
+                "runtime_dir": "/tmp/agent-sandbox-runtime",
+                "triggers": [
+                    {
+                        "id": "trigger-1",
+                        "display_name": "Tick",
+                        "type": "trigger:cron",
+                        "expression": "* * * * *",
+                    }
+                ],
+                "gates": [
+                    {
+                        "id": "for-1",
+                        "display_name": "Iterate steps",
+                        "type": "gate:for",
+                        "items": ["a", "b"],
+                    }
+                ],
+                "effects": [
+                    {
+                        "id": "effect-body",
+                        "display_name": "Body",
+                        "type": "effect:vm:exec",
+                        "target": "session-1",
+                        "command": "echo body",
+                    }
+                ],
+                "edges": [
+                    {"source_id": "trigger-1", "target_id": "for-1"},
+                    {"source_id": "for-1", "source_port": "body", "target_id": "effect-body"},
+                ],
+            }
+        )
+
+
 def test_trigger_orchestrator_worker_global_config_accepts_discriminated_triggers() -> None:
     config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
         {

@@ -514,6 +514,16 @@ class TriggerOrchestratorWorkerGlobalConfig(BaseModel):
                 inbound_errors.append(f"gate:merge {gate.id} must have at least 1 inbound edge, found {inbound_count}")
             elif gate.type == "gate:await-agent" and inbound_count != 1:
                 inbound_errors.append(f"gate:await-agent {gate.id} must have exactly 1 inbound edge, found {inbound_count}")
+            elif gate.type == "gate:for":
+                if inbound_count < 1:
+                    inbound_errors.append(f"gate:for {gate.id} must have at least 1 inbound edge, found {inbound_count}")
+                entry_edges = [
+                    edge for edge in inbound_edges.get(gate.id, ()) if not bool(getattr(edge, "allow_cycle", False))
+                ]
+                if len(entry_edges) != 1:
+                    inbound_errors.append(
+                        f"gate:for {gate.id} must have exactly 1 non-cyclic inbound edge, found {len(entry_edges)}"
+                    )
         for effect in self.effects:
             inbound_count = len(inbound_edges.get(effect.id, ()))
             if inbound_count != 1:
@@ -563,6 +573,33 @@ class TriggerOrchestratorWorkerGlobalConfig(BaseModel):
                     raise ValueError(
                         f"gate:merge {gate.id} outputs must equal the compatible intersection of upstream outputs"
                     )
+            elif gate.type == "gate:for":
+                expected_outputs = effective_node_output_schema(gate)
+                if gate.outputs is None:
+                    gate.outputs = expected_outputs
+                actual_outputs = dict(gate.outputs or {})
+                if not actual_outputs:
+                    gate.outputs = expected_outputs
+                    actual_outputs = expected_outputs
+                if actual_outputs != expected_outputs:
+                    raise ValueError(f"gate:for {gate.id} outputs must match for-loop outputs")
+
+                outbound_edges = [edge for edge in self.edges if edge.source_id == gate.id]
+                body_edges = [edge for edge in outbound_edges if edge.source_port == "body"]
+                done_edges = [edge for edge in outbound_edges if edge.source_port == "done"]
+                unlabeled_edges = [edge for edge in outbound_edges if edge.source_port is None]
+                invalid_ports = [
+                    edge.source_port for edge in outbound_edges if edge.source_port not in {None, "body", "done"}
+                ]
+                if len(body_edges) != 1:
+                    raise ValueError(f"gate:for {gate.id} must have exactly 1 outbound body edge")
+                if len(done_edges) != 1:
+                    raise ValueError(f"gate:for {gate.id} must have exactly 1 outbound done edge")
+                if unlabeled_edges:
+                    raise ValueError(f"gate:for {gate.id} outbound edges must declare source_port=body or source_port=done")
+                if invalid_ports:
+                    invalid = ", ".join(sorted({port for port in invalid_ports if port is not None}))
+                    raise ValueError(f"gate:for {gate.id} uses invalid source_port value(s): {invalid}")
         return self
 
     @model_validator(mode="after")

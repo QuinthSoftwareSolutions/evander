@@ -3,7 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from agent_sandbox.config import GatewayConfig
-from agent_sandbox.events.models import GitPrNoteQueryDefinition, SessionContextQueryDefinition, VmRunStateQueryDefinition
+from agent_sandbox.events.models import (
+    GitPrNoteQueryDefinition,
+    IssueGetQueryDefinition,
+    SessionContextQueryDefinition,
+    VmRunStateQueryDefinition,
+)
 from agent_sandbox.models import VmSummary
 from agent_sandbox.queries.providers.base import QueryProviderBase
 from agent_sandbox.queries.registry import (
@@ -23,6 +28,8 @@ class _AdminServiceStub:
     vms: list[VmSummary]
     pr_note_result: dict[str, object] | None = None
     pr_note_calls: list[dict[str, object]] | None = None
+    issue_result: dict[str, object] | None = None
+    issue_calls: list[dict[str, object]] | None = None
 
     def list_vms(self, *, include_inactive: bool = True, omit_state: bool = False):
         del include_inactive, omit_state
@@ -35,13 +42,25 @@ class _AdminServiceStub:
             raise RuntimeError("pr_note_result not configured")
         return dict(self.pr_note_result)
 
+    def get_issue(self, **kwargs):
+        if self.issue_calls is not None:
+            self.issue_calls.append(kwargs)
+        if self.issue_result is None:
+            raise RuntimeError("issue_result not configured")
+        return dict(self.issue_result)
+
 
 class _RecordingProvider(QueryProviderBase):
     pass
 
 
 def test_default_registry_includes_known_query_types() -> None:
-    assert set(DEFAULT_QUERY_PROVIDER_REGISTRY) == {"query:vm:run-state", "query:git:pr-note", "query:session-context"}
+    assert set(DEFAULT_QUERY_PROVIDER_REGISTRY) == {
+        "query:vm:run-state",
+        "query:git:pr-note",
+        "query:session-context",
+        "query:issue:get",
+    }
 
 
 def test_factory_initializes_query_provider_with_runtime_context() -> None:
@@ -162,3 +181,29 @@ def test_session_context_query_provider_returns_metadata(tmp_path: Path) -> None
 
     assert calls == [{"target": "session-1"}]
     assert output["metadata"]["issue_number"] == "14084"
+
+
+def test_issue_get_query_provider_returns_current_issue_payload(tmp_path: Path) -> None:
+    query = IssueGetQueryDefinition(
+        id="query-issue",
+        display_name="Issue get",
+        type="query:issue:get",
+        issue_id="root:issue-42",
+    )
+    admin_service = _AdminServiceStub(
+        vms=[],
+        issue_result={
+            "issue_id": "root:issue-42",
+            "issue_number": "42",
+            "title": "Fix planner resume",
+            "metadata": {"steps": ["analyze", "implement"]},
+        },
+        issue_calls=[],
+    )
+
+    factory = QueryProviderFactory(provider_config_resolver=_ResolverStub(), admin_service=admin_service)
+    provider = factory.build(query)
+    output = provider.execute()
+
+    assert admin_service.issue_calls == [{"issue_id": "root:issue-42"}]
+    assert output["metadata"]["steps"] == ["analyze", "implement"]

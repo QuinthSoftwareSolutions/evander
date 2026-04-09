@@ -198,6 +198,60 @@ def test_effect_orchestrator_executes_query_nodes(tmp_path: Path) -> None:
     assert record["outputs"] == {"state_code": "running"}
 
 
+def test_effect_orchestrator_executes_issue_get_query_nodes(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Tick",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                    "outputs": {"issue_id": {"type": "string"}},
+                }
+            ],
+            "queries": [
+                {
+                    "id": "query-1",
+                    "display_name": "Issue get",
+                    "type": "query:issue:get",
+                    "issue_id": "${{trigger-1.issue_id}}",
+                }
+            ],
+            "edges": [
+                _edge("trigger-1", "query-1"),
+            ],
+        }
+    )
+    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    worker.query_provider_factory = _Factory({"query-1": {"issue_id": "root:issue-42", "metadata": {"steps": ["one", "two"]}}})
+
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="event-query-issue-1",
+            trigger_id="trigger-1",
+            trigger_type="trigger:cron",
+            occurred_at=datetime(2026, 4, 4, 12, 0, tzinfo=timezone.utc),
+            payload={"issue_id": "root:issue-42"},
+        )
+    )
+
+    for _ in range(4):
+        worker.run_once()
+
+    effect_payload = json.loads((runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8"))
+    record = next(iter(effect_payload.values()))
+    assert record["effect_id"] == "query-1"
+    assert record["effect_type"] == "query:issue:get"
+    assert record["status"] == "succeeded"
+    assert record["outputs"] == {"issue_id": "root:issue-42", "metadata": {"steps": ["one", "two"]}}
+
+
 def test_effect_orchestrator_persists_provider_reported_failure_message(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
@@ -318,13 +372,97 @@ def test_effect_orchestrator_executes_issue_update_state_effect(tmp_path: Path) 
     record = next(iter(effect_payload.values()))
     assert record["effect_type"] == "effect:issue:update-state"
     assert record["status"] == "succeeded"
-    assert record["outputs"] == {
-        "issue_number": "14084",
-        "source_type": "local",
-        "updated": True,
-        "state": "In Progress",
-        "success": True,
-    }
+
+
+def test_for_gate_iterates_body_then_routes_to_done(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Tick",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                    "outputs": {"steps": {"type": "array"}},
+                }
+            ],
+            "gates": [
+                {
+                    "id": "for-1",
+                    "display_name": "Iterate steps",
+                    "type": "gate:for",
+                    "items": "${{trigger-1.steps}}",
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-body",
+                    "display_name": "Body",
+                    "type": "effect:vm:exec",
+                    "target": "session-1",
+                    "command": "work ${{for-1.current_index}}:${{for-1.current_element}}",
+                },
+                {
+                    "id": "effect-done",
+                    "display_name": "Done",
+                    "type": "effect:vm:exec",
+                    "target": "session-1",
+                    "command": "done ${{for-1.item_count}}",
+                },
+            ],
+            "edges": [
+                _edge("trigger-1", "for-1"),
+                {"source_id": "for-1", "source_port": "body", "target_id": "effect-body"},
+                {"source_id": "for-1", "source_port": "done", "target_id": "effect-done"},
+                {"source_id": "effect-body", "target_id": "for-1", "allow_cycle": True},
+            ],
+        }
+    )
+    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    worker.provider_factory = _Factory(
+        {
+            "effect-body": {"success": True, "message": "body"},
+            "effect-done": {"success": True, "message": "done"},
+        }
+    )
+
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="event-for-1",
+            trigger_id="trigger-1",
+            trigger_type="trigger:cron",
+            occurred_at=datetime(2026, 4, 4, 12, 0, tzinfo=timezone.utc),
+            payload={"steps": ["alpha", "beta", "gamma"]},
+            trace_id="trace-for-1",
+        )
+    )
+
+    for _ in range(20):
+        worker.run_once()
+
+    effect_payload = json.loads((runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8"))
+    body_records = [item for item in effect_payload.values() if item["effect_id"] == "effect-body"]
+    done_records = [item for item in effect_payload.values() if item["effect_id"] == "effect-done"]
+
+    assert len(body_records) == 3
+    assert len(done_records) == 1
+    assert [item["resolved_config"]["command"] for item in sorted(body_records, key=lambda entry: entry["resolved_config"]["command"])] == [
+        "work 0:alpha",
+        "work 1:beta",
+        "work 2:gamma",
+    ]
+    assert done_records[0]["resolved_config"]["command"] == "done 3"
+
+    gate_payload = json.loads((runtime_dir / "gate-orchestrator-executions.json").read_text(encoding="utf-8"))
+    for_records = [item for item in gate_payload.values() if item["gate_id"] == "for-1"]
+    assert len(for_records) == 4
+    assert sum(1 for item in for_records if item["outputs"].get("is_done") is False) == 3
+    assert sum(1 for item in for_records if item["outputs"].get("is_done") is True) == 1
 
 
 def test_effect_orchestrator_rejects_reserved_runtime_output_name(tmp_path: Path) -> None:

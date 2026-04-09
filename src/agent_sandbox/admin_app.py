@@ -984,6 +984,9 @@ def _format_issue_details(issue) -> str:
     description = str(issue.description or issue.body or "").strip()
     if description:
         lines.extend(["", "Description:", description])
+    metadata = getattr(issue, "metadata", None)
+    if isinstance(metadata, dict) and metadata:
+        lines.extend(["", "Metadata:", json.dumps(metadata, indent=2, sort_keys=True)])
     return "\n".join(lines)
 
 

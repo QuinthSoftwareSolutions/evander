@@ -23,6 +23,7 @@ import {
   type WorkflowEditorCatalog,
   type WorkflowEditorDocument,
   type WorkflowEditorFieldDefinition,
+  type WorkflowEditorNodePortDefinition,
   type WorkflowLayout,
   type WorkflowNodeConfig,
   type WorkflowNodeKind,
@@ -36,6 +37,8 @@ type GraphNodeData = {
   displayName: string;
   kind: WorkflowNodeKind;
   type: string;
+  inputPorts: ReadonlyArray<WorkflowEditorNodePortDefinition>;
+  outputPorts: ReadonlyArray<WorkflowEditorNodePortDefinition>;
   activeRunCount: number;
   dominantStatus: string | null;
   statusLabel: string | null;
@@ -87,7 +90,23 @@ function WorkflowNodeCard({ data, selected }: NodeProps) {
         nodeData.dominantStatus ? ` runtime-${nodeData.dominantStatus}` : ""
       }`}
     >
-      <Handle type="target" position={Position.Left} className="workflow-handle" />
+      {nodeData.inputPorts.length > 0 ? (
+        <div className="workflow-port-stack port-stack-input">
+          {nodeData.inputPorts.map((port, index) => (
+            <div
+              key={`input-${port.key}`}
+              className="workflow-port"
+              style={{ top: `${30 + index * 24}px` }}
+              title={port.description ?? undefined}
+            >
+              <Handle id={port.key} type="target" position={Position.Left} className="workflow-handle" />
+              <span className="workflow-port-label">{port.label}</span>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <Handle type="target" position={Position.Left} className="workflow-handle" />
+      )}
       <div className="node-drag-surface">
         <div className="node-heading">
           <div className="node-kind">{nodeData.kind}</div>
@@ -100,7 +119,23 @@ function WorkflowNodeCard({ data, selected }: NodeProps) {
         <div className="node-title">{nodeData.displayName}</div>
         <div className="node-id">{nodeData.id}</div>
       </div>
-      <Handle type="source" position={Position.Right} className="workflow-handle" />
+      {nodeData.outputPorts.length > 0 ? (
+        <div className="workflow-port-stack port-stack-output">
+          {nodeData.outputPorts.map((port, index) => (
+            <div
+              key={`output-${port.key}`}
+              className="workflow-port workflow-port-output"
+              style={{ top: `${30 + index * 24}px` }}
+              title={port.description ?? undefined}
+            >
+              <span className="workflow-port-label">{port.label}</span>
+              <Handle id={port.key} type="source" position={Position.Right} className="workflow-handle" />
+            </div>
+          ))}
+        </div>
+      ) : (
+        <Handle type="source" position={Position.Right} className="workflow-handle" />
+      )}
     </div>
   );
 }
@@ -168,7 +203,7 @@ function kindCollectionKey(kind: WorkflowNodeKind): "triggers" | "gates" | "effe
 function inboundLimit(node: WorkflowNodeConfig): number | null {
   const kind = nodeKindFromType(node.type);
   if (kind === "trigger") return 0;
-  if (node.type === "gate:merge") return null;
+  if (node.type === "gate:merge" || node.type === "gate:for") return null;
   return 1;
 }
 
@@ -192,6 +227,7 @@ function nodeStatusLabel(activity: WorkflowNodeActivityCounts | undefined): stri
 function buildNodes(
   config: WorkflowConfig,
   layout: WorkflowLayout,
+  catalog: WorkflowEditorCatalog,
   nodeActivity: Record<string, WorkflowNodeActivityCounts> = {},
   currentPositions: Record<string, { x: number; y: number }> = {},
 ): Node<GraphNodeData>[] {
@@ -206,6 +242,7 @@ function buildNodes(
     const kind = nodeKindFromType(node.type);
     const position = currentPositions[node.id] ?? layout.nodes[node.id] ?? fallbackPosition(index);
     const activity = nodeActivity[node.id];
+    const catalogEntry = getCatalogEntry(catalog, node.type);
     return {
       id: node.id,
       type: "workflowNode",
@@ -215,6 +252,8 @@ function buildNodes(
         displayName: node.display_name,
         kind,
         type: node.type,
+        inputPorts: catalogEntry?.input_ports ?? [],
+        outputPorts: catalogEntry?.output_ports ?? [],
         activeRunCount: Object.values(activity ?? {}).reduce((total, value) => total + value, 0),
         dominantStatus: dominantNodeStatus(activity),
         statusLabel: nodeStatusLabel(activity),
@@ -223,11 +262,40 @@ function buildNodes(
   });
 }
 
+function edgeId(edge: WorkflowEdge): string {
+  return `${edge.source_id}:${edge.source_port ?? ""}->${edge.target_id}`;
+}
+
+function wouldCreateCycle(config: WorkflowConfig, sourceId: string, targetId: string): boolean {
+  const nextEdges = [...config.edges, { source_id: sourceId, target_id: targetId }];
+  const downstream = new Map<string, string[]>();
+  for (const edge of nextEdges) {
+    const current = downstream.get(edge.source_id) ?? [];
+    current.push(edge.target_id);
+    downstream.set(edge.source_id, current);
+  }
+  const stack = [...(downstream.get(targetId) ?? [])];
+  const visited = new Set<string>();
+  while (stack.length > 0) {
+    const current = stack.pop()!;
+    if (current === sourceId) return true;
+    if (visited.has(current)) continue;
+    visited.add(current);
+    for (const child of downstream.get(current) ?? []) {
+      stack.push(child);
+    }
+  }
+  return false;
+}
+
 function buildEdges(config: WorkflowConfig): Edge[] {
   return config.edges.map((edge) => ({
-    id: `${edge.source_id}->${edge.target_id}`,
+    id: edgeId(edge),
     source: edge.source_id,
+    sourceHandle: edge.source_port,
     target: edge.target_id,
+    label: edge.source_port ?? undefined,
+    animated: Boolean(edge.allow_cycle),
   }));
 }
 
@@ -342,6 +410,15 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
       files: [{ destination_path: "/tmp/example.txt", content: "example" }],
     };
   }
+  if (kind === "effect" && type === "effect:vm:delete-files") {
+    return {
+      id,
+      display_name: "Delete files",
+      type,
+      paths: ["/tmp/example.txt"],
+      missing_ok: true,
+    };
+  }
   if (kind === "effect" && type === "effect:session:update-metadata") {
     return {
       id,
@@ -382,6 +459,14 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
       type,
     };
   }
+  if (kind === "query" && type === "query:issue:get") {
+    return {
+      id,
+      display_name: "Issue get",
+      type,
+      issue_id: "issue-1",
+    };
+  }
   return { id, display_name: "New node", type };
 }
 
@@ -413,36 +498,40 @@ function nodeById(config: WorkflowConfig, nodeId: string): WorkflowNodeConfig | 
   );
 }
 
-function validateConnection(config: WorkflowConfig, sourceId: string, targetId: string): string | null {
+function validateConnection(
+  config: WorkflowConfig,
+  catalog: WorkflowEditorCatalog,
+  sourceId: string,
+  targetId: string,
+  sourcePort?: string | null,
+): string | null {
   if (!sourceId || !targetId) return "Edge endpoints are required.";
   if (sourceId === targetId) return "Nodes cannot connect to themselves.";
-  if (config.edges.some((edge) => edge.source_id === sourceId && edge.target_id === targetId)) {
+  if (
+    config.edges.some(
+      (edge) => edge.source_id === sourceId && edge.target_id === targetId && (edge.source_port ?? "") === (sourcePort ?? ""),
+    )
+  ) {
     return "That edge already exists.";
   }
+  const sourceNode = nodeById(config, sourceId);
   const targetNode = nodeById(config, targetId);
+  if (!sourceNode) return "Source node does not exist.";
   if (!targetNode) return "Target node does not exist.";
+  const sourceCatalogEntry = getCatalogEntry(catalog, sourceNode.type);
+  const allowedPorts = sourceCatalogEntry?.output_ports ?? [];
+  if (allowedPorts.length > 0 && !allowedPorts.some((port) => port.key === sourcePort)) {
+    return `Node ${sourceId} requires selecting one of its named output ports.`;
+  }
   const limit = inboundLimit(targetNode);
   const inboundCount = config.edges.filter((edge) => edge.target_id === targetId).length;
   if (limit !== null && inboundCount >= limit) {
     return `Node ${targetId} already has the maximum supported inbound connections.`;
   }
-  const nextEdges = [...config.edges, { source_id: sourceId, target_id: targetId }];
-  const downstream = new Map<string, string[]>();
-  for (const edge of nextEdges) {
-    const current = downstream.get(edge.source_id) ?? [];
-    current.push(edge.target_id);
-    downstream.set(edge.source_id, current);
-  }
-  const stack = [...(downstream.get(targetId) ?? [])];
-  const visited = new Set<string>();
-  while (stack.length > 0) {
-    const current = stack.pop()!;
-    if (current === sourceId) return "That edge would create a cycle.";
-    if (visited.has(current)) continue;
-    visited.add(current);
-    for (const child of downstream.get(current) ?? []) {
-      stack.push(child);
-    }
+  if (wouldCreateCycle(config, sourceId, targetId)) {
+    if (sourceNode.type === "gate:for" && sourcePort === "body") return null;
+    if (targetNode.type === "gate:for") return null;
+    return "That edge would create a cycle.";
   }
   return null;
 }
@@ -732,6 +821,16 @@ function declaredOutputsForNode(node: WorkflowNodeConfig | undefined, config?: W
       file_count: { type: "integer" },
       copied_files: { type: "array" },
     },
+    "effect:vm:delete-files": {
+      success: { type: "boolean" },
+      action: { type: "string" },
+      message: { type: "string" },
+      target: { type: "string" },
+      vm_name: { type: "string" },
+      vm_user: { type: "string" },
+      deleted_count: { type: "integer" },
+      deleted_paths: { type: "array" },
+    },
     "effect:session:update-metadata": {
       success: { type: "boolean" },
       action: { type: "string" },
@@ -784,6 +883,23 @@ function declaredOutputsForNode(node: WorkflowNodeConfig | undefined, config?: W
       created_at: { type: "string" },
       expires_at: { type: "string" },
       model: { type: "string" },
+    },
+    "query:issue:get": {
+      issue_id: { type: "string" },
+      issue_number: { type: "string" },
+      title: { type: "string" },
+      body: { type: "string" },
+      state: { type: "string" },
+      url: { type: "string" },
+      source: { type: "string" },
+      source_type: { type: "string" },
+      directory_path: { type: "string" },
+      yaml_path: { type: "string" },
+      repo_source: { type: "string" },
+      metadata: { type: "object" },
+      comments: { type: "array" },
+      created_at: { type: "string" },
+      updated_at: { type: "string" },
     },
   };
   Object.assign(schema, staticSchemas[node.type] ?? {});
@@ -1012,7 +1128,7 @@ export default function App() {
         setCatalog(catalogPayload);
         setRunSnapshot(runSnapshotPayload);
         setDocument({ ...payload, config: normalizedConfig });
-        setFlowNodes(buildNodes(normalizedConfig, payload.layout, runSnapshotPayload.node_activity));
+        setFlowNodes(buildNodes(normalizedConfig, payload.layout, catalogPayload, runSnapshotPayload.node_activity));
         setFlowEdges(buildEdges(normalizedConfig));
       })
       .catch((reason: unknown) => {
@@ -1039,12 +1155,13 @@ export default function App() {
       buildNodes(
         document.config,
         document.layout,
+        catalog,
         runSnapshot?.node_activity ?? {},
         currentPositionsFromNodes(currentNodes),
       ),
     );
     setFlowEdges(buildEdges(document.config));
-  }, [document, runSnapshot]);
+  }, [catalog, document, runSnapshot]);
 
   useEffect(() => {
     if (!flowInstance || flowNodes.length === 0 || hasAutoFitRef.current) return;
@@ -1060,7 +1177,7 @@ export default function App() {
   const selectedNode = selectedNodeId ? nodeById(config, selectedNodeId) : undefined;
   const selectedCatalogEntry = selectedNode ? getCatalogEntry(catalog, selectedNode.type) : undefined;
   const selectedEdge = selectedEdgeId
-    ? config.edges.find((edge) => `${edge.source_id}->${edge.target_id}` === selectedEdgeId)
+    ? config.edges.find((edge) => edgeId(edge) === selectedEdgeId)
     : undefined;
   const selectedNodeBindingOptions = selectedNode ? upstreamBindingOptions(config, selectedNode.id) : [];
   const hasCollapsedTargetUi =
@@ -1148,7 +1265,7 @@ export default function App() {
     if (!document || !selectedEdgeId) return;
     const nextConfig = cloneConfig(document.config);
     nextConfig.edges = nextConfig.edges.filter(
-      (edge) => `${edge.source_id}->${edge.target_id}` !== selectedEdgeId,
+      (edge) => edgeId(edge) !== selectedEdgeId,
     );
     patchDocument(nextConfig, cloneLayout(document.layout));
     setSelectedEdgeId(null);
@@ -1269,6 +1386,7 @@ export default function App() {
         node.id === selectedNode.id ? nextNode : node,
       );
       nextConfig.edges = nextConfig.edges.map((edge) => ({
+        ...edge,
         source_id: edge.source_id === selectedNode.id ? rawId : edge.source_id,
         target_id: edge.target_id === selectedNode.id ? rawId : edge.target_id,
       }));
@@ -1288,15 +1406,33 @@ export default function App() {
 
   function onConnect(connection: Connection) {
     if (!document || !connection.source || !connection.target) return;
-    const validationError = validateConnection(document.config, connection.source, connection.target);
+    const validationError = validateConnection(
+      document.config,
+      catalog,
+      connection.source,
+      connection.target,
+      connection.sourceHandle,
+    );
     if (validationError) {
       setError(validationError);
       return;
     }
+    const targetNode = nodeById(document.config, connection.target);
+    const allowCycle = targetNode?.type === "gate:for" && wouldCreateCycle(document.config, connection.source, connection.target);
     const nextConfig = cloneConfig(document.config);
+    const nextEdge: WorkflowEdge = {
+      source_id: connection.source,
+      target_id: connection.target,
+    };
+    if (connection.sourceHandle) {
+      nextEdge.source_port = connection.sourceHandle;
+    }
+    if (allowCycle) {
+      nextEdge.allow_cycle = true;
+    }
     nextConfig.edges = [
       ...nextConfig.edges,
-      { source_id: connection.source, target_id: connection.target } satisfies WorkflowEdge,
+      nextEdge,
     ];
     patchDocument(nextConfig, cloneLayout(document.layout));
     setSelectedEdgeId(null);
@@ -1305,10 +1441,10 @@ export default function App() {
 
   function onEdgesDelete(deletedEdges: Edge[]) {
     if (!document) return;
-    const deleted = new Set(deletedEdges.map((edge) => `${edge.source}->${edge.target}`));
+    const deleted = new Set(deletedEdges.map((edge) => edge.id));
     const nextConfig = cloneConfig(document.config);
     nextConfig.edges = nextConfig.edges.filter(
-      (edge) => !deleted.has(`${edge.source_id}->${edge.target_id}`),
+      (edge) => !deleted.has(edgeId(edge)),
     );
     patchDocument(nextConfig, cloneLayout(document.layout));
     setSelectedEdgeId(null);
@@ -2002,7 +2138,9 @@ export default function App() {
             <div className="section-label">Edge</div>
             <div className="inspector-summary">
               <div>{selectedEdge.source_id}</div>
+              {selectedEdge.source_port ? <div>Port: {selectedEdge.source_port}</div> : null}
               <div>{selectedEdge.target_id}</div>
+              {selectedEdge.allow_cycle ? <div>Cycle return</div> : null}
             </div>
             <button className="danger" onClick={deleteSelectedEdge}>
               Delete edge

@@ -20,7 +20,7 @@ TriggerType = Literal[
     "trigger:agent:run:completed",
 ]
 
-GateType = Literal["gate:filter", "gate:map", "gate:merge", "gate:await-agent"]
+GateType = Literal["gate:filter", "gate:map", "gate:merge", "gate:await-agent", "gate:for"]
 EffectType = Literal[
     "effect:vm:create",
     "effect:vm:start",
@@ -28,6 +28,7 @@ EffectType = Literal[
     "effect:agent:prompt",
     "effect:vm:exec",
     "effect:vm:copy-files",
+    "effect:vm:delete-files",
     "effect:issue:update-state",
     "effect:session:update-metadata",
     "effect:git:promote-agent-branch",
@@ -37,6 +38,7 @@ QueryType = Literal[
     "query:vm:run-state",
     "query:git:pr-note",
     "query:session-context",
+    "query:issue:get",
 ]
 
 EmailProvider = Literal["json_store", "gmail", "graph"]
@@ -276,8 +278,19 @@ class GateAwaitAgentDefinition(GateDefinition):
         return self
 
 
+class GateForDefinition(GateDefinition):
+    type: Literal["gate:for"]
+    items: ConfigValue
+
+    @model_validator(mode="after")
+    def validate_default_outputs(self) -> "GateForDefinition":
+        if self.outputs is None:
+            self.outputs = effective_node_output_schema(self)
+        return self
+
+
 GateDefinitionDiscriminated = Annotated[
-    GateFilterDefinition | GateMapDefinition | GateMergeDefinition | GateAwaitAgentDefinition,
+    GateFilterDefinition | GateMapDefinition | GateMergeDefinition | GateAwaitAgentDefinition | GateForDefinition,
     Field(discriminator="type"),
 ]
 
@@ -379,6 +392,17 @@ class VmCopyFilesEffectDefinition(EffectDefinition):
     files: list[VmCopyFilesItemDefinition]
 
 
+class VmDeleteFilesEffectDefinition(EffectDefinition):
+    type: Literal["effect:vm:delete-files"]
+    target: ConfigValue | None = None
+    session_id: ConfigValue | None = None
+    vm_name: ConfigValue | None = None
+    vm_user: ConfigValue | None = None
+    paths: list[ConfigValue]
+    recursive: ConfigValue | None = False
+    missing_ok: ConfigValue | None = True
+
+
 class IssueUpdateStateEffectDefinition(EffectDefinition):
     type: Literal["effect:issue:update-state"]
     issue_id: ConfigValue
@@ -449,6 +473,7 @@ EffectDefinitionDiscriminated = Annotated[
     | AgentPromptEffectDefinition
     | VmExecEffectDefinition
     | VmCopyFilesEffectDefinition
+    | VmDeleteFilesEffectDefinition
     | IssueUpdateStateEffectDefinition
     | SessionUpdateMetadataEffectDefinition
     | GitPromoteAgentBranchEffectDefinition
@@ -460,6 +485,8 @@ EffectDefinitionDiscriminated = Annotated[
 class EdgeDefinition(BaseModel):
     source_id: str
     target_id: str
+    source_port: str | None = None
+    allow_cycle: bool = False
 
     @field_validator("source_id", "target_id", mode="before")
     @classmethod
@@ -468,6 +495,14 @@ class EdgeDefinition(BaseModel):
         if not text:
             raise ValueError(f"{info.field_name} must be a non-empty string")
         return text
+
+    @field_validator("source_port", mode="before")
+    @classmethod
+    def normalize_source_port(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
 
 
 class QueryDefinition(WorkflowNodeDefinition):
@@ -502,8 +537,13 @@ class SessionContextQueryDefinition(QueryDefinition):
         return self
 
 
+class IssueGetQueryDefinition(QueryDefinition):
+    type: Literal["query:issue:get"]
+    issue_id: ConfigValue
+
+
 QueryDefinitionDiscriminated = Annotated[
-    VmRunStateQueryDefinition | GitPrNoteQueryDefinition | SessionContextQueryDefinition,
+    VmRunStateQueryDefinition | GitPrNoteQueryDefinition | SessionContextQueryDefinition | IssueGetQueryDefinition,
     Field(discriminator="type"),
 ]
 
@@ -745,6 +785,16 @@ _STATIC_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
         "file_count": {"type": "integer"},
         "copied_files": {"type": "array"},
     },
+    "effect:vm:delete-files": {
+        "success": {"type": "boolean"},
+        "action": {"type": "string"},
+        "message": {"type": "string"},
+        "target": {"type": "string"},
+        "vm_name": {"type": "string"},
+        "vm_user": {"type": "string"},
+        "deleted_count": {"type": "integer"},
+        "deleted_paths": {"type": "array"},
+    },
     "effect:issue:update-state": {
         "success": {"type": "boolean"},
         "issue_number": {"type": "string"},
@@ -806,6 +856,29 @@ _STATIC_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
         "created_at": {"type": "string"},
         "expires_at": {"type": "string"},
         "model": {"type": "string"},
+    },
+    "query:issue:get": {
+        "issue_id": {"type": "string"},
+        "issue_number": {"type": "string"},
+        "title": {"type": "string"},
+        "body": {"type": "string"},
+        "state": {"type": "string"},
+        "url": {"type": "string"},
+        "source": {"type": "string"},
+        "source_type": {"type": "string"},
+        "directory_path": {"type": "string"},
+        "yaml_path": {"type": "string"},
+        "repo_source": {"type": "string"},
+        "metadata": {"type": "object"},
+        "comments": {"type": "array"},
+        "created_at": {"type": "string"},
+        "updated_at": {"type": "string"},
+    },
+    "gate:for": {
+        "current_element": {"type": "object"},
+        "current_index": {"type": "integer"},
+        "item_count": {"type": "integer"},
+        "is_done": {"type": "boolean"},
     },
 }
 

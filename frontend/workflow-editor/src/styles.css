@@ -412,6 +412,7 @@ select {
 }
 
 .node-card {
+  position: relative;
   min-width: 180px;
   padding: 0.9rem 1rem;
   border-radius: 18px;
@@ -445,6 +446,52 @@ select {
   border: 2px solid #fff7eb;
   background: #23594f;
   box-shadow: 0 0 0 2px rgba(35, 89, 79, 0.18);
+}
+
+.workflow-port-stack {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  --workflow-port-offset: 4.9rem;
+}
+
+.workflow-port {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  width: var(--workflow-port-offset);
+  pointer-events: none;
+}
+
+.workflow-port .workflow-handle {
+  pointer-events: auto;
+}
+
+.port-stack-input .workflow-port {
+  left: calc(-1 * var(--workflow-port-offset));
+}
+
+.port-stack-output .workflow-port {
+  right: calc(-1 * var(--workflow-port-offset));
+}
+
+.workflow-port-output {
+  justify-content: flex-end;
+}
+
+.workflow-port-label {
+  min-width: 3rem;
+  font-family: "Avenir Next Condensed", "Franklin Gothic Medium", sans-serif;
+  font-size: 0.68rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #7d5d34;
+  text-align: right;
+}
+
+.port-stack-input .workflow-port-label {
+  text-align: left;
 }
 
 .node-trigger .workflow-handle {

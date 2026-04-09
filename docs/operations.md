@@ -180,7 +180,7 @@ Storage layout for directory config:
 
 ## SSH Access
 
-- New VMs install `openssh-server`.
+- New VMs install `openssh-server` and `ripgrep`.
 - The launch script injects the caller's `~/.ssh/id_ed25519.pub` by default, falling back to `~/.ssh/id_rsa.pub`.
 - Override the key with `SSH_PUBLIC_KEY_FILE=/path/to/key.pub`, or point `SSH_PRIVATE_KEY_PATH` at the matching private key so the script can derive a temporary public key when needed.
 - After boot, find the guest IP with `virsh domifaddr <vm-name>` and connect with `ssh agent@<vm-ip>`.

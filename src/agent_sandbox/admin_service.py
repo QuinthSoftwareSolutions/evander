@@ -14,7 +14,7 @@ import time
 import fcntl
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError
@@ -321,11 +321,19 @@ class WorkflowEditorFieldDefinition(BaseModel):
     item_fields: list["WorkflowEditorFieldDefinition"] = Field(default_factory=list)
 
 
+class WorkflowEditorNodePortDefinition(BaseModel):
+    key: str
+    label: str
+    description: str | None = None
+
+
 class WorkflowEditorNodeCatalogEntry(BaseModel):
     kind: str
     type: str
     label: str
     fields: list[WorkflowEditorFieldDefinition] = Field(default_factory=list)
+    input_ports: list[WorkflowEditorNodePortDefinition] = Field(default_factory=list)
+    output_ports: list[WorkflowEditorNodePortDefinition] = Field(default_factory=list)
 
 
 class WorkflowEditorCatalogPayload(BaseModel):
@@ -372,8 +380,31 @@ def _guest_agent_pr_note_helper_b64(project_dir: Path) -> str:
     return base64.b64encode(helper_path.read_bytes()).decode("ascii")
 
 
+def _strip_default_edge_fields(payload: dict[str, object]) -> dict[str, object]:
+    edges = payload.get("edges")
+    if not isinstance(edges, list):
+        return payload
+    normalized_edges: list[object] = []
+    for entry in edges:
+        if not isinstance(entry, dict):
+            normalized_edges.append(entry)
+            continue
+        normalized = dict(entry)
+        if normalized.get("source_port") is None:
+            normalized.pop("source_port", None)
+        if normalized.get("allow_cycle") is False:
+            normalized.pop("allow_cycle", None)
+        normalized_edges.append(normalized)
+    payload["edges"] = normalized_edges
+    return payload
+
+
 def _field_option(value: str, label: str | None = None) -> WorkflowEditorFieldOption:
     return WorkflowEditorFieldOption(value=value, label=label or value)
+
+
+def _port(key: str, label: str, *, description: str | None = None) -> WorkflowEditorNodePortDefinition:
+    return WorkflowEditorNodePortDefinition(key=key, label=label, description=description)
 
 
 def _field(
@@ -578,6 +609,32 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         ],
     ),
     WorkflowEditorNodeCatalogEntry(
+        kind="gate",
+        type="gate:for",
+        label="For",
+        fields=[
+            _field(
+                "items",
+                "Items",
+                "json",
+                required=True,
+                bindable=True,
+                description="Array expression to iterate. The body branch receives current_element/current_index outputs.",
+            ),
+            _field(
+                "outputs",
+                "Outputs",
+                "json",
+                read_only=True,
+                description="Derived from for-loop runtime outputs.",
+            ),
+        ],
+        output_ports=[
+            _port("body", "Body", description="Loop body path while items remain."),
+            _port("done", "Done", description="Exit path after the final item."),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
         kind="effect",
         type="effect:vm:create",
         label="VM create",
@@ -717,6 +774,20 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
     ),
     WorkflowEditorNodeCatalogEntry(
         kind="effect",
+        type="effect:vm:delete-files",
+        label="VM delete files",
+        fields=[
+            _field("target", "Target", "string", bindable=True),
+            _field("session_id", "Session ID", "string", bindable=True),
+            _field("vm_name", "VM name", "string", bindable=True),
+            _field("vm_user", "VM user", "string", bindable=True),
+            _field("paths", "Paths", "string_list", required=True, description="Absolute guest paths to delete."),
+            _field("recursive", "Recursive", "boolean", bindable=True),
+            _field("missing_ok", "Ignore missing", "boolean", bindable=True),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="effect",
         type="effect:issue:update-state",
         label="Issue update state",
         fields=[
@@ -796,6 +867,14 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("target", "Target", "string", bindable=True),
             _field("session_id", "Session ID", "string", bindable=True),
             _field("vm_name", "VM name", "string", bindable=True),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="query",
+        type="query:issue:get",
+        label="Issue get",
+        fields=[
+            _field("issue_id", "Issue ID", "string", required=True, bindable=True),
         ],
     ),
 )
@@ -3493,6 +3572,52 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
             "copied_paths": copied_paths,
         }
 
+    def vm_delete_files(
+        self,
+        target: str,
+        *,
+        paths: list[str],
+        vm_user: str = "agent",
+        recursive: bool = False,
+        missing_ok: bool = True,
+    ) -> dict[str, Any]:
+        if not paths:
+            raise ValueError("paths must not be empty")
+        sessions = self.runtime.sessions.read_all()
+        vm_name = _resolve_vm_name_from_target(target, sessions)
+        vm_ip, ssh_private_key_path = _resolve_vm_ssh_access(vm_name, vm_user)
+        normalized_paths: list[str] = []
+        for index, raw_path in enumerate(paths):
+            path = str(raw_path or "").strip()
+            if not path:
+                raise ValueError(f"paths[{index}] must be a non-empty string")
+            if path.startswith("~") or not path.startswith("/"):
+                raise ValueError(f"paths[{index}] must be an absolute guest path")
+            normalized_paths.append(PurePosixPath(path).as_posix())
+
+        rm_flag = "-rf" if recursive else "-f"
+        commands = ["set -euo pipefail"]
+        if not missing_ok:
+            commands.extend(f"test -e {shlex.quote(path)}" for path in normalized_paths)
+        commands.extend(f"rm {rm_flag} -- {shlex.quote(path)}" for path in normalized_paths)
+        completed = _run_subprocess(
+            ["ssh", *_ssh_options(vm_name, vm_ip, ssh_private_key_path), f"{vm_user}@{vm_ip}", "bash", "-s"],
+            capture_output=True,
+            text=True,
+            input="\n".join(commands) + "\n",
+        )
+        if completed.returncode != 0:
+            raise RuntimeError((completed.stderr or completed.stdout or "").strip() or "remote delete failed")
+        return {
+            "success": True,
+            "vm_name": vm_name,
+            "action": "vm_delete_files",
+            "message": f"Deleted {len(normalized_paths)} path(s) from {vm_name}",
+            "deleted_count": len(normalized_paths),
+            "deleted_paths": normalized_paths,
+            "vm_user": vm_user,
+        }
+
     def pr_create(
         self,
         *,
@@ -4241,7 +4366,8 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
     def _validate_worker_global_config_payload(self, worker_id: str, payload: dict[str, object]) -> dict[str, object]:
         model = _WORKER_GLOBAL_CONFIG_MODELS[worker_id]
         try:
-            return model.model_validate(payload).model_dump(mode="json", exclude_none=True)
+            normalized = model.model_validate(payload).model_dump(mode="json", exclude_none=True)
+            return _strip_default_edge_fields(normalized)
         except ValidationError as exc:
             raise _safe_validation_error(exc, context=f"Invalid {worker_id} worker config") from exc
 
@@ -4598,6 +4724,8 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
             elif gate_type == "gate:await-agent":
                 gate.pop("completion_trigger_id", None)
                 gate["outputs"] = effective_node_output_schema({"type": "trigger:agent:run:completed"})
+            elif gate_type == "gate:for":
+                gate["outputs"] = effective_node_output_schema(gate)
             elif gate_type == "gate:merge":
                 upstream_outputs = [
                     effective_node_output_schema(nodes_by_id[upstream_id])
@@ -4912,6 +5040,11 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
             payload["steps"] = list(metadata_steps)
         else:
             payload.pop("steps", None)
+        metadata_plan_summary = issue.metadata.get("plan_summary") if isinstance(issue.metadata, dict) else None
+        if isinstance(metadata_plan_summary, str) and metadata_plan_summary.strip():
+            payload["plan_summary"] = metadata_plan_summary
+        else:
+            payload.pop("plan_summary", None)
         if updated_at is not None:
             payload["updated_at"] = updated_at.isoformat()
         yaml_path.parent.mkdir(parents=True, exist_ok=True)
@@ -4996,6 +5129,11 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
                     normalized_steps = [str(step).strip() for step in raw_steps if str(step).strip()]
                     if normalized_steps:
                         merged_metadata["steps"] = normalized_steps
+                raw_plan_summary = yaml_payload.get("plan_summary")
+                if isinstance(raw_plan_summary, str):
+                    normalized_plan_summary = raw_plan_summary.strip()
+                    if normalized_plan_summary:
+                        merged_metadata["plan_summary"] = normalized_plan_summary
                 if not title:
                     parsed_title = yaml_payload.get("title")
                     normalized_title = str(parsed_title or "").strip() if isinstance(parsed_title, str) else ""
@@ -5200,14 +5338,20 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
         self,
         issue_id: str,
         steps: list[str],
+        summary: str | None = None,
     ) -> dict[str, object]:
         normalized_steps = [str(step).strip() for step in steps if str(step).strip()]
         if not normalized_steps:
             raise ValueError("steps must contain at least one non-empty item")
+        normalized_summary = str(summary or "").strip() or None
 
         issue = self._resolve_local_issue_record(issue_id)
         issue.metadata = dict(issue.metadata)
         issue.metadata["steps"] = normalized_steps
+        if normalized_summary is not None:
+            issue.metadata["plan_summary"] = normalized_summary
+        else:
+            issue.metadata.pop("plan_summary", None)
         issue.updated_at = _utc_now()
         self.local_issue_store.put(issue.issue_id, issue)
         self._write_local_issue_yaml(issue, updated_at=issue.updated_at)
@@ -5217,6 +5361,7 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
             "updated": True,
             "steps": normalized_steps,
             "step_count": len(normalized_steps),
+            "summary": normalized_summary,
         }
 
     def set_issue_state(

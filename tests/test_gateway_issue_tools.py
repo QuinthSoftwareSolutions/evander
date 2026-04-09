@@ -106,6 +106,7 @@ def test_set_issue_plan_updates_issue_metadata(tmp_path: Path) -> None:
             "session_id": "session-1",
             "issue_id": created.issue_number,
             "steps": ["Inspect code", "Write patch"],
+            "summary": "Inspect the repo, make the patch, then continue with follow-up workflow steps.",
         },
     )
     reread = call_tool(
@@ -119,7 +120,11 @@ def test_set_issue_plan_updates_issue_metadata(tmp_path: Path) -> None:
 
     assert result["updated"] is True
     assert result["step_count"] == 2
+    assert result["summary"] == "Inspect the repo, make the patch, then continue with follow-up workflow steps."
     assert reread["metadata"]["steps"] == ["Inspect code", "Write patch"]
+    assert reread["metadata"]["plan_summary"] == (
+        "Inspect the repo, make the patch, then continue with follow-up workflow steps."
+    )
 
 
 def test_set_issue_plan_requires_permission(tmp_path: Path) -> None:
