@@ -1145,6 +1145,43 @@ def test_workflow_editor_validation_derives_filter_outputs_server_side(tmp_path:
     }
 
 
+def test_workflow_editor_save_allows_disconnected_draft_nodes(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+
+    result = service.save_workflow_editor_document(
+        config={
+            "runtime_dir": str(tmp_path / "runtime"),
+            "triggers": [
+                {
+                    "id": "cron-15m",
+                    "display_name": "Every 15 minutes",
+                    "type": "trigger:cron",
+                    "expression": "*/15 * * * *",
+                }
+            ],
+            "effects": [
+                {
+                    "id": "prompt-agent",
+                    "display_name": "Prompt agent",
+                    "type": "effect:agent:prompt",
+                    "prompt": "Summarize",
+                }
+            ],
+            "edges": [],
+        },
+        layout={
+            "nodes": {
+                "cron-15m": {"x": 100, "y": 50},
+                "prompt-agent": {"x": 300, "y": 50},
+            }
+        },
+    )
+
+    assert result.config["edges"] == []
+    reread = service.read_workflow_editor_document()
+    assert reread.config["effects"][0]["id"] == "prompt-agent"
+
+
 def test_create_issue_vm_uses_directory_vm_defaults_overlay_for_guest_env(tmp_path: Path, monkeypatch) -> None:
     service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
     create_result = service.create_directory_child("root", "team")

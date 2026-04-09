@@ -121,6 +121,43 @@ def test_admin_web_validates_and_saves_workflow_editor_document(tmp_path: Path) 
     assert (tmp_path / "config" / "trigger-orchestrator" / "layout.json").exists()
 
 
+def test_admin_web_saves_disconnected_workflow_editor_document(tmp_path: Path) -> None:
+    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    payload = {
+        "config": {
+            "runtime_dir": str(tmp_path / "runtime"),
+            "triggers": [
+                {
+                    "id": "cron-15m",
+                    "display_name": "Every 15 minutes",
+                    "type": "trigger:cron",
+                    "expression": "*/15 * * * *",
+                }
+            ],
+            "effects": [
+                {
+                    "id": "prompt-agent",
+                    "display_name": "Prompt agent",
+                    "type": "effect:agent:prompt",
+                    "prompt": "Summarize",
+                }
+            ],
+            "edges": [],
+        },
+        "layout": {
+            "nodes": {
+                "cron-15m": {"x": 100, "y": 50},
+                "prompt-agent": {"x": 300, "y": 50},
+            }
+        },
+    }
+
+    save_response = client.put("/api/workflow-editor/document", json=payload)
+
+    assert save_response.status_code == 200
+    assert save_response.json()["config"]["edges"] == []
+
+
 def test_admin_web_exposes_active_workflow_runs(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     runtime_dir.mkdir(parents=True, exist_ok=True)

@@ -335,6 +335,19 @@ function cloneLayout(layout: WorkflowLayout): WorkflowLayout {
   return JSON.parse(JSON.stringify(layout)) as WorkflowLayout;
 }
 
+function cloneNodeConfig(node: WorkflowNodeConfig): WorkflowNodeConfig {
+  return JSON.parse(JSON.stringify(node)) as WorkflowNodeConfig;
+}
+
+function isEditableEventTarget(target: EventTarget | null): boolean {
+  return (
+    target instanceof HTMLInputElement ||
+    target instanceof HTMLTextAreaElement ||
+    target instanceof HTMLSelectElement ||
+    (target instanceof HTMLElement && target.isContentEditable)
+  );
+}
+
 function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): WorkflowNodeConfig {
   if (kind === "trigger" && type === "trigger:cron") {
     return { id, display_name: "New trigger", type, expression: "*/15 * * * *" };
@@ -1098,6 +1111,7 @@ function activeEffectTargetKey(values: Record<string, unknown>): EffectTargetKey
 export default function App() {
   const appShellRef = useRef<HTMLDivElement | null>(null);
   const hasAutoFitRef = useRef(false);
+  const copiedNodeRef = useRef<WorkflowNodeConfig | null>(null);
   const [document, setDocument] = useState<WorkflowEditorDocument | null>(null);
   const [catalog, setCatalog] = useState<WorkflowEditorCatalog>(emptyCatalog());
   const [runSnapshot, setRunSnapshot] = useState<WorkflowRunSnapshot | null>(null);
@@ -1273,13 +1287,41 @@ export default function App() {
   }
 
   function handleAppShellKeyDown(event: React.KeyboardEvent<HTMLDivElement>) {
-    const target = event.target;
-    if (
-      target instanceof HTMLInputElement ||
-      target instanceof HTMLTextAreaElement ||
-      target instanceof HTMLSelectElement ||
-      (target instanceof HTMLElement && target.isContentEditable)
-    ) {
+    if (isEditableEventTarget(event.target)) return;
+    const isCopy = (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "c";
+    const isPaste = (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "v";
+    if (isCopy) {
+      if (!selectedNode) return;
+      event.preventDefault();
+      copiedNodeRef.current = cloneNodeConfig(selectedNode);
+      setError(null);
+      return;
+    }
+    if (isPaste) {
+      if (!document || !copiedNodeRef.current) return;
+      event.preventDefault();
+      const templateNode = copiedNodeRef.current;
+      const templateKind = nodeKindFromType(templateNode.type);
+      const nextConfig = cloneConfig(document.config);
+      nextConfig.triggers ??= [];
+      nextConfig.gates ??= [];
+      nextConfig.effects ??= [];
+      nextConfig.queries ??= [];
+      const nextId = generateNodeId(nextConfig, templateKind, templateNode.type);
+      const duplicatedNode = cloneNodeConfig(templateNode);
+      duplicatedNode.id = nextId;
+      duplicatedNode.display_name = `${templateNode.display_name} Copy`;
+      nextConfig[kindCollectionKey(templateKind)].push(duplicatedNode);
+      const currentPosition =
+        flowNodes.find((node) => node.id === templateNode.id)?.position ??
+        document.layout.nodes[templateNode.id] ??
+        fallbackPosition(0);
+      const nextLayout = cloneLayout(document.layout);
+      nextLayout.nodes[nextId] = { x: currentPosition.x + 40, y: currentPosition.y + 40 };
+      patchDocument(nextConfig, nextLayout);
+      setSelectedNodeId(nextId);
+      setSelectedEdgeId(null);
+      setError(null);
       return;
     }
     if (!selectedEdgeId) return;
@@ -2162,6 +2204,7 @@ export default function App() {
           onNodeClick={(_, node) => {
             setSelectedNodeId(node.id);
             setSelectedEdgeId(null);
+            appShellRef.current?.focus();
           }}
           onEdgeClick={(_, edge) => {
             setSelectedNodeId(null);
