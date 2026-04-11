@@ -361,3 +361,136 @@ def test_create_ado_backlog_item_validation_failures(
 
     with pytest.raises(ToolError, match=error_match):
         asyncio.run(server.call_tool("create_ado_backlog_item", arguments))
+
+
+def test_query_ado_backlog_items_requires_permission(tmp_path: Path) -> None:
+    context = make_context(tmp_path)
+    context.sessions.put(
+        "session-1",
+        SessionManifest(
+            session_id="session-1",
+            directory_path="root/team-a",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    server = create_server(context)
+
+    with pytest.raises(ToolError, match="not allowed"):
+        asyncio.run(server.call_tool("query_ado_backlog_items", {"session_id": "session-1"}))
+
+
+def test_query_ado_backlog_items_maps_request_into_issue_service(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    context = make_context(tmp_path)
+    context.sessions.put(
+        "session-1",
+        SessionManifest(
+            session_id="session-1",
+            directory_path="root/team-a",
+            allowed_tools=[ToolName.QUERY_ADO_BACKLOG_ITEMS],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    captured: dict[str, object] = {}
+
+    class StubIssueService:
+        def __init__(self, provider_config: object) -> None:
+            captured["provider_config"] = provider_config
+
+        def query_remote_backlog_items(self, **kwargs: object) -> dict[str, object]:
+            captured["request"] = kwargs
+            return {
+                "provider": "azure_devops",
+                "project": "example-project",
+                "items": [
+                    {
+                        "id": "77",
+                        "title": "Backlog item",
+                        "state": "New",
+                        "type": "Task",
+                        "iteration": "Project\\Sprint 1",
+                        "area": "Project",
+                        "assigned_to": "Ada Lovelace",
+                        "url": "https://dev.azure.com/example/example/_workitems/edit/77",
+                        "fields": {"System.Title": "Backlog item"},
+                    }
+                ],
+                "count": 1,
+                "paging": {
+                    "skip": 2,
+                    "top": 10,
+                    "returned_count": 1,
+                    "total_matches": 3,
+                    "has_more": False,
+                    "next_skip": None,
+                },
+            }
+
+    monkeypatch.setattr("agent_sandbox.gateway.IssueService", StubIssueService)
+    server = create_server(context)
+
+    result = call_tool(
+        server,
+        "query_ado_backlog_items",
+        {
+            "session_id": "session-1",
+            "project": "example-project",
+            "iteration": "Project\\Sprint 1",
+            "area_path": "Project",
+            "states": ["new", "active"],
+            "types": ["task", "bug"],
+            "tags_any": ["api", "backend"],
+            "text_search": "important",
+            "top": 10,
+            "skip": 2,
+        },
+    )
+
+    assert captured["provider_config"] == context.provider_config
+    assert captured["request"] == {
+        "provider": "azure_devops",
+        "directory_path": "root/team-a",
+        "project": "example-project",
+        "iteration": "Project\\Sprint 1",
+        "area_path": "Project",
+        "states": ["new", "active"],
+        "types": ["Task", "Bug"],
+        "tags_any": ["api", "backend"],
+        "text_search": "important",
+        "top": 10,
+        "skip": 2,
+    }
+    assert result["count"] == 1
+    assert result["items"][0]["id"] == "77"
+    assert result["paging"]["skip"] == 2
+
+
+@pytest.mark.parametrize(
+    ("arguments", "error_match"),
+    [
+        ({"session_id": "session-1", "top": 0}, "top"),
+        ({"session_id": "session-1", "skip": -1}, "skip"),
+        ({"session_id": "session-1", "types": ["not-a-real-type"]}, "type"),
+    ],
+)
+def test_query_ado_backlog_items_validation_failures(
+    tmp_path: Path,
+    arguments: dict[str, object],
+    error_match: str,
+) -> None:
+    context = make_context(tmp_path)
+    context.sessions.put(
+        "session-1",
+        SessionManifest(
+            session_id="session-1",
+            directory_path="root/team-a",
+            allowed_tools=[ToolName.QUERY_ADO_BACKLOG_ITEMS],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    server = create_server(context)
+
+    with pytest.raises(ToolError, match=error_match):
+        asyncio.run(server.call_tool("query_ado_backlog_items", arguments))

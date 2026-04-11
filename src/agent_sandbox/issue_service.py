@@ -55,6 +55,21 @@ class IssueProviderAdapter(Protocol):
         fields: dict[str, Any] | None = None,
     ) -> dict[str, Any]: ...
 
+    def query_backlog_items(
+        self,
+        *,
+        directory_path: str,
+        project: str | None = None,
+        iteration: str | None = None,
+        area_path: str | None = None,
+        states: list[str] | None = None,
+        types: list[str] | None = None,
+        tags_any: list[str] | None = None,
+        text_search: str | None = None,
+        top: int = 50,
+        skip: int = 0,
+    ) -> dict[str, Any]: ...
+
 
 class AzureDevOpsIssueAdapter:
     provider_name = "azure_devops"
@@ -178,6 +193,60 @@ class AzureDevOpsIssueAdapter:
                 "Parent relation validation failed: parent_backlog_item_id must contain only digits."
             )
         return normalized
+
+    @staticmethod
+    def _wiql_escape(value: str) -> str:
+        return value.replace("'", "''")
+
+    @classmethod
+    def _wiql_quote(cls, value: str) -> str:
+        return f"'{cls._wiql_escape(value)}'"
+
+    @classmethod
+    def _wiql_in_clause(cls, field_name: str, values: list[str]) -> str | None:
+        normalized = [str(value).strip() for value in values if str(value).strip()]
+        if not normalized:
+            return None
+        quoted = ", ".join(cls._wiql_quote(item) for item in normalized)
+        return f"[{field_name}] IN ({quoted})"
+
+    def _build_backlog_wiql_query(
+        self,
+        *,
+        project: str,
+        iteration: str | None = None,
+        area_path: str | None = None,
+        states: list[str] | None = None,
+        types: list[str] | None = None,
+        tags_any: list[str] | None = None,
+        text_search: str | None = None,
+    ) -> str:
+        where_clauses: list[str] = [f"[System.TeamProject] = {self._wiql_quote(project)}"]
+        if iteration:
+            where_clauses.append(f"[System.IterationPath] UNDER {self._wiql_quote(iteration)}")
+        if area_path:
+            where_clauses.append(f"[System.AreaPath] UNDER {self._wiql_quote(area_path)}")
+        state_clause = self._wiql_in_clause("System.State", states or [])
+        if state_clause:
+            where_clauses.append(state_clause)
+        type_clause = self._wiql_in_clause("System.WorkItemType", types or [])
+        if type_clause:
+            where_clauses.append(type_clause)
+        if tags_any:
+            tag_clauses = [f"[System.Tags] CONTAINS {self._wiql_quote(tag)}" for tag in tags_any if str(tag).strip()]
+            if tag_clauses:
+                where_clauses.append("(" + " OR ".join(tag_clauses) + ")")
+        if text_search:
+            query_text = self._wiql_quote(text_search)
+            where_clauses.append(
+                f"([System.Title] CONTAINS {query_text} OR [System.Description] CONTAINS {query_text})"
+            )
+        where = " AND ".join(where_clauses)
+        return (
+            "SELECT [System.Id] FROM WorkItems "
+            f"WHERE {where} "
+            "ORDER BY [System.ChangedDate] DESC, [System.Id] DESC"
+        )
 
     def _raise_ado_http_error(self, *, action: str, response: httpx.Response) -> None:
         message = self._extract_ado_error_message(response)
@@ -445,6 +514,124 @@ class AzureDevOpsIssueAdapter:
             },
         }
 
+    def query_backlog_items(
+        self,
+        *,
+        directory_path: str,
+        project: str | None = None,
+        iteration: str | None = None,
+        area_path: str | None = None,
+        states: list[str] | None = None,
+        types: list[str] | None = None,
+        tags_any: list[str] | None = None,
+        text_search: str | None = None,
+        top: int = 50,
+        skip: int = 0,
+    ) -> dict[str, Any]:
+        organization_url, configured_project, pat = self._resolve_connection(directory_path)
+        normalized_project = str(project or configured_project).strip()
+        if not normalized_project:
+            raise ValueError("project is required for Azure DevOps backlog queries.")
+        auth_header = self._auth_header(pat)
+        normalized_top = max(1, min(int(top), 200))
+        normalized_skip = max(0, int(skip))
+        wiql = self._build_backlog_wiql_query(
+            project=normalized_project,
+            iteration=iteration,
+            area_path=area_path,
+            states=states,
+            types=types,
+            tags_any=tags_any,
+            text_search=text_search,
+        )
+        wiql_url = f"{organization_url}/{normalized_project}/_apis/wit/wiql"
+        select_fields = [
+            "System.Id",
+            "System.Title",
+            "System.State",
+            "System.WorkItemType",
+            "System.IterationPath",
+            "System.AreaPath",
+            "System.AssignedTo",
+            "System.Tags",
+            "System.ChangedDate",
+        ]
+        with httpx.Client(timeout=self.timeout_seconds) as client:
+            wiql_response = client.post(
+                wiql_url,
+                params={"api-version": "7.1"},
+                headers={"Authorization": auth_header, "Content-Type": "application/json"},
+                json={"query": wiql},
+            )
+            if wiql_response.is_error:
+                self._raise_ado_http_error(action="query backlog items", response=wiql_response)
+            wiql_payload = wiql_response.json()
+            raw_work_items = wiql_payload.get("workItems") if isinstance(wiql_payload, dict) else None
+            work_item_ids = [
+                int(item.get("id"))
+                for item in (raw_work_items or [])
+                if isinstance(item, dict) and isinstance(item.get("id"), int)
+            ]
+            total_matches = len(work_item_ids)
+            paged_ids = work_item_ids[normalized_skip : normalized_skip + normalized_top]
+            items: list[dict[str, Any]] = []
+            if paged_ids:
+                batch_url = f"{organization_url}/_apis/wit/workitemsbatch"
+                for index in range(0, len(paged_ids), 200):
+                    chunk_ids = paged_ids[index : index + 200]
+                    batch_response = client.post(
+                        batch_url,
+                        params={"api-version": "7.1"},
+                        headers={"Authorization": auth_header, "Content-Type": "application/json"},
+                        json={
+                            "ids": chunk_ids,
+                            "fields": select_fields,
+                            "$expand": "Relations",
+                            "errorPolicy": "Omit",
+                        },
+                    )
+                    if batch_response.is_error:
+                        self._raise_ado_http_error(action="fetch backlog items batch", response=batch_response)
+                    batch_payload = batch_response.json()
+                    values = batch_payload.get("value") if isinstance(batch_payload, dict) else None
+                    for raw_item in values or []:
+                        if not isinstance(raw_item, dict):
+                            continue
+                        raw_fields = raw_item.get("fields") if isinstance(raw_item.get("fields"), dict) else {}
+                        items.append(
+                            {
+                                "id": str(raw_item.get("id") or "").strip(),
+                                "title": str(raw_fields.get("System.Title") or "").strip(),
+                                "state": str(raw_fields.get("System.State") or "").strip() or None,
+                                "type": str(raw_fields.get("System.WorkItemType") or "").strip() or None,
+                                "iteration": str(raw_fields.get("System.IterationPath") or "").strip() or None,
+                                "area": str(raw_fields.get("System.AreaPath") or "").strip() or None,
+                                "assigned_to": self._normalize_assigned_to(raw_fields.get("System.AssignedTo")),
+                                "url": str((raw_item.get("_links") or {}).get("web", {}).get("href") or "").strip()
+                                or str(raw_item.get("url") or "").strip()
+                                or None,
+                                "fields": {k: v for k, v in raw_fields.items()},
+                            }
+                        )
+            id_order = {str(item_id): index for index, item_id in enumerate(paged_ids)}
+            items.sort(key=lambda item: id_order.get(str(item.get("id") or ""), len(id_order)))
+        returned_count = len(items)
+        next_skip = normalized_skip + returned_count if normalized_skip + returned_count < total_matches else None
+        return {
+            "provider": self.provider_name,
+            "project": normalized_project,
+            "items": items,
+            "count": returned_count,
+            "paging": {
+                "skip": normalized_skip,
+                "top": normalized_top,
+                "returned_count": returned_count,
+                "total_matches": total_matches,
+                "has_more": next_skip is not None,
+                "next_skip": next_skip,
+            },
+        }
+
 
 class IssueService:
     def __init__(self, config_resolver: ProviderConfigResolver) -> None:
@@ -579,6 +766,37 @@ class IssueService:
             assigned_to=assigned_to,
             parent_backlog_item_id=parent_backlog_item_id,
             fields=fields,
+        )
+
+    def query_remote_backlog_items(
+        self,
+        *,
+        provider: str,
+        directory_path: str,
+        project: str | None = None,
+        iteration: str | None = None,
+        area_path: str | None = None,
+        states: list[str] | None = None,
+        types: list[str] | None = None,
+        tags_any: list[str] | None = None,
+        text_search: str | None = None,
+        top: int = 50,
+        skip: int = 0,
+    ) -> dict[str, Any]:
+        adapter = self.adapters.get(provider)
+        if adapter is None:
+            raise ValueError(f"Unsupported issue provider: {provider}")
+        return adapter.query_backlog_items(
+            directory_path=directory_path,
+            project=project,
+            iteration=iteration,
+            area_path=area_path,
+            states=states,
+            types=types,
+            tags_any=tags_any,
+            text_search=text_search,
+            top=top,
+            skip=skip,
         )
 
 

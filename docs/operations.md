@@ -349,6 +349,47 @@ A transport-terminated warning without client-visible failure can be expected fo
 - Optional MCP arguments: `description`, `acceptance_criteria`, `tags`, `assigned_user`,
   `parent_backlog_item_id`.
 
+## Host-Side Azure DevOps Backlog Query Tool
+
+- Gateway tool name: `query_ado_backlog_items`.
+- The tool is policy-gated: each session manifest must include `query_ado_backlog_items` in
+  `allowed_tools` before calls are accepted.
+- MCP arguments:
+  - `project` (optional when `azure_devops_project` is configured in provider config)
+  - optional filters: `iteration`, `area_path`, `states`, `types`, `tags_any`, `text_search`
+  - paging inputs: `top` (default `50`, max `200`) and `skip` (default `0`)
+- Response payload includes `items`, `count`, and `paging` (`skip`, `top`, `returned_count`,
+  `total_matches`, `has_more`, `next_skip`).
+
+Example session tool allowlist entry:
+
+```json
+{
+  "allowed_tools": [
+    "query_ado_backlog_items"
+  ]
+}
+```
+
+Example MCP call:
+
+```json
+{
+  "tool": "query_ado_backlog_items",
+  "arguments": {
+    "session_id": "real-session",
+    "project": "example-project",
+    "iteration": "Example\\Sprint 12",
+    "states": ["New", "Active"],
+    "types": ["Task", "Bug"],
+    "tags_any": ["api", "backend"],
+    "text_search": "retry policy",
+    "top": 25,
+    "skip": 0
+  }
+}
+```
+
 ### Required provider config and environment
 
 - Configure Azure DevOps work-item connectivity in effective provider config:
