@@ -306,6 +306,11 @@ Issue handling is now a single local abstraction in both Desktop and CLI flows:
 - VM setup can target either a local issue number (`77`) or proxy identifier forms like
   `proxy:ado/77`, and both resolve through the same local issue record before invoking
   `setup_issue_vm.sh`
+- ADO backlog create operations can include `parent_backlog_item_id`; when provided, the create
+  patch appends a `System.LinkTypes.Hierarchy-Reverse` relation in the same org/project context.
+  The parent ID must be non-empty digits. If that validation fails, the request is rejected before
+  contacting ADO; if ADO rejects the relation (for example parent is in a different project/team
+  path), the create call returns a parent-linkage error from ADO.
 
 Run it with:
 

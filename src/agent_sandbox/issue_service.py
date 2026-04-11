@@ -50,6 +50,7 @@ class IssueProviderAdapter(Protocol):
         acceptance_criteria: str | None = None,
         tags: list[str] | None = None,
         assigned_to: str | None = None,
+        parent_backlog_item_id: str | None = None,
         fields: dict[str, Any] | None = None,
     ) -> dict[str, Any]: ...
 
@@ -145,6 +146,21 @@ class AzureDevOpsIssueAdapter:
         if text:
             return text[:500]
         return "No response body."
+
+    @staticmethod
+    def _normalize_parent_backlog_item_id(parent_backlog_item_id: object) -> str | None:
+        if parent_backlog_item_id is None:
+            return None
+        normalized = str(parent_backlog_item_id).strip()
+        if not normalized:
+            raise ValueError(
+                "Parent relation validation failed: parent_backlog_item_id must be a non-empty numeric value."
+            )
+        if not normalized.isdigit():
+            raise ValueError(
+                "Parent relation validation failed: parent_backlog_item_id must contain only digits."
+            )
+        return normalized
 
     def _raise_ado_http_error(self, *, action: str, response: httpx.Response) -> None:
         message = self._extract_ado_error_message(response)
@@ -328,6 +344,7 @@ class AzureDevOpsIssueAdapter:
         acceptance_criteria: str | None = None,
         tags: list[str] | None = None,
         assigned_to: str | None = None,
+        parent_backlog_item_id: str | None = None,
         fields: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         organization_url, project, pat = self._resolve_connection(directory_path)
@@ -357,6 +374,21 @@ class AzureDevOpsIssueAdapter:
             normalized_field_name = str(field_name).strip()
             if normalized_field_name:
                 operations.append({"op": "add", "path": f"/fields/{normalized_field_name}", "value": value})
+        normalized_parent_backlog_item_id = self._normalize_parent_backlog_item_id(parent_backlog_item_id)
+        if normalized_parent_backlog_item_id is not None:
+            operations.append(
+                {
+                    "op": "add",
+                    "path": "/relations/-",
+                    "value": {
+                        "rel": "System.LinkTypes.Hierarchy-Reverse",
+                        "url": (
+                            f"{organization_url}/{project}/_apis/wit/workItems/"
+                            f"{normalized_parent_backlog_item_id}"
+                        ),
+                    },
+                }
+            )
 
         with httpx.Client(timeout=self.timeout_seconds) as client:
             response = client.patch(
@@ -369,6 +401,8 @@ class AzureDevOpsIssueAdapter:
                 json=operations,
             )
             if response.is_error:
+                if normalized_parent_backlog_item_id is not None:
+                    self._raise_ado_http_error(action="link parent relation during create work item", response=response)
                 self._raise_ado_http_error(action="create work item", response=response)
             payload = response.json()
 
@@ -508,6 +542,7 @@ class IssueService:
         acceptance_criteria: str | None = None,
         tags: list[str] | None = None,
         assigned_to: str | None = None,
+        parent_backlog_item_id: str | None = None,
         fields: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         adapter = self.adapters.get(provider)
@@ -522,6 +557,7 @@ class IssueService:
             acceptance_criteria=acceptance_criteria,
             tags=tags,
             assigned_to=assigned_to,
+            parent_backlog_item_id=parent_backlog_item_id,
             fields=fields,
         )
 
