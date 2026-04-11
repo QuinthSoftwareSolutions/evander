@@ -22,7 +22,10 @@ from .bootstrap import load_runtime_gateway_config, resolve_runtime_dir
 from .admin_service import AdminService
 from .config import GatewayConfig
 from .email.http_utils import ProviderRequestError
+from .issue_service import IssueService
 from .models import (
+    AdoBacklogCreateRequest,
+    AdoBacklogCreateResponse,
     AuditEvent,
     DiscordCommandEnvelope,
     HasPendingDiscordMessagesRequest,
@@ -446,6 +449,124 @@ def create_server(context: RuntimeContext) -> FastMCP:
             audit_failure(
                 session_id,
                 ToolName.GET_ISSUE,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
+    def create_ado_backlog_item(
+        type: str,
+        project: str,
+        iteration: str,
+        title: str,
+        description: str | None = None,
+        acceptance_criteria: str | None = None,
+        tags: list[str] | None = None,
+        assigned_user: str | None = None,
+        parent_backlog_item_id: int | str | None = None,
+        *,
+        session_id: str | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        session_id = _resolve_session_id_from_context(session_id, ctx, transport_session_map=transport_session_map)
+        args = {
+            "session_id": session_id,
+            "type": type,
+            "project": project,
+            "iteration": iteration,
+            "title": title,
+            "description": description,
+            "acceptance_criteria": acceptance_criteria,
+            "tags": tags,
+            "assigned_user": assigned_user,
+            "parent_backlog_item_id": parent_backlog_item_id,
+        }
+        try:
+            session = context.policy.require_tool(session_id, ToolName.CREATE_ADO_BACKLOG_ITEM)
+            request_model = AdoBacklogCreateRequest(
+                type=type,
+                project=project,
+                iteration=iteration,
+                title=title,
+                description=description,
+                acceptance_criteria=acceptance_criteria,
+                tags=tags or [],
+                assigned_user=assigned_user,
+                parent_backlog_item_id=parent_backlog_item_id,
+            )
+            args = {
+                "session_id": session_id,
+                **request_model.model_dump(mode="json"),
+            }
+            issue_service = IssueService(context.provider_config)
+            remote_payload = issue_service.create_remote_issue(
+                provider="azure_devops",
+                directory_path=session.directory_path,
+                project=request_model.project,
+                issue_type=request_model.type.value,
+                title=request_model.title,
+                description=request_model.description,
+                iteration_path=request_model.iteration,
+                acceptance_criteria=request_model.acceptance_criteria,
+                tags=request_model.tags,
+                assigned_to=request_model.assigned_user,
+                parent_backlog_item_id=request_model.parent_backlog_item_id,
+            )
+            remote_fields = remote_payload.get("fields") if isinstance(remote_payload.get("fields"), dict) else {}
+            assigned_to_value = remote_fields.get("System.AssignedTo")
+            if isinstance(assigned_to_value, dict):
+                normalized_assigned_to = next(
+                    (
+                        candidate
+                        for key in ("displayName", "uniqueName", "mailAddress", "signInAddress", "name")
+                        if (candidate := str(assigned_to_value.get(key) or "").strip())
+                    ),
+                    None,
+                )
+            elif assigned_to_value is None:
+                normalized_assigned_to = None
+            else:
+                normalized_assigned_to = str(assigned_to_value).strip() or None
+            response_model = AdoBacklogCreateResponse(
+                created_item_id=str(remote_payload.get("remote_issue_id") or remote_payload.get("id") or "").strip(),
+                url=str(remote_payload.get("url") or "").strip(),
+                provider=str(remote_payload.get("provider") or "azure_devops").strip() or "azure_devops",
+                project=str(remote_payload.get("project") or request_model.project).strip(),
+                type=request_model.type,
+                iteration=request_model.iteration,
+                title=str((remote_fields.get("System.Title") or request_model.title)).strip(),
+                description=remote_fields.get("System.Description") or request_model.description,
+                acceptance_criteria=remote_fields.get(
+                    "Microsoft.VSTS.Common.AcceptanceCriteria"
+                )
+                or request_model.acceptance_criteria,
+                tags=request_model.tags,
+                assigned_user=normalized_assigned_to or request_model.assigned_user,
+                parent_backlog_item_id=request_model.parent_backlog_item_id,
+            )
+            payload = response_model.model_dump(mode="json")
+            audit_success(
+                session_id,
+                ToolName.CREATE_ADO_BACKLOG_ITEM,
+                args,
+                {
+                    "created_item_id": payload.get("created_item_id"),
+                    "project": payload.get("project", request_model.project),
+                    "type": payload.get("type", request_model.type.value),
+                    "directory_path": session.directory_path,
+                },
+            )
+            return payload
+        except PolicyError as exc:
+            audit_failure(session_id, ToolName.CREATE_ADO_BACKLOG_ITEM, args, str(exc))
+            raise
+        except Exception as exc:
+            audit_failure(
+                session_id,
+                ToolName.CREATE_ADO_BACKLOG_ITEM,
                 args,
                 str(exc),
                 decision="error",

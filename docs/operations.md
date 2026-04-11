@@ -340,6 +340,32 @@ When diagnosing streamed `/v1/*` relay calls, inspect host relay logs for these 
 
 A transport-terminated warning without client-visible failure can be expected for some upstream SSE responses that close abruptly after emitting the final event.
 
+## Host-Side Azure DevOps Backlog Creation Tool
+
+- Gateway tool name: `create_ado_backlog_item`.
+- The tool is policy-gated: each session manifest must include `create_ado_backlog_item` in
+  `allowed_tools` before calls are accepted.
+- Required MCP arguments: `type`, `project`, `iteration`, `title`.
+- Optional MCP arguments: `description`, `acceptance_criteria`, `tags`, `assigned_user`,
+  `parent_backlog_item_id`.
+
+### Required provider config and environment
+
+- Configure Azure DevOps work-item connectivity in effective provider config:
+  - `azure_devops_organization_url` (for example: `https://dev.azure.com/example-org`)
+  - `azure_devops_project` (default project when per-call/project-level values are not overridden)
+  - `azure_devops_pat_env` (environment variable name that stores the PAT)
+- Export the PAT only on the host (for example `export ADO_WORK_ITEMS_AZURE_DEVOPS_PAT=...`) and
+  never in guest images or session manifests.
+
+### Directory-scoped overrides
+
+- The tool resolves provider config through directory inheritance (`root -> ... -> session.directory_path`).
+- Use directory-scoped provider overlays when teams/projects differ by directory boundary, for
+  example `root/team-a` vs `root/team-b`.
+- Session calls use the resolved config for that session's `directory_path`, so the same MCP tool
+  can target different Azure DevOps org/project defaults safely by directory scope.
+
 ## Host-Side Discord Access
 
 - Set `discord_backend: "bot_api"` in the effective `root` provider config to enable the provider-backed Discord adapter.

@@ -309,6 +309,11 @@ Issue handling is now a single local abstraction in both Desktop and CLI flows:
 - VM setup can target either a local issue number (`77`) or proxy identifier forms like
   `proxy:ado/77`, and both resolve through the same local issue record before invoking
   `setup_issue_vm.sh`
+- ADO backlog create operations can include `parent_backlog_item_id`; when provided, the create
+  patch appends a `System.LinkTypes.Hierarchy-Reverse` relation in the same org/project context.
+  The parent ID must be non-empty digits. If that validation fails, the request is rejected before
+  contacting ADO; if ADO rejects the relation (for example parent is in a different project/team
+  path), the create call returns a parent-linkage error from ADO.
 
 Run it with:
 
@@ -629,6 +634,55 @@ See [live-smoke-tests.md](/home/jonathan/agent-sandbox/docs/live-smoke-tests.md)
 - Use `get_issue` once you already know an issue number or canonical issue ID. It returns the
   current issue record directly, regardless of state, and is the preferred MCP path for agents to
   inspect rejected, approved, committed, or completed issues without depending on list filters.
+- Use `create_ado_backlog_item` to create Azure DevOps backlog work items through the host-side
+  provider adapter (no guest PAT required).
+- `create_ado_backlog_item` request fields:
+  - required: `type`, `project`, `iteration`, `title`
+  - optional: `description`, `acceptance_criteria`, `tags`, `assigned_user`,
+    `parent_backlog_item_id`
+- Session allowlisting is required: include `create_ado_backlog_item` in the session manifest
+  `allowed_tools`, or the call is denied by policy.
+
+### Minimal MCP client example (request/response)
+
+Request:
+
+```json
+{
+  "method": "tools/call",
+  "params": {
+    "name": "create_ado_backlog_item",
+    "arguments": {
+      "session_id": "issue-14084-session",
+      "type": "task",
+      "project": "Example.Project",
+      "iteration": "Example.Project\\Sprint 12",
+      "title": "Add retry guard for relay timeout"
+    }
+  }
+}
+```
+
+Response:
+
+```json
+{
+  "result": {
+    "created_item_id": "14382",
+    "url": "https://dev.azure.com/example-org/Example.Project/_workitems/edit/14382",
+    "provider": "azure_devops",
+    "project": "Example.Project",
+    "type": "task",
+    "iteration": "Example.Project\\Sprint 12",
+    "title": "Add retry guard for relay timeout",
+    "description": null,
+    "acceptance_criteria": null,
+    "tags": [],
+    "assigned_user": null,
+    "parent_backlog_item_id": null
+  }
+}
+```
 
 ## Agent Inspection Tooling
 

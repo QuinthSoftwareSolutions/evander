@@ -250,6 +250,10 @@ Gate execution state is intentionally explicit:
 - Trust boundary: guests can call MCP tools only; host-side gateway is the only component that
   holds Discord credentials, calls Discord HTTPS APIs, and enforces channel/user allowlists before
   commands reach guest automation.
+- Azure DevOps backlog creation follows the same boundary: guests call the policy-gated
+  `create_ado_backlog_item` MCP tool, while host-side provider config (`azure_devops_organization_url`,
+  project defaults, and PAT env indirection) is resolved by directory scope and the PAT remains
+  host-only.
 - Discord ingestion boundary in `bot_api` mode:
   - Poll targets are the channel IDs already present in the Discord command store
     (`discord_command_store_path`), not all reachable guild channels.

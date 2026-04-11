@@ -39,6 +39,22 @@ class IssueProviderAdapter(Protocol):
         fields: dict[str, Any] | None,
     ) -> dict[str, Any]: ...
 
+    def create_issue(
+        self,
+        *,
+        directory_path: str,
+        project: str | None = None,
+        issue_type: str,
+        title: str,
+        description: str | None = None,
+        iteration_path: str | None = None,
+        acceptance_criteria: str | None = None,
+        tags: list[str] | None = None,
+        assigned_to: str | None = None,
+        parent_backlog_item_id: str | None = None,
+        fields: dict[str, Any] | None = None,
+    ) -> dict[str, Any]: ...
+
 
 class AzureDevOpsIssueAdapter:
     provider_name = "azure_devops"
@@ -85,6 +101,87 @@ class AzureDevOpsIssueAdapter:
         if parsed.tzinfo is None:
             parsed = parsed.replace(tzinfo=UTC)
         return parsed.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+    @staticmethod
+    def _normalize_assigned_to(value: object) -> str | None:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            normalized = value.strip()
+            return normalized or None
+        if isinstance(value, dict):
+            for key in ("displayName", "uniqueName", "mailAddress", "signInAddress", "name"):
+                candidate = str(value.get(key) or "").strip()
+                if candidate:
+                    return candidate
+            return None
+        normalized = str(value).strip()
+        return normalized or None
+
+    @staticmethod
+    def _resolve_work_item_type(issue_type: str) -> str:
+        normalized = str(issue_type).strip()
+        if not normalized:
+            raise ValueError("issue_type is required for Azure DevOps issue creation.")
+        key = re.sub(r"[\s_-]+", " ", normalized.lower()).strip()
+        aliases = {
+            "bug": "Bug",
+            "task": "Task",
+            "issue": "Issue",
+            "epic": "Epic",
+            "feature": "Feature",
+            "user story": "User Story",
+            "story": "User Story",
+            "product backlog item": "Product Backlog Item",
+            "pbi": "Product Backlog Item",
+            "requirement": "Requirement",
+        }
+        return aliases.get(key, normalized)
+
+    @staticmethod
+    def _normalize_tags(tags: list[str] | None) -> str | None:
+        if not tags:
+            return None
+        values = [str(tag).strip() for tag in tags if str(tag).strip()]
+        if not values:
+            return None
+        return "; ".join(values)
+
+    @staticmethod
+    def _extract_ado_error_message(response: httpx.Response) -> str:
+        content_type = str(response.headers.get("Content-Type", "")).lower()
+        if "application/json" in content_type:
+            try:
+                payload = response.json()
+            except ValueError:
+                payload = None
+            if isinstance(payload, dict):
+                message = payload.get("message") or payload.get("error") or payload.get("typeName")
+                if isinstance(message, str) and message.strip():
+                    return message.strip()
+        text = response.text.strip()
+        if text:
+            return text[:500]
+        return "No response body."
+
+    @staticmethod
+    def _normalize_parent_backlog_item_id(parent_backlog_item_id: object) -> str | None:
+        if parent_backlog_item_id is None:
+            return None
+        normalized = str(parent_backlog_item_id).strip()
+        if not normalized:
+            raise ValueError(
+                "Parent relation validation failed: parent_backlog_item_id must be a non-empty numeric value."
+            )
+        if not normalized.isdigit():
+            raise ValueError(
+                "Parent relation validation failed: parent_backlog_item_id must contain only digits."
+            )
+        return normalized
+
+    def _raise_ado_http_error(self, *, action: str, response: httpx.Response) -> None:
+        message = self._extract_ado_error_message(response)
+        raise RuntimeError(f"Azure DevOps {action} failed (status {response.status_code}): {message}")
 
     def _fetch_comments(
         self,
@@ -253,6 +350,101 @@ class AzureDevOpsIssueAdapter:
             "fields": fields or {},
         }
 
+    def create_issue(
+        self,
+        *,
+        directory_path: str,
+        project: str | None = None,
+        issue_type: str,
+        title: str,
+        description: str | None = None,
+        iteration_path: str | None = None,
+        acceptance_criteria: str | None = None,
+        tags: list[str] | None = None,
+        assigned_to: str | None = None,
+        parent_backlog_item_id: str | None = None,
+        fields: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        organization_url, configured_project, pat = self._resolve_connection(directory_path)
+        normalized_project = str(project or configured_project).strip()
+        if not normalized_project:
+            raise ValueError("project is required for Azure DevOps issue creation.")
+        auth_header = self._auth_header(pat)
+        work_item_type = self._resolve_work_item_type(issue_type)
+        create_url = f"{organization_url}/{normalized_project}/_apis/wit/workitems/${work_item_type}"
+
+        operations: list[dict[str, Any]] = [{"op": "add", "path": "/fields/System.Title", "value": title}]
+        if description is not None:
+            operations.append({"op": "add", "path": "/fields/System.Description", "value": description})
+        if iteration_path is not None:
+            operations.append({"op": "add", "path": "/fields/System.IterationPath", "value": iteration_path})
+        if acceptance_criteria is not None:
+            operations.append(
+                {
+                    "op": "add",
+                    "path": "/fields/Microsoft.VSTS.Common.AcceptanceCriteria",
+                    "value": acceptance_criteria,
+                }
+            )
+        normalized_tags = self._normalize_tags(tags)
+        if normalized_tags is not None:
+            operations.append({"op": "add", "path": "/fields/System.Tags", "value": normalized_tags})
+        if assigned_to is not None:
+            operations.append({"op": "add", "path": "/fields/System.AssignedTo", "value": assigned_to})
+        for field_name, value in (fields or {}).items():
+            normalized_field_name = str(field_name).strip()
+            if normalized_field_name:
+                operations.append({"op": "add", "path": f"/fields/{normalized_field_name}", "value": value})
+        normalized_parent_backlog_item_id = self._normalize_parent_backlog_item_id(parent_backlog_item_id)
+        if normalized_parent_backlog_item_id is not None:
+            operations.append(
+                {
+                    "op": "add",
+                    "path": "/relations/-",
+                    "value": {
+                        "rel": "System.LinkTypes.Hierarchy-Reverse",
+                        "url": f"{organization_url}/{normalized_project}/_apis/wit/workItems/{normalized_parent_backlog_item_id}",
+                    },
+                }
+            )
+
+        with httpx.Client(timeout=self.timeout_seconds) as client:
+            response = client.patch(
+                create_url,
+                params={"api-version": "7.1"},
+                headers={
+                    "Authorization": auth_header,
+                    "Content-Type": "application/json-patch+json",
+                },
+                json=operations,
+            )
+            if response.is_error:
+                if normalized_parent_backlog_item_id is not None:
+                    self._raise_ado_http_error(action="link parent relation during create work item", response=response)
+                self._raise_ado_http_error(action="create work item", response=response)
+            payload = response.json()
+
+        payload_fields = payload.get("fields") if isinstance(payload.get("fields"), dict) else {}
+        return {
+            "provider": self.provider_name,
+            "remote_issue_id": str(payload.get("id") or ""),
+            "id": payload.get("id"),
+            "url": str((payload.get("_links") or {}).get("web", {}).get("href") or payload.get("url") or ""),
+            "type": str(payload_fields.get("System.WorkItemType") or work_item_type),
+            "project": str((payload_fields.get("System.TeamProject") or normalized_project)),
+            "fields": {
+                "System.Title": payload_fields.get("System.Title"),
+                "System.Description": payload_fields.get("System.Description"),
+                "System.IterationPath": payload_fields.get("System.IterationPath"),
+                "Microsoft.VSTS.Common.AcceptanceCriteria": payload_fields.get(
+                    "Microsoft.VSTS.Common.AcceptanceCriteria"
+                ),
+                "System.Tags": payload_fields.get("System.Tags"),
+                "System.AssignedTo": self._normalize_assigned_to(payload_fields.get("System.AssignedTo")),
+                **{k: v for k, v in (fields or {}).items() if k in payload_fields},
+            },
+        }
+
 
 class IssueService:
     def __init__(self, config_resolver: ProviderConfigResolver) -> None:
@@ -353,6 +545,39 @@ class IssueService:
             remote_issue_id=remote_issue_id,
             directory_path=directory_path,
             state=state,
+            fields=fields,
+        )
+
+    def create_remote_issue(
+        self,
+        *,
+        provider: str,
+        directory_path: str,
+        project: str | None = None,
+        issue_type: str,
+        title: str,
+        description: str | None = None,
+        iteration_path: str | None = None,
+        acceptance_criteria: str | None = None,
+        tags: list[str] | None = None,
+        assigned_to: str | None = None,
+        parent_backlog_item_id: str | None = None,
+        fields: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        adapter = self.adapters.get(provider)
+        if adapter is None:
+            raise ValueError(f"Unsupported issue provider: {provider}")
+        return adapter.create_issue(
+            directory_path=directory_path,
+            project=project,
+            issue_type=issue_type,
+            title=title,
+            description=description,
+            iteration_path=iteration_path,
+            acceptance_criteria=acceptance_criteria,
+            tags=tags,
+            assigned_to=assigned_to,
+            parent_backlog_item_id=parent_backlog_item_id,
             fields=fields,
         )
 
