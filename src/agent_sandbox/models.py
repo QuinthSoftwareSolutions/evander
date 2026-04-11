@@ -15,6 +15,7 @@ def utc_now() -> datetime:
 
 
 class ToolName(str, Enum):
+    CREATE_ADO_BACKLOG_ITEM = "create_ado_backlog_item"
     CREATE_LOCAL_ISSUE = "create_local_issue"
     LIST_ISSUES = "list_issues"
     GET_ISSUE = "get_issue"
