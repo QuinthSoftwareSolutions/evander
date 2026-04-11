@@ -1608,9 +1608,15 @@ def create_server(context: RuntimeContext) -> FastMCP:
             raise
 
     @server.tool()
-    def teams_get_messages(session_id: str, since_cursor: str | None = None) -> dict[str, Any]:
-        args = {"session_id": session_id, "since_cursor": since_cursor}
+    def teams_get_messages(
+        session_id: str,
+        since_cursor: str | None = None,
+        limit: int | None = None,
+    ) -> dict[str, Any]:
+        args = {"session_id": session_id, "since_cursor": since_cursor, "limit": limit}
         try:
+            if limit is not None and limit < 1:
+                raise ToolError("limit must be >= 1 when provided")
             session = context.policy.require_tool(session_id, ToolName.TEAMS_GET_MESSAGES)
             raw_messages = context.teams_service_for_session(session_id).get_messages(since_cursor)
             messages, denied_count, next_cursor = _filter_teams_messages_for_session(
@@ -1621,6 +1627,9 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 args,
                 audit_failure,
             )
+            if limit is not None:
+                messages = messages[-limit:]
+                next_cursor = messages[-1]["cursor"] if messages else since_cursor
             result = {"messages": messages, "next_cursor": next_cursor}
             audit_success(
                 session_id,
