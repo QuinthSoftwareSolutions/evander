@@ -26,6 +26,8 @@ from .issue_service import IssueService
 from .models import (
     AdoBacklogCreateRequest,
     AdoBacklogCreateResponse,
+    AdoBacklogGetRequest,
+    AdoBacklogGetResponse,
     AdoBacklogQueryRequest,
     AdoBacklogQueryResponse,
     AuditEvent,
@@ -667,6 +669,76 @@ def create_server(context: RuntimeContext) -> FastMCP:
             audit_failure(
                 session_id,
                 ToolName.QUERY_ADO_BACKLOG_ITEMS,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
+    def get_ado_backlog_item(
+        id: int | str,
+        project: str | None = None,
+        include_comments: bool = True,
+        include_relations: bool = True,
+        include_updates: bool = False,
+        *,
+        session_id: str | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        session_id = _resolve_session_id_from_context(session_id, ctx, transport_session_map=transport_session_map)
+        args = {
+            "session_id": session_id,
+            "id": id,
+            "project": project,
+            "include_comments": include_comments,
+            "include_relations": include_relations,
+            "include_updates": include_updates,
+        }
+        try:
+            session = context.policy.require_tool(session_id, ToolName.GET_ADO_BACKLOG_ITEM)
+            request_model = AdoBacklogGetRequest(
+                id=id,
+                project=project,
+                include_comments=include_comments,
+                include_relations=include_relations,
+                include_updates=include_updates,
+            )
+            args = {"session_id": session_id, **request_model.model_dump(mode="json")}
+            issue_service = IssueService(context.provider_config)
+            remote_payload = issue_service.get_remote_backlog_item_by_id(
+                provider="azure_devops",
+                directory_path=session.directory_path,
+                backlog_item_id=request_model.id,
+                project=request_model.project,
+                include_comments=request_model.include_comments,
+                include_relations=request_model.include_relations,
+                include_updates=request_model.include_updates,
+            )
+            response_model = AdoBacklogGetResponse.model_validate(remote_payload)
+            payload = response_model.model_dump(mode="json")
+            audit_success(
+                session_id,
+                ToolName.GET_ADO_BACKLOG_ITEM,
+                args,
+                {
+                    "id": payload.get("id"),
+                    "project": payload.get("project"),
+                    "include_comments": request_model.include_comments,
+                    "include_relations": request_model.include_relations,
+                    "include_updates": request_model.include_updates,
+                    "directory_path": session.directory_path,
+                },
+            )
+            return payload
+        except PolicyError as exc:
+            audit_failure(session_id, ToolName.GET_ADO_BACKLOG_ITEM, args, str(exc))
+            raise
+        except Exception as exc:
+            audit_failure(
+                session_id,
+                ToolName.GET_ADO_BACKLOG_ITEM,
                 args,
                 str(exc),
                 decision="error",
