@@ -528,6 +528,12 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
     ),
     WorkflowEditorNodeCatalogEntry(
         kind="trigger",
+        type="trigger:review:new-request",
+        label="Review request",
+        fields=[],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="trigger",
         type="trigger:git:push",
         label="Git push",
         fields=[

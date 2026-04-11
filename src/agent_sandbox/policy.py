@@ -71,6 +71,8 @@ class PolicyEngine:
             ToolName.HAS_PENDING_FEEDBACK,
             ToolName.LIST_UNREAD_FEEDBACK,
             ToolName.LIST_ALL_FEEDBACK,
+            ToolName.POST_PR_COMMENT,
+            ToolName.SUBMIT_PR_REVIEW,
         }:
             self.require_pr_feedback_streams(session)
         return session

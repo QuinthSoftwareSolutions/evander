@@ -14,6 +14,7 @@ from agent_sandbox.events.models import (
     IssueUpdateStateEffectDefinition,
     PrCreateEffectDefinition,
     PullRequestNewFeedbackTriggerDefinition,
+    ReviewNewRequestTriggerDefinition,
     SessionContextQueryDefinition,
     SessionUpdateMetadataEffectDefinition,
     TriggerDefinitionDiscriminated,
@@ -161,6 +162,18 @@ def test_pr_feedback_trigger_accepts_local_provider() -> None:
     )
 
     assert trigger.provider == "local"
+
+
+def test_review_request_trigger_validates() -> None:
+    trigger = ReviewNewRequestTriggerDefinition.model_validate(
+        {
+            "id": "review-1",
+            "display_name": "Review request",
+            "type": "trigger:review:new-request",
+        }
+    )
+
+    assert trigger.type == "trigger:review:new-request"
 
 
 def test_await_agent_gate_requires_session_id_or_vm_name() -> None:

@@ -40,6 +40,9 @@ class ToolName(str, Enum):
     LIST_UNREAD_FEEDBACK = "list_unread_feedback"
     LIST_ALL_FEEDBACK = "list_all_feedback"
     POST_PR_FEEDBACK_REPLY = "post_pr_feedback_reply"
+    REQUEST_PR_REVIEW = "request_pr_review"
+    POST_PR_COMMENT = "post_pr_comment"
+    SUBMIT_PR_REVIEW = "submit_pr_review"
     HAS_PENDING_DISCORD_MESSAGES = "has_pending_discord_messages"
     LIST_UNREAD_DISCORD_MESSAGES = "list_unread_discord_messages"
     LIST_ALL_DISCORD_MESSAGES = "list_all_discord_messages"
@@ -527,6 +530,96 @@ class PostPrFeedbackReplyResponse(BaseModel):
     comment_id: str | None = None
     reply_id: str | None = None
     reply_url: str | None = None
+    idempotency_key: str | None = None
+
+
+class RequestPrReviewRequest(BaseModel):
+    session_id: str = Field(min_length=1)
+    provider: str = Field(min_length=1)
+    repo: str = Field(min_length=1)
+    pr_id: str = Field(min_length=1)
+    requested_by: str | None = None
+    request_channel: str | None = None
+    review_type: str | None = None
+    instructions: str | None = None
+    directory_path: str | None = None
+    model: str | None = None
+    labels: dict[str, str] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class RequestPrReviewResponse(BaseModel):
+    status: str
+    request_id: str
+    provider: str
+    repo: str
+    pr_id: str
+    canonical_url: str | None = None
+    title: str | None = None
+    body: str | None = None
+    base_branch: str | None = None
+    head_branch: str | None = None
+    base_commit: str | None = None
+    head_commit: str | None = None
+    requested_at: datetime = Field(default_factory=utc_now)
+    requested_by: str | None = None
+    request_channel: str | None = None
+    review_type: str | None = None
+    instructions: str | None = None
+    directory_path: str | None = None
+    model: str | None = None
+    labels: dict[str, str] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class PostPrCommentRequest(BaseModel):
+    session_id: str = Field(min_length=1)
+    provider: str = Field(min_length=1)
+    repo: str = Field(min_length=1)
+    pr_id: str = Field(min_length=1)
+    body_text: str = Field(min_length=1)
+    idempotency_key: str | None = None
+    request_id: str | None = None
+
+
+class PostPrCommentResponse(BaseModel):
+    status: str
+    provider: str
+    repo: str
+    pr_id: str
+    comment_id: str | None = None
+    comment_url: str | None = None
+    idempotency_key: str | None = None
+
+
+class SubmitPrReviewComment(BaseModel):
+    path: str = Field(min_length=1)
+    body: str = Field(min_length=1)
+    line: int | None = Field(default=None, ge=1)
+    start_line: int | None = Field(default=None, ge=1)
+    side: str | None = None
+
+
+class SubmitPrReviewRequest(BaseModel):
+    session_id: str = Field(min_length=1)
+    provider: str = Field(min_length=1)
+    repo: str = Field(min_length=1)
+    pr_id: str = Field(min_length=1)
+    body_text: str = Field(min_length=1)
+    event: str | None = None
+    comments: list[SubmitPrReviewComment] = Field(default_factory=list)
+    idempotency_key: str | None = None
+    request_id: str | None = None
+
+
+class SubmitPrReviewResponse(BaseModel):
+    status: str
+    provider: str
+    repo: str
+    pr_id: str
+    review_id: str | None = None
+    review_url: str | None = None
+    comment_ids: list[str] = Field(default_factory=list)
     idempotency_key: str | None = None
 
 

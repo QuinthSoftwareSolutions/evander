@@ -172,10 +172,13 @@ Type-specific keys:
 | `trigger:discord:new-message` | `discord_bot_token_env` | `channel_ids`, `user_ids` |
 | `trigger:email:new-message` | `provider`, `account_identifier`, `mailbox_ids` | `auth_secret_refs` |
 | `trigger:pull-request:new-feedback` | `provider` | `organization_url`, `project` (but `organization_url` becomes required when `provider=ado`) |
+| `trigger:review:new-request` | — | — |
 | `trigger:git:push` | `path_to_repo` | — |
 
-The current trigger set also includes `trigger:teams:new-message`. It is fed by a host-side Teams
-ingest worker that reads the same delegated Teams auth settings described above. This flow is
+The current trigger set also includes `trigger:teams:new-message` and
+`trigger:review:new-request`. Teams is fed by a host-side ingest worker that reads the same
+delegated Teams auth settings described above. Review requests are fed from the host-owned
+`runtime/review-request-store.json` inbox populated by `request_pr_review(...)`. Both flows are
 independent from host-heartbeat; host-heartbeat continues to cover PR/Discord feedback wakeups.
 
 Example:

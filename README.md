@@ -741,6 +741,53 @@ Use this when you want the guest to wake only for new review feedback and post t
   - audit shows allowed calls for `has_pending_feedback`, `list_unread_feedback`, `list_all_feedback`, and `post_pr_feedback_reply`,
   - idempotent retry returns `status=deduplicated` instead of creating duplicate provider comments.
 
+## PR Review Request Workflow
+
+Use this when a receptionist-style agent should enqueue a PR review request and let the trigger
+orchestrator drive the disposable review VM workflow.
+
+### Host-side pieces
+
+- New MCP tools:
+  - `request_pr_review`
+  - `post_pr_comment`
+  - `submit_pr_review`
+- New trigger:
+  - `trigger:review:new-request`
+- New runtime state:
+  - `runtime/review-request-store.json`
+
+`request_pr_review` normalizes the PR target, resolves provider metadata (title, URL, base/head
+refs and commits), and writes a durable request record into the host review-request inbox. The
+trigger provider polls that inbox and emits a `review_request` payload for workflow consumption.
+
+### Typical workflow shape
+
+1. `trigger:review:new-request`
+2. `effect:vm:create`
+3. `effect:session:update-metadata`
+4. `effect:vm:exec`
+   run `scripts/guest/setup_review_repo.sh` inside the guest with explicit `--base-ref` and `--head-ref`
+5. `effect:agent:prompt`
+6. `gate:await-agent`
+7. `post_pr_comment` or `submit_pr_review`
+8. `effect:vm:stop`
+
+### Review repo prep helper
+
+Guests can prepare a deterministic review checkout with:
+
+```bash
+./scripts/guest/setup_review_repo.sh \
+  --repo-path /home/agent/<repo-name> \
+  --base-ref refs/heads/main \
+  --head-ref refs/heads/review/topic
+```
+
+The helper resolves explicit base/head refs, writes durable local refs under
+`refs/agent-sandbox/review/*`, detaches the worktree onto the head commit, and writes a
+shell-safe context file at `.agent-sandbox/review-context.env` by default.
+
 ### NuGet Relay Notes
 
 - The NuGet relay proxies both `nuget.org` and optional private Azure Artifacts feeds.

@@ -17,6 +17,7 @@ TriggerType = Literal[
     "trigger:teams:new-message",
     "trigger:email:new-message",
     "trigger:pull-request:new-feedback",
+    "trigger:review:new-request",
     "trigger:git:push",
     "trigger:agent:run:completed",
 ]
@@ -198,6 +199,10 @@ class PullRequestNewFeedbackTriggerDefinition(TriggerDefinition):
         return self
 
 
+class ReviewNewRequestTriggerDefinition(TriggerDefinition):
+    type: Literal["trigger:review:new-request"]
+
+
 class GitPushTriggerDefinition(TriggerDefinition):
     type: Literal["trigger:git:push"]
     path_to_repo: str | None = None
@@ -233,6 +238,7 @@ TriggerDefinitionDiscriminated = Annotated[
     | TeamsNewMessageTriggerDefinition
     | EmailNewMessageTriggerDefinition
     | PullRequestNewFeedbackTriggerDefinition
+    | ReviewNewRequestTriggerDefinition
     | GitPushTriggerDefinition
     | AgentRunCompletedTriggerDefinition,
     Field(discriminator="type"),
@@ -711,6 +717,38 @@ _STATIC_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
                 "resolved": {"type": "boolean"},
             },
         },
+    },
+    "trigger:review:new-request": {
+        "review_request": {
+            "type": "object",
+            "properties": {
+                "request_id": {"type": "string"},
+                "requested_at": {"type": "string"},
+                "requested_by": {"type": "string"},
+                "request_channel": {"type": "string"},
+                "provider": {"type": "string"},
+                "repo": {"type": "string"},
+                "pr_id": {"type": "string"},
+                "canonical_url": {"type": "string"},
+                "title": {"type": "string"},
+                "body": {"type": "string"},
+                "base_branch": {"type": "string"},
+                "head_branch": {"type": "string"},
+                "base_commit": {"type": "string"},
+                "head_commit": {"type": "string"},
+                "review_type": {"type": "string"},
+                "instructions": {"type": "string"},
+                "directory_path": {"type": "string"},
+                "model": {"type": "string"},
+                "labels": {"type": "object"},
+                "metadata": {"type": "object"},
+                "status": {"type": "string"},
+                "updated_at": {"type": "string"},
+                "lease_owner": {"type": "string"},
+                "lease_expires_at": {"type": "string"},
+                "dispatch_count": {"type": "integer"},
+            },
+        }
     },
     "trigger:git:push": {
         "branch_name": {"type": "string"},

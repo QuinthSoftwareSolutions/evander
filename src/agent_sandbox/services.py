@@ -1484,3 +1484,524 @@ def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
     temp_path = path.with_suffix(f"{path.suffix}.tmp")
     temp_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
     temp_path.replace(path)
+
+
+class PrPublishProvider(Protocol):
+    def post_comment(
+        self,
+        *,
+        repo: str,
+        pr_id: str,
+        body_text: str,
+    ) -> dict[str, Any]: ...
+
+    def submit_review(
+        self,
+        *,
+        repo: str,
+        pr_id: str,
+        body_text: str,
+        comments: list[dict[str, Any]] | None = None,
+        event: str | None = None,
+    ) -> dict[str, Any]: ...
+
+
+class GitHubPrPublishProvider:
+    def __init__(
+        self,
+        *,
+        token: str,
+        api_base_url: str = "https://api.github.com",
+        timeout_seconds: float = 30.0,
+    ) -> None:
+        self.token = token
+        self.api_base_url = api_base_url.rstrip("/")
+        self.timeout_seconds = timeout_seconds
+
+    def _headers(self) -> dict[str, str]:
+        return {
+            "Authorization": f"Bearer {self.token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+
+    def post_comment(
+        self,
+        *,
+        repo: str,
+        pr_id: str,
+        body_text: str,
+    ) -> dict[str, Any]:
+        normalized_body = body_text.strip()
+        if not normalized_body:
+            raise ValueError("GitHub PR comment publishing requires body_text")
+        with httpx.Client(timeout=self.timeout_seconds) as client:
+            response = client.post(
+                f"{self.api_base_url}/repos/{repo}/issues/{pr_id}/comments",
+                headers=self._headers(),
+                json={"body": normalized_body},
+            )
+            response.raise_for_status()
+            payload = response.json()
+        comment_id = str(payload.get("id", "")).strip() or None
+        return {
+            "status": "posted",
+            "provider": "github",
+            "repo": repo,
+            "pr_id": pr_id,
+            "comment_id": comment_id,
+            "comment_url": payload.get("html_url") or payload.get("url"),
+            "published_feedback_ids": [f"github:issue_comment:{comment_id}"] if comment_id else [],
+        }
+
+    def submit_review(
+        self,
+        *,
+        repo: str,
+        pr_id: str,
+        body_text: str,
+        comments: list[dict[str, Any]] | None = None,
+        event: str | None = None,
+    ) -> dict[str, Any]:
+        normalized_body = body_text.strip()
+        normalized_comments = _normalize_pr_review_comments(comments)
+        normalized_event = _normalize_pr_review_event(event)
+        if not normalized_body and not normalized_comments:
+            raise ValueError("GitHub PR review publishing requires body_text or comments")
+
+        review_payload: dict[str, Any] = {"event": normalized_event}
+        if normalized_body:
+            review_payload["body"] = normalized_body
+
+        with httpx.Client(timeout=self.timeout_seconds) as client:
+            review_response = client.post(
+                f"{self.api_base_url}/repos/{repo}/pulls/{pr_id}/reviews",
+                headers=self._headers(),
+                json=review_payload,
+            )
+            review_response.raise_for_status()
+            review_payload_json = review_response.json()
+
+            comment_ids: list[str] = []
+            comment_urls: list[str] = []
+            for comment in normalized_comments:
+                review_comment_payload: dict[str, Any] = {
+                    "body": comment["body_text"],
+                    "path": comment["path"],
+                }
+                for field_name in ("line", "start_line", "side", "start_side", "commit_id"):
+                    value = comment.get(field_name)
+                    if value is not None:
+                        review_comment_payload[field_name] = value
+                review_comment_response = client.post(
+                    f"{self.api_base_url}/repos/{repo}/pulls/{pr_id}/comments",
+                    headers=self._headers(),
+                    json=review_comment_payload,
+                )
+                review_comment_response.raise_for_status()
+                review_comment_json = review_comment_response.json()
+                review_comment_id = str(review_comment_json.get("id", "")).strip() or None
+                if review_comment_id is not None:
+                    comment_ids.append(review_comment_id)
+                comment_url = review_comment_json.get("html_url") or review_comment_json.get("url")
+                if comment_url:
+                    comment_urls.append(str(comment_url))
+
+        review_id = str(review_payload_json.get("id", "")).strip() or None
+        review_url = review_payload_json.get("html_url") or review_payload_json.get("url")
+        return {
+            "status": "posted",
+            "provider": "github",
+            "repo": repo,
+            "pr_id": pr_id,
+            "review_id": review_id,
+            "review_url": review_url,
+            "event": normalized_event,
+            "comment_ids": comment_ids,
+            "comment_urls": comment_urls,
+            "published_feedback_ids": [
+                *([f"github:review:{review_id}"] if review_id else []),
+                *[f"github:review_comment:{comment_id}" for comment_id in comment_ids],
+            ],
+        }
+
+
+class AzureDevOpsPrPublishProvider:
+    def __init__(
+        self,
+        *,
+        organization_url: str,
+        project: str,
+        pat: str,
+        timeout_seconds: float = 30.0,
+    ) -> None:
+        self.organization_url = organization_url.rstrip("/")
+        self.project = project
+        self.pat = pat
+        self.timeout_seconds = timeout_seconds
+
+    def _repo_identifier(self, repo: str) -> str:
+        return _normalize_azure_devops_repo_identifier(repo)
+
+    def _post_thread_comment(
+        self,
+        *,
+        client: httpx.Client,
+        repo: str,
+        pr_id: str,
+        body_text: str,
+        thread_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "comments": [{"parentCommentId": 0, "content": body_text.strip(), "commentType": "text"}],
+            "status": "active",
+        }
+        if thread_context is not None:
+            payload["threadContext"] = thread_context
+        response = client.post(
+            (
+                f"{self.organization_url}/{self.project}/_apis/git/repositories/{self._repo_identifier(repo)}/"
+                f"pullRequests/{pr_id}/threads"
+            ),
+            params={"api-version": "7.1"},
+            auth=("", self.pat),
+            json=payload,
+        )
+        response.raise_for_status()
+        response_payload = response.json()
+        thread_id = str(response_payload.get("id", "")).strip() or None
+        comments = response_payload.get("comments") if isinstance(response_payload.get("comments"), list) else []
+        first_comment = comments[0] if comments and isinstance(comments[0], dict) else {}
+        comment_id = str(first_comment.get("id", "")).strip() or None
+        comment_url = response_payload.get("_links", {}).get("web", {}).get("href")
+        published_feedback_ids = []
+        if thread_id and comment_id:
+            published_feedback_ids.append(f"azure_devops:thread_comment:{thread_id}:{comment_id}")
+        return {
+            "thread_id": thread_id,
+            "comment_id": comment_id,
+            "comment_url": comment_url,
+            "published_feedback_ids": published_feedback_ids,
+        }
+
+    def post_comment(
+        self,
+        *,
+        repo: str,
+        pr_id: str,
+        body_text: str,
+    ) -> dict[str, Any]:
+        normalized_body = body_text.strip()
+        if not normalized_body:
+            raise ValueError("Azure DevOps PR comment publishing requires body_text")
+        with httpx.Client(timeout=self.timeout_seconds) as client:
+            result = self._post_thread_comment(
+                client=client,
+                repo=repo,
+                pr_id=pr_id,
+                body_text=normalized_body,
+            )
+        return {
+            "status": "posted",
+            "provider": "azure_devops",
+            "repo": repo,
+            "pr_id": pr_id,
+            **result,
+        }
+
+    def submit_review(
+        self,
+        *,
+        repo: str,
+        pr_id: str,
+        body_text: str,
+        comments: list[dict[str, Any]] | None = None,
+        event: str | None = None,
+    ) -> dict[str, Any]:
+        normalized_body = body_text.strip()
+        normalized_comments = _normalize_pr_review_comments(comments)
+        if not normalized_body and not normalized_comments:
+            raise ValueError("Azure DevOps PR review publishing requires body_text or comments")
+
+        comment_ids: list[str] = []
+        comment_urls: list[str] = []
+        published_feedback_ids: list[str] = []
+        summary_thread_id: str | None = None
+        summary_comment_id: str | None = None
+        summary_comment_url: str | None = None
+
+        with httpx.Client(timeout=self.timeout_seconds) as client:
+            if normalized_body:
+                summary_result = self._post_thread_comment(
+                    client=client,
+                    repo=repo,
+                    pr_id=pr_id,
+                    body_text=normalized_body,
+                )
+                summary_thread_id = summary_result["thread_id"]
+                summary_comment_id = summary_result["comment_id"]
+                summary_comment_url = summary_result["comment_url"]
+                if summary_comment_id is not None:
+                    comment_ids.append(summary_comment_id)
+                if summary_comment_url:
+                    comment_urls.append(summary_comment_url)
+                published_feedback_ids.extend(summary_result["published_feedback_ids"])
+
+            for comment in normalized_comments:
+                thread_context = {
+                    "filePath": comment["path"],
+                    "rightFileStart": {"line": comment["line"]} if comment.get("line") is not None else {},
+                }
+                if not thread_context["rightFileStart"]:
+                    thread_context.pop("rightFileStart", None)
+                comment_result = self._post_thread_comment(
+                    client=client,
+                    repo=repo,
+                    pr_id=pr_id,
+                    body_text=comment["body_text"],
+                    thread_context=thread_context,
+                )
+                if comment_result["comment_id"] is not None:
+                    comment_ids.append(comment_result["comment_id"])
+                if comment_result["comment_url"]:
+                    comment_urls.append(comment_result["comment_url"])
+                published_feedback_ids.extend(comment_result["published_feedback_ids"])
+
+        review_url = summary_comment_url or (comment_urls[0] if comment_urls else None)
+        return {
+            "status": "posted",
+            "provider": "azure_devops",
+            "repo": repo,
+            "pr_id": pr_id,
+            "event": event.strip().upper() if isinstance(event, str) and event.strip() else None,
+            "review_id": None,
+            "review_url": review_url,
+            "summary_thread_id": summary_thread_id,
+            "summary_comment_id": summary_comment_id,
+            "summary_comment_url": summary_comment_url,
+            "comment_ids": comment_ids,
+            "comment_urls": comment_urls,
+            "published_feedback_ids": published_feedback_ids,
+        }
+
+
+class PrPublishService:
+    def __init__(
+        self,
+        *,
+        providers: dict[str, PrPublishProvider],
+        idempotency_store_path: Path,
+        ignored_feedback_store_path: Path | None = None,
+    ) -> None:
+        self.providers = providers
+        self.idempotency_store_path = idempotency_store_path
+        self.ignored_feedback_store_path = ignored_feedback_store_path
+        self._lock = Lock()
+        self.idempotency_store_path.parent.mkdir(parents=True, exist_ok=True)
+        if not self.idempotency_store_path.exists():
+            self._write_raw({})
+
+    def post_comment(
+        self,
+        *,
+        provider: str,
+        repo: str,
+        pr_id: str,
+        body_text: str,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        return self._publish(
+            operation="post_comment",
+            provider=provider,
+            repo=repo,
+            pr_id=pr_id,
+            body_text=body_text,
+            comments=None,
+            event=None,
+            idempotency_key=idempotency_key,
+        )
+
+    def submit_review(
+        self,
+        *,
+        provider: str,
+        repo: str,
+        pr_id: str,
+        body_text: str,
+        comments: list[dict[str, Any]] | None = None,
+        event: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        return self._publish(
+            operation="submit_review",
+            provider=provider,
+            repo=repo,
+            pr_id=pr_id,
+            body_text=body_text,
+            comments=comments,
+            event=event,
+            idempotency_key=idempotency_key,
+        )
+
+    def _publish(
+        self,
+        *,
+        operation: str,
+        provider: str,
+        repo: str,
+        pr_id: str,
+        body_text: str,
+        comments: list[dict[str, Any]] | None,
+        event: str | None,
+        idempotency_key: str | None,
+    ) -> dict[str, Any]:
+        provider_name = normalize_pr_feedback_provider(provider)
+        if provider_name not in self.providers:
+            raise ValueError(
+                f"PR publish provider {provider_name!r} is not configured for this gateway instance"
+            )
+        normalized_key = idempotency_key.strip() if idempotency_key else None
+        cache_key = (
+            f"{operation}:{provider_name}:{repo}:{pr_id}:{normalized_key}" if normalized_key else None
+        )
+        if cache_key:
+            with self._lock:
+                existing = self._read_raw().get(cache_key)
+            if isinstance(existing, dict):
+                cached = dict(existing)
+                cached["status"] = "deduplicated"
+                return cached
+
+        provider = self.providers[provider_name]
+        if operation == "post_comment":
+            response = provider.post_comment(repo=repo, pr_id=pr_id, body_text=body_text.strip())
+        elif operation == "submit_review":
+            response = provider.submit_review(
+                repo=repo,
+                pr_id=pr_id,
+                body_text=body_text.strip(),
+                comments=comments,
+                event=event,
+            )
+        else:
+            raise ValueError(f"Unsupported publish operation: {operation!r}")
+        response = dict(response)
+        response["idempotency_key"] = normalized_key
+        self._record_ignored_feedback_ids(response)
+        if cache_key:
+            with self._lock:
+                payload = self._read_raw()
+                payload[cache_key] = response
+                self._write_raw(payload)
+        return response
+
+    def _record_ignored_feedback_ids(self, response: dict[str, Any]) -> None:
+        feedback_ids = _publication_feedback_ids(response)
+        if not feedback_ids or self.ignored_feedback_store_path is None:
+            return
+
+        path = self.ignored_feedback_store_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with self._lock:
+            if path.exists():
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            else:
+                payload = {}
+            normalized_payload, current_feedback_ids, _ = _normalize_ignored_feedback_payload(payload)
+            entries = normalized_payload.get("feedback_ids", [])
+            now = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+            for feedback_id in feedback_ids:
+                if feedback_id in current_feedback_ids:
+                    continue
+                entries.append({"feedback_id": feedback_id, "ignored_at": now})
+                current_feedback_ids.add(feedback_id)
+            normalized_payload["feedback_ids"] = entries
+            final_payload, _, _ = _normalize_ignored_feedback_payload(normalized_payload)
+            _write_json_atomic(path, final_payload)
+
+    def _read_raw(self) -> dict[str, Any]:
+        return json.loads(self.idempotency_store_path.read_text(encoding="utf-8"))
+
+    def _write_raw(self, payload: dict[str, Any]) -> None:
+        temp_path = self.idempotency_store_path.with_suffix(
+            f"{self.idempotency_store_path.suffix}.tmp"
+        )
+        temp_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+        temp_path.replace(self.idempotency_store_path)
+
+
+def _normalize_pr_review_comments(comments: Any) -> list[dict[str, Any]]:
+    if comments is None:
+        return []
+    if isinstance(comments, dict):
+        comments = [comments]
+    if not isinstance(comments, list):
+        raise ValueError("PR review comments must be a list of objects")
+
+    normalized: list[dict[str, Any]] = []
+    for index, raw_comment in enumerate(comments):
+        if not isinstance(raw_comment, dict):
+            raise ValueError(f"PR review comment at index {index} must be an object")
+        body_text = _normalize_optional_text(raw_comment.get("body_text") or raw_comment.get("body"))
+        path = _normalize_optional_text(raw_comment.get("path"))
+        if not body_text:
+            raise ValueError(f"PR review comment at index {index} requires body_text")
+        if not path:
+            raise ValueError(f"PR review comment at index {index} requires path")
+        normalized_comment: dict[str, Any] = {"body_text": body_text, "path": path}
+        line = _as_int_or_none(raw_comment.get("line"))
+        if line is not None:
+            normalized_comment["line"] = line
+        start_line = _as_int_or_none(raw_comment.get("start_line"))
+        if start_line is not None:
+            normalized_comment["start_line"] = start_line
+        side = _normalize_optional_text(raw_comment.get("side"))
+        if side is not None:
+            normalized_comment["side"] = side.upper()
+        start_side = _normalize_optional_text(raw_comment.get("start_side"))
+        if start_side is not None:
+            normalized_comment["start_side"] = start_side.upper()
+        commit_id = _normalize_optional_text(raw_comment.get("commit_id"))
+        if commit_id is not None:
+            normalized_comment["commit_id"] = commit_id
+        normalized.append(normalized_comment)
+    return normalized
+
+
+def _normalize_pr_review_event(event: Any) -> str:
+    normalized = _normalize_optional_text(event)
+    if normalized is None:
+        return "COMMENT"
+    upper = normalized.upper()
+    if upper not in {"COMMENT", "APPROVE", "REQUEST_CHANGES"}:
+        raise ValueError(
+            "PR review event must be one of: COMMENT, APPROVE, REQUEST_CHANGES"
+        )
+    return upper
+
+
+def _publication_feedback_ids(response: dict[str, Any]) -> list[str]:
+    feedback_ids = response.get("published_feedback_ids")
+    if not isinstance(feedback_ids, list):
+        return []
+    normalized: list[str] = []
+    for feedback_id in feedback_ids:
+        if feedback_id is None:
+            continue
+        text = str(feedback_id).strip()
+        if text:
+            normalized.append(text)
+    return normalized
+
+
+def _normalize_optional_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _as_int_or_none(value: Any) -> int | None:
+    if value is None or value == "":
+        return None
+    return int(value)

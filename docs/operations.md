@@ -538,6 +538,64 @@ email_mailboxes:
     folder_allowlist_defaults: ["inbox", "drafts"]
 ```
 
+## Review Request Workflow
+
+Use this run pattern when a host-side receptionist or chat-facing agent should enqueue PR review
+work and let the trigger orchestrator start a temporary review VM.
+
+### Host-side contract
+
+- Enqueue review work with `request_pr_review(session_id, provider, repo, pr_id, ...)`.
+- Consume queued review requests with `trigger:review:new-request`.
+- Publish review output with:
+  - `post_pr_comment(...)` for top-level PR conversation comments
+  - `submit_pr_review(...)` for a summary plus optional inline findings
+
+The review-request inbox is persisted in `runtime/review-request-store.json`. Records transition
+through `pending`, `leased`, `dispatched`, `completed`, `failed`, or `cancelled`.
+
+### Recommended workflow graph
+
+1. `trigger:review:new-request`
+2. `effect:vm:create`
+3. `effect:session:update-metadata`
+4. `effect:vm:exec`
+5. `effect:agent:prompt`
+6. `gate:await-agent`
+7. `post_pr_comment` or `submit_pr_review`
+8. `effect:vm:stop`
+
+### Guest repo preparation
+
+After the VM is created and the repo is cloned, prepare the checkout explicitly instead of
+reviewing whatever the default branch clone happens to contain:
+
+```bash
+./scripts/guest/setup_review_repo.sh \
+  --repo-path /home/agent/<repo-name> \
+  --base-ref refs/heads/main \
+  --head-ref refs/heads/review/topic
+```
+
+The helper:
+
+- resolves explicit base/head refs to local refs under `refs/agent-sandbox/review/*`
+- detaches the worktree onto the head commit
+- hard-resets and cleans the worktree
+- writes `.agent-sandbox/review-context.env` for downstream prompt or shell steps
+
+### Failure handling
+
+- `request_pr_review` provider lookup failures:
+  - fail fast and do not enqueue a partial request
+  - verify host-side `GITHUB_TOKEN` or `AZURE_DEVOPS_PR_PAT`
+- Trigger/provider retries:
+  - retry leased-but-undispatched requests after lease expiry
+  - do not overload the trigger cursor with timestamp-only semantics
+- Publish retries:
+  - reuse the same `idempotency_key` when retrying `post_pr_comment` or `submit_pr_review`
+  - validate host-side provider credentials before replaying
+
 ### Microsoft Graph OAuth/token setup
 
 1. Register an application in Microsoft Entra ID and grant Microsoft Graph Mail permissions.

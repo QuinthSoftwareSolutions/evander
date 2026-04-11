@@ -144,6 +144,15 @@ def _trigger_adapter() -> TypeAdapter[TriggerDefinitionDiscriminated]:
         ),
         (
             {
+                "id": "review-request",
+                "display_name": "Review request",
+                "type": "trigger:review:new-request",
+            },
+            "trigger:review:new-request",
+            "id",
+        ),
+        (
+            {
                 "id": "git",
                 "display_name": "Git",
                 "type": "trigger:git:push",
@@ -991,6 +1000,7 @@ def test_conformance_traceability_matrix_and_report(
             "schema:trigger:teams:new-message",
             "schema:trigger:email:new-message",
             "schema:trigger:pull-request:new-feedback",
+            "schema:trigger:review:new-request",
             "schema:trigger:git:push",
             "schema:duplicate-ids",
         ],

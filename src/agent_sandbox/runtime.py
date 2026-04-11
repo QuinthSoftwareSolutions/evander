@@ -27,16 +27,24 @@ from .policy import PolicyEngine
 from .policy_config import PolicyConfigResolver
 from .provider_config import ProviderConfigResolver
 from .host_config import HostConfig
+from .review_request_service import (
+    ReviewRequestService,
+    _build_review_request_service,
+)
+from .review_request_store import ReviewRequestStore
 from .services import (
     AzureDevOpsPrReplyProvider,
+    AzureDevOpsPrPublishProvider,
     DiscordBotApiService,
     DiscordInboxService,
     DiscordService,
     EmailService,
     GraphTeamsService,
     GitHubPrReplyProvider,
+    GitHubPrPublishProvider,
     PrFeedbackService,
     PrReplyService,
+    PrPublishService,
     StubDiscordService,
     StubTeamsService,
     TeamsService,
@@ -64,6 +72,8 @@ class RuntimeContext:
     discord_inbox_service: DiscordInboxService
     pr_feedback_service: PrFeedbackService
     pr_reply_service: PrReplyService
+    pr_publish_service: PrPublishService
+    review_request_service: ReviewRequestService
     sessions: JsonStore[SessionManifest]
     approvals: JsonStore[ApprovalRequest]
     directories: DirectoryStore
@@ -107,6 +117,22 @@ class RuntimeContext:
         if resolved_config == self.config:
             return self.pr_reply_service
         return _build_pr_reply_service(resolved_config)
+
+    def pr_publish_service_for_session(self, session_id: str) -> PrPublishService:
+        if not isinstance(self.pr_publish_service, PrPublishService):
+            return self.pr_publish_service
+        resolved_config = self.resolve_provider_config_for_session(session_id)
+        if resolved_config == self.config:
+            return self.pr_publish_service
+        return _build_pr_publish_service(resolved_config)
+
+    def review_request_service_for_session(self, session_id: str) -> ReviewRequestService:
+        if not isinstance(self.review_request_service, ReviewRequestService):
+            return self.review_request_service
+        resolved_config = self.resolve_provider_config_for_session(session_id)
+        if resolved_config == self.config:
+            return self.review_request_service
+        return _build_review_request_service(resolved_config, self.sessions)
 
     def teams_service_for_session(self, session_id: str) -> TeamsService:
         if not isinstance(self.teams_service, (StubTeamsService, GraphTeamsService)):
@@ -175,6 +201,8 @@ def build_runtime(config: GatewayConfig) -> RuntimeContext:
             ignored_feedback_store_path=config.runtime_dir / "ignored-feedback-ids.json",
         ),
         pr_reply_service=_build_pr_reply_service(root_provider_config),
+        pr_publish_service=_build_pr_publish_service(root_provider_config),
+        review_request_service=_build_review_request_service(root_provider_config, sessions),
         sessions=sessions,
         approvals=approvals,
         directories=directories,
@@ -392,6 +420,30 @@ def _build_pr_reply_service(config: GatewayConfig) -> PrReplyService:
     return PrReplyService(
         providers=providers,
         idempotency_store_path=config.runtime_dir / "pr-reply-idempotency.json",
+        ignored_feedback_store_path=config.runtime_dir / "ignored-feedback-ids.json",
+    )
+
+
+def _build_pr_publish_service(config: GatewayConfig) -> PrPublishService:
+    github_token = os.environ.get(config.github_token_env, "").strip()
+    azure_pat = os.environ.get(config.azure_devops_pr_pat_env, "").strip()
+
+    providers = {}
+    if github_token:
+        providers["github"] = GitHubPrPublishProvider(
+            token=github_token,
+            timeout_seconds=config.email_provider_timeout_seconds,
+        )
+    if azure_pat:
+        providers["azure_devops"] = AzureDevOpsPrPublishProvider(
+            organization_url=config.azure_devops_organization_url,
+            project=config.azure_devops_project,
+            pat=azure_pat,
+            timeout_seconds=config.email_provider_timeout_seconds,
+        )
+    return PrPublishService(
+        providers=providers,
+        idempotency_store_path=config.runtime_dir / "pr-publish-idempotency.json",
         ignored_feedback_store_path=config.runtime_dir / "ignored-feedback-ids.json",
     )
 
