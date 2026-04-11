@@ -41,6 +41,7 @@ class ToolName(str, Enum):
     LIST_UNREAD_FEEDBACK = "list_unread_feedback"
     LIST_ALL_FEEDBACK = "list_all_feedback"
     POST_PR_FEEDBACK_REPLY = "post_pr_feedback_reply"
+    LIST_PULL_REQUESTS = "list_pull_requests"
     REQUEST_PR_REVIEW = "request_pr_review"
     POST_PR_COMMENT = "post_pr_comment"
     SUBMIT_PR_REVIEW = "submit_pr_review"
@@ -566,6 +567,35 @@ class PostPrFeedbackReplyResponse(BaseModel):
     reply_id: str | None = None
     reply_url: str | None = None
     idempotency_key: str | None = None
+
+
+class PullRequestItem(BaseModel):
+    provider: str
+    repo: str
+    pr_id: str
+    title: str | None = None
+    status: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    created_by: str | None = None
+    url: str | None = None
+    raw: dict[str, Any] = Field(default_factory=dict)
+
+
+class ListPullRequestsRequest(BaseModel):
+    session_id: str = Field(min_length=1)
+    provider: str = Field(min_length=1)
+    repo: str = Field(min_length=1)
+    status: str | None = None
+    creator_id: str | None = None
+    reviewer_id: str | None = None
+    top: int | None = Field(default=None, ge=1)
+    cursor: str | None = None
+
+
+class ListPullRequestsResponse(BaseModel):
+    pull_requests: list[PullRequestItem] = Field(default_factory=list)
+    next_cursor: str | None = None
 
 
 class AdoBacklogCreateRequest(BaseModel):

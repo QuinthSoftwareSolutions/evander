@@ -719,6 +719,9 @@ Use this when you want the guest to wake only for new review feedback and post t
    - status: `sudo systemctl status agent-sandbox-host-heartbeat.service`
 4. Use MCP calls from the agent in this order:
    `has_pending_feedback` → `list_unread_feedback` → `post_pr_feedback_reply` (with an idempotency key).
+   Use `list_pull_requests(session_id, provider, repo, status?, creator_id?, reviewer_id?, top?, cursor?)`
+   when you need provider-backed PR discovery; `status` maps to provider status filtering (for Azure DevOps:
+   `searchCriteria.status`), and pagination continues with `next_cursor`.
    For full thread history (including already-consumed items), call `list_all_feedback`.
 
 ### Expected timing behavior

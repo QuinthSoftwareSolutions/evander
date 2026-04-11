@@ -18,9 +18,11 @@ from .models import (
     EmailMessage,
     HasPendingDiscordMessagesResponse,
     HasPendingFeedbackResponse,
+    ListPullRequestsResponse,
     ListUnreadDiscordMessagesResponse,
     ListUnreadFeedbackResponse,
     PostPrFeedbackReplyResponse,
+    PullRequestItem,
     PrFeedbackItem,
     TeamsMessageEnvelope,
 )
@@ -1209,6 +1211,19 @@ class PrReplyProvider(Protocol):
     ) -> PostPrFeedbackReplyResponse: ...
 
 
+class PrQueryProvider(Protocol):
+    def list_pull_requests(
+        self,
+        *,
+        repo: str,
+        status: str | None = None,
+        creator_id: str | None = None,
+        reviewer_id: str | None = None,
+        top: int | None = None,
+        cursor: str | None = None,
+    ) -> ListPullRequestsResponse: ...
+
+
 class GitHubPrReplyProvider:
     def __init__(
         self,
@@ -1308,6 +1323,90 @@ class AzureDevOpsPrReplyProvider:
         )
 
 
+class AzureDevOpsPrQueryProvider:
+    def __init__(
+        self,
+        *,
+        organization_url: str,
+        project: str,
+        pat: str,
+        timeout_seconds: float = 30.0,
+    ) -> None:
+        self.organization_url = organization_url.rstrip("/")
+        self.project = project
+        self.pat = pat
+        self.timeout_seconds = timeout_seconds
+
+    def list_pull_requests(
+        self,
+        *,
+        repo: str,
+        status: str | None = None,
+        creator_id: str | None = None,
+        reviewer_id: str | None = None,
+        top: int | None = None,
+        cursor: str | None = None,
+    ) -> ListPullRequestsResponse:
+        repo_identifier = _normalize_azure_devops_repo_identifier(repo)
+        params: dict[str, Any] = {"api-version": "7.1"}
+        if status and status.strip():
+            params["searchCriteria.status"] = status.strip().lower()
+        if creator_id and creator_id.strip():
+            params["searchCriteria.creatorId"] = creator_id.strip()
+        if reviewer_id and reviewer_id.strip():
+            params["searchCriteria.reviewerId"] = reviewer_id.strip()
+        if top is not None:
+            params["$top"] = top
+        if cursor and cursor.strip():
+            params["continuationToken"] = cursor.strip()
+
+        with httpx.Client(timeout=self.timeout_seconds) as client:
+            response = client.get(
+                (
+                    f"{self.organization_url}/{self.project}/_apis/git/repositories/{repo_identifier}/"
+                    "pullrequests"
+                ),
+                params=params,
+                auth=("", self.pat),
+            )
+            response.raise_for_status()
+            payload = response.json()
+
+        raw_items = payload.get("value")
+        pr_items = raw_items if isinstance(raw_items, list) else []
+        normalized_items: list[PullRequestItem] = []
+        for item in pr_items:
+            if not isinstance(item, dict):
+                continue
+            created_by = item.get("createdBy") if isinstance(item.get("createdBy"), dict) else {}
+            normalized_items.append(
+                PullRequestItem(
+                    provider="azure_devops",
+                    repo=repo,
+                    pr_id=str(item.get("pullRequestId", "")).strip(),
+                    title=(str(item.get("title", "")).strip() or None),
+                    status=(str(item.get("status", "")).strip() or None),
+                    created_at=_parse_dt(item["creationDate"]) if item.get("creationDate") else None,
+                    updated_at=_parse_dt(item["creationDate"]) if item.get("creationDate") else None,
+                    created_by=(
+                        str(created_by.get("displayName") or created_by.get("uniqueName") or "").strip() or None
+                    ),
+                    url=(
+                        str(item.get("url") or item.get("remoteUrl") or "").strip()
+                        or item.get("_links", {}).get("web", {}).get("href")
+                    ),
+                    raw=item,
+                )
+            )
+        next_cursor_header = response.headers.get("x-ms-continuationtoken")
+        next_cursor_payload = payload.get("continuationToken")
+        next_cursor = str(next_cursor_header or next_cursor_payload or "").strip() or None
+        return ListPullRequestsResponse(
+            pull_requests=normalized_items,
+            next_cursor=next_cursor,
+        )
+
+
 def _normalize_azure_devops_repo_identifier(repo: str) -> str:
     normalized = unquote(repo.strip())
     if not normalized:
@@ -1328,6 +1427,34 @@ def normalize_pr_feedback_provider(provider: str) -> str:
     if normalized in {"azure_devops", "azure-devops"}:
         return "azure_devops"
     return normalized
+
+
+class PrQueryService:
+    def __init__(self, *, providers: dict[str, PrQueryProvider]) -> None:
+        self.providers = providers
+
+    def list_pull_requests(
+        self,
+        *,
+        provider: str,
+        repo: str,
+        status: str | None = None,
+        creator_id: str | None = None,
+        reviewer_id: str | None = None,
+        top: int | None = None,
+        cursor: str | None = None,
+    ) -> ListPullRequestsResponse:
+        provider_name = normalize_pr_feedback_provider(provider)
+        if provider_name not in self.providers:
+            raise ValueError(f"PR query provider {provider_name!r} is not configured for this gateway instance")
+        return self.providers[provider_name].list_pull_requests(
+            repo=repo,
+            status=status,
+            creator_id=creator_id,
+            reviewer_id=reviewer_id,
+            top=top,
+            cursor=cursor,
+        )
 
 
 class PrReplyService:

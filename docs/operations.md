@@ -460,6 +460,9 @@ without exposing provider credentials in the VM.
 2. Unread fetch when pending is true:
    - `list_unread_feedback(session_id, last_read_cursor, limit)` (set `limit=1` for strict one-comment handling)
    - `list_all_feedback(session_id, limit)` when you need full PR comment history, including already-read items
+   - `list_pull_requests(session_id, provider, repo, status?, creator_id?, reviewer_id?, top?, cursor?)`
+     to enumerate PRs directly from the provider; `status` is forwarded to provider status criteria
+     (Azure DevOps uses `searchCriteria.status`), and pagination resumes with `next_cursor`.
 3. Post threaded replies (when needed):
    - `post_pr_feedback_reply(session_id, provider, repo, pr_id, body_text, thread_id/comment_id, idempotency_key)`
 4. Cursor advancement:
