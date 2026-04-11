@@ -23,6 +23,8 @@ from .admin_service import AdminService
 from .config import GatewayConfig
 from .email.http_utils import ProviderRequestError
 from .models import (
+    AdoBacklogCreateRequest,
+    AdoBacklogCreateResponse,
     AuditEvent,
     DiscordCommandEnvelope,
     HasPendingDiscordMessagesRequest,
@@ -443,6 +445,83 @@ def create_server(context: RuntimeContext) -> FastMCP:
             audit_failure(
                 session_id,
                 ToolName.GET_ISSUE,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
+    def create_ado_backlog_item(
+        type: str,
+        project: str,
+        iteration: str,
+        title: str,
+        description: str | None = None,
+        acceptance_criteria: str | None = None,
+        tags: list[str] | None = None,
+        assigned_user: str | None = None,
+        parent_backlog_item_id: int | str | None = None,
+        *,
+        session_id: str | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        session_id = _resolve_session_id_from_context(session_id, ctx, transport_session_map=transport_session_map)
+        args = {
+            "session_id": session_id,
+            "type": type,
+            "project": project,
+            "iteration": iteration,
+            "title": title,
+            "description": description,
+            "acceptance_criteria": acceptance_criteria,
+            "tags": tags,
+            "assigned_user": assigned_user,
+            "parent_backlog_item_id": parent_backlog_item_id,
+        }
+        try:
+            session = context.policy.require_tool(session_id, ToolName.CREATE_ADO_BACKLOG_ITEM)
+            request_model = AdoBacklogCreateRequest(
+                type=type,
+                project=project,
+                iteration=iteration,
+                title=title,
+                description=description,
+                acceptance_criteria=acceptance_criteria,
+                tags=tags or [],
+                assigned_user=assigned_user,
+                parent_backlog_item_id=parent_backlog_item_id,
+            )
+            admin_service = AdminService(context.config.runtime_dir)
+            create_method = getattr(admin_service, "create_ado_backlog_item", None)
+            if not callable(create_method):
+                raise RuntimeError("create_ado_backlog_item is not configured in AdminService")
+            result = create_method(request_model)
+            payload = (
+                result.model_dump(mode="json")
+                if isinstance(result, AdoBacklogCreateResponse)
+                else _payload_from_result(result) or {}
+            )
+            audit_success(
+                session_id,
+                ToolName.CREATE_ADO_BACKLOG_ITEM,
+                args,
+                {
+                    "created_item_id": payload.get("created_item_id"),
+                    "project": payload.get("project", request_model.project),
+                    "type": payload.get("type", request_model.type.value),
+                    "directory_path": session.directory_path,
+                },
+            )
+            return payload
+        except PolicyError as exc:
+            audit_failure(session_id, ToolName.CREATE_ADO_BACKLOG_ITEM, args, str(exc))
+            raise
+        except Exception as exc:
+            audit_failure(
+                session_id,
+                ToolName.CREATE_ADO_BACKLOG_ITEM,
                 args,
                 str(exc),
                 decision="error",
