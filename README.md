@@ -722,7 +722,30 @@ Use this when you want the guest to wake only for new review feedback and post t
    Use `list_pull_requests(session_id, provider, repo, status?, creator_id?, reviewer_id?, top?, cursor?)`
    when you need provider-backed PR discovery; `status` maps to provider status filtering (for Azure DevOps:
    `searchCriteria.status`), and pagination continues with `next_cursor`.
+   Use `get_pull_request(session_id, provider, repo, pr_id, include_reviewers?, include_commits?)`
+   to fetch one PR with normalized fields plus a provider-complete `raw` payload.
    For full thread history (including already-consumed items), call `list_all_feedback`.
+
+Example `get_pull_request` result shape (Azure DevOps):
+
+```json
+{
+  "provider": "azure_devops",
+  "repo": "repo-1",
+  "pr_id": "17",
+  "title": "Fix race",
+  "status": "active",
+  "url": "https://dev.azure.com/org/project/_git/repo-1/pullrequest/17",
+  "source_branch": "refs/heads/feature/fix-race",
+  "target_branch": "refs/heads/main",
+  "source_commit": "abc123",
+  "target_commit": "def456",
+  "created_by": "Agent",
+  "reviewers": [{"reviewer_id": "u1", "display_name": "Reviewer One", "vote": 10}],
+  "commits": [{"commit_id": "abc123", "comment": "Fix race condition"}],
+  "raw": {"pullRequestId": 17, "...": "..."}
+}
+```
 
 ### Expected timing behavior
 

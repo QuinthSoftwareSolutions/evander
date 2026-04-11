@@ -87,3 +87,77 @@ def test_pr_query_service_normalizes_provider_and_returns_payload(monkeypatch: p
 
     assert result.pull_requests == []
     assert result.next_cursor is None
+
+
+def test_azure_query_provider_get_pull_request_maps_fields_and_uses_pat_auth(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        assert request.headers["authorization"].startswith("Basic ")
+        assert request.url.params["api-version"] == "7.1"
+        assert request.url.path.endswith("/_apis/git/repositories/repo-1/pullRequests/17")
+        return httpx.Response(
+            200,
+            json={
+                "pullRequestId": 17,
+                "title": "Fix race",
+                "status": "active",
+                "sourceRefName": "refs/heads/feature/fix-race",
+                "targetRefName": "refs/heads/main",
+                "lastMergeSourceCommit": {"commitId": "abc123"},
+                "lastMergeTargetCommit": {"commitId": "def456"},
+                "createdBy": {"displayName": "Agent"},
+                "reviewers": [{"id": "u1", "displayName": "Reviewer One", "vote": 10, "isRequired": True}],
+                "_links": {"web": {"href": "https://dev.azure.com/org/proj/_git/repo-1/pullrequest/17"}},
+                "customField": {"still": "in_raw"},
+            },
+        )
+
+    patch_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    provider = AzureDevOpsPrQueryProvider(
+        organization_url="https://dev.azure.com/org",
+        project="proj",
+        pat="secret",
+    )
+
+    result = provider.get_pull_request(repo="repo-1", pr_id="17")
+
+    assert len(requests) == 1
+    assert result.pr_id == "17"
+    assert result.title == "Fix race"
+    assert result.status == "active"
+    assert result.source_branch == "refs/heads/feature/fix-race"
+    assert result.target_branch == "refs/heads/main"
+    assert result.source_commit == "abc123"
+    assert result.target_commit == "def456"
+    assert result.created_by == "Agent"
+    assert result.reviewers[0].reviewer_id == "u1"
+    assert result.raw["customField"]["still"] == "in_raw"
+
+
+def test_azure_query_provider_get_pull_request_keeps_raw_commits(monkeypatch: pytest.MonkeyPatch) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/commits"):
+            return httpx.Response(
+                200,
+                json={"value": [{"commitId": "abc123", "comment": "message", "url": "https://example/commit/abc123"}]},
+            )
+        return httpx.Response(
+            200,
+            json={"pullRequestId": 17, "title": "Fix race", "status": "active"},
+        )
+
+    patch_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    provider = AzureDevOpsPrQueryProvider(
+        organization_url="https://dev.azure.com/org",
+        project="proj",
+        pat="secret",
+    )
+
+    result = provider.get_pull_request(repo="repo-1", pr_id="17", include_commits=True)
+
+    assert result.commits[0].commit_id == "abc123"
+    assert isinstance(result.raw.get("commits"), list)

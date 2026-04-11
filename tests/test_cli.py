@@ -1595,6 +1595,7 @@ def test_attach_pr_feedback_updates_existing_session(tmp_path: Path) -> None:
         {"provider": "github", "repo": "owner/repo", "pr_id": "17"}
     ]
     assert "has_pending_feedback" in manifest["allowed_tools"]
+    assert "get_pull_request" in manifest["allowed_tools"]
     assert "list_unread_feedback" in manifest["allowed_tools"]
     assert "list_all_feedback" in manifest["allowed_tools"]
     assert "post_pr_feedback_reply" in manifest["allowed_tools"]
