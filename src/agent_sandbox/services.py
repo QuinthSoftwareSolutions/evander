@@ -18,11 +18,14 @@ from .models import (
     EmailMessage,
     HasPendingDiscordMessagesResponse,
     HasPendingFeedbackResponse,
+    GetPullRequestResponse,
     ListPullRequestsResponse,
     ListUnreadDiscordMessagesResponse,
     ListUnreadFeedbackResponse,
     PostPrFeedbackReplyResponse,
+    PullRequestCommit,
     PullRequestItem,
+    PullRequestReviewer,
     PrFeedbackItem,
     TeamsMessageEnvelope,
 )
@@ -1223,6 +1226,15 @@ class PrQueryProvider(Protocol):
         cursor: str | None = None,
     ) -> ListPullRequestsResponse: ...
 
+    def get_pull_request(
+        self,
+        *,
+        repo: str,
+        pr_id: str,
+        include_reviewers: bool | None = None,
+        include_commits: bool | None = None,
+    ) -> GetPullRequestResponse: ...
+
 
 class GitHubPrReplyProvider:
     def __init__(
@@ -1406,6 +1418,94 @@ class AzureDevOpsPrQueryProvider:
             next_cursor=next_cursor,
         )
 
+    def get_pull_request(
+        self,
+        *,
+        repo: str,
+        pr_id: str,
+        include_reviewers: bool | None = None,
+        include_commits: bool | None = None,
+    ) -> GetPullRequestResponse:
+        repo_identifier = _normalize_azure_devops_repo_identifier(repo)
+        with httpx.Client(timeout=self.timeout_seconds) as client:
+            response = client.get(
+                (
+                    f"{self.organization_url}/{self.project}/_apis/git/repositories/{repo_identifier}/"
+                    f"pullRequests/{pr_id}"
+                ),
+                params={"api-version": "7.1"},
+                auth=("", self.pat),
+            )
+            response.raise_for_status()
+            payload = response.json()
+
+            commits_payload: list[dict[str, Any]] = []
+            if include_commits:
+                commits_response = client.get(
+                    (
+                        f"{self.organization_url}/{self.project}/_apis/git/repositories/{repo_identifier}/"
+                        f"pullRequests/{pr_id}/commits"
+                    ),
+                    params={"api-version": "7.1"},
+                    auth=("", self.pat),
+                )
+                commits_response.raise_for_status()
+                commits_raw = commits_response.json()
+                raw_items = commits_raw.get("value")
+                if isinstance(raw_items, list):
+                    commits_payload = [item for item in raw_items if isinstance(item, dict)]
+
+        created_by = payload.get("createdBy") if isinstance(payload.get("createdBy"), dict) else {}
+        raw_payload = payload if isinstance(payload, dict) else {}
+        if include_commits:
+            raw_payload = {**raw_payload, "commits": commits_payload}
+
+        reviewer_items = payload.get("reviewers")
+        reviewer_payload = reviewer_items if isinstance(reviewer_items, list) else []
+        normalized_reviewers = (
+            [
+                PullRequestReviewer(
+                    reviewer_id=str(item.get("id", "")).strip() or None,
+                    display_name=str(item.get("displayName", "")).strip() or None,
+                    vote=int(item["vote"]) if isinstance(item.get("vote"), int) else None,
+                    status=str(item.get("vote", "")).strip() or None,
+                    is_required=item.get("isRequired") if isinstance(item.get("isRequired"), bool) else None,
+                )
+                for item in reviewer_payload
+                if isinstance(item, dict)
+            ]
+            if include_reviewers is not False
+            else []
+        )
+        normalized_commits = [
+            PullRequestCommit(
+                commit_id=str(item.get("commitId", "")).strip(),
+                url=str(item.get("url", "")).strip() or None,
+                comment=str(item.get("comment", "")).strip() or None,
+            )
+            for item in commits_payload
+            if str(item.get("commitId", "")).strip()
+        ]
+        return GetPullRequestResponse(
+            provider="azure_devops",
+            repo=repo,
+            pr_id=pr_id,
+            title=str(payload.get("title", "")).strip() or None,
+            status=str(payload.get("status", "")).strip() or None,
+            url=(
+                str(payload.get("url") or payload.get("remoteUrl") or "").strip()
+                or payload.get("_links", {}).get("web", {}).get("href")
+            ),
+            source_branch=str(payload.get("sourceRefName", "")).strip() or None,
+            target_branch=str(payload.get("targetRefName", "")).strip() or None,
+            source_commit=str(payload.get("lastMergeSourceCommit", {}).get("commitId", "")).strip() or None,
+            target_commit=str(payload.get("lastMergeTargetCommit", {}).get("commitId", "")).strip() or None,
+            created_by=(str(created_by.get("displayName") or created_by.get("uniqueName") or "").strip() or None),
+            reviewers=normalized_reviewers,
+            commits=normalized_commits,
+            raw=raw_payload,
+        )
+
 
 def _normalize_azure_devops_repo_identifier(repo: str) -> str:
     normalized = unquote(repo.strip())
@@ -1454,6 +1554,25 @@ class PrQueryService:
             reviewer_id=reviewer_id,
             top=top,
             cursor=cursor,
+        )
+
+    def get_pull_request(
+        self,
+        *,
+        provider: str,
+        repo: str,
+        pr_id: str,
+        include_reviewers: bool | None = None,
+        include_commits: bool | None = None,
+    ) -> GetPullRequestResponse:
+        provider_name = normalize_pr_feedback_provider(provider)
+        if provider_name not in self.providers:
+            raise ValueError(f"PR query provider {provider_name!r} is not configured for this gateway instance")
+        return self.providers[provider_name].get_pull_request(
+            repo=repo,
+            pr_id=pr_id,
+            include_reviewers=include_reviewers,
+            include_commits=include_commits,
         )
 
 

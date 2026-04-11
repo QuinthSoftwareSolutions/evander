@@ -463,6 +463,9 @@ without exposing provider credentials in the VM.
    - `list_pull_requests(session_id, provider, repo, status?, creator_id?, reviewer_id?, top?, cursor?)`
      to enumerate PRs directly from the provider; `status` is forwarded to provider status criteria
      (Azure DevOps uses `searchCriteria.status`), and pagination resumes with `next_cursor`.
+   - `get_pull_request(session_id, provider, repo, pr_id, include_reviewers?, include_commits?)`
+     to fetch a single provider PR record, map stable top-level fields (title/status/branches/commits/reviewers),
+     and preserve provider-specific details in `raw`.
 3. Post threaded replies (when needed):
    - `post_pr_feedback_reply(session_id, provider, repo, pr_id, body_text, thread_id/comment_id, idempotency_key)`
 4. Cursor advancement:
