@@ -4,9 +4,7 @@ import argparse
 import contextlib
 import logging
 import os
-import secrets
 from datetime import datetime, timezone
-from hashlib import sha256
 from inspect import Parameter, signature
 from pathlib import Path
 from typing import Any
@@ -25,6 +23,12 @@ import uvicorn
 from .bootstrap import load_runtime_gateway_config, resolve_runtime_dir
 from .admin_service import AdminService
 from .agent_prompt_store import AgentPromptRecord
+from .agent_prompt_tokens import (
+    AgentPromptTokenError,
+    hash_agent_prompt_response_token,
+    issue_agent_prompt_response_token,
+    verify_agent_prompt_response_token,
+)
 from .config import GatewayConfig
 from .email.http_utils import ProviderRequestError
 from .issue_service import IssueService
@@ -93,6 +97,16 @@ def _normalize_agent_status(state: str | None) -> str:
     if normalized in {"idle", "not_started"}:
         return "idle"
     return "unknown"
+
+
+def _load_agent_prompt_token_secret(config: GatewayConfig) -> str:
+    env_var_name = str(config.agent_prompt_token_secret_env or "").strip()
+    if not env_var_name:
+        raise ToolError("agent_prompt_token_secret_env must be configured")
+    secret = os.environ.get(env_var_name, "").strip()
+    if not secret:
+        raise ToolError(f"Agent prompt token secret is missing in environment variable {env_var_name!r}")
+    return secret
 
 
 def _issue_creation_metadata(session: Any) -> dict[str, Any]:
@@ -457,10 +471,17 @@ def create_server(context: RuntimeContext) -> FastMCP:
                     vm_user=vm_user,
                 )
 
-            issued_response_token = secrets.token_urlsafe(32)
-            issued_token_hash = sha256(issued_response_token.encode("utf-8")).hexdigest()
             now = datetime.now(timezone.utc)
             message_id = f"agent-prompt-{uuid4().hex}"
+            issued_response_token, issued_claims = issue_agent_prompt_response_token(
+                secret=_load_agent_prompt_token_secret(context.config),
+                message_id=message_id,
+                sender_session_id=request.session_id,
+                target_session_id=resolved_target_session_id,
+                issued_at=now,
+                ttl_seconds=context.config.agent_prompt_token_ttl_seconds,
+            )
+            issued_token_hash = hash_agent_prompt_response_token(issued_response_token)
             created = context.agent_prompt_store.create_prompt_message(
                 AgentPromptRecord(
                     message_id=message_id,
@@ -474,11 +495,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
                         "idempotency_key": request.idempotency_key,
                     },
                     issued_token_hash=issued_token_hash,
-                    issued_token_claims={
-                        "message_id": message_id,
-                        "sender_session_id": request.session_id,
-                        "target_session_id": resolved_target_session_id,
-                    },
+                    issued_token_claims=issued_claims,
                     status="unread",
                     created_at=now,
                     updated_at=now,
@@ -566,7 +583,19 @@ def create_server(context: RuntimeContext) -> FastMCP:
             )
             args = request.model_dump(mode="json")
             context.policy.require_tool(request.session_id, ToolName.RESPOND_TO_AGENT)
-            token_hash = sha256(request.response_token.encode("utf-8")).hexdigest()
+            message = context.agent_prompt_store.get_prompt(request.message_id)
+            if message is None:
+                raise ToolError(f"Unknown message_id: {request.message_id}")
+            claims = verify_agent_prompt_response_token(
+                token=request.response_token,
+                secret=_load_agent_prompt_token_secret(context.config),
+                expected_message_id=request.message_id,
+                expected_target_session_id=request.session_id,
+            )
+            if claims["sender_session_id"] != message.sender_session_id:
+                raise PolicyError("response_token sender_session_id claim does not match original message")
+
+            token_hash = hash_agent_prompt_response_token(request.response_token)
             consumed = context.agent_prompt_store.validate_and_consume_token(
                 token_hash,
                 expected_message_id=request.message_id,
