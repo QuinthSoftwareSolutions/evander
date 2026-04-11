@@ -47,6 +47,26 @@ class ToolName(str, Enum):
     COPILOT_HOST_AUTH = "copilot_host_auth"
 
 
+class AdoBacklogItemType(str, Enum):
+    FEATURE = "Feature"
+    USER_STORY = "User Story"
+    BUG = "Bug"
+
+    @classmethod
+    def from_raw(cls, raw_value: str) -> "AdoBacklogItemType":
+        normalized = raw_value.strip().casefold()
+        lookup = {
+            "feature": cls.FEATURE,
+            "user story": cls.USER_STORY,
+            "user_story": cls.USER_STORY,
+            "user-story": cls.USER_STORY,
+            "bug": cls.BUG,
+        }
+        if normalized not in lookup:
+            raise ValueError("type must be one of: Feature, User Story, Bug")
+        return lookup[normalized]
+
+
 class ApprovalStatus(str, Enum):
     PENDING = "pending"
     APPROVED = "approved"
@@ -486,6 +506,98 @@ class PostPrFeedbackReplyResponse(BaseModel):
     reply_id: str | None = None
     reply_url: str | None = None
     idempotency_key: str | None = None
+
+
+class AdoBacklogCreateRequest(BaseModel):
+    type: AdoBacklogItemType
+    project: str = Field(min_length=1)
+    iteration: str = Field(min_length=1)
+    title: str = Field(min_length=1)
+    description: str | None = None
+    acceptance_criteria: str | None = None
+    tags: list[str] = Field(default_factory=list)
+    assigned_user: str | None = None
+    parent_backlog_item_id: int | str | None = None
+
+    @field_validator("type", mode="before")
+    @classmethod
+    def validate_type(cls, value: AdoBacklogItemType | str) -> AdoBacklogItemType:
+        if isinstance(value, AdoBacklogItemType):
+            return value
+        return AdoBacklogItemType.from_raw(str(value))
+
+    @field_validator(
+        "project",
+        "iteration",
+        "title",
+        "description",
+        "acceptance_criteria",
+        "assigned_user",
+        mode="before",
+    )
+    @classmethod
+    def trim_string_fields(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return str(value).strip()
+
+    @field_validator("project", "iteration", "title")
+    @classmethod
+    def validate_required_strings(cls, value: str) -> str:
+        if not value:
+            raise ValueError("field cannot be empty")
+        return value
+
+    @field_validator("tags", mode="before")
+    @classmethod
+    def normalize_tags(cls, value: object) -> list[str]:
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            raise ValueError("tags must be a list of strings")
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for item in value:
+            normalized = str(item).strip()
+            if not normalized:
+                continue
+            dedupe_key = normalized.casefold()
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            deduped.append(normalized)
+        return deduped
+
+    @field_validator("parent_backlog_item_id", mode="before")
+    @classmethod
+    def normalize_parent_backlog_item_id(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        if isinstance(value, int):
+            return str(value)
+        normalized = str(value).strip()
+        if not normalized:
+            return None
+        try:
+            int(normalized)
+        except ValueError as exc:
+            raise ValueError("parent_backlog_item_id must be int-like") from exc
+        return normalized
+
+
+class AdoBacklogCreateResponse(BaseModel):
+    created_item_id: str
+    url: str
+    provider: str
+    project: str
+    type: AdoBacklogItemType
+    iteration: str
+    title: str
+    description: str | None = None
+    acceptance_criteria: str | None = None
+    tags: list[str] = Field(default_factory=list)
+    assigned_user: str | None = None
+    parent_backlog_item_id: str | None = None
 
 
 class ScheduleResumeRequest(BaseModel):
