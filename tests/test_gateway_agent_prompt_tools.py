@@ -142,6 +142,52 @@ def test_prompt_agent_rejects_cross_directory_dispatch(tmp_path: Path) -> None:
         )
 
 
+def test_agent_prompt_tools_enforce_tool_permissions(tmp_path: Path) -> None:
+    context = make_context(tmp_path)
+    context.sessions.put(
+        "sender",
+        SessionManifest(
+            session_id="sender",
+            allowed_tools=[],
+            directory_path="root/alpha",
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        ),
+    )
+    context.sessions.put(
+        "target",
+        SessionManifest(
+            session_id="target",
+            allowed_tools=[],
+            directory_path="root/alpha",
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        ),
+    )
+    server = create_server(context)
+
+    with pytest.raises(PolicyError, match="does not allow tool"):
+        call_tool(
+            server,
+            "prompt_agent",
+            {
+                "session_id": "sender",
+                "target_session_id": "target",
+                "prompt": "No permission",
+            },
+        )
+
+    with pytest.raises(PolicyError, match="does not allow tool"):
+        call_tool(
+            server,
+            "respond_to_agent",
+            {
+                "session_id": "target",
+                "message_id": "message-id",
+                "response_token": "invalid-token",
+                "response_text": "No permission",
+            },
+        )
+
+
 def test_agent_prompt_tools_redact_response_token_in_audit_logs(tmp_path: Path) -> None:
     context = make_context(tmp_path)
     context.sessions.put(

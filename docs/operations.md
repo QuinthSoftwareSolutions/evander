@@ -422,6 +422,34 @@ Example MCP call:
 }
 ```
 
+## Agent Prompt/Response Tools
+
+- Gateway tool names:
+  - `prompt_agent`
+  - `respond_to_agent`
+- Policy gating:
+  - A session must include `prompt_agent` in `allowed_tools` to dispatch a prompt.
+  - A session must include `respond_to_agent` in `allowed_tools` to answer one.
+- Scope enforcement:
+  - Dispatch is directory-scoped. The target session must be in the caller's effective
+    directory scope or the gateway denies the request.
+- Response token semantics:
+  - `prompt_agent` returns a signed `response_token` bound to the issued `message_id` and
+    `target_session_id`.
+  - Token signing secret is loaded from the env var named by
+    `agent_prompt_token_secret_env`.
+  - Token validity is bounded by `agent_prompt_token_ttl_seconds`.
+  - `respond_to_agent` consumes the token one time; replay attempts are denied.
+  - Tampered/invalid/expired tokens are denied.
+- CLI defaults and overrides:
+  - `agent-sandbox-cli create-session` includes both tools by default.
+  - Use `agent-sandbox-cli add-tool-permission` / `revoke-tool-permission` to grant or remove
+    either tool per session.
+- Least-privilege guidance:
+  - Grant `prompt_agent` only to dispatcher sessions.
+  - Grant `respond_to_agent` only to responder sessions.
+  - Keep `directory_path` boundaries narrow so prompt routing cannot cross unrelated teams.
+
 ### Required provider config and environment
 
 - Configure Azure DevOps work-item connectivity in effective provider config:

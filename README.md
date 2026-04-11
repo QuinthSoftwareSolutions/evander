@@ -696,6 +696,29 @@ Response:
 - Requests for VMs outside the caller's directory scope are rejected at the gateway boundary with a
   scope-specific error.
 
+## Agent Prompt Tools (`prompt_agent` / `respond_to_agent`)
+
+- `prompt_agent` lets one session send a bounded prompt payload to another session in the **same
+  directory scope**.
+- `respond_to_agent` lets the target session post a response back exactly once.
+- Both tools are policy-gated by `allowed_tools` and are included in default session creation via
+  `agent-sandbox-cli create-session`. You can also grant/revoke them explicitly with:
+  - `agent-sandbox-cli add-tool-permission <target> prompt_agent`
+  - `agent-sandbox-cli add-tool-permission <target> respond_to_agent`
+  - `agent-sandbox-cli revoke-tool-permission <target> prompt_agent`
+  - `agent-sandbox-cli revoke-tool-permission <target> respond_to_agent`
+- Response token semantics:
+  - `prompt_agent` issues a signed `response_token` that is bound to the prompt message and target
+    session.
+  - Tokens are time-limited (`agent_prompt_token_ttl_seconds`) and secret-signed using the host
+    env var named by `agent_prompt_token_secret_env`.
+  - `respond_to_agent` consumes the token once; replay attempts are rejected.
+  - Invalid/tampered/expired tokens are rejected.
+- Least-privilege guidance:
+  - grant `prompt_agent` only to sessions that need to dispatch work;
+  - grant `respond_to_agent` only to sessions that need to answer prompts;
+  - avoid broad cross-team sharing by keeping sessions in narrow `directory_path` scopes.
+
 ## Relay Environment Configuration
 
 - `OPENAI_API_KEY` is required on the host for `agent-sandbox-openai-relay`.

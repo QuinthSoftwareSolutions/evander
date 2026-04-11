@@ -1621,6 +1621,8 @@ def create_session(
             ToolName.EMAIL_CREATE_DRAFT,
             ToolName.APPROVAL_SUBMIT,
             ToolName.APPROVAL_CHECK,
+            ToolName.PROMPT_AGENT,
+            ToolName.RESPOND_TO_AGENT,
             ToolName.HAS_PENDING_FEEDBACK,
             ToolName.LIST_PULL_REQUESTS,
             ToolName.GET_PULL_REQUEST,
