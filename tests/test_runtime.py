@@ -12,6 +12,7 @@ from agent_sandbox.models import SessionManifest, ToolName
 from agent_sandbox.runtime import _resolve_allowed_discord_channel_ids, build_runtime
 from agent_sandbox.services import (
     AzureDevOpsPrReplyProvider,
+    AzureDevOpsPrQueryProvider,
     AzureDevOpsPrPublishProvider,
     DiscordBotApiService,
     GraphTeamsService,
@@ -490,6 +491,44 @@ def test_runtime_pr_publish_service_for_session_uses_directory_provider_override
     assert isinstance(github_provider, GitHubPrPublishProvider)
     assert github_provider.token == "gh-token"
     assert isinstance(azure_provider, AzureDevOpsPrPublishProvider)
+    assert azure_provider.organization_url == "https://dev.azure.com/team-org"
+    assert azure_provider.project == "team-project"
+    assert azure_provider.pat == "ado-token"
+    assert azure_provider.timeout_seconds == 9.0
+
+
+def test_runtime_pr_query_service_for_session_uses_directory_provider_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("TEAM_ADO_PR_PAT", "ado-token")
+    config = make_config(tmp_path)
+    directories = DirectoryService(DirectoryStore(config.directories_store_path))
+    team = directories.create(parent="root", name="team")
+    write_provider_overlay(
+        config,
+        team.path,
+        {
+            "azure_devops_pr_pat_env": "TEAM_ADO_PR_PAT",
+            "azure_devops_organization_url": "https://dev.azure.com/team-org",
+            "azure_devops_project": "team-project",
+            "email_provider_timeout_seconds": 9.0,
+        },
+    )
+    runtime = build_runtime(config)
+    runtime.sessions.put(
+        "session-team",
+        SessionManifest(
+            session_id="session-team",
+            allowed_tools=[ToolName.LIST_PULL_REQUESTS],
+            directory_path=team.path,
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+
+    pr_query_service = runtime.pr_query_service_for_session("session-team")
+
+    azure_provider = pr_query_service.providers["azure_devops"]
+    assert isinstance(azure_provider, AzureDevOpsPrQueryProvider)
     assert azure_provider.organization_url == "https://dev.azure.com/team-org"
     assert azure_provider.project == "team-project"
     assert azure_provider.pat == "ado-token"

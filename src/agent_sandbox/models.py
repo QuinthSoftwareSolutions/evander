@@ -41,6 +41,8 @@ class ToolName(str, Enum):
     LIST_UNREAD_FEEDBACK = "list_unread_feedback"
     LIST_ALL_FEEDBACK = "list_all_feedback"
     POST_PR_FEEDBACK_REPLY = "post_pr_feedback_reply"
+    LIST_PULL_REQUESTS = "list_pull_requests"
+    GET_PULL_REQUEST = "get_pull_request"
     REQUEST_PR_REVIEW = "request_pr_review"
     POST_PR_COMMENT = "post_pr_comment"
     SUBMIT_PR_REVIEW = "submit_pr_review"
@@ -566,6 +568,75 @@ class PostPrFeedbackReplyResponse(BaseModel):
     reply_id: str | None = None
     reply_url: str | None = None
     idempotency_key: str | None = None
+
+
+class PullRequestItem(BaseModel):
+    provider: str
+    repo: str
+    pr_id: str
+    title: str | None = None
+    status: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    created_by: str | None = None
+    url: str | None = None
+    raw: dict[str, Any] = Field(default_factory=dict)
+
+
+class ListPullRequestsRequest(BaseModel):
+    session_id: str = Field(min_length=1)
+    provider: str = Field(min_length=1)
+    repo: str = Field(min_length=1)
+    status: str | None = None
+    creator_id: str | None = None
+    reviewer_id: str | None = None
+    top: int | None = Field(default=None, ge=1)
+    cursor: str | None = None
+
+
+class ListPullRequestsResponse(BaseModel):
+    pull_requests: list[PullRequestItem] = Field(default_factory=list)
+    next_cursor: str | None = None
+
+
+class PullRequestReviewer(BaseModel):
+    reviewer_id: str | None = None
+    display_name: str | None = None
+    vote: int | None = None
+    status: str | None = None
+    is_required: bool | None = None
+
+
+class PullRequestCommit(BaseModel):
+    commit_id: str
+    url: str | None = None
+    comment: str | None = None
+
+
+class GetPullRequestRequest(BaseModel):
+    session_id: str = Field(min_length=1)
+    provider: str = Field(min_length=1)
+    repo: str = Field(min_length=1)
+    pr_id: str = Field(min_length=1)
+    include_reviewers: bool | None = None
+    include_commits: bool | None = None
+
+
+class GetPullRequestResponse(BaseModel):
+    provider: str
+    repo: str
+    pr_id: str
+    title: str | None = None
+    status: str | None = None
+    url: str | None = None
+    source_branch: str | None = None
+    target_branch: str | None = None
+    source_commit: str | None = None
+    target_commit: str | None = None
+    created_by: str | None = None
+    reviewers: list[PullRequestReviewer] = Field(default_factory=list)
+    commits: list[PullRequestCommit] = Field(default_factory=list)
+    raw: dict[str, Any] = Field(default_factory=dict)
 
 
 class AdoBacklogCreateRequest(BaseModel):

@@ -1622,6 +1622,8 @@ def create_session(
             ToolName.APPROVAL_SUBMIT,
             ToolName.APPROVAL_CHECK,
             ToolName.HAS_PENDING_FEEDBACK,
+            ToolName.LIST_PULL_REQUESTS,
+            ToolName.GET_PULL_REQUEST,
             ToolName.LIST_UNREAD_FEEDBACK,
             ToolName.LIST_ALL_FEEDBACK,
             ToolName.POST_PR_FEEDBACK_REPLY,
@@ -2855,6 +2857,8 @@ def attach_pr_feedback(
 
     for tool in (
         ToolName.HAS_PENDING_FEEDBACK,
+        ToolName.LIST_PULL_REQUESTS,
+        ToolName.GET_PULL_REQUEST,
         ToolName.LIST_UNREAD_FEEDBACK,
         ToolName.LIST_ALL_FEEDBACK,
         ToolName.POST_PR_FEEDBACK_REPLY,

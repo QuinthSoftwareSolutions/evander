@@ -69,6 +69,8 @@ class PolicyEngine:
             raise PolicyError(f"Tool {tool_name.value} requires a session with a VM binding")
         if tool_name in {
             ToolName.HAS_PENDING_FEEDBACK,
+            ToolName.LIST_PULL_REQUESTS,
+            ToolName.GET_PULL_REQUEST,
             ToolName.LIST_UNREAD_FEEDBACK,
             ToolName.LIST_ALL_FEEDBACK,
             ToolName.POST_PR_COMMENT,

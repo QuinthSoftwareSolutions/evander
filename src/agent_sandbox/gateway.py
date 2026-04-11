@@ -28,9 +28,11 @@ from .models import (
     AdoBacklogCreateResponse,
     AuditEvent,
     DiscordCommandEnvelope,
+    GetPullRequestRequest,
     HasPendingDiscordMessagesRequest,
     HasPendingFeedbackRequest,
     ListUnreadDiscordMessagesRequest,
+    ListPullRequestsRequest,
     ListUnreadFeedbackRequest,
     PostPrCommentRequest,
     PostPrFeedbackReplyRequest,
@@ -1011,6 +1013,145 @@ def create_server(context: RuntimeContext) -> FastMCP:
             audit_failure(
                 resolved_session_id,
                 ToolName.GET_AGENT_LOGS,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
+    def list_pull_requests(
+        session_id: str,
+        provider: str,
+        repo: str,
+        status: str | None = None,
+        creator_id: str | None = None,
+        reviewer_id: str | None = None,
+        top: int | None = None,
+        cursor: str | None = None,
+    ) -> dict[str, Any]:
+        request = ListPullRequestsRequest(
+            session_id=session_id.strip(),
+            provider=normalize_pr_feedback_provider(provider),
+            repo=repo.strip(),
+            status=status.strip() if isinstance(status, str) else None,
+            creator_id=creator_id.strip() if isinstance(creator_id, str) else None,
+            reviewer_id=reviewer_id.strip() if isinstance(reviewer_id, str) else None,
+            top=top,
+            cursor=cursor.strip() if isinstance(cursor, str) else None,
+        )
+        args = request.model_dump(mode="json")
+        try:
+            session = context.policy.require_tool(request.session_id, ToolName.LIST_PULL_REQUESTS)
+            streams = context.policy.require_pr_feedback_streams(session)
+            allowlisted_repo = any(
+                stream["provider"] == request.provider and stream["repo"] == request.repo for stream in streams
+            )
+            if not allowlisted_repo:
+                raise PolicyError(
+                    f"PR repository {request.provider}:{request.repo} is not allowlisted for session "
+                    f"{request.session_id}"
+                )
+            response = context.pr_query_service_for_session(request.session_id).list_pull_requests(
+                provider=request.provider,
+                repo=request.repo,
+                status=request.status,
+                creator_id=request.creator_id,
+                reviewer_id=request.reviewer_id,
+                top=request.top,
+                cursor=request.cursor,
+            )
+            result = response.model_dump(mode="json")
+            audit_success(
+                request.session_id,
+                ToolName.LIST_PULL_REQUESTS,
+                args,
+                {"count": len(response.pull_requests), "next_cursor": response.next_cursor},
+            )
+            return result
+        except PolicyError as exc:
+            audit_failure(request.session_id, ToolName.LIST_PULL_REQUESTS, args, str(exc))
+            raise
+        except (httpx.HTTPError, ValueError) as exc:
+            audit_failure(
+                request.session_id,
+                ToolName.LIST_PULL_REQUESTS,
+                args,
+                str(exc),
+                decision="error",
+                error_class="adapter_http_error",
+            )
+            raise
+        except Exception as exc:
+            audit_failure(
+                request.session_id,
+                ToolName.LIST_PULL_REQUESTS,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
+    def get_pull_request(
+        session_id: str,
+        provider: str,
+        repo: str,
+        pr_id: str,
+        include_reviewers: bool | None = None,
+        include_commits: bool | None = None,
+    ) -> dict[str, Any]:
+        request = GetPullRequestRequest(
+            session_id=session_id.strip(),
+            provider=normalize_pr_feedback_provider(provider),
+            repo=repo.strip(),
+            pr_id=pr_id.strip(),
+            include_reviewers=include_reviewers,
+            include_commits=include_commits,
+        )
+        args = request.model_dump(mode="json")
+        try:
+            session = context.policy.require_tool(request.session_id, ToolName.GET_PULL_REQUEST)
+            context.policy.require_pr_feedback_stream(
+                session,
+                provider=request.provider,
+                repo=request.repo,
+                pr_id=request.pr_id,
+            )
+            response = context.pr_query_service_for_session(request.session_id).get_pull_request(
+                provider=request.provider,
+                repo=request.repo,
+                pr_id=request.pr_id,
+                include_reviewers=request.include_reviewers,
+                include_commits=request.include_commits,
+            )
+            result = response.model_dump(mode="json")
+            audit_success(
+                request.session_id,
+                ToolName.GET_PULL_REQUEST,
+                args,
+                {"pr_id": response.pr_id, "status": response.status},
+            )
+            return result
+        except PolicyError as exc:
+            audit_failure(request.session_id, ToolName.GET_PULL_REQUEST, args, str(exc))
+            raise
+        except (httpx.HTTPError, ValueError) as exc:
+            audit_failure(
+                request.session_id,
+                ToolName.GET_PULL_REQUEST,
+                args,
+                str(exc),
+                decision="error",
+                error_class="adapter_http_error",
+            )
+            raise
+        except Exception as exc:
+            audit_failure(
+                request.session_id,
+                ToolName.GET_PULL_REQUEST,
                 args,
                 str(exc),
                 decision="error",

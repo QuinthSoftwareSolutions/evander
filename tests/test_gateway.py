@@ -134,6 +134,93 @@ def test_create_server_registers_schedule_resume_tool(tmp_path) -> None:
     server = create_server(context)
 
     assert any(tool.name == "schedule_resume" for tool in server._tool_manager.list_tools())
+    assert any(tool.name == "list_pull_requests" for tool in server._tool_manager.list_tools())
+    assert any(tool.name == "get_pull_request" for tool in server._tool_manager.list_tools())
+
+
+def test_list_pull_requests_enforces_tool_policy_and_validation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("AZURE_DEVOPS_PR_PAT", "ado-token")
+    context = build_runtime(
+        GatewayConfig(
+            runtime_dir=tmp_path,
+            audit_log_path=tmp_path / "audit.jsonl",
+            session_store_path=tmp_path / "sessions.json",
+            approval_store_path=tmp_path / "approvals.json",
+            draft_store_path=tmp_path / "drafts.json",
+            email_store_path=tmp_path / "emails.json",
+            discord_command_store_path=tmp_path / "discord.json",
+        )
+    )
+    context.sessions.put(
+        "session-1",
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={"pr_feedback_streams": [{"provider": "azure_devops", "repo": "repo-1", "pr_id": "17"}]},
+        ),
+    )
+    server = create_server(context)
+
+    with pytest.raises(ToolError, match="Tool list_pull_requests is not allowed"):
+        asyncio.run(
+            server.call_tool(
+                "list_pull_requests",
+                {"session_id": "session-1", "provider": "azure_devops", "repo": "repo-1"},
+            )
+        )
+
+    context.sessions.put(
+        "session-1",
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[ToolName.LIST_PULL_REQUESTS],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={"pr_feedback_streams": [{"provider": "azure_devops", "repo": "repo-1", "pr_id": "17"}]},
+        ),
+    )
+    with pytest.raises(ToolError, match="greater than or equal to 1"):
+        asyncio.run(
+            server.call_tool(
+                "list_pull_requests",
+                {"session_id": "session-1", "provider": "azure_devops", "repo": "repo-1", "top": 0},
+            )
+        )
+
+
+def test_get_pull_request_enforces_tool_policy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AZURE_DEVOPS_PR_PAT", "ado-token")
+    context = build_runtime(
+        GatewayConfig(
+            runtime_dir=tmp_path,
+            audit_log_path=tmp_path / "audit.jsonl",
+            session_store_path=tmp_path / "sessions.json",
+            approval_store_path=tmp_path / "approvals.json",
+            draft_store_path=tmp_path / "drafts.json",
+            email_store_path=tmp_path / "emails.json",
+            discord_command_store_path=tmp_path / "discord.json",
+        )
+    )
+    context.sessions.put(
+        "session-1",
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={"pr_feedback_streams": [{"provider": "azure_devops", "repo": "repo-1", "pr_id": "17"}]},
+        ),
+    )
+    server = create_server(context)
+
+    with pytest.raises(ToolError, match="Tool get_pull_request is not allowed"):
+        asyncio.run(
+            server.call_tool(
+                "get_pull_request",
+                {"session_id": "session-1", "provider": "azure_devops", "repo": "repo-1", "pr_id": "17"},
+            )
+        )
 
 
 def test_schedule_resume_enforces_tool_policy_and_validates_args(tmp_path) -> None:

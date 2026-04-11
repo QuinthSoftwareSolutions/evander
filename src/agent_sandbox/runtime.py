@@ -34,6 +34,7 @@ from .review_request_service import (
 from .review_request_store import ReviewRequestStore
 from .services import (
     AzureDevOpsPrReplyProvider,
+    AzureDevOpsPrQueryProvider,
     AzureDevOpsPrPublishProvider,
     DiscordBotApiService,
     DiscordInboxService,
@@ -44,6 +45,7 @@ from .services import (
     GitHubPrPublishProvider,
     PrFeedbackService,
     PrReplyService,
+    PrQueryService,
     PrPublishService,
     StubDiscordService,
     StubTeamsService,
@@ -72,6 +74,7 @@ class RuntimeContext:
     discord_inbox_service: DiscordInboxService
     pr_feedback_service: PrFeedbackService
     pr_reply_service: PrReplyService
+    pr_query_service: PrQueryService
     pr_publish_service: PrPublishService
     review_request_service: ReviewRequestService
     sessions: JsonStore[SessionManifest]
@@ -125,6 +128,14 @@ class RuntimeContext:
         if resolved_config == self.config:
             return self.pr_publish_service
         return _build_pr_publish_service(resolved_config)
+
+    def pr_query_service_for_session(self, session_id: str) -> PrQueryService:
+        if not isinstance(self.pr_query_service, PrQueryService):
+            return self.pr_query_service
+        resolved_config = self.resolve_provider_config_for_session(session_id)
+        if resolved_config == self.config:
+            return self.pr_query_service
+        return _build_pr_query_service(resolved_config)
 
     def review_request_service_for_session(self, session_id: str) -> ReviewRequestService:
         if not isinstance(self.review_request_service, ReviewRequestService):
@@ -201,6 +212,7 @@ def build_runtime(config: GatewayConfig) -> RuntimeContext:
             ignored_feedback_store_path=config.runtime_dir / "ignored-feedback-ids.json",
         ),
         pr_reply_service=_build_pr_reply_service(root_provider_config),
+        pr_query_service=_build_pr_query_service(root_provider_config),
         pr_publish_service=_build_pr_publish_service(root_provider_config),
         review_request_service=_build_review_request_service(root_provider_config, sessions),
         sessions=sessions,
@@ -446,6 +458,19 @@ def _build_pr_publish_service(config: GatewayConfig) -> PrPublishService:
         idempotency_store_path=config.runtime_dir / "pr-publish-idempotency.json",
         ignored_feedback_store_path=config.runtime_dir / "ignored-feedback-ids.json",
     )
+
+
+def _build_pr_query_service(config: GatewayConfig) -> PrQueryService:
+    azure_pat = os.environ.get(config.azure_devops_pr_pat_env, "").strip()
+    providers = {}
+    if azure_pat:
+        providers["azure_devops"] = AzureDevOpsPrQueryProvider(
+            organization_url=config.azure_devops_organization_url,
+            project=config.azure_devops_project,
+            pat=azure_pat,
+            timeout_seconds=config.email_provider_timeout_seconds,
+        )
+    return PrQueryService(providers=providers)
 
 
 def _resolve_allowed_discord_channel_ids(
