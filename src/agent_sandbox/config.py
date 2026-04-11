@@ -74,7 +74,7 @@ class GatewayConfig(BaseModel):
     discord_operator_user_allowlist: list[str] = Field(default_factory=list)
     discord_operator_channel_allowlist: list[str] = Field(default_factory=list)
     discord_poll_operator_dms: bool = False
-    teams_backend: Literal["stub", "graph_api"] = "stub"
+    teams_backend: Literal["stub", "graph_api", "delegated_graph_api"] = "stub"
     teams_graph_access_token_env: str = Field(default="GRAPH_TEAMS_ACCESS_TOKEN", min_length=1)
     teams_graph_api_base_url: str = "https://graph.microsoft.com/v1.0"
     teams_poll_limit: int = Field(default=50, ge=1, le=100)
@@ -82,6 +82,21 @@ class GatewayConfig(BaseModel):
     teams_retry_count: int = Field(default=3, ge=0, le=10)
     teams_retry_base_backoff_seconds: float = Field(default=0.5, gt=0)
     teams_retry_max_backoff_seconds: float = Field(default=5.0, gt=0)
+    teams_delegated_identity_id: str | None = None
+    teams_delegated_client_id: str | None = None
+    teams_delegated_tenant_id: str = "organizations"
+    teams_delegated_scopes: list[str] = Field(
+        default_factory=lambda: [
+            "offline_access",
+            "https://graph.microsoft.com/ChannelMessage.Read.All",
+            "https://graph.microsoft.com/ChannelMessage.Send",
+            "https://graph.microsoft.com/Chat.ReadWrite",
+        ]
+    )
+    teams_delegated_authority_base_url: str = "https://login.microsoftonline.com"
+    teams_delegated_credential_store_path: Path = Path(
+        "/var/lib/agent-sandbox/teams-delegated-credentials.json"
+    )
     discord_inbox_routes: dict[str, list[str]] = Field(default_factory=dict)
     bind_network_cidr: IPvAnyNetwork = "192.168.250.0/24"
     gateway_url: str = "http://192.168.250.1:8000/mcp"
@@ -172,6 +187,7 @@ class GatewayConfig(BaseModel):
         "gateway_url",
         "discord_api_base_url",
         "teams_graph_api_base_url",
+        "teams_delegated_authority_base_url",
         "openai_api_base_url",
         "nuget_public_feed_base_url",
         "nuget_azure_feed_base_url",
@@ -190,6 +206,7 @@ class GatewayConfig(BaseModel):
         "gateway_url",
         "discord_api_base_url",
         "teams_graph_api_base_url",
+        "teams_delegated_authority_base_url",
         "openai_api_base_url",
         "nuget_public_feed_base_url",
         "nuget_azure_feed_base_url",
@@ -203,6 +220,46 @@ class GatewayConfig(BaseModel):
                 f"{info.field_name} must be a valid http(s) URL, got {value!r}"
             ) from exc
         return value
+
+    @field_validator("teams_delegated_identity_id", mode="before")
+    @classmethod
+    def normalize_teams_delegated_identity_id(cls, value: object) -> object:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+    @field_validator("teams_delegated_client_id", "teams_delegated_tenant_id", mode="before")
+    @classmethod
+    def normalize_teams_delegated_strings(cls, value: object) -> object:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+    @field_validator("teams_delegated_scopes", mode="before")
+    @classmethod
+    def normalize_teams_delegated_scopes(cls, value: object) -> object:
+        if value is None:
+            return value
+        if isinstance(value, str):
+            return [scope for scope in value.split(" ") if scope.strip()]
+        return value
+
+    @field_validator("teams_delegated_scopes")
+    @classmethod
+    def validate_teams_delegated_scopes(cls, value: list[str]) -> list[str]:
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for scope in value:
+            candidate = scope.strip()
+            if not candidate or candidate in seen:
+                continue
+            seen.add(candidate)
+            normalized.append(candidate)
+        if not normalized:
+            raise ValueError("teams_delegated_scopes must contain at least one scope")
+        return normalized
 
     @field_validator("bind_network_cidr", mode="before")
     @classmethod
@@ -236,6 +293,8 @@ class GatewayConfig(BaseModel):
             "email_cursor_store_path": default_runtime_dir / "email_cursors.json",
             "discord_command_store_path": default_runtime_dir / "discord_commands.json",
             "teams_message_store_path": default_runtime_dir / "teams_messages.json",
+            "teams_delegated_credential_store_path": default_runtime_dir
+            / "teams-delegated-credentials.json",
             "directories_store_path": default_runtime_dir / "directories.json",
             "pr_map_path": default_runtime_dir / "pr-map.json",
         }
@@ -262,6 +321,11 @@ class GatewayConfig(BaseModel):
                 mailbox.mailbox_id: mailbox.folder_allowlist_defaults
                 for mailbox in self.email_mailboxes
             }
+
+        if self.teams_backend == "delegated_graph_api" and not self.teams_delegated_identity_id:
+            raise ValueError("teams_backend 'delegated_graph_api' requires teams_delegated_identity_id")
+        if self.teams_backend == "delegated_graph_api" and not self.teams_delegated_client_id:
+            raise ValueError("teams_backend 'delegated_graph_api' requires teams_delegated_client_id")
 
         return self
 
@@ -437,6 +501,38 @@ class DiscordIngestWorkerGlobalConfig(BaseModel):
         return self
 
 
+class TeamsIngestWorkerGlobalConfig(BaseModel):
+    runtime_dir: Path = Path("runtime")
+    directories: list[str] = Field(default_factory=list)
+    poll_interval_seconds: float = Field(default=30.0, gt=0)
+    jitter_seconds: float = Field(default=5.0, ge=0)
+    backoff_seconds: float = Field(default=60.0, ge=0)
+    lock_path: Path | None = None
+
+    @field_validator("directories", mode="before")
+    @classmethod
+    def normalize_directories(cls, value: object) -> object:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            value = [value]
+        if not isinstance(value, (list, tuple)):
+            return value
+        normalized: list[str] = []
+        for item in value:
+            text = str(item).strip()
+            if not text:
+                continue
+            normalized.append(DirectoryPath(segments=text).as_posix())
+        return normalized
+
+    @model_validator(mode="after")
+    def apply_runtime_path_defaults(self) -> TeamsIngestWorkerGlobalConfig:
+        if self.lock_path is None:
+            self.lock_path = self.runtime_dir / "teams-ingest.lock"
+        return self
+
+
 class TriggerOrchestratorWorkerGlobalConfig(BaseModel):
     runtime_dir: Path = Path("runtime")
     poll_interval_seconds: float = Field(default=30.0, gt=0)
@@ -476,6 +572,9 @@ class TriggerOrchestratorWorkerGlobalConfig(BaseModel):
         nodes_by_id = {node.id: node for node in (*self.triggers, *self.gates, *self.effects, *self.queries)}
         node_outputs = index_declared_outputs(self.triggers, self.gates, self.effects, self.queries)
         inbound_edges = build_inbound_edge_index(self.edges)
+        outbound_edges_by_source: dict[str, list[EdgeDefinition]] = {}
+        for edge in self.edges:
+            outbound_edges_by_source.setdefault(edge.source_id, []).append(edge)
 
         missing_endpoints: list[str] = []
         self_edges: list[str] = []
@@ -499,12 +598,24 @@ class TriggerOrchestratorWorkerGlobalConfig(BaseModel):
             self_edge_list = ", ".join(self_edges)
             raise ValueError(f"Edges cannot connect a node to itself: {self_edge_list}")
 
+        reachable_node_ids = {node.id for node in self.triggers}
+        stack = [node.id for node in self.triggers]
+        while stack:
+            current = stack.pop()
+            for edge in outbound_edges_by_source.get(current, ()):
+                if edge.target_id in reachable_node_ids:
+                    continue
+                reachable_node_ids.add(edge.target_id)
+                stack.append(edge.target_id)
+
         inbound_errors: list[str] = []
         for node in self.triggers:
             inbound_count = len(inbound_edges.get(node.id, ()))
             if inbound_count != 0:
                 inbound_errors.append(f"trigger {node.id} must have 0 inbound edges, found {inbound_count}")
         for gate in self.gates:
+            if gate.id not in reachable_node_ids:
+                continue
             inbound_count = len(inbound_edges.get(gate.id, ()))
             if gate.type == "gate:filter" and inbound_count != 1:
                 inbound_errors.append(f"gate:filter {gate.id} must have exactly 1 inbound edge, found {inbound_count}")
@@ -514,11 +625,25 @@ class TriggerOrchestratorWorkerGlobalConfig(BaseModel):
                 inbound_errors.append(f"gate:merge {gate.id} must have at least 1 inbound edge, found {inbound_count}")
             elif gate.type == "gate:await-agent" and inbound_count != 1:
                 inbound_errors.append(f"gate:await-agent {gate.id} must have exactly 1 inbound edge, found {inbound_count}")
+            elif gate.type == "gate:for":
+                if inbound_count < 1:
+                    inbound_errors.append(f"gate:for {gate.id} must have at least 1 inbound edge, found {inbound_count}")
+                entry_edges = [
+                    edge for edge in inbound_edges.get(gate.id, ()) if not bool(getattr(edge, "allow_cycle", False))
+                ]
+                if len(entry_edges) != 1:
+                    inbound_errors.append(
+                        f"gate:for {gate.id} must have exactly 1 non-cyclic inbound edge, found {len(entry_edges)}"
+                    )
         for effect in self.effects:
+            if effect.id not in reachable_node_ids:
+                continue
             inbound_count = len(inbound_edges.get(effect.id, ()))
             if inbound_count != 1:
                 inbound_errors.append(f"effect {effect.id} must have exactly 1 inbound edge, found {inbound_count}")
         for query in self.queries:
+            if query.id not in reachable_node_ids:
+                continue
             inbound_count = len(inbound_edges.get(query.id, ()))
             if inbound_count != 1:
                 inbound_errors.append(f"query {query.id} must have exactly 1 inbound edge, found {inbound_count}")
@@ -526,6 +651,8 @@ class TriggerOrchestratorWorkerGlobalConfig(BaseModel):
             raise ValueError("; ".join(inbound_errors))
 
         for gate in self.gates:
+            if gate.id not in reachable_node_ids:
+                continue
             upstream_ids = [edge.source_id for edge in inbound_edges.get(gate.id, ())]
             if gate.type == "gate:filter":
                 upstream_outputs = node_outputs.get(upstream_ids[0], {})
@@ -563,6 +690,33 @@ class TriggerOrchestratorWorkerGlobalConfig(BaseModel):
                     raise ValueError(
                         f"gate:merge {gate.id} outputs must equal the compatible intersection of upstream outputs"
                     )
+            elif gate.type == "gate:for":
+                expected_outputs = effective_node_output_schema(gate)
+                if gate.outputs is None:
+                    gate.outputs = expected_outputs
+                actual_outputs = dict(gate.outputs or {})
+                if not actual_outputs:
+                    gate.outputs = expected_outputs
+                    actual_outputs = expected_outputs
+                if actual_outputs != expected_outputs:
+                    raise ValueError(f"gate:for {gate.id} outputs must match for-loop outputs")
+
+                outbound_edges = list(outbound_edges_by_source.get(gate.id, ()))
+                body_edges = [edge for edge in outbound_edges if edge.source_port == "body"]
+                done_edges = [edge for edge in outbound_edges if edge.source_port == "done"]
+                unlabeled_edges = [edge for edge in outbound_edges if edge.source_port is None]
+                invalid_ports = [
+                    edge.source_port for edge in outbound_edges if edge.source_port not in {None, "body", "done"}
+                ]
+                if len(body_edges) != 1:
+                    raise ValueError(f"gate:for {gate.id} must have exactly 1 outbound body edge")
+                if len(done_edges) != 1:
+                    raise ValueError(f"gate:for {gate.id} must have exactly 1 outbound done edge")
+                if unlabeled_edges:
+                    raise ValueError(f"gate:for {gate.id} outbound edges must declare source_port=body or source_port=done")
+                if invalid_ports:
+                    invalid = ", ".join(sorted({port for port in invalid_ports if port is not None}))
+                    raise ValueError(f"gate:for {gate.id} uses invalid source_port value(s): {invalid}")
         return self
 
     @model_validator(mode="after")

@@ -180,7 +180,7 @@ Storage layout for directory config:
 
 ## SSH Access
 
-- New VMs install `openssh-server`.
+- New VMs install `openssh-server` and `ripgrep`.
 - The launch script injects the caller's `~/.ssh/id_ed25519.pub` by default, falling back to `~/.ssh/id_rsa.pub`.
 - Override the key with `SSH_PUBLIC_KEY_FILE=/path/to/key.pub`, or point `SSH_PRIVATE_KEY_PATH` at the matching private key so the script can derive a temporary public key when needed.
 - After boot, find the guest IP with `virsh domifaddr <vm-name>` and connect with `ssh agent@<vm-ip>`.
@@ -208,6 +208,46 @@ Storage layout for directory config:
 - The bootstrap script also installs a guest `gh` shim in `~/bin/gh`. Copilot CLI uses GitHub CLI as its lowest-priority auth fallback, so the shim answers `gh auth token` by calling the host gateway at `/copilot-auth/token` with the guest session id. That keeps the long-lived GitHub token on the host while avoiding permanent guest-side token storage.
 - The bootstrap script appends `~/bin` and `COPILOT_HOME=~/.copilot` to both `~/.profile` and `~/.bashrc`.
 - Host-mediated auth reads the effective provider `github_token_env` on the host. That environment variable must contain a GitHub token that can satisfy Copilot CLI requests. Guest-side `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, `GITHUB_TOKEN`, or `copilot login` still override the host-mediated `gh` fallback if you set them intentionally.
+
+### Microsoft Teams delegated auth
+
+- Teams access is host-side and delegated. Use the host CLI device code flow to sign in, and keep
+  the resulting credential on the host only.
+- Bind each directory to the intended Teams identity through per-directory Teams identity binding
+  in directory-scoped provider config. Subdirectories inherit the binding, so different directory
+  trees can point at different Teams accounts without guest-side secrets.
+- Preferred delegated provider config keys are:
+  - `teams_backend: delegated_graph_api`
+  - `teams_delegated_identity_id`
+  - `teams_delegated_client_id`
+  - optional `teams_delegated_tenant_id`, `teams_delegated_scopes`,
+    `teams_delegated_authority_base_url`, and `teams_delegated_credential_store_path`
+  - the default delegated scope set includes channel read/send and `Chat.ReadWrite`
+- The Entra app behind `teams_delegated_client_id` must be configured for public client /
+  device-code auth. `AADSTS7000218` means the app is being treated as a confidential client and
+  the host-side delegated flow in this repo cannot complete until that registration is fixed.
+- Use the host CLI for delegated auth lifecycle:
+  - `agent-sandbox-cli teams-auth login --directory <directory-path>`
+  - `agent-sandbox-cli teams-auth status --directory <directory-path>`
+  - `agent-sandbox-cli teams-auth logout --directory <directory-path>`
+  - `agent-sandbox-cli teams-auth list`
+- After changing `teams_delegated_scopes`, repeat `teams-auth login` for that directory so the
+  stored delegated credential is refreshed with the new scopes.
+- The legacy static env-token mode remains supported for compatibility. In that mode,
+  `teams_graph_access_token_env` names the host environment variable that holds the token.
+- Do not place Teams credentials in cloud-init, session manifests, or guest shell profiles.
+- Guests never need direct Microsoft Graph credentials or internet access; Teams API access
+  happens only in the host-side gateway process, and the token must cover the Teams channels or
+  chats you intend to read and write.
+- Teams message arrival for `trigger:teams:new-message` comes from host-side ingest polling on the
+  host, using the same delegated Teams identity/configuration. That polling path is separate from
+  host-heartbeat, which remains the PR/Discord feedback wakeup loop.
+- Teams targets can be channel threads or group chats:
+  - channel targets use `team-id/channel-id`
+  - chat targets use `chat:<chat-id>`
+- The host-side Teams adapter reads channel threads from
+  `GET /teams/{team-id}/channels/{channel-id}/messages` and group chats from
+  `GET /chats/{chat-id}/messages`.
 
 ## VM Python Bootstrap
 
@@ -524,6 +564,64 @@ email_mailboxes:
     folder_allowlist_defaults: ["inbox", "drafts"]
 ```
 
+## Review Request Workflow
+
+Use this run pattern when a host-side receptionist or chat-facing agent should enqueue PR review
+work and let the trigger orchestrator start a temporary review VM.
+
+### Host-side contract
+
+- Enqueue review work with `request_pr_review(session_id, provider, repo, pr_id, ...)`.
+- Consume queued review requests with `trigger:review:new-request`.
+- Publish review output with:
+  - `post_pr_comment(...)` for top-level PR conversation comments
+  - `submit_pr_review(...)` for a summary plus optional inline findings
+
+The review-request inbox is persisted in `runtime/review-request-store.json`. Records transition
+through `pending`, `leased`, `dispatched`, `completed`, `failed`, or `cancelled`.
+
+### Recommended workflow graph
+
+1. `trigger:review:new-request`
+2. `effect:vm:create`
+3. `effect:session:update-metadata`
+4. `effect:vm:exec`
+5. `effect:agent:prompt`
+6. `gate:await-agent`
+7. `post_pr_comment` or `submit_pr_review`
+8. `effect:vm:stop`
+
+### Guest repo preparation
+
+After the VM is created and the repo is cloned, prepare the checkout explicitly instead of
+reviewing whatever the default branch clone happens to contain:
+
+```bash
+./scripts/guest/setup_review_repo.sh \
+  --repo-path /home/agent/<repo-name> \
+  --base-ref refs/heads/main \
+  --head-ref refs/heads/review/topic
+```
+
+The helper:
+
+- resolves explicit base/head refs to local refs under `refs/agent-sandbox/review/*`
+- detaches the worktree onto the head commit
+- hard-resets and cleans the worktree
+- writes `.agent-sandbox/review-context.env` for downstream prompt or shell steps
+
+### Failure handling
+
+- `request_pr_review` provider lookup failures:
+  - fail fast and do not enqueue a partial request
+  - verify host-side `GITHUB_TOKEN` or `AZURE_DEVOPS_PR_PAT`
+- Trigger/provider retries:
+  - retry leased-but-undispatched requests after lease expiry
+  - do not overload the trigger cursor with timestamp-only semantics
+- Publish retries:
+  - reuse the same `idempotency_key` when retrying `post_pr_comment` or `submit_pr_review`
+  - validate host-side provider credentials before replaying
+
 ### Microsoft Graph OAuth/token setup
 
 1. Register an application in Microsoft Entra ID and grant Microsoft Graph Mail permissions.
@@ -708,6 +806,15 @@ sudo systemctl start agent-sandbox-trigger-orchestrator.service
 sudo systemctl status agent-sandbox-trigger-orchestrator.service
 sudo journalctl -u agent-sandbox-trigger-orchestrator.service -f
 ```
+
+### Teams ingest worker
+
+- `trigger:teams:new-message` events are produced by a host-side Teams ingest worker that polls
+  Microsoft Graph on the host and writes into the Teams message store consumed by trigger
+  orchestration.
+- The ingest worker uses the same delegated Teams auth settings described above.
+- This polling path is independent from `agent-sandbox-host-heartbeat`; host-heartbeat remains the
+  feedback wakeup loop for PR/Discord resume behavior.
 
 Git hook ingestion path:
 

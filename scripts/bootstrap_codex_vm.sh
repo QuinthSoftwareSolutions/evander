@@ -133,9 +133,25 @@ CONFIG
 
 append_shell_setup() {
   local target="$1"
-  if ! grep -q 'export PATH="$HOME/bin:$PATH"' "${target}" 2>/dev/null; then
-    printf '\nexport PATH="$HOME/bin:$PATH"\n' >> "${target}"
-  fi
+  python3 - "${target}" <<'PY'
+from pathlib import Path
+import sys
+
+target = Path(sys.argv[1]).expanduser()
+target.parent.mkdir(parents=True, exist_ok=True)
+if target.exists():
+    lines = target.read_text(encoding="utf-8").splitlines()
+else:
+    lines = []
+
+filtered = [
+    line
+    for line in lines
+    if line.strip() != 'export PATH="$HOME/bin:$PATH"'
+]
+filtered.append('export PATH="$HOME/bin:$PATH"')
+target.write_text("\n".join(filtered) + "\n", encoding="utf-8")
+PY
   if ! grep -q 'relay-placeholder' "${target}" 2>/dev/null; then
     cat >> "${target}" <<PROFILE
 if [ -f /etc/agent-sandbox/session.env ]; then

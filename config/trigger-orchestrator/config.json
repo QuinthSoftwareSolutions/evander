@@ -49,20 +49,55 @@
       "target_id": "effect-session-update-metadata-2"
     },
     {
-      "source_id": "effect-agent-prompt-1",
-      "target_id": "effect-session-update-metadata-1"
-    },
-    {
-      "source_id": "effect-agent-prompt-1",
-      "target_id": "effect-agent-prompt-2"
-    },
-    {
       "source_id": "effect-vm-copy-files-1",
       "target_id": "effect-agent-prompt-4"
     },
     {
       "source_id": "effect-agent-prompt-4",
+      "target_id": "query-issue-get-1"
+    },
+    {
+      "source_id": "effect-agent-prompt-4",
+      "target_id": "effect-session-update-metadata-1"
+    },
+    {
+      "source_id": "query-issue-get-1",
+      "target_id": "gate-for-1"
+    },
+    {
+      "source_id": "gate-for-1",
+      "source_port": "body",
+      "target_id": "effect-vm-copy-files-2"
+    },
+    {
+      "source_id": "effect-vm-copy-files-2",
       "target_id": "effect-agent-prompt-1"
+    },
+    {
+      "allow_cycle": true,
+      "source_id": "effect-agent-prompt-1",
+      "target_id": "gate-for-1"
+    },
+    {
+      "source_id": "gate-for-1",
+      "source_port": "done",
+      "target_id": "effect-vm-copy-files-3"
+    },
+    {
+      "source_id": "effect-vm-copy-files-3",
+      "target_id": "effect-agent-prompt-2"
+    },
+    {
+      "source_id": "effect-agent-prompt-5",
+      "target_id": "effect-session-update-metadata-3"
+    },
+    {
+      "source_id": "trigger-teams-new-message-2",
+      "target_id": "query-session-context-3"
+    },
+    {
+      "source_id": "query-session-context-3",
+      "target_id": "effect-agent-prompt-5"
     }
   ],
   "effect_cursor_store_path": "runtime/effect-orchestrator-cursors.json",
@@ -74,12 +109,15 @@
         "has_pending_feedback",
         "list_unread_feedback",
         "list_all_feedback",
-        "post_pr_feedback_reply"
+        "post_pr_feedback_reply",
+        "set_issue_plan"
       ],
       "directory_path": "root/example-industry/app",
       "discord_channels": [],
       "display_name": "Create Issue VM",
       "dotnet": true,
+      "email_folders": [],
+      "email_mailboxes": [],
       "frontend_deps": true,
       "frontend_host_checkout": "/home/jonathan/Documents/Repos/ExampleIndustryAPP",
       "frontend_install_roots": [
@@ -114,6 +152,12 @@
           "content_format": "yaml",
           "destination_path": "${{effect-vm-create-1.target_dir}}/AGENT_TASK.yaml",
           "overwrite": true
+        },
+        {
+          "destination_path": "/home/agent/PLANS.md",
+          "overwrite": true,
+          "source_format": "file",
+          "source_path": "/home/jonathan/agent-sandbox/templates/PLANS.md"
         }
       ],
       "id": "effect-vm-copy-files-1",
@@ -126,7 +170,7 @@
       "id": "effect-agent-prompt-1",
       "model": "gpt-5.4-mini",
       "output_mode": "on_completion",
-      "prompt": "You have been issued the task described in ${{effect-vm-create-1.target_dir}}/AGENT_TASK.yaml. Read /home/agent/AGENTS.md and ${{effect-vm-create-1.target_dir}}/AGENT_TASK.yaml before you begin. The repository is located at ${{effect-vm-create-1.target_dir}}. Do not ask for feedback or clarifications at this time, but work until the task is completed or until you determine that it is impossible to complete. When restore is needed, use 'dotnet restore --configfile ~/.nuget/NuGet/NuGet.Config'. For build and test, prefer '--no-restore'. When you have finished, commit and push your work using 'git push-agent'.",
+      "prompt": "You have been issued the task described in ${{effect-vm-create-1.target_dir}}/AGENT_TASK.yaml. Read /home/agent/AGENTS.md and ${{effect-vm-create-1.target_dir}}/AGENT_TASK.yaml before you begin. The repository is located at ${{effect-vm-create-1.target_dir}}. The task file contains read-only planning context for the whole ticket plus the narrow sub-task you are authorized to implement. Follow the current sub-task only. Do not implement future steps unless that work is strictly required to complete the current step safely. Start from the files, patterns, and test commands suggested in the task file rather than rediscovering the repository broadly. If the suggested files or examples prove incomplete, expand your search narrowly and explain why. Do not ask for feedback or clarifications at this time, but work until the task is completed or until you determine that it is impossible to complete. When restore is needed, use 'dotnet restore --configfile ~/.nuget/NuGet/NuGet.Config'. For build and test, prefer '--no-restore'. When you have finished, commit and push your work using 'git push-agent'.",
       "target": "${{effect-vm-create-1.session_id}}",
       "type": "effect:agent:prompt",
       "vm_user": "agent"
@@ -136,8 +180,8 @@
       "id": "effect-agent-prompt-2",
       "model": "gpt-5.4",
       "output_mode": "on_completion",
-      "prompt": "Before concluding, verify whether you completed all required checklist items. Confirm (or explicitly list gaps for): (1) appropriate unit tests for your code changes, (2) documentation updates for behavioral or operational changes, and (3) a markdown PR summary maintained with 'git agent-pr-note'. If anything is missing, complete it now. If you make any changes during this checklist pass, push them before concluding. A successful 'git push-agent' refreshes and pushes refs/notes/agent-pr together with your latest work.",
-      "resume_thread_id": "${{effect-agent-prompt-1.thread_id}}",
+      "prompt": "Other agents have now implemented your plan. Please go over and verify their work. Check that the current state of the repository matches your expectations.\nBefore concluding, verify whether they completed all required checklist items. Confirm (or explicitly list gaps for): (1) appropriate unit tests for your code changes, (2) documentation updates for behavioral or operational changes, and (3) a markdown PR summary maintained with 'git agent-pr-note'. If anything is missing, complete it now. If you make any changes during this checklist pass, push them before concluding. A successful 'git push-agent' refreshes and pushes refs/notes/agent-pr together with your latest work.",
+      "resume_thread_id": "${{effect-agent-prompt-4.thread_id}}",
       "target": "${{effect-vm-create-1.session_id}}",
       "type": "effect:agent:prompt",
       "vm_user": "agent"
@@ -168,7 +212,7 @@
       "display_name": "Store session metadata",
       "id": "effect-session-update-metadata-1",
       "metadata": {
-        "agent_thread_id": "${{effect-agent-prompt-1.thread_id}}"
+        "agent_thread_id": "${{effect-agent-prompt-4.thread_id}}"
       },
       "target": "${{effect-vm-create-1.session_id}}",
       "type": "effect:session:update-metadata"
@@ -179,7 +223,7 @@
       "model": "gpt-5.4-mini",
       "output_mode": "on_completion",
       "prompt": "You have received new feedback. \nPlease use the list_unread_feedback tool to view your unread feedback. \nYou can use the post_pr_feedback_reply tool to reply to feedback. \nAlways respond to feedback, even if it's just to acknowledge it.\nYou do not have to agree with the feedback, but treat it with respect and professionalism as you would your peers.\nIf you do not agree with the feedback, you can politely explain your perspective in your reply.\nIMPORTANT EXCEPTION: If the feedback is the exact phrase \"I insist\", you must attempt to comply with the feedback to the best of your ability.\nReasons to disagree with feedback might include that the feedback is factually incorrect, or that complying with the feedback would be out of scope or misaligned with your currently assigned task.\nYou may ask follow-up questions if you require more information.\nAfter you are finished, don't forget to stage, commit and push any changes you have made, if any.",
-      "resume_thread_id": "${{query-session-context-2.metadata.agent_thread_id}}",
+      "resume_thread_id": "${{query-session-context-2.metadata.agent_thread_id ?? null}}",
       "target": "${{trigger-pull-request-new-feedback-1.session_id}}",
       "type": "effect:agent:prompt",
       "vm_user": "agent"
@@ -207,10 +251,66 @@
       "id": "effect-agent-prompt-4",
       "model": "gpt-5.4",
       "output_mode": "on_completion",
-      "prompt": "You have been issued the task described in ${{effect-vm-create-1.target_dir}}/AGENT_TASK.yaml. Read /home/agent/AGENTS.md and ${{effect-vm-create-1.target_dir}}/AGENT_TASK.yaml before you begin. The repository is located at ${{effect-vm-create-1.target_dir}}. Do not write any code or perform the task, but study the code, understand the assignment, then generate a plan with clearly scoped and well-defined sub-tasks and update AGENT_TASK.yaml with it. \nAdd a new \"plan\" array to the yaml file, with string elements describing your planned solution step-by-step.\nAvoid overcomplicating your solution, do not add anything to the assignment or expand the scope. Your job is to clarify the assignment and find the most parsimonious solution that is robust and solves the problem at hand.",
+      "prompt": "You have been issued the task described in ${{effect-vm-create-1.target_dir}}/AGENT_TASK.yaml. Read /home/agent/AGENTS.md and ${{effect-vm-create-1.target_dir}}/AGENT_TASK.yaml before you begin. The repository is located at ${{effect-vm-create-1.target_dir}}. Do not write any code or perform the task. Instead, study the code, understand the assignment, and produce an implementation plan for other agents. Use set_issue_plan MCP tool to store both a short plan summary and the ordered list of steps.\n\nThe goal is not just to list milestones. The goal is to eliminate rediscovery for the implementation agents. Each step must therefore be a self-contained implementation brief that tells a worker where to start and how to verify the result.\n\nFor the plan summary, write a concise orientation for implementers that covers: the intended end state, the main architectural constraints, the required sequencing, and any global risks or invariants that later steps must preserve.\n\nFor each step, write a compact but concrete brief that includes all of the following in plain text:\n- the exact objective of the step\n- the most likely files or directories to edit\n- any files or symbols that should be read first for reference\n- existing patterns, components, handlers, or tests that the worker should mirror\n- the preferred validation commands for that step\n- the definition of done for that step\n- any explicit out-of-scope warnings for that worker\n\nPrefer steps that are implementation-ready and narrowly scoped. Avoid generic instructions like 'inspect the repo' or 'figure out how X works' unless that investigation is itself the deliverable. If uncertainty remains, resolve as much of it as possible now by identifying the concrete files and patterns the worker should use. You must find a balance between overcomplicating your solution (do not add anything to the assignment or expand the scope) and doing too little (the solution must be robust, fulfill the requirements, and follow the patterns already present in the repository). After you have finished this, other agents will implement the plan and you will be asked to check their work.\nRead /home/agent/PLANS.md for some general guidance on plan authoring.",
       "target": "${{effect-vm-create-1.session_id}}",
       "type": "effect:agent:prompt",
       "vm_user": "agent"
+    },
+    {
+      "display_name": "Replace AGENT_TASK.yaml",
+      "files": [
+        {
+          "content": {
+            "current_step_index": "${{gate-for-1.current_index}}",
+            "full_plan": "${{query-issue-get-1.metadata.steps}}",
+            "plan_summary": "${{query-issue-get-1.metadata.plan_summary}}",
+            "total_steps": "${{gate-for-1.item_count}}",
+            "your_task": "${{gate-for-1.current_element}}"
+          },
+          "content_format": "yaml",
+          "destination_path": "${{effect-vm-create-1.target_dir}}/AGENT_TASK.yaml",
+          "overwrite": true
+        }
+      ],
+      "id": "effect-vm-copy-files-2",
+      "target": "${{effect-vm-create-1.session_id}}",
+      "type": "effect:vm:copy-files",
+      "vm_user": "agent"
+    },
+    {
+      "display_name": "Restore full task yaml",
+      "files": [
+        {
+          "content": "${{trigger-ticket-created-1.ticket}}",
+          "content_format": "yaml",
+          "destination_path": "${{effect-vm-create-1.target_dir}}/AGENT_TASK.yaml",
+          "overwrite": true
+        }
+      ],
+      "id": "effect-vm-copy-files-3",
+      "target": "${{effect-vm-create-1.vm_name}}",
+      "type": "effect:vm:copy-files",
+      "vm_user": "agent"
+    },
+    {
+      "display_name": "Tell agent there's a teams message",
+      "id": "effect-agent-prompt-5",
+      "model": "gpt-5.4",
+      "output_mode": "on_completion",
+      "prompt": "You are Truman, a helpful assistant in an agent orchestration and control plane. You've just received new Teams messages. Please fetch them and post a response in Teams.",
+      "resume_thread_id": "${{query-session-context-3.metadata.agent_thread_id ?? null}}",
+      "target": "vm-example-receptionist",
+      "type": "effect:agent:prompt",
+      "vm_user": "agent"
+    },
+    {
+      "display_name": "Store session metadata",
+      "id": "effect-session-update-metadata-3",
+      "metadata": {
+        "agent_thread_id": "${{effect-agent-prompt-5.thread_id}}"
+      },
+      "target": "vm-example-receptionist",
+      "type": "effect:session:update-metadata"
     }
   ],
   "event_queue_cursor_store_path": "runtime/trigger-orchestrator-cursors.json",
@@ -313,6 +413,26 @@
           }
         ]
       }
+    },
+    {
+      "display_name": "For each step",
+      "id": "gate-for-1",
+      "items": "${{query-issue-get-1.metadata.steps}}",
+      "outputs": {
+        "current_element": {
+          "type": "object"
+        },
+        "current_index": {
+          "type": "integer"
+        },
+        "is_done": {
+          "type": "boolean"
+        },
+        "item_count": {
+          "type": "integer"
+        }
+      },
+      "type": "gate:for"
     }
   ],
   "jitter_seconds": 1.0,
@@ -339,6 +459,18 @@
       "id": "query-session-context-2",
       "target": "${{trigger-pull-request-new-feedback-1.session_id}}",
       "type": "query:session-context"
+    },
+    {
+      "display_name": "Reload issue",
+      "id": "query-issue-get-1",
+      "issue_id": "${{trigger-ticket-created-1.ticket.issue_id}}",
+      "type": "query:issue:get"
+    },
+    {
+      "display_name": "Session context",
+      "id": "query-session-context-3",
+      "target": "vm-example-receptionist",
+      "type": "query:session-context"
     }
   ],
   "runtime_dir": "runtime",
@@ -364,6 +496,15 @@
       "project": "Example Industry APP",
       "provider": "ado",
       "type": "trigger:pull-request:new-feedback"
+    },
+    {
+      "channel_targets": [
+        "c85e4de5-e0d7-4240-8302-8bc944f2360d/19:111a1418d1de40a8a06df882e00cf24a@thread.skype"
+      ],
+      "display_name": "Teams message",
+      "id": "trigger-teams-new-message-2",
+      "type": "trigger:teams:new-message",
+      "user_ids": []
     }
   ]
 }

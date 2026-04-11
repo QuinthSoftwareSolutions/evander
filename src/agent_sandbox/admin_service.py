@@ -14,9 +14,11 @@ import time
 import fcntl
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
+from urllib.parse import quote
 
+import httpx
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 import yaml
 
@@ -28,6 +30,7 @@ from .config import (
     GatewayConfig,
     HostHeartbeatWorkerGlobalConfig,
     IssueOrchestratorWorkerGlobalConfig,
+    TeamsIngestWorkerGlobalConfig,
     TriggerOrchestratorWorkerGlobalConfig,
 )
 from .directory_admin import DirectoryAdminService
@@ -66,6 +69,13 @@ from .models import (
 )
 from .runtime import RuntimeContext, build_runtime
 from .storage import JsonStore
+from .teams_auth import (
+    DeviceCodeLoginSession,
+    JsonTeamsIdentityCredentialStore,
+    MicrosoftDeviceCodeAuthConfig,
+    TeamsAuthCredentials,
+    TeamsDeviceCodeTokenProvider,
+)
 from .events.models import (
     EdgeDefinition,
     EffectDefinitionDiscriminated,
@@ -79,6 +89,7 @@ from .workflow_graph import build_inbound_edge_index, merge_declared_output_inte
 _WORKER_DEFINITIONS: tuple[tuple[str, str, str], ...] = (
     ("ado", "ADO Worker", "agent-sandbox-ado-worker.service"),
     ("discord-ingest", "Discord Ingest Worker", "agent-sandbox-discord-ingest.service"),
+    ("teams-ingest", "Teams Ingest Worker", "agent-sandbox-teams-ingest.service"),
     ("host-heartbeat", "Host Heartbeat Worker", "agent-sandbox-host-heartbeat.service"),
     ("issue-orchestrator", "Issue Orchestrator Worker", "agent-sandbox-issue-orchestrator.service"),
     ("effect-orchestrator", "Effect Orchestrator Worker", "agent-sandbox-effect-orchestrator.service"),
@@ -88,6 +99,7 @@ _WORKER_DEFINITIONS: tuple[tuple[str, str, str], ...] = (
 _WORKER_GLOBAL_CONFIG_PATHS: dict[str, str] = {
     "ado": "config/ado-worker/config.json",
     "discord-ingest": "config/discord-ingest/config.json",
+    "teams-ingest": "config/teams-ingest/config.json",
     "host-heartbeat": "config/host-heartbeat/config.json",
     "issue-orchestrator": "config/issue-orchestrator/config.json",
     "effect-orchestrator": "config/trigger-orchestrator/config.json",
@@ -97,6 +109,7 @@ _WORKER_GLOBAL_CONFIG_PATHS: dict[str, str] = {
 _WORKER_GLOBAL_CONFIG_MODELS: dict[str, type[BaseModel]] = {
     "ado": AdoWorkerGlobalConfig,
     "discord-ingest": DiscordIngestWorkerGlobalConfig,
+    "teams-ingest": TeamsIngestWorkerGlobalConfig,
     "host-heartbeat": HostHeartbeatWorkerGlobalConfig,
     "issue-orchestrator": IssueOrchestratorWorkerGlobalConfig,
     "effect-orchestrator": TriggerOrchestratorWorkerGlobalConfig,
@@ -321,11 +334,19 @@ class WorkflowEditorFieldDefinition(BaseModel):
     item_fields: list["WorkflowEditorFieldDefinition"] = Field(default_factory=list)
 
 
+class WorkflowEditorNodePortDefinition(BaseModel):
+    key: str
+    label: str
+    description: str | None = None
+
+
 class WorkflowEditorNodeCatalogEntry(BaseModel):
     kind: str
     type: str
     label: str
     fields: list[WorkflowEditorFieldDefinition] = Field(default_factory=list)
+    input_ports: list[WorkflowEditorNodePortDefinition] = Field(default_factory=list)
+    output_ports: list[WorkflowEditorNodePortDefinition] = Field(default_factory=list)
 
 
 class WorkflowEditorCatalogPayload(BaseModel):
@@ -372,8 +393,31 @@ def _guest_agent_pr_note_helper_b64(project_dir: Path) -> str:
     return base64.b64encode(helper_path.read_bytes()).decode("ascii")
 
 
+def _strip_default_edge_fields(payload: dict[str, object]) -> dict[str, object]:
+    edges = payload.get("edges")
+    if not isinstance(edges, list):
+        return payload
+    normalized_edges: list[object] = []
+    for entry in edges:
+        if not isinstance(entry, dict):
+            normalized_edges.append(entry)
+            continue
+        normalized = dict(entry)
+        if normalized.get("source_port") is None:
+            normalized.pop("source_port", None)
+        if normalized.get("allow_cycle") is False:
+            normalized.pop("allow_cycle", None)
+        normalized_edges.append(normalized)
+    payload["edges"] = normalized_edges
+    return payload
+
+
 def _field_option(value: str, label: str | None = None) -> WorkflowEditorFieldOption:
     return WorkflowEditorFieldOption(value=value, label=label or value)
+
+
+def _port(key: str, label: str, *, description: str | None = None) -> WorkflowEditorNodePortDefinition:
+    return WorkflowEditorNodePortDefinition(key=key, label=label, description=description)
 
 
 def _field(
@@ -442,6 +486,15 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
     ),
     WorkflowEditorNodeCatalogEntry(
         kind="trigger",
+        type="trigger:teams:new-message",
+        label="Teams message",
+        fields=[
+            _field("channel_targets", "Channel targets", "string_list", required=True, placeholder="team-id/channel-id or chat:<chat-id>"),
+            _field("user_ids", "User IDs", "string_list"),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="trigger",
         type="trigger:email:new-message",
         label="Email message",
         fields=[
@@ -472,6 +525,12 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("organization_url", "Organization URL", "string"),
             _field("project", "Project", "string"),
         ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="trigger",
+        type="trigger:review:new-request",
+        label="Review request",
+        fields=[],
     ),
     WorkflowEditorNodeCatalogEntry(
         kind="trigger",
@@ -575,6 +634,32 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 read_only=True,
                 description="Derived from agent completion events.",
             ),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="gate",
+        type="gate:for",
+        label="For",
+        fields=[
+            _field(
+                "items",
+                "Items",
+                "json",
+                required=True,
+                bindable=True,
+                description="Array expression to iterate. The body branch receives current_element/current_index outputs.",
+            ),
+            _field(
+                "outputs",
+                "Outputs",
+                "json",
+                read_only=True,
+                description="Derived from for-loop runtime outputs.",
+            ),
+        ],
+        output_ports=[
+            _port("body", "Body", description="Loop body path while items remain."),
+            _port("done", "Done", description="Exit path after the final item."),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(
@@ -717,6 +802,20 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
     ),
     WorkflowEditorNodeCatalogEntry(
         kind="effect",
+        type="effect:vm:delete-files",
+        label="VM delete files",
+        fields=[
+            _field("target", "Target", "string", bindable=True),
+            _field("session_id", "Session ID", "string", bindable=True),
+            _field("vm_name", "VM name", "string", bindable=True),
+            _field("vm_user", "VM user", "string", bindable=True),
+            _field("paths", "Paths", "string_list", required=True, description="Absolute guest paths to delete."),
+            _field("recursive", "Recursive", "boolean", bindable=True),
+            _field("missing_ok", "Ignore missing", "boolean", bindable=True),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="effect",
         type="effect:issue:update-state",
         label="Issue update state",
         fields=[
@@ -796,6 +895,14 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("target", "Target", "string", bindable=True),
             _field("session_id", "Session ID", "string", bindable=True),
             _field("vm_name", "VM name", "string", bindable=True),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="query",
+        type="query:issue:get",
+        label="Issue get",
+        fields=[
+            _field("issue_id", "Issue ID", "string", required=True, bindable=True),
         ],
     ),
 )
@@ -1271,6 +1378,34 @@ def _default_base_branch_for_repo(repo_path: str) -> str | None:
             value = value[len("origin/") :]
         return value or None
     return None
+
+
+def _resolve_canonical_origin_url_for_repo(repo_path: str, remote_name: str = "origin") -> str:
+    remote_result = _run_subprocess(
+        ["git", "-C", repo_path, "remote", "get-url", remote_name],
+        capture_output=True,
+        text=True,
+    )
+    remote_url = (remote_result.stdout or "").strip() if remote_result.returncode == 0 else ""
+    if not remote_url:
+        return ""
+
+    try:
+        resolved_remote = str(Path(remote_url).resolve(strict=False))
+    except OSError:
+        resolved_remote = remote_url
+
+    if "/runtime/repo-cache/" in resolved_remote and resolved_remote.endswith(".git"):
+        mirror_origin_result = _run_subprocess(
+            ["git", f"--git-dir={resolved_remote}", "remote", "get-url", "origin"],
+            capture_output=True,
+            text=True,
+        )
+        mirror_origin_url = (mirror_origin_result.stdout or "").strip() if mirror_origin_result.returncode == 0 else ""
+        if mirror_origin_url:
+            return mirror_origin_url
+
+    return remote_url
 
 
 def _prune_pr_map(path: Path, *, session_ids: set[str]) -> tuple[int, set[tuple[str, str, str]]]:
@@ -2190,6 +2325,209 @@ class AdminService:
     def directory_scoped_config_enabled(self) -> bool:
         return self.config.enable_directory_scoped_config
 
+    def _normalize_directory_reference(self, reference: str | None) -> str:
+        directory_service = DirectoryService(self.runtime.directories)
+        return directory_service.show(reference or "root").directory.path
+
+    def _teams_auth_provider_for_directory(
+        self,
+        directory_path: str | None,
+    ) -> tuple[str, GatewayConfig, str, TeamsDeviceCodeTokenProvider]:
+        normalized_directory = self._normalize_directory_reference(directory_path)
+        resolved_config = self.runtime.provider_config.resolve_for_directory(normalized_directory)
+        if resolved_config.teams_backend != "delegated_graph_api":
+            raise ValueError(
+                f"Directory '{normalized_directory}' is not configured for delegated Teams auth "
+                f"(teams_backend={resolved_config.teams_backend!r})."
+            )
+        identity_id = str(resolved_config.teams_delegated_identity_id or "").strip()
+        if not identity_id:
+            raise ValueError(
+                f"Directory '{normalized_directory}' is missing teams_delegated_identity_id."
+            )
+        client_id = str(resolved_config.teams_delegated_client_id or "").strip()
+        if not client_id:
+            raise ValueError(
+                f"Directory '{normalized_directory}' is missing teams_delegated_client_id."
+            )
+        provider = TeamsDeviceCodeTokenProvider(
+            MicrosoftDeviceCodeAuthConfig(
+                client_id=client_id,
+                tenant_id=resolved_config.teams_delegated_tenant_id,
+                scopes=resolved_config.teams_delegated_scopes,
+                authority_base_url=resolved_config.teams_delegated_authority_base_url,
+                timeout_seconds=resolved_config.teams_timeout_seconds,
+            ),
+            JsonTeamsIdentityCredentialStore(
+                resolved_config.teams_delegated_credential_store_path,
+                identity_id,
+            ),
+        )
+        return normalized_directory, resolved_config, identity_id, provider
+
+    def _teams_auth_payload(
+        self,
+        *,
+        directory_path: str,
+        config: GatewayConfig,
+        identity_id: str,
+        credentials: TeamsAuthCredentials | None,
+    ) -> dict[str, object]:
+        return {
+            "directory_path": directory_path,
+            "identity_id": identity_id,
+            "backend": config.teams_backend,
+            "authenticated": credentials is not None,
+            "status": "authenticated" if credentials is not None else "reauth-required",
+            "account_identifier": identity_id,
+            "tenant_id": config.teams_delegated_tenant_id,
+            "scopes": list(config.teams_delegated_scopes),
+            "expires_at": credentials.expires_at if credentials is not None else None,
+            "issued_at": credentials.issued_at if credentials is not None else None,
+            "store_path": str(config.teams_delegated_credential_store_path),
+        }
+
+    def teams_auth_login(self, *, directory: str = "root") -> DeviceCodeLoginSession:
+        normalized_directory, config, identity_id, provider = self._teams_auth_provider_for_directory(directory)
+        session = provider.begin_device_code_login()
+        metadata = dict(session.metadata)
+        metadata.update(
+            {
+                "directory_path": normalized_directory,
+                "identity_id": identity_id,
+                "store_path": str(config.teams_delegated_credential_store_path),
+            }
+        )
+        return session.model_copy(update={"metadata": metadata})
+
+    def teams_auth_complete_login(
+        self,
+        login_session: DeviceCodeLoginSession,
+        *,
+        directory: str = "root",
+        timeout_seconds: float | None = None,
+    ) -> dict[str, object]:
+        normalized_directory, config, identity_id, provider = self._teams_auth_provider_for_directory(directory)
+        credentials = provider.complete_device_code_login(login_session, timeout_seconds=timeout_seconds)
+        return self._teams_auth_payload(
+            directory_path=normalized_directory,
+            config=config,
+            identity_id=identity_id,
+            credentials=credentials,
+        )
+
+    def teams_auth_status(self, *, directory: str = "root") -> dict[str, object]:
+        normalized_directory, config, identity_id, provider = self._teams_auth_provider_for_directory(directory)
+        return self._teams_auth_payload(
+            directory_path=normalized_directory,
+            config=config,
+            identity_id=identity_id,
+            credentials=provider.load_credentials(),
+        )
+
+    def teams_auth_logout(self, *, directory: str = "root") -> dict[str, object]:
+        normalized_directory, config, identity_id, provider = self._teams_auth_provider_for_directory(directory)
+        provider.clear_credentials()
+        return {
+            "directory_path": normalized_directory,
+            "identity_id": identity_id,
+            "backend": config.teams_backend,
+            "status": "logged_out",
+            "authenticated": False,
+            "store_path": str(config.teams_delegated_credential_store_path),
+        }
+
+    def teams_auth_list(self) -> list[dict[str, object]]:
+        directory_service = DirectoryService(self.runtime.directories)
+        directory_paths = ["root", *[item.path for item in directory_service.list_descendants("root")]]
+        entries: list[dict[str, object]] = []
+        for directory_path in directory_paths:
+            resolved_config = self.runtime.provider_config.resolve_for_directory(directory_path)
+            if resolved_config.teams_backend != "delegated_graph_api":
+                continue
+            _, config, identity_id, provider = self._teams_auth_provider_for_directory(directory_path)
+            entries.append(
+                self._teams_auth_payload(
+                    directory_path=directory_path,
+                    config=config,
+                    identity_id=identity_id,
+                    credentials=provider.load_credentials(),
+                )
+            )
+        return entries
+
+    def teams_auth_list_channels(
+        self,
+        *,
+        directory: str = "root",
+        team_id: str,
+        channel_name: str | None = None,
+        include_all: bool = False,
+    ) -> dict[str, object]:
+        normalized_directory, config, identity_id, provider = self._teams_auth_provider_for_directory(directory)
+        normalized_team_id = str(team_id or "").strip()
+        if not normalized_team_id:
+            raise ValueError("team_id is required")
+        normalized_channel_name = str(channel_name or "").strip()
+        if not normalized_channel_name and not include_all:
+            raise ValueError("channel_name is required unless include_all=True")
+
+        channels = self._teams_graph_list_channels(config, provider, team_id=normalized_team_id)
+        matches: list[dict[str, object]] = []
+        for channel in channels:
+            display_name = str(channel.get("displayName") or "").strip()
+            if normalized_channel_name and display_name.casefold() != normalized_channel_name.casefold():
+                continue
+            channel_id = str(channel.get("id") or "").strip()
+            matches.append(
+                {
+                    "team_id": normalized_team_id,
+                    "channel_id": channel_id,
+                    "display_name": display_name,
+                    "membership_type": str(channel.get("membershipType") or "").strip() or None,
+                    "web_url": str(channel.get("webUrl") or "").strip() or None,
+                    "allowlist_entry": f"{normalized_team_id}/{channel_id}" if channel_id else None,
+                }
+            )
+
+        return {
+            "directory_path": normalized_directory,
+            "identity_id": identity_id,
+            "backend": config.teams_backend,
+            "team_id": normalized_team_id,
+            "channel_name": normalized_channel_name or None,
+            "match_count": len(matches),
+            "channels": matches if normalized_channel_name or include_all else [],
+        }
+
+    def _teams_graph_list_channels(
+        self,
+        config: GatewayConfig,
+        provider: TeamsDeviceCodeTokenProvider,
+        *,
+        team_id: str,
+    ) -> list[dict[str, Any]]:
+        encoded_team_id = quote(team_id, safe="")
+        next_url = f"{config.teams_graph_api_base_url}/teams/{encoded_team_id}/channels"
+        channels: list[dict[str, Any]] = []
+        with httpx.Client(timeout=config.teams_timeout_seconds) as client:
+            while next_url:
+                response = client.get(
+                    next_url,
+                    headers={
+                        "Authorization": f"Bearer {provider.get_bearer_token()}",
+                        "Content-Type": "application/json",
+                    },
+                )
+                response.raise_for_status()
+                payload = response.json()
+                for item in payload.get("value", []):
+                    if isinstance(item, dict):
+                        channels.append(item)
+                raw_next = payload.get("@odata.nextLink")
+                next_url = str(raw_next).strip() if raw_next else ""
+        return channels
+
     def unlock_privileged_operations(self) -> str:
         helper = self._privileged_helper
         if helper is None:
@@ -2412,12 +2750,7 @@ class AdminService:
                 (trusted_repo_result.stderr or trusted_repo_result.stdout or "").strip()
                 or f"Failed to record trusted repo path for {bare_repo_path}"
             )
-        canonical_origin_result = _run_subprocess(
-            ["git", "-C", resolved_repo_path, "remote", "get-url", "origin"],
-            capture_output=True,
-            text=True,
-        )
-        canonical_origin_url = (canonical_origin_result.stdout or "").strip() if canonical_origin_result.returncode == 0 else ""
+        canonical_origin_url = _resolve_canonical_origin_url_for_repo(resolved_repo_path)
         if canonical_origin_url:
             canonical_config_result = _run_subprocess(
                 ["git", f"--git-dir={bare_repo_path}", "config", "agent-sandbox.canonicalOriginUrl", canonical_origin_url],
@@ -3493,6 +3826,52 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
             "copied_paths": copied_paths,
         }
 
+    def vm_delete_files(
+        self,
+        target: str,
+        *,
+        paths: list[str],
+        vm_user: str = "agent",
+        recursive: bool = False,
+        missing_ok: bool = True,
+    ) -> dict[str, Any]:
+        if not paths:
+            raise ValueError("paths must not be empty")
+        sessions = self.runtime.sessions.read_all()
+        vm_name = _resolve_vm_name_from_target(target, sessions)
+        vm_ip, ssh_private_key_path = _resolve_vm_ssh_access(vm_name, vm_user)
+        normalized_paths: list[str] = []
+        for index, raw_path in enumerate(paths):
+            path = str(raw_path or "").strip()
+            if not path:
+                raise ValueError(f"paths[{index}] must be a non-empty string")
+            if path.startswith("~") or not path.startswith("/"):
+                raise ValueError(f"paths[{index}] must be an absolute guest path")
+            normalized_paths.append(PurePosixPath(path).as_posix())
+
+        rm_flag = "-rf" if recursive else "-f"
+        commands = ["set -euo pipefail"]
+        if not missing_ok:
+            commands.extend(f"test -e {shlex.quote(path)}" for path in normalized_paths)
+        commands.extend(f"rm {rm_flag} -- {shlex.quote(path)}" for path in normalized_paths)
+        completed = _run_subprocess(
+            ["ssh", *_ssh_options(vm_name, vm_ip, ssh_private_key_path), f"{vm_user}@{vm_ip}", "bash", "-s"],
+            capture_output=True,
+            text=True,
+            input="\n".join(commands) + "\n",
+        )
+        if completed.returncode != 0:
+            raise RuntimeError((completed.stderr or completed.stdout or "").strip() or "remote delete failed")
+        return {
+            "success": True,
+            "vm_name": vm_name,
+            "action": "vm_delete_files",
+            "message": f"Deleted {len(normalized_paths)} path(s) from {vm_name}",
+            "deleted_count": len(normalized_paths),
+            "deleted_paths": normalized_paths,
+            "vm_user": vm_user,
+        }
+
     def pr_create(
         self,
         *,
@@ -4241,7 +4620,8 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
     def _validate_worker_global_config_payload(self, worker_id: str, payload: dict[str, object]) -> dict[str, object]:
         model = _WORKER_GLOBAL_CONFIG_MODELS[worker_id]
         try:
-            return model.model_validate(payload).model_dump(mode="json", exclude_none=True)
+            normalized = model.model_validate(payload).model_dump(mode="json", exclude_none=True)
+            return _strip_default_edge_fields(normalized)
         except ValidationError as exc:
             raise _safe_validation_error(exc, context=f"Invalid {worker_id} worker config") from exc
 
@@ -4598,6 +4978,8 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
             elif gate_type == "gate:await-agent":
                 gate.pop("completion_trigger_id", None)
                 gate["outputs"] = effective_node_output_schema({"type": "trigger:agent:run:completed"})
+            elif gate_type == "gate:for":
+                gate["outputs"] = effective_node_output_schema(gate)
             elif gate_type == "gate:merge":
                 upstream_outputs = [
                     effective_node_output_schema(nodes_by_id[upstream_id])
@@ -4912,6 +5294,11 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
             payload["steps"] = list(metadata_steps)
         else:
             payload.pop("steps", None)
+        metadata_plan_summary = issue.metadata.get("plan_summary") if isinstance(issue.metadata, dict) else None
+        if isinstance(metadata_plan_summary, str) and metadata_plan_summary.strip():
+            payload["plan_summary"] = metadata_plan_summary
+        else:
+            payload.pop("plan_summary", None)
         if updated_at is not None:
             payload["updated_at"] = updated_at.isoformat()
         yaml_path.parent.mkdir(parents=True, exist_ok=True)
@@ -4996,6 +5383,11 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
                     normalized_steps = [str(step).strip() for step in raw_steps if str(step).strip()]
                     if normalized_steps:
                         merged_metadata["steps"] = normalized_steps
+                raw_plan_summary = yaml_payload.get("plan_summary")
+                if isinstance(raw_plan_summary, str):
+                    normalized_plan_summary = raw_plan_summary.strip()
+                    if normalized_plan_summary:
+                        merged_metadata["plan_summary"] = normalized_plan_summary
                 if not title:
                     parsed_title = yaml_payload.get("title")
                     normalized_title = str(parsed_title or "").strip() if isinstance(parsed_title, str) else ""
@@ -5200,14 +5592,20 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
         self,
         issue_id: str,
         steps: list[str],
+        summary: str | None = None,
     ) -> dict[str, object]:
         normalized_steps = [str(step).strip() for step in steps if str(step).strip()]
         if not normalized_steps:
             raise ValueError("steps must contain at least one non-empty item")
+        normalized_summary = str(summary or "").strip() or None
 
         issue = self._resolve_local_issue_record(issue_id)
         issue.metadata = dict(issue.metadata)
         issue.metadata["steps"] = normalized_steps
+        if normalized_summary is not None:
+            issue.metadata["plan_summary"] = normalized_summary
+        else:
+            issue.metadata.pop("plan_summary", None)
         issue.updated_at = _utc_now()
         self.local_issue_store.put(issue.issue_id, issue)
         self._write_local_issue_yaml(issue, updated_at=issue.updated_at)
@@ -5217,6 +5615,7 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
             "updated": True,
             "steps": normalized_steps,
             "step_count": len(normalized_steps),
+            "summary": normalized_summary,
         }
 
     def set_issue_state(

@@ -177,19 +177,33 @@ done < <(python3 -c 'import json,sys; [print(json.dumps(item)) for item in json.
 ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "bash -s" <<'EOF'
 set -euo pipefail
 
-if ! grep -q 'toolchains/node-v24.14.0/bin' ~/.profile 2>/dev/null; then
-  cat >> ~/.profile <<PROFILE
-export PATH="$HOME/toolchains/node-v24.14.0/bin:$PATH"
-PROFILE
-fi
+append_node_path_setup() {
+  local target="$1"
+  python3 - "${target}" <<'PY'
+from pathlib import Path
+import sys
 
-if ! grep -q 'toolchains/node-v24.14.0/bin' ~/.bashrc 2>/dev/null; then
-  cat >> ~/.bashrc <<BASHRC
-export PATH="$HOME/toolchains/node-v24.14.0/bin:$PATH"
-BASHRC
-fi
+target = Path(sys.argv[1]).expanduser()
+target.parent.mkdir(parents=True, exist_ok=True)
+if target.exists():
+    lines = target.read_text(encoding="utf-8").splitlines()
+else:
+    lines = []
 
-export PATH="$HOME/toolchains/node-v24.14.0/bin:$PATH"
+managed = {
+    'export PATH="$HOME/toolchains/node-v24.14.0/bin:$PATH"',
+    'export PATH="$HOME/bin:$HOME/toolchains/node-v24.14.0/bin:$PATH"',
+}
+filtered = [line for line in lines if line.strip() not in managed]
+filtered.append('export PATH="$HOME/bin:$HOME/toolchains/node-v24.14.0/bin:$PATH"')
+target.write_text("\n".join(filtered) + "\n", encoding="utf-8")
+PY
+}
+
+append_node_path_setup ~/.profile
+append_node_path_setup ~/.bashrc
+
+export PATH="$HOME/bin:$HOME/toolchains/node-v24.14.0/bin:$PATH"
 
 node --version
 npm --version

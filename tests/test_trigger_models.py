@@ -14,6 +14,7 @@ from agent_sandbox.events.models import (
     IssueUpdateStateEffectDefinition,
     PrCreateEffectDefinition,
     PullRequestNewFeedbackTriggerDefinition,
+    ReviewNewRequestTriggerDefinition,
     SessionContextQueryDefinition,
     SessionUpdateMetadataEffectDefinition,
     TriggerDefinitionDiscriminated,
@@ -50,6 +51,36 @@ def test_email_trigger_validates_provider_enum() -> None:
                 "account_identifier": "ops@example.com",
                 "mailbox_ids": ["primary"],
                 "auth_secret_refs": {"access_token": "EMAIL_ACCESS_TOKEN"},
+            }
+        )
+
+
+def test_teams_trigger_normalizes_filters() -> None:
+    adapter = TypeAdapter(TriggerDefinitionDiscriminated)
+
+    trigger = adapter.validate_python(
+        {
+            "id": "t-teams",
+            "display_name": "Teams",
+            "type": "trigger:teams:new-message",
+            "channel_targets": [" team-a/channel-1 ", "", "team-b/channel-9/"],
+            "user_ids": " user-a ",
+        }
+    )
+
+    assert trigger.channel_targets == ["team-a/channel-1", "team-b/channel-9"]
+    assert trigger.user_ids == ["user-a"]
+
+
+def test_teams_trigger_requires_channel_targets() -> None:
+    adapter = TypeAdapter(TriggerDefinitionDiscriminated)
+
+    with pytest.raises(ValueError, match="channel_targets"):
+        adapter.validate_python(
+            {
+                "id": "t-teams-missing",
+                "display_name": "Teams",
+                "type": "trigger:teams:new-message",
             }
         )
 
@@ -131,6 +162,18 @@ def test_pr_feedback_trigger_accepts_local_provider() -> None:
     )
 
     assert trigger.provider == "local"
+
+
+def test_review_request_trigger_validates() -> None:
+    trigger = ReviewNewRequestTriggerDefinition.model_validate(
+        {
+            "id": "review-1",
+            "display_name": "Review request",
+            "type": "trigger:review:new-request",
+        }
+    )
+
+    assert trigger.type == "trigger:review:new-request"
 
 
 def test_await_agent_gate_requires_session_id_or_vm_name() -> None:

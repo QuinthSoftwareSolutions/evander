@@ -5,6 +5,7 @@ from agent_sandbox.config import (
     DiscordIngestWorkerGlobalConfig,
     GatewayConfig,
     HostHeartbeatWorkerGlobalConfig,
+    TeamsIngestWorkerGlobalConfig,
     TriggerOrchestratorWorkerGlobalConfig,
 )
 
@@ -77,6 +78,23 @@ def test_unique_email_mailbox_ids_pass_validation_with_alias_fields() -> None:
     assert [mailbox.auth_secret_refs for mailbox in config.email_mailboxes] == [
         {"access_token": "PRIMARY_TOKEN"},
         {"access_token": "SECONDARY_TOKEN"},
+    ]
+
+
+def test_teams_graph_access_token_env_defaults_to_compatibility_name() -> None:
+    config = GatewayConfig.model_validate({})
+
+    assert config.teams_graph_access_token_env == "GRAPH_TEAMS_ACCESS_TOKEN"
+
+
+def test_teams_delegated_scopes_default_includes_channel_and_chat_access() -> None:
+    config = GatewayConfig.model_validate({})
+
+    assert config.teams_delegated_scopes == [
+        "offline_access",
+        "https://graph.microsoft.com/ChannelMessage.Read.All",
+        "https://graph.microsoft.com/ChannelMessage.Send",
+        "https://graph.microsoft.com/Chat.ReadWrite",
     ]
 
 
@@ -194,6 +212,22 @@ def test_discord_ingest_worker_global_config_directory_paths_are_normalized() ->
     assert config.directories == ["root/team-a", "root/team-a/subdir"]
 
 
+def test_teams_ingest_worker_global_config_defaults_follow_runtime_dir() -> None:
+    config = TeamsIngestWorkerGlobalConfig.model_validate({"runtime_dir": "/tmp/agent-sandbox-runtime"})
+    assert str(config.lock_path) == "/tmp/agent-sandbox-runtime/teams-ingest.lock"
+    assert config.directories == []
+
+
+def test_teams_ingest_worker_global_config_directory_paths_are_normalized() -> None:
+    config = TeamsIngestWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": "/tmp/agent-sandbox-runtime",
+            "directories": [" root/team-a ", "root/team-a/subdir", "  "],
+        }
+    )
+    assert config.directories == ["root/team-a", "root/team-a/subdir"]
+
+
 def test_ado_worker_global_config_defaults_include_dedicated_pat_env_name() -> None:
     config = AdoWorkerGlobalConfig.model_validate({})
     assert config.ado_work_items_azure_devops_pat_env == "ADO_WORK_ITEMS_AZURE_DEVOPS_PAT"
@@ -203,6 +237,27 @@ def test_ado_worker_global_config_defaults_include_dedicated_pat_env_name() -> N
 def test_directory_scoped_config_flag_defaults_to_disabled() -> None:
     config = GatewayConfig.model_validate({})
     assert config.enable_directory_scoped_config is False
+
+
+def test_teams_delegated_credential_store_path_follows_runtime_dir_default() -> None:
+    config = GatewayConfig.model_validate({"runtime_dir": "/tmp/agent-sandbox-runtime"})
+    assert str(config.teams_delegated_credential_store_path) == (
+        "/tmp/agent-sandbox-runtime/teams-delegated-credentials.json"
+    )
+
+
+def test_teams_backend_accepts_delegated_graph_api_when_identity_is_bound() -> None:
+    config = GatewayConfig.model_validate(
+        {
+            "teams_backend": "delegated_graph_api",
+            "teams_delegated_identity_id": " team-a ",
+            "teams_delegated_client_id": " client-123 ",
+        }
+    )
+
+    assert config.teams_backend == "delegated_graph_api"
+    assert config.teams_delegated_identity_id == "team-a"
+    assert config.teams_delegated_client_id == "client-123"
 
 
 def test_trigger_orchestrator_worker_global_config_defaults_follow_runtime_dir() -> None:
@@ -474,6 +529,131 @@ def test_trigger_orchestrator_await_agent_gate_accepts_linear_flow_without_compl
 
     assert config.gates[0].type == "gate:await-agent"
     assert config.gates[0].outputs["dispatch_id"] == {"type": "string"}
+
+
+def test_trigger_orchestrator_for_gate_accepts_body_done_ports_and_cycle_return() -> None:
+    config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": "/tmp/agent-sandbox-runtime",
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Tick",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                    "outputs": {"steps": {"type": "array"}},
+                }
+            ],
+            "gates": [
+                {
+                    "id": "for-1",
+                    "display_name": "Iterate steps",
+                    "type": "gate:for",
+                    "items": "${{trigger-1.steps}}",
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-body",
+                    "display_name": "Body",
+                    "type": "effect:vm:exec",
+                    "target": "session-1",
+                    "command": "echo body",
+                },
+                {
+                    "id": "effect-done",
+                    "display_name": "Done",
+                    "type": "effect:vm:exec",
+                    "target": "session-1",
+                    "command": "echo done",
+                },
+            ],
+            "edges": [
+                {"source_id": "trigger-1", "target_id": "for-1"},
+                {"source_id": "for-1", "source_port": "body", "target_id": "effect-body"},
+                {"source_id": "for-1", "source_port": "done", "target_id": "effect-done"},
+                {"source_id": "effect-body", "target_id": "for-1", "allow_cycle": True},
+            ],
+        }
+    )
+
+    assert config.gates[0].type == "gate:for"
+    assert config.gates[0].outputs["current_index"] == {"type": "integer"}
+    assert config.gates[0].outputs["is_done"] == {"type": "boolean"}
+
+
+def test_trigger_orchestrator_for_gate_rejects_missing_done_edge() -> None:
+    with pytest.raises(ValueError, match="gate:for for-1 must have exactly 1 outbound done edge"):
+        TriggerOrchestratorWorkerGlobalConfig.model_validate(
+            {
+                "runtime_dir": "/tmp/agent-sandbox-runtime",
+                "triggers": [
+                    {
+                        "id": "trigger-1",
+                        "display_name": "Tick",
+                        "type": "trigger:cron",
+                        "expression": "* * * * *",
+                    }
+                ],
+                "gates": [
+                    {
+                        "id": "for-1",
+                        "display_name": "Iterate steps",
+                        "type": "gate:for",
+                        "items": ["a", "b"],
+                    }
+                ],
+                "effects": [
+                    {
+                        "id": "effect-body",
+                        "display_name": "Body",
+                        "type": "effect:vm:exec",
+                        "target": "session-1",
+                        "command": "echo body",
+                    }
+                ],
+                "edges": [
+                    {"source_id": "trigger-1", "target_id": "for-1"},
+                    {"source_id": "for-1", "source_port": "body", "target_id": "effect-body"},
+                ],
+            }
+        )
+
+
+def test_trigger_orchestrator_allows_orphaned_draft_subgraphs() -> None:
+    config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": "/tmp/agent-sandbox-runtime",
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Tick",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+            "gates": [
+                {
+                    "id": "for-1",
+                    "display_name": "Draft loop",
+                    "type": "gate:for",
+                    "items": ["a", "b"],
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-body",
+                    "display_name": "Body",
+                    "type": "effect:vm:exec",
+                    "target": "session-1",
+                    "command": "echo body",
+                }
+            ],
+            "edges": [],
+        }
+    )
+
+    assert config.gates[0].type == "gate:for"
 
 
 def test_trigger_orchestrator_worker_global_config_accepts_discriminated_triggers() -> None:

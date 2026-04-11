@@ -155,6 +155,52 @@ def test_directory_config_resolver_reports_validation_errors_for_invalid_gateway
     assert resolution.validation_errors
 
 
+def test_directory_config_store_validates_delegated_teams_provider_fields(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    store = DirectoryStore(runtime_dir / "directories.json")
+    service = DirectoryService(store)
+    config_store = DirectoryConfigStore(store, runtime_dir=runtime_dir)
+    resolver = DirectoryConfigResolver(service, config_store=config_store)
+
+    team = service.create(parent="root", name="team")
+
+    written = config_store.write(
+        team.path,
+        domain="providers",
+        payload={
+            "teams_backend": "delegated_graph_api",
+            "teams_delegated_client_id": "client-123",
+            "teams_delegated_identity_id": "team-a",
+            "teams_delegated_credential_store_path": runtime_dir / "teams-delegated-credentials.json",
+        },
+    )
+
+    assert written == {
+        "teams_backend": "delegated_graph_api",
+        "teams_delegated_client_id": "client-123",
+        "teams_delegated_identity_id": "team-a",
+        "teams_delegated_credential_store_path": str(
+            runtime_dir / "teams-delegated-credentials.json"
+        ),
+    }
+
+    resolution = resolver.resolve_domain(
+        team.path,
+        domain="providers",
+        base_config=get_domain_base_config(GatewayConfig(), "providers"),
+        validator=lambda candidate: validate_effective_domain_payload("providers", candidate),
+    )
+
+    assert resolution.effective_config["teams_backend"] == "delegated_graph_api"
+    assert resolution.effective_config["teams_delegated_client_id"] == "client-123"
+    assert resolution.effective_config["teams_delegated_identity_id"] == "team-a"
+    assert (
+        resolution.effective_config["teams_delegated_credential_store_path"]
+        == str(runtime_dir / "teams-delegated-credentials.json")
+    )
+    assert resolution.validation_errors == []
+
+
 def test_directory_config_store_writes_validated_domain_files_and_updates_directory_metadata(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     store = DirectoryStore(runtime_dir / "directories.json")

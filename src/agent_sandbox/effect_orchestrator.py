@@ -61,6 +61,8 @@ logger = logging.getLogger(__name__)
 _MAX_GRAPH_DEPTH = 16
 _MAX_EVENTS_PER_CYCLE = 200
 _AWAIT_AGENT_STALE_GRACE_SECONDS = 120
+_BRANCH_PORT_PAYLOAD_KEY = "__branch_port"
+_FOR_EXECUTION_IDS_PAYLOAD_KEY = "__for_execution_ids"
 WorkflowNodeDefinition = (
     TriggerDefinitionDiscriminated | GateDefinitionDiscriminated | EffectDefinitionDiscriminated | QueryDefinitionDiscriminated
 )
@@ -124,12 +126,23 @@ class AwaitAgentPendingRecord(BaseModel):
     occurred_at: datetime
 
 
+class ForGateStateRecord(BaseModel):
+    key: str = Field(min_length=1)
+    gate_id: str = Field(min_length=1)
+    trace_id: str = Field(min_length=1)
+    for_execution_id: str = Field(min_length=1)
+    next_index: int = Field(ge=0)
+    item_count: int = Field(ge=0)
+    updated_at: datetime
+
+
 @dataclass(frozen=True)
 class ExecutionGraph:
     nodes_by_id: dict[str, WorkflowNodeDefinition]
     gates_by_id: dict[str, GateDefinitionDiscriminated]
     effects_by_id: dict[str, EffectDefinitionDiscriminated]
     queries_by_id: dict[str, QueryDefinitionDiscriminated]
+    outbound_index: dict[str, tuple[Any, ...]]
     downstream_index: dict[str, tuple[str, ...]]
     inbound_index: dict[str, tuple[Any, ...]]
     declared_outputs: dict[str, dict[str, Any]]
@@ -175,6 +188,7 @@ class EffectOrchestratorWorker:
         )
         self.gate_execution_store = JsonGateExecutionStore(self.gate_execution_store_path)
         self.await_agent_store = JsonStore(worker_config.runtime_dir / "await-agent-pending.json", AwaitAgentPendingRecord)
+        self.for_gate_state_store = JsonStore(worker_config.runtime_dir / "for-gate-state.json", ForGateStateRecord)
         self._executor = ThreadPoolExecutor(
             max_workers=max(1, min(32, max(1, (os.cpu_count() or 1) * 4))),
             thread_name_prefix="effect-orchestrator",
@@ -296,20 +310,21 @@ class EffectOrchestratorWorker:
         )
 
     def _process_event_record(self, queue_record: TriggerQueueRecord, *, graph: ExecutionGraph) -> int:
-        downstream_node_ids = graph.downstream_index.get(queue_record.trigger_id, ())
+        outbound_edges = _matching_outbound_edges(queue_record=queue_record, graph=graph)
         logger.debug(
             "Processing workflow event event_id=%s trace_id=%s source_node_id=%s downstream_nodes=%d",
             queue_record.event_id,
             queue_record.trace_id,
             queue_record.trigger_id,
-            len(downstream_node_ids),
+            len(outbound_edges),
         )
         execution_count = 0
-        for target_node_id in downstream_node_ids:
+        for edge in outbound_edges:
+            target_node_id = _edge_target_id(edge)
             node = graph.nodes_by_id.get(target_node_id)
             if node is None:
                 continue
-            if would_form_cycle(queue_record.trigger_id, target_node_id, graph.downstream_index):
+            if not _edge_allows_cycle(edge) and would_form_cycle(queue_record.trigger_id, target_node_id, graph.downstream_index):
                 self._write_skipped_node_record(queue_record=queue_record, node=node, reason="cycle_detected")
                 continue
 
@@ -579,7 +594,9 @@ class EffectOrchestratorWorker:
                 )
                 if matches:
                     outputs = {
-                        key: value for key, value in queue_record.payload.items() if key != NODE_OUTPUTS_CONTEXT_KEY
+                        key: value
+                        for key, value in queue_record.payload.items()
+                        if key not in {NODE_OUTPUTS_CONTEXT_KEY, _BRANCH_PORT_PAYLOAD_KEY, _FOR_EXECUTION_IDS_PAYLOAD_KEY}
                     }
                     self._write_gate_record(
                         queue_record=queue_record,
@@ -656,6 +673,33 @@ class EffectOrchestratorWorker:
                     queue_record=queue_record,
                     gate=gate,
                     resolved_config=require_object_payload(resolved.resolved_config, gate_type="gate:await-agent"),
+                )
+                return
+
+            if gate.type == "gate:for":
+                resolved = resolve_workflow_bindings(
+                    {
+                        "items": gate.items,
+                    },
+                    upstream_payload,
+                    upstream_output_names,
+                    system_value_resolver=_system_value_resolver(
+                        started_at=started_at,
+                        trace_id=queue_record.trace_id,
+                        event_id=queue_record.event_id,
+                        node_id=gate.id,
+                    ),
+                    strict_validation=True,
+                )
+                self._execute_for_gate(
+                    queue_record=queue_record,
+                    gate=gate,
+                    graph=graph,
+                    resolved_config=require_object_payload(resolved.resolved_config, gate_type="gate:for"),
+                    inputs_by_source=inputs_by_source,
+                    input_event_ids_by_source=input_event_ids_by_source,
+                    input_occurred_at_by_source=input_occurred_at_by_source,
+                    started_at=started_at,
                 )
                 return
 
@@ -784,6 +828,98 @@ class EffectOrchestratorWorker:
             input_occurred_at_by_source={queue_record.trigger_id: queue_record.occurred_at},
         )
 
+    def _execute_for_gate(
+        self,
+        *,
+        queue_record: TriggerQueueRecord,
+        gate: GateDefinitionDiscriminated,
+        graph: ExecutionGraph,
+        resolved_config: dict[str, Any],
+        inputs_by_source: dict[str, dict[str, Any]],
+        input_event_ids_by_source: dict[str, str],
+        input_occurred_at_by_source: dict[str, datetime],
+        started_at: datetime,
+    ) -> None:
+        raw_items = resolved_config.get("items")
+        if not isinstance(raw_items, list):
+            self._write_gate_record(
+                queue_record=queue_record,
+                gate=gate,
+                status="failed",
+                started_at=started_at,
+                resolved_config=resolved_config,
+                outputs={},
+                inputs_by_source=inputs_by_source,
+                input_event_ids_by_source=input_event_ids_by_source,
+                input_occurred_at_by_source=input_occurred_at_by_source,
+                error="gate:for items must resolve to an array",
+            )
+            return
+
+        for_execution_id = _resolve_for_gate_execution_id(
+            queue_record=queue_record,
+            gate=gate,
+            graph=graph,
+        )
+        state_key = _for_gate_state_key(
+            gate_id=gate.id,
+            trace_id=queue_record.trace_id,
+            for_execution_id=for_execution_id,
+        )
+        existing_state = self.for_gate_state_store.get(state_key)
+        next_index = existing_state.next_index if existing_state is not None else 0
+        item_count = len(raw_items)
+
+        if next_index < item_count:
+            outputs = {
+                "current_element": raw_items[next_index],
+                "current_index": next_index,
+                "item_count": item_count,
+                "is_done": False,
+            }
+            branch_port = "body"
+            next_state = ForGateStateRecord(
+                key=state_key,
+                gate_id=gate.id,
+                trace_id=queue_record.trace_id,
+                for_execution_id=for_execution_id,
+                next_index=next_index + 1,
+                item_count=item_count,
+                updated_at=datetime.now(UTC),
+            )
+        else:
+            outputs = {
+                "current_index": item_count,
+                "item_count": item_count,
+                "is_done": True,
+            }
+            branch_port = "done"
+            next_state = ForGateStateRecord(
+                key=state_key,
+                gate_id=gate.id,
+                trace_id=queue_record.trace_id,
+                for_execution_id=for_execution_id,
+                next_index=item_count,
+                item_count=item_count,
+                updated_at=datetime.now(UTC),
+            )
+
+        self.for_gate_state_store.put(state_key, next_state)
+        self._write_gate_record(
+            queue_record=queue_record,
+            gate=gate,
+            status="succeeded",
+            started_at=started_at,
+            resolved_config=resolved_config,
+            outputs=outputs,
+            inputs_by_source=inputs_by_source,
+            input_event_ids_by_source=input_event_ids_by_source,
+            input_occurred_at_by_source=input_occurred_at_by_source,
+            publish_completion_event=True,
+            branch_port=branch_port,
+            for_execution_ids={gate.id: for_execution_id},
+        )
+
     def _execute_await_agent_completion(
         self,
         *,
@@ -802,7 +938,7 @@ class EffectOrchestratorWorker:
         outputs = {
             key_name: value
             for key_name, value in queue_record.payload.items()
-            if key_name != NODE_OUTPUTS_CONTEXT_KEY
+            if key_name not in {NODE_OUTPUTS_CONTEXT_KEY, _BRANCH_PORT_PAYLOAD_KEY, _FOR_EXECUTION_IDS_PAYLOAD_KEY}
         }
         merged_payload = _payload_with_node_output_context(
             source_payload=pending.payload,
@@ -1186,7 +1322,11 @@ class EffectOrchestratorWorker:
             finished_at = datetime.now(UTC)
             merged_outputs = {
                 **record.outputs,
-                **{key: value for key, value in queue_record.payload.items() if key != NODE_OUTPUTS_CONTEXT_KEY},
+                **{
+                    key: value
+                    for key, value in queue_record.payload.items()
+                    if key not in {NODE_OUTPUTS_CONTEXT_KEY, _BRANCH_PORT_PAYLOAD_KEY, _FOR_EXECUTION_IDS_PAYLOAD_KEY}
+                },
             }
             published_event_id = self._publish_completion_event_from_record(record=record, outputs=merged_outputs)
             record.status = "succeeded"
@@ -1381,6 +1521,8 @@ class EffectOrchestratorWorker:
         *,
         record: GateExecutionRecord,
         outputs: dict[str, Any],
+        branch_port: str | None = None,
+        for_execution_ids: dict[str, str] | None = None,
     ) -> str:
         completion_event_id = _completion_event_id(
             parent_event_id=record.event_id,
@@ -1399,6 +1541,8 @@ class EffectOrchestratorWorker:
                 completed_node_id=record.gate_id,
                 outputs=outputs,
                 reset_context=record.gate_type == "gate:merge",
+                branch_port=branch_port,
+                for_execution_ids=for_execution_ids,
             ),
         )
         self.event_queue.publish(completion_event, idempotency_key=record.idempotency_key)
@@ -1501,6 +1645,8 @@ class EffectOrchestratorWorker:
         input_occurred_at_by_source: dict[str, datetime],
         error: str | None = None,
         publish_completion_event: bool = False,
+        branch_port: str | None = None,
+        for_execution_ids: dict[str, str] | None = None,
     ) -> None:
         idempotency_key = _execution_idempotency_key(queue_record.event_id, gate.id)
         if self.gate_execution_store.find_by_idempotency_key(idempotency_key) is not None:
@@ -1528,7 +1674,12 @@ class EffectOrchestratorWorker:
             error=error,
         )
         if publish_completion_event:
-            record.published_event_id = self._publish_gate_completion_event_from_record(record=record, outputs=outputs)
+            record.published_event_id = self._publish_gate_completion_event_from_record(
+                record=record,
+                outputs=outputs,
+                branch_port=branch_port,
+                for_execution_ids=for_execution_ids,
+            )
             record.completion_event_enqueued_at = finished_at
         self.gate_execution_store.put(record)
 
@@ -1648,13 +1799,15 @@ def _build_execution_graph(worker_config: TriggerOrchestratorWorkerGlobalConfig)
         for node in (*worker_config.triggers, *worker_config.gates, *worker_config.effects, *worker_config.queries)
     }
     edges = list(worker_config.edges)
+    acyclic_edges = [edge for edge in edges if not _edge_allows_cycle(edge)]
 
     return ExecutionGraph(
         nodes_by_id=nodes_by_id,
         gates_by_id={gate.id: gate for gate in worker_config.gates},
         effects_by_id={effect.id: effect for effect in worker_config.effects},
         queries_by_id={query.id: query for query in worker_config.queries},
-        downstream_index=build_downstream_index(edges),
+        outbound_index=_build_outbound_edge_index(edges),
+        downstream_index=build_downstream_index(acyclic_edges),
         inbound_index=build_inbound_edge_index(edges),
         declared_outputs=index_declared_outputs(
             worker_config.triggers,
@@ -1694,7 +1847,11 @@ def _node_output_context_from_payload(payload: dict[str, Any], *, source_node_id
         if context:
             return context
 
-    flat_payload = {key: value for key, value in payload.items() if key != NODE_OUTPUTS_CONTEXT_KEY}
+    flat_payload = {
+        key: value
+        for key, value in payload.items()
+        if key not in {NODE_OUTPUTS_CONTEXT_KEY, _BRANCH_PORT_PAYLOAD_KEY, _FOR_EXECUTION_IDS_PAYLOAD_KEY}
+    }
     return {source_node_id: flat_payload}
 
 
@@ -1749,6 +1906,8 @@ def _payload_with_node_output_context(
     completed_node_id: str,
     outputs: dict[str, Any],
     reset_context: bool,
+    branch_port: str | None = None,
+    for_execution_ids: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     validate_output_mapping_keys(
         outputs,
@@ -1756,12 +1915,24 @@ def _payload_with_node_output_context(
     )
     payload = dict(outputs)
     inherited_context = _node_output_context_from_payload(source_payload, source_node_id=source_node_id)
+    merged_for_execution_ids = _merged_for_execution_ids(
+        source_payload=source_payload,
+        for_execution_ids=for_execution_ids,
+    )
     if reset_context:
         payload[NODE_OUTPUTS_CONTEXT_KEY] = {completed_node_id: dict(outputs)}
+        if branch_port is not None:
+            payload[_BRANCH_PORT_PAYLOAD_KEY] = branch_port
+        if merged_for_execution_ids:
+            payload[_FOR_EXECUTION_IDS_PAYLOAD_KEY] = merged_for_execution_ids
         return payload
     merged_context = {node_id: dict(node_payload) for node_id, node_payload in inherited_context.items()}
     merged_context[completed_node_id] = dict(outputs)
     payload[NODE_OUTPUTS_CONTEXT_KEY] = merged_context
+    if branch_port is not None:
+        payload[_BRANCH_PORT_PAYLOAD_KEY] = branch_port
+    if merged_for_execution_ids:
+        payload[_FOR_EXECUTION_IDS_PAYLOAD_KEY] = merged_for_execution_ids
     return payload
 
 
@@ -1841,6 +2012,123 @@ def _edge_source_id(edge: Any) -> str:
         if text:
             return text
     raise ValueError(f"workflow edge is missing a source id: {edge!r}")
+
+
+def _edge_target_id(edge: Any) -> str:
+    for field_name in ("target_id",):
+        if isinstance(edge, dict):
+            value = edge.get(field_name)
+        else:
+            value = getattr(edge, field_name, None)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    raise ValueError(f"workflow edge is missing a target id: {edge!r}")
+
+
+def _edge_source_port(edge: Any) -> str | None:
+    if isinstance(edge, dict):
+        value = edge.get("source_port")
+    else:
+        value = getattr(edge, "source_port", None)
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _edge_allows_cycle(edge: Any) -> bool:
+    if isinstance(edge, dict):
+        return bool(edge.get("allow_cycle", False))
+    return bool(getattr(edge, "allow_cycle", False))
+
+
+def _build_outbound_edge_index(edges: list[Any]) -> dict[str, tuple[Any, ...]]:
+    outbound: dict[str, list[Any]] = {}
+    for edge in edges:
+        source_id = _edge_source_id(edge)
+        outbound.setdefault(source_id, []).append(edge)
+    return {source_id: tuple(values) for source_id, values in sorted(outbound.items())}
+
+
+def _matching_outbound_edges(*, queue_record: TriggerQueueRecord, graph: ExecutionGraph) -> tuple[Any, ...]:
+    branch_port = _normalize_optional_string(queue_record.payload.get(_BRANCH_PORT_PAYLOAD_KEY))
+    matched: list[Any] = []
+    for edge in graph.outbound_index.get(queue_record.trigger_id, ()):
+        edge_port = _edge_source_port(edge)
+        if branch_port is None:
+            if edge_port is not None:
+                continue
+        elif edge_port != branch_port:
+            continue
+        matched.append(edge)
+    return tuple(matched)
+
+
+def _for_gate_state_key(*, gate_id: str, trace_id: str, for_execution_id: str) -> str:
+    return f"{gate_id}:{trace_id}:{for_execution_id}"
+
+
+def _resolve_for_gate_execution_id(
+    *,
+    queue_record: TriggerQueueRecord,
+    gate: GateDefinitionDiscriminated,
+    graph: ExecutionGraph,
+) -> str:
+    inbound_edge = _matching_inbound_edge(queue_record=queue_record, target_node_id=gate.id, graph=graph)
+    if inbound_edge is not None and _edge_allows_cycle(inbound_edge):
+        for_execution_id = _for_execution_id_from_payload(queue_record.payload, gate_id=gate.id)
+        if for_execution_id is not None:
+            return for_execution_id
+    return queue_record.event_id
+
+
+def _matching_inbound_edge(*, queue_record: TriggerQueueRecord, target_node_id: str, graph: ExecutionGraph) -> Any | None:
+    for edge in graph.inbound_index.get(target_node_id, ()):
+        if _edge_source_id(edge) == queue_record.trigger_id:
+            return edge
+    return None
+
+
+def _for_execution_ids_from_payload(payload: dict[str, Any]) -> dict[str, str]:
+    raw_value = payload.get(_FOR_EXECUTION_IDS_PAYLOAD_KEY)
+    if not isinstance(raw_value, dict):
+        return {}
+    normalized: dict[str, str] = {}
+    for gate_id, execution_id in raw_value.items():
+        if not isinstance(gate_id, str):
+            continue
+        normalized_gate_id = gate_id.strip()
+        normalized_execution_id = _normalize_optional_string(execution_id)
+        if normalized_gate_id and normalized_execution_id is not None:
+            normalized[normalized_gate_id] = normalized_execution_id
+    return normalized
+
+
+def _for_execution_id_from_payload(payload: dict[str, Any], *, gate_id: str) -> str | None:
+    return _for_execution_ids_from_payload(payload).get(gate_id)
+
+
+def _merged_for_execution_ids(*, source_payload: dict[str, Any], for_execution_ids: dict[str, str] | None) -> dict[str, str]:
+    merged = _for_execution_ids_from_payload(source_payload)
+    if for_execution_ids:
+        merged.update(
+            {
+                gate_id.strip(): execution_id
+                for gate_id, execution_id in for_execution_ids.items()
+                if gate_id.strip() and _normalize_optional_string(execution_id) is not None
+            }
+        )
+    return merged
+
+
+def _normalize_optional_string(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
 
 
 def _resolve_worker_path(worker_config: TriggerOrchestratorWorkerGlobalConfig, attribute: str, *, fallback: Path) -> Path:

@@ -32,9 +32,12 @@ from .models import (
     HasPendingFeedbackRequest,
     ListUnreadDiscordMessagesRequest,
     ListUnreadFeedbackRequest,
+    PostPrCommentRequest,
     PostPrFeedbackReplyRequest,
+    RequestPrReviewRequest,
     ScheduleResumeRequest,
     ScheduleResumeResponse,
+    SubmitPrReviewRequest,
     WakeScheduleDefinition,
     TeamsMessageEnvelope,
     ToolName,
@@ -617,6 +620,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
     def set_issue_plan(
         issue_id: str,
         steps: list[str],
+        summary: str | None = None,
         *,
         session_id: str | None = None,
         ctx: Context | None = None,
@@ -626,10 +630,11 @@ def create_server(context: RuntimeContext) -> FastMCP:
             "session_id": session_id,
             "issue_id": issue_id,
             "steps": steps,
+            "summary": summary,
         }
         try:
             session = context.policy.require_tool(session_id, ToolName.SET_ISSUE_PLAN)
-            result = AdminService(context.config.runtime_dir).set_issue_plan(issue_id, steps)
+            result = AdminService(context.config.runtime_dir).set_issue_plan(issue_id, steps, summary=summary)
             audit_success(
                 session_id,
                 ToolName.SET_ISSUE_PLAN,
@@ -638,6 +643,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
                     "issue_number": result.get("issue_number"),
                     "source_type": result.get("source_type"),
                     "step_count": result.get("step_count"),
+                    "has_summary": bool(result.get("summary")),
                     "directory_path": session.directory_path,
                 },
             )
@@ -1262,6 +1268,246 @@ def create_server(context: RuntimeContext) -> FastMCP:
             audit_failure(
                 session_id,
                 ToolName.POST_PR_FEEDBACK_REPLY,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
+    def request_pr_review(
+        session_id: str,
+        provider: str,
+        repo: str,
+        pr_id: str,
+        requested_by: str | None = None,
+        request_channel: str | None = None,
+        review_type: str | None = None,
+        instructions: str | None = None,
+        directory_path: str | None = None,
+        model: str | None = None,
+        labels: dict[str, str] | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        request = RequestPrReviewRequest(
+            session_id=session_id.strip(),
+            provider=normalize_pr_feedback_provider(provider),
+            repo=repo.strip(),
+            pr_id=pr_id.strip(),
+            requested_by=requested_by.strip() if isinstance(requested_by, str) else None,
+            request_channel=request_channel.strip() if isinstance(request_channel, str) else None,
+            review_type=review_type.strip() if isinstance(review_type, str) else None,
+            instructions=instructions.strip() if isinstance(instructions, str) else None,
+            directory_path=directory_path.strip() if isinstance(directory_path, str) else None,
+            model=model.strip() if isinstance(model, str) else None,
+            labels=labels or {},
+            metadata=metadata or {},
+        )
+        args = request.model_dump(mode="json")
+        try:
+            context.policy.require_tool(request.session_id, ToolName.REQUEST_PR_REVIEW)
+            result = context.review_request_service_for_session(request.session_id).enqueue_request(
+                session_id=request.session_id,
+                provider=request.provider,
+                repo=request.repo,
+                pr_id=request.pr_id,
+                requested_by=request.requested_by,
+                request_channel=request.request_channel,
+                review_type=request.review_type,
+                instructions=request.instructions,
+                directory_path=request.directory_path,
+                model=request.model,
+                labels=request.labels,
+                metadata=request.metadata,
+            ).model_dump(mode="json")
+            audit_success(
+                request.session_id,
+                ToolName.REQUEST_PR_REVIEW,
+                args,
+                {
+                    "status": result.get("status"),
+                    "request_id": result.get("request_id"),
+                    "provider": result.get("provider"),
+                    "repo": result.get("repo"),
+                    "pr_id": result.get("pr_id"),
+                },
+            )
+            return result
+        except PolicyError as exc:
+            audit_failure(request.session_id, ToolName.REQUEST_PR_REVIEW, args, str(exc))
+            raise
+        except (httpx.HTTPError, ValueError) as exc:
+            audit_failure(
+                request.session_id,
+                ToolName.REQUEST_PR_REVIEW,
+                args,
+                str(exc),
+                decision="error",
+                error_class="adapter_http_error",
+            )
+            raise
+        except Exception as exc:
+            audit_failure(
+                request.session_id,
+                ToolName.REQUEST_PR_REVIEW,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
+    def post_pr_comment(
+        session_id: str,
+        provider: str,
+        repo: str,
+        pr_id: str,
+        body_text: str,
+        idempotency_key: str | None = None,
+        request_id: str | None = None,
+    ) -> dict[str, Any]:
+        request = PostPrCommentRequest(
+            session_id=session_id.strip(),
+            provider=normalize_pr_feedback_provider(provider),
+            repo=repo.strip(),
+            pr_id=pr_id.strip(),
+            body_text=body_text.strip(),
+            idempotency_key=idempotency_key.strip() if isinstance(idempotency_key, str) else None,
+            request_id=request_id.strip() if isinstance(request_id, str) else None,
+        )
+        args = request.model_dump(mode="json")
+        try:
+            session = context.policy.require_tool(request.session_id, ToolName.POST_PR_COMMENT)
+            context.policy.require_pr_feedback_stream(
+                session,
+                provider=request.provider,
+                repo=request.repo,
+                pr_id=request.pr_id,
+            )
+            if context.policy.effective_policy_for_session(session).pr_reply_require_approval:
+                if not request.request_id:
+                    raise PolicyError("request_id is required when pr_reply_require_approval is enabled")
+                context.policy.require_approved(request.request_id, payload=args)
+            result = context.pr_publish_service_for_session(request.session_id).post_comment(
+                provider=request.provider,
+                repo=request.repo,
+                pr_id=request.pr_id,
+                body_text=request.body_text,
+                idempotency_key=request.idempotency_key,
+            )
+            audit_success(
+                request.session_id,
+                ToolName.POST_PR_COMMENT,
+                args,
+                {
+                    "status": result.get("status"),
+                    "provider": result.get("provider"),
+                    "comment_id": result.get("comment_id"),
+                    "comment_url": result.get("comment_url"),
+                },
+            )
+            return result
+        except PolicyError as exc:
+            audit_failure(request.session_id, ToolName.POST_PR_COMMENT, args, str(exc))
+            raise
+        except (httpx.HTTPError, ValueError) as exc:
+            audit_failure(
+                request.session_id,
+                ToolName.POST_PR_COMMENT,
+                args,
+                str(exc),
+                decision="error",
+                error_class="adapter_http_error",
+            )
+            raise
+        except Exception as exc:
+            audit_failure(
+                request.session_id,
+                ToolName.POST_PR_COMMENT,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
+    def submit_pr_review(
+        session_id: str,
+        provider: str,
+        repo: str,
+        pr_id: str,
+        body_text: str,
+        event: str | None = None,
+        comments: list[dict[str, Any]] | None = None,
+        idempotency_key: str | None = None,
+        request_id: str | None = None,
+    ) -> dict[str, Any]:
+        request = SubmitPrReviewRequest(
+            session_id=session_id.strip(),
+            provider=normalize_pr_feedback_provider(provider),
+            repo=repo.strip(),
+            pr_id=pr_id.strip(),
+            body_text=body_text.strip(),
+            event=event.strip() if isinstance(event, str) else None,
+            comments=comments or [],
+            idempotency_key=idempotency_key.strip() if isinstance(idempotency_key, str) else None,
+            request_id=request_id.strip() if isinstance(request_id, str) else None,
+        )
+        args = request.model_dump(mode="json")
+        try:
+            session = context.policy.require_tool(request.session_id, ToolName.SUBMIT_PR_REVIEW)
+            context.policy.require_pr_feedback_stream(
+                session,
+                provider=request.provider,
+                repo=request.repo,
+                pr_id=request.pr_id,
+            )
+            if context.policy.effective_policy_for_session(session).pr_reply_require_approval:
+                if not request.request_id:
+                    raise PolicyError("request_id is required when pr_reply_require_approval is enabled")
+                context.policy.require_approved(request.request_id, payload=args)
+            result = context.pr_publish_service_for_session(request.session_id).submit_review(
+                provider=request.provider,
+                repo=request.repo,
+                pr_id=request.pr_id,
+                body_text=request.body_text,
+                event=request.event,
+                comments=[item.model_dump(mode="json") for item in request.comments],
+                idempotency_key=request.idempotency_key,
+            )
+            audit_success(
+                request.session_id,
+                ToolName.SUBMIT_PR_REVIEW,
+                args,
+                {
+                    "status": result.get("status"),
+                    "provider": result.get("provider"),
+                    "review_id": result.get("review_id"),
+                    "review_url": result.get("review_url"),
+                    "comment_count": len(result.get("comment_ids") or []),
+                },
+            )
+            return result
+        except PolicyError as exc:
+            audit_failure(request.session_id, ToolName.SUBMIT_PR_REVIEW, args, str(exc))
+            raise
+        except (httpx.HTTPError, ValueError) as exc:
+            audit_failure(
+                request.session_id,
+                ToolName.SUBMIT_PR_REVIEW,
+                args,
+                str(exc),
+                decision="error",
+                error_class="adapter_http_error",
+            )
+            raise
+        except Exception as exc:
+            audit_failure(
+                request.session_id,
+                ToolName.SUBMIT_PR_REVIEW,
                 args,
                 str(exc),
                 decision="error",

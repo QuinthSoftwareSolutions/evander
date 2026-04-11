@@ -173,10 +173,27 @@ logic remains isolated:
 - Provider workers/hooks own:
   - provider-specific fetch/filter semantics (Discord/email/PR/etc.)
   - provider-side cursor semantics
+  - review-request inbox leasing/polling semantics for `trigger:review:new-request`
   - git hook emission path for `trigger:git:push` (post-receive -> queue append)
 
 This boundary keeps trigger transport and idempotent persistence in one host-owned queue while
 allowing each provider integration to evolve independently.
+
+## Review Request Inbox Boundary
+
+Review requests are modeled as host-owned workflow jobs, not as PR feedback items:
+
+- `request_pr_review` writes normalized review requests into `runtime/review-request-store.json`
+- `trigger:review:new-request` leases those requests and emits `review_request` events
+- downstream workflow effects create the VM, prepare the repo, prompt the reviewer agent, and
+  publish results back to the PR
+
+This is intentionally separate from `runtime/pr-feedback-store.json`:
+
+- PR feedback is provider-originated inbound discussion
+- review requests are host-originated workflow intents
+
+Keeping them separate avoids mixing cursor semantics, replay rules, and audit meaning.
 
 ## Workflow Graph + Edge Semantics
 

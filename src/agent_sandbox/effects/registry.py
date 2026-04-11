@@ -15,6 +15,7 @@ from .providers.pr_create import PrCreateEffectProvider
 from .providers.session_update_metadata import SessionUpdateMetadataEffectProvider
 from .providers.vm_copy_files import VmCopyFilesEffectProvider
 from .providers.vm_create import VmCreateEffectProvider
+from .providers.vm_delete_files import VmDeleteFilesEffectProvider
 from .providers.vm_exec import VmExecEffectProvider
 from .providers.vm_start import VmStartEffectProvider
 from .providers.vm_stop import VmStopEffectProvider
@@ -33,6 +34,7 @@ DEFAULT_EFFECT_PROVIDER_REGISTRY: dict[EffectType, EffectProviderClass] = {
     "effect:agent:prompt": AgentPromptEffectProvider,
     "effect:vm:exec": VmExecEffectProvider,
     "effect:vm:copy-files": VmCopyFilesEffectProvider,
+    "effect:vm:delete-files": VmDeleteFilesEffectProvider,
     "effect:issue:update-state": IssueUpdateStateEffectProvider,
     "effect:session:update-metadata": SessionUpdateMetadataEffectProvider,
     "effect:git:promote-agent-branch": GitPromoteAgentBranchEffectProvider,

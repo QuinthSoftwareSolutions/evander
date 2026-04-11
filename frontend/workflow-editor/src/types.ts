@@ -9,7 +9,9 @@ export type WorkflowNodeConfig = {
 
 export type WorkflowEdge = {
   source_id: string;
+  source_port?: string;
   target_id: string;
+  allow_cycle?: boolean;
 };
 
 export type WorkflowConfig = {
@@ -69,11 +71,19 @@ export type WorkflowEditorFieldDefinition = {
   item_fields: WorkflowEditorFieldDefinition[];
 };
 
+export type WorkflowEditorNodePortDefinition = {
+  key: string;
+  label: string;
+  description?: string | null;
+};
+
 export type WorkflowEditorNodeCatalogEntry = {
   kind: WorkflowNodeKind;
   type: string;
   label: string;
   fields: WorkflowEditorFieldDefinition[];
+  input_ports: WorkflowEditorNodePortDefinition[];
+  output_ports: WorkflowEditorNodePortDefinition[];
 };
 
 export type WorkflowEditorCatalog = {

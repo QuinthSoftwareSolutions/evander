@@ -12,6 +12,8 @@ from agent_sandbox.triggers.providers.discord_new_message import DiscordNewMessa
 from agent_sandbox.triggers.providers.email_new_message import EmailNewMessageTriggerProvider
 from agent_sandbox.triggers.providers.git_push import GitPushTriggerProvider
 from agent_sandbox.triggers.providers.pull_request_new_feedback import PullRequestNewFeedbackTriggerProvider
+from agent_sandbox.triggers.providers.review_new_request import ReviewNewRequestTriggerProvider
+from agent_sandbox.triggers.providers.teams_new_message import TeamsNewMessageTriggerProvider
 from agent_sandbox.triggers.providers.ticket_changed import TicketChangedTriggerProvider
 from agent_sandbox.triggers.providers.ticket_created import TicketCreatedTriggerProvider
 
@@ -27,8 +29,10 @@ DEFAULT_TRIGGER_PROVIDER_REGISTRY: dict[TriggerType, TriggerProviderClass] = {
     "trigger:ticket:created": TicketCreatedTriggerProvider,
     "trigger:ticket:changed": TicketChangedTriggerProvider,
     "trigger:discord:new-message": DiscordNewMessageTriggerProvider,
+    "trigger:teams:new-message": TeamsNewMessageTriggerProvider,
     "trigger:email:new-message": EmailNewMessageTriggerProvider,
     "trigger:pull-request:new-feedback": PullRequestNewFeedbackTriggerProvider,
+    "trigger:review:new-request": ReviewNewRequestTriggerProvider,
     "trigger:git:push": GitPushTriggerProvider,
     "trigger:agent:run:completed": AgentRunCompletedTriggerProvider,
 }

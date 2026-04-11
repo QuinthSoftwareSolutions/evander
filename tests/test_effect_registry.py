@@ -68,6 +68,7 @@ def test_default_registry_includes_all_known_effect_types() -> None:
         "effect:agent:prompt",
         "effect:vm:exec",
         "effect:vm:copy-files",
+        "effect:vm:delete-files",
         "effect:issue:update-state",
         "effect:session:update-metadata",
         "effect:git:promote-agent-branch",

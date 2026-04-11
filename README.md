@@ -9,6 +9,7 @@
 - A host-side NuGet relay that proxies nuget.org and private Azure Artifacts feeds for guests
 - A host-side Azure DevOps backlog worker that polls tagged work items and drives `setup_issue_vm.sh`
 - A host-side workflow orchestrator that polls provider triggers, evaluates gates, and persists durable queue events for downstream workers/hooks
+- A host-side Teams ingest worker that polls Microsoft Graph and feeds `trigger:teams:new-message` orchestration
 - A host-side shared NuGet cache that can be mounted read-only into guests for faster cold restores
 - File-backed session, approval, audit, and draft storage for local development
 - A small CLI for bootstrapping state and creating session manifests
@@ -218,6 +219,8 @@ The scaffold includes `agent-sandbox-trigger-orchestrator`, a host-side worker t
 - evaluates gate nodes and routes events through explicit edges
 - persists discovered events into a durable queue (`runtime/trigger-orchestrator-events.json` by default)
 - records per-trigger cursor/checkpoint metadata (`runtime/trigger-orchestrator-cursors.json` by default)
+- also accepts `trigger:teams:new-message` events, which are sourced from host-side Teams ingest
+  polling rather than from host-heartbeat
 
 One-shot cycle execution is supported for ops/debugging:
 
@@ -545,26 +548,58 @@ See [live-smoke-tests.md](/home/jonathan/agent-sandbox/docs/live-smoke-tests.md)
 
 ## Teams Adapter Configuration
 
-- Teams access is host-side. Configure the gateway with:
+- Teams access is host-side. The preferred operator flow is to sign in on the host with the CLI
+  device code flow and keep the delegated credential on the host only.
+- Bind each directory subtree to the intended Teams identity through per-directory Teams identity
+  binding in directory-scoped provider config. Sessions below that subtree inherit the binding, so
+  different teams can use different host-managed identities without guest-side secrets.
+- Preferred delegated configuration:
+  - `teams_backend: delegated_graph_api`
+  - `teams_delegated_identity_id: <DIRECTORY_BOUND_IDENTITY>`
+  - `teams_delegated_client_id: <ENTRA_APP_CLIENT_ID>`
+  - optional `teams_delegated_tenant_id`, `teams_delegated_scopes`,
+    `teams_delegated_authority_base_url`, and `teams_delegated_credential_store_path`
+  - default delegated scopes now include channel read/send plus `Chat.ReadWrite` for group chats
+- The Entra app registration used for `teams_delegated_client_id` must allow public client /
+  device-code flows. If the token poll fails with `AADSTS7000218`, the app is configured as a
+  confidential client and needs to be updated or replaced.
+- Start delegated auth on the host with:
+  - `agent-sandbox-cli teams-auth login --directory <directory-path>`
+- Inspect or clear delegated auth on the host with:
+  - `agent-sandbox-cli teams-auth status --directory <directory-path>`
+  - `agent-sandbox-cli teams-auth logout --directory <directory-path>`
+  - `agent-sandbox-cli teams-auth list`
+- If you add or widen `teams_delegated_scopes`, run `agent-sandbox-cli teams-auth login --directory <directory-path>`
+  again so the stored delegated credential is reissued with the new scope set.
+- The gateway still supports the legacy static env-token mode for compatibility. If you use it,
+  `teams_graph_access_token_env` names the host environment variable that holds the token.
+- Configure the gateway with:
   - `teams_backend: graph_api`
   - `teams_graph_access_token_env: <ENV_VAR_NAME>`
   - optional `teams_graph_api_base_url` when you need a non-default Graph endpoint
 - The access token referenced by `teams_graph_access_token_env` must be able to read Microsoft
-  Teams channel messages and, if you enable outbound status posts, create channel messages/replies
-  for the teams/channels you plan to use.
+  Teams channel and chat messages and, if you enable outbound status posts, create
+  channel/chat messages and replies for the teams targets you plan to use.
+- `trigger:teams:new-message` message arrival is driven by host-side Teams ingest polling on the
+  host, not by the host-heartbeat worker. Host-heartbeat remains the PR/Discord feedback wakeup
+  loop.
 - Session manifests opt into Teams access explicitly:
 
   ```json
   {
     "session_id": "teams-session",
     "allowed_tools": ["teams_get_messages", "teams_post_status"],
-    "teams_channel_allowlist": ["<team-id>/<channel-id>"]
+    "teams_channel_allowlist": ["<team-id>/<channel-id>"],
+    "teams_chat_allowlist": ["chat:<chat-id>"]
   }
   ```
 
-- Channel targets use the literal `team-id/channel-id` format. The Teams adapter polls
-  `GET /teams/{team-id}/channels/{channel-id}/messages` and stores both top-level messages and any
-  expanded replies in `runtime/teams_messages.json`.
+- Channel targets use the literal `team-id/channel-id` format. Chat targets use the literal
+  `chat:<chat-id>` format.
+- The Teams adapter polls:
+  - `GET /teams/{team-id}/channels/{channel-id}/messages` for channel threads
+  - `GET /chats/{chat-id}/messages` for group chats
+  It stores both top-level messages and any expanded replies in `runtime/teams_messages.json`.
 - The `teams_get_messages` gateway tool returns normalized envelopes with:
   - `cursor`
   - `message_id`
@@ -579,9 +614,13 @@ See [live-smoke-tests.md](/home/jonathan/agent-sandbox/docs/live-smoke-tests.md)
   - `channel_target`
   - `message`
   - optional `thread_id` to reply into an existing channel thread
+- When the target is a chat, the adapter uses the `chat:<chat-id>` identifier instead of a
+  team/channel pair.
 - `teams_post_status` writes via:
   - `POST /teams/{team-id}/channels/{channel-id}/messages` for top-level posts
   - `POST /teams/{team-id}/channels/{channel-id}/messages/{thread_id}/replies` for replies
+  - `POST /chats/{chat-id}/messages` for top-level chat posts
+  - `POST /chats/{chat-id}/messages/{message-id}/replies` for chat replies
 - Outbound posts are audited and persisted in `runtime/teams_messages.json` with
   `metadata.source == "teams_graph_api_status"` and the originating `session_id`.
 - Source filtering is strict: only envelopes tagged with `metadata.source == "teams_graph_api"`
@@ -755,6 +794,53 @@ Use this when you want the guest to wake only for new review feedback and post t
   - host worker alternates between quiet polls and discovered feedback events,
   - audit shows allowed calls for `has_pending_feedback`, `list_unread_feedback`, `list_all_feedback`, and `post_pr_feedback_reply`,
   - idempotent retry returns `status=deduplicated` instead of creating duplicate provider comments.
+
+## PR Review Request Workflow
+
+Use this when a receptionist-style agent should enqueue a PR review request and let the trigger
+orchestrator drive the disposable review VM workflow.
+
+### Host-side pieces
+
+- New MCP tools:
+  - `request_pr_review`
+  - `post_pr_comment`
+  - `submit_pr_review`
+- New trigger:
+  - `trigger:review:new-request`
+- New runtime state:
+  - `runtime/review-request-store.json`
+
+`request_pr_review` normalizes the PR target, resolves provider metadata (title, URL, base/head
+refs and commits), and writes a durable request record into the host review-request inbox. The
+trigger provider polls that inbox and emits a `review_request` payload for workflow consumption.
+
+### Typical workflow shape
+
+1. `trigger:review:new-request`
+2. `effect:vm:create`
+3. `effect:session:update-metadata`
+4. `effect:vm:exec`
+   run `scripts/guest/setup_review_repo.sh` inside the guest with explicit `--base-ref` and `--head-ref`
+5. `effect:agent:prompt`
+6. `gate:await-agent`
+7. `post_pr_comment` or `submit_pr_review`
+8. `effect:vm:stop`
+
+### Review repo prep helper
+
+Guests can prepare a deterministic review checkout with:
+
+```bash
+./scripts/guest/setup_review_repo.sh \
+  --repo-path /home/agent/<repo-name> \
+  --base-ref refs/heads/main \
+  --head-ref refs/heads/review/topic
+```
+
+The helper resolves explicit base/head refs, writes durable local refs under
+`refs/agent-sandbox/review/*`, detaches the worktree onto the head commit, and writes a
+shell-safe context file at `.agent-sandbox/review-context.env` by default.
 
 ### NuGet Relay Notes
 

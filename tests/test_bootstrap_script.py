@@ -29,6 +29,7 @@ def test_bootstrap_script_enforces_codex_config_and_placeholder_key() -> None:
     assert 'if [ -n "${AGENT_SANDBOX_SESSION_ID:-}" ]; then' in script
     assert 'CODEX_LLM_BASE_URL="${CODEX_LLM_BASE_URL%/}/session/${AGENT_SANDBOX_SESSION_ID}"' in script
     assert 'CODEX_GATEWAY_URL="${CODEX_GATEWAY_URL}?session_id=${AGENT_SANDBOX_SESSION_ID}"' in script
+    assert 'if line.strip() != \'export PATH="$HOME/bin:$PATH"\'' in script
     assert "append_shell_setup ~/.profile" in script
     assert "append_shell_setup ~/.bashrc" in script
     assert 'ENABLE_GUEST_HEARTBEAT="${ENABLE_GUEST_HEARTBEAT:-0}"' in script
@@ -98,3 +99,13 @@ def test_guest_heartbeat_assets_exist() -> None:
     assert "ExecStart=%h/.config/systemd/user/heartbeat_cycle.sh" in service
     assert "OnUnitActiveSec=5min" in timer
     assert "Unit=agent-heartbeat.service" in timer
+
+
+def test_node_bootstraps_preserve_home_bin_precedence() -> None:
+    playwright = (ROOT / "scripts" / "bootstrap_playwright_vm.sh").read_text(encoding="utf-8")
+    frontend = (ROOT / "scripts" / "bootstrap_frontend_deps_vm.sh").read_text(encoding="utf-8")
+
+    assert 'export PATH="$HOME/bin:$HOME/toolchains/node-v24.14.0/bin:$PATH"' in playwright
+    assert 'export PATH="$HOME/bin:$HOME/toolchains/node-v24.14.0/bin:$PATH"' in frontend
+    assert 'export PATH="$HOME/toolchains/node-v24.14.0/bin:$PATH"' in playwright
+    assert 'export PATH="$HOME/toolchains/node-v24.14.0/bin:$PATH"' in frontend

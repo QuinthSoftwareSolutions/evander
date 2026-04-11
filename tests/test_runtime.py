@@ -12,13 +12,16 @@ from agent_sandbox.models import SessionManifest, ToolName
 from agent_sandbox.runtime import _resolve_allowed_discord_channel_ids, build_runtime
 from agent_sandbox.services import (
     AzureDevOpsPrReplyProvider,
+    AzureDevOpsPrPublishProvider,
     DiscordBotApiService,
     GraphTeamsService,
     DiscordInboxService,
     GitHubPrReplyProvider,
+    GitHubPrPublishProvider,
     StubDiscordService,
     StubTeamsService,
 )
+from agent_sandbox.teams_auth import JsonTeamsIdentityCredentialStore, TeamsAuthCredentials
 
 
 def make_config(tmp_path: Path, **kwargs: object) -> GatewayConfig:
@@ -99,6 +102,22 @@ def test_build_runtime_uses_graph_teams_backend_when_token_is_present(
 ) -> None:
     monkeypatch.setenv("GRAPH_TEAMS_ACCESS_TOKEN", "graph-token")
     config = make_config(tmp_path, teams_backend="graph_api")
+
+    runtime = build_runtime(config)
+
+    assert isinstance(runtime.teams_service, GraphTeamsService)
+
+
+def test_build_runtime_supports_delegated_teams_backend_without_static_env_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("GRAPH_TEAMS_ACCESS_TOKEN", raising=False)
+    config = make_config(
+        tmp_path,
+        teams_backend="delegated_graph_api",
+        teams_delegated_identity_id="root-identity",
+        teams_delegated_client_id="client-123",
+    )
 
     runtime = build_runtime(config)
 
@@ -343,6 +362,54 @@ def test_runtime_teams_service_for_session_uses_directory_provider_override_and_
     assert teams_service._allowed_channel_targets() == ["team-a/channel-1"]
 
 
+def test_runtime_teams_service_for_session_uses_directory_delegated_credentials(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("GRAPH_TEAMS_ACCESS_TOKEN", raising=False)
+    config = make_config(tmp_path, teams_backend="stub")
+    directories = DirectoryService(DirectoryStore(config.directories_store_path))
+    team = directories.create(parent="root", name="team")
+    write_provider_overlay(
+        config,
+        team.path,
+        {
+            "teams_backend": "delegated_graph_api",
+            "teams_delegated_identity_id": "team-identity",
+            "teams_delegated_client_id": "client-123",
+        },
+    )
+    JsonTeamsIdentityCredentialStore(
+        tmp_path / "teams-delegated-credentials.json",
+        "team-identity",
+    ).save(
+        TeamsAuthCredentials(
+            client_id="client-123",
+            tenant_id="tenant-abc",
+            access_token="delegated-team-token",
+            refresh_token="refresh-token",
+            scopes=["offline_access"],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    runtime = build_runtime(config)
+    runtime.sessions.put(
+        "session-team",
+        SessionManifest(
+            session_id="session-team",
+            directory_path=team.path,
+            allowed_tools=[ToolName.TEAMS_GET_MESSAGES],
+            teams_channel_allowlist=["team-a/channel-1"],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+
+    teams_service = runtime.teams_service_for_session("session-team")
+
+    assert isinstance(teams_service, GraphTeamsService)
+    assert teams_service._headers()["Authorization"] == "Bearer delegated-team-token"
+    assert teams_service._allowed_channel_targets() == ["team-a/channel-1"]
+
+
 def test_runtime_pr_reply_service_for_session_uses_directory_provider_override(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -380,6 +447,49 @@ def test_runtime_pr_reply_service_for_session_uses_directory_provider_override(
     assert isinstance(github_provider, GitHubPrReplyProvider)
     assert github_provider.token == "gh-token"
     assert isinstance(azure_provider, AzureDevOpsPrReplyProvider)
+    assert azure_provider.organization_url == "https://dev.azure.com/team-org"
+    assert azure_provider.project == "team-project"
+    assert azure_provider.pat == "ado-token"
+    assert azure_provider.timeout_seconds == 9.0
+
+
+def test_runtime_pr_publish_service_for_session_uses_directory_provider_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("TEAM_GITHUB_TOKEN", "gh-token")
+    monkeypatch.setenv("TEAM_ADO_PR_PAT", "ado-token")
+    config = make_config(tmp_path)
+    directories = DirectoryService(DirectoryStore(config.directories_store_path))
+    team = directories.create(parent="root", name="team")
+    write_provider_overlay(
+        config,
+        team.path,
+        {
+            "github_token_env": "TEAM_GITHUB_TOKEN",
+            "azure_devops_pr_pat_env": "TEAM_ADO_PR_PAT",
+            "azure_devops_organization_url": "https://dev.azure.com/team-org",
+            "azure_devops_project": "team-project",
+            "email_provider_timeout_seconds": 9.0,
+        },
+    )
+    runtime = build_runtime(config)
+    runtime.sessions.put(
+        "session-team",
+        SessionManifest(
+            session_id="session-team",
+            allowed_tools=[ToolName.POST_PR_FEEDBACK_REPLY],
+            directory_path=team.path,
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+
+    pr_publish_service = runtime.pr_publish_service_for_session("session-team")
+
+    github_provider = pr_publish_service.providers["github"]
+    azure_provider = pr_publish_service.providers["azure_devops"]
+    assert isinstance(github_provider, GitHubPrPublishProvider)
+    assert github_provider.token == "gh-token"
+    assert isinstance(azure_provider, AzureDevOpsPrPublishProvider)
     assert azure_provider.organization_url == "https://dev.azure.com/team-org"
     assert azure_provider.project == "team-project"
     assert azure_provider.pat == "ado-token"

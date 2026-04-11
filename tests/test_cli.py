@@ -8,6 +8,7 @@ from typer.testing import CliRunner
 
 from agent_sandbox.cli import EndpointStatus, UnitStatus, app
 from agent_sandbox.models import ApprovalRequest, LocalIssueRecord, VmActionResult, VmSummary
+from agent_sandbox.teams_auth import InvalidClientConfigurationError
 
 UTC = timezone.utc
 
@@ -109,8 +110,223 @@ def test_help_groups_commands_by_panel_then_alphabetically() -> None:
     assert "Backfill missing directory ownership fields" in output
     assert "create-issue-vm" in output and "Create and bootstrap an issue VM." in output
     assert "create-vm" in output and "Create and bootstrap a standalone VM." in output
+    assert "teams-auth" in output
     assert "host-heartbeat" in output and "Run the host heartbeat worker." in output
+    assert "teams-ingest" in output and "Run the Teams ingest worker." in output
     assert "trigger-orchestrator" in output and "Run the trigger orchestrator worker." in output
+
+
+def test_teams_auth_help_exposes_subcommands() -> None:
+    runner = CliRunner()
+
+    result = runner.invoke(app, ["teams-auth", "--help"])
+
+    assert result.exit_code == 0
+    output = result.output
+    assert "login" in output
+    assert "status" in output
+    assert "logout" in output
+    assert "list" in output
+    assert "channels" in output
+
+
+def test_teams_auth_commands_use_admin_service_and_redact_tokens(tmp_path: Path, monkeypatch) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+    calls: list[str] = []
+
+    class FakeAdminService:
+        def __init__(self, config) -> None:
+            self.config = config
+
+        def teams_auth_login(self, *, directory="root"):
+            calls.append("login")
+            return {
+                "status": "device_code_pending",
+                "message": "Go to https://microsoft.com/devicelogin and enter code ABCD-EFGH",
+                "verification_uri": "https://microsoft.com/devicelogin",
+                "user_code": "ABCD-EFGH",
+                "access_token": "should-not-leak",
+                "refresh_token": "should-not-leak-either",
+            }
+
+        def teams_auth_complete_login(self, login_session, *, directory="root"):
+            calls.append("complete_login")
+            return {
+                "status": "authenticated",
+                "backend": "delegated_graph_api",
+                "account_identifier": "alice@example.com",
+                "tenant_id": "contoso",
+                "expires_at": "2026-05-01T12:00:00Z",
+                "access_token": "should-not-leak",
+            }
+
+        def teams_auth_status(self, *, directory="root"):
+            calls.append("status")
+            return {
+                "status": "authenticated",
+                "backend": "delegated_graph_api",
+                "account_identifier": "alice@example.com",
+                "tenant_id": "contoso",
+                "expires_at": "2026-05-01T12:00:00Z",
+                "access_token": "should-not-leak",
+            }
+
+        def teams_auth_list(self):
+            calls.append("list")
+            return [
+                {
+                    "status": "authenticated",
+                    "account": "alice@example.com",
+                    "tenant": "contoso",
+                    "refresh_token": "should-not-leak",
+                },
+                {
+                    "status": "expired",
+                    "account": "bob@example.com",
+                    "tenant": "fabrikam",
+                },
+            ]
+
+        def teams_auth_logout(self, *, directory="root"):
+            calls.append("logout")
+            return None
+
+        def teams_auth_list_channels(
+            self,
+            *,
+            directory="root",
+            team_id="",
+            channel_name=None,
+            include_all=False,
+        ):
+            calls.append("list_channels")
+            return {
+                "team_id": team_id,
+                "channel_name": channel_name,
+                "match_count": 1,
+                "channels": [
+                    {
+                        "display_name": "Truman",
+                        "channel_id": "19:abc@thread.skype",
+                        "allowlist_entry": f"{team_id}/19:abc@thread.skype",
+                    }
+                ],
+            }
+
+    monkeypatch.setattr("agent_sandbox.cli.AdminService", FakeAdminService)
+
+    login_result = runner.invoke(app, ["teams-auth", "login", "--config", str(config_path)])
+    status_result = runner.invoke(app, ["teams-auth", "status", "--config", str(config_path)])
+    list_result = runner.invoke(app, ["teams-auth", "list", "--config", str(config_path)])
+    logout_result = runner.invoke(app, ["teams-auth", "logout", "--config", str(config_path)])
+    channels_result = runner.invoke(
+        app,
+        [
+            "teams-auth",
+            "channels",
+            "--config",
+            str(config_path),
+            "--team-id",
+            "team-123",
+            "--name",
+            "Truman",
+        ],
+    )
+
+    assert login_result.exit_code == 0
+    assert "ABCD-EFGH" in login_result.output
+    assert "should-not-leak" not in login_result.output
+    assert "<redacted>" in login_result.output
+    assert "alice@example.com" in login_result.output
+
+    assert status_result.exit_code == 0
+    assert "alice@example.com" in status_result.output
+    assert "delegated_graph_api" in status_result.output
+    assert "should-not-leak" not in status_result.output
+
+    assert list_result.exit_code == 0
+    assert "Entries: 2" in list_result.output
+    assert "bob@example.com" in list_result.output
+    assert "should-not-leak" not in list_result.output
+
+    assert channels_result.exit_code == 0
+    assert "Truman" in channels_result.output
+    assert "19:abc@thread.skype" in channels_result.output
+    assert "team-123/19:abc@thread.skype" in channels_result.output
+
+    assert logout_result.exit_code == 0
+    assert "Completed successfully." in logout_result.output
+    assert calls == ["login", "complete_login", "status", "list", "logout", "list_channels"]
+
+
+def test_teams_auth_login_reports_auth_errors_without_traceback(tmp_path: Path, monkeypatch) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+
+    class FakeAdminService:
+        def __init__(self, config) -> None:
+            self.config = config
+
+        def teams_auth_login(self, *, directory="root"):
+            return {
+                "status": "device_code_pending",
+                "message": "Open the browser and authenticate.",
+                "verification_uri": "https://login.microsoft.com/device",
+                "user_code": "ABCD-EFGH",
+            }
+
+        def teams_auth_complete_login(self, login_session, *, directory="root"):
+            raise InvalidClientConfigurationError(
+                "Microsoft Entra rejected the device-code flow because the configured app registration "
+                "is not enabled as a public client."
+            )
+
+    monkeypatch.setattr("agent_sandbox.cli.AdminService", FakeAdminService)
+
+    result = runner.invoke(app, ["teams-auth", "login", "--config", str(config_path)])
+
+    assert result.exit_code == 1
+    assert "Teams auth login failed:" in result.output
+    assert "not enabled as a public client" in result.output
+    assert "Traceback" not in result.output
+
+
+def test_teams_auth_login_renders_datetime_details_without_traceback(tmp_path: Path, monkeypatch) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+
+    class FakeAdminService:
+        def __init__(self, config) -> None:
+            self.config = config
+
+        def teams_auth_login(self, *, directory="root"):
+            return {
+                "status": "device_code_pending",
+                "message": "Open the browser and authenticate.",
+                "verification_uri": "https://login.microsoft.com/device",
+                "user_code": "ABCD-EFGH",
+            }
+
+        def teams_auth_complete_login(self, login_session, *, directory="root"):
+            return {
+                "status": "authenticated",
+                "backend": "delegated_graph_api",
+                "account_identifier": "example-teams",
+                "tenant_id": "contoso",
+                "expires_at": datetime(2026, 4, 10, 7, 27, 3, tzinfo=UTC),
+                "issued_at": datetime(2026, 4, 10, 6, 27, 3, tzinfo=UTC),
+                "store_path": "/tmp/teams.json",
+            }
+
+    monkeypatch.setattr("agent_sandbox.cli.AdminService", FakeAdminService)
+
+    result = runner.invoke(app, ["teams-auth", "login", "--config", str(config_path)])
+
+    assert result.exit_code == 0
+    assert "Teams auth status" in result.output
+    assert "2026-04-10T06:27:03+00:00" in result.output
+    assert "Traceback" not in result.output
 
 
 def test_init_state_creates_directories_store_with_root(tmp_path: Path) -> None:
@@ -3517,6 +3733,32 @@ def test_host_heartbeat_once_runs_single_cycle(tmp_path: Path, monkeypatch) -> N
     assert calls == ["run_once_with_lock"]
     assert "streams=3" in result.output
     assert "discovered=1" in result.output
+
+
+def test_teams_ingest_once_runs_single_cycle(tmp_path: Path, monkeypatch) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+    calls: list[str] = []
+
+    class _FakeWorker:
+        def run_once_with_lock(self):
+            calls.append("run_once_with_lock")
+            return SimpleNamespace(directories_polled=4, sessions_seen=6, next_sleep_seconds=21.25)
+
+        def run_forever(self) -> None:
+            raise AssertionError("run_forever should not be called in --once mode")
+
+    monkeypatch.setattr("agent_sandbox.cli._build_teams_ingest_worker", lambda cfg, **kwargs: _FakeWorker())
+
+    result = runner.invoke(
+        app,
+        ["teams-ingest", "--config", str(config_path), "--once", "--log-level", "DEBUG"],
+    )
+
+    assert result.exit_code == 0
+    assert calls == ["run_once_with_lock"]
+    assert "directories=4" in result.output
+    assert "sessions=6" in result.output
 
 
 def test_wake_schedules_create_and_list(tmp_path: Path) -> None:

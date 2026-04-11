@@ -48,6 +48,16 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
     assert any(node["type"] == "effect:vm:exec" for node in catalog_payload["nodes"])
     vm_exec = next(node for node in catalog_payload["nodes"] if node["type"] == "effect:vm:exec")
     assert any(field["key"] == "command" and field["bindable"] for field in vm_exec["fields"])
+    vm_delete = next(node for node in catalog_payload["nodes"] if node["type"] == "effect:vm:delete-files")
+    assert [field["key"] for field in vm_delete["fields"]] == [
+        "target",
+        "session_id",
+        "vm_name",
+        "vm_user",
+        "paths",
+        "recursive",
+        "missing_ok",
+    ]
     issue_state = next(node for node in catalog_payload["nodes"] if node["type"] == "effect:issue:update-state")
     assert [field["key"] for field in issue_state["fields"]] == ["issue_id", "state", "sync_proxy_cache"]
     agent_prompt = next(node for node in catalog_payload["nodes"] if node["type"] == "effect:agent:prompt")
@@ -59,9 +69,20 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
     ]
     ticket_created = next(node for node in catalog_payload["nodes"] if node["type"] == "trigger:ticket:created")
     assert all(field["key"] != "outputs" for field in ticket_created["fields"])
+    review_request = next(node for node in catalog_payload["nodes"] if node["type"] == "trigger:review:new-request")
+    assert review_request["fields"] == []
+    teams_message = next(node for node in catalog_payload["nodes"] if node["type"] == "trigger:teams:new-message")
+    assert [field["key"] for field in teams_message["fields"]] == ["channel_targets", "user_ids"]
     await_agent = next(node for node in catalog_payload["nodes"] if node["type"] == "gate:await-agent")
     assert [field["key"] for field in await_agent["fields"]] == ["session_id", "vm_name", "outputs"]
     assert all(field["bindable"] for field in await_agent["fields"][:2])
+    for_gate = next(node for node in catalog_payload["nodes"] if node["type"] == "gate:for")
+    assert for_gate["output_ports"] == [
+        {"key": "body", "label": "Body", "description": "Loop body path while items remain."},
+        {"key": "done", "label": "Done", "description": "Exit path after the final item."},
+    ]
+    issue_get = next(node for node in catalog_payload["nodes"] if node["type"] == "query:issue:get")
+    assert [field["key"] for field in issue_get["fields"]] == ["issue_id"]
 
 
 def test_admin_web_validates_and_saves_workflow_editor_document(tmp_path: Path) -> None:
@@ -102,6 +123,43 @@ def test_admin_web_validates_and_saves_workflow_editor_document(tmp_path: Path) 
     assert save_response.status_code == 200
     assert save_response.json()["layout"]["nodes"]["prompt-agent"] == {"x": 300.0, "y": 50.0}
     assert (tmp_path / "config" / "trigger-orchestrator" / "layout.json").exists()
+
+
+def test_admin_web_saves_disconnected_workflow_editor_document(tmp_path: Path) -> None:
+    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    payload = {
+        "config": {
+            "runtime_dir": str(tmp_path / "runtime"),
+            "triggers": [
+                {
+                    "id": "cron-15m",
+                    "display_name": "Every 15 minutes",
+                    "type": "trigger:cron",
+                    "expression": "*/15 * * * *",
+                }
+            ],
+            "effects": [
+                {
+                    "id": "prompt-agent",
+                    "display_name": "Prompt agent",
+                    "type": "effect:agent:prompt",
+                    "prompt": "Summarize",
+                }
+            ],
+            "edges": [],
+        },
+        "layout": {
+            "nodes": {
+                "cron-15m": {"x": 100, "y": 50},
+                "prompt-agent": {"x": 300, "y": 50},
+            }
+        },
+    }
+
+    save_response = client.put("/api/workflow-editor/document", json=payload)
+
+    assert save_response.status_code == 200
+    assert save_response.json()["config"]["edges"] == []
 
 
 def test_admin_web_exposes_active_workflow_runs(tmp_path: Path) -> None:
@@ -432,3 +490,64 @@ def test_admin_web_load_normalizes_await_agent_outputs_without_completion_trigge
     assert response.status_code == 200
     gate = response.json()["config"]["gates"][0]
     assert gate["outputs"]["dispatch_id"] == {"type": "string"}
+
+
+def test_admin_web_load_normalizes_for_gate_outputs(tmp_path: Path) -> None:
+    config_root = tmp_path / "config" / "trigger-orchestrator"
+    config_root.mkdir(parents=True, exist_ok=True)
+    (config_root / "config.json").write_text(
+        """
+{
+  "runtime_dir": "runtime",
+  "triggers": [
+    {
+      "id": "trigger-cron-1",
+      "display_name": "Tick",
+      "type": "trigger:cron",
+      "expression": "* * * * *"
+    }
+  ],
+  "gates": [
+    {
+      "id": "gate-for-1",
+      "display_name": "For",
+      "type": "gate:for",
+      "items": ["a", "b"],
+      "outputs": {}
+    }
+  ],
+  "effects": [
+    {
+      "id": "effect-body-1",
+      "display_name": "Body",
+      "type": "effect:vm:exec",
+      "target": "session-1",
+      "command": "echo body"
+    },
+    {
+      "id": "effect-done-1",
+      "display_name": "Done",
+      "type": "effect:vm:exec",
+      "target": "session-1",
+      "command": "echo done"
+    }
+  ],
+  "queries": [],
+  "edges": [
+    { "source_id": "trigger-cron-1", "target_id": "gate-for-1" },
+    { "source_id": "gate-for-1", "source_port": "body", "target_id": "effect-body-1" },
+    { "source_id": "gate-for-1", "source_port": "done", "target_id": "effect-done-1" },
+    { "source_id": "effect-body-1", "target_id": "gate-for-1", "allow_cycle": true }
+  ]
+}
+""".strip(),
+        encoding="utf-8",
+    )
+
+    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    response = client.get("/api/workflow-editor/document")
+
+    assert response.status_code == 200
+    gate = response.json()["config"]["gates"][0]
+    assert gate["outputs"]["current_index"] == {"type": "integer"}
+    assert gate["outputs"]["item_count"] == {"type": "integer"}

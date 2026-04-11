@@ -11,15 +11,17 @@ import pytest
 from pydantic import TypeAdapter
 
 from agent_sandbox.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
-from agent_sandbox.models import DiscordMessageEnvelope, EmailMessage, LocalIssueRecord, PrFeedbackItem
+from agent_sandbox.models import DiscordMessageEnvelope, EmailMessage, LocalIssueRecord, PrFeedbackItem, TeamsMessageEnvelope
 from agent_sandbox.trigger_orchestrator import TriggerOrchestratorWorker
 from agent_sandbox.events.models import TriggerDefinitionDiscriminated
+from agent_sandbox.teams_inbox_store import TeamsInboxMessage, TeamsInboxStore
 from agent_sandbox.triggers.providers.base import TriggerRuntimeContext
 from agent_sandbox.triggers.providers.cron import CronTriggerProvider
 from agent_sandbox.triggers.providers.discord_new_message import DiscordNewMessageTriggerProvider
 from agent_sandbox.triggers.providers.email_new_message import EmailNewMessageTriggerProvider
 from agent_sandbox.triggers.providers.git_push import GitPushTriggerProvider
 from agent_sandbox.triggers.providers.pull_request_new_feedback import PullRequestNewFeedbackTriggerProvider
+from agent_sandbox.triggers.providers.teams_new_message import TeamsNewMessageTriggerProvider
 from agent_sandbox.triggers.providers.ticket_changed import TicketChangedTriggerProvider
 from agent_sandbox.triggers.providers.ticket_created import TicketCreatedTriggerProvider
 from agent_sandbox.triggers.queue import TriggerEventQueue
@@ -119,6 +121,17 @@ def _trigger_adapter() -> TypeAdapter[TriggerDefinitionDiscriminated]:
         ),
         (
             {
+                "id": "teams",
+                "display_name": "Teams",
+                "type": "trigger:teams:new-message",
+                "channel_targets": ["team-a/channel-1"],
+                "user_ids": ["user-a"],
+            },
+            "trigger:teams:new-message",
+            "channel_targets",
+        ),
+        (
+            {
                 "id": "pr",
                 "display_name": "PR",
                 "type": "trigger:pull-request:new-feedback",
@@ -128,6 +141,15 @@ def _trigger_adapter() -> TypeAdapter[TriggerDefinitionDiscriminated]:
             },
             "trigger:pull-request:new-feedback",
             "provider",
+        ),
+        (
+            {
+                "id": "review-request",
+                "display_name": "Review request",
+                "type": "trigger:review:new-request",
+            },
+            "trigger:review:new-request",
+            "id",
         ),
         (
             {
@@ -188,6 +210,15 @@ def test_conformance_schema_accepts_required_trigger_shapes(
             },
             "account_identifier",
             "trigger:email:new-message",
+        ),
+        (
+            {
+                "id": "teams-bad",
+                "display_name": "Teams",
+                "type": "trigger:teams:new-message",
+            },
+            "channel_targets",
+            "trigger:teams:new-message",
         ),
         (
             {
@@ -329,6 +360,22 @@ def test_conformance_provider_payload_contracts_and_secret_redaction(
         encoding="utf-8",
     )
 
+    teams_store = TeamsInboxStore(runtime_dir / "teams-inbox-store.json")
+    teams_store.add_message_if_new(
+        TeamsInboxMessage(
+            cursor="team-a/channel-1/msg-1",
+            message_id="msg-1",
+            author_id="user-a",
+            author_name="User A",
+            team_id="team-a",
+            channel_id="channel-1",
+            thread_id="msg-1",
+            content="hello from Teams",
+            created_at=now,
+            metadata={"source": "teams_graph_api"},
+        )
+    )
+
     pr_feedback_path = runtime_dir / "pr-feedback-store.json"
     pr_feedback_path.write_text(
         json.dumps(
@@ -407,6 +454,19 @@ def test_conformance_provider_payload_contracts_and_secret_redaction(
             env={"EMAIL_TOKEN": "super-secret-value"},
         ),
     )
+    teams = TeamsNewMessageTriggerProvider()
+    teams.initialize(
+        _trigger_adapter().validate_python(
+            {
+                "id": "teams",
+                "display_name": "Teams",
+                "type": "trigger:teams:new-message",
+                "channel_targets": ["team-a/channel-1"],
+                "user_ids": ["user-a"],
+            }
+        ),
+        TriggerRuntimeContext(resolved_config=config, env={}),
+    )
     pr = PullRequestNewFeedbackTriggerProvider()
     pr.initialize(
         _trigger_adapter().validate_python(
@@ -425,12 +485,14 @@ def test_conformance_provider_payload_contracts_and_secret_redaction(
     ticket_changed_events = ticket_changed.poll()
     discord_events = discord.poll()
     email_events = email.poll()
+    teams_events = teams.poll()
     pr_events = pr.poll()
 
     assert list(ticket_created_events[0].payload.keys()) == ["ticket"]
     assert list(ticket_changed_events[0].payload.keys()) == ["ticket"]
     assert list(discord_events[0].payload.keys()) == ["message"]
     assert list(email_events[0].payload.keys()) == ["message"]
+    assert list(teams_events[0].payload.keys()) == ["message"]
     assert set(pr_events[0].payload.keys()) == {"pr", "feedback"}
 
     for line in caplog.messages:
@@ -536,6 +598,35 @@ def test_conformance_directory_and_filter_scoping(tmp_path: Path, report_collect
         ),
         encoding="utf-8",
     )
+    teams_store = TeamsInboxStore(runtime_dir / "teams-inbox-store.json")
+    teams_store.add_message_if_new(
+        TeamsInboxMessage(
+            cursor="team-a/channel-1/msg-1",
+            message_id="msg-1",
+            author_id="user-a",
+            author_name="User A",
+            team_id="team-a",
+            channel_id="channel-1",
+            thread_id="msg-1",
+            content="allowed",
+            created_at=now,
+            metadata={"source": "teams_graph_api", "team_id": "team-a", "channel_id": "channel-1"},
+        )
+    )
+    teams_store.add_message_if_new(
+        TeamsInboxMessage(
+            cursor="team-b/channel-9/msg-9",
+            message_id="msg-9",
+            author_id="user-b",
+            author_name="User B",
+            team_id="team-b",
+            channel_id="channel-9",
+            thread_id="msg-9",
+            content="blocked",
+            created_at=now + timedelta(seconds=2),
+            metadata={"source": "teams_graph_api", "team_id": "team-b", "channel_id": "channel-9"},
+        )
+    )
 
     ticket_provider = TicketCreatedTriggerProvider()
     ticket_provider.initialize(
@@ -563,22 +654,38 @@ def test_conformance_directory_and_filter_scoping(tmp_path: Path, report_collect
         ),
         _build_runtime_context(runtime_dir),
     )
+    teams_provider = TeamsNewMessageTriggerProvider()
+    teams_provider.initialize(
+        _trigger_adapter().validate_python(
+            {
+                "id": "teams-filtered",
+                "display_name": "Teams",
+                "type": "trigger:teams:new-message",
+                "channel_targets": ["team-a/channel-1"],
+                "user_ids": ["user-a"],
+            }
+        ),
+        _build_runtime_context(runtime_dir),
+    )
 
     ticket_events = ticket_provider.poll()
     discord_events = discord_provider.poll()
+    teams_events = teams_provider.poll()
 
     assert len(ticket_events) == 1
     assert ticket_events[0].payload["ticket"]["directory_path"] == "root/team-a"
     assert len(discord_events) == 1
     assert discord_events[0].payload["message"]["channel_id"] == "chan-a"
+    assert len(teams_events) == 1
+    assert teams_events[0].payload["message"]["channel_id"] == "channel-1"
 
     _record_result(
         report_collector,
         requirement_id="provider:directory-and-filter-scoping",
-        trigger_type="trigger:ticket:created,trigger:discord:new-message",
+        trigger_type="trigger:ticket:created,trigger:discord:new-message,trigger:teams:new-message",
         status="pass",
         coverage=["provider behavior correctness"],
-        details="Ticket directory scope and Discord channel/user filters are enforced.",
+        details="Ticket directory scope and Discord/Teams message filters are enforced.",
     )
 
 
@@ -890,8 +997,10 @@ def test_conformance_traceability_matrix_and_report(
             "schema:trigger:ticket:created",
             "schema:trigger:ticket:changed",
             "schema:trigger:discord:new-message",
+            "schema:trigger:teams:new-message",
             "schema:trigger:email:new-message",
             "schema:trigger:pull-request:new-feedback",
+            "schema:trigger:review:new-request",
             "schema:trigger:git:push",
             "schema:duplicate-ids",
         ],

@@ -357,6 +357,10 @@ render_unit \
   "${SYSTEMD_DIR}/agent-sandbox-discord-ingest.service"
 
 render_unit \
+  "${ROOT_DIR}/systemd/agent-sandbox-teams-ingest.service.template" \
+  "${SYSTEMD_DIR}/agent-sandbox-teams-ingest.service"
+
+render_unit \
   "${ROOT_DIR}/systemd/agent-sandbox-host-heartbeat.service.template" \
   "${SYSTEMD_DIR}/agent-sandbox-host-heartbeat.service"
 
@@ -379,6 +383,7 @@ systemctl enable agent-sandbox-firewall.service
 systemctl enable agent-sandbox-nuget-relay.service
 systemctl enable agent-sandbox-ado-worker.service
 systemctl enable agent-sandbox-discord-ingest.service
+systemctl enable agent-sandbox-teams-ingest.service
 systemctl enable agent-sandbox-host-heartbeat.service
 systemctl enable agent-sandbox-issue-orchestrator.service
 systemctl enable agent-sandbox-effect-orchestrator.service
@@ -392,6 +397,7 @@ Installed systemd units:
   agent-sandbox-nuget-relay.service
   agent-sandbox-ado-worker.service
   agent-sandbox-discord-ingest.service
+  agent-sandbox-teams-ingest.service
   agent-sandbox-host-heartbeat.service
   agent-sandbox-issue-orchestrator.service
   agent-sandbox-effect-orchestrator.service
@@ -401,16 +407,18 @@ Next steps:
   1. Populate ${ROOT_DIR}/runtime/directory-config/root/ado-worker.json via the root directory config migration commands.
   2. Populate ${ROOT_DIR}/config/ado-worker/config.json via the Admin GUI if you want to override worker defaults.
   3. Populate ${ROOT_DIR}/config/issue-orchestrator/config.json from the example file if you want to enable the issue orchestrator scaffold.
-  4. Populate ${ROOT_DIR}/config/trigger-orchestrator/config.json from the example file if you want to enable the trigger orchestrator scaffold.
-  5. Export the required host secrets in the service manager environment, or source ${ROOT_DIR}/secrets.env if you keep one there.
-  6. Optionally edit ${ROOT_DIR}/config/firewall.env to change allowed host ports.
-  7. Start services:
+  4. Populate ${ROOT_DIR}/config/teams-ingest/config.json from the example file if you want to override Teams ingest defaults.
+  5. Populate ${ROOT_DIR}/config/trigger-orchestrator/config.json from the example file if you want to enable the trigger orchestrator scaffold.
+  6. Export the required host secrets in the service manager environment, or source ${ROOT_DIR}/secrets.env if you keep one there.
+  7. Optionally edit ${ROOT_DIR}/config/firewall.env to change allowed host ports.
+  8. Start services:
      sudo systemctl start agent-sandbox-firewall.service
      sudo systemctl start agent-sandbox-gateway.service
      sudo systemctl start agent-sandbox-openai-relay.service
      sudo systemctl start agent-sandbox-nuget-relay.service
      sudo systemctl start agent-sandbox-ado-worker.service
      sudo systemctl start agent-sandbox-discord-ingest.service
+     sudo systemctl start agent-sandbox-teams-ingest.service
      sudo systemctl start agent-sandbox-host-heartbeat.service
      sudo systemctl start agent-sandbox-issue-orchestrator.service
      sudo systemctl start agent-sandbox-effect-orchestrator.service

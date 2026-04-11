@@ -13,6 +13,7 @@ from .models import (
     ToolName,
     digest_payload,
 )
+from .services import normalize_teams_target, teams_target_from_message
 from .policy_config import EffectivePolicyConfig, PolicyConfigResolver
 from .storage import JsonStore
 
@@ -70,6 +71,8 @@ class PolicyEngine:
             ToolName.HAS_PENDING_FEEDBACK,
             ToolName.LIST_UNREAD_FEEDBACK,
             ToolName.LIST_ALL_FEEDBACK,
+            ToolName.POST_PR_COMMENT,
+            ToolName.SUBMIT_PR_REVIEW,
         }:
             self.require_pr_feedback_streams(session)
         return session
@@ -152,29 +155,33 @@ class PolicyEngine:
         if source != "teams_graph_api":
             raise PolicyError(f"Teams message {message.cursor} has untrusted source {source!r}")
 
-        team_id = str(message.metadata.get("team_id", message.team_id)).strip()
-        channel_id = str(message.metadata.get("channel_id", message.channel_id)).strip()
-        if not team_id or not channel_id:
+        try:
+            target = teams_target_from_message(
+                team_id=message.team_id,
+                channel_id=message.channel_id,
+                chat_id=message.chat_id,
+                metadata=message.metadata,
+            )
+        except ValueError as exc:
             raise PolicyError(
                 f"Teams message {message.cursor} is missing required source metadata"
-            )
+            ) from exc
 
-        channel_target = f"{team_id}/{channel_id}"
-        if channel_target not in session.teams_channel_allowlist:
+        if target not in {normalize_teams_target(value) for value in session.teams_channel_allowlist if value.strip()}:
             raise PolicyError(
                 f"Teams message {message.cursor} source is not allowlisted for session "
                 f"{session.session_id}"
             )
 
     def require_teams_channel_target(self, session: SessionManifest, channel_target: str) -> str:
-        normalized_target = str(channel_target).strip().strip("/")
-        team_id, separator, channel_id = normalized_target.partition("/")
-        if not separator or not team_id or not channel_id:
-            raise PolicyError(
-                f"Invalid Teams channel target {channel_target!r}: expected 'team-id/channel-id'."
-            )
-        if normalized_target not in session.teams_channel_allowlist:
-            raise PolicyError(f"Teams channel is not allowlisted for session {session.session_id}")
+        try:
+            normalized_target = normalize_teams_target(channel_target)
+        except ValueError as exc:
+            raise PolicyError(str(exc)) from exc
+        if normalized_target not in {
+            normalize_teams_target(value) for value in session.teams_channel_allowlist if value.strip()
+        }:
+            raise PolicyError(f"Teams target is not allowlisted for session {session.session_id}")
         return normalized_target
 
     def require_email_folder(self, session: SessionManifest, folder: str) -> None:

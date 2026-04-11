@@ -270,6 +270,7 @@ exit 1
     env["PATH"] = f"{fake_bin}:{env['PATH']}"
     env["SSH_PRIVATE_KEY_PATH"] = str(private_key)
     env["USER"] = env.get("USER", "root")
+    env["AGENT_MODEL"] = "gpt-5.3-codex"
 
     result = subprocess.run(
         [str(script_path), "Resume work now", "14084"],
@@ -652,6 +653,7 @@ esac
     env["PATH"] = f"{fake_bin}:{env['PATH']}"
     env["SSH_PRIVATE_KEY_PATH"] = str(private_key)
     env["USER"] = env.get("USER", "root")
+    env["AGENT_MODEL"] = "gpt-5.3-codex"
 
     result = subprocess.run(
         [

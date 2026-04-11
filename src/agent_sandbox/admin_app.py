@@ -16,6 +16,7 @@ from .config import (
     GatewayConfig,
     HostHeartbeatWorkerGlobalConfig,
     IssueOrchestratorWorkerGlobalConfig,
+    TeamsIngestWorkerGlobalConfig,
     TriggerOrchestratorWorkerGlobalConfig,
 )
 from .directory_config import (
@@ -794,10 +795,10 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
 }
 
 WORKER_GLOBAL_CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
-    "runtime_dir": "Base runtime directory for the ADO worker's state and default relative paths.",
-    "poll_interval_seconds": "How often the ADO worker polls Azure DevOps for new work items.",
+    "runtime_dir": "Base runtime directory for the worker's state and default relative paths.",
+    "poll_interval_seconds": "Base polling interval in seconds for the worker loop.",
     "directories": (
-        "Canonical directory paths the ADO worker should process on each cycle. "
+        "Canonical directory paths the worker should process on each cycle. "
         "One path per line; an empty list means the worker skips polling."
     ),
     "host_heartbeat_directory_paths": (
@@ -833,9 +834,10 @@ WORKER_GLOBAL_CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
     "host_heartbeat_schedule_max_active_per_session": "Optional cap on active scheduled wake requests per session.",
     "host_heartbeat_schedule_max_active_total": "Optional cap on active scheduled wake requests across all sessions.",
     "host_heartbeat_schedule_min_interval_seconds": "Optional minimum allowed interval for recurring scheduled wakes.",
-    "jitter_seconds": "Random delay added to each issue orchestrator sleep interval.",
+    "jitter_seconds": "Random delay added to each worker sleep interval.",
+    "backoff_seconds": "Sleep interval used after an ingest cycle fails before retrying.",
     "cooldown_seconds": "Minimum cooldown before the issue orchestrator retries the same session.",
-    "lock_path": "Single-instance lock file for the issue orchestrator worker.",
+    "lock_path": "Single-instance lock file for the worker.",
     "busy_check_script_path": "Host script used by the issue orchestrator to detect whether a session VM is busy.",
     "resume_script_path": "Host script invoked by the issue orchestrator to resume a session VM.",
     "wake_state_path": "Host-side JSON state file written by issue orchestrator resume attempts.",
@@ -852,6 +854,7 @@ WORKER_GLOBAL_CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
 
 WORKER_GLOBAL_CONFIG_MODELS: dict[str, type[BaseModel]] = {
     "ado": AdoWorkerGlobalConfig,
+    "teams-ingest": TeamsIngestWorkerGlobalConfig,
     "host-heartbeat": HostHeartbeatWorkerGlobalConfig,
     "issue-orchestrator": IssueOrchestratorWorkerGlobalConfig,
     "trigger-orchestrator": TriggerOrchestratorWorkerGlobalConfig,
@@ -874,6 +877,7 @@ def _config_field_kind(field_name: str) -> tuple[str, tuple[Any, ...]]:
     field_models = (
         GatewayConfig.model_fields,
         AdoWorkerGlobalConfig.model_fields,
+        TeamsIngestWorkerGlobalConfig.model_fields,
         HostHeartbeatWorkerGlobalConfig.model_fields,
         TriggerOrchestratorWorkerGlobalConfig.model_fields,
         AdoWorkerDirectoryConfig.model_fields,
@@ -984,6 +988,9 @@ def _format_issue_details(issue) -> str:
     description = str(issue.description or issue.body or "").strip()
     if description:
         lines.extend(["", "Description:", description])
+    metadata = getattr(issue, "metadata", None)
+    if isinstance(metadata, dict) and metadata:
+        lines.extend(["", "Metadata:", json.dumps(metadata, indent=2, sort_keys=True)])
     return "\n".join(lines)
 
 

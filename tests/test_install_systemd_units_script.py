@@ -36,10 +36,12 @@ def test_install_systemd_units_preflight_checks_for_mssql_worker_password_when_e
     assert 'config/ado-worker/config.json' in text
     assert 'runtime/directory-config/root/ado-worker.json' in text
     assert 'config/issue-orchestrator/config.json' in text
+    assert 'config/teams-ingest/config.json' in text
     assert 'config/trigger-orchestrator/config.json' in text
     assert 'secrets.env' in text
     assert 'config/ado-worker.env' not in text
     assert 'agent-sandbox-issue-orchestrator.service' in text
+    assert 'agent-sandbox-teams-ingest.service' in text
     assert 'agent-sandbox-trigger-orchestrator.service' in text
 
 
@@ -65,6 +67,9 @@ def test_service_templates_use_optional_shared_secrets_env() -> None:
     heartbeat = (repo / "systemd" / "agent-sandbox-host-heartbeat.service.template").read_text(
         encoding="utf-8"
     )
+    teams_ingest = (repo / "systemd" / "agent-sandbox-teams-ingest.service.template").read_text(
+        encoding="utf-8"
+    )
     discord_ingest = (repo / "systemd" / "agent-sandbox-discord-ingest.service.template").read_text(
         encoding="utf-8"
     )
@@ -83,6 +88,9 @@ def test_service_templates_use_optional_shared_secrets_env() -> None:
     assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in nuget
     assert "EnvironmentFile=-__PROJECT_DIR__/config/host-heartbeat.env" in heartbeat
     assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in heartbeat
+    assert "Environment=TEAMS_INGEST_LOG_LEVEL=INFO" in teams_ingest
+    assert "ExecStart=__PROJECT_DIR__/scripts/run_teams_ingest.sh" in teams_ingest
+    assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in teams_ingest
     assert "Environment=DISCORD_INGEST_LOG_LEVEL=INFO" in discord_ingest
     assert "--log-level ${DISCORD_INGEST_LOG_LEVEL}" in discord_ingest
     assert "ExecStart=__PROJECT_DIR__/.venv/bin/agent-sandbox-discord-ingest" in discord_ingest
