@@ -627,7 +627,7 @@ overlays can bind a subtree to that host-managed Teams identity, while the legac
 mode remains supported for compatibility through `teams_graph_access_token_env` (default
 `GRAPH_TEAMS_ACCESS_TOKEN`).
 The same delegated Teams identity/configuration is also used by the host-side Teams ingest worker
-that feeds `trigger:teams:new-message`.
+that feeds `trigger:teams:new-message` for both channel threads and group chats.
 
 Key delegated Teams provider settings now include:
 
@@ -635,12 +635,15 @@ Key delegated Teams provider settings now include:
 - `teams_delegated_identity_id`
 - `teams_delegated_client_id`
 - optional `teams_delegated_tenant_id`
-- optional `teams_delegated_scopes`
+- optional `teams_delegated_scopes` (default includes `offline_access`,
+  `ChannelMessage.Read.All`, `ChannelMessage.Send`, and `Chat.ReadWrite`)
 - optional `teams_delegated_authority_base_url`
 - optional `teams_delegated_credential_store_path`
 - The app registration referenced by `teams_delegated_client_id` must support public client /
   device-code auth. If Microsoft returns `AADSTS7000218`, the registration currently requires a
   client secret or assertion and is incompatible with this flow.
+- Changing `teams_delegated_scopes` affects only newly issued delegated credentials; rerun the
+  host `teams-auth login` flow for the directory after scope changes.
 
 ## 4) Additional env vars consumed directly in code paths
 

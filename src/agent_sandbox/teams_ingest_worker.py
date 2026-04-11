@@ -17,7 +17,7 @@ from .bootstrap import load_runtime_gateway_config
 from .config import GatewayConfig, TeamsIngestWorkerGlobalConfig
 from .models import DirectoryPath, SessionManifest, TeamsMessageEnvelope, ToolName
 from .runtime import RuntimeContext, _build_delegated_teams_token_provider, build_runtime
-from .services import GraphTeamsService
+from .services import GraphTeamsService, normalize_teams_target, parse_teams_target
 from .storage import JsonStore
 from .teams_inbox_store import TeamsInboxMessage, TeamsInboxStore
 
@@ -135,7 +135,7 @@ class TeamsIngestWorker:
         active_sessions: list[SessionManifest],
     ) -> list[str]:
         targets = {
-            target.strip().strip("/")
+            normalize_teams_target(target)
             for session in active_sessions
             if ToolName.TEAMS_GET_MESSAGES in session.allowed_tools
             and _directory_is_within_scope(session.directory_path, directory_path)
@@ -209,18 +209,23 @@ class TeamsIngestWorker:
         service: GraphTeamsService,
         channel_target: str,
     ) -> None:
-        team_id, channel_id = _parse_teams_channel_target(channel_target)
+        target = parse_teams_target(channel_target)
         cursor_state = self.store.get_cursor_state(channel_target)
         discovered: list[TeamsInboxMessage] = []
+        latest_seen_message: TeamsInboxMessage | None = None
         candidates: list[TeamsInboxMessage] = []
-        for message_payload in service._iter_channel_messages(
-            client,
-            team_id=team_id,
-            channel_id=channel_id,
-        ):
+        if target.kind == "chat":
+            iterator = service._iter_chat_messages(client, chat_id=target.chat_id or "")
+        else:
+            iterator = service._iter_channel_messages(
+                client,
+                team_id=target.team_id or "",
+                channel_id=target.channel_id or "",
+            )
+        for message_payload in iterator:
             candidates.append(
                 self._normalize_message(
-                    service._to_envelope(message_payload, team_id=team_id, channel_id=channel_id)
+                    service._to_envelope(message_payload, target=target)
                 )
             )
             for reply_payload in message_payload.get("replies") or []:
@@ -228,7 +233,7 @@ class TeamsIngestWorker:
                     continue
                 candidates.append(
                     self._normalize_message(
-                        service._to_envelope(reply_payload, team_id=team_id, channel_id=channel_id)
+                        service._to_envelope(reply_payload, target=target)
                     )
                 )
         candidates.sort(key=lambda item: (item.created_at, item.cursor))
@@ -237,10 +242,13 @@ class TeamsIngestWorker:
                 continue
             if not _message_is_after_cursor_state(message, cursor_state):
                 continue
+            latest_seen_message = message
+            if self._is_known_status_post(message.cursor):
+                continue
             if self.store.add_message_if_new(message):
                 discovered.append(message)
-        if discovered:
-            latest = discovered[-1]
+        latest = discovered[-1] if discovered else latest_seen_message
+        if latest is not None:
             self.store.set_cursor(
                 channel_target,
                 latest.cursor,
@@ -256,9 +264,16 @@ class TeamsIngestWorker:
         author_id = str(metadata.get("author_id", envelope.author_id)).strip() or envelope.author_id
         team_id = str(metadata.get("team_id", envelope.team_id)).strip() or envelope.team_id
         channel_id = str(metadata.get("channel_id", envelope.channel_id)).strip() or envelope.channel_id
+        raw_chat_id = metadata.get("chat_id", envelope.chat_id)
+        chat_id = str(raw_chat_id).strip() if raw_chat_id is not None else ""
+        chat_id = chat_id or None
         thread_id = str(metadata.get("thread_id", envelope.thread_id or "")).strip() or envelope.thread_id
+        target = _target_from_envelope(envelope, metadata=metadata)
+        metadata.setdefault("target", target)
+        metadata.setdefault("target_type", "chat" if chat_id else "channel")
         metadata.setdefault("team_id", team_id)
         metadata.setdefault("channel_id", channel_id)
+        metadata.setdefault("chat_id", chat_id)
         metadata.setdefault("thread_id", thread_id)
         metadata.setdefault("author_id", author_id)
         if author_name:
@@ -268,6 +283,7 @@ class TeamsIngestWorker:
             message_id=envelope.message_id,
             team_id=team_id,
             channel_id=channel_id,
+            chat_id=chat_id,
             thread_id=thread_id,
             author_id=author_id,
             author_name=author_name or author_id,
@@ -275,6 +291,12 @@ class TeamsIngestWorker:
             created_at=envelope.created_at,
             metadata=metadata,
         )
+
+    def _is_known_status_post(self, cursor: str) -> bool:
+        known = self.runtime.teams_messages.get(cursor)
+        if known is None:
+            return False
+        return str(known.metadata.get("source") or "").strip() == "teams_graph_api_status"
 
 
 def _worker_global_config_path(project_dir: Path) -> Path:
@@ -361,15 +383,12 @@ def _compute_next_sleep_seconds(*, poll_interval_seconds: float, jitter_seconds:
         delay += random.uniform(0.0, jitter_seconds)
     return max(0.0, delay)
 
-
-def _parse_teams_channel_target(target: str) -> tuple[str, str]:
-    normalized = target.strip().strip("/")
-    team_id, separator, channel_id = normalized.partition("/")
-    if not separator or not team_id or not channel_id:
-        raise ValueError(
-            f"Invalid Teams channel target {target!r}: expected 'team-id/channel-id'."
-        )
-    return team_id, channel_id
+def _target_from_envelope(envelope: TeamsMessageEnvelope, *, metadata: dict[str, Any]) -> str:
+    if metadata.get("target"):
+        return normalize_teams_target(str(metadata["target"]))
+    if envelope.chat_id:
+        return f"chat:{envelope.chat_id}"
+    return f"{envelope.team_id}/{envelope.channel_id}"
 
 
 def _extract_teams_author_name(raw_message: object) -> str:

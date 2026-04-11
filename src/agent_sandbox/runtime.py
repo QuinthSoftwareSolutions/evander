@@ -40,6 +40,7 @@ from .services import (
     StubDiscordService,
     StubTeamsService,
     TeamsService,
+    normalize_teams_target,
 )
 from .storage import JsonStore
 from .teams_auth import (
@@ -439,7 +440,7 @@ def _resolve_allowed_teams_channel_targets(
         if ToolName.TEAMS_GET_MESSAGES not in session.allowed_tools:
             continue
         targets.update(session.teams_channel_allowlist)
-    return sorted({target.strip().strip("/") for target in targets if target.strip()})
+    return sorted({normalize_teams_target(target) for target in targets if target.strip()})
 
 
 def _resolve_allowed_teams_channel_targets_for_session(
@@ -453,6 +454,4 @@ def _resolve_allowed_teams_channel_targets_for_session(
         return []
     if ToolName.TEAMS_GET_MESSAGES not in session.allowed_tools:
         return []
-    return sorted(
-        {target.strip().strip("/") for target in session.teams_channel_allowlist if target.strip()}
-    )
+    return sorted({normalize_teams_target(target) for target in session.teams_channel_allowlist if target.strip()})

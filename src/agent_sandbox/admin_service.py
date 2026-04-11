@@ -489,7 +489,7 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         type="trigger:teams:new-message",
         label="Teams message",
         fields=[
-            _field("channel_targets", "Channel targets", "string_list", required=True, placeholder="team-id/channel-id"),
+            _field("channel_targets", "Channel targets", "string_list", required=True, placeholder="team-id/channel-id or chat:<chat-id>"),
             _field("user_ids", "User IDs", "string_list"),
         ],
     ),

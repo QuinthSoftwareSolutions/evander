@@ -93,15 +93,38 @@ scp "${SSH_OPTS[@]}" -r "${HOST_PLAYWRIGHT_BROWSERS}" "${VM_USER}@${VM_IP}:~/.ca
 ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "bash -s" <<'EOF'
 set -euo pipefail
 
-if ! grep -q 'toolchains/node-v24.14.0/bin' ~/.profile 2>/dev/null; then
-  cat >> ~/.profile <<PROFILE
-export PATH="$HOME/toolchains/node-v24.14.0/bin:$PATH"
-export PLAYWRIGHT_BROWSERS_PATH="$HOME/.cache/ms-playwright"
-export NODE_PATH="$HOME/playwright-runtime/node_modules"
-PROFILE
-fi
+append_node_path_setup() {
+  local target="$1"
+  python3 - "${target}" <<'PY'
+from pathlib import Path
+import sys
 
-export PATH="$HOME/toolchains/node-v24.14.0/bin:$PATH"
+target = Path(sys.argv[1]).expanduser()
+target.parent.mkdir(parents=True, exist_ok=True)
+if target.exists():
+    lines = target.read_text(encoding="utf-8").splitlines()
+else:
+    lines = []
+
+managed = {
+    'export PATH="$HOME/toolchains/node-v24.14.0/bin:$PATH"',
+    'export PATH="$HOME/bin:$HOME/toolchains/node-v24.14.0/bin:$PATH"',
+}
+filtered = [line for line in lines if line.strip() not in managed]
+filtered.extend(
+    [
+        'export PATH="$HOME/bin:$HOME/toolchains/node-v24.14.0/bin:$PATH"',
+        'export PLAYWRIGHT_BROWSERS_PATH="$HOME/.cache/ms-playwright"',
+        'export NODE_PATH="$HOME/playwright-runtime/node_modules"',
+    ]
+)
+target.write_text("\n".join(filtered) + "\n", encoding="utf-8")
+PY
+}
+
+append_node_path_setup ~/.profile
+
+export PATH="$HOME/bin:$HOME/toolchains/node-v24.14.0/bin:$PATH"
 export PLAYWRIGHT_BROWSERS_PATH="$HOME/.cache/ms-playwright"
 export NODE_PATH="$HOME/playwright-runtime/node_modules"
 

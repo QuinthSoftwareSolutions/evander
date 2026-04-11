@@ -554,6 +554,7 @@ See [live-smoke-tests.md](/home/jonathan/agent-sandbox/docs/live-smoke-tests.md)
   - `teams_delegated_client_id: <ENTRA_APP_CLIENT_ID>`
   - optional `teams_delegated_tenant_id`, `teams_delegated_scopes`,
     `teams_delegated_authority_base_url`, and `teams_delegated_credential_store_path`
+  - default delegated scopes now include channel read/send plus `Chat.ReadWrite` for group chats
 - The Entra app registration used for `teams_delegated_client_id` must allow public client /
   device-code flows. If the token poll fails with `AADSTS7000218`, the app is configured as a
   confidential client and needs to be updated or replaced.
@@ -563,6 +564,8 @@ See [live-smoke-tests.md](/home/jonathan/agent-sandbox/docs/live-smoke-tests.md)
   - `agent-sandbox-cli teams-auth status --directory <directory-path>`
   - `agent-sandbox-cli teams-auth logout --directory <directory-path>`
   - `agent-sandbox-cli teams-auth list`
+- If you add or widen `teams_delegated_scopes`, run `agent-sandbox-cli teams-auth login --directory <directory-path>`
+  again so the stored delegated credential is reissued with the new scope set.
 - The gateway still supports the legacy static env-token mode for compatibility. If you use it,
   `teams_graph_access_token_env` names the host environment variable that holds the token.
 - Configure the gateway with:
@@ -570,8 +573,8 @@ See [live-smoke-tests.md](/home/jonathan/agent-sandbox/docs/live-smoke-tests.md)
   - `teams_graph_access_token_env: <ENV_VAR_NAME>`
   - optional `teams_graph_api_base_url` when you need a non-default Graph endpoint
 - The access token referenced by `teams_graph_access_token_env` must be able to read Microsoft
-  Teams channel messages and, if you enable outbound status posts, create channel messages/replies
-  for the teams/channels you plan to use.
+  Teams channel and chat messages and, if you enable outbound status posts, create
+  channel/chat messages and replies for the teams targets you plan to use.
 - `trigger:teams:new-message` message arrival is driven by host-side Teams ingest polling on the
   host, not by the host-heartbeat worker. Host-heartbeat remains the PR/Discord feedback wakeup
   loop.
@@ -581,13 +584,17 @@ See [live-smoke-tests.md](/home/jonathan/agent-sandbox/docs/live-smoke-tests.md)
   {
     "session_id": "teams-session",
     "allowed_tools": ["teams_get_messages", "teams_post_status"],
-    "teams_channel_allowlist": ["<team-id>/<channel-id>"]
+    "teams_channel_allowlist": ["<team-id>/<channel-id>"],
+    "teams_chat_allowlist": ["chat:<chat-id>"]
   }
   ```
 
-- Channel targets use the literal `team-id/channel-id` format. The Teams adapter polls
-  `GET /teams/{team-id}/channels/{channel-id}/messages` and stores both top-level messages and any
-  expanded replies in `runtime/teams_messages.json`.
+- Channel targets use the literal `team-id/channel-id` format. Chat targets use the literal
+  `chat:<chat-id>` format.
+- The Teams adapter polls:
+  - `GET /teams/{team-id}/channels/{channel-id}/messages` for channel threads
+  - `GET /chats/{chat-id}/messages` for group chats
+  It stores both top-level messages and any expanded replies in `runtime/teams_messages.json`.
 - The `teams_get_messages` gateway tool returns normalized envelopes with:
   - `cursor`
   - `message_id`
@@ -602,9 +609,13 @@ See [live-smoke-tests.md](/home/jonathan/agent-sandbox/docs/live-smoke-tests.md)
   - `channel_target`
   - `message`
   - optional `thread_id` to reply into an existing channel thread
+- When the target is a chat, the adapter uses the `chat:<chat-id>` identifier instead of a
+  team/channel pair.
 - `teams_post_status` writes via:
   - `POST /teams/{team-id}/channels/{channel-id}/messages` for top-level posts
   - `POST /teams/{team-id}/channels/{channel-id}/messages/{thread_id}/replies` for replies
+  - `POST /chats/{chat-id}/messages` for top-level chat posts
+  - `POST /chats/{chat-id}/messages/{message-id}/replies` for chat replies
 - Outbound posts are audited and persisted in `runtime/teams_messages.json` with
   `metadata.source == "teams_graph_api_status"` and the originating `session_id`.
 - Source filtering is strict: only envelopes tagged with `metadata.source == "teams_graph_api"`

@@ -222,6 +222,7 @@ Storage layout for directory config:
   - `teams_delegated_client_id`
   - optional `teams_delegated_tenant_id`, `teams_delegated_scopes`,
     `teams_delegated_authority_base_url`, and `teams_delegated_credential_store_path`
+  - the default delegated scope set includes channel read/send and `Chat.ReadWrite`
 - The Entra app behind `teams_delegated_client_id` must be configured for public client /
   device-code auth. `AADSTS7000218` means the app is being treated as a confidential client and
   the host-side delegated flow in this repo cannot complete until that registration is fixed.
@@ -230,14 +231,23 @@ Storage layout for directory config:
   - `agent-sandbox-cli teams-auth status --directory <directory-path>`
   - `agent-sandbox-cli teams-auth logout --directory <directory-path>`
   - `agent-sandbox-cli teams-auth list`
+- After changing `teams_delegated_scopes`, repeat `teams-auth login` for that directory so the
+  stored delegated credential is refreshed with the new scopes.
 - The legacy static env-token mode remains supported for compatibility. In that mode,
   `teams_graph_access_token_env` names the host environment variable that holds the token.
 - Do not place Teams credentials in cloud-init, session manifests, or guest shell profiles.
 - Guests never need direct Microsoft Graph credentials or internet access; Teams API access
-  happens only in the host-side gateway process.
+  happens only in the host-side gateway process, and the token must cover the Teams channels or
+  chats you intend to read and write.
 - Teams message arrival for `trigger:teams:new-message` comes from host-side ingest polling on the
   host, using the same delegated Teams identity/configuration. That polling path is separate from
   host-heartbeat, which remains the PR/Discord feedback wakeup loop.
+- Teams targets can be channel threads or group chats:
+  - channel targets use `team-id/channel-id`
+  - chat targets use `chat:<chat-id>`
+- The host-side Teams adapter reads channel threads from
+  `GET /teams/{team-id}/channels/{channel-id}/messages` and group chats from
+  `GET /chats/{chat-id}/messages`.
 
 ## VM Python Bootstrap
 

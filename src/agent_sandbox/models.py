@@ -415,8 +415,9 @@ class TeamsMessageEnvelope(BaseModel):
     cursor: str
     message_id: str
     author_id: str
-    team_id: str
-    channel_id: str
+    team_id: str = ""
+    channel_id: str = ""
+    chat_id: str | None = None
     thread_id: str | None = None
     content: str
     created_at: datetime = Field(default_factory=utc_now)

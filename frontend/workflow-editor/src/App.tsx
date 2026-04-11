@@ -368,6 +368,15 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
       user_ids: [],
     };
   }
+  if (kind === "trigger" && type === "trigger:teams:new-message") {
+    return {
+      id,
+      display_name: "Teams message",
+      type,
+      channel_targets: [],
+      user_ids: [],
+    };
+  }
   if (kind === "trigger" && type === "trigger:email:new-message") {
     return {
       id,
@@ -674,6 +683,22 @@ function declaredOutputsForNode(node: WorkflowNodeConfig | undefined, config?: W
           created_at: { type: "string" },
           in_reply_to: { type: "string" },
           raw: { type: "object" },
+        },
+      },
+    },
+    "trigger:teams:new-message": {
+      message: {
+        type: "object",
+        properties: {
+          cursor: { type: "string" },
+          message_id: { type: "string" },
+          author_id: { type: "string" },
+          team_id: { type: "string" },
+          channel_id: { type: "string" },
+          thread_id: { type: "string" },
+          content: { type: "string" },
+          created_at: { type: "string" },
+          metadata: { type: "object" },
         },
       },
     },

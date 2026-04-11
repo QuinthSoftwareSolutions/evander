@@ -90,6 +90,7 @@ class GatewayConfig(BaseModel):
             "offline_access",
             "https://graph.microsoft.com/ChannelMessage.Read.All",
             "https://graph.microsoft.com/ChannelMessage.Send",
+            "https://graph.microsoft.com/Chat.ReadWrite",
         ]
     )
     teams_delegated_authority_base_url: str = "https://login.microsoftonline.com"

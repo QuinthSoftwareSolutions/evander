@@ -87,6 +87,17 @@ def test_teams_graph_access_token_env_defaults_to_compatibility_name() -> None:
     assert config.teams_graph_access_token_env == "GRAPH_TEAMS_ACCESS_TOKEN"
 
 
+def test_teams_delegated_scopes_default_includes_channel_and_chat_access() -> None:
+    config = GatewayConfig.model_validate({})
+
+    assert config.teams_delegated_scopes == [
+        "offline_access",
+        "https://graph.microsoft.com/ChannelMessage.Read.All",
+        "https://graph.microsoft.com/ChannelMessage.Send",
+        "https://graph.microsoft.com/Chat.ReadWrite",
+    ]
+
+
 @pytest.mark.parametrize(
     ("field_name", "value"),
     [

@@ -173,3 +173,68 @@ def test_teams_ingest_worker_uses_delegated_token_provider(
     worker.run_once()
 
     assert requests[0].headers["Authorization"] == "Bearer delegated-token"
+
+
+def test_teams_ingest_worker_ignores_graph_echo_of_agent_status_post(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path.endswith("/teams/team-a/channels/channel-1/messages"):
+            return httpx.Response(
+                200,
+                json={
+                    "value": [
+                        {
+                            "id": "msg-status",
+                            "createdDateTime": "2026-03-30T11:02:00Z",
+                            "body": {"content": "status", "contentType": "text"},
+                            "from": {"application": {"id": "bot-app", "displayName": "Agent Sandbox"}},
+                        }
+                    ]
+                },
+                request=request,
+            )
+        raise AssertionError(f"Unexpected path: {request.url.path}")
+
+    patch_worker_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    monkeypatch.setenv("GRAPH_TEAMS_ACCESS_TOKEN", "graph-token")
+    config = GatewayConfig.model_validate(
+        {
+            "runtime_dir": str(tmp_path / "runtime"),
+            "teams_backend": "graph_api",
+        }
+    )
+    worker = build_teams_ingest_worker(config, project_dir=tmp_path)
+    worker.sessions.put(
+        "session-1",
+        SessionManifest(
+            session_id="session-1",
+            directory_path="root/team-a",
+            allowed_tools=[ToolName.TEAMS_GET_MESSAGES],
+            teams_channel_allowlist=["team-a/channel-1"],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    worker.runtime.teams_messages.put(
+        "team-a/channel-1/msg-status",
+        TeamsMessageEnvelope(
+            cursor="team-a/channel-1/msg-status",
+            message_id="msg-status",
+            author_id="bot-app",
+            team_id="team-a",
+            channel_id="channel-1",
+            thread_id="msg-status",
+            content="status",
+            created_at=datetime(2026, 3, 30, 11, 2, tzinfo=UTC),
+            metadata={"source": "teams_graph_api_status", "session_id": "session-1"},
+        ),
+    )
+
+    worker.run_once()
+
+    assert worker.store.list_all_messages(channel_targets=["team-a/channel-1"]) == []
+    assert worker.store.get_cursor("team-a/channel-1") == "team-a/channel-1/msg-status"

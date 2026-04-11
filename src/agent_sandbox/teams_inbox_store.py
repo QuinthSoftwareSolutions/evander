@@ -19,8 +19,9 @@ class TeamsInboxCursorState(BaseModel):
 class TeamsInboxMessage(BaseModel):
     cursor: str
     message_id: str
-    team_id: str
-    channel_id: str
+    team_id: str = ""
+    channel_id: str = ""
+    chat_id: str | None = None
     thread_id: str | None = None
     author_id: str
     author_name: str = ""
@@ -167,6 +168,8 @@ class TeamsInboxStore:
 
     @staticmethod
     def _channel_target(message: TeamsInboxMessage) -> str:
+        if message.chat_id:
+            return f"chat:{message.chat_id}"
         return f"{message.team_id}/{message.channel_id}"
 
     @staticmethod

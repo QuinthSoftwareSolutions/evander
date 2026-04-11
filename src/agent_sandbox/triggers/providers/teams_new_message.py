@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from agent_sandbox.events.models import TeamsNewMessageTriggerDefinition, TriggerEvent
+from agent_sandbox.services import normalize_teams_target, teams_target_from_message
 from agent_sandbox.teams_inbox_store import TeamsInboxMessage, TeamsInboxStore
 from agent_sandbox.triggers.providers._cursor_state import TriggerCursorStore
 from agent_sandbox.triggers.providers.base import TriggerProviderBase
@@ -89,13 +90,18 @@ class TeamsNewMessageTriggerProvider(TriggerProviderBase):
 
 
 def _message_channel_target(message: TeamsInboxMessage) -> str:
-    team_id = str(message.metadata.get("team_id", message.team_id)).strip() or message.team_id
-    channel_id = str(message.metadata.get("channel_id", message.channel_id)).strip() or message.channel_id
-    return _normalize_channel_target(f"{team_id}/{channel_id}")
+    return _normalize_channel_target(
+        teams_target_from_message(
+            team_id=message.team_id,
+            channel_id=message.channel_id,
+            chat_id=message.chat_id,
+            metadata=message.metadata,
+        )
+    )
 
 
 def _normalize_channel_target(value: str) -> str:
-    return value.strip().strip("/")
+    return normalize_teams_target(value)
 
 
 def _parse_dt(value: object) -> datetime | None:

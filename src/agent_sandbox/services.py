@@ -3,10 +3,11 @@ from __future__ import annotations
 import json
 import random
 import time
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Lock
-from typing import Any, Callable, Iterator, Protocol
+from typing import Any, Callable, Iterator, Literal, Protocol
 from urllib.parse import quote, unquote
 
 import httpx
@@ -112,6 +113,15 @@ class TeamsService(Protocol):
 
 class TeamsAuthenticationError(httpx.HTTPError):
     """Raised when Teams delegated or static credentials cannot be resolved."""
+
+
+@dataclass(frozen=True)
+class TeamsTarget:
+    kind: Literal["channel", "chat"]
+    normalized: str
+    team_id: str | None = None
+    channel_id: str | None = None
+    chat_id: str | None = None
 
 
 class StubDiscordService:
@@ -453,14 +463,53 @@ def _graph_error_details(response: httpx.Response) -> str:
     return ", ".join(parts)
 
 
-def _parse_teams_channel_target(target: str) -> tuple[str, str]:
-    normalized = target.strip().strip("/")
+def normalize_teams_target(target: str) -> str:
+    normalized = str(target or "").strip().strip("/")
+    if normalized.startswith("chat:"):
+        chat_id = normalized.removeprefix("chat:").strip()
+        if not chat_id:
+            raise ValueError(
+                f"Invalid Teams target {target!r}: expected 'team-id/channel-id' or 'chat:<chat-id>'."
+            )
+        return f"chat:{chat_id}"
     team_id, separator, channel_id = normalized.partition("/")
     if not separator or not team_id or not channel_id:
         raise ValueError(
-            f"Invalid Teams channel target {target!r}: expected 'team-id/channel-id'."
+            f"Invalid Teams target {target!r}: expected 'team-id/channel-id' or 'chat:<chat-id>'."
         )
-    return team_id, channel_id
+    return f"{team_id}/{channel_id}"
+
+
+def parse_teams_target(target: str) -> TeamsTarget:
+    normalized = normalize_teams_target(target)
+    if normalized.startswith("chat:"):
+        return TeamsTarget(kind="chat", normalized=normalized, chat_id=normalized.removeprefix("chat:"))
+    team_id, _, channel_id = normalized.partition("/")
+    return TeamsTarget(
+        kind="channel",
+        normalized=normalized,
+        team_id=team_id,
+        channel_id=channel_id,
+    )
+
+
+def teams_target_from_message(
+    *,
+    team_id: str | None = None,
+    channel_id: str | None = None,
+    chat_id: str | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> str:
+    payload = metadata if isinstance(metadata, dict) else {}
+    raw_target = str(payload.get("target") or "").strip()
+    if raw_target:
+        return normalize_teams_target(raw_target)
+    resolved_chat_id = str(payload.get("chat_id") or chat_id or "").strip()
+    if resolved_chat_id:
+        return normalize_teams_target(f"chat:{resolved_chat_id}")
+    resolved_team_id = str(payload.get("team_id") or team_id or "").strip()
+    resolved_channel_id = str(payload.get("channel_id") or channel_id or "").strip()
+    return normalize_teams_target(f"{resolved_team_id}/{resolved_channel_id}")
 
 
 class StubTeamsService:
@@ -470,16 +519,36 @@ class StubTeamsService:
     def get_messages(self, since_cursor: str | None = None) -> list[TeamsMessageEnvelope]:
         messages = list(self.message_store.read_all().values())
         for message in messages:
+            normalized_target = teams_target_from_message(
+                team_id=message.team_id,
+                channel_id=message.channel_id,
+                chat_id=message.chat_id,
+                metadata=message.metadata,
+            )
+            parsed_target = parse_teams_target(normalized_target)
             message.metadata = {
                 "source": message.metadata.get("source", "stub"),
+                "target": normalized_target,
+                "target_type": parsed_target.kind,
                 "team_id": message.metadata.get("team_id", message.team_id),
                 "channel_id": message.metadata.get("channel_id", message.channel_id),
+                "chat_id": message.metadata.get("chat_id", message.chat_id),
                 "thread_id": message.metadata.get("thread_id", message.thread_id),
                 "author_id": message.metadata.get("author_id", message.author_id),
                 **{
                     key: value
                     for key, value in message.metadata.items()
-                    if key not in {"source", "team_id", "channel_id", "thread_id", "author_id"}
+                    if key
+                    not in {
+                        "source",
+                        "target",
+                        "target_type",
+                        "team_id",
+                        "channel_id",
+                        "chat_id",
+                        "thread_id",
+                        "author_id",
+                    }
                 },
             }
         ordered = _sorted_teams_messages({message.cursor: message for message in messages})
@@ -492,17 +561,21 @@ class StubTeamsService:
         session_id: str,
         thread_id: str | None = None,
     ) -> dict[str, Any]:
-        team_id, channel_id = _parse_teams_channel_target(channel_target)
+        target = parse_teams_target(channel_target)
         normalized_thread_id = str(thread_id or "").strip() or None
-        return {
+        result: dict[str, Any] = {
             "status": "stubbed",
-            "channel_target": f"{team_id}/{channel_id}",
-            "team_id": team_id,
-            "channel_id": channel_id,
+            "channel_target": target.normalized,
             "thread_id": normalized_thread_id,
             "session_id": session_id,
             "message_preview": message[:120],
         }
+        if target.kind == "chat":
+            result["chat_id"] = target.chat_id
+        else:
+            result["team_id"] = target.team_id
+            result["channel_id"] = target.channel_id
+        return result
 
 
 class GraphTeamsService:
@@ -556,7 +629,7 @@ class GraphTeamsService:
     def _allowed_channel_targets(self) -> list[str]:
         return sorted(
             {
-                target.strip().strip("/")
+                normalize_teams_target(target)
                 for target in self.allowed_channel_targets_provider()
                 if target.strip()
             }
@@ -627,22 +700,24 @@ class GraphTeamsService:
         self,
         payload: dict[str, Any],
         *,
-        team_id: str,
-        channel_id: str,
+        target: TeamsTarget,
         source: str = "teams_graph_api",
         session_id: str | None = None,
         reply_to_id: str | None = None,
     ) -> TeamsMessageEnvelope:
         message_id = str(payload.get("id") or "").strip()
         resolved_reply_to_id = str(payload.get("replyToId") or reply_to_id or "").strip() or None
-        thread_id = resolved_reply_to_id or message_id or None
-        cursor = f"{team_id}/{channel_id}/{message_id}"
+        thread_id = resolved_reply_to_id or (message_id if target.kind == "channel" else None)
+        cursor = f"{target.normalized}/{message_id}"
         body = payload.get("body") or {}
         author_id = self._author_id(payload)
         metadata = {
             "source": source,
-            "team_id": team_id,
-            "channel_id": channel_id,
+            "target": target.normalized,
+            "target_type": target.kind,
+            "team_id": target.team_id,
+            "channel_id": target.channel_id,
+            "chat_id": target.chat_id,
             "thread_id": thread_id,
             "author_id": author_id,
             "reply_to_id": resolved_reply_to_id,
@@ -656,8 +731,9 @@ class GraphTeamsService:
             cursor=cursor,
             message_id=message_id,
             author_id=author_id,
-            team_id=team_id,
-            channel_id=channel_id,
+            team_id=target.team_id or "",
+            channel_id=target.channel_id or "",
+            chat_id=target.chat_id,
             thread_id=thread_id,
             content=str(body.get("content") or ""),
             created_at=_parse_graph_datetime(str(payload.get("createdDateTime") or "")),
@@ -689,21 +765,46 @@ class GraphTeamsService:
             next_url = str(raw_next_url).strip() if raw_next_url else ""
             params = None
 
+    def _iter_chat_messages(
+        self,
+        client: httpx.Client,
+        *,
+        chat_id: str,
+    ) -> Iterator[dict[str, Any]]:
+        next_url = f"{self.api_base_url}/chats/{quote(chat_id, safe='')}/messages"
+        params: dict[str, Any] | None = {"$top": self.poll_limit}
+        seen_urls: set[str] = set()
+        while next_url:
+            if next_url in seen_urls:
+                raise RuntimeError(f"Teams Graph pagination loop detected for chat {chat_id}")
+            seen_urls.add(next_url)
+            response = self._request_with_retries(client, "GET", next_url, params=params)
+            payload = response.json()
+            for message_payload in payload.get("value", []):
+                yield message_payload
+            raw_next_url = payload.get("@odata.nextLink")
+            next_url = str(raw_next_url).strip() if raw_next_url else ""
+            params = None
+
     def get_messages(self, since_cursor: str | None = None) -> list[TeamsMessageEnvelope]:
         messages: dict[str, TeamsMessageEnvelope] = dict(self.message_store.read_all())
         with httpx.Client(timeout=self.timeout_seconds) as client:
             for target in self._allowed_channel_targets():
-                team_id, channel_id = _parse_teams_channel_target(target)
-                for message_payload in self._iter_channel_messages(
-                    client,
-                    team_id=team_id,
-                    channel_id=channel_id,
-                ):
-                    envelope = self._to_envelope(message_payload, team_id=team_id, channel_id=channel_id)
+                parsed_target = parse_teams_target(target)
+                if parsed_target.kind == "chat":
+                    iterator = self._iter_chat_messages(client, chat_id=parsed_target.chat_id or "")
+                else:
+                    iterator = self._iter_channel_messages(
+                        client,
+                        team_id=parsed_target.team_id or "",
+                        channel_id=parsed_target.channel_id or "",
+                    )
+                for message_payload in iterator:
+                    envelope = self._to_envelope(message_payload, target=parsed_target)
                     messages[envelope.cursor] = envelope
                     self.message_store.put(envelope.cursor, envelope)
                     for reply_payload in message_payload.get("replies") or []:
-                        reply_envelope = self._to_envelope(reply_payload, team_id=team_id, channel_id=channel_id)
+                        reply_envelope = self._to_envelope(reply_payload, target=parsed_target)
                         messages[reply_envelope.cursor] = reply_envelope
                         self.message_store.put(reply_envelope.cursor, reply_envelope)
 
@@ -717,19 +818,24 @@ class GraphTeamsService:
         session_id: str,
         thread_id: str | None = None,
     ) -> dict[str, Any]:
-        team_id, channel_id = _parse_teams_channel_target(channel_target)
+        target = parse_teams_target(channel_target)
         normalized_thread_id = str(thread_id or "").strip() or None
-        encoded_team_id = quote(team_id, safe="")
-        encoded_channel_id = quote(channel_id, safe="")
-        if normalized_thread_id is None:
-            url = (
-                f"{self.api_base_url}/teams/{encoded_team_id}/channels/{encoded_channel_id}/messages"
-            )
+        if target.kind == "chat":
+            if normalized_thread_id is not None:
+                raise ValueError("Teams chat targets do not support thread replies.")
+            url = f"{self.api_base_url}/chats/{quote(target.chat_id or '', safe='')}/messages"
         else:
-            url = (
-                f"{self.api_base_url}/teams/{encoded_team_id}/channels/{encoded_channel_id}/messages/"
-                f"{quote(normalized_thread_id, safe='')}/replies"
-            )
+            encoded_team_id = quote(target.team_id or "", safe="")
+            encoded_channel_id = quote(target.channel_id or "", safe="")
+            if normalized_thread_id is None:
+                url = (
+                    f"{self.api_base_url}/teams/{encoded_team_id}/channels/{encoded_channel_id}/messages"
+                )
+            else:
+                url = (
+                    f"{self.api_base_url}/teams/{encoded_team_id}/channels/{encoded_channel_id}/messages/"
+                    f"{quote(normalized_thread_id, safe='')}/replies"
+                )
 
         with httpx.Client(timeout=self.timeout_seconds) as client:
             response = self._request_with_retries(
@@ -742,24 +848,27 @@ class GraphTeamsService:
 
         envelope = self._to_envelope(
             payload,
-            team_id=team_id,
-            channel_id=channel_id,
+            target=target,
             source="teams_graph_api_status",
             session_id=session_id,
             reply_to_id=normalized_thread_id,
         )
         self.message_store.put(envelope.cursor, envelope)
-        return {
+        result = {
             "status": "posted",
-            "channel_target": f"{team_id}/{channel_id}",
-            "team_id": team_id,
-            "channel_id": channel_id,
+            "channel_target": target.normalized,
             "thread_id": envelope.thread_id,
             "reply_to_message_id": normalized_thread_id,
             "session_id": session_id,
             "message_id": envelope.message_id,
             "web_url": envelope.metadata.get("web_url"),
         }
+        if target.kind == "chat":
+            result["chat_id"] = target.chat_id
+        else:
+            result["team_id"] = target.team_id
+            result["channel_id"] = target.channel_id
+        return result
 
 
 class DiscordInboxService:
