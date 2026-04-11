@@ -1050,6 +1050,8 @@ def test_create_session_disables_email_send_by_default(tmp_path: Path) -> None:
     manifest = sessions["session-1"]
     assert manifest["email_send_enabled"] is False
     assert "email_send_approved" not in manifest["allowed_tools"]
+    assert "prompt_agent" in manifest["allowed_tools"]
+    assert "respond_to_agent" in manifest["allowed_tools"]
 
 
 def test_create_session_uses_configured_default_ttl_when_no_ttl_is_provided(tmp_path: Path) -> None:
@@ -1650,14 +1652,14 @@ def test_add_tool_permission_by_session_id_updates_manifest(tmp_path: Path) -> N
             "--config",
             str(config_path),
             "session-1",
-            "email_send_approved",
+            "prompt_agent",
         ],
     )
 
     assert result.exit_code == 0
     manifest = json.loads(sessions_path.read_text(encoding="utf-8"))["session-1"]
-    assert manifest["allowed_tools"] == ["approval_submit", "email_send_approved"]
-    assert "Added tool permission email_send_approved to session session-1" in result.stdout
+    assert manifest["allowed_tools"] == ["approval_submit", "prompt_agent"]
+    assert "Added tool permission prompt_agent to session session-1" in result.stdout
 
 
 def test_add_tool_permission_by_vm_name_uses_matching_session(tmp_path: Path) -> None:
@@ -1840,7 +1842,7 @@ def test_revoke_tool_permission_by_session_id_updates_manifest(tmp_path: Path) -
                 "session-1": {
                     "session_id": "session-1",
                     "vm_id": "vm-100",
-                    "allowed_tools": ["approval_submit", "email_send_approved"],
+                    "allowed_tools": ["approval_submit", "respond_to_agent"],
                     "discord_channel_allowlist": [],
                     "email_folder_allowlist": [],
                     "email_mailbox_allowlist": [],
@@ -1865,14 +1867,14 @@ def test_revoke_tool_permission_by_session_id_updates_manifest(tmp_path: Path) -
             "--config",
             str(config_path),
             "session-1",
-            "email_send_approved",
+            "respond_to_agent",
         ],
     )
 
     assert result.exit_code == 0
     manifest = json.loads(sessions_path.read_text(encoding="utf-8"))["session-1"]
     assert manifest["allowed_tools"] == ["approval_submit"]
-    assert "Revoked tool permission email_send_approved from session session-1" in result.stdout
+    assert "Revoked tool permission respond_to_agent from session session-1" in result.stdout
 
 
 def test_revoke_tool_permission_by_vm_name_uses_matching_session(tmp_path: Path) -> None:

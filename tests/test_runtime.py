@@ -152,6 +152,13 @@ def test_build_runtime_initializes_discord_inbox_service(tmp_path: Path) -> None
     assert runtime.discord_inbox_service.store_path == tmp_path / "discord-inbox-store.json"
 
 
+def test_build_runtime_initializes_agent_prompt_store(tmp_path: Path) -> None:
+    runtime = build_runtime(make_config(tmp_path))
+
+    assert runtime.agent_prompt_store.path == tmp_path / "agent-prompt-store.json"
+    assert runtime.agent_prompt_store.path.exists()
+
+
 def test_runtime_discord_service_for_session_uses_directory_provider_override(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
