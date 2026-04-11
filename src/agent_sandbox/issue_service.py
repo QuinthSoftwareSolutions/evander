@@ -39,6 +39,20 @@ class IssueProviderAdapter(Protocol):
         fields: dict[str, Any] | None,
     ) -> dict[str, Any]: ...
 
+    def create_issue(
+        self,
+        *,
+        directory_path: str,
+        issue_type: str,
+        title: str,
+        description: str | None = None,
+        iteration_path: str | None = None,
+        acceptance_criteria: str | None = None,
+        tags: list[str] | None = None,
+        assigned_to: str | None = None,
+        fields: dict[str, Any] | None = None,
+    ) -> dict[str, Any]: ...
+
 
 class AzureDevOpsIssueAdapter:
     provider_name = "azure_devops"
@@ -85,6 +99,56 @@ class AzureDevOpsIssueAdapter:
         if parsed.tzinfo is None:
             parsed = parsed.replace(tzinfo=UTC)
         return parsed.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+    @staticmethod
+    def _resolve_work_item_type(issue_type: str) -> str:
+        normalized = str(issue_type).strip()
+        if not normalized:
+            raise ValueError("issue_type is required for Azure DevOps issue creation.")
+        key = re.sub(r"[\s_-]+", " ", normalized.lower()).strip()
+        aliases = {
+            "bug": "Bug",
+            "task": "Task",
+            "issue": "Issue",
+            "epic": "Epic",
+            "feature": "Feature",
+            "user story": "User Story",
+            "story": "User Story",
+            "product backlog item": "Product Backlog Item",
+            "pbi": "Product Backlog Item",
+            "requirement": "Requirement",
+        }
+        return aliases.get(key, normalized)
+
+    @staticmethod
+    def _normalize_tags(tags: list[str] | None) -> str | None:
+        if not tags:
+            return None
+        values = [str(tag).strip() for tag in tags if str(tag).strip()]
+        if not values:
+            return None
+        return "; ".join(values)
+
+    @staticmethod
+    def _extract_ado_error_message(response: httpx.Response) -> str:
+        content_type = str(response.headers.get("Content-Type", "")).lower()
+        if "application/json" in content_type:
+            try:
+                payload = response.json()
+            except ValueError:
+                payload = None
+            if isinstance(payload, dict):
+                message = payload.get("message") or payload.get("error") or payload.get("typeName")
+                if isinstance(message, str) and message.strip():
+                    return message.strip()
+        text = response.text.strip()
+        if text:
+            return text[:500]
+        return "No response body."
+
+    def _raise_ado_http_error(self, *, action: str, response: httpx.Response) -> None:
+        message = self._extract_ado_error_message(response)
+        raise RuntimeError(f"Azure DevOps {action} failed (status {response.status_code}): {message}")
 
     def _fetch_comments(
         self,
@@ -253,6 +317,82 @@ class AzureDevOpsIssueAdapter:
             "fields": fields or {},
         }
 
+    def create_issue(
+        self,
+        *,
+        directory_path: str,
+        issue_type: str,
+        title: str,
+        description: str | None = None,
+        iteration_path: str | None = None,
+        acceptance_criteria: str | None = None,
+        tags: list[str] | None = None,
+        assigned_to: str | None = None,
+        fields: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        organization_url, project, pat = self._resolve_connection(directory_path)
+        auth_header = self._auth_header(pat)
+        work_item_type = self._resolve_work_item_type(issue_type)
+        create_url = f"{organization_url}/{project}/_apis/wit/workitems/${work_item_type}"
+
+        operations: list[dict[str, Any]] = [{"op": "add", "path": "/fields/System.Title", "value": title}]
+        if description is not None:
+            operations.append({"op": "add", "path": "/fields/System.Description", "value": description})
+        if iteration_path is not None:
+            operations.append({"op": "add", "path": "/fields/System.IterationPath", "value": iteration_path})
+        if acceptance_criteria is not None:
+            operations.append(
+                {
+                    "op": "add",
+                    "path": "/fields/Microsoft.VSTS.Common.AcceptanceCriteria",
+                    "value": acceptance_criteria,
+                }
+            )
+        normalized_tags = self._normalize_tags(tags)
+        if normalized_tags is not None:
+            operations.append({"op": "add", "path": "/fields/System.Tags", "value": normalized_tags})
+        if assigned_to is not None:
+            operations.append({"op": "add", "path": "/fields/System.AssignedTo", "value": assigned_to})
+        for field_name, value in (fields or {}).items():
+            normalized_field_name = str(field_name).strip()
+            if normalized_field_name:
+                operations.append({"op": "add", "path": f"/fields/{normalized_field_name}", "value": value})
+
+        with httpx.Client(timeout=self.timeout_seconds) as client:
+            response = client.patch(
+                create_url,
+                params={"api-version": "7.1"},
+                headers={
+                    "Authorization": auth_header,
+                    "Content-Type": "application/json-patch+json",
+                },
+                json=operations,
+            )
+            if response.is_error:
+                self._raise_ado_http_error(action="create work item", response=response)
+            payload = response.json()
+
+        payload_fields = payload.get("fields") if isinstance(payload.get("fields"), dict) else {}
+        return {
+            "provider": self.provider_name,
+            "remote_issue_id": str(payload.get("id") or ""),
+            "id": payload.get("id"),
+            "url": str((payload.get("_links") or {}).get("web", {}).get("href") or payload.get("url") or ""),
+            "type": str(payload_fields.get("System.WorkItemType") or work_item_type),
+            "project": str((payload_fields.get("System.TeamProject") or project)),
+            "fields": {
+                "System.Title": payload_fields.get("System.Title"),
+                "System.Description": payload_fields.get("System.Description"),
+                "System.IterationPath": payload_fields.get("System.IterationPath"),
+                "Microsoft.VSTS.Common.AcceptanceCriteria": payload_fields.get(
+                    "Microsoft.VSTS.Common.AcceptanceCriteria"
+                ),
+                "System.Tags": payload_fields.get("System.Tags"),
+                "System.AssignedTo": payload_fields.get("System.AssignedTo"),
+                **{k: v for k, v in (fields or {}).items() if k in payload_fields},
+            },
+        }
+
 
 class IssueService:
     def __init__(self, config_resolver: ProviderConfigResolver) -> None:
@@ -353,6 +493,35 @@ class IssueService:
             remote_issue_id=remote_issue_id,
             directory_path=directory_path,
             state=state,
+            fields=fields,
+        )
+
+    def create_remote_issue(
+        self,
+        *,
+        provider: str,
+        directory_path: str,
+        issue_type: str,
+        title: str,
+        description: str | None = None,
+        iteration_path: str | None = None,
+        acceptance_criteria: str | None = None,
+        tags: list[str] | None = None,
+        assigned_to: str | None = None,
+        fields: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        adapter = self.adapters.get(provider)
+        if adapter is None:
+            raise ValueError(f"Unsupported issue provider: {provider}")
+        return adapter.create_issue(
+            directory_path=directory_path,
+            issue_type=issue_type,
+            title=title,
+            description=description,
+            iteration_path=iteration_path,
+            acceptance_criteria=acceptance_criteria,
+            tags=tags,
+            assigned_to=assigned_to,
             fields=fields,
         )
 
