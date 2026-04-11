@@ -1,0 +1,103 @@
+from __future__ import annotations
+
+import httpx
+import pytest
+
+from agent_sandbox.issue_service import AzureDevOpsIssueAdapter
+
+
+class _DummyClient:
+    def __init__(self, response: httpx.Response, calls: list[dict[str, object]]) -> None:
+        self._response = response
+        self._calls = calls
+
+    def __enter__(self) -> _DummyClient:
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        return None
+
+    def patch(self, url: str, **kwargs: object) -> httpx.Response:
+        self._calls.append({"url": url, **kwargs})
+        return self._response
+
+
+def test_create_issue_appends_parent_relation_operation(monkeypatch: pytest.MonkeyPatch) -> None:
+    adapter = AzureDevOpsIssueAdapter(config_resolver=object())
+    monkeypatch.setattr(
+        adapter,
+        "_resolve_connection",
+        lambda directory_path: ("https://dev.azure.com/example", "project-x", "pat"),
+    )
+    calls: list[dict[str, object]] = []
+    payload = {
+        "id": 77,
+        "url": "https://dev.azure.com/example/project-x/_apis/wit/workitems/77",
+        "fields": {"System.WorkItemType": "Task", "System.TeamProject": "project-x", "System.Title": "T"},
+        "_links": {"web": {"href": "https://dev.azure.com/example/project-x/_workitems/edit/77"}},
+    }
+    monkeypatch.setattr(
+        "agent_sandbox.issue_service.httpx.Client",
+        lambda timeout: _DummyClient(httpx.Response(200, json=payload), calls),
+    )
+
+    adapter.create_issue(
+        directory_path="root",
+        issue_type="task",
+        title="T",
+        parent_backlog_item_id="1234",
+    )
+
+    assert len(calls) == 1
+    operations = calls[0]["json"]
+    assert isinstance(operations, list)
+    assert operations[-1] == {
+        "op": "add",
+        "path": "/relations/-",
+        "value": {
+            "rel": "System.LinkTypes.Hierarchy-Reverse",
+            "url": "https://dev.azure.com/example/project-x/_apis/wit/workItems/1234",
+        },
+    }
+
+
+def test_create_issue_rejects_invalid_parent_relation_id_before_network(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = AzureDevOpsIssueAdapter(config_resolver=object())
+    monkeypatch.setattr(
+        adapter,
+        "_resolve_connection",
+        lambda directory_path: ("https://dev.azure.com/example", "project-x", "pat"),
+    )
+
+    with pytest.raises(ValueError, match="Parent relation validation failed"):
+        adapter.create_issue(
+            directory_path="root",
+            issue_type="task",
+            title="T",
+            parent_backlog_item_id="abc-123",
+        )
+
+
+def test_create_issue_surfaces_parent_linkage_failure_action(monkeypatch: pytest.MonkeyPatch) -> None:
+    adapter = AzureDevOpsIssueAdapter(config_resolver=object())
+    monkeypatch.setattr(
+        adapter,
+        "_resolve_connection",
+        lambda directory_path: ("https://dev.azure.com/example", "project-x", "pat"),
+    )
+    calls: list[dict[str, object]] = []
+    error_response = httpx.Response(400, json={"message": "The parent does not exist in this project."})
+    monkeypatch.setattr(
+        "agent_sandbox.issue_service.httpx.Client",
+        lambda timeout: _DummyClient(error_response, calls),
+    )
+
+    with pytest.raises(RuntimeError, match="link parent relation during create work item failed"):
+        adapter.create_issue(
+            directory_path="root",
+            issue_type="task",
+            title="T",
+            parent_backlog_item_id="1234",
+        )
