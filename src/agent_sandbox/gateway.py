@@ -26,6 +26,8 @@ from .issue_service import IssueService
 from .models import (
     AdoBacklogCreateRequest,
     AdoBacklogCreateResponse,
+    AdoCurrentIterationBacklogRequest,
+    AdoCurrentIterationBacklogResponse,
     AdoBacklogGetRequest,
     AdoBacklogGetResponse,
     AdoBacklogQueryRequest,
@@ -739,6 +741,97 @@ def create_server(context: RuntimeContext) -> FastMCP:
             audit_failure(
                 session_id,
                 ToolName.GET_ADO_BACKLOG_ITEM,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
+    def list_ado_current_iteration_backlog_items(
+        project: str | None = None,
+        team: str | None = None,
+        area_path: str | None = None,
+        states: list[str] | None = None,
+        types: list[str] | None = None,
+        tags_any: list[str] | None = None,
+        text_search: str | None = None,
+        top: int = 50,
+        skip: int = 0,
+        *,
+        session_id: str | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        session_id = _resolve_session_id_from_context(session_id, ctx, transport_session_map=transport_session_map)
+        args = {
+            "session_id": session_id,
+            "project": project,
+            "team": team,
+            "area_path": area_path,
+            "states": states,
+            "types": types,
+            "tags_any": tags_any,
+            "text_search": text_search,
+            "top": top,
+            "skip": skip,
+        }
+        try:
+            session = context.policy.require_tool(session_id, ToolName.LIST_ADO_CURRENT_ITERATION_BACKLOG_ITEMS)
+            request_model = AdoCurrentIterationBacklogRequest(
+                project=project,
+                team=team,
+                area_path=area_path,
+                states=states or [],
+                types=types or [],
+                tags_any=tags_any or [],
+                text_search=text_search,
+                top=top,
+                skip=skip,
+            )
+            args = {"session_id": session_id, **request_model.model_dump(mode="json")}
+            issue_service = IssueService(context.provider_config)
+            remote_payload = issue_service.list_remote_current_iteration_backlog_items(
+                provider="azure_devops",
+                directory_path=session.directory_path,
+                project=request_model.project,
+                team=request_model.team,
+                area_path=request_model.area_path,
+                states=request_model.states,
+                types=[item_type.value for item_type in request_model.types],
+                tags_any=request_model.tags_any,
+                text_search=request_model.text_search,
+                top=request_model.top,
+                skip=request_model.skip,
+            )
+            response_model = AdoCurrentIterationBacklogResponse.model_validate(
+                {
+                    "iteration_path": remote_payload.get("iteration_path") or "",
+                    "items": remote_payload.get("items") or [],
+                    "count": remote_payload.get("count", 0),
+                }
+            )
+            payload = response_model.model_dump(mode="json")
+            audit_success(
+                session_id,
+                ToolName.LIST_ADO_CURRENT_ITERATION_BACKLOG_ITEMS,
+                args,
+                {
+                    "project": request_model.project,
+                    "team": request_model.team,
+                    "iteration_path": payload.get("iteration_path"),
+                    "count": payload.get("count", 0),
+                    "directory_path": session.directory_path,
+                },
+            )
+            return payload
+        except PolicyError as exc:
+            audit_failure(session_id, ToolName.LIST_ADO_CURRENT_ITERATION_BACKLOG_ITEMS, args, str(exc))
+            raise
+        except Exception as exc:
+            audit_failure(
+                session_id,
+                ToolName.LIST_ADO_CURRENT_ITERATION_BACKLOG_ITEMS,
                 args,
                 str(exc),
                 decision="error",

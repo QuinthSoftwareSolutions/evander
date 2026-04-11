@@ -496,6 +496,154 @@ def test_query_ado_backlog_items_validation_failures(
         asyncio.run(server.call_tool("query_ado_backlog_items", arguments))
 
 
+def test_list_ado_current_iteration_backlog_items_requires_permission(tmp_path: Path) -> None:
+    context = make_context(tmp_path)
+    context.sessions.put(
+        "session-1",
+        SessionManifest(
+            session_id="session-1",
+            directory_path="root/team-a",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    server = create_server(context)
+
+    with pytest.raises(ToolError, match="not allowed"):
+        asyncio.run(server.call_tool("list_ado_current_iteration_backlog_items", {"session_id": "session-1"}))
+
+
+def test_list_ado_current_iteration_backlog_items_maps_request_and_shape(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    context = make_context(tmp_path)
+    context.sessions.put(
+        "session-1",
+        SessionManifest(
+            session_id="session-1",
+            directory_path="root/team-a",
+            allowed_tools=[ToolName.LIST_ADO_CURRENT_ITERATION_BACKLOG_ITEMS],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    captured: dict[str, object] = {}
+
+    class StubIssueService:
+        def __init__(self, provider_config: object) -> None:
+            captured["provider_config"] = provider_config
+
+        def list_remote_current_iteration_backlog_items(self, **kwargs: object) -> dict[str, object]:
+            captured["request"] = kwargs
+            return {
+                "provider": "azure_devops",
+                "project": "example-project",
+                "iteration_path": "Project\\Sprint 12",
+                "items": [
+                    {
+                        "id": "101",
+                        "title": "Current sprint task",
+                        "state": "Active",
+                        "type": "Task",
+                        "iteration": "Project\\Sprint 12",
+                        "area": "Project",
+                        "assigned_to": "Ada Lovelace",
+                        "url": "https://dev.azure.com/example/example/_workitems/edit/101",
+                        "fields": {"System.Title": "Current sprint task"},
+                    }
+                ],
+                "count": 1,
+            }
+
+    monkeypatch.setattr("agent_sandbox.gateway.IssueService", StubIssueService)
+    server = create_server(context)
+
+    result = call_tool(
+        server,
+        "list_ado_current_iteration_backlog_items",
+        {
+            "session_id": "session-1",
+            "project": "example-project",
+            "team": "Platform Team",
+            "area_path": "Project",
+            "states": ["active"],
+            "types": ["task"],
+            "tags_any": ["backend"],
+            "text_search": "retry",
+            "top": 25,
+            "skip": 5,
+        },
+    )
+
+    assert captured["provider_config"] == context.provider_config
+    assert captured["request"] == {
+        "provider": "azure_devops",
+        "directory_path": "root/team-a",
+        "project": "example-project",
+        "team": "Platform Team",
+        "area_path": "Project",
+        "states": ["active"],
+        "types": ["Task"],
+        "tags_any": ["backend"],
+        "text_search": "retry",
+        "top": 25,
+        "skip": 5,
+    }
+    assert result == {
+        "iteration_path": "Project\\Sprint 12",
+        "items": [
+            {
+                "id": "101",
+                "title": "Current sprint task",
+                "state": "Active",
+                "type": "Task",
+                "iteration": "Project\\Sprint 12",
+                "area": "Project",
+                "assigned_to": "Ada Lovelace",
+                "url": "https://dev.azure.com/example/example/_workitems/edit/101",
+                "fields": {"System.Title": "Current sprint task"},
+            }
+        ],
+        "count": 1,
+    }
+
+
+def test_list_ado_current_iteration_backlog_items_errors_when_no_iteration_configured(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    context = make_context(tmp_path)
+    context.sessions.put(
+        "session-1",
+        SessionManifest(
+            session_id="session-1",
+            directory_path="root/team-a",
+            allowed_tools=[ToolName.LIST_ADO_CURRENT_ITERATION_BACKLOG_ITEMS],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+
+    class StubIssueService:
+        def __init__(self, provider_config: object) -> None:
+            pass
+
+        def list_remote_current_iteration_backlog_items(self, **kwargs: object) -> dict[str, object]:
+            raise RuntimeError("Azure DevOps team 'Platform Team' has no current iteration configured.")
+
+    monkeypatch.setattr("agent_sandbox.gateway.IssueService", StubIssueService)
+    server = create_server(context)
+
+    with pytest.raises(ToolError, match="no current iteration configured"):
+        asyncio.run(
+            server.call_tool(
+                "list_ado_current_iteration_backlog_items",
+                {
+                    "session_id": "session-1",
+                    "project": "example-project",
+                    "team": "Platform Team",
+                },
+            )
+        )
+
+
 def test_get_ado_backlog_item_requires_permission(tmp_path: Path) -> None:
     context = make_context(tmp_path)
     context.sessions.put(
