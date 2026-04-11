@@ -133,6 +133,84 @@ def test_teams_get_messages_passes_since_cursor_and_filters_unallowlisted_source
     assert result["next_cursor"] == "team-b/channel-9/msg-9"
 
 
+def test_teams_get_messages_supports_limit_and_includes_session_authored_messages(
+    tmp_path: Path,
+) -> None:
+    context = make_context(tmp_path)
+    context.sessions.put(
+        "session-1",
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[ToolName.TEAMS_GET_MESSAGES],
+            teams_channel_allowlist=["team-a/channel-1"],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    context.teams_service = FakeTeamsService(
+        [
+            TeamsMessageEnvelope(
+                cursor="team-a/channel-1/msg-1",
+                message_id="msg-1",
+                author_id="user-1",
+                team_id="team-a",
+                channel_id="channel-1",
+                thread_id="msg-1",
+                content="oldest",
+                metadata={
+                    "source": "teams_graph_api",
+                    "team_id": "team-a",
+                    "channel_id": "channel-1",
+                    "author_id": "user-1",
+                },
+            ),
+            TeamsMessageEnvelope(
+                cursor="team-a/channel-1/msg-2",
+                message_id="msg-2",
+                author_id="agent-user",
+                team_id="team-a",
+                channel_id="channel-1",
+                thread_id="msg-1",
+                content="session-authored status",
+                metadata={
+                    "source": "teams_graph_api_status",
+                    "team_id": "team-a",
+                    "channel_id": "channel-1",
+                    "author_id": "agent-user",
+                    "session_id": "session-1",
+                },
+            ),
+            TeamsMessageEnvelope(
+                cursor="team-a/channel-1/msg-3",
+                message_id="msg-3",
+                author_id="user-3",
+                team_id="team-a",
+                channel_id="channel-1",
+                thread_id="msg-1",
+                content="newest",
+                metadata={
+                    "source": "teams_graph_api",
+                    "team_id": "team-a",
+                    "channel_id": "channel-1",
+                    "author_id": "user-3",
+                },
+            ),
+        ]
+    )
+    server = create_server(context)
+
+    result = call_tool(
+        server,
+        "teams_get_messages",
+        {"session_id": "session-1", "limit": 2},
+    )
+
+    assert [entry["cursor"] for entry in result["messages"]] == [
+        "team-a/channel-1/msg-2",
+        "team-a/channel-1/msg-3",
+    ]
+    assert result["next_cursor"] == "team-a/channel-1/msg-3"
+
+
 def test_teams_post_status_posts_to_allowlisted_channel_and_thread(tmp_path: Path) -> None:
     context = make_context(tmp_path)
     context.sessions.put(
