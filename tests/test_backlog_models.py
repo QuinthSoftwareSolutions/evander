@@ -30,6 +30,31 @@ def test_backlog_create_request_normalizes_fields() -> None:
     assert payload.parent_backlog_item_id == "1234"
 
 
+@pytest.mark.parametrize(
+    ("raw_type", "expected_type"),
+    [
+        ("task", AdoBacklogItemType.TASK),
+        ("Epic", AdoBacklogItemType.EPIC),
+        ("issue", AdoBacklogItemType.ISSUE),
+        ("pbi", AdoBacklogItemType.PRODUCT_BACKLOG_ITEM),
+        ("requirement", AdoBacklogItemType.REQUIREMENT),
+        ("story", AdoBacklogItemType.USER_STORY),
+    ],
+)
+def test_backlog_create_request_accepts_supported_type_aliases(
+    raw_type: str,
+    expected_type: AdoBacklogItemType,
+) -> None:
+    payload = AdoBacklogCreateRequest(
+        type=raw_type,
+        project="Project",
+        iteration="Iteration",
+        title="Title",
+    )
+
+    assert payload.type == expected_type
+
+
 @pytest.mark.parametrize("field_name", ["project", "iteration", "title"])
 def test_backlog_create_request_rejects_empty_required_strings(field_name: str) -> None:
     payload = {
@@ -47,7 +72,7 @@ def test_backlog_create_request_rejects_empty_required_strings(field_name: str) 
 def test_backlog_create_request_rejects_invalid_type() -> None:
     with pytest.raises(ValidationError, match="type must be one of"):
         AdoBacklogCreateRequest(
-            type="Task",
+            type="not-a-real-type",
             project="Project",
             iteration="Iteration",
             title="Title",

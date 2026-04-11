@@ -204,7 +204,8 @@ def test_create_ado_backlog_item_success_with_allowed_tool(tmp_path: Path, monke
     assert captured["request"] == {
         "provider": "azure_devops",
         "directory_path": "root/team-a",
-        "issue_type": "task",
+        "project": "example-project",
+        "issue_type": "Task",
         "title": "Gateway-created item",
         "description": "<p>desc</p>",
         "iteration_path": "Project\\Sprint 1",
@@ -216,6 +217,57 @@ def test_create_ado_backlog_item_success_with_allowed_tool(tmp_path: Path, monke
     assert result["created_item_id"] == "9001"
     assert result["provider"] == "azure_devops"
     assert result["project"] == "example-project"
+
+
+def test_create_ado_backlog_item_normalizes_assignee_identity_object(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    context = make_context(tmp_path)
+    context.sessions.put(
+        "session-1",
+        SessionManifest(
+            session_id="session-1",
+            directory_path="root/team-a",
+            allowed_tools=[ToolName.CREATE_ADO_BACKLOG_ITEM],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+
+    class StubIssueService:
+        def __init__(self, provider_config: object) -> None:
+            pass
+
+        def create_remote_issue(self, **kwargs: object) -> dict[str, object]:
+            return {
+                "provider": "azure_devops",
+                "remote_issue_id": "9002",
+                "url": "https://dev.azure.com/example/example/_workitems/edit/9002",
+                "project": "example-project",
+                "fields": {
+                    "System.Title": "Gateway-created item",
+                    "System.AssignedTo": {
+                        "displayName": "Ada Lovelace",
+                        "uniqueName": "ada@example.com",
+                    },
+                },
+            }
+
+    monkeypatch.setattr("agent_sandbox.gateway.IssueService", StubIssueService)
+    server = create_server(context)
+
+    result = call_tool(
+        server,
+        "create_ado_backlog_item",
+        {
+            "session_id": "session-1",
+            "type": "task",
+            "project": "example-project",
+            "iteration": "Project\\Sprint 1",
+            "title": "Gateway-created item",
+        },
+    )
+
+    assert result["assigned_user"] == "Ada Lovelace"
 
 
 def test_create_ado_backlog_item_requires_permission(tmp_path: Path) -> None:

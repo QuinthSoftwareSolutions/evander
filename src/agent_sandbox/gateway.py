@@ -505,6 +505,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
             remote_payload = issue_service.create_remote_issue(
                 provider="azure_devops",
                 directory_path=session.directory_path,
+                project=request_model.project,
                 issue_type=request_model.type.value,
                 title=request_model.title,
                 description=request_model.description,
@@ -514,6 +515,21 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 assigned_to=request_model.assigned_user,
                 parent_backlog_item_id=request_model.parent_backlog_item_id,
             )
+            remote_fields = remote_payload.get("fields") if isinstance(remote_payload.get("fields"), dict) else {}
+            assigned_to_value = remote_fields.get("System.AssignedTo")
+            if isinstance(assigned_to_value, dict):
+                normalized_assigned_to = next(
+                    (
+                        candidate
+                        for key in ("displayName", "uniqueName", "mailAddress", "signInAddress", "name")
+                        if (candidate := str(assigned_to_value.get(key) or "").strip())
+                    ),
+                    None,
+                )
+            elif assigned_to_value is None:
+                normalized_assigned_to = None
+            else:
+                normalized_assigned_to = str(assigned_to_value).strip() or None
             response_model = AdoBacklogCreateResponse(
                 created_item_id=str(remote_payload.get("remote_issue_id") or remote_payload.get("id") or "").strip(),
                 url=str(remote_payload.get("url") or "").strip(),
@@ -521,17 +537,14 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 project=str(remote_payload.get("project") or request_model.project).strip(),
                 type=request_model.type,
                 iteration=request_model.iteration,
-                title=str(
-                    (remote_payload.get("fields") or {}).get("System.Title") or request_model.title
-                ).strip(),
-                description=(remote_payload.get("fields") or {}).get("System.Description")
-                or request_model.description,
-                acceptance_criteria=(remote_payload.get("fields") or {}).get(
+                title=str((remote_fields.get("System.Title") or request_model.title)).strip(),
+                description=remote_fields.get("System.Description") or request_model.description,
+                acceptance_criteria=remote_fields.get(
                     "Microsoft.VSTS.Common.AcceptanceCriteria"
                 )
                 or request_model.acceptance_criteria,
                 tags=request_model.tags,
-                assigned_user=(remote_payload.get("fields") or {}).get("System.AssignedTo") or request_model.assigned_user,
+                assigned_user=normalized_assigned_to or request_model.assigned_user,
                 parent_backlog_item_id=request_model.parent_backlog_item_id,
             )
             payload = response_model.model_dump(mode="json")

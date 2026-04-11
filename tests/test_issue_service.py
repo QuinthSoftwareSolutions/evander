@@ -61,6 +61,39 @@ def test_create_issue_appends_parent_relation_operation(monkeypatch: pytest.Monk
     }
 
 
+def test_create_issue_uses_explicit_project_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    adapter = AzureDevOpsIssueAdapter(config_resolver=object())
+    monkeypatch.setattr(
+        adapter,
+        "_resolve_connection",
+        lambda directory_path: ("https://dev.azure.com/example", "default-project", "pat"),
+    )
+    calls: list[dict[str, object]] = []
+    payload = {
+        "id": 101,
+        "fields": {"System.WorkItemType": "Task", "System.TeamProject": "other-project", "System.Title": "T"},
+        "_links": {"web": {"href": "https://dev.azure.com/example/other-project/_workitems/edit/101"}},
+    }
+    monkeypatch.setattr(
+        "agent_sandbox.issue_service.httpx.Client",
+        lambda timeout: _DummyClient(httpx.Response(200, json=payload), calls),
+    )
+
+    result = adapter.create_issue(
+        directory_path="root",
+        project="other-project",
+        issue_type="task",
+        title="T",
+        parent_backlog_item_id="1234",
+    )
+
+    assert calls[0]["url"] == "https://dev.azure.com/example/other-project/_apis/wit/workitems/$Task"
+    operations = calls[0]["json"]
+    assert isinstance(operations, list)
+    assert operations[-1]["value"]["url"] == "https://dev.azure.com/example/other-project/_apis/wit/workItems/1234"
+    assert result["project"] == "other-project"
+
+
 def test_create_issue_rejects_invalid_parent_relation_id_before_network(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -159,6 +192,41 @@ def test_create_issue_composes_json_patch_for_backlog_fields(monkeypatch: pytest
     assert result["fields"]["Microsoft.VSTS.Common.AcceptanceCriteria"] == "Tests pass"
     assert result["fields"]["System.Tags"] == "api; backend"
     assert result["fields"]["System.AssignedTo"] == "ada@example.com"
+
+
+def test_create_issue_normalizes_assigned_to_identity_object(monkeypatch: pytest.MonkeyPatch) -> None:
+    adapter = AzureDevOpsIssueAdapter(config_resolver=object())
+    monkeypatch.setattr(
+        adapter,
+        "_resolve_connection",
+        lambda directory_path: ("https://dev.azure.com/example", "project-x", "pat"),
+    )
+    calls: list[dict[str, object]] = []
+    payload = {
+        "id": 89,
+        "fields": {
+            "System.WorkItemType": "Task",
+            "System.TeamProject": "project-x",
+            "System.Title": "Implement API",
+            "System.AssignedTo": {
+                "displayName": "Ada Lovelace",
+                "uniqueName": "ada@example.com",
+            },
+        },
+        "_links": {"web": {"href": "https://dev.azure.com/example/project-x/_workitems/edit/89"}},
+    }
+    monkeypatch.setattr(
+        "agent_sandbox.issue_service.httpx.Client",
+        lambda timeout: _DummyClient(httpx.Response(200, json=payload), calls),
+    )
+
+    result = adapter.create_issue(
+        directory_path="root",
+        issue_type="task",
+        title="Implement API",
+    )
+
+    assert result["fields"]["System.AssignedTo"] == "Ada Lovelace"
 
 
 def test_create_issue_propagates_ado_error_message(monkeypatch: pytest.MonkeyPatch) -> None:

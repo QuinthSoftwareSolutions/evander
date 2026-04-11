@@ -52,7 +52,12 @@ class ToolName(str, Enum):
 
 
 class AdoBacklogItemType(str, Enum):
+    EPIC = "Epic"
     FEATURE = "Feature"
+    ISSUE = "Issue"
+    PRODUCT_BACKLOG_ITEM = "Product Backlog Item"
+    REQUIREMENT = "Requirement"
+    TASK = "Task"
     USER_STORY = "User Story"
     BUG = "Bug"
 
@@ -60,14 +65,23 @@ class AdoBacklogItemType(str, Enum):
     def from_raw(cls, raw_value: str) -> "AdoBacklogItemType":
         normalized = raw_value.strip().casefold()
         lookup = {
+            "epic": cls.EPIC,
             "feature": cls.FEATURE,
+            "issue": cls.ISSUE,
+            "product backlog item": cls.PRODUCT_BACKLOG_ITEM,
+            "pbi": cls.PRODUCT_BACKLOG_ITEM,
+            "requirement": cls.REQUIREMENT,
+            "task": cls.TASK,
             "user story": cls.USER_STORY,
             "user_story": cls.USER_STORY,
             "user-story": cls.USER_STORY,
+            "story": cls.USER_STORY,
             "bug": cls.BUG,
         }
         if normalized not in lookup:
-            raise ValueError("type must be one of: Feature, User Story, Bug")
+            raise ValueError(
+                "type must be one of: Epic, Feature, Issue, Product Backlog Item, Requirement, Task, User Story, Bug"
+            )
         return lookup[normalized]
 
 

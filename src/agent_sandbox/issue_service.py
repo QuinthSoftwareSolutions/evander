@@ -43,6 +43,7 @@ class IssueProviderAdapter(Protocol):
         self,
         *,
         directory_path: str,
+        project: str | None = None,
         issue_type: str,
         title: str,
         description: str | None = None,
@@ -100,6 +101,22 @@ class AzureDevOpsIssueAdapter:
         if parsed.tzinfo is None:
             parsed = parsed.replace(tzinfo=UTC)
         return parsed.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+    @staticmethod
+    def _normalize_assigned_to(value: object) -> str | None:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            normalized = value.strip()
+            return normalized or None
+        if isinstance(value, dict):
+            for key in ("displayName", "uniqueName", "mailAddress", "signInAddress", "name"):
+                candidate = str(value.get(key) or "").strip()
+                if candidate:
+                    return candidate
+            return None
+        normalized = str(value).strip()
+        return normalized or None
 
     @staticmethod
     def _resolve_work_item_type(issue_type: str) -> str:
@@ -337,6 +354,7 @@ class AzureDevOpsIssueAdapter:
         self,
         *,
         directory_path: str,
+        project: str | None = None,
         issue_type: str,
         title: str,
         description: str | None = None,
@@ -347,10 +365,13 @@ class AzureDevOpsIssueAdapter:
         parent_backlog_item_id: str | None = None,
         fields: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        organization_url, project, pat = self._resolve_connection(directory_path)
+        organization_url, configured_project, pat = self._resolve_connection(directory_path)
+        normalized_project = str(project or configured_project).strip()
+        if not normalized_project:
+            raise ValueError("project is required for Azure DevOps issue creation.")
         auth_header = self._auth_header(pat)
         work_item_type = self._resolve_work_item_type(issue_type)
-        create_url = f"{organization_url}/{project}/_apis/wit/workitems/${work_item_type}"
+        create_url = f"{organization_url}/{normalized_project}/_apis/wit/workitems/${work_item_type}"
 
         operations: list[dict[str, Any]] = [{"op": "add", "path": "/fields/System.Title", "value": title}]
         if description is not None:
@@ -382,10 +403,7 @@ class AzureDevOpsIssueAdapter:
                     "path": "/relations/-",
                     "value": {
                         "rel": "System.LinkTypes.Hierarchy-Reverse",
-                        "url": (
-                            f"{organization_url}/{project}/_apis/wit/workItems/"
-                            f"{normalized_parent_backlog_item_id}"
-                        ),
+                        "url": f"{organization_url}/{normalized_project}/_apis/wit/workItems/{normalized_parent_backlog_item_id}",
                     },
                 }
             )
@@ -413,7 +431,7 @@ class AzureDevOpsIssueAdapter:
             "id": payload.get("id"),
             "url": str((payload.get("_links") or {}).get("web", {}).get("href") or payload.get("url") or ""),
             "type": str(payload_fields.get("System.WorkItemType") or work_item_type),
-            "project": str((payload_fields.get("System.TeamProject") or project)),
+            "project": str((payload_fields.get("System.TeamProject") or normalized_project)),
             "fields": {
                 "System.Title": payload_fields.get("System.Title"),
                 "System.Description": payload_fields.get("System.Description"),
@@ -422,7 +440,7 @@ class AzureDevOpsIssueAdapter:
                     "Microsoft.VSTS.Common.AcceptanceCriteria"
                 ),
                 "System.Tags": payload_fields.get("System.Tags"),
-                "System.AssignedTo": payload_fields.get("System.AssignedTo"),
+                "System.AssignedTo": self._normalize_assigned_to(payload_fields.get("System.AssignedTo")),
                 **{k: v for k, v in (fields or {}).items() if k in payload_fields},
             },
         }
@@ -535,6 +553,7 @@ class IssueService:
         *,
         provider: str,
         directory_path: str,
+        project: str | None = None,
         issue_type: str,
         title: str,
         description: str | None = None,
@@ -550,6 +569,7 @@ class IssueService:
             raise ValueError(f"Unsupported issue provider: {provider}")
         return adapter.create_issue(
             directory_path=directory_path,
+            project=project,
             issue_type=issue_type,
             title=title,
             description=description,
