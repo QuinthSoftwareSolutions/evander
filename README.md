@@ -9,6 +9,7 @@
 - A host-side NuGet relay that proxies nuget.org and private Azure Artifacts feeds for guests
 - A host-side Azure DevOps backlog worker that polls tagged work items and drives `setup_issue_vm.sh`
 - A host-side workflow orchestrator that polls provider triggers, evaluates gates, and persists durable queue events for downstream workers/hooks
+- A host-side Teams ingest worker that polls Microsoft Graph and feeds `trigger:teams:new-message` orchestration
 - A host-side shared NuGet cache that can be mounted read-only into guests for faster cold restores
 - File-backed session, approval, audit, and draft storage for local development
 - A small CLI for bootstrapping state and creating session manifests
@@ -218,6 +219,8 @@ The scaffold includes `agent-sandbox-trigger-orchestrator`, a host-side worker t
 - evaluates gate nodes and routes events through explicit edges
 - persists discovered events into a durable queue (`runtime/trigger-orchestrator-events.json` by default)
 - records per-trigger cursor/checkpoint metadata (`runtime/trigger-orchestrator-cursors.json` by default)
+- also accepts `trigger:teams:new-message` events, which are sourced from host-side Teams ingest
+  polling rather than from host-heartbeat
 
 One-shot cycle execution is supported for ops/debugging:
 
@@ -551,6 +554,9 @@ See [live-smoke-tests.md](/home/jonathan/agent-sandbox/docs/live-smoke-tests.md)
   - `teams_delegated_client_id: <ENTRA_APP_CLIENT_ID>`
   - optional `teams_delegated_tenant_id`, `teams_delegated_scopes`,
     `teams_delegated_authority_base_url`, and `teams_delegated_credential_store_path`
+- The Entra app registration used for `teams_delegated_client_id` must allow public client /
+  device-code flows. If the token poll fails with `AADSTS7000218`, the app is configured as a
+  confidential client and needs to be updated or replaced.
 - Start delegated auth on the host with:
   - `agent-sandbox-cli teams-auth login --directory <directory-path>`
 - Inspect or clear delegated auth on the host with:
@@ -566,6 +572,9 @@ See [live-smoke-tests.md](/home/jonathan/agent-sandbox/docs/live-smoke-tests.md)
 - The access token referenced by `teams_graph_access_token_env` must be able to read Microsoft
   Teams channel messages and, if you enable outbound status posts, create channel messages/replies
   for the teams/channels you plan to use.
+- `trigger:teams:new-message` message arrival is driven by host-side Teams ingest polling on the
+  host, not by the host-heartbeat worker. Host-heartbeat remains the PR/Discord feedback wakeup
+  loop.
 - Session manifests opt into Teams access explicitly:
 
   ```json

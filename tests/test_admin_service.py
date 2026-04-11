@@ -9,6 +9,7 @@ import subprocess
 from typing import Any
 
 import agent_sandbox.admin_service as admin_service
+import httpx
 import pytest
 from agent_sandbox.admin_service import AdminService
 from agent_sandbox.models import ApprovalRequest, ApprovalStatus, SessionManifest, ToolName
@@ -59,6 +60,137 @@ def test_create_local_issue_persists_yaml_and_store(tmp_path: Path) -> None:
     payload = json.loads((tmp_path / "runtime" / "local-issues.json").read_text(encoding="utf-8"))
     assert payload[issue.issue_id]["directory_path"] == "root"
     assert payload[issue.issue_id]["repo_source"] == "/src/repo"
+
+
+def test_teams_auth_list_channels_resolves_exact_channel_matches(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    created = service.create_directory_child("root", "example-industry")
+    assert created.ok is True and created.data is not None
+    directory_path = created.data.details.directory.path
+    write_result = service.write_directory_domain_config(
+        directory_path,
+        "providers",
+        {
+            "teams_backend": "delegated_graph_api",
+            "teams_delegated_identity_id": "example-teams",
+            "teams_delegated_client_id": "client-123",
+            "teams_delegated_tenant_id": "tenant-123",
+        },
+    )
+    assert write_result.ok is True
+
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        assert request.headers["Authorization"] == "Bearer access-token"
+        return httpx.Response(
+            200,
+            json={
+                "value": [
+                    {
+                        "id": "19:truman@thread.skype",
+                        "displayName": "Truman",
+                        "membershipType": "standard",
+                        "webUrl": "https://teams.example/truman",
+                    },
+                    {
+                        "id": "19:other@thread.skype",
+                        "displayName": "General",
+                        "membershipType": "standard",
+                    },
+                ]
+            },
+            request=request,
+        )
+
+    real_client = httpx.Client
+
+    def fake_client(*args: object, **kwargs: object) -> httpx.Client:
+        kwargs["transport"] = httpx.MockTransport(handler)
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr(admin_service.httpx, "Client", fake_client)
+    monkeypatch.setattr(
+        admin_service.TeamsDeviceCodeTokenProvider,
+        "get_bearer_token",
+        lambda self, force_refresh=False: "access-token",
+    )
+
+    result = service.teams_auth_list_channels(
+        directory=directory_path,
+        team_id="c85e4de5-e0d7-4240-8302-8bc944f2360d",
+        channel_name="Truman",
+    )
+
+    assert result["directory_path"] == directory_path
+    assert result["match_count"] == 1
+    assert result["channels"] == [
+        {
+            "team_id": "c85e4de5-e0d7-4240-8302-8bc944f2360d",
+            "channel_id": "19:truman@thread.skype",
+            "display_name": "Truman",
+            "membership_type": "standard",
+            "web_url": "https://teams.example/truman",
+            "allowlist_entry": "c85e4de5-e0d7-4240-8302-8bc944f2360d/19:truman@thread.skype",
+        }
+    ]
+    assert requests[0].url.path == "/v1.0/teams/c85e4de5-e0d7-4240-8302-8bc944f2360d/channels"
+
+
+def test_teams_auth_list_channels_can_list_all_channels(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    created = service.create_directory_child("root", "example-industry")
+    assert created.ok is True and created.data is not None
+    directory_path = created.data.details.directory.path
+    write_result = service.write_directory_domain_config(
+        directory_path,
+        "providers",
+        {
+            "teams_backend": "delegated_graph_api",
+            "teams_delegated_identity_id": "example-teams",
+            "teams_delegated_client_id": "client-123",
+            "teams_delegated_tenant_id": "tenant-123",
+        },
+    )
+    assert write_result.ok is True
+
+    real_client = httpx.Client
+
+    def fake_client(*args: object, **kwargs: object) -> httpx.Client:
+        return real_client(
+            *args,
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(
+                    200,
+                    json={
+                        "value": [
+                            {"id": "19:a@thread.skype", "displayName": "General"},
+                            {"id": "19:b@thread.skype", "displayName": "Truman"},
+                        ]
+                    },
+                    request=request,
+                )
+            ),
+            **kwargs,
+        )
+
+    monkeypatch.setattr(admin_service.httpx, "Client", fake_client)
+    monkeypatch.setattr(
+        admin_service.TeamsDeviceCodeTokenProvider,
+        "get_bearer_token",
+        lambda self, force_refresh=False: "access-token",
+    )
+
+    result = service.teams_auth_list_channels(
+        directory=directory_path,
+        team_id="team-123",
+        include_all=True,
+    )
+
+    assert result["channel_name"] is None
+    assert result["match_count"] == 2
+    assert [item["display_name"] for item in result["channels"]] == ["General", "Truman"]
 
 
 def test_create_local_issue_reuses_scoped_id_within_directory(tmp_path: Path) -> None:
@@ -835,6 +967,41 @@ def test_admin_service_reads_and_writes_discord_ingest_worker_global_config(tmp_
     reread = service.read_worker_global_config("discord-ingest")
     assert reread.config["directories"] == ["root/team-a", "root/team-b"]
     assert reread.config["backoff_seconds"] == 45.0
+
+
+def test_admin_service_reads_and_writes_teams_ingest_worker_global_config(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+
+    read_result = service.read_worker_global_config("teams-ingest")
+    assert read_result.exists is False
+    assert read_result.path == str(tmp_path / "config" / "teams-ingest" / "config.json")
+    assert read_result.config["poll_interval_seconds"] == 30.0
+    assert read_result.config["directories"] == []
+    assert read_result.config["backoff_seconds"] == 60.0
+
+    write_result = service.write_worker_global_config(
+        "teams-ingest",
+        {
+            "runtime_dir": str(tmp_path / "runtime"),
+            "directories": ["root/team-a", "root/team-b"],
+            "poll_interval_seconds": 15.0,
+            "jitter_seconds": 2.0,
+            "backoff_seconds": 90.0,
+            "lock_path": None,
+        },
+    )
+    assert write_result.config["directories"] == ["root/team-a", "root/team-b"]
+    assert write_result.config["poll_interval_seconds"] == 15.0
+
+    config_path = tmp_path / "config" / "teams-ingest" / "config.json"
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    assert payload["directories"] == ["root/team-a", "root/team-b"]
+    assert payload["poll_interval_seconds"] == 15.0
+    assert payload["backoff_seconds"] == 90.0
+
+    reread = service.read_worker_global_config("teams-ingest")
+    assert reread.config["directories"] == ["root/team-a", "root/team-b"]
+    assert reread.config["backoff_seconds"] == 90.0
 
 
 def test_admin_service_can_read_and_mutate_trigger_orchestrator_triggers_by_id(tmp_path: Path) -> None:
@@ -1769,6 +1936,17 @@ def test_list_background_workers_reads_systemd_state(tmp_path: Path, monkeypatch
             "ExecMainCode": "1",
             "ExecMainStatus": "0",
         },
+        "agent-sandbox-teams-ingest.service": {
+            "ActiveState": "inactive",
+            "SubState": "dead",
+            "Result": "success",
+            "UnitFileState": "disabled",
+            "Description": "Teams ingest worker",
+            "MainPID": "0",
+            "LoadState": "loaded",
+            "ExecMainCode": "1",
+            "ExecMainStatus": "0",
+        },
         "agent-sandbox-host-heartbeat.service": {
             "ActiveState": "failed",
             "SubState": "failed",
@@ -1821,6 +1999,7 @@ def test_list_background_workers_reads_systemd_state(tmp_path: Path, monkeypatch
     assert [summary.worker_id for summary in summaries] == [
         "ado",
         "discord-ingest",
+        "teams-ingest",
         "host-heartbeat",
         "issue-orchestrator",
         "effect-orchestrator",
@@ -1834,17 +2013,20 @@ def test_list_background_workers_reads_systemd_state(tmp_path: Path, monkeypatch
     assert summaries[1].failed is False
     assert summaries[1].main_pid == 456
     assert summaries[2].running is False
-    assert summaries[2].failed is True
-    assert summaries[2].detail == "load=loaded, exec=1:2"
+    assert summaries[2].failed is False
+    assert summaries[2].unit_file_state == "disabled"
     assert summaries[3].running is False
-    assert summaries[3].failed is False
-    assert summaries[3].unit_file_state == "disabled"
-    assert summaries[4].running is True
+    assert summaries[3].failed is True
+    assert summaries[3].detail == "load=loaded, exec=1:2"
+    assert summaries[4].running is False
     assert summaries[4].failed is False
-    assert summaries[4].main_pid == 777
+    assert summaries[4].unit_file_state == "disabled"
     assert summaries[5].running is True
     assert summaries[5].failed is False
-    assert summaries[5].main_pid == 789
+    assert summaries[5].main_pid == 777
+    assert summaries[6].running is True
+    assert summaries[6].failed is False
+    assert summaries[6].main_pid == 789
 
 
 def test_list_background_workers_marks_unavailable_when_systemctl_fails(tmp_path: Path, monkeypatch) -> None:
@@ -2849,6 +3031,44 @@ def test_sync_repo_into_bare_remote_records_canonical_origin_url_when_available(
         if cmd[:4] == ["git", "-C", "/src/repo", "branch"]:
             return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="main\n", stderr="")
         if cmd == ["git", "-C", "/src/repo", "remote", "get-url", "origin"]:
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="https://example.com/org/repo.git\n", stderr="")
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("agent_sandbox.admin_service.subprocess.run", _fake_run)
+
+    service._sync_repo_into_bare_remote("sample-repo", "/src/repo", issue_setup=issue_setup)
+
+    assert any(
+        cmd == [
+            "git",
+            f"--git-dir={issue_setup.git_root}/sample-repo.git",
+            "config",
+            "agent-sandbox.canonicalOriginUrl",
+            "https://example.com/org/repo.git",
+        ]
+        for cmd in captured_cmds
+    )
+
+
+def test_sync_repo_into_bare_remote_unwraps_repo_cache_origin_url(tmp_path: Path, monkeypatch: Any) -> None:
+    service = AdminService(write_config(tmp_path))
+    issue_setup = service._resolve_issue_setup("root", root_dir=Path(__file__).resolve().parents[1])
+    captured_cmds: list[list[str]] = []
+    cached_origin = "/home/jonathan/agent-sandbox/runtime/repo-cache/example.git"
+
+    def _fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        captured_cmds.append(cmd)
+        if cmd[0].endswith("create_git_remote.sh"):
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="ok", stderr="")
+        if cmd[0] == "git" and "fetch" in cmd:
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+        if cmd[:5] == ["git", "-C", "/src/repo", "symbolic-ref", "--quiet"]:
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="origin/main\n", stderr="")
+        if cmd[:4] == ["git", "-C", "/src/repo", "branch"]:
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="main\n", stderr="")
+        if cmd == ["git", "-C", "/src/repo", "remote", "get-url", "origin"]:
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout=f"{cached_origin}\n", stderr="")
+        if cmd == ["git", f"--git-dir={cached_origin}", "remote", "get-url", "origin"]:
             return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="https://example.com/org/repo.git\n", stderr="")
         return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
 

@@ -174,6 +174,10 @@ Type-specific keys:
 | `trigger:pull-request:new-feedback` | `provider` | `organization_url`, `project` (but `organization_url` becomes required when `provider=ado`) |
 | `trigger:git:push` | `path_to_repo` | — |
 
+The current trigger set also includes `trigger:teams:new-message`. It is fed by a host-side Teams
+ingest worker that reads the same delegated Teams auth settings described above. This flow is
+independent from host-heartbeat; host-heartbeat continues to cover PR/Discord feedback wakeups.
+
 Example:
 
 ```json
@@ -622,6 +626,8 @@ the host with device code flow and keep the credential host-only. Directory-scop
 overlays can bind a subtree to that host-managed Teams identity, while the legacy static env-token
 mode remains supported for compatibility through `teams_graph_access_token_env` (default
 `GRAPH_TEAMS_ACCESS_TOKEN`).
+The same delegated Teams identity/configuration is also used by the host-side Teams ingest worker
+that feeds `trigger:teams:new-message`.
 
 Key delegated Teams provider settings now include:
 
@@ -632,6 +638,9 @@ Key delegated Teams provider settings now include:
 - optional `teams_delegated_scopes`
 - optional `teams_delegated_authority_base_url`
 - optional `teams_delegated_credential_store_path`
+- The app registration referenced by `teams_delegated_client_id` must support public client /
+  device-code auth. If Microsoft returns `AADSTS7000218`, the registration currently requires a
+  client secret or assertion and is incompatible with this flow.
 
 ## 4) Additional env vars consumed directly in code paths
 

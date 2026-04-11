@@ -145,3 +145,15 @@ def test_map_template_bindings_fail_strictly_when_output_is_missing() -> None:
             declared_upstream_output_names={"trigger_1": {"ticket_id", "missing_key"}},
             strict_validation=True,
         )
+
+
+def test_effect_binding_supports_literal_fallback_inside_interpolated_string() -> None:
+    result = resolve_effect_config_bindings(
+        {"prompt": "Thread: ${{query_1.metadata.agent_thread_id ?? \"new\"}}"},
+        upstream_payload={"query_1": {"metadata": {}}},
+        declared_upstream_output_names={"query_1": {"metadata"}},
+        strict_validation=True,
+    )
+
+    assert result.resolved_config == {"prompt": "Thread: new"}
+    assert result.trace.consumed_output_keys == ()

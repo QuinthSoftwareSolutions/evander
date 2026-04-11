@@ -206,6 +206,42 @@ def test_graph_teams_service_fails_clearly_when_token_provider_cannot_resolve_to
         service.get_messages()
 
 
+def test_graph_teams_service_includes_graph_error_body_in_http_status_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            403,
+            json={
+                "error": {
+                    "code": "Forbidden",
+                    "message": "Caller does not have access to this channel.",
+                    "innerError": {
+                        "request-id": "req-123",
+                        "date": "2026-04-10T07:15:00Z",
+                    },
+                }
+            },
+            request=request,
+        )
+
+    transport = httpx.MockTransport(handler)
+    patch_httpx_client(monkeypatch, transport)
+    store = JsonStore(tmp_path / "teams.json", TeamsMessageEnvelope)
+    service = GraphTeamsService(
+        store,
+        token="graph-token",
+        api_base_url="https://graph.microsoft.com/v1.0",
+        poll_limit=25,
+        timeout_seconds=5.0,
+        allowed_channel_targets_provider=lambda: ["team-a/channel-1"],
+    )
+
+    with pytest.raises(httpx.HTTPStatusError, match="Graph error: code=Forbidden, message=Caller does not have access to this channel., request-id=req-123, date=2026-04-10T07:15:00Z"):
+        service.get_messages()
+
+
 def test_stub_teams_service_filters_by_cursor(tmp_path: Path) -> None:
     store = JsonStore(tmp_path / "teams.json", TeamsMessageEnvelope)
     store.put(

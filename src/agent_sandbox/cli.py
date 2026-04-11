@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import json
 import inspect
 import logging
@@ -46,6 +47,7 @@ from .models import ApprovalStatus, DiscordCommandEnvelope, EmailMessage, Sessio
 from .policy_config import EffectivePolicyConfig, PolicyConfigResolver
 from .provider_config import ProviderConfigResolver
 from .runtime import build_runtime
+from .teams_auth import TeamsAuthError
 from .vm_defaults_config import EffectiveVmDefaultsConfig, VmDefaultsConfigResolver
 
 _COMMAND_PANELS = {
@@ -123,6 +125,23 @@ def _load_runtime_config_from_option(config: Path) -> GatewayConfig:
 def _load_host_config_from_option(config: Path):
     runtime_dir, legacy_config_path = _bootstrap_inputs(config)
     return load_host_bootstrap_config(runtime_dir=runtime_dir, legacy_config_path=legacy_config_path)
+
+
+def _build_teams_ingest_worker(cfg: GatewayConfig, *, project_dir: Path):
+    try:
+        module = importlib.import_module("agent_sandbox.teams_ingest_worker")
+    except ModuleNotFoundError as exc:
+        if exc.name == "agent_sandbox.teams_ingest_worker":
+            raise RuntimeError(
+                "Teams ingest worker module agent_sandbox.teams_ingest_worker is not available."
+            ) from exc
+        raise
+    builder = getattr(module, "build_teams_ingest_worker", None)
+    if builder is None:
+        raise RuntimeError(
+            "Teams ingest worker module does not export build_teams_ingest_worker(config, *, project_dir=...)."
+        )
+    return builder(cfg, project_dir=project_dir)
 
 
 def _parse_utc_datetime(value: str) -> datetime:
@@ -280,6 +299,11 @@ _TEAMS_AUTH_SUMMARY_FIELDS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Account", ("account", "account_identifier", "user", "user_principal_name", "username", "email")),
     ("Tenant", ("tenant", "tenant_id", "tenant_name")),
     ("Authority", ("authority", "issuer", "environment")),
+    ("Team ID", ("team_id",)),
+    ("Channel name", ("channel_name", "display_name")),
+    ("Channel ID", ("channel_id",)),
+    ("Allowlist entry", ("allowlist_entry",)),
+    ("Matches", ("match_count", "count")),
     ("Scopes", ("scopes", "permissions")),
     ("Expires at", ("expires_at", "expires", "expires_on")),
     ("Created at", ("created_at", "created")),
@@ -324,6 +348,14 @@ def _teams_auth_normalize_value(value: object) -> object:
         return value.model_dump(mode="json")
     if is_dataclass(value):
         return asdict(value)
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {key: _teams_auth_normalize_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_teams_auth_normalize_value(item) for item in value]
+    if isinstance(value, tuple):
+        return [_teams_auth_normalize_value(item) for item in value]
     return value
 
 
@@ -1475,7 +1507,12 @@ def teams_auth_login(
     service = _teams_auth_service(config)
     login_session = _teams_auth_call(service, "login", directory=directory)
     _teams_auth_emit_result("Teams auth login", login_session)
-    result = _teams_auth_call(service, "complete_login", directory=directory, login_session=login_session)
+    try:
+        result = _teams_auth_call(service, "complete_login", directory=directory, login_session=login_session)
+    except TeamsAuthError as exc:
+        typer.echo("", err=True)
+        typer.echo(f"Teams auth login failed: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
     typer.echo("")
     _teams_auth_emit_result("Teams auth status", result)
 
@@ -1505,6 +1542,36 @@ def teams_auth_list(config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR) -> None:
     service = _teams_auth_service(config)
     result = _teams_auth_call(service, "list")
     _teams_auth_emit_result("Teams auth entries", result)
+
+
+@teams_auth_app.command("channels", short_help="Resolve Teams channel IDs within a team.")
+def teams_auth_channels(
+    team_id: Annotated[str, typer.Option("--team-id", help="Microsoft Teams team ID to query.")] ,
+    channel_name: Annotated[
+        str | None,
+        typer.Option("--name", help="Exact Teams channel display name to match."),
+    ] = None,
+    include_all: Annotated[
+        bool,
+        typer.Option("--all", help="List all channels in the team instead of filtering by name."),
+    ] = False,
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
+    directory: DirectoryOption = "root",
+) -> None:
+    service = _teams_auth_service(config)
+    try:
+        result = _teams_auth_call(
+            service,
+            "list_channels",
+            directory=directory,
+            team_id=team_id,
+            channel_name=channel_name,
+            include_all=include_all,
+        )
+    except (TeamsAuthError, ValueError, httpx.HTTPError) as exc:
+        typer.echo(f"Teams channel lookup failed: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    _teams_auth_emit_result("Teams channels", result)
 
 
 @app.command(
@@ -3123,6 +3190,40 @@ def force_complete_await_agent(
     if not worker.force_complete_await_agent(dispatch_id):
         raise typer.BadParameter(f"Unable to force-complete await-agent dispatch: {dispatch_id}")
     typer.echo(f"Force-completed await-agent dispatch {dispatch_id}")
+
+
+@app.command(
+    "teams-ingest",
+    rich_help_panel="Background Workers",
+    short_help="Run the Teams ingest worker.",
+)
+def teams_ingest(
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
+    run_once: Annotated[
+        bool,
+        typer.Option("--once", help="Run a single Teams ingest cycle and exit."),
+    ] = False,
+    log_level: Annotated[str, typer.Option("--log-level", help="Python logging level.")] = "INFO",
+) -> None:
+    logging_level = getattr(logging, log_level.upper(), None)
+    if not isinstance(logging_level, int):
+        raise typer.BadParameter(f"Invalid --log-level value: {log_level}")
+    logging.basicConfig(
+        level=logging_level,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+
+    cfg = _load_runtime_config_from_option(config)
+    worker = _build_teams_ingest_worker(cfg, project_dir=_project_dir_for_config_option(config))
+    if run_once:
+        result = worker.run_once_with_lock()
+        typer.echo(
+            f"Teams ingest worker cycle complete directories={result.directories_polled} "
+            f"sessions={result.sessions_seen} sleep_seconds={result.next_sleep_seconds:.3f}"
+        )
+        return
+
+    worker.run_forever()
 
 
 @app.command(

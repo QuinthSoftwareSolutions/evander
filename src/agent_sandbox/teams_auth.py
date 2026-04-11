@@ -13,6 +13,7 @@ from pydantic import AnyHttpUrl, BaseModel, Field, TypeAdapter, field_validator
 _HTTP_URL_ADAPTER = TypeAdapter(AnyHttpUrl)
 _DEFAULT_AUTHORITY_BASE_URL = "https://login.microsoftonline.com"
 _DEVICE_CODE_GRANT_TYPE = "urn:ietf:params:oauth:grant-type:device_code"
+_AADSTS_CONFIDENTIAL_CLIENT_REQUIRES_SECRET = "AADSTS7000218"
 
 
 def _utc_now() -> datetime:
@@ -614,6 +615,18 @@ class TeamsDeviceCodeTokenProvider:
             error_type = TemporaryAuthFailureError
         elif error_code == "invalid_request" and operation in {"device_code_start", "device_code_poll", "refresh"}:
             error_type = InvalidClientConfigurationError
+
+        if (
+            error_type is InvalidClientConfigurationError
+            and description
+            and _AADSTS_CONFIDENTIAL_CLIENT_REQUIRES_SECRET in description
+        ):
+            message = (
+                "Microsoft Entra rejected the device-code flow because the configured app registration "
+                "is not enabled as a public client. Enable device-code/public client flows for "
+                f"client_id {self.config.client_id!r}, or use an app registration intended for "
+                "delegated device-code auth."
+            )
 
         return error_type(
             message,

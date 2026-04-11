@@ -53,6 +53,28 @@ is_remote_source() {
   return 1
 }
 
+resolve_canonical_origin_url() {
+  local repo_path="$1"
+  local remote_name="$2"
+  local remote_url=""
+  local normalized_url=""
+  local mirror_origin_url=""
+
+  if ! remote_url="$(git -C "${repo_path}" remote get-url "${remote_name}" 2>/dev/null)"; then
+    return 1
+  fi
+
+  normalized_url="$(readlink -f "${remote_url}" 2>/dev/null || printf '%s' "${remote_url}")"
+  if [[ "${normalized_url}" =~ /runtime/repo-cache/[^/]+\.git$ ]] \
+    && [[ -d "${normalized_url}" ]] \
+    && mirror_origin_url="$(git --git-dir="${normalized_url}" remote get-url origin 2>/dev/null)"; then
+    printf '%s\n' "${mirror_origin_url}"
+    return 0
+  fi
+
+  printf '%s\n' "${remote_url}"
+}
+
 reset_issue_remote_refs() {
   local bare_repo_path="$1"
   local -a refs=()
@@ -80,6 +102,7 @@ build_safe_default_refspecs() {
   local repo_path="$1"
   local default_base_branch="$2"
   local -a refspecs=()
+  local -a remote_head_refspecs=()
 
   while IFS= read -r ref; do
     [[ -n "${ref}" ]] || continue
@@ -95,12 +118,32 @@ build_safe_default_refspecs() {
   while IFS= read -r ref; do
     [[ -n "${ref}" ]] || continue
     refspecs+=("${ref}:${ref}")
-  done < <(git -C "${repo_path}" for-each-ref --format='%(refname)' refs/tags)
+    done < <(git -C "${repo_path}" for-each-ref --format='%(refname)' refs/tags)
+
+  if (( ${#refspecs[@]} == 0 )); then
+    while IFS= read -r ref; do
+      [[ -n "${ref}" ]] || continue
+      local remote_branch_name="${ref#refs/remotes/${REMOTE_NAME}/}"
+      case "${remote_branch_name}" in
+        HEAD|agents/*|review/*)
+          continue
+          ;;
+      esac
+      remote_head_refspecs+=("${ref}:refs/heads/${remote_branch_name}")
+    done < <(git -C "${repo_path}" for-each-ref --format='%(refname)' "refs/remotes/${REMOTE_NAME}")
+  fi
+
+  if (( ${#refspecs[@]} == 0 && ${#remote_head_refspecs[@]} > 0 )); then
+    refspecs=("${remote_head_refspecs[@]}")
+  fi
 
   if (( ${#refspecs[@]} == 0 )); then
     if [[ -n "${default_base_branch}" ]] \
       && git -C "${repo_path}" show-ref --verify --quiet "refs/heads/${default_base_branch}"; then
       refspecs+=("refs/heads/${default_base_branch}:refs/heads/${default_base_branch}")
+    elif [[ -n "${default_base_branch}" ]] \
+      && git -C "${repo_path}" show-ref --verify --quiet "refs/remotes/${REMOTE_NAME}/${default_base_branch}"; then
+      refspecs+=("refs/remotes/${REMOTE_NAME}/${default_base_branch}:refs/heads/${default_base_branch}")
     elif git -C "${repo_path}" rev-parse --verify HEAD >/dev/null 2>&1; then
       local head_branch
       head_branch="$(git -C "${repo_path}" branch --show-current)"
@@ -252,8 +295,8 @@ git --git-dir="${BARE_REPO_PATH}" config --unset-all agent-sandbox.mirrorRefspec
 CANONICAL_ORIGIN_URL=""
 if [[ "${SOURCE_MODE}" == "remote" ]]; then
   CANONICAL_ORIGIN_URL="${REPO_SOURCE}"
-elif git -C "${RESOLVED_REPO_PATH}" remote get-url "${REMOTE_NAME}" >/dev/null 2>&1; then
-  CANONICAL_ORIGIN_URL="$(git -C "${RESOLVED_REPO_PATH}" remote get-url "${REMOTE_NAME}")"
+elif CANONICAL_ORIGIN_URL="$(resolve_canonical_origin_url "${RESOLVED_REPO_PATH}" "${REMOTE_NAME}" 2>/dev/null)"; then
+  :
 fi
 if [[ -n "${CANONICAL_ORIGIN_URL}" ]]; then
   git --git-dir="${BARE_REPO_PATH}" config agent-sandbox.canonicalOriginUrl "${CANONICAL_ORIGIN_URL}"
@@ -269,6 +312,13 @@ DEFAULT_BASE_BRANCH="$(
   git -C "${RESOLVED_REPO_PATH}" symbolic-ref --quiet --short "refs/remotes/${REMOTE_NAME}/HEAD" 2>/dev/null \
     | sed "s#^${REMOTE_NAME}/##" || true
 )"
+if [[ -z "${DEFAULT_BASE_BRANCH}" ]]; then
+  DEFAULT_BASE_BRANCH="$(
+    git -C "${RESOLVED_REPO_PATH}" for-each-ref --format='%(refname:strip=3)' "refs/remotes/${REMOTE_NAME}" \
+      | grep -v '^HEAD$' \
+      | head -n 1 || true
+  )"
+fi
 if [[ -n "${DEFAULT_BASE_BRANCH}" ]]; then
   git --git-dir="${BARE_REPO_PATH}" config agent-sandbox.baseBranch "${DEFAULT_BASE_BRANCH}"
   git --git-dir="${BARE_REPO_PATH}" symbolic-ref HEAD "refs/heads/${DEFAULT_BASE_BRANCH}"
@@ -285,6 +335,12 @@ if (( ${#REFSPECS[@]} > 0 )); then
 else
   reset_issue_remote_refs "${BARE_REPO_PATH}"
   mapfile -t DEFAULT_REFSPECS < <(build_safe_default_refspecs "${RESOLVED_REPO_PATH}" "${DEFAULT_BASE_BRANCH}")
+  FILTERED_DEFAULT_REFSPECS=()
+  for refspec in "${DEFAULT_REFSPECS[@]}"; do
+    [[ -n "${refspec}" ]] || continue
+    FILTERED_DEFAULT_REFSPECS+=("${refspec}")
+  done
+  DEFAULT_REFSPECS=("${FILTERED_DEFAULT_REFSPECS[@]}")
   if (( ${#DEFAULT_REFSPECS[@]} == 0 )); then
     echo "Could not determine any safe refs to mirror from ${RESOLVED_REPO_PATH}." >&2
     exit 1
@@ -295,8 +351,10 @@ fi
 SOURCE_COMMIT=""
 if [[ -n "${DEFAULT_BASE_BRANCH}" ]] && git -C "${RESOLVED_REPO_PATH}" show-ref --verify --quiet "refs/heads/${DEFAULT_BASE_BRANCH}"; then
   SOURCE_COMMIT="$(git -C "${RESOLVED_REPO_PATH}" rev-parse "refs/heads/${DEFAULT_BASE_BRANCH}")"
+elif [[ -n "${DEFAULT_BASE_BRANCH}" ]] && git -C "${RESOLVED_REPO_PATH}" show-ref --verify --quiet "refs/remotes/${REMOTE_NAME}/${DEFAULT_BASE_BRANCH}"; then
+  SOURCE_COMMIT="$(git -C "${RESOLVED_REPO_PATH}" rev-parse "refs/remotes/${REMOTE_NAME}/${DEFAULT_BASE_BRANCH}")"
 else
-  SOURCE_COMMIT="$(git -C "${RESOLVED_REPO_PATH}" rev-parse HEAD)"
+  SOURCE_COMMIT="$(git -C "${RESOLVED_REPO_PATH}" rev-parse --verify HEAD)"
 fi
 
 echo

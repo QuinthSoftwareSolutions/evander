@@ -25,6 +25,7 @@ def test_default_registry_includes_all_known_trigger_types() -> None:
         "trigger:ticket:created",
         "trigger:ticket:changed",
         "trigger:discord:new-message",
+        "trigger:teams:new-message",
         "trigger:email:new-message",
         "trigger:pull-request:new-feedback",
         "trigger:git:push",

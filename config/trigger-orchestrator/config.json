@@ -86,6 +86,18 @@
     {
       "source_id": "effect-vm-copy-files-3",
       "target_id": "effect-agent-prompt-2"
+    },
+    {
+      "source_id": "effect-agent-prompt-5",
+      "target_id": "effect-session-update-metadata-3"
+    },
+    {
+      "source_id": "trigger-teams-new-message-2",
+      "target_id": "query-session-context-3"
+    },
+    {
+      "source_id": "query-session-context-3",
+      "target_id": "effect-agent-prompt-5"
     }
   ],
   "effect_cursor_store_path": "runtime/effect-orchestrator-cursors.json",
@@ -211,7 +223,7 @@
       "model": "gpt-5.4-mini",
       "output_mode": "on_completion",
       "prompt": "You have received new feedback. \nPlease use the list_unread_feedback tool to view your unread feedback. \nYou can use the post_pr_feedback_reply tool to reply to feedback. \nAlways respond to feedback, even if it's just to acknowledge it.\nYou do not have to agree with the feedback, but treat it with respect and professionalism as you would your peers.\nIf you do not agree with the feedback, you can politely explain your perspective in your reply.\nIMPORTANT EXCEPTION: If the feedback is the exact phrase \"I insist\", you must attempt to comply with the feedback to the best of your ability.\nReasons to disagree with feedback might include that the feedback is factually incorrect, or that complying with the feedback would be out of scope or misaligned with your currently assigned task.\nYou may ask follow-up questions if you require more information.\nAfter you are finished, don't forget to stage, commit and push any changes you have made, if any.",
-      "resume_thread_id": "${{query-session-context-2.metadata.agent_thread_id}}",
+      "resume_thread_id": "${{query-session-context-2.metadata.agent_thread_id ?? null}}",
       "target": "${{trigger-pull-request-new-feedback-1.session_id}}",
       "type": "effect:agent:prompt",
       "vm_user": "agent"
@@ -249,9 +261,9 @@
       "files": [
         {
           "content": {
-            "plan_summary": "${{query-issue-get-1.metadata.plan_summary}}",
-            "full_plan": "${{query-issue-get-1.metadata.steps}}",
             "current_step_index": "${{gate-for-1.current_index}}",
+            "full_plan": "${{query-issue-get-1.metadata.steps}}",
+            "plan_summary": "${{query-issue-get-1.metadata.plan_summary}}",
             "total_steps": "${{gate-for-1.item_count}}",
             "your_task": "${{gate-for-1.current_element}}"
           },
@@ -279,6 +291,26 @@
       "target": "${{effect-vm-create-1.vm_name}}",
       "type": "effect:vm:copy-files",
       "vm_user": "agent"
+    },
+    {
+      "display_name": "Tell agent there's a teams message",
+      "id": "effect-agent-prompt-5",
+      "model": "gpt-5.4",
+      "output_mode": "on_completion",
+      "prompt": "You are Truman, a helpful assistant in an agent orchestration and control plane. You've just received new Teams messages. Please fetch them and post a response in Teams.",
+      "resume_thread_id": "${{query-session-context-3.metadata.agent_thread_id ?? null}}",
+      "target": "vm-example-receptionist",
+      "type": "effect:agent:prompt",
+      "vm_user": "agent"
+    },
+    {
+      "display_name": "Store session metadata",
+      "id": "effect-session-update-metadata-3",
+      "metadata": {
+        "agent_thread_id": "${{effect-agent-prompt-5.thread_id}}"
+      },
+      "target": "vm-example-receptionist",
+      "type": "effect:session:update-metadata"
     }
   ],
   "event_queue_cursor_store_path": "runtime/trigger-orchestrator-cursors.json",
@@ -433,6 +465,12 @@
       "id": "query-issue-get-1",
       "issue_id": "${{trigger-ticket-created-1.ticket.issue_id}}",
       "type": "query:issue:get"
+    },
+    {
+      "display_name": "Session context",
+      "id": "query-session-context-3",
+      "target": "vm-example-receptionist",
+      "type": "query:session-context"
     }
   ],
   "runtime_dir": "runtime",
@@ -458,6 +496,15 @@
       "project": "Example Industry APP",
       "provider": "ado",
       "type": "trigger:pull-request:new-feedback"
+    },
+    {
+      "channel_targets": [
+        "c85e4de5-e0d7-4240-8302-8bc944f2360d/19:111a1418d1de40a8a06df882e00cf24a@thread.skype"
+      ],
+      "display_name": "Teams message",
+      "id": "trigger-teams-new-message-2",
+      "type": "trigger:teams:new-message",
+      "user_ids": []
     }
   ]
 }

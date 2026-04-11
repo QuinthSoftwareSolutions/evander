@@ -16,7 +16,9 @@ from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
 from typing import Any
+from urllib.parse import quote
 
+import httpx
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 import yaml
 
@@ -28,6 +30,7 @@ from .config import (
     GatewayConfig,
     HostHeartbeatWorkerGlobalConfig,
     IssueOrchestratorWorkerGlobalConfig,
+    TeamsIngestWorkerGlobalConfig,
     TriggerOrchestratorWorkerGlobalConfig,
 )
 from .directory_admin import DirectoryAdminService
@@ -86,6 +89,7 @@ from .workflow_graph import build_inbound_edge_index, merge_declared_output_inte
 _WORKER_DEFINITIONS: tuple[tuple[str, str, str], ...] = (
     ("ado", "ADO Worker", "agent-sandbox-ado-worker.service"),
     ("discord-ingest", "Discord Ingest Worker", "agent-sandbox-discord-ingest.service"),
+    ("teams-ingest", "Teams Ingest Worker", "agent-sandbox-teams-ingest.service"),
     ("host-heartbeat", "Host Heartbeat Worker", "agent-sandbox-host-heartbeat.service"),
     ("issue-orchestrator", "Issue Orchestrator Worker", "agent-sandbox-issue-orchestrator.service"),
     ("effect-orchestrator", "Effect Orchestrator Worker", "agent-sandbox-effect-orchestrator.service"),
@@ -95,6 +99,7 @@ _WORKER_DEFINITIONS: tuple[tuple[str, str, str], ...] = (
 _WORKER_GLOBAL_CONFIG_PATHS: dict[str, str] = {
     "ado": "config/ado-worker/config.json",
     "discord-ingest": "config/discord-ingest/config.json",
+    "teams-ingest": "config/teams-ingest/config.json",
     "host-heartbeat": "config/host-heartbeat/config.json",
     "issue-orchestrator": "config/issue-orchestrator/config.json",
     "effect-orchestrator": "config/trigger-orchestrator/config.json",
@@ -104,6 +109,7 @@ _WORKER_GLOBAL_CONFIG_PATHS: dict[str, str] = {
 _WORKER_GLOBAL_CONFIG_MODELS: dict[str, type[BaseModel]] = {
     "ado": AdoWorkerGlobalConfig,
     "discord-ingest": DiscordIngestWorkerGlobalConfig,
+    "teams-ingest": TeamsIngestWorkerGlobalConfig,
     "host-heartbeat": HostHeartbeatWorkerGlobalConfig,
     "issue-orchestrator": IssueOrchestratorWorkerGlobalConfig,
     "effect-orchestrator": TriggerOrchestratorWorkerGlobalConfig,
@@ -475,6 +481,15 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         fields=[
             _field("discord_bot_token_env", "Bot token env var", "string", required=True),
             _field("channel_ids", "Channel IDs", "string_list"),
+            _field("user_ids", "User IDs", "string_list"),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="trigger",
+        type="trigger:teams:new-message",
+        label="Teams message",
+        fields=[
+            _field("channel_targets", "Channel targets", "string_list", required=True, placeholder="team-id/channel-id"),
             _field("user_ids", "User IDs", "string_list"),
         ],
     ),
@@ -1357,6 +1372,34 @@ def _default_base_branch_for_repo(repo_path: str) -> str | None:
             value = value[len("origin/") :]
         return value or None
     return None
+
+
+def _resolve_canonical_origin_url_for_repo(repo_path: str, remote_name: str = "origin") -> str:
+    remote_result = _run_subprocess(
+        ["git", "-C", repo_path, "remote", "get-url", remote_name],
+        capture_output=True,
+        text=True,
+    )
+    remote_url = (remote_result.stdout or "").strip() if remote_result.returncode == 0 else ""
+    if not remote_url:
+        return ""
+
+    try:
+        resolved_remote = str(Path(remote_url).resolve(strict=False))
+    except OSError:
+        resolved_remote = remote_url
+
+    if "/runtime/repo-cache/" in resolved_remote and resolved_remote.endswith(".git"):
+        mirror_origin_result = _run_subprocess(
+            ["git", f"--git-dir={resolved_remote}", "remote", "get-url", "origin"],
+            capture_output=True,
+            text=True,
+        )
+        mirror_origin_url = (mirror_origin_result.stdout or "").strip() if mirror_origin_result.returncode == 0 else ""
+        if mirror_origin_url:
+            return mirror_origin_url
+
+    return remote_url
 
 
 def _prune_pr_map(path: Path, *, session_ids: set[str]) -> tuple[int, set[tuple[str, str, str]]]:
@@ -2407,6 +2450,78 @@ class AdminService:
             )
         return entries
 
+    def teams_auth_list_channels(
+        self,
+        *,
+        directory: str = "root",
+        team_id: str,
+        channel_name: str | None = None,
+        include_all: bool = False,
+    ) -> dict[str, object]:
+        normalized_directory, config, identity_id, provider = self._teams_auth_provider_for_directory(directory)
+        normalized_team_id = str(team_id or "").strip()
+        if not normalized_team_id:
+            raise ValueError("team_id is required")
+        normalized_channel_name = str(channel_name or "").strip()
+        if not normalized_channel_name and not include_all:
+            raise ValueError("channel_name is required unless include_all=True")
+
+        channels = self._teams_graph_list_channels(config, provider, team_id=normalized_team_id)
+        matches: list[dict[str, object]] = []
+        for channel in channels:
+            display_name = str(channel.get("displayName") or "").strip()
+            if normalized_channel_name and display_name.casefold() != normalized_channel_name.casefold():
+                continue
+            channel_id = str(channel.get("id") or "").strip()
+            matches.append(
+                {
+                    "team_id": normalized_team_id,
+                    "channel_id": channel_id,
+                    "display_name": display_name,
+                    "membership_type": str(channel.get("membershipType") or "").strip() or None,
+                    "web_url": str(channel.get("webUrl") or "").strip() or None,
+                    "allowlist_entry": f"{normalized_team_id}/{channel_id}" if channel_id else None,
+                }
+            )
+
+        return {
+            "directory_path": normalized_directory,
+            "identity_id": identity_id,
+            "backend": config.teams_backend,
+            "team_id": normalized_team_id,
+            "channel_name": normalized_channel_name or None,
+            "match_count": len(matches),
+            "channels": matches if normalized_channel_name or include_all else [],
+        }
+
+    def _teams_graph_list_channels(
+        self,
+        config: GatewayConfig,
+        provider: TeamsDeviceCodeTokenProvider,
+        *,
+        team_id: str,
+    ) -> list[dict[str, Any]]:
+        encoded_team_id = quote(team_id, safe="")
+        next_url = f"{config.teams_graph_api_base_url}/teams/{encoded_team_id}/channels"
+        channels: list[dict[str, Any]] = []
+        with httpx.Client(timeout=config.teams_timeout_seconds) as client:
+            while next_url:
+                response = client.get(
+                    next_url,
+                    headers={
+                        "Authorization": f"Bearer {provider.get_bearer_token()}",
+                        "Content-Type": "application/json",
+                    },
+                )
+                response.raise_for_status()
+                payload = response.json()
+                for item in payload.get("value", []):
+                    if isinstance(item, dict):
+                        channels.append(item)
+                raw_next = payload.get("@odata.nextLink")
+                next_url = str(raw_next).strip() if raw_next else ""
+        return channels
+
     def unlock_privileged_operations(self) -> str:
         helper = self._privileged_helper
         if helper is None:
@@ -2629,12 +2744,7 @@ class AdminService:
                 (trusted_repo_result.stderr or trusted_repo_result.stdout or "").strip()
                 or f"Failed to record trusted repo path for {bare_repo_path}"
             )
-        canonical_origin_result = _run_subprocess(
-            ["git", "-C", resolved_repo_path, "remote", "get-url", "origin"],
-            capture_output=True,
-            text=True,
-        )
-        canonical_origin_url = (canonical_origin_result.stdout or "").strip() if canonical_origin_result.returncode == 0 else ""
+        canonical_origin_url = _resolve_canonical_origin_url_for_repo(resolved_repo_path)
         if canonical_origin_url:
             canonical_config_result = _run_subprocess(
                 ["git", f"--git-dir={bare_repo_path}", "config", "agent-sandbox.canonicalOriginUrl", canonical_origin_url],

@@ -26,9 +26,14 @@ def test_teams_docs_cover_host_delegated_identity_binding() -> None:
     assert "device code flow" in readme
     assert "per-directory Teams identity binding" in readme
     assert "teams_graph_access_token_env" in readme
+    assert "trigger:teams:new-message" in readme
     assert "device code flow" in operations
     assert "host-only" in operations
     assert "teams_graph_access_token_env" in operations
+    assert "host-side ingest polling" in operations
+    assert "host-heartbeat" in operations
     assert "Teams delegated auth follows the same host-side model" in configuration_reference
     assert "providers.json" in configuration_reference
     assert "GRAPH_TEAMS_ACCESS_TOKEN" in configuration_reference
+    assert "trigger:teams:new-message" in configuration_reference
+    assert "independent from host-heartbeat" in configuration_reference

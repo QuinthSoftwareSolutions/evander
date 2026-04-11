@@ -118,3 +118,40 @@ def test_workflow_binding_resolution_supports_system_values() -> None:
         "unique.compact",
         "execution.event_id",
     ]
+
+
+def test_workflow_binding_resolution_supports_null_fallback_for_missing_nested_path() -> None:
+    result = resolve_workflow_bindings(
+        {"resume_thread_id": "${{query_1.metadata.agent_thread_id ?? null}}"},
+        {"query_1": {"metadata": {}}},
+        {"query_1": {"metadata"}},
+    )
+
+    assert result.resolved_config == {"resume_thread_id": None}
+    assert result.trace.consumed_output_keys == ()
+
+
+def test_workflow_binding_resolution_supports_output_reference_fallback() -> None:
+    result = resolve_workflow_bindings(
+        {"resume_thread_id": "${{query_1.metadata.agent_thread_id ?? effect_1.thread_id}}"},
+        {
+            "query_1": {"metadata": {}},
+            "effect_1": {"thread_id": "thread-fallback"},
+        },
+        {
+            "query_1": {"metadata"},
+            "effect_1": {"thread_id"},
+        },
+    )
+
+    assert result.resolved_config == {"resume_thread_id": "thread-fallback"}
+    assert result.trace.consumed_output_keys == ("effect_1.thread_id",)
+
+
+def test_workflow_binding_resolution_rejects_malformed_fallback_expression() -> None:
+    with pytest.raises(BindingResolutionError, match="Malformed"):
+        resolve_workflow_bindings(
+            {"resume_thread_id": "${{query_1.metadata.agent_thread_id ?? }}"},
+            {"query_1": {"metadata": {}}},
+            {"query_1": {"metadata"}},
+        )

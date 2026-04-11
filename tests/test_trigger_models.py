@@ -54,6 +54,36 @@ def test_email_trigger_validates_provider_enum() -> None:
         )
 
 
+def test_teams_trigger_normalizes_filters() -> None:
+    adapter = TypeAdapter(TriggerDefinitionDiscriminated)
+
+    trigger = adapter.validate_python(
+        {
+            "id": "t-teams",
+            "display_name": "Teams",
+            "type": "trigger:teams:new-message",
+            "channel_targets": [" team-a/channel-1 ", "", "team-b/channel-9/"],
+            "user_ids": " user-a ",
+        }
+    )
+
+    assert trigger.channel_targets == ["team-a/channel-1", "team-b/channel-9"]
+    assert trigger.user_ids == ["user-a"]
+
+
+def test_teams_trigger_requires_channel_targets() -> None:
+    adapter = TypeAdapter(TriggerDefinitionDiscriminated)
+
+    with pytest.raises(ValueError, match="channel_targets"):
+        adapter.validate_python(
+            {
+                "id": "t-teams-missing",
+                "display_name": "Teams",
+                "type": "trigger:teams:new-message",
+            }
+        )
+
+
 def test_pr_feedback_trigger_requires_org_url_for_ado() -> None:
     with pytest.raises(ValueError, match="organization_url is required"):
         PullRequestNewFeedbackTriggerDefinition.model_validate(

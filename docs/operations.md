@@ -222,6 +222,9 @@ Storage layout for directory config:
   - `teams_delegated_client_id`
   - optional `teams_delegated_tenant_id`, `teams_delegated_scopes`,
     `teams_delegated_authority_base_url`, and `teams_delegated_credential_store_path`
+- The Entra app behind `teams_delegated_client_id` must be configured for public client /
+  device-code auth. `AADSTS7000218` means the app is being treated as a confidential client and
+  the host-side delegated flow in this repo cannot complete until that registration is fixed.
 - Use the host CLI for delegated auth lifecycle:
   - `agent-sandbox-cli teams-auth login --directory <directory-path>`
   - `agent-sandbox-cli teams-auth status --directory <directory-path>`
@@ -232,6 +235,9 @@ Storage layout for directory config:
 - Do not place Teams credentials in cloud-init, session manifests, or guest shell profiles.
 - Guests never need direct Microsoft Graph credentials or internet access; Teams API access
   happens only in the host-side gateway process.
+- Teams message arrival for `trigger:teams:new-message` comes from host-side ingest polling on the
+  host, using the same delegated Teams identity/configuration. That polling path is separate from
+  host-heartbeat, which remains the PR/Discord feedback wakeup loop.
 
 ## VM Python Bootstrap
 
@@ -706,6 +712,15 @@ sudo systemctl start agent-sandbox-trigger-orchestrator.service
 sudo systemctl status agent-sandbox-trigger-orchestrator.service
 sudo journalctl -u agent-sandbox-trigger-orchestrator.service -f
 ```
+
+### Teams ingest worker
+
+- `trigger:teams:new-message` events are produced by a host-side Teams ingest worker that polls
+  Microsoft Graph on the host and writes into the Teams message store consumed by trigger
+  orchestration.
+- The ingest worker uses the same delegated Teams auth settings described above.
+- This polling path is independent from `agent-sandbox-host-heartbeat`; host-heartbeat remains the
+  feedback wakeup loop for PR/Discord resume behavior.
 
 Git hook ingestion path:
 

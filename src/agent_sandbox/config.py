@@ -500,6 +500,38 @@ class DiscordIngestWorkerGlobalConfig(BaseModel):
         return self
 
 
+class TeamsIngestWorkerGlobalConfig(BaseModel):
+    runtime_dir: Path = Path("runtime")
+    directories: list[str] = Field(default_factory=list)
+    poll_interval_seconds: float = Field(default=30.0, gt=0)
+    jitter_seconds: float = Field(default=5.0, ge=0)
+    backoff_seconds: float = Field(default=60.0, ge=0)
+    lock_path: Path | None = None
+
+    @field_validator("directories", mode="before")
+    @classmethod
+    def normalize_directories(cls, value: object) -> object:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            value = [value]
+        if not isinstance(value, (list, tuple)):
+            return value
+        normalized: list[str] = []
+        for item in value:
+            text = str(item).strip()
+            if not text:
+                continue
+            normalized.append(DirectoryPath(segments=text).as_posix())
+        return normalized
+
+    @model_validator(mode="after")
+    def apply_runtime_path_defaults(self) -> TeamsIngestWorkerGlobalConfig:
+        if self.lock_path is None:
+            self.lock_path = self.runtime_dir / "teams-ingest.lock"
+        return self
+
+
 class TriggerOrchestratorWorkerGlobalConfig(BaseModel):
     runtime_dir: Path = Path("runtime")
     poll_interval_seconds: float = Field(default=30.0, gt=0)

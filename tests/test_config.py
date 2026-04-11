@@ -5,6 +5,7 @@ from agent_sandbox.config import (
     DiscordIngestWorkerGlobalConfig,
     GatewayConfig,
     HostHeartbeatWorkerGlobalConfig,
+    TeamsIngestWorkerGlobalConfig,
     TriggerOrchestratorWorkerGlobalConfig,
 )
 
@@ -192,6 +193,22 @@ def test_discord_ingest_worker_global_config_defaults_follow_runtime_dir() -> No
 
 def test_discord_ingest_worker_global_config_directory_paths_are_normalized() -> None:
     config = DiscordIngestWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": "/tmp/agent-sandbox-runtime",
+            "directories": [" root/team-a ", "root/team-a/subdir", "  "],
+        }
+    )
+    assert config.directories == ["root/team-a", "root/team-a/subdir"]
+
+
+def test_teams_ingest_worker_global_config_defaults_follow_runtime_dir() -> None:
+    config = TeamsIngestWorkerGlobalConfig.model_validate({"runtime_dir": "/tmp/agent-sandbox-runtime"})
+    assert str(config.lock_path) == "/tmp/agent-sandbox-runtime/teams-ingest.lock"
+    assert config.directories == []
+
+
+def test_teams_ingest_worker_global_config_directory_paths_are_normalized() -> None:
+    config = TeamsIngestWorkerGlobalConfig.model_validate(
         {
             "runtime_dir": "/tmp/agent-sandbox-runtime",
             "directories": [" root/team-a ", "root/team-a/subdir", "  "],

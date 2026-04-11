@@ -216,6 +216,39 @@ def test_begin_device_code_login_maps_invalid_client_configuration(tmp_path: Pat
         provider.begin_device_code_login()
 
 
+def test_poll_device_code_login_once_explains_confidential_client_misconfiguration(tmp_path: Path) -> None:
+    session = DeviceCodeLoginSession(
+        client_id="client-123",
+        tenant_id="tenant-abc",
+        scopes=["offline_access"],
+        device_code="device-code-1",
+        user_code="ABCD-EFGH",
+        verification_uri="https://microsoft.com/devicelogin",
+        message="Sign in with the code.",
+        interval_seconds=5,
+        created_at=datetime(2026, 4, 9, 12, 0, tzinfo=UTC),
+        expires_at=datetime(2026, 4, 9, 12, 15, tzinfo=UTC),
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            400,
+            json={
+                "error": "invalid_request",
+                "error_description": (
+                    "AADSTS7000218: The request body must contain the following parameter: "
+                    "'client_assertion' or 'client_secret'."
+                ),
+            },
+            request=request,
+        )
+
+    provider, _ = make_provider(tmp_path, transport=httpx.MockTransport(handler))
+
+    with pytest.raises(InvalidClientConfigurationError, match="not enabled as a public client"):
+        provider.poll_device_code_login_once(session)
+
+
 def test_get_bearer_token_refreshes_expiring_credentials_and_reuses_prior_refresh_token(
     tmp_path: Path,
 ) -> None:
@@ -287,4 +320,3 @@ def test_refresh_access_token_clears_store_when_refresh_token_is_revoked(tmp_pat
         provider.refresh_access_token()
 
     assert store.load() is None
-

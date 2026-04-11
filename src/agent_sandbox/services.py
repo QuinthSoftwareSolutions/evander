@@ -410,6 +410,49 @@ def _parse_graph_datetime(value: str | None) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
+def _augment_http_status_error(exc: httpx.HTTPStatusError) -> httpx.HTTPStatusError:
+    details = _graph_error_details(exc.response)
+    if not details:
+        return exc
+    return httpx.HTTPStatusError(
+        f"{exc}. Graph error: {details}",
+        request=exc.request,
+        response=exc.response,
+    )
+
+
+def _graph_error_details(response: httpx.Response) -> str:
+    try:
+        payload = response.json()
+    except ValueError:
+        text = response.text.strip()
+        return text[:500] if text else ""
+    if not isinstance(payload, dict):
+        return ""
+    error = payload.get("error")
+    if not isinstance(error, dict):
+        return ""
+
+    parts: list[str] = []
+    code = str(error.get("code") or "").strip()
+    message = str(error.get("message") or "").strip()
+    if code:
+        parts.append(f"code={code}")
+    if message:
+        parts.append(f"message={message}")
+
+    inner = error.get("innerError")
+    if isinstance(inner, dict):
+        request_id = str(inner.get("request-id") or inner.get("requestId") or "").strip()
+        date = str(inner.get("date") or "").strip()
+        if request_id:
+            parts.append(f"request-id={request_id}")
+        if date:
+            parts.append(f"date={date}")
+
+    return ", ".join(parts)
+
+
 def _parse_teams_channel_target(target: str) -> tuple[str, str]:
     normalized = target.strip().strip("/")
     team_id, separator, channel_id = normalized.partition("/")
@@ -550,10 +593,10 @@ class GraphTeamsService:
             except httpx.HTTPStatusError as exc:
                 status_code = exc.response.status_code
                 if status_code not in {429} and not (500 <= status_code <= 599):
-                    raise
+                    raise _augment_http_status_error(exc) from exc
                 if attempt >= self.retry_count:
-                    raise
-                last_error = exc
+                    raise _augment_http_status_error(exc) from exc
+                last_error = _augment_http_status_error(exc)
 
             planned_backoff = min(
                 self.retry_max_backoff_seconds,

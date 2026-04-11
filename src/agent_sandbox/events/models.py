@@ -14,6 +14,7 @@ TriggerType = Literal[
     "trigger:ticket:created",
     "trigger:ticket:changed",
     "trigger:discord:new-message",
+    "trigger:teams:new-message",
     "trigger:email:new-message",
     "trigger:pull-request:new-feedback",
     "trigger:git:push",
@@ -126,6 +127,25 @@ class DiscordNewMessageTriggerDefinition(TriggerDefinition):
         return normalize_string_list(value)
 
 
+class TeamsNewMessageTriggerDefinition(TriggerDefinition):
+    type: Literal["trigger:teams:new-message"]
+    channel_targets: list[str] = Field(min_length=1)
+    user_ids: list[str] = Field(default_factory=list)
+
+    @field_validator("channel_targets", mode="before")
+    @classmethod
+    def normalize_channel_targets(cls, value: object) -> object:
+        normalized = normalize_string_list(value)
+        if not isinstance(normalized, list):
+            return normalized
+        return [item.strip("/") for item in normalized if item.strip("/")]
+
+    @field_validator("user_ids", mode="before")
+    @classmethod
+    def normalize_optional_lists(cls, value: object) -> object:
+        return normalize_string_list(value)
+
+
 class EmailNewMessageTriggerDefinition(TriggerDefinition):
     type: Literal["trigger:email:new-message"]
     provider: EmailProvider
@@ -210,6 +230,7 @@ TriggerDefinitionDiscriminated = Annotated[
     | TicketCreatedTriggerDefinition
     | TicketChangedTriggerDefinition
     | DiscordNewMessageTriggerDefinition
+    | TeamsNewMessageTriggerDefinition
     | EmailNewMessageTriggerDefinition
     | PullRequestNewFeedbackTriggerDefinition
     | GitPushTriggerDefinition
@@ -625,6 +646,22 @@ _STATIC_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
                 "created_at": {"type": "string"},
                 "in_reply_to": {"type": "string"},
                 "raw": {"type": "object"},
+            },
+        }
+    },
+    "trigger:teams:new-message": {
+        "message": {
+            "type": "object",
+            "properties": {
+                "cursor": {"type": "string"},
+                "message_id": {"type": "string"},
+                "author_id": {"type": "string"},
+                "team_id": {"type": "string"},
+                "channel_id": {"type": "string"},
+                "thread_id": {"type": "string"},
+                "content": {"type": "string"},
+                "created_at": {"type": "string"},
+                "metadata": {"type": "object"},
             },
         }
     },
