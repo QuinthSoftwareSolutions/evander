@@ -4,9 +4,13 @@ import argparse
 import contextlib
 import logging
 import os
+import secrets
+from datetime import datetime, timezone
+from hashlib import sha256
 from inspect import Parameter, signature
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import httpx
 from mcp.server.fastmcp import Context, FastMCP
@@ -20,6 +24,7 @@ import uvicorn
 
 from .bootstrap import load_runtime_gateway_config, resolve_runtime_dir
 from .admin_service import AdminService
+from .agent_prompt_store import AgentPromptRecord
 from .config import GatewayConfig
 from .email.http_utils import ProviderRequestError
 from .issue_service import IssueService
@@ -42,7 +47,11 @@ from .models import (
     ListUnreadFeedbackRequest,
     PostPrCommentRequest,
     PostPrFeedbackReplyRequest,
+    PromptAgentRequest,
+    PromptAgentResponse,
     RequestPrReviewRequest,
+    RespondToAgentRequest,
+    RespondToAgentResponse,
     ScheduleResumeRequest,
     ScheduleResumeResponse,
     SubmitPrReviewRequest,
@@ -289,6 +298,27 @@ def _require_vm_visible_in_session_directory(
     return summary
 
 
+def _require_target_session_visible_within_directory(
+    context: RuntimeContext,
+    source_session: Any,
+    *,
+    target_session_id: str,
+    vm_user: str,
+) -> Any:
+    target_session = context.policy.get_session(target_session_id)
+    if target_session.directory_path == source_session.directory_path:
+        return target_session
+
+    visible_vms = _visible_vm_summaries_for_session(context, source_session, vm_user=vm_user)
+    if any(target_session_id in summary.session_ids for summary in visible_vms):
+        return target_session
+
+    raise PolicyError(
+        f"Session '{target_session_id}' is outside the session directory scope "
+        f"'{source_session.directory_path}'."
+    )
+
+
 def create_server(context: RuntimeContext) -> FastMCP:
     server = FastMCP(
         "Agent Sandbox Gateway",
@@ -311,12 +341,13 @@ def create_server(context: RuntimeContext) -> FastMCP:
         return recipients
 
     def redacted_keys_for_session_id(session_id: str | None) -> set[str]:
+        token_redacted_keys = {"response_token", "issued_token", "token_hash"}
         if not session_id:
-            return set(context.policy.policy_config.resolve_for_directory("root").redacted_keys)
+            return set(context.policy.policy_config.resolve_for_directory("root").redacted_keys) | token_redacted_keys
         session = context.sessions.get(session_id)
         if session is None:
-            return set(context.policy.policy_config.resolve_for_directory("root").redacted_keys)
-        return set(context.policy.effective_policy_for_session(session).redacted_keys)
+            return set(context.policy.policy_config.resolve_for_directory("root").redacted_keys) | token_redacted_keys
+        return set(context.policy.effective_policy_for_session(session).redacted_keys) | token_redacted_keys
 
     def audit_success(
         session_id: str,
@@ -361,6 +392,249 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 result={"error": error, "error_class": error_class},
             )
         )
+
+    @server.tool()
+    def prompt_agent(
+        session_id: str | None = None,
+        target_vm_name: str | None = None,
+        target_session_id: str | None = None,
+        prompt: str = "",
+        metadata: dict[str, Any] | None = None,
+        idempotency_key: str | None = None,
+        vm_user: str = "agent",
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        resolved_session_id = _resolve_session_id_from_context(
+            session_id, ctx, transport_session_map=transport_session_map
+        )
+        args = {
+            "session_id": resolved_session_id,
+            "target_vm_name": target_vm_name,
+            "target_session_id": target_session_id,
+            "prompt": prompt,
+            "metadata": metadata or {},
+            "idempotency_key": idempotency_key,
+            "vm_user": vm_user,
+        }
+        try:
+            request = PromptAgentRequest(
+                session_id=resolved_session_id,
+                target_vm_name=target_vm_name,
+                target_session_id=target_session_id,
+                prompt=prompt,
+                metadata=metadata or {},
+                idempotency_key=idempotency_key.strip() if isinstance(idempotency_key, str) else None,
+            )
+            args = request.model_dump(mode="json")
+            args["vm_user"] = vm_user
+            source_session = context.policy.require_tool(request.session_id, ToolName.PROMPT_AGENT)
+
+            resolved_target_session_id = ""
+            if request.target_vm_name:
+                summary = _require_vm_visible_in_session_directory(
+                    context,
+                    source_session,
+                    vm_name=request.target_vm_name,
+                    vm_user=vm_user,
+                )
+                if not summary.session_ids:
+                    raise ToolError(
+                        f"VM '{request.target_vm_name}' has no visible target session bound for prompt dispatch."
+                    )
+                if len(summary.session_ids) > 1:
+                    raise ToolError(
+                        f"VM '{request.target_vm_name}' has multiple visible sessions; use target_session_id instead."
+                    )
+                resolved_target_session_id = summary.session_ids[0]
+            else:
+                resolved_target_session_id = str(request.target_session_id or "").strip()
+                if not resolved_target_session_id:
+                    raise ToolError("target_session_id is required")
+                _require_target_session_visible_within_directory(
+                    context,
+                    source_session,
+                    target_session_id=resolved_target_session_id,
+                    vm_user=vm_user,
+                )
+
+            issued_response_token = secrets.token_urlsafe(32)
+            issued_token_hash = sha256(issued_response_token.encode("utf-8")).hexdigest()
+            now = datetime.now(timezone.utc)
+            message_id = f"agent-prompt-{uuid4().hex}"
+            created = context.agent_prompt_store.create_prompt_message(
+                AgentPromptRecord(
+                    message_id=message_id,
+                    sender_session_id=request.session_id,
+                    sender_vm_id=source_session.vm_id,
+                    target_session_id=resolved_target_session_id,
+                    target_vm_id=None,
+                    prompt_payload={
+                        "prompt": request.prompt,
+                        "metadata": request.metadata,
+                        "idempotency_key": request.idempotency_key,
+                    },
+                    issued_token_hash=issued_token_hash,
+                    issued_token_claims={
+                        "message_id": message_id,
+                        "sender_session_id": request.session_id,
+                        "target_session_id": resolved_target_session_id,
+                    },
+                    status="unread",
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            if not created:
+                raise ToolError("Failed to persist agent prompt message")
+
+            response = PromptAgentResponse(
+                message_id=message_id,
+                target_session_id=resolved_target_session_id,
+                status="unread",
+                response_token=issued_response_token,
+            ).model_dump(mode="json")
+            audit_success(
+                resolved_session_id,
+                ToolName.PROMPT_AGENT,
+                args,
+                {
+                    "message_id": response["message_id"],
+                    "target_session_id": response["target_session_id"],
+                    "status": response["status"],
+                    "response_token": "<redacted>",
+                },
+            )
+            return response
+        except PolicyError as exc:
+            audit_failure(resolved_session_id, ToolName.PROMPT_AGENT, args, str(exc))
+            raise
+        except ValueError as exc:
+            message = str(exc)
+            audit_failure(
+                resolved_session_id,
+                ToolName.PROMPT_AGENT,
+                args,
+                message,
+                decision="error",
+                error_class="validation_error",
+            )
+            raise ToolError(message) from exc
+        except ToolError as exc:
+            audit_failure(
+                resolved_session_id,
+                ToolName.PROMPT_AGENT,
+                args,
+                str(exc),
+                decision="error",
+                error_class="validation_error",
+            )
+            raise
+        except Exception as exc:
+            audit_failure(
+                resolved_session_id,
+                ToolName.PROMPT_AGENT,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
+    def respond_to_agent(
+        session_id: str | None = None,
+        message_id: str = "",
+        response_token: str = "",
+        response_text: str = "",
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        resolved_session_id = _resolve_session_id_from_context(
+            session_id, ctx, transport_session_map=transport_session_map
+        )
+        args = {
+            "session_id": resolved_session_id,
+            "message_id": message_id,
+            "response_token": response_token,
+            "response_text": response_text,
+        }
+        try:
+            request = RespondToAgentRequest(
+                session_id=resolved_session_id,
+                message_id=message_id,
+                response_token=response_token,
+                response_text=response_text,
+            )
+            args = request.model_dump(mode="json")
+            context.policy.require_tool(request.session_id, ToolName.RESPOND_TO_AGENT)
+            token_hash = sha256(request.response_token.encode("utf-8")).hexdigest()
+            consumed = context.agent_prompt_store.validate_and_consume_token(
+                token_hash,
+                expected_message_id=request.message_id,
+            )
+            if consumed is None:
+                raise PolicyError("response_token is invalid, already consumed, or does not match message_id")
+            if consumed.target_session_id != request.session_id:
+                raise PolicyError("response token is not valid for this session")
+
+            updated = context.agent_prompt_store.record_response(
+                request.message_id,
+                response_text=request.response_text,
+                responder_session_id=request.session_id,
+            )
+            if updated is None:
+                raise ToolError(f"Unknown message_id: {request.message_id}")
+
+            result = RespondToAgentResponse(
+                status="responded",
+                message_id=request.message_id,
+                delivered_at=updated.updated_at,
+            ).model_dump(mode="json")
+            audit_success(
+                request.session_id,
+                ToolName.RESPOND_TO_AGENT,
+                args,
+                {
+                    "status": result["status"],
+                    "message_id": result["message_id"],
+                    "delivered_at": result["delivered_at"],
+                    "response_token": "<redacted>",
+                },
+            )
+            return result
+        except PolicyError as exc:
+            audit_failure(resolved_session_id, ToolName.RESPOND_TO_AGENT, args, str(exc))
+            raise
+        except ValueError as exc:
+            message = str(exc)
+            audit_failure(
+                resolved_session_id,
+                ToolName.RESPOND_TO_AGENT,
+                args,
+                message,
+                decision="error",
+                error_class="validation_error",
+            )
+            raise ToolError(message) from exc
+        except ToolError as exc:
+            audit_failure(
+                resolved_session_id,
+                ToolName.RESPOND_TO_AGENT,
+                args,
+                str(exc),
+                decision="error",
+                error_class="validation_error",
+            )
+            raise
+        except Exception as exc:
+            audit_failure(
+                resolved_session_id,
+                ToolName.RESPOND_TO_AGENT,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
 
     @server.tool()
     def list_issues(

@@ -180,6 +180,43 @@ class AgentPromptStore:
             self._atomic_write(payload)
             return message
 
+    def record_response(
+        self,
+        message_id: str,
+        *,
+        response_text: str,
+        responder_session_id: str,
+        responded_at: datetime | None = None,
+    ) -> AgentPromptRecord | None:
+        normalized_message_id = str(message_id).strip()
+        normalized_response_text = str(response_text).strip()
+        normalized_responder_session_id = str(responder_session_id).strip()
+        if not normalized_message_id or not normalized_response_text or not normalized_responder_session_id:
+            return None
+
+        with self._lock:
+            payload = self._read_raw()
+            messages = payload.setdefault("messages", {})
+            message = self._validate_message(messages.get(normalized_message_id))
+            if message is None:
+                return None
+
+            response_time = responded_at or datetime.now(timezone.utc)
+            prompt_payload = dict(message.prompt_payload or {})
+            prompt_payload["response"] = {
+                "text": normalized_response_text,
+                "responder_session_id": normalized_responder_session_id,
+                "responded_at": response_time.isoformat().replace("+00:00", "Z"),
+            }
+            message.prompt_payload = prompt_payload
+            message.status = "responded"
+            message.updated_at = response_time
+
+            messages[normalized_message_id] = message.model_dump(mode="json")
+            self._compact(payload)
+            self._atomic_write(payload)
+            return message
+
     def read_raw(self) -> dict[str, Any]:
         with self._lock:
             return self._read_raw()
