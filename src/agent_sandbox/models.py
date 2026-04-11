@@ -17,6 +17,7 @@ def utc_now() -> datetime:
 class ToolName(str, Enum):
     CREATE_ADO_BACKLOG_ITEM = "create_ado_backlog_item"
     QUERY_ADO_BACKLOG_ITEMS = "query_ado_backlog_items"
+    GET_ADO_BACKLOG_ITEM = "get_ado_backlog_item"
     CREATE_LOCAL_ISSUE = "create_local_issue"
     LIST_ISSUES = "list_issues"
     GET_ISSUE = "get_issue"
@@ -745,6 +746,56 @@ class AdoBacklogQueryResponse(BaseModel):
     items: list[AdoBacklogQueryItem] = Field(default_factory=list)
     count: int = 0
     paging: AdoBacklogQueryPaging
+
+
+class AdoBacklogGetRequest(BaseModel):
+    id: int | str
+    project: str | None = None
+    include_comments: bool = True
+    include_relations: bool = True
+    include_updates: bool = False
+
+    @field_validator("id", mode="before")
+    @classmethod
+    def normalize_id(cls, value: object) -> str:
+        if value is None:
+            raise ValueError("id is required")
+        if isinstance(value, bool):
+            raise ValueError("id must be an integer")
+        if isinstance(value, int):
+            normalized = str(value)
+        else:
+            normalized = str(value).strip()
+        if not normalized or not normalized.isdigit():
+            raise ValueError("id must be a numeric backlog item id")
+        return normalized
+
+    @field_validator("project", mode="before")
+    @classmethod
+    def normalize_project(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        normalized = str(value).strip()
+        return normalized or None
+
+
+class AdoBacklogGetResponse(BaseModel):
+    provider: str
+    id: str
+    project: str | None = None
+    rev: int | None = None
+    url: str | None = None
+    web_url: str | None = None
+    title: str | None = None
+    state: str | None = None
+    type: str | None = None
+    created_at: str | None = None
+    changed_at: str | None = None
+    closed_at: str | None = None
+    fields: dict[str, Any] = Field(default_factory=dict)
+    relations: list[dict[str, Any]] = Field(default_factory=list)
+    comments: list[dict[str, Any]] = Field(default_factory=list)
+    updates: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class RequestPrReviewRequest(BaseModel):

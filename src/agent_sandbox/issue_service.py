@@ -70,6 +70,17 @@ class IssueProviderAdapter(Protocol):
         skip: int = 0,
     ) -> dict[str, Any]: ...
 
+    def get_backlog_item_by_id(
+        self,
+        *,
+        directory_path: str,
+        backlog_item_id: str,
+        project: str | None = None,
+        include_comments: bool = True,
+        include_relations: bool = True,
+        include_updates: bool = False,
+    ) -> dict[str, Any]: ...
+
 
 class AzureDevOpsIssueAdapter:
     provider_name = "azure_devops"
@@ -319,6 +330,81 @@ class AzureDevOpsIssueAdapter:
             "updated_at": self._normalize_datetime(str(fields.get("System.ChangedDate") or "")),
             "fields": {k: v for k, v in fields.items()},
         }
+
+    @staticmethod
+    def _json_safe(value: Any) -> Any:
+        if value is None or isinstance(value, (str, int, float, bool)):
+            return value
+        if isinstance(value, datetime):
+            return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
+        if isinstance(value, list):
+            return [AzureDevOpsIssueAdapter._json_safe(item) for item in value]
+        if isinstance(value, dict):
+            return {str(key): AzureDevOpsIssueAdapter._json_safe(item) for key, item in value.items()}
+        return str(value)
+
+    def _normalize_relations(self, relations: object) -> list[dict[str, Any]]:
+        if not isinstance(relations, list):
+            return []
+        normalized: list[dict[str, Any]] = []
+        for relation in relations:
+            if not isinstance(relation, dict):
+                continue
+            attrs = relation.get("attributes") if isinstance(relation.get("attributes"), dict) else {}
+            normalized.append(
+                {
+                    "rel": str(relation.get("rel") or "").strip() or None,
+                    "url": str(relation.get("url") or "").strip() or None,
+                    "attributes": self._json_safe(attrs),
+                }
+            )
+        return normalized
+
+    def _fetch_updates(
+        self,
+        client: httpx.Client,
+        *,
+        organization_url: str,
+        project: str,
+        auth_header: str,
+        backlog_item_id: str,
+    ) -> list[dict[str, Any]]:
+        updates_url = f"{organization_url}/{project}/_apis/wit/workItems/{backlog_item_id}/updates"
+        continuation_token: str | None = None
+        updates: list[dict[str, Any]] = []
+        while True:
+            params: dict[str, str] = {"api-version": "7.1-preview.3", "$top": "200"}
+            if continuation_token:
+                params["continuationToken"] = continuation_token
+            response = client.get(
+                updates_url,
+                params=params,
+                headers={"Authorization": auth_header},
+            )
+            response.raise_for_status()
+            payload = response.json()
+            entries = payload.get("value") if isinstance(payload, dict) else None
+            if isinstance(entries, list):
+                for entry in entries:
+                    if not isinstance(entry, dict):
+                        continue
+                    updates.append(
+                        {
+                            "id": str(entry.get("id") or "").strip() or None,
+                            "rev": entry.get("rev"),
+                            "revised_at": self._normalize_datetime(str(entry.get("revisedDate") or "").strip()),
+                            "revised_by": self._normalize_assigned_to(entry.get("revisedBy")),
+                            "fields": self._json_safe(entry.get("fields") if isinstance(entry.get("fields"), dict) else {}),
+                            "relations": self._json_safe(
+                                entry.get("relations") if isinstance(entry.get("relations"), dict) else {}
+                            ),
+                            "url": str(entry.get("url") or "").strip() or None,
+                        }
+                    )
+            continuation_token = str(response.headers.get("x-ms-continuationtoken") or "").strip() or None
+            if continuation_token is None:
+                break
+        return updates
 
     def read_issue(
         self,
@@ -632,6 +718,73 @@ class AzureDevOpsIssueAdapter:
             },
         }
 
+    def get_backlog_item_by_id(
+        self,
+        *,
+        directory_path: str,
+        backlog_item_id: str,
+        project: str | None = None,
+        include_comments: bool = True,
+        include_relations: bool = True,
+        include_updates: bool = False,
+    ) -> dict[str, Any]:
+        organization_url, configured_project, pat = self._resolve_connection(directory_path)
+        normalized_project = str(project or configured_project).strip()
+        if not normalized_project:
+            raise ValueError("project is required for Azure DevOps backlog item retrieval.")
+        auth_header = self._auth_header(pat)
+        work_item_url = f"{organization_url}/{normalized_project}/_apis/wit/workitems/{backlog_item_id}"
+        with httpx.Client(timeout=self.timeout_seconds) as client:
+            response = client.get(
+                work_item_url,
+                params={"api-version": "7.1", "$expand": "All"},
+                headers={"Authorization": auth_header},
+            )
+            if response.is_error:
+                self._raise_ado_http_error(action="get backlog item by id", response=response)
+            payload = response.json()
+            fields = payload.get("fields") if isinstance(payload.get("fields"), dict) else {}
+            project_name = str(fields.get("System.TeamProject") or normalized_project).strip() or None
+            item: dict[str, Any] = {
+                "provider": self.provider_name,
+                "id": str(payload.get("id") or backlog_item_id).strip(),
+                "project": project_name,
+                "rev": payload.get("rev"),
+                "url": str(payload.get("url") or "").strip() or None,
+                "web_url": str((payload.get("_links") or {}).get("web", {}).get("href") or "").strip() or None,
+                "title": str(fields.get("System.Title") or "").strip() or None,
+                "state": str(fields.get("System.State") or "").strip() or None,
+                "type": str(fields.get("System.WorkItemType") or "").strip() or None,
+                "created_at": self._normalize_datetime(str(fields.get("System.CreatedDate") or "").strip()),
+                "changed_at": self._normalize_datetime(str(fields.get("System.ChangedDate") or "").strip()),
+                "closed_at": self._normalize_datetime(str(fields.get("Microsoft.VSTS.Common.ClosedDate") or "").strip()),
+                "fields": self._json_safe(fields),
+                "relations": self._normalize_relations(payload.get("relations")) if include_relations else [],
+            }
+            item["comments"] = (
+                self._fetch_comments(
+                    client,
+                    organization_url=organization_url,
+                    project=project_name or normalized_project,
+                    auth_header=auth_header,
+                    remote_issue_id=item["id"],
+                )
+                if include_comments
+                else []
+            )
+            item["updates"] = (
+                self._fetch_updates(
+                    client,
+                    organization_url=organization_url,
+                    project=project_name or normalized_project,
+                    auth_header=auth_header,
+                    backlog_item_id=item["id"],
+                )
+                if include_updates
+                else []
+            )
+            return item
+
 
 class IssueService:
     def __init__(self, config_resolver: ProviderConfigResolver) -> None:
@@ -797,6 +950,29 @@ class IssueService:
             text_search=text_search,
             top=top,
             skip=skip,
+        )
+
+    def get_remote_backlog_item_by_id(
+        self,
+        *,
+        provider: str,
+        directory_path: str,
+        backlog_item_id: str,
+        project: str | None = None,
+        include_comments: bool = True,
+        include_relations: bool = True,
+        include_updates: bool = False,
+    ) -> dict[str, Any]:
+        adapter = self.adapters.get(provider)
+        if adapter is None:
+            raise ValueError(f"Unsupported issue provider: {provider}")
+        return adapter.get_backlog_item_by_id(
+            directory_path=directory_path,
+            backlog_item_id=backlog_item_id,
+            project=project,
+            include_comments=include_comments,
+            include_relations=include_relations,
+            include_updates=include_updates,
         )
 
 

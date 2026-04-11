@@ -361,12 +361,27 @@ A transport-terminated warning without client-visible failure can be expected fo
 - Response payload includes `items`, `count`, and `paging` (`skip`, `top`, `returned_count`,
   `total_matches`, `has_more`, `next_skip`).
 
+## Host-Side Azure DevOps Backlog Get-by-ID Tool
+
+- Gateway tool name: `get_ado_backlog_item`.
+- The tool is policy-gated: each session manifest must include `get_ado_backlog_item` in
+  `allowed_tools` before calls are accepted.
+- MCP arguments:
+  - `id` (required numeric backlog item id)
+  - `project` (optional when `azure_devops_project` is configured in provider config)
+  - `include_comments` (optional, default `true`)
+  - `include_relations` (optional, default `true`)
+  - `include_updates` (optional, default `false`)
+- Response payload includes normalized ADO work item metadata (`fields`, `relations`, `comments`,
+  `updates`, `url`, `rev`, and normalized timestamps).
+
 Example session tool allowlist entry:
 
 ```json
 {
   "allowed_tools": [
-    "query_ado_backlog_items"
+    "query_ado_backlog_items",
+    "get_ado_backlog_item"
   ]
 }
 ```
