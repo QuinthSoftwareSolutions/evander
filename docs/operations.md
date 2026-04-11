@@ -361,6 +361,23 @@ A transport-terminated warning without client-visible failure can be expected fo
 - Response payload includes `items`, `count`, and `paging` (`skip`, `top`, `returned_count`,
   `total_matches`, `has_more`, `next_skip`).
 
+## Host-Side Azure DevOps Current Iteration Backlog Tool
+
+- Gateway tool name: `list_ado_current_iteration_backlog_items`.
+- This is a convenience wrapper over `query_ado_backlog_items` that first resolves the team’s
+  current iteration in Azure DevOps and then runs a backlog query scoped to that iteration path.
+- The tool is policy-gated: each session manifest must include
+  `list_ado_current_iteration_backlog_items` in `allowed_tools` before calls are accepted.
+- MCP arguments:
+  - `project` (optional when `azure_devops_project` is configured)
+  - `team` (optional; defaults to the configured/default team semantics for the project)
+  - optional filters: `area_path`, `states`, `types`, `tags_any`, `text_search`
+  - paging inputs: `top` (default `50`, max `200`) and `skip` (default `0`)
+- Response payload includes:
+  - `iteration_path` (resolved current iteration path from ADO team settings)
+  - `items`
+  - `count`
+
 ## Host-Side Azure DevOps Backlog Get-by-ID Tool
 
 - Gateway tool name: `get_ado_backlog_item`.

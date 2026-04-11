@@ -5,6 +5,7 @@ import os
 import re
 from datetime import UTC, datetime
 from typing import Any, Protocol
+from urllib.parse import quote
 
 import httpx
 
@@ -61,6 +62,21 @@ class IssueProviderAdapter(Protocol):
         directory_path: str,
         project: str | None = None,
         iteration: str | None = None,
+        area_path: str | None = None,
+        states: list[str] | None = None,
+        types: list[str] | None = None,
+        tags_any: list[str] | None = None,
+        text_search: str | None = None,
+        top: int = 50,
+        skip: int = 0,
+    ) -> dict[str, Any]: ...
+
+    def list_current_iteration_backlog_items(
+        self,
+        *,
+        directory_path: str,
+        project: str | None = None,
+        team: str | None = None,
         area_path: str | None = None,
         states: list[str] | None = None,
         types: list[str] | None = None,
@@ -619,10 +635,133 @@ class AzureDevOpsIssueAdapter:
         if not normalized_project:
             raise ValueError("project is required for Azure DevOps backlog queries.")
         auth_header = self._auth_header(pat)
+        with httpx.Client(timeout=self.timeout_seconds) as client:
+            return self._query_backlog_items_core(
+                client,
+                organization_url=organization_url,
+                project=normalized_project,
+                auth_header=auth_header,
+                iteration=iteration,
+                area_path=area_path,
+                states=states,
+                types=types,
+                tags_any=tags_any,
+                text_search=text_search,
+                top=top,
+                skip=skip,
+            )
+
+    def list_current_iteration_backlog_items(
+        self,
+        *,
+        directory_path: str,
+        project: str | None = None,
+        team: str | None = None,
+        area_path: str | None = None,
+        states: list[str] | None = None,
+        types: list[str] | None = None,
+        tags_any: list[str] | None = None,
+        text_search: str | None = None,
+        top: int = 50,
+        skip: int = 0,
+    ) -> dict[str, Any]:
+        organization_url, configured_project, pat = self._resolve_connection(directory_path)
+        normalized_project = str(project or configured_project).strip()
+        if not normalized_project:
+            raise ValueError("project is required for Azure DevOps current-iteration backlog queries.")
+        auth_header = self._auth_header(pat)
+        with httpx.Client(timeout=self.timeout_seconds) as client:
+            _, iteration_path = self._resolve_current_iteration_path(
+                client,
+                organization_url=organization_url,
+                project=normalized_project,
+                auth_header=auth_header,
+                team=team,
+            )
+            query_result = self._query_backlog_items_core(
+                client,
+                organization_url=organization_url,
+                project=normalized_project,
+                auth_header=auth_header,
+                iteration=iteration_path,
+                area_path=area_path,
+                states=states,
+                types=types,
+                tags_any=tags_any,
+                text_search=text_search,
+                top=top,
+                skip=skip,
+            )
+        return {
+            "provider": self.provider_name,
+            "project": normalized_project,
+            "iteration_path": iteration_path,
+            "items": query_result.get("items") or [],
+            "count": int(query_result.get("count") or 0),
+        }
+
+    @staticmethod
+    def _normalize_ado_team_name(value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = str(value).strip()
+        return normalized or None
+
+    def _resolve_current_iteration_path(
+        self,
+        client: httpx.Client,
+        *,
+        organization_url: str,
+        project: str,
+        auth_header: str,
+        team: str | None = None,
+    ) -> tuple[str, str]:
+        normalized_team = self._normalize_ado_team_name(team) or project
+        iterations_url = (
+            f"{organization_url}/{quote(project, safe='')}/{quote(normalized_team, safe='')}"
+            "/_apis/work/teamsettings/iterations"
+        )
+        response = client.get(
+            iterations_url,
+            params={"$timeframe": "current", "api-version": "7.1"},
+            headers={"Authorization": auth_header},
+        )
+        if response.is_error:
+            self._raise_ado_http_error(action="resolve current iteration", response=response)
+        payload = response.json()
+        values = payload.get("value") if isinstance(payload, dict) else None
+        if not isinstance(values, list) or not values:
+            raise RuntimeError(
+                f"Azure DevOps team '{normalized_team}' in project '{project}' has no current iteration configured."
+            )
+        first_iteration = values[0] if isinstance(values[0], dict) else {}
+        iteration_path = str(first_iteration.get("path") or "").strip()
+        if not iteration_path:
+            raise RuntimeError(
+                f"Azure DevOps team '{normalized_team}' in project '{project}' returned no current iteration path."
+            )
+        return normalized_team, iteration_path
+
+    def _query_backlog_items_core(
+        self,
+        client: httpx.Client,
+        *,
+        organization_url: str,
+        project: str,
+        auth_header: str,
+        iteration: str | None = None,
+        area_path: str | None = None,
+        states: list[str] | None = None,
+        types: list[str] | None = None,
+        tags_any: list[str] | None = None,
+        text_search: str | None = None,
+        top: int = 50,
+        skip: int = 0,
+    ) -> dict[str, Any]:
         normalized_top = max(1, min(int(top), 200))
         normalized_skip = max(0, int(skip))
         wiql = self._build_backlog_wiql_query(
-            project=normalized_project,
+            project=project,
             iteration=iteration,
             area_path=area_path,
             states=states,
@@ -630,7 +769,7 @@ class AzureDevOpsIssueAdapter:
             tags_any=tags_any,
             text_search=text_search,
         )
-        wiql_url = f"{organization_url}/{normalized_project}/_apis/wit/wiql"
+        wiql_url = f"{organization_url}/{project}/_apis/wit/wiql"
         select_fields = [
             "System.Id",
             "System.Title",
@@ -642,70 +781,69 @@ class AzureDevOpsIssueAdapter:
             "System.Tags",
             "System.ChangedDate",
         ]
-        with httpx.Client(timeout=self.timeout_seconds) as client:
-            wiql_response = client.post(
-                wiql_url,
-                params={"api-version": "7.1"},
-                headers={"Authorization": auth_header, "Content-Type": "application/json"},
-                json={"query": wiql},
-            )
-            if wiql_response.is_error:
-                self._raise_ado_http_error(action="query backlog items", response=wiql_response)
-            wiql_payload = wiql_response.json()
-            raw_work_items = wiql_payload.get("workItems") if isinstance(wiql_payload, dict) else None
-            work_item_ids = [
-                int(item.get("id"))
-                for item in (raw_work_items or [])
-                if isinstance(item, dict) and isinstance(item.get("id"), int)
-            ]
-            total_matches = len(work_item_ids)
-            paged_ids = work_item_ids[normalized_skip : normalized_skip + normalized_top]
-            items: list[dict[str, Any]] = []
-            if paged_ids:
-                batch_url = f"{organization_url}/_apis/wit/workitemsbatch"
-                for index in range(0, len(paged_ids), 200):
-                    chunk_ids = paged_ids[index : index + 200]
-                    batch_response = client.post(
-                        batch_url,
-                        params={"api-version": "7.1"},
-                        headers={"Authorization": auth_header, "Content-Type": "application/json"},
-                        json={
-                            "ids": chunk_ids,
-                            "fields": select_fields,
-                            "$expand": "Relations",
-                            "errorPolicy": "Omit",
-                        },
+        wiql_response = client.post(
+            wiql_url,
+            params={"api-version": "7.1"},
+            headers={"Authorization": auth_header, "Content-Type": "application/json"},
+            json={"query": wiql},
+        )
+        if wiql_response.is_error:
+            self._raise_ado_http_error(action="query backlog items", response=wiql_response)
+        wiql_payload = wiql_response.json()
+        raw_work_items = wiql_payload.get("workItems") if isinstance(wiql_payload, dict) else None
+        work_item_ids = [
+            int(item.get("id"))
+            for item in (raw_work_items or [])
+            if isinstance(item, dict) and isinstance(item.get("id"), int)
+        ]
+        total_matches = len(work_item_ids)
+        paged_ids = work_item_ids[normalized_skip : normalized_skip + normalized_top]
+        items: list[dict[str, Any]] = []
+        if paged_ids:
+            batch_url = f"{organization_url}/_apis/wit/workitemsbatch"
+            for index in range(0, len(paged_ids), 200):
+                chunk_ids = paged_ids[index : index + 200]
+                batch_response = client.post(
+                    batch_url,
+                    params={"api-version": "7.1"},
+                    headers={"Authorization": auth_header, "Content-Type": "application/json"},
+                    json={
+                        "ids": chunk_ids,
+                        "fields": select_fields,
+                        "$expand": "Relations",
+                        "errorPolicy": "Omit",
+                    },
+                )
+                if batch_response.is_error:
+                    self._raise_ado_http_error(action="fetch backlog items batch", response=batch_response)
+                batch_payload = batch_response.json()
+                values = batch_payload.get("value") if isinstance(batch_payload, dict) else None
+                for raw_item in values or []:
+                    if not isinstance(raw_item, dict):
+                        continue
+                    raw_fields = raw_item.get("fields") if isinstance(raw_item.get("fields"), dict) else {}
+                    items.append(
+                        {
+                            "id": str(raw_item.get("id") or "").strip(),
+                            "title": str(raw_fields.get("System.Title") or "").strip(),
+                            "state": str(raw_fields.get("System.State") or "").strip() or None,
+                            "type": str(raw_fields.get("System.WorkItemType") or "").strip() or None,
+                            "iteration": str(raw_fields.get("System.IterationPath") or "").strip() or None,
+                            "area": str(raw_fields.get("System.AreaPath") or "").strip() or None,
+                            "assigned_to": self._normalize_assigned_to(raw_fields.get("System.AssignedTo")),
+                            "url": str((raw_item.get("_links") or {}).get("web", {}).get("href") or "").strip()
+                            or str(raw_item.get("url") or "").strip()
+                            or None,
+                            "fields": {k: v for k, v in raw_fields.items()},
+                        }
                     )
-                    if batch_response.is_error:
-                        self._raise_ado_http_error(action="fetch backlog items batch", response=batch_response)
-                    batch_payload = batch_response.json()
-                    values = batch_payload.get("value") if isinstance(batch_payload, dict) else None
-                    for raw_item in values or []:
-                        if not isinstance(raw_item, dict):
-                            continue
-                        raw_fields = raw_item.get("fields") if isinstance(raw_item.get("fields"), dict) else {}
-                        items.append(
-                            {
-                                "id": str(raw_item.get("id") or "").strip(),
-                                "title": str(raw_fields.get("System.Title") or "").strip(),
-                                "state": str(raw_fields.get("System.State") or "").strip() or None,
-                                "type": str(raw_fields.get("System.WorkItemType") or "").strip() or None,
-                                "iteration": str(raw_fields.get("System.IterationPath") or "").strip() or None,
-                                "area": str(raw_fields.get("System.AreaPath") or "").strip() or None,
-                                "assigned_to": self._normalize_assigned_to(raw_fields.get("System.AssignedTo")),
-                                "url": str((raw_item.get("_links") or {}).get("web", {}).get("href") or "").strip()
-                                or str(raw_item.get("url") or "").strip()
-                                or None,
-                                "fields": {k: v for k, v in raw_fields.items()},
-                            }
-                        )
-            id_order = {str(item_id): index for index, item_id in enumerate(paged_ids)}
-            items.sort(key=lambda item: id_order.get(str(item.get("id") or ""), len(id_order)))
+        id_order = {str(item_id): index for index, item_id in enumerate(paged_ids)}
+        items.sort(key=lambda item: id_order.get(str(item.get("id") or ""), len(id_order)))
         returned_count = len(items)
         next_skip = normalized_skip + returned_count if normalized_skip + returned_count < total_matches else None
         return {
             "provider": self.provider_name,
-            "project": normalized_project,
+            "project": project,
             "items": items,
             "count": returned_count,
             "paging": {
@@ -943,6 +1081,37 @@ class IssueService:
             directory_path=directory_path,
             project=project,
             iteration=iteration,
+            area_path=area_path,
+            states=states,
+            types=types,
+            tags_any=tags_any,
+            text_search=text_search,
+            top=top,
+            skip=skip,
+        )
+
+    def list_remote_current_iteration_backlog_items(
+        self,
+        *,
+        provider: str,
+        directory_path: str,
+        project: str | None = None,
+        team: str | None = None,
+        area_path: str | None = None,
+        states: list[str] | None = None,
+        types: list[str] | None = None,
+        tags_any: list[str] | None = None,
+        text_search: str | None = None,
+        top: int = 50,
+        skip: int = 0,
+    ) -> dict[str, Any]:
+        adapter = self.adapters.get(provider)
+        if adapter is None:
+            raise ValueError(f"Unsupported issue provider: {provider}")
+        return adapter.list_current_iteration_backlog_items(
+            directory_path=directory_path,
+            project=project,
+            team=team,
             area_path=area_path,
             states=states,
             types=types,
