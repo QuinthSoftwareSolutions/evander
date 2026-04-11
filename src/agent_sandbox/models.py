@@ -16,6 +16,9 @@ def utc_now() -> datetime:
 
 class ToolName(str, Enum):
     CREATE_ADO_BACKLOG_ITEM = "create_ado_backlog_item"
+    QUERY_ADO_BACKLOG_ITEMS = "query_ado_backlog_items"
+    LIST_ADO_CURRENT_ITERATION_BACKLOG_ITEMS = "list_ado_current_iteration_backlog_items"
+    GET_ADO_BACKLOG_ITEM = "get_ado_backlog_item"
     CREATE_LOCAL_ISSUE = "create_local_issue"
     LIST_ISSUES = "list_issues"
     GET_ISSUE = "get_issue"
@@ -731,6 +734,203 @@ class AdoBacklogCreateResponse(BaseModel):
     tags: list[str] = Field(default_factory=list)
     assigned_user: str | None = None
     parent_backlog_item_id: str | None = None
+
+
+class AdoBacklogQueryRequest(BaseModel):
+    project: str | None = None
+    iteration: str | None = None
+    area_path: str | None = None
+    states: list[str] = Field(default_factory=list)
+    types: list[AdoBacklogItemType] = Field(default_factory=list)
+    tags_any: list[str] = Field(default_factory=list)
+    text_search: str | None = None
+    top: int = Field(default=50, ge=1, le=200)
+    skip: int = Field(default=0, ge=0)
+
+    @field_validator("project", "iteration", "area_path", "text_search", mode="before")
+    @classmethod
+    def trim_optional_strings(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        normalized = str(value).strip()
+        return normalized or None
+
+    @field_validator("states", "tags_any", mode="before")
+    @classmethod
+    def normalize_string_filters(cls, value: object) -> list[str]:
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            raise ValueError("filter must be a list of strings")
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for item in value:
+            normalized = str(item).strip()
+            if not normalized:
+                continue
+            dedupe_key = normalized.casefold()
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            deduped.append(normalized)
+        return deduped
+
+    @field_validator("types", mode="before")
+    @classmethod
+    def normalize_types(cls, value: object) -> list[AdoBacklogItemType]:
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            raise ValueError("types must be a list of item types")
+        normalized: list[AdoBacklogItemType] = []
+        seen: set[AdoBacklogItemType] = set()
+        for item in value:
+            resolved = item if isinstance(item, AdoBacklogItemType) else AdoBacklogItemType.from_raw(str(item))
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            normalized.append(resolved)
+        return normalized
+
+
+class AdoBacklogQueryItem(BaseModel):
+    id: str
+    title: str
+    state: str | None = None
+    type: str | None = None
+    iteration: str | None = None
+    area: str | None = None
+    assigned_to: str | None = None
+    url: str | None = None
+    fields: dict[str, Any] = Field(default_factory=dict)
+
+
+class AdoBacklogQueryPaging(BaseModel):
+    skip: int = 0
+    top: int = 0
+    returned_count: int = 0
+    total_matches: int = 0
+    has_more: bool = False
+    next_skip: int | None = None
+
+
+class AdoBacklogQueryResponse(BaseModel):
+    items: list[AdoBacklogQueryItem] = Field(default_factory=list)
+    count: int = 0
+    paging: AdoBacklogQueryPaging
+
+
+class AdoCurrentIterationBacklogRequest(BaseModel):
+    project: str | None = None
+    team: str | None = None
+    area_path: str | None = None
+    states: list[str] = Field(default_factory=list)
+    types: list[AdoBacklogItemType] = Field(default_factory=list)
+    tags_any: list[str] = Field(default_factory=list)
+    text_search: str | None = None
+    top: int = Field(default=50, ge=1, le=200)
+    skip: int = Field(default=0, ge=0)
+
+    @field_validator("project", "team", "area_path", "text_search", mode="before")
+    @classmethod
+    def trim_optional_strings(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        normalized = str(value).strip()
+        return normalized or None
+
+    @field_validator("states", "tags_any", mode="before")
+    @classmethod
+    def normalize_string_filters(cls, value: object) -> list[str]:
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            raise ValueError("filter must be a list of strings")
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for item in value:
+            normalized = str(item).strip()
+            if not normalized:
+                continue
+            dedupe_key = normalized.casefold()
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            deduped.append(normalized)
+        return deduped
+
+    @field_validator("types", mode="before")
+    @classmethod
+    def normalize_types(cls, value: object) -> list[AdoBacklogItemType]:
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            raise ValueError("types must be a list of item types")
+        normalized: list[AdoBacklogItemType] = []
+        seen: set[AdoBacklogItemType] = set()
+        for item in value:
+            resolved = item if isinstance(item, AdoBacklogItemType) else AdoBacklogItemType.from_raw(str(item))
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            normalized.append(resolved)
+        return normalized
+
+
+class AdoCurrentIterationBacklogResponse(BaseModel):
+    iteration_path: str
+    items: list[AdoBacklogQueryItem] = Field(default_factory=list)
+    count: int = 0
+
+
+class AdoBacklogGetRequest(BaseModel):
+    id: int | str
+    project: str | None = None
+    include_comments: bool = True
+    include_relations: bool = True
+    include_updates: bool = False
+
+    @field_validator("id", mode="before")
+    @classmethod
+    def normalize_id(cls, value: object) -> str:
+        if value is None:
+            raise ValueError("id is required")
+        if isinstance(value, bool):
+            raise ValueError("id must be an integer")
+        if isinstance(value, int):
+            normalized = str(value)
+        else:
+            normalized = str(value).strip()
+        if not normalized or not normalized.isdigit():
+            raise ValueError("id must be a numeric backlog item id")
+        return normalized
+
+    @field_validator("project", mode="before")
+    @classmethod
+    def normalize_project(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        normalized = str(value).strip()
+        return normalized or None
+
+
+class AdoBacklogGetResponse(BaseModel):
+    provider: str
+    id: str
+    project: str | None = None
+    rev: int | None = None
+    url: str | None = None
+    web_url: str | None = None
+    title: str | None = None
+    state: str | None = None
+    type: str | None = None
+    created_at: str | None = None
+    changed_at: str | None = None
+    closed_at: str | None = None
+    fields: dict[str, Any] = Field(default_factory=dict)
+    relations: list[dict[str, Any]] = Field(default_factory=list)
+    comments: list[dict[str, Any]] = Field(default_factory=list)
+    updates: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class RequestPrReviewRequest(BaseModel):

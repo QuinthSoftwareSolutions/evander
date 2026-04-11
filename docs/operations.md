@@ -349,6 +349,79 @@ A transport-terminated warning without client-visible failure can be expected fo
 - Optional MCP arguments: `description`, `acceptance_criteria`, `tags`, `assigned_user`,
   `parent_backlog_item_id`.
 
+## Host-Side Azure DevOps Backlog Query Tool
+
+- Gateway tool name: `query_ado_backlog_items`.
+- The tool is policy-gated: each session manifest must include `query_ado_backlog_items` in
+  `allowed_tools` before calls are accepted.
+- MCP arguments:
+  - `project` (optional when `azure_devops_project` is configured in provider config)
+  - optional filters: `iteration`, `area_path`, `states`, `types`, `tags_any`, `text_search`
+  - paging inputs: `top` (default `50`, max `200`) and `skip` (default `0`)
+- Response payload includes `items`, `count`, and `paging` (`skip`, `top`, `returned_count`,
+  `total_matches`, `has_more`, `next_skip`).
+
+## Host-Side Azure DevOps Current Iteration Backlog Tool
+
+- Gateway tool name: `list_ado_current_iteration_backlog_items`.
+- This is a convenience wrapper over `query_ado_backlog_items` that first resolves the team’s
+  current iteration in Azure DevOps and then runs a backlog query scoped to that iteration path.
+- The tool is policy-gated: each session manifest must include
+  `list_ado_current_iteration_backlog_items` in `allowed_tools` before calls are accepted.
+- MCP arguments:
+  - `project` (optional when `azure_devops_project` is configured)
+  - `team` (optional; defaults to the configured/default team semantics for the project)
+  - optional filters: `area_path`, `states`, `types`, `tags_any`, `text_search`
+  - paging inputs: `top` (default `50`, max `200`) and `skip` (default `0`)
+- Response payload includes:
+  - `iteration_path` (resolved current iteration path from ADO team settings)
+  - `items`
+  - `count`
+
+## Host-Side Azure DevOps Backlog Get-by-ID Tool
+
+- Gateway tool name: `get_ado_backlog_item`.
+- The tool is policy-gated: each session manifest must include `get_ado_backlog_item` in
+  `allowed_tools` before calls are accepted.
+- MCP arguments:
+  - `id` (required numeric backlog item id)
+  - `project` (optional when `azure_devops_project` is configured in provider config)
+  - `include_comments` (optional, default `true`)
+  - `include_relations` (optional, default `true`)
+  - `include_updates` (optional, default `false`)
+- Response payload includes normalized ADO work item metadata (`fields`, `relations`, `comments`,
+  `updates`, `url`, `rev`, and normalized timestamps).
+
+Example session tool allowlist entry:
+
+```json
+{
+  "allowed_tools": [
+    "query_ado_backlog_items",
+    "get_ado_backlog_item"
+  ]
+}
+```
+
+Example MCP call:
+
+```json
+{
+  "tool": "query_ado_backlog_items",
+  "arguments": {
+    "session_id": "real-session",
+    "project": "example-project",
+    "iteration": "Example\\Sprint 12",
+    "states": ["New", "Active"],
+    "types": ["Task", "Bug"],
+    "tags_any": ["api", "backend"],
+    "text_search": "retry policy",
+    "top": 25,
+    "skip": 0
+  }
+}
+```
+
 ### Required provider config and environment
 
 - Configure Azure DevOps work-item connectivity in effective provider config:

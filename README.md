@@ -636,12 +636,16 @@ See [live-smoke-tests.md](/home/jonathan/agent-sandbox/docs/live-smoke-tests.md)
   inspect rejected, approved, committed, or completed issues without depending on list filters.
 - Use `create_ado_backlog_item` to create Azure DevOps backlog work items through the host-side
   provider adapter (no guest PAT required).
+- Use `query_ado_backlog_items` to list/filter Azure DevOps backlog work items.
+- Use `get_ado_backlog_item` when you need a single normalized Azure DevOps work item by numeric
+  id, with optional comments/relations/updates expansion.
 - `create_ado_backlog_item` request fields:
   - required: `type`, `project`, `iteration`, `title`
   - optional: `description`, `acceptance_criteria`, `tags`, `assigned_user`,
     `parent_backlog_item_id`
 - Session allowlisting is required: include `create_ado_backlog_item` in the session manifest
-  `allowed_tools`, or the call is denied by policy.
+  `allowed_tools`, or the call is denied by policy. The same applies to
+  `query_ado_backlog_items` and `get_ado_backlog_item`.
 
 ### Minimal MCP client example (request/response)
 
