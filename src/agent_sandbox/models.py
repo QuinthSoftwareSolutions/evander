@@ -573,6 +573,8 @@ class AdoBacklogCreateRequest(BaseModel):
     def normalize_parent_backlog_item_id(cls, value: object) -> str | None:
         if value is None:
             return None
+        if isinstance(value, bool):
+            raise ValueError("parent_backlog_item_id must be int-like")
         if isinstance(value, int):
             return str(value)
         normalized = str(value).strip()

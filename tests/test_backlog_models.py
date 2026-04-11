@@ -63,3 +63,15 @@ def test_backlog_create_request_rejects_non_int_like_parent_id() -> None:
             title="Title",
             parent_backlog_item_id="abc-123",
         )
+
+
+@pytest.mark.parametrize("parent_id", [True, False])
+def test_backlog_create_request_rejects_boolean_parent_id(parent_id: bool) -> None:
+    with pytest.raises(ValidationError, match="int-like"):
+        AdoBacklogCreateRequest(
+            type="Bug",
+            project="Project",
+            iteration="Iteration",
+            title="Title",
+            parent_backlog_item_id=parent_id,
+        )
