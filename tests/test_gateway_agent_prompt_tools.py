@@ -1,5 +1,7 @@
 import asyncio
 import json
+import os
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -13,6 +15,7 @@ from agent_sandbox.runtime import build_runtime
 
 
 def make_context(tmp_path: Path):
+    os.environ["TEST_AGENT_PROMPT_TOKEN_SECRET"] = "test-agent-prompt-secret"
     config = GatewayConfig(
         runtime_dir=tmp_path,
         audit_log_path=tmp_path / "audit.jsonl",
@@ -21,6 +24,8 @@ def make_context(tmp_path: Path):
         draft_store_path=tmp_path / "drafts.json",
         email_store_path=tmp_path / "emails.json",
         discord_command_store_path=tmp_path / "discord.json",
+        agent_prompt_token_secret_env="TEST_AGENT_PROMPT_TOKEN_SECRET",
+        agent_prompt_token_ttl_seconds=60,
     )
     return build_runtime(config)
 
@@ -185,3 +190,143 @@ def test_agent_prompt_tools_redact_response_token_in_audit_logs(tmp_path: Path) 
     assert prompt_event["result"]["response_token"] == "<redacted>"
     assert respond_event["args"]["response_token"] == "<redacted>"
     assert respond_event["result"]["response_token"] == "<redacted>"
+
+
+def test_respond_to_agent_rejects_bad_signature_token(tmp_path: Path) -> None:
+    context = make_context(tmp_path)
+    context.sessions.put(
+        "sender",
+        SessionManifest(
+            session_id="sender",
+            allowed_tools=[ToolName.PROMPT_AGENT],
+            directory_path="root/alpha",
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        ),
+    )
+    context.sessions.put(
+        "target",
+        SessionManifest(
+            session_id="target",
+            allowed_tools=[ToolName.RESPOND_TO_AGENT],
+            directory_path="root/alpha",
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        ),
+    )
+    server = create_server(context)
+    prompt_result = call_tool(
+        server,
+        "prompt_agent",
+        {"session_id": "sender", "target_session_id": "target", "prompt": "hello"},
+    )
+    tampered = f"{prompt_result['response_token']}x"
+    with pytest.raises(Exception, match="signature is invalid"):
+        call_tool(
+            server,
+            "respond_to_agent",
+            {
+                "session_id": "target",
+                "message_id": prompt_result["message_id"],
+                "response_token": tampered,
+                "response_text": "fail",
+            },
+        )
+
+
+def test_respond_to_agent_rejects_expired_token(tmp_path: Path) -> None:
+    os.environ["TEST_AGENT_PROMPT_TOKEN_SECRET"] = "test-agent-prompt-secret"
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        audit_log_path=tmp_path / "audit.jsonl",
+        session_store_path=tmp_path / "sessions.json",
+        approval_store_path=tmp_path / "approvals.json",
+        draft_store_path=tmp_path / "drafts.json",
+        email_store_path=tmp_path / "emails.json",
+        discord_command_store_path=tmp_path / "discord.json",
+        agent_prompt_token_secret_env="TEST_AGENT_PROMPT_TOKEN_SECRET",
+        agent_prompt_token_ttl_seconds=1,
+    )
+    context = build_runtime(config)
+    context.sessions.put(
+        "sender",
+        SessionManifest(
+            session_id="sender",
+            allowed_tools=[ToolName.PROMPT_AGENT],
+            directory_path="root/alpha",
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        ),
+    )
+    context.sessions.put(
+        "target",
+        SessionManifest(
+            session_id="target",
+            allowed_tools=[ToolName.RESPOND_TO_AGENT],
+            directory_path="root/alpha",
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        ),
+    )
+    server = create_server(context)
+    prompt_result = call_tool(
+        server,
+        "prompt_agent",
+        {"session_id": "sender", "target_session_id": "target", "prompt": "hello"},
+    )
+    time.sleep(1.2)
+    with pytest.raises(Exception, match="expired"):
+        call_tool(
+            server,
+            "respond_to_agent",
+            {
+                "session_id": "target",
+                "message_id": prompt_result["message_id"],
+                "response_token": prompt_result["response_token"],
+                "response_text": "late",
+            },
+        )
+
+
+def test_respond_to_agent_rejects_wrong_session_binding(tmp_path: Path) -> None:
+    context = make_context(tmp_path)
+    context.sessions.put(
+        "sender",
+        SessionManifest(
+            session_id="sender",
+            allowed_tools=[ToolName.PROMPT_AGENT],
+            directory_path="root/alpha",
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        ),
+    )
+    context.sessions.put(
+        "target",
+        SessionManifest(
+            session_id="target",
+            allowed_tools=[ToolName.RESPOND_TO_AGENT],
+            directory_path="root/alpha",
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        ),
+    )
+    context.sessions.put(
+        "wrong-target",
+        SessionManifest(
+            session_id="wrong-target",
+            allowed_tools=[ToolName.RESPOND_TO_AGENT],
+            directory_path="root/alpha",
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        ),
+    )
+    server = create_server(context)
+    prompt_result = call_tool(
+        server,
+        "prompt_agent",
+        {"session_id": "sender", "target_session_id": "target", "prompt": "hello"},
+    )
+    with pytest.raises(Exception, match="target_session_id claim does not match request session"):
+        call_tool(
+            server,
+            "respond_to_agent",
+            {
+                "session_id": "wrong-target",
+                "message_id": prompt_result["message_id"],
+                "response_token": prompt_result["response_token"],
+                "response_text": "wrong",
+            },
+        )

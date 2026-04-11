@@ -31,7 +31,7 @@ class EffectivePolicyConfig(BaseModel):
     email_send_enabled: bool = False
     pr_reply_require_approval: bool = False
     redacted_keys: set[str] = Field(
-        default_factory=lambda: {"body", "body_text", "authorization", "token"}
+        default_factory=lambda: {"body", "body_text", "authorization", "token", "response_token"}
     )
 
 

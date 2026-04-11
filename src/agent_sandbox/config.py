@@ -121,6 +121,8 @@ class GatewayConfig(BaseModel):
     email_send_enabled: bool = False
     pr_reply_require_approval: bool = False
     github_token_env: str = "GITHUB_TOKEN"
+    agent_prompt_token_secret_env: str = "AGENT_PROMPT_TOKEN_SECRET"
+    agent_prompt_token_ttl_seconds: int = Field(default=3600, ge=1)
     azure_devops_pat_env: str = "AZURE_DEVOPS_PAT"
     azure_devops_pr_pat_env: str = "AZURE_DEVOPS_PR_PAT"
     azure_devops_organization_url: str = "https://dev.azure.com"
@@ -180,7 +182,7 @@ class GatewayConfig(BaseModel):
         ]
     )
     redacted_keys: set[str] = Field(
-        default_factory=lambda: {"body", "body_text", "prompt", "authorization", "token"}
+        default_factory=lambda: {"body", "body_text", "prompt", "authorization", "token", "response_token"}
     )
 
     @field_validator(
