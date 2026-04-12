@@ -854,6 +854,8 @@ class GraphTeamsService:
         envelope = self._to_envelope(
             payload,
             target=target,
+            # Historical name: this marks a self-authored Teams status post from
+            # this agent session, not an inbound user-authored Graph message.
             source="teams_graph_api_status",
             session_id=session_id,
             reply_to_id=normalized_thread_id,

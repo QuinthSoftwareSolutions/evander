@@ -211,6 +211,49 @@ def test_teams_get_messages_supports_limit_and_includes_session_authored_message
     assert result["next_cursor"] == "team-a/channel-1/msg-3"
 
 
+def test_teams_get_messages_includes_status_messages_from_other_sessions_in_same_channel(tmp_path: Path) -> None:
+    context = make_context(tmp_path)
+    context.sessions.put(
+        "session-1",
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[ToolName.TEAMS_GET_MESSAGES],
+            teams_channel_allowlist=["team-a/channel-1"],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    context.teams_service = FakeTeamsService(
+        [
+            TeamsMessageEnvelope(
+                cursor="team-a/channel-1/msg-2",
+                message_id="msg-2",
+                author_id="agent-user",
+                team_id="team-a",
+                channel_id="channel-1",
+                thread_id="msg-1",
+                content="foreign session status",
+                metadata={
+                    "source": "teams_graph_api_status",
+                    "team_id": "team-a",
+                    "channel_id": "channel-1",
+                    "author_id": "agent-user",
+                    "session_id": "session-2",
+                },
+            )
+        ]
+    )
+    server = create_server(context)
+
+    result = call_tool(
+        server,
+        "teams_get_messages",
+        {"session_id": "session-1"},
+    )
+
+    assert [entry["cursor"] for entry in result["messages"]] == ["team-a/channel-1/msg-2"]
+    assert result["next_cursor"] == "team-a/channel-1/msg-2"
+
+
 def test_teams_post_status_posts_to_allowlisted_channel_and_thread(tmp_path: Path) -> None:
     context = make_context(tmp_path)
     context.sessions.put(

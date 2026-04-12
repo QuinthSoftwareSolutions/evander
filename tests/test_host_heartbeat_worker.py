@@ -1353,15 +1353,16 @@ def test_wake_bindings_skips_resume_for_ignored_feedback(tmp_path, monkeypatch) 
             comment_id="42",
             author="reviewer",
             body="Already handled",
-            created_at=datetime(2026, 1, 11, 12, 0, 0, tzinfo=timezone.utc),
+            created_at=now - timedelta(minutes=10),
         )
     )
+    ignored_at = (now - timedelta(minutes=5)).isoformat().replace("+00:00", "Z")
     ignored_path = tmp_path / "ignored-feedback-ids.json"
     ignored_path.write_text(
         json.dumps(
             {
                 "feedback_ids": [
-                    {"feedback_id": "github:review_comment:42", "ignored_at": "2026-01-11T12:05:00Z"}
+                    {"feedback_id": "github:review_comment:42", "ignored_at": ignored_at}
                 ]
             }
         ),

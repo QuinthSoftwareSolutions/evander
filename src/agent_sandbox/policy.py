@@ -172,7 +172,12 @@ class PolicyEngine:
         message: TeamsMessageEnvelope,
     ) -> None:
         source = str(message.metadata.get("source", ""))
-        if source != "teams_graph_api":
+        if source == "teams_graph_api_status":
+            # Historical name: this tag marks a Teams message previously posted
+            # through the Graph API by one of our agent sessions. Visibility is
+            # still enforced by the allowlisted Teams target below.
+            pass
+        elif source != "teams_graph_api":
             raise PolicyError(f"Teams message {message.cursor} has untrusted source {source!r}")
 
         try:
