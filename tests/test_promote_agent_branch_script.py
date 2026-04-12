@@ -26,16 +26,16 @@ if [[ "${{args[0]:-}}" == "-C" ]]; then
   args=("${{args[@]:2}}")
 fi
     case "${{args[*]}}" in
-      "remote get-url agent-dropbox")
+      "remote get-url agent-dropbox-auto")
         exit 2
         ;;
-      "remote add agent-dropbox "*)
+      "remote add agent-dropbox-auto "*)
         exit 0
         ;;
       "show-ref --verify --quiet refs/heads/review/session-1/topic")
         exit 0
         ;;
-  "fetch agent-dropbox refs/heads/agents/session-1/topic")
+  "fetch agent-dropbox-auto refs/heads/agents/session-1/topic")
     exit 0
     ;;
   "switch -C review/session-1/topic FETCH_HEAD")
@@ -67,8 +67,8 @@ esac
         env=env,
     )
 
-    assert "Fetched agents/session-1/topic from agent-dropbox" in result.stdout
+    assert "Fetched agents/session-1/topic from agent-dropbox-auto" in result.stdout
     assert "Refreshed local review branch: review/session-1/topic" in result.stdout
     log_text = git_log.read_text(encoding="utf-8")
-    assert "fetch agent-dropbox refs/heads/agents/session-1/topic" in log_text
+    assert "fetch agent-dropbox-auto refs/heads/agents/session-1/topic" in log_text
     assert "switch -C review/session-1/topic FETCH_HEAD" in log_text

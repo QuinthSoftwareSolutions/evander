@@ -488,6 +488,7 @@ class PrCreateEffectDefinition(EffectDefinition):
     host_repo_path: ConfigValue
     local_branch: ConfigValue | None = None
     origin_branch: ConfigValue | None = None
+    canonical_origin_url: ConfigValue | None = None
     provider: ConfigValue | None = None
     base_branch: ConfigValue | None = None
     session_id: ConfigValue | None = None

@@ -35,7 +35,7 @@ def test_admin_service_promote_agent_branch_invokes_script_and_derives_review_br
     ]]
     assert result["success"] is True
     assert result["review_branch"] == "review/session-1/topic"
-    assert result["remote_name"] == "agent-dropbox"
+    assert result["remote_name"] == "agent-dropbox-auto"
 
 
 def test_admin_service_promote_agent_branch_passes_optional_flags(tmp_path: Path, monkeypatch: Any) -> None:

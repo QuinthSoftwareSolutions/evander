@@ -15,9 +15,9 @@ def test_admin_service_git_pr_note_query_reads_note_from_cached_ref(tmp_path: Pa
 
     def _fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         captured.append(cmd)
-        if cmd[:6] == ["git", "-C", "/repo", "remote", "get-url", "agent-dropbox"]:
+        if cmd[:6] == ["git", "-C", "/repo", "remote", "get-url", "agent-dropbox-auto"]:
             return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="/git-remotes/sample.git\n", stderr="")
-        if cmd[:5] == ["git", "-C", "/repo", "fetch", "agent-dropbox"]:
+        if cmd[:5] == ["git", "-C", "/repo", "fetch", "agent-dropbox-auto"]:
             return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
         if cmd[:5] == ["git", "-C", "/repo", "rev-parse", "review/session-1/topic"]:
             return subprocess.CompletedProcess(args=cmd, returncode=0, stdout=f"{'a'*40}\n", stderr="")
@@ -32,7 +32,7 @@ def test_admin_service_git_pr_note_query_reads_note_from_cached_ref(tmp_path: Pa
     assert result["has_note"] is True
     assert result["body"] == "Agent note body"
     assert result["local_notes_ref"] == "refs/notes/agent-pr-cache/sample"
-    assert result["remote_name"] == "agent-dropbox"
+    assert result["remote_name"] == "agent-dropbox-auto"
     assert result["commit_sha"] == "a" * 40
 
 
@@ -42,9 +42,9 @@ def test_admin_service_git_pr_note_query_returns_has_note_false_when_note_missin
     service = AdminService(runtime_dir)
 
     def _fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        if cmd[:6] == ["git", "-C", "/repo", "remote", "get-url", "agent-dropbox"]:
+        if cmd[:6] == ["git", "-C", "/repo", "remote", "get-url", "agent-dropbox-auto"]:
             return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="/git-remotes/sample.git\n", stderr="")
-        if cmd[:5] == ["git", "-C", "/repo", "fetch", "agent-dropbox"]:
+        if cmd[:5] == ["git", "-C", "/repo", "fetch", "agent-dropbox-auto"]:
             return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
         if cmd[:5] == ["git", "-C", "/repo", "rev-parse", "review/session-1/topic"]:
             return subprocess.CompletedProcess(args=cmd, returncode=0, stdout=f"{'a'*40}\n", stderr="")
@@ -68,9 +68,9 @@ def test_admin_service_git_pr_note_query_falls_back_to_recent_first_parent_commi
     service = AdminService(runtime_dir)
 
     def _fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        if cmd[:6] == ["git", "-C", "/repo", "remote", "get-url", "agent-dropbox"]:
+        if cmd[:6] == ["git", "-C", "/repo", "remote", "get-url", "agent-dropbox-auto"]:
             return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="/git-remotes/sample.git\n", stderr="")
-        if cmd[:5] == ["git", "-C", "/repo", "fetch", "agent-dropbox"]:
+        if cmd[:5] == ["git", "-C", "/repo", "fetch", "agent-dropbox-auto"]:
             return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
         if cmd[:5] == ["git", "-C", "/repo", "rev-parse", "review/session-1/topic"]:
             return subprocess.CompletedProcess(args=cmd, returncode=0, stdout=f"{'a'*40}\n", stderr="")

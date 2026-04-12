@@ -3372,6 +3372,7 @@ def test_pr_create_writes_inline_body_to_temporary_file_and_cleans_it_up(
 
     def fake_run_subprocess(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
         captured["cmd"] = list(cmd)
+        captured["env"] = dict(kwargs.get("env") or {})
         body_file = cmd[cmd.index("--body-file") + 1]
         body_path = Path(body_file)
         captured["body_file"] = body_path
@@ -3388,6 +3389,7 @@ def test_pr_create_writes_inline_body_to_temporary_file_and_cleans_it_up(
     result = service.pr_create(
         host_repo_path="/home/jonathan/Documents/Repos/ExampleIndustryAPP",
         local_branch="review/issue-14724",
+        canonical_origin_url="git@ssh.dev.azure.com:v3/example/project/repo",
         title="14724: Test Issue: Truman",
         body="Inline PR body",
         draft=True,
@@ -3398,6 +3400,7 @@ def test_pr_create_writes_inline_body_to_temporary_file_and_cleans_it_up(
     assert cmd[0].endswith("/scripts/open_agent_pr.sh")
     assert "--create-pr" in cmd
     assert "--draft" in cmd
+    assert captured["env"]["AGENT_SANDBOX_CANONICAL_ORIGIN_URL"] == "git@ssh.dev.azure.com:v3/example/project/repo"
     assert captured["body"] == "Inline PR body"
     assert not body_path.exists()
     assert result["success"] is True

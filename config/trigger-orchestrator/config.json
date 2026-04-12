@@ -203,7 +203,9 @@
       "fill": true,
       "host_repo_path": "${{effect-git-promote-agent-branch-1.host_repo_path}}",
       "id": "effect-pr-create-1",
+      "canonical_origin_url": "${{gate-filter-2.canonical_origin_url}}",
       "local_branch": "${{effect-git-promote-agent-branch-1.review_branch}}",
+      "provider": "azure_devops",
       "session_id": "${{trigger-git-push-1.session_id}}",
       "title": "${{query-session-context-1.metadata.issue_number}}: ${{query-session-context-1.metadata.issue_title}}",
       "type": "effect:pr:create"

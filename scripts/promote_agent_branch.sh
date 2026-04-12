@@ -18,7 +18,7 @@ Arguments:
 
 Options:
   --remote-name <name>  Remote name to use in the trusted clone.
-                        Default: agent-dropbox
+                        Default: agent-dropbox-auto
   -h, --help            Show this help text.
 
 Configuration:
@@ -31,7 +31,7 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   exit 0
 fi
 
-REMOTE_NAME="agent-dropbox"
+REMOTE_NAME="agent-dropbox-auto"
 POSITIONAL=()
 
 while [[ $# -gt 0 ]]; do
@@ -118,11 +118,7 @@ EXPECTED_URL="${BARE_REPO_PATH}"
 if git -C "${HOST_REPO_PATH}" remote get-url "${REMOTE_NAME}" >/dev/null 2>&1; then
   CURRENT_URL="$(git -C "${HOST_REPO_PATH}" remote get-url "${REMOTE_NAME}")"
   if [[ "${CURRENT_URL}" != "${EXPECTED_URL}" ]]; then
-    echo "Remote ${REMOTE_NAME} already exists with a different URL:" >&2
-    echo "  current:  ${CURRENT_URL}" >&2
-    echo "  expected: ${EXPECTED_URL}" >&2
-    echo "Use a different --remote-name or fix the remote manually." >&2
-    exit 1
+    git -C "${HOST_REPO_PATH}" remote set-url "${REMOTE_NAME}" "${EXPECTED_URL}"
   fi
 else
   git -C "${HOST_REPO_PATH}" remote add "${REMOTE_NAME}" "${EXPECTED_URL}"

@@ -3492,6 +3492,7 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
         host_repo_path: str,
         local_branch: str | None = None,
         origin_branch: str | None = None,
+        canonical_origin_url: str | None = None,
         provider: str | None = None,
         base_branch: str | None = None,
         session_id: str | None = None,
@@ -3541,7 +3542,11 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
             if origin_branch:
                 cmd.append(origin_branch)
 
-            completed = _run_subprocess(cmd, capture_output=True, text=True)
+            env = os.environ.copy()
+            if canonical_origin_url:
+                env["AGENT_SANDBOX_CANONICAL_ORIGIN_URL"] = canonical_origin_url
+
+            completed = _run_subprocess(cmd, capture_output=True, text=True, env=env)
             stdout = completed.stdout or ""
             stderr = completed.stderr or ""
             if completed.returncode != 0:
@@ -3613,7 +3618,7 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
             "bare_repo_path": bare_repo_path or bare_repo_name,
             "agent_branch": agent_branch,
             "review_branch": resolved_review_branch,
-            "remote_name": remote_name or "agent-dropbox",
+            "remote_name": remote_name or "agent-dropbox-auto",
         }
 
     @staticmethod
@@ -3631,7 +3636,7 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
         remote_name: str | None = None,
         notes_ref: str | None = None,
     ) -> dict[str, Any]:
-        resolved_remote_name = (remote_name or "").strip() or "agent-dropbox"
+        resolved_remote_name = (remote_name or "").strip() or "agent-dropbox-auto"
         resolved_notes_ref = (notes_ref or "").strip() or "refs/notes/agent-pr"
 
         remote_url_result = _run_subprocess(
