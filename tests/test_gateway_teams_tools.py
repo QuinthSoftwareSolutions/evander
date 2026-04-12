@@ -211,7 +211,7 @@ def test_teams_get_messages_supports_limit_and_includes_session_authored_message
     assert result["next_cursor"] == "team-a/channel-1/msg-3"
 
 
-def test_teams_get_messages_rejects_status_messages_from_other_sessions(tmp_path: Path) -> None:
+def test_teams_get_messages_includes_status_messages_from_other_sessions_in_same_channel(tmp_path: Path) -> None:
     context = make_context(tmp_path)
     context.sessions.put(
         "session-1",
@@ -250,7 +250,7 @@ def test_teams_get_messages_rejects_status_messages_from_other_sessions(tmp_path
         {"session_id": "session-1"},
     )
 
-    assert result["messages"] == []
+    assert [entry["cursor"] for entry in result["messages"]] == ["team-a/channel-1/msg-2"]
     assert result["next_cursor"] == "team-a/channel-1/msg-2"
 
 
