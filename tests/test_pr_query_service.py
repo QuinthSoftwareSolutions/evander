@@ -63,6 +63,35 @@ def test_azure_query_provider_constructs_request_with_filters(monkeypatch: pytes
     assert response.pull_requests[0].status == "active"
 
 
+def test_azure_query_provider_prefers_web_url_in_list_results(monkeypatch: pytest.MonkeyPatch) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "value": [
+                    {
+                        "pullRequestId": 17,
+                        "title": "Fix race",
+                        "status": "active",
+                        "url": "https://dev.azure.com/org/proj/_apis/git/repositories/repo-1/pullRequests/17",
+                        "_links": {"web": {"href": "https://dev.azure.com/org/proj/_git/repo-1/pullrequest/17"}},
+                    }
+                ]
+            },
+        )
+
+    patch_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    provider = AzureDevOpsPrQueryProvider(
+        organization_url="https://dev.azure.com/org",
+        project="proj",
+        pat="secret",
+    )
+
+    response = provider.list_pull_requests(repo="repo-1")
+
+    assert response.pull_requests[0].url == "https://dev.azure.com/org/proj/_git/repo-1/pullrequest/17"
+
+
 def test_pr_query_service_normalizes_provider_and_returns_payload(monkeypatch: pytest.MonkeyPatch) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.params["searchCriteria.status"] == "completed"
@@ -135,6 +164,7 @@ def test_azure_query_provider_get_pull_request_maps_fields_and_uses_pat_auth(
     assert result.target_commit == "def456"
     assert result.created_by == "Agent"
     assert result.reviewers[0].reviewer_id == "u1"
+    assert result.url == "https://dev.azure.com/org/proj/_git/repo-1/pullrequest/17"
     assert result.raw["customField"]["still"] == "in_raw"
 
 

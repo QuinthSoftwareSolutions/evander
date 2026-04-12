@@ -1309,15 +1309,11 @@ def create_server(context: RuntimeContext) -> FastMCP:
         args = request.model_dump(mode="json")
         try:
             session = context.policy.require_tool(request.session_id, ToolName.LIST_PULL_REQUESTS)
-            streams = context.policy.require_pr_feedback_streams(session)
-            allowlisted_repo = any(
-                stream["provider"] == request.provider and stream["repo"] == request.repo for stream in streams
+            context.policy.require_pr_feedback_repo(
+                session,
+                provider=request.provider,
+                repo=request.repo,
             )
-            if not allowlisted_repo:
-                raise PolicyError(
-                    f"PR repository {request.provider}:{request.repo} is not allowlisted for session "
-                    f"{request.session_id}"
-                )
             response = context.pr_query_service_for_session(request.session_id).list_pull_requests(
                 provider=request.provider,
                 repo=request.repo,
@@ -1379,11 +1375,10 @@ def create_server(context: RuntimeContext) -> FastMCP:
         args = request.model_dump(mode="json")
         try:
             session = context.policy.require_tool(request.session_id, ToolName.GET_PULL_REQUEST)
-            context.policy.require_pr_feedback_stream(
+            context.policy.require_pr_feedback_repo(
                 session,
                 provider=request.provider,
                 repo=request.repo,
-                pr_id=request.pr_id,
             )
             response = context.pr_query_service_for_session(request.session_id).get_pull_request(
                 provider=request.provider,

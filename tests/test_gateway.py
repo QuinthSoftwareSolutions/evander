@@ -4,6 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import asyncio
+import httpx
 import pytest
 from mcp.server.fastmcp.exceptions import ToolError
 from starlette.testclient import TestClient
@@ -18,6 +19,16 @@ from agent_sandbox.gateway import (
 from agent_sandbox.models import DiscordCommandEnvelope, SessionManifest, ToolName
 from agent_sandbox.policy import PolicyError
 from agent_sandbox.runtime import build_runtime
+
+
+def _call_tool(server, name: str, arguments: dict[str, object]):
+    result = asyncio.run(server.call_tool(name, arguments))
+    if isinstance(result, tuple) and len(result) == 2:
+        structured = result[1]
+        if isinstance(structured, dict) and set(structured) == {"result"}:
+            return structured["result"]
+        return structured
+    return result
 
 
 def _command(command_id: str, *, source: str) -> DiscordCommandEnvelope:
@@ -221,6 +232,57 @@ def test_get_pull_request_enforces_tool_policy(tmp_path: Path, monkeypatch: pyte
                 {"session_id": "session-1", "provider": "azure_devops", "repo": "repo-1", "pr_id": "17"},
             )
         )
+
+
+def test_get_pull_request_allows_repo_scoped_pr_lookup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AZURE_DEVOPS_PR_PAT", "ado-token")
+    context = build_runtime(
+        GatewayConfig(
+            runtime_dir=tmp_path,
+            audit_log_path=tmp_path / "audit.jsonl",
+            session_store_path=tmp_path / "sessions.json",
+            approval_store_path=tmp_path / "approvals.json",
+            draft_store_path=tmp_path / "drafts.json",
+            email_store_path=tmp_path / "emails.json",
+            discord_command_store_path=tmp_path / "discord.json",
+        )
+    )
+    context.sessions.put(
+        "session-1",
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[ToolName.GET_PULL_REQUEST],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={"pr_feedback_streams": [{"provider": "azure_devops", "repo": "repo-1", "pr_id": "17"}]},
+        ),
+    )
+    server = create_server(context)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path.endswith("/_apis/git/repositories/repo-1/pullRequests/99")
+        return httpx.Response(
+            200,
+            json={
+                "pullRequestId": 99,
+                "title": "Follow-up",
+                "status": "active",
+                "_links": {"web": {"href": "https://dev.azure.com/org/proj/_git/repo-1/pullrequest/99"}},
+            },
+        )
+
+    real_client = httpx.Client
+    monkeypatch.setattr(
+        "agent_sandbox.services.httpx.Client",
+        lambda timeout: real_client(timeout=timeout, transport=httpx.MockTransport(handler)),
+    )
+
+    result = _call_tool(
+        server,
+        "get_pull_request",
+        {"session_id": "session-1", "provider": "azure_devops", "repo": "repo-1", "pr_id": "99"},
+    )
+
+    assert result["pr_id"] == "99"
 
 
 def test_schedule_resume_enforces_tool_policy_and_validates_args(tmp_path) -> None:

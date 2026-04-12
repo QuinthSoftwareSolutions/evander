@@ -1404,8 +1404,8 @@ class AzureDevOpsPrQueryProvider:
                         str(created_by.get("displayName") or created_by.get("uniqueName") or "").strip() or None
                     ),
                     url=(
-                        str(item.get("url") or item.get("remoteUrl") or "").strip()
-                        or item.get("_links", {}).get("web", {}).get("href")
+                        str(item.get("_links", {}).get("web", {}).get("href") or "").strip()
+                        or str(item.get("remoteUrl") or item.get("url") or "").strip()
                     ),
                     raw=item,
                 )
@@ -1493,8 +1493,8 @@ class AzureDevOpsPrQueryProvider:
             title=str(payload.get("title", "")).strip() or None,
             status=str(payload.get("status", "")).strip() or None,
             url=(
-                str(payload.get("url") or payload.get("remoteUrl") or "").strip()
-                or payload.get("_links", {}).get("web", {}).get("href")
+                str(payload.get("_links", {}).get("web", {}).get("href") or "").strip()
+                or str(payload.get("remoteUrl") or payload.get("url") or "").strip()
             ),
             source_branch=str(payload.get("sourceRefName", "")).strip() or None,
             target_branch=str(payload.get("targetRefName", "")).strip() or None,

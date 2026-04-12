@@ -513,6 +513,20 @@ def test_require_pr_feedback_stream_enforces_allowlist(tmp_path: Path) -> None:
         engine.require_pr_feedback_stream(session, provider="github", repo="org/repo", pr_id="18")
 
 
+def test_require_pr_feedback_repo_enforces_repo_allowlist(tmp_path: Path) -> None:
+    engine = make_engine(tmp_path)
+    session = SessionManifest(
+        session_id="s1",
+        allowed_tools=[ToolName.GET_PULL_REQUEST],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+        metadata={"pr_feedback_streams": [{"provider": "github", "repo": "org/repo", "pr_id": "17"}]},
+    )
+
+    engine.require_pr_feedback_repo(session, provider="github", repo="org/repo")
+    with pytest.raises(PolicyError, match="is not allowlisted"):
+        engine.require_pr_feedback_repo(session, provider="github", repo="org/other")
+
+
 def test_require_draft_recipients_enforces_address_and_domain_allowlists(tmp_path: Path) -> None:
     engine = make_engine(tmp_path)
     session = SessionManifest(
