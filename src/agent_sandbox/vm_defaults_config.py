@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import shlex
 from pathlib import Path
 from urllib.parse import SplitResult, urlsplit, urlunsplit
 
 from pydantic import BaseModel
 
+from .bootstrap import load_runtime_gateway_config
 from .config import GatewayConfig, load_config
 from .directory_config import (
     DirectoryConfigResolver,
@@ -92,6 +94,26 @@ class VmDefaultsConfigResolver:
             return self.directory_service.show(directory_path).directory.path
         except ValueError:
             return "root"
+
+
+def render_vm_defaults_exports(
+    *,
+    runtime_dir: str | Path,
+    session_id: str | None = None,
+    fallback_directory: str = "root",
+) -> str:
+    resolver = VmDefaultsConfigResolver(load_runtime_gateway_config(runtime_dir=runtime_dir))
+    if session_id:
+        try:
+            vm_defaults = resolver.resolve_for_session_id(session_id)
+        except ValueError:
+            vm_defaults = resolver.resolve_for_directory(fallback_directory)
+    else:
+        vm_defaults = resolver.resolve_for_directory(fallback_directory)
+    return "\n".join(
+        f"export {key}={shlex.quote(value)}"
+        for key, value in sorted(vm_defaults.guest_environment().items())
+    )
 
 
 def _service_url_from_gateway_url(gateway_url: str, *, port: int, path: str) -> str:

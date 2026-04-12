@@ -323,34 +323,8 @@ fi
 REPO_SOURCE="${REPO_SOURCE_ARG:-${DEFAULT_REPO_SOURCE}}"
 AGENT_SANDBOX_RUNTIME_DIR="${AGENT_SANDBOX_RUNTIME_DIR:-${ROOT_DIR}/runtime}"
 
-resolve_vm_defaults_exports() {
-  local python_bin="${ROOT_DIR}/.venv/bin/python"
-  if [[ ! -x "${python_bin}" ]]; then
-    python_bin="python3"
-  fi
-  PYTHONPATH="${ROOT_DIR}/src${PYTHONPATH:+:${PYTHONPATH}}" \
-    "${python_bin}" - "${AGENT_SANDBOX_RUNTIME_DIR}" "${SESSION_ID}" <<'PY'
-import shlex
-import sys
-
-from agent_sandbox.bootstrap import load_runtime_gateway_config
-from agent_sandbox.vm_defaults_config import VmDefaultsConfigResolver
-
-runtime_dir, session_id = sys.argv[1], sys.argv[2]
-resolver = VmDefaultsConfigResolver(load_runtime_gateway_config(runtime_dir=runtime_dir))
-try:
-    vm_defaults = resolver.resolve_for_session_id(session_id)
-except ValueError:
-    vm_defaults = resolver.resolve_for_directory("root")
-for key, value in sorted(vm_defaults.guest_environment().items()):
-    print(f"export {key}={shlex.quote(value)}")
-PY
-}
-
 if [[ -z "${GATEWAY_URL:-}" || -z "${LLM_BASE_URL:-}" || -z "${NUGET_RELAY_BASE_URL:-}" ]]; then
-  if VM_DEFAULTS_EXPORTS="$(resolve_vm_defaults_exports 2>/dev/null)"; then
-    eval "${VM_DEFAULTS_EXPORTS}"
-  fi
+  load_vm_defaults_env "${AGENT_SANDBOX_RUNTIME_DIR}" "${SESSION_ID}" || true
 fi
 
 if (( BOOTSTRAP_NUGET )); then

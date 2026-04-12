@@ -131,7 +131,7 @@
       "mssql": true,
       "nuget": true,
       "playwright": true,
-      "repo_source": "/home/jonathan/Documents/Repos/ExampleIndustryAPP",
+      "repo_source": "git@ssh.dev.azure.com:v3/exampleindustry/Example%20Industry%20APP/ExampleIndustryAPP",
       "session_id": "issue-${{trigger-ticket-created-1.ticket.issue_number}}-root-example-industry-app-${{system.now.utc_timestamp_compact}}-${{system.unique.compact}}",
       "ttl_hours": 48,
       "type": "effect:vm:create",

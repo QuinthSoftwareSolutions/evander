@@ -4,7 +4,7 @@ from agent_sandbox.config import GatewayConfig
 from agent_sandbox.directories import DirectoryService, DirectoryStore
 from agent_sandbox.models import SessionManifest
 from agent_sandbox.storage import JsonStore
-from agent_sandbox.vm_defaults_config import VmDefaultsConfigResolver
+from agent_sandbox.vm_defaults_config import VmDefaultsConfigResolver, render_vm_defaults_exports
 
 
 def test_vm_defaults_resolver_applies_root_and_child_overlays(tmp_path: Path) -> None:
@@ -71,3 +71,41 @@ def test_vm_defaults_resolver_uses_session_directory_path(tmp_path: Path) -> Non
     ).resolve_for_session_id("session-1")
 
     assert resolved.gateway_url == "http://team-gw:8000/mcp"
+
+
+def test_render_vm_defaults_exports_uses_session_scope_and_shell_exports(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig.model_validate(
+        {
+            "runtime_dir": str(runtime_dir),
+            "session_store_path": str(runtime_dir / "sessions.json"),
+            "directories_store_path": str(runtime_dir / "directories.json"),
+        }
+    )
+    directory_store = DirectoryStore(config.directories_store_path)
+    directory_store.ensure_root()
+    service = DirectoryService(directory_store)
+    team = service.create(parent="root", name="team")
+    resolver = VmDefaultsConfigResolver(config, directory_store=directory_store)
+    resolver.config_store.write(
+        team.path,
+        domain="vm-defaults",
+        payload={"gateway_url": "http://10.0.0.8:9000/mcp", "openai_relay_port": 12000, "nuget_relay_port": 13000},
+    )
+
+    sessions = JsonStore(config.session_store_path, SessionManifest)
+    sessions.put(
+        "session-1",
+        SessionManifest(
+            session_id="session-1",
+            directory_path=team.path,
+            allowed_tools=[],
+            expires_at="2099-01-01T00:00:00Z",
+        ),
+    )
+
+    exports = render_vm_defaults_exports(runtime_dir=runtime_dir, session_id="session-1")
+
+    assert 'export GATEWAY_URL=http://10.0.0.8:9000/mcp' in exports
+    assert 'export LLM_BASE_URL=http://10.0.0.8:12000/v1' in exports
+    assert 'export NUGET_RELAY_BASE_URL=http://10.0.0.8:13000' in exports

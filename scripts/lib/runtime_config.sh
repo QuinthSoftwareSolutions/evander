@@ -11,6 +11,37 @@ load_root_secrets_env() {
   set +a
 }
 
+resolve_vm_defaults_exports() {
+  local runtime_dir="$1"
+  local session_id="${2:-}"
+  local python_bin="${ROOT_DIR}/.venv/bin/python"
+  if [[ ! -x "${python_bin}" ]]; then
+    python_bin="python3"
+  fi
+  PYTHONPATH="${ROOT_DIR}/src${PYTHONPATH:+:${PYTHONPATH}}" \
+    "${python_bin}" - "${runtime_dir}" "${session_id}" <<'PY'
+import sys
+
+from agent_sandbox.vm_defaults_config import render_vm_defaults_exports
+
+runtime_dir = sys.argv[1]
+session_id = sys.argv[2] or None
+print(render_vm_defaults_exports(runtime_dir=runtime_dir, session_id=session_id))
+PY
+}
+
+load_vm_defaults_env() {
+  local runtime_dir="$1"
+  local session_id="${2:-}"
+  local exports
+
+  if ! exports="$(resolve_vm_defaults_exports "${runtime_dir}" "${session_id}" 2>/dev/null)"; then
+    return 1
+  fi
+
+  eval "${exports}"
+}
+
 load_issue_setup_config() {
   local issue_setup_json="${ROOT_DIR}/runtime/directory-config/root/issue-setup.json"
 
