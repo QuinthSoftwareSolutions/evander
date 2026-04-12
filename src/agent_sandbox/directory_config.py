@@ -78,6 +78,8 @@ DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
             "discord_retry_max_backoff_seconds",
             "discord_timeout_seconds",
             "github_token_env",
+            "agent_prompt_token_secret_env",
+            "agent_prompt_token_ttl_seconds",
             "nuget_azure_feed_base_url",
             "nuget_azure_pat_env",
             "nuget_public_feed_base_url",

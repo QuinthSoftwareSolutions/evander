@@ -5,6 +5,7 @@ from pydantic import TypeAdapter
 
 from agent_sandbox.events.models import (
     AgentPromptEffectDefinition,
+    AgentPromptNewTriggerDefinition,
     AgentRunCompletedTriggerDefinition,
     ConfigValue,
     EffectDefinitionDiscriminated,
@@ -174,6 +175,18 @@ def test_review_request_trigger_validates() -> None:
     )
 
     assert trigger.type == "trigger:review:new-request"
+
+
+def test_agent_prompt_new_trigger_validates() -> None:
+    trigger = AgentPromptNewTriggerDefinition.model_validate(
+        {
+            "id": "agent-prompt-1",
+            "display_name": "Agent prompt",
+            "type": "trigger:agent:prompt:new",
+        }
+    )
+
+    assert trigger.type == "trigger:agent:prompt:new"
 
 
 def test_await_agent_gate_requires_session_id_or_vm_name() -> None:

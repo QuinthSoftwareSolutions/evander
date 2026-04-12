@@ -6,6 +6,7 @@ from collections.abc import Callable, Mapping
 from agent_sandbox.provider_config import ProviderConfigResolver
 from agent_sandbox.events.models import TriggerDefinitionDiscriminated, TriggerType
 from agent_sandbox.triggers.providers.base import TriggerProviderBase, TriggerRuntimeContext
+from agent_sandbox.triggers.providers.agent_prompt_new import AgentPromptNewTriggerProvider
 from agent_sandbox.triggers.providers.agent_run_completed import AgentRunCompletedTriggerProvider
 from agent_sandbox.triggers.providers.cron import CronTriggerProvider
 from agent_sandbox.triggers.providers.discord_new_message import DiscordNewMessageTriggerProvider
@@ -34,6 +35,7 @@ DEFAULT_TRIGGER_PROVIDER_REGISTRY: dict[TriggerType, TriggerProviderClass] = {
     "trigger:pull-request:new-feedback": PullRequestNewFeedbackTriggerProvider,
     "trigger:review:new-request": ReviewNewRequestTriggerProvider,
     "trigger:git:push": GitPushTriggerProvider,
+    "trigger:agent:prompt:new": AgentPromptNewTriggerProvider,
     "trigger:agent:run:completed": AgentRunCompletedTriggerProvider,
 }
 

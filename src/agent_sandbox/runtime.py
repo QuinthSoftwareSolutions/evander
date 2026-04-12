@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from dataclasses import dataclass
 from typing import Callable
 
+from .agent_prompt_store import AgentPromptStore
 from .audit import AuditLogger
 from .directories import DirectoryStore
 from .models import (
@@ -86,6 +87,7 @@ class RuntimeContext:
     discord_commands: JsonStore[DiscordCommandEnvelope]
     teams_messages: JsonStore[TeamsMessageEnvelope]
     wake_store: WakeRequestStore
+    agent_prompt_store: AgentPromptStore
 
     def resolve_provider_config_for_session(self, session_id: str) -> GatewayConfig:
         return self.provider_config.resolve_for_session_id(session_id)
@@ -188,6 +190,7 @@ def build_runtime(config: GatewayConfig) -> RuntimeContext:
     teams_messages = JsonStore(config.teams_message_store_path, TeamsMessageEnvelope)
     discord_inbox_service = DiscordInboxService(config.runtime_dir / "discord-inbox-store.json")
     wake_store = WakeRequestStore(config.runtime_dir / "wake-requests-store.json")
+    agent_prompt_store = AgentPromptStore(config.runtime_dir / "agent-prompt-store.json")
     root_provider_config = provider_config.resolve_for_directory("root")
     discord_service = _build_discord_service(root_provider_config, discord_commands, sessions, policy_config)
     teams_service = _build_teams_service(
@@ -224,6 +227,7 @@ def build_runtime(config: GatewayConfig) -> RuntimeContext:
         discord_commands=discord_commands,
         teams_messages=teams_messages,
         wake_store=wake_store,
+        agent_prompt_store=agent_prompt_store,
     )
 
 

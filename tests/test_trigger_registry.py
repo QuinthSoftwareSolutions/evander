@@ -30,6 +30,7 @@ def test_default_registry_includes_all_known_trigger_types() -> None:
         "trigger:pull-request:new-feedback",
         "trigger:review:new-request",
         "trigger:git:push",
+        "trigger:agent:prompt:new",
         "trigger:agent:run:completed",
     }
 
