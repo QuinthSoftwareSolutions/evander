@@ -63,7 +63,10 @@ class PolicyEngine:
 
     def require_tool(self, session_id: str, tool_name: ToolName) -> SessionManifest:
         session = self.get_session(session_id)
-        if tool_name not in session.allowed_tools:
+        has_tool_permission = tool_name in session.allowed_tools
+        if tool_name == ToolName.LIST_PENDING_AGENT_PROMPTS and not has_tool_permission:
+            has_tool_permission = ToolName.RESPOND_TO_AGENT in session.allowed_tools
+        if not has_tool_permission:
             raise PolicyError(f"Tool {tool_name.value} is not allowed for session {session_id}")
         if tool_name == ToolName.SCHEDULE_RESUME and not str(session.vm_id or "").strip():
             raise PolicyError(f"Tool {tool_name.value} requires a session with a VM binding")

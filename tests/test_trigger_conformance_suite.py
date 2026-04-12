@@ -20,6 +20,7 @@ from agent_sandbox.triggers.providers.cron import CronTriggerProvider
 from agent_sandbox.triggers.providers.discord_new_message import DiscordNewMessageTriggerProvider
 from agent_sandbox.triggers.providers.email_new_message import EmailNewMessageTriggerProvider
 from agent_sandbox.triggers.providers.git_push import GitPushTriggerProvider
+from agent_sandbox.triggers.providers.agent_prompt_new import AgentPromptNewTriggerProvider
 from agent_sandbox.triggers.providers.pull_request_new_feedback import PullRequestNewFeedbackTriggerProvider
 from agent_sandbox.triggers.providers.teams_new_message import TeamsNewMessageTriggerProvider
 from agent_sandbox.triggers.providers.ticket_changed import TicketChangedTriggerProvider
@@ -160,6 +161,15 @@ def _trigger_adapter() -> TypeAdapter[TriggerDefinitionDiscriminated]:
             },
             "trigger:git:push",
             "path_glob",
+        ),
+        (
+            {
+                "id": "agent-prompt",
+                "display_name": "Agent prompt",
+                "type": "trigger:agent:prompt:new",
+            },
+            "trigger:agent:prompt:new",
+            "id",
         ),
     ],
 )

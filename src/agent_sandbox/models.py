@@ -54,6 +54,7 @@ class ToolName(str, Enum):
     LIST_ALL_DISCORD_MESSAGES = "list_all_discord_messages"
     SCHEDULE_RESUME = "schedule_resume"
     PROMPT_AGENT = "prompt_agent"
+    LIST_PENDING_AGENT_PROMPTS = "list_pending_agent_prompts"
     RESPOND_TO_AGENT = "respond_to_agent"
     COPILOT_HOST_AUTH = "copilot_host_auth"
 
@@ -500,6 +501,28 @@ class PromptAgentResponse(BaseModel):
     target_session_id: str = Field(min_length=1)
     status: str = Field(min_length=1)
     response_token: str = Field(min_length=1)
+
+
+class ListPendingAgentPromptsRequest(BaseModel):
+    session_id: str = Field(min_length=1)
+    limit: int | None = Field(default=None, ge=1, le=100)
+
+
+class PendingAgentPrompt(BaseModel):
+    message_id: str = Field(min_length=1)
+    sender_session_id: str = Field(min_length=1)
+    target_session_id: str = Field(min_length=1)
+    prompt: str = Field(min_length=1)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    status: str = Field(min_length=1)
+    created_at: datetime
+    expires_at: datetime | None = None
+    response_token: str = Field(min_length=1)
+    response_token_claims: dict[str, Any] = Field(default_factory=dict)
+
+
+class ListPendingAgentPromptsResponse(BaseModel):
+    prompts: list[PendingAgentPrompt] = Field(default_factory=list)
 
 
 class RespondToAgentRequest(BaseModel):

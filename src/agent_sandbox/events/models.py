@@ -19,6 +19,7 @@ TriggerType = Literal[
     "trigger:pull-request:new-feedback",
     "trigger:review:new-request",
     "trigger:git:push",
+    "trigger:agent:prompt:new",
     "trigger:agent:run:completed",
 ]
 
@@ -230,6 +231,10 @@ class AgentRunCompletedTriggerDefinition(TriggerDefinition):
     vm_user: str | None = "agent"
 
 
+class AgentPromptNewTriggerDefinition(TriggerDefinition):
+    type: Literal["trigger:agent:prompt:new"]
+
+
 TriggerDefinitionDiscriminated = Annotated[
     CronTriggerDefinition
     | TicketCreatedTriggerDefinition
@@ -240,6 +245,7 @@ TriggerDefinitionDiscriminated = Annotated[
     | PullRequestNewFeedbackTriggerDefinition
     | ReviewNewRequestTriggerDefinition
     | GitPushTriggerDefinition
+    | AgentPromptNewTriggerDefinition
     | AgentRunCompletedTriggerDefinition,
     Field(discriminator="type"),
 ]
@@ -762,6 +768,21 @@ _STATIC_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
         "trusted_repo_path": {"type": "string"},
         "base_branch": {"type": "string"},
         "canonical_origin_url": {"type": "string"},
+    },
+    "trigger:agent:prompt:new": {
+        "session_id": {"type": "string"},
+        "agent_prompt": {
+            "type": "object",
+            "properties": {
+                "message_id": {"type": "string"},
+                "sender_session_id": {"type": "string"},
+                "target_session_id": {"type": "string"},
+                "prompt": {"type": "string"},
+                "metadata": {"type": "object"},
+                "status": {"type": "string"},
+                "created_at": {"type": "string"},
+            },
+        },
     },
     "trigger:agent:run:completed": {
         "vm": {
