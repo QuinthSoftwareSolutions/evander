@@ -42,9 +42,20 @@ def issue_agent_prompt_response_token(
         raise AgentPromptTokenError("Token claims must include message/session identifiers")
 
     payload = json.dumps(claims, separators=(",", ":"), sort_keys=True).encode("utf-8")
-    payload_part = _b64url_encode(payload)
-    signature_part = _sign(secret=normalized_secret, payload_part=payload_part)
-    return f"v1.{payload_part}.{signature_part}", claims
+    return _encode_token(normalized_secret, payload), claims
+
+
+def encode_agent_prompt_response_token_from_claims(
+    *,
+    secret: str,
+    claims: dict[str, Any],
+) -> str:
+    normalized_secret = str(secret or "").strip()
+    if not normalized_secret:
+        raise AgentPromptTokenError("Agent prompt token secret is not configured")
+    validated_claims = _validate_claims(claims)
+    payload = json.dumps(validated_claims, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    return _encode_token(normalized_secret, payload)
 
 
 def verify_agent_prompt_response_token(
@@ -128,6 +139,12 @@ def _sign(*, secret: str, payload_part: str) -> str:
     mac = hmac.new(secret.encode("utf-8"), digestmod=hashlib.sha256)
     mac.update(f"v1.{payload_part}".encode("utf-8"))
     return _b64url_encode(mac.digest())
+
+
+def _encode_token(secret: str, payload: bytes) -> str:
+    payload_part = _b64url_encode(payload)
+    signature_part = _sign(secret=secret, payload_part=payload_part)
+    return f"v1.{payload_part}.{signature_part}"
 
 
 def _b64url_encode(value: bytes) -> str:

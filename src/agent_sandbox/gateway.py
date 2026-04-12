@@ -25,6 +25,7 @@ from .admin_service import AdminService
 from .agent_prompt_store import AgentPromptRecord
 from .agent_prompt_tokens import (
     AgentPromptTokenError,
+    encode_agent_prompt_response_token_from_claims,
     hash_agent_prompt_response_token,
     issue_agent_prompt_response_token,
     verify_agent_prompt_response_token,
@@ -46,9 +47,12 @@ from .models import (
     GetPullRequestRequest,
     HasPendingDiscordMessagesRequest,
     HasPendingFeedbackRequest,
+    ListPendingAgentPromptsRequest,
+    ListPendingAgentPromptsResponse,
     ListUnreadDiscordMessagesRequest,
     ListPullRequestsRequest,
     ListUnreadFeedbackRequest,
+    PendingAgentPrompt,
     PostPrCommentRequest,
     PostPrFeedbackReplyRequest,
     PromptAgentRequest,
@@ -107,6 +111,68 @@ def _load_agent_prompt_token_secret(config: GatewayConfig) -> str:
     if not secret:
         raise ToolError(f"Agent prompt token secret is missing in environment variable {env_var_name!r}")
     return secret
+
+
+def _issue_agent_prompt_response_token_for_session(
+    context: RuntimeContext,
+    *,
+    sender_session_id: str,
+    target_session_id: str,
+    message_id: str,
+    issued_at: datetime | None = None,
+) -> tuple[str, dict[str, Any]]:
+    resolved_config = context.resolve_provider_config_for_session(target_session_id)
+    return issue_agent_prompt_response_token(
+        secret=_load_agent_prompt_token_secret(resolved_config),
+        message_id=message_id,
+        sender_session_id=sender_session_id,
+        target_session_id=target_session_id,
+        issued_at=issued_at,
+        ttl_seconds=resolved_config.agent_prompt_token_ttl_seconds,
+    )
+
+
+def _get_or_refresh_agent_prompt_response_token(
+    context: RuntimeContext,
+    *,
+    message: AgentPromptRecord,
+    refresh_expired: bool,
+) -> tuple[AgentPromptRecord, str, dict[str, Any]]:
+    resolved_config = context.resolve_provider_config_for_session(message.target_session_id)
+    secret = _load_agent_prompt_token_secret(resolved_config)
+    allow_refresh = refresh_expired and message.status == "unread" and message.token_used_at is None
+    stored_claims = dict(message.issued_token_claims or {})
+    if stored_claims:
+        try:
+            issued_response_token = encode_agent_prompt_response_token_from_claims(
+                secret=secret,
+                claims=stored_claims,
+            )
+            issued_token_hash = hash_agent_prompt_response_token(issued_response_token)
+            if issued_token_hash == message.issued_token_hash:
+                expires_at = int(stored_claims["expires_at"])
+                if datetime.now(timezone.utc).timestamp() < float(expires_at) or not allow_refresh:
+                    return message, issued_response_token, stored_claims
+        except (ValueError, KeyError, TypeError):
+            pass
+    if not allow_refresh:
+        raise ToolError(f"No active response token is available for message_id: {message.message_id}")
+
+    issued_response_token, issued_claims = _issue_agent_prompt_response_token_for_session(
+        context,
+        sender_session_id=message.sender_session_id,
+        target_session_id=message.target_session_id,
+        message_id=message.message_id,
+    )
+    issued_token_hash = hash_agent_prompt_response_token(issued_response_token)
+    refreshed = context.agent_prompt_store.replace_issued_token(
+        message.message_id,
+        issued_token_hash=issued_token_hash,
+        issued_token_claims=issued_claims,
+    )
+    if refreshed is None:
+        raise ToolError(f"Unknown message_id: {message.message_id}")
+    return refreshed, issued_response_token, issued_claims
 
 
 def _issue_creation_metadata(session: Any) -> dict[str, Any]:
@@ -470,16 +536,55 @@ def create_server(context: RuntimeContext) -> FastMCP:
                     target_session_id=resolved_target_session_id,
                     vm_user=vm_user,
                 )
+            context.policy.require_tool(resolved_target_session_id, ToolName.RESPOND_TO_AGENT)
+
+            if request.idempotency_key:
+                existing = context.agent_prompt_store.find_prompt_by_idempotency_key(
+                    sender_session_id=request.session_id,
+                    idempotency_key=request.idempotency_key,
+                )
+                if existing is not None:
+                    if existing.target_session_id != resolved_target_session_id:
+                        raise ToolError(
+                            "idempotency_key is already bound to a different target_session_id"
+                        )
+                    existing_payload = dict(existing.prompt_payload or {})
+                    if str(existing_payload.get("prompt") or "").strip() != request.prompt:
+                        raise ToolError("idempotency_key is already bound to a different prompt")
+                    if dict(existing_payload.get("metadata") or {}) != request.metadata:
+                        raise ToolError("idempotency_key is already bound to different metadata")
+                    existing, issued_response_token, _issued_claims = _get_or_refresh_agent_prompt_response_token(
+                        context,
+                        message=existing,
+                        refresh_expired=True,
+                    )
+                    response = PromptAgentResponse(
+                        message_id=existing.message_id,
+                        target_session_id=existing.target_session_id,
+                        status=existing.status,
+                        response_token=issued_response_token,
+                    ).model_dump(mode="json")
+                    audit_success(
+                        resolved_session_id,
+                        ToolName.PROMPT_AGENT,
+                        args,
+                        {
+                            "message_id": response["message_id"],
+                            "target_session_id": response["target_session_id"],
+                            "status": response["status"],
+                            "response_token": "<redacted>",
+                        },
+                    )
+                    return response
 
             now = datetime.now(timezone.utc)
             message_id = f"agent-prompt-{uuid4().hex}"
-            issued_response_token, issued_claims = issue_agent_prompt_response_token(
-                secret=_load_agent_prompt_token_secret(context.config),
+            issued_response_token, issued_claims = _issue_agent_prompt_response_token_for_session(
+                context,
                 message_id=message_id,
                 sender_session_id=request.session_id,
                 target_session_id=resolved_target_session_id,
                 issued_at=now,
-                ttl_seconds=context.config.agent_prompt_token_ttl_seconds,
             )
             issued_token_hash = hash_agent_prompt_response_token(issued_response_token)
             created = context.agent_prompt_store.create_prompt_message(
@@ -558,6 +663,97 @@ def create_server(context: RuntimeContext) -> FastMCP:
             raise
 
     @server.tool()
+    def list_pending_agent_prompts(
+        session_id: str | None = None,
+        limit: int | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        resolved_session_id = _resolve_session_id_from_context(
+            session_id, ctx, transport_session_map=transport_session_map
+        )
+        args = {
+            "session_id": resolved_session_id,
+            "limit": limit,
+        }
+        try:
+            request = ListPendingAgentPromptsRequest(session_id=resolved_session_id, limit=limit)
+            args = request.model_dump(mode="json")
+            context.policy.require_tool(request.session_id, ToolName.LIST_PENDING_AGENT_PROMPTS)
+            messages = context.agent_prompt_store.list_unread_prompts(
+                target_session_id=request.session_id,
+                limit=request.limit,
+            )
+
+            prompts: list[PendingAgentPrompt] = []
+            for message in messages:
+                message, issued_response_token, issued_claims = _get_or_refresh_agent_prompt_response_token(
+                    context,
+                    message=message,
+                    refresh_expired=False,
+                )
+                prompt_payload = dict(message.prompt_payload or {})
+                prompts.append(
+                    PendingAgentPrompt(
+                        message_id=message.message_id,
+                        sender_session_id=message.sender_session_id,
+                        target_session_id=message.target_session_id,
+                        prompt=str(prompt_payload.get("prompt") or "").strip(),
+                        metadata=dict(prompt_payload.get("metadata") or {}),
+                        status=message.status,
+                        created_at=message.created_at,
+                        expires_at=datetime.fromtimestamp(
+                            int(issued_claims["expires_at"]),
+                            tz=timezone.utc,
+                        ),
+                        response_token=issued_response_token,
+                        response_token_claims=issued_claims,
+                    )
+                )
+
+            result = ListPendingAgentPromptsResponse(prompts=prompts).model_dump(mode="json")
+            audit_success(
+                request.session_id,
+                ToolName.LIST_PENDING_AGENT_PROMPTS,
+                args,
+                {"count": len(prompts)},
+            )
+            return result
+        except PolicyError as exc:
+            audit_failure(resolved_session_id, ToolName.LIST_PENDING_AGENT_PROMPTS, args, str(exc))
+            raise
+        except ValueError as exc:
+            message = str(exc)
+            audit_failure(
+                resolved_session_id,
+                ToolName.LIST_PENDING_AGENT_PROMPTS,
+                args,
+                message,
+                decision="error",
+                error_class="validation_error",
+            )
+            raise ToolError(message) from exc
+        except ToolError as exc:
+            audit_failure(
+                resolved_session_id,
+                ToolName.LIST_PENDING_AGENT_PROMPTS,
+                args,
+                str(exc),
+                decision="error",
+                error_class="validation_error",
+            )
+            raise
+        except Exception as exc:
+            audit_failure(
+                resolved_session_id,
+                ToolName.LIST_PENDING_AGENT_PROMPTS,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
     def respond_to_agent(
         session_id: str | None = None,
         message_id: str = "",
@@ -586,9 +782,10 @@ def create_server(context: RuntimeContext) -> FastMCP:
             message = context.agent_prompt_store.get_prompt(request.message_id)
             if message is None:
                 raise ToolError(f"Unknown message_id: {request.message_id}")
+            resolved_config = context.resolve_provider_config_for_session(request.session_id)
             claims = verify_agent_prompt_response_token(
                 token=request.response_token,
-                secret=_load_agent_prompt_token_secret(context.config),
+                secret=_load_agent_prompt_token_secret(resolved_config),
                 expected_message_id=request.message_id,
                 expected_target_session_id=request.session_id,
             )

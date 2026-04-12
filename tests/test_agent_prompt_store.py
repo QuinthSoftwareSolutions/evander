@@ -71,6 +71,41 @@ def test_agent_prompt_store_rejects_token_replay(tmp_path: Path) -> None:
     assert second is None
 
 
+def test_agent_prompt_store_replaces_active_token_hash(tmp_path: Path) -> None:
+    store = AgentPromptStore(tmp_path / "agent-prompt-store.json")
+    created = datetime(2026, 4, 10, 0, 0, 1, tzinfo=timezone.utc)
+    store.create_prompt_message(_prompt("m-1", created_at=created, token_hash="token-1"))
+
+    replaced = store.replace_issued_token(
+        "m-1",
+        issued_token_hash="token-2",
+        issued_token_claims={"aud": "target-session", "nonce": "n-2"},
+        updated_at=created + timedelta(seconds=5),
+    )
+
+    assert replaced is not None
+    assert replaced.issued_token_hash == "token-2"
+    assert replaced.issued_token_claims["nonce"] == "n-2"
+    assert store.validate_and_consume_token("token-1", expected_message_id="m-1") is None
+    assert store.validate_and_consume_token("token-2", expected_message_id="m-1") is not None
+
+
+def test_agent_prompt_store_finds_message_by_sender_scoped_idempotency_key(tmp_path: Path) -> None:
+    store = AgentPromptStore(tmp_path / "agent-prompt-store.json")
+    created = datetime(2026, 4, 10, 0, 0, 1, tzinfo=timezone.utc)
+    record = _prompt("m-1", created_at=created)
+    record.prompt_payload["idempotency_key"] = "retry-key"
+    store.create_prompt_message(record)
+
+    found = store.find_prompt_by_idempotency_key(
+        sender_session_id="sender-session",
+        idempotency_key="retry-key",
+    )
+
+    assert found is not None
+    assert found.message_id == "m-1"
+
+
 def test_agent_prompt_store_rejects_duplicate_token_hash_during_create(tmp_path: Path) -> None:
     store = AgentPromptStore(tmp_path / "agent-prompt-store.json")
     created = datetime(2026, 4, 10, 0, 0, 1, tzinfo=timezone.utc)
