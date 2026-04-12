@@ -769,7 +769,7 @@ class AzureDevOpsIssueAdapter:
             tags_any=tags_any,
             text_search=text_search,
         )
-        wiql_url = f"{organization_url}/{project}/_apis/wit/wiql"
+        wiql_url = f"{organization_url}/{quote(project, safe='')}/_apis/wit/wiql"
         select_fields = [
             "System.Id",
             "System.Title",
@@ -871,7 +871,9 @@ class AzureDevOpsIssueAdapter:
         if not normalized_project:
             raise ValueError("project is required for Azure DevOps backlog item retrieval.")
         auth_header = self._auth_header(pat)
-        work_item_url = f"{organization_url}/{normalized_project}/_apis/wit/workitems/{backlog_item_id}"
+        work_item_url = (
+            f"{organization_url}/{quote(normalized_project, safe='')}/_apis/wit/workitems/{backlog_item_id}"
+        )
         with httpx.Client(timeout=self.timeout_seconds) as client:
             response = client.get(
                 work_item_url,
