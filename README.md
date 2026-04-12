@@ -435,8 +435,11 @@ If you want to mirror the default host repo into an issue-numbered bare remote f
 You can choose freshness behavior explicitly:
 
 ```bash
-# Local working tree source (default: no upstream fetch)
-./scripts/mirror_issue_repo.sh --sync-remote --remote-name origin 14084 /path/to/local/repo
+# Local working tree source (default: upstream fetch + divergence check)
+./scripts/mirror_issue_repo.sh --remote-name origin 14084 /path/to/local/repo
+
+# Opt out of upstream sync for local/offline-only flows
+./scripts/mirror_issue_repo.sh --no-sync-remote 14084 /path/to/local/repo
 
 # Remote URL source (always refreshed in runtime/repo-cache before mirroring)
 ./scripts/mirror_issue_repo.sh 14084 https://example.com/org/repo.git
@@ -446,9 +449,10 @@ You can choose freshness behavior explicitly:
 ./scripts/mirror_issue_repo.sh --refspec refs/heads/main:refs/heads/main 14084 /path/to/local/repo
 ```
 
-When `--sync-remote` is active for a local source, the helper fetches
+By default (or when `--sync-remote` is set) for a local source, the helper fetches
 `git fetch --prune <remote-name>` and checks whether the local default branch is behind the remote
-default branch. If so, it stops with a divergence message unless `--force-local` is supplied.
+default branch. If so, it stops with a divergence message unless `--force-local` is supplied. Use
+`--no-sync-remote` to keep a strictly local/offline mirror update.
 Every mirror run logs the source mode (local vs remote), selected base branch, and source commit
 SHA for auditability.
 

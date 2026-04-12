@@ -9,8 +9,8 @@ Bootstrap passwordless Git access for a guest VM and create or refresh the
 matching issue-numbered bare mirror on the host in one step.
 
 Options (forwarded to mirror_issue_repo.sh):
-  --sync-remote
-  --no-sync-remote
+  --sync-remote       Force upstream sync before mirroring local sources.
+  --no-sync-remote    Disable upstream sync for local sources.
   --remote-name NAME
   --refspec SPEC
   --branch NAME

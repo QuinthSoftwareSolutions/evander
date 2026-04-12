@@ -75,8 +75,8 @@ Environment:
                               SQL Server instance when --mssql is enabled.
 
 Mirror options (forwarded to setup_issue_git_vm.sh and mirror_issue_repo.sh):
-  --sync-remote
-  --no-sync-remote
+  --sync-remote       Force upstream sync before mirroring local sources.
+  --no-sync-remote    Disable upstream sync for local sources.
   --remote-name NAME
   --refspec SPEC
   --branch NAME
