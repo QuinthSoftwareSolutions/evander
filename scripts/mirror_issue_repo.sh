@@ -12,7 +12,8 @@ convention:
 
 Options:
   --sync-remote       Refresh local repo from its upstream before mirroring.
-                      Default: on for remote URL input, off for local path input.
+                      Default: on for remote URL input, and on for local path input
+                      unless AGENT_SANDBOX_MIRROR_SYNC_REMOTE_DEFAULT=0.
   --no-sync-remote    Disable sync for local path input.
   --remote-name NAME  Upstream remote name for fetch/divergence checks. Default: origin
   --refspec SPEC      Mirror only the provided refspec (repeatable). Optional.
@@ -24,6 +25,11 @@ Arguments:
   issue-number  Issue identifier used to derive the repo/remote names.
   repo-source   Working tree path or remote URL to mirror.
                 Default: $AGENT_SANDBOX_DEFAULT_REPO_SOURCE
+
+Environment:
+  AGENT_SANDBOX_MIRROR_SYNC_REMOTE_DEFAULT
+                Default local-source sync mode when no explicit flag is passed.
+                Set to 1 (default) to sync local sources; set to 0 to opt out.
 USAGE
 }
 
@@ -229,6 +235,12 @@ if is_remote_source "${REPO_SOURCE}"; then
   SOURCE_MODE="remote"
 fi
 
+LOCAL_SYNC_REMOTE_DEFAULT="${AGENT_SANDBOX_MIRROR_SYNC_REMOTE_DEFAULT:-1}"
+if [[ "${LOCAL_SYNC_REMOTE_DEFAULT}" != "0" && "${LOCAL_SYNC_REMOTE_DEFAULT}" != "1" ]]; then
+  echo "Invalid AGENT_SANDBOX_MIRROR_SYNC_REMOTE_DEFAULT='${LOCAL_SYNC_REMOTE_DEFAULT}'; expected 0 or 1." >&2
+  exit 1
+fi
+
 SYNC_REMOTE=0
 if [[ "${SOURCE_MODE}" == "remote" ]]; then
   SYNC_REMOTE=1
@@ -236,6 +248,8 @@ elif [[ "${SYNC_REMOTE_MODE}" == "on" ]]; then
   SYNC_REMOTE=1
 elif [[ "${SYNC_REMOTE_MODE}" == "off" ]]; then
   SYNC_REMOTE=0
+elif [[ "${LOCAL_SYNC_REMOTE_DEFAULT}" == "1" ]]; then
+  SYNC_REMOTE=1
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -257,7 +271,7 @@ if (( SYNC_REMOTE )) && [[ "${SOURCE_MODE}" == "local" ]]; then
 
   DEFAULT_REMOTE_BRANCH="$(
     git -C "${RESOLVED_REPO_PATH}" symbolic-ref --quiet --short "refs/remotes/${REMOTE_NAME}/HEAD" 2>/dev/null \
-      | sed "s#^${REMOTE_NAME}/##"
+      | sed "s#^${REMOTE_NAME}/##" || true
   )"
   if [[ -n "${DEFAULT_REMOTE_BRANCH}" ]]; then
     LOCAL_DEFAULT_REF="refs/heads/${DEFAULT_REMOTE_BRANCH}"

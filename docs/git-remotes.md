@@ -41,16 +41,18 @@ naming convention, use:
 
 Freshness controls:
 
-- local source path: defaults to no upstream fetch
+- local source path: defaults to upstream fetch + divergence check
 - remote URL source: always refreshes latest refs in `runtime/repo-cache` first
-- `--sync-remote`: fetch `--prune <remote-name>` for local source before mirroring
+- `--sync-remote`: explicitly force that fetch/divergence-check behavior for local source
+- `--no-sync-remote`: skip upstream fetch for local/offline-only mirroring
 - `--force-local`: continue even if local default branch is behind remote default branch
 - optional pinning: `--branch <name>` or `--refspec <src:dst>`
 
 Examples:
 
 ```bash
-./scripts/mirror_issue_repo.sh --sync-remote --remote-name origin 14084 /path/to/local/repo
+./scripts/mirror_issue_repo.sh --remote-name origin 14084 /path/to/local/repo
+./scripts/mirror_issue_repo.sh --no-sync-remote 14084 /path/to/local/repo
 ./scripts/mirror_issue_repo.sh 14084 https://example.com/org/repo.git
 ./scripts/mirror_issue_repo.sh --branch main 14084 /path/to/local/repo
 ```

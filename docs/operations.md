@@ -1085,8 +1085,9 @@ canonical remote.
 Mirror freshness flags are accepted and forwarded through both setup helpers:
 
 ```bash
-./scripts/setup_issue_git_vm.sh --sync-remote --remote-name origin vm-real 14084 /path/to/local/repo
-./scripts/setup_issue_vm.sh --sync-remote /path/to/issue.yaml /path/to/project.slnx /path/to/local/repo
+./scripts/setup_issue_git_vm.sh --remote-name origin vm-real 14084 /path/to/local/repo
+./scripts/setup_issue_vm.sh /path/to/issue.yaml /path/to/project.slnx /path/to/local/repo
+./scripts/setup_issue_vm.sh --no-sync-remote /path/to/issue.yaml /path/to/project.slnx /path/to/local/repo
 ```
 
 Issue mirrors now carry a `post-receive` hook. When the bare repo has a trusted clone mapping,
@@ -1166,16 +1167,18 @@ Or mirror the default host repo into an issue-numbered bare remote:
 
 Freshness behavior for `mirror_issue_repo.sh`:
 
-- local repo source path: default is **no upstream fetch**
+- local repo source path: default is **upstream fetch + divergence check**
 - remote URL source: default is **always fetch latest refs** into cache before mirror update
-- `--sync-remote`: fetch `git fetch --prune <remote-name>` for local source and run divergence checks
+- `--sync-remote`: explicitly force that fetch/divergence-check behavior for local source
+- `--no-sync-remote`: skip upstream fetch for local/offline-only mirroring
 - `--force-local`: continue even when local default branch is behind upstream
 - optional pinning: `--branch <name>` or `--refspec <src:dst>`
 
 Examples:
 
 ```bash
-./scripts/mirror_issue_repo.sh --sync-remote --remote-name origin 14084 /path/to/local/repo
+./scripts/mirror_issue_repo.sh --remote-name origin 14084 /path/to/local/repo
+./scripts/mirror_issue_repo.sh --no-sync-remote 14084 /path/to/local/repo
 ./scripts/mirror_issue_repo.sh 14084 https://example.com/org/repo.git
 ./scripts/mirror_issue_repo.sh --branch main 14084 /path/to/local/repo
 ```
