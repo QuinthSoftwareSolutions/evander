@@ -505,17 +505,23 @@ class WorkerAdminFacade:
             ip_address = admin_service_module._resolve_vm_ip(vm_name) if libvirt_state == "running" else None
             if libvirt_state != "running":
                 agent_state = "disabled" if host_control_status == "disabled" else "inactive_vm"
+                agent_pid = None
                 repo_names: list[str] = []
                 updated_at = None
+                dispatch_id = None
             elif omit_state or not ip_address:
                 if host_control_status == "disabled":
                     agent_state = "disabled"
                 else:
                     agent_state = "unknown" if not ip_address else "omitted"
+                agent_pid = None
                 repo_names = []
                 updated_at = None
+                dispatch_id = None
             else:
-                agent_state, repo_names, updated_at, dispatch_id = admin_service_module._probe_agent_state(vm_name, ip_address, vm_user)
+                agent_state, repo_names, updated_at, dispatch_id, agent_pid = admin_service_module._probe_agent_state(
+                    vm_name, ip_address, vm_user
+                )
             summaries.append(
                 VmSummary(
                     vm_name=vm_name,
@@ -526,6 +532,7 @@ class WorkerAdminFacade:
                     libvirt_state=libvirt_state,
                     ip_address=ip_address,
                     agent_state=agent_state,
+                    agent_pid=agent_pid if libvirt_state == "running" and not omit_state and ip_address else None,
                     agent_repo_names=repo_names,
                     last_state_update_at=updated_at,
                     dispatch_id=dispatch_id if libvirt_state == "running" and not omit_state and ip_address else None,

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import html
 import json
 import random
+import re
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -35,6 +37,7 @@ from .email.providers import EmailDraft, EmailMessageDetail, EmailMessageSummary
 from .storage import JsonStore
 
 _IGNORED_FEEDBACK_RETENTION = timedelta(days=90)
+_FENCED_CODE_BLOCK_RE = re.compile(r"```[^\n`]*\n?(.*?)```", re.DOTALL)
 
 
 def _parse_snowflake(value: str, *, field_name: str) -> int:
@@ -62,6 +65,34 @@ def _message_sort_value(value: str) -> tuple[int, int | str]:
     if value.isdigit():
         return (0, int(value))
     return (1, value)
+
+
+def _teams_message_to_html(message: str) -> str:
+    normalized = str(message or "").replace("\r\n", "\n").replace("\r", "\n")
+    parts: list[str] = []
+    last_index = 0
+    for match in _FENCED_CODE_BLOCK_RE.finditer(normalized):
+        if match.start() > last_index:
+            parts.append(_teams_text_fragment_to_html(normalized[last_index:match.start()]))
+        code_content = match.group(1)
+        code_content = code_content.lstrip("\n").rstrip("\n")
+        parts.append(f"<pre><code>{html.escape(code_content)}</code></pre>")
+        last_index = match.end()
+    if last_index < len(normalized):
+        parts.append(_teams_text_fragment_to_html(normalized[last_index:]))
+    rendered = "".join(fragment for fragment in parts if fragment)
+    return rendered or "<p></p>"
+
+
+def _teams_text_fragment_to_html(text: str) -> str:
+    escaped = html.escape(text)
+    paragraphs = [segment.strip("\n") for segment in escaped.split("\n\n")]
+    rendered_paragraphs: list[str] = []
+    for paragraph in paragraphs:
+        if not paragraph.strip():
+            continue
+        rendered_paragraphs.append(f"<p>{paragraph.replace('\n', '<br>')}</p>")
+    return "".join(rendered_paragraphs)
 
 
 class EmailService:
@@ -843,11 +874,12 @@ class GraphTeamsService:
                 )
 
         with httpx.Client(timeout=self.timeout_seconds) as client:
+            formatted_message = _teams_message_to_html(message)
             response = self._request_with_retries(
                 client,
                 "POST",
                 url,
-                json={"body": {"content": message, "contentType": "text"}},
+                json={"body": {"content": formatted_message, "contentType": "html"}},
             )
             payload = response.json()
 

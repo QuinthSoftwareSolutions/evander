@@ -1,10 +1,10 @@
 {
-  "runtime_dir": "runtime",
+  "backoff_seconds": 60.0,
   "directories": [
     "root/example-industry/app"
   ],
-  "poll_interval_seconds": 30,
-  "jitter_seconds": 5,
-  "backoff_seconds": 60,
-  "lock_path": null
+  "jitter_seconds": 1.0,
+  "lock_path": "runtime/teams-ingest.lock",
+  "poll_interval_seconds": 5.0,
+  "runtime_dir": "runtime"
 }

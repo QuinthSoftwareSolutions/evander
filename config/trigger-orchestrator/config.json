@@ -88,16 +88,91 @@
       "target_id": "effect-agent-prompt-2"
     },
     {
-      "source_id": "effect-agent-prompt-5",
-      "target_id": "effect-session-update-metadata-3"
-    },
-    {
       "source_id": "trigger-teams-new-message-2",
       "target_id": "query-session-context-3"
     },
     {
       "source_id": "query-session-context-3",
+      "target_id": "effect-agent-enqueue-prompt-1"
+    },
+    {
+      "source_id": "effect-agent-enqueue-prompt-1",
+      "target_id": "effect-session-update-metadata-3"
+    },
+    {
+      "source_id": "trigger-review-new-request-1",
+      "target_id": "effect-vm-create-2"
+    },
+    {
+      "source_id": "effect-vm-create-2",
+      "target_id": "gate-filter-3"
+    },
+    {
+      "source_id": "gate-filter-3",
+      "target_id": "effect-vm-copy-files-4"
+    },
+    {
+      "source_id": "effect-vm-copy-files-4",
       "target_id": "effect-agent-prompt-5"
+    },
+    {
+      "source_id": "trigger-ticket-created-2",
+      "target_id": "effect-vm-create-3"
+    },
+    {
+      "source_id": "effect-vm-create-3",
+      "target_id": "gate-filter-4"
+    },
+    {
+      "source_id": "gate-filter-4",
+      "target_id": "effect-issue-update-state-2"
+    },
+    {
+      "source_id": "gate-filter-4",
+      "target_id": "effect-vm-copy-files-5"
+    },
+    {
+      "source_id": "effect-vm-copy-files-5",
+      "target_id": "effect-agent-prompt-6"
+    },
+    {
+      "source_id": "effect-vm-copy-files-5",
+      "target_id": "effect-session-update-metadata-5"
+    },
+    {
+      "source_id": "effect-agent-prompt-6",
+      "target_id": "effect-session-update-metadata-4"
+    },
+    {
+      "source_id": "effect-agent-prompt-6",
+      "target_id": "query-issue-get-2"
+    },
+    {
+      "source_id": "query-issue-get-2",
+      "target_id": "gate-for-2"
+    },
+    {
+      "source_id": "gate-for-2",
+      "source_port": "body",
+      "target_id": "effect-vm-copy-files-6"
+    },
+    {
+      "source_id": "effect-vm-copy-files-6",
+      "target_id": "effect-agent-prompt-7"
+    },
+    {
+      "allow_cycle": true,
+      "source_id": "effect-agent-prompt-7",
+      "target_id": "gate-for-2"
+    },
+    {
+      "source_id": "gate-for-2",
+      "source_port": "done",
+      "target_id": "effect-vm-copy-files-7"
+    },
+    {
+      "source_id": "effect-vm-copy-files-7",
+      "target_id": "effect-agent-prompt-8"
     }
   ],
   "effect_cursor_store_path": "runtime/effect-orchestrator-cursors.json",
@@ -198,12 +273,12 @@
     {
       "base_branch": "${{trigger-git-push-1.base_branch}}",
       "body": "---\n\nThank you for your contribution to the True APP repo. \nBefore submitting this PR, please make sure:\n\n- [ ] Your code builds clean without any errors or warnings\n- [ ] You have added unit tests\n- [ ] You are using approved terminology\n- [ ] You have read and follow our contribution and development guidelines\n- [ ] You have merged *from* main\n- [ ] Version history and relevant documentation is updated\n\n---\n\n## Agent Summary\n\n${{query-git-pr-note-1.body}}",
+      "canonical_origin_url": "${{gate-filter-2.canonical_origin_url}}",
       "display_name": "Create PR",
       "draft": true,
       "fill": true,
       "host_repo_path": "${{effect-git-promote-agent-branch-1.host_repo_path}}",
       "id": "effect-pr-create-1",
-      "canonical_origin_url": "${{gate-filter-2.canonical_origin_url}}",
       "local_branch": "${{effect-git-promote-agent-branch-1.review_branch}}",
       "provider": "azure_devops",
       "session_id": "${{trigger-git-push-1.session_id}}",
@@ -295,24 +370,245 @@
       "vm_user": "agent"
     },
     {
-      "display_name": "Tell agent there's a teams message",
-      "id": "effect-agent-prompt-5",
+      "display_name": "Store session metadata",
+      "id": "effect-session-update-metadata-3",
+      "metadata": {
+        "agent_thread_id": "${{effect-agent-enqueue-prompt-1.thread_id ?? query-session-context-3.metadata.agent_thread_id ?? null}}"
+      },
+      "target": "vm-example-receptionist",
+      "type": "effect:session:update-metadata"
+    },
+    {
+      "display_name": "Enqueue Teams Prompt",
+      "id": "effect-agent-enqueue-prompt-1",
       "model": "gpt-5.4",
-      "output_mode": "on_completion",
       "prompt": "You are Truman, a helpful assistant in an agent orchestration and control plane. You've just received new Teams messages. Please fetch them and post a response in Teams.",
       "resume_thread_id": "${{query-session-context-3.metadata.agent_thread_id ?? null}}",
       "target": "vm-example-receptionist",
+      "type": "effect:agent:enqueue-prompt",
+      "vm_name": "vm-example-receptionist",
+      "vm_user": "agent"
+    },
+    {
+      "allowed_tools": [
+        "post_pr_comment",
+        "post_pr_feedback_reply",
+        "list_unread_feedback",
+        "list_all_feedback",
+        "submit_pr_review"
+      ],
+      "directory_path": "root/example-industry/app",
+      "discord_channels": [],
+      "display_name": "New VM effect",
+      "dotnet": true,
+      "email_folders": [],
+      "email_mailboxes": [],
+      "frontend_deps": true,
+      "frontend_host_checkout": "/home/jonathan/Documents/Repos/ExampleIndustryAPP/Src/Clients",
+      "frontend_install_roots": [
+        "/home/jonathan/Documents/Repos/ExampleIndustryAPP/Src/Clients"
+      ],
+      "id": "effect-vm-create-2",
+      "labels": {
+        "vm-type": "review"
+      },
+      "model": "gpt-5.4",
+      "mssql": true,
+      "nuget": true,
+      "playwright": true,
+      "repo_source": "git@ssh.dev.azure.com:v3/exampleindustry/Example%20Industry%20APP/ExampleIndustryAPP",
+      "session_id": "review-${{trigger-review-new-request-1.review_request.pr_id}}-root-example-industry-app-${{system.now.utc_timestamp_compact}}-${{system.unique.compact}}",
+      "ttl_hours": 24,
+      "type": "effect:vm:create",
+      "vm_name": "vm-review-${{trigger-review-new-request-1.review_request.pr_id}}",
+      "vm_user": "agent"
+    },
+    {
+      "display_name": "Copy files into VM",
+      "files": [
+        {
+          "destination_path": "/home/agent/AGENTS.md",
+          "overwrite": true,
+          "source_format": "template",
+          "source_path": "/home/jonathan/agent-sandbox/templates/guest-AGENTS-review.md.tmpl"
+        },
+        {
+          "content": "${{trigger-review-new-request-1.review_request}}",
+          "content_format": "yaml",
+          "destination_path": "${{effect-vm-create-2.target_dir}}/REVIEW_TASK.yaml",
+          "overwrite": true
+        }
+      ],
+      "id": "effect-vm-copy-files-4",
+      "target": "${{effect-vm-create-2.vm_name}}",
+      "type": "effect:vm:copy-files",
+      "vm_user": "agent"
+    },
+    {
+      "display_name": "Send task prompt",
+      "id": "effect-agent-prompt-5",
+      "model": "gpt-5.4",
+      "output_mode": "on_completion",
+      "prompt": "You have been assigned the review task described in ${{effect-vm-create-2.target_dir}}/REVIEW_TASK.yaml. Read /home/agent/AGENTS.md and ${{effect-vm-create-2.target_dir}}/REVIEW_TASK.yaml before you begin. The repository is located at ${{effect-vm-create-2.target_dir}}. When restore is needed, use 'dotnet restore --configfile ~/.nuget/NuGet/NuGet.Config'. For build and test, prefer '--no-restore'. Post comments to the PR using the post_pr_comment tool.",
+      "target": "${{effect-vm-create-2.session_id}}",
+      "type": "effect:agent:prompt",
+      "vm_user": "agent"
+    },
+    {
+      "allowed_tools": [
+        "has_pending_feedback",
+        "list_unread_feedback",
+        "list_all_feedback",
+        "post_pr_feedback_reply",
+        "set_issue_plan"
+      ],
+      "directory_path": "root/example-industry/scanspac",
+      "discord_channels": [],
+      "display_name": "Create Issue VM",
+      "dotnet": true,
+      "email_folders": [],
+      "email_mailboxes": [],
+      "frontend_deps": true,
+      "frontend_host_checkout": "/home/jonathan/Documents/Repos/Scanspac",
+      "frontend_install_roots": [
+        "/home/jonathan/Documents/Repos/Scanspac/Src/MesAdmin",
+        "/home/jonathan/Documents/Repos/Scanspac/Src/StationGUI"
+      ],
+      "id": "effect-vm-create-3",
+      "labels": {
+        "vm-type": "issue"
+      },
+      "model": "gpt-5.4",
+      "mssql": true,
+      "nuget": true,
+      "playwright": true,
+      "repo_source": "git@ssh.dev.azure.com:v3/exampleindustry/Scanspac/Scanspac",
+      "session_id": "issue-${{trigger-ticket-created-2.ticket.issue_number}}-root-example-industry-scanspac-${{system.now.utc_timestamp_compact}}-${{system.unique.compact}}",
+      "ttl_hours": 48,
+      "type": "effect:vm:create",
+      "vm_name": "vm-issue-${{trigger-ticket-created-2.ticket.issue_number}}",
+      "vm_user": "agent"
+    },
+    {
+      "display_name": "Set issue in progress",
+      "id": "effect-issue-update-state-2",
+      "issue_id": "${{trigger-ticket-created-2.ticket.issue_id}}",
+      "state": "In Progress",
+      "sync_proxy_cache": true,
+      "type": "effect:issue:update-state"
+    },
+    {
+      "display_name": "Copy files into VM",
+      "files": [
+        {
+          "destination_path": "/home/agent/AGENTS.md",
+          "overwrite": true,
+          "source_format": "template",
+          "source_path": "/home/jonathan/agent-sandbox/templates/guest-AGENTS-scanspac.md.tmpl"
+        },
+        {
+          "content": "${{trigger-ticket-created-2.ticket}}",
+          "content_format": "yaml",
+          "destination_path": "${{effect-vm-create-3.target_dir}}/AGENT_TASK.yaml",
+          "overwrite": true
+        },
+        {
+          "destination_path": "/home/agent/PLANS.md",
+          "overwrite": true,
+          "source_format": "file",
+          "source_path": "/home/jonathan/agent-sandbox/templates/PLANS.md"
+        }
+      ],
+      "id": "effect-vm-copy-files-5",
+      "target": "${{effect-vm-create-3.session_id}}",
+      "type": "effect:vm:copy-files",
+      "vm_user": "agent"
+    },
+    {
+      "display_name": "Create plan",
+      "id": "effect-agent-prompt-6",
+      "model": "gpt-5.4",
+      "output_mode": "on_completion",
+      "prompt": "You have been issued the task described in ${{effect-vm-create-3.target_dir}}/AGENT_TASK.yaml. Read /home/agent/AGENTS.md and ${{effect-vm-create-3.target_dir}}/AGENT_TASK.yaml before you begin. The repository is located at ${{effect-vm-create-3.target_dir}}. Do not write any code or perform the task. Instead, study the code, understand the assignment, and produce an implementation plan for other agents. Use set_issue_plan MCP tool to store both a short plan summary and the ordered list of steps.\n\nThe goal is not just to list milestones. The goal is to eliminate rediscovery for the implementation agents. Each step must therefore be a self-contained implementation brief that tells a worker where to start and how to verify the result.\n\nFor the plan summary, write a concise orientation for implementers that covers: the intended end state, the main architectural constraints, the required sequencing, and any global risks or invariants that later steps must preserve.\n\nFor each step, write a compact but concrete brief that includes all of the following in plain text:\n- the exact objective of the step\n- the most likely files or directories to edit\n- any files or symbols that should be read first for reference\n- existing patterns, components, handlers, or tests that the worker should mirror\n- the preferred validation commands for that step\n- the definition of done for that step\n- any explicit out-of-scope warnings for that worker\n\nPrefer steps that are implementation-ready and narrowly scoped. Avoid generic instructions like 'inspect the repo' or 'figure out how X works' unless that investigation is itself the deliverable. If uncertainty remains, resolve as much of it as possible now by identifying the concrete files and patterns the worker should use. You must find a balance between overcomplicating your solution (do not add anything to the assignment or expand the scope) and doing too little (the solution must be robust, fulfill the requirements, and follow the patterns already present in the repository). After you have finished this, other agents will implement the plan and you will be asked to check their work.\nRead /home/agent/PLANS.md for some general guidance on plan authoring.",
+      "target": "${{effect-vm-create-3.session_id}}",
       "type": "effect:agent:prompt",
       "vm_user": "agent"
     },
     {
       "display_name": "Store session metadata",
-      "id": "effect-session-update-metadata-3",
+      "id": "effect-session-update-metadata-4",
       "metadata": {
-        "agent_thread_id": "${{effect-agent-prompt-5.thread_id}}"
+        "agent_thread_id": "${{effect-agent-prompt-6.thread_id}}"
       },
-      "target": "vm-example-receptionist",
+      "target": "${{effect-vm-create-3",
       "type": "effect:session:update-metadata"
+    },
+    {
+      "display_name": "Update session metadata",
+      "id": "effect-session-update-metadata-5",
+      "metadata": {
+        "issue_number": "${{trigger-ticket-created-2.ticket.issue_number}}",
+        "issue_title": "${{trigger-ticket-created-2.ticket.title}}"
+      },
+      "target": "${{effect-vm-create-3.session_id}}",
+      "type": "effect:session:update-metadata"
+    },
+    {
+      "display_name": "Replace AGENT_TASK.yaml",
+      "files": [
+        {
+          "content": {
+            "current_step_index": "${{gate-for-1.current_index}}",
+            "full_plan": "${{query-issue-get-1.metadata.steps}}",
+            "plan_summary": "${{query-issue-get-1.metadata.plan_summary}}",
+            "total_steps": "${{gate-for-1.item_count}}",
+            "your_task": "${{gate-for-1.current_element}}"
+          },
+          "content_format": "yaml",
+          "destination_path": "${{effect-vm-create-3.target_dir}}/AGENT_TASK.yaml",
+          "overwrite": true
+        }
+      ],
+      "id": "effect-vm-copy-files-6",
+      "target": "${{effect-vm-create-3.session_id}}",
+      "type": "effect:vm:copy-files",
+      "vm_user": "agent"
+    },
+    {
+      "display_name": "Send task prompt",
+      "id": "effect-agent-prompt-7",
+      "model": "gpt-5.4-mini",
+      "output_mode": "on_completion",
+      "prompt": "You have been issued the task described in ${{effect-vm-create-3.target_dir}}/AGENT_TASK.yaml. Read /home/agent/AGENTS.md and ${{effect-vm-create-3.target_dir}}/AGENT_TASK.yaml before you begin. The repository is located at ${{effect-vm-create-3.target_dir}}. The task file contains read-only planning context for the whole ticket plus the narrow sub-task you are authorized to implement. Follow the current sub-task only. Do not implement future steps unless that work is strictly required to complete the current step safely. Start from the files, patterns, and test commands suggested in the task file rather than rediscovering the repository broadly. If the suggested files or examples prove incomplete, expand your search narrowly and explain why. Do not ask for feedback or clarifications at this time, but work until the task is completed or until you determine that it is impossible to complete. When restore is needed, use 'dotnet restore --configfile ~/.nuget/NuGet/NuGet.Config'. For build and test, prefer '--no-restore'. When you have finished, commit and push your work using 'git push-agent'.",
+      "target": "${{effect-vm-create-3.session_id}}",
+      "type": "effect:agent:prompt",
+      "vm_user": "agent"
+    },
+    {
+      "display_name": "Restore full task yaml",
+      "files": [
+        {
+          "content": "${{trigger-ticket-created-2.ticket}}",
+          "content_format": "yaml",
+          "destination_path": "${{effect-vm-create-3.target_dir}}/AGENT_TASK.yaml",
+          "overwrite": true
+        }
+      ],
+      "id": "effect-vm-copy-files-7",
+      "target": "${{effect-vm-create-3.vm_name}}",
+      "type": "effect:vm:copy-files",
+      "vm_user": "agent"
+    },
+    {
+      "display_name": "Send follow-up prompt",
+      "id": "effect-agent-prompt-8",
+      "model": "gpt-5.4",
+      "output_mode": "on_completion",
+      "prompt": "Other agents have now implemented your plan. Please go over and verify their work. Check that the current state of the repository matches your expectations.\nBefore concluding, verify whether they completed all required checklist items. Confirm (or explicitly list gaps for): (1) appropriate unit tests for your code changes, (2) documentation updates for behavioral or operational changes, and (3) a markdown PR summary maintained with 'git agent-pr-note'. If anything is missing, complete it now. If you make any changes during this checklist pass, push them before concluding. A successful 'git push-agent' refreshes and pushes refs/notes/agent-pr together with your latest work.",
+      "resume_thread_id": "${{effect-agent-prompt-6.thread_id}}",
+      "target": "${{effect-vm-create-3.session_id}}",
+      "type": "effect:agent:prompt",
+      "vm_user": "agent"
     }
   ],
   "event_queue_cursor_store_path": "runtime/trigger-orchestrator-cursors.json",
@@ -435,6 +731,106 @@
         }
       },
       "type": "gate:for"
+    },
+    {
+      "display_name": "Verify successful creation",
+      "id": "gate-filter-3",
+      "outputs": {
+        "guest_repo_name": {
+          "type": "string"
+        },
+        "labels": {
+          "type": "object"
+        },
+        "remote_url": {
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "success": {
+          "type": "boolean"
+        },
+        "target_dir": {
+          "type": "string"
+        },
+        "vm_name": {
+          "type": "string"
+        }
+      },
+      "type": "gate:filter",
+      "when": {
+        "all": [
+          {
+            "equals": true,
+            "left": "${{effect-vm-create-2.success}}"
+          },
+          {
+            "is_not_null": true,
+            "left": "${{effect-vm-create-2.session_id}}"
+          }
+        ]
+      }
+    },
+    {
+      "display_name": "Verify successful creation",
+      "id": "gate-filter-4",
+      "outputs": {
+        "guest_repo_name": {
+          "type": "string"
+        },
+        "labels": {
+          "type": "object"
+        },
+        "remote_url": {
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "success": {
+          "type": "boolean"
+        },
+        "target_dir": {
+          "type": "string"
+        },
+        "vm_name": {
+          "type": "string"
+        }
+      },
+      "type": "gate:filter",
+      "when": {
+        "all": [
+          {
+            "equals": true,
+            "left": "${{effect-vm-create-3.success}}"
+          },
+          {
+            "is_not_null": true,
+            "left": "${{effect-vm-create-3.session_id}}"
+          }
+        ]
+      }
+    },
+    {
+      "display_name": "For each step",
+      "id": "gate-for-2",
+      "items": "${{query-issue-get-2.metadata.steps}}",
+      "outputs": {
+        "current_element": {
+          "type": "object"
+        },
+        "current_index": {
+          "type": "integer"
+        },
+        "is_done": {
+          "type": "boolean"
+        },
+        "item_count": {
+          "type": "integer"
+        }
+      },
+      "type": "gate:for"
     }
   ],
   "jitter_seconds": 1.0,
@@ -473,6 +869,12 @@
       "id": "query-session-context-3",
       "target": "vm-example-receptionist",
       "type": "query:session-context"
+    },
+    {
+      "display_name": "Reload issue",
+      "id": "query-issue-get-2",
+      "issue_id": "${{trigger-ticket-created-2.ticket.issue_id}}",
+      "type": "query:issue:get"
     }
   ],
   "runtime_dir": "runtime",
@@ -481,7 +883,7 @@
       "directories": [
         "root/example-industry/app"
       ],
-      "display_name": "Ticket created",
+      "display_name": "APP Ticket created",
       "id": "trigger-ticket-created-1",
       "type": "trigger:ticket:created"
     },
@@ -500,13 +902,38 @@
       "type": "trigger:pull-request:new-feedback"
     },
     {
-      "channel_targets": [
-        "c85e4de5-e0d7-4240-8302-8bc944f2360d/19:111a1418d1de40a8a06df882e00cf24a@thread.skype"
-      ],
       "display_name": "Teams message",
       "id": "trigger-teams-new-message-2",
+      "targets": [
+        {
+          "target": "c85e4de5-e0d7-4240-8302-8bc944f2360d/19:111a1418d1de40a8a06df882e00cf24a@thread.skype"
+        },
+        {
+          "message_filter": {
+            "mentions": {
+              "user_ids": [
+                "143e5b02-868f-4f0c-a262-cf509b6c09e5"
+              ]
+            }
+          },
+          "target": "chat:19:0deeedd064364392b26376e3a117a682@thread.v2"
+        }
+      ],
       "type": "trigger:teams:new-message",
       "user_ids": []
+    },
+    {
+      "display_name": "Review request created",
+      "id": "trigger-review-new-request-1",
+      "type": "trigger:review:new-request"
+    },
+    {
+      "directories": [
+        "root/example-industry/scanspac"
+      ],
+      "display_name": "Scanspac ticket created",
+      "id": "trigger-ticket-created-2",
+      "type": "trigger:ticket:created"
     }
   ]
 }

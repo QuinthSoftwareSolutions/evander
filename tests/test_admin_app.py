@@ -477,6 +477,7 @@ def test_update_vm_action_bar_shows_destroy_for_non_issue_vm() -> None:
         shutdown_vm_button=DummyButton(),
         enable_agent_button=DummyButton(),
         disable_agent_button=DummyButton(),
+        kill_agent_button=DummyButton(),
         resume_agent_button=DummyButton(),
         destroy_vm_button=DummyButton(),
         selected_vm_summary=lambda: SimpleNamespace(
@@ -484,6 +485,7 @@ def test_update_vm_action_bar_shows_destroy_for_non_issue_vm() -> None:
             libvirt_state="running",
             issue_number=None,
             agent_state="unknown",
+            agent_pid=None,
         ),
     )
 
@@ -493,7 +495,69 @@ def test_update_vm_action_bar_shows_destroy_for_non_issue_vm() -> None:
     assert window.destroy_vm_button.visible is True
     assert window.enable_agent_button.visible is False
     assert window.disable_agent_button.visible is False
+    assert window.kill_agent_button.visible is False
     assert window.resume_agent_button.visible is False
+
+
+def test_update_vm_action_bar_shows_kill_for_running_agent_pid() -> None:
+    class DummyLabel:
+        def __init__(self) -> None:
+            self.text = ""
+
+        def setText(self, value: str) -> None:
+            self.text = value
+
+        def show(self) -> None:
+            pass
+
+    class DummyButton:
+        def __init__(self) -> None:
+            self.visible = None
+
+        def setVisible(self, value: bool) -> None:
+            self.visible = value
+
+        def hide(self) -> None:
+            self.visible = False
+
+    window = SimpleNamespace(
+        vm_selection_hint=DummyLabel(),
+        start_vm_button=DummyButton(),
+        shutdown_vm_button=DummyButton(),
+        enable_agent_button=DummyButton(),
+        disable_agent_button=DummyButton(),
+        kill_agent_button=DummyButton(),
+        resume_agent_button=DummyButton(),
+        destroy_vm_button=DummyButton(),
+        selected_vm_summary=lambda: SimpleNamespace(
+            vm_name="vm-42",
+            libvirt_state="running",
+            issue_number="42",
+            agent_state="running",
+            agent_pid=4321,
+        ),
+    )
+
+    admin_app.MainWindow.update_vm_action_bar(window)
+
+    assert window.kill_agent_button.visible is True
+
+
+def test_handle_kill_selected_vm_agent_uses_selected_pid() -> None:
+    captured: dict[str, object] = {}
+    window = SimpleNamespace(
+        selected_vm_summary=lambda: SimpleNamespace(vm_name="vm-42", agent_pid=4321),
+        service=SimpleNamespace(kill_agent=object()),
+        run_action=lambda label, fn, *args: captured.update({"label": label, "fn": fn, "args": args}),
+    )
+
+    admin_app.MainWindow.handle_kill_selected_vm_agent(window)
+
+    assert captured == {
+        "label": "Kill agent vm-42 pid 4321",
+        "fn": window.service.kill_agent,
+        "args": ("vm-42", 4321),
+    }
 
 
 def test_update_session_action_bar_populates_session_model_controls() -> None:

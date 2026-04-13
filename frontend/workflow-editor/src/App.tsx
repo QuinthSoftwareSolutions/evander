@@ -373,7 +373,7 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
       id,
       display_name: "Teams message",
       type,
-      channel_targets: [],
+      targets: [],
       user_ids: [],
     };
   }
@@ -606,6 +606,10 @@ function formatJson(value: unknown, fallback = "{}"): string {
   return JSON.stringify(value, null, 2);
 }
 
+function objectListJsonDraftKey(fieldKey: string, index: number, itemFieldKey: string): string {
+  return `${fieldKey}.${index}.${itemFieldKey}`;
+}
+
 function getCatalogEntry(catalog: WorkflowEditorCatalog, type: string) {
   return catalog.nodes.find((entry) => entry.type === type);
 }
@@ -746,6 +750,38 @@ function declaredOutputsForNode(node: WorkflowNodeConfig | undefined, config?: W
           created_at: { type: "string" },
           in_reply_to: { type: "string" },
           resolved: { type: "boolean" },
+        },
+      },
+    },
+    "trigger:review:new-request": {
+      review_request: {
+        type: "object",
+        properties: {
+          request_id: { type: "string" },
+          requested_at: { type: "string" },
+          requested_by: { type: "string" },
+          request_channel: { type: "string" },
+          provider: { type: "string" },
+          repo: { type: "string" },
+          pr_id: { type: "string" },
+          canonical_url: { type: "string" },
+          title: { type: "string" },
+          body: { type: "string" },
+          base_branch: { type: "string" },
+          head_branch: { type: "string" },
+          base_commit: { type: "string" },
+          head_commit: { type: "string" },
+          review_type: { type: "string" },
+          instructions: { type: "string" },
+          directory_path: { type: "string" },
+          model: { type: "string" },
+          labels: { type: "object" },
+          metadata: { type: "object" },
+          status: { type: "string" },
+          updated_at: { type: "string" },
+          lease_owner: { type: "string" },
+          lease_expires_at: { type: "string" },
+          dispatch_count: { type: "integer" },
         },
       },
     },
@@ -1260,6 +1296,21 @@ export default function App() {
         : formatJson(nextKnownValues[field.key], field.required || field.key === "outputs" ? "{}" : "");
     }
     for (const field of selectedCatalogEntry?.fields ?? []) {
+      if (field.kind !== "object_list") continue;
+      const items: unknown[] = Array.isArray(nextKnownValues[field.key]) ? (nextKnownValues[field.key] as unknown[]) : [];
+      items.forEach((item: unknown, index: number) => {
+        const itemValue = isRecord(item) ? item : {};
+        field.item_fields.forEach((itemField) => {
+          if (itemField.kind !== "json") return;
+          const draftKey = objectListJsonDraftKey(field.key, index, itemField.key);
+          const nestedValue = itemValue[itemField.key];
+          nextJsonDrafts[draftKey] = nestedValue === undefined
+            ? (itemField.required ? "{}" : "")
+            : formatJson(nestedValue, itemField.required ? "{}" : "");
+        });
+      });
+    }
+    for (const field of selectedCatalogEntry?.fields ?? []) {
       if (field.kind !== "string_list") continue;
       nextStringListDrafts[field.key] = Array.isArray(nextKnownValues[field.key])
         ? (nextKnownValues[field.key] as unknown[]).map((item) => String(item)).join("\n")
@@ -1439,6 +1490,27 @@ export default function App() {
           .split("\n")
           .map((item) => item.trim())
           .filter(Boolean);
+      }
+      for (const field of selectedCatalogEntry?.fields ?? []) {
+        if (field.kind !== "object_list") continue;
+        const currentItems = Array.isArray(nextKnownValues[field.key]) ? [...(nextKnownValues[field.key] as unknown[])] : [];
+        field.item_fields.forEach((itemField) => {
+          if (itemField.kind !== "json") return;
+          currentItems.forEach((item, index) => {
+            if (!isRecord(item)) return;
+            const draftKey = objectListJsonDraftKey(field.key, index, itemField.key);
+            const currentValue = item[itemField.key];
+            if (isExactBindingValue(currentValue)) return;
+            const fallbackValue = itemField.required ? {} : undefined;
+            const parsedValue = parseJsonDraft(inspectorJsonDrafts[draftKey] ?? "", fallbackValue);
+            if (parsedValue === undefined) {
+              delete item[itemField.key];
+            } else {
+              item[itemField.key] = parsedValue;
+            }
+          });
+        });
+        nextKnownValues[field.key] = currentItems;
       }
       const nextNode = removeUndefinedValues({
         id: rawId,
@@ -2001,6 +2073,7 @@ export default function App() {
                 {field.item_fields.map((itemField) => {
                   const currentValue = itemValue[itemField.key];
                   const currentMode = fieldValueMode(itemField, currentValue);
+                  const nestedJsonKey = objectListJsonDraftKey(field.key, index, itemField.key);
                   return (
                     <div key={itemField.key} className="nested-field">
                       <div className="field-toolbar">
@@ -2030,6 +2103,19 @@ export default function App() {
                       {currentMode === "bind"
                         ? renderBindingSelect(itemField, selectedNodeBindingOptions, currentValue, (nextValue) =>
                             updateObjectListItem(field.key, index, itemField.key, nextValue),
+                          )
+                        : itemField.kind === "json"
+                          ? (
+                            <textarea
+                              value={inspectorJsonDrafts[nestedJsonKey] ?? ""}
+                              rows={6}
+                              onChange={(event) =>
+                                setInspectorJsonDrafts((current) => ({
+                                  ...current,
+                                  [nestedJsonKey]: event.target.value,
+                                }))
+                              }
+                            />
                           )
                         : itemField.kind === "enum"
                           ? (

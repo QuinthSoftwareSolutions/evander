@@ -294,7 +294,7 @@ def test_graph_teams_service_posts_status_and_thread_reply(
                 json={
                     "id": "msg-root",
                     "createdDateTime": "2026-03-30T12:00:00Z",
-                    "body": {"content": "root status", "contentType": "text"},
+                    "body": {"content": "<p>root status</p>", "contentType": "html"},
                     "from": {"application": {"id": "bot-app"}},
                     "webUrl": "https://teams.example/root",
                 },
@@ -309,7 +309,7 @@ def test_graph_teams_service_posts_status_and_thread_reply(
                     "id": "msg-reply",
                     "replyToId": "msg-root",
                     "createdDateTime": "2026-03-30T12:01:00Z",
-                    "body": {"content": "thread reply", "contentType": "text"},
+                    "body": {"content": "<p>thread reply</p>", "contentType": "html"},
                     "from": {"application": {"id": "bot-app"}},
                     "webUrl": "https://teams.example/reply",
                 },
@@ -360,10 +360,47 @@ def test_graph_teams_service_posts_status_and_thread_reply(
         "web_url": "https://teams.example/reply",
     }
     assert requests[0].headers["Authorization"] == "Bearer graph-token"
-    assert requests[0].content == b'{"body":{"content":"root status","contentType":"text"}}'
-    assert requests[1].content == b'{"body":{"content":"thread reply","contentType":"text"}}'
+    assert requests[0].content == b'{"body":{"content":"<p>root status</p>","contentType":"html"}}'
+    assert requests[1].content == b'{"body":{"content":"<p>thread reply</p>","contentType":"html"}}'
 
     stored = store.read_all()
     assert stored["team-a/channel-1/msg-root"].metadata["source"] == "teams_graph_api_status"
     assert stored["team-a/channel-1/msg-root"].metadata["session_id"] == "session-1"
     assert stored["team-a/channel-1/msg-reply"].thread_id == "msg-root"
+
+
+def test_graph_teams_service_renders_fenced_code_blocks_as_html(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            201,
+            json={
+                "id": "msg-root",
+                "createdDateTime": "2026-03-30T12:00:00Z",
+                "body": {"content": "<pre><code>var x = 1;\n</code></pre>", "contentType": "html"},
+                "from": {"application": {"id": "bot-app"}},
+                "webUrl": "https://teams.example/root",
+            },
+            request=request,
+        )
+
+    transport = httpx.MockTransport(handler)
+    patch_httpx_client(monkeypatch, transport)
+    store = JsonStore(tmp_path / "teams.json", TeamsMessageEnvelope)
+    service = GraphTeamsService(
+        store,
+        token="graph-token",
+        api_base_url="https://graph.microsoft.com/v1.0",
+        poll_limit=25,
+        timeout_seconds=5.0,
+        allowed_channel_targets_provider=lambda: ["team-a/channel-1"],
+    )
+
+    service.post_status("```csharp\nvar x = 1;\n```", "team-a/channel-1", "session-1")
+
+    assert requests[0].content == b'{"body":{"content":"<pre><code>var x = 1;</code></pre>","contentType":"html"}}'

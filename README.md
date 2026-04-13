@@ -587,6 +587,15 @@ See [live-smoke-tests.md](/home/jonathan/agent-sandbox/docs/live-smoke-tests.md)
 - `trigger:teams:new-message` message arrival is driven by host-side Teams ingest polling on the
   host, not by the host-heartbeat worker. Host-heartbeat remains the PR/Discord feedback wakeup
   loop.
+- `trigger:teams:new-message` is a wake signal only. It fires at most once per poll cycle when any
+  new allowlisted Teams messages have arrived, and it does not include message content in the
+  trigger payload. Agents that need message context should call `teams_get_messages`.
+- `trigger:teams:new-message` defines `targets`, where each target can optionally narrow wakes
+  with its own `message_filter`.
+- The initial supported filter shape is content substring matching:
+  - `{"target":"team-id/channel-id"}`
+  - `{"target":"chat:<chat-id>","message_filter":{"content":{"contains":"@Truman Bot"}}}`
+  - optional `case_sensitive: true|false` (default `false`)
 - Session manifests opt into Teams access explicitly:
 
   ```json
@@ -742,13 +751,9 @@ Use this when you want the guest to wake only for new review feedback and post t
 
 1. Include PR feedback tools/stream metadata in the session manifest (same `session_id` the guest uses).
 2. Bootstrap a provider runtime in the guest (`./scripts/bootstrap_codex_vm.sh <vm-name>` or `./scripts/bootstrap_copilot_vm.sh <vm-name>`).
-3. Run the host heartbeat worker service:
-   `sudo systemctl start agent-sandbox-host-heartbeat.service`.
-   Common lifecycle commands:
-   - start: `sudo systemctl start agent-sandbox-host-heartbeat.service`
-   - stop: `sudo systemctl stop agent-sandbox-host-heartbeat.service`
-   - status: `sudo systemctl status agent-sandbox-host-heartbeat.service`
-4. Use MCP calls from the agent in this order:
+3. For Azure DevOps PR feedback, keep `agent-sandbox-ado-worker` running; it now owns Azure DevOps feedback ingestion and trigger publication.
+4. `agent-sandbox-host-heartbeat.service` is no longer required for Azure DevOps PR feedback ingestion. Keep it only if you still rely on Discord inbox wakeups, scheduled resumes, or legacy non-ADO feedback polling.
+5. Use MCP calls from the agent in this order:
    `has_pending_feedback` → `list_unread_feedback` → `post_pr_feedback_reply` (with an idempotency key).
    Use `list_pull_requests(session_id, provider, repo, status?, creator_id?, reviewer_id?, top?, cursor?)`
    when you need provider-backed PR discovery; `status` maps to provider status filtering (for Azure DevOps:
@@ -780,10 +785,8 @@ Example `get_pull_request` result shape (Azure DevOps):
 
 ### Expected timing behavior
 
-- Host heartbeat cadence is controlled by the host heartbeat worker config:
-  `host_heartbeat_directory_paths`, `host_heartbeat_poll_interval_seconds`, `host_heartbeat_jitter_seconds`,
-  and `host_heartbeat_cooldown_seconds`.
-- Feedback polling happens once per configured directory on the host and updates the shared host feedback store.
+- Azure DevOps feedback pickup is driven by `agent-sandbox-ado-worker` cadence and updates the shared host feedback store plus trigger queue.
+- `agent-sandbox-host-heartbeat` no longer polls Azure DevOps PR feedback streams.
 - Guests consume pending feedback via MCP tools by default.
 - Provider bootstrap scripts default `ENABLE_GUEST_HEARTBEAT=0`, which keeps
   `agent-heartbeat.timer` disabled for new guests.

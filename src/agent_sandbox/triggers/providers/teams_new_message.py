@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from agent_sandbox.events.models import TeamsNewMessageTriggerDefinition, TriggerEvent
+from agent_sandbox.events.models import TeamsMessageFilterDefinition, TeamsNewMessageTriggerDefinition, TriggerEvent
 from agent_sandbox.services import normalize_teams_target, teams_target_from_message
 from agent_sandbox.teams_inbox_store import TeamsInboxMessage, TeamsInboxStore
 from agent_sandbox.triggers.providers._cursor_state import TriggerCursorStore
@@ -27,14 +27,18 @@ class TeamsNewMessageTriggerProvider(TriggerProviderBase):
         inbox_store = TeamsInboxStore(self._resolved_config().runtime_dir / "teams-inbox-store.json")
         raw_messages = inbox_store.list_all_messages()
 
-        channel_target_filter = {_normalize_channel_target(value) for value in trigger.channel_targets if value.strip()}
+        target_filters = {
+            _normalize_channel_target(item.target): item.message_filter
+            for item in trigger.targets
+            if item.target.strip()
+        }
         user_filter = {value.strip() for value in trigger.user_ids if value.strip()}
 
         candidates: list[TeamsInboxMessage] = []
         for message in raw_messages:
             channel_target = _message_channel_target(message)
             author_id = message.author_id.strip()
-            if channel_target_filter and channel_target not in channel_target_filter:
+            if target_filters and channel_target not in target_filters:
                 continue
             if user_filter and author_id not in user_filter:
                 continue
@@ -43,25 +47,19 @@ class TeamsNewMessageTriggerProvider(TriggerProviderBase):
                 continue
             if cursor is not None and occurred_at == cursor and message.cursor in recent_cursor_set:
                 continue
+            if not _message_matches_filter(message, target_filters.get(channel_target)):
+                continue
             candidates.append(message)
 
         candidates.sort(key=lambda message: (message.created_at, message.cursor))
 
-        events: list[TriggerEvent] = []
         max_created_at = cursor
         new_cursors = list(recent_cursors)
+        latest_cursor: str | None = None
         for message in candidates:
             occurred_at = message.created_at.astimezone(UTC)
-            events.append(
-                TriggerEvent(
-                    event_id=f"{trigger.id}:{message.cursor}",
-                    trigger_id=trigger.id,
-                    trigger_type=trigger.type,
-                    occurred_at=occurred_at,
-                    payload={"message": message.model_dump(mode="json")},
-                )
-            )
             new_cursors.append(message.cursor)
+            latest_cursor = message.cursor
             if max_created_at is None or occurred_at > max_created_at:
                 max_created_at = occurred_at
 
@@ -73,7 +71,17 @@ class TeamsNewMessageTriggerProvider(TriggerProviderBase):
                     "recent_cursors": new_cursors[-self._RECENT_CURSOR_LIMIT :],
                 },
             )
-        return events
+        if not candidates or max_created_at is None or latest_cursor is None:
+            return []
+        return [
+            TriggerEvent(
+                event_id=f"{trigger.id}:{latest_cursor}",
+                trigger_id=trigger.id,
+                trigger_type=trigger.type,
+                occurred_at=max_created_at,
+                payload={},
+            )
+        ]
 
     def _trigger(self) -> TeamsNewMessageTriggerDefinition:
         if not isinstance(self.trigger_definition, TeamsNewMessageTriggerDefinition):
@@ -114,3 +122,52 @@ def _parse_dt(value: object) -> datetime | None:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=UTC)
     return parsed.astimezone(UTC)
+
+
+def _message_matches_filter(
+    message: TeamsInboxMessage,
+    message_filter: TeamsMessageFilterDefinition | None,
+) -> bool:
+    if message_filter is None:
+        return True
+    content_filter = message_filter.content
+    if content_filter is not None:
+        haystack = message.content
+        needle = content_filter.contains
+        if not content_filter.case_sensitive:
+            haystack = haystack.casefold()
+            needle = needle.casefold()
+        if needle not in haystack:
+            return False
+
+    mention_filter = message_filter.mentions
+    if mention_filter is not None:
+        mentioned_user_ids = _mentioned_user_ids(message)
+        allowed_user_ids = {value.strip() for value in mention_filter.user_ids if value.strip()}
+        if not mentioned_user_ids.intersection(allowed_user_ids):
+            return False
+
+    return True
+
+
+def _mentioned_user_ids(message: TeamsInboxMessage) -> set[str]:
+    raw_message = message.metadata.get("message")
+    if not isinstance(raw_message, dict):
+        return set()
+    mentions = raw_message.get("mentions")
+    if not isinstance(mentions, list):
+        return set()
+    user_ids: set[str] = set()
+    for mention in mentions:
+        if not isinstance(mention, dict):
+            continue
+        mentioned = mention.get("mentioned")
+        if not isinstance(mentioned, dict):
+            continue
+        user = mentioned.get("user")
+        if not isinstance(user, dict):
+            continue
+        user_id = str(user.get("id") or "").strip()
+        if user_id:
+            user_ids.add(user_id)
+    return user_ids

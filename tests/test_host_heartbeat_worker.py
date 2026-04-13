@@ -26,7 +26,6 @@ from agent_sandbox.host_heartbeat_worker import (
 from agent_sandbox.models import SessionManifest, ToolName, WakeScheduleDefinition
 from agent_sandbox.pr_feedback_worker import (
     FeedbackEnvelope,
-    FeedbackProviderAuthError,
     PrFeedbackStore,
 )
 from agent_sandbox.services import PrFeedbackService
@@ -145,10 +144,7 @@ def test_collect_streams_dedupes_and_skips_expired_or_invalid() -> None:
 
     streams = worker._collect_streams()
 
-    assert streams == [
-        FeedbackStream(provider="azure_devops", repo="repo-a", pr_id="99"),
-        FeedbackStream(provider="github", repo="org/repo", pr_id="17"),
-    ]
+    assert streams == [FeedbackStream(provider="github", repo="org/repo", pr_id="17")]
 
 
 def test_collect_stream_mappings_falls_back_to_pr_map_when_manifest_missing(tmp_path) -> None:
@@ -376,7 +372,7 @@ def test_run_once_uses_directory_scoped_provider_adapter(tmp_path) -> None:
     assert feedback_worker.tokens == ["team-token"]
 
 
-def test_run_once_logs_provider_auth_errors_without_traceback(tmp_path, caplog) -> None:
+def test_run_once_skips_azure_devops_feedback_streams(tmp_path, caplog) -> None:
     now = datetime.now(UTC)
     sessions = {
         "active-a": _build_manifest(
@@ -390,7 +386,7 @@ def test_run_once_logs_provider_auth_errors_without_traceback(tmp_path, caplog) 
         store = SimpleNamespace(has_unread_feedback=lambda **kwargs: False)
 
         def poll_once(self, **kwargs):  # noqa: ANN003
-            raise FeedbackProviderAuthError("Check environment variable 'AZURE_DEVOPS_PR_PAT'.")
+            raise AssertionError("host heartbeat should not poll Azure DevOps PR feedback streams")
 
     runtime = SimpleNamespace(sessions=SimpleNamespace(read_all=lambda: sessions), audit=_DummyAudit())
     worker = HostHeartbeatWorker(
@@ -409,11 +405,9 @@ def test_run_once_logs_provider_auth_errors_without_traceback(tmp_path, caplog) 
 
     result = worker.run_once()
 
-    assert result.streams_polled == 1
+    assert result.streams_polled == 0
     assert result.discovered_feedback == 0
-    assert "Host heartbeat stream poll skipped provider=azure_devops repo=repo-a pr=99" in caplog.text
-    assert "Check environment variable 'AZURE_DEVOPS_PR_PAT'." in caplog.text
-    assert "Traceback" not in caplog.text
+    assert caplog.text == ""
 
 
 def test_build_host_heartbeat_worker_uses_global_config_file_for_conflict_policy(tmp_path, monkeypatch) -> None:

@@ -2134,12 +2134,6 @@ def create_server(context: RuntimeContext) -> FastMCP:
             raise PolicyError(message)
         try:
             session = context.policy.require_tool(session_id, ToolName.POST_PR_FEEDBACK_REPLY)
-            context.policy.require_pr_feedback_stream(
-                session,
-                provider=request.provider,
-                repo=request.repo,
-                pr_id=request.pr_id,
-            )
             if context.policy.effective_policy_for_session(session).pr_reply_require_approval:
                 if not request.request_id:
                     raise PolicyError("request_id is required when pr_reply_require_approval is enabled")
@@ -2294,12 +2288,6 @@ def create_server(context: RuntimeContext) -> FastMCP:
         args = request.model_dump(mode="json")
         try:
             session = context.policy.require_tool(request.session_id, ToolName.POST_PR_COMMENT)
-            context.policy.require_pr_feedback_stream(
-                session,
-                provider=request.provider,
-                repo=request.repo,
-                pr_id=request.pr_id,
-            )
             if context.policy.effective_policy_for_session(session).pr_reply_require_approval:
                 if not request.request_id:
                     raise PolicyError("request_id is required when pr_reply_require_approval is enabled")
@@ -2373,12 +2361,6 @@ def create_server(context: RuntimeContext) -> FastMCP:
         args = request.model_dump(mode="json")
         try:
             session = context.policy.require_tool(request.session_id, ToolName.SUBMIT_PR_REVIEW)
-            context.policy.require_pr_feedback_stream(
-                session,
-                provider=request.provider,
-                repo=request.repo,
-                pr_id=request.pr_id,
-            )
             if context.policy.effective_policy_for_session(session).pr_reply_require_approval:
                 if not request.request_id:
                     raise PolicyError("request_id is required when pr_reply_require_approval is enabled")

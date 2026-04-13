@@ -17,6 +17,7 @@ from typing import Any, Generic, TypeVar
 from pydantic import BaseModel, Field
 
 from .admin_service import AdminService
+from .agent_prompt_queue import AgentPromptQueueStore, QueuedAgentPromptRecord
 from .agent_completion_watcher import build_agent_run_completed_event
 from .config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
 from .effects.registry import EffectProviderFactory
@@ -188,6 +189,7 @@ class EffectOrchestratorWorker:
         )
         self.gate_execution_store = JsonGateExecutionStore(self.gate_execution_store_path)
         self.await_agent_store = JsonStore(worker_config.runtime_dir / "await-agent-pending.json", AwaitAgentPendingRecord)
+        self.queued_agent_prompt_store = AgentPromptQueueStore(worker_config.runtime_dir / "queued-agent-prompts.json")
         self.for_gate_state_store = JsonStore(worker_config.runtime_dir / "for-gate-state.json", ForGateStateRecord)
         self._executor = ThreadPoolExecutor(
             max_workers=max(1, min(32, max(1, (os.cpu_count() or 1) * 4))),
@@ -278,6 +280,7 @@ class EffectOrchestratorWorker:
         self._reconcile_await_agent_pending(graph=graph)
         completion_events_published += self._complete_pending_await_agent_gates_directly(graph=graph)
         completion_events_published += self._complete_waiting_agent_prompt_effects_directly()
+        completion_events_published += self._dispatch_queued_agent_prompts_directly()
 
         completed_count, published_count = self._reap_completed_futures()
         effect_executions_completed += completed_count
@@ -1074,6 +1077,55 @@ class EffectOrchestratorWorker:
             if self._complete_pending_await_agent_directly(pending=pending, gate=gate, log_skips=True, key=key):
                 completed += 1
         return completed
+
+    def _dispatch_queued_agent_prompts_directly(self) -> int:
+        queued = self.queued_agent_prompt_store.read_all()
+        if not queued:
+            return 0
+        try:
+            summaries = self._list_vm_summaries_for_await_agent_reconciliation()
+        except Exception:
+            logger.exception("Queued agent-prompt reconciliation failed while listing VMs")
+            return 0
+
+        dispatched = 0
+        for queue_key, record in queued.items():
+            if not self._queued_prompt_target_is_idle(record=record, summaries=summaries):
+                continue
+            dispatch_id = f"dispatch-{record.effect_id}-{hashlib.sha256((queue_key + record.updated_at.isoformat()).encode('utf-8')).hexdigest()[:12]}"
+            result = self.provider_factory.admin_service.resume_agent(
+                target=record.target,
+                prompt=record.prompt,
+                model=record.model,
+                vm_user=record.vm_user,
+                dispatch_id=dispatch_id,
+                resume_thread_id=record.resume_thread_id,
+            )
+            if not bool(getattr(result, "success", False)):
+                logger.warning(
+                    "Queued agent prompt dispatch failed queue_key=%s vm_name=%s message=%s",
+                    queue_key,
+                    record.vm_name,
+                    str(getattr(result, "message", "") or "").strip(),
+                )
+                continue
+            self.queued_agent_prompt_store.delete(queue_key)
+            dispatched += 1
+        return dispatched
+
+    @staticmethod
+    def _queued_prompt_target_is_idle(*, record: QueuedAgentPromptRecord, summaries: list[Any]) -> bool:
+        matching_summary = next(
+            (
+                summary
+                for summary in summaries
+                if str(getattr(summary, "vm_name", "") or "").strip() == record.vm_name
+            ),
+            None,
+        )
+        if matching_summary is None:
+            return False
+        return str(getattr(matching_summary, "agent_state", "") or "").strip() != "running"
 
     def _complete_pending_await_agent_directly(
         self,

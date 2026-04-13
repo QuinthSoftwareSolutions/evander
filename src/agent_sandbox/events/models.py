@@ -29,6 +29,7 @@ EffectType = Literal[
     "effect:vm:start",
     "effect:vm:stop",
     "effect:agent:prompt",
+    "effect:agent:enqueue-prompt",
     "effect:vm:exec",
     "effect:vm:copy-files",
     "effect:vm:delete-files",
@@ -129,18 +130,63 @@ class DiscordNewMessageTriggerDefinition(TriggerDefinition):
         return normalize_string_list(value)
 
 
+class TeamsContentFilterDefinition(BaseModel):
+    contains: str = Field(min_length=1)
+    case_sensitive: bool = False
+
+    @field_validator("contains", mode="before")
+    @classmethod
+    def normalize_contains(cls, value: object) -> str:
+        text = str(value).strip()
+        if not text:
+            raise ValueError("contains must be a non-empty string")
+        return text
+
+
+class TeamsMentionFilterDefinition(BaseModel):
+    user_ids: list[str] = Field(min_length=1)
+
+    @field_validator("user_ids", mode="before")
+    @classmethod
+    def normalize_user_ids(cls, value: object) -> object:
+        return normalize_string_list(value)
+
+
+class TeamsMessageFilterDefinition(BaseModel):
+    content: TeamsContentFilterDefinition | None = None
+    mentions: TeamsMentionFilterDefinition | None = None
+
+    @model_validator(mode="after")
+    def validate_at_least_one_filter(self) -> "TeamsMessageFilterDefinition":
+        if self.content is None and self.mentions is None:
+            raise ValueError("message_filter must define at least one of content or mentions")
+        return self
+
+
+class TeamsTargetDefinition(BaseModel):
+    target: str = Field(min_length=1)
+    message_filter: TeamsMessageFilterDefinition | None = None
+
+    @field_validator("target", mode="before")
+    @classmethod
+    def normalize_target(cls, value: object) -> str:
+        text = str(value).strip().strip("/")
+        if not text:
+            raise ValueError("target must be a non-empty string")
+        return text
+
+
 class TeamsNewMessageTriggerDefinition(TriggerDefinition):
     type: Literal["trigger:teams:new-message"]
-    channel_targets: list[str] = Field(min_length=1)
+    targets: list[TeamsTargetDefinition] = Field(min_length=1)
     user_ids: list[str] = Field(default_factory=list)
 
-    @field_validator("channel_targets", mode="before")
+    @field_validator("targets", mode="before")
     @classmethod
-    def normalize_channel_targets(cls, value: object) -> object:
-        normalized = normalize_string_list(value)
-        if not isinstance(normalized, list):
-            return normalized
-        return [item.strip("/") for item in normalized if item.strip("/")]
+    def normalize_targets(cls, value: object) -> object:
+        if isinstance(value, list):
+            return value
+        return value
 
     @field_validator("user_ids", mode="before")
     @classmethod
@@ -369,6 +415,17 @@ class AgentPromptEffectDefinition(EffectDefinition):
     output_mode: Literal["immediate", "on_completion"] = "immediate"
 
 
+class AgentEnqueuePromptEffectDefinition(EffectDefinition):
+    type: Literal["effect:agent:enqueue-prompt"]
+    target: ConfigValue | None = None
+    session_id: ConfigValue | None = None
+    vm_name: ConfigValue | None = None
+    prompt: ConfigValue
+    model: ConfigValue | None = None
+    vm_user: ConfigValue | None = None
+    resume_thread_id: ConfigValue | None = None
+
+
 class VmStartEffectDefinition(EffectDefinition):
     type: Literal["effect:vm:start"]
     target: ConfigValue | None = None
@@ -505,6 +562,7 @@ EffectDefinitionDiscriminated = Annotated[
     | VmStartEffectDefinition
     | VmStopEffectDefinition
     | AgentPromptEffectDefinition
+    | AgentEnqueuePromptEffectDefinition
     | VmExecEffectDefinition
     | VmCopyFilesEffectDefinition
     | VmDeleteFilesEffectDefinition
@@ -662,22 +720,7 @@ _STATIC_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
             },
         }
     },
-    "trigger:teams:new-message": {
-        "message": {
-            "type": "object",
-            "properties": {
-                "cursor": {"type": "string"},
-                "message_id": {"type": "string"},
-                "author_id": {"type": "string"},
-                "team_id": {"type": "string"},
-                "channel_id": {"type": "string"},
-                "thread_id": {"type": "string"},
-                "content": {"type": "string"},
-                "created_at": {"type": "string"},
-                "metadata": {"type": "object"},
-            },
-        }
-    },
+    "trigger:teams:new-message": {},
     "trigger:email:new-message": {
         "message": {
             "type": "object",
@@ -857,6 +900,16 @@ _STATIC_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
         "thread_id": {"type": "string"},
         "success": {"type": "boolean"},
         "output_mode": {"type": "string"},
+    },
+    "effect:agent:enqueue-prompt": {
+        "dispatch_id": {"type": "string"},
+        "thread_id": {"type": "string"},
+        "success": {"type": "boolean"},
+        "queued": {"type": "boolean"},
+        "queue_key": {"type": "string"},
+        "vm_name": {"type": "string"},
+        "session_id": {"type": "string"},
+        "coalesced_count": {"type": "integer"},
     },
     "effect:vm:exec": {
         "success": {"type": "boolean"},

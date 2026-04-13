@@ -581,7 +581,8 @@ without exposing provider credentials in the VM.
 
 ### Host heartbeat worker
 
-- Feedback polling now runs on the host via `agent-sandbox-cli host-heartbeat` (typically managed by `agent-sandbox-host-heartbeat.service`).
+- `agent-sandbox-cli host-heartbeat` is now limited to Discord inbox wakeups, scheduled resumes, and legacy non-ADO feedback paths.
+- Azure DevOps PR feedback ingestion is owned by `agent-sandbox-ado-worker`, which writes `runtime/pr-feedback-store.json` and publishes `trigger:pull-request:new-feedback` events directly.
 - Recommended service lifecycle commands:
   - `sudo systemctl start agent-sandbox-host-heartbeat.service`
   - `sudo systemctl stop agent-sandbox-host-heartbeat.service`
@@ -613,7 +614,7 @@ without exposing provider credentials in the VM.
   - edit existing wake: `agent-sandbox-cli wake-schedules edit <request-id> --cron "*/15 * * * *" --prompt "Updated prompt"`
   - delete wake: `agent-sandbox-cli wake-schedules delete <request-id>`
 - Agent control state is mirrored on the host in `runtime/host-agent-control-state.json`; the host heartbeat worker checks that file before probing or resuming a session so disabled agents stay ignored even when their VMs are powered off.
-- The host worker reads session manifests through runtime state and writes provider feedback/cursors to `runtime/pr-feedback-store.json`.
+- The host heartbeat worker still reads session manifests through runtime state for wake routing, but Azure DevOps PR feedback store updates now come from `agent-sandbox-ado-worker`.
 - Guests no longer run `agent-heartbeat.service` or `agent-heartbeat.timer` by default.
 - Provider bootstrap scripts default `ENABLE_GUEST_HEARTBEAT=0`, which disables the guest timer on bootstrap.
 - Set `ENABLE_GUEST_HEARTBEAT=1` during bootstrap to install and enable `agent-heartbeat.timer` inside the guest.
@@ -787,6 +788,9 @@ agent-sandbox-cli create-session real-session --runtime-dir runtime
   `agent-sandbox-cli poll-ado-backlog`.
 - The worker polls Azure DevOps work items in `Committed` state tagged `truman`, writes YAML
   payloads under `ADO_YAML_OUTPUT_DIR`, and invokes `scripts/setup_issue_vm.sh`.
+- The same worker now owns Azure DevOps PR feedback ingestion for configured PR streams; it
+  updates `runtime/pr-feedback-store.json` and publishes `trigger:pull-request:new-feedback`
+  events without depending on `agent-sandbox-host-heartbeat`.
 - A polled ADO work item is represented in the unified local issue store as a proxy issue
   (`source: proxy_azure_devops`) keyed by local issue number with remote linkage in
   `metadata.remote` and a last-seen cache in `metadata.proxy_cache`.
@@ -920,8 +924,9 @@ sudo journalctl -u agent-sandbox-trigger-orchestrator.service -f
   Microsoft Graph on the host and writes into the Teams message store consumed by trigger
   orchestration.
 - The ingest worker uses the same delegated Teams auth settings described above.
-- This polling path is independent from `agent-sandbox-host-heartbeat`; host-heartbeat remains the
-  feedback wakeup loop for PR/Discord resume behavior.
+- This polling path is independent from `agent-sandbox-host-heartbeat`; host-heartbeat now covers
+  Discord/scheduled wake behavior while Azure DevOps PR feedback ingestion stays with
+  `agent-sandbox-ado-worker`.
 
 Git hook ingestion path:
 

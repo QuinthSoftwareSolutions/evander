@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.effects.providers.base import EffectProviderBase
@@ -9,8 +11,8 @@ from agent_sandbox.effects.registry import (
     EffectProviderFactory,
     EffectProviderRegistry,
 )
-from agent_sandbox.events.models import AgentPromptEffectDefinition, VmCreateEffectDefinition
-from agent_sandbox.models import VmActionResult
+from agent_sandbox.events.models import AgentEnqueuePromptEffectDefinition, AgentPromptEffectDefinition, VmCreateEffectDefinition
+from agent_sandbox.models import SessionManifest, ToolName, VmActionResult
 
 
 class _ResolverStub:
@@ -22,6 +24,20 @@ class _ResolverStub:
 class _AdminServiceStub:
     create_vm_calls: list[dict[str, object]]
     resume_calls: list[dict[str, object]]
+
+    def __post_init__(self) -> None:
+        self.runtime = SimpleNamespace(
+            sessions=SimpleNamespace(
+                read_all=lambda: {
+                    "session-42": SessionManifest(
+                        session_id="session-42",
+                        vm_id="vm-42",
+                        allowed_tools=[ToolName.GET_AGENT_STATUS],
+                        expires_at=datetime.now(UTC) + timedelta(hours=1),
+                    )
+                }
+            )
+        )
 
     def create_vm(self, **kwargs):
         self.create_vm_calls.append(kwargs)
@@ -66,6 +82,7 @@ def test_default_registry_includes_all_known_effect_types() -> None:
         "effect:vm:start",
         "effect:vm:stop",
         "effect:agent:prompt",
+        "effect:agent:enqueue-prompt",
         "effect:vm:exec",
         "effect:vm:copy-files",
         "effect:vm:delete-files",
@@ -212,6 +229,27 @@ def test_agent_prompt_provider_emits_thread_id() -> None:
     assert admin_service.resume_calls[0]["target"] == "session-42"
     assert admin_service.resume_calls[0]["dispatch_id"] == output["dispatch_id"]
     assert admin_service.resume_calls[0]["resume_thread_id"] == "thread-123"
+
+
+def test_agent_enqueue_prompt_provider_dispatches_immediately_when_idle() -> None:
+    effect = AgentEnqueuePromptEffectDefinition(
+        id="effect-prompt",
+        display_name="Prompt",
+        type="effect:agent:enqueue-prompt",
+        prompt="continue",
+        session_id="session-42",
+        resume_thread_id="thread-123",
+    )
+    admin_service = _AdminServiceStub(create_vm_calls=[], resume_calls=[])
+    admin_service.list_vms = lambda include_inactive=True, vm_user="agent": []  # type: ignore[attr-defined]
+    factory = EffectProviderFactory(provider_config_resolver=_ResolverStub(), admin_service=admin_service)
+
+    provider = factory.build(effect)
+    output = provider.execute()
+
+    assert output["dispatch_id"].startswith("dispatch-effect-prompt-")
+    assert output["queued"] is False
+    assert admin_service.resume_calls[0]["target"] == "session-42"
 
 
 def test_agent_prompt_provider_passes_model_override() -> None:

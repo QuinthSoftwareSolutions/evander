@@ -42,6 +42,9 @@ class FeedbackStream:
     pr_id: str
 
 
+_HOST_HEARTBEAT_DISABLED_FEEDBACK_PROVIDERS = frozenset({"azure_devops"})
+
+
 @dataclass(frozen=True)
 class StreamSessionBinding:
     session_id: str
@@ -967,6 +970,8 @@ class HostHeartbeatWorker:
                         raw_stream,
                     )
                     continue
+                if not _host_heartbeat_manages_feedback_provider(parsed.provider):
+                    continue
                 key = (parsed.provider, parsed.repo, parsed.pr_id)
                 binding = StreamSessionBinding(
                     session_id=session.session_id,
@@ -989,6 +994,8 @@ class HostHeartbeatWorker:
                 )
 
         for key, raw_entry in _load_pr_map_entries(self.config.pr_map_path).items():
+            if not _host_heartbeat_manages_feedback_provider(key[0]):
+                continue
             if key in stream_index:
                 continue
             session_id = str(raw_entry.get("session_id", "")).strip()
@@ -1075,10 +1082,12 @@ class HostHeartbeatWorker:
             if isinstance(raw_streams, list):
                 for raw_stream in raw_streams:
                     parsed = _parse_stream(raw_stream)
-                    if parsed is not None:
+                    if parsed is not None and _host_heartbeat_manages_feedback_provider(parsed.provider):
                         collected[(parsed.provider, parsed.repo, parsed.pr_id)] = parsed
 
         for (provider, repo, pr_id), raw_entry in _load_pr_map_entries(self.config.pr_map_path).items():
+            if not _host_heartbeat_manages_feedback_provider(provider):
+                continue
             session_id = str(raw_entry.get("session_id", "")).strip()
             if session_id != binding.session_id:
                 continue
@@ -1183,6 +1192,10 @@ def _parse_stream(raw_stream: Any) -> FeedbackStream | None:
     if not provider or not repo or not pr_id:
         return None
     return FeedbackStream(provider=provider, repo=repo, pr_id=pr_id)
+
+
+def _host_heartbeat_manages_feedback_provider(provider: str) -> bool:
+    return provider not in _HOST_HEARTBEAT_DISABLED_FEEDBACK_PROVIDERS
 
 
 def _load_pr_map_entries(path: Path) -> dict[tuple[str, str, str], dict[str, Any]]:

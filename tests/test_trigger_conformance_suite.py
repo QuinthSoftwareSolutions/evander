@@ -125,11 +125,11 @@ def _trigger_adapter() -> TypeAdapter[TriggerDefinitionDiscriminated]:
                 "id": "teams",
                 "display_name": "Teams",
                 "type": "trigger:teams:new-message",
-                "channel_targets": ["team-a/channel-1"],
+                "targets": [{"target": "team-a/channel-1"}],
                 "user_ids": ["user-a"],
             },
             "trigger:teams:new-message",
-            "channel_targets",
+            "targets",
         ),
         (
             {
@@ -227,7 +227,7 @@ def test_conformance_schema_accepts_required_trigger_shapes(
                 "display_name": "Teams",
                 "type": "trigger:teams:new-message",
             },
-            "channel_targets",
+            "targets",
             "trigger:teams:new-message",
         ),
         (
@@ -467,14 +467,14 @@ def test_conformance_provider_payload_contracts_and_secret_redaction(
     teams = TeamsNewMessageTriggerProvider()
     teams.initialize(
         _trigger_adapter().validate_python(
-            {
-                "id": "teams",
-                "display_name": "Teams",
-                "type": "trigger:teams:new-message",
-                "channel_targets": ["team-a/channel-1"],
-                "user_ids": ["user-a"],
-            }
-        ),
+                {
+                    "id": "teams",
+                    "display_name": "Teams",
+                    "type": "trigger:teams:new-message",
+                    "targets": [{"target": "team-a/channel-1"}],
+                    "user_ids": ["user-a"],
+                }
+            ),
         TriggerRuntimeContext(resolved_config=config, env={}),
     )
     pr = PullRequestNewFeedbackTriggerProvider()
@@ -502,7 +502,7 @@ def test_conformance_provider_payload_contracts_and_secret_redaction(
     assert list(ticket_changed_events[0].payload.keys()) == ["ticket"]
     assert list(discord_events[0].payload.keys()) == ["message"]
     assert list(email_events[0].payload.keys()) == ["message"]
-    assert list(teams_events[0].payload.keys()) == ["message"]
+    assert teams_events[0].payload == {}
     assert set(pr_events[0].payload.keys()) == {"pr", "feedback"}
 
     for line in caplog.messages:
@@ -514,7 +514,7 @@ def test_conformance_provider_payload_contracts_and_secret_redaction(
         trigger_type="all",
         status="pass",
         coverage=["event/output contract verification", "provider behavior correctness"],
-        details="Trigger payload keys match contract and no secret values leak to logs.",
+        details="Trigger payload contracts match their schemas and no secret values leak to logs.",
     )
 
 
@@ -667,14 +667,14 @@ def test_conformance_directory_and_filter_scoping(tmp_path: Path, report_collect
     teams_provider = TeamsNewMessageTriggerProvider()
     teams_provider.initialize(
         _trigger_adapter().validate_python(
-            {
-                "id": "teams-filtered",
-                "display_name": "Teams",
-                "type": "trigger:teams:new-message",
-                "channel_targets": ["team-a/channel-1"],
-                "user_ids": ["user-a"],
-            }
-        ),
+                {
+                    "id": "teams-filtered",
+                    "display_name": "Teams",
+                    "type": "trigger:teams:new-message",
+                    "targets": [{"target": "team-a/channel-1"}],
+                    "user_ids": ["user-a"],
+                }
+            ),
         _build_runtime_context(runtime_dir),
     )
 
@@ -687,7 +687,7 @@ def test_conformance_directory_and_filter_scoping(tmp_path: Path, report_collect
     assert len(discord_events) == 1
     assert discord_events[0].payload["message"]["channel_id"] == "chan-a"
     assert len(teams_events) == 1
-    assert teams_events[0].payload["message"]["channel_id"] == "channel-1"
+    assert teams_events[0].payload == {}
 
     _record_result(
         report_collector,

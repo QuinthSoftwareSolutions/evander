@@ -27,13 +27,15 @@ def _trigger_definition() -> TeamsNewMessageTriggerDefinition:
             "id": "teams-trigger",
             "display_name": "Teams new message",
             "type": "trigger:teams:new-message",
-            "channel_targets": ["team-a/channel-1"],
+            "targets": [{"target": "team-a/channel-1"}],
             "user_ids": ["user-a"],
         }
     )
 
 
-def test_teams_trigger_emits_each_matching_message_once_and_persists_cursor(tmp_path: Path) -> None:
+def test_teams_trigger_emits_once_per_poll_when_any_matching_messages_arrive_and_persists_cursor(
+    tmp_path: Path,
+) -> None:
     context = _runtime_context(tmp_path)
     store = TeamsInboxStore(context.resolved_config.runtime_dir / "teams-inbox-store.json")
     created_at = datetime(2026, 4, 9, 9, 30, tzinfo=UTC)
@@ -95,15 +97,12 @@ def test_teams_trigger_emits_each_matching_message_once_and_persists_cursor(tmp_
     third = provider.poll()
     fourth = provider.poll()
 
-    assert [event.event_id for event in first] == [
-        "teams-trigger:team-a/channel-1/msg-1",
-        "teams-trigger:team-a/channel-1/msg-2",
-    ]
+    assert [event.event_id for event in first] == ["teams-trigger:team-a/channel-1/msg-2"]
     assert second == []
     assert [event.event_id for event in third] == ["teams-trigger:team-a/channel-1/msg-3"]
     assert fourth == []
-    assert first[0].payload["message"]["cursor"] == "team-a/channel-1/msg-1"
-    assert third[0].payload["message"]["content"] == "late arrival with same timestamp"
+    assert first[0].payload == {}
+    assert third[0].payload == {}
 
     cursor_payload = json.loads(
         (context.resolved_config.runtime_dir / "trigger-cursors-teams.json").read_text(encoding="utf-8")
@@ -165,5 +164,235 @@ def test_teams_trigger_filters_by_channel_target_and_user(tmp_path: Path) -> Non
     events = provider.poll()
 
     assert len(events) == 1
-    assert events[0].payload["message"]["cursor"] == "team-a/channel-1/msg-1"
-    assert events[0].payload["message"]["author_id"] == "user-a"
+    assert events[0].event_id == "teams-trigger:team-a/channel-1/msg-1"
+    assert events[0].payload == {}
+
+
+def test_teams_trigger_message_filter_matches_content_case_insensitively(tmp_path: Path) -> None:
+    context = _runtime_context(tmp_path)
+    store = TeamsInboxStore(context.resolved_config.runtime_dir / "teams-inbox-store.json")
+    for message in (
+        TeamsInboxMessage(
+            cursor="chat:19:abc@thread.v2/msg-1",
+            message_id="msg-1",
+            author_id="user-a",
+            author_name="User A",
+            chat_id="19:abc@thread.v2",
+            content="hello @Truman Bot",
+            created_at=datetime(2026, 4, 9, 10, 0, tzinfo=UTC),
+            metadata={"source": "teams_graph_api", "chat_id": "19:abc@thread.v2"},
+        ),
+        TeamsInboxMessage(
+            cursor="chat:19:abc@thread.v2/msg-2",
+            message_id="msg-2",
+            author_id="user-a",
+            author_name="User A",
+            chat_id="19:abc@thread.v2",
+            content="hello someone else",
+            created_at=datetime(2026, 4, 9, 10, 1, tzinfo=UTC),
+            metadata={"source": "teams_graph_api", "chat_id": "19:abc@thread.v2"},
+        ),
+    ):
+        store.add_message_if_new(message)
+
+    provider = TeamsNewMessageTriggerProvider()
+    provider.initialize(
+        TeamsNewMessageTriggerDefinition.model_validate(
+            {
+                "id": "teams-trigger",
+                "display_name": "Teams new message",
+                "type": "trigger:teams:new-message",
+                "targets": [
+                    {
+                        "target": "chat:19:abc@thread.v2",
+                        "message_filter": {
+                            "content": {
+                                "contains": "@truman bot",
+                                "case_sensitive": False,
+                            }
+                        },
+                    }
+                ],
+            }
+        ),
+        context,
+    )
+
+    events = provider.poll()
+
+    assert [event.event_id for event in events] == ["teams-trigger:chat:19:abc@thread.v2/msg-1"]
+    assert events[0].payload == {}
+
+
+def test_teams_trigger_message_filter_matches_mentions_by_user_id(tmp_path: Path) -> None:
+    context = _runtime_context(tmp_path)
+    store = TeamsInboxStore(context.resolved_config.runtime_dir / "teams-inbox-store.json")
+    for message in (
+        TeamsInboxMessage(
+            cursor="chat:19:abc@thread.v2/msg-1",
+            message_id="msg-1",
+            author_id="user-a",
+            author_name="User A",
+            chat_id="19:abc@thread.v2",
+            content="<p><at id=\"0\">Truman</at>&nbsp;<at id=\"1\">Bot</at>&nbsp;Welcome</p>",
+            created_at=datetime(2026, 4, 9, 10, 0, tzinfo=UTC),
+            metadata={
+                "source": "teams_graph_api",
+                "chat_id": "19:abc@thread.v2",
+                "message": {
+                    "mentions": [
+                        {
+                            "id": 0,
+                            "mentionText": "Truman",
+                            "mentioned": {
+                                "user": {
+                                    "id": "143e5b02-868f-4f0c-a262-cf509b6c09e5",
+                                }
+                            },
+                        },
+                        {
+                            "id": 1,
+                            "mentionText": "Bot",
+                            "mentioned": {
+                                "user": {
+                                    "id": "143e5b02-868f-4f0c-a262-cf509b6c09e5",
+                                }
+                            },
+                        },
+                    ]
+                },
+            },
+        ),
+        TeamsInboxMessage(
+            cursor="chat:19:abc@thread.v2/msg-2",
+            message_id="msg-2",
+            author_id="user-a",
+            author_name="User A",
+            chat_id="19:abc@thread.v2",
+            content="hello someone else",
+            created_at=datetime(2026, 4, 9, 10, 1, tzinfo=UTC),
+            metadata={"source": "teams_graph_api", "chat_id": "19:abc@thread.v2", "message": {"mentions": []}},
+        ),
+    ):
+        store.add_message_if_new(message)
+
+    provider = TeamsNewMessageTriggerProvider()
+    provider.initialize(
+        TeamsNewMessageTriggerDefinition.model_validate(
+            {
+                "id": "teams-trigger",
+                "display_name": "Teams new message",
+                "type": "trigger:teams:new-message",
+                "targets": [
+                    {
+                        "target": "chat:19:abc@thread.v2",
+                        "message_filter": {
+                            "mentions": {
+                                "user_ids": ["143e5b02-868f-4f0c-a262-cf509b6c09e5"],
+                            }
+                        },
+                    }
+                ],
+            }
+        ),
+        context,
+    )
+
+    events = provider.poll()
+
+    assert [event.event_id for event in events] == ["teams-trigger:chat:19:abc@thread.v2/msg-1"]
+    assert events[0].payload == {}
+
+
+def test_teams_trigger_message_filter_can_exclude_all_messages(tmp_path: Path) -> None:
+    context = _runtime_context(tmp_path)
+    store = TeamsInboxStore(context.resolved_config.runtime_dir / "teams-inbox-store.json")
+    store.add_message_if_new(
+        TeamsInboxMessage(
+            cursor="chat:19:abc@thread.v2/msg-1",
+            message_id="msg-1",
+            author_id="user-a",
+            author_name="User A",
+            chat_id="19:abc@thread.v2",
+            content="hello someone else",
+            created_at=datetime(2026, 4, 9, 10, 0, tzinfo=UTC),
+            metadata={"source": "teams_graph_api", "chat_id": "19:abc@thread.v2"},
+        )
+    )
+
+    provider = TeamsNewMessageTriggerProvider()
+    provider.initialize(
+        TeamsNewMessageTriggerDefinition.model_validate(
+            {
+                "id": "teams-trigger",
+                "display_name": "Teams new message",
+                "type": "trigger:teams:new-message",
+                "targets": [
+                    {
+                        "target": "chat:19:abc@thread.v2",
+                        "message_filter": {
+                            "mentions": {
+                                "user_ids": ["143e5b02-868f-4f0c-a262-cf509b6c09e5"],
+                            }
+                        },
+                    }
+                ],
+            }
+        ),
+        context,
+    )
+
+    assert provider.poll() == []
+
+
+def test_teams_trigger_targets_can_apply_different_filters_per_target(tmp_path: Path) -> None:
+    context = _runtime_context(tmp_path)
+    store = TeamsInboxStore(context.resolved_config.runtime_dir / "teams-inbox-store.json")
+    for message in (
+        TeamsInboxMessage(
+            cursor="team-a/channel-1/msg-1",
+            message_id="msg-1",
+            author_id="user-a",
+            author_name="User A",
+            team_id="team-a",
+            channel_id="channel-1",
+            thread_id="msg-1",
+            content="plain channel message",
+            created_at=datetime(2026, 4, 9, 10, 0, tzinfo=UTC),
+            metadata={"source": "teams_graph_api", "team_id": "team-a", "channel_id": "channel-1"},
+        ),
+        TeamsInboxMessage(
+            cursor="chat:19:abc@thread.v2/msg-2",
+            message_id="msg-2",
+            author_id="user-a",
+            author_name="User A",
+            chat_id="19:abc@thread.v2",
+            content="hello someone else",
+            created_at=datetime(2026, 4, 9, 10, 1, tzinfo=UTC),
+            metadata={"source": "teams_graph_api", "chat_id": "19:abc@thread.v2"},
+        ),
+    ):
+        store.add_message_if_new(message)
+
+    provider = TeamsNewMessageTriggerProvider()
+    provider.initialize(
+        TeamsNewMessageTriggerDefinition.model_validate(
+            {
+                "id": "teams-trigger",
+                "display_name": "Teams new message",
+                "type": "trigger:teams:new-message",
+                "targets": [
+                    {"target": "team-a/channel-1"},
+                    {
+                        "target": "chat:19:abc@thread.v2",
+                        "message_filter": {"mentions": {"user_ids": ["143e5b02-868f-4f0c-a262-cf509b6c09e5"]}},
+                    },
+                ],
+            }
+        ),
+        context,
+    )
+
+    events = provider.poll()
+
+    assert [event.event_id for event in events] == ["teams-trigger:team-a/channel-1/msg-1"]

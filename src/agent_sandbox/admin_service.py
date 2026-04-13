@@ -489,7 +489,22 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         type="trigger:teams:new-message",
         label="Teams message",
         fields=[
-            _field("channel_targets", "Channel targets", "string_list", required=True, placeholder="team-id/channel-id or chat:<chat-id>"),
+            _field(
+                "targets",
+                "Targets",
+                "object_list",
+                required=True,
+                description="Teams targets with optional per-target message filters.",
+                item_fields=[
+                    _field("target", "Target", "string", required=True, placeholder="team-id/channel-id or chat:<chat-id>"),
+                    _field(
+                        "message_filter",
+                        "Message filter",
+                        "json",
+                        description='Optional per-target wake filter, for example {"mentions":{"user_ids":["aad-user-id"]}} or {"content":{"contains":"literal text","case_sensitive":false}}.',
+                    ),
+                ],
+            ),
             _field("user_ids", "User IDs", "string_list"),
         ],
     ),
@@ -738,6 +753,20 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                     _field_option("on_completion", "On completion"),
                 ],
             ),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="effect",
+        type="effect:agent:enqueue-prompt",
+        label="Agent enqueue prompt",
+        fields=[
+            _field("target", "Target", "string", bindable=True),
+            _field("session_id", "Session ID", "string", bindable=True),
+            _field("vm_name", "VM name", "string", bindable=True),
+            _field("prompt", "Prompt", "string", required=True, bindable=True, multiline=True),
+            _field("model", "Model", "string", bindable=True),
+            _field("vm_user", "VM user", "string", bindable=True),
+            _field("resume_thread_id", "Resume thread ID", "string", bindable=True),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(
@@ -1912,10 +1941,12 @@ def _remote_shell_script(
     return "\n".join(script_lines) + "\n"
 
 
-def _probe_agent_state(vm_name: str, vm_ip: str, vm_user: str) -> tuple[str, list[str], datetime | None, str | None]:
+def _probe_agent_state(
+    vm_name: str, vm_ip: str, vm_user: str
+) -> tuple[str, list[str], datetime | None, str | None, int | None]:
     ssh_private_key_path = _resolve_private_key_path()
     if ssh_private_key_path is None:
-        return "unknown", [], None
+        return "unknown", [], None, None, None
 
     remote_script = r"""
 set -euo pipefail
@@ -1978,6 +2009,7 @@ shopt -s nullglob
 active_entries=()
 newest_updated_at="${control_updated_at}"
 newest_dispatch_id=""
+active_pid=""
 found_any_state=0
 for state_path in "${LOG_DIR}"/agent-*.state; do
   found_any_state=1
@@ -1999,6 +2031,9 @@ for state_path in "${LOG_DIR}"/agent-*.state; do
   name="${name#agent-}"
   name="${name%.state}"
   active_entries+=("${name}")
+  if [[ -z "${active_pid}" ]]; then
+    active_pid="${pid}"
+  fi
 done
 codex_state_path="${LOG_DIR}/codex-resume-last.state"
 if [[ -f "${codex_state_path}" ]]; then
@@ -2013,6 +2048,9 @@ if [[ -f "${codex_state_path}" ]]; then
   fi
   if [[ "${status}" == "running" ]] && ( state_is_fresh "${updated_at}" || is_active_agent_pid "${pid}" ); then
     active_entries+=("codex-heartbeat")
+    if [[ -z "${active_pid}" ]]; then
+      active_pid="${pid}"
+    fi
   fi
 fi
 shopt -u nullglob
@@ -2021,18 +2059,19 @@ if [[ ${#active_entries[@]} -gt 0 ]]; then
   repos_json="$(printf '%s\n' "${active_entries[@]}" | python3 -c 'import json,sys; print(json.dumps([line.strip() for line in sys.stdin if line.strip()]))')"
   updated_json="$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1] or None))' "${newest_updated_at}")"
   dispatch_json="$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1] or None))' "${newest_dispatch_id}")"
-  printf '{"state":"running","repos":%s,"updated_at":%s,"dispatch_id":%s}\n' "${repos_json}" "${updated_json}" "${dispatch_json}"
+  pid_json="$(python3 -c 'import json,sys; value=sys.argv[1].strip(); print(json.dumps(int(value) if value.isdigit() else None))' "${active_pid}")"
+  printf '{"state":"running","repos":%s,"updated_at":%s,"dispatch_id":%s,"pid":%s}\n' "${repos_json}" "${updated_json}" "${dispatch_json}" "${pid_json}"
   exit 0
 fi
 
 if [[ "${found_any_state}" == "1" || -n "${control_updated_at}" ]]; then
-  printf '{"state":"idle","repos":[],"updated_at":%s,"dispatch_id":%s}\n' \
+  printf '{"state":"idle","repos":[],"updated_at":%s,"dispatch_id":%s,"pid":null}\n' \
     "$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1] or None))' "${newest_updated_at}")" \
     "$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1] or None))' "${newest_dispatch_id}")"
   exit 0
 fi
 
-printf '{"state":"not_started","repos":[],"updated_at":null,"dispatch_id":null}\n'
+printf '{"state":"not_started","repos":[],"updated_at":null,"dispatch_id":null,"pid":null}\n'
 """
 
     result = _run_subprocess(
@@ -2043,17 +2082,18 @@ printf '{"state":"not_started","repos":[],"updated_at":null,"dispatch_id":null}\
         input=remote_script,
     )
     if result.returncode != 0:
-        return "unknown", [], None, None
+        return "unknown", [], None, None, None
     try:
         payload = json.loads((result.stdout or "").strip() or "{}")
     except json.JSONDecodeError:
-        return "unknown", [], None, None
+        return "unknown", [], None, None, None
     updated_at = payload.get("updated_at")
     return (
         str(payload.get("state") or "unknown"),
         [str(item) for item in payload.get("repos", []) if str(item).strip()],
         datetime.fromisoformat(updated_at) if isinstance(updated_at, str) and updated_at else None,
         str(payload.get("dispatch_id")).strip() if payload.get("dispatch_id") is not None and str(payload.get("dispatch_id")).strip() else None,
+        int(payload["pid"]) if isinstance(payload.get("pid"), int) else None,
     )
 
 
@@ -3143,6 +3183,137 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
         return self._run_script(
             "set_issue_agent_state.sh",
             ["--state", "disable", "--vm-name", vm_name, "--vm-user", vm_user, "--host-state-path", str(self.config.host_agent_control_state_path)],
+        )
+
+    def kill_agent(self, target: str, pid: int, *, vm_user: str = "agent") -> VmActionResult:
+        sessions = self.runtime.sessions.read_all()
+        vm_name = _resolve_vm_name_from_target(target, sessions)
+        if pid <= 0:
+            return VmActionResult(
+                success=False,
+                vm_name=vm_name,
+                action="kill_agent",
+                message=f"Invalid agent pid: {pid}",
+            )
+        current_state = _dominfo_field(vm_name, "State")
+        if current_state is None:
+            return VmActionResult(success=False, vm_name=vm_name, action="kill_agent", message=f"VM not found: {vm_name}")
+        if current_state != "running":
+            return VmActionResult(
+                success=False,
+                vm_name=vm_name,
+                action="kill_agent",
+                message=f"VM is not running: {vm_name}",
+            )
+        try:
+            vm_ip, ssh_private_key_path = _resolve_vm_ssh_access(vm_name, vm_user)
+        except RuntimeError as exc:
+            return VmActionResult(success=False, vm_name=vm_name, action="kill_agent", message=str(exc))
+
+        remote_script = r"""
+set -euo pipefail
+
+TARGET_PID="${TARGET_PID:-}"
+LOG_DIR="${HOME}/.agent-sandbox"
+
+is_valid_agent_pid() {
+  local pid="$1"
+  local cmdline_path="/proc/${pid}/cmdline"
+  local cmdline=""
+
+  [[ -n "${pid}" && "${pid}" =~ ^[0-9]+$ ]] || return 1
+  kill -0 "${pid}" >/dev/null 2>&1 || return 1
+  [[ -r "${cmdline_path}" ]] || return 1
+  cmdline="$(tr '\000' ' ' < "${cmdline_path}" 2>/dev/null || true)"
+  [[ -n "${cmdline}" ]] || return 1
+  [[ "${cmdline}" == *"agent_runner_exec"* || "${cmdline}" == *"agent_runner_resume_last"* ]]
+}
+
+read_state_value() {
+  local state_path="$1"
+  local key="$2"
+  [[ -f "${state_path}" ]] || return 1
+  awk -F= -v target_key="${key}" '$1 == target_key {print substr($0, index($0, "=") + 1); exit}' "${state_path}" 2>/dev/null
+}
+
+write_idle_state() {
+  local state_path="$1"
+  local repo_name="$2"
+  local dispatch_id="$3"
+  local now tmp_path
+
+  now="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  tmp_path="${state_path}.tmp"
+  {
+    printf "status=idle\n"
+    printf "phase=terminated_by_admin\n"
+    printf "repo=%s\n" "${repo_name}"
+    printf "pid=%s\n" "${TARGET_PID}"
+    printf "updated_at=%s\n" "${now}"
+    if [[ -n "${dispatch_id}" ]]; then
+      printf "dispatch_id=%s\n" "${dispatch_id}"
+    fi
+    printf "exit_code=143\n"
+  } > "${tmp_path}"
+  mv "${tmp_path}" "${state_path}"
+}
+
+remove_matching_pid_file() {
+  local pid_file="$1"
+  local file_pid=""
+  [[ -f "${pid_file}" ]] || return 0
+  file_pid="$(cat "${pid_file}" 2>/dev/null || true)"
+  if [[ "${file_pid}" == "${TARGET_PID}" ]]; then
+    rm -f "${pid_file}"
+  fi
+}
+
+if ! is_valid_agent_pid "${TARGET_PID}"; then
+  echo "Guest agent pid is not active or not managed by agent-sandbox: ${TARGET_PID}" >&2
+  exit 1
+fi
+
+matched_states=()
+shopt -s nullglob
+for state_path in "${LOG_DIR}"/agent-*.state "${LOG_DIR}/codex-resume-last.state"; do
+  state_pid="$(read_state_value "${state_path}" "pid" || true)"
+  if [[ "${state_pid}" == "${TARGET_PID}" ]]; then
+    matched_states+=("${state_path}")
+  fi
+done
+
+kill "${TARGET_PID}" >/dev/null 2>&1 || true
+sleep 1
+if kill -0 "${TARGET_PID}" >/dev/null 2>&1; then
+  kill -9 "${TARGET_PID}" >/dev/null 2>&1 || true
+fi
+
+for state_path in "${matched_states[@]}"; do
+  repo_name="$(read_state_value "${state_path}" "repo" || true)"
+  dispatch_id="$(read_state_value "${state_path}" "dispatch_id" || true)"
+  write_idle_state "${state_path}" "${repo_name}" "${dispatch_id}"
+done
+
+for pid_file in "${LOG_DIR}"/agent-*.pid "${LOG_DIR}/codex-heartbeat.pid"; do
+  remove_matching_pid_file "${pid_file}"
+done
+shopt -u nullglob
+
+printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@]}"
+"""
+        completed = _run_subprocess(
+            ["ssh", *_ssh_options(vm_name, vm_ip, ssh_private_key_path), f"{vm_user}@{vm_ip}", "env", f"TARGET_PID={pid}", "bash", "-s"],
+            capture_output=True,
+            text=True,
+            timeout=20.0,
+            input=remote_script,
+        )
+        message = (completed.stdout or completed.stderr or "").strip()
+        return VmActionResult(
+            success=completed.returncode == 0,
+            vm_name=vm_name,
+            action="kill_agent",
+            message=message or f"kill_agent exited with code {completed.returncode}",
         )
 
     def resume_agent(

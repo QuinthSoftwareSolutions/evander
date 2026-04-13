@@ -1397,6 +1397,147 @@ def test_agent_prompt_on_completion_releases_downstream_effect_without_await_gat
     assert by_effect["effect-2"]["resolved_config"]["prompt"] == "Write post-exec summary for vm-issue-42"
 
 
+def test_agent_enqueue_prompt_queues_when_target_agent_is_running(tmp_path: Path, monkeypatch) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {"id": "trigger-1", "display_name": "Tick", "type": "trigger:cron", "expression": "* * * * *"}
+            ],
+            "effects": [
+                {
+                    "id": "effect-1",
+                    "display_name": "Enqueue",
+                    "type": "effect:agent:enqueue-prompt",
+                    "vm_name": "vm-1",
+                    "prompt": "hello",
+                }
+            ],
+            "edges": [_edge("trigger-1", "effect-1")],
+        }
+    )
+    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    monkeypatch.setattr(
+        worker.provider_factory.admin_service,
+        "list_vms",
+        lambda include_inactive=True, vm_user="agent": [
+            VmSummary(
+                vm_name="vm-1",
+                libvirt_state="running",
+                agent_state="running",
+                session_ids=[],
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        worker.provider_factory.admin_service,
+        "resume_agent",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("resume_agent should not be called while busy")),
+    )
+
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="event-enqueue-1",
+            trigger_id="trigger-1",
+            trigger_type="trigger:cron",
+            occurred_at=datetime(2026, 4, 4, 12, 0, tzinfo=timezone.utc),
+            payload={},
+            trace_id="trace-enqueue-1",
+        )
+    )
+
+    for _ in range(3):
+        worker.run_once()
+
+    effect_payload = json.loads((runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8"))
+    only = next(iter(effect_payload.values()))
+    assert only["status"] == "succeeded"
+    assert only["outputs"]["queued"] is True
+    queued_payload = json.loads((runtime_dir / "queued-agent-prompts.json").read_text(encoding="utf-8"))
+    assert "vm-1" in queued_payload
+
+
+def test_agent_enqueue_prompt_dispatches_queued_prompt_when_target_agent_becomes_idle(tmp_path: Path, monkeypatch) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {"id": "trigger-1", "display_name": "Tick", "type": "trigger:cron", "expression": "* * * * *"}
+            ],
+            "effects": [
+                {
+                    "id": "effect-1",
+                    "display_name": "Enqueue",
+                    "type": "effect:agent:enqueue-prompt",
+                    "vm_name": "vm-1",
+                    "prompt": "hello",
+                }
+            ],
+            "edges": [_edge("trigger-1", "effect-1")],
+        }
+    )
+    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    summaries = [
+        [
+            VmSummary(
+                vm_name="vm-1",
+                libvirt_state="running",
+                agent_state="running",
+                session_ids=[],
+            )
+        ],
+        [
+            VmSummary(
+                vm_name="vm-1",
+                libvirt_state="running",
+                agent_state="idle",
+                session_ids=[],
+            )
+        ],
+    ]
+    monkeypatch.setattr(
+        worker.provider_factory.admin_service,
+        "list_vms",
+        lambda **kwargs: summaries.pop(0) if summaries else [],
+    )
+    resume_calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        worker.provider_factory.admin_service,
+        "resume_agent",
+        lambda **kwargs: resume_calls.append(kwargs)
+        or type("Result", (), {"success": True, "thread_id": "thread-queued"})(),
+    )
+
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="event-enqueue-1",
+            trigger_id="trigger-1",
+            trigger_type="trigger:cron",
+            occurred_at=datetime(2026, 4, 4, 12, 0, tzinfo=timezone.utc),
+            payload={},
+            trace_id="trace-enqueue-1",
+        )
+    )
+
+    worker.run_once()
+    worker.run_once()
+    worker.run_once()
+
+    assert len(resume_calls) == 1
+    assert resume_calls[0]["target"] == "vm-1"
+    queued_store_path = runtime_dir / "queued-agent-prompts.json"
+    queued_payload = json.loads(queued_store_path.read_text(encoding="utf-8")) if queued_store_path.exists() else {}
+    assert queued_payload == {}
+
+
 def test_filter_gate_when_drops_payload_when_predicate_is_false(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)

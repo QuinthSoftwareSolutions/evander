@@ -47,7 +47,12 @@ class AgentPromptEffectProvider(EffectProviderBase):
         )
         thread_id = self._normalize_optional_string(getattr(result, "thread_id", None))
         if not thread_id:
-            raise RuntimeError("effect:agent:prompt did not receive a thread_id from resume_agent")
+            result_success = bool(getattr(result, "success", False))
+            result_message = self._normalize_optional_string(getattr(result, "message", None)) or "<empty>"
+            raise RuntimeError(
+                "effect:agent:prompt did not receive a thread_id from resume_agent "
+                f"(success={result_success}, message={result_message})"
+            )
         return {
             "dispatch_id": dispatch_id,
             "thread_id": thread_id,

@@ -62,6 +62,16 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
     assert [field["key"] for field in issue_state["fields"]] == ["issue_id", "state", "sync_proxy_cache"]
     agent_prompt = next(node for node in catalog_payload["nodes"] if node["type"] == "effect:agent:prompt")
     assert any(field["key"] == "model" and field["bindable"] for field in agent_prompt["fields"])
+    agent_enqueue_prompt = next(node for node in catalog_payload["nodes"] if node["type"] == "effect:agent:enqueue-prompt")
+    assert [field["key"] for field in agent_enqueue_prompt["fields"]] == [
+        "target",
+        "session_id",
+        "vm_name",
+        "prompt",
+        "model",
+        "vm_user",
+        "resume_thread_id",
+    ]
     output_mode = next(field for field in agent_prompt["fields"] if field["key"] == "output_mode")
     assert output_mode["options"] == [
         {"value": "immediate", "label": "Immediate"},
@@ -72,7 +82,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
     review_request = next(node for node in catalog_payload["nodes"] if node["type"] == "trigger:review:new-request")
     assert review_request["fields"] == []
     teams_message = next(node for node in catalog_payload["nodes"] if node["type"] == "trigger:teams:new-message")
-    assert [field["key"] for field in teams_message["fields"]] == ["channel_targets", "user_ids"]
+    assert [field["key"] for field in teams_message["fields"]] == ["targets", "user_ids"]
     await_agent = next(node for node in catalog_payload["nodes"] if node["type"] == "gate:await-agent")
     assert [field["key"] for field in await_agent["fields"]] == ["session_id", "vm_name", "outputs"]
     assert all(field["bindable"] for field in await_agent["fields"][:2])

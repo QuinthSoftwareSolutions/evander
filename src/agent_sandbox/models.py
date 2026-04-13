@@ -220,6 +220,7 @@ class VmSummary(BaseModel):
     libvirt_state: str
     ip_address: str | None = None
     agent_state: str
+    agent_pid: int | None = None
     agent_repo_names: list[str] = Field(default_factory=list)
     last_state_update_at: datetime | None = None
     dispatch_id: str | None = None

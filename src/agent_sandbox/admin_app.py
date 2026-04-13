@@ -1278,6 +1278,9 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self.disable_agent_button = QPushButton("Disable")
         _set_standard_icon(self.disable_agent_button, "SP_DialogCancelButton")
         self.disable_agent_button.clicked.connect(self.handle_disable_selected_vm)
+        self.kill_agent_button = QPushButton("Kill Agent")
+        _set_standard_icon(self.kill_agent_button, "SP_BrowserStop")
+        self.kill_agent_button.clicked.connect(self.handle_kill_selected_vm_agent)
         self.resume_agent_button = QPushButton("Resume")
         _set_standard_icon(self.resume_agent_button, "SP_BrowserReload")
         self.resume_agent_button.clicked.connect(self.handle_resume_selected_vm)
@@ -1289,6 +1292,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             self.shutdown_vm_button,
             self.enable_agent_button,
             self.disable_agent_button,
+            self.kill_agent_button,
             self.resume_agent_button,
             self.destroy_vm_button,
         ):
@@ -1737,6 +1741,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
                 self.shutdown_vm_button,
                 self.enable_agent_button,
                 self.disable_agent_button,
+                self.kill_agent_button,
                 self.resume_agent_button,
                 self.destroy_vm_button,
             ):
@@ -1751,6 +1756,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         supports_agent_controls = bool(summary.vm_name) and summary.agent_state != "unknown"
         self.enable_agent_button.setVisible(supports_agent_controls and summary.agent_state == "disabled")
         self.disable_agent_button.setVisible(supports_agent_controls and summary.agent_state != "disabled")
+        self.kill_agent_button.setVisible(summary.agent_state == "running" and getattr(summary, "agent_pid", None) is not None)
         self.resume_agent_button.setVisible(supports_agent_controls and summary.agent_state != "disabled")
         self.destroy_vm_button.setVisible(True)
 
@@ -1858,6 +1864,17 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             f"Disable agent {summary.vm_name}",
             self.service.disable_agent,
             summary.vm_name,
+        )
+
+    def handle_kill_selected_vm_agent(self) -> None:
+        summary = self.selected_vm_summary()
+        if summary is None or summary.agent_pid is None:
+            return
+        self.run_action(
+            f"Kill agent {summary.vm_name} pid {summary.agent_pid}",
+            self.service.kill_agent,
+            summary.vm_name,
+            summary.agent_pid,
         )
 
     def handle_resume_selected_vm(self) -> None:

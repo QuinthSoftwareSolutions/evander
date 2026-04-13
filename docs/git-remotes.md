@@ -268,15 +268,16 @@ When combining Git push automation with PR feedback handling:
 ### Setup steps
 
 1. Complete Git remote setup (`bootstrap_git_vm.sh` + mirror/setup issue helper).
-2. Ensure the host heartbeat worker service is running so feedback polling runs continuously (`sudo systemctl status agent-sandbox-host-heartbeat.service`).
-3. Ensure session policy allows feedback tools for the target provider/repo/PR stream.
-4. In agent logic, post replies with `post_pr_feedback_reply(..., idempotency_key=...)` before `git push-agent` when feedback requires code changes.
+2. For Azure DevOps PR feedback, ensure `agent-sandbox-ado-worker` is running so feedback ingestion and trigger publication continue.
+3. Keep `agent-sandbox-host-heartbeat.service` only if you still need Discord inbox wakeups, scheduled resumes, or legacy non-ADO feedback polling.
+4. Ensure session policy allows feedback tools for the target provider/repo/PR stream.
+5. In agent logic, post replies with `post_pr_feedback_reply(..., idempotency_key=...)` before `git push-agent` when feedback requires code changes.
 
 ### Expected timing behavior
 
 - Git push/promotion remains event-driven (on push hooks).
-- Feedback pickup is host-worker-driven based on configured poll interval/jitter/cooldown, so comments may take up to one poll interval before updates begin.
-- The host worker only updates feedback state; guest execution remains explicit and idempotent via MCP tool flow.
+- Azure DevOps feedback pickup is ADO-worker-driven based on its configured poll interval, so comments may take up to one worker cycle before updates begin.
+- The ingest worker only updates feedback state and trigger events; guest execution remains explicit and idempotent via MCP tool flow.
 - `bootstrap_codex_vm.sh` defaults `ENABLE_GUEST_HEARTBEAT=0`, so new guests keep
   `agent-heartbeat.timer` disabled unless explicitly enabled for that agent.
 - If you enable the guest timer, set `GUEST_HEARTBEAT_PROMPT` when bootstrapping to control the

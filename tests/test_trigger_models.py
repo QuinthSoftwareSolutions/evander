@@ -64,19 +64,64 @@ def test_teams_trigger_normalizes_filters() -> None:
             "id": "t-teams",
             "display_name": "Teams",
             "type": "trigger:teams:new-message",
-            "channel_targets": [" team-a/channel-1 ", "", "team-b/channel-9/"],
+            "targets": [{"target": " team-a/channel-1 "}, {"target": "team-b/channel-9/"}],
             "user_ids": " user-a ",
         }
     )
 
-    assert trigger.channel_targets == ["team-a/channel-1", "team-b/channel-9"]
+    assert [item.target for item in trigger.targets] == ["team-a/channel-1", "team-b/channel-9"]
     assert trigger.user_ids == ["user-a"]
 
 
-def test_teams_trigger_requires_channel_targets() -> None:
+def test_teams_trigger_accepts_per_target_message_filter() -> None:
     adapter = TypeAdapter(TriggerDefinitionDiscriminated)
 
-    with pytest.raises(ValueError, match="channel_targets"):
+    trigger = adapter.validate_python(
+        {
+            "id": "t-teams",
+            "display_name": "Teams",
+            "type": "trigger:teams:new-message",
+            "targets": [
+                {
+                    "target": "chat:19:abc@thread.v2",
+                    "message_filter": {
+                        "mentions": {
+                            "user_ids": [" 143e5b02-868f-4f0c-a262-cf509b6c09e5 "]
+                        }
+                    },
+                }
+            ],
+        }
+    )
+
+    assert trigger.targets[0].message_filter is not None
+    assert trigger.targets[0].message_filter.mentions is not None
+    assert trigger.targets[0].message_filter.mentions.user_ids == ["143e5b02-868f-4f0c-a262-cf509b6c09e5"]
+
+
+def test_teams_trigger_message_filter_requires_content_or_mentions() -> None:
+    adapter = TypeAdapter(TriggerDefinitionDiscriminated)
+
+    with pytest.raises(ValueError, match="content or mentions"):
+        adapter.validate_python(
+            {
+                "id": "t-teams",
+                "display_name": "Teams",
+                "type": "trigger:teams:new-message",
+                "targets": [
+                    {
+                        "target": "chat:19:abc@thread.v2",
+                        "message_filter": {},
+                    }
+                ],
+            }
+        )
+
+
+def test_teams_trigger_requires_targets() -> None:
+    adapter = TypeAdapter(TriggerDefinitionDiscriminated)
+
+    with pytest.raises(ValueError, match="targets"):
         adapter.validate_python(
             {
                 "id": "t-teams-missing",

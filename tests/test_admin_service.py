@@ -341,7 +341,7 @@ def test_list_vms_collects_session_and_agent_state(tmp_path: Path, monkeypatch) 
     )
     monkeypatch.setattr(
         "agent_sandbox.admin_service._probe_agent_state",
-        lambda vm_name, vm_ip, vm_user: ("running", ["repo-one"], datetime.now(UTC), None),
+        lambda vm_name, vm_ip, vm_user: ("running", ["repo-one"], datetime.now(UTC), None, 4321),
     )
 
     summaries = service.list_vms(include_inactive=True)
@@ -350,8 +350,10 @@ def test_list_vms_collects_session_and_agent_state(tmp_path: Path, monkeypatch) 
     assert summaries[0].issue_number == "123"
     assert summaries[0].session_ids == ["issue-123-session"]
     assert summaries[0].agent_state == "running"
+    assert summaries[0].agent_pid == 4321
     assert summaries[0].agent_repo_names == ["repo-one"]
     assert summaries[1].agent_state == "inactive_vm"
+    assert summaries[1].agent_pid is None
 
 
 def test_list_vms_marks_inactive_vm_disabled_from_host_control_state(tmp_path: Path, monkeypatch) -> None:
@@ -564,12 +566,13 @@ def test_probe_agent_state_accepts_codex_resume_state(tmp_path: Path, monkeypatc
 
     monkeypatch.setattr("agent_sandbox.admin_service._run_subprocess", _fake_run_subprocess)
 
-    state, repos, updated_at, dispatch_id = admin_service._probe_agent_state("bug-finder-vm", "192.168.122.11", "agent")
+    state, repos, updated_at, dispatch_id, pid = admin_service._probe_agent_state("bug-finder-vm", "192.168.122.11", "agent")
 
     assert state == "running"
     assert repos == ["codex-heartbeat"]
     assert updated_at == datetime(2026, 3, 29, 12, 6, 53, tzinfo=UTC)
     assert dispatch_id is None
+    assert pid is None
     remote_script = str(captured["input"])
     assert 'codex_state_path="${LOG_DIR}/codex-resume-last.state"' in remote_script
     assert 'active_entries+=("codex-heartbeat")' in remote_script
@@ -2710,13 +2713,50 @@ def test_list_vms_surfaces_shared_session_labels(tmp_path: Path, monkeypatch: An
     monkeypatch.setattr("agent_sandbox.admin_service._resolve_vm_ip", lambda vm_name: "192.0.2.10")
     monkeypatch.setattr(
         "agent_sandbox.admin_service._probe_agent_state",
-        lambda vm_name, vm_ip, vm_user: ("idle", ["sample-repo"], datetime(2026, 4, 5, 12, 0, tzinfo=UTC), None),
+        lambda vm_name, vm_ip, vm_user: ("idle", ["sample-repo"], datetime(2026, 4, 5, 12, 0, tzinfo=UTC), None, None),
     )
 
     summaries = service.list_vms()
 
     assert len(summaries) == 1
     assert summaries[0].labels == {"workflow": "issue-worker", "agent_role": "issue"}
+
+
+def test_kill_agent_terminates_selected_guest_pid(tmp_path: Path, monkeypatch) -> None:
+    service = AdminService(write_config(tmp_path))
+    monkeypatch.setattr("agent_sandbox.admin_service._dominfo_field", lambda vm_name, field_name: "running")
+    monkeypatch.setattr(
+        "agent_sandbox.admin_service._resolve_vm_ssh_access",
+        lambda vm_name, vm_user: ("192.168.122.10", Path("/tmp/test-key")),
+    )
+
+    captured: dict[str, object] = {}
+
+    def _fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        captured["cmd"] = cmd
+        captured["input"] = kwargs.get("input")
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="terminated pid=4321 state_files=1\n", stderr="")
+
+    monkeypatch.setattr("agent_sandbox.admin_service._run_subprocess", _fake_run)
+
+    result = service.kill_agent("vm-123", 4321)
+
+    assert result.success is True
+    assert result.vm_name == "vm-123"
+    assert result.action == "kill_agent"
+    assert result.message == "terminated pid=4321 state_files=1"
+    assert captured["cmd"] == [
+        "ssh",
+        *admin_service._ssh_options("vm-123", "192.168.122.10", Path("/tmp/test-key")),
+        "agent@192.168.122.10",
+        "env",
+        "TARGET_PID=4321",
+        "bash",
+        "-s",
+    ]
+    remote_script = str(captured["input"])
+    assert 'write_idle_state "${state_path}" "${repo_name}" "${dispatch_id}"' in remote_script
+    assert 'for pid_file in "${LOG_DIR}"/agent-*.pid "${LOG_DIR}/codex-heartbeat.pid"; do' in remote_script
 
 
 def test_create_vm_with_repo_source_clones_repo_and_bootstraps_python(tmp_path: Path, monkeypatch: Any) -> None:
