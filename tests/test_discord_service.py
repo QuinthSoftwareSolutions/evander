@@ -422,10 +422,64 @@ def test_get_commands_cursor_restart_safe_ordering(
 def test_discord_service_contract_signatures_are_stable() -> None:
     get_commands_sig = signature(DiscordBotApiService.get_commands)
     post_status_sig = signature(DiscordBotApiService.post_status)
+    add_reaction_sig = signature(DiscordBotApiService.add_reaction)
 
     assert list(get_commands_sig.parameters) == ["self", "since_cursor"]
     assert get_commands_sig.parameters["since_cursor"].default is None
     assert list(post_status_sig.parameters) == ["self", "message", "channel_id", "session_id"]
+    assert list(add_reaction_sig.parameters) == [
+        "self",
+        "channel_id",
+        "message_id",
+        "emoji",
+        "session_id",
+    ]
+
+
+def test_add_reaction_success_returns_normalized_payload(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(204, request=request)
+
+    transport = httpx.MockTransport(handler)
+    patch_httpx_client(monkeypatch, transport)
+    service = make_service(tmp_path, transport)
+
+    result = service.add_reaction("chan-a", "msg-123", "✅", "session-1")
+
+    assert result == {
+        "status": "reacted",
+        "channel_id": "chan-a",
+        "session_id": "session-1",
+        "message_id": "msg-123",
+        "emoji": "✅",
+        "reaction": "✅",
+    }
+    assert requests[0].method == "PUT"
+    assert requests[0].url.path.endswith(
+        "/channels/chan-a/messages/msg-123/reactions/%E2%9C%85/@me"
+    )
+
+
+def test_stub_discord_add_reaction_returns_deterministic_success_payload(tmp_path: Path) -> None:
+    command_store = JsonStore(tmp_path / "discord.json", DiscordCommandEnvelope)
+    service = StubDiscordService(command_store)
+
+    result = service.add_reaction("chan-a", "msg-123", "👍", "session-1")
+
+    assert result == {
+        "status": "stubbed",
+        "channel_id": "chan-a",
+        "session_id": "session-1",
+        "message_id": "msg-123",
+        "emoji": "👍",
+        "reaction": "👍",
+    }
 
 
 def test_get_commands_raises_on_timeout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -134,6 +134,14 @@ class DiscordService(Protocol):
 
     def post_status(self, message: str, channel_id: str, session_id: str) -> dict[str, Any]: ...
 
+    def add_reaction(
+        self,
+        channel_id: str,
+        message_id: str,
+        emoji: str,
+        session_id: str,
+    ) -> dict[str, Any]: ...
+
 
 class TeamsService(Protocol):
     def get_messages(self, since_cursor: str | None = None) -> list["TeamsMessageEnvelope"]: ...
@@ -144,6 +152,14 @@ class TeamsService(Protocol):
         channel_target: str,
         session_id: str,
         thread_id: str | None = None,
+    ) -> dict[str, Any]: ...
+
+    def add_reaction(
+        self,
+        channel_target: str,
+        message_id: str,
+        reaction: str,
+        session_id: str,
     ) -> dict[str, Any]: ...
 
 
@@ -194,6 +210,22 @@ class StubDiscordService:
             "channel_id": channel_id,
             "session_id": session_id,
             "message_preview": message[:120],
+        }
+
+    def add_reaction(
+        self,
+        channel_id: str,
+        message_id: str,
+        emoji: str,
+        session_id: str,
+    ) -> dict[str, Any]:
+        return {
+            "status": "stubbed",
+            "channel_id": channel_id,
+            "session_id": session_id,
+            "message_id": message_id,
+            "emoji": emoji,
+            "reaction": emoji,
         }
 
 
@@ -428,6 +460,33 @@ class DiscordBotApiService:
             "message_id": payload["id"],
         }
 
+    def add_reaction(
+        self,
+        channel_id: str,
+        message_id: str,
+        emoji: str,
+        session_id: str,
+    ) -> dict[str, Any]:
+        normalized_emoji = str(emoji).strip()
+        if not normalized_emoji:
+            raise ValueError("Discord emoji must be a non-empty string.")
+        encoded_emoji = quote(normalized_emoji, safe="")
+        with httpx.Client(timeout=None) as client:
+            self._request_with_retries(
+                client,
+                "PUT",
+                f"{self.api_base_url}/channels/{channel_id}/messages/{message_id}/reactions/"
+                f"{encoded_emoji}/@me",
+            )
+        return {
+            "status": "reacted",
+            "channel_id": channel_id,
+            "session_id": session_id,
+            "message_id": message_id,
+            "emoji": normalized_emoji,
+            "reaction": normalized_emoji,
+        }
+
 def _sorted_teams_messages(messages: dict[str, TeamsMessageEnvelope]) -> list[TeamsMessageEnvelope]:
     return sorted(messages.values(), key=lambda item: (item.created_at, item.cursor))
 
@@ -605,6 +664,30 @@ class StubTeamsService:
             "thread_id": normalized_thread_id,
             "session_id": session_id,
             "message_preview": message[:120],
+        }
+        if target.kind == "chat":
+            result["chat_id"] = target.chat_id
+        else:
+            result["team_id"] = target.team_id
+            result["channel_id"] = target.channel_id
+        return result
+
+    def add_reaction(
+        self,
+        channel_target: str,
+        message_id: str,
+        reaction: str,
+        session_id: str,
+    ) -> dict[str, Any]:
+        target = parse_teams_target(channel_target)
+        normalized_reaction = str(reaction).strip()
+        result: dict[str, Any] = {
+            "status": "stubbed",
+            "channel_target": target.normalized,
+            "session_id": session_id,
+            "message_id": message_id,
+            "reaction": normalized_reaction,
+            "emoji": normalized_reaction,
         }
         if target.kind == "chat":
             result["chat_id"] = target.chat_id
@@ -901,6 +984,50 @@ class GraphTeamsService:
             "session_id": session_id,
             "message_id": envelope.message_id,
             "web_url": envelope.metadata.get("web_url"),
+        }
+        if target.kind == "chat":
+            result["chat_id"] = target.chat_id
+        else:
+            result["team_id"] = target.team_id
+            result["channel_id"] = target.channel_id
+        return result
+
+    def add_reaction(
+        self,
+        channel_target: str,
+        message_id: str,
+        reaction: str,
+        session_id: str,
+    ) -> dict[str, Any]:
+        target = parse_teams_target(channel_target)
+        normalized_reaction = str(reaction).strip()
+        if not normalized_reaction:
+            raise ValueError("Teams reaction must be a non-empty string.")
+        encoded_message_id = quote(message_id, safe="")
+        if target.kind == "chat":
+            url = (
+                f"{self.api_base_url}/chats/{quote(target.chat_id or '', safe='')}/messages/"
+                f"{encoded_message_id}/setReaction"
+            )
+        else:
+            url = (
+                f"{self.api_base_url}/teams/{quote(target.team_id or '', safe='')}/channels/"
+                f"{quote(target.channel_id or '', safe='')}/messages/{encoded_message_id}/setReaction"
+            )
+        with httpx.Client(timeout=self.timeout_seconds) as client:
+            self._request_with_retries(
+                client,
+                "POST",
+                url,
+                json={"reactionType": normalized_reaction},
+            )
+        result = {
+            "status": "reacted",
+            "channel_target": target.normalized,
+            "session_id": session_id,
+            "message_id": message_id,
+            "reaction": normalized_reaction,
+            "emoji": normalized_reaction,
         }
         if target.kind == "chat":
             result["chat_id"] = target.chat_id

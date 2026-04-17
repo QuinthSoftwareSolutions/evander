@@ -404,3 +404,108 @@ def test_graph_teams_service_renders_fenced_code_blocks_as_html(
     service.post_status("```csharp\nvar x = 1;\n```", "team-a/channel-1", "session-1")
 
     assert requests[0].content == b'{"body":{"content":"<pre><code>var x = 1;</code></pre>","contentType":"html"}}'
+
+
+def test_graph_teams_service_add_reaction_for_channel_message(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(204, request=request)
+
+    transport = httpx.MockTransport(handler)
+    patch_httpx_client(monkeypatch, transport)
+    store = JsonStore(tmp_path / "teams.json", TeamsMessageEnvelope)
+    service = GraphTeamsService(
+        store,
+        token="graph-token",
+        api_base_url="https://graph.microsoft.com/v1.0",
+        poll_limit=25,
+        timeout_seconds=5.0,
+        allowed_channel_targets_provider=lambda: ["team-a/channel-1"],
+    )
+
+    result = service.add_reaction("team-a/channel-1", "msg-root", "like", "session-1")
+
+    assert result == {
+        "status": "reacted",
+        "channel_target": "team-a/channel-1",
+        "team_id": "team-a",
+        "channel_id": "channel-1",
+        "session_id": "session-1",
+        "message_id": "msg-root",
+        "reaction": "like",
+        "emoji": "like",
+    }
+    assert requests[0].method == "POST"
+    assert requests[0].url.path.endswith(
+        "/teams/team-a/channels/channel-1/messages/msg-root/setReaction"
+    )
+    assert requests[0].content == b'{"reactionType":"like"}'
+
+
+def test_graph_teams_service_add_reaction_for_chat_message(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(204, request=request)
+
+    transport = httpx.MockTransport(handler)
+    patch_httpx_client(monkeypatch, transport)
+    store = JsonStore(tmp_path / "teams.json", TeamsMessageEnvelope)
+    service = GraphTeamsService(
+        store,
+        token="graph-token",
+        api_base_url="https://graph.microsoft.com/v1.0",
+        poll_limit=25,
+        timeout_seconds=5.0,
+        allowed_channel_targets_provider=lambda: ["chat:chat-1"],
+    )
+
+    result = service.add_reaction("chat:chat-1", "msg-chat", "heart", "session-1")
+
+    assert result == {
+        "status": "reacted",
+        "channel_target": "chat:chat-1",
+        "chat_id": "chat-1",
+        "session_id": "session-1",
+        "message_id": "msg-chat",
+        "reaction": "heart",
+        "emoji": "heart",
+    }
+    assert requests[0].url.path.endswith("/chats/chat-1/messages/msg-chat/setReaction")
+
+
+def test_stub_teams_add_reaction_returns_deterministic_success_payload(tmp_path: Path) -> None:
+    store = JsonStore(tmp_path / "teams.json", TeamsMessageEnvelope)
+    service = StubTeamsService(store)
+
+    channel_result = service.add_reaction("team-a/channel-1", "msg-root", "like", "session-1")
+    chat_result = service.add_reaction("chat:chat-1", "msg-chat", "heart", "session-1")
+
+    assert channel_result == {
+        "status": "stubbed",
+        "channel_target": "team-a/channel-1",
+        "team_id": "team-a",
+        "channel_id": "channel-1",
+        "session_id": "session-1",
+        "message_id": "msg-root",
+        "reaction": "like",
+        "emoji": "like",
+    }
+    assert chat_result == {
+        "status": "stubbed",
+        "channel_target": "chat:chat-1",
+        "chat_id": "chat-1",
+        "session_id": "session-1",
+        "message_id": "msg-chat",
+        "reaction": "heart",
+        "emoji": "heart",
+    }
