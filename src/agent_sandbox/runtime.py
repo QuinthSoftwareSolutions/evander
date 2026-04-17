@@ -303,7 +303,10 @@ def _build_discord_service(
     session_id: str | None = None,
 ) -> DiscordService:
     if config.discord_backend == "stub":
-        return StubDiscordService(command_store)
+        return StubDiscordService(
+            command_store,
+            read_reaction_emoji=config.discord_read_reaction_emoji,
+        )
     if config.discord_backend == "bot_api":
         env_var_name = config.discord_bot_token_env.strip()
         if not env_var_name:
@@ -341,6 +344,7 @@ def _build_discord_service(
                 if session_id is None
                 else lambda: policy_config.include_operator_dms_for_session_id(session_id)
             ),
+            read_reaction_emoji=config.discord_read_reaction_emoji,
         )
     raise RuntimeError(
         f"Unsupported discord backend {config.discord_backend!r}. Expected one of: 'stub', 'bot_api'."
@@ -356,7 +360,10 @@ def _build_teams_service(
     allowed_channel_targets_provider: Callable[[], list[str]] | None = None,
 ) -> TeamsService:
     if config.teams_backend == "stub":
-        return StubTeamsService(message_store)
+        return StubTeamsService(
+            message_store,
+            read_reaction_emoji=config.teams_read_reaction_emoji,
+        )
     if config.teams_backend == "graph_api":
         env_var_name = config.teams_graph_access_token_env.strip()
         if not env_var_name:
@@ -378,6 +385,7 @@ def _build_teams_service(
             retry_max_backoff_seconds=config.teams_retry_max_backoff_seconds,
             allowed_channel_targets_provider=allowed_channel_targets_provider
             or (lambda: _resolve_allowed_teams_channel_targets(sessions)),
+            read_reaction_emoji=config.teams_read_reaction_emoji,
         )
     if config.teams_backend == "delegated_graph_api":
         token_provider = _build_delegated_teams_token_provider(config)
@@ -392,6 +400,7 @@ def _build_teams_service(
             retry_max_backoff_seconds=config.teams_retry_max_backoff_seconds,
             allowed_channel_targets_provider=allowed_channel_targets_provider
             or (lambda: _resolve_allowed_teams_channel_targets(sessions)),
+            read_reaction_emoji=config.teams_read_reaction_emoji,
         )
     raise RuntimeError(
         f"Unsupported teams backend {config.teams_backend!r}. Expected one of: 'stub', 'graph_api', 'delegated_graph_api'."

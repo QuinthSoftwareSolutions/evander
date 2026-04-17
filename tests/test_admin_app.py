@@ -229,8 +229,10 @@ def test_directory_config_tab_field_sources_expose_composite_discord_tab() -> No
     field_domains = {field_name: domain for domain, field_name in field_sources}
 
     assert ("providers", "discord_backend") in field_sources
+    assert ("providers", "discord_read_reaction_emoji") in field_sources
     assert ("policy", "discord_operator_user_allowlist") in field_sources
     assert field_domains["discord_bot_token_env"] == "providers"
+    assert field_domains["discord_read_reaction_emoji"] == "providers"
     assert field_domains["discord_poll_operator_dms"] == "policy"
     assert admin_app._directory_config_tab_underlying_domains("discord") == ("providers", "policy")
 

@@ -75,8 +75,7 @@ from .services import normalize_pr_feedback_provider
 
 logger = logging.getLogger(__name__)
 
-_DISCORD_READ_REACTION = "✅"
-_TEAMS_READ_REACTION = "like"
+_DEFAULT_READ_REACTION_EMOJI = "👀"
 
 
 def _normalize_issue_status_filters(statuses: list[str] | None) -> set[str]:
@@ -411,6 +410,10 @@ def _apply_discord_read_reactions(
     args: dict[str, Any],
     audit_failure_cb: Any,
 ) -> None:
+    discord_service = context.discord_service_for_session(session_id)
+    read_reaction = str(
+        getattr(discord_service, "read_reaction_emoji", _DEFAULT_READ_REACTION_EMOJI)
+    ).strip() or _DEFAULT_READ_REACTION_EMOJI
     for message in messages:
         if _is_session_authored_discord_status_message(message, session_id):
             continue
@@ -419,10 +422,10 @@ def _apply_discord_read_reactions(
         if not message_id or not channel_id:
             continue
         try:
-            context.discord_service_for_session(session_id).add_reaction(
+            discord_service.add_reaction(
                 channel_id=channel_id,
                 message_id=message_id,
-                emoji=_DISCORD_READ_REACTION,
+                emoji=read_reaction,
                 session_id=session_id,
             )
         except Exception as exc:  # noqa: BLE001
@@ -445,7 +448,7 @@ def _apply_discord_read_reactions(
                     **args,
                     "message_id": message_id,
                     "channel_id": channel_id,
-                    "reaction": _DISCORD_READ_REACTION,
+                    "reaction": read_reaction,
                     "reaction_provider_response": details,
                 },
                 str(exc),
@@ -462,6 +465,10 @@ def _apply_teams_read_reactions(
     args: dict[str, Any],
     audit_failure_cb: Any,
 ) -> None:
+    teams_service = context.teams_service_for_session(session_id)
+    read_reaction = str(
+        getattr(teams_service, "read_reaction_emoji", _DEFAULT_READ_REACTION_EMOJI)
+    ).strip() or _DEFAULT_READ_REACTION_EMOJI
     for message in messages:
         if _is_session_authored_teams_status_message(message, session_id):
             continue
@@ -471,10 +478,10 @@ def _apply_teams_read_reactions(
         if not message_id or not channel_target:
             continue
         try:
-            context.teams_service_for_session(session_id).add_reaction(
+            teams_service.add_reaction(
                 channel_target=channel_target,
                 message_id=message_id,
-                reaction=_TEAMS_READ_REACTION,
+                reaction=read_reaction,
                 session_id=session_id,
             )
         except Exception as exc:  # noqa: BLE001
@@ -499,7 +506,7 @@ def _apply_teams_read_reactions(
                     "cursor": cursor,
                     "message_id": message_id,
                     "channel_target": channel_target,
-                    "reaction": _TEAMS_READ_REACTION,
+                    "reaction": read_reaction,
                     "reaction_provider_response": details,
                 },
                 str(exc),

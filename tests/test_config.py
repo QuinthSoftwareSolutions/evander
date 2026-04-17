@@ -87,6 +87,31 @@ def test_teams_graph_access_token_env_defaults_to_compatibility_name() -> None:
     assert config.teams_graph_access_token_env == "GRAPH_TEAMS_ACCESS_TOKEN"
 
 
+def test_read_reaction_emoji_defaults_to_eyes_for_discord_and_teams() -> None:
+    config = GatewayConfig.model_validate({})
+
+    assert config.discord_read_reaction_emoji == "👀"
+    assert config.teams_read_reaction_emoji == "👀"
+
+
+def test_read_reaction_emoji_fields_normalize_unicode_and_trim_whitespace() -> None:
+    config = GatewayConfig.model_validate(
+        {
+            "discord_read_reaction_emoji": " e\u0301 ",
+            "teams_read_reaction_emoji": " \u212b ",
+        }
+    )
+
+    assert config.discord_read_reaction_emoji == "é"
+    assert config.teams_read_reaction_emoji == "Å"
+
+
+@pytest.mark.parametrize("field_name", ["discord_read_reaction_emoji", "teams_read_reaction_emoji"])
+def test_read_reaction_emoji_fields_reject_empty_values_with_field_name(field_name: str) -> None:
+    with pytest.raises(ValueError, match=field_name):
+        GatewayConfig.model_validate({field_name: "   "})
+
+
 def test_teams_delegated_scopes_default_includes_channel_and_chat_access() -> None:
     config = GatewayConfig.model_validate({})
 
