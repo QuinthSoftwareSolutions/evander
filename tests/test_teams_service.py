@@ -22,6 +22,34 @@ def patch_httpx_client(
     )
 
 
+def test_teams_services_default_and_override_read_reaction_emoji(tmp_path: Path) -> None:
+    store = JsonStore(tmp_path / "teams.json", TeamsMessageEnvelope)
+    stub_default = StubTeamsService(store)
+    stub_override = StubTeamsService(store, read_reaction_emoji="heart")
+    graph_default = GraphTeamsService(
+        store,
+        token="graph-token",
+        api_base_url="https://graph.microsoft.com/v1.0",
+        poll_limit=25,
+        timeout_seconds=5.0,
+        allowed_channel_targets_provider=lambda: ["team-a/channel-1"],
+    )
+    graph_override = GraphTeamsService(
+        store,
+        token="graph-token",
+        api_base_url="https://graph.microsoft.com/v1.0",
+        poll_limit=25,
+        timeout_seconds=5.0,
+        allowed_channel_targets_provider=lambda: ["team-a/channel-1"],
+        read_reaction_emoji="heart",
+    )
+
+    assert stub_default.read_reaction_emoji == "👀"
+    assert stub_override.read_reaction_emoji == "heart"
+    assert graph_default.read_reaction_emoji == "👀"
+    assert graph_override.read_reaction_emoji == "heart"
+
+
 def test_graph_teams_service_polls_allowlisted_channels_and_flattens_replies(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

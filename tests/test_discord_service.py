@@ -38,6 +38,34 @@ def make_service(tmp_path: Path, transport: httpx.BaseTransport) -> DiscordBotAp
     )
 
 
+def test_discord_services_default_and_override_read_reaction_emoji(tmp_path: Path) -> None:
+    command_store = JsonStore(tmp_path / "discord.json", DiscordCommandEnvelope)
+    stub_default = StubDiscordService(command_store)
+    stub_override = StubDiscordService(command_store, read_reaction_emoji="✅")
+    api_default = DiscordBotApiService(
+        command_store,
+        token="test-token",
+        api_base_url="https://discord.test/api/v10",
+        poll_limit=25,
+        timeout_seconds=5.0,
+        allowed_channel_ids_provider=lambda: ["chan-a"],
+    )
+    api_override = DiscordBotApiService(
+        command_store,
+        token="test-token",
+        api_base_url="https://discord.test/api/v10",
+        poll_limit=25,
+        timeout_seconds=5.0,
+        allowed_channel_ids_provider=lambda: ["chan-a"],
+        read_reaction_emoji="✅",
+    )
+
+    assert stub_default.read_reaction_emoji == "👀"
+    assert stub_override.read_reaction_emoji == "✅"
+    assert api_default.read_reaction_emoji == "👀"
+    assert api_override.read_reaction_emoji == "✅"
+
+
 def test_get_commands_polls_only_allowlisted_channels_and_filters_since_cursor(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -202,6 +202,16 @@ def test_list_unread_discord_messages_applies_reactions_and_skips_self_status(tm
                         "in_reply_to": None,
                         "raw": {"source": "discord_bot_api"},
                     },
+                    "discord:3": {
+                        "message_id": "discord:3",
+                        "channel_id": "chan-a",
+                        "author_id": "user-b",
+                        "author_name": "Bob",
+                        "content": "Another human reply",
+                        "created_at": "2026-01-03T00:00:00Z",
+                        "in_reply_to": None,
+                        "raw": {"source": "discord_bot_api"},
+                    },
                 },
                 "session_reads": {},
             }
@@ -214,8 +224,54 @@ def test_list_unread_discord_messages_applies_reactions_and_skips_self_status(tm
 
     result = call_tool(server, "list_unread_discord_messages", {"session_id": "session-1"})
 
-    assert [entry["message_id"] for entry in result["messages"]] == ["discord:2"]
-    assert fake_discord.reaction_calls == [("chan-a", "discord:2", "👀", "session-1")]
+    assert [entry["message_id"] for entry in result["messages"]] == ["discord:2", "discord:3"]
+    assert fake_discord.reaction_calls == [
+        ("chan-a", "discord:2", "👀", "session-1"),
+        ("chan-a", "discord:3", "👀", "session-1"),
+    ]
+
+
+def test_list_unread_discord_messages_uses_configured_reaction_emoji(tmp_path: Path) -> None:
+    context = make_context(tmp_path)
+    context.sessions.put(
+        "session-1",
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[ToolName.LIST_UNREAD_DISCORD_MESSAGES],
+            discord_channel_allowlist=["chan-a"],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    inbox_store_path = context.config.runtime_dir / "discord-inbox-store.json"
+    inbox_store_path.write_text(
+        json.dumps(
+            {
+                "cursors": {},
+                "messages": {
+                    "discord:2": {
+                        "message_id": "discord:2",
+                        "channel_id": "chan-a",
+                        "author_id": "user-a",
+                        "author_name": "Alice",
+                        "content": "Human reply",
+                        "created_at": "2026-01-02T00:00:00Z",
+                        "in_reply_to": None,
+                        "raw": {"source": "discord_bot_api"},
+                    },
+                },
+                "session_reads": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    fake_discord = FakeDiscordService(commands=[])
+    fake_discord.read_reaction_emoji = "✅"
+    set_discord_service(context, fake_discord)
+    server = create_server(context)
+
+    call_tool(server, "list_unread_discord_messages", {"session_id": "session-1"})
+
+    assert fake_discord.reaction_calls == [("chan-a", "discord:2", "✅", "session-1")]
 
 
 def test_list_unread_discord_messages_reaction_failure_is_best_effort_and_audited(tmp_path: Path) -> None:
@@ -272,6 +328,67 @@ def test_list_unread_discord_messages_reaction_failure_is_best_effort_and_audite
         and event["args"].get("message_id") == "discord:2"
         for event in events
     )
+
+
+def test_list_unread_discord_messages_repeated_reads_are_idempotent_for_reactions_and_failures(
+    tmp_path: Path,
+) -> None:
+    context = make_context(tmp_path)
+    context.sessions.put(
+        "session-1",
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[ToolName.LIST_UNREAD_DISCORD_MESSAGES],
+            discord_channel_allowlist=["chan-a"],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    inbox_store_path = context.config.runtime_dir / "discord-inbox-store.json"
+    inbox_store_path.write_text(
+        json.dumps(
+            {
+                "cursors": {},
+                "messages": {
+                    "discord:2": {
+                        "message_id": "discord:2",
+                        "channel_id": "chan-a",
+                        "author_id": "user-a",
+                        "author_name": "Alice",
+                        "content": "Human reply",
+                        "created_at": "2026-01-02T00:00:00Z",
+                        "in_reply_to": None,
+                        "raw": {"source": "discord_bot_api"},
+                    },
+                },
+                "session_reads": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    fake_discord = FakeDiscordService(commands=[])
+    request = httpx.Request("PUT", "https://discord.test/channels/chan-a/messages/discord:2/reactions")
+    response = httpx.Response(500, request=request, text='{"error":"failure"}')
+    fake_discord.reaction_error_by_message_id["discord:2"] = httpx.HTTPStatusError(
+        "boom",
+        request=request,
+        response=response,
+    )
+    set_discord_service(context, fake_discord)
+    server = create_server(context)
+
+    first = call_tool(server, "list_unread_discord_messages", {"session_id": "session-1"})
+    second = call_tool(server, "list_unread_discord_messages", {"session_id": "session-1"})
+
+    assert [entry["message_id"] for entry in first["messages"]] == ["discord:2"]
+    assert second["messages"] == []
+    assert fake_discord.reaction_calls == [("chan-a", "discord:2", "👀", "session-1")]
+    reaction_failure_events = [
+        event
+        for event in read_audit_events(context.config.audit_log_path)
+        if event["tool_name"] == ToolName.LIST_UNREAD_DISCORD_MESSAGES.value
+        and event["result"].get("error_class") == "reaction_side_effect_error"
+    ]
+    assert len(reaction_failure_events) == 1
 
 
 def test_create_local_issue_uses_session_directory_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
