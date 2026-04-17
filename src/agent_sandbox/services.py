@@ -286,8 +286,14 @@ class TeamsTarget:
 
 
 class StubDiscordService:
-    def __init__(self, command_store: JsonStore[DiscordCommandEnvelope]) -> None:
+    def __init__(
+        self,
+        command_store: JsonStore[DiscordCommandEnvelope],
+        *,
+        read_reaction_emoji: str = "👀",
+    ) -> None:
         self.command_store = command_store
+        self.read_reaction_emoji = read_reaction_emoji
 
     def get_commands(self, since_cursor: str | None = None) -> list[DiscordCommandEnvelope]:
         commands = list(self.command_store.read_all().values())
@@ -354,6 +360,7 @@ class DiscordBotApiService:
         operator_user_ids_provider: Callable[[], list[str]] | None = None,
         include_operator_dms_provider: Callable[[], bool] | None = None,
         include_operator_dms: bool = False,
+        read_reaction_emoji: str = "👀",
     ) -> None:
         self.command_store = command_store
         self.token = token
@@ -370,6 +377,7 @@ class DiscordBotApiService:
         self.allowed_channel_ids_provider = allowed_channel_ids_provider
         self.operator_user_ids_provider = operator_user_ids_provider or (lambda: [])
         self.include_operator_dms_provider = include_operator_dms_provider or (lambda: include_operator_dms)
+        self.read_reaction_emoji = read_reaction_emoji
 
     def _headers(self) -> dict[str, str]:
         return {
@@ -717,8 +725,14 @@ def teams_target_from_message(
 
 
 class StubTeamsService:
-    def __init__(self, message_store: JsonStore[TeamsMessageEnvelope]) -> None:
+    def __init__(
+        self,
+        message_store: JsonStore[TeamsMessageEnvelope],
+        *,
+        read_reaction_emoji: str = "👀",
+    ) -> None:
         self.message_store = message_store
+        self.read_reaction_emoji = read_reaction_emoji
 
     def get_messages(self, since_cursor: str | None = None) -> list[TeamsMessageEnvelope]:
         messages = list(self.message_store.read_all().values())
@@ -820,6 +834,7 @@ class GraphTeamsService:
         retry_base_backoff_seconds: float = 0.5,
         retry_max_backoff_seconds: float = 5.0,
         allowed_channel_targets_provider: Callable[[], list[str]] = lambda: [],
+        read_reaction_emoji: str = "👀",
     ) -> None:
         self.message_store = message_store
         self.token = str(token or "").strip()
@@ -835,6 +850,7 @@ class GraphTeamsService:
             for attempt in range(self.retry_count)
         )
         self.allowed_channel_targets_provider = allowed_channel_targets_provider
+        self.read_reaction_emoji = read_reaction_emoji
 
     def _resolve_token(self) -> str:
         try:

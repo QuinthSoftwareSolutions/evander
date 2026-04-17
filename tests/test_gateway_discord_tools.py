@@ -215,7 +215,7 @@ def test_list_unread_discord_messages_applies_reactions_and_skips_self_status(tm
     result = call_tool(server, "list_unread_discord_messages", {"session_id": "session-1"})
 
     assert [entry["message_id"] for entry in result["messages"]] == ["discord:2"]
-    assert fake_discord.reaction_calls == [("chan-a", "discord:2", "✅", "session-1")]
+    assert fake_discord.reaction_calls == [("chan-a", "discord:2", "👀", "session-1")]
 
 
 def test_list_unread_discord_messages_reaction_failure_is_best_effort_and_audited(tmp_path: Path) -> None:

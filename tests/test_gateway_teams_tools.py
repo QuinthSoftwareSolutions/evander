@@ -229,7 +229,7 @@ def test_teams_get_messages_supports_limit_and_includes_session_authored_message
         "team-a/channel-1/msg-3",
     ]
     assert result["next_cursor"] == "team-a/channel-1/msg-3"
-    assert context.teams_service.reaction_calls == [("team-a/channel-1", "msg-3", "like", "session-1")]
+    assert context.teams_service.reaction_calls == [("team-a/channel-1", "msg-3", "👀", "session-1")]
 
 
 def test_teams_get_messages_includes_status_messages_from_other_sessions_in_same_channel(tmp_path: Path) -> None:
@@ -273,7 +273,7 @@ def test_teams_get_messages_includes_status_messages_from_other_sessions_in_same
 
     assert [entry["cursor"] for entry in result["messages"]] == ["team-a/channel-1/msg-2"]
     assert result["next_cursor"] == "team-a/channel-1/msg-2"
-    assert context.teams_service.reaction_calls == [("team-a/channel-1", "msg-2", "like", "session-1")]
+    assert context.teams_service.reaction_calls == [("team-a/channel-1", "msg-2", "👀", "session-1")]
 
 
 def test_teams_get_messages_reaction_failure_is_best_effort_and_audited(tmp_path: Path) -> None:
