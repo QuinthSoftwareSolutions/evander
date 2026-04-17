@@ -232,6 +232,46 @@ def test_teams_get_messages_supports_limit_and_includes_session_authored_message
     assert context.teams_service.reaction_calls == [("team-a/channel-1", "msg-3", "👀", "session-1")]
 
 
+def test_teams_get_messages_uses_configured_reaction_emoji(tmp_path: Path) -> None:
+    context = make_context(tmp_path)
+    context.sessions.put(
+        "session-1",
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[ToolName.TEAMS_GET_MESSAGES],
+            teams_channel_allowlist=["team-a/channel-1"],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    fake_teams = FakeTeamsService(
+        [
+            TeamsMessageEnvelope(
+                cursor="team-a/channel-1/msg-3",
+                message_id="msg-3",
+                author_id="user-3",
+                team_id="team-a",
+                channel_id="channel-1",
+                thread_id="msg-1",
+                content="newest",
+                metadata={
+                    "source": "teams_graph_api",
+                    "team_id": "team-a",
+                    "channel_id": "channel-1",
+                    "author_id": "user-3",
+                },
+            ),
+        ]
+    )
+    fake_teams.read_reaction_emoji = "heart"
+    context.teams_service = fake_teams
+    server = create_server(context)
+
+    result = call_tool(server, "teams_get_messages", {"session_id": "session-1"})
+
+    assert [entry["cursor"] for entry in result["messages"]] == ["team-a/channel-1/msg-3"]
+    assert context.teams_service.reaction_calls == [("team-a/channel-1", "msg-3", "heart", "session-1")]
+
+
 def test_teams_get_messages_includes_status_messages_from_other_sessions_in_same_channel(tmp_path: Path) -> None:
     context = make_context(tmp_path)
     context.sessions.put(
@@ -327,6 +367,67 @@ def test_teams_get_messages_reaction_failure_is_best_effort_and_audited(tmp_path
         and event["args"].get("message_id") == "msg-3"
         for event in events
     )
+
+
+def test_teams_get_messages_repeated_reads_with_cursor_are_idempotent_for_reaction_failures(
+    tmp_path: Path,
+) -> None:
+    context = make_context(tmp_path)
+    context.sessions.put(
+        "session-1",
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[ToolName.TEAMS_GET_MESSAGES],
+            teams_channel_allowlist=["team-a/channel-1"],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    fake_teams = FakeTeamsService(
+        [
+            TeamsMessageEnvelope(
+                cursor="team-a/channel-1/msg-3",
+                message_id="msg-3",
+                author_id="user-3",
+                team_id="team-a",
+                channel_id="channel-1",
+                thread_id="msg-1",
+                content="newest",
+                metadata={
+                    "source": "teams_graph_api",
+                    "team_id": "team-a",
+                    "channel_id": "channel-1",
+                    "author_id": "user-3",
+                },
+            ),
+        ]
+    )
+    request = httpx.Request("POST", "https://graph.microsoft.com/v1.0/test")
+    response = httpx.Response(500, request=request, text='{"error":"failure"}')
+    fake_teams.reaction_error_by_message_id["msg-3"] = httpx.HTTPStatusError(
+        "boom",
+        request=request,
+        response=response,
+    )
+    context.teams_service = fake_teams
+    server = create_server(context)
+
+    first = call_tool(server, "teams_get_messages", {"session_id": "session-1"})
+    second = call_tool(
+        server,
+        "teams_get_messages",
+        {"session_id": "session-1", "since_cursor": first["next_cursor"]},
+    )
+
+    assert [entry["cursor"] for entry in first["messages"]] == ["team-a/channel-1/msg-3"]
+    assert second["messages"] == []
+    assert context.teams_service.reaction_calls == [("team-a/channel-1", "msg-3", "👀", "session-1")]
+    reaction_failure_events = [
+        event
+        for event in read_audit_events(context.config.audit_log_path)
+        if event["tool_name"] == ToolName.TEAMS_GET_MESSAGES.value
+        and event["result"].get("error_class") == "reaction_side_effect_error"
+    ]
+    assert len(reaction_failure_events) == 1
 
 
 def test_teams_post_status_posts_to_allowlisted_channel_and_thread(tmp_path: Path) -> None:
