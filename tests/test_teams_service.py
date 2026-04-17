@@ -406,6 +406,58 @@ def test_graph_teams_service_renders_fenced_code_blocks_as_html(
     assert requests[0].content == b'{"body":{"content":"<pre><code>var x = 1;</code></pre>","contentType":"html"}}'
 
 
+def test_graph_teams_service_renders_common_markdown_formatting_as_html(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            201,
+            json={
+                "id": "msg-root",
+                "createdDateTime": "2026-03-30T12:00:00Z",
+                "body": {"content": "<p>ok</p>", "contentType": "html"},
+                "from": {"application": {"id": "bot-app"}},
+                "webUrl": "https://teams.example/root",
+            },
+            request=request,
+        )
+
+    transport = httpx.MockTransport(handler)
+    patch_httpx_client(monkeypatch, transport)
+    store = JsonStore(tmp_path / "teams.json", TeamsMessageEnvelope)
+    service = GraphTeamsService(
+        store,
+        token="graph-token",
+        api_base_url="https://graph.microsoft.com/v1.0",
+        poll_limit=25,
+        timeout_seconds=5.0,
+        allowed_channel_targets_provider=lambda: ["team-a/channel-1"],
+    )
+
+    message = (
+        "# Update\n"
+        "- **Bold** item\n"
+        "- *Italic* item with `inline_code`\n"
+        "1. First\n"
+        "2. Second with ~~strike~~\n"
+        "> Quote line\n"
+        "See [docs](https://example.com/docs)"
+    )
+    service.post_status(message, "team-a/channel-1", "session-1")
+
+    assert requests[0].content == (
+        b'{"body":{"content":"<h1>Update</h1><ul><li><strong>Bold</strong> item</li>'
+        b"<li><em>Italic</em> item with <code>inline_code</code></li></ul>"
+        b"<ol><li>First</li><li>Second with <del>strike</del></li></ol>"
+        b'<blockquote><p>Quote line</p></blockquote><p>See <a href=\\"https://example.com/docs\\">docs</a></p>",'
+        b'"contentType":"html"}}'
+    )
+
+
 def test_graph_teams_service_add_reaction_for_channel_message(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
