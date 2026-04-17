@@ -173,6 +173,26 @@
     {
       "source_id": "effect-vm-copy-files-7",
       "target_id": "effect-agent-prompt-8"
+    },
+    {
+      "source_id": "trigger-script-run-request-1",
+      "target_id": "gate-filter-5"
+    },
+    {
+      "source_id": "gate-filter-5",
+      "target_id": "effect-bash-script-1"
+    },
+    {
+      "source_id": "effect-bash-script-1",
+      "target_id": "effect-session-update-metadata-6"
+    },
+    {
+      "source_id": "effect-session-update-metadata-6",
+      "target_id": "query-session-context-4"
+    },
+    {
+      "source_id": "query-session-context-4",
+      "target_id": "effect-agent-prompt-9"
     }
   ],
   "effect_cursor_store_path": "runtime/effect-orchestrator-cursors.json",
@@ -382,7 +402,7 @@
       "display_name": "Enqueue Teams Prompt",
       "id": "effect-agent-enqueue-prompt-1",
       "model": "gpt-5.4",
-      "prompt": "You are Truman, a helpful assistant in an agent orchestration and control plane. You've just received new Teams messages. Please fetch them and post a response in Teams.",
+      "prompt": "You are Truman, a helpful assistant in an agent orchestration and control plane. You've just received new Teams messages. Please fetch them and post a response in Teams. If a user asks you to do something that takes time, such as analyze the codebase, or start a long-running task, respond to the user first so they know their message has been seen. Then you can respond to them again once the task is complete.",
       "resume_thread_id": "${{query-session-context-3.metadata.agent_thread_id ?? null}}",
       "target": "vm-example-receptionist",
       "type": "effect:agent:enqueue-prompt",
@@ -482,7 +502,7 @@
       "mssql": true,
       "nuget": true,
       "playwright": true,
-      "repo_source": "git@ssh.dev.azure.com:v3/exampleindustry/Scanspac/Scanspac",
+      "repo_source": "/home/jonathan/Documents/Repos/Scanspac",
       "session_id": "issue-${{trigger-ticket-created-2.ticket.issue_number}}-root-example-industry-scanspac-${{system.now.utc_timestamp_compact}}-${{system.unique.compact}}",
       "ttl_hours": 48,
       "type": "effect:vm:create",
@@ -607,6 +627,69 @@
       "prompt": "Other agents have now implemented your plan. Please go over and verify their work. Check that the current state of the repository matches your expectations.\nBefore concluding, verify whether they completed all required checklist items. Confirm (or explicitly list gaps for): (1) appropriate unit tests for your code changes, (2) documentation updates for behavioral or operational changes, and (3) a markdown PR summary maintained with 'git agent-pr-note'. If anything is missing, complete it now. If you make any changes during this checklist pass, push them before concluding. A successful 'git push-agent' refreshes and pushes refs/notes/agent-pr together with your latest work.",
       "resume_thread_id": "${{effect-agent-prompt-6.thread_id}}",
       "target": "${{effect-vm-create-3.session_id}}",
+      "type": "effect:agent:prompt",
+      "vm_user": "agent"
+    },
+    {
+      "args": [
+        "--resource-base-name",
+        "${{gate-filter-5.parameters.0}}",
+        "--environment-alias",
+        "${{gate-filter-5.parameters.0}}",
+        "--session-id",
+        "${{gate-filter-5.session_id}}"
+      ],
+      "check": true,
+      "display_name": "Provision ExampleIndustry APP demo environment",
+      "id": "effect-bash-script-1",
+      "outputs": {
+        "environment_alias": {
+          "type": "string"
+        },
+        "exit_code": {
+          "type": "integer"
+        },
+        "app_base_url": {
+          "type": "string"
+        },
+        "provisioning_status": {
+          "type": "string"
+        },
+        "public_domain": {
+          "type": "string"
+        },
+        "resource_base_name": {
+          "type": "string"
+        },
+        "session_metadata_patch": {
+          "type": "object"
+        },
+        "stdout": {
+          "type": "string"
+        },
+        "success": {
+          "type": "boolean"
+        }
+      },
+      "script_path": "/home/jonathan/agent-sandbox/scripts/provision_exampleindustry_app_demo_environment.sh",
+      "type": "effect:bash:script",
+      "working_directory": "/home/jonathan/agent-sandbox"
+    },
+    {
+      "display_name": "Store APP provisioning metadata",
+      "id": "effect-session-update-metadata-6",
+      "metadata": "${{effect-bash-script-1.session_metadata_patch}}",
+      "target": "${{gate-filter-5.session_id}}",
+      "type": "effect:session:update-metadata"
+    },
+    {
+      "display_name": "Resume after APP provisioning",
+      "id": "effect-agent-prompt-9",
+      "model": "gpt-5.4",
+      "output_mode": "on_completion",
+      "prompt": "The host-side APP demo environment provisioning request '${{gate-filter-5.request_id}}' has completed.\n\nEnvironment alias: ${{effect-bash-script-1.environment_alias}}\nAPP base URL: ${{effect-bash-script-1.app_base_url}}\nPublic domain: ${{effect-bash-script-1.public_domain}}\n\nProvisioning result JSON:\n${{effect-bash-script-1.stdout}}\n\nContinue the same user task in this session. Use the provisioned environment alias named above when referring to this environment. If a host-side HTTP target relay is configured for this session, continue through that relay rather than attempting direct outbound access.\nDon't forget to message to the user to let them know that the demo has been successfully provisioned, through whatever channel the user's original request arrived (Teams, Discord, Email, or a plain prompt). When you do, give the user the public URL to the demo instance so they can follow along.",
+      "resume_thread_id": "${{query-session-context-4.metadata.agent_thread_id ?? null}}",
+      "target": "${{gate-filter-5.session_id}}",
       "type": "effect:agent:prompt",
       "vm_user": "agent"
     }
@@ -831,6 +914,40 @@
         }
       },
       "type": "gate:for"
+    },
+    {
+      "display_name": "Allow APP demo provision requests",
+      "id": "gate-filter-5",
+      "outputs": {
+        "parameters": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "request_id": {
+          "type": "string"
+        },
+        "script_name": {
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        }
+      },
+      "type": "gate:filter",
+      "when": {
+        "all": [
+          {
+            "equals": "provision_exampleindustry_app_demo_environment.sh",
+            "left": "${{trigger-script-run-request-1.script_name}}"
+          },
+          {
+            "is_not_null": true,
+            "left": "${{trigger-script-run-request-1.parameters.0 ?? null}}"
+          }
+        ]
+      }
     }
   ],
   "jitter_seconds": 1.0,
@@ -875,6 +992,12 @@
       "id": "query-issue-get-2",
       "issue_id": "${{trigger-ticket-created-2.ticket.issue_id}}",
       "type": "query:issue:get"
+    },
+    {
+      "display_name": "Session context",
+      "id": "query-session-context-4",
+      "target": "${{gate-filter-5.session_id}}",
+      "type": "query:session-context"
     }
   ],
   "runtime_dir": "runtime",
@@ -934,6 +1057,28 @@
       "display_name": "Scanspac ticket created",
       "id": "trigger-ticket-created-2",
       "type": "trigger:ticket:created"
+    },
+    {
+      "display_name": "Script run request",
+      "id": "trigger-script-run-request-1",
+      "outputs": {
+        "parameters": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "request_id": {
+          "type": "string"
+        },
+        "script_name": {
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        }
+      },
+      "type": "trigger:script-run-request"
     }
   ]
 }

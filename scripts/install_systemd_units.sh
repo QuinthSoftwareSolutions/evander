@@ -349,6 +349,10 @@ render_unit \
   "${SYSTEMD_DIR}/agent-sandbox-nuget-relay.service"
 
 render_unit \
+  "${ROOT_DIR}/systemd/agent-sandbox-http-target-relay.service.template" \
+  "${SYSTEMD_DIR}/agent-sandbox-http-target-relay.service"
+
+render_unit \
   "${ROOT_DIR}/systemd/agent-sandbox-ado-worker.service.template" \
   "${SYSTEMD_DIR}/agent-sandbox-ado-worker.service"
 
@@ -381,6 +385,7 @@ systemctl enable agent-sandbox-gateway.service
 systemctl enable agent-sandbox-openai-relay.service
 systemctl enable agent-sandbox-firewall.service
 systemctl enable agent-sandbox-nuget-relay.service
+systemctl enable agent-sandbox-http-target-relay.service
 systemctl enable agent-sandbox-ado-worker.service
 systemctl enable agent-sandbox-discord-ingest.service
 systemctl enable agent-sandbox-teams-ingest.service
@@ -395,6 +400,7 @@ Installed systemd units:
   agent-sandbox-openai-relay.service
   agent-sandbox-firewall.service
   agent-sandbox-nuget-relay.service
+  agent-sandbox-http-target-relay.service
   agent-sandbox-ado-worker.service
   agent-sandbox-discord-ingest.service
   agent-sandbox-teams-ingest.service
@@ -416,6 +422,7 @@ Next steps:
      sudo systemctl start agent-sandbox-gateway.service
      sudo systemctl start agent-sandbox-openai-relay.service
      sudo systemctl start agent-sandbox-nuget-relay.service
+     sudo systemctl start agent-sandbox-http-target-relay.service
      sudo systemctl start agent-sandbox-ado-worker.service
      sudo systemctl start agent-sandbox-discord-ingest.service
      sudo systemctl start agent-sandbox-teams-ingest.service

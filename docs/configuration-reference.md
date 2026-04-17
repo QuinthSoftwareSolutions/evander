@@ -39,7 +39,7 @@ manager environment or optional repo-root `secrets.env`.
 
 | Parameter | Found in | Consumed by |
 |---|---|---|
-| `ALLOWED_TCP_PORTS` | `config/firewall.env.example` | `scripts/apply_firewall.sh` (nftables allow-list for guest->host TCP ports). |
+| `ALLOWED_TCP_PORTS` | `config/firewall.env.example` | `scripts/apply_firewall.sh` (nftables allow-list for guest->host TCP ports; current defaults include `22`, `8000`, `11434`, `11666`, and `11777` for the HTTP target relay port). |
 
 ## `config/host-heartbeat.env.example`
 
@@ -169,17 +169,24 @@ Type-specific keys:
 | `trigger:cron` | `expression` | — |
 | `trigger:ticket:created` | `directories` | — |
 | `trigger:ticket:changed` | `directories` | — |
+| `trigger:script-run-request` | — | — |
 | `trigger:discord:new-message` | `discord_bot_token_env` | `channel_ids`, `user_ids` |
 | `trigger:email:new-message` | `provider`, `account_identifier`, `mailbox_ids` | `auth_secret_refs` |
 | `trigger:pull-request:new-feedback` | `provider` | `organization_url`, `project` (but `organization_url` becomes required when `provider=ado`) |
 | `trigger:review:new-request` | — | — |
 | `trigger:git:push` | `path_to_repo` | — |
 
-The current trigger set also includes `trigger:teams:new-message` and
-`trigger:review:new-request`. Teams is fed by a host-side ingest worker that reads the same
+The current trigger set also includes `trigger:teams:new-message`, `trigger:review:new-request`,
+and `trigger:script-run-request`. Teams is fed by a host-side ingest worker that reads the same
 delegated Teams auth settings described above. Review requests are fed from the host-owned
-`runtime/review-request-store.json` inbox populated by `request_pr_review(...)`. Both flows are
-independent from host-heartbeat; host-heartbeat continues to cover PR/Discord feedback wakeups.
+`runtime/review-request-store.json` inbox populated by `request_pr_review(...)`. Script run
+requests are fed from `runtime/script-run-requests-store.json`, which the `run_script(...)` MCP
+tool appends to after validating that the calling session is allowed to invoke the requested
+script name. The checked-in global workflow currently filters that trigger down to
+`provision_exampleindustry_app_demo_environment.sh`, which wraps the existing host-side Example
+Industry APP Azure provisioning script and resumes the originating session with the JSON result.
+All three flows are independent from host-heartbeat; host-heartbeat continues to cover
+PR/Discord feedback wakeups.
 
 Example:
 
@@ -262,10 +269,11 @@ Type-specific keys:
 
 | `type` | Required keys | Optional keys |
 |---|---|---|
-| `effect:vm:create` | _none beyond envelope_ | `vm_name`, `session_id`, `model`, `repo_source`, `vm_user`, `ttl_hours`, `discord_channels`, `email_mailboxes`, `email_folders`, `python`, `dotnet`, `nuget`, `mssql`, `mssql_init_root`, `playwright`, `directory_path`, `outputs` |
+| `effect:vm:create` | _none beyond envelope_ | `vm_name`, `session_id`, `model`, `repo_source`, `vm_user`, `ttl_hours`, `allowed_tools`, `allowed_script_names`, `discord_channels`, `email_mailboxes`, `email_folders`, `python`, `dotnet`, `nuget`, `mssql`, `mssql_init_root`, `playwright`, `directory_path`, `outputs` |
 | `effect:vm:start` | _none beyond envelope_ | `target`, `session_id`, `vm_name`, `outputs` |
 | `effect:vm:stop` | _none beyond envelope_ | `target`, `session_id`, `vm_name`, `timeout_seconds`, `outputs` |
 | `effect:agent:prompt` | `prompt` | `target`, `session_id`, `vm_name`, `vm_user`, `resume_thread_id`, `output_mode`, `outputs` |
+| `effect:bash:script` | `script_path` | `args`, `working_directory`, `environment`, `stdin`, `timeout_seconds`, `check`, `outputs` |
 | `effect:vm:exec` | `command` | `target`, `session_id`, `vm_name`, `vm_user`, `working_directory`, `environment`, `stdin`, `timeout_seconds`, `check`, `outputs` |
 | `effect:vm:copy-files` | `files` | `target`, `session_id`, `vm_name`, `vm_user`, `outputs` |
 | `effect:issue:update-state` | `issue_id`, `state` | `sync_proxy_cache`, `outputs` |
@@ -284,6 +292,12 @@ Effect schema envelope example:
   }
 }
 ```
+
+The checked-in APP provisioning workflow uses `effect:bash:script` with
+`/home/jonathan/agent-sandbox/scripts/provision_exampleindustry_app_demo_environment.sh`,
+projects `stdout` plus parsed JSON fields such as `app_base_url`, `app_public_url`,
+`app_api_alias`, `app_ui_alias`, and `public_domain` as declared outputs, stores those values in
+session metadata, and then resumes the originating agent session.
 
 ### Graph examples
 
@@ -512,6 +526,19 @@ In the root-only model, this file is an import source for seeding `runtime/direc
 | `openai_api_key_env` | legacy gateway YAML | `src/agent_sandbox/openai_relay.py` env-var name lookup for API key. |
 | `openai_relay_timeout_seconds` | legacy gateway YAML | `src/agent_sandbox/openai_relay.py` upstream request timeout. |
 
+### HTTP target relay keys
+
+| Key | Found in | Consumed by |
+|---|---|---|
+| `http_target_relay_host`, `http_target_relay_port` | root `host-config.json`, provider config overlays | `src/agent_sandbox/http_target_relay.py` listener bind and `src/agent_sandbox/cli.py` status checks. |
+| `http_target_relay_timeout_seconds` | provider config overlays | `src/agent_sandbox/http_target_relay.py` upstream request timeout. |
+
+The current HTTP target relay is auth-transparent: it allowlists the upstream destination by
+session and per-target alias, but it forwards guest `Authorization` headers and cookies instead of
+injecting host-side credentials. The APP demo workflow is one consumer layered on top of this
+generic relay pattern and can register separate UI and API aliases for the same provisioned
+environment.
+
 ### NuGet relay keys
 
 | Key | Found in | Consumed by |
@@ -603,13 +630,13 @@ Supported directory config domains:
 | Domain file | Purpose | YAML fields allowed |
 |---|---|---|
 | `policy.json` | Session/policy defaults and operator restrictions | `approval_ttl_seconds`, `default_session_ttl_seconds`, Discord/email allowlists, `email_send_enabled`, `pr_reply_require_approval`, `redacted_keys` |
-| `providers.json` | Upstream/provider endpoints and credentials-by-reference | Discord, OpenAI, NuGet, GitHub, Azure DevOps, Teams |
+| `providers.json` | Upstream/provider endpoints and credentials-by-reference | Discord, OpenAI, HTTP target relay, NuGet, GitHub, Azure DevOps, Teams |
 | `email.json` | Mailbox provider definitions and email provider runtime settings | `email_mailboxes`, `email_provider_timeout_seconds` |
 | `heartbeat.json` | Host heartbeat worker behavior | `host_heartbeat_pr_resume_prompt`, `host_heartbeat_discord_resume_prompt` |
 | `ado-worker.json` | Azure DevOps backlog worker setup/bootstrap behavior | `ado_area_filters`, `ado_team_filters`, `ado_project_or_solution`, `ado_prewarm_target`, `ado_repo_source`, `create_prs_automatically`, `create_prs_as_draft`, `ado_bootstrap_*`, `ado_mssql_sa_password_env`, frontend bootstrap fields |
 | `issue-setup.json` | VM issue setup/git hand-off defaults | `git_root`, `git_host`, `git_user`, `git_ssh_alias`, optional `default_model`, `post_exec_verification_prompt`, `enable_guest_heartbeat`, `guest_heartbeat_prompt`, optional `issue_setup_azure_devops_pr_pat_env` |
 | `pr-template.json` | Directory-scoped markdown boilerplate prepended to automated PR bodies | `pr_template_markdown` |
-| `vm.json` | Guest-facing relay/network defaults | `bind_network_cidr`, `gateway_url`, OpenAI relay host/port, NuGet relay host/port |
+| `vm.json` | Guest-facing relay/network defaults | `bind_network_cidr`, `gateway_url`, OpenAI relay host/port, NuGet relay host/port, HTTP target relay host/port |
 
 Merge behavior in `src/agent_sandbox/directory_config.py`:
 
@@ -696,6 +723,7 @@ The following environment variables are consumed directly by scripts as runtime 
 | `scripts/bootstrap_mssql_vm.sh` | `MSSQL_PID`, `MSSQL_SA_PASSWORD`, `SSH_KEY_PATH` |
 | `scripts/bootstrap_nuget_vm.sh` | `SSH_KEY_PATH`, `NUGET_RELAY_BASE_URL`, `NUGET_FALLBACK_PACKAGES`, `NUGET_PACKAGES_DIR`, `NUGET_HTTP_CACHE_DIR` |
 | `scripts/bootstrap_playwright_vm.sh` | `SSH_KEY_PATH`, `HOST_NODE_ROOT`, `HOST_PLAYWRIGHT_NODE_MODULES`, `HOST_PLAYWRIGHT_BROWSERS` |
+| `scripts/bootstrap_python_packages_vm.sh` | `SSH_KEY_PATH`, `HOST_PYTHON_BIN`, `GUEST_PYTHON_BIN`, `GUEST_WHEELHOUSE_DIR` |
 | `scripts/check_issue_vm.sh` | `SSH_PRIVATE_KEY_PATH`, `VM_WAIT_IP_TIMEOUT_SECONDS`, `VM_WAIT_SSH_TIMEOUT_SECONDS` |
 | `scripts/check_session_vm_busy.sh` | `SSH_PRIVATE_KEY_PATH`, `VM_AGENT_BUSY_CONNECT_TIMEOUT_SECONDS` |
 | `scripts/create_base_vm.sh` | `VM_STORAGE_DIR`, `DOWNLOAD_URL` |

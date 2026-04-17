@@ -3,18 +3,22 @@ set -euo pipefail
 
 show_help() {
   cat <<'EOF'
-Usage: bootstrap_codex_vm.sh <vm-name> [vm-user]
+Usage: bootstrap_codex_vm.sh [--skill NAME ...] <vm-name> [vm-user]
 
 Copy the host Codex binary into a guest VM and configure it to use the host
 OpenAI relay.
 
 Arguments:
+  --skill    Codex skill directory name to copy from the host skill root into
+             the guest CODEX_HOME skills directory. Repeat for multiple skills.
   vm-name   libvirt domain name.
   vm-user   Guest user to configure. Default: agent
 
 Environment:
   SSH_KEY_PATH    Private key matching the guest authorized key.
   HOST_CODEX_ROOT Host Codex package root.
+  HOST_CODEX_SKILLS_DIR Host Codex skills root. Default: ~/.codex/skills for the caller.
+  HOST_REPO_CODEX_SKILLS_DIR Repo-local Codex skills root. Default: <repo>/skills.
   LLM_BASE_URL    Guest OpenAI-compatible base URL. Overrides ~/.agent/config.env when set.
   AGENT_MODEL     Model persisted for guest heartbeat resume runs when enabled.
   ENABLE_GUEST_HEARTBEAT Install and enable the guest heartbeat timer (0/1, default: 0).
@@ -26,6 +30,37 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   show_help
   exit 0
 fi
+
+if [[ $# -lt 1 ]]; then
+  show_help >&2
+  exit 1
+fi
+
+CODEX_SKILLS=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --skill)
+      if [[ -z "${2:-}" ]]; then
+        echo "Missing value for $1" >&2
+        exit 1
+      fi
+      CODEX_SKILLS+=("$2")
+      shift 2
+      ;;
+    --)
+      shift
+      break
+      ;;
+    -*)
+      echo "Unknown option: $1" >&2
+      show_help >&2
+      exit 1
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
 
 if [[ $# -lt 1 ]]; then
   show_help >&2
@@ -46,6 +81,8 @@ if [[ ! -f "${SSH_KEY_PATH}" ]]; then
 fi
 
 HOST_CODEX_ROOT="${HOST_CODEX_ROOT:-${CALLER_HOME}/.nvm/versions/node/v24.14.0/lib/node_modules/@openai/codex}"
+HOST_CODEX_SKILLS_DIR="${HOST_CODEX_SKILLS_DIR:-${CALLER_HOME}/.codex/skills}"
+HOST_REPO_CODEX_SKILLS_DIR="${HOST_REPO_CODEX_SKILLS_DIR:-${ROOT_DIR}/skills}"
 VENDOR_DIR="${HOST_CODEX_ROOT}/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl"
 LLM_BASE_URL="${LLM_BASE_URL:-}"
 AGENT_MODEL="${AGENT_MODEL:-}"
@@ -66,6 +103,43 @@ if [[ ! -f "${SSH_KEY_PATH}" ]]; then
   echo "Set SSH_KEY_PATH to the private key that matches the VM's authorized key." >&2
   exit 1
 fi
+
+normalize_skill_name() {
+  local name="${1:-}"
+  if [[ ! "${name}" =~ ^[A-Za-z0-9._-]+$ ]]; then
+    echo "Invalid Codex skill name: ${name}" >&2
+    return 1
+  fi
+  printf '%s\n' "${name}"
+}
+
+resolve_skill_path() {
+  local skill_name="$1"
+  local repo_local_path="${HOST_REPO_CODEX_SKILLS_DIR}/${skill_name}"
+  local user_skill_path="${HOST_CODEX_SKILLS_DIR}/${skill_name}"
+
+  if [[ -d "${repo_local_path}" ]]; then
+    printf '%s\n' "${repo_local_path}"
+    return 0
+  fi
+  if [[ -d "${user_skill_path}" ]]; then
+    printf '%s\n' "${user_skill_path}"
+    return 0
+  fi
+
+  echo "Missing host Codex skill directory: ${repo_local_path} or ${user_skill_path}" >&2
+  echo "Set HOST_REPO_CODEX_SKILLS_DIR or HOST_CODEX_SKILLS_DIR if your skills live elsewhere." >&2
+  return 1
+}
+
+for raw_skill in "${CODEX_SKILLS[@]}"; do
+  skill_name="$(normalize_skill_name "${raw_skill}")"
+  skill_path="$(resolve_skill_path "${skill_name}")"
+  if [[ ! -f "${skill_path}/SKILL.md" ]]; then
+    echo "Invalid Codex skill '${skill_name}': missing ${skill_path}/SKILL.md" >&2
+    exit 1
+  fi
+done
 
 get_vm_ip() {
   if guest_ssh_resolve_vm_ip "${VM_NAME}"; then
@@ -99,7 +173,8 @@ ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" \
 set -euo pipefail
 cp ~/codex-vendor/codex/codex ~/bin/codex
 chmod +x ~/bin/codex
-mkdir -p ~/.codex
+export CODEX_HOME="${CODEX_HOME:-$HOME/.config/agent-sandbox/codex}"
+mkdir -p ~/.codex "${CODEX_HOME}"
 if [ -f ~/.agent/config.env ]; then
   # shellcheck disable=SC1091
   . ~/.agent/config.env
@@ -114,7 +189,8 @@ if [ -n "${AGENT_SANDBOX_SESSION_ID:-}" ]; then
   CODEX_LLM_BASE_URL="${CODEX_LLM_BASE_URL%/}/session/${AGENT_SANDBOX_SESSION_ID}"
   CODEX_GATEWAY_URL="${CODEX_GATEWAY_URL}?session_id=${AGENT_SANDBOX_SESSION_ID}"
 fi
-cat > ~/.codex/config.toml <<CONFIG
+for CODEX_CONFIG_PATH in "${CODEX_HOME}/config.toml" "${HOME}/.codex/config.toml"; do
+cat > "${CODEX_CONFIG_PATH}" <<CONFIG
 model = "gpt-5.4"
 model_provider = "openai"
 model_reasoning_effort = "high"
@@ -124,12 +200,13 @@ openai_base_url = "${CODEX_LLM_BASE_URL}"
 [mcp_servers.agent_sandbox]
 url = "${CODEX_GATEWAY_URL}"
 CONFIG
-cat >> ~/.codex/config.toml <<CONFIG
+cat >> "${CODEX_CONFIG_PATH}" <<CONFIG
 enabled = true
 
 [projects."/home/${VM_USER}"]
 trust_level = "trusted"
 CONFIG
+done
 
 append_shell_setup() {
   local target="$1"
@@ -147,9 +224,13 @@ else:
 filtered = [
     line
     for line in lines
-    if line.strip() != 'export PATH="$HOME/bin:$PATH"'
+    if line.strip() not in {
+        'export PATH="$HOME/bin:$PATH"',
+        'export CODEX_HOME="${CODEX_HOME:-$HOME/.config/agent-sandbox/codex}"',
+    }
 ]
 filtered.append('export PATH="$HOME/bin:$PATH"')
+filtered.append('export CODEX_HOME="${CODEX_HOME:-$HOME/.config/agent-sandbox/codex}"')
 target.write_text("\n".join(filtered) + "\n", encoding="utf-8")
 PY
   if ! grep -q 'relay-placeholder' "${target}" 2>/dev/null; then
@@ -167,7 +248,9 @@ PROFILE
 append_shell_setup ~/.profile
 append_shell_setup ~/.bashrc
 
+mkdir -p "${CODEX_HOME}/skills"
 export PATH="$HOME/bin:$HOME/codex-vendor/path:$PATH"
+export CODEX_HOME
 export OPENAI_API_KEY="${OPENAI_API_KEY:-relay-placeholder}"
 codex --version
 
@@ -216,6 +299,34 @@ else
     systemctl --user disable --now agent-heartbeat.timer >/dev/null 2>&1 || true
     systemctl --user daemon-reload || true
   '
+fi
+
+if (( ${#CODEX_SKILLS[@]} > 0 )); then
+  ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "
+    set -euo pipefail
+    export CODEX_HOME=\"\${CODEX_HOME:-\$HOME/.config/agent-sandbox/codex}\"
+    mkdir -p \"\${CODEX_HOME}/skills\" \"\${CODEX_HOME}/skill-bootstrap\"
+  "
+  for raw_skill in "${CODEX_SKILLS[@]}"; do
+    skill_name="$(normalize_skill_name "${raw_skill}")"
+    skill_path="$(resolve_skill_path "${skill_name}")"
+    remote_skill_bootstrap_dir="$(
+      ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" '
+        set -euo pipefail
+        export CODEX_HOME="${CODEX_HOME:-$HOME/.config/agent-sandbox/codex}"
+        printf "%s\n" "${CODEX_HOME}/skill-bootstrap"
+      '
+    )"
+    scp "${SSH_OPTS[@]}" -r "${skill_path}" "${VM_USER}@${VM_IP}:${remote_skill_bootstrap_dir}/"
+    ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "SKILL_NAME='${skill_name}' bash -s" <<'EOF'
+set -euo pipefail
+export CODEX_HOME="${CODEX_HOME:-$HOME/.config/agent-sandbox/codex}"
+mkdir -p "${CODEX_HOME}/skills" "${CODEX_HOME}/skill-bootstrap"
+rm -rf "${CODEX_HOME}/skills/${SKILL_NAME}"
+mv "${CODEX_HOME}/skill-bootstrap/${SKILL_NAME}" "${CODEX_HOME}/skills/${SKILL_NAME}"
+EOF
+  done
+  echo "Installed Codex skills into guest: ${CODEX_SKILLS[*]}"
 fi
 
 echo "Codex bootstrap complete for ${VM_NAME} (${VM_IP})"

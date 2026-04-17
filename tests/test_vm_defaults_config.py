@@ -12,7 +12,7 @@ def test_vm_defaults_resolver_applies_root_and_child_overlays(tmp_path: Path) ->
     store = DirectoryStore(runtime_dir / "directories.json")
     store.ensure_root()
     service = DirectoryService(store)
-    config = GatewayConfig.model_validate({"runtime_dir": str(runtime_dir)})
+    config = GatewayConfig.model_validate({"runtime_dir": str(runtime_dir), "http_target_relay_port": 14000})
     resolver = VmDefaultsConfigResolver(config, directory_store=store)
 
     team = service.create(parent="root", name="team")
@@ -20,7 +20,10 @@ def test_vm_defaults_resolver_applies_root_and_child_overlays(tmp_path: Path) ->
     config_store.write(
         "root",
         domain="vm-defaults",
-        payload={"gateway_url": "http://10.0.0.1:9000/mcp", "openai_relay_port": 12000},
+        payload={
+            "gateway_url": "http://10.0.0.1:9000/mcp",
+            "openai_relay_port": 12000,
+        },
     )
     config_store.write(
         team.path,
@@ -32,7 +35,9 @@ def test_vm_defaults_resolver_applies_root_and_child_overlays(tmp_path: Path) ->
 
     assert effective.gateway_url == "http://10.0.0.1:9000/mcp"
     assert effective.openai_relay_port == 12000
+    assert effective.http_target_relay_port == 14000
     assert effective.nuget_relay_port == 13000
+    assert effective.guest_http_target_relay_base_url() == "http://10.0.0.1:14000"
     assert effective.guest_openai_base_url() == "http://10.0.0.1:12000/v1"
     assert effective.guest_nuget_relay_base_url() == "http://10.0.0.1:13000"
 
@@ -107,5 +112,6 @@ def test_render_vm_defaults_exports_uses_session_scope_and_shell_exports(tmp_pat
     exports = render_vm_defaults_exports(runtime_dir=runtime_dir, session_id="session-1")
 
     assert 'export GATEWAY_URL=http://10.0.0.8:9000/mcp' in exports
+    assert 'export HTTP_TARGET_RELAY_BASE_URL=http://10.0.0.8:11777' in exports
     assert 'export LLM_BASE_URL=http://10.0.0.8:12000/v1' in exports
     assert 'export NUGET_RELAY_BASE_URL=http://10.0.0.8:13000' in exports

@@ -13,6 +13,7 @@ TriggerType = Literal[
     "trigger:cron",
     "trigger:ticket:created",
     "trigger:ticket:changed",
+    "trigger:script-run-request",
     "trigger:discord:new-message",
     "trigger:teams:new-message",
     "trigger:email:new-message",
@@ -30,6 +31,7 @@ EffectType = Literal[
     "effect:vm:stop",
     "effect:agent:prompt",
     "effect:agent:enqueue-prompt",
+    "effect:bash:script",
     "effect:vm:exec",
     "effect:vm:copy-files",
     "effect:vm:delete-files",
@@ -116,6 +118,10 @@ class TicketChangedTriggerDefinition(TriggerDefinition):
     @classmethod
     def normalize_directories(cls, value: object) -> object:
         return normalize_directory_paths(value)
+
+
+class ScriptRunRequestTriggerDefinition(TriggerDefinition):
+    type: Literal["trigger:script-run-request"]
 
 
 class DiscordNewMessageTriggerDefinition(TriggerDefinition):
@@ -285,6 +291,7 @@ TriggerDefinitionDiscriminated = Annotated[
     CronTriggerDefinition
     | TicketCreatedTriggerDefinition
     | TicketChangedTriggerDefinition
+    | ScriptRunRequestTriggerDefinition
     | DiscordNewMessageTriggerDefinition
     | TeamsNewMessageTriggerDefinition
     | EmailNewMessageTriggerDefinition
@@ -388,6 +395,7 @@ class VmCreateEffectDefinition(EffectDefinition):
     vm_user: ConfigValue | None = None
     ttl_hours: ConfigValue | None = None
     allowed_tools: list[str] | None = None
+    allowed_script_names: list[str] | None = None
     discord_channels: list[str] | None = None
     email_mailboxes: list[str] | None = None
     email_folders: list[str] | None = None
@@ -397,6 +405,7 @@ class VmCreateEffectDefinition(EffectDefinition):
     mssql: ConfigValue | None = None
     mssql_init_root: ConfigValue | None = None
     playwright: ConfigValue | None = None
+    codex_skills: ConfigValue | None = None
     frontend_deps: ConfigValue | None = None
     frontend_host_checkout: ConfigValue | None = None
     frontend_install_roots: ConfigValue | None = None
@@ -424,6 +433,17 @@ class AgentEnqueuePromptEffectDefinition(EffectDefinition):
     model: ConfigValue | None = None
     vm_user: ConfigValue | None = None
     resume_thread_id: ConfigValue | None = None
+
+
+class BashScriptEffectDefinition(EffectDefinition):
+    type: Literal["effect:bash:script"]
+    script_path: ConfigValue
+    args: list[ConfigValue] = Field(default_factory=list)
+    working_directory: ConfigValue | None = None
+    environment: ConfigValue | None = None
+    stdin: ConfigValue | None = None
+    timeout_seconds: ConfigValue | None = None
+    check: ConfigValue | None = True
 
 
 class VmStartEffectDefinition(EffectDefinition):
@@ -510,7 +530,7 @@ class SessionUpdateMetadataEffectDefinition(EffectDefinition):
     @field_validator("metadata")
     @classmethod
     def validate_metadata_is_object(cls, value: ConfigValue) -> ConfigValue:
-        if not isinstance(value, Mapping):
+        if not isinstance(value, (Mapping, str)):
             raise ValueError("effect:session:update-metadata metadata must be a JSON object")
         return value
 
@@ -563,6 +583,7 @@ EffectDefinitionDiscriminated = Annotated[
     | VmStopEffectDefinition
     | AgentPromptEffectDefinition
     | AgentEnqueuePromptEffectDefinition
+    | BashScriptEffectDefinition
     | VmExecEffectDefinition
     | VmCopyFilesEffectDefinition
     | VmDeleteFilesEffectDefinition
@@ -704,6 +725,12 @@ _STATIC_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
                 "updated_at": {"type": "string"},
             },
         }
+    },
+    "trigger:script-run-request": {
+        "request_id": {"type": "string"},
+        "session_id": {"type": "string"},
+        "script_name": {"type": "string"},
+        "parameters": {"type": "array", "items": {"type": "string"}},
     },
     "trigger:discord:new-message": {
         "message": {
@@ -910,6 +937,15 @@ _STATIC_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
         "vm_name": {"type": "string"},
         "session_id": {"type": "string"},
         "coalesced_count": {"type": "integer"},
+    },
+    "effect:bash:script": {
+        "success": {"type": "boolean"},
+        "action": {"type": "string"},
+        "script_path": {"type": "string"},
+        "message": {"type": "string"},
+        "exit_code": {"type": "integer"},
+        "stdout": {"type": "string"},
+        "stderr": {"type": "string"},
     },
     "effect:vm:exec": {
         "success": {"type": "boolean"},

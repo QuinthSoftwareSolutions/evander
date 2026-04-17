@@ -52,10 +52,13 @@ class ProviderConfigResolver:
         return GatewayConfig.model_validate(payload)
 
     def resolve_for_session_id(self, session_id: str) -> GatewayConfig:
+        return self.resolve_for_session_manifest(self.get_session_manifest(session_id))
+
+    def get_session_manifest(self, session_id: str) -> SessionManifest:
         session = self.session_store.get(session_id)
         if session is None:
             raise ValueError(f"unknown session: {session_id}")
-        return self.resolve_for_session_manifest(session)
+        return session
 
     def resolve_for_session_manifest(self, session: SessionManifest) -> GatewayConfig:
         return self.resolve_for_directory(session.directory_path)

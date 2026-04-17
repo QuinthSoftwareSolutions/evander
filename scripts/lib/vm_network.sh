@@ -9,7 +9,7 @@ vm_network_domain_state() {
 
   state="$(
     sudo -n virsh dominfo "${vm_name}" 2>/dev/null \
-      | awk -F': *' '/^State:/ {print $2; exit}'
+      | awk -F': *' '/^State:/ {print $2; exit}' || true
   )"
   if [[ -n "${state}" ]]; then
     printf '%s\n' "${state}"
@@ -18,7 +18,7 @@ vm_network_domain_state() {
 
   state="$(
     virsh dominfo "${vm_name}" 2>/dev/null \
-      | awk -F': *' '/^State:/ {print $2; exit}'
+      | awk -F': *' '/^State:/ {print $2; exit}' || true
   )"
   if [[ -n "${state}" ]]; then
     printf '%s\n' "${state}"
@@ -57,7 +57,7 @@ vm_network_resolve_ip() {
 
   ip="$(
     sudo -n virsh domifaddr "${vm_name}" 2>/dev/null \
-      | awk '/ipv4/ {split($4, a, "/"); print a[1]; exit}'
+      | awk '/ipv4/ {split($4, a, "/"); print a[1]; exit}' || true
   )"
   if [[ -n "${ip}" ]]; then
     printf '%s\n' "${ip}"
@@ -66,7 +66,7 @@ vm_network_resolve_ip() {
 
   ip="$(
     virsh domifaddr "${vm_name}" 2>/dev/null \
-      | awk '/ipv4/ {split($4, a, "/"); print a[1]; exit}'
+      | awk '/ipv4/ {split($4, a, "/"); print a[1]; exit}' || true
   )"
   if [[ -n "${ip}" ]]; then
     printf '%s\n' "${ip}"
@@ -76,7 +76,7 @@ vm_network_resolve_ip() {
   if [[ "${AGENT_SANDBOX_ALLOW_PKEXEC_VIRSH:-0}" == "1" ]]; then
     ip="$(
       pkexec virsh domifaddr "${vm_name}" 2>/dev/null \
-        | awk '/ipv4/ {split($4, a, "/"); print a[1]; exit}'
+        | awk '/ipv4/ {split($4, a, "/"); print a[1]; exit}' || true
     )"
     if [[ -n "${ip}" ]]; then
       printf '%s\n' "${ip}"

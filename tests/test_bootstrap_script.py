@@ -7,11 +7,25 @@ def test_bootstrap_script_enforces_codex_config_and_placeholder_key() -> None:
     script = (ROOT / "scripts" / "bootstrap_codex_vm.sh").read_text(encoding="utf-8")
     guest_ssh_lib = (ROOT / "scripts" / "lib" / "guest_ssh.sh").read_text(encoding="utf-8")
 
+    assert "Usage: bootstrap_codex_vm.sh [--skill NAME ...] <vm-name> [vm-user]" in script
+    assert 'HOST_CODEX_SKILLS_DIR="${HOST_CODEX_SKILLS_DIR:-${CALLER_HOME}/.codex/skills}"' in script
+    assert 'HOST_REPO_CODEX_SKILLS_DIR="${HOST_REPO_CODEX_SKILLS_DIR:-${ROOT_DIR}/skills}"' in script
+    assert 'CODEX_SKILLS=()' in script
+    assert '--skill' in script
+    assert 'resolve_skill_path() {' in script
+    assert 'mkdir -p "${CODEX_HOME}/skills"' in script
+    assert 'scp "${SSH_OPTS[@]}" -r "${skill_path}"' in script
+    assert 'remote_skill_bootstrap_dir="$(' in script
+    assert 'printf "%s\\n" "${CODEX_HOME}/skill-bootstrap"' in script
+    assert '"${VM_USER}@${VM_IP}:${remote_skill_bootstrap_dir}/"' in script
+    assert 'mv "${CODEX_HOME}/skill-bootstrap/${SKILL_NAME}" "${CODEX_HOME}/skills/${SKILL_NAME}"' in script
     assert "guest_ssh_resolve_vm_ip" in script
     assert 'ip="${AGENT_SANDBOX_VM_IP:-}"' in guest_ssh_lib
     assert "sudo -n virsh domifaddr" in guest_ssh_lib
     assert "pkexec virsh domifaddr" in guest_ssh_lib
-    assert 'cat > ~/.codex/config.toml <<CONFIG' in script
+    assert 'export CODEX_HOME="${CODEX_HOME:-$HOME/.config/agent-sandbox/codex}"' in script
+    assert 'for CODEX_CONFIG_PATH in "${CODEX_HOME}/config.toml" "${HOME}/.codex/config.toml"; do' in script
+    assert 'cat > "${CODEX_CONFIG_PATH}" <<CONFIG' in script
     assert 'model = "gpt-5.4"' in script
     assert 'model_reasoning_effort = "high"' in script
     assert 'personality = "pragmatic"' in script
@@ -29,7 +43,7 @@ def test_bootstrap_script_enforces_codex_config_and_placeholder_key() -> None:
     assert 'if [ -n "${AGENT_SANDBOX_SESSION_ID:-}" ]; then' in script
     assert 'CODEX_LLM_BASE_URL="${CODEX_LLM_BASE_URL%/}/session/${AGENT_SANDBOX_SESSION_ID}"' in script
     assert 'CODEX_GATEWAY_URL="${CODEX_GATEWAY_URL}?session_id=${AGENT_SANDBOX_SESSION_ID}"' in script
-    assert 'if line.strip() != \'export PATH="$HOME/bin:$PATH"\'' in script
+    assert 'if line.strip() not in {' in script
     assert "append_shell_setup ~/.profile" in script
     assert "append_shell_setup ~/.bashrc" in script
     assert 'ENABLE_GUEST_HEARTBEAT="${ENABLE_GUEST_HEARTBEAT:-0}"' in script
@@ -70,6 +84,8 @@ def test_bootstrap_copilot_script_writes_mcp_config_and_auth_guidance() -> None:
 def test_launch_script_can_derive_public_key_from_private_key() -> None:
     script = (ROOT / "scripts" / "launch_agent_vm.sh").read_text(encoding="utf-8")
 
+    assert 'HTTP_TARGET_RELAY_BASE_URL="${HTTP_TARGET_RELAY_BASE_URL:-http://192.168.250.1:11777}"' in script
+    assert '-e "s|__HTTP_TARGET_RELAY_BASE_URL__|${ESCAPED_HTTP_TARGET_RELAY_BASE_URL}|g" \\' in script
     assert 'SSH_PRIVATE_KEY_PATH="${SSH_PRIVATE_KEY_PATH:-${CALLER_HOME}/.ssh/id_ed25519}"' in script
     assert 'ssh-keygen -y -f "${SSH_PRIVATE_KEY_PATH}" > "${DERIVED_PUBLIC_KEY_FILE}"' in script
     assert 'Alternatively set SSH_PRIVATE_KEY_PATH to derive the public key automatically.' in script
@@ -80,6 +96,10 @@ def test_setup_issue_vm_can_derive_public_key_from_private_key() -> None:
 
     assert 'ssh-keygen -y -f "${SSH_PRIVATE_KEY_PATH}" > "${DERIVED_PUBLIC_KEY_FILE}"' in script
     assert 'Alternatively set SSH_PRIVATE_KEY_PATH to derive the public key automatically.' in script
+    assert 'HTTP_TARGET_RELAY_BASE_URL="${HTTP_TARGET_RELAY_BASE_URL:-}"' in script
+    assert "--codex-skill" in script
+    assert 'BOOTSTRAP_CODEX_SKILLS=()' in script
+    assert 'BOOTSTRAP_PROVIDER_ARGS+=("--skill" "${skill}")' in script
 
 
 def test_guest_heartbeat_assets_exist() -> None:
@@ -109,3 +129,30 @@ def test_node_bootstraps_preserve_home_bin_precedence() -> None:
     assert 'export PATH="$HOME/bin:$HOME/toolchains/node-v24.14.0/bin:$PATH"' in frontend
     assert 'export PATH="$HOME/toolchains/node-v24.14.0/bin:$PATH"' in playwright
     assert 'export PATH="$HOME/toolchains/node-v24.14.0/bin:$PATH"' in frontend
+
+
+def test_setup_vm_supports_codex_skills() -> None:
+    script = (ROOT / "scripts" / "setup_vm.sh").read_text(encoding="utf-8")
+
+    assert "--codex-skill" in script
+    assert 'BOOTSTRAP_CODEX_SKILLS=()' in script
+    assert '--codex-skill requires AGENT_PROVIDER=codex.' in script
+    assert 'BOOTSTRAP_PROVIDER_ARGS+=("--skill" "${skill}")' in script
+    assert 'HTTP_TARGET_RELAY_BASE_URL=${HTTP_TARGET_RELAY_BASE_URL:-}' in script
+
+
+def test_repo_local_app_multi_env_skill_exists() -> None:
+    skill = (ROOT / "skills" / "exampleindustry-app-multi-env-demo" / "SKILL.md").read_text(encoding="utf-8")
+
+    assert "name: exampleindustry-app-multi-env-demo" in skill
+    assert "run_script(...)" in skill
+    assert "HTTP_TARGET_RELAY_BASE_URL" in skill
+    assert "HTTP target relay" in skill
+    assert "environment alias" in skill
+    assert "Please create a APP demo" in skill
+    assert "Use this skill by default for sandboxed agents" in skill
+    assert "APP_API_TARGET_ALIAS" in skill
+    assert "APP_UI_TARGET_ALIAS" in skill
+    assert "OPENAI_BASE_URL" in skill
+    assert "imagegen" in skill
+    assert "never guess between multiple demo environments by recency alone" in skill

@@ -1524,6 +1524,10 @@ def test_create_vm_creates_manifest_before_invoking_launch_flow(tmp_path: Path, 
             "--dotnet",
             "--nuget",
             "--playwright",
+            "--codex-skill",
+            "playwright",
+            "--codex-skill",
+            "playwright-interactive",
             "lab-vm",
         ],
     )
@@ -1545,6 +1549,7 @@ def test_create_vm_creates_manifest_before_invoking_launch_flow(tmp_path: Path, 
         "mssql": False,
         "mssql_init_root": None,
         "playwright": True,
+        "codex_skills": ["playwright", "playwright-interactive"],
         "directory_path": "root/team",
     }
 
@@ -3630,6 +3635,7 @@ def test_status_human_output_reports_degraded_state(tmp_path: Path, monkeypatch)
     assert "emails.json: degraded" in result.stdout
     assert "inactive (available)" in result.stdout
     assert "openai_relay: degraded" in result.stdout
+    assert "http_target_relay: degraded" in result.stdout
 
 
 def test_status_uses_root_vm_defaults_overlay_for_health_endpoints(tmp_path: Path, monkeypatch) -> None:
@@ -3649,7 +3655,7 @@ def test_status_uses_root_vm_defaults_overlay_for_health_endpoints(tmp_path: Pat
                 "--domain",
                 "vm",
                 "root",
-                '{"gateway_url":"http://10.0.0.5:9000/mcp","openai_relay_host":"127.0.0.2","openai_relay_port":12000}',
+                '{"gateway_url":"http://10.0.0.5:9000/mcp","openai_relay_host":"127.0.0.2","openai_relay_port":12000,"http_target_relay_host":"127.0.0.3","http_target_relay_port":14000}',
             ],
         ).exit_code
         == 0
@@ -3671,6 +3677,7 @@ def test_status_uses_root_vm_defaults_overlay_for_health_endpoints(tmp_path: Pat
     assert result.exit_code == 0
     assert ("gateway", "http://10.0.0.5:9000/mcp") in checked_urls
     assert ("openai_relay", "http://127.0.0.2:12000/healthz") in checked_urls
+    assert ("http_target_relay", "http://127.0.0.3:14000/healthz") in checked_urls
 
 
 

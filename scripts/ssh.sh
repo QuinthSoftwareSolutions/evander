@@ -28,17 +28,7 @@ if [[ ! -f "${SSH_PRIVATE_KEY_PATH}" ]]; then
   exit 1
 fi
 
-VM_IP="$(
-  sudo -n virsh domifaddr "$VM_NAME" 2>/dev/null | awk '/ipv4/ {split($4, a, "/"); print a[1]; exit}'
-)"
-
-if [[ -z "$VM_IP" ]]; then
-  VM_IP="$(
-    virsh domifaddr "$VM_NAME" 2>/dev/null | awk '/ipv4/ {split($4, a, "/"); print a[1]; exit}'
-  )"
-fi
-
-if [[ -z "$VM_IP" ]]; then
+if ! VM_IP="$(guest_ssh_resolve_vm_ip "$VM_NAME")"; then
   echo "Could not determine an IPv4 address for VM: $VM_NAME" >&2
   exit 1
 fi

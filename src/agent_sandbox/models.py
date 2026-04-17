@@ -7,7 +7,17 @@ from hashlib import sha256
 from pathlib import PurePosixPath
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import (
+    AliasChoices,
+    AnyHttpUrl,
+    BaseModel,
+    Field,
+    TypeAdapter,
+    ValidationError,
+    field_validator,
+)
+
+_HTTP_URL_ADAPTER = TypeAdapter(AnyHttpUrl)
 
 
 def utc_now() -> datetime:
@@ -56,6 +66,7 @@ class ToolName(str, Enum):
     PROMPT_AGENT = "prompt_agent"
     LIST_PENDING_AGENT_PROMPTS = "list_pending_agent_prompts"
     RESPOND_TO_AGENT = "respond_to_agent"
+    RUN_SCRIPT = "run_script"
     COPILOT_HOST_AUTH = "copilot_host_auth"
 
 
@@ -106,6 +117,7 @@ class SessionManifest(BaseModel):
     model: str | None = None
     directory_path: str = "root"
     allowed_tools: list[ToolName]
+    allowed_script_names: list[str] = Field(default_factory=list)
     discord_channel_allowlist: list[str] = Field(default_factory=list)
     teams_channel_allowlist: list[str] = Field(default_factory=list)
     email_folder_allowlist: list[str] = Field(default_factory=list)
@@ -123,6 +135,133 @@ class SessionManifest(BaseModel):
     @classmethod
     def validate_directory_path(cls, value: str) -> str:
         return DirectoryPath(segments=value).as_posix()
+
+    @field_validator("allowed_script_names", mode="before")
+    @classmethod
+    def normalize_allowed_script_names(cls, value: object) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            value = [value]
+        if not isinstance(value, (list, tuple)):
+            raise ValueError("allowed_script_names must be a list of strings")
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for item in value:
+            candidate = str(item).strip()
+            if not candidate or candidate in seen:
+                continue
+            seen.add(candidate)
+            normalized.append(candidate)
+        return normalized
+
+    def http_targets_metadata(self) -> "SessionHttpTargetsMetadata":
+        raw_metadata = self.metadata.get("http_targets")
+        if raw_metadata is None and "example_app" in self.metadata:
+            app_metadata = self.metadata.get("example_app", {})
+            if app_metadata is None:
+                app_metadata = {}
+            if isinstance(app_metadata, dict):
+                raw_metadata = {"targets": app_metadata.get("environments", {})}
+        if raw_metadata is None:
+            raw_metadata = {}
+        try:
+            return SessionHttpTargetsMetadata.model_validate(raw_metadata)
+        except ValidationError as exc:
+            raise ValueError("session metadata field 'http_targets' is invalid") from exc
+
+    def http_target(self, alias: str) -> "HttpTargetMetadata":
+        return self.http_targets_metadata().require_target(alias)
+
+    def app_metadata(self) -> "SessionMesMetadata":
+        raw_metadata = self.metadata.get("example_app", {})
+        if raw_metadata is None:
+            raw_metadata = {}
+        try:
+            return SessionMesMetadata.model_validate(raw_metadata)
+        except ValidationError as exc:
+            raise ValueError("session metadata field 'example_app' is invalid") from exc
+
+    def app_environment(self, alias: str) -> "MesEnvironmentMetadata":
+        return self.app_metadata().require_environment(alias)
+
+
+class HttpTargetMetadata(BaseModel):
+    base_url: str = Field(validation_alias=AliasChoices("base_url", "allowed_base_url"))
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("base_url", mode="before")
+    @classmethod
+    def normalize_base_url(cls, value: object) -> str:
+        text = str(value).strip() if value is not None else ""
+        if not text:
+            raise ValueError("base_url must be non-empty")
+        return text.rstrip("/")
+
+    @field_validator("base_url")
+    @classmethod
+    def validate_base_url(cls, value: str) -> str:
+        try:
+            _HTTP_URL_ADAPTER.validate_python(value)
+        except ValidationError as exc:
+            raise ValueError(f"base_url must be a valid http(s) URL, got {value!r}") from exc
+        return value
+
+    @property
+    def allowed_base_url(self) -> str:
+        return self.base_url
+
+
+class SessionHttpTargetsMetadata(BaseModel):
+    targets: dict[str, HttpTargetMetadata] = Field(default_factory=dict)
+
+    @field_validator("targets", mode="before")
+    @classmethod
+    def normalize_targets(cls, value: object) -> dict[str, object]:
+        if value is None:
+            return {}
+        if not isinstance(value, dict):
+            raise ValueError("targets must be an object")
+        normalized: dict[str, object] = {}
+        for raw_alias, target in value.items():
+            alias = str(raw_alias).strip()
+            if not alias:
+                raise ValueError("target aliases must be non-empty")
+            if alias in normalized:
+                raise ValueError(f"duplicate HTTP target alias: {alias}")
+            normalized[alias] = target
+        return normalized
+
+    def require_target(self, alias: str) -> HttpTargetMetadata:
+        normalized_alias = str(alias).strip()
+        if not normalized_alias:
+            raise ValueError("target alias must be non-empty")
+        target = self.targets.get(normalized_alias)
+        if target is None:
+            raise ValueError(f"unknown HTTP target alias: {normalized_alias}")
+        return target
+
+
+class MesEnvironmentMetadata(HttpTargetMetadata):
+    pass
+
+
+class SessionMesMetadata(BaseModel):
+    environments: dict[str, MesEnvironmentMetadata] = Field(default_factory=dict)
+
+    @field_validator("environments", mode="before")
+    @classmethod
+    def normalize_environments(cls, value: object) -> dict[str, object]:
+        return SessionHttpTargetsMetadata.normalize_targets(value)
+
+    def require_environment(self, alias: str) -> MesEnvironmentMetadata:
+        normalized_alias = str(alias).strip()
+        if not normalized_alias:
+            raise ValueError("environment alias must be non-empty")
+        environment = self.environments.get(normalized_alias)
+        if environment is None:
+            raise ValueError(f"unknown APP environment alias: {normalized_alias}")
+        return environment
 
 
 class DirectoryPath(BaseModel):
@@ -1128,6 +1267,72 @@ class ScheduleResumeRequest(BaseModel):
         has_cron = bool((self.cron or "").strip())
         if has_resume_at == has_cron:
             raise ValueError("exactly one schedule definition must be provided: resume_at or cron")
+
+
+class RunScriptRequest(BaseModel):
+    session_id: str = Field(min_length=1)
+    script_name: str = Field(min_length=1)
+    parameters: list[str] = Field(default_factory=list)
+
+    @field_validator("script_name", mode="before")
+    @classmethod
+    def normalize_script_name(cls, value: object) -> str:
+        text = str(value).strip() if value is not None else ""
+        if not text:
+            raise ValueError("script_name must be non-empty")
+        return text
+
+    @field_validator("parameters", mode="before")
+    @classmethod
+    def normalize_parameters(cls, value: object) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            return [value]
+        if not isinstance(value, (list, tuple)):
+            raise ValueError("parameters must be a list of scalar values")
+        normalized: list[str] = []
+        for item in value:
+            if isinstance(item, (dict, list, tuple, set)):
+                raise ValueError("parameters entries must be scalar values")
+            normalized.append("" if item is None else str(item))
+        return normalized
+
+
+class RunScriptResponse(BaseModel):
+    request_id: str = Field(min_length=1)
+    script_name: str = Field(min_length=1)
+    parameters: list[str] = Field(default_factory=list)
+    queued: bool = True
+
+
+class ScriptRunRequestRecord(BaseModel):
+    request_id: str = Field(min_length=1)
+    session_id: str = Field(min_length=1)
+    directory_path: str = "root"
+    script_name: str = Field(min_length=1)
+    parameters: list[str] = Field(default_factory=list)
+    source: str = "mcp_tool"
+    created_at: datetime = Field(default_factory=utc_now)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("directory_path")
+    @classmethod
+    def validate_script_request_directory_path(cls, value: str) -> str:
+        return DirectoryPath(segments=value).as_posix()
+
+    @field_validator("script_name", mode="before")
+    @classmethod
+    def normalize_script_request_name(cls, value: object) -> str:
+        text = str(value).strip() if value is not None else ""
+        if not text:
+            raise ValueError("script_name must be non-empty")
+        return text
+
+    @field_validator("parameters", mode="before")
+    @classmethod
+    def normalize_script_request_parameters(cls, value: object) -> list[str]:
+        return RunScriptRequest.normalize_parameters(value)
 
 
 class WakeScheduleDefinition(BaseModel):

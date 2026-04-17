@@ -9,6 +9,7 @@ from agent_sandbox.provider_config import ProviderConfigResolver
 
 from .providers.agent_prompt import AgentPromptEffectProvider
 from .providers.agent_enqueue_prompt import AgentEnqueuePromptEffectProvider
+from .providers.bash_script import BashScriptEffectProvider
 from .providers.base import EffectProviderBase, EffectRuntimeContext
 from .providers.git_promote_agent_branch import GitPromoteAgentBranchEffectProvider
 from .providers.issue_update_state import IssueUpdateStateEffectProvider
@@ -34,6 +35,7 @@ DEFAULT_EFFECT_PROVIDER_REGISTRY: dict[EffectType, EffectProviderClass] = {
     "effect:vm:stop": VmStopEffectProvider,
     "effect:agent:prompt": AgentPromptEffectProvider,
     "effect:agent:enqueue-prompt": AgentEnqueuePromptEffectProvider,
+    "effect:bash:script": BashScriptEffectProvider,
     "effect:vm:exec": VmExecEffectProvider,
     "effect:vm:copy-files": VmCopyFilesEffectProvider,
     "effect:vm:delete-files": VmDeleteFilesEffectProvider,

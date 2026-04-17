@@ -18,6 +18,8 @@ class HostConfig(BaseModel):
     gateway_port: int = 8000
     openai_relay_host: str = "0.0.0.0"
     openai_relay_port: int = 11434
+    http_target_relay_host: str = "0.0.0.0"
+    http_target_relay_port: int = 11777
     nuget_relay_host: str = "0.0.0.0"
     nuget_relay_port: int = 11666
     audit_log_path: Path = Path("/var/log/agent-sandbox/audit.jsonl")
@@ -69,6 +71,8 @@ class HostConfig(BaseModel):
                 "gateway_port": config.port,
                 "openai_relay_host": config.openai_relay_host,
                 "openai_relay_port": config.openai_relay_port,
+                "http_target_relay_host": config.http_target_relay_host,
+                "http_target_relay_port": config.http_target_relay_port,
                 "nuget_relay_host": config.nuget_relay_host,
                 "nuget_relay_port": config.nuget_relay_port,
                 "audit_log_path": config.audit_log_path,
@@ -137,6 +141,8 @@ def build_runtime_gateway_config(host_config: HostConfig) -> GatewayConfig:
             "port": host_config.gateway_port,
             "openai_relay_host": host_config.openai_relay_host,
             "openai_relay_port": host_config.openai_relay_port,
+            "http_target_relay_host": host_config.http_target_relay_host,
+            "http_target_relay_port": host_config.http_target_relay_port,
             "nuget_relay_host": host_config.nuget_relay_host,
             "nuget_relay_port": host_config.nuget_relay_port,
             "audit_log_path": host_config.audit_log_path,

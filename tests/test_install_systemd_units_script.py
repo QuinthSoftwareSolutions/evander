@@ -43,6 +43,7 @@ def test_install_systemd_units_preflight_checks_for_mssql_worker_password_when_e
     assert 'agent-sandbox-issue-orchestrator.service' in text
     assert 'agent-sandbox-teams-ingest.service' in text
     assert 'agent-sandbox-trigger-orchestrator.service' in text
+    assert 'agent-sandbox-http-target-relay.service' in text
 
 
 def test_install_systemd_units_no_longer_requires_removed_per_service_env_files() -> None:
@@ -62,6 +63,9 @@ def test_service_templates_use_optional_shared_secrets_env() -> None:
         encoding="utf-8"
     )
     nuget = (repo / "systemd" / "agent-sandbox-nuget-relay.service.template").read_text(
+        encoding="utf-8"
+    )
+    http_target = (repo / "systemd" / "agent-sandbox-http-target-relay.service.template").read_text(
         encoding="utf-8"
     )
     heartbeat = (repo / "systemd" / "agent-sandbox-host-heartbeat.service.template").read_text(
@@ -86,6 +90,9 @@ def test_service_templates_use_optional_shared_secrets_env() -> None:
     assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in openai
     assert "EnvironmentFile=-__PROJECT_DIR__/config/nuget-relay.env" in nuget
     assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in nuget
+    assert "EnvironmentFile=-__PROJECT_DIR__/config/http-target-relay.env" in http_target
+    assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in http_target
+    assert "ExecStart=__PROJECT_DIR__/.venv/bin/agent-sandbox-http-target-relay" in http_target
     assert "EnvironmentFile=-__PROJECT_DIR__/config/host-heartbeat.env" in heartbeat
     assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in heartbeat
     assert "Environment=TEAMS_INGEST_LOG_LEVEL=INFO" in teams_ingest

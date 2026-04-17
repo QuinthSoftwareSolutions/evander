@@ -1,0 +1,14 @@
+Restore GNOME suspend settings
+
+Previous values:
+- sleep-inactive-ac-type: 'suspend'
+- sleep-inactive-ac-timeout: 900
+- sleep-inactive-battery-type: 'suspend'
+- sleep-inactive-battery-timeout: 900
+
+Run these commands to restore them:
+
+gsettings set org.gnome.settings-daemon.plugins.power sleep-inactive-ac-type 'suspend'
+gsettings set org.gnome.settings-daemon.plugins.power sleep-inactive-ac-timeout 900
+gsettings set org.gnome.settings-daemon.plugins.power sleep-inactive-battery-type 'suspend'
+gsettings set org.gnome.settings-daemon.plugins.power sleep-inactive-battery-timeout 900

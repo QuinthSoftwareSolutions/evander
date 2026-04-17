@@ -57,6 +57,8 @@ from .models import (
     PostPrFeedbackReplyRequest,
     PromptAgentRequest,
     PromptAgentResponse,
+    RunScriptRequest,
+    RunScriptResponse,
     RequestPrReviewRequest,
     RespondToAgentRequest,
     RespondToAgentResponse,
@@ -2095,6 +2097,79 @@ def create_server(context: RuntimeContext) -> FastMCP:
             audit_failure(
                 resolved_session_id,
                 ToolName.SCHEDULE_RESUME,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
+    def run_script(
+        session_id: str | None = None,
+        script_name: str = "",
+        parameters: list[str] | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        resolved_session_id = _resolve_session_id_from_context(
+            session_id, ctx, transport_session_map=transport_session_map
+        )
+        args = {
+            "session_id": resolved_session_id,
+            "script_name": script_name,
+            "parameters": list(parameters or []),
+        }
+        try:
+            request = RunScriptRequest(
+                session_id=resolved_session_id,
+                script_name=script_name,
+                parameters=parameters or [],
+            )
+            args = request.model_dump(mode="json")
+            session = context.policy.require_tool(resolved_session_id, ToolName.RUN_SCRIPT)
+            normalized_script_name = context.policy.require_script_name(session, request.script_name)
+            queued = context.script_run_request_store.enqueue(
+                session_id=resolved_session_id,
+                directory_path=session.directory_path,
+                script_name=normalized_script_name,
+                parameters=list(request.parameters),
+                source="mcp_tool",
+            )
+            result = RunScriptResponse(
+                request_id=queued.request_id,
+                script_name=queued.script_name,
+                parameters=list(queued.parameters),
+                queued=True,
+            ).model_dump(mode="json")
+            audit_success(
+                resolved_session_id,
+                ToolName.RUN_SCRIPT,
+                args,
+                {
+                    "request_id": queued.request_id,
+                    "script_name": queued.script_name,
+                    "queued": True,
+                    "parameter_count": len(queued.parameters),
+                },
+            )
+            return result
+        except PolicyError as exc:
+            audit_failure(resolved_session_id, ToolName.RUN_SCRIPT, args, str(exc))
+            raise
+        except ValueError as exc:
+            audit_failure(
+                resolved_session_id,
+                ToolName.RUN_SCRIPT,
+                args,
+                str(exc),
+                decision="error",
+                error_class="validation_error",
+            )
+            raise ToolError(str(exc)) from exc
+        except Exception as exc:
+            audit_failure(
+                resolved_session_id,
+                ToolName.RUN_SCRIPT,
                 args,
                 str(exc),
                 decision="error",

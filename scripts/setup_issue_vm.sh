@@ -20,7 +20,7 @@ trap 'on_error ${LINENO}' ERR
 
 show_help() {
   cat <<'EOF'
-Usage: setup_issue_vm.sh [--dry-run] [--python] [--dotnet] [--nuget] [--mssql [--mssql-init-root PATH]] [--playwright] [--frontend-deps --frontend-host-checkout PATH --frontend-install-root PATH ...] [mirror-options] <issue-number|issue-yaml> [project-or-solution-if-nuget] [repo-source] [session-id] [vm-user]
+Usage: setup_issue_vm.sh [--dry-run] [--python] [--dotnet] [--nuget] [--mssql [--mssql-init-root PATH]] [--playwright] [--codex-skill NAME ...] [--frontend-deps --frontend-host-checkout PATH --frontend-install-root PATH ...] [mirror-options] <issue-number|issue-yaml> [project-or-solution-if-nuget] [repo-source] [session-id] [vm-user]
 
 Run the common issue-VM bring-up flow in one command:
   1. optionally prewarm the shared NuGet cache on the host
@@ -91,6 +91,9 @@ Optional guest toolchains:
                       Host directory copied into /var/opt/mssql/init. If present,
                       init.sql from that directory is executed after SQL Server starts.
   --playwright        Bootstrap the host-seeded Node + Playwright runtime into the guest.
+  --codex-skill NAME  Codex skill directory name to copy into the guest CODEX_HOME
+                      skills directory.
+                      Repeat for multiple skills. Requires AGENT_PROVIDER=codex.
   --frontend-deps     Bootstrap host-seeded frontend install roots into the guest.
   --frontend-host-checkout PATH
                       Host repo checkout that owns the install roots. Optional for
@@ -112,6 +115,7 @@ BOOTSTRAP_NUGET=0
 BOOTSTRAP_MSSQL=0
 BOOTSTRAP_PLAYWRIGHT=0
 BOOTSTRAP_FRONTEND_DEPS=0
+BOOTSTRAP_CODEX_SKILLS=()
 MSSQL_INIT_ROOT="${AGENT_SANDBOX_MSSQL_INIT_ROOT:-}"
 FRONTEND_HOST_CHECKOUT="${AGENT_SANDBOX_FRONTEND_HOST_CHECKOUT:-}"
 FRONTEND_INSTALL_ROOTS=()
@@ -149,6 +153,14 @@ while [[ $# -gt 0 ]]; do
     --playwright)
       BOOTSTRAP_PLAYWRIGHT=1
       shift
+      ;;
+    --codex-skill)
+      if [[ -z "${2:-}" ]]; then
+        echo "Missing value for $1" >&2
+        exit 1
+      fi
+      BOOTSTRAP_CODEX_SKILLS+=("$2")
+      shift 2
       ;;
     --frontend-deps)
       BOOTSTRAP_FRONTEND_DEPS=1
@@ -237,6 +249,10 @@ AGENT_RUNNER_PROVIDER_LIB_B64="$(base64 -w0 "${AGENT_RUNNER_PROVIDER_LIB_PATH}")
 AGENT_BOOTSTRAP_SCRIPT_PATH="$(agent_provider_bootstrap_script_path "${SCRIPT_DIR}" "${AGENT_PROVIDER}")"
 if [[ ! -f "${AGENT_BOOTSTRAP_SCRIPT_PATH}" ]]; then
   echo "Unsupported AGENT_PROVIDER '${AGENT_PROVIDER}': missing bootstrap script ${AGENT_BOOTSTRAP_SCRIPT_PATH}" >&2
+  exit 1
+fi
+if (( ${#BOOTSTRAP_CODEX_SKILLS[@]} > 0 )) && [[ "${AGENT_PROVIDER}" != "codex" ]]; then
+  echo "--codex-skill requires AGENT_PROVIDER=codex." >&2
   exit 1
 fi
 AGENT_STATE_LIB_B64="$(base64 -w0 "${SCRIPT_DIR}/lib/agent_state.sh")"
@@ -455,7 +471,9 @@ log_step "launch_vm"
 sudo \
   SSH_PUBLIC_KEY_FILE="${SSH_PUBLIC_KEY_FILE}" \
   GATEWAY_URL="${GATEWAY_URL:-}" \
+  HTTP_TARGET_RELAY_BASE_URL="${HTTP_TARGET_RELAY_BASE_URL:-}" \
   LLM_BASE_URL="${LLM_BASE_URL:-}" \
+  AGENT_SANDBOX_RUNTIME_DIR="${AGENT_SANDBOX_RUNTIME_DIR:-}" \
   "${SCRIPT_DIR}/launch_agent_vm.sh" "${VM_NAME}" "${SESSION_ID}"
 log_step "wait_for_ip"
 VM_IP="$(vm_network_wait_for_ip "${VM_NAME}" "${VM_WAIT_IP_TIMEOUT_SECONDS}")"
@@ -465,7 +483,11 @@ vm_network_wait_for_ssh "${VM_NAME}" "${VM_IP}" "${VM_USER}" "${SSH_PRIVATE_KEY_
 echo "Guest SSH is ready on ${VM_USER}@${VM_IP}"
 mapfile -t SSH_OPTS < <(guest_ssh_options "${VM_NAME}" "${VM_IP}" "${SSH_PRIVATE_KEY_PATH}" "${CALLER_HOME}")
 log_step "bootstrap_${AGENT_PROVIDER}"
-"${AGENT_BOOTSTRAP_SCRIPT_PATH}" "${VM_NAME}" "${VM_USER}"
+BOOTSTRAP_PROVIDER_ARGS=()
+for skill in "${BOOTSTRAP_CODEX_SKILLS[@]}"; do
+  BOOTSTRAP_PROVIDER_ARGS+=("--skill" "${skill}")
+done
+"${AGENT_BOOTSTRAP_SCRIPT_PATH}" "${BOOTSTRAP_PROVIDER_ARGS[@]}" "${VM_NAME}" "${VM_USER}"
 if (( BOOTSTRAP_DOTNET )); then
   log_step "bootstrap_dotnet"
   "${SCRIPT_DIR}/bootstrap_dotnet_vm.sh" "${VM_NAME}" "${VM_USER}"

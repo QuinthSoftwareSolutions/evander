@@ -1928,6 +1928,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             self.service.resume_agent,
             summary.vm_name,
             prompt.strip(),
+            resume_mode="same_context",
         )
 
     def _validate_vm_model_configuration(self, summary) -> str | None:

@@ -95,7 +95,7 @@ Directory-scoped config is rooted at `root`:
    sudo ./scripts/apply_firewall.sh
    ```
 
-   The default firewall policy allows host ports `22`, `8000`, `11434`, and `11666` so VMs can use SSH for Git remotes, MCP on `8000`, the OpenAI relay on `11434`, and the NuGet relay on `11666`.
+  The default firewall policy allows host ports `22`, `8000`, `11434`, `11666`, and `11777` so VMs can use SSH for Git remotes, MCP on `8000`, the OpenAI relay on `11434`, the NuGet relay on `11666`, and the session-scoped HTTP target relay on `11777` for approved external web endpoints such as APP demo environments.
 
 6. Start the host-side services:
 
@@ -152,6 +152,14 @@ Directory-scoped config is rooted at `root`:
    ```
 
    This builds a temporary host wheelhouse from the repo's `pyproject.toml`, copies it into the guest, creates a repo-local `.venv`, and installs the repo with dev dependencies offline.
+
+   For generic guest-side Python tools that are not tied to a cloned repo checkout, use the lower-level package bootstrap instead:
+
+   ```bash
+   ./scripts/bootstrap_python_packages_vm.sh vm-real openai
+   ```
+
+   This builds a temporary host wheelhouse for the requested package specs, copies it into the guest, creates or reuses a guest tools virtualenv under `~/.agent-sandbox/python-tools-venv`, and installs those packages offline there.
 
 11. Optionally install host-relay NuGet sources into the VM:
 

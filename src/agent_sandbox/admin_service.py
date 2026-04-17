@@ -12,6 +12,7 @@ import tempfile
 import threading
 import time
 import fcntl
+from collections.abc import Mapping
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
@@ -476,6 +477,12 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
     ),
     WorkflowEditorNodeCatalogEntry(
         kind="trigger",
+        type="trigger:script-run-request",
+        label="Script run request",
+        fields=[],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="trigger",
         type="trigger:discord:new-message",
         label="Discord message",
         fields=[
@@ -695,6 +702,12 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "string_list",
                 description="Additional MCP tools to allow for the created session.",
             ),
+            _field(
+                "allowed_script_names",
+                "Allowed script names",
+                "string_list",
+                description="Additional script names the created session may invoke with run_script.",
+            ),
             _field("discord_channels", "Discord channels", "string_list"),
             _field("email_mailboxes", "Email mailboxes", "string_list"),
             _field("email_folders", "Email folders", "string_list"),
@@ -704,6 +717,7 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("mssql", "MSSQL", "boolean", bindable=True),
             _field("mssql_init_root", "MSSQL init root", "string", bindable=True),
             _field("playwright", "Playwright", "boolean", bindable=True),
+            _field("codex_skills", "Codex skills", "string_list"),
             _field("frontend_deps", "Frontend deps", "boolean", bindable=True),
             _field("frontend_host_checkout", "Frontend host checkout", "string", bindable=True),
             _field("frontend_install_roots", "Frontend install roots", "string_list"),
@@ -767,6 +781,20 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("model", "Model", "string", bindable=True),
             _field("vm_user", "VM user", "string", bindable=True),
             _field("resume_thread_id", "Resume thread ID", "string", bindable=True),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="effect",
+        type="effect:bash:script",
+        label="Bash script",
+        fields=[
+            _field("script_path", "Script path", "string", required=True, bindable=True),
+            _field("args", "Args", "string_list", bindable=True),
+            _field("working_directory", "Working directory", "string", bindable=True),
+            _field("environment", "Environment", "json", bindable=True),
+            _field("stdin", "Stdin", "string", bindable=True, multiline=True),
+            _field("timeout_seconds", "Timeout seconds", "number", bindable=True),
+            _field("check", "Check exit code", "boolean", bindable=True),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(
@@ -1392,8 +1420,12 @@ def _resolve_session_target(target: str, sessions: dict[str, SessionManifest]) -
 
 
 def _default_base_branch_for_repo(repo_path: str) -> str | None:
+    return _default_base_branch_for_repo_remote(repo_path, "origin")
+
+
+def _default_base_branch_for_repo_remote(repo_path: str, remote_name: str) -> str | None:
     candidates = [
-        ["git", "-C", repo_path, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"],
+        ["git", "-C", repo_path, "symbolic-ref", "--quiet", "--short", f"refs/remotes/{remote_name}/HEAD"],
         ["git", "-C", repo_path, "branch", "--show-current"],
     ]
     for cmd in candidates:
@@ -1403,8 +1435,9 @@ def _default_base_branch_for_repo(repo_path: str) -> str | None:
         value = (result.stdout or "").strip()
         if not value:
             continue
-        if value.startswith("origin/"):
-            value = value[len("origin/") :]
+        remote_prefix = f"{remote_name}/"
+        if value.startswith(remote_prefix):
+            value = value[len(remote_prefix) :]
         return value or None
     return None
 
@@ -1435,6 +1468,55 @@ def _resolve_canonical_origin_url_for_repo(repo_path: str, remote_name: str = "o
             return mirror_origin_url
 
     return remote_url
+
+
+def _mirror_remote_name_for_repo(repo_path: str) -> str:
+    current_branch_result = _run_subprocess(
+        ["git", "-C", repo_path, "branch", "--show-current"],
+        capture_output=True,
+        text=True,
+    )
+    current_branch = (current_branch_result.stdout or "").strip() if current_branch_result.returncode == 0 else ""
+    if current_branch:
+        tracking_remote_result = _run_subprocess(
+            ["git", "-C", repo_path, "config", "--get", f"branch.{current_branch}.remote"],
+            capture_output=True,
+            text=True,
+        )
+        tracking_remote = (
+            (tracking_remote_result.stdout or "").strip() if tracking_remote_result.returncode == 0 else ""
+        )
+        if tracking_remote:
+            return tracking_remote
+
+    remote_head_result = _run_subprocess(
+        ["git", "-C", repo_path, "for-each-ref", "--format=%(refname)", "refs/remotes/*/HEAD"],
+        capture_output=True,
+        text=True,
+    )
+    if remote_head_result.returncode == 0:
+        remote_heads = []
+        for line in (remote_head_result.stdout or "").splitlines():
+            remote_head_ref = line.strip()
+            if not remote_head_ref:
+                continue
+            ref_parts = remote_head_ref.split("/")
+            if len(ref_parts) >= 4 and ref_parts[:2] == ["refs", "remotes"] and ref_parts[-1] == "HEAD":
+                remote_heads.append(ref_parts[2])
+        if remote_heads:
+            return remote_heads[0]
+
+    remotes_result = _run_subprocess(
+        ["git", "-C", repo_path, "remote"],
+        capture_output=True,
+        text=True,
+    )
+    if remotes_result.returncode == 0:
+        remotes = [line.strip() for line in (remotes_result.stdout or "").splitlines() if line.strip()]
+        if remotes:
+            return remotes[0]
+
+    return "origin"
 
 
 def _prune_pr_map(path: Path, *, session_ids: set[str]) -> tuple[int, set[tuple[str, str, str]]]:
@@ -2119,6 +2201,7 @@ def _build_issue_session_manifest(
     directory_path: str,
     ttl_hours: int | None,
     extra_allowed_tools: list[str | ToolName] | None = None,
+    allowed_script_names: list[str] | None = None,
     discord_channels: list[str],
     email_mailboxes: list[str],
     email_folders: list[str],
@@ -2167,6 +2250,7 @@ def _build_issue_session_manifest(
         vm_id=vm_id,
         directory_path=directory_path,
         allowed_tools=list(dict.fromkeys(resolved_allowed_tools)),
+        allowed_script_names=_normalize_allowed_script_names(allowed_script_names or []),
         discord_channel_allowlist=discord_channels,
         email_folder_allowlist=resolved_email_folders,
         email_mailbox_allowlist=resolved_email_mailboxes,
@@ -2207,6 +2291,29 @@ def _normalize_allowed_tools(value: list[str | ToolName]) -> list[ToolName]:
         seen.add(normalized_tool)
         normalized_tools.append(normalized_tool)
     return normalized_tools
+
+
+def _normalize_allowed_script_names(value: list[str]) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for script_name in value:
+        candidate = str(script_name).strip()
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        normalized.append(candidate)
+    return normalized
+
+
+def _deep_merge_mapping(base: Mapping[str, Any], update: Mapping[str, Any]) -> dict[str, Any]:
+    merged: dict[str, Any] = dict(base)
+    for key, value in update.items():
+        existing = merged.get(key)
+        if isinstance(existing, Mapping) and isinstance(value, Mapping):
+            merged[key] = _deep_merge_mapping(existing, value)
+            continue
+        merged[key] = value
+    return merged
 
 
 def _pkexec_env_command(base_cmd: list[str], env: dict[str, str], allowed_keys: tuple[str, ...]) -> list[str]:
@@ -2617,6 +2724,7 @@ class AdminService:
         mssql: bool,
         mssql_init_root: str | None,
         playwright: bool,
+        codex_skills: list[str] | None,
         frontend_deps: bool,
         frontend_host_checkout: str | None,
         frontend_install_roots: list[str] | None,
@@ -2640,6 +2748,8 @@ class AdminService:
             cmd.extend(["--mssql-init-root", mssql_init_root])
         if playwright:
             cmd.append("--playwright")
+        for skill_name in codex_skills or []:
+            cmd.extend(["--codex-skill", skill_name])
         if frontend_deps:
             cmd.append("--frontend-deps")
         if frontend_host_checkout is not None:
@@ -2681,7 +2791,14 @@ class AdminService:
             raise RuntimeError((name_result.stderr or name_result.stdout or "").strip() or f"Failed to determine repo name: {repo_source}")
         return (path_result.stdout or "").strip(), (name_result.stdout or "").strip()
 
-    def _sync_repo_into_bare_remote(self, repo_name: str, resolved_repo_path: str, *, issue_setup: EffectiveIssueSetupConfig) -> Path:
+    def _sync_repo_into_bare_remote(
+        self,
+        repo_name: str,
+        resolved_repo_path: str,
+        *,
+        issue_setup: EffectiveIssueSetupConfig,
+        repo_source: str | None = None,
+    ) -> Path:
         create_remote_script = self.project_dir / "scripts" / "create_git_remote.sh"
         completed = _run_subprocess(
             [str(create_remote_script), repo_name, "agents"],
@@ -2722,7 +2839,49 @@ class AdminService:
                 (trusted_repo_result.stderr or trusted_repo_result.stdout or "").strip()
                 or f"Failed to record trusted repo path for {bare_repo_path}"
             )
-        canonical_origin_url = _resolve_canonical_origin_url_for_repo(resolved_repo_path)
+        mirror_source = (repo_source or resolved_repo_path).strip()
+        mirror_source_result = _run_subprocess(
+            ["git", f"--git-dir={bare_repo_path}", "config", "agent-sandbox.mirrorSource", mirror_source],
+            capture_output=True,
+            text=True,
+        )
+        if mirror_source_result.returncode != 0:
+            raise RuntimeError(
+                (mirror_source_result.stderr or mirror_source_result.stdout or "").strip()
+                or f"Failed to record mirror source for {bare_repo_path}"
+            )
+        mirror_remote_name = _mirror_remote_name_for_repo(resolved_repo_path)
+        mirror_remote_result = _run_subprocess(
+            ["git", f"--git-dir={bare_repo_path}", "config", "agent-sandbox.mirrorRemoteName", mirror_remote_name],
+            capture_output=True,
+            text=True,
+        )
+        if mirror_remote_result.returncode != 0:
+            raise RuntimeError(
+                (mirror_remote_result.stderr or mirror_remote_result.stdout or "").strip()
+                or f"Failed to record mirror remote name for {bare_repo_path}"
+            )
+        mirror_sync_result = _run_subprocess(
+            ["git", f"--git-dir={bare_repo_path}", "config", "agent-sandbox.mirrorSyncRemote", "1"],
+            capture_output=True,
+            text=True,
+        )
+        if mirror_sync_result.returncode != 0:
+            raise RuntimeError(
+                (mirror_sync_result.stderr or mirror_sync_result.stdout or "").strip()
+                or f"Failed to record mirror sync policy for {bare_repo_path}"
+            )
+        mirror_force_local_result = _run_subprocess(
+            ["git", f"--git-dir={bare_repo_path}", "config", "agent-sandbox.mirrorForceLocal", "0"],
+            capture_output=True,
+            text=True,
+        )
+        if mirror_force_local_result.returncode != 0:
+            raise RuntimeError(
+                (mirror_force_local_result.stderr or mirror_force_local_result.stdout or "").strip()
+                or f"Failed to record mirror force-local policy for {bare_repo_path}"
+            )
+        canonical_origin_url = _resolve_canonical_origin_url_for_repo(resolved_repo_path, mirror_remote_name)
         if canonical_origin_url:
             canonical_config_result = _run_subprocess(
                 ["git", f"--git-dir={bare_repo_path}", "config", "agent-sandbox.canonicalOriginUrl", canonical_origin_url],
@@ -2734,7 +2893,7 @@ class AdminService:
                     (canonical_config_result.stderr or canonical_config_result.stdout or "").strip()
                     or f"Failed to record canonical origin URL for {bare_repo_path}"
                 )
-        default_base_branch = _default_base_branch_for_repo(resolved_repo_path)
+        default_base_branch = _default_base_branch_for_repo_remote(resolved_repo_path, mirror_remote_name)
         if default_base_branch:
             base_branch_config_result = _run_subprocess(
                 ["git", f"--git-dir={bare_repo_path}", "config", "agent-sandbox.baseBranch", default_base_branch],
@@ -2982,6 +3141,9 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
 
     def set_session_allowed_tools(self, target: str, allowed_tools: list[str | ToolName]) -> SessionActionResult:
         return self.session_admin.set_session_allowed_tools(target, allowed_tools)
+
+    def set_session_allowed_script_names(self, target: str, allowed_script_names: list[str]) -> SessionActionResult:
+        return self.session_admin.set_session_allowed_script_names(target, allowed_script_names)
 
     def set_session_model(self, target: str, model: str) -> SessionActionResult:
         return self.session_admin.set_session_model(target, model)
@@ -3325,15 +3487,20 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
         vm_user: str = "agent",
         dispatch_id: str | None = None,
         resume_thread_id: str | None = None,
+        resume_mode: str = "new_context",
     ) -> VmActionResult:
         sessions = self.runtime.sessions.read_all()
         vm_name = _resolve_vm_name_from_target(target, sessions)
         session_id: str | None = None
         directory_path: str | None = None
+        manifest: SessionManifest | None = None
+        effective_resume_thread_id: str | None = None
         try:
             session_id, manifest = _resolve_session_target(target, sessions)
             resolved_model = str(model or "").strip() or self._resolve_agent_model_for_session(manifest)
             directory_path = manifest.directory_path
+            stored_resume_thread_id = str(manifest.metadata.get("agent_thread_id") or "").strip() or None
+            effective_resume_thread_id = str(resume_thread_id or "").strip() or stored_resume_thread_id
         except ValueError as exc:
             return VmActionResult(
                 success=False,
@@ -3342,6 +3509,14 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
                 message=str(exc),
             )
         script_path = Path(__file__).resolve().parents[2] / "scripts" / "resume_issue_agent.sh"
+        normalized_resume_mode = str(resume_mode).strip() or "new_context"
+        if normalized_resume_mode not in {"same_context", "new_context"}:
+            return VmActionResult(
+                success=False,
+                vm_name=vm_name,
+                action="resume_issue_agent",
+                message=f"Unsupported resume mode: {resume_mode}",
+            )
         args = [
             str(script_path),
             "--prompt",
@@ -3353,7 +3528,7 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
             "--host-control-state-path",
             str(self.config.host_agent_control_state_path),
             *(["--dispatch-id", dispatch_id] if dispatch_id else []),
-            *(["--resume-thread-id", resume_thread_id] if resume_thread_id else ["--resume-mode", "new_context"]),
+            *(["--resume-thread-id", effective_resume_thread_id] if effective_resume_thread_id else ["--resume-mode", normalized_resume_mode]),
         ]
         completed = _run_subprocess(args, capture_output=True, text=True, env=os.environ | {"AGENT_MODEL": resolved_model})
         stdout = completed.stdout or ""
@@ -3368,6 +3543,11 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
                 continue
             message_lines.append(line)
         message = "\n".join(line for line in message_lines if line.strip()).strip() or stderr.strip()
+        resolved_thread_id = thread_id or effective_resume_thread_id
+        if completed.returncode == 0 and session_id and manifest is not None and resolved_thread_id:
+            updated_metadata = dict(manifest.metadata)
+            updated_metadata["agent_thread_id"] = resolved_thread_id
+            self.runtime.sessions.put(session_id, manifest.model_copy(update={"metadata": updated_metadata}))
         if completed.returncode == 0 and dispatch_id:
             self._spawn_agent_completion_watcher(
                 vm_name=vm_name,
@@ -3381,7 +3561,7 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
             vm_name=vm_name,
             action="resume_issue_agent",
             message=message or f"resume_issue_agent.sh exited with code {completed.returncode}",
-            thread_id=thread_id,
+            thread_id=resolved_thread_id,
         )
 
     def _spawn_agent_completion_watcher(
@@ -3907,8 +4087,7 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
 
     def session_update_metadata(self, *, target: str, metadata: Mapping[str, Any]) -> dict[str, Any]:
         session_id, manifest = _resolve_session_target(target, self.runtime.sessions.read_all())
-        merged_metadata = dict(manifest.metadata)
-        merged_metadata.update(dict(metadata))
+        merged_metadata = _deep_merge_mapping(manifest.metadata, metadata)
         updated_manifest = manifest.model_copy(update={"metadata": merged_metadata})
         self.runtime.sessions.put(session_id, updated_manifest)
         return {
@@ -5544,6 +5723,7 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
         mssql: bool = False,
         mssql_init_root: str | None = None,
         playwright: bool = False,
+        codex_skills: list[str] | None = None,
         frontend_deps: bool = False,
         frontend_host_checkout: str | None = None,
         frontend_install_roots: list[str] | None = None,
@@ -5650,6 +5830,7 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
                 mssql=mssql,
                 mssql_init_root=mssql_init_root,
                 playwright=playwright,
+                codex_skills=codex_skills,
                 frontend_deps=frontend_deps,
                 frontend_host_checkout=frontend_host_checkout,
                 frontend_install_roots=frontend_install_roots,
@@ -5685,6 +5866,7 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
         mssql: bool = False,
         mssql_init_root: str | None = None,
         playwright: bool = False,
+        codex_skills: list[str] | None = None,
     ) -> VmActionResult:
         try:
             issue_key = self._resolve_local_issue_key(issue_identifier)
@@ -5715,6 +5897,7 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
             mssql=mssql,
             mssql_init_root=mssql_init_root,
             playwright=playwright,
+            codex_skills=codex_skills,
             directory_path=issue.directory_path,
         )
 
@@ -5729,6 +5912,7 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
         vm_user: str = "agent",
         ttl_hours: int | None = None,
         allowed_tools: list[str | ToolName] | None = None,
+        allowed_script_names: list[str] | None = None,
         discord_channels: list[str] | None = None,
         email_mailboxes: list[str] | None = None,
         email_folders: list[str] | None = None,
@@ -5738,6 +5922,7 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
         mssql: bool = False,
         mssql_init_root: str | None = None,
         playwright: bool = False,
+        codex_skills: list[str] | None = None,
         frontend_deps: bool = False,
         frontend_host_checkout: str | None = None,
         frontend_install_roots: list[str] | None = None,
@@ -5779,6 +5964,7 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
                 message="repo_source is required when frontend dependency bootstrap is enabled.",
             )
         normalized_frontend_install_roots = [item.strip() for item in (frontend_install_roots or []) if item and item.strip()]
+        normalized_codex_skills = [item.strip() for item in (codex_skills or []) if item and item.strip()]
         if frontend_deps and not normalized_frontend_install_roots:
             return VmActionResult(
                 success=False,
@@ -5802,6 +5988,7 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
             directory_path=normalized_directory_path,
             ttl_hours=ttl_hours,
             extra_allowed_tools=allowed_tools,
+            allowed_script_names=allowed_script_names,
             discord_channels=discord_channels or [],
             email_mailboxes=email_mailboxes or [],
             email_folders=email_folders or [],
@@ -5852,6 +6039,8 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
                     setup_args.extend(["--mssql-init-root", mssql_init_root])
             if playwright:
                 setup_args.append("--playwright")
+            for skill_name in normalized_codex_skills:
+                setup_args.extend(["--codex-skill", skill_name])
             setup_args.extend([resolved_vm_name, resolved_session_id, vm_user])
             if helper is not None:
                 response = helper.call(
@@ -5914,7 +6103,12 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
             if (repo_source or "").strip():
                 resolved_repo_path, resolved_repo_name = self._resolve_repo_source(repo_source.strip())
                 resolved_frontend_host_checkout = frontend_host_checkout.strip() if frontend_host_checkout and frontend_host_checkout.strip() else resolved_repo_path
-                self._sync_repo_into_bare_remote(resolved_repo_name, resolved_repo_path, issue_setup=issue_setup)
+                self._sync_repo_into_bare_remote(
+                    resolved_repo_name,
+                    resolved_repo_path,
+                    issue_setup=issue_setup,
+                    repo_source=repo_source.strip(),
+                )
                 guest_repo_root = self._clone_repo_into_vm(
                     vm_name=resolved_vm_name,
                     vm_user=vm_user,

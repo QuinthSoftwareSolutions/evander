@@ -58,7 +58,7 @@ get_vm_ip() {
 
   ip="$(
     sudo -n virsh domifaddr "${VM_NAME}" 2>/dev/null \
-      | awk '/ipv4/ {split($4, a, "/"); print a[1]; exit}'
+      | awk '/ipv4/ {split($4, a, "/"); print a[1]; exit}' || true
   )"
   if [[ -n "${ip}" ]]; then
     printf '%s\n' "${ip}"
@@ -67,7 +67,7 @@ get_vm_ip() {
 
   ip="$(
     virsh domifaddr "${VM_NAME}" 2>/dev/null \
-      | awk '/ipv4/ {split($4, a, "/"); print a[1]; exit}'
+      | awk '/ipv4/ {split($4, a, "/"); print a[1]; exit}' || true
   )"
   if [[ -n "${ip}" ]]; then
     printf '%s\n' "${ip}"

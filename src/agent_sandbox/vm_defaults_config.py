@@ -22,6 +22,7 @@ from .storage import JsonStore
 class EffectiveVmDefaultsConfig(BaseModel):
     bind_network_cidr: str = "192.168.250.0/24"
     gateway_url: str = "http://192.168.250.1:8000/mcp"
+    http_target_relay_port: int = 11777
     nuget_relay_port: int = 11666
     openai_relay_port: int = 11434
 
@@ -31,9 +32,13 @@ class EffectiveVmDefaultsConfig(BaseModel):
     def guest_nuget_relay_base_url(self) -> str:
         return _service_url_from_gateway_url(self.gateway_url, port=self.nuget_relay_port, path="")
 
+    def guest_http_target_relay_base_url(self) -> str:
+        return _service_url_from_gateway_url(self.gateway_url, port=self.http_target_relay_port, path="")
+
     def guest_environment(self) -> dict[str, str]:
         return {
             "GATEWAY_URL": self.gateway_url,
+            "HTTP_TARGET_RELAY_BASE_URL": self.guest_http_target_relay_base_url(),
             "LLM_BASE_URL": self.guest_openai_base_url(),
             "NUGET_RELAY_BASE_URL": self.guest_nuget_relay_base_url(),
         }
@@ -74,6 +79,8 @@ class VmDefaultsConfigResolver:
         payload = resolution.effective_config
         payload.setdefault("openai_relay_host", self.config.openai_relay_host)
         payload.setdefault("openai_relay_port", self.config.openai_relay_port)
+        payload.setdefault("http_target_relay_host", self.config.http_target_relay_host)
+        payload.setdefault("http_target_relay_port", self.config.http_target_relay_port)
         payload.setdefault("nuget_relay_host", self.config.nuget_relay_host)
         payload.setdefault("nuget_relay_port", self.config.nuget_relay_port)
         return EffectiveVmDefaultsConfig.model_validate(payload)

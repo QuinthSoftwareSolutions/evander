@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from agent_sandbox.admin_service import _deep_merge_mapping
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.effects.providers.base import EffectRuntimeContext
 from agent_sandbox.effects.providers.session_update_metadata import SessionUpdateMetadataEffectProvider
@@ -71,3 +72,31 @@ def test_session_update_metadata_provider_requires_admin_service_method(tmp_path
 
     with pytest.raises(RuntimeError, match="AdminService\\.session_update_metadata is not available"):
         provider.execute(resolved_config={"session_id": "session-1", "metadata": {"issue_number": "14084"}})
+
+
+def test_deep_merge_mapping_merges_nested_session_metadata() -> None:
+    merged = _deep_merge_mapping(
+        {
+            "example_app": {
+                "environments": {
+                    "alpha": {"base_url": "https://alpha.example"}
+                }
+            }
+        },
+        {
+            "example_app": {
+                "environments": {
+                    "beta": {"base_url": "https://beta.example"}
+                }
+            }
+        },
+    )
+
+    assert merged == {
+        "example_app": {
+            "environments": {
+                "alpha": {"base_url": "https://alpha.example"},
+                "beta": {"base_url": "https://beta.example"},
+            }
+        }
+    }

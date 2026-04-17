@@ -27,13 +27,14 @@ Install these packages on the Ubuntu host before using the scripts:
 10. Launch a VM with `sudo ./scripts/launch_agent_vm.sh`.
 10. Optionally bootstrap a provider runtime in the guest (for example `./scripts/bootstrap_codex_vm.sh <vm-name>` or `./scripts/bootstrap_copilot_vm.sh <vm-name>`).
 11. Optionally bootstrap a Python repo into a guest-local virtualenv with `./scripts/bootstrap_python_vm.sh <vm-name> <host-checkout-root> <guest-repo-root>`.
-12. Optionally install the host `.NET` SDK into the guest with `./scripts/bootstrap_dotnet_vm.sh <vm-name>`.
-13. Optionally prewarm the shared host NuGet cache with `./scripts/prewarm_nuget_cache.sh <path> [more paths...]`.
-14. Optionally install NuGet relay sources into the guest with `./scripts/bootstrap_nuget_vm.sh <vm-name>`.
-15. Optionally provision a guest-local Microsoft SQL Server instance into the guest with `MSSQL_SA_PASSWORD=... ./scripts/bootstrap_mssql_vm.sh <vm-name>`.
-16. Optionally install Playwright into the guest with `./scripts/bootstrap_playwright_vm.sh <vm-name>` for rendered-DOM debugging.
-17. Optionally create a local bare Git remote with `./scripts/create_git_remote.sh <repo-name>` or mirror the default host repo with `./scripts/mirror_issue_repo.sh <issue-number>` if the VM should push code back to the host.
-18. Use [live-smoke-tests.md](/home/jonathan/agent-sandbox/docs/live-smoke-tests.md) when you want to verify live Discord and provider-backed email behavior against real credentials.
+12. Optionally bootstrap generic guest Python packages into an offline tools virtualenv with `./scripts/bootstrap_python_packages_vm.sh <vm-name> <package-spec> [package-spec ...]`.
+13. Optionally install the host `.NET` SDK into the guest with `./scripts/bootstrap_dotnet_vm.sh <vm-name>`.
+14. Optionally prewarm the shared host NuGet cache with `./scripts/prewarm_nuget_cache.sh <path> [more paths...]`.
+15. Optionally install NuGet relay sources into the guest with `./scripts/bootstrap_nuget_vm.sh <vm-name>`.
+16. Optionally provision a guest-local Microsoft SQL Server instance into the guest with `MSSQL_SA_PASSWORD=... ./scripts/bootstrap_mssql_vm.sh <vm-name>`.
+17. Optionally install Playwright into the guest with `./scripts/bootstrap_playwright_vm.sh <vm-name>` for rendered-DOM debugging.
+18. Optionally create a local bare Git remote with `./scripts/create_git_remote.sh <repo-name>` or mirror the default host repo with `./scripts/mirror_issue_repo.sh <issue-number>` if the VM should push code back to the host.
+19. Use [live-smoke-tests.md](/home/jonathan/agent-sandbox/docs/live-smoke-tests.md) when you want to verify live Discord and provider-backed email behavior against real credentials.
 
 - The launch script resizes each overlay disk to `20G` by default.
 - The launch script also exposes a read-only shared NuGet cache via `virtiofs` at `/opt/agent-sandbox/nuget-cache-ro` inside the guest.
@@ -254,6 +255,9 @@ Storage layout for directory config:
 - `./scripts/bootstrap_python_vm.sh <vm-name> <host-checkout-root> <guest-repo-root>` builds a temporary host wheelhouse from the repo's `pyproject.toml`, copies it into the guest, creates a repo-local `.venv`, and installs the repo with dev dependencies offline.
 - The bootstrap validates that the guest Python interpreter satisfies the repo's `requires-python` lower bound before it creates the virtualenv.
 - The guest install path uses `pip install --no-index --find-links ... --no-build-isolation -e ".[dev]"` so later guest edits still run against the cloned checkout rather than a prebuilt wheel.
+- `./scripts/bootstrap_python_packages_vm.sh <vm-name> <package-spec> [package-spec ...]` is the lower-level generic variant for guest-local Python tools that are not tied to a repo checkout.
+- The generic package bootstrap builds a temporary host wheelhouse for the requested package specs plus `setuptools`, `wheel`, and `virtualenv`, copies that wheelhouse into the guest under `~/.agent-sandbox/python-wheelhouse/tools`, creates or reuses a guest tools virtualenv under `~/.agent-sandbox/python-tools-venv`, and installs the requested packages offline with `pip install --no-index --find-links ...`.
+- Override host/guest interpreter paths with `HOST_PYTHON_BIN` and `GUEST_PYTHON_BIN`, or override guest destinations with `GUEST_WHEELHOUSE_DIR` and `--venv` when needed.
 
 ## VM Playwright Bootstrap
 
@@ -318,11 +322,11 @@ Storage layout for directory config:
 ## Host-Side LLM Access
 
 - The firewall allows only the host TCP ports listed in `ALLOWED_TCP_PORTS`.
-- Defaults: `22` for host SSH/Git, `8000` for the MCP gateway, `11434` for the host-side OpenAI relay or a local OpenAI-compatible LLM endpoint such as Ollama, and `11666` for the host-side NuGet relay.
+- Defaults: `22` for host SSH/Git, `8000` for the MCP gateway, `11434` for the host-side OpenAI relay or a local OpenAI-compatible LLM endpoint such as Ollama, `11666` for the host-side NuGet relay, and `11777` for the host-side HTTP target relay used to reach approved external web endpoints such as APP demo environments.
 - Override when applying firewall rules, for example:
 
   ```bash
-  sudo ALLOWED_TCP_PORTS="22 8000 11434 11666 4000" ./scripts/apply_firewall.sh
+  sudo ALLOWED_TCP_PORTS="22 8000 11434 11666 11777 4000" ./scripts/apply_firewall.sh
   ```
 
 - The guest receives `AGENT_SANDBOX_LLM_BASE_URL` and `OPENAI_BASE_URL` in `/etc/agent-sandbox/session.env`.
@@ -918,6 +922,35 @@ sudo systemctl status agent-sandbox-trigger-orchestrator.service
 sudo journalctl -u agent-sandbox-trigger-orchestrator.service -f
 ```
 
+### APP demo provisioning workflow
+
+- `trigger:script-run-request` is wired to accept exactly one host-approved provisioning wrapper:
+  `provision_exampleindustry_app_demo_environment.sh`.
+- That wrapper lives in this repo under `scripts/` and delegates to the existing host script at
+  `/home/jonathan/Documents/Repos/ExampleIndustryAPP/Scripts/Azure/Environment/deploy-demo-environment.sh`.
+- The wrapper reserves stdout for a final JSON payload and sends deploy progress logs to stderr, so
+  the orchestrator can capture the result blob without parsing human-oriented progress output.
+- The wrapper emits a `session_metadata_patch` object that appends two relay targets under
+  `metadata.http_targets.targets`: `<environment-alias>-api` for backend/API traffic and
+  `<environment-alias>-ui` for browser/DOM traffic. It keeps the APP-specific
+  `metadata.example_app.environments.<environment-alias>` record for convenience and refreshes
+  `metadata.example_app_last_provision` with the selected environment alias plus its API alias, UI
+  alias, `app_base_url` (API base URL), and `app_public_url` (public UI URL).
+- The trigger graph writes that metadata patch into the originating session and resumes the same
+  session with the provisioning result in the follow-up prompt.
+- The orchestrator filter expects the script request to pass the environment name as the first
+  parameter; the current workflow forwards that value as `--resource-base-name` and uses it as the
+  reported logical environment alias.
+- Guests authenticate to the selected APP environment themselves through the relay-backed URL for
+  the appropriate API or UI alias. The generic HTTP target relay no longer injects host-side APP
+  authorization headers.
+
+You can run the wrapper directly on the host for validation:
+
+```bash
+./scripts/provision_exampleindustry_app_demo_environment.sh --resource-base-name demo-blue
+```
+
 ### Teams ingest worker
 
 - `trigger:teams:new-message` events are produced by a host-side Teams ingest worker that polls
@@ -956,6 +989,7 @@ This creates:
 - `agent-sandbox-gateway.service`
 - `agent-sandbox-openai-relay.service`
 - `agent-sandbox-nuget-relay.service`
+- `agent-sandbox-http-target-relay.service`
 - `agent-sandbox-ado-worker.service`
 - `agent-sandbox-host-heartbeat.service`
 - `agent-sandbox-issue-orchestrator.service`
@@ -971,7 +1005,10 @@ Before running install mode, ensure preflight is clean (or only warning-only), t
 4. Ensure the needed service env vars are available. The rendered units will load optional
    per-service `config/*.env` files and optional repo-root `secrets.env`.
 5. Ensure `OPENAI_API_KEY` is available for the OpenAI relay and `AZURE_ARTIFACTS_PAT` when the
-   NuGet relay needs private Azure Artifacts access.
+   NuGet relay needs private Azure Artifacts access. The HTTP target relay is auth-transparent and
+   exists to enforce destination allowlisting for approved external web endpoints. In the APP demo
+   workflow, guests authenticate to APP interactively or with guest-managed bearer tokens/cookies
+   through that relay path.
 6. For private PR feedback polling, ensure the service environment exposes `GITHUB_TOKEN`
    and/or `AZURE_DEVOPS_PR_PAT` and ensure the effective `root` provider config sets the correct
    `azure_devops_organization_url`, `azure_devops_project`, and `azure_devops_pr_pat_env`.
@@ -982,6 +1019,7 @@ sudo systemctl start agent-sandbox-firewall.service
 sudo systemctl start agent-sandbox-gateway.service
 sudo systemctl start agent-sandbox-openai-relay.service
 sudo systemctl start agent-sandbox-nuget-relay.service
+sudo systemctl start agent-sandbox-http-target-relay.service
 sudo systemctl start agent-sandbox-ado-worker.service
 sudo systemctl start agent-sandbox-host-heartbeat.service
 sudo systemctl start agent-sandbox-issue-orchestrator.service
@@ -989,6 +1027,7 @@ sudo systemctl status agent-sandbox-firewall.service
 sudo systemctl status agent-sandbox-gateway.service
 sudo systemctl status agent-sandbox-openai-relay.service
 sudo systemctl status agent-sandbox-nuget-relay.service
+sudo systemctl status agent-sandbox-http-target-relay.service
 sudo systemctl status agent-sandbox-ado-worker.service
 sudo systemctl status agent-sandbox-host-heartbeat.service
 sudo systemctl status agent-sandbox-issue-orchestrator.service

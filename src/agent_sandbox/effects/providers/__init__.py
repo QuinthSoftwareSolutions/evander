@@ -1,4 +1,5 @@
 from .agent_prompt import AgentPromptEffectProvider
+from .bash_script import BashScriptEffectProvider
 from .base import EffectProvider, EffectProviderBase, EffectRuntimeContext
 from .issue_update_state import IssueUpdateStateEffectProvider
 from .pr_create import PrCreateEffectProvider
@@ -10,6 +11,7 @@ from .vm_stop import VmStopEffectProvider
 
 __all__ = [
     "AgentPromptEffectProvider",
+    "BashScriptEffectProvider",
     "EffectProvider",
     "EffectProviderBase",
     "EffectRuntimeContext",

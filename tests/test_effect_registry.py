@@ -83,6 +83,7 @@ def test_default_registry_includes_all_known_effect_types() -> None:
         "effect:vm:stop",
         "effect:agent:prompt",
         "effect:agent:enqueue-prompt",
+        "effect:bash:script",
         "effect:vm:exec",
         "effect:vm:copy-files",
         "effect:vm:delete-files",
@@ -204,6 +205,23 @@ def test_vm_create_provider_passes_frontend_deps_fields() -> None:
     assert admin_service.create_vm_calls[0]["frontend_deps"] is True
     assert admin_service.create_vm_calls[0]["frontend_host_checkout"] == "/tmp/checkout"
     assert admin_service.create_vm_calls[0]["frontend_install_roots"] == ["/tmp/checkout/Src/Clients"]
+
+
+def test_vm_create_provider_passes_codex_skills() -> None:
+    effect = VmCreateEffectDefinition(
+        id="effect-vm",
+        display_name="Create VM",
+        type="effect:vm:create",
+        vm_name="lab-vm",
+        codex_skills=["playwright", "exampleindustry-app-demo"],
+    )
+    admin_service = _AdminServiceStub(create_vm_calls=[], resume_calls=[])
+    factory = EffectProviderFactory(provider_config_resolver=_ResolverStub(), admin_service=admin_service)
+
+    provider = factory.build(effect, directory_path="root/team-a")
+    provider.execute()
+
+    assert admin_service.create_vm_calls[0]["codex_skills"] == ["playwright", "exampleindustry-app-demo"]
 
 
 def test_agent_prompt_provider_emits_thread_id() -> None:

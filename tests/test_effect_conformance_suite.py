@@ -116,6 +116,15 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
             "prompt": "Continue ${{effect_1.session_id}}",
         }
     )
+    bash_script = adapter.validate_python(
+        {
+            "id": "effect-script",
+            "display_name": "Run script",
+            "type": "effect:bash:script",
+            "script_path": "./scripts/example.sh",
+            "args": ["--flag", "value"],
+        }
+    )
     vm_exec = adapter.validate_python(
         {
             "id": "effect-exec",
@@ -173,6 +182,7 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
     assert vm_stop.type == "effect:vm:stop"
     assert prompt.type == "effect:agent:prompt"
     assert enqueue_prompt.type == "effect:agent:enqueue-prompt"
+    assert bash_script.type == "effect:bash:script"
     assert vm_exec.type == "effect:vm:exec"
     assert vm_copy.type == "effect:vm:copy-files"
     assert issue_state.type == "effect:issue:update-state"

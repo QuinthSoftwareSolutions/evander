@@ -72,6 +72,16 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "vm_user",
         "resume_thread_id",
     ]
+    bash_script = next(node for node in catalog_payload["nodes"] if node["type"] == "effect:bash:script")
+    assert [field["key"] for field in bash_script["fields"]] == [
+        "script_path",
+        "args",
+        "working_directory",
+        "environment",
+        "stdin",
+        "timeout_seconds",
+        "check",
+    ]
     output_mode = next(field for field in agent_prompt["fields"] if field["key"] == "output_mode")
     assert output_mode["options"] == [
         {"value": "immediate", "label": "Immediate"},
@@ -81,6 +91,8 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
     assert all(field["key"] != "outputs" for field in ticket_created["fields"])
     review_request = next(node for node in catalog_payload["nodes"] if node["type"] == "trigger:review:new-request")
     assert review_request["fields"] == []
+    script_run_request = next(node for node in catalog_payload["nodes"] if node["type"] == "trigger:script-run-request")
+    assert script_run_request["fields"] == []
     teams_message = next(node for node in catalog_payload["nodes"] if node["type"] == "trigger:teams:new-message")
     assert [field["key"] for field in teams_message["fields"]] == ["targets", "user_ids"]
     await_agent = next(node for node in catalog_payload["nodes"] if node["type"] == "gate:await-agent")
@@ -93,6 +105,8 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
     ]
     issue_get = next(node for node in catalog_payload["nodes"] if node["type"] == "query:issue:get")
     assert [field["key"] for field in issue_get["fields"]] == ["issue_id"]
+    vm_create = next(node for node in catalog_payload["nodes"] if node["type"] == "effect:vm:create")
+    assert any(field["key"] == "allowed_script_names" for field in vm_create["fields"])
 
 
 def test_admin_web_validates_and_saves_workflow_editor_document(tmp_path: Path) -> None:

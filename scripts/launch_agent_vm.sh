@@ -15,6 +15,7 @@ Arguments:
 Environment:
   VM_STORAGE_DIR       Root directory for libvirt-accessible VM storage.
   GATEWAY_URL          Host MCP gateway URL exposed to the guest.
+  HTTP_TARGET_RELAY_BASE_URL Host HTTP target relay URL exposed to the guest.
   SSH_PUBLIC_KEY_FILE  Public key injected into the guest.
   SSH_PRIVATE_KEY_PATH Private key used to derive a temporary public key when needed.
   LLM_BASE_URL         Host OpenAI-compatible base URL exposed to the guest.
@@ -80,6 +81,7 @@ if [[ -z "${GATEWAY_URL:-}" || -z "${LLM_BASE_URL:-}" ]]; then
 fi
 
 GATEWAY_URL="${GATEWAY_URL:-http://192.168.250.1:8000/mcp}"
+HTTP_TARGET_RELAY_BASE_URL="${HTTP_TARGET_RELAY_BASE_URL:-http://192.168.250.1:11777}"
 LLM_BASE_URL="${LLM_BASE_URL:-http://192.168.250.1:11434/v1}"
 
 mkdir -p "${VM_DIR}"
@@ -120,6 +122,8 @@ fi
 SSH_PUBLIC_KEY="$(tr -d '\n' < "${SSH_PUBLIC_KEY_FILE}")"
 ESCAPED_SSH_PUBLIC_KEY="${SSH_PUBLIC_KEY//&/\\&}"
 ESCAPED_SSH_PUBLIC_KEY="${ESCAPED_SSH_PUBLIC_KEY//|/\\|}"
+ESCAPED_HTTP_TARGET_RELAY_BASE_URL="${HTTP_TARGET_RELAY_BASE_URL//&/\\&}"
+ESCAPED_HTTP_TARGET_RELAY_BASE_URL="${ESCAPED_HTTP_TARGET_RELAY_BASE_URL//|/\\|}"
 ESCAPED_LLM_BASE_URL="${LLM_BASE_URL//&/\\&}"
 ESCAPED_LLM_BASE_URL="${ESCAPED_LLM_BASE_URL//|/\\|}"
 ESCAPED_NUGET_FALLBACK_PACKAGES="${GUEST_NUGET_FALLBACK_PACKAGES//&/\\&}"
@@ -172,6 +176,7 @@ ESCAPED_NUGET_CACHE_MOUNT_OPTIONS="${ESCAPED_NUGET_CACHE_MOUNT_OPTIONS//|/\\|}"
 
 sed \
   -e "s|__GATEWAY_URL__|${GATEWAY_URL}|g" \
+  -e "s|__HTTP_TARGET_RELAY_BASE_URL__|${ESCAPED_HTTP_TARGET_RELAY_BASE_URL}|g" \
   -e "s|__SESSION_ID__|${SESSION_ID}|g" \
   -e "s|__SSH_PUBLIC_KEY__|${ESCAPED_SSH_PUBLIC_KEY}|g" \
   -e "s|__LLM_BASE_URL__|${ESCAPED_LLM_BASE_URL}|g" \

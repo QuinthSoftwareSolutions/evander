@@ -406,6 +406,17 @@ class SessionAdminFacade:
             message=f"Updated allowed tools for session {session_id}",
         )
 
+    def set_session_allowed_script_names(self, target: str, allowed_script_names: list[str]) -> SessionActionResult:
+        session_id, manifest = admin_service_module._resolve_session_target(target, self._service.runtime.sessions.read_all())
+        manifest.allowed_script_names = admin_service_module._normalize_allowed_script_names(allowed_script_names)
+        self._service.runtime.sessions.put(session_id, manifest)
+        return SessionActionResult(
+            success=True,
+            session_id=session_id,
+            action="set_session_allowed_script_names",
+            message=f"Updated allowed script names for session {session_id}",
+        )
+
     def set_session_model(self, target: str, model: str) -> SessionActionResult:
         session_id, manifest = admin_service_module._resolve_session_target(target, self._service.runtime.sessions.read_all())
         normalized_model = str(model).strip()

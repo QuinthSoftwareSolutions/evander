@@ -12,12 +12,14 @@ def test_setup_issue_vm_supports_opt_in_bootstraps() -> None:
     assert "--mssql" in setup_issue_vm
     assert "--mssql-init-root" in setup_issue_vm
     assert "--playwright" in setup_issue_vm
+    assert "--codex-skill" in setup_issue_vm
     assert "--frontend-deps" in setup_issue_vm
     assert 'BOOTSTRAP_PYTHON=0' in setup_issue_vm
     assert 'BOOTSTRAP_DOTNET=0' in setup_issue_vm
     assert 'BOOTSTRAP_NUGET=0' in setup_issue_vm
     assert 'BOOTSTRAP_MSSQL=0' in setup_issue_vm
     assert 'BOOTSTRAP_PLAYWRIGHT=0' in setup_issue_vm
+    assert 'BOOTSTRAP_CODEX_SKILLS=()' in setup_issue_vm
     assert 'BOOTSTRAP_FRONTEND_DEPS=0' in setup_issue_vm
     assert '"${SCRIPT_DIR}/bootstrap_python_vm.sh"' in setup_issue_vm
     assert '"${SCRIPT_DIR}/bootstrap_dotnet_vm.sh"' in setup_issue_vm

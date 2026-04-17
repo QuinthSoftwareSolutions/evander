@@ -105,6 +105,9 @@ class GatewayConfig(BaseModel):
     openai_api_base_url: str = "https://api.openai.com/v1"
     openai_api_key_env: str = "OPENAI_API_KEY"
     openai_relay_timeout_seconds: float = 300.0
+    http_target_relay_host: str = "0.0.0.0"
+    http_target_relay_port: int = 11777
+    http_target_relay_timeout_seconds: float = 300.0
     nuget_relay_host: str = "0.0.0.0"
     nuget_relay_port: int = 11666
     nuget_public_feed_base_url: str = "https://api.nuget.org"
@@ -182,7 +185,15 @@ class GatewayConfig(BaseModel):
         ]
     )
     redacted_keys: set[str] = Field(
-        default_factory=lambda: {"body", "body_text", "prompt", "authorization", "token", "response_token"}
+        default_factory=lambda: {
+            "body",
+            "body_text",
+            "prompt",
+            "authorization",
+            "token",
+            "response_token",
+            "parameters",
+        }
     )
 
     @field_validator(
@@ -247,6 +258,7 @@ class GatewayConfig(BaseModel):
         if isinstance(value, str):
             return [scope for scope in value.split(" ") if scope.strip()]
         return value
+
 
     @field_validator("teams_delegated_scopes")
     @classmethod

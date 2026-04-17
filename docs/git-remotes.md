@@ -118,12 +118,24 @@ Optional environment override:
 Mirror runs emit an audit summary including source mode, effective default/base branch, and source
 commit SHA used for the mirror update.
 
-Issue mirrors also persist their mirror-source settings in the bare repo config. When a guest fetches
-or pulls from an issue mirror over the restricted SSH alias, the host now refreshes that mirror from
-its configured source immediately before serving `git-upload-pack`. In practice, `git pull` inside the
-guest can bring the host mirror up to date with the canonical repo and then pull those latest refs
-into the guest in one step. If the host-side refresh fails, the guest fetch/pull fails rather than
-silently serving stale refs.
+Issue mirrors persist their mirror-source settings in the bare repo config. Shared non-issue remotes
+created by the host VM setup flow now do the same. When a guest fetches or pulls from either kind of
+repo over the restricted SSH alias, the host refreshes that bare repo from its configured source
+immediately before serving `git-upload-pack`. In practice, `git pull` inside the guest can bring the
+host mirror up to date with the canonical repo and then pull those latest refs into the guest in one
+step. If the host-side refresh fails, the guest fetch/pull fails rather than silently serving stale
+refs.
+
+For an existing bare repo, configure the refresh metadata once on the host:
+
+```bash
+git --git-dir=/home/jonathan/agent-sandbox/git-remotes/ExampleIndustryAPP.git config agent-sandbox.mirrorSource /home/jonathan/Documents/Repos/ExampleIndustryAPP
+git --git-dir=/home/jonathan/agent-sandbox/git-remotes/ExampleIndustryAPP.git config agent-sandbox.mirrorRemoteName origin
+git --git-dir=/home/jonathan/agent-sandbox/git-remotes/ExampleIndustryAPP.git config agent-sandbox.mirrorSyncRemote 1
+git --git-dir=/home/jonathan/agent-sandbox/git-remotes/ExampleIndustryAPP.git config agent-sandbox.mirrorForceLocal 0
+```
+
+After that, the next guest-side `git fetch` or `git pull` refreshes the host bare repo automatically.
 
 ## VM Workflow
 

@@ -80,6 +80,16 @@ class PolicyEngine:
             self.require_pr_feedback_streams(session)
         return session
 
+    def require_script_name(self, session: SessionManifest, script_name: str) -> str:
+        normalized = str(script_name or "").strip()
+        if not normalized:
+            raise PolicyError("script_name is required")
+        if normalized not in set(session.allowed_script_names or []):
+            raise PolicyError(
+                f"Script {normalized!r} is not allowlisted for session {session.session_id}"
+            )
+        return normalized
+
     def require_pr_feedback_streams(self, session: SessionManifest) -> list[dict[str, str]]:
         streams = session.metadata.get("pr_feedback_streams")
         if not isinstance(streams, list) or not streams:

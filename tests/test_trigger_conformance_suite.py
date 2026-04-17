@@ -97,6 +97,15 @@ def _trigger_adapter() -> TypeAdapter[TriggerDefinitionDiscriminated]:
         ),
         (
             {
+                "id": "script-run-request",
+                "display_name": "Script run request",
+                "type": "trigger:script-run-request",
+            },
+            "trigger:script-run-request",
+            "id",
+        ),
+        (
+            {
                 "id": "discord",
                 "display_name": "Discord",
                 "type": "trigger:discord:new-message",

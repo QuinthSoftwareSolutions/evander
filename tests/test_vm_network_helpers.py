@@ -129,3 +129,118 @@ vm_network_wait_for_ssh "vm-1" "192.168.122.11" "agent" "/tmp/id_ed25519" 5
     ssh_calls = (tmp_path / "ssh.log").read_text(encoding="utf-8").splitlines()
     assert any("TestMarker=attempt-1" in call for call in ssh_calls)
     assert any("TestMarker=attempt-2" in call for call in ssh_calls)
+
+
+def test_guest_ssh_resolve_vm_ip_falls_back_after_sudo_failure(tmp_path: Path) -> None:
+    sandbox_root = tmp_path / "sandbox"
+    scripts_dir = sandbox_root / "scripts"
+    lib_dir = scripts_dir / "lib"
+    fake_bin = tmp_path / "bin"
+    scripts_dir.mkdir(parents=True)
+    lib_dir.mkdir()
+    fake_bin.mkdir()
+
+    (lib_dir / "guest_ssh.sh").write_text((ROOT / "scripts" / "lib" / "guest_ssh.sh").read_text(encoding="utf-8"), encoding="utf-8")
+    _write_executable(
+        fake_bin / "sudo",
+        """#!/usr/bin/env bash
+set -euo pipefail
+exit 1
+""",
+    )
+    _write_executable(
+        fake_bin / "virsh",
+        """#!/usr/bin/env bash
+set -euo pipefail
+cat <<'EOF'
+ Name       MAC address          Protocol     Address
+-------------------------------------------------------------------------------
+ vnet0      52:54:00:12:34:56    ipv4         192.168.122.11/24
+EOF
+""",
+    )
+
+    driver = scripts_dir / "driver.sh"
+    _write_executable(
+        driver,
+        """#!/usr/bin/env bash
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/lib/guest_ssh.sh"
+guest_ssh_resolve_vm_ip "vm-1"
+""",
+    )
+
+    env = os.environ.copy()
+    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+
+    result = subprocess.run(
+        [str(driver)],
+        text=True,
+        capture_output=True,
+        env=env,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert result.stdout.strip() == "192.168.122.11"
+
+
+def test_vm_network_resolve_ip_falls_back_after_sudo_failure(tmp_path: Path) -> None:
+    sandbox_root = tmp_path / "sandbox"
+    scripts_dir = sandbox_root / "scripts"
+    lib_dir = scripts_dir / "lib"
+    fake_bin = tmp_path / "bin"
+    scripts_dir.mkdir(parents=True)
+    lib_dir.mkdir()
+    fake_bin.mkdir()
+
+    (lib_dir / "guest_ssh.sh").write_text((ROOT / "scripts" / "lib" / "guest_ssh.sh").read_text(encoding="utf-8"), encoding="utf-8")
+    (lib_dir / "vm_network.sh").write_text((ROOT / "scripts" / "lib" / "vm_network.sh").read_text(encoding="utf-8"), encoding="utf-8")
+    _write_executable(
+        fake_bin / "sudo",
+        """#!/usr/bin/env bash
+set -euo pipefail
+exit 1
+""",
+    )
+    _write_executable(
+        fake_bin / "virsh",
+        """#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "domifaddr" ]]; then
+  cat <<'EOF'
+ Name       MAC address          Protocol     Address
+-------------------------------------------------------------------------------
+ vnet0      52:54:00:12:34:56    ipv4         192.168.122.42/24
+EOF
+  exit 0
+fi
+exit 1
+""",
+    )
+
+    driver = scripts_dir / "driver.sh"
+    _write_executable(
+        driver,
+        """#!/usr/bin/env bash
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/lib/vm_network.sh"
+vm_network_resolve_ip "vm-1"
+""",
+    )
+
+    env = os.environ.copy()
+    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+
+    result = subprocess.run(
+        [str(driver)],
+        text=True,
+        capture_output=True,
+        env=env,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert result.stdout.strip() == "192.168.122.42"

@@ -145,8 +145,58 @@ def test_create_server_registers_schedule_resume_tool(tmp_path) -> None:
     server = create_server(context)
 
     assert any(tool.name == "schedule_resume" for tool in server._tool_manager.list_tools())
+    assert any(tool.name == "run_script" for tool in server._tool_manager.list_tools())
     assert any(tool.name == "list_pull_requests" for tool in server._tool_manager.list_tools())
     assert any(tool.name == "get_pull_request" for tool in server._tool_manager.list_tools())
+
+
+def test_run_script_enforces_tool_policy_and_script_allowlist(tmp_path: Path) -> None:
+    context = build_runtime(
+        GatewayConfig(
+            runtime_dir=tmp_path,
+            audit_log_path=tmp_path / "audit.jsonl",
+            session_store_path=tmp_path / "sessions.json",
+            approval_store_path=tmp_path / "approvals.json",
+            draft_store_path=tmp_path / "drafts.json",
+            email_store_path=tmp_path / "emails.json",
+            discord_command_store_path=tmp_path / "discord.json",
+        )
+    )
+    context.sessions.put(
+        "session-1",
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[],
+            allowed_script_names=["deploy-review"],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    server = create_server(context)
+
+    with pytest.raises(ToolError, match="Tool run_script is not allowed"):
+        asyncio.run(
+            server.call_tool(
+                "run_script",
+                {"session_id": "session-1", "script_name": "deploy-review", "parameters": ["--pr", "42"]},
+            )
+        )
+
+    context.sessions.put(
+        "session-1",
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[ToolName.RUN_SCRIPT],
+            allowed_script_names=["deploy-review"],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    with pytest.raises(ToolError, match="not allowlisted"):
+        asyncio.run(
+            server.call_tool(
+                "run_script",
+                {"session_id": "session-1", "script_name": "collect-logs", "parameters": []},
+            )
+        )
 
 
 def test_list_pull_requests_enforces_tool_policy_and_validation(

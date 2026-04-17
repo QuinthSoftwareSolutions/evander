@@ -285,6 +285,7 @@ class EffectOrchestratorWorker:
         completed_count, published_count = self._reap_completed_futures()
         effect_executions_completed += completed_count
         completion_events_published += published_count
+        completion_events_published += self._dispatch_queued_agent_prompts_directly()
 
         while events_processed < _MAX_EVENTS_PER_CYCLE:
             pending = self.event_queue.list_pending(limit=1)

@@ -84,6 +84,7 @@ DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
             "nuget_azure_pat_env",
             "nuget_public_feed_base_url",
             "nuget_relay_timeout_seconds",
+            "http_target_relay_timeout_seconds",
             "openai_api_base_url",
             "openai_api_key_env",
             "openai_relay_timeout_seconds",
@@ -119,6 +120,8 @@ DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
         {
             "bind_network_cidr",
             "gateway_url",
+            "http_target_relay_host",
+            "http_target_relay_port",
             "nuget_relay_host",
             "nuget_relay_port",
             "openai_relay_host",

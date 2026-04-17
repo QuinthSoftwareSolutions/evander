@@ -1358,6 +1358,7 @@ def status(config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR, as_json: Annotated[bo
             "agent-sandbox-firewall.service",
             "agent-sandbox-gateway.service",
             "agent-sandbox-openai-relay.service",
+            "agent-sandbox-http-target-relay.service",
             "agent-sandbox-host-heartbeat.service",
         ]
         unit_statuses = [_get_systemd_unit_state(unit) for unit in units]
@@ -1371,9 +1372,13 @@ def status(config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR, as_json: Annotated[bo
         relay_health_url = (
             f"http://{_normalize_host_for_local_check(cfg.openai_relay_host)}:{cfg.openai_relay_port}/healthz"
         )
+        http_target_relay_health_url = (
+            f"http://{_normalize_host_for_local_check(cfg.http_target_relay_host)}:{cfg.http_target_relay_port}/healthz"
+        )
         health_results = [
             _check_health_endpoint("gateway", gateway_health_url),
             _check_health_endpoint("openai_relay", relay_health_url),
+            _check_health_endpoint("http_target_relay", http_target_relay_health_url),
         ]
         report["health"] = [asdict(result) for result in health_results]
         for endpoint in health_results:
@@ -2598,6 +2603,13 @@ def create_vm(
     playwright: Annotated[
         bool, typer.Option("--playwright", help="Bootstrap the host-seeded Playwright runtime into the guest.")
     ] = False,
+    codex_skill: Annotated[
+        list[str],
+        typer.Option(
+            "--codex-skill",
+            help="Codex skill directory name to copy into guest ~/.codex/skills. Repeat for multiple skills.",
+        ),
+    ] = [],
     model: Annotated[
         str | None,
         typer.Option("--model", help="Agent model override for the created session."),
@@ -2621,6 +2633,7 @@ def create_vm(
         mssql=mssql,
         mssql_init_root=mssql_init_root,
         playwright=playwright,
+        codex_skills=codex_skill,
         directory_path=directory_path,
         model=model,
     )
@@ -2684,6 +2697,13 @@ def create_issue_vm(
     playwright: Annotated[
         bool, typer.Option("--playwright", help="Bootstrap the host-seeded Playwright runtime into the guest.")
     ] = False,
+    codex_skill: Annotated[
+        list[str],
+        typer.Option(
+            "--codex-skill",
+            help="Codex skill directory name to copy into guest ~/.codex/skills. Repeat for multiple skills.",
+        ),
+    ] = [],
     frontend_deps: Annotated[
         bool,
         typer.Option(
@@ -2735,6 +2755,7 @@ def create_issue_vm(
         mssql=mssql,
         mssql_init_root=mssql_init_root,
         playwright=playwright,
+        codex_skills=codex_skill,
         frontend_deps=frontend_deps,
         frontend_host_checkout=frontend_host_checkout,
         frontend_install_roots=frontend_install_root,

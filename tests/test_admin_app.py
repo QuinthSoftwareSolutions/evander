@@ -345,6 +345,39 @@ def test_apply_vm_refresh_always_refreshes_selected_agent_log() -> None:
     assert captured == ["refreshed"]
 
 
+def test_resume_vm_uses_same_context_mode(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        admin_app.QInputDialog,
+        "getMultiLineText",
+        staticmethod(lambda *args, **kwargs: ("Resume prior work", True)),
+    )
+
+    class DummyLabel:
+        def __init__(self) -> None:
+            self.text = ""
+
+        def setText(self, value: str) -> None:
+            self.text = value
+
+    window = SimpleNamespace(
+        _validate_vm_model_configuration=lambda summary: None,
+        vm_inline_validation_label=DummyLabel(),
+        service=SimpleNamespace(resume_agent=object()),
+        run_action=lambda label, fn, *args, **kwargs: captured.update(
+            {"label": label, "fn": fn, "args": args, "kwargs": kwargs}
+        ),
+    )
+    summary = SimpleNamespace(vm_name="vm-14084")
+
+    admin_app.MainWindow.resume_vm(window, summary)
+
+    assert captured["label"] == "Resume vm-14084"
+    assert captured["args"] == ("vm-14084", "Resume prior work")
+    assert captured["kwargs"]["resume_mode"] == "same_context"
+
+
 def test_update_issue_action_bar_shows_yaml_button_for_selected_issue() -> None:
     class DummyLabel:
         def __init__(self) -> None:

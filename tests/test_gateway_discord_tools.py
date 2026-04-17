@@ -2064,6 +2064,49 @@ def test_schedule_resume_rejects_non_utc_timestamps(tmp_path: Path) -> None:
         )
 
 
+def test_run_script_persists_request_and_audits_success(tmp_path: Path) -> None:
+    context = make_context(tmp_path)
+    context.sessions.put(
+        "session-1",
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[ToolName.RUN_SCRIPT],
+            allowed_script_names=["deploy-review"],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    server = create_server(context)
+
+    result = call_tool(
+        server,
+        "run_script",
+        {
+            "session_id": "session-1",
+            "script_name": "deploy-review",
+            "parameters": ["--pr", "42"],
+        },
+    )
+
+    assert result["script_name"] == "deploy-review"
+    assert result["parameters"] == ["--pr", "42"]
+    assert result["queued"] is True
+
+    stored = json.loads((tmp_path / "script-run-requests-store.json").read_text(encoding="utf-8"))
+    saved_request = next(iter(stored["requests"].values()))
+    assert saved_request["session_id"] == "session-1"
+    assert saved_request["script_name"] == "deploy-review"
+    assert saved_request["parameters"] == ["--pr", "42"]
+    assert saved_request["directory_path"] == "root"
+
+    event = read_audit_events(context.config.audit_log_path)[-1]
+    assert event["tool_name"] == ToolName.RUN_SCRIPT.value
+    assert event["decision"] == "allowed"
+    assert event["args"]["parameters"] == "<redacted>"
+    assert event["result"]["script_name"] == "deploy-review"
+    assert event["result"]["queued"] is True
+    assert event["result"]["parameter_count"] == 2
+
+
 def test_list_all_feedback_returns_history_including_already_read_items(tmp_path: Path) -> None:
     context = make_context(tmp_path)
     context.sessions.put(

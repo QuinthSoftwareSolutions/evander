@@ -31,6 +31,7 @@ desktop = [
 [project.scripts]
 agent-sandbox-gateway = "agent_sandbox.gateway:main"
 agent-sandbox-openai-relay = "agent_sandbox.openai_relay:main"
+agent-sandbox-http-target-relay = "agent_sandbox.http_target_relay:main"
 agent-sandbox-nuget-relay = "agent_sandbox.nuget_relay:main"
 agent-sandbox-ado-worker = "agent_sandbox.ado_issue_worker:main"
 agent-sandbox-discord-ingest = "agent_sandbox.discord_ingest_worker:main"

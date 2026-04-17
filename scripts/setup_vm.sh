@@ -20,7 +20,7 @@ trap 'on_error ${LINENO}' ERR
 
 show_help() {
   cat <<'EOF'
-Usage: setup_vm.sh [--dotnet] [--nuget] [--mssql [--mssql-init-root PATH]] [--playwright] <vm-name> <session-id> [vm-user]
+Usage: setup_vm.sh [--dotnet] [--nuget] [--mssql [--mssql-init-root PATH]] [--playwright] [--codex-skill NAME ...] <vm-name> <session-id> [vm-user]
 
 Run the shared standalone-VM bootstrap flow:
   1. launch the VM
@@ -50,6 +50,9 @@ Optional guest toolchains:
                       Host directory copied into /var/opt/mssql/init. If present,
                       init.sql from that directory is executed after SQL Server starts.
   --playwright        Bootstrap the host-seeded Node + Playwright runtime into the guest.
+  --codex-skill NAME  Codex skill directory name to copy into the guest CODEX_HOME
+                      skills directory.
+                      Repeat for multiple skills. Requires AGENT_PROVIDER=codex.
 EOF
 }
 
@@ -57,6 +60,7 @@ BOOTSTRAP_DOTNET=0
 BOOTSTRAP_NUGET=0
 BOOTSTRAP_MSSQL=0
 BOOTSTRAP_PLAYWRIGHT=0
+BOOTSTRAP_CODEX_SKILLS=()
 MSSQL_INIT_ROOT="${AGENT_SANDBOX_MSSQL_INIT_ROOT:-}"
 
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
@@ -89,6 +93,14 @@ while [[ $# -gt 0 ]]; do
     --playwright)
       BOOTSTRAP_PLAYWRIGHT=1
       shift
+      ;;
+    --codex-skill)
+      if [[ -z "${2:-}" ]]; then
+        echo "Missing value for $1" >&2
+        exit 1
+      fi
+      BOOTSTRAP_CODEX_SKILLS+=("$2")
+      shift 2
       ;;
     --)
       shift
@@ -183,11 +195,16 @@ if [[ ! -f "${AGENT_BOOTSTRAP_SCRIPT_PATH}" ]]; then
   echo "Unsupported AGENT_PROVIDER '${AGENT_PROVIDER}': missing bootstrap script ${AGENT_BOOTSTRAP_SCRIPT_PATH}" >&2
   exit 1
 fi
+if (( ${#BOOTSTRAP_CODEX_SKILLS[@]} > 0 )) && [[ "${AGENT_PROVIDER}" != "codex" ]]; then
+  echo "--codex-skill requires AGENT_PROVIDER=codex." >&2
+  exit 1
+fi
 
 run_launch_vm() {
   local -a env_args=(
     "SSH_PUBLIC_KEY_FILE=${SSH_PUBLIC_KEY_FILE}"
     "GATEWAY_URL=${GATEWAY_URL:-}"
+    "HTTP_TARGET_RELAY_BASE_URL=${HTTP_TARGET_RELAY_BASE_URL:-}"
     "LLM_BASE_URL=${LLM_BASE_URL:-}"
     "AGENT_SANDBOX_RUNTIME_DIR=${AGENT_SANDBOX_RUNTIME_DIR:-}"
     "VM_STORAGE_DIR=${VM_STORAGE_DIR:-}"
@@ -214,7 +231,11 @@ log_step "wait_for_ssh"
 vm_network_wait_for_ssh "${VM_NAME}" "${VM_IP}" "${VM_USER}" "${SSH_PRIVATE_KEY_PATH}" "${VM_WAIT_SSH_TIMEOUT_SECONDS}"
 echo "Guest SSH is ready on ${VM_USER}@${VM_IP}"
 log_step "bootstrap_${AGENT_PROVIDER}"
-"${AGENT_BOOTSTRAP_SCRIPT_PATH}" "${VM_NAME}" "${VM_USER}"
+BOOTSTRAP_PROVIDER_ARGS=()
+for skill in "${BOOTSTRAP_CODEX_SKILLS[@]}"; do
+  BOOTSTRAP_PROVIDER_ARGS+=("--skill" "${skill}")
+done
+"${AGENT_BOOTSTRAP_SCRIPT_PATH}" "${BOOTSTRAP_PROVIDER_ARGS[@]}" "${VM_NAME}" "${VM_USER}"
 if (( BOOTSTRAP_DOTNET )); then
   log_step "bootstrap_dotnet"
   "${SCRIPT_DIR}/bootstrap_dotnet_vm.sh" "${VM_NAME}" "${VM_USER}"

@@ -16,6 +16,7 @@ from agent_sandbox.events.models import (
     PrCreateEffectDefinition,
     PullRequestNewFeedbackTriggerDefinition,
     ReviewNewRequestTriggerDefinition,
+    ScriptRunRequestTriggerDefinition,
     SessionContextQueryDefinition,
     SessionUpdateMetadataEffectDefinition,
     TriggerDefinitionDiscriminated,
@@ -222,6 +223,18 @@ def test_review_request_trigger_validates() -> None:
     assert trigger.type == "trigger:review:new-request"
 
 
+def test_script_run_request_trigger_validates() -> None:
+    trigger = ScriptRunRequestTriggerDefinition.model_validate(
+        {
+            "id": "script-run-1",
+            "display_name": "Script run request",
+            "type": "trigger:script-run-request",
+        }
+    )
+
+    assert trigger.type == "trigger:script-run-request"
+
+
 def test_agent_prompt_new_trigger_validates() -> None:
     trigger = AgentPromptNewTriggerDefinition.model_validate(
         {
@@ -372,6 +385,38 @@ def test_vm_create_effect_accepts_allowed_tools_list() -> None:
     assert effect.allowed_tools == ["list_unread_feedback", "post_pr_feedback_reply"]
 
 
+def test_vm_create_effect_accepts_allowed_script_names_list() -> None:
+    adapter = TypeAdapter(EffectDefinitionDiscriminated)
+    effect = adapter.validate_python(
+        {
+            "id": "effect-vm-tools",
+            "display_name": "Create VM",
+            "type": "effect:vm:create",
+            "vm_name": "vm-1",
+            "allowed_script_names": ["deploy-review", "collect-logs"],
+        }
+    )
+
+    assert effect.type == "effect:vm:create"
+    assert effect.allowed_script_names == ["deploy-review", "collect-logs"]
+
+
+def test_vm_create_effect_accepts_codex_skills_list() -> None:
+    adapter = TypeAdapter(EffectDefinitionDiscriminated)
+    effect = adapter.validate_python(
+        {
+            "id": "effect-vm-skills",
+            "display_name": "Create VM",
+            "type": "effect:vm:create",
+            "vm_name": "vm-1",
+            "codex_skills": ["playwright", "playwright-interactive"],
+        }
+    )
+
+    assert effect.type == "effect:vm:create"
+    assert effect.codex_skills == ["playwright", "playwright-interactive"]
+
+
 def test_vm_start_effect_accepts_session_target() -> None:
     adapter = TypeAdapter(EffectDefinitionDiscriminated)
     effect = adapter.validate_python(
@@ -496,6 +541,20 @@ def test_session_update_metadata_effect_and_session_context_query_validate() -> 
     assert state_effect.state == "In Progress"
     assert effect.metadata == {"issue_number": "14084"}
     assert query.session_id == "session-1"
+
+
+def test_session_update_metadata_effect_allows_templated_metadata_reference() -> None:
+    effect = SessionUpdateMetadataEffectDefinition.model_validate(
+        {
+            "id": "effect-session-meta",
+            "display_name": "Store issue metadata",
+            "type": "effect:session:update-metadata",
+            "session_id": "session-1",
+            "metadata": "${{effect-bash-script-1.session_metadata_patch}}",
+        }
+    )
+
+    assert effect.metadata == "${{effect-bash-script-1.session_metadata_patch}}"
 
 
 def test_vm_copy_files_effect_rejects_mixed_source_kinds() -> None:
