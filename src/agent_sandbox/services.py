@@ -1072,15 +1072,41 @@ class GraphTeamsService:
                     )
                 for message_payload in iterator:
                     envelope = self._to_envelope(message_payload, target=parsed_target)
+                    envelope = self._preserve_status_source_metadata(
+                        known=messages.get(envelope.cursor),
+                        fetched=envelope,
+                    )
                     messages[envelope.cursor] = envelope
                     self.message_store.put(envelope.cursor, envelope)
                     for reply_payload in message_payload.get("replies") or []:
                         reply_envelope = self._to_envelope(reply_payload, target=parsed_target)
+                        reply_envelope = self._preserve_status_source_metadata(
+                            known=messages.get(reply_envelope.cursor),
+                            fetched=reply_envelope,
+                        )
                         messages[reply_envelope.cursor] = reply_envelope
                         self.message_store.put(reply_envelope.cursor, reply_envelope)
 
         ordered = _sorted_teams_messages(messages)
         return _filter_teams_messages_since_cursor(ordered, since_cursor)
+
+    @staticmethod
+    def _preserve_status_source_metadata(
+        *,
+        known: TeamsMessageEnvelope | None,
+        fetched: TeamsMessageEnvelope,
+    ) -> TeamsMessageEnvelope:
+        if known is None:
+            return fetched
+        known_source = str(known.metadata.get("source") or "").strip()
+        if known_source != "teams_graph_api_status":
+            return fetched
+        merged_metadata = dict(fetched.metadata)
+        merged_metadata["source"] = "teams_graph_api_status"
+        known_session_id = str(known.metadata.get("session_id") or "").strip()
+        if known_session_id:
+            merged_metadata["session_id"] = known_session_id
+        return fetched.model_copy(update={"metadata": merged_metadata})
 
     def post_status(
         self,

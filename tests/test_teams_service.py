@@ -397,6 +397,65 @@ def test_graph_teams_service_posts_status_and_thread_reply(
     assert stored["team-a/channel-1/msg-reply"].thread_id == "msg-root"
 
 
+def test_graph_teams_service_get_messages_preserves_status_source_for_known_posts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.method == "POST" and request.url.path.endswith("/teams/team-a/channels/channel-1/messages"):
+            return httpx.Response(
+                201,
+                json={
+                    "id": "msg-root",
+                    "createdDateTime": "2026-03-30T12:00:00Z",
+                    "body": {"content": "<p>root status</p>", "contentType": "html"},
+                    "from": {"application": {"id": "bot-app"}},
+                    "webUrl": "https://teams.example/root",
+                },
+                request=request,
+            )
+        if request.method == "GET" and request.url.path.endswith("/teams/team-a/channels/channel-1/messages"):
+            return httpx.Response(
+                200,
+                json={
+                    "value": [
+                        {
+                            "id": "msg-root",
+                            "createdDateTime": "2026-03-30T12:00:00Z",
+                            "body": {"content": "<p>root status</p>", "contentType": "html"},
+                            "from": {"application": {"id": "bot-app"}},
+                            "webUrl": "https://teams.example/root",
+                            "replies": [],
+                        }
+                    ]
+                },
+                request=request,
+            )
+        raise AssertionError(f"Unexpected request: {request.method} {request.url.path}")
+
+    transport = httpx.MockTransport(handler)
+    patch_httpx_client(monkeypatch, transport)
+    store = JsonStore(tmp_path / "teams.json", TeamsMessageEnvelope)
+    service = GraphTeamsService(
+        store,
+        token="graph-token",
+        api_base_url="https://graph.microsoft.com/v1.0",
+        poll_limit=25,
+        timeout_seconds=5.0,
+        allowed_channel_targets_provider=lambda: ["team-a/channel-1"],
+    )
+
+    service.post_status("root status", "team-a/channel-1", "session-1")
+    messages = service.get_messages()
+
+    assert [message.cursor for message in messages] == ["team-a/channel-1/msg-root"]
+    assert messages[0].metadata["source"] == "teams_graph_api_status"
+    assert messages[0].metadata["session_id"] == "session-1"
+
+
 def test_graph_teams_service_renders_fenced_code_blocks_as_html(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
