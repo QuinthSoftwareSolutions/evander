@@ -167,6 +167,7 @@ def test_discord_get_commands_passes_since_cursor_and_filters_unallowlisted_sour
 
 def test_list_unread_discord_messages_applies_reactions_and_skips_self_status(tmp_path: Path) -> None:
     context = make_context(tmp_path)
+    write_root_policy_overlay(context, {"discord_inbox_routes": {"chan-a": ["session-1"]}})
     context.sessions.put(
         "session-1",
         SessionManifest(
@@ -233,6 +234,7 @@ def test_list_unread_discord_messages_applies_reactions_and_skips_self_status(tm
 
 def test_list_unread_discord_messages_uses_configured_reaction_emoji(tmp_path: Path) -> None:
     context = make_context(tmp_path)
+    write_root_policy_overlay(context, {"discord_inbox_routes": {"chan-a": ["session-1"]}})
     context.sessions.put(
         "session-1",
         SessionManifest(
@@ -276,6 +278,7 @@ def test_list_unread_discord_messages_uses_configured_reaction_emoji(tmp_path: P
 
 def test_list_unread_discord_messages_reaction_failure_is_best_effort_and_audited(tmp_path: Path) -> None:
     context = make_context(tmp_path)
+    write_root_policy_overlay(context, {"discord_inbox_routes": {"chan-a": ["session-1"]}})
     context.sessions.put(
         "session-1",
         SessionManifest(
@@ -334,6 +337,7 @@ def test_list_unread_discord_messages_repeated_reads_are_idempotent_for_reaction
     tmp_path: Path,
 ) -> None:
     context = make_context(tmp_path)
+    write_root_policy_overlay(context, {"discord_inbox_routes": {"chan-a": ["session-1"]}})
     context.sessions.put(
         "session-1",
         SessionManifest(

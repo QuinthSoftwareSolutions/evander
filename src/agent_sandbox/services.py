@@ -43,6 +43,24 @@ _ORDERED_LIST_RE = re.compile(r"^\s*\d+[.)]\s+(.+)$")
 _HEADING_RE = re.compile(r"^\s*(#{1,6})\s+(.+)$")
 _BLOCKQUOTE_RE = re.compile(r"^\s{0,3}>\s?(.*)$")
 _HORIZONTAL_RULE_RE = re.compile(r"^\s{0,3}([-*_])(?:\s*\1){2,}\s*$")
+_GRAPH_TEAMS_REACTION_TYPE_BY_VALUE = {
+    "like": "like",
+    "thumbsup": "like",
+    "thumbs_up": "like",
+    "thumbs-up": "like",
+    "heart": "heart",
+    "love": "heart",
+    "laugh": "laugh",
+    "haha": "laugh",
+    "joy": "laugh",
+    "surprised": "surprised",
+    "wow": "surprised",
+    "eyes": "surprised",
+    "sad": "sad",
+    "cry": "sad",
+    "angry": "angry",
+    "mad": "angry",
+}
 
 
 def _parse_snowflake(value: str, *, field_name: str) -> int:
@@ -64,6 +82,15 @@ def _parse_dt(value: Any) -> datetime:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=UTC)
     return parsed.astimezone(UTC)
+
+
+def _normalize_graph_teams_reaction_type(reaction: str) -> str:
+    normalized = str(reaction).strip()
+    if not normalized:
+        raise ValueError("Teams reaction must be a non-empty string.")
+    if not normalized.isascii():
+        return normalized
+    return _GRAPH_TEAMS_REACTION_TYPE_BY_VALUE.get(normalized.casefold(), normalized)
 
 
 def _message_sort_value(value: str) -> tuple[int, int | str]:
@@ -1126,8 +1153,7 @@ class GraphTeamsService:
     ) -> dict[str, Any]:
         target = parse_teams_target(channel_target)
         normalized_reaction = str(reaction).strip()
-        if not normalized_reaction:
-            raise ValueError("Teams reaction must be a non-empty string.")
+        graph_reaction_type = _normalize_graph_teams_reaction_type(normalized_reaction)
         encoded_message_id = quote(message_id, safe="")
         if target.kind == "chat":
             url = (
@@ -1144,7 +1170,7 @@ class GraphTeamsService:
                 client,
                 "POST",
                 url,
-                json={"reactionType": normalized_reaction},
+                json={"reactionType": graph_reaction_type},
             )
         result = {
             "status": "reacted",
@@ -1154,6 +1180,8 @@ class GraphTeamsService:
             "reaction": normalized_reaction,
             "emoji": normalized_reaction,
         }
+        if graph_reaction_type != normalized_reaction:
+            result["graph_reaction_type"] = graph_reaction_type
         if target.kind == "chat":
             result["chat_id"] = target.chat_id
         else:

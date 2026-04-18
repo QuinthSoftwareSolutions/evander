@@ -21,10 +21,21 @@ class FakeTeamsService:
         self.post_calls: list[tuple[str, str, str, str | None]] = []
         self.reaction_calls: list[tuple[str, str, str, str]] = []
         self.reaction_error_by_message_id: dict[str, Exception] = {}
+        self.read_reaction_emoji = "👀"
 
     def get_messages(self, since_cursor: str | None = None) -> list[TeamsMessageEnvelope]:
         self.last_since_cursor = since_cursor
-        return self.messages
+        if since_cursor is None:
+            return self.messages
+        seen_cursor = False
+        filtered: list[TeamsMessageEnvelope] = []
+        for message in self.messages:
+            if seen_cursor:
+                filtered.append(message)
+                continue
+            if message.cursor == since_cursor:
+                seen_cursor = True
+        return filtered if seen_cursor else self.messages
 
     def post_status(
         self,

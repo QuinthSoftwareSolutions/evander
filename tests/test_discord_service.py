@@ -489,7 +489,7 @@ def test_add_reaction_success_returns_normalized_payload(
         "reaction": "✅",
     }
     assert requests[0].method == "PUT"
-    assert requests[0].url.path.endswith(
+    assert str(requests[0].url).endswith(
         "/channels/chan-a/messages/msg-123/reactions/%E2%9C%85/@me"
     )
 

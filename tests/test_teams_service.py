@@ -527,6 +527,43 @@ def test_graph_teams_service_add_reaction_for_channel_message(
     assert requests[0].content == b'{"reactionType":"like"}'
 
 
+def test_graph_teams_service_preserves_unicode_eyes_reaction(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(204, request=request)
+
+    transport = httpx.MockTransport(handler)
+    patch_httpx_client(monkeypatch, transport)
+    store = JsonStore(tmp_path / "teams.json", TeamsMessageEnvelope)
+    service = GraphTeamsService(
+        store,
+        token="graph-token",
+        api_base_url="https://graph.microsoft.com/v1.0",
+        poll_limit=25,
+        timeout_seconds=5.0,
+        allowed_channel_targets_provider=lambda: ["team-a/channel-1"],
+    )
+
+    result = service.add_reaction("team-a/channel-1", "msg-root", "👀", "session-1")
+
+    assert result == {
+        "status": "reacted",
+        "channel_target": "team-a/channel-1",
+        "team_id": "team-a",
+        "channel_id": "channel-1",
+        "session_id": "session-1",
+        "message_id": "msg-root",
+        "reaction": "👀",
+        "emoji": "👀",
+    }
+    assert requests[0].content == b'{"reactionType":"\xf0\x9f\x91\x80"}'
+
+
 def test_graph_teams_service_add_reaction_for_chat_message(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
