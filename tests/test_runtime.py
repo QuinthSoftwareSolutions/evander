@@ -49,6 +49,8 @@ def test_build_runtime_uses_stub_discord_backend_by_default(tmp_path: Path) -> N
     runtime = build_runtime(make_config(tmp_path))
     assert isinstance(runtime.discord_service, StubDiscordService)
     assert isinstance(runtime.teams_service, StubTeamsService)
+    assert runtime.discord_service.read_reaction_emoji == "👀"
+    assert runtime.teams_service.read_reaction_emoji == "👀"
 
 
 def test_build_runtime_requires_bot_token_for_bot_api_backend(
@@ -70,6 +72,22 @@ def test_build_runtime_uses_bot_api_discord_backend_when_token_is_present(
     runtime = build_runtime(config)
 
     assert isinstance(runtime.discord_service, DiscordBotApiService)
+
+
+def test_build_runtime_threads_discord_read_reaction_emoji_into_adapter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", "token-value")
+    config = make_config(
+        tmp_path,
+        discord_backend="bot_api",
+        discord_read_reaction_emoji="✅",
+    )
+
+    runtime = build_runtime(config)
+
+    assert isinstance(runtime.discord_service, DiscordBotApiService)
+    assert runtime.discord_service.read_reaction_emoji == "✅"
 
 
 def test_build_runtime_reads_bot_token_from_configured_env_var(
@@ -107,6 +125,22 @@ def test_build_runtime_uses_graph_teams_backend_when_token_is_present(
     runtime = build_runtime(config)
 
     assert isinstance(runtime.teams_service, GraphTeamsService)
+
+
+def test_build_runtime_threads_teams_read_reaction_emoji_into_adapter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GRAPH_TEAMS_ACCESS_TOKEN", "graph-token")
+    config = make_config(
+        tmp_path,
+        teams_backend="graph_api",
+        teams_read_reaction_emoji="✅",
+    )
+
+    runtime = build_runtime(config)
+
+    assert isinstance(runtime.teams_service, GraphTeamsService)
+    assert runtime.teams_service.read_reaction_emoji == "✅"
 
 
 def test_build_runtime_supports_delegated_teams_backend_without_static_env_token(

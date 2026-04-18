@@ -4,6 +4,7 @@ from collections import Counter
 from ipaddress import ip_network
 from pathlib import Path
 from typing import Any, Literal
+import unicodedata
 
 import yaml
 from pydantic import (
@@ -71,6 +72,7 @@ class GatewayConfig(BaseModel):
     discord_retry_count: int = Field(default=3, ge=0, le=10)
     discord_retry_base_backoff_seconds: float = Field(default=0.5, gt=0)
     discord_retry_max_backoff_seconds: float = Field(default=5.0, gt=0)
+    discord_read_reaction_emoji: str = "👀"
     discord_operator_user_allowlist: list[str] = Field(default_factory=list)
     discord_operator_channel_allowlist: list[str] = Field(default_factory=list)
     discord_poll_operator_dms: bool = False
@@ -82,6 +84,7 @@ class GatewayConfig(BaseModel):
     teams_retry_count: int = Field(default=3, ge=0, le=10)
     teams_retry_base_backoff_seconds: float = Field(default=0.5, gt=0)
     teams_retry_max_backoff_seconds: float = Field(default=5.0, gt=0)
+    teams_read_reaction_emoji: str = "👀"
     teams_delegated_identity_id: str | None = None
     teams_delegated_client_id: str | None = None
     teams_delegated_tenant_id: str = "organizations"
@@ -241,6 +244,17 @@ class GatewayConfig(BaseModel):
             return None
         text = str(value).strip()
         return text or None
+
+    @field_validator("discord_read_reaction_emoji", "teams_read_reaction_emoji", mode="before")
+    @classmethod
+    def normalize_read_reaction_emoji_fields(cls, value: object, info) -> object:
+        text = str(value or "").strip()
+        if not text:
+            raise ValueError(f"{info.field_name} must be a non-empty string")
+        normalized = unicodedata.normalize("NFC", text)
+        if not normalized:
+            raise ValueError(f"{info.field_name} must be a non-empty string")
+        return normalized
 
     @field_validator("teams_delegated_client_id", "teams_delegated_tenant_id", mode="before")
     @classmethod

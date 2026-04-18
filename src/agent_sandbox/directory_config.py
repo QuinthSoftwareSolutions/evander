@@ -77,6 +77,7 @@ DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
             "discord_retry_count",
             "discord_retry_max_backoff_seconds",
             "discord_timeout_seconds",
+            "discord_read_reaction_emoji",
             "github_token_env",
             "agent_prompt_token_secret_env",
             "agent_prompt_token_ttl_seconds",
@@ -102,6 +103,7 @@ DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
             "teams_retry_count",
             "teams_retry_max_backoff_seconds",
             "teams_timeout_seconds",
+            "teams_read_reaction_emoji",
         }
     ),
     "email": frozenset(

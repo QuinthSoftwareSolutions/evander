@@ -561,6 +561,7 @@ environment.
 | `discord_retry_count` | legacy gateway YAML | `src/agent_sandbox/runtime.py` retry behavior. |
 | `discord_retry_base_backoff_seconds` | legacy gateway YAML | `src/agent_sandbox/runtime.py` retry backoff floor. |
 | `discord_retry_max_backoff_seconds` | legacy gateway YAML | `src/agent_sandbox/runtime.py` retry backoff ceiling. |
+| `discord_read_reaction_emoji` | legacy gateway YAML | `src/agent_sandbox/runtime.py` adapter config + `src/agent_sandbox/gateway.py` unread-message reaction side effect. |
 | `discord_operator_user_allowlist` | legacy gateway YAML | `src/agent_sandbox/runtime.py` and `src/agent_sandbox/policy.py` authorization checks. |
 | `discord_operator_channel_allowlist` | legacy gateway YAML | `src/agent_sandbox/runtime.py` channel filter for operator events. |
 | `discord_poll_operator_dms` | legacy gateway YAML | `src/agent_sandbox/runtime.py` DM polling toggle. |
@@ -669,6 +670,7 @@ Key delegated Teams provider settings now include:
   `ChannelMessage.Read.All`, `ChannelMessage.Send`, and `Chat.ReadWrite`)
 - optional `teams_delegated_authority_base_url`
 - optional `teams_delegated_credential_store_path`
+- optional `teams_read_reaction_emoji` (default `👀`, used for unread-message read reactions)
 - The app registration referenced by `teams_delegated_client_id` must support public client /
   device-code auth. If Microsoft returns `AADSTS7000218`, the registration currently requires a
   client secret or assertion and is incompatible with this flow.

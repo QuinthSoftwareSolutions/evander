@@ -40,6 +40,7 @@ _DISCORD_CONFIG_FIELDS: tuple[tuple[str, str], ...] = (
     ("providers", "discord_retry_count"),
     ("providers", "discord_retry_base_backoff_seconds"),
     ("providers", "discord_retry_max_backoff_seconds"),
+    ("providers", "discord_read_reaction_emoji"),
     ("policy", "discord_operator_channel_allowlist"),
     ("policy", "discord_inbox_routes"),
     ("policy", "discord_operator_user_allowlist"),
@@ -655,6 +656,12 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
     ),
     "discord_timeout_seconds": (
         "HTTP timeout in seconds for Discord API requests."
+    ),
+    "discord_read_reaction_emoji": (
+        "Reaction emoji that the gateway applies when unread Discord messages are fetched."
+    ),
+    "teams_read_reaction_emoji": (
+        "Reaction emoji that the gateway applies when unread Teams messages are fetched."
     ),
     "email_mailboxes": (
         "JSON array of mailbox definitions. Each entry supports mailbox_id, provider "

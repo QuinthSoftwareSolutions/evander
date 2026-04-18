@@ -38,6 +38,29 @@ from .storage import JsonStore
 
 _IGNORED_FEEDBACK_RETENTION = timedelta(days=90)
 _FENCED_CODE_BLOCK_RE = re.compile(r"```[^\n`]*\n?(.*?)```", re.DOTALL)
+_UNORDERED_LIST_RE = re.compile(r"^\s*[-*+]\s+(.+)$")
+_ORDERED_LIST_RE = re.compile(r"^\s*\d+[.)]\s+(.+)$")
+_HEADING_RE = re.compile(r"^\s*(#{1,6})\s+(.+)$")
+_BLOCKQUOTE_RE = re.compile(r"^\s{0,3}>\s?(.*)$")
+_HORIZONTAL_RULE_RE = re.compile(r"^\s{0,3}([-*_])(?:\s*\1){2,}\s*$")
+_GRAPH_TEAMS_REACTION_TYPE_BY_VALUE = {
+    "like": "like",
+    "thumbsup": "like",
+    "thumbs_up": "like",
+    "thumbs-up": "like",
+    "heart": "heart",
+    "love": "heart",
+    "laugh": "laugh",
+    "haha": "laugh",
+    "joy": "laugh",
+    "surprised": "surprised",
+    "wow": "surprised",
+    "eyes": "surprised",
+    "sad": "sad",
+    "cry": "sad",
+    "angry": "angry",
+    "mad": "angry",
+}
 
 
 def _parse_snowflake(value: str, *, field_name: str) -> int:
@@ -59,6 +82,15 @@ def _parse_dt(value: Any) -> datetime:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=UTC)
     return parsed.astimezone(UTC)
+
+
+def _normalize_graph_teams_reaction_type(reaction: str) -> str:
+    normalized = str(reaction).strip()
+    if not normalized:
+        raise ValueError("Teams reaction must be a non-empty string.")
+    if not normalized.isascii():
+        return normalized
+    return _GRAPH_TEAMS_REACTION_TYPE_BY_VALUE.get(normalized.casefold(), normalized)
 
 
 def _message_sort_value(value: str) -> tuple[int, int | str]:
@@ -85,14 +117,118 @@ def _teams_message_to_html(message: str) -> str:
 
 
 def _teams_text_fragment_to_html(text: str) -> str:
-    escaped = html.escape(text)
-    paragraphs = [segment.strip("\n") for segment in escaped.split("\n\n")]
-    rendered_paragraphs: list[str] = []
-    for paragraph in paragraphs:
-        if not paragraph.strip():
+    normalized = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
+    lines = normalized.split("\n")
+    blocks: list[str] = []
+    index = 0
+
+    while index < len(lines):
+        line = lines[index]
+        if not line.strip():
+            index += 1
             continue
-        rendered_paragraphs.append(f"<p>{paragraph.replace('\n', '<br>')}</p>")
-    return "".join(rendered_paragraphs)
+
+        heading_match = _HEADING_RE.match(line)
+        if heading_match:
+            level = len(heading_match.group(1))
+            blocks.append(f"<h{level}>{_teams_render_inline(heading_match.group(2))}</h{level}>")
+            index += 1
+            continue
+
+        if _HORIZONTAL_RULE_RE.match(line):
+            blocks.append("<hr>")
+            index += 1
+            continue
+
+        quote_match = _BLOCKQUOTE_RE.match(line)
+        if quote_match:
+            quote_lines: list[str] = [quote_match.group(1)]
+            index += 1
+            while index < len(lines):
+                next_match = _BLOCKQUOTE_RE.match(lines[index])
+                if not next_match:
+                    break
+                quote_lines.append(next_match.group(1))
+                index += 1
+            quote_html = _teams_text_fragment_to_html("\n".join(quote_lines))
+            blocks.append(f"<blockquote>{quote_html}</blockquote>")
+            continue
+
+        unordered_match = _UNORDERED_LIST_RE.match(line)
+        if unordered_match:
+            items = [f"<li>{_teams_render_inline(unordered_match.group(1))}</li>"]
+            index += 1
+            while index < len(lines):
+                next_match = _UNORDERED_LIST_RE.match(lines[index])
+                if not next_match:
+                    break
+                items.append(f"<li>{_teams_render_inline(next_match.group(1))}</li>")
+                index += 1
+            blocks.append(f"<ul>{''.join(items)}</ul>")
+            continue
+
+        ordered_match = _ORDERED_LIST_RE.match(line)
+        if ordered_match:
+            items = [f"<li>{_teams_render_inline(ordered_match.group(1))}</li>"]
+            index += 1
+            while index < len(lines):
+                next_match = _ORDERED_LIST_RE.match(lines[index])
+                if not next_match:
+                    break
+                items.append(f"<li>{_teams_render_inline(next_match.group(1))}</li>")
+                index += 1
+            blocks.append(f"<ol>{''.join(items)}</ol>")
+            continue
+
+        paragraph_lines = [line]
+        index += 1
+        while index < len(lines):
+            candidate = lines[index]
+            if not candidate.strip() or _teams_line_starts_block(candidate):
+                break
+            paragraph_lines.append(candidate)
+            index += 1
+        paragraph_html = _teams_render_inline("\n".join(paragraph_lines)).replace("\n", "<br>")
+        blocks.append(f"<p>{paragraph_html}</p>")
+
+    return "".join(blocks)
+
+
+def _teams_line_starts_block(line: str) -> bool:
+    return (
+        _HEADING_RE.match(line) is not None
+        or _HORIZONTAL_RULE_RE.match(line) is not None
+        or _BLOCKQUOTE_RE.match(line) is not None
+        or _UNORDERED_LIST_RE.match(line) is not None
+        or _ORDERED_LIST_RE.match(line) is not None
+    )
+
+
+def _teams_render_inline(text: str) -> str:
+    rendered = html.escape(text)
+    placeholders: list[str] = []
+
+    def _stash(value: str) -> str:
+        placeholders.append(value)
+        return f"\u0000{len(placeholders) - 1}\u0000"
+
+    rendered = re.sub(
+        r"`([^`\n]+?)`",
+        lambda match: _stash(f"<code>{match.group(1)}</code>"),
+        rendered,
+    )
+    rendered = re.sub(
+        r"\[([^\]]+)\]\((https?://[^)\s]+)\)",
+        lambda match: f'<a href="{html.escape(match.group(2), quote=True)}">{match.group(1)}</a>',
+        rendered,
+    )
+    rendered = re.sub(r"\*\*(?=\S)(.+?)(?<=\S)\*\*", r"<strong>\1</strong>", rendered)
+    rendered = re.sub(r"__(?=\S)(.+?)(?<=\S)__", r"<strong>\1</strong>", rendered)
+    rendered = re.sub(r"~~(?=\S)(.+?)(?<=\S)~~", r"<del>\1</del>", rendered)
+    rendered = re.sub(r"(?<!\*)\*(?=\S)(.+?)(?<=\S)\*(?!\*)", r"<em>\1</em>", rendered)
+    rendered = re.sub(r"(?<!\w)_(?=\S)(.+?)(?<=\S)_(?!\w)", r"<em>\1</em>", rendered)
+
+    return re.sub(r"\u0000(\d+)\u0000", lambda match: placeholders[int(match.group(1))], rendered)
 
 
 class EmailService:
@@ -134,6 +270,14 @@ class DiscordService(Protocol):
 
     def post_status(self, message: str, channel_id: str, session_id: str) -> dict[str, Any]: ...
 
+    def add_reaction(
+        self,
+        channel_id: str,
+        message_id: str,
+        emoji: str,
+        session_id: str,
+    ) -> dict[str, Any]: ...
+
 
 class TeamsService(Protocol):
     def get_messages(self, since_cursor: str | None = None) -> list["TeamsMessageEnvelope"]: ...
@@ -144,6 +288,14 @@ class TeamsService(Protocol):
         channel_target: str,
         session_id: str,
         thread_id: str | None = None,
+    ) -> dict[str, Any]: ...
+
+    def add_reaction(
+        self,
+        channel_target: str,
+        message_id: str,
+        reaction: str,
+        session_id: str,
     ) -> dict[str, Any]: ...
 
 
@@ -161,8 +313,14 @@ class TeamsTarget:
 
 
 class StubDiscordService:
-    def __init__(self, command_store: JsonStore[DiscordCommandEnvelope]) -> None:
+    def __init__(
+        self,
+        command_store: JsonStore[DiscordCommandEnvelope],
+        *,
+        read_reaction_emoji: str = "👀",
+    ) -> None:
         self.command_store = command_store
+        self.read_reaction_emoji = read_reaction_emoji
 
     def get_commands(self, since_cursor: str | None = None) -> list[DiscordCommandEnvelope]:
         commands = list(self.command_store.read_all().values())
@@ -196,6 +354,22 @@ class StubDiscordService:
             "message_preview": message[:120],
         }
 
+    def add_reaction(
+        self,
+        channel_id: str,
+        message_id: str,
+        emoji: str,
+        session_id: str,
+    ) -> dict[str, Any]:
+        return {
+            "status": "stubbed",
+            "channel_id": channel_id,
+            "session_id": session_id,
+            "message_id": message_id,
+            "emoji": emoji,
+            "reaction": emoji,
+        }
+
 
 class DiscordBotApiService:
     def __init__(
@@ -213,6 +387,7 @@ class DiscordBotApiService:
         operator_user_ids_provider: Callable[[], list[str]] | None = None,
         include_operator_dms_provider: Callable[[], bool] | None = None,
         include_operator_dms: bool = False,
+        read_reaction_emoji: str = "👀",
     ) -> None:
         self.command_store = command_store
         self.token = token
@@ -229,6 +404,7 @@ class DiscordBotApiService:
         self.allowed_channel_ids_provider = allowed_channel_ids_provider
         self.operator_user_ids_provider = operator_user_ids_provider or (lambda: [])
         self.include_operator_dms_provider = include_operator_dms_provider or (lambda: include_operator_dms)
+        self.read_reaction_emoji = read_reaction_emoji
 
     def _headers(self) -> dict[str, str]:
         return {
@@ -428,6 +604,33 @@ class DiscordBotApiService:
             "message_id": payload["id"],
         }
 
+    def add_reaction(
+        self,
+        channel_id: str,
+        message_id: str,
+        emoji: str,
+        session_id: str,
+    ) -> dict[str, Any]:
+        normalized_emoji = str(emoji).strip()
+        if not normalized_emoji:
+            raise ValueError("Discord emoji must be a non-empty string.")
+        encoded_emoji = quote(normalized_emoji, safe="")
+        with httpx.Client(timeout=None) as client:
+            self._request_with_retries(
+                client,
+                "PUT",
+                f"{self.api_base_url}/channels/{channel_id}/messages/{message_id}/reactions/"
+                f"{encoded_emoji}/@me",
+            )
+        return {
+            "status": "reacted",
+            "channel_id": channel_id,
+            "session_id": session_id,
+            "message_id": message_id,
+            "emoji": normalized_emoji,
+            "reaction": normalized_emoji,
+        }
+
 def _sorted_teams_messages(messages: dict[str, TeamsMessageEnvelope]) -> list[TeamsMessageEnvelope]:
     return sorted(messages.values(), key=lambda item: (item.created_at, item.cursor))
 
@@ -549,8 +752,14 @@ def teams_target_from_message(
 
 
 class StubTeamsService:
-    def __init__(self, message_store: JsonStore[TeamsMessageEnvelope]) -> None:
+    def __init__(
+        self,
+        message_store: JsonStore[TeamsMessageEnvelope],
+        *,
+        read_reaction_emoji: str = "👀",
+    ) -> None:
         self.message_store = message_store
+        self.read_reaction_emoji = read_reaction_emoji
 
     def get_messages(self, since_cursor: str | None = None) -> list[TeamsMessageEnvelope]:
         messages = list(self.message_store.read_all().values())
@@ -613,6 +822,30 @@ class StubTeamsService:
             result["channel_id"] = target.channel_id
         return result
 
+    def add_reaction(
+        self,
+        channel_target: str,
+        message_id: str,
+        reaction: str,
+        session_id: str,
+    ) -> dict[str, Any]:
+        target = parse_teams_target(channel_target)
+        normalized_reaction = str(reaction).strip()
+        result: dict[str, Any] = {
+            "status": "stubbed",
+            "channel_target": target.normalized,
+            "session_id": session_id,
+            "message_id": message_id,
+            "reaction": normalized_reaction,
+            "emoji": normalized_reaction,
+        }
+        if target.kind == "chat":
+            result["chat_id"] = target.chat_id
+        else:
+            result["team_id"] = target.team_id
+            result["channel_id"] = target.channel_id
+        return result
+
 
 class GraphTeamsService:
     def __init__(
@@ -628,6 +861,7 @@ class GraphTeamsService:
         retry_base_backoff_seconds: float = 0.5,
         retry_max_backoff_seconds: float = 5.0,
         allowed_channel_targets_provider: Callable[[], list[str]] = lambda: [],
+        read_reaction_emoji: str = "👀",
     ) -> None:
         self.message_store = message_store
         self.token = str(token or "").strip()
@@ -643,6 +877,7 @@ class GraphTeamsService:
             for attempt in range(self.retry_count)
         )
         self.allowed_channel_targets_provider = allowed_channel_targets_provider
+        self.read_reaction_emoji = read_reaction_emoji
 
     def _resolve_token(self) -> str:
         try:
@@ -902,6 +1137,51 @@ class GraphTeamsService:
             "message_id": envelope.message_id,
             "web_url": envelope.metadata.get("web_url"),
         }
+        if target.kind == "chat":
+            result["chat_id"] = target.chat_id
+        else:
+            result["team_id"] = target.team_id
+            result["channel_id"] = target.channel_id
+        return result
+
+    def add_reaction(
+        self,
+        channel_target: str,
+        message_id: str,
+        reaction: str,
+        session_id: str,
+    ) -> dict[str, Any]:
+        target = parse_teams_target(channel_target)
+        normalized_reaction = str(reaction).strip()
+        graph_reaction_type = _normalize_graph_teams_reaction_type(normalized_reaction)
+        encoded_message_id = quote(message_id, safe="")
+        if target.kind == "chat":
+            url = (
+                f"{self.api_base_url}/chats/{quote(target.chat_id or '', safe='')}/messages/"
+                f"{encoded_message_id}/setReaction"
+            )
+        else:
+            url = (
+                f"{self.api_base_url}/teams/{quote(target.team_id or '', safe='')}/channels/"
+                f"{quote(target.channel_id or '', safe='')}/messages/{encoded_message_id}/setReaction"
+            )
+        with httpx.Client(timeout=self.timeout_seconds) as client:
+            self._request_with_retries(
+                client,
+                "POST",
+                url,
+                json={"reactionType": graph_reaction_type},
+            )
+        result = {
+            "status": "reacted",
+            "channel_target": target.normalized,
+            "session_id": session_id,
+            "message_id": message_id,
+            "reaction": normalized_reaction,
+            "emoji": normalized_reaction,
+        }
+        if graph_reaction_type != normalized_reaction:
+            result["graph_reaction_type"] = graph_reaction_type
         if target.kind == "chat":
             result["chat_id"] = target.chat_id
         else:
