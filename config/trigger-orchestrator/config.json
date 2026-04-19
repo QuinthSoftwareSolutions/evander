@@ -190,10 +190,10 @@
       "nuget": true,
       "playwright": true,
       "repo_source": "${{gate-merge-1.repo_source}}",
-      "session_id": "issue-${{trigger-ticket-created-main.ticket.issue_number}}-${{gate-merge-1.directory_slug}}-${{system.now.utc_timestamp_compact}}-${{system.unique.compact}}",
+      "session_id": "issue-${{gate-merge-1.ticket.issue_number}}-${{gate-merge-1.directory_slug}}-${{system.now.utc_timestamp_compact}}-${{system.unique.compact}}",
       "ttl_hours": 48,
       "type": "effect:vm:create",
-      "vm_name": "vm-issue-${{trigger-ticket-created-main.ticket.issue_number}}",
+      "vm_name": "vm-issue-${{gate-merge-1.ticket.issue_number}}",
       "vm_user": "agent"
     },
     {
@@ -206,7 +206,7 @@
           "source_path": "${{gate-merge-1.agents_template_path}}"
         },
         {
-          "content": "${{trigger-ticket-created-main.ticket}}",
+          "content": "${{gate-merge-1.ticket}}",
           "content_format": "yaml",
           "destination_path": "${{effect-vm-create-1.target_dir}}/AGENT_TASK.yaml",
           "overwrite": true
@@ -294,8 +294,8 @@
       "metadata": {
         "ado_project": "${{gate-merge-1.ado_project}}",
         "directory_path": "${{gate-merge-1.directory_path}}",
-        "issue_number": "${{trigger-ticket-created-main.ticket.issue_number}}",
-        "issue_title": "${{trigger-ticket-created-main.ticket.title}}"
+        "issue_number": "${{gate-merge-1.ticket.issue_number}}",
+        "issue_title": "${{gate-merge-1.ticket.title}}"
       },
       "target": "${{effect-vm-create-1.session_id}}",
       "type": "effect:session:update-metadata"
@@ -303,7 +303,7 @@
     {
       "display_name": "Set issue in progress",
       "id": "effect-issue-update-state-1",
-      "issue_id": "${{trigger-ticket-created-main.ticket.issue_id}}",
+      "issue_id": "${{gate-merge-1.ticket.issue_id}}",
       "state": "In Progress",
       "sync_proxy_cache": true,
       "type": "effect:issue:update-state"
@@ -343,7 +343,7 @@
       "display_name": "Restore full task yaml",
       "files": [
         {
-          "content": "${{trigger-ticket-created-main.ticket}}",
+          "content": "${{gate-merge-1.ticket}}",
           "content_format": "yaml",
           "destination_path": "${{effect-vm-create-1.target_dir}}/AGENT_TASK.yaml",
           "overwrite": true
@@ -701,6 +701,9 @@
         },
         "repo_source": {
           "type": "string"
+        },
+        "ticket": {
+          "type": "object"
         }
       },
       "template": {
@@ -712,7 +715,30 @@
         "frontend_install_roots": [
           "/home/jonathan/Documents/Repos/ExampleIndustryAPP/Src/Clients"
         ],
-        "repo_source": "git@ssh.dev.azure.com:v3/exampleindustry/Example%20Industry%20APP/ExampleIndustryAPP"
+        "repo_source": "git@ssh.dev.azure.com:v3/exampleindustry/Example%20Industry%20APP/ExampleIndustryAPP",
+        "ticket": {
+          "body": "${{gate-filter-6.ticket.body}}",
+          "comments": "${{gate-filter-6.ticket.comments ?? []}}",
+          "created_at": "${{gate-filter-6.ticket.created_at}}",
+          "description": "${{gate-filter-6.ticket.description}}",
+          "directory_path": "${{gate-filter-6.ticket.directory_path}}",
+          "forwarding_policy": "${{gate-filter-6.ticket.forwarding_policy ?? null}}",
+          "issue_id": "${{gate-filter-6.ticket.issue_id}}",
+          "issue_number": "${{gate-filter-6.ticket.issue_number}}",
+          "metadata": "${{gate-filter-6.ticket.metadata ?? null}}",
+          "reason": "${{gate-filter-6.ticket.reason ?? null}}",
+          "rejection_reason": "${{gate-filter-6.ticket.rejection_reason ?? null}}",
+          "remote_reference": "${{gate-filter-6.ticket.remote_reference ?? null}}",
+          "repo_source": "${{gate-filter-6.ticket.repo_source}}",
+          "source": "${{gate-filter-6.ticket.source}}",
+          "source_type": "${{gate-filter-6.ticket.source_type}}",
+          "state": "${{gate-filter-6.ticket.state}}",
+          "tags": "${{gate-filter-6.ticket.tags ?? []}}",
+          "title": "${{gate-filter-6.ticket.title}}",
+          "updated_at": "${{gate-filter-6.ticket.updated_at}}",
+          "url": "${{gate-filter-6.ticket.url}}",
+          "yaml_path": "${{gate-filter-6.ticket.yaml_path}}"
+        }
       },
       "type": "gate:map"
     },
@@ -740,6 +766,9 @@
         },
         "repo_source": {
           "type": "string"
+        },
+        "ticket": {
+          "type": "object"
         }
       },
       "template": {
@@ -752,7 +781,30 @@
           "/home/jonathan/Documents/Repos/Scanspac/Src/MesAdmin",
           "/home/jonathan/Documents/Repos/Scanspac/Src/StationGUI"
         ],
-        "repo_source": "git@ssh.dev.azure.com:v3/exampleindustry/Example%20Industry%20Scanspac/ExampleIndustryScanspac"
+        "repo_source": "git@ssh.dev.azure.com:v3/exampleindustry/Example%20Industry%20Scanspac/ExampleIndustryScanspac",
+        "ticket": {
+          "body": "${{gate-filter-7.ticket.body}}",
+          "comments": "${{gate-filter-7.ticket.comments ?? []}}",
+          "created_at": "${{gate-filter-7.ticket.created_at}}",
+          "description": "${{gate-filter-7.ticket.description}}",
+          "directory_path": "${{gate-filter-7.ticket.directory_path}}",
+          "forwarding_policy": "${{gate-filter-7.ticket.forwarding_policy ?? null}}",
+          "issue_id": "${{gate-filter-7.ticket.issue_id}}",
+          "issue_number": "${{gate-filter-7.ticket.issue_number}}",
+          "metadata": "${{gate-filter-7.ticket.metadata ?? null}}",
+          "reason": "${{gate-filter-7.ticket.reason ?? null}}",
+          "rejection_reason": "${{gate-filter-7.ticket.rejection_reason ?? null}}",
+          "remote_reference": "${{gate-filter-7.ticket.remote_reference ?? null}}",
+          "repo_source": "${{gate-filter-7.ticket.repo_source}}",
+          "source": "${{gate-filter-7.ticket.source}}",
+          "source_type": "${{gate-filter-7.ticket.source_type}}",
+          "state": "${{gate-filter-7.ticket.state}}",
+          "tags": "${{gate-filter-7.ticket.tags ?? []}}",
+          "title": "${{gate-filter-7.ticket.title}}",
+          "updated_at": "${{gate-filter-7.ticket.updated_at}}",
+          "url": "${{gate-filter-7.ticket.url}}",
+          "yaml_path": "${{gate-filter-7.ticket.yaml_path}}"
+        }
       },
       "type": "gate:map"
     },
@@ -780,6 +832,9 @@
         },
         "repo_source": {
           "type": "string"
+        },
+        "ticket": {
+          "type": "object"
         }
       },
       "type": "gate:merge"
@@ -1003,7 +1058,7 @@
     {
       "display_name": "Reload issue",
       "id": "query-issue-get-1",
-      "issue_id": "${{trigger-ticket-created-main.ticket.issue_id}}",
+      "issue_id": "${{gate-merge-1.ticket.issue_id}}",
       "type": "query:issue:get"
     },
     {
