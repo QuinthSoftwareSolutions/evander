@@ -6,6 +6,10 @@ from importlib import import_module
 from importlib.metadata import EntryPoint, entry_points
 from typing import Any, Protocol
 
+from pydantic import BaseModel
+
+from agent_sandbox.workflow.contracts import WorkflowNodeEnvelope
+
 from agent_sandbox.effects.providers.base import EffectProviderBase
 from agent_sandbox.gates.providers.base import GateProviderBase
 from agent_sandbox.queries.providers.base import QueryProviderBase
@@ -26,6 +30,7 @@ class ProviderPluginRegistration:
     gate_providers: Mapping[str, type[GateProviderBase]] = field(default_factory=dict)
     effect_providers: Mapping[str, type[EffectProviderBase]] = field(default_factory=dict)
     query_providers: Mapping[str, type[QueryProviderBase]] = field(default_factory=dict)
+    node_definition_resolvers: Mapping[str, Callable[[WorkflowNodeEnvelope], BaseModel]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -34,6 +39,7 @@ class LoadedProviderCatalog:
     gate_providers: Mapping[str, type[GateProviderBase]]
     effect_providers: Mapping[str, type[EffectProviderBase]]
     query_providers: Mapping[str, type[QueryProviderBase]]
+    node_definition_resolvers: Mapping[str, Callable[[WorkflowNodeEnvelope], BaseModel]]
     loaded_plugins: tuple[str, ...]
 
 
@@ -46,6 +52,7 @@ def load_provider_plugins(
     gate_providers: dict[str, type[GateProviderBase]] = {}
     effect_providers: dict[str, type[EffectProviderBase]] = {}
     query_providers: dict[str, type[QueryProviderBase]] = {}
+    node_definition_resolvers: dict[str, Callable[[WorkflowNodeEnvelope], BaseModel]] = {}
     loaded_plugins: list[str] = []
 
     registration_specs: list[tuple[str, Any]] = []
@@ -67,6 +74,7 @@ def load_provider_plugins(
         gate_providers.update(registration.gate_providers)
         effect_providers.update(registration.effect_providers)
         query_providers.update(registration.query_providers)
+        node_definition_resolvers.update(registration.node_definition_resolvers)
         loaded_plugins.append(source)
 
     return LoadedProviderCatalog(
@@ -74,6 +82,7 @@ def load_provider_plugins(
         gate_providers=gate_providers,
         effect_providers=effect_providers,
         query_providers=query_providers,
+        node_definition_resolvers=node_definition_resolvers,
         loaded_plugins=tuple(loaded_plugins),
     )
 
@@ -113,6 +122,7 @@ def _coerce_registration(*, source: str, value: Any) -> ProviderPluginRegistrati
             gate_providers=_coerce_provider_mapping(source=source, mapping=value.get("gate_providers")),
             effect_providers=_coerce_provider_mapping(source=source, mapping=value.get("effect_providers")),
             query_providers=_coerce_provider_mapping(source=source, mapping=value.get("query_providers")),
+            node_definition_resolvers=_coerce_node_definition_resolvers(source=source, mapping=value.get("node_definition_resolvers")),
         )
 
     return ProviderPluginRegistration(
@@ -120,8 +130,30 @@ def _coerce_registration(*, source: str, value: Any) -> ProviderPluginRegistrati
         gate_providers=_coerce_provider_mapping(source=source, mapping=getattr(value, "gate_providers", None)),
         effect_providers=_coerce_provider_mapping(source=source, mapping=getattr(value, "effect_providers", None)),
         query_providers=_coerce_provider_mapping(source=source, mapping=getattr(value, "query_providers", None)),
+        node_definition_resolvers=_coerce_node_definition_resolvers(source=source, mapping=getattr(value, "node_definition_resolvers", None)),
     )
 
+
+
+
+def _coerce_node_definition_resolvers(
+    *,
+    source: str,
+    mapping: Mapping[str, Callable[[WorkflowNodeEnvelope], BaseModel]] | None,
+) -> Mapping[str, Callable[[WorkflowNodeEnvelope], BaseModel]]:
+    if mapping is None:
+        return {}
+    if not isinstance(mapping, Mapping):
+        raise TypeError(f"Node definition resolvers from {source} must be a mapping")
+    normalized: dict[str, Callable[[WorkflowNodeEnvelope], BaseModel]] = {}
+    for raw_type, raw_resolver in mapping.items():
+        node_type = str(raw_type).strip()
+        if not node_type:
+            raise ValueError(f"Node resolver registration from {source} contains an empty node type key")
+        if not callable(raw_resolver):
+            raise TypeError(f"Node resolver for {node_type!r} from {source} must be callable")
+        normalized[node_type] = raw_resolver
+    return normalized
 
 def _coerce_provider_mapping(
     *,
@@ -149,3 +181,6 @@ TRIGGER_PLUGIN_CLASSES: Mapping[str, type[TriggerProviderBase]] = _DEFAULT_PROVI
 GATE_PLUGIN_CLASSES: Mapping[str, type[GateProviderBase]] = _DEFAULT_PROVIDER_CATALOG.gate_providers
 EFFECT_PLUGIN_CLASSES: Mapping[str, type[EffectProviderBase]] = _DEFAULT_PROVIDER_CATALOG.effect_providers
 QUERY_PLUGIN_CLASSES: Mapping[str, type[QueryProviderBase]] = _DEFAULT_PROVIDER_CATALOG.query_providers
+
+
+NODE_DEFINITION_RESOLVERS: Mapping[str, Callable[[WorkflowNodeEnvelope], BaseModel]] = _DEFAULT_PROVIDER_CATALOG.node_definition_resolvers
