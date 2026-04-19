@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from collections.abc import Mapping
-from typing import Annotated, Any, Callable, Literal, TypeAlias, get_args, get_origin
+from typing import Annotated, Any, Callable, Literal, TypeAlias
 
 from pydantic import BaseModel, Field, StringConstraints, field_validator, model_validator
 from typing_extensions import TypeAliasType
@@ -106,50 +106,9 @@ def _materialize_with_model(model_class: type[BaseModel], node: WorkflowNodeEnve
     return model_class.model_validate(payload)
 
 
-def _extract_literal_string(annotation: object) -> str | None:
-    if get_origin(annotation) is not Literal:
-        return None
-    literal_values = get_args(annotation)
-    if len(literal_values) != 1:
-        return None
-    literal_value = literal_values[0]
-    if not isinstance(literal_value, str):
-        return None
-    return literal_value
-
-
-def _iter_node_definition_models() -> list[type[WorkflowNodeDefinition]]:
-    models: list[type[WorkflowNodeDefinition]] = []
-    for obj in globals().values():
-        if not isinstance(obj, type):
-            continue
-        if not issubclass(obj, WorkflowNodeDefinition) or obj is WorkflowNodeDefinition:
-            continue
-        if obj in {TriggerDefinition, GateDefinition, EffectDefinition, QueryDefinition}:
-            continue
-        models.append(obj)
-    return models
-
-
-def _build_node_schema_registry() -> dict[str, NodeSchemaRegistration]:
-    registry: dict[str, NodeSchemaRegistration] = {}
-    for model_class in _iter_node_definition_models():
-        model_fields = getattr(model_class, "model_fields", {})
-        type_field = model_fields.get("type")
-        if type_field is None:
-            continue
-        node_type = _extract_literal_string(type_field.annotation)
-        if node_type is None:
-            continue
-        registry[node_type] = NodeSchemaRegistration(
-            node_type=node_type,
-            model_class=model_class,
-            materialize=lambda node, model_class=model_class: _materialize_with_model(model_class, node),
-        )
-    return registry
-
-
-_NODE_SCHEMA_REGISTRY: dict[str, NodeSchemaRegistration]
+_NODE_SCHEMA_REGISTRY: dict[str, NodeSchemaRegistration] = {}
+_NODE_OUTPUT_SCHEMA_REGISTRY: dict[str, dict[str, dict[str, Any]]] = {}
+_SCHEMA_BOOTSTRAP_ATTEMPTED = False
 
 
 def register_node_schema(
@@ -169,7 +128,16 @@ def get_node_schema_registry() -> Mapping[str, NodeSchemaRegistration]:
     return _NODE_SCHEMA_REGISTRY
 
 
+def register_node_output_schema(*, node_type: str, outputs: Mapping[str, Mapping[str, Any]]) -> None:
+    _NODE_OUTPUT_SCHEMA_REGISTRY[node_type] = {str(key): dict(value) for key, value in outputs.items()}
+
+
+def get_node_output_schema_registry() -> Mapping[str, dict[str, dict[str, Any]]]:
+    return _NODE_OUTPUT_SCHEMA_REGISTRY
+
+
 def materialize_node_definition(node: WorkflowNodeEnvelope) -> BaseModel:
+    _ensure_schema_bootstrap()
     registration = _NODE_SCHEMA_REGISTRY.get(node.type)
     if registration is None:
         return node
@@ -446,10 +414,13 @@ class GateForDefinition(GateDefinition):
         return self
 
 
-GateDefinitionDiscriminated = Annotated[
-    GateFilterDefinition | GateMapDefinition | GateMergeDefinition | GateAwaitAgentDefinition | GateForDefinition,
-    Field(discriminator="type"),
-]
+GateDefinitionDiscriminated = (
+    Annotated[
+        GateFilterDefinition | GateMapDefinition | GateMergeDefinition | GateAwaitAgentDefinition | GateForDefinition,
+        Field(discriminator="type"),
+    ]
+    | WorkflowNodeEnvelope
+)
 
 
 class EffectDefinition(WorkflowNodeDefinition):
@@ -717,9 +688,6 @@ QueryDefinitionDiscriminated = WorkflowNodeEnvelope
 
 WorkflowNodeType = TriggerType | GateType | EffectType | QueryType
 
-_NODE_SCHEMA_REGISTRY = _build_node_schema_registry()
-
-
 class TriggerEvent(BaseModel):
     event_id: str = Field(min_length=1)
     trigger_id: str = Field(min_length=1)
@@ -727,402 +695,6 @@ class TriggerEvent(BaseModel):
     occurred_at: datetime
     payload: dict[str, Any] = Field(default_factory=dict)
     trace_id: str | None = Field(default=None, min_length=1)
-
-
-_STATIC_OUTPUT_SCHEMAS: dict[str, dict[str, dict[str, Any]]] = {
-    "trigger:ticket:created": {
-        "ticket": {
-            "type": "object",
-            "properties": {
-                "issue_id": {"type": "string"},
-                "issue_number": {"type": "string"},
-                "title": {"type": "string"},
-                "body": {"type": "string"},
-                "description": {"type": "string"},
-                "reason": {"type": "string"},
-                "rejection_reason": {"type": "string"},
-                "yaml_path": {"type": "string"},
-                "directory_path": {"type": "string"},
-                "repo_source": {"type": "string"},
-                "source_type": {"type": "string"},
-                "tags": {"type": "array", "items": {"type": "string"}},
-                "state": {"type": "string"},
-                "url": {"type": "string"},
-                "comments": {"type": "array"},
-                "source": {"type": "string"},
-                "metadata": {"type": "object"},
-                "created_at": {"type": "string"},
-                "updated_at": {"type": "string"},
-            },
-        }
-    },
-    "trigger:ticket:changed": {
-        "ticket": {
-            "type": "object",
-            "properties": {
-                "issue_id": {"type": "string"},
-                "issue_number": {"type": "string"},
-                "title": {"type": "string"},
-                "body": {"type": "string"},
-                "description": {"type": "string"},
-                "reason": {"type": "string"},
-                "rejection_reason": {"type": "string"},
-                "yaml_path": {"type": "string"},
-                "directory_path": {"type": "string"},
-                "repo_source": {"type": "string"},
-                "source_type": {"type": "string"},
-                "tags": {"type": "array", "items": {"type": "string"}},
-                "state": {"type": "string"},
-                "url": {"type": "string"},
-                "comments": {"type": "array"},
-                "source": {"type": "string"},
-                "metadata": {"type": "object"},
-                "created_at": {"type": "string"},
-                "updated_at": {"type": "string"},
-            },
-        }
-    },
-    "trigger:script-run-request": {
-        "request_id": {"type": "string"},
-        "session_id": {"type": "string"},
-        "script_name": {"type": "string"},
-        "parameters": {"type": "array", "items": {"type": "string"}},
-    },
-    "trigger:discord:new-message": {
-        "message": {
-            "type": "object",
-            "properties": {
-                "message_id": {"type": "string"},
-                "channel_id": {"type": "string"},
-                "author_id": {"type": "string"},
-                "author_name": {"type": "string"},
-                "content": {"type": "string"},
-                "created_at": {"type": "string"},
-                "in_reply_to": {"type": "string"},
-                "raw": {"type": "object"},
-            },
-        }
-    },
-    "trigger:teams:new-message": {},
-    "trigger:email:new-message": {
-        "message": {
-            "type": "object",
-            "properties": {
-                "mailbox_id": {"type": "string"},
-                "provider": {"type": "string"},
-                "folder": {"type": "string"},
-                "message_id": {"type": "string"},
-                "thread_id": {"type": "string"},
-                "sender": {"type": "string"},
-                "recipients": {"type": "array", "items": {"type": "string"}},
-                "received_at": {"type": "string"},
-                "unread": {"type": "boolean"},
-                "body_snippet": {"type": "string"},
-                "metadata": {"type": "object"},
-            },
-        }
-    },
-    "trigger:pull-request:new-feedback": {
-        "session_id": {"type": "string"},
-        "pr": {
-            "type": "object",
-            "properties": {
-                "provider": {"type": "string"},
-                "repo": {"type": "string"},
-                "pr_id": {"type": "string"},
-            },
-        },
-        "feedback": {
-            "type": "object",
-            "properties": {
-                "feedback_id": {"type": "string"},
-                "provider": {"type": "string"},
-                "repo": {"type": "string"},
-                "pr_id": {"type": "string"},
-                "thread_id": {"type": "string"},
-                "comment_id": {"type": "string"},
-                "author": {"type": "string"},
-                "body": {"type": "string"},
-                "file_path": {"type": "string"},
-                "line": {"type": "integer"},
-                "created_at": {"type": "string"},
-                "in_reply_to": {"type": "string"},
-                "resolved": {"type": "boolean"},
-            },
-        },
-    },
-    "trigger:review:new-request": {
-        "review_request": {
-            "type": "object",
-            "properties": {
-                "request_id": {"type": "string"},
-                "requested_at": {"type": "string"},
-                "requested_by": {"type": "string"},
-                "request_channel": {"type": "string"},
-                "provider": {"type": "string"},
-                "repo": {"type": "string"},
-                "pr_id": {"type": "string"},
-                "canonical_url": {"type": "string"},
-                "title": {"type": "string"},
-                "body": {"type": "string"},
-                "base_branch": {"type": "string"},
-                "head_branch": {"type": "string"},
-                "base_commit": {"type": "string"},
-                "head_commit": {"type": "string"},
-                "review_type": {"type": "string"},
-                "instructions": {"type": "string"},
-                "directory_path": {"type": "string"},
-                "model": {"type": "string"},
-                "labels": {"type": "object"},
-                "metadata": {"type": "object"},
-                "status": {"type": "string"},
-                "updated_at": {"type": "string"},
-                "lease_owner": {"type": "string"},
-                "lease_expires_at": {"type": "string"},
-                "dispatch_count": {"type": "integer"},
-            },
-        }
-    },
-    "trigger:git:push": {
-        "branch_name": {"type": "string"},
-        "commit_hash": {"type": "string"},
-        "old_commit_hash": {"type": "string"},
-        "ref_name": {"type": "string"},
-        "repo_path": {"type": "string"},
-        "repo_name": {"type": "string"},
-        "session_id": {"type": "string"},
-        "review_branch": {"type": "string"},
-        "trusted_repo_path": {"type": "string"},
-        "base_branch": {"type": "string"},
-        "canonical_origin_url": {"type": "string"},
-    },
-    "trigger:agent:prompt:new": {
-        "session_id": {"type": "string"},
-        "agent_prompt": {
-            "type": "object",
-            "properties": {
-                "message_id": {"type": "string"},
-                "sender_session_id": {"type": "string"},
-                "target_session_id": {"type": "string"},
-                "prompt": {"type": "string"},
-                "metadata": {"type": "object"},
-                "status": {"type": "string"},
-                "created_at": {"type": "string"},
-            },
-        },
-    },
-    "trigger:agent:run:completed": {
-        "vm": {
-            "type": "object",
-            "properties": {
-                "vm_name": {"type": "string"},
-                "issue_number": {"type": "string"},
-                "session_ids": {"type": "array", "items": {"type": "string"}},
-                "labels": {"type": "object"},
-                "directory_paths": {"type": "array", "items": {"type": "string"}},
-                "libvirt_state": {"type": "string"},
-                "ip_address": {"type": "string"},
-                "agent_state": {"type": "string"},
-                "agent_repo_names": {"type": "array", "items": {"type": "string"}},
-                "last_state_update_at": {"type": "string"},
-            },
-        },
-        "vm_name": {"type": "string"},
-        "session_ids": {"type": "array"},
-        "labels": {"type": "object"},
-        "directory_paths": {"type": "array"},
-        "agent_repo_names": {"type": "array"},
-        "libvirt_state": {"type": "string"},
-        "agent_state": {"type": "string"},
-        "previous_agent_state": {"type": "string"},
-        "transition": {
-            "type": "object",
-            "properties": {
-                "from": {"type": "string"},
-                "to": {"type": "string"},
-            },
-        },
-        "last_state_update_at": {"type": "string"},
-        "dispatch_id": {"type": "string"},
-        "scope": {
-            "type": "object",
-            "properties": {
-                "directory_path": {"type": "string"},
-                "vm_name": {"type": "string"},
-                "session_id": {"type": "string"},
-                "vm_user": {"type": "string"},
-            },
-        },
-        "ip_address": {"type": "string"},
-    },
-    "effect:vm:create": {
-        "session_id": {"type": "string"},
-        "vm_name": {"type": "string"},
-        "labels": {"type": "object"},
-        "success": {"type": "boolean"},
-        "target_dir": {"type": "string"},
-        "guest_repo_name": {"type": "string"},
-        "remote_url": {"type": "string"},
-    },
-    "effect:vm:start": {
-        "success": {"type": "boolean"},
-        "action": {"type": "string"},
-        "target": {"type": "string"},
-        "vm_name": {"type": "string"},
-        "message": {"type": "string"},
-    },
-    "effect:vm:stop": {
-        "success": {"type": "boolean"},
-        "action": {"type": "string"},
-        "target": {"type": "string"},
-        "vm_name": {"type": "string"},
-        "message": {"type": "string"},
-    },
-    "effect:agent:prompt": {
-        "dispatch_id": {"type": "string"},
-        "thread_id": {"type": "string"},
-        "success": {"type": "boolean"},
-        "output_mode": {"type": "string"},
-    },
-    "effect:agent:enqueue-prompt": {
-        "dispatch_id": {"type": "string"},
-        "thread_id": {"type": "string"},
-        "success": {"type": "boolean"},
-        "queued": {"type": "boolean"},
-        "queue_key": {"type": "string"},
-        "vm_name": {"type": "string"},
-        "session_id": {"type": "string"},
-        "coalesced_count": {"type": "integer"},
-    },
-    "effect:bash:script": {
-        "success": {"type": "boolean"},
-        "action": {"type": "string"},
-        "script_path": {"type": "string"},
-        "message": {"type": "string"},
-        "exit_code": {"type": "integer"},
-        "stdout": {"type": "string"},
-        "stderr": {"type": "string"},
-    },
-    "effect:vm:exec": {
-        "success": {"type": "boolean"},
-        "vm_name": {"type": "string"},
-        "session_id": {"type": "string"},
-        "action": {"type": "string"},
-        "message": {"type": "string"},
-        "exit_code": {"type": "integer"},
-        "stdout": {"type": "string"},
-        "stderr": {"type": "string"},
-    },
-    "effect:vm:copy-files": {
-        "success": {"type": "boolean"},
-        "action": {"type": "string"},
-        "message": {"type": "string"},
-        "target": {"type": "string"},
-        "vm_name": {"type": "string"},
-        "vm_ip": {"type": "string"},
-        "vm_user": {"type": "string"},
-        "directory_path": {"type": "string"},
-        "copied_count": {"type": "integer"},
-        "copied_paths": {"type": "array"},
-        "file_count": {"type": "integer"},
-        "copied_files": {"type": "array"},
-    },
-    "effect:vm:delete-files": {
-        "success": {"type": "boolean"},
-        "action": {"type": "string"},
-        "message": {"type": "string"},
-        "target": {"type": "string"},
-        "vm_name": {"type": "string"},
-        "vm_user": {"type": "string"},
-        "deleted_count": {"type": "integer"},
-        "deleted_paths": {"type": "array"},
-    },
-    "effect:issue:update-state": {
-        "success": {"type": "boolean"},
-        "issue_number": {"type": "string"},
-        "source_type": {"type": "string"},
-        "updated": {"type": "boolean"},
-        "state": {"type": "string"},
-        "provider": {"type": "string"},
-        "remote_issue_id": {"type": "string"},
-    },
-    "effect:session:update-metadata": {
-        "success": {"type": "boolean"},
-        "action": {"type": "string"},
-        "message": {"type": "string"},
-        "session_id": {"type": "string"},
-        "vm_name": {"type": "string"},
-        "directory_path": {"type": "string"},
-        "metadata": {"type": "object"},
-    },
-    "effect:git:promote-agent-branch": {
-        "success": {"type": "boolean"},
-        "action": {"type": "string"},
-        "message": {"type": "string"},
-        "host_repo_path": {"type": "string"},
-        "bare_repo_path": {"type": "string"},
-        "agent_branch": {"type": "string"},
-        "review_branch": {"type": "string"},
-        "remote_name": {"type": "string"},
-    },
-    "effect:pr:create": {
-        "success": {"type": "boolean"},
-        "action": {"type": "string"},
-        "message": {"type": "string"},
-        "pr_id": {"type": "string"},
-        "pr_url": {"type": "string"},
-    },
-    "query:vm:run-state": {
-        "vm_name": {"type": "string"},
-        "session_ids": {"type": "array"},
-        "libvirt_state": {"type": "string"},
-        "state_code": {"type": "string"},
-        "is_running": {"type": "boolean"},
-        "is_terminal": {"type": "boolean"},
-    },
-    "query:git:pr-note": {
-        "body": {"type": "string"},
-        "has_note": {"type": "boolean"},
-        "local_branch": {"type": "string"},
-        "host_repo_path": {"type": "string"},
-        "notes_ref": {"type": "string"},
-        "local_notes_ref": {"type": "string"},
-        "remote_name": {"type": "string"},
-        "commit_sha": {"type": "string"},
-    },
-    "query:session-context": {
-        "session_id": {"type": "string"},
-        "vm_name": {"type": "string"},
-        "directory_path": {"type": "string"},
-        "metadata": {"type": "object"},
-        "created_at": {"type": "string"},
-        "expires_at": {"type": "string"},
-        "model": {"type": "string"},
-    },
-    "query:issue:get": {
-        "issue_id": {"type": "string"},
-        "issue_number": {"type": "string"},
-        "title": {"type": "string"},
-        "body": {"type": "string"},
-        "state": {"type": "string"},
-        "url": {"type": "string"},
-        "source": {"type": "string"},
-        "source_type": {"type": "string"},
-        "directory_path": {"type": "string"},
-        "yaml_path": {"type": "string"},
-        "repo_source": {"type": "string"},
-        "metadata": {"type": "object"},
-        "comments": {"type": "array"},
-        "created_at": {"type": "string"},
-        "updated_at": {"type": "string"},
-    },
-    "gate:for": {
-        "current_element": {"type": "object"},
-        "current_index": {"type": "integer"},
-        "item_count": {"type": "integer"},
-        "is_done": {"type": "boolean"},
-    },
-}
 
 
 def validate_output_mapping_keys(payload: Mapping[str, Any], *, context: str) -> None:
@@ -1186,6 +758,7 @@ def _validate_filter_when_node(value: Any, *, path: str) -> None:
 
 
 def effective_node_output_schema(node: Any) -> dict[str, dict[str, Any]]:
+    _ensure_schema_bootstrap()
     if isinstance(node, Mapping):
         node_type = str(node.get("type") or "").strip()
         raw_outputs = node.get("outputs")
@@ -1196,7 +769,7 @@ def effective_node_output_schema(node: Any) -> dict[str, dict[str, Any]]:
         template = getattr(node, "template", None)
 
     schema: dict[str, dict[str, Any]] = {}
-    static_schema = _STATIC_OUTPUT_SCHEMAS.get(node_type, {})
+    static_schema = _NODE_OUTPUT_SCHEMA_REGISTRY.get(node_type, {})
     if static_schema:
         schema.update({key: dict(value) for key, value in static_schema.items()})
 
@@ -1211,6 +784,18 @@ def effective_node_output_schema(node: Any) -> dict[str, dict[str, Any]]:
     if isinstance(raw_outputs, Mapping):
         schema.update({str(key): dict(value) for key, value in raw_outputs.items() if isinstance(value, Mapping)})
     return schema
+
+
+def _ensure_schema_bootstrap() -> None:
+    global _SCHEMA_BOOTSTRAP_ATTEMPTED
+    if _SCHEMA_BOOTSTRAP_ATTEMPTED:
+        return
+    _SCHEMA_BOOTSTRAP_ATTEMPTED = True
+    try:
+        from agent_sandbox.schema_bootstrap import bootstrap_default_node_schemas
+    except Exception:
+        return
+    bootstrap_default_node_schemas()
 
 
 def _infer_schema_from_template_value(value: Any) -> dict[str, Any]:
