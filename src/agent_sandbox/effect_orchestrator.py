@@ -6,7 +6,6 @@ import logging
 import os
 import random
 import time
-from copy import deepcopy
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -16,9 +15,11 @@ from typing import Any, Generic, TypeVar
 
 from pydantic import BaseModel, Field
 
+from .agent_completion_watcher import build_agent_run_completed_event
 from .admin_service import AdminService
-from .agent_prompt_queue import AgentPromptQueueStore, QueuedAgentPromptRecord
+from .agent_prompt_queue import AgentPromptQueueStore
 from .config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
+from .effects.providers.vm_copy_files_executor import VmCopyFilesNodeExecutor
 from .effects.registry import EffectProviderFactory
 from .events.models import (
     EffectDefinitionDiscriminated,
@@ -32,8 +33,6 @@ from .events.models import (
 from .gates.registry import GateProviderFactory
 from .gate_runtime import (
     GateRuntimeError,
-    filter_when_matches,
-    filter_payload_matches,
     require_object_payload,
 )
 from .host_heartbeat_worker import _single_instance_lock
@@ -50,8 +49,6 @@ from .workflow_events import WorkflowEventJournal
 from .workflow_binding import (
     BindingResolutionError,
     resolve_effect_config_bindings,
-    resolve_gate_map_bindings,
-    resolve_workflow_bindings,
 )
 from .workflow_graph import (
     WorkflowGraphCycleError,
@@ -60,6 +57,11 @@ from .workflow_graph import (
     compute_downstream_depth,
     index_declared_outputs,
     would_form_cycle,
+)
+from .workflow_engine.node_executors import (
+    NodeExecutorRegistry,
+    ProviderEffectNodeExecutor,
+    ProviderQueryNodeExecutor,
 )
 
 logger = logging.getLogger(__name__)
@@ -216,6 +218,10 @@ class EffectOrchestratorWorker:
             admin_service=AdminService(config.runtime_dir),
             env=dict(os.environ),
         )
+        self.gate_executor_registry = NodeExecutorRegistry()
+        self.effect_executor_registry = NodeExecutorRegistry()
+        self.query_executor_registry = NodeExecutorRegistry()
+        self._register_default_node_executors()
         self._gate_providers: dict[str, Any] = {}
         self.event_queue.reset_inflight()
 
@@ -426,6 +432,35 @@ class EffectOrchestratorWorker:
         self._gate_providers[gate_type] = provider
         return provider
 
+    def _register_default_node_executors(self) -> None:
+        provider_effect_executor = ProviderEffectNodeExecutor(self.provider_factory)
+        provider_query_executor = ProviderQueryNodeExecutor(self.query_provider_factory)
+
+        for gate_type in ("gate:filter", "gate:map", "gate:merge", "gate:await-agent", "gate:for"):
+            self.gate_executor_registry.register(gate_type, gate_type)
+        for effect_type in (
+            "effect:vm:create",
+            "effect:vm:start",
+            "effect:vm:stop",
+            "effect:agent:prompt",
+            "effect:agent:enqueue-prompt",
+            "effect:bash:script",
+            "effect:vm:exec",
+            "effect:vm:copy-files",
+            "effect:vm:delete-files",
+            "effect:issue:update-state",
+            "effect:session:update-metadata",
+            "effect:git:promote-agent-branch",
+            "effect:pr:create",
+        ):
+            self.effect_executor_registry.register(effect_type, provider_effect_executor)
+        self.effect_executor_registry.register(
+            "effect:vm:copy-files",
+            VmCopyFilesNodeExecutor(provider_effect_executor),
+        )
+        for query_type in ("query:vm:run-state", "query:git:pr-note", "query:session-context", "query:issue:get"):
+            self.query_executor_registry.register(query_type, provider_query_executor)
+
     def _dispatch_registered_gate(
         self,
         *,
@@ -440,6 +475,8 @@ class EffectOrchestratorWorker:
         input_event_ids_by_source: dict[str, str],
         input_occurred_at_by_source: dict[str, datetime],
     ) -> bool:
+        if self.gate_executor_registry.get(gate.type) is None:
+            return False
         provider = self._get_gate_provider(gate.type)
         if provider is None:
             return False
@@ -634,8 +671,19 @@ class EffectOrchestratorWorker:
             return False
 
         resolved_config = resolved.resolved_config if isinstance(resolved.resolved_config, dict) else {}
+        executor = self.effect_executor_registry.get(effect.type)
+        if executor is None:
+            self._write_failed_effect_record(
+                queue_record=queue_record,
+                effect=effect,
+                started_at=started_at,
+                resolved_config=resolved_config,
+                config_revision=config_revision,
+                error=f"no_effect_executor_registered:{effect.type}",
+            )
+            return False
         try:
-            resolved_config = _prepare_effect_resolved_config(
+            resolved_config = executor.prepare_resolved_config(
                 effect=effect,
                 resolved_config=resolved_config,
                 upstream_payload=upstream_payload,
@@ -704,91 +752,6 @@ class EffectOrchestratorWorker:
         input_occurred_at_by_source = {queue_record.trigger_id: queue_record.occurred_at}
 
         try:
-            if gate.type == "gate:filter":
-                raw_filter_config = gate.when if gate.when is not None else gate.match
-                resolved = resolve_workflow_bindings(
-                    raw_filter_config,
-                    upstream_payload,
-                    upstream_output_names,
-                    system_value_resolver=_system_value_resolver(
-                        started_at=started_at,
-                        trace_id=queue_record.trace_id,
-                        event_id=queue_record.event_id,
-                        node_id=gate.id,
-                    ),
-                    strict_validation=True,
-                )
-                resolved_filter = resolved.resolved_config
-                resolved_config = {"when": resolved_filter} if gate.when is not None else {"match": resolved_filter}
-                matches = (
-                    filter_when_matches(resolved_filter)
-                    if gate.when is not None
-                    else filter_payload_matches(resolved_filter, queue_record.payload)
-                )
-                if matches:
-                    outputs = {
-                        key: value
-                        for key, value in queue_record.payload.items()
-                        if key not in {NODE_OUTPUTS_CONTEXT_KEY, _BRANCH_PORT_PAYLOAD_KEY, _FOR_EXECUTION_IDS_PAYLOAD_KEY}
-                    }
-                    self._write_gate_record(
-                        queue_record=queue_record,
-                        gate=gate,
-                        status="succeeded",
-                        started_at=started_at,
-                        resolved_config=resolved_config,
-                        outputs=outputs,
-                        inputs_by_source=inputs_by_source,
-                        input_event_ids_by_source=input_event_ids_by_source,
-                        input_occurred_at_by_source=input_occurred_at_by_source,
-                        config_revision=config_revision,
-                        publish_completion_event=True,
-                    )
-                    return
-
-                self._write_gate_record(
-                    queue_record=queue_record,
-                    gate=gate,
-                    status="dropped",
-                    started_at=started_at,
-                    resolved_config=resolved_config,
-                    outputs={},
-                    inputs_by_source=inputs_by_source,
-                    input_event_ids_by_source=input_event_ids_by_source,
-                    input_occurred_at_by_source=input_occurred_at_by_source,
-                    config_revision=config_revision,
-                )
-                return
-
-            if gate.type == "gate:map":
-                resolved = resolve_gate_map_bindings(
-                    gate.template,
-                    upstream_payload,
-                    upstream_output_names,
-                    system_value_resolver=_system_value_resolver(
-                        started_at=started_at,
-                        trace_id=queue_record.trace_id,
-                        event_id=queue_record.event_id,
-                        node_id=gate.id,
-                    ),
-                    strict_validation=True,
-                )
-                outputs = require_object_payload(resolved.resolved_config, gate_type="gate:map")
-                self._write_gate_record(
-                    queue_record=queue_record,
-                    gate=gate,
-                    status="succeeded",
-                    started_at=started_at,
-                    resolved_config={"template": outputs},
-                    outputs=outputs,
-                    inputs_by_source=inputs_by_source,
-                    input_event_ids_by_source=input_event_ids_by_source,
-                    input_occurred_at_by_source=input_occurred_at_by_source,
-                    config_revision=config_revision,
-                    publish_completion_event=True,
-                )
-                return
-
             if self._dispatch_registered_gate(
                 queue_record=queue_record,
                 gate=gate,
@@ -803,28 +766,18 @@ class EffectOrchestratorWorker:
             ):
                 return
 
-            if gate.type != "gate:merge":
-                self._write_gate_record(
-                    queue_record=queue_record,
-                    gate=gate,
-                    status="failed",
-                    started_at=started_at,
-                    resolved_config={},
-                    outputs={},
-                    inputs_by_source=inputs_by_source,
-                    input_event_ids_by_source=input_event_ids_by_source,
-                    input_occurred_at_by_source=input_occurred_at_by_source,
-                    config_revision=config_revision,
-                    error=f"no_gate_provider_registered:{gate.type}",
-                )
-                return
-
-            self._execute_merge_gate(
+            self._write_gate_record(
                 queue_record=queue_record,
                 gate=gate,
-                graph=graph,
+                status="failed",
                 started_at=started_at,
+                resolved_config={},
+                outputs={},
+                inputs_by_source=inputs_by_source,
+                input_event_ids_by_source=input_event_ids_by_source,
+                input_occurred_at_by_source=input_occurred_at_by_source,
                 config_revision=config_revision,
+                error=f"no_gate_provider_registered:{gate.type}",
             )
         except (BindingResolutionError, GateRuntimeError) as exc:
             self._write_gate_record(
@@ -841,45 +794,9 @@ class EffectOrchestratorWorker:
                 error=str(exc),
             )
 
-    def _execute_merge_gate(
-        self,
-        *,
-        queue_record: TriggerQueueRecord,
-        gate: GateDefinitionDiscriminated,
-        graph: ExecutionGraph,
-        started_at: datetime,
-        config_revision: str,
-    ) -> None:
-        previous = self.gate_execution_store.find_latest_by_gate_id(gate.id)
-        inputs_by_source = deepcopy(previous.inputs_by_source) if previous is not None else {}
-        input_event_ids_by_source = dict(previous.input_event_ids_by_source) if previous is not None else {}
-        input_occurred_at_by_source = dict(previous.input_occurred_at_by_source) if previous is not None else {}
-
-        inputs_by_source[queue_record.trigger_id] = dict(queue_record.payload)
-        input_event_ids_by_source[queue_record.trigger_id] = queue_record.event_id
-        input_occurred_at_by_source[queue_record.trigger_id] = queue_record.occurred_at
-
-        required_source_ids = tuple(_edge_source_id(edge) for edge in graph.inbound_index.get(gate.id, ()))
-        shared_output_keys = tuple(sorted((gate.outputs or {}).keys()))
-        resolved_config = {"shared_output_keys": list(shared_output_keys)}
-        outputs = {key: queue_record.payload[key] for key in shared_output_keys if key in queue_record.payload}
-        self._write_gate_record(
-            queue_record=queue_record,
-            gate=gate,
-            status="succeeded",
-            started_at=started_at,
-            resolved_config=resolved_config,
-            outputs=outputs,
-            inputs_by_source=inputs_by_source,
-            input_event_ids_by_source=input_event_ids_by_source,
-            input_occurred_at_by_source=input_occurred_at_by_source,
-            config_revision=config_revision,
-            publish_completion_event=True,
-        )
-
     def _execute_provider(self, *, effect: EffectDefinitionDiscriminated, resolved_config: dict[str, Any]) -> dict[str, Any]:
-        provider = self.provider_factory.build(effect)
-        return dict(provider.execute(resolved_config=resolved_config) or {})
+        executor = self.effect_executor_registry.resolve(effect.type)
+        return dict(executor.execute(effect=effect, resolved_config=resolved_config) or {})
 
     def _execute_query_provider(
         self,
@@ -887,8 +804,8 @@ class EffectOrchestratorWorker:
         query: QueryDefinitionDiscriminated,
         resolved_config: dict[str, Any],
     ) -> dict[str, Any]:
-        provider = self.query_provider_factory.build(query)
-        return dict(provider.execute(resolved_config=resolved_config) or {})
+        executor = self.query_executor_registry.resolve(query.type)
+        return dict(executor.execute(query=query, resolved_config=resolved_config) or {})
 
     def _list_vm_summaries_for_reconciliation(self) -> list[Any]:
         admin_service = getattr(self.provider_factory, "admin_service", None)
@@ -1679,51 +1596,6 @@ def _payload_with_node_output_context(
 
 def _completion_event_id(*, parent_event_id: str, node_id: str, prefix: str) -> str:
     return f"{prefix}:{node_id}:{hashlib.sha1(parent_event_id.encode('utf-8')).hexdigest()[:12]}"
-
-
-def _prepare_effect_resolved_config(
-    *,
-    effect: EffectDefinitionDiscriminated,
-    resolved_config: dict[str, Any],
-    upstream_payload: dict[str, dict[str, Any]],
-    declared_upstream_output_names: dict[str, set[str] | list[str] | tuple[str, ...]],
-    system_value_resolver,
-) -> dict[str, Any]:
-    if effect.type != "effect:vm:copy-files":
-        return resolved_config
-    next_config = deepcopy(resolved_config)
-    raw_files = next_config.get("files")
-    if not isinstance(raw_files, list):
-        return next_config
-    for index, raw_entry in enumerate(raw_files):
-        if not isinstance(raw_entry, dict):
-            continue
-        source_format = str(raw_entry.get("source_format") or "").strip().lower()
-        if source_format not in {"", "file", "template"}:
-            raise ValueError(f"effect:vm:copy-files files[{index}] source_format must be one of: file, template")
-        if source_format != "template":
-            continue
-        source_path = str(raw_entry.get("source_path") or "").strip()
-        if not source_path:
-            raise ValueError(f"effect:vm:copy-files files[{index}] source_path is required for template sources")
-        template_path = Path(source_path).expanduser().resolve()
-        if not template_path.exists():
-            raise ValueError(f"effect:vm:copy-files template source does not exist: {template_path}")
-        if template_path.is_dir():
-            raise ValueError(f"effect:vm:copy-files template source must be a file: {template_path}")
-        template_text = template_path.read_text(encoding="utf-8")
-        rendered = resolve_workflow_bindings(
-            template_text,
-            upstream_payload=upstream_payload,
-            declared_upstream_output_names=declared_upstream_output_names,
-            system_value_resolver=system_value_resolver,
-            strict_validation=True,
-        ).resolved_config
-        if not isinstance(rendered, str):
-            raise ValueError(f"effect:vm:copy-files template source must resolve to text: {template_path}")
-        raw_entry["content"] = rendered
-        raw_entry.pop("source_path", None)
-    return next_config
 
 
 def _config_revision_hash(worker_config: TriggerOrchestratorWorkerGlobalConfig) -> str:

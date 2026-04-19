@@ -8,14 +8,20 @@ from agent_sandbox.events.models import GateType
 from agent_sandbox.provider_config import ProviderConfigResolver
 
 from .providers.await_agent import AwaitAgentGateProvider
+from .providers.filter_gate import FilterGateProvider
 from .providers.for_gate import ForGateProvider
+from .providers.map_gate import MapGateProvider
+from .providers.merge_gate import MergeGateProvider
 from .providers.base import GateProviderBase, GateRuntimeContext
 
 GateProviderClass = type[GateProviderBase]
 
 DEFAULT_GATE_PROVIDER_REGISTRY: dict[GateType, GateProviderClass] = {
     "gate:await-agent": AwaitAgentGateProvider,
+    "gate:filter": FilterGateProvider,
     "gate:for": ForGateProvider,
+    "gate:map": MapGateProvider,
+    "gate:merge": MergeGateProvider,
 }
 
 
