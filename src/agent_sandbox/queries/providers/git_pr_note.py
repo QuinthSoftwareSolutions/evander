@@ -17,7 +17,7 @@ class GitPrNoteQueryProvider(QueryProviderBase):
         notes_ref = self._normalize_optional_string(payload.get("notes_ref"))
 
         context = self._context()
-        query_fn = getattr(context.admin_service, "git_pr_note_query", None)
+        query_fn = getattr(context.git_pr_note_reader, "git_pr_note_query", None)
         if not callable(query_fn):
             raise RuntimeError("AdminService.git_pr_note_query is not available")
 

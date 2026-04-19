@@ -21,7 +21,7 @@ class VmDeleteFilesEffectProvider(EffectProviderBase):
         missing_ok = bool(payload.get("missing_ok", True))
 
         context = self._context()
-        vm_delete_files = getattr(context.admin_service, "vm_delete_files", None)
+        vm_delete_files = getattr(context.vm_file_deleter, "vm_delete_files", None)
         if callable(vm_delete_files):
             result = vm_delete_files(
                 target=session_id or vm_name,
@@ -87,16 +87,9 @@ class VmDeleteFilesEffectProvider(EffectProviderBase):
 
     def _lookup_session(self, session_id: str) -> Any | None:
         context = self._context()
-        sessions = getattr(getattr(context.admin_service, "runtime", None), "sessions", None)
-        if sessions is None:
-            raise RuntimeError("VmDeleteFilesEffectProvider requires admin_service.runtime.sessions")
-        getter = getattr(sessions, "get", None)
-        if callable(getter):
-            return getter(session_id)
-        reader = getattr(sessions, "read_all", None)
-        if callable(reader):
-            return reader().get(session_id)
-        raise RuntimeError("Unsupported session store interface")
+        if context.session_lookup is None:
+            raise RuntimeError("VmDeleteFilesEffectProvider requires session_lookup")
+        return context.session_lookup.read_all_sessions().get(session_id)
 
     def _execute_via_ssh(
         self,

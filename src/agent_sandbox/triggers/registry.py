@@ -5,6 +5,7 @@ from collections.abc import Callable, Mapping
 
 from agent_sandbox.provider_config import ProviderConfigResolver
 from agent_sandbox.events.models import TriggerDefinitionDiscriminated, TriggerType
+from agent_sandbox.provider_runtime.adapters import trigger_provider_config_blob
 from agent_sandbox.triggers.providers.base import TriggerProviderBase, TriggerRuntimeContext
 from agent_sandbox.triggers.providers.agent_prompt_new import AgentPromptNewTriggerProvider
 from agent_sandbox.triggers.providers.agent_run_completed import AgentRunCompletedTriggerProvider
@@ -83,11 +84,13 @@ class TriggerProviderFactory:
         provider_class = self.registry.resolve(trigger_definition.type)
         resolved_config = self.provider_config_resolver.resolve_for_directory(directory_path)
         runtime_context = TriggerRuntimeContext(
-            resolved_config=resolved_config,
-            admin_service=self.admin_service,
+            provider_config=trigger_provider_config_blob(resolved_config),
             env=self.env,
             secret_resolver=self.secret_resolver,
-            metadata={"directory_path": directory_path or "root"},
+            metadata={
+                "directory_path": directory_path or "root",
+                "admin_service": self.admin_service,
+            },
         )
         provider = provider_class()
         validated_definition = provider_class.validate_definition(trigger_definition)

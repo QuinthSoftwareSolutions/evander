@@ -6,6 +6,7 @@ from collections.abc import Callable, Mapping
 from agent_sandbox.admin_service import AdminService
 from agent_sandbox.events.models import QueryDefinitionDiscriminated, QueryType
 from agent_sandbox.provider_config import ProviderConfigResolver
+from agent_sandbox.provider_runtime.adapters import AdminServiceProviderAdapter, query_provider_config_blob
 
 from .providers.base import QueryProviderBase, QueryRuntimeContext
 from .providers.git_pr_note import GitPrNoteQueryProvider
@@ -52,6 +53,7 @@ class QueryProviderFactory:
     ) -> None:
         self.provider_config_resolver = provider_config_resolver
         self.admin_service = admin_service
+        self._admin_adapter = AdminServiceProviderAdapter(admin_service)
         self.registry = registry or QueryProviderRegistry()
         self.env = env or dict(os.environ)
         self.secret_resolver = secret_resolver
@@ -65,8 +67,11 @@ class QueryProviderFactory:
         provider_class = self.registry.resolve(query_definition.type)
         resolved_config = self.provider_config_resolver.resolve_for_directory(directory_path)
         runtime_context = QueryRuntimeContext(
-            resolved_config=resolved_config,
-            admin_service=self.admin_service,
+            provider_config=query_provider_config_blob(resolved_config),
+            vm_inventory=self._admin_adapter,
+            git_pr_note_reader=self._admin_adapter,
+            issue_reader=self._admin_adapter,
+            session_context_reader=self._admin_adapter,
             env=self.env,
             secret_resolver=self.secret_resolver,
             metadata={"directory_path": directory_path or "root"},

@@ -1,32 +1,27 @@
 from __future__ import annotations
 
-import os
-from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
-from typing import Any, Protocol
+from collections.abc import Mapping
+from dataclasses import dataclass
+from typing import Protocol
 
-from agent_sandbox.admin_service import AdminService
-from agent_sandbox.config import GatewayConfig
 from agent_sandbox.events.models import QueryDefinitionDiscriminated, materialize_node_definition
+from agent_sandbox.provider_runtime.contracts import (
+    GitPrNoteReader,
+    IssueReader,
+    ProviderRuntimeBase,
+    SessionContextReader,
+    VmInventory,
+)
 
 
 @dataclass(frozen=True)
-class QueryRuntimeContext:
+class QueryRuntimeContext(ProviderRuntimeBase):
     """Host-side runtime inputs used by query providers."""
 
-    resolved_config: GatewayConfig
-    admin_service: AdminService
-    env: Mapping[str, str] = field(default_factory=lambda: dict(os.environ))
-    secret_resolver: Callable[[str], str | None] | None = None
-    metadata: Mapping[str, Any] = field(default_factory=dict)
-
-    def resolve_secret(self, ref: str) -> str | None:
-        normalized_ref = ref.strip()
-        if not normalized_ref:
-            return None
-        if self.secret_resolver is not None:
-            return self.secret_resolver(normalized_ref)
-        return self.env.get(normalized_ref)
+    vm_inventory: VmInventory | None = None
+    git_pr_note_reader: GitPrNoteReader | None = None
+    issue_reader: IssueReader | None = None
+    session_context_reader: SessionContextReader | None = None
 
 
 class QueryProvider(Protocol):

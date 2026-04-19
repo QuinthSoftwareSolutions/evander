@@ -19,7 +19,7 @@ class PrCreateEffectProvider(EffectProviderBase):
             raise ValueError("effect:pr:create requires host_repo_path, repo_path, or target")
 
         context = self._context()
-        pr_create = getattr(context.admin_service, "pr_create", None)
+        pr_create = getattr(context.pull_request_creator, "pr_create", None)
         if not callable(pr_create):
             raise RuntimeError("AdminService.pr_create is not available")
 

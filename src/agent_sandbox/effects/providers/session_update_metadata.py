@@ -21,7 +21,7 @@ class SessionUpdateMetadataEffectProvider(EffectProviderBase):
             raise ValueError("effect:session:update-metadata requires target, session_id, or vm_name")
 
         context = self._context()
-        update_fn = getattr(context.admin_service, "session_update_metadata", None)
+        update_fn = getattr(context.session_metadata_updater, "session_update_metadata", None)
         if not callable(update_fn):
             raise RuntimeError("AdminService.session_update_metadata is not available")
 

@@ -32,7 +32,7 @@ class IssueGetQueryProvider(QueryProviderBase):
         issue_id = self._normalize_required_string(payload.get("issue_id"), field_name="issue_id")
 
         context = self._context()
-        query_fn = getattr(context.admin_service, "get_issue", None)
+        query_fn = getattr(context.issue_reader, "get_issue", None)
         if not callable(query_fn):
             raise RuntimeError("AdminService.get_issue is not available")
         result = query_fn(issue_id=issue_id)
