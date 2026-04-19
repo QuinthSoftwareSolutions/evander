@@ -3,10 +3,11 @@ from __future__ import annotations
 from pathlib import Path
 
 from agent_sandbox.config import TriggerOrchestratorWorkerGlobalConfig
-from agent_sandbox.workflow_compiler import WorkflowCompilationPolicies, compile_trigger_orchestrator_config
+from agent_sandbox.workflow_compiler import compile_trigger_orchestrator_config
+from agent_sandbox.workflow_transforms.await_agent import augment_await_agent_completion
 
 
-def test_compile_trigger_orchestrator_config_can_augment_await_agent_completion_trigger(tmp_path: Path) -> None:
+def test_compile_trigger_orchestrator_config_can_apply_await_agent_completion_transform(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
         {
@@ -44,10 +45,7 @@ def test_compile_trigger_orchestrator_config_can_augment_await_agent_completion_
         }
     )
 
-    compiled = compile_trigger_orchestrator_config(
-        worker_config,
-        policies=WorkflowCompilationPolicies(augment_await_agent_completion=True),
-    )
+    compiled = compile_trigger_orchestrator_config(worker_config, transforms=[augment_await_agent_completion])
 
     assert len(compiled.triggers) == 2
     assert any(trigger.type == "trigger:agent:run:completed" for trigger in compiled.triggers)
@@ -55,7 +53,7 @@ def test_compile_trigger_orchestrator_config_can_augment_await_agent_completion_
     assert await_gate.completion_trigger_id == "__await-agent-completion__"
 
 
-def test_compile_trigger_orchestrator_config_respects_disabled_augmentation_policy(tmp_path: Path) -> None:
+def test_compile_trigger_orchestrator_config_is_valid_without_domain_transforms(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
         {
@@ -83,10 +81,7 @@ def test_compile_trigger_orchestrator_config_respects_disabled_augmentation_poli
         }
     )
 
-    compiled = compile_trigger_orchestrator_config(
-        worker_config,
-        policies=WorkflowCompilationPolicies(augment_await_agent_completion=False),
-    )
+    compiled = compile_trigger_orchestrator_config(worker_config)
 
     assert compiled == worker_config
     assert len(compiled.triggers) == 0

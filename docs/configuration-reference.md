@@ -150,6 +150,7 @@ provided via `workflow_packs` + optional inline `workflow_ir`, which compose int
 | `event_queue_cursor_store_path` | `config/trigger-orchestrator/config.json` | Trigger orchestrator event queue cursor/checkpoint store path. |
 | `workflow_packs` | `config/trigger-orchestrator/config.json` | Ordered workflow-pack filenames under `config/workflow-packs/` to compose into executable IR. |
 | `workflow_ir` | `config/trigger-orchestrator/config.json` | Optional inline IR overlay (`version`, `nodes`, `edges`) merged after pack composition. |
+| `workflow_transforms` | `config/trigger-orchestrator/config.json` | Optional ordered transform plugin names (for example `await_agent_completion`) applied after structural compile/validation. |
 | `triggers` | `config/trigger-orchestrator/config.json` | Trigger orchestrator trigger definition list (`src/agent_sandbox/triggers/models.py`). |
 | `gate_execution_store_path` | `config/trigger-orchestrator/config.json` | Gate execution log path (idempotency keys, merge state, resolved config snapshots, outputs, failures). |
 | `gate_cursor_store_path` | `config/trigger-orchestrator/config.json` | Gate orchestrator cursor/checkpoint path. |

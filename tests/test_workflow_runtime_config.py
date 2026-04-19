@@ -121,6 +121,7 @@ def test_load_config_compiles_await_agent_templates_to_explicit_triggers(tmp_pat
                     {"source_id": "cron-1", "target_id": "effect-1"},
                     {"source_id": "effect-1", "target_id": "await-agent-1"},
                 ],
+                "workflow_transforms": ["await_agent_completion"],
             }
         ),
         encoding="utf-8",
