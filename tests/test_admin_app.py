@@ -211,17 +211,28 @@ def test_create_wake_schedule_uses_admin_ui_source() -> None:
 
 def test_directory_config_domain_help_text_calls_out_discord_fields() -> None:
     discord_help = admin_app._directory_config_domain_help_text("discord")
-    policy_help = admin_app._directory_config_domain_help_text("policy")
-    providers_help = admin_app._directory_config_domain_help_text("providers")
 
     assert discord_help is not None
     assert "Per-directory Discord configuration" in discord_help
-    assert policy_help is not None
-    assert "discord_operator_user_allowlist" in policy_help
-    assert providers_help is not None
-    assert "discord_backend" in providers_help
-    assert "discord_bot_token_env" in providers_help
+    assert admin_app._directory_config_domain_help_text("policy") is None
+    assert admin_app._directory_config_domain_help_text("providers") is None
     assert admin_app._directory_config_domain_help_text("email") is None
+
+
+def test_directory_config_tab_field_sources_omit_discord_fields_from_policy_and_providers_tabs() -> None:
+    policy_fields = {
+        field_name
+        for _domain, field_name in admin_app._directory_config_tab_field_sources("policy")
+    }
+    provider_fields = {
+        field_name
+        for _domain, field_name in admin_app._directory_config_tab_field_sources("providers")
+    }
+
+    assert "discord_operator_user_allowlist" not in policy_fields
+    assert "discord_operator_channel_allowlist" not in policy_fields
+    assert "discord_backend" not in provider_fields
+    assert "discord_bot_token_env" not in provider_fields
 
 
 def test_directory_config_tab_field_sources_expose_composite_discord_tab() -> None:

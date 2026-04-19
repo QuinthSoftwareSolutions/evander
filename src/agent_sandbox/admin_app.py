@@ -929,16 +929,6 @@ def _directory_config_domain_help_text(domain: str) -> str | None:
             "Per-directory Discord configuration. This combines Discord adapter settings from "
             "`providers` with Discord policy fields from `policy`."
         )
-    if domain == "policy":
-        return (
-            "Session-scoped Discord policy lives here, including "
-            "`discord_operator_user_allowlist`."
-        )
-    if domain == "providers":
-        return (
-            "Host-side Discord adapter settings live here, including "
-            "`discord_backend` and `discord_bot_token_env`."
-        )
     return None
 
 
@@ -950,6 +940,11 @@ def _directory_config_tab_field_sources(tab_key: str) -> tuple[tuple[str, str], 
     if tab_key == "discord":
         return _DISCORD_CONFIG_FIELDS
     field_names = set(DIRECTORY_CONFIG_DOMAIN_FIELDS[tab_key])
+    if tab_key in {"policy", "providers"}:
+        discord_fields_for_tab = {
+            field_name for source_domain, field_name in _DISCORD_CONFIG_FIELDS if source_domain == tab_key
+        }
+        field_names.difference_update(discord_fields_for_tab)
     if tab_key == "issue_setup":
         field_names.add("default_model")
     return tuple((tab_key, field_name) for field_name in sorted(field_names))
