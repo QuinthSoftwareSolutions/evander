@@ -28,9 +28,11 @@ from .events.models import (
     TriggerDefinitionDiscriminated,
     effective_node_output_schema,
 )
+from .schema_bootstrap import bootstrap_default_node_schemas
 from .workflow_graph import build_inbound_edge_index, index_declared_outputs, merge_declared_output_intersection
 
 _HTTP_URL_ADAPTER = TypeAdapter(AnyHttpUrl)
+bootstrap_default_node_schemas()
 
 
 class MailboxConfig(BaseModel):
