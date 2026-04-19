@@ -9,9 +9,14 @@ from agent_sandbox.agent_prompt_queue import AgentPromptQueueStore, QueuedAgentP
 from agent_sandbox.events.models import AgentEnqueuePromptEffectDefinition
 
 from .base import EffectProviderBase
+from .lifecycle_hooks import AgentEnqueuePromptQueueDispatchHook
 
 
 class AgentEnqueuePromptEffectProvider(EffectProviderBase):
+    @classmethod
+    def lifecycle_hooks(cls) -> tuple[type[AgentEnqueuePromptQueueDispatchHook], ...]:
+        return (AgentEnqueuePromptQueueDispatchHook,)
+
     def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
         effect = self._effect()
         context = self._context()

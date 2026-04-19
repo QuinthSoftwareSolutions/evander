@@ -16,6 +16,7 @@ from agent_sandbox.effect_orchestrator import (
     _await_agent_pending_target,
     build_effect_orchestrator_worker,
 )
+from agent_sandbox.agent_prompt_queue import QueuedAgentPromptRecord
 from agent_sandbox.events.models import TriggerEvent
 from agent_sandbox.models import VmSummary
 
@@ -1703,6 +1704,59 @@ def test_agent_enqueue_prompt_dispatches_queued_prompt_when_target_agent_becomes
     queued_store_path = runtime_dir / "queued-agent-prompts.json"
     queued_payload = json.loads(queued_store_path.read_text(encoding="utf-8")) if queued_store_path.exists() else {}
     assert queued_payload == {}
+
+
+def test_agent_enqueue_prompt_queue_dispatch_hook_is_neutral_when_provider_absent(tmp_path: Path, monkeypatch) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {"id": "trigger-1", "display_name": "Tick", "type": "trigger:cron", "expression": "* * * * *"}
+            ],
+            "effects": [
+                {
+                    "id": "effect-1",
+                    "display_name": "Prompt",
+                    "type": "effect:agent:prompt",
+                    "vm_name": "vm-1",
+                    "prompt": "hello",
+                }
+            ],
+            "edges": [_edge("trigger-1", "effect-1")],
+        }
+    )
+    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+
+    worker.queued_agent_prompt_store.put(
+        QueuedAgentPromptRecord(
+            queue_key="vm-1",
+            target="vm-1",
+            vm_name="vm-1",
+            session_id=None,
+            prompt="queued",
+            model=None,
+            vm_user="agent",
+            resume_thread_id=None,
+            effect_id="effect-enqueue",
+        )
+    )
+    resume_calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        worker.provider_factory.admin_service,
+        "resume_agent",
+        lambda **kwargs: resume_calls.append(kwargs)
+        or type("Result", (), {"success": True, "thread_id": "thread-queued"})(),
+    )
+
+    worker.run_once()
+
+    assert resume_calls == []
+    queued_payload = json.loads((runtime_dir / "queued-agent-prompts.json").read_text(encoding="utf-8"))
+    assert "vm-1" in queued_payload
 
 
 def test_filter_gate_when_drops_payload_when_predicate_is_false(tmp_path: Path) -> None:

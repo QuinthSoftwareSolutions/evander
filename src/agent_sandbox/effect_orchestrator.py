@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 
 from .config import GatewayConfig, OrchestrationCoreConfig, TriggerOrchestratorWorkerGlobalConfig
 from .effects.registry import EffectProviderFactory, EffectProviderRegistry
+from .effects.providers.lifecycle_hooks import build_effect_lifecycle_hooks
 from .events.models import (
     EffectDefinitionDiscriminated,
     GateDefinitionDiscriminated,
@@ -220,6 +221,7 @@ class EffectOrchestratorWorker:
         self.query_executor_registry = NodeExecutorRegistry()
         self._register_default_node_executors()
         self._gate_providers: dict[str, Any] = {}
+        self._effect_lifecycle_hooks = build_effect_lifecycle_hooks(provider_factory=self.provider_factory)
         self.event_queue.reset_inflight()
         self._kernel = PollingOrchestratorKernel(
             config=PollingKernelConfig(
@@ -264,13 +266,12 @@ class EffectOrchestratorWorker:
             edge_count=len(latest_config.edges),
         )
         completion_events_published += self._reconcile_gate_providers(graph=graph)
-        completion_events_published += self._reconcile_waiting_effect_providers()
-        completion_events_published += self._dispatch_queued_agent_prompts_directly()
+        completion_events_published += self._run_waiting_reconciliation_hooks()
 
         completed_count, published_count = self._reap_completed_futures()
         effect_executions_completed += completed_count
         completion_events_published += published_count
-        completion_events_published += self._dispatch_queued_agent_prompts_directly()
+        completion_events_published += self._run_post_completion_dispatch_hooks()
 
         loop = OrchestrationLoop[
             TriggerQueueRecord,
@@ -426,7 +427,7 @@ class EffectOrchestratorWorker:
         queue_record: TriggerQueueRecord,
         graph: ExecutionGraph,
     ) -> None:
-        self._handle_effect_completion_event(queue_record=queue_record)
+        self._run_completion_fan_out_hooks(queue_record=queue_record, graph=graph)
         self._handle_gate_completion_event(queue_record=queue_record, graph=graph)
 
     def _get_gate_provider(self, gate_type: str) -> Any | None:
@@ -458,23 +459,23 @@ class EffectOrchestratorWorker:
         except KeyError:
             return None
 
-    def _handle_effect_completion_event(self, *, queue_record: TriggerQueueRecord) -> int:
-        completed = 0
-        for effect_type in self.provider_factory.registry.registered_types():
-            provider_class = self._effect_provider_class(effect_type)
-            if provider_class is None:
-                continue
-            completed += int(provider_class.on_completion_event(worker=self, queue_record=queue_record) or 0)
-        return completed
+    def _run_completion_fan_out_hooks(self, *, queue_record: TriggerQueueRecord, graph: ExecutionGraph) -> int:
+        fan_out_count = 0
+        for hook in self._effect_lifecycle_hooks:
+            fan_out_count += int(hook.on_completion_fan_out(worker=self, queue_record=queue_record, graph=graph) or 0)
+        return fan_out_count
 
-    def _reconcile_waiting_effect_providers(self) -> int:
+    def _run_waiting_reconciliation_hooks(self) -> int:
         reconciled = 0
-        for effect_type in self.provider_factory.registry.registered_types():
-            provider_class = self._effect_provider_class(effect_type)
-            if provider_class is None:
-                continue
-            reconciled += int(provider_class.reconcile_waiting(worker=self) or 0)
+        for hook in self._effect_lifecycle_hooks:
+            reconciled += int(hook.on_waiting_reconciliation(worker=self) or 0)
         return reconciled
+
+    def _run_post_completion_dispatch_hooks(self) -> int:
+        dispatched = 0
+        for hook in self._effect_lifecycle_hooks:
+            dispatched += int(hook.on_post_completion_dispatch(worker=self) or 0)
+        return dispatched
 
     def _dispatch_registered_gate(
         self,
