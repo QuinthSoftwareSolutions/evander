@@ -4,9 +4,12 @@ from copy import deepcopy
 from typing import Any
 
 from agent_sandbox.gates.providers.base import GateProviderBase
+from agent_sandbox.workflow_validation import NodeCapability
 
 
 class MergeGateProvider(GateProviderBase):
+    capability = NodeCapability(min_inbound=1)
+
     def execute(self, **kwargs: Any) -> bool:
         worker = kwargs["worker"]
         queue_record = kwargs["queue_record"]

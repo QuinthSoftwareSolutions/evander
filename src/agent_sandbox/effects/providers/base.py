@@ -20,6 +20,7 @@ from agent_sandbox.provider_runtime.contracts import (
     VmInventory,
     VmPowerController,
 )
+from agent_sandbox.workflow_validation import NodeCapability, WorkflowValidationDiagnostic
 
 
 @dataclass(frozen=True)
@@ -115,3 +116,18 @@ class EffectProviderBase:
     @classmethod
     def validate_definition(cls, effect_definition: EffectDefinitionDiscriminated) -> EffectDefinitionDiscriminated:
         return materialize_node_definition(effect_definition)
+
+    @classmethod
+    def node_capability(cls) -> NodeCapability:
+        return cls.capability
+
+    @classmethod
+    def validate_graph_node(
+        cls,
+        *,
+        node: Any,
+        **_: Any,
+    ) -> list[WorkflowValidationDiagnostic]:
+        del node
+        return []
+    capability = NodeCapability(min_inbound=1, max_inbound=1)

@@ -10,6 +10,7 @@ from agent_sandbox.gate_runtime import GateRuntimeError
 from agent_sandbox.gates.providers.base import GateProviderBase
 from agent_sandbox.storage import JsonStore
 from agent_sandbox.workflow_binding import resolve_workflow_bindings
+from agent_sandbox.workflow_validation import NodeCapability
 
 
 class ForGateStateRecord(BaseModel):
@@ -37,6 +38,14 @@ class _ForGateStateStoreAdapter:
 
 
 class ForGateProvider(GateProviderBase):
+    capability = NodeCapability(
+        min_inbound=1,
+        non_cyclic_inbound_exact=1,
+        allowed_source_ports=frozenset({"body", "done"}),
+        required_source_ports=frozenset({"body", "done"}),
+        completion_semantics="loop",
+    )
+
     def __init__(self) -> None:
         super().__init__()
         self._adapter: _ForGateStateStoreAdapter | None = None

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol
 
 from agent_sandbox.events.models import QueryDefinitionDiscriminated, materialize_node_definition
 from agent_sandbox.provider_runtime.contracts import (
@@ -12,6 +12,7 @@ from agent_sandbox.provider_runtime.contracts import (
     SessionContextReader,
     VmInventory,
 )
+from agent_sandbox.workflow_validation import NodeCapability, WorkflowValidationDiagnostic
 
 
 @dataclass(frozen=True)
@@ -61,3 +62,18 @@ class QueryProviderBase:
     @classmethod
     def validate_definition(cls, query_definition: QueryDefinitionDiscriminated) -> QueryDefinitionDiscriminated:
         return materialize_node_definition(query_definition)
+
+    @classmethod
+    def node_capability(cls) -> NodeCapability:
+        return cls.capability
+
+    @classmethod
+    def validate_graph_node(
+        cls,
+        *,
+        node: Any,
+        **_: Any,
+    ) -> list[WorkflowValidationDiagnostic]:
+        del node
+        return []
+    capability = NodeCapability(min_inbound=1, max_inbound=1)

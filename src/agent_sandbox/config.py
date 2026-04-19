@@ -26,10 +26,10 @@ from .events.models import (
     GateDefinitionDiscriminated,
     QueryDefinitionDiscriminated,
     TriggerDefinitionDiscriminated,
-    effective_node_output_schema,
 )
 from .schema_bootstrap import bootstrap_default_node_schemas
-from .workflow_graph import build_inbound_edge_index, index_declared_outputs, merge_declared_output_intersection
+from .workflow_graph import build_inbound_edge_index, would_form_cycle
+from .workflow_plugins import EFFECT_PLUGIN_CLASSES, GATE_PLUGIN_CLASSES, QUERY_PLUGIN_CLASSES
 
 _HTTP_URL_ADAPTER = TypeAdapter(AnyHttpUrl)
 bootstrap_default_node_schemas()
@@ -605,11 +605,16 @@ class TriggerOrchestratorWorkerGlobalConfig(BaseModel):
     @model_validator(mode="after")
     def validate_graph_edges(self) -> TriggerOrchestratorWorkerGlobalConfig:
         nodes_by_id = {node.id: node for node in (*self.triggers, *self.gates, *self.effects, *self.queries)}
-        node_outputs = index_declared_outputs(self.triggers, self.gates, self.effects, self.queries)
         inbound_edges = build_inbound_edge_index(self.edges)
+        downstream_non_cyclic: dict[str, list[str]] = {}
         outbound_edges_by_source: dict[str, list[EdgeDefinition]] = {}
         for edge in self.edges:
             outbound_edges_by_source.setdefault(edge.source_id, []).append(edge)
+            if bool(getattr(edge, "allow_cycle", False)):
+                continue
+            if would_form_cycle(edge.source_id, edge.target_id, downstream_non_cyclic):
+                raise ValueError(f"Non-cyclic edges cannot form a cycle: {edge.source_id} -> {edge.target_id}")
+            downstream_non_cyclic.setdefault(edge.source_id, []).append(edge.target_id)
 
         missing_endpoints: list[str] = []
         self_edges: list[str] = []
@@ -648,110 +653,41 @@ class TriggerOrchestratorWorkerGlobalConfig(BaseModel):
             inbound_count = len(inbound_edges.get(node.id, ()))
             if inbound_count != 0:
                 inbound_errors.append(f"trigger {node.id} must have 0 inbound edges, found {inbound_count}")
-        for gate in self.gates:
-            if gate.id not in reachable_node_ids:
+        node_capabilities = {
+            **{node_type: provider.node_capability() for node_type, provider in GATE_PLUGIN_CLASSES.items()},
+            **{node_type: provider.node_capability() for node_type, provider in EFFECT_PLUGIN_CLASSES.items()},
+            **{node_type: provider.node_capability() for node_type, provider in QUERY_PLUGIN_CLASSES.items()},
+        }
+        for node in (*self.gates, *self.effects, *self.queries):
+            if node.id not in reachable_node_ids:
                 continue
-            inbound_count = len(inbound_edges.get(gate.id, ()))
-            if gate.type == "gate:filter" and inbound_count != 1:
-                inbound_errors.append(f"gate:filter {gate.id} must have exactly 1 inbound edge, found {inbound_count}")
-            elif gate.type == "gate:map" and inbound_count != 1:
-                inbound_errors.append(f"gate:map {gate.id} must have exactly 1 inbound edge, found {inbound_count}")
-            elif gate.type == "gate:merge" and inbound_count < 1:
-                inbound_errors.append(f"gate:merge {gate.id} must have at least 1 inbound edge, found {inbound_count}")
-            elif gate.type == "gate:await-agent" and inbound_count != 1:
-                inbound_errors.append(f"gate:await-agent {gate.id} must have exactly 1 inbound edge, found {inbound_count}")
-            elif gate.type == "gate:for":
-                if inbound_count < 1:
-                    inbound_errors.append(f"gate:for {gate.id} must have at least 1 inbound edge, found {inbound_count}")
-                entry_edges = [
-                    edge for edge in inbound_edges.get(gate.id, ()) if not bool(getattr(edge, "allow_cycle", False))
-                ]
-                if len(entry_edges) != 1:
+            capability = node_capabilities.get(node.type)
+            if capability is None:
+                continue
+            inbound = list(inbound_edges.get(node.id, ()))
+            inbound_count = len(inbound)
+            if capability.min_inbound is not None and inbound_count < capability.min_inbound:
+                inbound_errors.append(f"{node.type} {node.id} must have at least {capability.min_inbound} inbound edge(s), found {inbound_count}")
+            if capability.max_inbound is not None and inbound_count > capability.max_inbound:
+                inbound_errors.append(f"{node.type} {node.id} must have at most {capability.max_inbound} inbound edge(s), found {inbound_count}")
+            if capability.non_cyclic_inbound_exact is not None:
+                non_cyclic_count = sum(1 for edge in inbound if not bool(getattr(edge, "allow_cycle", False)))
+                if non_cyclic_count != capability.non_cyclic_inbound_exact:
                     inbound_errors.append(
-                        f"gate:for {gate.id} must have exactly 1 non-cyclic inbound edge, found {len(entry_edges)}"
+                        f"{node.type} {node.id} must have exactly {capability.non_cyclic_inbound_exact} non-cyclic inbound edge(s), found {non_cyclic_count}"
                     )
-        for effect in self.effects:
-            if effect.id not in reachable_node_ids:
-                continue
-            inbound_count = len(inbound_edges.get(effect.id, ()))
-            if inbound_count != 1:
-                inbound_errors.append(f"effect {effect.id} must have exactly 1 inbound edge, found {inbound_count}")
-        for query in self.queries:
-            if query.id not in reachable_node_ids:
-                continue
-            inbound_count = len(inbound_edges.get(query.id, ()))
-            if inbound_count != 1:
-                inbound_errors.append(f"query {query.id} must have exactly 1 inbound edge, found {inbound_count}")
+            if capability.allowed_source_ports is not None:
+                outbound_ports = [edge.source_port for edge in outbound_edges_by_source.get(node.id, ())]
+                invalid_ports = [port for port in outbound_ports if port not in capability.allowed_source_ports]
+                if invalid_ports:
+                    inbound_errors.append(
+                        f"{node.type} {node.id} uses invalid source_port value(s): {', '.join(sorted({str(port) for port in invalid_ports}))}"
+                    )
+            for required_port in sorted(capability.required_source_ports):
+                if not any(edge.source_port == required_port for edge in outbound_edges_by_source.get(node.id, ())):
+                    inbound_errors.append(f"{node.type} {node.id} must have an outbound edge with source_port={required_port}")
         if inbound_errors:
             raise ValueError("; ".join(inbound_errors))
-
-        for gate in self.gates:
-            if gate.id not in reachable_node_ids:
-                continue
-            upstream_ids = [edge.source_id for edge in inbound_edges.get(gate.id, ())]
-            if gate.type == "gate:filter":
-                upstream_outputs = node_outputs.get(upstream_ids[0], {})
-                if gate.outputs is None:
-                    gate.outputs = upstream_outputs
-                actual_outputs = dict(gate.outputs or {})
-                if not actual_outputs:
-                    gate.outputs = upstream_outputs
-                    actual_outputs = upstream_outputs
-                if actual_outputs != upstream_outputs:
-                    raise ValueError(f"gate:filter {gate.id} outputs must match its single upstream outputs")
-            elif gate.type == "gate:await-agent":
-                upstream_node = nodes_by_id[upstream_ids[0]]
-                if upstream_node.type != "effect:agent:prompt":
-                    raise ValueError(f"gate:await-agent {gate.id} inbound edge must come from effect:agent:prompt")
-                completion_outputs = effective_node_output_schema({"type": "trigger:agent:run:completed"})
-                if gate.outputs is None:
-                    gate.outputs = completion_outputs
-                actual_outputs = dict(gate.outputs or {})
-                if not actual_outputs:
-                    gate.outputs = completion_outputs
-                    actual_outputs = completion_outputs
-                if actual_outputs != completion_outputs:
-                    raise ValueError(f"gate:await-agent {gate.id} outputs must match agent completion outputs")
-            elif gate.type == "gate:merge":
-                upstream_outputs = [node_outputs.get(upstream_id, {}) for upstream_id in upstream_ids]
-                expected_outputs = merge_declared_output_intersection(*upstream_outputs)
-                if gate.outputs is None:
-                    gate.outputs = expected_outputs
-                actual_outputs = dict(gate.outputs or {})
-                if not actual_outputs:
-                    gate.outputs = expected_outputs
-                    actual_outputs = expected_outputs
-                if actual_outputs != expected_outputs:
-                    raise ValueError(
-                        f"gate:merge {gate.id} outputs must equal the compatible intersection of upstream outputs"
-                    )
-            elif gate.type == "gate:for":
-                expected_outputs = effective_node_output_schema(gate)
-                if gate.outputs is None:
-                    gate.outputs = expected_outputs
-                actual_outputs = dict(gate.outputs or {})
-                if not actual_outputs:
-                    gate.outputs = expected_outputs
-                    actual_outputs = expected_outputs
-                if actual_outputs != expected_outputs:
-                    raise ValueError(f"gate:for {gate.id} outputs must match for-loop outputs")
-
-                outbound_edges = list(outbound_edges_by_source.get(gate.id, ()))
-                body_edges = [edge for edge in outbound_edges if edge.source_port == "body"]
-                done_edges = [edge for edge in outbound_edges if edge.source_port == "done"]
-                unlabeled_edges = [edge for edge in outbound_edges if edge.source_port is None]
-                invalid_ports = [
-                    edge.source_port for edge in outbound_edges if edge.source_port not in {None, "body", "done"}
-                ]
-                if len(body_edges) != 1:
-                    raise ValueError(f"gate:for {gate.id} must have exactly 1 outbound body edge")
-                if len(done_edges) != 1:
-                    raise ValueError(f"gate:for {gate.id} must have exactly 1 outbound done edge")
-                if unlabeled_edges:
-                    raise ValueError(f"gate:for {gate.id} outbound edges must declare source_port=body or source_port=done")
-                if invalid_ports:
-                    invalid = ", ".join(sorted({port for port in invalid_ports if port is not None}))
-                    raise ValueError(f"gate:for {gate.id} uses invalid source_port value(s): {invalid}")
         return self
 
     @model_validator(mode="after")
