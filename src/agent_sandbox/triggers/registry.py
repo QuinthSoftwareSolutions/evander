@@ -61,7 +61,7 @@ class TriggerProviderFactory:
         directory_path: str | None = None,
     ) -> TriggerProviderBase:
         provider_class = self.registry.resolve(trigger_definition.type)
-        resolved_config = self.provider_config_resolver.resolve_for_directory(directory_path)
+        resolved_config = self.provider_config_resolver.resolve_trigger_provider_config(directory_path)
         runtime_context = TriggerRuntimeContext(
             provider_config=trigger_provider_config_blob(resolved_config),
             env=self.env,

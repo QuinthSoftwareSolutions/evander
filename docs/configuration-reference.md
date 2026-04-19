@@ -139,6 +139,7 @@ workflow inheritance model is introduced. Triggers, gates, and effects all live 
 config, with explicit edges describing routing between node ids. Domain workflows can now be
 provided via `workflow_packs` + optional inline `workflow_ir`, which compose into executable
 `triggers`/`gates`/`effects`/`queries`/`edges` at load time.
+Provider plugin loading is configured separately under `provider_loader`.
 
 | Parameter | Found in | Consumed by |
 |---|---|---|
@@ -158,6 +159,10 @@ provided via `workflow_packs` + optional inline `workflow_ir`, which compose int
 | `effects` | `config/trigger-orchestrator/config.json` | Effect definition list (`src/agent_sandbox/events/models.py`). Effects no longer take `upstream_id`; they are wired with edges. |
 | `gates` | `config/trigger-orchestrator/config.json` | Gate definition list (filter/map/merge nodes). |
 | `edges` | `config/trigger-orchestrator/config.json` | Explicit graph wiring between triggers, gates, and effects. |
+| `max_graph_depth` | `config/trigger-orchestrator/config.json` | Maximum allowed downstream graph depth during workflow execution safety checks. |
+| `max_events_per_cycle` | `config/trigger-orchestrator/config.json` | Maximum workflow events processed per effect-orchestrator cycle. |
+| `provider_loader.provider_modules` | `config/trigger-orchestrator/config.json` | Additional provider plugin Python modules to load alongside built-ins. |
+| `provider_loader.provider_entry_points_enabled` | `config/trigger-orchestrator/config.json` | Enables provider plugin discovery via Python entry points. |
 
 ### Trigger definition schema keys
 

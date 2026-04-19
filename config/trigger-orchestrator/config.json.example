@@ -7,6 +7,8 @@
   "event_queue_cursor_store_path": null,
   "workflow_transforms": [],
   "triggers": [],
-  "provider_modules": [],
-  "provider_entry_points_enabled": true
+  "provider_loader": {
+    "provider_modules": [],
+    "provider_entry_points_enabled": true
+  }
 }

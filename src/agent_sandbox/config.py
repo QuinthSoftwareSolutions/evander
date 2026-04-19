@@ -564,7 +564,7 @@ class TeamsIngestWorkerGlobalConfig(BaseModel):
         return self
 
 
-class TriggerOrchestratorWorkerGlobalConfig(BaseModel):
+class OrchestrationCoreConfig(BaseModel):
     runtime_dir: Path = Path("runtime")
     poll_interval_seconds: float = Field(default=30.0, gt=0)
     jitter_seconds: float = Field(default=5.0, ge=0)
@@ -585,11 +585,11 @@ class TriggerOrchestratorWorkerGlobalConfig(BaseModel):
     edges: list[EdgeDefinition] = Field(default_factory=list)
     effects: list[EffectDefinitionDiscriminated] = Field(default_factory=list)
     queries: list[QueryDefinitionDiscriminated] = Field(default_factory=list)
-    provider_modules: list[str] = Field(default_factory=list)
-    provider_entry_points_enabled: bool = True
+    max_graph_depth: int = Field(default=16, ge=1)
+    max_events_per_cycle: int = Field(default=200, ge=1)
 
     @model_validator(mode="after")
-    def validate_unique_graph_node_ids(self) -> TriggerOrchestratorWorkerGlobalConfig:
+    def validate_unique_graph_node_ids(self) -> OrchestrationCoreConfig:
         node_ids = (
             [node.id for node in self.triggers]
             + [node.id for node in self.gates]
@@ -605,7 +605,7 @@ class TriggerOrchestratorWorkerGlobalConfig(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def validate_graph_edges(self) -> TriggerOrchestratorWorkerGlobalConfig:
+    def validate_graph_edges(self) -> OrchestrationCoreConfig:
         nodes_by_id = {node.id: node for node in (*self.triggers, *self.gates, *self.effects, *self.queries)}
         inbound_edges = build_inbound_edge_index(self.edges)
         downstream_non_cyclic: dict[str, list[str]] = {}
@@ -655,10 +655,7 @@ class TriggerOrchestratorWorkerGlobalConfig(BaseModel):
             inbound_count = len(inbound_edges.get(node.id, ()))
             if inbound_count != 0:
                 inbound_errors.append(f"trigger {node.id} must have 0 inbound edges, found {inbound_count}")
-        provider_catalog = load_provider_plugins(
-            module_names=self.provider_modules,
-            include_entry_points=self.provider_entry_points_enabled,
-        )
+        provider_catalog = load_provider_plugins(module_names=(), include_entry_points=False)
         node_capabilities = {
             **{node_type: provider.node_capability() for node_type, provider in provider_catalog.gate_providers.items()},
             **{node_type: provider.node_capability() for node_type, provider in provider_catalog.effect_providers.items()},
@@ -697,7 +694,7 @@ class TriggerOrchestratorWorkerGlobalConfig(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def apply_runtime_path_defaults(self) -> TriggerOrchestratorWorkerGlobalConfig:
+    def apply_runtime_path_defaults(self) -> OrchestrationCoreConfig:
         if self.lock_path is None:
             self.lock_path = self.runtime_dir / "trigger-orchestrator.lock"
         if self.event_queue_store_path is None:
@@ -717,6 +714,37 @@ class TriggerOrchestratorWorkerGlobalConfig(BaseModel):
         if self.effect_lock_path is None:
             self.effect_lock_path = self.runtime_dir / "effect-orchestrator.lock"
         return self
+
+
+class OrchestrationProviderLoaderConfig(BaseModel):
+    provider_modules: list[str] = Field(default_factory=list)
+    provider_entry_points_enabled: bool = True
+
+
+class TriggerOrchestratorWorkerGlobalConfig(OrchestrationCoreConfig):
+    provider_loader: OrchestrationProviderLoaderConfig = Field(default_factory=OrchestrationProviderLoaderConfig)
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_legacy_provider_loader_settings(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        legacy_keys = [key for key in ("provider_modules", "provider_entry_points_enabled") if key in value]
+        if legacy_keys:
+            key_list = ", ".join(legacy_keys)
+            raise ValueError(
+                f"Legacy trigger-orchestrator config keys are no longer supported: {key_list}. "
+                "Move these keys under provider_loader."
+            )
+        return value
+
+    @property
+    def provider_modules(self) -> list[str]:
+        return list(self.provider_loader.provider_modules)
+
+    @property
+    def provider_entry_points_enabled(self) -> bool:
+        return self.provider_loader.provider_entry_points_enabled
 
 
 def load_config(path: str | Path) -> GatewayConfig:

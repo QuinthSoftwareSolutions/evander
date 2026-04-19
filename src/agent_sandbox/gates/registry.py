@@ -52,7 +52,7 @@ class GateProviderFactory:
 
     def build(self, gate_type: GateType, *, directory_path: str | None = None) -> GateProviderBase:
         provider_class = self.registry.resolve(gate_type)
-        resolved_config = self.provider_config_resolver.resolve_for_directory(directory_path)
+        resolved_config = self.provider_config_resolver.resolve_gate_provider_config(directory_path)
         runtime_context = GateRuntimeContext(
             provider_config=gate_provider_config_blob(resolved_config),
             vm_inventory=self._gate_adapter,

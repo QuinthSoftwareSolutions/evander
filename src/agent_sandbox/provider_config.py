@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from pydantic import BaseModel
+
 from .config import GatewayConfig, load_config
 from .directory_config import (
     DirectoryConfigResolver,
@@ -12,6 +14,31 @@ from .directory_config import (
 from .directories import DirectoryService, DirectoryStore
 from .models import SessionManifest
 from .storage import JsonStore
+
+
+class TriggerProviderConfig(BaseModel):
+    runtime_dir: Path
+    session_store_path: Path
+    pr_map_path: Path
+    github_token_env: str
+    azure_devops_pr_pat_env: str
+    azure_devops_organization_url: str
+    azure_devops_project: str
+    email_provider_timeout_seconds: float
+    email_store_path: Path
+    draft_store_path: Path
+
+
+class EffectProviderConfig(BaseModel):
+    runtime_dir: Path
+
+
+class QueryProviderConfig(BaseModel):
+    runtime_dir: Path
+
+
+class GateProviderConfig(BaseModel):
+    runtime_dir: Path
 
 
 class ProviderConfigResolver:
@@ -62,6 +89,22 @@ class ProviderConfigResolver:
 
     def resolve_for_session_manifest(self, session: SessionManifest) -> GatewayConfig:
         return self.resolve_for_directory(session.directory_path)
+
+    def resolve_trigger_provider_config(self, directory_path: str | None) -> TriggerProviderConfig:
+        resolved = self.resolve_for_directory(directory_path)
+        return TriggerProviderConfig.model_validate(resolved.model_dump(mode="json"))
+
+    def resolve_effect_provider_config(self, directory_path: str | None) -> EffectProviderConfig:
+        resolved = self.resolve_for_directory(directory_path)
+        return EffectProviderConfig.model_validate(resolved.model_dump(mode="json"))
+
+    def resolve_query_provider_config(self, directory_path: str | None) -> QueryProviderConfig:
+        resolved = self.resolve_for_directory(directory_path)
+        return QueryProviderConfig.model_validate(resolved.model_dump(mode="json"))
+
+    def resolve_gate_provider_config(self, directory_path: str | None) -> GateProviderConfig:
+        resolved = self.resolve_for_directory(directory_path)
+        return GateProviderConfig.model_validate(resolved.model_dump(mode="json"))
 
     def _normalize_directory_path(self, directory_path: str | None) -> str:
         if not directory_path:
