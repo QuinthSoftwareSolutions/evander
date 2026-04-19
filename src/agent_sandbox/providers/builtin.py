@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from agent_sandbox.effects.providers.default_schema import effect_node_schema_resolvers
+from agent_sandbox.gates.providers.default_schema import gate_node_schema_resolvers
+from agent_sandbox.queries.providers.default_schema import query_node_schema_resolvers
+from agent_sandbox.triggers.providers.default_schema import trigger_node_schema_resolvers
 from agent_sandbox.effects.providers.agent_enqueue_prompt import AgentEnqueuePromptEffectProvider
 from agent_sandbox.effects.providers.agent_prompt import AgentPromptEffectProvider
 from agent_sandbox.effects.providers.bash_script import BashScriptEffectProvider
@@ -79,5 +83,11 @@ def register_providers() -> dict[str, dict[str, type]]:
             "query:git:pr-note": GitPrNoteQueryProvider,
             "query:session-context": SessionContextQueryProvider,
             "query:issue:get": IssueGetQueryProvider,
+        },
+        node_definition_resolvers={
+            **trigger_node_schema_resolvers(),
+            **gate_node_schema_resolvers(),
+            **effect_node_schema_resolvers(),
+            **query_node_schema_resolvers(),
         },
     )

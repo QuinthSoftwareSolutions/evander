@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from agent_sandbox.events.models import (
+from collections.abc import Callable
+from typing import Any
+
+from pydantic import BaseModel
+
+from agent_sandbox.triggers.providers.schemas import (
     AgentPromptNewTriggerDefinition,
     AgentRunCompletedTriggerDefinition,
     CronTriggerDefinition,
@@ -13,9 +18,8 @@ from agent_sandbox.events.models import (
     TeamsNewMessageTriggerDefinition,
     TicketChangedTriggerDefinition,
     TicketCreatedTriggerDefinition,
-    register_node_output_schema,
-    register_node_schema,
 )
+from agent_sandbox.workflow.contracts import WorkflowNodeEnvelope, register_node_output_schema
 
 _TRIGGER_MODEL_BY_TYPE = {
     "trigger:cron": CronTriggerDefinition,
@@ -75,8 +79,24 @@ _TRIGGER_OUTPUT_SCHEMAS = {
 }
 
 
-def register_trigger_node_schemas() -> None:
-    for node_type, model in _TRIGGER_MODEL_BY_TYPE.items():
-        register_node_schema(node_type=node_type, model_class=model)
+def _materialize_with_model(model_class: type[BaseModel], node: WorkflowNodeEnvelope) -> BaseModel:
+    payload = {
+        "id": node.id,
+        "display_name": node.display_name,
+        "type": node.type,
+        "outputs": node.outputs,
+        **dict(node.config),
+    }
+    return model_class.model_validate(payload)
+
+
+def trigger_node_schema_resolvers() -> dict[str, Callable[[WorkflowNodeEnvelope], BaseModel]]:
+    return {
+        node_type: (lambda node, model=model: _materialize_with_model(model, node))
+        for node_type, model in _TRIGGER_MODEL_BY_TYPE.items()
+    }
+
+
+def register_trigger_output_schemas() -> None:
     for node_type, outputs in _TRIGGER_OUTPUT_SCHEMAS.items():
         register_node_output_schema(node_type=node_type, outputs=outputs)
