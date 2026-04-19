@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
-from .workflow_compiler import compile_trigger_orchestrator_config
+from .workflow_compiler import compile_trigger_orchestrator_config, compile_trigger_orchestrator_config_with_diagnostics
 from .workflow_transforms import resolve_workflow_transforms
 from .workflow_packs import compose_workflow_ir
 
@@ -115,6 +115,14 @@ def _compile_worker_global_config(
 ) -> TriggerOrchestratorWorkerGlobalConfig:
     transforms = resolve_workflow_transforms(worker_config.workflow_transforms)
     return compile_trigger_orchestrator_config(worker_config, transforms=transforms)
+
+
+def compile_worker_global_config_with_diagnostics(
+    worker_config: TriggerOrchestratorWorkerGlobalConfig,
+) -> tuple[TriggerOrchestratorWorkerGlobalConfig, list[str]]:
+    transforms = resolve_workflow_transforms(worker_config.workflow_transforms)
+    compiled, diagnostics = compile_trigger_orchestrator_config_with_diagnostics(worker_config, transforms=transforms)
+    return compiled, [item.message for item in diagnostics]
 
 
 def _compose_configured_workflow_ir(*, project_dir: Path, payload: dict[str, Any]) -> dict[str, Any]:

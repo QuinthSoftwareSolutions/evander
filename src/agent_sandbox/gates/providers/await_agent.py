@@ -14,6 +14,8 @@ from agent_sandbox.gates.providers.base import GateProviderBase
 from agent_sandbox.storage import JsonStore
 from agent_sandbox.triggers.queue import TriggerQueueRecord
 from agent_sandbox.workflow_binding import resolve_workflow_bindings
+from agent_sandbox.workflow_validation import NodeCapability, WorkflowValidationDiagnostic
+from agent_sandbox.workflow_transforms.await_agent import validate_await_agent_gate
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +54,8 @@ class _AwaitAgentStateStoreAdapter:
 
 
 class AwaitAgentGateProvider(GateProviderBase):
+    capability = NodeCapability(min_inbound=1, max_inbound=1, completion_semantics="external_completion")
+
     def __init__(self) -> None:
         super().__init__()
         self._adapter: _AwaitAgentStateStoreAdapter | None = None
@@ -152,6 +156,22 @@ class AwaitAgentGateProvider(GateProviderBase):
 
     def _store(self):
         return self.load_state()
+
+    @classmethod
+    def validate_graph_node(
+        cls,
+        *,
+        node: Any,
+        nodes_by_id: dict[str, Any] | None = None,
+        inbound_edges: dict[str, list[Any]] | None = None,
+        **_: Any,
+    ) -> list[WorkflowValidationDiagnostic]:
+        del cls
+        return validate_await_agent_gate(
+            node=node,
+            nodes_by_id=nodes_by_id or {},
+            inbound_edges=inbound_edges or {},
+        )
 
     def _register_prompt(self, *, worker: Any, queue_record: TriggerQueueRecord, gate: Any, resolved_config: dict[str, Any], config_revision: str, started_at: datetime) -> None:
         dispatch_id = str(queue_record.payload.get("dispatch_id") or "").strip()

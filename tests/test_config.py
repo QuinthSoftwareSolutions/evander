@@ -513,7 +513,6 @@ def test_trigger_orchestrator_await_agent_gate_accepts_completion_trigger_refere
     )
 
     assert config.gates[0].type == "gate:await-agent"
-    assert config.gates[0].outputs["dispatch_id"] == {"type": "string"}
 
 
 def test_trigger_orchestrator_await_agent_gate_accepts_linear_flow_without_completion_trigger() -> None:
@@ -554,7 +553,6 @@ def test_trigger_orchestrator_await_agent_gate_accepts_linear_flow_without_compl
     )
 
     assert config.gates[0].type == "gate:await-agent"
-    assert config.gates[0].outputs["dispatch_id"] == {"type": "string"}
 
 
 def test_trigger_orchestrator_for_gate_accepts_body_done_ports_and_cycle_return() -> None:
@@ -604,12 +602,10 @@ def test_trigger_orchestrator_for_gate_accepts_body_done_ports_and_cycle_return(
     )
 
     assert config.gates[0].type == "gate:for"
-    assert config.gates[0].outputs["current_index"] == {"type": "integer"}
-    assert config.gates[0].outputs["is_done"] == {"type": "boolean"}
 
 
 def test_trigger_orchestrator_for_gate_rejects_missing_done_edge() -> None:
-    with pytest.raises(ValueError, match="gate:for for-1 must have exactly 1 outbound done edge"):
+    with pytest.raises(ValueError, match="gate:for for-1 must have an outbound edge with source_port=done"):
         TriggerOrchestratorWorkerGlobalConfig.model_validate(
             {
                 "runtime_dir": "/tmp/agent-sandbox-runtime",

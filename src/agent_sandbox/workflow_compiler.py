@@ -3,7 +3,10 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 from .config import TriggerOrchestratorWorkerGlobalConfig
+from .workflow_graph import build_inbound_edge_index
+from .workflow_plugins import EFFECT_PLUGIN_CLASSES, GATE_PLUGIN_CLASSES, QUERY_PLUGIN_CLASSES
 from .workflow_transforms import WorkflowTransform
+from .workflow_validation import WorkflowValidationDiagnostic
 
 
 def compile_trigger_orchestrator_structure(
@@ -31,3 +34,36 @@ def compile_trigger_orchestrator_config(
 ) -> TriggerOrchestratorWorkerGlobalConfig:
     compiled = compile_trigger_orchestrator_structure(worker_config)
     return apply_workflow_transforms(compiled, transforms=transforms)
+
+
+def compile_trigger_orchestrator_config_with_diagnostics(
+    worker_config: TriggerOrchestratorWorkerGlobalConfig,
+    *,
+    transforms: Iterable[WorkflowTransform] | None = None,
+) -> tuple[TriggerOrchestratorWorkerGlobalConfig, list[WorkflowValidationDiagnostic]]:
+    compiled = compile_trigger_orchestrator_config(worker_config, transforms=transforms)
+    return compiled, collect_domain_validation_diagnostics(compiled)
+
+
+def collect_domain_validation_diagnostics(
+    worker_config: TriggerOrchestratorWorkerGlobalConfig,
+) -> list[WorkflowValidationDiagnostic]:
+    nodes_by_id = {node.id: node for node in (*worker_config.triggers, *worker_config.gates, *worker_config.effects, *worker_config.queries)}
+    inbound_edges = {k: list(v) for k, v in build_inbound_edge_index(worker_config.edges).items()}
+    diagnostics: list[WorkflowValidationDiagnostic] = []
+    for gate in worker_config.gates:
+        provider = GATE_PLUGIN_CLASSES.get(gate.type)
+        if provider is None:
+            continue
+        diagnostics.extend(provider.validate_graph_node(node=gate, nodes_by_id=nodes_by_id, inbound_edges=inbound_edges))
+    for effect in worker_config.effects:
+        provider = EFFECT_PLUGIN_CLASSES.get(effect.type)
+        if provider is None:
+            continue
+        diagnostics.extend(provider.validate_graph_node(node=effect, nodes_by_id=nodes_by_id, inbound_edges=inbound_edges))
+    for query in worker_config.queries:
+        provider = QUERY_PLUGIN_CLASSES.get(query.type)
+        if provider is None:
+            continue
+        diagnostics.extend(provider.validate_graph_node(node=query, nodes_by_id=nodes_by_id, inbound_edges=inbound_edges))
+    return diagnostics

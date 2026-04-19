@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from agent_sandbox.provider_runtime.contracts import GateVmInventory, ProviderRuntimeBase
+from agent_sandbox.workflow_validation import NodeCapability, WorkflowValidationDiagnostic
 
 
 @dataclass(frozen=True)
@@ -12,6 +13,8 @@ class GateRuntimeContext(ProviderRuntimeBase):
 
 
 class GateProviderBase:
+    capability = NodeCapability()
+
     def __init__(self) -> None:
         self.runtime_context: GateRuntimeContext | None = None
 
@@ -38,3 +41,17 @@ class GateProviderBase:
 
     def force_complete(self, **_: Any) -> bool:
         return False
+
+    @classmethod
+    def node_capability(cls) -> NodeCapability:
+        return cls.capability
+
+    @classmethod
+    def validate_graph_node(
+        cls,
+        *,
+        node: Any,
+        **_: Any,
+    ) -> list[WorkflowValidationDiagnostic]:
+        del node
+        return []

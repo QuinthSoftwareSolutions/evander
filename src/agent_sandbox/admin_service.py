@@ -72,6 +72,7 @@ from .models import (
 from .runtime import RuntimeContext, build_runtime
 from .storage import JsonStore
 from .workflow_events import WorkflowEventJournal, workflow_event_journal_path
+from .workflow_runtime_config import compile_worker_global_config_with_diagnostics
 from .teams_auth import (
     DeviceCodeLoginSession,
     JsonTeamsIdentityCredentialStore,
@@ -282,6 +283,7 @@ class WorkflowEditorValidationPayload(BaseModel):
     worker_id: str = "trigger-orchestrator"
     config: dict[str, object]
     layout: dict[str, object]
+    validation_diagnostics: list[dict[str, object]] = Field(default_factory=list)
 
 
 class WorkflowEditorSavePayload(BaseModel):
@@ -4706,11 +4708,19 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
     ) -> WorkflowEditorValidationPayload:
         normalized_candidate = self._normalize_workflow_editor_config(config)
         normalized_config = self._validate_worker_global_config_payload("trigger-orchestrator", normalized_candidate)
+        compiled_config, diagnostics = compile_worker_global_config_with_diagnostics(
+            TriggerOrchestratorWorkerGlobalConfig.model_validate(normalized_config)
+        )
+        normalized_config = compiled_config.model_dump(mode="json", exclude_none=True)
         normalized_layout = self._validate_workflow_editor_layout(
             layout or {},
             node_ids=self._collect_workflow_node_ids(normalized_config),
         )
-        return WorkflowEditorValidationPayload(config=normalized_config, layout=normalized_layout)
+        return WorkflowEditorValidationPayload(
+            config=normalized_config,
+            layout=normalized_layout,
+            validation_diagnostics=[{"code": "domain_validation", "message": message} for message in diagnostics],
+        )
 
     def _save_workflow_editor_document(
         self,

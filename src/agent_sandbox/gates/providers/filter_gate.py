@@ -5,6 +5,7 @@ from typing import Any
 from agent_sandbox.events.models import NODE_OUTPUTS_CONTEXT_KEY
 from agent_sandbox.gate_runtime import filter_payload_matches, filter_when_matches
 from agent_sandbox.gates.providers.base import GateProviderBase
+from agent_sandbox.workflow_validation import NodeCapability
 from agent_sandbox.workflow_binding import resolve_workflow_bindings
 
 _BRANCH_PORT_PAYLOAD_KEY = "__branch_port"
@@ -12,6 +13,8 @@ _FOR_EXECUTION_IDS_PAYLOAD_KEY = "__for_execution_ids"
 
 
 class FilterGateProvider(GateProviderBase):
+    capability = NodeCapability(min_inbound=1, max_inbound=1)
+
     def execute(self, **kwargs: Any) -> bool:
         worker = kwargs["worker"]
         queue_record = kwargs["queue_record"]

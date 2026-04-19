@@ -3,10 +3,13 @@ from __future__ import annotations
 from typing import Any
 
 from agent_sandbox.gates.providers.base import GateProviderBase
+from agent_sandbox.workflow_validation import NodeCapability
 from agent_sandbox.workflow_binding import resolve_gate_map_bindings
 
 
 class MapGateProvider(GateProviderBase):
+    capability = NodeCapability(min_inbound=1, max_inbound=1)
+
     def execute(self, **kwargs: Any) -> bool:
         worker = kwargs["worker"]
         queue_record = kwargs["queue_record"]
