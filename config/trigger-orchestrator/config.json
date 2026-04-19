@@ -266,7 +266,8 @@
       "provider": "azure_devops",
       "session_id": "${{trigger-git-push-1.session_id}}",
       "title": "${{query-session-context-1.metadata.issue_number}}: ${{query-session-context-1.metadata.issue_title}}",
-      "type": "effect:pr:create"
+      "type": "effect:pr:create",
+      "project": "${{query-session-context-1.metadata.ado_project}}"
     },
     {
       "display_name": "Store session metadata",

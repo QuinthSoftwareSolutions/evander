@@ -18,6 +18,7 @@ Options:
   --draft             Force Azure DevOps PR creation in draft mode.
   --no-draft          Force Azure DevOps PR creation as ready-for-review.
   --provider <name>   PR provider: auto, github, azure_devops. Default: auto.
+  --project <name>    Azure DevOps project override for PR/review API operations.
   --base <branch>     Base branch for the PR. Default: repository default branch.
   --session-id <id>   Session id for mapping metadata. Defaults to branch-derived value.
   --work-item-id <id> Explicit Azure DevOps work item id to associate with the PR.
@@ -49,6 +50,7 @@ TITLE_EXPLICIT=0
 BODY_FILE=""
 USE_FILL=1
 PROVIDER="auto"
+PROJECT_OVERRIDE=""
 SESSION_ID=""
 WORK_ITEM_ID=""
 DRAFT_OVERRIDE=""
@@ -78,6 +80,14 @@ while [[ $# -gt 0 ]]; do
         exit 1
       fi
       PROVIDER="$2"
+      shift 2
+      ;;
+    --project)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --project" >&2
+        exit 1
+      fi
+      PROJECT_OVERRIDE="$2"
       shift 2
       ;;
     --base)
@@ -459,6 +469,7 @@ github_auth_available() {
 infer_repo_slug() {
   local origin_url="$1"
   local provider="$2"
+  local project_override="${3:-}"
   case "${provider}" in
     github)
       local trimmed="${origin_url%.git}"
@@ -467,12 +478,13 @@ infer_repo_slug() {
       printf '%s\n' "${trimmed}"
       ;;
     azure_devops)
-      ORIGIN_URL="${origin_url}" python3 - <<'PY'
+      ORIGIN_URL="${origin_url}" PROJECT_OVERRIDE="${project_override}" python3 - <<'PY'
 import os
 import re
 import urllib.parse
 
 origin_url = os.environ["ORIGIN_URL"]
+project_override = os.environ.get("PROJECT_OVERRIDE", "").strip()
 ssh_match = re.match(r"^git@ssh\.dev\.azure\.com:v3/([^/]+)/([^/]+)/([^/]+)$", origin_url)
 https_match = re.match(
     r"^https://(?:[^@/]+@)?dev\.azure\.com/([^/]+)/([^/]+)/_git/([^/]+)$",
@@ -489,7 +501,7 @@ if not match:
 else:
     organization, project, repo = match.groups()
     organization = urllib.parse.unquote(organization)
-    project = urllib.parse.unquote(project)
+    project = project_override or urllib.parse.unquote(project)
     repo = urllib.parse.unquote(repo)
     print(f"{organization}/{project}/{repo}", end="")
 PY
@@ -710,7 +722,7 @@ if [[ -n "${WORK_ITEM_ID}" && ! "${WORK_ITEM_ID}" =~ ^[0-9]+$ ]]; then
   exit 1
 fi
 
-REPO_SLUG="$(infer_repo_slug "${ORIGIN_URL}" "${PROVIDER}")"
+REPO_SLUG="$(infer_repo_slug "${ORIGIN_URL}" "${PROVIDER}" "${PROJECT_OVERRIDE}")"
 if [[ -z "${REPO_SLUG}" ]]; then
   REPO_SLUG="$(basename "${HOST_REPO_PATH}")"
 fi
@@ -760,6 +772,7 @@ case "${PROVIDER}" in
 
     AZURE_RESULT="$(
     ORIGIN_URL="${ORIGIN_URL}" \
+    PROJECT_OVERRIDE="${PROJECT_OVERRIDE}" \
     AZURE_DEVOPS_PR_PAT_VALUE="${AZURE_DEVOPS_PR_PAT_VALUE}" \
     BASE_BRANCH="${BASE_BRANCH}" \
     ORIGIN_BRANCH="${ORIGIN_BRANCH}" \
@@ -778,6 +791,7 @@ import urllib.parse
 import urllib.request
 
 origin_url = os.environ["ORIGIN_URL"]
+project_override = os.environ.get("PROJECT_OVERRIDE", "").strip()
 base_branch = os.environ["BASE_BRANCH"]
 origin_branch = os.environ["ORIGIN_BRANCH"]
 title = os.environ["TITLE"]
@@ -807,7 +821,7 @@ else:
     print(f"Unsupported Azure DevOps origin URL: {origin_url}", file=sys.stderr)
     sys.exit(1)
 
-project = urllib.parse.unquote(project)
+project = project_override or urllib.parse.unquote(project)
 repo = urllib.parse.unquote(repo)
 
 base_url = (
