@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import logging
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -10,6 +11,7 @@ from pydantic import BaseModel, Field
 from agent_sandbox.agent_completion_watcher import build_agent_run_completed_event
 from agent_sandbox.events.models import NODE_OUTPUTS_CONTEXT_KEY
 from agent_sandbox.gates.providers.base import GateProviderBase
+from agent_sandbox.storage import JsonStore
 from agent_sandbox.triggers.queue import TriggerQueueRecord
 from agent_sandbox.workflow_binding import resolve_workflow_bindings
 
@@ -32,7 +34,51 @@ class AwaitAgentPendingRecord(BaseModel):
     occurred_at: datetime
 
 
+class _AwaitAgentStateStoreAdapter:
+    def __init__(self, path: Path) -> None:
+        self.store = JsonStore(path, AwaitAgentPendingRecord)
+
+    def read_all(self) -> dict[str, AwaitAgentPendingRecord]:
+        return self.store.read_all()
+
+    def get(self, key: str) -> AwaitAgentPendingRecord | None:
+        return self.store.get(key)
+
+    def put(self, key: str, value: AwaitAgentPendingRecord) -> None:
+        self.store.put(key, value)
+
+    def delete(self, key: str) -> None:
+        self.store.delete(key)
+
+
 class AwaitAgentGateProvider(GateProviderBase):
+    def __init__(self) -> None:
+        super().__init__()
+        self._adapter: _AwaitAgentStateStoreAdapter | None = None
+
+    def load_state(self, **kwargs: Any) -> _AwaitAgentStateStoreAdapter:
+        del kwargs
+        if self._adapter is not None:
+            return self._adapter
+        runtime_config = self.runtime_context.resolved_config if self.runtime_context is not None else None
+        runtime_dir = Path(getattr(runtime_config, "runtime_dir", Path("runtime")))
+        provider_state = getattr(runtime_config, "provider_state", {}) if runtime_config is not None else {}
+        store_path = _provider_state_path(
+            provider_state,
+            namespace=("gates", "await_agent", "pending_store_path"),
+            default=runtime_dir / "providers" / "gates" / "await-agent" / "pending.json",
+        )
+        _migrate_legacy_store(
+            legacy_path=runtime_dir / "await-agent-pending.json",
+            provider_owned_path=store_path,
+        )
+        self._adapter = _AwaitAgentStateStoreAdapter(store_path)
+        return self._adapter
+
+    def cleanup(self, **kwargs: Any) -> None:
+        del kwargs
+        self._adapter = None
+
     def execute(self, **kwargs: Any) -> bool:
         worker = kwargs["worker"]
         queue_record = kwargs["queue_record"]
@@ -93,7 +139,7 @@ class AwaitAgentGateProvider(GateProviderBase):
         if not dispatch_id:
             raise ValueError("dispatch_id is required")
         key, pending = next(
-            ((record_key, record) for record_key, record in self._store(worker).read_all().items() if record.dispatch_id == dispatch_id),
+            ((record_key, record) for record_key, record in self._store().read_all().items() if record.dispatch_id == dispatch_id),
             (None, None),
         )
         if pending is None:
@@ -104,8 +150,8 @@ class AwaitAgentGateProvider(GateProviderBase):
             worker.run_once_with_lock()
         return completed
 
-    def _store(self, worker: Any):
-        return worker.await_agent_store
+    def _store(self):
+        return self.load_state()
 
     def _register_prompt(self, *, worker: Any, queue_record: TriggerQueueRecord, gate: Any, resolved_config: dict[str, Any], config_revision: str, started_at: datetime) -> None:
         dispatch_id = str(queue_record.payload.get("dispatch_id") or "").strip()
@@ -142,7 +188,7 @@ class AwaitAgentGateProvider(GateProviderBase):
             )
             return
         key = f"{gate.id}:{dispatch_id}"
-        self._store(worker).put(
+        self._store().put(
             key,
             AwaitAgentPendingRecord(
                 gate_id=gate.id,
@@ -175,7 +221,7 @@ class AwaitAgentGateProvider(GateProviderBase):
         if not dispatch_id:
             return False
         key = f"{gate.id}:{dispatch_id}"
-        pending = self._store(worker).get(key)
+        pending = self._store().get(key)
         if pending is None:
             return False
         outputs = {k: v for k, v in queue_record.payload.items() if k not in {NODE_OUTPUTS_CONTEXT_KEY, _BRANCH_PORT_PAYLOAD_KEY, _FOR_EXECUTION_IDS_PAYLOAD_KEY}}
@@ -208,11 +254,11 @@ class AwaitAgentGateProvider(GateProviderBase):
             input_occurred_at_by_source={pending.prompt_source_node_id: pending.occurred_at, queue_record.trigger_id: queue_record.occurred_at},
             publish_completion_event=True,
         )
-        self._store(worker).delete(key)
+        self._store().delete(key)
         return True
 
     def _reconcile_pending(self, *, worker: Any, graph: Any) -> None:
-        pending_by_key = self._store(worker).read_all()
+        pending_by_key = self._store().read_all()
         if not pending_by_key:
             return
         summaries = _list_vm_summaries(worker)
@@ -229,7 +275,7 @@ class AwaitAgentGateProvider(GateProviderBase):
         now = datetime.now(UTC)
         for key, pending in pending_by_key.items():
             if pending.gate_id not in graph.gates_by_id:
-                self._store(worker).delete(key)
+                self._store().delete(key)
                 continue
             if (now - pending.occurred_at).total_seconds() < _AWAIT_AGENT_STALE_GRACE_SECONDS:
                 continue
@@ -258,10 +304,10 @@ class AwaitAgentGateProvider(GateProviderBase):
                 for summary in candidates
             )
             if replaced_or_unavailable:
-                self._store(worker).delete(key)
+                self._store().delete(key)
 
     def _complete_pending_directly(self, *, worker: Any, graph: Any) -> int:
-        pending_by_key = self._store(worker).read_all()
+        pending_by_key = self._store().read_all()
         completed = 0
         for key, pending in pending_by_key.items():
             gate = graph.gates_by_id.get(pending.gate_id)
@@ -287,7 +333,7 @@ class AwaitAgentGateProvider(GateProviderBase):
             idempotency_key=f"__await-agent-completion__:{pending.dispatch_id}",
         )
         self._execute_completion(worker=worker, queue_record=queue_record, gate=gate)
-        return self._store(worker).get(f"{pending.gate_id}:{pending.dispatch_id}") is None
+        return self._store().get(f"{pending.gate_id}:{pending.dispatch_id}") is None
 
     def _build_completion_event(self, *, worker: Any, pending: AwaitAgentPendingRecord, log_skips: bool, key: str | None):
         summaries = _list_vm_summaries(worker)
@@ -361,3 +407,22 @@ def _payload_with_node_output_context(*, source_payload: dict[str, Any], source_
     merged_context[completed_node_id] = dict(outputs)
     payload[NODE_OUTPUTS_CONTEXT_KEY] = merged_context
     return payload
+
+
+def _provider_state_path(provider_state: Any, *, namespace: tuple[str, ...], default: Path) -> Path:
+    cursor: Any = provider_state if isinstance(provider_state, dict) else {}
+    for key in namespace:
+        if not isinstance(cursor, dict):
+            return default
+        cursor = cursor.get(key)
+    if cursor is None:
+        return default
+    text = str(cursor).strip()
+    return Path(text) if text else default
+
+
+def _migrate_legacy_store(*, legacy_path: Path, provider_owned_path: Path) -> None:
+    if not legacy_path.exists() or provider_owned_path.exists():
+        return
+    provider_owned_path.parent.mkdir(parents=True, exist_ok=True)
+    legacy_path.replace(provider_owned_path)

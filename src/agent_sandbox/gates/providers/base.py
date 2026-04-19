@@ -28,6 +28,15 @@ class GateProviderBase:
     def execute(self, **_: Any) -> bool:
         return False
 
+    def load_state(self, **_: Any) -> Any:
+        return None
+
+    def save_state(self, **_: Any) -> None:
+        return None
+
+    def cleanup(self, **_: Any) -> None:
+        return None
+
     def reconcile(self, **_: Any) -> int:
         return 0
 

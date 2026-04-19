@@ -4892,7 +4892,11 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
                 finished_at=_coerce_optional_datetime(raw_record.get("finished_at")),
             )
 
-        await_agent_payload = _read_json_object(runtime_dir / "await-agent-pending.json")
+        await_agent_payload = _read_json_object(
+            runtime_dir / "providers" / "gates" / "await-agent" / "pending.json"
+        )
+        if not await_agent_payload:
+            await_agent_payload = _read_json_object(runtime_dir / "await-agent-pending.json")
         for record_key, raw_record in await_agent_payload.items():
             if not isinstance(raw_record, dict):
                 continue

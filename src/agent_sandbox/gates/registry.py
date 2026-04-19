@@ -8,12 +8,14 @@ from agent_sandbox.events.models import GateType
 from agent_sandbox.provider_config import ProviderConfigResolver
 
 from .providers.await_agent import AwaitAgentGateProvider
+from .providers.for_gate import ForGateProvider
 from .providers.base import GateProviderBase, GateRuntimeContext
 
 GateProviderClass = type[GateProviderBase]
 
 DEFAULT_GATE_PROVIDER_REGISTRY: dict[GateType, GateProviderClass] = {
     "gate:await-agent": AwaitAgentGateProvider,
+    "gate:for": ForGateProvider,
 }
 
 
