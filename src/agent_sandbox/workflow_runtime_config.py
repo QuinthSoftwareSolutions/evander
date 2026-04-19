@@ -77,7 +77,7 @@ class TriggerOrchestratorWorkerGlobalConfigReloader:
         self._last_fingerprint = fingerprint
         return self._current_config, changed
 
-    def _compute_fingerprint(self) -> tuple[int, str] | None:
+    def _compute_fingerprint(self) -> tuple[int, int, int, str] | None:
         try:
             stat = self._path.stat()
         except FileNotFoundError:
@@ -87,7 +87,7 @@ class TriggerOrchestratorWorkerGlobalConfigReloader:
         except OSError:
             return None
         digest = hashlib.sha256(payload).hexdigest()
-        return stat.st_mtime_ns, digest
+        return stat.st_mtime_ns, stat.st_ino, stat.st_size, digest
 
     def _load_from_path(self) -> TriggerOrchestratorWorkerGlobalConfig:
         if not self._path.exists():
