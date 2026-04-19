@@ -920,6 +920,7 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("local_branch", "Local branch", "string", bindable=True),
             _field("origin_branch", "Origin branch", "string", bindable=True),
             _field("provider", "Provider", "string", bindable=True),
+            _field("project", "Project", "string", bindable=True),
             _field("base_branch", "Base branch", "string", bindable=True),
             _field("session_id", "Session ID", "string", bindable=True),
             _field("work_item_id", "Work item ID", "string", bindable=True),
@@ -3862,6 +3863,7 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
         origin_branch: str | None = None,
         canonical_origin_url: str | None = None,
         provider: str | None = None,
+        project: str | None = None,
         base_branch: str | None = None,
         session_id: str | None = None,
         work_item_id: str | None = None,
@@ -3882,6 +3884,8 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
             cmd.append("--no-draft")
         if provider:
             cmd.extend(["--provider", provider])
+        if project:
+            cmd.extend(["--project", project])
         if base_branch:
             cmd.extend(["--base", base_branch])
         if session_id:
