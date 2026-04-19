@@ -781,7 +781,7 @@
           "/home/jonathan/Documents/Repos/Scanspac/Src/MesAdmin",
           "/home/jonathan/Documents/Repos/Scanspac/Src/StationGUI"
         ],
-        "repo_source": "git@ssh.dev.azure.com:v3/exampleindustry/Example%20Industry%20Scanspac/ExampleIndustryScanspac",
+        "repo_source": "/home/jonathan/Documents/Repos/Scanspac",
         "ticket": {
           "body": "${{gate-filter-7.ticket.body}}",
           "comments": "${{gate-filter-7.ticket.comments ?? []}}",
