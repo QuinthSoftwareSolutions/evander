@@ -13,6 +13,8 @@ class AgentPromptEffectProvider(EffectProviderBase):
     def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
         effect = self._effect()
         context = self._context()
+        if context.agent_resumer is None:
+            raise RuntimeError("effect:agent:prompt agent_resumer is not available")
 
         payload = {
             "target": effect.target,
@@ -37,7 +39,7 @@ class AgentPromptEffectProvider(EffectProviderBase):
 
         dispatch_id = self._make_dispatch_id(effect_id=effect.id)
         resume_thread_id = self._normalize_optional_string(payload.get("resume_thread_id"))
-        result = context.admin_service.resume_agent(
+        result = context.agent_resumer.resume_agent(
             target=target,
             prompt=prompt,
             model=model,

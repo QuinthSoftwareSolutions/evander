@@ -13,7 +13,9 @@ class VmStopEffectProvider(EffectProviderBase):
         timeout_seconds = self._as_int_or_none(payload.get("timeout_seconds")) or 60
 
         context = self._context()
-        result = context.admin_service.shutdown_vm(target, timeout_seconds=timeout_seconds)
+        if context.vm_power_controller is None:
+            raise RuntimeError("effect:vm:stop vm_power_controller is not available")
+        result = context.vm_power_controller.shutdown_vm(target, timeout_seconds=timeout_seconds)
         return {
             "success": bool(result.success),
             "action": "shutdown",

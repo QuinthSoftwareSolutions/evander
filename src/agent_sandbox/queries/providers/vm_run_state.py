@@ -26,7 +26,9 @@ class VmRunStateQueryProvider(QueryProviderBase):
             raise ValueError("query:vm:run-state requires session_id or vm_name")
 
         context = self._context()
-        candidates = context.admin_service.list_vms(include_inactive=True, omit_state=True)
+        if context.vm_inventory is None:
+            raise RuntimeError("query:vm:run-state vm_inventory is not available")
+        candidates = context.vm_inventory.list_vms(include_inactive=True, omit_state=True)
         selected = [
             vm
             for vm in candidates

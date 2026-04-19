@@ -12,6 +12,8 @@ class VmCreateEffectProvider(EffectProviderBase):
     def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
         effect = self._effect()
         context = self._context()
+        if context.vm_creator is None:
+            raise RuntimeError("effect:vm:create vm_creator is not available")
 
         payload = {
             "vm_name": effect.vm_name,
@@ -51,7 +53,7 @@ class VmCreateEffectProvider(EffectProviderBase):
             context.metadata.get("directory_path") or "root"
         )
 
-        result = context.admin_service.create_vm(
+        result = context.vm_creator.create_vm(
             vm_name=vm_name,
             session_id=session_id,
             labels=self._as_string_mapping(payload.get("labels")),

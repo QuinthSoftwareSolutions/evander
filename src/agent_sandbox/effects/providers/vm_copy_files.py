@@ -26,7 +26,7 @@ class VmCopyFilesEffectProvider(EffectProviderBase):
             raise ValueError("effect:vm:copy-files requires at least one file entry")
         target = self._resolve_target(payload)
 
-        vm_copy_files = getattr(context.admin_service, "vm_copy_files", None)
+        vm_copy_files = getattr(context.vm_file_copier, "vm_copy_files", None)
         if callable(vm_copy_files):
             result = vm_copy_files(target=target, files=files, vm_user=vm_user)
             if not isinstance(result, Mapping):
@@ -126,10 +126,9 @@ class VmCopyFilesEffectProvider(EffectProviderBase):
             vm_name = target
             return vm_name, explicit_vm_ip
 
-        admin_service = context.admin_service
-        list_vms = getattr(admin_service, "list_vms", None)
+        list_vms = getattr(context.vm_inventory, "list_vms", None)
         if not callable(list_vms):
-            raise RuntimeError("VmCopyFilesEffectProvider requires AdminService.list_vms()")
+            raise RuntimeError("VmCopyFilesEffectProvider requires vm_inventory.list_vms()")
 
         summaries = list_vms(include_inactive=True, omit_state=True, vm_user=vm_user, directory_path=directory_path)
         matches: list[tuple[str, str]] = []

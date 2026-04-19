@@ -6,6 +6,7 @@ from collections.abc import Callable, Mapping
 from agent_sandbox.admin_service import AdminService
 from agent_sandbox.events.models import EffectDefinitionDiscriminated, EffectType
 from agent_sandbox.provider_config import ProviderConfigResolver
+from agent_sandbox.provider_runtime.adapters import AdminServiceProviderAdapter, effect_provider_config_blob
 
 from .providers.agent_prompt import AgentPromptEffectProvider
 from .providers.agent_enqueue_prompt import AgentEnqueuePromptEffectProvider
@@ -74,6 +75,7 @@ class EffectProviderFactory:
     ) -> None:
         self.provider_config_resolver = provider_config_resolver
         self.admin_service = admin_service
+        self._admin_adapter = AdminServiceProviderAdapter(admin_service)
         self.registry = registry or EffectProviderRegistry()
         self.env = env or dict(os.environ)
         self.secret_resolver = secret_resolver
@@ -87,8 +89,19 @@ class EffectProviderFactory:
         provider_class = self.registry.resolve(effect_definition.type)
         resolved_config = self.provider_config_resolver.resolve_for_directory(directory_path)
         runtime_context = EffectRuntimeContext(
-            resolved_config=resolved_config,
-            admin_service=self.admin_service,
+            provider_config=effect_provider_config_blob(resolved_config),
+            vm_creator=self._admin_adapter,
+            agent_resumer=self._admin_adapter,
+            vm_power_controller=self._admin_adapter,
+            vm_inventory=self._admin_adapter,
+            vm_executor=self._admin_adapter,
+            vm_file_copier=self._admin_adapter,
+            vm_file_deleter=self._admin_adapter,
+            session_lookup=self._admin_adapter,
+            issue_updater=self._admin_adapter,
+            session_metadata_updater=self._admin_adapter,
+            git_branch_promoter=self._admin_adapter,
+            pull_request_creator=self._admin_adapter,
             env=self.env,
             secret_resolver=self.secret_resolver,
             metadata={"directory_path": directory_path or "root"},

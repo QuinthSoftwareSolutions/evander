@@ -1,32 +1,43 @@
 from __future__ import annotations
 
-import os
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-from agent_sandbox.admin_service import AdminService
-from agent_sandbox.config import GatewayConfig
 from agent_sandbox.events.models import EffectDefinitionDiscriminated, materialize_node_definition
+from agent_sandbox.provider_runtime.contracts import (
+    AgentResumer,
+    GitBranchPromoter,
+    IssueUpdater,
+    ProviderRuntimeBase,
+    PullRequestCreator,
+    SessionLookup,
+    SessionMetadataUpdater,
+    VmCreator,
+    VmExecutor,
+    VmFileCopier,
+    VmFileDeleter,
+    VmInventory,
+    VmPowerController,
+)
 
 
 @dataclass(frozen=True)
-class EffectRuntimeContext:
+class EffectRuntimeContext(ProviderRuntimeBase):
     """Host-side runtime inputs used by effect providers."""
 
-    resolved_config: GatewayConfig
-    admin_service: AdminService
-    env: Mapping[str, str] = field(default_factory=lambda: dict(os.environ))
-    secret_resolver: Callable[[str], str | None] | None = None
-    metadata: Mapping[str, Any] = field(default_factory=dict)
-
-    def resolve_secret(self, ref: str) -> str | None:
-        normalized_ref = ref.strip()
-        if not normalized_ref:
-            return None
-        if self.secret_resolver is not None:
-            return self.secret_resolver(normalized_ref)
-        return self.env.get(normalized_ref)
+    vm_creator: VmCreator | None = None
+    agent_resumer: AgentResumer | None = None
+    vm_power_controller: VmPowerController | None = None
+    vm_inventory: VmInventory | None = None
+    vm_executor: VmExecutor | None = None
+    vm_file_copier: VmFileCopier | None = None
+    vm_file_deleter: VmFileDeleter | None = None
+    session_lookup: SessionLookup | None = None
+    issue_updater: IssueUpdater | None = None
+    session_metadata_updater: SessionMetadataUpdater | None = None
+    git_branch_promoter: GitBranchPromoter | None = None
+    pull_request_creator: PullRequestCreator | None = None
 
 
 class EffectProvider(Protocol):
