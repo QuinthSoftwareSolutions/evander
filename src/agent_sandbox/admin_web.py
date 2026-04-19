@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import asyncio
 import json
 from pathlib import Path
 from typing import Any
@@ -72,27 +71,51 @@ async def _json_body(request: Request) -> dict[str, Any]:
 
 
 async def _workflow_run_events(service: AdminService, request: Request):
-    last_payload: str | None = None
-    while True:
+    last_state_key: str | None = None
+    journal = service.workflow_event_journal()
+    cursor = journal.cursor()
+
+    async def snapshot_event() -> tuple[str, str] | None:
         if await request.is_disconnected():
-            break
+            return None
         try:
             snapshot = service.read_workflow_run_snapshot()
         except ValueError as exc:
             payload = json.dumps({"error": str(exc)})
-            if payload != last_payload:
-                last_payload = payload
-                yield f"event: error\ndata: {payload}\n\n"
-            await asyncio.sleep(1.0)
-            continue
+            return f"error:{payload}", f"event: error\ndata: {payload}\n\n"
 
         payload = json.dumps(snapshot.model_dump(mode="json"))
-        if payload != last_payload:
-            last_payload = payload
-            yield f"event: snapshot\ndata: {payload}\n\n"
+        state_key = json.dumps(
+            {
+                "runs": [run.model_dump(mode="json") for run in snapshot.runs],
+                "node_activity": snapshot.node_activity,
+            },
+            sort_keys=True,
+        )
+        return state_key, f"event: snapshot\ndata: {payload}\n\n"
+
+    first = await snapshot_event()
+    if first is None:
+        return
+    last_state_key, first_payload = first
+    yield first_payload
+
+    while True:
+        if await request.is_disconnected():
+            break
+        events, cursor = await journal.wait_after(cursor, timeout_seconds=15.0)
+        if not events:
+            yield ": keepalive\n\n"
+            continue
+        event = await snapshot_event()
+        if event is None:
+            break
+        state_key, payload = event
+        if state_key != last_state_key:
+            last_state_key = state_key
+            yield payload
         else:
             yield ": keepalive\n\n"
-        await asyncio.sleep(1.0)
 
 
 def create_app(service: AdminService) -> Starlette:

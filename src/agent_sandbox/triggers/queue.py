@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from agent_sandbox.storage import JsonStore
 from agent_sandbox.events.models import TriggerEvent
+from agent_sandbox.workflow_events import WorkflowEventJournal, workflow_event_journal_path
 
 DeliveryState = Literal["pending", "inflight", "delivered"]
 
@@ -30,9 +31,15 @@ class TriggerQueueRecord(BaseModel):
 class TriggerEventQueue:
     """Durable trigger event queue backed by the shared JSON store conventions."""
 
-    def __init__(self, path: Path | str = Path("runtime") / "trigger-event-queue.json") -> None:
+    def __init__(
+        self,
+        path: Path | str = Path("runtime") / "trigger-event-queue.json",
+        *,
+        journal_path: Path | str | None = None,
+    ) -> None:
         self.path = Path(path)
         self._store = JsonStore(path=self.path, model=TriggerQueueRecord)
+        self._journal = WorkflowEventJournal(journal_path or workflow_event_journal_path(self.path.parent))
         self._lock = RLock()
 
     def publish(self, event: TriggerEvent, *, idempotency_key: str | None = None) -> TriggerQueueRecord:
@@ -61,6 +68,12 @@ class TriggerEventQueue:
             )
             items[event.event_id] = created
             self._store.write_all(items)
+            self._journal.append(
+                "workflow.trigger_event.published",
+                source="trigger_queue",
+                subject_id=event.event_id,
+                payload={"trigger_id": event.trigger_id, "trigger_type": event.trigger_type},
+            )
             return created
 
     def contains(self, event_id: str) -> bool:
@@ -113,6 +126,11 @@ class TriggerEventQueue:
             record.delivered_at = delivered_at or datetime.now(UTC)
             items[normalized_event_id] = record
             self._store.write_all(items)
+            self._journal.append(
+                "workflow.trigger_event.delivered",
+                source="trigger_queue",
+                subject_id=normalized_event_id,
+            )
             return True
 
     def mark_inflight(self, event_id: str, *, inflight_at: datetime | None = None) -> bool:
@@ -133,6 +151,11 @@ class TriggerEventQueue:
             record.delivered_at = None
             items[normalized_event_id] = record
             self._store.write_all(items)
+            self._journal.append(
+                "workflow.trigger_event.inflight",
+                source="trigger_queue",
+                subject_id=normalized_event_id,
+            )
             return True
 
     def reset_inflight(self) -> int:
@@ -149,6 +172,11 @@ class TriggerEventQueue:
                 reset_count += 1
             if reset_count > 0:
                 self._store.write_all(items)
+                self._journal.append(
+                    "workflow.trigger_event.reset_inflight",
+                    source="trigger_queue",
+                    payload={"reset_count": reset_count},
+                )
         return reset_count
 
     @staticmethod

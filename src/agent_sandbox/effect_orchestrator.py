@@ -42,6 +42,7 @@ from .queries.registry import QueryProviderFactory
 from .runtime import RuntimeContext, build_runtime
 from .storage import JsonStore
 from .triggers.queue import TriggerEventQueue, TriggerQueueRecord
+from .workflow_events import NotifyingJsonStore, WorkflowEventJournal
 from .workflow_binding import (
     BindingResolutionError,
     resolve_effect_config_bindings,
@@ -169,7 +170,11 @@ class EffectOrchestratorWorker:
         self.config = config
         self.worker_config = worker_config
         self.runtime = runtime
-        self.event_queue = TriggerEventQueue(worker_config.event_queue_store_path)
+        self.workflow_event_journal = WorkflowEventJournal(worker_config.workflow_event_journal_path)
+        self.event_queue = TriggerEventQueue(
+            worker_config.event_queue_store_path,
+            journal_path=worker_config.workflow_event_journal_path,
+        )
         self.lock_path = _resolve_worker_path(
             worker_config,
             "gate_lock_path",
@@ -181,14 +186,25 @@ class EffectOrchestratorWorker:
             fallback=worker_config.effect_cursor_store_path or (worker_config.runtime_dir / "effect-orchestrator-cursors.json"),
         )
         self.execution_store_path = worker_config.effect_execution_store_path
-        self.execution_store = JsonExecutionStore(self.execution_store_path)
+        self.execution_store = JsonExecutionStore(
+            self.execution_store_path,
+            journal_path=worker_config.workflow_event_journal_path,
+        )
         self.gate_execution_store_path = _resolve_worker_path(
             worker_config,
             "gate_execution_store_path",
             fallback=worker_config.runtime_dir / "gate-orchestrator-executions.json",
         )
-        self.gate_execution_store = JsonGateExecutionStore(self.gate_execution_store_path)
-        self.await_agent_store = JsonStore(worker_config.runtime_dir / "await-agent-pending.json", AwaitAgentPendingRecord)
+        self.gate_execution_store = JsonGateExecutionStore(
+            self.gate_execution_store_path,
+            journal_path=worker_config.workflow_event_journal_path,
+        )
+        self.await_agent_store = NotifyingJsonStore(
+            worker_config.runtime_dir / "await-agent-pending.json",
+            AwaitAgentPendingRecord,
+            journal_path=worker_config.workflow_event_journal_path,
+            source="await_agent_pending",
+        )
         self.queued_agent_prompt_store = AgentPromptQueueStore(worker_config.runtime_dir / "queued-agent-prompts.json")
         self.for_gate_state_store = JsonStore(worker_config.runtime_dir / "for-gate-state.json", ForGateStateRecord)
         self._executor = ThreadPoolExecutor(
@@ -1738,9 +1754,11 @@ class EffectOrchestratorWorker:
 
 
 class _JsonRecordStore(Generic[TRecord]):
-    def __init__(self, path: Path, model: type[TRecord]) -> None:
+    def __init__(self, path: Path, model: type[TRecord], *, journal_path: Path | None = None, source: str | None = None) -> None:
         self.path = path
         self.model = model
+        self._journal = WorkflowEventJournal(journal_path) if journal_path is not None else None
+        self._journal_source = source
         self._lock = RLock()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         if not self.path.exists():
@@ -1756,6 +1774,16 @@ class _JsonRecordStore(Generic[TRecord]):
             payload = self._read_payload()
             payload[getattr(record, "execution_id")] = record.model_dump(mode="json")
             self.path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+        if self._journal is not None and self._journal_source is not None:
+            self._journal.append(
+                "workflow.execution.updated",
+                source=self._journal_source,
+                subject_id=str(getattr(record, "execution_id")),
+                payload={
+                    "event_id": str(getattr(record, "event_id", "")),
+                    "status": str(getattr(record, "status", "")),
+                },
+            )
 
     def find_by_idempotency_key(self, idempotency_key: str) -> TRecord | None:
         with self._lock:
@@ -1773,13 +1801,13 @@ class _JsonRecordStore(Generic[TRecord]):
 
 
 class JsonExecutionStore(_JsonRecordStore[EffectExecutionRecord]):
-    def __init__(self, path: Path) -> None:
-        super().__init__(path, EffectExecutionRecord)
+    def __init__(self, path: Path, *, journal_path: Path | None = None) -> None:
+        super().__init__(path, EffectExecutionRecord, journal_path=journal_path, source="effect_execution")
 
 
 class JsonGateExecutionStore(_JsonRecordStore[GateExecutionRecord]):
-    def __init__(self, path: Path) -> None:
-        super().__init__(path, GateExecutionRecord)
+    def __init__(self, path: Path, *, journal_path: Path | None = None) -> None:
+        super().__init__(path, GateExecutionRecord, journal_path=journal_path, source="gate_execution")
 
     def find_latest_by_gate_id(self, gate_id: str) -> GateExecutionRecord | None:
         latest: GateExecutionRecord | None = None
