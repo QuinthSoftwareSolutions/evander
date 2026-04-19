@@ -55,6 +55,15 @@ class EffectProvider(Protocol):
     def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
         ...
 
+    def load_state(self, **kwargs: Any) -> Any:
+        ...
+
+    def save_state(self, **kwargs: Any) -> None:
+        ...
+
+    def cleanup(self, **kwargs: Any) -> None:
+        ...
+
 
 class EffectProviderBase:
     """Convenience base class for effect provider implementations."""
@@ -74,6 +83,18 @@ class EffectProviderBase:
     def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
         del resolved_config
         return {}
+
+    def load_state(self, **kwargs: Any) -> Any:
+        del kwargs
+        return None
+
+    def save_state(self, **kwargs: Any) -> None:
+        del kwargs
+        return None
+
+    def cleanup(self, **kwargs: Any) -> None:
+        del kwargs
+        return None
     @classmethod
     def validate_definition(cls, effect_definition: EffectDefinitionDiscriminated) -> EffectDefinitionDiscriminated:
         return materialize_node_definition(effect_definition)

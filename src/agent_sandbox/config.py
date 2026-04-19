@@ -176,6 +176,7 @@ class GatewayConfig(BaseModel):
     host_heartbeat_schedule_max_active_total: int | None = Field(default=None, ge=1)
     host_heartbeat_schedule_min_interval_seconds: float | None = Field(default=None, gt=0)
     pr_map_path: Path = Path("/var/lib/agent-sandbox/pr-map.json")
+    provider_state: dict[str, Any] = Field(default_factory=dict)
     email_mailboxes: list[MailboxConfig] = Field(
         default_factory=lambda: [
             MailboxConfig(

@@ -29,7 +29,6 @@ from .events.models import (
     TriggerDefinitionDiscriminated,
     TriggerEvent,
 )
-from .gates.providers.await_agent import AwaitAgentPendingRecord, _await_agent_pending_target
 from .gates.registry import GateProviderFactory
 from .gate_runtime import (
     GateRuntimeError,
@@ -41,14 +40,13 @@ from .host_heartbeat_worker import _single_instance_lock
 from .provider_config import ProviderConfigResolver
 from .queries.registry import QueryProviderFactory
 from .runtime import RuntimeContext, build_runtime
-from .storage import JsonStore
 from .triggers.queue import TriggerEventQueue, TriggerQueueRecord
 from .workflow_runtime_config import (
     FixedTriggerOrchestratorWorkerGlobalConfigReloader,
     TriggerOrchestratorWorkerGlobalConfigReloader,
     load_trigger_orchestrator_worker_global_config,
 )
-from .workflow_events import NotifyingJsonStore, WorkflowEventJournal
+from .workflow_events import WorkflowEventJournal
 from .workflow_binding import (
     BindingResolutionError,
     resolve_effect_config_bindings,
@@ -124,16 +122,6 @@ class GateExecutionRecord(BaseModel):
     config_revision: str | None = None
 
 
-class ForGateStateRecord(BaseModel):
-    key: str = Field(min_length=1)
-    gate_id: str = Field(min_length=1)
-    trace_id: str = Field(min_length=1)
-    for_execution_id: str = Field(min_length=1)
-    next_index: int = Field(ge=0)
-    item_count: int = Field(ge=0)
-    updated_at: datetime
-
-
 @dataclass(frozen=True)
 class ExecutionGraph:
     nodes_by_id: dict[str, WorkflowNodeDefinition]
@@ -203,14 +191,7 @@ class EffectOrchestratorWorker:
             self.gate_execution_store_path,
             journal_path=worker_config.workflow_event_journal_path,
         )
-        self.await_agent_store = NotifyingJsonStore(
-            worker_config.runtime_dir / "await-agent-pending.json",
-            AwaitAgentPendingRecord,
-            journal_path=worker_config.workflow_event_journal_path,
-            source="await_agent_pending",
-        )
         self.queued_agent_prompt_store = AgentPromptQueueStore(worker_config.runtime_dir / "queued-agent-prompts.json")
-        self.for_gate_state_store = JsonStore(worker_config.runtime_dir / "for-gate-state.json", ForGateStateRecord)
         self._executor = ThreadPoolExecutor(
             max_workers=max(1, min(32, max(1, (os.cpu_count() or 1) * 4))),
             thread_name_prefix="effect-orchestrator",
@@ -441,6 +422,7 @@ class EffectOrchestratorWorker:
             provider = self.gate_provider_factory.build(gate_type)  # type: ignore[arg-type]
         except KeyError:
             return None
+        provider.load_state(worker=self)
         self._gate_providers[gate_type] = provider
         return provider
 
@@ -454,6 +436,9 @@ class EffectOrchestratorWorker:
         config_revision: str,
         upstream_payload: dict[str, dict[str, Any]],
         upstream_output_names: dict[str, set[str]],
+        inputs_by_source: dict[str, dict[str, Any]],
+        input_event_ids_by_source: dict[str, str],
+        input_occurred_at_by_source: dict[str, datetime],
     ) -> bool:
         provider = self._get_gate_provider(gate.type)
         if provider is None:
@@ -468,6 +453,9 @@ class EffectOrchestratorWorker:
                 config_revision=config_revision,
                 upstream_payload=upstream_payload,
                 upstream_output_names=upstream_output_names,
+                inputs_by_source=inputs_by_source,
+                input_event_ids_by_source=input_event_ids_by_source,
+                input_occurred_at_by_source=input_occurred_at_by_source,
             )
         )
 
@@ -809,35 +797,10 @@ class EffectOrchestratorWorker:
                 config_revision=config_revision,
                 upstream_payload=upstream_payload,
                 upstream_output_names=upstream_output_names,
+                inputs_by_source=inputs_by_source,
+                input_event_ids_by_source=input_event_ids_by_source,
+                input_occurred_at_by_source=input_occurred_at_by_source,
             ):
-                return
-
-            if gate.type == "gate:for":
-                resolved = resolve_workflow_bindings(
-                    {
-                        "items": gate.items,
-                    },
-                    upstream_payload,
-                    upstream_output_names,
-                    system_value_resolver=_system_value_resolver(
-                        started_at=started_at,
-                        trace_id=queue_record.trace_id,
-                        event_id=queue_record.event_id,
-                        node_id=gate.id,
-                    ),
-                    strict_validation=True,
-                )
-                self._execute_for_gate(
-                    queue_record=queue_record,
-                    gate=gate,
-                    graph=graph,
-                    resolved_config=require_object_payload(resolved.resolved_config, gate_type="gate:for"),
-                    inputs_by_source=inputs_by_source,
-                    input_event_ids_by_source=input_event_ids_by_source,
-                    input_occurred_at_by_source=input_occurred_at_by_source,
-                    started_at=started_at,
-                    config_revision=config_revision,
-                )
                 return
 
             if gate.type != "gate:merge":
@@ -1851,31 +1814,6 @@ def _matching_outbound_edges(*, queue_record: TriggerQueueRecord, graph: Executi
     return tuple(matched)
 
 
-def _for_gate_state_key(*, gate_id: str, trace_id: str, for_execution_id: str) -> str:
-    return f"{gate_id}:{trace_id}:{for_execution_id}"
-
-
-def _resolve_for_gate_execution_id(
-    *,
-    queue_record: TriggerQueueRecord,
-    gate: GateDefinitionDiscriminated,
-    graph: ExecutionGraph,
-) -> str:
-    inbound_edge = _matching_inbound_edge(queue_record=queue_record, target_node_id=gate.id, graph=graph)
-    if inbound_edge is not None and _edge_allows_cycle(inbound_edge):
-        for_execution_id = _for_execution_id_from_payload(queue_record.payload, gate_id=gate.id)
-        if for_execution_id is not None:
-            return for_execution_id
-    return queue_record.event_id
-
-
-def _matching_inbound_edge(*, queue_record: TriggerQueueRecord, target_node_id: str, graph: ExecutionGraph) -> Any | None:
-    for edge in graph.inbound_index.get(target_node_id, ()):
-        if _edge_source_id(edge) == queue_record.trigger_id:
-            return edge
-    return None
-
-
 def _for_execution_ids_from_payload(payload: dict[str, Any]) -> dict[str, str]:
     raw_value = payload.get(_FOR_EXECUTION_IDS_PAYLOAD_KEY)
     if not isinstance(raw_value, dict):
@@ -1889,11 +1827,6 @@ def _for_execution_ids_from_payload(payload: dict[str, Any]) -> dict[str, str]:
         if normalized_gate_id and normalized_execution_id is not None:
             normalized[normalized_gate_id] = normalized_execution_id
     return normalized
-
-
-def _for_execution_id_from_payload(payload: dict[str, Any], *, gate_id: str) -> str | None:
-    return _for_execution_ids_from_payload(payload).get(gate_id)
-
 
 def _merged_for_execution_ids(*, source_payload: dict[str, Any], for_execution_ids: dict[str, str] | None) -> dict[str, str]:
     merged = _for_execution_ids_from_payload(source_payload)

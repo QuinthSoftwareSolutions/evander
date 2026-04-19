@@ -70,6 +70,12 @@ def _edge(source_id: str, target_id: str) -> dict[str, str]:
     return {"source_id": source_id, "target_id": target_id}
 
 
+def _await_agent_store(worker: EffectOrchestratorWorker):
+    provider = worker._get_gate_provider("gate:await-agent")
+    assert provider is not None
+    return provider.load_state()
+
+
 def test_effect_orchestrator_run_once_uses_reloaded_worker_config_for_sleep(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
@@ -2042,7 +2048,7 @@ def test_await_agent_gate_releases_follow_up_from_in_process_vm_poll(tmp_path: P
     for _ in range(4):
         worker.run_once()
 
-    pending = worker.await_agent_store.get("await-agent-1:dispatch-effect-1-abc123")
+    pending = _await_agent_store(worker).get("await-agent-1:dispatch-effect-1-abc123")
     assert pending is not None
     pending.session_id = "session-42"
     pending.vm_name = "vm-issue-42"
@@ -2050,7 +2056,7 @@ def test_await_agent_gate_releases_follow_up_from_in_process_vm_poll(tmp_path: P
         "session_id": "session-42",
         "vm_name": "vm-issue-42",
     }
-    worker.await_agent_store.put("await-agent-1:dispatch-effect-1-abc123", pending)
+    _await_agent_store(worker).put("await-agent-1:dispatch-effect-1-abc123", pending)
 
     monkeypatch.setattr(
         worker,
@@ -2163,7 +2169,7 @@ def test_await_agent_gate_preserves_upstream_node_outputs_for_follow_up_bindings
     for _ in range(4):
         worker.run_once()
 
-    pending = worker.await_agent_store.get("await-agent-1:dispatch-effect-1-abc123")
+    pending = _await_agent_store(worker).get("await-agent-1:dispatch-effect-1-abc123")
     assert pending is not None
     pending.session_id = "session-42"
     pending.vm_name = "vm-issue-42"
@@ -2171,7 +2177,7 @@ def test_await_agent_gate_preserves_upstream_node_outputs_for_follow_up_bindings
         "session_id": "session-42",
         "vm_name": "vm-issue-42",
     }
-    worker.await_agent_store.put("await-agent-1:dispatch-effect-1-abc123", pending)
+    _await_agent_store(worker).put("await-agent-1:dispatch-effect-1-abc123", pending)
 
     monkeypatch.setattr(
         worker,
@@ -2285,11 +2291,11 @@ def test_force_complete_await_agent_releases_follow_up(tmp_path: Path, monkeypat
     for _ in range(4):
         worker.run_once()
 
-    pending = worker.await_agent_store.get("await-agent-1:dispatch-effect-1-abc123")
+    pending = _await_agent_store(worker).get("await-agent-1:dispatch-effect-1-abc123")
     assert pending is not None
     pending.session_id = "session-42"
     pending.vm_name = "vm-issue-42"
-    worker.await_agent_store.put("await-agent-1:dispatch-effect-1-abc123", pending)
+    _await_agent_store(worker).put("await-agent-1:dispatch-effect-1-abc123", pending)
     monkeypatch.setattr(
         worker,
         "_list_vm_summaries_for_await_agent_reconciliation",
@@ -2602,11 +2608,11 @@ def test_await_agent_gate_releases_when_settled_summary_lacks_dispatch_id(tmp_pa
     for _ in range(4):
         worker.run_once()
 
-    pending = worker.await_agent_store.get("await-agent-1:dispatch-effect-1-abc123")
+    pending = _await_agent_store(worker).get("await-agent-1:dispatch-effect-1-abc123")
     assert pending is not None
     pending.session_id = "session-42"
     pending.vm_name = "vm-issue-42"
-    worker.await_agent_store.put("await-agent-1:dispatch-effect-1-abc123", pending)
+    _await_agent_store(worker).put("await-agent-1:dispatch-effect-1-abc123", pending)
     monkeypatch.setattr(
         worker,
         "_list_vm_summaries_for_await_agent_reconciliation",
@@ -2684,7 +2690,7 @@ def test_await_agent_reconciliation_completes_idle_pending_record_without_dispat
         payload={},
         occurred_at=datetime(2026, 4, 4, 11, 50, tzinfo=timezone.utc),
     )
-    worker.await_agent_store.put("await-agent-1:dispatch-old", pending)
+    _await_agent_store(worker).put("await-agent-1:dispatch-old", pending)
     monkeypatch.setattr(
         worker,
         "_list_vm_summaries_for_await_agent_reconciliation",
@@ -2705,7 +2711,7 @@ def test_await_agent_reconciliation_completes_idle_pending_record_without_dispat
 
     worker.run_once()
 
-    assert worker.await_agent_store.read_all() == {}
+    assert _await_agent_store(worker).read_all() == {}
 
 
 def test_await_agent_reconciliation_keeps_pending_record_without_matching_summary(tmp_path: Path, monkeypatch) -> None:
@@ -2759,12 +2765,12 @@ def test_await_agent_reconciliation_keeps_pending_record_without_matching_summar
         payload={},
         occurred_at=datetime(2026, 4, 4, 11, 50, tzinfo=timezone.utc),
     )
-    worker.await_agent_store.put("await-agent-1:dispatch-missing", pending)
+    _await_agent_store(worker).put("await-agent-1:dispatch-missing", pending)
     monkeypatch.setattr(worker, "_list_vm_summaries_for_await_agent_reconciliation", lambda: [])
 
     worker.run_once()
 
-    assert worker.await_agent_store.read_all() == {"await-agent-1:dispatch-missing": pending}
+    assert _await_agent_store(worker).read_all() == {"await-agent-1:dispatch-missing": pending}
 
 
 def test_await_agent_reconciliation_keeps_settled_current_dispatch_record(tmp_path: Path, monkeypatch) -> None:
@@ -2818,7 +2824,7 @@ def test_await_agent_reconciliation_keeps_settled_current_dispatch_record(tmp_pa
         payload={},
         occurred_at=datetime(2026, 4, 4, 11, 50, tzinfo=timezone.utc),
     )
-    worker.await_agent_store.put("await-agent-1:dispatch-current", pending)
+    _await_agent_store(worker).put("await-agent-1:dispatch-current", pending)
     monkeypatch.setattr(
         worker,
         "_list_vm_summaries_for_await_agent_reconciliation",
@@ -2839,7 +2845,7 @@ def test_await_agent_reconciliation_keeps_settled_current_dispatch_record(tmp_pa
 
     worker.run_once()
 
-    assert worker.await_agent_store.read_all() == {}
+    assert _await_agent_store(worker).read_all() == {}
 
 
 def test_await_agent_pending_target_can_fill_missing_vm_name_from_session_summary() -> None:
