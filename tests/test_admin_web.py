@@ -109,6 +109,17 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
     assert any(field["key"] == "allowed_script_names" for field in vm_create["fields"])
 
 
+def test_admin_web_exposes_workflow_run_stream(tmp_path: Path) -> None:
+    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+
+    with client.stream("GET", "/api/workflow-editor/runs/stream") as response:
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/event-stream")
+        first_line = next(response.iter_lines())
+
+    assert first_line == "event: snapshot"
+
+
 def test_admin_web_validates_and_saves_workflow_editor_document(tmp_path: Path) -> None:
     client = TestClient(create_app(AdminService(write_config(tmp_path))))
     payload = {

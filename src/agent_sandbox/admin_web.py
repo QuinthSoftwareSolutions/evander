@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 from pathlib import Path
 from typing import Any
@@ -8,7 +9,7 @@ from typing import Any
 import uvicorn
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, JSONResponse, Response
+from starlette.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
@@ -70,6 +71,30 @@ async def _json_body(request: Request) -> dict[str, Any]:
     return payload
 
 
+async def _workflow_run_events(service: AdminService, request: Request):
+    last_payload: str | None = None
+    while True:
+        if await request.is_disconnected():
+            break
+        try:
+            snapshot = service.read_workflow_run_snapshot()
+        except ValueError as exc:
+            payload = json.dumps({"error": str(exc)})
+            if payload != last_payload:
+                last_payload = payload
+                yield f"event: error\ndata: {payload}\n\n"
+            await asyncio.sleep(1.0)
+            continue
+
+        payload = json.dumps(snapshot.model_dump(mode="json"))
+        if payload != last_payload:
+            last_payload = payload
+            yield f"event: snapshot\ndata: {payload}\n\n"
+        else:
+            yield ": keepalive\n\n"
+        await asyncio.sleep(1.0)
+
+
 def create_app(service: AdminService) -> Starlette:
     dist_dir = _dist_dir()
 
@@ -96,6 +121,13 @@ def create_app(service: AdminService) -> Starlette:
         except ValueError as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)
         return JSONResponse(snapshot.model_dump(mode="json"))
+
+    async def stream_runs(request: Request) -> StreamingResponse:
+        return StreamingResponse(
+            _workflow_run_events(service, request),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+        )
 
     async def validate_document(request: Request) -> JSONResponse:
         try:
@@ -127,6 +159,7 @@ def create_app(service: AdminService) -> Starlette:
         Route("/api/workflow-editor/document", get_document, methods=["GET"]),
         Route("/api/workflow-editor/catalog", get_catalog, methods=["GET"]),
         Route("/api/workflow-editor/runs", get_runs, methods=["GET"]),
+        Route("/api/workflow-editor/runs/stream", stream_runs, methods=["GET"]),
         Route("/api/workflow-editor/validate", validate_document, methods=["POST"]),
         Route("/api/workflow-editor/document", save_document, methods=["PUT"]),
     ]

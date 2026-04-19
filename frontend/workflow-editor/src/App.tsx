@@ -1212,16 +1212,23 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    const intervalId = window.setInterval(() => {
-      fetchJson<WorkflowRunSnapshot>("/api/workflow-editor/runs")
-        .then((payload) => {
-          setRunSnapshot(payload);
-        })
-        .catch(() => {
-          // Keep the last snapshot visible when the polling request fails.
-        });
-    }, RUNTIME_POLL_INTERVAL_MS);
-    return () => window.clearInterval(intervalId);
+    const stream = new EventSource("/api/workflow-editor/runs/stream");
+
+    stream.addEventListener("snapshot", (event) => {
+      if (!(event instanceof MessageEvent)) return;
+      try {
+        const payload = JSON.parse(event.data) as WorkflowRunSnapshot;
+        setRunSnapshot(payload);
+      } catch {
+        // Ignore malformed event payloads and keep last known snapshot.
+      }
+    });
+
+    stream.addEventListener("error", () => {
+      // Keep the last snapshot visible when the stream reports an error.
+    });
+
+    return () => stream.close();
   }, []);
 
   useEffect(() => {
