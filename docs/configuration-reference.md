@@ -136,7 +136,9 @@ This JSON file stores the workflow orchestrator worker's global settings.
 Trigger definitions are currently global (host-wide) and are **not** directory-scoped; this keeps
 provider secret resolution and cross-directory event ingestion centralized until a directory-resolved
 workflow inheritance model is introduced. Triggers, gates, and effects all live in the same graph
-config, with explicit edges describing routing between node ids.
+config, with explicit edges describing routing between node ids. Domain workflows can now be
+provided via `workflow_packs` + optional inline `workflow_ir`, which compose into executable
+`triggers`/`gates`/`effects`/`queries`/`edges` at load time.
 
 | Parameter | Found in | Consumed by |
 |---|---|---|
@@ -146,6 +148,8 @@ config, with explicit edges describing routing between node ids.
 | `lock_path` | `config/trigger-orchestrator/config.json` | Trigger orchestrator single-instance lock file path. |
 | `event_queue_store_path` | `config/trigger-orchestrator/config.json` | Trigger orchestrator persisted event queue store path. |
 | `event_queue_cursor_store_path` | `config/trigger-orchestrator/config.json` | Trigger orchestrator event queue cursor/checkpoint store path. |
+| `workflow_packs` | `config/trigger-orchestrator/config.json` | Ordered workflow-pack filenames under `config/workflow-packs/` to compose into executable IR. |
+| `workflow_ir` | `config/trigger-orchestrator/config.json` | Optional inline IR overlay (`version`, `nodes`, `edges`) merged after pack composition. |
 | `triggers` | `config/trigger-orchestrator/config.json` | Trigger orchestrator trigger definition list (`src/agent_sandbox/triggers/models.py`). |
 | `gate_execution_store_path` | `config/trigger-orchestrator/config.json` | Gate execution log path (idempotency keys, merge state, resolved config snapshots, outputs, failures). |
 | `gate_cursor_store_path` | `config/trigger-orchestrator/config.json` | Gate orchestrator cursor/checkpoint path. |

@@ -4,9 +4,11 @@ import hashlib
 import json
 import logging
 from pathlib import Path
+from typing import Any
 
 from .config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
 from .workflow_compiler import WorkflowCompilationPolicies, compile_trigger_orchestrator_config
+from .workflow_packs import compose_workflow_ir
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +40,7 @@ def load_trigger_orchestrator_worker_global_config(
     raw = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
         raise ValueError(f"worker config file {path} must contain a JSON object")
+    raw = _compose_configured_workflow_ir(project_dir=project_dir, payload=raw)
     return compile_trigger_orchestrator_config(
         TriggerOrchestratorWorkerGlobalConfig.model_validate({**base_payload, **raw}),
         policies=WorkflowCompilationPolicies(augment_await_agent_completion=True),
@@ -105,10 +108,31 @@ class TriggerOrchestratorWorkerGlobalConfigReloader:
         raw = json.loads(self._path.read_text(encoding="utf-8"))
         if not isinstance(raw, dict):
             raise ValueError(f"worker config file {self._path} must contain a JSON object")
+        raw = _compose_configured_workflow_ir(project_dir=self._path.parents[2], payload=raw)
         return compile_trigger_orchestrator_config(
             TriggerOrchestratorWorkerGlobalConfig.model_validate({**self._base_payload, **raw}),
             policies=WorkflowCompilationPolicies(augment_await_agent_completion=True),
         )
+
+
+def _compose_configured_workflow_ir(*, project_dir: Path, payload: dict[str, Any]) -> dict[str, Any]:
+    configured_packs = payload.get("workflow_packs")
+    inline_ir = payload.get("workflow_ir")
+    if not isinstance(configured_packs, list) and not isinstance(inline_ir, dict):
+        return payload
+
+    composition = compose_workflow_ir(
+        project_dir=project_dir,
+        workflow_packs=configured_packs if isinstance(configured_packs, list) else [],
+        inline_ir=inline_ir if isinstance(inline_ir, dict) else None,
+    )
+    merged = dict(payload)
+    merged["triggers"] = composition.triggers
+    merged["gates"] = composition.gates
+    merged["effects"] = composition.effects
+    merged["queries"] = composition.queries
+    merged["edges"] = composition.edges
+    return merged
 
 
 class FixedTriggerOrchestratorWorkerGlobalConfigReloader:

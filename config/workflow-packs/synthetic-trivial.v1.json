@@ -1,0 +1,31 @@
+{
+  "pack_id": "synthetic-trivial",
+  "pack_version": "v1",
+  "description": "Minimal non-VM synthetic workflow to validate core engine execution.",
+  "ir": {
+    "version": "v1",
+    "nodes": [
+      {
+        "id": "trigger-cron-synthetic",
+        "display_name": "Synthetic tick",
+        "type": "trigger:cron",
+        "expression": "* * * * *"
+      },
+      {
+        "id": "effect-log-synthetic",
+        "display_name": "Synthetic script",
+        "type": "effect:bash:script",
+        "script_path": "/bin/echo",
+        "args": [
+          "synthetic-workflow"
+        ]
+      }
+    ],
+    "edges": [
+      {
+        "source_id": "trigger-cron-synthetic",
+        "target_id": "effect-log-synthetic"
+      }
+    ]
+  }
+}

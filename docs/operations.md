@@ -98,6 +98,17 @@ Troubleshooting checklist:
    - Direct cycles are marked `skipped` with `error: cycle_detected`; break the loop by changing
      the edge wiring between nodes.
 
+### Workflow pack operations
+
+- The trigger/effect workers compose workflow definitions from `workflow_packs` in
+  `config/trigger-orchestrator/config.json`.
+- Pack files live at `config/workflow-packs/*.json` and include versioned IR (`pack_id`,
+  `pack_version`, `ir.version`, `ir.nodes`, `ir.edges`).
+- To add a new domain workflow, add a new pack file and list it in `workflow_packs`. No core
+  orchestrator Python code changes are required for that path.
+- Optional one-off overlays can be provided with inline `workflow_ir` in
+  `config/trigger-orchestrator/config.json`.
+
 ## Desktop Operator Console
 
 For a host-local desktop GUI on Ubuntu, install the optional desktop extra:
