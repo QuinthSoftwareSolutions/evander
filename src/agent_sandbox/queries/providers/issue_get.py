@@ -3,10 +3,28 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from agent_sandbox.events.models import IssueGetQueryDefinition, QueryDefinitionDiscriminated, WorkflowNodeEnvelope
+
 from .base import QueryProviderBase
+from .issue_get_schema import IssueGetQueryConfigSchema
 
 
 class IssueGetQueryProvider(QueryProviderBase):
+    @classmethod
+    def validate_definition(cls, query_definition: QueryDefinitionDiscriminated) -> QueryDefinitionDiscriminated:
+        if isinstance(query_definition, WorkflowNodeEnvelope):
+            config = IssueGetQueryConfigSchema.model_validate(query_definition.config).model_dump()
+            return IssueGetQueryDefinition.model_validate(
+                {
+                    "id": query_definition.id,
+                    "display_name": query_definition.display_name,
+                    "type": query_definition.type,
+                    "outputs": query_definition.outputs,
+                    **config,
+                }
+            )
+        return super().validate_definition(query_definition)
+
     def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
         payload = self._query_payload()
         if resolved_config:

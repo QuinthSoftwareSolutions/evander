@@ -67,11 +67,30 @@ ConfigValue = TypeAliasType(
 )
 
 
-class WorkflowNodeDefinition(BaseModel):
+class WorkflowNodeEnvelope(BaseModel):
     id: str
     display_name: str
     type: str
+    config: dict[str, Any] = Field(default_factory=dict)
     outputs: dict[str, dict[str, Any]] | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def collect_legacy_top_level_config(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        payload = dict(value)
+        config = payload.get("config")
+        if config is None:
+            config = {}
+        if not isinstance(config, dict):
+            return value
+        for key in list(payload.keys()):
+            if key in {"id", "display_name", "type", "config", "outputs"}:
+                continue
+            config[key] = payload.pop(key)
+        payload["config"] = config
+        return payload
 
     @field_validator("id", "display_name", mode="before")
     @classmethod
@@ -82,13 +101,37 @@ class WorkflowNodeDefinition(BaseModel):
         return text
 
     @model_validator(mode="after")
-    def validate_declared_output_names(self) -> "WorkflowNodeDefinition":
+    def validate_declared_output_names(self) -> "WorkflowNodeEnvelope":
         if self.outputs is not None:
             validate_output_mapping_keys(
                 self.outputs,
                 context=f"{self.type} {self.id} declared outputs",
             )
         return self
+
+    def __getattr__(self, item: str) -> Any:
+        config = object.__getattribute__(self, "config")
+        if isinstance(config, dict) and item in config:
+            return config[item]
+        raise AttributeError(item)
+
+
+class WorkflowNodeDefinition(WorkflowNodeEnvelope):
+    """Backward-compatible alias for historical node model naming."""
+
+
+def materialize_node_definition(node: WorkflowNodeEnvelope) -> BaseModel:
+    model_class = _NODE_DEFINITION_MODELS.get(node.type)
+    if model_class is None:
+        return node
+    payload = {
+        "id": node.id,
+        "display_name": node.display_name,
+        "type": node.type,
+        "outputs": node.outputs,
+        **dict(node.config),
+    }
+    return model_class.model_validate(payload)
 
 
 class TriggerDefinition(WorkflowNodeDefinition):
@@ -287,21 +330,7 @@ class AgentPromptNewTriggerDefinition(TriggerDefinition):
     type: Literal["trigger:agent:prompt:new"]
 
 
-TriggerDefinitionDiscriminated = Annotated[
-    CronTriggerDefinition
-    | TicketCreatedTriggerDefinition
-    | TicketChangedTriggerDefinition
-    | ScriptRunRequestTriggerDefinition
-    | DiscordNewMessageTriggerDefinition
-    | TeamsNewMessageTriggerDefinition
-    | EmailNewMessageTriggerDefinition
-    | PullRequestNewFeedbackTriggerDefinition
-    | ReviewNewRequestTriggerDefinition
-    | GitPushTriggerDefinition
-    | AgentPromptNewTriggerDefinition
-    | AgentRunCompletedTriggerDefinition,
-    Field(discriminator="type"),
-]
+TriggerDefinitionDiscriminated = WorkflowNodeEnvelope
 
 
 class GateDefinition(WorkflowNodeDefinition):
@@ -578,22 +607,7 @@ class PrCreateEffectDefinition(EffectDefinition):
     fill: ConfigValue | None = True
 
 
-EffectDefinitionDiscriminated = Annotated[
-    VmCreateEffectDefinition
-    | VmStartEffectDefinition
-    | VmStopEffectDefinition
-    | AgentPromptEffectDefinition
-    | AgentEnqueuePromptEffectDefinition
-    | BashScriptEffectDefinition
-    | VmExecEffectDefinition
-    | VmCopyFilesEffectDefinition
-    | VmDeleteFilesEffectDefinition
-    | IssueUpdateStateEffectDefinition
-    | SessionUpdateMetadataEffectDefinition
-    | GitPromoteAgentBranchEffectDefinition
-    | PrCreateEffectDefinition,
-    Field(discriminator="type"),
-]
+EffectDefinitionDiscriminated = WorkflowNodeEnvelope
 
 
 class EdgeDefinition(BaseModel):
@@ -656,13 +670,42 @@ class IssueGetQueryDefinition(QueryDefinition):
     issue_id: ConfigValue
 
 
-QueryDefinitionDiscriminated = Annotated[
-    VmRunStateQueryDefinition | GitPrNoteQueryDefinition | SessionContextQueryDefinition | IssueGetQueryDefinition,
-    Field(discriminator="type"),
-]
+QueryDefinitionDiscriminated = WorkflowNodeEnvelope
 
 
 WorkflowNodeType = TriggerType | GateType | EffectType | QueryType
+
+_NODE_DEFINITION_MODELS: dict[str, type[BaseModel]] = {
+    "trigger:cron": CronTriggerDefinition,
+    "trigger:ticket:created": TicketCreatedTriggerDefinition,
+    "trigger:ticket:changed": TicketChangedTriggerDefinition,
+    "trigger:script-run-request": ScriptRunRequestTriggerDefinition,
+    "trigger:discord:new-message": DiscordNewMessageTriggerDefinition,
+    "trigger:teams:new-message": TeamsNewMessageTriggerDefinition,
+    "trigger:email:new-message": EmailNewMessageTriggerDefinition,
+    "trigger:pull-request:new-feedback": PullRequestNewFeedbackTriggerDefinition,
+    "trigger:review:new-request": ReviewNewRequestTriggerDefinition,
+    "trigger:git:push": GitPushTriggerDefinition,
+    "trigger:agent:prompt:new": AgentPromptNewTriggerDefinition,
+    "trigger:agent:run:completed": AgentRunCompletedTriggerDefinition,
+    "effect:vm:create": VmCreateEffectDefinition,
+    "effect:vm:start": VmStartEffectDefinition,
+    "effect:vm:stop": VmStopEffectDefinition,
+    "effect:agent:prompt": AgentPromptEffectDefinition,
+    "effect:agent:enqueue-prompt": AgentEnqueuePromptEffectDefinition,
+    "effect:bash:script": BashScriptEffectDefinition,
+    "effect:vm:exec": VmExecEffectDefinition,
+    "effect:vm:copy-files": VmCopyFilesEffectDefinition,
+    "effect:vm:delete-files": VmDeleteFilesEffectDefinition,
+    "effect:issue:update-state": IssueUpdateStateEffectDefinition,
+    "effect:session:update-metadata": SessionUpdateMetadataEffectDefinition,
+    "effect:git:promote-agent-branch": GitPromoteAgentBranchEffectDefinition,
+    "effect:pr:create": PrCreateEffectDefinition,
+    "query:vm:run-state": VmRunStateQueryDefinition,
+    "query:git:pr-note": GitPrNoteQueryDefinition,
+    "query:session-context": SessionContextQueryDefinition,
+    "query:issue:get": IssueGetQueryDefinition,
+}
 
 
 class TriggerEvent(BaseModel):

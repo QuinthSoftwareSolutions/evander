@@ -7,7 +7,7 @@ from typing import Any, Protocol
 
 from agent_sandbox.admin_service import AdminService
 from agent_sandbox.config import GatewayConfig
-from agent_sandbox.events.models import TriggerDefinitionDiscriminated, TriggerEvent
+from agent_sandbox.events.models import TriggerDefinitionDiscriminated, TriggerEvent, materialize_node_definition
 
 
 TriggerHookHandler = Callable[[TriggerEvent], None]
@@ -37,6 +37,10 @@ class TriggerRuntimeContext:
 
 
 class TriggerProvider(Protocol):
+    @classmethod
+    def validate_definition(cls, trigger_definition: TriggerDefinitionDiscriminated) -> TriggerDefinitionDiscriminated:
+        ...
+
     def initialize(
         self,
         trigger_definition: TriggerDefinitionDiscriminated,
@@ -70,3 +74,6 @@ class TriggerProviderBase:
 
     def poll(self) -> list[TriggerEvent]:
         return []
+    @classmethod
+    def validate_definition(cls, trigger_definition: TriggerDefinitionDiscriminated) -> TriggerDefinitionDiscriminated:
+        return materialize_node_definition(trigger_definition)

@@ -94,5 +94,6 @@ class EffectProviderFactory:
             metadata={"directory_path": directory_path or "root"},
         )
         provider = provider_class()
-        provider.initialize(effect_definition=effect_definition, runtime_context=runtime_context)
+        validated_definition = provider_class.validate_definition(effect_definition)
+        provider.initialize(effect_definition=validated_definition, runtime_context=runtime_context)
         return provider
