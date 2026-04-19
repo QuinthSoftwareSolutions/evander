@@ -55,6 +55,14 @@ class EffectProvider(Protocol):
     def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
         ...
 
+    def normalize_resolved_config(
+        self,
+        *,
+        resolved_config: Mapping[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        ...
+
     def load_state(self, **kwargs: Any) -> Any:
         ...
 
@@ -83,6 +91,15 @@ class EffectProviderBase:
     def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
         del resolved_config
         return {}
+
+    def normalize_resolved_config(
+        self,
+        *,
+        resolved_config: Mapping[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        del kwargs
+        return dict(resolved_config) if isinstance(resolved_config, Mapping) else {}
 
     def load_state(self, **kwargs: Any) -> Any:
         del kwargs

@@ -47,7 +47,12 @@ class ProviderEffectNodeExecutor:
         self.provider_factory = provider_factory
 
     def prepare_resolved_config(self, **kwargs: Any) -> dict[str, Any]:
+        effect = kwargs["effect"]
+        provider = self.provider_factory.build(effect)
         resolved_config = kwargs.get("resolved_config")
+        normalize = getattr(provider, "normalize_resolved_config", None)
+        if callable(normalize):
+            return dict(normalize(**kwargs) or {})
         return dict(resolved_config) if isinstance(resolved_config, Mapping) else {}
 
     def execute(self, **kwargs: Any) -> dict[str, Any]:

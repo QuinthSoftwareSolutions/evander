@@ -8,6 +8,8 @@ from pathlib import Path
 from threading import Event
 
 from agent_sandbox.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
+from agent_sandbox.effects.providers.base import EffectRuntimeContext
+from agent_sandbox.effects.providers.vm_copy_files import VmCopyFilesEffectProvider
 from agent_sandbox.effect_orchestrator import (
     AwaitAgentPendingRecord,
     EffectOrchestratorWorker,
@@ -1838,12 +1840,25 @@ def test_vm_copy_files_template_source_renders_bindings_before_dispatch(tmp_path
         }
     )
     worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
-    worker.provider_factory = _Factory(
-        {
-            "effect-1": {"session_id": "session-123", "vm_name": "vm-issue-14084", "success": True},
-            "effect-2": {"success": True},
-        }
-    )
+    class _VmFileCopierStub:
+        def vm_copy_files(self, **kwargs):
+            return {"success": True, "action": "vm_copy_files", **kwargs}
+
+    class _TemplateAwareFactory:
+        def build(self, effect):
+            if effect.id == "effect-2":
+                provider = VmCopyFilesEffectProvider()
+                provider.initialize(
+                    effect_definition=effect,
+                    runtime_context=EffectRuntimeContext(
+                        vm_file_copier=_VmFileCopierStub(),
+                        metadata={"directory_path": "root/team-a"},
+                    ),
+                )
+                return provider
+            return _Provider({"session_id": "session-123", "vm_name": "vm-issue-14084", "success": True})
+
+    worker.provider_factory = _TemplateAwareFactory()
 
     worker.event_queue.publish(
         TriggerEvent(
