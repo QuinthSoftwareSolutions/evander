@@ -1949,7 +1949,8 @@ def _publish_directory_pr_feedback_events(
     trigger_worker_config = _load_trigger_orchestrator_worker_config(config)
     event_queue = TriggerEventQueue(
         (trigger_worker_config.event_queue_store_path if trigger_worker_config is not None else None)
-        or config.runtime_dir / "trigger-orchestrator-events.json"
+        or config.runtime_dir / "trigger-orchestrator-events.json",
+        journal_path=(trigger_worker_config.workflow_event_journal_path if trigger_worker_config is not None else None),
     )
     feedback_store = PrFeedbackStore(config.runtime_dir / "pr-feedback-store.json")
     audit_logger = AuditLogger(config.runtime_dir / "audit.log")

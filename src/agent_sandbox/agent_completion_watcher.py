@@ -69,6 +69,7 @@ def await_agent_completion_and_publish(
     vm_name: str,
     dispatch_id: str,
     event_queue_store_path: Path | None = None,
+    workflow_event_journal_path: Path | None = None,
     vm_user: str = _DEFAULT_VM_USER,
     session_id: str | None = None,
     directory_path: str | None = None,
@@ -77,7 +78,11 @@ def await_agent_completion_and_publish(
     timeout_seconds: float = _DEFAULT_TIMEOUT_SECONDS,
 ) -> bool:
     admin_service = AdminService(runtime_dir=runtime_dir)
-    event_queue = TriggerEventQueue(event_queue_store_path or runtime_dir / "trigger-orchestrator-events.json")
+    queue_kwargs = {"journal_path": workflow_event_journal_path} if workflow_event_journal_path is not None else {}
+    event_queue = TriggerEventQueue(
+        event_queue_store_path or runtime_dir / "trigger-orchestrator-events.json",
+        **queue_kwargs,
+    )
     started_at = time.monotonic()
 
     while time.monotonic() - started_at < timeout_seconds:
@@ -117,6 +122,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--vm-name", required=True)
     parser.add_argument("--dispatch-id", required=True)
     parser.add_argument("--event-queue-store-path")
+    parser.add_argument("--workflow-event-journal-path")
     parser.add_argument("--vm-user", default=_DEFAULT_VM_USER)
     parser.add_argument("--session-id")
     parser.add_argument("--directory-path")
@@ -139,6 +145,7 @@ def main() -> int:
         vm_name=args.vm_name,
         dispatch_id=args.dispatch_id,
         event_queue_store_path=Path(args.event_queue_store_path) if args.event_queue_store_path else None,
+        workflow_event_journal_path=Path(args.workflow_event_journal_path) if args.workflow_event_journal_path else None,
         vm_user=args.vm_user,
         session_id=args.session_id,
         directory_path=args.directory_path,

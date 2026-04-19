@@ -8,7 +8,7 @@ from typing import Any
 import uvicorn
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, JSONResponse, Response
+from starlette.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
@@ -70,6 +70,54 @@ async def _json_body(request: Request) -> dict[str, Any]:
     return payload
 
 
+async def _workflow_run_events(service: AdminService, request: Request):
+    last_state_key: str | None = None
+    journal = service.workflow_event_journal()
+    cursor = journal.cursor()
+
+    async def snapshot_event() -> tuple[str, str] | None:
+        if await request.is_disconnected():
+            return None
+        try:
+            snapshot = service.read_workflow_run_snapshot()
+        except ValueError as exc:
+            payload = json.dumps({"error": str(exc)})
+            return f"error:{payload}", f"event: error\ndata: {payload}\n\n"
+
+        payload = json.dumps(snapshot.model_dump(mode="json"))
+        state_key = json.dumps(
+            {
+                "runs": [run.model_dump(mode="json") for run in snapshot.runs],
+                "node_activity": snapshot.node_activity,
+            },
+            sort_keys=True,
+        )
+        return state_key, f"event: snapshot\ndata: {payload}\n\n"
+
+    first = await snapshot_event()
+    if first is None:
+        return
+    last_state_key, first_payload = first
+    yield first_payload
+
+    while True:
+        if await request.is_disconnected():
+            break
+        events, cursor = await journal.wait_after(cursor, timeout_seconds=15.0)
+        if not events:
+            yield ": keepalive\n\n"
+            continue
+        event = await snapshot_event()
+        if event is None:
+            break
+        state_key, payload = event
+        if state_key != last_state_key:
+            last_state_key = state_key
+            yield payload
+        else:
+            yield ": keepalive\n\n"
+
+
 def create_app(service: AdminService) -> Starlette:
     dist_dir = _dist_dir()
 
@@ -96,6 +144,13 @@ def create_app(service: AdminService) -> Starlette:
         except ValueError as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)
         return JSONResponse(snapshot.model_dump(mode="json"))
+
+    async def stream_runs(request: Request) -> StreamingResponse:
+        return StreamingResponse(
+            _workflow_run_events(service, request),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+        )
 
     async def validate_document(request: Request) -> JSONResponse:
         try:
@@ -127,6 +182,7 @@ def create_app(service: AdminService) -> Starlette:
         Route("/api/workflow-editor/document", get_document, methods=["GET"]),
         Route("/api/workflow-editor/catalog", get_catalog, methods=["GET"]),
         Route("/api/workflow-editor/runs", get_runs, methods=["GET"]),
+        Route("/api/workflow-editor/runs/stream", stream_runs, methods=["GET"]),
         Route("/api/workflow-editor/validate", validate_document, methods=["POST"]),
         Route("/api/workflow-editor/document", save_document, methods=["PUT"]),
     ]

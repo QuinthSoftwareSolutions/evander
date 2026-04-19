@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 from starlette.testclient import TestClient
 
 from agent_sandbox.admin_service import AdminService
-from agent_sandbox.admin_web import create_app
+from agent_sandbox.admin_web import _workflow_run_events, create_app
 
 
 def write_config(tmp_path: Path) -> Path:
@@ -107,6 +108,23 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
     assert [field["key"] for field in issue_get["fields"]] == ["issue_id"]
     vm_create = next(node for node in catalog_payload["nodes"] if node["type"] == "effect:vm:create")
     assert any(field["key"] == "allowed_script_names" for field in vm_create["fields"])
+
+
+def test_admin_web_exposes_workflow_run_stream(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+
+    class RequestStub:
+        async def is_disconnected(self) -> bool:
+            return False
+
+    async def read_first_event() -> str:
+        stream = _workflow_run_events(service, RequestStub())  # type: ignore[arg-type]
+        try:
+            return await asyncio.wait_for(anext(stream), timeout=1.0)
+        finally:
+            await stream.aclose()
+
+    assert asyncio.run(read_first_event()).startswith("event: snapshot\n")
 
 
 def test_admin_web_validates_and_saves_workflow_editor_document(tmp_path: Path) -> None:
