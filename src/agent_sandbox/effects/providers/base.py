@@ -135,6 +135,10 @@ class EffectProviderBase:
         return 0
 
     @classmethod
+    def lifecycle_hooks(cls) -> tuple[type["EffectLifecycleHook"], ...]:
+        return ()
+
+    @classmethod
     def validate_definition(cls, effect_definition: EffectDefinitionDiscriminated) -> EffectDefinitionDiscriminated:
         return materialize_node_definition(effect_definition)
 
@@ -152,3 +156,28 @@ class EffectProviderBase:
         del node
         return []
     capability = NodeCapability(min_inbound=1, max_inbound=1)
+
+
+class EffectLifecycleHook(Protocol):
+    def on_post_completion_dispatch(self, *, worker: Any) -> int:
+        ...
+
+    def on_waiting_reconciliation(self, *, worker: Any) -> int:
+        ...
+
+    def on_completion_fan_out(self, *, worker: Any, queue_record: Any, graph: Any) -> int:
+        ...
+
+
+class EffectLifecycleHookBase:
+    def on_post_completion_dispatch(self, *, worker: Any) -> int:
+        del worker
+        return 0
+
+    def on_waiting_reconciliation(self, *, worker: Any) -> int:
+        del worker
+        return 0
+
+    def on_completion_fan_out(self, *, worker: Any, queue_record: Any, graph: Any) -> int:
+        del worker, queue_record, graph
+        return 0
