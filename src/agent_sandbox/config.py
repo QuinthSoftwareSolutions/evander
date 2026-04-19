@@ -577,6 +577,7 @@ class TriggerOrchestratorWorkerGlobalConfig(BaseModel):
     effect_lock_path: Path | None = None
     workflow_packs: list[str] = Field(default_factory=list)
     workflow_ir: dict[str, Any] | None = None
+    workflow_transforms: list[str] = Field(default_factory=list)
     triggers: list[TriggerDefinitionDiscriminated] = Field(default_factory=list)
     gates: list[GateDefinitionDiscriminated] = Field(default_factory=list)
     edges: list[EdgeDefinition] = Field(default_factory=list)

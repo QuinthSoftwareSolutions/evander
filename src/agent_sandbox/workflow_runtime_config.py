@@ -7,7 +7,8 @@ from pathlib import Path
 from typing import Any
 
 from .config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
-from .workflow_compiler import WorkflowCompilationPolicies, compile_trigger_orchestrator_config
+from .workflow_compiler import compile_trigger_orchestrator_config
+from .workflow_transforms import resolve_workflow_transforms
 from .workflow_packs import compose_workflow_ir
 
 logger = logging.getLogger(__name__)
@@ -33,17 +34,13 @@ def load_trigger_orchestrator_worker_global_config(
     base_payload = _base_worker_global_payload(base_config)
     path = _worker_global_config_path(project_dir)
     if not path.exists():
-        return compile_trigger_orchestrator_config(
-            TriggerOrchestratorWorkerGlobalConfig.model_validate(base_payload),
-            policies=WorkflowCompilationPolicies(augment_await_agent_completion=True),
-        )
+        return _compile_worker_global_config(TriggerOrchestratorWorkerGlobalConfig.model_validate(base_payload))
     raw = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
         raise ValueError(f"worker config file {path} must contain a JSON object")
     raw = _compose_configured_workflow_ir(project_dir=project_dir, payload=raw)
-    return compile_trigger_orchestrator_config(
-        TriggerOrchestratorWorkerGlobalConfig.model_validate({**base_payload, **raw}),
-        policies=WorkflowCompilationPolicies(augment_await_agent_completion=True),
+    return _compile_worker_global_config(
+        TriggerOrchestratorWorkerGlobalConfig.model_validate({**base_payload, **raw})
     )
 
 
@@ -101,18 +98,23 @@ class TriggerOrchestratorWorkerGlobalConfigReloader:
 
     def _load_from_path(self) -> TriggerOrchestratorWorkerGlobalConfig:
         if not self._path.exists():
-            return compile_trigger_orchestrator_config(
-                TriggerOrchestratorWorkerGlobalConfig.model_validate(self._base_payload),
-                policies=WorkflowCompilationPolicies(augment_await_agent_completion=True),
+            return _compile_worker_global_config(
+                TriggerOrchestratorWorkerGlobalConfig.model_validate(self._base_payload)
             )
         raw = json.loads(self._path.read_text(encoding="utf-8"))
         if not isinstance(raw, dict):
             raise ValueError(f"worker config file {self._path} must contain a JSON object")
         raw = _compose_configured_workflow_ir(project_dir=self._path.parents[2], payload=raw)
-        return compile_trigger_orchestrator_config(
-            TriggerOrchestratorWorkerGlobalConfig.model_validate({**self._base_payload, **raw}),
-            policies=WorkflowCompilationPolicies(augment_await_agent_completion=True),
+        return _compile_worker_global_config(
+            TriggerOrchestratorWorkerGlobalConfig.model_validate({**self._base_payload, **raw})
         )
+
+
+def _compile_worker_global_config(
+    worker_config: TriggerOrchestratorWorkerGlobalConfig,
+) -> TriggerOrchestratorWorkerGlobalConfig:
+    transforms = resolve_workflow_transforms(worker_config.workflow_transforms)
+    return compile_trigger_orchestrator_config(worker_config, transforms=transforms)
 
 
 def _compose_configured_workflow_ir(*, project_dir: Path, payload: dict[str, Any]) -> dict[str, Any]:
