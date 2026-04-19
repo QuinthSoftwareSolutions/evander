@@ -19,6 +19,13 @@ from .runtime import RuntimeContext
 from .app_bootstrap import build_runtime
 from .platform_integrations import PlatformServiceBundle, RuntimeAssemblyInterface
 from .events.models import TriggerDefinitionDiscriminated, validate_output_mapping_keys
+from .orchestration.adapters import (
+    TriggerCompletionPublisherAdapter,
+    TriggerDependencyResolverAdapter,
+    TriggerEventFetcherAdapter,
+    TriggerExecutionRecorderAdapter,
+)
+from .workflow_engine import OrchestrationLoop
 from .triggers.queue import TriggerEventQueue
 from .triggers.registry import TriggerProviderFactory
 from .workflow_runtime_config import (
@@ -113,57 +120,63 @@ class TriggerOrchestratorWorker:
         events_published = 0
         cursor_payload = _load_cursor_payload(latest_config.event_queue_cursor_store_path)
 
-        for trigger in configured_triggers:
-            provider = providers.get(trigger.id)
-            if provider is None:
-                continue
-            try:
-                events = provider.poll()
-            except Exception:
-                logger.exception(
+        loop = OrchestrationLoop[
+            TriggerDefinitionDiscriminated,
+            Any,
+            Any,
+        ](
+            event_fetcher=TriggerEventFetcherAdapter(triggers=configured_triggers),
+            dependency_resolver=TriggerDependencyResolverAdapter(
+                providers_by_id=providers,
+                update_cursor_state=lambda trigger, discovered, event_ids: self._update_cursor_state(
+                    cursor_payload,
+                    trigger=trigger,
+                    discovered=discovered,
+                    event_ids=event_ids,
+                ),
+                on_poll_error=lambda trigger: logger.exception(
                     "Trigger poll failed trigger_id=%s trigger_type=%s",
                     trigger.id,
                     trigger.type,
+                ),
+            ),
+            execution_recorder=TriggerExecutionRecorderAdapter(),
+            completion_publisher=TriggerCompletionPublisherAdapter(),
+        )
+
+        def _resolve_and_execute(trigger: TriggerDefinitionDiscriminated, event: Any) -> Any | None:
+            trace_id = _normalize_trace_id(getattr(event, "trace_id", None))
+            event = event.model_copy(update={"trace_id": trace_id})
+            try:
+                validate_output_mapping_keys(
+                    event.payload,
+                    context=f"{trigger.type} {trigger.id} runtime outputs",
                 )
-                continue
+            except ValueError:
+                logger.exception(
+                    "Trigger event rejected trigger_id=%s trigger_type=%s event_id=%s trace_id=%s",
+                    trigger.id,
+                    trigger.type,
+                    event.event_id,
+                    trace_id,
+                )
+                return None
+            already_queued = self.event_queue.contains(event.event_id)
+            record = self.event_queue.publish(event)
+            if not already_queued and record.event_id == event.event_id:
+                logger.debug(
+                    "Trigger event published trigger_id=%s trigger_type=%s event_id=%s trace_id=%s",
+                    trigger.id,
+                    trigger.type,
+                    event.event_id,
+                    trace_id,
+                )
+                return {"published": True}
+            return None
 
-            discovered_for_trigger = len(events)
-            events_discovered += discovered_for_trigger
-            for event in events:
-                trace_id = _normalize_trace_id(event.trace_id)
-                event = event.model_copy(update={"trace_id": trace_id})
-                try:
-                    validate_output_mapping_keys(
-                        event.payload,
-                        context=f"{trigger.type} {trigger.id} runtime outputs",
-                    )
-                except ValueError:
-                    logger.exception(
-                        "Trigger event rejected trigger_id=%s trigger_type=%s event_id=%s trace_id=%s",
-                        trigger.id,
-                        trigger.type,
-                        event.event_id,
-                        trace_id,
-                    )
-                    continue
-                already_queued = self.event_queue.contains(event.event_id)
-                record = self.event_queue.publish(event)
-                if not already_queued and record.event_id == event.event_id:
-                    events_published += 1
-                    logger.debug(
-                        "Trigger event published trigger_id=%s trigger_type=%s event_id=%s trace_id=%s",
-                        trigger.id,
-                        trigger.type,
-                        event.event_id,
-                        trace_id,
-                    )
-
-            self._update_cursor_state(
-                cursor_payload,
-                trigger=trigger,
-                discovered=discovered_for_trigger,
-                event_ids=[event.event_id for event in events],
-            )
+        loop_result = loop.run_once(max_events=len(configured_triggers), resolve_and_execute=_resolve_and_execute)
+        events_discovered = loop_result.dependencies_resolved
+        events_published = loop_result.executions_recorded
 
         _save_cursor_payload(latest_config.event_queue_cursor_store_path, cursor_payload)
         sleep_config = previous_config if changed else latest_config
