@@ -52,7 +52,10 @@ class TriggerOrchestratorWorker:
         self.worker_config = worker_config
         self._config_reloader = config_reloader or FixedTriggerOrchestratorWorkerGlobalConfigReloader(worker_config)
         self.runtime = runtime
-        self.event_queue = TriggerEventQueue(worker_config.event_queue_store_path)
+        self.event_queue = TriggerEventQueue(
+            worker_config.event_queue_store_path,
+            journal_path=worker_config.workflow_event_journal_path,
+        )
         self.provider_factory = TriggerProviderFactory(
             ProviderConfigResolver(config),
             admin_service=AdminService(config.runtime_dir),

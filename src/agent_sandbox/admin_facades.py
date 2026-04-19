@@ -16,6 +16,7 @@ from .admin_service import (
     WorkerActionResult,
     WorkerSummary,
 )
+from .workflow_events import WorkflowEventJournal
 from .directories import DirectoryService
 from .models import SessionActionResult, SessionSummary, ToolName, VmSummary, WakeScheduledRequest, WakeScheduleDefinition
 from .teams_auth import DeviceCodeLoginSession
@@ -684,6 +685,9 @@ class WorkerAdminFacade:
 
     def read_workflow_run_snapshot(self) -> WorkflowRunSnapshotPayload:
         return self._service._read_workflow_run_snapshot()
+
+    def workflow_event_journal(self) -> WorkflowEventJournal:
+        return self._service._workflow_event_journal()
 
     def upsert_trigger_config(self, trigger_id: str, payload: dict[str, object]) -> TriggerConfigMutationPayload:
         return self._service._upsert_trigger_config(trigger_id, payload)

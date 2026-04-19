@@ -298,6 +298,7 @@ def test_trigger_orchestrator_worker_global_config_defaults_follow_runtime_dir()
         str(config.event_queue_cursor_store_path)
         == "/tmp/agent-sandbox-runtime/trigger-orchestrator-cursors.json"
     )
+    assert str(config.workflow_event_journal_path) == "/tmp/agent-sandbox-runtime/workflow-events.jsonl"
     assert (
         str(config.gate_execution_store_path)
         == "/tmp/agent-sandbox-runtime/gate-orchestrator-executions.json"

@@ -71,6 +71,7 @@ from .models import (
 )
 from .runtime import RuntimeContext, build_runtime
 from .storage import JsonStore
+from .workflow_events import WorkflowEventJournal, workflow_event_journal_path
 from .teams_auth import (
     DeviceCodeLoginSession,
     JsonTeamsIdentityCredentialStore,
@@ -3596,12 +3597,23 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
             "172800",
         ]
         trigger_worker_config = self._read_worker_global_config("trigger-orchestrator").config
+        workflow_runtime_dir = _resolve_path_setting(
+            base_dir=self.project_dir,
+            value=trigger_worker_config.get("runtime_dir"),
+            fallback=self.config.runtime_dir,
+        )
         event_queue_store_path = _resolve_path_setting(
             base_dir=self.project_dir,
             value=trigger_worker_config.get("event_queue_store_path"),
-            fallback=self.config.runtime_dir / "trigger-orchestrator-events.json",
+            fallback=workflow_runtime_dir / "trigger-orchestrator-events.json",
+        )
+        workflow_event_journal = _resolve_path_setting(
+            base_dir=self.project_dir,
+            value=trigger_worker_config.get("workflow_event_journal_path"),
+            fallback=workflow_event_journal_path(workflow_runtime_dir),
         )
         watcher_cmd.extend(["--event-queue-store-path", str(event_queue_store_path)])
+        watcher_cmd.extend(["--workflow-event-journal-path", str(workflow_event_journal)])
         if session_id:
             watcher_cmd.extend(["--session-id", session_id])
         if directory_path:
@@ -4548,6 +4560,9 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
     def read_workflow_run_snapshot(self) -> WorkflowRunSnapshotPayload:
         return self.worker_admin.read_workflow_run_snapshot()
 
+    def workflow_event_journal(self) -> WorkflowEventJournal:
+        return self.worker_admin.workflow_event_journal()
+
     def upsert_trigger_config(self, trigger_id: str, payload: dict[str, object]) -> TriggerConfigMutationPayload:
         return self.worker_admin.upsert_trigger_config(trigger_id, payload)
 
@@ -4918,6 +4933,20 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
             runs=runs,
             node_activity={node_id: dict(sorted(counts.items())) for node_id, counts in sorted(node_activity.items())},
         )
+
+    def _workflow_event_journal(self) -> WorkflowEventJournal:
+        worker_config = self._read_worker_global_config("trigger-orchestrator").config
+        runtime_dir = _resolve_path_setting(
+            base_dir=self.project_dir,
+            value=worker_config.get("runtime_dir"),
+            fallback=self.config.runtime_dir,
+        )
+        journal_path = _resolve_path_setting(
+            base_dir=self.project_dir,
+            value=worker_config.get("workflow_event_journal_path"),
+            fallback=workflow_event_journal_path(runtime_dir),
+        )
+        return WorkflowEventJournal(journal_path)
 
     def _collect_workflow_node_ids(self, config: dict[str, object]) -> set[str]:
         node_ids: set[str] = set()

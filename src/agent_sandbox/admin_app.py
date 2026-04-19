@@ -852,6 +852,7 @@ WORKER_GLOBAL_CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
     "resume_timeout_seconds": "Timeout in seconds for an issue orchestrator resume invocation.",
     "event_queue_store_path": "JSON queue file used by trigger/effect orchestration to persist pending events.",
     "event_queue_cursor_store_path": "JSON cursor state file written by the trigger orchestrator to track poll progress.",
+    "workflow_event_journal_path": "JSONL journal used to notify workflow editor streams about runtime state changes.",
     "effect_execution_store_path": "JSON execution log for effect-orchestrator runs and idempotency keys.",
     "effect_cursor_store_path": "JSON cursor state file written by the effect orchestrator while consuming queued events.",
     "effect_lock_path": "Single-instance lock file for the effect orchestrator worker loop.",

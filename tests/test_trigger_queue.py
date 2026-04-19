@@ -90,6 +90,14 @@ def test_mark_delivered_updates_state(tmp_path) -> None:
     assert queue.mark_delivered("evt-missing") is False
 
     assert queue.list_pending() == []
+    journal_events = [
+        json.loads(line)
+        for line in (tmp_path / "workflow-events.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert [event["event_type"] for event in journal_events] == [
+        "workflow.trigger_event.published",
+        "workflow.trigger_event.delivered",
+    ]
 
 
 def test_mark_inflight_and_reset_inflight(tmp_path) -> None:
