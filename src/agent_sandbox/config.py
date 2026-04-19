@@ -29,7 +29,7 @@ from .events.models import (
 )
 from .schema_bootstrap import bootstrap_default_node_schemas
 from .workflow_graph import build_inbound_edge_index, would_form_cycle
-from .workflow_plugins import EFFECT_PLUGIN_CLASSES, GATE_PLUGIN_CLASSES, QUERY_PLUGIN_CLASSES
+from .workflow_plugins import load_provider_plugins
 
 _HTTP_URL_ADAPTER = TypeAdapter(AnyHttpUrl)
 bootstrap_default_node_schemas()
@@ -585,6 +585,8 @@ class TriggerOrchestratorWorkerGlobalConfig(BaseModel):
     edges: list[EdgeDefinition] = Field(default_factory=list)
     effects: list[EffectDefinitionDiscriminated] = Field(default_factory=list)
     queries: list[QueryDefinitionDiscriminated] = Field(default_factory=list)
+    provider_modules: list[str] = Field(default_factory=list)
+    provider_entry_points_enabled: bool = True
 
     @model_validator(mode="after")
     def validate_unique_graph_node_ids(self) -> TriggerOrchestratorWorkerGlobalConfig:
@@ -653,10 +655,14 @@ class TriggerOrchestratorWorkerGlobalConfig(BaseModel):
             inbound_count = len(inbound_edges.get(node.id, ()))
             if inbound_count != 0:
                 inbound_errors.append(f"trigger {node.id} must have 0 inbound edges, found {inbound_count}")
+        provider_catalog = load_provider_plugins(
+            module_names=self.provider_modules,
+            include_entry_points=self.provider_entry_points_enabled,
+        )
         node_capabilities = {
-            **{node_type: provider.node_capability() for node_type, provider in GATE_PLUGIN_CLASSES.items()},
-            **{node_type: provider.node_capability() for node_type, provider in EFFECT_PLUGIN_CLASSES.items()},
-            **{node_type: provider.node_capability() for node_type, provider in QUERY_PLUGIN_CLASSES.items()},
+            **{node_type: provider.node_capability() for node_type, provider in provider_catalog.gate_providers.items()},
+            **{node_type: provider.node_capability() for node_type, provider in provider_catalog.effect_providers.items()},
+            **{node_type: provider.node_capability() for node_type, provider in provider_catalog.query_providers.items()},
         }
         for node in (*self.gates, *self.effects, *self.queries):
             if node.id not in reachable_node_ids:

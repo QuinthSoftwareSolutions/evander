@@ -1,0 +1,83 @@
+from __future__ import annotations
+
+from agent_sandbox.effects.providers.agent_enqueue_prompt import AgentEnqueuePromptEffectProvider
+from agent_sandbox.effects.providers.agent_prompt import AgentPromptEffectProvider
+from agent_sandbox.effects.providers.bash_script import BashScriptEffectProvider
+from agent_sandbox.effects.providers.git_promote_agent_branch import GitPromoteAgentBranchEffectProvider
+from agent_sandbox.effects.providers.issue_update_state import IssueUpdateStateEffectProvider
+from agent_sandbox.effects.providers.pr_create import PrCreateEffectProvider
+from agent_sandbox.effects.providers.session_update_metadata import SessionUpdateMetadataEffectProvider
+from agent_sandbox.effects.providers.vm_copy_files import VmCopyFilesEffectProvider
+from agent_sandbox.effects.providers.vm_create import VmCreateEffectProvider
+from agent_sandbox.effects.providers.vm_delete_files import VmDeleteFilesEffectProvider
+from agent_sandbox.effects.providers.vm_exec import VmExecEffectProvider
+from agent_sandbox.effects.providers.vm_start import VmStartEffectProvider
+from agent_sandbox.effects.providers.vm_stop import VmStopEffectProvider
+from agent_sandbox.gates.providers.await_agent import AwaitAgentGateProvider
+from agent_sandbox.gates.providers.filter_gate import FilterGateProvider
+from agent_sandbox.gates.providers.for_gate import ForGateProvider
+from agent_sandbox.gates.providers.map_gate import MapGateProvider
+from agent_sandbox.gates.providers.merge_gate import MergeGateProvider
+from agent_sandbox.queries.providers.git_pr_note import GitPrNoteQueryProvider
+from agent_sandbox.queries.providers.issue_get import IssueGetQueryProvider
+from agent_sandbox.queries.providers.session_context import SessionContextQueryProvider
+from agent_sandbox.queries.providers.vm_run_state import VmRunStateQueryProvider
+from agent_sandbox.triggers.providers.agent_prompt_new import AgentPromptNewTriggerProvider
+from agent_sandbox.triggers.providers.agent_run_completed import AgentRunCompletedTriggerProvider
+from agent_sandbox.triggers.providers.cron import CronTriggerProvider
+from agent_sandbox.triggers.providers.discord_new_message import DiscordNewMessageTriggerProvider
+from agent_sandbox.triggers.providers.email_new_message import EmailNewMessageTriggerProvider
+from agent_sandbox.triggers.providers.git_push import GitPushTriggerProvider
+from agent_sandbox.triggers.providers.pull_request_new_feedback import PullRequestNewFeedbackTriggerProvider
+from agent_sandbox.triggers.providers.review_new_request import ReviewNewRequestTriggerProvider
+from agent_sandbox.triggers.providers.script_run_request import ScriptRunRequestTriggerProvider
+from agent_sandbox.triggers.providers.teams_new_message import TeamsNewMessageTriggerProvider
+from agent_sandbox.triggers.providers.ticket_changed import TicketChangedTriggerProvider
+from agent_sandbox.triggers.providers.ticket_created import TicketCreatedTriggerProvider
+
+
+def register_providers() -> dict[str, dict[str, type]]:
+    return dict(
+        trigger_providers={
+            "trigger:cron": CronTriggerProvider,
+            "trigger:ticket:created": TicketCreatedTriggerProvider,
+            "trigger:ticket:changed": TicketChangedTriggerProvider,
+            "trigger:script-run-request": ScriptRunRequestTriggerProvider,
+            "trigger:discord:new-message": DiscordNewMessageTriggerProvider,
+            "trigger:teams:new-message": TeamsNewMessageTriggerProvider,
+            "trigger:email:new-message": EmailNewMessageTriggerProvider,
+            "trigger:pull-request:new-feedback": PullRequestNewFeedbackTriggerProvider,
+            "trigger:review:new-request": ReviewNewRequestTriggerProvider,
+            "trigger:git:push": GitPushTriggerProvider,
+            "trigger:agent:prompt:new": AgentPromptNewTriggerProvider,
+            "trigger:agent:run:completed": AgentRunCompletedTriggerProvider,
+        },
+        gate_providers={
+            "gate:await-agent": AwaitAgentGateProvider,
+            "gate:filter": FilterGateProvider,
+            "gate:for": ForGateProvider,
+            "gate:map": MapGateProvider,
+            "gate:merge": MergeGateProvider,
+        },
+        effect_providers={
+            "effect:vm:create": VmCreateEffectProvider,
+            "effect:vm:start": VmStartEffectProvider,
+            "effect:vm:stop": VmStopEffectProvider,
+            "effect:agent:prompt": AgentPromptEffectProvider,
+            "effect:agent:enqueue-prompt": AgentEnqueuePromptEffectProvider,
+            "effect:bash:script": BashScriptEffectProvider,
+            "effect:vm:exec": VmExecEffectProvider,
+            "effect:vm:copy-files": VmCopyFilesEffectProvider,
+            "effect:vm:delete-files": VmDeleteFilesEffectProvider,
+            "effect:issue:update-state": IssueUpdateStateEffectProvider,
+            "effect:session:update-metadata": SessionUpdateMetadataEffectProvider,
+            "effect:git:promote-agent-branch": GitPromoteAgentBranchEffectProvider,
+            "effect:pr:create": PrCreateEffectProvider,
+        },
+        query_providers={
+            "query:vm:run-state": VmRunStateQueryProvider,
+            "query:git:pr-note": GitPrNoteQueryProvider,
+            "query:session-context": SessionContextQueryProvider,
+            "query:issue:get": IssueGetQueryProvider,
+        },
+    )

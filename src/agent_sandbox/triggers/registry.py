@@ -7,18 +7,7 @@ from agent_sandbox.provider_config import ProviderConfigResolver
 from agent_sandbox.events.models import TriggerDefinitionDiscriminated, TriggerType
 from agent_sandbox.provider_runtime.adapters import trigger_provider_config_blob
 from agent_sandbox.triggers.providers.base import TriggerProviderBase, TriggerRuntimeContext
-from agent_sandbox.triggers.providers.agent_prompt_new import AgentPromptNewTriggerProvider
-from agent_sandbox.triggers.providers.agent_run_completed import AgentRunCompletedTriggerProvider
-from agent_sandbox.triggers.providers.cron import CronTriggerProvider
-from agent_sandbox.triggers.providers.discord_new_message import DiscordNewMessageTriggerProvider
-from agent_sandbox.triggers.providers.email_new_message import EmailNewMessageTriggerProvider
-from agent_sandbox.triggers.providers.git_push import GitPushTriggerProvider
-from agent_sandbox.triggers.providers.pull_request_new_feedback import PullRequestNewFeedbackTriggerProvider
-from agent_sandbox.triggers.providers.review_new_request import ReviewNewRequestTriggerProvider
-from agent_sandbox.triggers.providers.script_run_request import ScriptRunRequestTriggerProvider
-from agent_sandbox.triggers.providers.teams_new_message import TeamsNewMessageTriggerProvider
-from agent_sandbox.triggers.providers.ticket_changed import TicketChangedTriggerProvider
-from agent_sandbox.triggers.providers.ticket_created import TicketCreatedTriggerProvider
+from agent_sandbox.workflow_plugins import TRIGGER_PLUGIN_CLASSES
 
 TriggerProviderClass = type[TriggerProviderBase]
 
@@ -27,20 +16,7 @@ class NoopTriggerProvider(TriggerProviderBase):
     """Default provider scaffold for trigger types awaiting concrete implementations."""
 
 
-DEFAULT_TRIGGER_PROVIDER_REGISTRY: dict[TriggerType, TriggerProviderClass] = {
-    "trigger:cron": CronTriggerProvider,
-    "trigger:ticket:created": TicketCreatedTriggerProvider,
-    "trigger:ticket:changed": TicketChangedTriggerProvider,
-    "trigger:script-run-request": ScriptRunRequestTriggerProvider,
-    "trigger:discord:new-message": DiscordNewMessageTriggerProvider,
-    "trigger:teams:new-message": TeamsNewMessageTriggerProvider,
-    "trigger:email:new-message": EmailNewMessageTriggerProvider,
-    "trigger:pull-request:new-feedback": PullRequestNewFeedbackTriggerProvider,
-    "trigger:review:new-request": ReviewNewRequestTriggerProvider,
-    "trigger:git:push": GitPushTriggerProvider,
-    "trigger:agent:prompt:new": AgentPromptNewTriggerProvider,
-    "trigger:agent:run:completed": AgentRunCompletedTriggerProvider,
-}
+DEFAULT_TRIGGER_PROVIDER_REGISTRY: dict[TriggerType, TriggerProviderClass] = dict(TRIGGER_PLUGIN_CLASSES)
 
 
 class TriggerProviderRegistry:
@@ -55,6 +31,9 @@ class TriggerProviderRegistry:
         if provider_class is None:
             raise KeyError(f"No trigger provider registered for type {trigger_type!r}")
         return provider_class
+
+    def registered_types(self) -> tuple[TriggerType, ...]:
+        return tuple(self._providers.keys())
 
 
 class TriggerProviderFactory:

@@ -28,6 +28,10 @@ desktop = [
   "PySide6>=6.8.0",
 ]
 
+
+[project.entry-points."agent_sandbox.providers"]
+builtin = "agent_sandbox.providers.builtin:register_providers"
+
 [project.scripts]
 agent-sandbox-gateway = "agent_sandbox.gateway:main"
 agent-sandbox-openai-relay = "agent_sandbox.openai_relay:main"
