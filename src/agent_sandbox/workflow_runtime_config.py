@@ -96,3 +96,14 @@ class TriggerOrchestratorWorkerGlobalConfigReloader:
         if not isinstance(raw, dict):
             raise ValueError(f"worker config file {self._path} must contain a JSON object")
         return TriggerOrchestratorWorkerGlobalConfig.model_validate({**self._base_payload, **raw})
+
+
+class FixedTriggerOrchestratorWorkerGlobalConfigReloader:
+    def __init__(self, config: TriggerOrchestratorWorkerGlobalConfig) -> None:
+        self._config = config
+
+    def get_latest(self) -> tuple[TriggerOrchestratorWorkerGlobalConfig, bool]:
+        return self._config, False
+
+    def reload_now(self) -> tuple[TriggerOrchestratorWorkerGlobalConfig, bool]:
+        return self._config, False

@@ -4603,8 +4603,7 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
         return self.project_dir / "config" / "trigger-orchestrator" / "layout.json"
 
     def _workflow_editor_revision(self, config: dict[str, object]) -> str:
-        normalized = TriggerOrchestratorWorkerGlobalConfig.model_validate(config).model_dump(mode="json")
-        encoded = json.dumps(normalized, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        encoded = json.dumps(config, sort_keys=True, separators=(",", ":")).encode("utf-8")
         return hashlib.sha256(encoded).hexdigest()
 
     def _write_json_file_atomic(self, path: Path, payload: dict[str, object]) -> None:

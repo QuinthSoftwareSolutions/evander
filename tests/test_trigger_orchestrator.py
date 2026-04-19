@@ -4,6 +4,8 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
+
 from agent_sandbox.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
 from agent_sandbox.trigger_orchestrator import TriggerOrchestratorCycleResult, TriggerOrchestratorWorker, main
 from agent_sandbox.events.models import TriggerEvent
@@ -251,6 +253,49 @@ def test_trigger_orchestrator_run_once_uses_reloaded_worker_config(tmp_path: Pat
     result = worker.run_once()
 
     assert result.configured_triggers == 1
+
+
+def test_trigger_orchestrator_direct_worker_does_not_reload_from_cwd(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [],
+        }
+    )
+    project_config_dir = tmp_path / "config" / "trigger-orchestrator"
+    project_config_dir.mkdir(parents=True)
+    monkeypatch.chdir(tmp_path)
+    worker = TriggerOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    (project_config_dir / "config.json").write_text(
+        json.dumps(
+            {
+                "runtime_dir": str(runtime_dir),
+                "poll_interval_seconds": 1,
+                "jitter_seconds": 0,
+                "triggers": [
+                    {
+                        "id": "cron-1",
+                        "display_name": "Every minute",
+                        "type": "trigger:cron",
+                        "expression": "* * * * *",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    worker.provider_factory.build = lambda trigger: _StaticProvider([])  # type: ignore[assignment]
+
+    result = worker.run_once()
+
+    assert result.configured_triggers == 0
 
 
 def test_trigger_orchestrator_poll_interval_change_applies_next_cycle(tmp_path: Path) -> None:

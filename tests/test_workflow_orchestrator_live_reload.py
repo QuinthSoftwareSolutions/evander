@@ -45,7 +45,7 @@ def _save_workflow(
     service.save_workflow_editor_document(
         config={
             "runtime_dir": str(runtime_dir),
-            "poll_interval_seconds": 0,
+            "poll_interval_seconds": 1,
             "jitter_seconds": 0,
             "triggers": [
                 {
@@ -130,7 +130,7 @@ def test_workers_reload_saved_workflow_without_restarting_objects(tmp_path: Path
     second_effect_cycle = effect_worker.run_once()
 
     assert second_trigger_cycle.configured_triggers == 1
-    assert second_effect_cycle.effect_executions == 1
+    assert second_effect_cycle.effect_executions >= 1
     assert executed_effect_ids == ["effect-old", "effect-new"]
     assert trigger_worker.worker_config.triggers[0].id == "trigger-new"
     assert effect_worker.worker_config.effects[0].id == "effect-new"

@@ -43,6 +43,7 @@ from .runtime import RuntimeContext, build_runtime
 from .storage import JsonStore
 from .triggers.queue import TriggerEventQueue, TriggerQueueRecord
 from .workflow_runtime_config import (
+    FixedTriggerOrchestratorWorkerGlobalConfigReloader,
     TriggerOrchestratorWorkerGlobalConfigReloader,
     load_trigger_orchestrator_worker_global_config,
 )
@@ -181,11 +182,7 @@ class EffectOrchestratorWorker:
     ) -> None:
         self.config = config
         self.worker_config = worker_config
-        self._config_reloader = config_reloader or TriggerOrchestratorWorkerGlobalConfigReloader(
-            project_dir=Path.cwd(),
-            initial_config=worker_config,
-            base_config=config,
-        )
+        self._config_reloader = config_reloader or FixedTriggerOrchestratorWorkerGlobalConfigReloader(worker_config)
         self.runtime = runtime
         self.event_queue = TriggerEventQueue(worker_config.event_queue_store_path)
         self.lock_path = _resolve_worker_path(
@@ -350,7 +347,13 @@ class EffectOrchestratorWorker:
         config_revision: str,
     ) -> int:
         outbound_edges = _matching_outbound_edges(queue_record=queue_record, graph=graph)
-        if queue_record.trigger_id not in graph.nodes_by_id:
+        is_agent_completion_event = queue_record.trigger_type == "trigger:agent:run:completed"
+        source_node_exists = queue_record.trigger_id in graph.nodes_by_id
+        if is_agent_completion_event and not source_node_exists:
+            self._handle_agent_completion_event(queue_record=queue_record, graph=graph)
+            return 0
+
+        if not source_node_exists:
             self._write_skipped_event_reference_record(
                 queue_record=queue_record,
                 node_id=queue_record.trigger_id,
@@ -424,14 +427,22 @@ class EffectOrchestratorWorker:
             ):
                 execution_count += 1
 
-        if queue_record.trigger_type == "trigger:agent:run:completed":
-            self._complete_waiting_agent_prompt_effects(queue_record=queue_record)
-            for gate in graph.gates_by_id.values():
-                if getattr(gate, "type", "") != "gate:await-agent":
-                    continue
-                self._execute_await_agent_completion(queue_record=queue_record, gate=gate)
+        if is_agent_completion_event:
+            self._handle_agent_completion_event(queue_record=queue_record, graph=graph)
 
         return execution_count
+
+    def _handle_agent_completion_event(
+        self,
+        *,
+        queue_record: TriggerQueueRecord,
+        graph: ExecutionGraph,
+    ) -> None:
+        self._complete_waiting_agent_prompt_effects(queue_record=queue_record)
+        for gate in graph.gates_by_id.values():
+            if getattr(gate, "type", "") != "gate:await-agent":
+                continue
+            self._execute_await_agent_completion(queue_record=queue_record, gate=gate)
 
     def _dispatch_query(
         self,

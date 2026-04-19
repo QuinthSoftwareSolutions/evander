@@ -20,6 +20,7 @@ from .events.models import AgentRunCompletedTriggerDefinition, TriggerDefinition
 from .triggers.queue import TriggerEventQueue
 from .triggers.registry import TriggerProviderFactory
 from .workflow_runtime_config import (
+    FixedTriggerOrchestratorWorkerGlobalConfigReloader,
     TriggerOrchestratorWorkerGlobalConfigReloader,
     load_trigger_orchestrator_worker_global_config,
 )
@@ -49,11 +50,7 @@ class TriggerOrchestratorWorker:
     ) -> None:
         self.config = config
         self.worker_config = worker_config
-        self._config_reloader = config_reloader or TriggerOrchestratorWorkerGlobalConfigReloader(
-            project_dir=Path.cwd(),
-            initial_config=worker_config,
-            base_config=config,
-        )
+        self._config_reloader = config_reloader or FixedTriggerOrchestratorWorkerGlobalConfigReloader(worker_config)
         self.runtime = runtime
         self.event_queue = TriggerEventQueue(worker_config.event_queue_store_path)
         self.provider_factory = TriggerProviderFactory(
