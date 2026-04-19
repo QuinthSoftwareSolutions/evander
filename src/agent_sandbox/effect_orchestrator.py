@@ -15,7 +15,6 @@ from typing import Any, Generic, TypeVar
 
 from pydantic import BaseModel, Field
 
-from .agent_completion_watcher import build_agent_run_completed_event
 from .admin_service import AdminService
 from .agent_prompt_queue import AgentPromptQueueStore
 from .config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
@@ -76,7 +75,6 @@ logger = logging.getLogger(__name__)
 
 _MAX_GRAPH_DEPTH = 16
 _MAX_EVENTS_PER_CYCLE = 200
-_AWAIT_AGENT_STALE_GRACE_SECONDS = 120
 _BRANCH_PORT_PAYLOAD_KEY = "__branch_port"
 _FOR_EXECUTION_IDS_PAYLOAD_KEY = "__for_execution_ids"
 WorkflowNodeDefinition = (
@@ -292,7 +290,7 @@ class EffectOrchestratorWorker:
             edge_count=len(latest_config.edges),
         )
         completion_events_published += self._reconcile_gate_providers(graph=graph)
-        completion_events_published += self._complete_waiting_agent_prompt_effects_directly()
+        completion_events_published += self._reconcile_waiting_effect_providers()
         completion_events_published += self._dispatch_queued_agent_prompts_directly()
 
         completed_count, published_count = self._reap_completed_futures()
@@ -450,7 +448,7 @@ class EffectOrchestratorWorker:
         queue_record: TriggerQueueRecord,
         graph: ExecutionGraph,
     ) -> None:
-        self._complete_waiting_agent_prompt_effects(queue_record=queue_record)
+        self._handle_effect_completion_event(queue_record=queue_record)
         self._handle_gate_completion_event(queue_record=queue_record, graph=graph)
 
     def _get_gate_provider(self, gate_type: str) -> Any | None:
@@ -469,26 +467,36 @@ class EffectOrchestratorWorker:
         provider_effect_executor = ProviderEffectNodeExecutor(self.provider_factory)
         provider_query_executor = ProviderQueryNodeExecutor(self.query_provider_factory)
 
-        for gate_type in ("gate:filter", "gate:map", "gate:merge", "gate:await-agent", "gate:for"):
+        for gate_type in self.gate_provider_factory.registry.registered_types():
             self.gate_executor_registry.register(gate_type, gate_type)
-        for effect_type in (
-            "effect:vm:create",
-            "effect:vm:start",
-            "effect:vm:stop",
-            "effect:agent:prompt",
-            "effect:agent:enqueue-prompt",
-            "effect:bash:script",
-            "effect:vm:exec",
-            "effect:vm:copy-files",
-            "effect:vm:delete-files",
-            "effect:issue:update-state",
-            "effect:session:update-metadata",
-            "effect:git:promote-agent-branch",
-            "effect:pr:create",
-        ):
+        for effect_type in self.provider_factory.registry.registered_types():
             self.effect_executor_registry.register(effect_type, provider_effect_executor)
-        for query_type in ("query:vm:run-state", "query:git:pr-note", "query:session-context", "query:issue:get"):
+        for query_type in self.query_provider_factory.registry.registered_types():
             self.query_executor_registry.register(query_type, provider_query_executor)
+
+    def _effect_provider_class(self, effect_type: str) -> Any | None:
+        try:
+            return self.provider_factory.registry.resolve(effect_type)  # type: ignore[arg-type]
+        except KeyError:
+            return None
+
+    def _handle_effect_completion_event(self, *, queue_record: TriggerQueueRecord) -> int:
+        completed = 0
+        for effect_type in self.provider_factory.registry.registered_types():
+            provider_class = self._effect_provider_class(effect_type)
+            if provider_class is None:
+                continue
+            completed += int(provider_class.on_completion_event(worker=self, queue_record=queue_record) or 0)
+        return completed
+
+    def _reconcile_waiting_effect_providers(self) -> int:
+        reconciled = 0
+        for effect_type in self.provider_factory.registry.registered_types():
+            provider_class = self._effect_provider_class(effect_type)
+            if provider_class is None:
+                continue
+            reconciled += int(provider_class.reconcile_waiting(worker=self) or 0)
+        return reconciled
 
     def _dispatch_registered_gate(
         self,
@@ -868,7 +876,11 @@ class EffectOrchestratorWorker:
             finished_at = datetime.now(UTC)
             try:
                 outputs = dict(future.result() or {})
-                if self._effect_waits_for_completion(record=record, outputs=outputs):
+                provider_class = self._effect_provider_class(record.effect_type)
+                waits_for_completion = bool(
+                    provider_class is not None and provider_class.on_execution_started(record=record, outputs=outputs)
+                )
+                if waits_for_completion:
                     record.status = "waiting"
                     record.outputs = outputs
                     record.published_event_id = None
@@ -876,6 +888,8 @@ class EffectOrchestratorWorker:
                     record.finished_at = finished_at
                     self.execution_store.put(record)
                     self._update_event_delivery_state(record.event_id)
+                    if provider_class is not None:
+                        provider_class.on_execution_waiting(worker=self, record=record)
                     continue
                 published_event_id = self._publish_completion_event_from_record(record=record, outputs=outputs)
                 record.status = "succeeded"
@@ -902,183 +916,6 @@ class EffectOrchestratorWorker:
             self._update_event_delivery_state(record.event_id)
 
         return completed_count, published_count
-
-    @staticmethod
-    def _effect_waits_for_completion(*, record: EffectExecutionRecord, outputs: dict[str, Any]) -> bool:
-        if record.effect_type != "effect:agent:prompt":
-            return False
-        if outputs.get("success") is False:
-            return False
-        if str(outputs.get("output_mode") or "").strip() != "on_completion":
-            return False
-        return bool(str(outputs.get("dispatch_id") or "").strip())
-
-    def _complete_waiting_agent_prompt_effects(self, *, queue_record: TriggerQueueRecord) -> int:
-        dispatch_id = str(queue_record.payload.get("dispatch_id") or "").strip()
-        if not dispatch_id:
-            return 0
-
-        finalized = 0
-        for record in self.execution_store.read_all().values():
-            if record.effect_type != "effect:agent:prompt" or record.status != "waiting":
-                continue
-            record_dispatch_id = str(record.outputs.get("dispatch_id") or "").strip()
-            if record_dispatch_id != dispatch_id:
-                continue
-
-            finished_at = datetime.now(UTC)
-            merged_outputs = {
-                **record.outputs,
-                **{
-                    key: value
-                    for key, value in queue_record.payload.items()
-                    if key not in {NODE_OUTPUTS_CONTEXT_KEY, _BRANCH_PORT_PAYLOAD_KEY, _FOR_EXECUTION_IDS_PAYLOAD_KEY}
-                },
-            }
-            published_event_id = self._publish_completion_event_from_record(record=record, outputs=merged_outputs)
-            record.status = "succeeded"
-            record.outputs = merged_outputs
-            record.published_event_id = published_event_id
-            record.completion_event_enqueued_at = finished_at
-            record.finished_at = finished_at
-            self.execution_store.put(record)
-            self._update_event_delivery_state(record.event_id)
-            finalized += 1
-        return finalized
-
-    def _complete_waiting_agent_prompt_effects_directly(self) -> int:
-        waiting_records = [
-            record
-            for record in self.execution_store.read_all().values()
-            if record.effect_type == "effect:agent:prompt" and record.status == "waiting"
-        ]
-        if not waiting_records:
-            return 0
-
-        try:
-            summaries = self._list_vm_summaries_for_reconciliation()
-        except Exception:
-            logger.exception("Waiting agent-prompt reconciliation failed while listing VMs")
-            return 0
-
-        completed = 0
-        for record in waiting_records:
-            queue_record = self._build_completion_queue_record_for_waiting_agent_prompt(record=record, summaries=summaries)
-            if queue_record is None:
-                continue
-            if self._complete_waiting_agent_prompt_effects(queue_record=queue_record):
-                completed += 1
-        return completed
-
-    def _build_completion_queue_record_for_waiting_agent_prompt(
-        self,
-        *,
-        record: EffectExecutionRecord,
-        summaries: list[Any],
-    ) -> TriggerQueueRecord | None:
-        dispatch_id = str(record.outputs.get("dispatch_id") or "").strip()
-        if not dispatch_id:
-            return None
-
-        session_id, vm_name = self._waiting_agent_prompt_target(record=record)
-        matching_summary = self._match_waiting_agent_prompt_summary(
-            summaries=summaries,
-            dispatch_id=dispatch_id,
-            session_id=session_id,
-            vm_name=vm_name,
-            record=record,
-        )
-        if matching_summary is None:
-            return None
-        if str(getattr(matching_summary, "agent_state", "") or "").strip() == "running":
-            return None
-
-        completion_event = build_agent_run_completed_event(
-            trigger_id="__await-agent-completion__",
-            dispatch_id=dispatch_id,
-            vm_user=str(record.resolved_config.get("vm_user") or "agent"),
-            summary=matching_summary,
-            session_id=session_id,
-            directory_path=(getattr(matching_summary, "directory_paths", None) or [None])[0],
-        )
-        return TriggerQueueRecord(
-            event_id=completion_event.event_id,
-            trigger_id=completion_event.trigger_id,
-            trigger_type=completion_event.trigger_type,
-            trace_id=completion_event.trace_id or record.trace_id,
-            occurred_at=completion_event.occurred_at,
-            payload=completion_event.payload,
-            delivery_state="delivered",
-            delivered_at=datetime.now(UTC),
-            idempotency_key=f"__await-agent-completion__:{dispatch_id}",
-        )
-
-    @staticmethod
-    def _waiting_agent_prompt_target(record: EffectExecutionRecord) -> tuple[str | None, str | None]:
-        session_id = str(record.resolved_config.get("session_id") or "").strip() or None
-        vm_name = str(record.resolved_config.get("vm_name") or "").strip() or None
-        target = str(record.resolved_config.get("target") or "").strip() or None
-        if target and vm_name is None and target.startswith("vm-"):
-            vm_name = target
-        if target and session_id is None and not target.startswith("vm-"):
-            session_id = target
-        return session_id, vm_name
-
-    @staticmethod
-    def _match_waiting_agent_prompt_summary(
-        *,
-        summaries: list[Any],
-        dispatch_id: str,
-        session_id: str | None,
-        vm_name: str | None,
-        record: EffectExecutionRecord,
-    ) -> Any | None:
-        exact_match = next(
-            (
-                summary
-                for summary in summaries
-                if str(getattr(summary, "dispatch_id", "") or "").strip() == dispatch_id
-                and (vm_name is None or str(getattr(summary, "vm_name", "") or "").strip() == vm_name)
-                and (
-                    session_id is None
-                    or session_id in {str(item or "").strip() for item in (getattr(summary, "session_ids", []) or [])}
-                )
-            ),
-            None,
-        )
-        if exact_match is not None:
-            return exact_match
-
-        if (datetime.now(UTC) - record.finished_at).total_seconds() < _AWAIT_AGENT_STALE_GRACE_SECONDS:
-            return None
-
-        if vm_name is not None:
-            vm_match = next(
-                (
-                    summary
-                    for summary in summaries
-                    if str(getattr(summary, "vm_name", "") or "").strip() == vm_name
-                    and not str(getattr(summary, "dispatch_id", "") or "").strip()
-                    and str(getattr(summary, "agent_state", "") or "").strip() != "running"
-                ),
-                None,
-            )
-            if vm_match is not None:
-                return vm_match
-
-        if session_id is None:
-            return None
-
-        return next(
-            (
-                summary
-                for summary in summaries
-                if session_id in {str(item or "").strip() for item in (getattr(summary, "session_ids", []) or [])}
-                and not str(getattr(summary, "dispatch_id", "") or "").strip()
-                and str(getattr(summary, "agent_state", "") or "").strip() != "running"
-            ),
-            None,
-        )
 
     def _update_event_delivery_state(self, event_id: str) -> None:
         if self._event_has_inflight_effects(event_id):

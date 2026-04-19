@@ -60,6 +60,9 @@ class EffectProviderRegistry:
             raise KeyError(f"No effect provider registered for type {effect_type!r}")
         return provider_class
 
+    def registered_types(self) -> tuple[EffectType, ...]:
+        return tuple(self._providers.keys())
+
 
 class EffectProviderFactory:
     """Centralized provider constructor to keep env/secret handling host-side."""

@@ -39,6 +39,9 @@ class GateProviderRegistry:
             raise KeyError(f"No gate provider registered for type {gate_type!r}")
         return provider_class
 
+    def registered_types(self) -> tuple[GateType, ...]:
+        return tuple(self._providers.keys())
+
 
 class GateProviderFactory:
     def __init__(

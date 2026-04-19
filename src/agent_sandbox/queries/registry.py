@@ -38,6 +38,9 @@ class QueryProviderRegistry:
             raise KeyError(f"No query provider registered for type {query_type!r}")
         return provider_class
 
+    def registered_types(self) -> tuple[QueryType, ...]:
+        return tuple(self._providers.keys())
+
 
 class QueryProviderFactory:
     """Centralized provider constructor to keep env/secret handling host-side."""

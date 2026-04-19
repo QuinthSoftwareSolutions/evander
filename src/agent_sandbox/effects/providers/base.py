@@ -113,6 +113,27 @@ class EffectProviderBase:
     def cleanup(self, **kwargs: Any) -> None:
         del kwargs
         return None
+
+    @classmethod
+    def on_execution_started(cls, **kwargs: Any) -> bool:
+        del kwargs
+        return False
+
+    @classmethod
+    def on_execution_waiting(cls, **kwargs: Any) -> None:
+        del kwargs
+        return None
+
+    @classmethod
+    def on_completion_event(cls, **kwargs: Any) -> int:
+        del kwargs
+        return 0
+
+    @classmethod
+    def reconcile_waiting(cls, **kwargs: Any) -> int:
+        del kwargs
+        return 0
+
     @classmethod
     def validate_definition(cls, effect_definition: EffectDefinitionDiscriminated) -> EffectDefinitionDiscriminated:
         return materialize_node_definition(effect_definition)
