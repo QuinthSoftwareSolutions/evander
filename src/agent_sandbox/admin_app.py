@@ -56,6 +56,61 @@ _TEAMS_WORKER_GLOBAL_CONFIG_FIELDS: tuple[tuple[str, str], ...] = tuple(
     ("worker_global:teams-ingest", field_name)
     for field_name in TeamsIngestWorkerGlobalConfig.model_fields
 )
+_DIRECTORY_CONFIG_UI_TAB_FIELD_SOURCES: dict[str, tuple[tuple[str, str], ...]] = {
+    "communications": (
+        *_DISCORD_CONFIG_FIELDS,
+        *_TEAMS_PROVIDER_CONFIG_FIELDS,
+        *_TEAMS_WORKER_GLOBAL_CONFIG_FIELDS,
+    ),
+    "access_policy": tuple(
+        ("policy", field_name)
+        for field_name in sorted(
+            DIRECTORY_CONFIG_DOMAIN_FIELDS["policy"]
+            - {name for source_domain, name in _DISCORD_CONFIG_FIELDS if source_domain == "policy"}
+        )
+    ),
+    "providers": tuple(
+        ("providers", field_name)
+        for field_name in sorted(
+            DIRECTORY_CONFIG_DOMAIN_FIELDS["providers"]
+            - {
+                name
+                for source_domain, name in (*_DISCORD_CONFIG_FIELDS, *_TEAMS_PROVIDER_CONFIG_FIELDS)
+                if source_domain == "providers"
+            }
+        )
+    ),
+    "email": tuple(("email", field_name) for field_name in sorted(DIRECTORY_CONFIG_DOMAIN_FIELDS["email"])),
+    "heartbeat": tuple(
+        ("heartbeat", field_name) for field_name in sorted(DIRECTORY_CONFIG_DOMAIN_FIELDS["heartbeat"])
+    ),
+    "vm_runtime": tuple(("vm", field_name) for field_name in sorted(DIRECTORY_CONFIG_DOMAIN_FIELDS["vm"])),
+    "issue_setup": tuple(
+        ("issue_setup", field_name) for field_name in sorted(DIRECTORY_CONFIG_DOMAIN_FIELDS["issue_setup"])
+    ),
+    "ado_worker": tuple(
+        ("ado_worker", field_name) for field_name in sorted(DIRECTORY_CONFIG_DOMAIN_FIELDS["ado_worker"])
+    ),
+    "automation": tuple(
+        ("automation", field_name) for field_name in sorted(DIRECTORY_CONFIG_DOMAIN_FIELDS["automation"])
+    ),
+    "pr_template": tuple(
+        ("pr_template", field_name) for field_name in sorted(DIRECTORY_CONFIG_DOMAIN_FIELDS["pr_template"])
+    ),
+}
+_DIRECTORY_CONFIG_UI_TAB_ORDER: tuple[str, ...] = tuple(_DIRECTORY_CONFIG_UI_TAB_FIELD_SOURCES)
+_DIRECTORY_CONFIG_UI_TAB_TITLES: dict[str, str] = {
+    "communications": "Communications",
+    "access_policy": "Access Policy",
+    "providers": "Provider Integrations",
+    "email": "Email",
+    "heartbeat": "Heartbeat Prompts",
+    "vm_runtime": "VM Runtime",
+    "issue_setup": "Issue Setup",
+    "ado_worker": "ADO Worker",
+    "automation": "Automation",
+    "pr_template": "PR Template",
+}
 
 try:
     from PySide6.QtCore import QObject, QRunnable, QSettings, QThreadPool, QTimer, Qt, Signal
@@ -934,15 +989,35 @@ def _config_field_tooltip(field_name: str) -> str:
 
 
 def _directory_config_domain_help_text(domain: str) -> str | None:
-    if domain == "discord":
+    if domain == "communications":
         return (
-            "Per-directory Discord configuration. This combines Discord adapter settings from "
-            "`providers` with Discord policy fields from `policy`."
+            "Messaging integrations for Discord and Teams, including backend/API connectivity, "
+            "channel and user routing allowlists, read-reaction behavior, and polling controls "
+            "for inbound message handling."
         )
-    if domain == "teams":
+    if domain == "access_policy":
         return (
-            "Teams settings combine per-directory provider overrides with global Teams ingest worker "
-            "configuration. Save actions are split by scope to avoid accidental cross-scope writes."
+            "Directory-level guardrails for approvals, recipient and mailbox restrictions, and "
+            "audit redaction defaults."
+        )
+    if domain == "providers":
+        return "External provider credentials and service endpoints used by host integrations."
+    if domain == "vm_runtime":
+        return "VM network and relay endpoint settings used when launching and wiring guest runtime access."
+    if domain == "automation":
+        return "Role and capacity controls that govern automated issue intake and worker assignment."
+    if domain == "heartbeat":
+        return "Prompt templates used by host heartbeat resumes for unread PR and Discord activity."
+    if domain == "issue_setup":
+        return "Repository bootstrap and post-execution defaults applied during issue VM setup."
+    if domain == "ado_worker":
+        return "ADO ingestion and VM bootstrap behavior for directory-scoped issue provisioning."
+    if domain == "pr_template":
+        return "Default markdown scaffold prepended to automated pull request descriptions."
+    if domain == "email":
+        return (
+            "Mailbox definitions and timeout defaults for provider-backed email access within "
+            "directory sessions."
         )
     return None
 
@@ -952,19 +1027,7 @@ def _worker_global_config_tooltip(field_name: str) -> str:
 
 
 def _directory_config_tab_field_sources(tab_key: str) -> tuple[tuple[str, str], ...]:
-    if tab_key == "discord":
-        return _DISCORD_CONFIG_FIELDS
-    if tab_key == "teams":
-        return (*_TEAMS_PROVIDER_CONFIG_FIELDS, *_TEAMS_WORKER_GLOBAL_CONFIG_FIELDS)
-    field_names = set(DIRECTORY_CONFIG_DOMAIN_FIELDS[tab_key])
-    if tab_key in {"policy", "providers"}:
-        discord_fields_for_tab = {
-            field_name for source_domain, field_name in _DISCORD_CONFIG_FIELDS if source_domain == tab_key
-        }
-        field_names.difference_update(discord_fields_for_tab)
-    if tab_key == "issue_setup":
-        field_names.add("default_model")
-    return tuple((tab_key, field_name) for field_name in sorted(field_names))
+    return _DIRECTORY_CONFIG_UI_TAB_FIELD_SOURCES[tab_key]
 
 
 def _directory_config_tab_underlying_domains(tab_key: str) -> tuple[str, ...]:
@@ -994,7 +1057,7 @@ def _directory_config_scope_label(source_domain: str) -> str:
 
 
 def _directory_config_tab_title(tab_key: str) -> str:
-    return tab_key
+    return _DIRECTORY_CONFIG_UI_TAB_TITLES.get(tab_key, tab_key)
 
 
 def _root_config_field_starts_editable(domain: str, field_name: str, raw_config: dict[str, Any]) -> bool:
@@ -1232,7 +1295,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self.config_status_label.setWordWrap(True)
         self.config_tabs = QTabWidget()
         self._config_widgets: dict[str, dict[str, object]] = {}
-        for domain in [*DIRECTORY_CONFIG_DOMAIN_FILENAMES.keys(), "discord", "teams"]:
+        for domain in _DIRECTORY_CONFIG_UI_TAB_ORDER:
             page = QWidget()
             page_layout = QVBoxLayout(page)
             domain_help = _directory_config_domain_help_text(domain)
@@ -1263,15 +1326,16 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             save_button.clicked.connect(lambda _checked=False, domain=domain: self.save_config_domain(domain))
             save_directory_button = None
             save_worker_button = None
-            if domain == "teams":
+            if any(source_domain.startswith("worker_global:") for source_domain, _field_name in field_sources):
                 save_button.setVisible(False)
-                save_directory_button = QPushButton("Save Teams Directory Settings")
+                tab_title = _directory_config_tab_title(domain)
+                save_directory_button = QPushButton(f"Save {tab_title} Directory Settings")
                 save_directory_button.clicked.connect(
                     lambda _checked=False, domain=domain: self.save_config_domain(
                         domain, source_filter=lambda source_domain: not source_domain.startswith("worker_global:")
                     )
                 )
-                save_worker_button = QPushButton("Save Teams Worker Settings")
+                save_worker_button = QPushButton(f"Save {tab_title} Worker Settings")
                 save_worker_button.clicked.connect(
                     lambda _checked=False, domain=domain: self.save_config_domain(
                         domain, source_filter=lambda source_domain: source_domain.startswith("worker_global:")
