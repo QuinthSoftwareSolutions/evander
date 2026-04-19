@@ -255,7 +255,7 @@
     },
     {
       "base_branch": "${{trigger-git-push-1.base_branch}}",
-      "body": "---\n\nThank you for your contribution to the True APP repo. \nBefore submitting this PR, please make sure:\n\n- [ ] Your code builds clean without any errors or warnings\n- [ ] You have added unit tests\n- [ ] You are using approved terminology\n- [ ] You have read and follow our contribution and development guidelines\n- [ ] You have merged *from* main\n- [ ] Version history and relevant documentation is updated\n\n---\n\n## Agent Summary\n\n${{query-git-pr-note-1.body}}",
+      "body": "---\n\nThank you for your contribution to the ${{query-session-context-1.metadata.ado_project ?? 'target'}} repo. \nBefore submitting this PR, please make sure:\n\n- [ ] Your code builds clean without any errors or warnings\n- [ ] You have added unit tests\n- [ ] You are using approved terminology\n- [ ] You have read and follow our contribution and development guidelines\n- [ ] You have merged *from* main\n- [ ] Version history and relevant documentation is updated\n\n---\n\n## Agent Summary\n\n${{query-git-pr-note-1.body}}",
       "canonical_origin_url": "${{gate-filter-2.canonical_origin_url}}",
       "display_name": "Create PR",
       "draft": true,
@@ -293,7 +293,9 @@
       "id": "effect-session-update-metadata-2",
       "metadata": {
         "issue_number": "${{trigger-ticket-created-main.ticket.issue_number}}",
-        "issue_title": "${{trigger-ticket-created-main.ticket.title}}"
+        "issue_title": "${{trigger-ticket-created-main.ticket.title}}",
+        "directory_path": "${{gate-merge-1.directory_path}}",
+        "ado_project": "${{gate-merge-1.ado_project}}"
       },
       "target": "${{effect-vm-create-1.session_id}}",
       "type": "effect:session:update-metadata"
