@@ -255,7 +255,7 @@
     },
     {
       "base_branch": "${{trigger-git-push-1.base_branch}}",
-      "body": "---\n\nThank you for your contribution to the ${{query-session-context-1.metadata.ado_project ?? 'target'}} repo. \nBefore submitting this PR, please make sure:\n\n- [ ] Your code builds clean without any errors or warnings\n- [ ] You have added unit tests\n- [ ] You are using approved terminology\n- [ ] You have read and follow our contribution and development guidelines\n- [ ] You have merged *from* main\n- [ ] Version history and relevant documentation is updated\n\n---\n\n## Agent Summary\n\n${{query-git-pr-note-1.body}}",
+      "body": "---\n\nThank you for your contribution to the ${{query-session-context-1.metadata.ado_project ?? \"target\"}} repo. \nBefore submitting this PR, please make sure:\n\n- [ ] Your code builds clean without any errors or warnings\n- [ ] You have added unit tests\n- [ ] You are using approved terminology\n- [ ] You have read and follow our contribution and development guidelines\n- [ ] You have merged *from* main\n- [ ] Version history and relevant documentation is updated\n\n---\n\n## Agent Summary\n\n${{query-git-pr-note-1.body}}",
       "canonical_origin_url": "${{gate-filter-2.canonical_origin_url}}",
       "display_name": "Create PR",
       "draft": true,
@@ -266,8 +266,7 @@
       "provider": "azure_devops",
       "session_id": "${{trigger-git-push-1.session_id}}",
       "title": "${{query-session-context-1.metadata.issue_number}}: ${{query-session-context-1.metadata.issue_title}}",
-      "type": "effect:pr:create",
-      "project": "${{query-session-context-1.metadata.ado_project}}"
+      "type": "effect:pr:create"
     },
     {
       "display_name": "Store session metadata",
@@ -293,10 +292,10 @@
       "display_name": "Update session metadata",
       "id": "effect-session-update-metadata-2",
       "metadata": {
-        "issue_number": "${{trigger-ticket-created-main.ticket.issue_number}}",
-        "issue_title": "${{trigger-ticket-created-main.ticket.title}}",
+        "ado_project": "${{gate-merge-1.ado_project}}",
         "directory_path": "${{gate-merge-1.directory_path}}",
-        "ado_project": "${{gate-merge-1.ado_project}}"
+        "issue_number": "${{trigger-ticket-created-main.ticket.issue_number}}",
+        "issue_title": "${{trigger-ticket-created-main.ticket.title}}"
       },
       "target": "${{effect-vm-create-1.session_id}}",
       "type": "effect:session:update-metadata"
@@ -521,12 +520,79 @@
     {
       "display_name": "Filter APP ticket directory",
       "id": "gate-filter-6",
+      "outputs": {
+        "ticket": {
+          "properties": {
+            "body": {
+              "type": "string"
+            },
+            "comments": {
+              "type": "array"
+            },
+            "created_at": {
+              "type": "string"
+            },
+            "description": {
+              "type": "string"
+            },
+            "directory_path": {
+              "type": "string"
+            },
+            "issue_id": {
+              "type": "string"
+            },
+            "issue_number": {
+              "type": "string"
+            },
+            "metadata": {
+              "type": "object"
+            },
+            "reason": {
+              "type": "string"
+            },
+            "rejection_reason": {
+              "type": "string"
+            },
+            "repo_source": {
+              "type": "string"
+            },
+            "source": {
+              "type": "string"
+            },
+            "source_type": {
+              "type": "string"
+            },
+            "state": {
+              "type": "string"
+            },
+            "tags": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "title": {
+              "type": "string"
+            },
+            "updated_at": {
+              "type": "string"
+            },
+            "url": {
+              "type": "string"
+            },
+            "yaml_path": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        }
+      },
       "type": "gate:filter",
       "when": {
         "all": [
           {
-            "left": "${{trigger-ticket-created-main.ticket.directory_path}}",
-            "equals": "root/example-industry/app"
+            "equals": "root/example-industry/app",
+            "left": "${{trigger-ticket-created-main.ticket.directory_path}}"
           }
         ]
       }
@@ -534,12 +600,79 @@
     {
       "display_name": "Filter Scanspac ticket directory",
       "id": "gate-filter-7",
+      "outputs": {
+        "ticket": {
+          "properties": {
+            "body": {
+              "type": "string"
+            },
+            "comments": {
+              "type": "array"
+            },
+            "created_at": {
+              "type": "string"
+            },
+            "description": {
+              "type": "string"
+            },
+            "directory_path": {
+              "type": "string"
+            },
+            "issue_id": {
+              "type": "string"
+            },
+            "issue_number": {
+              "type": "string"
+            },
+            "metadata": {
+              "type": "object"
+            },
+            "reason": {
+              "type": "string"
+            },
+            "rejection_reason": {
+              "type": "string"
+            },
+            "repo_source": {
+              "type": "string"
+            },
+            "source": {
+              "type": "string"
+            },
+            "source_type": {
+              "type": "string"
+            },
+            "state": {
+              "type": "string"
+            },
+            "tags": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "title": {
+              "type": "string"
+            },
+            "updated_at": {
+              "type": "string"
+            },
+            "url": {
+              "type": "string"
+            },
+            "yaml_path": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        }
+      },
       "type": "gate:filter",
       "when": {
         "all": [
           {
-            "left": "${{trigger-ticket-created-main.ticket.directory_path}}",
-            "equals": "root/example-industry/scanspac"
+            "equals": "root/example-industry/scanspac",
+            "left": "${{trigger-ticket-created-main.ticket.directory_path}}"
           }
         ]
       }
@@ -547,61 +680,105 @@
     {
       "display_name": "Map APP ticket routing",
       "id": "gate-map-1",
-      "type": "gate:map",
-      "template": {
-        "directory_path": "root/example-industry/app",
-        "repo_source": "git@ssh.dev.azure.com:v3/exampleindustry/Example%20Industry%20APP/ExampleIndustryAPP",
-        "frontend_host_checkout": "/home/jonathan/Documents/Repos/ExampleIndustryAPP",
-        "frontend_install_roots": [
-          "/home/jonathan/Documents/Repos/ExampleIndustryAPP/Src/Clients"
-        ],
-        "agents_template_path": "/home/jonathan/agent-sandbox/templates/guest-AGENTS-new.md.tmpl",
-        "directory_slug": "root-example-industry-app",
-        "ado_project": "Example Industry APP"
-      }
-    },
-    {
-      "display_name": "Map Scanspac ticket routing",
-      "id": "gate-map-2",
-      "type": "gate:map",
-      "template": {
-        "directory_path": "root/example-industry/scanspac",
-        "repo_source": "git@ssh.dev.azure.com:v3/exampleindustry/Example%20Industry%20Scanspac/ExampleIndustryScanspac",
-        "frontend_host_checkout": "/home/jonathan/Documents/Repos/ExampleIndustryScanspac",
-        "frontend_install_roots": [
-          "/home/jonathan/Documents/Repos/ExampleIndustryScanspac/Src/Clients"
-        ],
-        "agents_template_path": "/home/jonathan/agent-sandbox/templates/guest-AGENTS-new.md.tmpl",
-        "directory_slug": "root-example-industry-scanspac",
-        "ado_project": "Example Industry Scanspac"
-      }
-    },
-    {
-      "display_name": "Merge ticket routing payload",
-      "id": "gate-merge-1",
       "outputs": {
+        "ado_project": {
+          "type": "string"
+        },
+        "agents_template_path": {
+          "type": "string"
+        },
         "directory_path": {
           "type": "string"
         },
-        "repo_source": {
+        "directory_slug": {
           "type": "string"
         },
         "frontend_host_checkout": {
           "type": "string"
         },
         "frontend_install_roots": {
-          "items": {
-            "type": "string"
-          },
           "type": "array"
         },
+        "repo_source": {
+          "type": "string"
+        }
+      },
+      "template": {
+        "ado_project": "Example Industry APP",
+        "agents_template_path": "/home/jonathan/agent-sandbox/templates/guest-AGENTS-new.md.tmpl",
+        "directory_path": "root/example-industry/app",
+        "directory_slug": "root-example-industry-app",
+        "frontend_host_checkout": "/home/jonathan/Documents/Repos/ExampleIndustryAPP",
+        "frontend_install_roots": [
+          "/home/jonathan/Documents/Repos/ExampleIndustryAPP/Src/Clients"
+        ],
+        "repo_source": "git@ssh.dev.azure.com:v3/exampleindustry/Example%20Industry%20APP/ExampleIndustryAPP"
+      },
+      "type": "gate:map"
+    },
+    {
+      "display_name": "Map Scanspac ticket routing",
+      "id": "gate-map-2",
+      "outputs": {
+        "ado_project": {
+          "type": "string"
+        },
         "agents_template_path": {
+          "type": "string"
+        },
+        "directory_path": {
           "type": "string"
         },
         "directory_slug": {
           "type": "string"
         },
+        "frontend_host_checkout": {
+          "type": "string"
+        },
+        "frontend_install_roots": {
+          "type": "array"
+        },
+        "repo_source": {
+          "type": "string"
+        }
+      },
+      "template": {
+        "ado_project": "Example Industry Scanspac",
+        "agents_template_path": "/home/jonathan/agent-sandbox/templates/guest-AGENTS-new.md.tmpl",
+        "directory_path": "root/example-industry/scanspac",
+        "directory_slug": "root-example-industry-scanspac",
+        "frontend_host_checkout": "/home/jonathan/Documents/Repos/Scanspac",
+        "frontend_install_roots": [
+          "/home/jonathan/Documents/Repos/Scanspac/Src/MesAdmin",
+          "/home/jonathan/Documents/Repos/Scanspac/Src/StationGUI"
+        ],
+        "repo_source": "git@ssh.dev.azure.com:v3/exampleindustry/Example%20Industry%20Scanspac/ExampleIndustryScanspac"
+      },
+      "type": "gate:map"
+    },
+    {
+      "display_name": "Merge ticket routing payload",
+      "id": "gate-merge-1",
+      "outputs": {
         "ado_project": {
+          "type": "string"
+        },
+        "agents_template_path": {
+          "type": "string"
+        },
+        "directory_path": {
+          "type": "string"
+        },
+        "directory_slug": {
+          "type": "string"
+        },
+        "frontend_host_checkout": {
+          "type": "string"
+        },
+        "frontend_install_roots": {
+          "type": "array"
+        },
+        "repo_source": {
           "type": "string"
         }
       },
