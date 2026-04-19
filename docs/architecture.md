@@ -240,6 +240,53 @@ Gate execution state is intentionally explicit:
 - `failed`: evaluation, binding, or merge projection failed.
 - `skipped`: the node was bypassed because of a validation or cycle guard.
 
+## Workflow IR and Domain Workflow Packs
+
+Core orchestrator logic now loads a minimal workflow IR and keeps domain workflow definitions in
+versioned workflow-pack files under `config/workflow-packs/`.
+
+### Minimal IR schema (`v1`)
+
+Each pack uses this shape:
+
+- `pack_id`: stable identifier.
+- `pack_version`: version label (`v1`, etc.).
+- `ir.version`: workflow IR schema version.
+- `ir.nodes[]`: node envelopes.
+  - `node.id`, `node.display_name`, `node.type`
+  - `node.config` (or legacy top-level config keys)
+  - optional `node.outputs` schema declarations
+  - optional IR metadata: `bindings`, `retry`, `idempotency`
+- `ir.edges[]`: edge envelopes.
+  - `source_id`, `target_id`
+  - optional `source_port`, `allow_cycle`
+
+`bindings`, `retry`, and `idempotency` are part of the IR contract for portable workflow
+representation. In the current runtime, binding resolution is still driven by node config values
+(`\${{...}}` expressions), while retry/idempotency execution guarantees remain enforced by the
+orchestrator’s durable execution stores.
+
+### Composition model
+
+`config/trigger-orchestrator/config.json` now selects packs with:
+
+- `workflow_packs`: ordered list of pack file names (relative to `config/workflow-packs/`)
+- optional `workflow_ir`: inline IR fragment for local overlays
+
+At load time, the orchestrator composes selected pack IR + optional inline IR into executable
+runtime arrays (`triggers`, `gates`, `effects`, `queries`, `edges`) and then runs existing graph
+validation/compilation.
+
+### Adding a new domain pack (no core code changes)
+
+1. Create a new `config/workflow-packs/<name>.v1.json`.
+2. Define nodes/edges in `ir` using existing trigger/gate/effect/query types.
+3. Add the pack file name to `workflow_packs` in `config/trigger-orchestrator/config.json`.
+4. Optionally add a focused test that loads the worker config and validates expected wiring.
+
+This keeps domain workflow evolution in configuration artifacts while the orchestrator engine
+remains generic.
+
 ## Planned Next Integrations
 
 - Discord integration now uses a provider-backed bot API adapter (`discord_backend: bot_api`) while
