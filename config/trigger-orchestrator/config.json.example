@@ -8,6 +8,8 @@
   "workflow_transforms": [],
   "triggers": [],
   "provider_loader": {
+    "provider_profile": "profiles/agent-default",
+    "include_builtin": null,
     "provider_modules": [],
     "provider_entry_points_enabled": true
   }

@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 from .config import TriggerOrchestratorWorkerGlobalConfig
+from .provider_profiles import resolve_provider_module_names
 from .workflow_graph import build_inbound_edge_index
 from .workflow_plugins import load_provider_plugins
 from .workflow_transforms import WorkflowTransform
@@ -52,8 +53,12 @@ def collect_domain_validation_diagnostics(
     inbound_edges = {k: list(v) for k, v in build_inbound_edge_index(worker_config.edges).items()}
     diagnostics: list[WorkflowValidationDiagnostic] = []
     provider_catalog = load_provider_plugins(
-        module_names=worker_config.provider_loader.provider_modules,
+        module_names=resolve_provider_module_names(
+            profile_name=worker_config.provider_profile,
+            extra_modules=worker_config.provider_loader.provider_modules,
+        ),
         include_entry_points=worker_config.provider_loader.provider_entry_points_enabled,
+        include_builtin=worker_config.provider_include_builtin,
     )
     for gate in worker_config.gates:
         provider = provider_catalog.gate_providers.get(gate.type)

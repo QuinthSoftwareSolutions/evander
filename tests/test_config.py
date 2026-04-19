@@ -873,6 +873,29 @@ def test_trigger_orchestrator_worker_global_config_rejects_duplicate_effect_ids(
         )
 
 
+def test_trigger_orchestrator_worker_global_config_defaults_provider_profile_to_agent_default() -> None:
+    config = TriggerOrchestratorWorkerGlobalConfig.model_validate({})
+
+    assert config.provider_profile == "profiles/agent-default"
+    assert config.provider_include_builtin is True
+
+
+def test_trigger_orchestrator_worker_global_config_supports_core_minimal_profile() -> None:
+    config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {"provider_loader": {"provider_profile": "profiles/core-minimal"}}
+    )
+
+    assert config.provider_profile == "profiles/core-minimal"
+    assert config.provider_include_builtin is False
+
+
+def test_trigger_orchestrator_worker_global_config_rejects_unknown_provider_profile() -> None:
+    with pytest.raises(ValueError, match="Unknown provider loader profile"):
+        TriggerOrchestratorWorkerGlobalConfig.model_validate(
+            {"provider_loader": {"provider_profile": "profiles/unknown"}}
+        )
+
+
 def test_trigger_orchestrator_worker_global_config_rejects_unknown_effect_edge_source() -> None:
     with pytest.raises(ValueError, match="Edge endpoints must reference existing node IDs: missing-id"):
         TriggerOrchestratorWorkerGlobalConfig.model_validate(
