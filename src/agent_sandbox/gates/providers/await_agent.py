@@ -359,10 +359,12 @@ class AwaitAgentGateProvider(GateProviderBase):
 
 
 def _list_vm_summaries(worker: Any) -> list[Any]:
-    admin_service = getattr(worker.provider_factory, "admin_service", None)
-    if admin_service is None:
+    provider = worker._get_gate_provider("gate:await-agent")
+    runtime_context = getattr(provider, "runtime_context", None)
+    vm_inventory = getattr(runtime_context, "vm_inventory", None)
+    if vm_inventory is None:
         return []
-    return list(admin_service.list_vms(include_inactive=True, omit_state=False, vm_user="agent", directory_path=None, direct_only=False))
+    return list(vm_inventory.list_vms(include_inactive=True, omit_state=False, vm_user="agent", directory_path=None, direct_only=False))
 
 
 def _await_agent_pending_target(pending: AwaitAgentPendingRecord, *, summaries: list[Any] | None = None) -> tuple[str | None, str | None]:

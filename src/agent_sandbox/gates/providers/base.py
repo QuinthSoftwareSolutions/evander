@@ -1,21 +1,14 @@
 from __future__ import annotations
 
-import os
-from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
-from agent_sandbox.admin_service import AdminService
-from agent_sandbox.events.models import GateDefinitionDiscriminated
+from agent_sandbox.provider_runtime.contracts import GateVmInventory, ProviderRuntimeBase
 
 
 @dataclass(frozen=True)
-class GateRuntimeContext:
-    resolved_config: Any
-    admin_service: AdminService | None = None
-    env: Mapping[str, str] = field(default_factory=lambda: dict(os.environ))
-    secret_resolver: Callable[[str], str | None] | None = None
-    metadata: Mapping[str, Any] = field(default_factory=dict)
+class GateRuntimeContext(ProviderRuntimeBase):
+    vm_inventory: GateVmInventory | None = None
 
 
 class GateProviderBase:
