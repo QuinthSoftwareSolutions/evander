@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 import re
@@ -273,6 +274,8 @@ class WorkflowEditorDocumentPayload(BaseModel):
     layout_exists: bool
     config: dict[str, object]
     layout: dict[str, object]
+    saved_at: datetime | None = None
+    revision: str | None = None
 
 
 class WorkflowEditorValidationPayload(BaseModel):
@@ -287,6 +290,8 @@ class WorkflowEditorSavePayload(BaseModel):
     layout_path: str
     config: dict[str, object]
     layout: dict[str, object]
+    saved_at: datetime | None = None
+    revision: str | None = None
 
 
 class WorkflowRunNodeActivityPayload(BaseModel):
@@ -4612,6 +4617,34 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
     def _workflow_editor_layout_path(self) -> Path:
         return self.project_dir / "config" / "trigger-orchestrator" / "layout.json"
 
+    def _workflow_editor_revision(self, config: dict[str, object]) -> str:
+        encoded = json.dumps(config, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    def _write_json_file_atomic(self, path: Path, payload: dict[str, object]) -> None:
+        encoded = json.dumps(payload, indent=2, sort_keys=True).encode("utf-8")
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            dir=path.parent,
+            delete=False,
+        ) as temp_file:
+            temp_path = Path(temp_file.name)
+            temp_file.write(encoded)
+            temp_file.flush()
+            os.fsync(temp_file.fileno())
+        try:
+            os.replace(temp_path, path)
+            dir_fd = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        finally:
+            if temp_path.exists():
+                temp_path.unlink()
+
     def _read_workflow_editor_document(self) -> WorkflowEditorDocumentPayload:
         config_path = self._worker_global_config_path("trigger-orchestrator")
         if config_path is None:
@@ -4641,6 +4674,12 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
             node_ids=self._collect_workflow_node_ids(normalized_config),
             allow_unknown_nodes=True,
         )
+        saved_at = (
+            datetime.fromtimestamp(config_path.stat().st_mtime, tz=UTC)
+            if config_exists
+            else None
+        )
+        revision = self._workflow_editor_revision(normalized_config) if config_exists else None
         return WorkflowEditorDocumentPayload(
             config_path=str(config_path),
             layout_path=str(layout_path),
@@ -4648,6 +4687,8 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
             layout_exists=layout_exists,
             config=normalized_config,
             layout=layout,
+            saved_at=saved_at,
+            revision=revision,
         )
 
     def _read_workflow_editor_catalog(self) -> WorkflowEditorCatalogPayload:
@@ -4680,13 +4721,17 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
         layout_path = self._workflow_editor_layout_path()
         config_path.parent.mkdir(parents=True, exist_ok=True)
         layout_path.parent.mkdir(parents=True, exist_ok=True)
-        config_path.write_text(json.dumps(validation.config, indent=2, sort_keys=True), encoding="utf-8")
-        layout_path.write_text(json.dumps(validation.layout, indent=2, sort_keys=True), encoding="utf-8")
+        self._write_json_file_atomic(config_path, validation.config)
+        self._write_json_file_atomic(layout_path, validation.layout)
+        saved_at = datetime.fromtimestamp(config_path.stat().st_mtime, tz=UTC)
+        revision = self._workflow_editor_revision(validation.config)
         return WorkflowEditorSavePayload(
             config_path=str(config_path),
             layout_path=str(layout_path),
             config=validation.config,
             layout=validation.layout,
+            saved_at=saved_at,
+            revision=revision,
         )
 
     def _read_workflow_run_snapshot(self) -> WorkflowRunSnapshotPayload:

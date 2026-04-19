@@ -42,6 +42,11 @@ from .queries.registry import QueryProviderFactory
 from .runtime import RuntimeContext, build_runtime
 from .storage import JsonStore
 from .triggers.queue import TriggerEventQueue, TriggerQueueRecord
+from .workflow_runtime_config import (
+    FixedTriggerOrchestratorWorkerGlobalConfigReloader,
+    TriggerOrchestratorWorkerGlobalConfigReloader,
+    load_trigger_orchestrator_worker_global_config,
+)
 from .workflow_events import NotifyingJsonStore, WorkflowEventJournal
 from .workflow_binding import (
     BindingResolutionError,
@@ -90,6 +95,7 @@ class EffectExecutionRecord(BaseModel):
     published_event_id: str | None = None
     error: str | None = None
     completion_event_enqueued_at: datetime | None = None
+    config_revision: str | None = None
 
 
 class GateExecutionRecord(BaseModel):
@@ -114,6 +120,7 @@ class GateExecutionRecord(BaseModel):
     published_event_id: str | None = None
     error: str | None = None
     completion_event_enqueued_at: datetime | None = None
+    config_revision: str | None = None
 
 
 class AwaitAgentPendingRecord(BaseModel):
@@ -159,16 +166,24 @@ class EffectOrchestratorCycleResult:
     next_sleep_seconds: float
 
 
+@dataclass(frozen=True)
+class InflightExecution:
+    future: Future[dict[str, Any]]
+    config_revision: str
+
+
 class EffectOrchestratorWorker:
     def __init__(
         self,
         *,
         config: GatewayConfig,
         worker_config: TriggerOrchestratorWorkerGlobalConfig,
+        config_reloader: TriggerOrchestratorWorkerGlobalConfigReloader | None = None,
         runtime: RuntimeContext,
     ) -> None:
         self.config = config
         self.worker_config = worker_config
+        self._config_reloader = config_reloader or FixedTriggerOrchestratorWorkerGlobalConfigReloader(worker_config)
         self.runtime = runtime
         self.workflow_event_journal = WorkflowEventJournal(worker_config.workflow_event_journal_path)
         self.event_queue = TriggerEventQueue(
@@ -211,8 +226,11 @@ class EffectOrchestratorWorker:
             max_workers=max(1, min(32, max(1, (os.cpu_count() or 1) * 4))),
             thread_name_prefix="effect-orchestrator",
         )
-        self._inflight: dict[str, Future[dict[str, Any]]] = {}
+        self._inflight: dict[str, InflightExecution] = {}
         self._inflight_lock = RLock()
+        self._last_graph_revision: str | None = None
+        self._last_graph_node_count = 0
+        self._last_graph_edge_count = 0
         self.provider_factory = EffectProviderFactory(
             ProviderConfigResolver(config),
             admin_service=AdminService(config.runtime_dir),
@@ -285,6 +303,9 @@ class EffectOrchestratorWorker:
         return completed
 
     def run_once(self) -> EffectOrchestratorCycleResult:
+        latest_config, _changed = self._config_reloader.get_latest()
+        self.worker_config = latest_config
+        config_revision = _config_revision_hash(latest_config)
         cursor_payload = _load_cursor_payload(self.cursor_path)
         pending_events_scanned = 0
         events_processed = 0
@@ -293,6 +314,11 @@ class EffectOrchestratorWorker:
         completion_events_published = 0
 
         graph = _build_execution_graph(self.worker_config)
+        self._log_graph_revision_change(
+            config_revision=config_revision,
+            node_count=len(graph.nodes_by_id),
+            edge_count=len(latest_config.edges),
+        )
         self._reconcile_await_agent_pending(graph=graph)
         completion_events_published += self._complete_pending_await_agent_gates_directly(graph=graph)
         completion_events_published += self._complete_waiting_agent_prompt_effects_directly()
@@ -309,7 +335,7 @@ class EffectOrchestratorWorker:
                 break
             pending_events_scanned += 1
             queue_record = pending[0]
-            execution_count = self._process_event_record(queue_record, graph=graph)
+            execution_count = self._process_event_record(queue_record, graph=graph, config_revision=config_revision)
             effect_executions_started += execution_count
             events_processed += 1
             self._update_event_delivery_state(queue_record.event_id)
@@ -329,8 +355,29 @@ class EffectOrchestratorWorker:
             next_sleep_seconds=next_sleep_seconds,
         )
 
-    def _process_event_record(self, queue_record: TriggerQueueRecord, *, graph: ExecutionGraph) -> int:
+    def _process_event_record(
+        self,
+        queue_record: TriggerQueueRecord,
+        *,
+        graph: ExecutionGraph,
+        config_revision: str,
+    ) -> int:
         outbound_edges = _matching_outbound_edges(queue_record=queue_record, graph=graph)
+        is_agent_completion_event = queue_record.trigger_type == "trigger:agent:run:completed"
+        source_node_exists = queue_record.trigger_id in graph.nodes_by_id
+        if is_agent_completion_event and not source_node_exists:
+            self._handle_agent_completion_event(queue_record=queue_record, graph=graph)
+            return 0
+
+        if not source_node_exists:
+            self._write_skipped_event_reference_record(
+                queue_record=queue_record,
+                node_id=queue_record.trigger_id,
+                node_type=queue_record.trigger_type,
+                config_revision=config_revision,
+                reason=f"source_node_removed_from_graph:{queue_record.trigger_id}",
+            )
+            return 0
         logger.debug(
             "Processing workflow event event_id=%s trace_id=%s source_node_id=%s downstream_nodes=%d",
             queue_record.event_id,
@@ -343,9 +390,21 @@ class EffectOrchestratorWorker:
             target_node_id = _edge_target_id(edge)
             node = graph.nodes_by_id.get(target_node_id)
             if node is None:
+                self._write_skipped_event_reference_record(
+                    queue_record=queue_record,
+                    node_id=target_node_id,
+                    node_type="workflow:unknown",
+                    config_revision=config_revision,
+                    reason=f"edge_target_removed_from_graph:{queue_record.trigger_id}->{target_node_id}",
+                )
                 continue
             if not _edge_allows_cycle(edge) and would_form_cycle(queue_record.trigger_id, target_node_id, graph.downstream_index):
-                self._write_skipped_node_record(queue_record=queue_record, node=node, reason="cycle_detected")
+                self._write_skipped_node_record(
+                    queue_record=queue_record,
+                    node=node,
+                    config_revision=config_revision,
+                    reason="cycle_detected",
+                )
                 continue
 
             depth = _compute_depth(target_node_id, graph.downstream_index)
@@ -353,18 +412,25 @@ class EffectOrchestratorWorker:
                 self._write_skipped_node_record(
                     queue_record=queue_record,
                     node=node,
+                    config_revision=config_revision,
                     reason=f"max_depth_exceeded:{depth}",
                 )
                 continue
 
             if target_node_id in graph.gates_by_id:
-                self._execute_gate(queue_record, gate=graph.gates_by_id[target_node_id], graph=graph)
+                self._execute_gate(
+                    queue_record,
+                    gate=graph.gates_by_id[target_node_id],
+                    graph=graph,
+                    config_revision=config_revision,
+                )
                 continue
 
             if target_node_id in graph.effects_by_id and self._dispatch_effect(
                 queue_record,
                 effect=graph.effects_by_id[target_node_id],
                 graph=graph,
+                config_revision=config_revision,
             ):
                 execution_count += 1
                 continue
@@ -373,17 +439,26 @@ class EffectOrchestratorWorker:
                 queue_record,
                 query=graph.queries_by_id[target_node_id],
                 graph=graph,
+                config_revision=config_revision,
             ):
                 execution_count += 1
 
-        if queue_record.trigger_type == "trigger:agent:run:completed":
-            self._complete_waiting_agent_prompt_effects(queue_record=queue_record)
-            for gate in graph.gates_by_id.values():
-                if getattr(gate, "type", "") != "gate:await-agent":
-                    continue
-                self._execute_await_agent_completion(queue_record=queue_record, gate=gate)
+        if is_agent_completion_event:
+            self._handle_agent_completion_event(queue_record=queue_record, graph=graph)
 
         return execution_count
+
+    def _handle_agent_completion_event(
+        self,
+        *,
+        queue_record: TriggerQueueRecord,
+        graph: ExecutionGraph,
+    ) -> None:
+        self._complete_waiting_agent_prompt_effects(queue_record=queue_record)
+        for gate in graph.gates_by_id.values():
+            if getattr(gate, "type", "") != "gate:await-agent":
+                continue
+            self._execute_await_agent_completion(queue_record=queue_record, gate=gate)
 
     def _dispatch_query(
         self,
@@ -391,6 +466,7 @@ class EffectOrchestratorWorker:
         *,
         query: QueryDefinitionDiscriminated,
         graph: ExecutionGraph,
+        config_revision: str,
     ) -> bool:
         idempotency_key = _execution_idempotency_key(queue_record.event_id, query.id)
         existing = self.execution_store.find_by_idempotency_key(idempotency_key)
@@ -405,7 +481,7 @@ class EffectOrchestratorWorker:
                     resolved_config=dict(existing.resolved_config),
                 )
                 with self._inflight_lock:
-                    self._inflight[idempotency_key] = future
+                    self._inflight[idempotency_key] = InflightExecution(future=future, config_revision=config_revision)
                 return True
             return False
         with self._inflight_lock:
@@ -438,6 +514,7 @@ class EffectOrchestratorWorker:
                 effect=query,
                 started_at=started_at,
                 resolved_config={},
+                config_revision=config_revision,
                 error=str(exc),
             )
             return False
@@ -459,11 +536,12 @@ class EffectOrchestratorWorker:
             resolved_config=resolved_config,
             input_payload=dict(queue_record.payload),
             outputs={},
+            config_revision=config_revision,
         )
         self.execution_store.put(record)
         future = self._executor.submit(self._execute_query_provider, query=query, resolved_config=resolved_config)
         with self._inflight_lock:
-            self._inflight[idempotency_key] = future
+            self._inflight[idempotency_key] = InflightExecution(future=future, config_revision=config_revision)
         return True
 
     def _dispatch_effect(
@@ -472,6 +550,7 @@ class EffectOrchestratorWorker:
         *,
         effect: EffectDefinitionDiscriminated,
         graph: ExecutionGraph,
+        config_revision: str,
     ) -> bool:
         idempotency_key = _execution_idempotency_key(queue_record.event_id, effect.id)
         existing = self.execution_store.find_by_idempotency_key(idempotency_key)
@@ -486,7 +565,7 @@ class EffectOrchestratorWorker:
                     resolved_config=dict(existing.resolved_config),
                 )
                 with self._inflight_lock:
-                    self._inflight[idempotency_key] = future
+                    self._inflight[idempotency_key] = InflightExecution(future=future, config_revision=config_revision)
                 return True
             return False
         with self._inflight_lock:
@@ -519,6 +598,7 @@ class EffectOrchestratorWorker:
                 effect=effect,
                 started_at=started_at,
                 resolved_config={},
+                config_revision=config_revision,
                 error=str(exc),
             )
             return False
@@ -543,6 +623,7 @@ class EffectOrchestratorWorker:
                 effect=effect,
                 started_at=started_at,
                 resolved_config=resolved_config,
+                config_revision=config_revision,
                 error=str(exc),
             )
             return False
@@ -562,11 +643,12 @@ class EffectOrchestratorWorker:
             resolved_config=resolved_config,
             input_payload=dict(queue_record.payload),
             outputs={},
+            config_revision=config_revision,
         )
         self.execution_store.put(record)
         future = self._executor.submit(self._execute_provider, effect=effect, resolved_config=resolved_config)
         with self._inflight_lock:
-            self._inflight[idempotency_key] = future
+            self._inflight[idempotency_key] = InflightExecution(future=future, config_revision=config_revision)
         return True
 
     def _execute_gate(
@@ -575,6 +657,7 @@ class EffectOrchestratorWorker:
         *,
         gate: GateDefinitionDiscriminated,
         graph: ExecutionGraph,
+        config_revision: str,
     ) -> None:
         idempotency_key = _execution_idempotency_key(queue_record.event_id, gate.id)
         if self.gate_execution_store.find_by_idempotency_key(idempotency_key) is not None:
@@ -628,6 +711,7 @@ class EffectOrchestratorWorker:
                         inputs_by_source=inputs_by_source,
                         input_event_ids_by_source=input_event_ids_by_source,
                         input_occurred_at_by_source=input_occurred_at_by_source,
+                        config_revision=config_revision,
                         publish_completion_event=True,
                     )
                     return
@@ -642,6 +726,7 @@ class EffectOrchestratorWorker:
                     inputs_by_source=inputs_by_source,
                     input_event_ids_by_source=input_event_ids_by_source,
                     input_occurred_at_by_source=input_occurred_at_by_source,
+                    config_revision=config_revision,
                 )
                 return
 
@@ -669,6 +754,7 @@ class EffectOrchestratorWorker:
                     inputs_by_source=inputs_by_source,
                     input_event_ids_by_source=input_event_ids_by_source,
                     input_occurred_at_by_source=input_occurred_at_by_source,
+                    config_revision=config_revision,
                     publish_completion_event=True,
                 )
                 return
@@ -693,6 +779,7 @@ class EffectOrchestratorWorker:
                     queue_record=queue_record,
                     gate=gate,
                     resolved_config=require_object_payload(resolved.resolved_config, gate_type="gate:await-agent"),
+                    config_revision=config_revision,
                 )
                 return
 
@@ -720,6 +807,7 @@ class EffectOrchestratorWorker:
                     input_event_ids_by_source=input_event_ids_by_source,
                     input_occurred_at_by_source=input_occurred_at_by_source,
                     started_at=started_at,
+                    config_revision=config_revision,
                 )
                 return
 
@@ -728,6 +816,7 @@ class EffectOrchestratorWorker:
                 gate=gate,
                 graph=graph,
                 started_at=started_at,
+                config_revision=config_revision,
             )
         except (BindingResolutionError, GateRuntimeError) as exc:
             self._write_gate_record(
@@ -740,6 +829,7 @@ class EffectOrchestratorWorker:
                 inputs_by_source=inputs_by_source,
                 input_event_ids_by_source=input_event_ids_by_source,
                 input_occurred_at_by_source=input_occurred_at_by_source,
+                config_revision=config_revision,
                 error=str(exc),
             )
 
@@ -750,6 +840,7 @@ class EffectOrchestratorWorker:
         gate: GateDefinitionDiscriminated,
         graph: ExecutionGraph,
         started_at: datetime,
+        config_revision: str,
     ) -> None:
         previous = self.gate_execution_store.find_latest_by_gate_id(gate.id)
         inputs_by_source = deepcopy(previous.inputs_by_source) if previous is not None else {}
@@ -774,6 +865,7 @@ class EffectOrchestratorWorker:
             inputs_by_source=inputs_by_source,
             input_event_ids_by_source=input_event_ids_by_source,
             input_occurred_at_by_source=input_occurred_at_by_source,
+            config_revision=config_revision,
             publish_completion_event=True,
         )
 
@@ -783,6 +875,7 @@ class EffectOrchestratorWorker:
         queue_record: TriggerQueueRecord,
         gate: GateDefinitionDiscriminated,
         resolved_config: dict[str, Any],
+        config_revision: str,
     ) -> None:
         started_at = datetime.now(UTC)
         dispatch_id = str(queue_record.payload.get("dispatch_id") or "").strip()
@@ -799,6 +892,7 @@ class EffectOrchestratorWorker:
                 inputs_by_source={queue_record.trigger_id: dict(queue_record.payload)},
                 input_event_ids_by_source={queue_record.trigger_id: queue_record.event_id},
                 input_occurred_at_by_source={queue_record.trigger_id: queue_record.occurred_at},
+                config_revision=config_revision,
                 error="gate:await-agent requires upstream effect output dispatch_id",
             )
             return
@@ -813,6 +907,7 @@ class EffectOrchestratorWorker:
                 inputs_by_source={queue_record.trigger_id: dict(queue_record.payload)},
                 input_event_ids_by_source={queue_record.trigger_id: queue_record.event_id},
                 input_occurred_at_by_source={queue_record.trigger_id: queue_record.occurred_at},
+                config_revision=config_revision,
                 error="gate:await-agent requires resolved session_id or vm_name",
             )
             return
@@ -846,6 +941,7 @@ class EffectOrchestratorWorker:
             inputs_by_source={queue_record.trigger_id: dict(queue_record.payload)},
             input_event_ids_by_source={queue_record.trigger_id: queue_record.event_id},
             input_occurred_at_by_source={queue_record.trigger_id: queue_record.occurred_at},
+            config_revision=config_revision,
         )
 
     def _execute_for_gate(
@@ -859,6 +955,7 @@ class EffectOrchestratorWorker:
         input_event_ids_by_source: dict[str, str],
         input_occurred_at_by_source: dict[str, datetime],
         started_at: datetime,
+        config_revision: str,
     ) -> None:
         raw_items = resolved_config.get("items")
         if not isinstance(raw_items, list):
@@ -872,6 +969,7 @@ class EffectOrchestratorWorker:
                 inputs_by_source=inputs_by_source,
                 input_event_ids_by_source=input_event_ids_by_source,
                 input_occurred_at_by_source=input_occurred_at_by_source,
+                config_revision=config_revision,
                 error="gate:for items must resolve to an array",
             )
             return
@@ -935,6 +1033,7 @@ class EffectOrchestratorWorker:
             inputs_by_source=inputs_by_source,
             input_event_ids_by_source=input_event_ids_by_source,
             input_occurred_at_by_source=input_occurred_at_by_source,
+            config_revision=config_revision,
             publish_completion_event=True,
             branch_port=branch_port,
             for_execution_ids={gate.id: for_execution_id},
@@ -1317,9 +1416,9 @@ class EffectOrchestratorWorker:
         published_count = 0
         to_finalize: list[tuple[str, Future[dict[str, Any]]]] = []
         with self._inflight_lock:
-            for idempotency_key, future in list(self._inflight.items()):
-                if future.done():
-                    to_finalize.append((idempotency_key, future))
+            for idempotency_key, inflight in list(self._inflight.items()):
+                if inflight.future.done():
+                    to_finalize.append((idempotency_key, inflight.future))
                     self._inflight.pop(idempotency_key, None)
 
         for idempotency_key, future in to_finalize:
@@ -1622,6 +1721,7 @@ class EffectOrchestratorWorker:
         *,
         queue_record: TriggerQueueRecord,
         node: WorkflowNodeDefinition,
+        config_revision: str | None = None,
         reason: str,
     ) -> None:
         if _is_gate(node):
@@ -1635,6 +1735,7 @@ class EffectOrchestratorWorker:
                 inputs_by_source={queue_record.trigger_id: dict(queue_record.payload)},
                 input_event_ids_by_source={queue_record.trigger_id: queue_record.event_id},
                 input_occurred_at_by_source={queue_record.trigger_id: queue_record.occurred_at},
+                config_revision=config_revision,
                 error=reason,
             )
             return
@@ -1645,7 +1746,44 @@ class EffectOrchestratorWorker:
             status="skipped",
             started_at=datetime.now(UTC),
             resolved_config={},
+            config_revision=config_revision,
             error=reason,
+        )
+
+
+    def _write_skipped_event_reference_record(
+        self,
+        *,
+        queue_record: TriggerQueueRecord,
+        node_id: str,
+        node_type: str,
+        config_revision: str | None,
+        reason: str,
+    ) -> None:
+        idempotency_key = _execution_idempotency_key(queue_record.event_id, node_id)
+        if self.execution_store.find_by_idempotency_key(idempotency_key) is not None:
+            return
+        now = datetime.now(UTC)
+        self.execution_store.put(
+            EffectExecutionRecord(
+                execution_id=f"exec-{hashlib.sha1(idempotency_key.encode('utf-8')).hexdigest()[:16]}",
+                idempotency_key=idempotency_key,
+                event_id=queue_record.event_id,
+                trace_id=queue_record.trace_id,
+                source_node_id=queue_record.trigger_id,
+                source_trigger_type=queue_record.trigger_type,
+                effect_id=node_id,
+                effect_type=node_type,
+                status="skipped",
+                started_at=now,
+                finished_at=now,
+                resolved_config_hash=_json_sha256({}),
+                resolved_config={},
+                input_payload=dict(queue_record.payload),
+                outputs={},
+                error=reason,
+                config_revision=config_revision,
+            )
         )
 
     def _write_failed_effect_record(
@@ -1655,6 +1793,7 @@ class EffectOrchestratorWorker:
         effect: EffectDefinitionDiscriminated | QueryDefinitionDiscriminated,
         started_at: datetime,
         resolved_config: dict[str, Any],
+        config_revision: str | None = None,
         error: str,
     ) -> None:
         self._write_terminal_effect_record(
@@ -1663,6 +1802,7 @@ class EffectOrchestratorWorker:
             status="failed",
             started_at=started_at,
             resolved_config=resolved_config,
+            config_revision=config_revision,
             error=error,
         )
 
@@ -1674,6 +1814,7 @@ class EffectOrchestratorWorker:
         status: str,
         started_at: datetime,
         resolved_config: dict[str, Any],
+        config_revision: str | None = None,
         error: str,
     ) -> None:
         idempotency_key = _execution_idempotency_key(queue_record.event_id, effect.id)
@@ -1697,6 +1838,7 @@ class EffectOrchestratorWorker:
             input_payload=dict(queue_record.payload),
             outputs={},
             error=error,
+            config_revision=config_revision,
         )
         self.execution_store.put(record)
 
@@ -1712,6 +1854,7 @@ class EffectOrchestratorWorker:
         inputs_by_source: dict[str, dict[str, Any]],
         input_event_ids_by_source: dict[str, str],
         input_occurred_at_by_source: dict[str, datetime],
+        config_revision: str | None = None,
         error: str | None = None,
         publish_completion_event: bool = False,
         branch_port: str | None = None,
@@ -1741,6 +1884,7 @@ class EffectOrchestratorWorker:
             input_event_ids_by_source=input_event_ids_by_source,
             input_occurred_at_by_source=input_occurred_at_by_source,
             error=error,
+            config_revision=config_revision,
         )
         if publish_completion_event:
             record.published_event_id = self._publish_gate_completion_event_from_record(
@@ -1751,6 +1895,23 @@ class EffectOrchestratorWorker:
             )
             record.completion_event_enqueued_at = finished_at
         self.gate_execution_store.put(record)
+
+
+    def _log_graph_revision_change(self, *, config_revision: str, node_count: int, edge_count: int) -> None:
+        if self._last_graph_revision == config_revision:
+            return
+        logger.info(
+            "Workflow graph revision changed revision=%s previous_revision=%s nodes=%d->%d edges=%d->%d",
+            config_revision,
+            self._last_graph_revision,
+            self._last_graph_node_count,
+            node_count,
+            self._last_graph_edge_count,
+            edge_count,
+        )
+        self._last_graph_revision = config_revision
+        self._last_graph_node_count = node_count
+        self._last_graph_edge_count = edge_count
 
 
 class _JsonRecordStore(Generic[TRecord]):
@@ -1829,7 +1990,12 @@ def build_effect_orchestrator_worker(
     project_dir: Path | None = None,
 ) -> EffectOrchestratorWorker:
     resolved_project_dir = Path(project_dir) if project_dir is not None else Path.cwd()
-    worker_config = _load_trigger_orchestrator_worker_global_config(resolved_project_dir, base_config=config)
+    worker_config = load_trigger_orchestrator_worker_global_config(resolved_project_dir, base_config=config)
+    config_reloader = TriggerOrchestratorWorkerGlobalConfigReloader(
+        project_dir=resolved_project_dir,
+        initial_config=worker_config,
+        base_config=config,
+    )
     effective_config = GatewayConfig.model_validate(
         {
             **config.model_dump(mode="json"),
@@ -1840,6 +2006,7 @@ def build_effect_orchestrator_worker(
     return EffectOrchestratorWorker(
         config=effective_config,
         worker_config=worker_config,
+        config_reloader=config_reloader,
         runtime=runtime,
     )
 
@@ -2066,6 +2233,12 @@ def _prepare_effect_resolved_config(
     return next_config
 
 
+def _config_revision_hash(worker_config: TriggerOrchestratorWorkerGlobalConfig) -> str:
+    payload = worker_config.model_dump(mode="json")
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def _json_sha256(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
@@ -2229,25 +2402,6 @@ def _compute_backoff_sleep_seconds(*, poll_interval_seconds: float, jitter_secon
     if jitter_seconds > 0:
         delay += random.uniform(0.0, jitter_seconds)
     return max(1.0, delay)
-
-
-def _load_trigger_orchestrator_worker_global_config(
-    project_dir: Path,
-    *,
-    base_config: GatewayConfig | None = None,
-) -> TriggerOrchestratorWorkerGlobalConfig:
-    base_payload = TriggerOrchestratorWorkerGlobalConfig.model_validate(
-        {
-            "runtime_dir": (base_config.runtime_dir if base_config is not None else Path("runtime")),
-        }
-    ).model_dump(mode="json")
-    path = project_dir / "config" / "trigger-orchestrator" / "config.json"
-    if not path.exists():
-        return TriggerOrchestratorWorkerGlobalConfig.model_validate(base_payload)
-    raw = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(raw, dict):
-        raise ValueError(f"worker config file {path} must contain a JSON object")
-    return TriggerOrchestratorWorkerGlobalConfig.model_validate({**base_payload, **raw})
 
 
 def _await_agent_pending_target(

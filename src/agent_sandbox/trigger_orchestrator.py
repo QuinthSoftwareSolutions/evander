@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 import os
 import random
@@ -18,6 +19,11 @@ from .runtime import RuntimeContext, build_runtime
 from .events.models import AgentRunCompletedTriggerDefinition, TriggerDefinitionDiscriminated, validate_output_mapping_keys
 from .triggers.queue import TriggerEventQueue
 from .triggers.registry import TriggerProviderFactory
+from .workflow_runtime_config import (
+    FixedTriggerOrchestratorWorkerGlobalConfigReloader,
+    TriggerOrchestratorWorkerGlobalConfigReloader,
+    load_trigger_orchestrator_worker_global_config,
+)
 from .host_heartbeat_worker import _single_instance_lock
 
 logger = logging.getLogger(__name__)
@@ -39,10 +45,12 @@ class TriggerOrchestratorWorker:
         *,
         config: GatewayConfig,
         worker_config: TriggerOrchestratorWorkerGlobalConfig,
+        config_reloader: TriggerOrchestratorWorkerGlobalConfigReloader | None = None,
         runtime: RuntimeContext,
     ) -> None:
         self.config = config
         self.worker_config = worker_config
+        self._config_reloader = config_reloader or FixedTriggerOrchestratorWorkerGlobalConfigReloader(worker_config)
         self.runtime = runtime
         self.event_queue = TriggerEventQueue(
             worker_config.event_queue_store_path,
@@ -88,11 +96,22 @@ class TriggerOrchestratorWorker:
             return self.run_once()
 
     def run_once(self) -> TriggerOrchestratorCycleResult:
-        configured_triggers = self._configured_triggers()
-        providers = self._load_configured_providers(configured_triggers)
+        latest_config, changed = self._config_reloader.get_latest()
+        previous_config = self.worker_config
+        self.worker_config = latest_config
+        if changed:
+            logger.info(
+                "Trigger orchestrator config revision changed revision=%s trigger_count=%d",
+                _config_revision_hash(latest_config),
+                len(latest_config.triggers),
+            )
+            self.event_queue = TriggerEventQueue(self.worker_config.event_queue_store_path)
+
+        configured_triggers = self._configured_triggers(latest_config)
+        providers = self._load_configured_providers(latest_config, configured_triggers)
         events_discovered = 0
         events_published = 0
-        cursor_payload = _load_cursor_payload(self.worker_config.event_queue_cursor_store_path)
+        cursor_payload = _load_cursor_payload(latest_config.event_queue_cursor_store_path)
 
         for trigger in configured_triggers:
             provider = providers.get(trigger.id)
@@ -146,10 +165,11 @@ class TriggerOrchestratorWorker:
                 event_ids=[event.event_id for event in events],
             )
 
-        _save_cursor_payload(self.worker_config.event_queue_cursor_store_path, cursor_payload)
+        _save_cursor_payload(latest_config.event_queue_cursor_store_path, cursor_payload)
+        sleep_config = previous_config if changed else latest_config
         next_sleep_seconds = _compute_next_sleep_seconds(
-            poll_interval_seconds=self.worker_config.poll_interval_seconds,
-            jitter_seconds=self.worker_config.jitter_seconds,
+            poll_interval_seconds=sleep_config.poll_interval_seconds,
+            jitter_seconds=sleep_config.jitter_seconds,
         )
         return TriggerOrchestratorCycleResult(
             configured_triggers=len(configured_triggers),
@@ -158,9 +178,11 @@ class TriggerOrchestratorWorker:
             next_sleep_seconds=next_sleep_seconds,
         )
 
-    def _configured_triggers(self) -> list[TriggerDefinitionDiscriminated]:
-        triggers = list(self.worker_config.triggers)
-        has_await_agent = any(getattr(gate, "type", "") == "gate:await-agent" for gate in self.worker_config.gates)
+    def _configured_triggers(
+        self, worker_config: TriggerOrchestratorWorkerGlobalConfig
+    ) -> list[TriggerDefinitionDiscriminated]:
+        triggers = list(worker_config.triggers)
+        has_await_agent = any(getattr(gate, "type", "") == "gate:await-agent" for gate in worker_config.gates)
         has_explicit_completion_trigger = any(
             getattr(trigger, "type", "") == "trigger:agent:run:completed" for trigger in triggers
         )
@@ -175,7 +197,12 @@ class TriggerOrchestratorWorker:
             )
         return triggers
 
-    def _load_configured_providers(self, triggers: list[TriggerDefinitionDiscriminated]) -> dict[str, Any]:
+    def _load_configured_providers(
+        self,
+        worker_config: TriggerOrchestratorWorkerGlobalConfig,
+        triggers: list[TriggerDefinitionDiscriminated],
+    ) -> dict[str, Any]:
+        _ = worker_config
         providers: dict[str, Any] = {}
         for trigger in triggers:
             try:
@@ -212,10 +239,6 @@ class TriggerOrchestratorWorker:
         triggers_payload[trigger.id] = trigger_payload
 
 
-def _worker_global_config_path(project_dir: Path) -> Path:
-    return project_dir / "config" / "trigger-orchestrator" / "config.json"
-
-
 def _normalize_trace_id(value: str | None) -> str:
     if value is None:
         return str(uuid4())
@@ -223,23 +246,10 @@ def _normalize_trace_id(value: str | None) -> str:
     return normalized or str(uuid4())
 
 
-def _load_trigger_orchestrator_worker_global_config(
-    project_dir: Path,
-    *,
-    base_config: GatewayConfig | None = None,
-) -> TriggerOrchestratorWorkerGlobalConfig:
-    base_payload = TriggerOrchestratorWorkerGlobalConfig.model_validate(
-        {
-            "runtime_dir": (base_config.runtime_dir if base_config is not None else Path("runtime")),
-        }
-    ).model_dump(mode="json")
-    path = _worker_global_config_path(project_dir)
-    if not path.exists():
-        return TriggerOrchestratorWorkerGlobalConfig.model_validate(base_payload)
-    raw = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(raw, dict):
-        raise ValueError(f"worker config file {path} must contain a JSON object")
-    return TriggerOrchestratorWorkerGlobalConfig.model_validate({**base_payload, **raw})
+def _config_revision_hash(worker_config: TriggerOrchestratorWorkerGlobalConfig) -> str:
+    payload = worker_config.model_dump(mode="json")
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def build_trigger_orchestrator_worker(
@@ -248,7 +258,12 @@ def build_trigger_orchestrator_worker(
     project_dir: Path | None = None,
 ) -> TriggerOrchestratorWorker:
     resolved_project_dir = Path(project_dir) if project_dir is not None else Path.cwd()
-    worker_config = _load_trigger_orchestrator_worker_global_config(resolved_project_dir, base_config=config)
+    worker_config = load_trigger_orchestrator_worker_global_config(resolved_project_dir, base_config=config)
+    config_reloader = TriggerOrchestratorWorkerGlobalConfigReloader(
+        project_dir=resolved_project_dir,
+        initial_config=worker_config,
+        base_config=config,
+    )
     effective_config = GatewayConfig.model_validate(
         {
             **config.model_dump(mode="json"),
@@ -259,6 +274,7 @@ def build_trigger_orchestrator_worker(
     return TriggerOrchestratorWorker(
         config=effective_config,
         worker_config=worker_config,
+        config_reloader=config_reloader,
         runtime=runtime,
     )
 

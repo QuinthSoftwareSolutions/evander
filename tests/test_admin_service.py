@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import hashlib
 import json
 import os
 import time
@@ -1272,6 +1273,8 @@ def test_workflow_editor_document_round_trips_config_and_separate_layout(tmp_pat
 
     assert Path(save_result.config_path).exists()
     assert Path(save_result.layout_path).exists()
+    assert save_result.saved_at is not None
+    assert save_result.revision is not None
     persisted_layout = json.loads(Path(save_result.layout_path).read_text(encoding="utf-8"))
     assert persisted_layout == {
         "nodes": {
@@ -1283,6 +1286,14 @@ def test_workflow_editor_document_round_trips_config_and_separate_layout(tmp_pat
     reread = service.read_workflow_editor_document()
     assert reread.config["edges"] == [{"source_id": "cron-15m", "target_id": "prompt-agent"}]
     assert reread.layout == persisted_layout
+    assert reread.revision == save_result.revision
+    assert reread.saved_at is not None
+
+    normalized_config = json.loads(Path(save_result.config_path).read_text(encoding="utf-8"))
+    expected_revision = hashlib.sha256(
+        json.dumps(normalized_config, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    assert save_result.revision == expected_revision
 
 
 def test_workflow_editor_document_uses_runtime_parent_as_project_root(
@@ -1441,6 +1452,32 @@ def test_workflow_editor_save_allows_disconnected_draft_nodes(tmp_path: Path) ->
     assert result.config["edges"] == []
     reread = service.read_workflow_editor_document()
     assert reread.config["effects"][0]["id"] == "prompt-agent"
+
+
+def test_workflow_editor_save_writes_via_atomic_replace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    service = AdminService(write_config(tmp_path))
+    replace_calls: list[tuple[str, str]] = []
+    real_replace = os.replace
+
+    def tracking_replace(src: str | os.PathLike[str], dst: str | os.PathLike[str]) -> None:
+        replace_calls.append((os.fspath(src), os.fspath(dst)))
+        real_replace(src, dst)
+
+    monkeypatch.setattr(admin_service.os, "replace", tracking_replace)
+
+    service.save_workflow_editor_document(
+        config={
+            "runtime_dir": str(tmp_path / "runtime"),
+            "triggers": [{"id": "cron-15m", "display_name": "Every 15 minutes", "type": "trigger:cron", "expression": "*/15 * * * *"}],
+            "effects": [{"id": "prompt-agent", "display_name": "Prompt agent", "type": "effect:agent:prompt", "prompt": "Summarize"}],
+            "edges": [{"source_id": "cron-15m", "target_id": "prompt-agent"}],
+        },
+        layout={"nodes": {"cron-15m": {"x": 100, "y": 50}, "prompt-agent": {"x": 300, "y": 50}}},
+    )
+
+    assert len(replace_calls) == 2
+    assert any(dst.endswith("config/trigger-orchestrator/config.json") for _src, dst in replace_calls)
+    assert any(dst.endswith("config/trigger-orchestrator/layout.json") for _src, dst in replace_calls)
 
 
 def test_create_issue_vm_uses_directory_vm_defaults_overlay_for_guest_env(tmp_path: Path, monkeypatch) -> None:

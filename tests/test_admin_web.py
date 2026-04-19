@@ -164,6 +164,8 @@ def test_admin_web_validates_and_saves_workflow_editor_document(tmp_path: Path) 
     assert validate_response.status_code == 200
     assert save_response.status_code == 200
     assert save_response.json()["layout"]["nodes"]["prompt-agent"] == {"x": 300.0, "y": 50.0}
+    assert isinstance(save_response.json().get("revision"), str)
+    assert isinstance(save_response.json().get("saved_at"), str)
     assert (tmp_path / "config" / "trigger-orchestrator" / "layout.json").exists()
 
 
