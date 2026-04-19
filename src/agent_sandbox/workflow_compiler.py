@@ -52,8 +52,8 @@ def collect_domain_validation_diagnostics(
     inbound_edges = {k: list(v) for k, v in build_inbound_edge_index(worker_config.edges).items()}
     diagnostics: list[WorkflowValidationDiagnostic] = []
     provider_catalog = load_provider_plugins(
-        module_names=worker_config.provider_modules,
-        include_entry_points=worker_config.provider_entry_points_enabled,
+        module_names=worker_config.provider_loader.provider_modules,
+        include_entry_points=worker_config.provider_loader.provider_entry_points_enabled,
     )
     for gate in worker_config.gates:
         provider = provider_catalog.gate_providers.get(gate.type)

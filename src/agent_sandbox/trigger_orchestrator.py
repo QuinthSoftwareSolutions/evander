@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from .config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
+from .config import GatewayConfig, OrchestrationCoreConfig, TriggerOrchestratorWorkerGlobalConfig
 from .admin_service import AdminService
 from .provider_config import ProviderConfigResolver
 from .runtime import RuntimeContext
@@ -52,24 +52,31 @@ class TriggerOrchestratorWorker:
         self,
         *,
         config: GatewayConfig,
-        worker_config: TriggerOrchestratorWorkerGlobalConfig,
+        core_config: OrchestrationCoreConfig | None = None,
+        worker_config: TriggerOrchestratorWorkerGlobalConfig | None = None,
         config_reloader: TriggerOrchestratorWorkerGlobalConfigReloader | None = None,
         runtime: RuntimeContext,
+        provider_config_resolver: ProviderConfigResolver | None = None,
     ) -> None:
         self.config = config
-        self.worker_config = worker_config
-        self._config_reloader = config_reloader or FixedTriggerOrchestratorWorkerGlobalConfigReloader(worker_config)
+        selected_config = core_config or worker_config
+        if selected_config is None:
+            raise ValueError("TriggerOrchestratorWorker requires either core_config or worker_config")
+        self.worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(selected_config.model_dump(mode="json"))
+        self._config_reloader = config_reloader or FixedTriggerOrchestratorWorkerGlobalConfigReloader(self.worker_config)
         self.runtime = runtime
+        runtime_provider_resolver = getattr(runtime, "provider_config", None)
+        self.provider_config_resolver = provider_config_resolver or runtime_provider_resolver or ProviderConfigResolver(config)
         self.event_queue = TriggerEventQueue(
-            worker_config.event_queue_store_path,
-            journal_path=worker_config.workflow_event_journal_path,
+            self.worker_config.event_queue_store_path,
+            journal_path=self.worker_config.workflow_event_journal_path,
         )
         provider_catalog = load_provider_plugins(
-            module_names=worker_config.provider_modules,
-            include_entry_points=worker_config.provider_entry_points_enabled,
+            module_names=self.worker_config.provider_modules,
+            include_entry_points=self.worker_config.provider_entry_points_enabled,
         )
         self.provider_factory = TriggerProviderFactory(
-            ProviderConfigResolver(config),
+            self.provider_config_resolver,
             registry=TriggerProviderRegistry(initial=provider_catalog.trigger_providers),
             admin_service=AdminService(config.runtime_dir),
             env=dict(os.environ),
@@ -77,7 +84,7 @@ class TriggerOrchestratorWorker:
         unresolved_trigger_types = sorted(
             {
                 trigger.type
-                for trigger in worker_config.triggers
+                for trigger in self.worker_config.triggers
                 if trigger.type not in provider_catalog.trigger_providers
             }
         )

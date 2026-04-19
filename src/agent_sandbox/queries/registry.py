@@ -60,7 +60,7 @@ class QueryProviderFactory:
         directory_path: str | None = None,
     ) -> QueryProviderBase:
         provider_class = self.registry.resolve(query_definition.type)
-        resolved_config = self.provider_config_resolver.resolve_for_directory(directory_path)
+        resolved_config = self.provider_config_resolver.resolve_query_provider_config(directory_path)
         runtime_context = QueryRuntimeContext(
             provider_config=query_provider_config_blob(resolved_config),
             vm_inventory=self._admin_adapter,

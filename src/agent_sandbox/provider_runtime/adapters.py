@@ -5,7 +5,12 @@ from pathlib import Path
 from typing import Any
 
 from agent_sandbox.admin_service import AdminService
-from agent_sandbox.config import GatewayConfig
+from agent_sandbox.provider_config import (
+    EffectProviderConfig,
+    GateProviderConfig,
+    QueryProviderConfig,
+    TriggerProviderConfig,
+)
 
 
 class AdminServiceProviderAdapter:
@@ -73,27 +78,17 @@ class GateProviderAdapter:
         return self._admin_service.list_vms(**kwargs)
 
 
-def trigger_provider_config_blob(config: GatewayConfig) -> dict[str, Any]:
-    return {
-        "runtime_dir": config.runtime_dir,
-        "session_store_path": config.session_store_path,
-        "pr_map_path": config.pr_map_path,
-        "github_token_env": config.github_token_env,
-        "azure_devops_pr_pat_env": config.azure_devops_pr_pat_env,
-        "azure_devops_organization_url": config.azure_devops_organization_url,
-        "azure_devops_project": config.azure_devops_project,
-        "email_provider_timeout_seconds": config.email_provider_timeout_seconds,
-        "teams": config.teams,
-    }
+def trigger_provider_config_blob(config: TriggerProviderConfig) -> dict[str, Any]:
+    return config.model_dump(mode="json")
 
 
-def effect_provider_config_blob(config: GatewayConfig) -> dict[str, Any]:
-    return {"runtime_dir": config.runtime_dir}
+def effect_provider_config_blob(config: EffectProviderConfig) -> dict[str, Any]:
+    return config.model_dump(mode="json")
 
 
-def query_provider_config_blob(config: GatewayConfig) -> dict[str, Any]:
-    return {"runtime_dir": config.runtime_dir}
+def query_provider_config_blob(config: QueryProviderConfig) -> dict[str, Any]:
+    return config.model_dump(mode="json")
 
 
-def gate_provider_config_blob(config: GatewayConfig) -> dict[str, Any]:
-    return {"runtime_dir": config.runtime_dir}
+def gate_provider_config_blob(config: GateProviderConfig) -> dict[str, Any]:
+    return config.model_dump(mode="json")

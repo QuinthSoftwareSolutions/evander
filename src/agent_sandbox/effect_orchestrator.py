@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 
 from .admin_service import AdminService
 from .agent_prompt_queue import AgentPromptQueueStore
-from .config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
+from .config import GatewayConfig, OrchestrationCoreConfig, TriggerOrchestratorWorkerGlobalConfig
 from .effects.registry import EffectProviderFactory, EffectProviderRegistry
 from .events.models import (
     EffectDefinitionDiscriminated,
@@ -74,8 +74,8 @@ from .workflow_plugins import load_provider_plugins
 
 logger = logging.getLogger(__name__)
 
-_MAX_GRAPH_DEPTH = 16
-_MAX_EVENTS_PER_CYCLE = 200
+_DEFAULT_MAX_GRAPH_DEPTH = 16
+_DEFAULT_MAX_EVENTS_PER_CYCLE = 200
 _BRANCH_PORT_PAYLOAD_KEY = "__branch_port"
 _FOR_EXECUTION_IDS_PAYLOAD_KEY = "__for_execution_ids"
 WorkflowNodeDefinition = (
@@ -163,44 +163,51 @@ class EffectOrchestratorWorker:
         self,
         *,
         config: GatewayConfig,
-        worker_config: TriggerOrchestratorWorkerGlobalConfig,
+        core_config: OrchestrationCoreConfig | None = None,
+        worker_config: TriggerOrchestratorWorkerGlobalConfig | None = None,
         config_reloader: TriggerOrchestratorWorkerGlobalConfigReloader | None = None,
         runtime: RuntimeContext,
+        provider_config_resolver: ProviderConfigResolver | None = None,
     ) -> None:
         self.config = config
-        self.worker_config = worker_config
-        self._config_reloader = config_reloader or FixedTriggerOrchestratorWorkerGlobalConfigReloader(worker_config)
+        selected_config = core_config or worker_config
+        if selected_config is None:
+            raise ValueError("EffectOrchestratorWorker requires either core_config or worker_config")
+        self.worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(selected_config.model_dump(mode="json"))
+        self._config_reloader = config_reloader or FixedTriggerOrchestratorWorkerGlobalConfigReloader(self.worker_config)
         self.runtime = runtime
-        self.workflow_event_journal = WorkflowEventJournal(worker_config.workflow_event_journal_path)
+        runtime_provider_resolver = getattr(runtime, "provider_config", None)
+        self.provider_config_resolver = provider_config_resolver or runtime_provider_resolver or ProviderConfigResolver(config)
+        self.workflow_event_journal = WorkflowEventJournal(self.worker_config.workflow_event_journal_path)
         self.event_queue = TriggerEventQueue(
-            worker_config.event_queue_store_path,
-            journal_path=worker_config.workflow_event_journal_path,
+            self.worker_config.event_queue_store_path,
+            journal_path=self.worker_config.workflow_event_journal_path,
         )
         self.lock_path = _resolve_worker_path(
-            worker_config,
+            self.worker_config,
             "gate_lock_path",
-            fallback=worker_config.effect_lock_path or (worker_config.runtime_dir / "effect-orchestrator.lock"),
+            fallback=self.worker_config.effect_lock_path or (self.worker_config.runtime_dir / "effect-orchestrator.lock"),
         )
         self.cursor_path = _resolve_worker_path(
-            worker_config,
+            self.worker_config,
             "gate_cursor_store_path",
-            fallback=worker_config.effect_cursor_store_path or (worker_config.runtime_dir / "effect-orchestrator-cursors.json"),
+            fallback=self.worker_config.effect_cursor_store_path or (self.worker_config.runtime_dir / "effect-orchestrator-cursors.json"),
         )
-        self.execution_store_path = worker_config.effect_execution_store_path
+        self.execution_store_path = self.worker_config.effect_execution_store_path
         self.execution_store = JsonExecutionStore(
             self.execution_store_path,
-            journal_path=worker_config.workflow_event_journal_path,
+            journal_path=self.worker_config.workflow_event_journal_path,
         )
         self.gate_execution_store_path = _resolve_worker_path(
-            worker_config,
+            self.worker_config,
             "gate_execution_store_path",
-            fallback=worker_config.runtime_dir / "gate-orchestrator-executions.json",
+            fallback=self.worker_config.runtime_dir / "gate-orchestrator-executions.json",
         )
         self.gate_execution_store = JsonGateExecutionStore(
             self.gate_execution_store_path,
-            journal_path=worker_config.workflow_event_journal_path,
+            journal_path=self.worker_config.workflow_event_journal_path,
         )
-        self.queued_agent_prompt_store = AgentPromptQueueStore(worker_config.runtime_dir / "queued-agent-prompts.json")
+        self.queued_agent_prompt_store = AgentPromptQueueStore(self.worker_config.runtime_dir / "queued-agent-prompts.json")
         self._executor = ThreadPoolExecutor(
             max_workers=max(1, min(32, max(1, (os.cpu_count() or 1) * 4))),
             thread_name_prefix="effect-orchestrator",
@@ -211,30 +218,30 @@ class EffectOrchestratorWorker:
         self._last_graph_node_count = 0
         self._last_graph_edge_count = 0
         provider_catalog = load_provider_plugins(
-            module_names=worker_config.provider_modules,
-            include_entry_points=worker_config.provider_entry_points_enabled,
+            module_names=self.worker_config.provider_modules,
+            include_entry_points=self.worker_config.provider_entry_points_enabled,
         )
         self.provider_factory = EffectProviderFactory(
-            ProviderConfigResolver(config),
+            self.provider_config_resolver,
             registry=EffectProviderRegistry(initial=provider_catalog.effect_providers),
             admin_service=AdminService(config.runtime_dir),
             env=dict(os.environ),
         )
         self.query_provider_factory = QueryProviderFactory(
-            ProviderConfigResolver(config),
+            self.provider_config_resolver,
             registry=QueryProviderRegistry(initial=provider_catalog.query_providers),
             admin_service=AdminService(config.runtime_dir),
             env=dict(os.environ),
         )
         self.gate_provider_factory = GateProviderFactory(
-            ProviderConfigResolver(config),
+            self.provider_config_resolver,
             registry=GateProviderRegistry(initial=provider_catalog.gate_providers),
             admin_service=AdminService(config.runtime_dir),
             env=dict(os.environ),
         )
-        unresolved_gate_types = sorted({gate.type for gate in worker_config.gates if gate.type not in provider_catalog.gate_providers})
-        unresolved_effect_types = sorted({effect.type for effect in worker_config.effects if effect.type not in provider_catalog.effect_providers})
-        unresolved_query_types = sorted({query.type for query in worker_config.queries if query.type not in provider_catalog.query_providers})
+        unresolved_gate_types = sorted({gate.type for gate in self.worker_config.gates if gate.type not in provider_catalog.gate_providers})
+        unresolved_effect_types = sorted({effect.type for effect in self.worker_config.effects if effect.type not in provider_catalog.effect_providers})
+        unresolved_query_types = sorted({query.type for query in self.worker_config.queries if query.type not in provider_catalog.query_providers})
         logger.info(
             "Workflow provider diagnostics loaded_plugins=%s gate_types=%s effect_types=%s query_types=%s unresolved_gate_types=%s unresolved_effect_types=%s unresolved_query_types=%s",
             list(provider_catalog.loaded_plugins),
@@ -352,7 +359,10 @@ class EffectOrchestratorWorker:
             )
             return queue_record
 
-        loop_result = loop.run_once(max_events=_MAX_EVENTS_PER_CYCLE, resolve_and_execute=_resolve_and_execute)
+        loop_result = loop.run_once(
+            max_events=max(1, int(getattr(latest_config, "max_events_per_cycle", _DEFAULT_MAX_EVENTS_PER_CYCLE))),
+            resolve_and_execute=_resolve_and_execute,
+        )
         pending_events_scanned = loop_result.events_scanned
         events_processed = loop_result.events_scanned
 
@@ -422,8 +432,9 @@ class EffectOrchestratorWorker:
                 )
                 continue
 
-            depth = _compute_depth(target_node_id, graph.downstream_index)
-            if depth > _MAX_GRAPH_DEPTH:
+            max_graph_depth = max(1, int(getattr(self.worker_config, "max_graph_depth", _DEFAULT_MAX_GRAPH_DEPTH)))
+            depth = _compute_depth(target_node_id, graph.downstream_index, max_graph_depth=max_graph_depth)
+            if depth > max_graph_depth:
                 self._write_skipped_node_record(
                     queue_record=queue_record,
                     node=node,
@@ -1497,11 +1508,11 @@ def _json_sha256(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
-def _compute_depth(node_id: str, downstream_index: dict[str, tuple[str, ...]]) -> int:
+def _compute_depth(node_id: str, downstream_index: dict[str, tuple[str, ...]], *, max_graph_depth: int) -> int:
     try:
         return compute_downstream_depth(node_id, downstream_index)
     except WorkflowGraphCycleError:
-        return _MAX_GRAPH_DEPTH + 1
+        return max(1, int(max_graph_depth)) + 1
 
 
 def _is_gate(node: WorkflowNodeDefinition) -> bool:

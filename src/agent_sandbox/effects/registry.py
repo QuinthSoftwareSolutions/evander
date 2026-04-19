@@ -64,7 +64,7 @@ class EffectProviderFactory:
         directory_path: str | None = None,
     ) -> EffectProviderBase:
         provider_class = self.registry.resolve(effect_definition.type)
-        resolved_config = self.provider_config_resolver.resolve_for_directory(directory_path)
+        resolved_config = self.provider_config_resolver.resolve_effect_provider_config(directory_path)
         runtime_context = EffectRuntimeContext(
             provider_config=effect_provider_config_blob(resolved_config),
             vm_creator=self._admin_adapter,
