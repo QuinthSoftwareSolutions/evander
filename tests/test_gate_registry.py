@@ -7,7 +7,7 @@ from pathlib import Path
 from agent_sandbox.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
 from agent_sandbox.effect_orchestrator import EffectOrchestratorWorker
 from agent_sandbox.events.models import TriggerEvent
-from agent_sandbox.gates.registry import GateProviderRegistry
+from agent_sandbox.gates.registry import DEFAULT_GATE_PROVIDER_REGISTRY, GateProviderRegistry
 
 
 def _edge(source_id: str, target_id: str) -> dict[str, str]:
@@ -58,3 +58,13 @@ def test_effect_orchestrator_runs_without_await_agent_provider(tmp_path: Path) -
     only = next(iter(gate_payload.values()))
     assert only["status"] == "failed"
     assert only["error"] == "no_gate_provider_registered:gate:await-agent"
+
+
+def test_default_registry_includes_all_known_gate_types() -> None:
+    assert set(DEFAULT_GATE_PROVIDER_REGISTRY) == {
+        "gate:await-agent",
+        "gate:filter",
+        "gate:for",
+        "gate:map",
+        "gate:merge",
+    }
