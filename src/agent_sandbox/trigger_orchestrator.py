@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 import os
 import random
@@ -96,16 +97,21 @@ class TriggerOrchestratorWorker:
 
     def run_once(self) -> TriggerOrchestratorCycleResult:
         latest_config, changed = self._config_reloader.get_latest()
+        previous_config = self.worker_config
         self.worker_config = latest_config
         if changed:
-            logger.info("Reloaded trigger orchestrator worker config")
+            logger.info(
+                "Trigger orchestrator config revision changed revision=%s trigger_count=%d",
+                _config_revision_hash(latest_config),
+                len(latest_config.triggers),
+            )
             self.event_queue = TriggerEventQueue(self.worker_config.event_queue_store_path)
 
-        configured_triggers = self._configured_triggers()
-        providers = self._load_configured_providers(configured_triggers)
+        configured_triggers = self._configured_triggers(latest_config)
+        providers = self._load_configured_providers(latest_config, configured_triggers)
         events_discovered = 0
         events_published = 0
-        cursor_payload = _load_cursor_payload(self.worker_config.event_queue_cursor_store_path)
+        cursor_payload = _load_cursor_payload(latest_config.event_queue_cursor_store_path)
 
         for trigger in configured_triggers:
             provider = providers.get(trigger.id)
@@ -159,10 +165,11 @@ class TriggerOrchestratorWorker:
                 event_ids=[event.event_id for event in events],
             )
 
-        _save_cursor_payload(self.worker_config.event_queue_cursor_store_path, cursor_payload)
+        _save_cursor_payload(latest_config.event_queue_cursor_store_path, cursor_payload)
+        sleep_config = previous_config if changed else latest_config
         next_sleep_seconds = _compute_next_sleep_seconds(
-            poll_interval_seconds=self.worker_config.poll_interval_seconds,
-            jitter_seconds=self.worker_config.jitter_seconds,
+            poll_interval_seconds=sleep_config.poll_interval_seconds,
+            jitter_seconds=sleep_config.jitter_seconds,
         )
         return TriggerOrchestratorCycleResult(
             configured_triggers=len(configured_triggers),
@@ -171,9 +178,11 @@ class TriggerOrchestratorWorker:
             next_sleep_seconds=next_sleep_seconds,
         )
 
-    def _configured_triggers(self) -> list[TriggerDefinitionDiscriminated]:
-        triggers = list(self.worker_config.triggers)
-        has_await_agent = any(getattr(gate, "type", "") == "gate:await-agent" for gate in self.worker_config.gates)
+    def _configured_triggers(
+        self, worker_config: TriggerOrchestratorWorkerGlobalConfig
+    ) -> list[TriggerDefinitionDiscriminated]:
+        triggers = list(worker_config.triggers)
+        has_await_agent = any(getattr(gate, "type", "") == "gate:await-agent" for gate in worker_config.gates)
         has_explicit_completion_trigger = any(
             getattr(trigger, "type", "") == "trigger:agent:run:completed" for trigger in triggers
         )
@@ -188,7 +197,12 @@ class TriggerOrchestratorWorker:
             )
         return triggers
 
-    def _load_configured_providers(self, triggers: list[TriggerDefinitionDiscriminated]) -> dict[str, Any]:
+    def _load_configured_providers(
+        self,
+        worker_config: TriggerOrchestratorWorkerGlobalConfig,
+        triggers: list[TriggerDefinitionDiscriminated],
+    ) -> dict[str, Any]:
+        _ = worker_config
         providers: dict[str, Any] = {}
         for trigger in triggers:
             try:
@@ -230,6 +244,12 @@ def _normalize_trace_id(value: str | None) -> str:
         return str(uuid4())
     normalized = value.strip()
     return normalized or str(uuid4())
+
+
+def _config_revision_hash(worker_config: TriggerOrchestratorWorkerGlobalConfig) -> str:
+    payload = worker_config.model_dump(mode="json")
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def build_trigger_orchestrator_worker(
