@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -98,6 +99,101 @@ def test_effect_orchestrator_run_once_uses_reloaded_worker_config_for_sleep(tmp_
     result = worker.run_once()
 
     assert result.next_sleep_seconds == 13
+
+
+def test_effect_orchestrator_logs_graph_revision_changes(tmp_path: Path, caplog) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    first_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {"id": "trigger-1", "display_name": "Tick", "type": "trigger:cron", "expression": "* * * * *"}
+            ],
+            "effects": [
+                {"id": "effect-1", "display_name": "Do Work", "type": "effect:agent:prompt", "prompt": "hello"}
+            ],
+            "edges": [_edge("trigger-1", "effect-1")],
+        }
+    )
+    second_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {"id": "trigger-1", "display_name": "Tick", "type": "trigger:cron", "expression": "* * * * *"}
+            ],
+            "effects": [
+                {"id": "effect-1", "display_name": "Do Work", "type": "effect:agent:prompt", "prompt": "hello"},
+                {"id": "effect-2", "display_name": "Do More", "type": "effect:agent:prompt", "prompt": "more"},
+            ],
+            "edges": [_edge("trigger-1", "effect-1"), _edge("trigger-1", "effect-2")],
+        }
+    )
+
+    class _SequenceReloader:
+        def __init__(self):
+            self._calls = 0
+
+        def get_latest(self):
+            self._calls += 1
+            if self._calls == 1:
+                return first_config, False
+            if self._calls == 2:
+                return second_config, True
+            return second_config, False
+
+    worker = EffectOrchestratorWorker(
+        config=config,
+        worker_config=first_config,
+        config_reloader=_SequenceReloader(),
+        runtime=None,  # type: ignore[arg-type]
+    )
+
+    with caplog.at_level(logging.INFO):
+        worker.run_once()
+        worker.run_once()
+
+    assert "Workflow graph revision changed" in caplog.text
+    assert "nodes=2->3 edges=1->2" in caplog.text
+
+
+def test_effect_orchestrator_marks_removed_source_node_event_as_skipped(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [],
+            "effects": [],
+            "gates": [],
+            "queries": [],
+            "edges": [],
+        }
+    )
+    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="event-orphan-1",
+            trigger_id="effect-removed",
+            trigger_type="effect:agent:prompt",
+            occurred_at=datetime(2026, 4, 4, 12, 0, tzinfo=timezone.utc),
+            payload={},
+        )
+    )
+
+    worker.run_once()
+
+    execution_payload = json.loads((runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8"))
+    only = next(iter(execution_payload.values()))
+    assert only["status"] == "skipped"
+    assert only["error"] == "source_node_removed_from_graph:effect-removed"
+    assert only["config_revision"]
 
 
 def test_effect_orchestrator_executes_gate_and_effect_chain(tmp_path: Path) -> None:
