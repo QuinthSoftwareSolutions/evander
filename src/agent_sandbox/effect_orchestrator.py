@@ -19,7 +19,6 @@ from .agent_completion_watcher import build_agent_run_completed_event
 from .admin_service import AdminService
 from .agent_prompt_queue import AgentPromptQueueStore
 from .config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
-from .effects.providers.vm_copy_files_executor import VmCopyFilesNodeExecutor
 from .effects.registry import EffectProviderFactory
 from .events.models import (
     EffectDefinitionDiscriminated,
@@ -456,10 +455,6 @@ class EffectOrchestratorWorker:
             "effect:pr:create",
         ):
             self.effect_executor_registry.register(effect_type, provider_effect_executor)
-        self.effect_executor_registry.register(
-            "effect:vm:copy-files",
-            VmCopyFilesNodeExecutor(provider_effect_executor),
-        )
         for query_type in ("query:vm:run-state", "query:git:pr-note", "query:session-context", "query:issue:get"):
             self.query_executor_registry.register(query_type, provider_query_executor)
 
