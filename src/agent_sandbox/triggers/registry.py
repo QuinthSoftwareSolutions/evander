@@ -90,5 +90,6 @@ class TriggerProviderFactory:
             metadata={"directory_path": directory_path or "root"},
         )
         provider = provider_class()
-        provider.initialize(trigger_definition=trigger_definition, runtime_context=runtime_context)
+        validated_definition = provider_class.validate_definition(trigger_definition)
+        provider.initialize(trigger_definition=validated_definition, runtime_context=runtime_context)
         return provider

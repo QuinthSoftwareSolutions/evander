@@ -72,5 +72,6 @@ class QueryProviderFactory:
             metadata={"directory_path": directory_path or "root"},
         )
         provider = provider_class()
-        provider.initialize(query_definition=query_definition, runtime_context=runtime_context)
+        validated_definition = provider_class.validate_definition(query_definition)
+        provider.initialize(query_definition=validated_definition, runtime_context=runtime_context)
         return provider

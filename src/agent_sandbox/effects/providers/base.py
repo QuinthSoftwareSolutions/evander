@@ -7,7 +7,7 @@ from typing import Any, Protocol
 
 from agent_sandbox.admin_service import AdminService
 from agent_sandbox.config import GatewayConfig
-from agent_sandbox.events.models import EffectDefinitionDiscriminated
+from agent_sandbox.events.models import EffectDefinitionDiscriminated, materialize_node_definition
 
 
 @dataclass(frozen=True)
@@ -30,6 +30,10 @@ class EffectRuntimeContext:
 
 
 class EffectProvider(Protocol):
+    @classmethod
+    def validate_definition(cls, effect_definition: EffectDefinitionDiscriminated) -> EffectDefinitionDiscriminated:
+        ...
+
     def initialize(
         self,
         effect_definition: EffectDefinitionDiscriminated,
@@ -59,3 +63,6 @@ class EffectProviderBase:
     def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
         del resolved_config
         return {}
+    @classmethod
+    def validate_definition(cls, effect_definition: EffectDefinitionDiscriminated) -> EffectDefinitionDiscriminated:
+        return materialize_node_definition(effect_definition)

@@ -7,7 +7,7 @@ from typing import Any, Protocol
 
 from agent_sandbox.admin_service import AdminService
 from agent_sandbox.config import GatewayConfig
-from agent_sandbox.events.models import QueryDefinitionDiscriminated
+from agent_sandbox.events.models import QueryDefinitionDiscriminated, materialize_node_definition
 
 
 @dataclass(frozen=True)
@@ -30,6 +30,10 @@ class QueryRuntimeContext:
 
 
 class QueryProvider(Protocol):
+    @classmethod
+    def validate_definition(cls, query_definition: QueryDefinitionDiscriminated) -> QueryDefinitionDiscriminated:
+        ...
+
     def initialize(
         self,
         query_definition: QueryDefinitionDiscriminated,
@@ -59,3 +63,6 @@ class QueryProviderBase:
     def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
         del resolved_config
         return {}
+    @classmethod
+    def validate_definition(cls, query_definition: QueryDefinitionDiscriminated) -> QueryDefinitionDiscriminated:
+        return materialize_node_definition(query_definition)
