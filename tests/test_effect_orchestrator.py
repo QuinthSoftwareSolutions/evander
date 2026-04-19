@@ -12,6 +12,7 @@ from agent_sandbox.effect_orchestrator import (
     AwaitAgentPendingRecord,
     EffectOrchestratorWorker,
     _await_agent_pending_target,
+    build_effect_orchestrator_worker,
 )
 from agent_sandbox.events.models import TriggerEvent
 from agent_sandbox.models import VmSummary
@@ -74,6 +75,26 @@ def _await_agent_store(worker: EffectOrchestratorWorker):
     provider = worker._get_gate_provider("gate:await-agent")
     assert provider is not None
     return provider.load_state()
+
+
+def test_build_effect_orchestrator_worker_accepts_injected_services(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+
+    class _InjectedServices:
+        def __init__(self) -> None:
+            self.called_with: GatewayConfig | None = None
+
+        def build_runtime(self, cfg: GatewayConfig):
+            self.called_with = cfg
+            return object()
+
+    services = _InjectedServices()
+    worker = build_effect_orchestrator_worker(config, project_dir=tmp_path, services=services)
+
+    assert services.called_with is not None
+    assert services.called_with.runtime_dir == runtime_dir
+    assert worker.runtime is not None
 
 
 def test_effect_orchestrator_run_once_uses_reloaded_worker_config_for_sleep(tmp_path: Path) -> None:
