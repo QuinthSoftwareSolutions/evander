@@ -35,6 +35,12 @@ from .gate_runtime import (
     require_object_payload,
 )
 from .host_heartbeat_worker import _single_instance_lock
+from .orchestration.adapters import (
+    EffectCompletionPublisherAdapter,
+    EffectDependencyResolverAdapter,
+    EffectEventFetcherAdapter,
+    EffectExecutionRecorderAdapter,
+)
 from .provider_config import ProviderConfigResolver
 from .queries.registry import QueryProviderFactory
 from .runtime import RuntimeContext
@@ -64,6 +70,7 @@ from .workflow_engine.node_executors import (
     ProviderEffectNodeExecutor,
     ProviderQueryNodeExecutor,
 )
+from .workflow_engine import OrchestrationLoop
 
 logger = logging.getLogger(__name__)
 
@@ -293,17 +300,42 @@ class EffectOrchestratorWorker:
         completion_events_published += published_count
         completion_events_published += self._dispatch_queued_agent_prompts_directly()
 
-        while events_processed < _MAX_EVENTS_PER_CYCLE:
-            pending = self.event_queue.list_pending(limit=1)
-            if not pending:
-                break
-            pending_events_scanned += 1
-            queue_record = pending[0]
-            execution_count = self._process_event_record(queue_record, graph=graph, config_revision=config_revision)
-            effect_executions_started += execution_count
-            events_processed += 1
-            self._update_event_delivery_state(queue_record.event_id)
-            _update_cursor_payload(cursor_payload, queue_record)
+        loop = OrchestrationLoop[
+            TriggerQueueRecord,
+            tuple[ExecutionGraph, str, dict[str, Any]],
+            TriggerQueueRecord,
+        ](
+            event_fetcher=EffectEventFetcherAdapter(
+                fetch_pending=lambda: (self.event_queue.list_pending(limit=1) or [None])[0]
+            ),
+            dependency_resolver=EffectDependencyResolverAdapter(
+                dependency_factory=lambda _queue_record: (graph, config_revision, cursor_payload)
+            ),
+            execution_recorder=EffectExecutionRecorderAdapter(
+                record_event_processed=lambda queue_record: (
+                    self._update_event_delivery_state(queue_record.event_id),
+                    _update_cursor_payload(cursor_payload, queue_record),
+                )
+            ),
+            completion_publisher=EffectCompletionPublisherAdapter(),
+        )
+
+        def _resolve_and_execute(
+            queue_record: TriggerQueueRecord,
+            dependency: tuple[ExecutionGraph, str, dict[str, Any]],
+        ) -> TriggerQueueRecord:
+            nonlocal effect_executions_started
+            resolved_graph, resolved_config_revision, _cursor = dependency
+            effect_executions_started += self._process_event_record(
+                queue_record,
+                graph=resolved_graph,
+                config_revision=resolved_config_revision,
+            )
+            return queue_record
+
+        loop_result = loop.run_once(max_events=_MAX_EVENTS_PER_CYCLE, resolve_and_execute=_resolve_and_execute)
+        pending_events_scanned = loop_result.events_scanned
+        events_processed = loop_result.events_scanned
 
         _save_cursor_payload(self.cursor_path, cursor_payload)
         next_sleep_seconds = _compute_next_sleep_seconds(
