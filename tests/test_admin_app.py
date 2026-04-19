@@ -219,6 +219,13 @@ def test_directory_config_domain_help_text_calls_out_discord_fields() -> None:
     assert admin_app._directory_config_domain_help_text("email") is None
 
 
+def test_directory_config_domain_help_text_calls_out_teams_mixed_scope() -> None:
+    teams_help = admin_app._directory_config_domain_help_text("teams")
+
+    assert teams_help is not None
+    assert "global Teams ingest worker" in teams_help
+
+
 def test_directory_config_tab_field_sources_omit_discord_fields_from_policy_and_providers_tabs() -> None:
     policy_fields = {
         field_name
@@ -248,7 +255,21 @@ def test_directory_config_tab_field_sources_expose_composite_discord_tab() -> No
     assert admin_app._directory_config_tab_underlying_domains("discord") == ("providers", "policy")
 
 
-def test_collect_config_form_payloads_by_domain_splits_discord_tab_fields() -> None:
+def test_directory_config_tab_field_sources_expose_mixed_scope_teams_tab() -> None:
+    field_sources = admin_app._directory_config_tab_field_sources("teams")
+    field_domains = {field_name: domain for domain, field_name in field_sources}
+
+    assert ("providers", "teams_backend") in field_sources
+    assert ("providers", "teams_graph_api_base_url") in field_sources
+    assert ("worker_global:teams-ingest", "poll_interval_seconds") in field_sources
+    assert ("worker_global:teams-ingest", "directories") in field_sources
+    assert field_domains["teams_backend"] == "providers"
+    assert field_domains["poll_interval_seconds"] == "worker_global:teams-ingest"
+    assert admin_app._directory_config_tab_underlying_domains("teams") == ("providers",)
+    assert admin_app._directory_config_tab_worker_global_sources("teams") == ("teams-ingest",)
+
+
+def test_collect_config_form_payloads_by_source_splits_discord_tab_fields() -> None:
     class DummyCheckbox:
         def __init__(self, checked: bool) -> None:
             self._checked = checked
@@ -286,12 +307,127 @@ def test_collect_config_form_payloads_by_domain_splits_discord_tab_fields() -> N
         _collect_config_form_payload=lambda domain: admin_app.MainWindow._collect_config_form_payload(window, domain),
     )
 
-    payloads = admin_app.MainWindow._collect_config_form_payloads_by_domain(window, "discord")
+    payloads = admin_app.MainWindow._collect_config_form_payloads_by_source(window, "discord")
 
     assert payloads == {
         "providers": {"discord_backend": "bot_api"},
         "policy": {"discord_operator_user_allowlist": ["123456789012345678"]},
     }
+
+
+def test_collect_config_form_payloads_by_source_filters_scope() -> None:
+    class DummyCheckbox:
+        def __init__(self, checked: bool) -> None:
+            self._checked = checked
+
+        def isChecked(self) -> bool:
+            return self._checked
+
+    window = SimpleNamespace(
+        _selected_directory_path="root/team-a",
+        _config_widgets={
+            "teams": {
+                "field_specs": {
+                    "teams_backend": {
+                        "include_checkbox": DummyCheckbox(True),
+                        "clear_checkbox": DummyCheckbox(False),
+                        "kind": "literal",
+                        "control": object(),
+                    },
+                    "poll_interval_seconds": {
+                        "include_checkbox": DummyCheckbox(True),
+                        "clear_checkbox": DummyCheckbox(False),
+                        "kind": "float",
+                        "control": object(),
+                    },
+                },
+                "field_domains": {
+                    "teams_backend": "providers",
+                    "poll_interval_seconds": "worker_global:teams-ingest",
+                },
+            }
+        },
+        _read_config_field_control_value=lambda spec: (
+            "graph_api" if spec["kind"] == "literal" else 45.0
+        ),
+        _collect_config_form_payload=lambda domain: admin_app.MainWindow._collect_config_form_payload(window, domain),
+    )
+
+    directory_payloads = admin_app.MainWindow._collect_config_form_payloads_by_source(
+        window, "teams", source_filter=lambda source_domain: not source_domain.startswith("worker_global:")
+    )
+    worker_payloads = admin_app.MainWindow._collect_config_form_payloads_by_source(
+        window, "teams", source_filter=lambda source_domain: source_domain.startswith("worker_global:")
+    )
+
+    assert directory_payloads == {"providers": {"teams_backend": "graph_api"}}
+    assert worker_payloads == {"worker_global:teams-ingest": {"poll_interval_seconds": 45.0}}
+
+
+def test_save_config_domain_routes_mixed_scope_writes() -> None:
+    writes: list[tuple[str, str, dict[str, object]]] = []
+
+    class DummyResult:
+        def __init__(self) -> None:
+            self.ok = True
+            self.errors = []
+
+    class DummyText:
+        def __init__(self) -> None:
+            self.value = ""
+
+        def setPlainText(self, value: str) -> None:
+            self.value = value
+
+    class DummyLabel:
+        def __init__(self) -> None:
+            self.value = ""
+
+        def setText(self, value: str) -> None:
+            self.value = value
+
+    service = SimpleNamespace(
+        directory_scoped_config_enabled=True,
+        write_directory_domain_config=lambda directory_path, source_domain, payload: (
+            writes.append(("directory", source_domain, payload)) or DummyResult()
+        ),
+        write_worker_global_config=lambda worker_id, payload: (
+            writes.append(("worker", worker_id, payload)) or DummyResult()
+        ),
+    )
+    window = SimpleNamespace(
+        service=service,
+        _selected_directory_path="root/team-a",
+        _config_widgets={
+            "teams": {
+                "validation_view": DummyText(),
+            }
+        },
+        _config_dirty_domains={"teams"},
+        config_status_label=DummyLabel(),
+        refresh_configuration=lambda: writes.append(("refresh", "", {})),
+        _collect_config_form_payloads_by_source=lambda domain, source_filter=None: (
+            admin_app.MainWindow._collect_config_form_payloads_by_source(window, domain, source_filter=source_filter)
+        ),
+        _collect_config_form_payload=lambda _domain: {
+            "teams_backend": "graph_api",
+            "poll_interval_seconds": 60.0,
+        },
+    )
+    window._config_widgets["teams"]["field_domains"] = {
+        "teams_backend": "providers",
+        "poll_interval_seconds": "worker_global:teams-ingest",
+    }
+
+    admin_app.MainWindow.save_config_domain(
+        window, "teams", source_filter=lambda source_domain: not source_domain.startswith("worker_global:")
+    )
+    admin_app.MainWindow.save_config_domain(
+        window, "teams", source_filter=lambda source_domain: source_domain.startswith("worker_global:")
+    )
+
+    assert ("directory", "providers", {"teams_backend": "graph_api"}) in writes
+    assert ("worker", "teams-ingest", {"poll_interval_seconds": 60.0}) in writes
 
 
 def test_preferred_agent_log_repo_name_uses_single_detected_repo() -> None:
