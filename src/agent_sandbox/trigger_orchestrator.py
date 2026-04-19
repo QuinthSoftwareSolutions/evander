@@ -16,7 +16,7 @@ from .config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
 from .admin_service import AdminService
 from .provider_config import ProviderConfigResolver
 from .runtime import RuntimeContext, build_runtime
-from .events.models import AgentRunCompletedTriggerDefinition, TriggerDefinitionDiscriminated, validate_output_mapping_keys
+from .events.models import TriggerDefinitionDiscriminated, validate_output_mapping_keys
 from .triggers.queue import TriggerEventQueue
 from .triggers.registry import TriggerProviderFactory
 from .workflow_runtime_config import (
@@ -38,8 +38,6 @@ class TriggerOrchestratorCycleResult:
 
 
 class TriggerOrchestratorWorker:
-    _AWAIT_AGENT_COMPLETION_TRIGGER_ID = "__await-agent-completion__"
-
     def __init__(
         self,
         *,
@@ -181,21 +179,7 @@ class TriggerOrchestratorWorker:
     def _configured_triggers(
         self, worker_config: TriggerOrchestratorWorkerGlobalConfig
     ) -> list[TriggerDefinitionDiscriminated]:
-        triggers = list(worker_config.triggers)
-        has_await_agent = any(getattr(gate, "type", "") == "gate:await-agent" for gate in worker_config.gates)
-        has_explicit_completion_trigger = any(
-            getattr(trigger, "type", "") == "trigger:agent:run:completed" for trigger in triggers
-        )
-        if has_await_agent and not has_explicit_completion_trigger:
-            triggers.append(
-                AgentRunCompletedTriggerDefinition(
-                    id=self._AWAIT_AGENT_COMPLETION_TRIGGER_ID,
-                    display_name="Await agent completion",
-                    type="trigger:agent:run:completed",
-                    vm_user="agent",
-                )
-            )
-        return triggers
+        return list(worker_config.triggers)
 
     def _load_configured_providers(
         self,

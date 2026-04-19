@@ -6,6 +6,7 @@ import logging
 from pathlib import Path
 
 from .config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
+from .workflow_compiler import WorkflowCompilationPolicies, compile_trigger_orchestrator_config
 
 logger = logging.getLogger(__name__)
 
@@ -30,11 +31,17 @@ def load_trigger_orchestrator_worker_global_config(
     base_payload = _base_worker_global_payload(base_config)
     path = _worker_global_config_path(project_dir)
     if not path.exists():
-        return TriggerOrchestratorWorkerGlobalConfig.model_validate(base_payload)
+        return compile_trigger_orchestrator_config(
+            TriggerOrchestratorWorkerGlobalConfig.model_validate(base_payload),
+            policies=WorkflowCompilationPolicies(augment_await_agent_completion=True),
+        )
     raw = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
         raise ValueError(f"worker config file {path} must contain a JSON object")
-    return TriggerOrchestratorWorkerGlobalConfig.model_validate({**base_payload, **raw})
+    return compile_trigger_orchestrator_config(
+        TriggerOrchestratorWorkerGlobalConfig.model_validate({**base_payload, **raw}),
+        policies=WorkflowCompilationPolicies(augment_await_agent_completion=True),
+    )
 
 
 class TriggerOrchestratorWorkerGlobalConfigReloader:
@@ -91,11 +98,17 @@ class TriggerOrchestratorWorkerGlobalConfigReloader:
 
     def _load_from_path(self) -> TriggerOrchestratorWorkerGlobalConfig:
         if not self._path.exists():
-            return TriggerOrchestratorWorkerGlobalConfig.model_validate(self._base_payload)
+            return compile_trigger_orchestrator_config(
+                TriggerOrchestratorWorkerGlobalConfig.model_validate(self._base_payload),
+                policies=WorkflowCompilationPolicies(augment_await_agent_completion=True),
+            )
         raw = json.loads(self._path.read_text(encoding="utf-8"))
         if not isinstance(raw, dict):
             raise ValueError(f"worker config file {self._path} must contain a JSON object")
-        return TriggerOrchestratorWorkerGlobalConfig.model_validate({**self._base_payload, **raw})
+        return compile_trigger_orchestrator_config(
+            TriggerOrchestratorWorkerGlobalConfig.model_validate({**self._base_payload, **raw}),
+            policies=WorkflowCompilationPolicies(augment_await_agent_completion=True),
+        )
 
 
 class FixedTriggerOrchestratorWorkerGlobalConfigReloader:
