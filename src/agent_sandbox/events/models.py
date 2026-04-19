@@ -1,51 +1,19 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
 from collections.abc import Mapping
-from typing import Annotated, Any, Literal, TypeAlias
+from typing import Annotated, Any, Callable, Literal, TypeAlias, get_args, get_origin
 
 from pydantic import BaseModel, Field, StringConstraints, field_validator, model_validator
 from typing_extensions import TypeAliasType
 
 from agent_sandbox.models import DirectoryPath
 
-TriggerType = Literal[
-    "trigger:cron",
-    "trigger:ticket:created",
-    "trigger:ticket:changed",
-    "trigger:script-run-request",
-    "trigger:discord:new-message",
-    "trigger:teams:new-message",
-    "trigger:email:new-message",
-    "trigger:pull-request:new-feedback",
-    "trigger:review:new-request",
-    "trigger:git:push",
-    "trigger:agent:prompt:new",
-    "trigger:agent:run:completed",
-]
-
-GateType = Literal["gate:filter", "gate:map", "gate:merge", "gate:await-agent", "gate:for"]
-EffectType = Literal[
-    "effect:vm:create",
-    "effect:vm:start",
-    "effect:vm:stop",
-    "effect:agent:prompt",
-    "effect:agent:enqueue-prompt",
-    "effect:bash:script",
-    "effect:vm:exec",
-    "effect:vm:copy-files",
-    "effect:vm:delete-files",
-    "effect:issue:update-state",
-    "effect:session:update-metadata",
-    "effect:git:promote-agent-branch",
-    "effect:pr:create",
-]
-QueryType = Literal[
-    "query:vm:run-state",
-    "query:git:pr-note",
-    "query:session-context",
-    "query:issue:get",
-]
+TriggerType: TypeAlias = str
+GateType: TypeAlias = str
+EffectType: TypeAlias = str
+QueryType: TypeAlias = str
 
 EmailProvider = Literal["json_store", "gmail", "graph"]
 PrFeedbackProvider = Literal["local", "github", "ado"]
@@ -120,10 +88,14 @@ class WorkflowNodeDefinition(WorkflowNodeEnvelope):
     """Backward-compatible alias for historical node model naming."""
 
 
-def materialize_node_definition(node: WorkflowNodeEnvelope) -> BaseModel:
-    model_class = _NODE_DEFINITION_MODELS.get(node.type)
-    if model_class is None:
-        return node
+@dataclass(frozen=True)
+class NodeSchemaRegistration:
+    node_type: str
+    model_class: type[BaseModel]
+    materialize: Callable[[WorkflowNodeEnvelope], BaseModel]
+
+
+def _materialize_with_model(model_class: type[BaseModel], node: WorkflowNodeEnvelope) -> BaseModel:
     payload = {
         "id": node.id,
         "display_name": node.display_name,
@@ -132,6 +104,76 @@ def materialize_node_definition(node: WorkflowNodeEnvelope) -> BaseModel:
         **dict(node.config),
     }
     return model_class.model_validate(payload)
+
+
+def _extract_literal_string(annotation: object) -> str | None:
+    if get_origin(annotation) is not Literal:
+        return None
+    literal_values = get_args(annotation)
+    if len(literal_values) != 1:
+        return None
+    literal_value = literal_values[0]
+    if not isinstance(literal_value, str):
+        return None
+    return literal_value
+
+
+def _iter_node_definition_models() -> list[type[WorkflowNodeDefinition]]:
+    models: list[type[WorkflowNodeDefinition]] = []
+    for obj in globals().values():
+        if not isinstance(obj, type):
+            continue
+        if not issubclass(obj, WorkflowNodeDefinition) or obj is WorkflowNodeDefinition:
+            continue
+        if obj in {TriggerDefinition, GateDefinition, EffectDefinition, QueryDefinition}:
+            continue
+        models.append(obj)
+    return models
+
+
+def _build_node_schema_registry() -> dict[str, NodeSchemaRegistration]:
+    registry: dict[str, NodeSchemaRegistration] = {}
+    for model_class in _iter_node_definition_models():
+        model_fields = getattr(model_class, "model_fields", {})
+        type_field = model_fields.get("type")
+        if type_field is None:
+            continue
+        node_type = _extract_literal_string(type_field.annotation)
+        if node_type is None:
+            continue
+        registry[node_type] = NodeSchemaRegistration(
+            node_type=node_type,
+            model_class=model_class,
+            materialize=lambda node, model_class=model_class: _materialize_with_model(model_class, node),
+        )
+    return registry
+
+
+_NODE_SCHEMA_REGISTRY: dict[str, NodeSchemaRegistration]
+
+
+def register_node_schema(
+    *,
+    node_type: str,
+    model_class: type[BaseModel],
+    materialize: Callable[[WorkflowNodeEnvelope], BaseModel] | None = None,
+) -> None:
+    _NODE_SCHEMA_REGISTRY[node_type] = NodeSchemaRegistration(
+        node_type=node_type,
+        model_class=model_class,
+        materialize=materialize or (lambda node: _materialize_with_model(model_class, node)),
+    )
+
+
+def get_node_schema_registry() -> Mapping[str, NodeSchemaRegistration]:
+    return _NODE_SCHEMA_REGISTRY
+
+
+def materialize_node_definition(node: WorkflowNodeEnvelope) -> BaseModel:
+    registration = _NODE_SCHEMA_REGISTRY.get(node.type)
+    if registration is None:
+        return node
+    return registration.materialize(node)
 
 
 class TriggerDefinition(WorkflowNodeDefinition):
@@ -675,37 +717,7 @@ QueryDefinitionDiscriminated = WorkflowNodeEnvelope
 
 WorkflowNodeType = TriggerType | GateType | EffectType | QueryType
 
-_NODE_DEFINITION_MODELS: dict[str, type[BaseModel]] = {
-    "trigger:cron": CronTriggerDefinition,
-    "trigger:ticket:created": TicketCreatedTriggerDefinition,
-    "trigger:ticket:changed": TicketChangedTriggerDefinition,
-    "trigger:script-run-request": ScriptRunRequestTriggerDefinition,
-    "trigger:discord:new-message": DiscordNewMessageTriggerDefinition,
-    "trigger:teams:new-message": TeamsNewMessageTriggerDefinition,
-    "trigger:email:new-message": EmailNewMessageTriggerDefinition,
-    "trigger:pull-request:new-feedback": PullRequestNewFeedbackTriggerDefinition,
-    "trigger:review:new-request": ReviewNewRequestTriggerDefinition,
-    "trigger:git:push": GitPushTriggerDefinition,
-    "trigger:agent:prompt:new": AgentPromptNewTriggerDefinition,
-    "trigger:agent:run:completed": AgentRunCompletedTriggerDefinition,
-    "effect:vm:create": VmCreateEffectDefinition,
-    "effect:vm:start": VmStartEffectDefinition,
-    "effect:vm:stop": VmStopEffectDefinition,
-    "effect:agent:prompt": AgentPromptEffectDefinition,
-    "effect:agent:enqueue-prompt": AgentEnqueuePromptEffectDefinition,
-    "effect:bash:script": BashScriptEffectDefinition,
-    "effect:vm:exec": VmExecEffectDefinition,
-    "effect:vm:copy-files": VmCopyFilesEffectDefinition,
-    "effect:vm:delete-files": VmDeleteFilesEffectDefinition,
-    "effect:issue:update-state": IssueUpdateStateEffectDefinition,
-    "effect:session:update-metadata": SessionUpdateMetadataEffectDefinition,
-    "effect:git:promote-agent-branch": GitPromoteAgentBranchEffectDefinition,
-    "effect:pr:create": PrCreateEffectDefinition,
-    "query:vm:run-state": VmRunStateQueryDefinition,
-    "query:git:pr-note": GitPrNoteQueryDefinition,
-    "query:session-context": SessionContextQueryDefinition,
-    "query:issue:get": IssueGetQueryDefinition,
-}
+_NODE_SCHEMA_REGISTRY = _build_node_schema_registry()
 
 
 class TriggerEvent(BaseModel):
