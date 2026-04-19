@@ -20,6 +20,7 @@ from pydantic import (
 )
 
 from .models import DirectoryPath
+from .provider_profiles import DEFAULT_PROVIDER_PROFILE_NAME, resolve_provider_profile
 from .events.models import (
     EdgeDefinition,
     EffectDefinitionDiscriminated,
@@ -655,7 +656,11 @@ class OrchestrationCoreConfig(BaseModel):
             inbound_count = len(inbound_edges.get(node.id, ()))
             if inbound_count != 0:
                 inbound_errors.append(f"trigger {node.id} must have 0 inbound edges, found {inbound_count}")
-        provider_catalog = load_provider_plugins(module_names=(), include_entry_points=False)
+        provider_catalog = load_provider_plugins(
+            module_names=(),
+            include_entry_points=False,
+            include_builtin=True,
+        )
         node_capabilities = {
             **{node_type: provider.node_capability() for node_type, provider in provider_catalog.gate_providers.items()},
             **{node_type: provider.node_capability() for node_type, provider in provider_catalog.effect_providers.items()},
@@ -717,8 +722,15 @@ class OrchestrationCoreConfig(BaseModel):
 
 
 class OrchestrationProviderLoaderConfig(BaseModel):
+    provider_profile: str = DEFAULT_PROVIDER_PROFILE_NAME
+    include_builtin: bool | None = None
     provider_modules: list[str] = Field(default_factory=list)
     provider_entry_points_enabled: bool = True
+
+    @field_validator("provider_profile")
+    @classmethod
+    def validate_provider_profile(cls, value: str) -> str:
+        return resolve_provider_profile(value).name
 
 
 class TriggerOrchestratorWorkerGlobalConfig(OrchestrationCoreConfig):
@@ -741,6 +753,18 @@ class TriggerOrchestratorWorkerGlobalConfig(OrchestrationCoreConfig):
     @property
     def provider_modules(self) -> list[str]:
         return list(self.provider_loader.provider_modules)
+
+    @property
+    def provider_profile(self) -> str:
+        return self.provider_loader.provider_profile
+
+    @property
+    def provider_include_builtin(self) -> bool:
+        override = self.provider_loader.include_builtin
+        if override is not None:
+            return override
+        profile = resolve_provider_profile(self.provider_loader.provider_profile)
+        return profile.include_builtin
 
     @property
     def provider_entry_points_enabled(self) -> bool:

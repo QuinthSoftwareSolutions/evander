@@ -11,6 +11,8 @@ As of this change, `config/trigger-orchestrator/config.json` is interpreted as:
   - graph declarations (`triggers`, `gates`, `effects`, `queries`, `edges`)
   - engine safety limits (`max_graph_depth`, `max_events_per_cycle`)
 - **`provider_loader`** for provider plugin discovery:
+  - `provider_profile`
+  - `include_builtin`
   - `provider_modules`
   - `provider_entry_points_enabled`
 

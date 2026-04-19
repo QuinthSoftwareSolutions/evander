@@ -29,7 +29,7 @@ def register_providers():
     catalog = load_provider_plugins(module_names=["custom_plugin"], include_entry_points=False)
 
     assert "trigger:custom:test" in catalog.trigger_providers
-    assert "agent_sandbox.providers.builtin" in catalog.loaded_plugins
+    assert "agent_sandbox.providers.builtin" not in catalog.loaded_plugins
     assert "custom_plugin" in catalog.loaded_plugins
 
 
@@ -53,3 +53,10 @@ def test_load_provider_plugins_supports_entry_points(monkeypatch) -> None:
 
     assert "query:custom:test" in catalog.query_providers
     assert "entry_point:custom.entry" in catalog.loaded_plugins
+
+
+def test_load_provider_plugins_can_include_builtin_explicitly() -> None:
+    catalog = load_provider_plugins(module_names=[], include_entry_points=False, include_builtin=True)
+
+    assert "trigger:cron" in catalog.trigger_providers
+    assert "agent_sandbox.providers.builtin" in catalog.loaded_plugins

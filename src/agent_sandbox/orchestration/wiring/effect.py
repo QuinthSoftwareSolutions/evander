@@ -11,6 +11,7 @@ from ...config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
 from ...effects.registry import EffectProviderFactory, EffectProviderRegistry
 from ...gates.registry import GateProviderFactory, GateProviderRegistry
 from ...provider_config import ProviderConfigResolver
+from ...provider_profiles import resolve_provider_module_names
 from ...queries.registry import QueryProviderFactory, QueryProviderRegistry
 from ...runtime import RuntimeContext
 from ...triggers.queue import TriggerEventQueue
@@ -78,8 +79,12 @@ def build_effect_worker_wiring(
         thread_name_prefix="effect-orchestrator",
     )
     provider_catalog = load_provider_plugins(
-        module_names=worker_config.provider_modules,
+        module_names=resolve_provider_module_names(
+            profile_name=worker_config.provider_profile,
+            extra_modules=worker_config.provider_modules,
+        ),
         include_entry_points=worker_config.provider_entry_points_enabled,
+        include_builtin=worker_config.provider_include_builtin,
     )
     provider_factory = EffectProviderFactory(
         resolver,

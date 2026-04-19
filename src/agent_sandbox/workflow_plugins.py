@@ -47,6 +47,7 @@ def load_provider_plugins(
     *,
     module_names: Sequence[str] | None = None,
     include_entry_points: bool = True,
+    include_builtin: bool = False,
 ) -> LoadedProviderCatalog:
     trigger_providers: dict[str, type[TriggerProviderBase]] = {}
     gate_providers: dict[str, type[GateProviderBase]] = {}
@@ -56,7 +57,13 @@ def load_provider_plugins(
     loaded_plugins: list[str] = []
 
     registration_specs: list[tuple[str, Any]] = []
-    registration_specs.append(("agent_sandbox.providers.builtin", _load_registration_from_module("agent_sandbox.providers.builtin")))
+    if include_builtin:
+        registration_specs.append(
+            (
+                "agent_sandbox.providers.builtin",
+                _load_registration_from_module("agent_sandbox.providers.builtin"),
+            )
+        )
 
     for module_name in module_names or ():
         normalized = str(module_name).strip()
@@ -175,7 +182,11 @@ def _coerce_provider_mapping(
     return normalized
 
 
-_DEFAULT_PROVIDER_CATALOG = load_provider_plugins(module_names=(), include_entry_points=False)
+_DEFAULT_PROVIDER_CATALOG = load_provider_plugins(
+    module_names=(),
+    include_entry_points=False,
+    include_builtin=True,
+)
 
 TRIGGER_PLUGIN_CLASSES: Mapping[str, type[TriggerProviderBase]] = _DEFAULT_PROVIDER_CATALOG.trigger_providers
 GATE_PLUGIN_CLASSES: Mapping[str, type[GateProviderBase]] = _DEFAULT_PROVIDER_CATALOG.gate_providers

@@ -78,3 +78,24 @@ def test_effect_queue_delivery_semantics_are_preserved(tmp_path: Path) -> None:
     assert result.events_processed == 1
     queue_payload = json.loads(worker_config.event_queue_store_path.read_text(encoding="utf-8"))
     assert queue_payload["event-1"]["delivery_state"] == "delivered"
+
+
+def test_orchestration_only_profile_runs_without_domain_providers(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "provider_loader": {"provider_profile": "profiles/core-minimal"},
+            "triggers": [],
+            "gates": [],
+            "effects": [],
+            "queries": [],
+            "edges": [],
+        }
+    )
+
+    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    result = worker.run_once()
+
+    assert result.events_processed == 0
