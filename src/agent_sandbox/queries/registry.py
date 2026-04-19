@@ -7,22 +7,14 @@ from agent_sandbox.admin_service import AdminService
 from agent_sandbox.events.models import QueryDefinitionDiscriminated, QueryType
 from agent_sandbox.provider_config import ProviderConfigResolver
 from agent_sandbox.provider_runtime.adapters import AdminServiceProviderAdapter, query_provider_config_blob
+from agent_sandbox.workflow_plugins import QUERY_PLUGIN_CLASSES
 
 from .providers.base import QueryProviderBase, QueryRuntimeContext
-from .providers.git_pr_note import GitPrNoteQueryProvider
-from .providers.issue_get import IssueGetQueryProvider
-from .providers.session_context import SessionContextQueryProvider
-from .providers.vm_run_state import VmRunStateQueryProvider
 
 QueryProviderClass = type[QueryProviderBase]
 
 
-DEFAULT_QUERY_PROVIDER_REGISTRY: dict[QueryType, QueryProviderClass] = {
-    "query:vm:run-state": VmRunStateQueryProvider,
-    "query:git:pr-note": GitPrNoteQueryProvider,
-    "query:session-context": SessionContextQueryProvider,
-    "query:issue:get": IssueGetQueryProvider,
-}
+DEFAULT_QUERY_PROVIDER_REGISTRY: dict[QueryType, QueryProviderClass] = dict(QUERY_PLUGIN_CLASSES)
 
 
 class QueryProviderRegistry:

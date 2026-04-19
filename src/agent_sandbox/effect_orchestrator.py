@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 from .admin_service import AdminService
 from .agent_prompt_queue import AgentPromptQueueStore
 from .config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
-from .effects.registry import EffectProviderFactory
+from .effects.registry import EffectProviderFactory, EffectProviderRegistry
 from .events.models import (
     EffectDefinitionDiscriminated,
     GateDefinitionDiscriminated,
@@ -28,7 +28,7 @@ from .events.models import (
     TriggerDefinitionDiscriminated,
     TriggerEvent,
 )
-from .gates.registry import GateProviderFactory
+from .gates.registry import GateProviderFactory, GateProviderRegistry
 from .gate_runtime import (
     GateRuntimeError,
     require_object_payload,
@@ -41,7 +41,7 @@ from .orchestration.adapters import (
     EffectExecutionRecorderAdapter,
 )
 from .provider_config import ProviderConfigResolver
-from .queries.registry import QueryProviderFactory
+from .queries.registry import QueryProviderFactory, QueryProviderRegistry
 from .runtime import RuntimeContext
 from .app_bootstrap import build_runtime
 from .platform_integrations import PlatformServiceBundle, RuntimeAssemblyInterface
@@ -70,6 +70,7 @@ from .workflow_engine.node_executors import (
     ProviderQueryNodeExecutor,
 )
 from .workflow_engine import OrchestrationLoop
+from .workflow_plugins import load_provider_plugins
 
 logger = logging.getLogger(__name__)
 
@@ -209,20 +210,40 @@ class EffectOrchestratorWorker:
         self._last_graph_revision: str | None = None
         self._last_graph_node_count = 0
         self._last_graph_edge_count = 0
+        provider_catalog = load_provider_plugins(
+            module_names=worker_config.provider_modules,
+            include_entry_points=worker_config.provider_entry_points_enabled,
+        )
         self.provider_factory = EffectProviderFactory(
             ProviderConfigResolver(config),
+            registry=EffectProviderRegistry(initial=provider_catalog.effect_providers),
             admin_service=AdminService(config.runtime_dir),
             env=dict(os.environ),
         )
         self.query_provider_factory = QueryProviderFactory(
             ProviderConfigResolver(config),
+            registry=QueryProviderRegistry(initial=provider_catalog.query_providers),
             admin_service=AdminService(config.runtime_dir),
             env=dict(os.environ),
         )
         self.gate_provider_factory = GateProviderFactory(
             ProviderConfigResolver(config),
+            registry=GateProviderRegistry(initial=provider_catalog.gate_providers),
             admin_service=AdminService(config.runtime_dir),
             env=dict(os.environ),
+        )
+        unresolved_gate_types = sorted({gate.type for gate in worker_config.gates if gate.type not in provider_catalog.gate_providers})
+        unresolved_effect_types = sorted({effect.type for effect in worker_config.effects if effect.type not in provider_catalog.effect_providers})
+        unresolved_query_types = sorted({query.type for query in worker_config.queries if query.type not in provider_catalog.query_providers})
+        logger.info(
+            "Workflow provider diagnostics loaded_plugins=%s gate_types=%s effect_types=%s query_types=%s unresolved_gate_types=%s unresolved_effect_types=%s unresolved_query_types=%s",
+            list(provider_catalog.loaded_plugins),
+            sorted(provider_catalog.gate_providers.keys()),
+            sorted(provider_catalog.effect_providers.keys()),
+            sorted(provider_catalog.query_providers.keys()),
+            unresolved_gate_types,
+            unresolved_effect_types,
+            unresolved_query_types,
         )
         self.gate_executor_registry = NodeExecutorRegistry()
         self.effect_executor_registry = NodeExecutorRegistry()

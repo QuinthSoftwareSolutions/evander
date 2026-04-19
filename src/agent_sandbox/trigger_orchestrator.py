@@ -27,13 +27,14 @@ from .orchestration.adapters import (
 )
 from .workflow_engine import OrchestrationLoop
 from .triggers.queue import TriggerEventQueue
-from .triggers.registry import TriggerProviderFactory
+from .triggers.registry import TriggerProviderFactory, TriggerProviderRegistry
 from .workflow_runtime_config import (
     FixedTriggerOrchestratorWorkerGlobalConfigReloader,
     TriggerOrchestratorWorkerGlobalConfigReloader,
     load_trigger_orchestrator_worker_global_config,
 )
 from .host_heartbeat_worker import _single_instance_lock
+from .workflow_plugins import load_provider_plugins
 
 logger = logging.getLogger(__name__)
 
@@ -63,10 +64,28 @@ class TriggerOrchestratorWorker:
             worker_config.event_queue_store_path,
             journal_path=worker_config.workflow_event_journal_path,
         )
+        provider_catalog = load_provider_plugins(
+            module_names=worker_config.provider_modules,
+            include_entry_points=worker_config.provider_entry_points_enabled,
+        )
         self.provider_factory = TriggerProviderFactory(
             ProviderConfigResolver(config),
+            registry=TriggerProviderRegistry(initial=provider_catalog.trigger_providers),
             admin_service=AdminService(config.runtime_dir),
             env=dict(os.environ),
+        )
+        unresolved_trigger_types = sorted(
+            {
+                trigger.type
+                for trigger in worker_config.triggers
+                if trigger.type not in provider_catalog.trigger_providers
+            }
+        )
+        logger.info(
+            "Trigger provider diagnostics loaded_plugins=%s loaded_trigger_types=%s unresolved_trigger_types=%s",
+            list(provider_catalog.loaded_plugins),
+            sorted(provider_catalog.trigger_providers.keys()),
+            unresolved_trigger_types,
         )
 
     def run_forever(self) -> None:
