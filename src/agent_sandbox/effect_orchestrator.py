@@ -38,7 +38,9 @@ from .gate_runtime import (
 from .host_heartbeat_worker import _single_instance_lock
 from .provider_config import ProviderConfigResolver
 from .queries.registry import QueryProviderFactory
-from .runtime import RuntimeContext, build_runtime
+from .runtime import RuntimeContext
+from .app_bootstrap import build_runtime
+from .platform_integrations import PlatformServiceBundle, RuntimeAssemblyInterface
 from .triggers.queue import TriggerEventQueue, TriggerQueueRecord
 from .workflow_runtime_config import (
     FixedTriggerOrchestratorWorkerGlobalConfigReloader,
@@ -1398,6 +1400,7 @@ def build_effect_orchestrator_worker(
     config: GatewayConfig,
     *,
     project_dir: Path | None = None,
+    services: RuntimeAssemblyInterface | None = None,
 ) -> EffectOrchestratorWorker:
     resolved_project_dir = Path(project_dir) if project_dir is not None else Path.cwd()
     worker_config = load_trigger_orchestrator_worker_global_config(resolved_project_dir, base_config=config)
@@ -1412,7 +1415,8 @@ def build_effect_orchestrator_worker(
             "runtime_dir": worker_config.runtime_dir,
         }
     )
-    runtime = build_runtime(effective_config)
+    service_bundle = services or PlatformServiceBundle(runtime_builder=build_runtime)
+    runtime = service_bundle.build_runtime(effective_config)
     return EffectOrchestratorWorker(
         config=effective_config,
         worker_config=worker_config,
