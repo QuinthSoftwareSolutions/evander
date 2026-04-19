@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import hashlib
 import logging
-import os
 import random
 import time
 from uuid import uuid4
@@ -13,7 +12,6 @@ from pathlib import Path
 from typing import Any
 
 from .config import GatewayConfig, OrchestrationCoreConfig, TriggerOrchestratorWorkerGlobalConfig
-from .admin_service import AdminService
 from .provider_config import ProviderConfigResolver
 from .runtime import RuntimeContext
 from .app_bootstrap import build_runtime
@@ -27,16 +25,26 @@ from .orchestration.adapters import (
 )
 from .workflow_engine import OrchestrationLoop
 from .triggers.queue import TriggerEventQueue
-from .triggers.registry import TriggerProviderFactory, TriggerProviderRegistry
 from .workflow_runtime_config import (
     FixedTriggerOrchestratorWorkerGlobalConfigReloader,
     TriggerOrchestratorWorkerGlobalConfigReloader,
     load_trigger_orchestrator_worker_global_config,
 )
 from .host_heartbeat_worker import _single_instance_lock
-from .workflow_plugins import load_provider_plugins
+from .orchestration.kernels import PollingKernelConfig, PollingOrchestratorKernel
+from .orchestration.wiring import TriggerWorkerWiring, build_trigger_worker_wiring
 
 logger = logging.getLogger(__name__)
+
+
+class _LockManager:
+    def lock(self, path: Path):
+        return _single_instance_lock(path)
+
+
+class _Sleeper:
+    def sleep(self, seconds: float) -> None:
+        time.sleep(seconds)
 
 
 @dataclass(frozen=True)
@@ -57,6 +65,7 @@ class TriggerOrchestratorWorker:
         config_reloader: TriggerOrchestratorWorkerGlobalConfigReloader | None = None,
         runtime: RuntimeContext,
         provider_config_resolver: ProviderConfigResolver | None = None,
+        wiring: TriggerWorkerWiring | None = None,
     ) -> None:
         self.config = config
         selected_config = core_config or worker_config
@@ -65,68 +74,32 @@ class TriggerOrchestratorWorker:
         self.worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(selected_config.model_dump(mode="json"))
         self._config_reloader = config_reloader or FixedTriggerOrchestratorWorkerGlobalConfigReloader(self.worker_config)
         self.runtime = runtime
-        runtime_provider_resolver = getattr(runtime, "provider_config", None)
-        self.provider_config_resolver = provider_config_resolver or runtime_provider_resolver or ProviderConfigResolver(config)
-        self.event_queue = TriggerEventQueue(
-            self.worker_config.event_queue_store_path,
-            journal_path=self.worker_config.workflow_event_journal_path,
+        resolved_wiring = wiring or build_trigger_worker_wiring(
+            config=config,
+            worker_config=self.worker_config,
+            runtime=runtime,
+            provider_config_resolver=provider_config_resolver,
         )
-        provider_catalog = load_provider_plugins(
-            module_names=self.worker_config.provider_modules,
-            include_entry_points=self.worker_config.provider_entry_points_enabled,
-        )
-        self.provider_factory = TriggerProviderFactory(
-            self.provider_config_resolver,
-            registry=TriggerProviderRegistry(initial=provider_catalog.trigger_providers),
-            admin_service=AdminService(config.runtime_dir),
-            env=dict(os.environ),
-        )
-        unresolved_trigger_types = sorted(
-            {
-                trigger.type
-                for trigger in self.worker_config.triggers
-                if trigger.type not in provider_catalog.trigger_providers
-            }
-        )
-        logger.info(
-            "Trigger provider diagnostics loaded_plugins=%s loaded_trigger_types=%s unresolved_trigger_types=%s",
-            list(provider_catalog.loaded_plugins),
-            sorted(provider_catalog.trigger_providers.keys()),
-            unresolved_trigger_types,
+        self.provider_config_resolver = resolved_wiring.provider_config_resolver
+        self.event_queue = resolved_wiring.event_queue
+        self.provider_factory = resolved_wiring.provider_factory
+        self._kernel = PollingOrchestratorKernel(
+            config=PollingKernelConfig(
+                poll_interval_seconds=self.worker_config.poll_interval_seconds,
+                jitter_seconds=self.worker_config.jitter_seconds,
+                lock_path=self.worker_config.lock_path,
+            ),
+            lock_manager=_LockManager(),
+            sleeper=_Sleeper(),
+            run_cycle=self.run_once,
+            get_sleep_seconds=lambda result: result.next_sleep_seconds,
         )
 
     def run_forever(self) -> None:
-        with _single_instance_lock(self.worker_config.lock_path):
-            logger.info(
-                "Trigger orchestrator started poll_interval=%.3f jitter=%.3f lock=%s",
-                self.worker_config.poll_interval_seconds,
-                self.worker_config.jitter_seconds,
-                self.worker_config.lock_path,
-            )
-            while True:
-                try:
-                    result = self.run_once()
-                except Exception:
-                    logger.exception("Trigger orchestrator cycle failed")
-                    time.sleep(
-                        _compute_backoff_sleep_seconds(
-                            poll_interval_seconds=self.worker_config.poll_interval_seconds,
-                            jitter_seconds=self.worker_config.jitter_seconds,
-                        )
-                    )
-                    continue
-                logger.debug(
-                    "Trigger orchestrator cycle complete triggers=%d discovered=%d published=%d sleep_seconds=%.3f",
-                    result.configured_triggers,
-                    result.events_discovered,
-                    result.events_published,
-                    result.next_sleep_seconds,
-                )
-                time.sleep(result.next_sleep_seconds)
+        self._kernel.run_forever()
 
     def run_once_with_lock(self) -> TriggerOrchestratorCycleResult:
-        with _single_instance_lock(self.worker_config.lock_path):
-            return self.run_once()
+        return self._kernel.run_once_with_lock()
 
     def run_once(self) -> TriggerOrchestratorCycleResult:
         latest_config, changed = self._config_reloader.get_latest()
