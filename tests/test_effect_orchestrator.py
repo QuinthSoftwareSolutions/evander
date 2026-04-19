@@ -54,8 +54,50 @@ class _FailingFactory:
         return _FailingProvider({})
 
 
+class _StaticReloader:
+    def __init__(self, config: TriggerOrchestratorWorkerGlobalConfig, *, changed: bool) -> None:
+        self._config = config
+        self._changed = changed
+
+    def get_latest(self) -> tuple[TriggerOrchestratorWorkerGlobalConfig, bool]:
+        changed = self._changed
+        self._changed = False
+        return self._config, changed
+
+
 def _edge(source_id: str, target_id: str) -> dict[str, str]:
     return {"source_id": source_id, "target_id": target_id}
+
+
+def test_effect_orchestrator_run_once_uses_reloaded_worker_config_for_sleep(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [],
+        }
+    )
+    updated_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 13,
+            "jitter_seconds": 0,
+            "triggers": [],
+        }
+    )
+    worker = EffectOrchestratorWorker(
+        config=config,
+        worker_config=worker_config,
+        config_reloader=_StaticReloader(updated_config, changed=True),
+        runtime=None,  # type: ignore[arg-type]
+    )
+
+    result = worker.run_once()
+
+    assert result.next_sleep_seconds == 13
 
 
 def test_effect_orchestrator_executes_gate_and_effect_chain(tmp_path: Path) -> None:

@@ -17,6 +17,17 @@ class _StaticProvider:
         return list(self._events)
 
 
+class _StaticReloader:
+    def __init__(self, config: TriggerOrchestratorWorkerGlobalConfig, *, changed: bool) -> None:
+        self._config = config
+        self._changed = changed
+
+    def get_latest(self) -> tuple[TriggerOrchestratorWorkerGlobalConfig, bool]:
+        changed = self._changed
+        self._changed = False
+        return self._config, changed
+
+
 def test_trigger_orchestrator_run_once_publishes_and_updates_cursor(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
@@ -190,3 +201,42 @@ def test_trigger_orchestrator_synthesizes_agent_completion_trigger_for_await_gat
     queue_payload = json.loads(worker_config.event_queue_store_path.read_text(encoding="utf-8"))
     assert queue_payload["event-agent-complete"]["trigger_type"] == "trigger:agent:run:completed"
     assert queue_payload["event-agent-complete"]["trigger_id"] == worker._AWAIT_AGENT_COMPLETION_TRIGGER_ID
+
+
+def test_trigger_orchestrator_run_once_uses_reloaded_worker_config(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    initial_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [],
+        }
+    )
+    updated_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "cron-1",
+                    "display_name": "Every minute",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+        }
+    )
+    worker = TriggerOrchestratorWorker(
+        config=config,
+        worker_config=initial_config,
+        config_reloader=_StaticReloader(updated_config, changed=True),
+        runtime=None,  # type: ignore[arg-type]
+    )
+    worker.provider_factory.build = lambda trigger: _StaticProvider([])  # type: ignore[assignment]
+
+    result = worker.run_once()
+
+    assert result.configured_triggers == 1

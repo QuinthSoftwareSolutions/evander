@@ -18,6 +18,10 @@ from .runtime import RuntimeContext, build_runtime
 from .events.models import AgentRunCompletedTriggerDefinition, TriggerDefinitionDiscriminated, validate_output_mapping_keys
 from .triggers.queue import TriggerEventQueue
 from .triggers.registry import TriggerProviderFactory
+from .workflow_runtime_config import (
+    TriggerOrchestratorWorkerGlobalConfigReloader,
+    load_trigger_orchestrator_worker_global_config,
+)
 from .host_heartbeat_worker import _single_instance_lock
 
 logger = logging.getLogger(__name__)
@@ -39,10 +43,16 @@ class TriggerOrchestratorWorker:
         *,
         config: GatewayConfig,
         worker_config: TriggerOrchestratorWorkerGlobalConfig,
+        config_reloader: TriggerOrchestratorWorkerGlobalConfigReloader | None = None,
         runtime: RuntimeContext,
     ) -> None:
         self.config = config
         self.worker_config = worker_config
+        self._config_reloader = config_reloader or TriggerOrchestratorWorkerGlobalConfigReloader(
+            project_dir=Path.cwd(),
+            initial_config=worker_config,
+            base_config=config,
+        )
         self.runtime = runtime
         self.event_queue = TriggerEventQueue(worker_config.event_queue_store_path)
         self.provider_factory = TriggerProviderFactory(
@@ -85,6 +95,12 @@ class TriggerOrchestratorWorker:
             return self.run_once()
 
     def run_once(self) -> TriggerOrchestratorCycleResult:
+        latest_config, changed = self._config_reloader.get_latest()
+        self.worker_config = latest_config
+        if changed:
+            logger.info("Reloaded trigger orchestrator worker config")
+            self.event_queue = TriggerEventQueue(self.worker_config.event_queue_store_path)
+
         configured_triggers = self._configured_triggers()
         providers = self._load_configured_providers(configured_triggers)
         events_discovered = 0
@@ -209,34 +225,11 @@ class TriggerOrchestratorWorker:
         triggers_payload[trigger.id] = trigger_payload
 
 
-def _worker_global_config_path(project_dir: Path) -> Path:
-    return project_dir / "config" / "trigger-orchestrator" / "config.json"
-
-
 def _normalize_trace_id(value: str | None) -> str:
     if value is None:
         return str(uuid4())
     normalized = value.strip()
     return normalized or str(uuid4())
-
-
-def _load_trigger_orchestrator_worker_global_config(
-    project_dir: Path,
-    *,
-    base_config: GatewayConfig | None = None,
-) -> TriggerOrchestratorWorkerGlobalConfig:
-    base_payload = TriggerOrchestratorWorkerGlobalConfig.model_validate(
-        {
-            "runtime_dir": (base_config.runtime_dir if base_config is not None else Path("runtime")),
-        }
-    ).model_dump(mode="json")
-    path = _worker_global_config_path(project_dir)
-    if not path.exists():
-        return TriggerOrchestratorWorkerGlobalConfig.model_validate(base_payload)
-    raw = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(raw, dict):
-        raise ValueError(f"worker config file {path} must contain a JSON object")
-    return TriggerOrchestratorWorkerGlobalConfig.model_validate({**base_payload, **raw})
 
 
 def build_trigger_orchestrator_worker(
@@ -245,7 +238,12 @@ def build_trigger_orchestrator_worker(
     project_dir: Path | None = None,
 ) -> TriggerOrchestratorWorker:
     resolved_project_dir = Path(project_dir) if project_dir is not None else Path.cwd()
-    worker_config = _load_trigger_orchestrator_worker_global_config(resolved_project_dir, base_config=config)
+    worker_config = load_trigger_orchestrator_worker_global_config(resolved_project_dir, base_config=config)
+    config_reloader = TriggerOrchestratorWorkerGlobalConfigReloader(
+        project_dir=resolved_project_dir,
+        initial_config=worker_config,
+        base_config=config,
+    )
     effective_config = GatewayConfig.model_validate(
         {
             **config.model_dump(mode="json"),
@@ -256,6 +254,7 @@ def build_trigger_orchestrator_worker(
     return TriggerOrchestratorWorker(
         config=effective_config,
         worker_config=worker_config,
+        config_reloader=config_reloader,
         runtime=runtime,
     )
 

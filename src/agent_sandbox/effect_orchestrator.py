@@ -42,6 +42,10 @@ from .queries.registry import QueryProviderFactory
 from .runtime import RuntimeContext, build_runtime
 from .storage import JsonStore
 from .triggers.queue import TriggerEventQueue, TriggerQueueRecord
+from .workflow_runtime_config import (
+    TriggerOrchestratorWorkerGlobalConfigReloader,
+    load_trigger_orchestrator_worker_global_config,
+)
 from .workflow_binding import (
     BindingResolutionError,
     resolve_effect_config_bindings,
@@ -164,10 +168,16 @@ class EffectOrchestratorWorker:
         *,
         config: GatewayConfig,
         worker_config: TriggerOrchestratorWorkerGlobalConfig,
+        config_reloader: TriggerOrchestratorWorkerGlobalConfigReloader | None = None,
         runtime: RuntimeContext,
     ) -> None:
         self.config = config
         self.worker_config = worker_config
+        self._config_reloader = config_reloader or TriggerOrchestratorWorkerGlobalConfigReloader(
+            project_dir=Path.cwd(),
+            initial_config=worker_config,
+            base_config=config,
+        )
         self.runtime = runtime
         self.event_queue = TriggerEventQueue(worker_config.event_queue_store_path)
         self.lock_path = _resolve_worker_path(
@@ -269,6 +279,8 @@ class EffectOrchestratorWorker:
         return completed
 
     def run_once(self) -> EffectOrchestratorCycleResult:
+        latest_config, _changed = self._config_reloader.get_latest()
+        self.worker_config = latest_config
         cursor_payload = _load_cursor_payload(self.cursor_path)
         pending_events_scanned = 0
         events_processed = 0
@@ -1801,7 +1813,12 @@ def build_effect_orchestrator_worker(
     project_dir: Path | None = None,
 ) -> EffectOrchestratorWorker:
     resolved_project_dir = Path(project_dir) if project_dir is not None else Path.cwd()
-    worker_config = _load_trigger_orchestrator_worker_global_config(resolved_project_dir, base_config=config)
+    worker_config = load_trigger_orchestrator_worker_global_config(resolved_project_dir, base_config=config)
+    config_reloader = TriggerOrchestratorWorkerGlobalConfigReloader(
+        project_dir=resolved_project_dir,
+        initial_config=worker_config,
+        base_config=config,
+    )
     effective_config = GatewayConfig.model_validate(
         {
             **config.model_dump(mode="json"),
@@ -1812,6 +1829,7 @@ def build_effect_orchestrator_worker(
     return EffectOrchestratorWorker(
         config=effective_config,
         worker_config=worker_config,
+        config_reloader=config_reloader,
         runtime=runtime,
     )
 
@@ -2201,25 +2219,6 @@ def _compute_backoff_sleep_seconds(*, poll_interval_seconds: float, jitter_secon
     if jitter_seconds > 0:
         delay += random.uniform(0.0, jitter_seconds)
     return max(1.0, delay)
-
-
-def _load_trigger_orchestrator_worker_global_config(
-    project_dir: Path,
-    *,
-    base_config: GatewayConfig | None = None,
-) -> TriggerOrchestratorWorkerGlobalConfig:
-    base_payload = TriggerOrchestratorWorkerGlobalConfig.model_validate(
-        {
-            "runtime_dir": (base_config.runtime_dir if base_config is not None else Path("runtime")),
-        }
-    ).model_dump(mode="json")
-    path = project_dir / "config" / "trigger-orchestrator" / "config.json"
-    if not path.exists():
-        return TriggerOrchestratorWorkerGlobalConfig.model_validate(base_payload)
-    raw = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(raw, dict):
-        raise ValueError(f"worker config file {path} must contain a JSON object")
-    return TriggerOrchestratorWorkerGlobalConfig.model_validate({**base_payload, **raw})
 
 
 def _await_agent_pending_target(
