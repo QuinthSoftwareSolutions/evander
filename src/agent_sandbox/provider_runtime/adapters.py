@@ -63,6 +63,16 @@ class AdminServiceProviderAdapter:
         return self._admin_service.session_context_query(**kwargs)
 
 
+class GateProviderAdapter:
+    """Narrow gate-runtime adapter over AdminService."""
+
+    def __init__(self, admin_service: AdminService) -> None:
+        self._admin_service = admin_service
+
+    def list_vms(self, **kwargs: Any) -> list[Any]:
+        return self._admin_service.list_vms(**kwargs)
+
+
 def trigger_provider_config_blob(config: GatewayConfig) -> dict[str, Any]:
     return {
         "runtime_dir": config.runtime_dir,
@@ -82,4 +92,8 @@ def effect_provider_config_blob(config: GatewayConfig) -> dict[str, Any]:
 
 
 def query_provider_config_blob(config: GatewayConfig) -> dict[str, Any]:
+    return {"runtime_dir": config.runtime_dir}
+
+
+def gate_provider_config_blob(config: GatewayConfig) -> dict[str, Any]:
     return {"runtime_dir": config.runtime_dir}

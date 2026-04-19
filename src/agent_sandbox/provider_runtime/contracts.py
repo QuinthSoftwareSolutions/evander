@@ -30,6 +30,10 @@ class VmInventory(Protocol):
     def list_vms(self, **kwargs: Any) -> list[Any]: ...
 
 
+class GateVmInventory(Protocol):
+    def list_vms(self, **kwargs: Any) -> list[Any]: ...
+
+
 class VmExecutor(Protocol):
     def vm_exec(self, **kwargs: Any) -> Mapping[str, Any]: ...
 

@@ -6,6 +6,7 @@ from collections.abc import Callable, Mapping
 from agent_sandbox.admin_service import AdminService
 from agent_sandbox.events.models import GateType
 from agent_sandbox.provider_config import ProviderConfigResolver
+from agent_sandbox.provider_runtime.adapters import GateProviderAdapter, gate_provider_config_blob
 
 from .providers.await_agent import AwaitAgentGateProvider
 from .providers.filter_gate import FilterGateProvider
@@ -51,6 +52,7 @@ class GateProviderFactory:
     ) -> None:
         self.provider_config_resolver = provider_config_resolver
         self.admin_service = admin_service
+        self._gate_adapter = GateProviderAdapter(admin_service)
         self.registry = registry or GateProviderRegistry()
         self.env = env or dict(os.environ)
         self.secret_resolver = secret_resolver
@@ -59,8 +61,8 @@ class GateProviderFactory:
         provider_class = self.registry.resolve(gate_type)
         resolved_config = self.provider_config_resolver.resolve_for_directory(directory_path)
         runtime_context = GateRuntimeContext(
-            resolved_config=resolved_config,
-            admin_service=self.admin_service,
+            provider_config=gate_provider_config_blob(resolved_config),
+            vm_inventory=self._gate_adapter,
             env=self.env,
             secret_resolver=self.secret_resolver,
             metadata={"directory_path": directory_path or "root"},
