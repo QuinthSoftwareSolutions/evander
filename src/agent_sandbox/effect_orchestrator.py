@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import os
 import random
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -15,8 +14,6 @@ from typing import Any, Generic, TypeVar
 
 from pydantic import BaseModel, Field
 
-from .admin_service import AdminService
-from .agent_prompt_queue import AgentPromptQueueStore
 from .config import GatewayConfig, OrchestrationCoreConfig, TriggerOrchestratorWorkerGlobalConfig
 from .effects.registry import EffectProviderFactory, EffectProviderRegistry
 from .events.models import (
@@ -71,6 +68,8 @@ from .workflow_engine.node_executors import (
 )
 from .workflow_engine import OrchestrationLoop
 from .workflow_plugins import load_provider_plugins
+from .orchestration.kernels import PollingKernelConfig, PollingOrchestratorKernel
+from .orchestration.wiring import EffectWorkerWiring, build_effect_worker_wiring
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +81,16 @@ WorkflowNodeDefinition = (
     TriggerDefinitionDiscriminated | GateDefinitionDiscriminated | EffectDefinitionDiscriminated | QueryDefinitionDiscriminated
 )
 TRecord = TypeVar("TRecord", bound=BaseModel)
+
+
+class _LockManager:
+    def lock(self, path: Path):
+        return _single_instance_lock(path)
+
+
+class _Sleeper:
+    def sleep(self, seconds: float) -> None:
+        time.sleep(seconds)
 
 
 class EffectExecutionRecord(BaseModel):
@@ -168,6 +177,7 @@ class EffectOrchestratorWorker:
         config_reloader: TriggerOrchestratorWorkerGlobalConfigReloader | None = None,
         runtime: RuntimeContext,
         provider_config_resolver: ProviderConfigResolver | None = None,
+        wiring: EffectWorkerWiring | None = None,
     ) -> None:
         self.config = config
         selected_config = core_config or worker_config
@@ -176,122 +186,58 @@ class EffectOrchestratorWorker:
         self.worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(selected_config.model_dump(mode="json"))
         self._config_reloader = config_reloader or FixedTriggerOrchestratorWorkerGlobalConfigReloader(self.worker_config)
         self.runtime = runtime
-        runtime_provider_resolver = getattr(runtime, "provider_config", None)
-        self.provider_config_resolver = provider_config_resolver or runtime_provider_resolver or ProviderConfigResolver(config)
-        self.workflow_event_journal = WorkflowEventJournal(self.worker_config.workflow_event_journal_path)
-        self.event_queue = TriggerEventQueue(
-            self.worker_config.event_queue_store_path,
-            journal_path=self.worker_config.workflow_event_journal_path,
+        resolved_wiring = wiring or build_effect_worker_wiring(
+            config=config,
+            worker_config=self.worker_config,
+            runtime=runtime,
+            provider_config_resolver=provider_config_resolver,
         )
-        self.lock_path = _resolve_worker_path(
-            self.worker_config,
-            "gate_lock_path",
-            fallback=self.worker_config.effect_lock_path or (self.worker_config.runtime_dir / "effect-orchestrator.lock"),
-        )
-        self.cursor_path = _resolve_worker_path(
-            self.worker_config,
-            "gate_cursor_store_path",
-            fallback=self.worker_config.effect_cursor_store_path or (self.worker_config.runtime_dir / "effect-orchestrator-cursors.json"),
-        )
+        self.provider_config_resolver = resolved_wiring.provider_config_resolver
+        self.workflow_event_journal = resolved_wiring.workflow_event_journal
+        self.event_queue = resolved_wiring.event_queue
+        self.lock_path = resolved_wiring.lock_path
+        self.cursor_path = resolved_wiring.cursor_path
         self.execution_store_path = self.worker_config.effect_execution_store_path
-        self.execution_store = JsonExecutionStore(
-            self.execution_store_path,
-            journal_path=self.worker_config.workflow_event_journal_path,
-        )
+        self.execution_store = resolved_wiring.execution_store
         self.gate_execution_store_path = _resolve_worker_path(
             self.worker_config,
             "gate_execution_store_path",
             fallback=self.worker_config.runtime_dir / "gate-orchestrator-executions.json",
         )
-        self.gate_execution_store = JsonGateExecutionStore(
-            self.gate_execution_store_path,
-            journal_path=self.worker_config.workflow_event_journal_path,
-        )
-        self.queued_agent_prompt_store = AgentPromptQueueStore(self.worker_config.runtime_dir / "queued-agent-prompts.json")
-        self._executor = ThreadPoolExecutor(
-            max_workers=max(1, min(32, max(1, (os.cpu_count() or 1) * 4))),
-            thread_name_prefix="effect-orchestrator",
-        )
+        self.gate_execution_store = resolved_wiring.gate_execution_store
+        self.queued_agent_prompt_store = resolved_wiring.queued_agent_prompt_store
+        self._executor = resolved_wiring.executor
         self._inflight: dict[str, InflightExecution] = {}
         self._inflight_lock = RLock()
         self._last_graph_revision: str | None = None
         self._last_graph_node_count = 0
         self._last_graph_edge_count = 0
-        provider_catalog = load_provider_plugins(
-            module_names=self.worker_config.provider_modules,
-            include_entry_points=self.worker_config.provider_entry_points_enabled,
-        )
-        self.provider_factory = EffectProviderFactory(
-            self.provider_config_resolver,
-            registry=EffectProviderRegistry(initial=provider_catalog.effect_providers),
-            admin_service=AdminService(config.runtime_dir),
-            env=dict(os.environ),
-        )
-        self.query_provider_factory = QueryProviderFactory(
-            self.provider_config_resolver,
-            registry=QueryProviderRegistry(initial=provider_catalog.query_providers),
-            admin_service=AdminService(config.runtime_dir),
-            env=dict(os.environ),
-        )
-        self.gate_provider_factory = GateProviderFactory(
-            self.provider_config_resolver,
-            registry=GateProviderRegistry(initial=provider_catalog.gate_providers),
-            admin_service=AdminService(config.runtime_dir),
-            env=dict(os.environ),
-        )
-        unresolved_gate_types = sorted({gate.type for gate in self.worker_config.gates if gate.type not in provider_catalog.gate_providers})
-        unresolved_effect_types = sorted({effect.type for effect in self.worker_config.effects if effect.type not in provider_catalog.effect_providers})
-        unresolved_query_types = sorted({query.type for query in self.worker_config.queries if query.type not in provider_catalog.query_providers})
-        logger.info(
-            "Workflow provider diagnostics loaded_plugins=%s gate_types=%s effect_types=%s query_types=%s unresolved_gate_types=%s unresolved_effect_types=%s unresolved_query_types=%s",
-            list(provider_catalog.loaded_plugins),
-            sorted(provider_catalog.gate_providers.keys()),
-            sorted(provider_catalog.effect_providers.keys()),
-            sorted(provider_catalog.query_providers.keys()),
-            unresolved_gate_types,
-            unresolved_effect_types,
-            unresolved_query_types,
-        )
+        self.provider_factory = resolved_wiring.provider_factory
+        self.query_provider_factory = resolved_wiring.query_provider_factory
+        self.gate_provider_factory = resolved_wiring.gate_provider_factory
         self.gate_executor_registry = NodeExecutorRegistry()
         self.effect_executor_registry = NodeExecutorRegistry()
         self.query_executor_registry = NodeExecutorRegistry()
         self._register_default_node_executors()
         self._gate_providers: dict[str, Any] = {}
         self.event_queue.reset_inflight()
+        self._kernel = PollingOrchestratorKernel(
+            config=PollingKernelConfig(
+                poll_interval_seconds=self.worker_config.poll_interval_seconds,
+                jitter_seconds=self.worker_config.jitter_seconds,
+                lock_path=self.lock_path,
+            ),
+            lock_manager=_LockManager(),
+            sleeper=_Sleeper(),
+            run_cycle=self.run_once,
+            get_sleep_seconds=lambda result: result.next_sleep_seconds,
+        )
 
     def run_forever(self) -> None:
-        with _single_instance_lock(self.lock_path):
-            logger.info(
-                "Workflow orchestrator started poll_interval=%.3f jitter=%.3f lock=%s",
-                self.worker_config.poll_interval_seconds,
-                self.worker_config.jitter_seconds,
-                self.lock_path,
-            )
-            while True:
-                try:
-                    result = self.run_once()
-                except Exception:
-                    logger.exception("Workflow orchestrator cycle failed")
-                    time.sleep(
-                        _compute_backoff_sleep_seconds(
-                            poll_interval_seconds=self.worker_config.poll_interval_seconds,
-                            jitter_seconds=self.worker_config.jitter_seconds,
-                        )
-                    )
-                    continue
-                logger.debug(
-                    "Workflow orchestrator cycle complete pending=%d processed=%d executed=%d published=%d sleep_seconds=%.3f",
-                    result.pending_events_scanned,
-                    result.events_processed,
-                    result.effect_executions,
-                    result.completion_events_published,
-                    result.next_sleep_seconds,
-                )
-                time.sleep(result.next_sleep_seconds)
+        self._kernel.run_forever()
 
     def run_once_with_lock(self) -> EffectOrchestratorCycleResult:
-        with _single_instance_lock(self.lock_path):
-            return self.run_once()
+        return self._kernel.run_once_with_lock()
 
     def force_complete_await_agent(self, dispatch_id: str) -> bool:
         graph = _build_execution_graph(self.worker_config)
