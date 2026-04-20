@@ -4,10 +4,9 @@ from collections.abc import Iterable
 
 from .config import TriggerOrchestratorWorkerGlobalConfig
 from .provider_profiles import resolve_provider_module_names
-from .workflow_graph import build_inbound_edge_index
 from .workflow_plugins import load_provider_plugins
 from .workflow_transforms import WorkflowTransform
-from .workflow_validation import WorkflowValidationDiagnostic
+from .workflow_validation import WorkflowValidationDiagnostic, validate_workflow_graph
 
 
 def compile_trigger_orchestrator_structure(
@@ -50,7 +49,6 @@ def collect_domain_validation_diagnostics(
     worker_config: TriggerOrchestratorWorkerGlobalConfig,
 ) -> list[WorkflowValidationDiagnostic]:
     nodes_by_id = {node.id: node for node in (*worker_config.triggers, *worker_config.gates, *worker_config.effects, *worker_config.queries)}
-    inbound_edges = {k: list(v) for k, v in build_inbound_edge_index(worker_config.edges).items()}
     diagnostics: list[WorkflowValidationDiagnostic] = []
     provider_catalog = load_provider_plugins(
         module_names=resolve_provider_module_names(
@@ -60,6 +58,23 @@ def collect_domain_validation_diagnostics(
         include_entry_points=worker_config.provider_loader.provider_entry_points_enabled,
         include_builtin=worker_config.provider_include_builtin,
     )
+    node_capabilities = {
+        **{node_type: provider.node_capability() for node_type, provider in provider_catalog.gate_providers.items()},
+        **{node_type: provider.node_capability() for node_type, provider in provider_catalog.effect_providers.items()},
+        **{node_type: provider.node_capability() for node_type, provider in provider_catalog.query_providers.items()},
+    }
+    capability_messages = validate_workflow_graph(
+        nodes=(*worker_config.triggers, *worker_config.gates, *worker_config.effects, *worker_config.queries),
+        edges=worker_config.edges,
+        trigger_node_ids=(trigger.id for trigger in worker_config.triggers),
+        node_capabilities=node_capabilities,
+    )
+    diagnostics.extend(
+        WorkflowValidationDiagnostic(code="node_capability", message=message) for message in capability_messages
+    )
+    inbound_edges: dict[str, list[object]] = {}
+    for edge in worker_config.edges:
+        inbound_edges.setdefault(edge.target_id, []).append(edge)
     for gate in worker_config.gates:
         provider = provider_catalog.gate_providers.get(gate.type)
         if provider is None:
