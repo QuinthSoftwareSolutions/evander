@@ -1379,6 +1379,7 @@ def _upsert_unified_issue_record(
     issue_id = existing_key or _build_proxy_issue_id(config, work_item_id, normalized_directory_path)
     issue_number = str(work_item_id)
     description = str(work_item.get("description", "") or "")
+    metadata = _preserved_local_issue_metadata(existing_record=existing_record, yaml_path=yaml_path)
 
     remote_reference = RemoteIssueReference(
         provider="azure_devops",
@@ -1407,6 +1408,7 @@ def _upsert_unified_issue_record(
         url=str(work_item.get("url", "") or "") or None,
         comments=[dict(comment) for comment in work_item.get("comments", []) if isinstance(comment, dict)],
         source="ado_worker",
+        metadata=metadata,
         created_at=existing_record.created_at if existing_record is not None else now,
         updated_at=now,
     )
@@ -1416,7 +1418,7 @@ def _upsert_unified_issue_record(
 
 def _build_issue_payload(record: LocalIssueRecord) -> dict[str, Any]:
     remote = record.remote_reference
-    return {
+    payload = {
         "issue_number": int(record.issue_number) if record.issue_number.isdigit() else record.issue_number,
         "issue_id": record.issue_id,
         "title": record.title,
@@ -1434,6 +1436,40 @@ def _build_issue_payload(record: LocalIssueRecord) -> dict[str, Any]:
         "remote_reference": remote.model_dump(mode="json") if remote is not None else None,
         "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
     }
+    metadata_steps = record.metadata.get("steps") if isinstance(record.metadata, dict) else None
+    if isinstance(metadata_steps, list) and all(isinstance(step, str) for step in metadata_steps):
+        payload["steps"] = list(metadata_steps)
+    metadata_plan_summary = record.metadata.get("plan_summary") if isinstance(record.metadata, dict) else None
+    if isinstance(metadata_plan_summary, str) and metadata_plan_summary.strip():
+        payload["plan_summary"] = metadata_plan_summary
+    return payload
+
+
+def _preserved_local_issue_metadata(
+    *,
+    existing_record: LocalIssueRecord | None,
+    yaml_path: Path,
+) -> dict[str, Any]:
+    metadata = dict(existing_record.metadata) if existing_record is not None else {}
+    if not yaml_path.exists():
+        return metadata
+    try:
+        loaded = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
+    except Exception:
+        return metadata
+    if not isinstance(loaded, dict):
+        return metadata
+    yaml_steps = loaded.get("steps")
+    if "steps" not in metadata and isinstance(yaml_steps, list) and all(isinstance(step, str) for step in yaml_steps):
+        metadata["steps"] = list(yaml_steps)
+    yaml_plan_summary = loaded.get("plan_summary")
+    if (
+        "plan_summary" not in metadata
+        and isinstance(yaml_plan_summary, str)
+        and yaml_plan_summary.strip()
+    ):
+        metadata["plan_summary"] = yaml_plan_summary
+    return metadata
 
 
 def _persist_unified_issue_record(config: WorkerConfig, record: LocalIssueRecord, yaml_path: Path) -> None:
