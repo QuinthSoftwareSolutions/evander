@@ -5,10 +5,10 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
-from agent_sandbox.agent_completion_watcher import build_agent_run_completed_event
 from agent_sandbox.events.models import NODE_OUTPUTS_CONTEXT_KEY
 from agent_sandbox.events.provider_models import AgentPromptEffectDefinition
 from agent_sandbox.triggers.queue import TriggerQueueRecord
+from agent_sandbox.orchestration.effect_extensions import list_vm_summaries_for_agent_reconciliation
 
 from .base import EffectProviderBase
 
@@ -117,7 +117,7 @@ class AgentPromptEffectProvider(EffectProviderBase):
             return 0
 
         try:
-            summaries = worker._list_vm_summaries_for_reconciliation()
+            summaries = list_vm_summaries_for_agent_reconciliation(worker)
         except Exception:
             return 0
 
@@ -176,6 +176,8 @@ class AgentPromptEffectProvider(EffectProviderBase):
             return None
         if str(getattr(summary, "agent_state", "") or "").strip() == "running":
             return None
+        from agent_sandbox.agent_completion_watcher import build_agent_run_completed_event
+
         completion_event = build_agent_run_completed_event(
             trigger_id="__await-agent-completion__",
             dispatch_id=dispatch_id,

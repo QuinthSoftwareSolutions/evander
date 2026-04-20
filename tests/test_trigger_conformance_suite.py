@@ -13,7 +13,7 @@ from pydantic import TypeAdapter
 from agent_sandbox.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
 from agent_sandbox.models import DiscordMessageEnvelope, EmailMessage, LocalIssueRecord, PrFeedbackItem, TeamsMessageEnvelope
 from agent_sandbox.trigger_orchestrator import TriggerOrchestratorWorker
-from agent_sandbox.events.models import TriggerDefinitionDiscriminated
+from agent_sandbox.events.models import TriggerDefinitionDiscriminated, materialize_node_definition
 from agent_sandbox.teams_inbox_store import TeamsInboxMessage, TeamsInboxStore
 from agent_sandbox.triggers.providers.base import TriggerRuntimeContext
 from agent_sandbox.triggers.providers.cron import CronTriggerProvider
@@ -63,8 +63,16 @@ def _build_runtime_context(runtime_dir: Path, *, env: dict[str, str] | None = No
     return TriggerRuntimeContext(resolved_config=GatewayConfig(runtime_dir=runtime_dir), env=env or {})
 
 
-def _trigger_adapter() -> TypeAdapter[TriggerDefinitionDiscriminated]:
-    return TypeAdapter(TriggerDefinitionDiscriminated)
+class _MaterializingTriggerAdapter:
+    def __init__(self) -> None:
+        self._adapter = TypeAdapter(TriggerDefinitionDiscriminated)
+
+    def validate_python(self, payload: object) -> object:
+        return materialize_node_definition(self._adapter.validate_python(payload))
+
+
+def _trigger_adapter() -> _MaterializingTriggerAdapter:
+    return _MaterializingTriggerAdapter()
 
 
 @pytest.mark.parametrize(

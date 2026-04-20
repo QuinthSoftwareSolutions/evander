@@ -11,6 +11,7 @@ from agent_sandbox.events.models import (
     GateMapDefinition,
     GateMergeDefinition,
 )
+from agent_sandbox.schema_bootstrap import _GATE_OUTPUT_SCHEMAS
 from agent_sandbox.workflow.contracts import WorkflowNodeEnvelope, register_node_output_schema
 
 _GATE_MODEL_BY_TYPE = {
@@ -41,12 +42,5 @@ def gate_node_schema_resolvers() -> dict[str, Callable[[WorkflowNodeEnvelope], B
 
 
 def register_gate_output_schemas() -> None:
-    register_node_output_schema(
-        node_type="gate:for",
-        outputs={
-            "current_element": {"type": "object"},
-            "current_index": {"type": "integer"},
-            "item_count": {"type": "integer"},
-            "is_done": {"type": "boolean"},
-        },
-    )
+    for node_type, outputs in _GATE_OUTPUT_SCHEMAS.items():
+        register_node_output_schema(node_type=node_type, outputs=outputs)

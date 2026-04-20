@@ -90,7 +90,7 @@ def test_compile_trigger_orchestrator_config_is_valid_without_domain_transforms(
     assert compiled == worker_config
     assert len(compiled.triggers) == 0
     await_gate = next(gate for gate in compiled.gates if gate.type == "gate:await-agent")
-    assert await_gate.completion_trigger_id is None
+    assert "completion_trigger_id" not in await_gate.config
 
 
 def test_compile_trigger_orchestrator_config_with_diagnostics_reports_await_agent_domain_issue(tmp_path: Path) -> None:

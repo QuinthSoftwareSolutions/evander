@@ -28,7 +28,7 @@ from .directory_config import (
     get_domain_base_config,
     validate_effective_domain_payload,
 )
-from .events.models import TriggerEvent
+from .events.models import TriggerEvent, materialize_node_definition
 from .events.provider_models import PullRequestNewFeedbackTriggerDefinition
 from .models import DirectoryPath, LocalIssueRecord, PrFeedbackItem, RemoteIssueReference, SessionManifest, ToolName
 from .pr_feedback_worker import AzureDevOpsFeedbackAdapter, FeedbackEnvelope, PrFeedbackStore, _stream_key
@@ -1830,11 +1830,12 @@ def _load_ado_pr_feedback_triggers(config: WorkerConfig) -> list[PullRequestNewF
     worker_config = _load_trigger_orchestrator_worker_config(config)
     if worker_config is None:
         return []
-    return [
-        trigger
-        for trigger in worker_config.triggers
-        if isinstance(trigger, PullRequestNewFeedbackTriggerDefinition) and trigger.provider == "ado"
-    ]
+    triggers: list[PullRequestNewFeedbackTriggerDefinition] = []
+    for trigger in worker_config.triggers:
+        materialized = materialize_node_definition(trigger)
+        if isinstance(materialized, PullRequestNewFeedbackTriggerDefinition) and materialized.provider == "ado":
+            triggers.append(materialized)
+    return triggers
 
 
 def _load_trigger_orchestrator_worker_config(config: WorkerConfig) -> TriggerOrchestratorWorkerGlobalConfig | None:

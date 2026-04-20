@@ -2,16 +2,15 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import Any
 
-from ...admin_service import AdminService
 from ...config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
 from ...provider_config import ProviderConfigResolver
 from ...provider_profiles import resolve_provider_module_names
 from ...runtime import RuntimeContext
 from ...triggers.queue import TriggerEventQueue
-from ...triggers.registry import TriggerProviderFactory, TriggerProviderRegistry
+from ...triggers.registry import TriggerProviderFactory
 from ...workflow_plugins import load_provider_plugins
+from ..adapters.provider_factories import build_trigger_provider_factory
 
 
 @dataclass(frozen=True)
@@ -42,11 +41,11 @@ def build_trigger_worker_wiring(
         include_entry_points=worker_config.provider_entry_points_enabled,
         include_builtin=worker_config.provider_include_builtin,
     )
-    provider_factory = TriggerProviderFactory(
-        resolver,
-        registry=TriggerProviderRegistry(initial=provider_catalog.trigger_providers),
-        admin_service=AdminService(config.runtime_dir),
-        env=dict(os.environ),
+    provider_factory = build_trigger_provider_factory(
+        runtime_dir=config.runtime_dir,
+        provider_config_resolver=resolver,
+        trigger_providers=provider_catalog.trigger_providers,
+        env=os.environ,
     )
     return TriggerWorkerWiring(
         provider_config_resolver=resolver,

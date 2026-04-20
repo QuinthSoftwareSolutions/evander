@@ -1,9 +1,7 @@
-from .await_agent import AwaitAgentGateProvider
-from .base import GateProviderBase, GateRuntimeContext
-from .filter_gate import FilterGateProvider
-from .for_gate import ForGateProvider
-from .map_gate import MapGateProvider
-from .merge_gate import MergeGateProvider
+from __future__ import annotations
+
+from importlib import import_module
+from typing import Any
 
 __all__ = [
     "AwaitAgentGateProvider",
@@ -14,3 +12,22 @@ __all__ = [
     "MapGateProvider",
     "MergeGateProvider",
 ]
+
+_EXPORT_MODULES = {
+    "AwaitAgentGateProvider": ".await_agent",
+    "FilterGateProvider": ".filter_gate",
+    "ForGateProvider": ".for_gate",
+    "GateProviderBase": ".base",
+    "GateRuntimeContext": ".base",
+    "MapGateProvider": ".map_gate",
+    "MergeGateProvider": ".merge_gate",
+}
+
+
+def __getattr__(name: str) -> Any:
+    module_name = _EXPORT_MODULES.get(name)
+    if module_name is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    value = getattr(import_module(module_name, __name__), name)
+    globals()[name] = value
+    return value

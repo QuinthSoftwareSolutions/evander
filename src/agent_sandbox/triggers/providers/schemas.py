@@ -5,7 +5,7 @@ from typing import Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from agent_sandbox.events.models import TriggerDefinition
-from agent_sandbox.events.provider_models import (
+from agent_sandbox.events.provider_types import (
     EmailProvider,
     PrFeedbackProvider,
     validate_email_provider,
@@ -17,6 +17,11 @@ from agent_sandbox.workflow.contracts import normalize_directory_paths, normaliz
 class CronTriggerDefinition(TriggerDefinition):
     type: Literal["trigger:cron"]
     expression: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def sync_expression_config(self) -> "CronTriggerDefinition":
+        self.config = {**self.config, "expression": self.expression}
+        return self
 
 
 class TicketCreatedTriggerDefinition(TriggerDefinition):

@@ -5,18 +5,24 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
-from ...admin_service import AdminService
 from ...agent_prompt_queue import AgentPromptQueueStore
 from ...config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
-from ...effects.registry import EffectProviderFactory, EffectProviderRegistry
-from ...gates.registry import GateProviderFactory, GateProviderRegistry
+from ...effects.registry import EffectProviderFactory
 from ...provider_config import ProviderConfigResolver
 from ...provider_profiles import is_pure_orchestration_core_profile, resolve_provider_module_names
-from ...queries.registry import QueryProviderFactory, QueryProviderRegistry
+from ...gates.registry import GateProviderFactory
+from ...queries.registry import QueryProviderFactory
 from ...runtime import RuntimeContext
 from ...triggers.queue import TriggerEventQueue
 from ...workflow_events import WorkflowEventJournal
 from ...workflow_plugins import load_provider_plugins
+from ..adapters.provider_factories import (
+    build_agent_prompt_dispatch_port,
+    build_agent_run_status_port,
+    build_effect_provider_factory,
+    build_gate_provider_factory,
+    build_query_provider_factory,
+)
 from ..effect_extensions import (
     CompletionDispatchHook,
     LifecycleReconciliationHook,
@@ -38,6 +44,8 @@ class EffectWorkerWiring:
     provider_factory: EffectProviderFactory
     query_provider_factory: QueryProviderFactory
     gate_provider_factory: GateProviderFactory
+    agent_run_status_port: object | None
+    agent_prompt_dispatch_port: object | None
     special_event_handlers: tuple[SpecialEventHandler, ...]
     lifecycle_reconciliation_hooks: tuple[LifecycleReconciliationHook, ...]
     completion_dispatch_hooks: tuple[CompletionDispatchHook, ...]
@@ -95,28 +103,32 @@ def build_effect_worker_wiring(
         include_entry_points=worker_config.provider_entry_points_enabled,
         include_builtin=worker_config.provider_include_builtin,
     )
-    provider_factory = EffectProviderFactory(
-        resolver,
-        registry=EffectProviderRegistry(initial=provider_catalog.effect_providers),
-        admin_service=AdminService(config.runtime_dir),
-        env=dict(os.environ),
+    provider_factory = build_effect_provider_factory(
+        runtime_dir=config.runtime_dir,
+        provider_config_resolver=resolver,
+        effect_providers=provider_catalog.effect_providers,
+        env=os.environ,
     )
-    query_provider_factory = QueryProviderFactory(
-        resolver,
-        registry=QueryProviderRegistry(initial=provider_catalog.query_providers),
-        admin_service=AdminService(config.runtime_dir),
-        env=dict(os.environ),
+    query_provider_factory = build_query_provider_factory(
+        runtime_dir=config.runtime_dir,
+        provider_config_resolver=resolver,
+        query_providers=provider_catalog.query_providers,
+        env=os.environ,
     )
-    gate_provider_factory = GateProviderFactory(
-        resolver,
-        registry=GateProviderRegistry(initial=provider_catalog.gate_providers),
-        admin_service=AdminService(config.runtime_dir),
-        env=dict(os.environ),
+    gate_provider_factory = build_gate_provider_factory(
+        runtime_dir=config.runtime_dir,
+        provider_config_resolver=resolver,
+        gate_providers=provider_catalog.gate_providers,
+        env=os.environ,
     )
+    agent_run_status_port = None
+    agent_prompt_dispatch_port = None
     special_event_handlers: tuple[SpecialEventHandler, ...] = ()
     lifecycle_reconciliation_hooks: tuple[LifecycleReconciliationHook, ...] = ()
     completion_dispatch_hooks: tuple[CompletionDispatchHook, ...] = ()
     if include_default_domain_handlers and not is_pure_orchestration_core_profile(worker_config.provider_profile):
+        agent_run_status_port = build_agent_run_status_port(runtime_dir=config.runtime_dir)
+        agent_prompt_dispatch_port = build_agent_prompt_dispatch_port(runtime_dir=config.runtime_dir)
         from ..providers import build_agent_default_effect_handlers
 
         (
@@ -137,6 +149,8 @@ def build_effect_worker_wiring(
         provider_factory=provider_factory,
         query_provider_factory=query_provider_factory,
         gate_provider_factory=gate_provider_factory,
+        agent_run_status_port=agent_run_status_port,
+        agent_prompt_dispatch_port=agent_prompt_dispatch_port,
         special_event_handlers=special_event_handlers,
         lifecycle_reconciliation_hooks=lifecycle_reconciliation_hooks,
         completion_dispatch_hooks=completion_dispatch_hooks,

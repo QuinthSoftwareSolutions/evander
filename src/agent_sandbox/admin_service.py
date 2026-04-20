@@ -87,6 +87,7 @@ from .events.models import (
     QueryDefinitionDiscriminated,
     TriggerDefinitionDiscriminated,
     effective_node_output_schema,
+    materialize_node_definition,
 )
 from .workflow_graph import build_inbound_edge_index, merge_declared_output_intersection
 
@@ -419,6 +420,41 @@ def _strip_default_edge_fields(payload: dict[str, object]) -> dict[str, object]:
         normalized_edges.append(normalized)
     payload["edges"] = normalized_edges
     return payload
+
+
+def _flatten_workflow_node_for_legacy_response(entry: dict[str, object], adapter: TypeAdapter) -> dict[str, object]:
+    try:
+        materialized = materialize_node_definition(adapter.validate_python(entry))
+        payload = materialized.model_dump(mode="json", exclude_none=True)
+    except ValidationError:
+        payload = dict(entry)
+    config = payload.pop("config", None)
+    if isinstance(config, dict):
+        payload.update(config)
+    return payload
+
+
+def _workflow_config_for_legacy_mutation_response(config: dict[str, object]) -> dict[str, object]:
+    response = json.loads(json.dumps(config))
+    if not isinstance(response, dict):
+        return config
+    adapters = {
+        "triggers": _TRIGGER_DEFINITION_ADAPTER,
+        "gates": _GATE_DEFINITION_ADAPTER,
+        "effects": _EFFECT_DEFINITION_ADAPTER,
+        "queries": _QUERY_DEFINITION_ADAPTER,
+    }
+    for collection_name, adapter in adapters.items():
+        entries = response.get(collection_name)
+        if not isinstance(entries, list):
+            continue
+        response[collection_name] = [
+            _flatten_workflow_node_for_legacy_response(entry, adapter)
+            if isinstance(entry, dict)
+            else entry
+            for entry in entries
+        ]
+    return response
 
 
 def _field_option(value: str, label: str | None = None) -> WorkflowEditorFieldOption:
@@ -4711,7 +4747,7 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
         compiled_config, diagnostics = compile_worker_global_config_with_diagnostics(
             TriggerOrchestratorWorkerGlobalConfig.model_validate(normalized_config)
         )
-        normalized_config = compiled_config.model_dump(mode="json", exclude_none=True)
+        normalized_config = _strip_default_edge_fields(compiled_config.model_dump(mode="json", exclude_none=True))
         normalized_layout = self._validate_workflow_editor_layout(
             layout or {},
             node_ids=self._collect_workflow_node_ids(normalized_config),
@@ -5115,7 +5151,7 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
             trigger_id=normalized_trigger_id,
             operation="updated" if replacing else "added",
             path=write_result.path,
-            config=write_result.config,
+            config=_workflow_config_for_legacy_mutation_response(write_result.config),
         )
 
     def _delete_trigger_config(self, trigger_id: str) -> TriggerConfigMutationPayload:
@@ -5145,7 +5181,7 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
             trigger_id=normalized_trigger_id,
             operation="deleted",
             path=write_result.path,
-            config=write_result.config,
+            config=_workflow_config_for_legacy_mutation_response(write_result.config),
         )
 
     def _upsert_effect_config(self, effect_id: str, payload: dict[str, object]) -> EffectConfigMutationPayload:
@@ -5200,7 +5236,7 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
             effect_id=normalized_effect_id,
             operation="updated" if replacing else "added",
             path=write_result.path,
-            config=write_result.config,
+            config=_workflow_config_for_legacy_mutation_response(write_result.config),
         )
 
     def _delete_effect_config(self, effect_id: str) -> EffectConfigMutationPayload:
@@ -5242,7 +5278,7 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
             effect_id=normalized_effect_id,
             operation="deleted",
             path=write_result.path,
-            config=write_result.config,
+            config=_workflow_config_for_legacy_mutation_response(write_result.config),
         )
 
     def _next_local_issue_number(self) -> str:

@@ -19,6 +19,7 @@ from .effects.registry import EffectProviderFactory, EffectProviderRegistry
 from .events.models import (
     EffectDefinitionDiscriminated,
     GateDefinitionDiscriminated,
+    materialize_node_definition,
     NODE_OUTPUTS_CONTEXT_KEY,
     QueryDefinitionDiscriminated,
     validate_output_mapping_keys,
@@ -35,6 +36,7 @@ from .orchestration.adapters import (
     EffectCompletionPublisherAdapter,
     EffectDependencyResolverAdapter,
     EffectEventFetcherAdapter,
+    EffectLoopExecution,
     EffectExecutionRecorderAdapter,
 )
 from .provider_config import ProviderConfigResolver
@@ -71,6 +73,7 @@ from .workflow_plugins import load_provider_plugins
 from .orchestration.kernels import PollingKernelConfig, PollingOrchestratorKernel
 from .orchestration.wiring import EffectWorkerWiring, build_effect_worker_wiring
 from .orchestration.effect_extensions import SpecialEventResult
+from .gates.providers.await_agent import AwaitAgentPendingRecord, _await_agent_pending_target
 
 logger = logging.getLogger(__name__)
 
@@ -216,11 +219,15 @@ class EffectOrchestratorWorker:
         self.provider_factory = resolved_wiring.provider_factory
         self.query_provider_factory = resolved_wiring.query_provider_factory
         self.gate_provider_factory = resolved_wiring.gate_provider_factory
+        self.agent_run_status_port = getattr(resolved_wiring, "agent_run_status_port", None)
+        self.agent_prompt_dispatch_port = getattr(resolved_wiring, "agent_prompt_dispatch_port", None)
+        self._effect_provider_class_registry = getattr(self.provider_factory, "registry", None)
         self.gate_executor_registry = NodeExecutorRegistry()
         self.effect_executor_registry = NodeExecutorRegistry()
         self.query_executor_registry = NodeExecutorRegistry()
         self._register_default_node_executors()
         self._gate_providers: dict[str, Any] = {}
+        self._gate_provider_factory_cache_id = id(self.gate_provider_factory)
         self._special_event_handlers = resolved_wiring.special_event_handlers
         self._lifecycle_reconciliation_hooks = resolved_wiring.lifecycle_reconciliation_hooks
         self._completion_dispatch_hooks = resolved_wiring.completion_dispatch_hooks
@@ -274,7 +281,7 @@ class EffectOrchestratorWorker:
         loop = OrchestrationLoop[
             TriggerQueueRecord,
             tuple[ExecutionGraph, str, dict[str, Any]],
-            TriggerQueueRecord,
+            EffectLoopExecution,
         ](
             event_fetcher=EffectEventFetcherAdapter(
                 fetch_pending=lambda: (self.event_queue.list_pending(limit=1) or [None])[0]
@@ -294,15 +301,20 @@ class EffectOrchestratorWorker:
         def _resolve_and_execute(
             queue_record: TriggerQueueRecord,
             dependency: tuple[ExecutionGraph, str, dict[str, Any]],
-        ) -> TriggerQueueRecord:
+        ) -> EffectLoopExecution:
             nonlocal effect_executions_started
             resolved_graph, resolved_config_revision, _cursor = dependency
-            effect_executions_started += self._process_event_record(
+            execution_count = self._process_event_record(
                 queue_record,
                 graph=resolved_graph,
                 config_revision=resolved_config_revision,
             )
-            return queue_record
+            effect_executions_started += execution_count
+            return EffectLoopExecution(
+                queue_record=queue_record,
+                execution_count=execution_count,
+                published_count=0,
+            )
 
         loop_result = loop.run_once(
             max_events=max(1, int(getattr(latest_config, "max_events_per_cycle", _DEFAULT_MAX_EVENTS_PER_CYCLE))),
@@ -432,6 +444,9 @@ class EffectOrchestratorWorker:
         return _build_execution_graph(self.worker_config)
 
     def _get_gate_provider(self, gate_type: str) -> Any | None:
+        if id(self.gate_provider_factory) != self._gate_provider_factory_cache_id:
+            self._gate_providers.clear()
+            self._gate_provider_factory_cache_id = id(self.gate_provider_factory)
         cached = self._gate_providers.get(gate_type)
         if cached is not None:
             return cached
@@ -444,8 +459,8 @@ class EffectOrchestratorWorker:
         return provider
 
     def _register_default_node_executors(self) -> None:
-        provider_effect_executor = ProviderEffectNodeExecutor(self.provider_factory)
-        provider_query_executor = ProviderQueryNodeExecutor(self.query_provider_factory)
+        provider_effect_executor = ProviderEffectNodeExecutor(provider_factory_getter=lambda: self.provider_factory)
+        provider_query_executor = ProviderQueryNodeExecutor(provider_factory_getter=lambda: self.query_provider_factory)
 
         for gate_type in self.gate_provider_factory.registry.registered_types():
             self.gate_executor_registry.register(gate_type, gate_type)
@@ -455,9 +470,14 @@ class EffectOrchestratorWorker:
             self.query_executor_registry.register(query_type, provider_query_executor)
 
     def _effect_provider_class(self, effect_type: str) -> Any | None:
+        registry = getattr(self.provider_factory, "registry", None)
+        if registry is None:
+            registry = self._effect_provider_class_registry
+        if registry is None:
+            return None
         try:
-            return self.provider_factory.registry.resolve(effect_type)  # type: ignore[arg-type]
-        except KeyError:
+            return registry.resolve(effect_type)  # type: ignore[arg-type]
+        except (AttributeError, KeyError):
             return None
 
     def _run_waiting_reconciliation_hooks(self) -> int:
@@ -519,11 +539,12 @@ class EffectOrchestratorWorker:
         provider = self._get_gate_provider(gate.type)
         if provider is None:
             return False
+        materialized_gate = materialize_node_definition(gate)
         return bool(
             provider.execute(
                 worker=self,
                 queue_record=queue_record,
-                gate=gate,
+                gate=materialized_gate,
                 graph=graph,
                 started_at=started_at,
                 config_revision=config_revision,
@@ -859,6 +880,9 @@ class EffectOrchestratorWorker:
                 direct_only=False,
             )
         )
+
+    def _list_vm_summaries_for_await_agent_reconciliation(self) -> list[Any]:
+        return self._list_vm_summaries_for_reconciliation()
 
     def _reap_completed_futures(self) -> tuple[int, int]:
         completed_count = 0
@@ -1347,17 +1371,11 @@ def _build_execution_graph(worker_config: TriggerOrchestratorWorkerGlobalConfig)
 
 
 def _extract_effect_config(effect: EffectDefinitionDiscriminated) -> dict[str, Any]:
-    payload = effect.model_dump(mode="json")
-    for field_name in ("id", "display_name", "type", "outputs"):
-        payload.pop(field_name, None)
-    return payload
+    return dict(effect.config)
 
 
 def _extract_query_config(query: QueryDefinitionDiscriminated) -> dict[str, Any]:
-    payload = query.model_dump(mode="json")
-    for field_name in ("id", "display_name", "type", "outputs"):
-        payload.pop(field_name, None)
-    return payload
+    return dict(query.config)
 
 
 def _execution_idempotency_key(event_id: str, node_id: str) -> str:

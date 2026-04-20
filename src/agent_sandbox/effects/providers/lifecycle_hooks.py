@@ -4,6 +4,13 @@ from datetime import UTC, datetime
 from typing import Any
 
 from agent_sandbox.effects.providers.base import EffectLifecycleHookBase
+from agent_sandbox.orchestration.effect_extensions import (
+    dispatch_agent_prompt,
+    list_vm_summaries_for_agent_reconciliation,
+    resolve_agent_prompt_dispatch_port,
+)
+
+
 class ProviderCompletionLifecycleHook(EffectLifecycleHookBase):
     def __init__(self, provider_class: type[Any]) -> None:
         self._provider_class = provider_class
@@ -19,9 +26,8 @@ class ProviderCompletionLifecycleHook(EffectLifecycleHookBase):
 class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
     def on_post_completion_dispatch(self, *, worker: Any) -> int:
         queue_store = getattr(worker, "queued_agent_prompt_store", None)
-        provider_factory = getattr(worker, "provider_factory", None)
-        admin_service = getattr(provider_factory, "admin_service", None)
-        if queue_store is None or admin_service is None:
+        dispatch_port = resolve_agent_prompt_dispatch_port(worker)
+        if queue_store is None or dispatch_port is None:
             return 0
 
         queued_records = queue_store.read_all()
@@ -30,18 +36,23 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
 
         summaries = {
             str(getattr(item, "vm_name", "") or "").strip(): item
-            for item in admin_service.list_vms(include_inactive=True, vm_user="agent")
+            for item in list_vm_summaries_for_agent_reconciliation(worker)
         }
 
         dispatched = 0
         for queue_key, record in sorted(queued_records.items()):
+            graph = worker._build_execution_graph()
+            effect = graph.effects_by_id.get(record.effect_id)
+            if effect is None or getattr(effect, "type", "") != "effect:agent:enqueue-prompt":
+                continue
             vm_name = str(record.vm_name or "").strip()
             summary = summaries.get(vm_name)
             if summary is not None and str(getattr(summary, "agent_state", "") or "").strip() == "running":
                 continue
 
             dispatch_id = f"dispatch-{record.effect_id}-{datetime.now(UTC).strftime('%Y%m%d%H%M%S%f')}"
-            result = admin_service.resume_agent(
+            result = dispatch_agent_prompt(
+                worker,
                 target=record.target,
                 prompt=record.prompt,
                 model=record.model,
@@ -49,7 +60,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
                 dispatch_id=dispatch_id,
                 resume_thread_id=record.resume_thread_id,
             )
-            if bool(getattr(result, "success", False)):
+            if result is not None and bool(getattr(result, "success", False)):
                 queue_store.delete(queue_key)
                 dispatched += 1
 

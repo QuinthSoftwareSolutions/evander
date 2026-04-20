@@ -1,21 +1,403 @@
 from __future__ import annotations
 
-from agent_sandbox.effects.providers.default_schema import register_effect_output_schemas
-from agent_sandbox.gates.providers.default_schema import register_gate_output_schemas
-from agent_sandbox.queries.providers.default_schema import register_query_output_schemas
-from agent_sandbox.triggers.providers.default_schema import register_trigger_output_schemas
+from agent_sandbox.workflow.contracts import register_node_output_schema
 
 _BOOTSTRAPPED = False
+
+_TICKET_OUTPUT_SCHEMA = {
+    "ticket": {
+        "type": "object",
+        "properties": {
+            "issue_id": {"type": "string"},
+            "issue_number": {"type": "string"},
+            "title": {"type": "string"},
+            "body": {"type": "string"},
+            "description": {"type": "string"},
+            "reason": {"type": "string"},
+            "rejection_reason": {"type": "string"},
+            "yaml_path": {"type": "string"},
+            "directory_path": {"type": "string"},
+            "repo_source": {"type": "string"},
+            "source_type": {"type": "string"},
+            "tags": {"type": "array", "items": {"type": "string"}},
+            "state": {"type": "string"},
+            "url": {"type": "string"},
+            "comments": {"type": "array"},
+            "source": {"type": "string"},
+            "metadata": {"type": "object"},
+            "created_at": {"type": "string"},
+            "updated_at": {"type": "string"},
+        },
+    }
+}
+
+_TRIGGER_OUTPUT_SCHEMAS = {
+    "trigger:ticket:created": _TICKET_OUTPUT_SCHEMA,
+    "trigger:ticket:changed": _TICKET_OUTPUT_SCHEMA,
+    "trigger:script-run-request": {
+        "request_id": {"type": "string"},
+        "session_id": {"type": "string"},
+        "script_name": {"type": "string"},
+        "parameters": {"type": "array", "items": {"type": "string"}},
+    },
+    "trigger:discord:new-message": {
+        "message": {
+            "type": "object",
+            "properties": {
+                "message_id": {"type": "string"},
+                "channel_id": {"type": "string"},
+                "author_id": {"type": "string"},
+                "author_name": {"type": "string"},
+                "content": {"type": "string"},
+                "created_at": {"type": "string"},
+                "in_reply_to": {"type": "string"},
+                "raw": {"type": "object"},
+            },
+        }
+    },
+    "trigger:teams:new-message": {},
+    "trigger:email:new-message": {
+        "message": {
+            "type": "object",
+            "properties": {
+                "mailbox_id": {"type": "string"},
+                "provider": {"type": "string"},
+                "folder": {"type": "string"},
+                "message_id": {"type": "string"},
+                "thread_id": {"type": "string"},
+                "sender": {"type": "string"},
+                "recipients": {"type": "array", "items": {"type": "string"}},
+                "received_at": {"type": "string"},
+                "unread": {"type": "boolean"},
+                "body_snippet": {"type": "string"},
+                "metadata": {"type": "object"},
+            },
+        }
+    },
+    "trigger:pull-request:new-feedback": {
+        "session_id": {"type": "string"},
+        "pr": {
+            "type": "object",
+            "properties": {
+                "provider": {"type": "string"},
+                "repo": {"type": "string"},
+                "pr_id": {"type": "string"},
+            },
+        },
+        "feedback": {
+            "type": "object",
+            "properties": {
+                "feedback_id": {"type": "string"},
+                "provider": {"type": "string"},
+                "repo": {"type": "string"},
+                "pr_id": {"type": "string"},
+                "thread_id": {"type": "string"},
+                "comment_id": {"type": "string"},
+                "author": {"type": "string"},
+                "body": {"type": "string"},
+                "file_path": {"type": "string"},
+                "line": {"type": "integer"},
+                "created_at": {"type": "string"},
+                "in_reply_to": {"type": "string"},
+                "resolved": {"type": "boolean"},
+            },
+        },
+    },
+    "trigger:review:new-request": {
+        "review_request": {
+            "type": "object",
+            "properties": {
+                "request_id": {"type": "string"},
+                "requested_at": {"type": "string"},
+                "requested_by": {"type": "string"},
+                "request_channel": {"type": "string"},
+                "provider": {"type": "string"},
+                "repo": {"type": "string"},
+                "pr_id": {"type": "string"},
+                "canonical_url": {"type": "string"},
+                "title": {"type": "string"},
+                "body": {"type": "string"},
+                "base_branch": {"type": "string"},
+                "head_branch": {"type": "string"},
+                "base_commit": {"type": "string"},
+                "head_commit": {"type": "string"},
+                "review_type": {"type": "string"},
+                "instructions": {"type": "string"},
+                "directory_path": {"type": "string"},
+                "model": {"type": "string"},
+                "labels": {"type": "object"},
+                "metadata": {"type": "object"},
+                "status": {"type": "string"},
+                "updated_at": {"type": "string"},
+                "lease_owner": {"type": "string"},
+                "lease_expires_at": {"type": "string"},
+                "dispatch_count": {"type": "integer"},
+            },
+        }
+    },
+    "trigger:git:push": {
+        "branch_name": {"type": "string"},
+        "commit_hash": {"type": "string"},
+        "old_commit_hash": {"type": "string"},
+        "ref_name": {"type": "string"},
+        "repo_path": {"type": "string"},
+        "repo_name": {"type": "string"},
+        "session_id": {"type": "string"},
+        "review_branch": {"type": "string"},
+        "trusted_repo_path": {"type": "string"},
+        "base_branch": {"type": "string"},
+        "canonical_origin_url": {"type": "string"},
+    },
+    "trigger:agent:prompt:new": {
+        "session_id": {"type": "string"},
+        "agent_prompt": {
+            "type": "object",
+            "properties": {
+                "message_id": {"type": "string"},
+                "sender_session_id": {"type": "string"},
+                "target_session_id": {"type": "string"},
+                "prompt": {"type": "string"},
+                "metadata": {"type": "object"},
+                "status": {"type": "string"},
+                "created_at": {"type": "string"},
+            },
+        },
+    },
+    "trigger:agent:run:completed": {
+        "vm": {
+            "type": "object",
+            "properties": {
+                "vm_name": {"type": "string"},
+                "issue_number": {"type": "string"},
+                "session_ids": {"type": "array", "items": {"type": "string"}},
+                "labels": {"type": "object"},
+                "directory_paths": {"type": "array", "items": {"type": "string"}},
+                "libvirt_state": {"type": "string"},
+                "ip_address": {"type": "string"},
+                "agent_state": {"type": "string"},
+                "agent_repo_names": {"type": "array", "items": {"type": "string"}},
+                "last_state_update_at": {"type": "string"},
+            },
+        },
+        "vm_name": {"type": "string"},
+        "session_ids": {"type": "array"},
+        "labels": {"type": "object"},
+        "directory_paths": {"type": "array"},
+        "agent_repo_names": {"type": "array"},
+        "libvirt_state": {"type": "string"},
+        "agent_state": {"type": "string"},
+        "previous_agent_state": {"type": "string"},
+        "transition": {
+            "type": "object",
+            "properties": {
+                "from": {"type": "string"},
+                "to": {"type": "string"},
+            },
+        },
+        "last_state_update_at": {"type": "string"},
+        "dispatch_id": {"type": "string"},
+        "scope": {
+            "type": "object",
+            "properties": {
+                "directory_path": {"type": "string"},
+                "vm_name": {"type": "string"},
+                "session_id": {"type": "string"},
+                "vm_user": {"type": "string"},
+            },
+        },
+        "ip_address": {"type": "string"},
+    },
+}
+
+_GATE_OUTPUT_SCHEMAS = {
+    "gate:for": {
+        "current_element": {"type": "object"},
+        "current_index": {"type": "integer"},
+        "item_count": {"type": "integer"},
+        "is_done": {"type": "boolean"},
+    },
+}
+
+_EFFECT_OUTPUT_SCHEMAS = {
+    "effect:vm:create": {
+        "session_id": {"type": "string"},
+        "vm_name": {"type": "string"},
+        "labels": {"type": "object"},
+        "success": {"type": "boolean"},
+        "target_dir": {"type": "string"},
+        "guest_repo_name": {"type": "string"},
+        "remote_url": {"type": "string"},
+    },
+    "effect:vm:start": {
+        "success": {"type": "boolean"},
+        "action": {"type": "string"},
+        "target": {"type": "string"},
+        "vm_name": {"type": "string"},
+        "message": {"type": "string"},
+    },
+    "effect:vm:stop": {
+        "success": {"type": "boolean"},
+        "action": {"type": "string"},
+        "target": {"type": "string"},
+        "vm_name": {"type": "string"},
+        "message": {"type": "string"},
+    },
+    "effect:agent:prompt": {
+        "dispatch_id": {"type": "string"},
+        "thread_id": {"type": "string"},
+        "success": {"type": "boolean"},
+        "output_mode": {"type": "string"},
+    },
+    "effect:agent:enqueue-prompt": {
+        "dispatch_id": {"type": "string"},
+        "thread_id": {"type": "string"},
+        "success": {"type": "boolean"},
+        "queued": {"type": "boolean"},
+        "queue_key": {"type": "string"},
+        "vm_name": {"type": "string"},
+        "session_id": {"type": "string"},
+        "coalesced_count": {"type": "integer"},
+    },
+    "effect:bash:script": {
+        "success": {"type": "boolean"},
+        "action": {"type": "string"},
+        "script_path": {"type": "string"},
+        "message": {"type": "string"},
+        "exit_code": {"type": "integer"},
+        "stdout": {"type": "string"},
+        "stderr": {"type": "string"},
+    },
+    "effect:vm:exec": {
+        "success": {"type": "boolean"},
+        "vm_name": {"type": "string"},
+        "session_id": {"type": "string"},
+        "action": {"type": "string"},
+        "message": {"type": "string"},
+        "exit_code": {"type": "integer"},
+        "stdout": {"type": "string"},
+        "stderr": {"type": "string"},
+    },
+    "effect:vm:copy-files": {
+        "success": {"type": "boolean"},
+        "action": {"type": "string"},
+        "message": {"type": "string"},
+        "target": {"type": "string"},
+        "vm_name": {"type": "string"},
+        "vm_ip": {"type": "string"},
+        "vm_user": {"type": "string"},
+        "directory_path": {"type": "string"},
+        "copied_count": {"type": "integer"},
+        "copied_paths": {"type": "array"},
+        "file_count": {"type": "integer"},
+        "copied_files": {"type": "array"},
+    },
+    "effect:vm:delete-files": {
+        "success": {"type": "boolean"},
+        "action": {"type": "string"},
+        "message": {"type": "string"},
+        "target": {"type": "string"},
+        "vm_name": {"type": "string"},
+        "vm_user": {"type": "string"},
+        "deleted_count": {"type": "integer"},
+        "deleted_paths": {"type": "array"},
+    },
+    "effect:issue:update-state": {
+        "success": {"type": "boolean"},
+        "issue_number": {"type": "string"},
+        "source_type": {"type": "string"},
+        "updated": {"type": "boolean"},
+        "state": {"type": "string"},
+        "provider": {"type": "string"},
+        "remote_issue_id": {"type": "string"},
+    },
+    "effect:session:update-metadata": {
+        "success": {"type": "boolean"},
+        "action": {"type": "string"},
+        "message": {"type": "string"},
+        "session_id": {"type": "string"},
+        "vm_name": {"type": "string"},
+        "directory_path": {"type": "string"},
+        "metadata": {"type": "object"},
+    },
+    "effect:git:promote-agent-branch": {
+        "success": {"type": "boolean"},
+        "action": {"type": "string"},
+        "message": {"type": "string"},
+        "host_repo_path": {"type": "string"},
+        "bare_repo_path": {"type": "string"},
+        "agent_branch": {"type": "string"},
+        "review_branch": {"type": "string"},
+        "remote_name": {"type": "string"},
+    },
+    "effect:pr:create": {
+        "success": {"type": "boolean"},
+        "action": {"type": "string"},
+        "message": {"type": "string"},
+        "pr_id": {"type": "string"},
+        "pr_url": {"type": "string"},
+    },
+}
+
+_QUERY_OUTPUT_SCHEMAS = {
+    "query:vm:run-state": {
+        "vm_name": {"type": "string"},
+        "session_ids": {"type": "array"},
+        "libvirt_state": {"type": "string"},
+        "state_code": {"type": "string"},
+        "is_running": {"type": "boolean"},
+        "is_terminal": {"type": "boolean"},
+    },
+    "query:git:pr-note": {
+        "body": {"type": "string"},
+        "has_note": {"type": "boolean"},
+        "local_branch": {"type": "string"},
+        "host_repo_path": {"type": "string"},
+        "notes_ref": {"type": "string"},
+        "local_notes_ref": {"type": "string"},
+        "remote_name": {"type": "string"},
+        "commit_sha": {"type": "string"},
+    },
+    "query:session-context": {
+        "session_id": {"type": "string"},
+        "vm_name": {"type": "string"},
+        "directory_path": {"type": "string"},
+        "metadata": {"type": "object"},
+        "created_at": {"type": "string"},
+        "expires_at": {"type": "string"},
+        "model": {"type": "string"},
+    },
+    "query:issue:get": {
+        "issue_id": {"type": "string"},
+        "issue_number": {"type": "string"},
+        "title": {"type": "string"},
+        "body": {"type": "string"},
+        "state": {"type": "string"},
+        "url": {"type": "string"},
+        "source": {"type": "string"},
+        "source_type": {"type": "string"},
+        "directory_path": {"type": "string"},
+        "yaml_path": {"type": "string"},
+        "repo_source": {"type": "string"},
+        "metadata": {"type": "object"},
+        "comments": {"type": "array"},
+        "created_at": {"type": "string"},
+        "updated_at": {"type": "string"},
+    },
+}
 
 
 def bootstrap_default_output_schemas() -> None:
     global _BOOTSTRAPPED
     if _BOOTSTRAPPED:
         return
-    register_trigger_output_schemas()
-    register_gate_output_schemas()
-    register_effect_output_schemas()
-    register_query_output_schemas()
+    for schema_group in (
+        _TRIGGER_OUTPUT_SCHEMAS,
+        _GATE_OUTPUT_SCHEMAS,
+        _EFFECT_OUTPUT_SCHEMAS,
+        _QUERY_OUTPUT_SCHEMAS,
+    ):
+        for node_type, outputs in schema_group.items():
+            register_node_output_schema(node_type=node_type, outputs=outputs)
     _BOOTSTRAPPED = True
 
 

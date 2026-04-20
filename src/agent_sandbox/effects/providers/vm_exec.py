@@ -5,8 +5,6 @@ import subprocess
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from agent_sandbox.admin_service import _resolve_private_key_path, _resolve_vm_ip, _ssh_options
-
 from .base import EffectProviderBase
 
 
@@ -122,6 +120,8 @@ class VmExecEffectProvider(EffectProviderBase):
         stdin: str | None,
         environment: Mapping[str, str],
     ) -> dict[str, Any]:
+        from agent_sandbox.admin_service import _resolve_private_key_path, _resolve_vm_ip, _ssh_options
+
         vm_ip = _resolve_vm_ip(vm_name)
         ssh_private_key_path = _resolve_private_key_path()
         if not vm_ip:

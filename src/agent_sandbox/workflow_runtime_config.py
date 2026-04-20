@@ -128,13 +128,15 @@ def compile_worker_global_config_with_diagnostics(
 def _compose_configured_workflow_ir(*, project_dir: Path, payload: dict[str, Any]) -> dict[str, Any]:
     configured_packs = payload.get("workflow_packs")
     inline_ir = payload.get("workflow_ir")
-    if not isinstance(configured_packs, list) and not isinstance(inline_ir, dict):
+    has_configured_packs = isinstance(configured_packs, list) and bool(configured_packs)
+    has_inline_ir = isinstance(inline_ir, dict)
+    if not has_configured_packs and not has_inline_ir:
         return payload
 
     composition = compose_workflow_ir(
         project_dir=project_dir,
-        workflow_packs=configured_packs if isinstance(configured_packs, list) else [],
-        inline_ir=inline_ir if isinstance(inline_ir, dict) else None,
+        workflow_packs=configured_packs if has_configured_packs else [],
+        inline_ir=inline_ir if has_inline_ir else None,
     )
     merged = dict(payload)
     merged["triggers"] = composition.triggers

@@ -19,6 +19,7 @@ from agent_sandbox.triggers.providers.schemas import (
     TicketChangedTriggerDefinition,
     TicketCreatedTriggerDefinition,
 )
+from agent_sandbox.schema_bootstrap import _TRIGGER_OUTPUT_SCHEMAS
 from agent_sandbox.workflow.contracts import WorkflowNodeEnvelope, register_node_output_schema
 
 _TRIGGER_MODEL_BY_TYPE = {
@@ -35,49 +36,6 @@ _TRIGGER_MODEL_BY_TYPE = {
     "trigger:agent:run:completed": AgentRunCompletedTriggerDefinition,
     "trigger:agent:prompt:new": AgentPromptNewTriggerDefinition,
 }
-
-_TRIGGER_OUTPUT_SCHEMAS = {
-    "trigger:ticket:created": {"ticket": {"type": "object"}},
-    "trigger:ticket:changed": {"ticket": {"type": "object"}},
-    "trigger:script-run-request": {
-        "request_id": {"type": "string"},
-        "session_id": {"type": "string"},
-        "script_name": {"type": "string"},
-        "parameters": {"type": "array", "items": {"type": "string"}},
-    },
-    "trigger:discord:new-message": {"message": {"type": "object"}},
-    "trigger:teams:new-message": {},
-    "trigger:email:new-message": {"message": {"type": "object"}},
-    "trigger:pull-request:new-feedback": {
-        "session_id": {"type": "string"},
-        "pr": {"type": "object"},
-        "feedback": {"type": "object"},
-    },
-    "trigger:review:new-request": {"review_request": {"type": "object"}},
-    "trigger:git:push": {
-        "branch_name": {"type": "string"},
-        "commit_hash": {"type": "string"},
-        "old_commit_hash": {"type": "string"},
-        "ref_name": {"type": "string"},
-        "repo_path": {"type": "string"},
-        "repo_name": {"type": "string"},
-        "session_id": {"type": "string"},
-        "review_branch": {"type": "string"},
-        "trusted_repo_path": {"type": "string"},
-        "base_branch": {"type": "string"},
-        "canonical_origin_url": {"type": "string"},
-    },
-    "trigger:agent:prompt:new": {
-        "session_id": {"type": "string"},
-        "agent_prompt": {"type": "object"},
-    },
-    "trigger:agent:run:completed": {
-        "vm": {"type": "object"},
-        "dispatch_id": {"type": "string"},
-        "scope": {"type": "object"},
-    },
-}
-
 
 def _materialize_with_model(model_class: type[BaseModel], node: WorkflowNodeEnvelope) -> BaseModel:
     payload = {

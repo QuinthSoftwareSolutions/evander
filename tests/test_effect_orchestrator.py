@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from threading import Event
 
+import pytest
+
 from agent_sandbox.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
 from agent_sandbox.effects.providers.base import EffectRuntimeContext
 from agent_sandbox.effects.providers.vm_copy_files import VmCopyFilesEffectProvider
@@ -68,6 +70,42 @@ class _StaticReloader:
         changed = self._changed
         self._changed = False
         return self._config, changed
+
+
+class _AgentRunStatusPortStub:
+    def __init__(self, summaries: list[object]) -> None:
+        self.summaries = summaries
+
+    def list_vm_summaries(self) -> list[object]:
+        return list(self.summaries)
+
+
+class _AgentPromptDispatchPortStub:
+    def __init__(self, resume_calls: list[dict[str, object]], result: object) -> None:
+        self.resume_calls = resume_calls
+        self.result = result
+
+    def dispatch_agent_prompt(
+        self,
+        *,
+        target: str,
+        prompt: str,
+        model: str | None = None,
+        vm_user: str = "agent",
+        dispatch_id: str | None = None,
+        resume_thread_id: str | None = None,
+    ) -> object:
+        self.resume_calls.append(
+            {
+                "target": target,
+                "prompt": prompt,
+                "model": model,
+                "vm_user": vm_user,
+                "dispatch_id": dispatch_id,
+                "resume_thread_id": resume_thread_id,
+            }
+        )
+        return self.result
 
 
 def _edge(source_id: str, target_id: str) -> dict[str, str]:
@@ -947,42 +985,22 @@ def test_effect_orchestrator_supports_disambiguated_references_for_same_key_name
 
 def test_effect_orchestrator_depth_protection_skips_cyclic_graph(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
-    config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
-        {
-            "runtime_dir": runtime_dir,
-            "poll_interval_seconds": 1,
-            "jitter_seconds": 0,
-            "effects": [
-                {"id": "effect-a", "display_name": "A", "type": "effect:agent:prompt", "prompt": "A"},
-                {"id": "effect-b", "display_name": "B", "type": "effect:agent:prompt", "prompt": "B"},
-            ],
-            "edges": [
-                _edge("effect-b", "effect-a"),
-                _edge("effect-a", "effect-b"),
-            ],
-        }
-    )
-    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
-    worker.provider_factory = _Factory({})
-
-    worker.event_queue.publish(
-        TriggerEvent(
-            event_id="event-cycle-1",
-            trigger_id="effect-a",
-            trigger_type="trigger:cron",
-            occurred_at=datetime(2026, 4, 4, 12, 0, tzinfo=timezone.utc),
-            payload={},
+    with pytest.raises(ValueError, match="Non-cyclic edges cannot form a cycle"):
+        TriggerOrchestratorWorkerGlobalConfig.model_validate(
+            {
+                "runtime_dir": runtime_dir,
+                "poll_interval_seconds": 1,
+                "jitter_seconds": 0,
+                "effects": [
+                    {"id": "effect-a", "display_name": "A", "type": "effect:agent:prompt", "prompt": "A"},
+                    {"id": "effect-b", "display_name": "B", "type": "effect:agent:prompt", "prompt": "B"},
+                ],
+                "edges": [
+                    _edge("effect-b", "effect-a"),
+                    _edge("effect-a", "effect-b"),
+                ],
+            }
         )
-    )
-
-    worker.run_once()
-
-    execution_payload = json.loads((runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8"))
-    record = next(iter(execution_payload.values()))
-    assert record["effect_id"] == "effect-b"
-    assert record["status"] == "skipped"
-    assert record["error"] == "cycle_detected"
 
 
 def test_effect_orchestrator_dispatches_without_waiting_for_long_effect(tmp_path: Path) -> None:
@@ -1649,19 +1667,25 @@ def test_agent_enqueue_prompt_dispatches_queued_prompt_when_target_agent_becomes
                     "prompt": "hello",
                 }
             ],
-            "edges": [_edge("trigger-1", "effect-1")],
+                "edges": [_edge("trigger-1", "effect-1")],
         }
     )
     worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
-    summaries = [
-        [
-            VmSummary(
-                vm_name="vm-1",
-                libvirt_state="running",
-                agent_state="running",
-                session_ids=[],
-            )
-        ],
+    resume_calls: list[dict[str, object]] = []
+    worker.queued_agent_prompt_store.put(
+        QueuedAgentPromptRecord(
+            queue_key="vm-1",
+            target="vm-1",
+            vm_name="vm-1",
+            session_id=None,
+            prompt="hello",
+            model=None,
+            vm_user="agent",
+            resume_thread_id=None,
+            effect_id="effect-1",
+        )
+    )
+    worker.agent_run_status_port = _AgentRunStatusPortStub(
         [
             VmSummary(
                 vm_name="vm-1",
@@ -1669,35 +1693,14 @@ def test_agent_enqueue_prompt_dispatches_queued_prompt_when_target_agent_becomes
                 agent_state="idle",
                 session_ids=[],
             )
-        ],
-    ]
-    monkeypatch.setattr(
-        worker.provider_factory.admin_service,
-        "list_vms",
-        lambda **kwargs: summaries.pop(0) if summaries else [],
+        ]
     )
-    resume_calls: list[dict[str, object]] = []
-    monkeypatch.setattr(
-        worker.provider_factory.admin_service,
-        "resume_agent",
-        lambda **kwargs: resume_calls.append(kwargs)
-        or type("Result", (), {"success": True, "thread_id": "thread-queued"})(),
+    worker.agent_prompt_dispatch_port = _AgentPromptDispatchPortStub(
+        resume_calls,
+        type("Result", (), {"success": True, "thread_id": "thread-queued"})(),
     )
 
-    worker.event_queue.publish(
-        TriggerEvent(
-            event_id="event-enqueue-1",
-            trigger_id="trigger-1",
-            trigger_type="trigger:cron",
-            occurred_at=datetime(2026, 4, 4, 12, 0, tzinfo=timezone.utc),
-            payload={},
-            trace_id="trace-enqueue-1",
-        )
-    )
-
-    worker.run_once()
-    worker.run_once()
-    worker.run_once()
+    worker._run_post_completion_dispatch_hooks()
 
     assert len(resume_calls) == 1
     assert resume_calls[0]["target"] == "vm-1"
@@ -2122,7 +2125,7 @@ def test_await_agent_gate_releases_follow_up_from_in_process_vm_poll(tmp_path: P
             },
         }
     )
-    monkeypatch.setattr(worker, "_list_vm_summaries_for_await_agent_reconciliation", lambda: [])
+    worker.agent_run_status_port = _AgentRunStatusPortStub([])
 
     worker.event_queue.publish(
         TriggerEvent(
@@ -2148,24 +2151,20 @@ def test_await_agent_gate_releases_follow_up_from_in_process_vm_poll(tmp_path: P
     }
     _await_agent_store(worker).put("await-agent-1:dispatch-effect-1-abc123", pending)
 
-    monkeypatch.setattr(
-        worker,
-        "_list_vm_summaries_for_await_agent_reconciliation",
-        lambda: [
-            VmSummary(
-                vm_name="vm-issue-42",
-                session_ids=["session-42"],
-                labels={},
-                directory_paths=["root/team-a"],
-                libvirt_state="running",
-                ip_address="192.0.2.10",
-                agent_state="idle",
-                agent_repo_names=["repo-a"],
-                last_state_update_at=datetime(2026, 4, 4, 12, 5, tzinfo=timezone.utc),
-                dispatch_id="dispatch-effect-1-abc123",
-            )
-        ],
-    )
+    worker.agent_run_status_port.summaries = [
+        VmSummary(
+            vm_name="vm-issue-42",
+            session_ids=["session-42"],
+            labels={},
+            directory_paths=["root/team-a"],
+            libvirt_state="running",
+            ip_address="192.0.2.10",
+            agent_state="idle",
+            agent_repo_names=["repo-a"],
+            last_state_update_at=datetime(2026, 4, 4, 12, 5, tzinfo=timezone.utc),
+            dispatch_id="dispatch-effect-1-abc123",
+        )
+    ]
 
     for _ in range(6):
         worker.run_once()
@@ -2465,7 +2464,7 @@ def test_waiting_agent_prompt_reconciliation_completes_from_idle_matching_dispat
             },
         }
     )
-    monkeypatch.setattr(worker, "_list_vm_summaries_for_await_agent_reconciliation", lambda: [])
+    worker.agent_run_status_port = _AgentRunStatusPortStub([])
 
     worker.event_queue.publish(
         TriggerEvent(
@@ -2481,24 +2480,20 @@ def test_waiting_agent_prompt_reconciliation_completes_from_idle_matching_dispat
     for _ in range(4):
         worker.run_once()
 
-    monkeypatch.setattr(
-        worker,
-        "_list_vm_summaries_for_await_agent_reconciliation",
-        lambda: [
-            VmSummary(
-                vm_name="vm-issue-42",
-                session_ids=["session-42"],
-                labels={},
-                directory_paths=["root/team-a"],
-                libvirt_state="running",
-                ip_address="192.0.2.10",
-                agent_state="idle",
-                agent_repo_names=["repo-a"],
-                last_state_update_at=datetime(2026, 4, 4, 12, 5, tzinfo=timezone.utc),
-                dispatch_id="dispatch-effect-1-abc123",
-            )
-        ],
-    )
+    worker.agent_run_status_port.summaries = [
+        VmSummary(
+            vm_name="vm-issue-42",
+            session_ids=["session-42"],
+            labels={},
+            directory_paths=["root/team-a"],
+            libvirt_state="running",
+            ip_address="192.0.2.10",
+            agent_state="idle",
+            agent_repo_names=["repo-a"],
+            last_state_update_at=datetime(2026, 4, 4, 12, 5, tzinfo=timezone.utc),
+            dispatch_id="dispatch-effect-1-abc123",
+        )
+    ]
 
     for _ in range(6):
         worker.run_once()

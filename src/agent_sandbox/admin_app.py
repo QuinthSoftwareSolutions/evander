@@ -1000,8 +1000,6 @@ def _directory_config_domain_help_text(domain: str) -> str | None:
             "Directory-level guardrails for approvals, recipient and mailbox restrictions, and "
             "audit redaction defaults."
         )
-    if domain == "providers":
-        return "External provider credentials and service endpoints used by host integrations."
     if domain == "vm_runtime":
         return "VM network and relay endpoint settings used when launching and wiring guest runtime access."
     if domain == "automation":
@@ -1014,11 +1012,18 @@ def _directory_config_domain_help_text(domain: str) -> str | None:
         return "ADO ingestion and VM bootstrap behavior for directory-scoped issue provisioning."
     if domain == "pr_template":
         return "Default markdown scaffold prepended to automated pull request descriptions."
-    if domain == "email":
-        return (
-            "Mailbox definitions and timeout defaults for provider-backed email access within "
-            "directory sessions."
-        )
+    return None
+
+
+def _directory_config_legacy_redirect(tab_key: str) -> dict[str, str] | None:
+    if tab_key in {"discord", "teams"}:
+        return {
+            "new_key": "communications",
+            "message": (
+                f"Legacy directory config tab '{tab_key}' now lives under 'communications'; "
+                "this is a non-blocking migration hint for older UI/API references."
+            ),
+        }
     return None
 
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Annotated, Any, Literal, TypeAlias
 
-from pydantic import BaseModel, Field, StringConstraints, field_validator, model_validator
+from pydantic import AfterValidator, BaseModel, Field, StringConstraints, field_validator, model_validator
 from typing_extensions import TypeAliasType
 
 from agent_sandbox.workflow.contracts import (
@@ -121,16 +121,15 @@ class QueryDefinition(WorkflowNodeDefinition):
     type: QueryType
 
 
-TriggerDefinitionDiscriminated = WorkflowNodeEnvelope
-EffectDefinitionDiscriminated = WorkflowNodeEnvelope
-QueryDefinitionDiscriminated = WorkflowNodeEnvelope
-GateDefinitionDiscriminated = (
-    Annotated[
-        GateFilterDefinition | GateMapDefinition | GateMergeDefinition | GateAwaitAgentDefinition | GateForDefinition,
-        Field(discriminator="type"),
-    ]
-    | WorkflowNodeEnvelope
-)
+def validate_provider_node_definition(node: WorkflowNodeEnvelope) -> WorkflowNodeEnvelope:
+    materialize_node_definition(node)
+    return node
+
+
+TriggerDefinitionDiscriminated = Annotated[WorkflowNodeEnvelope, AfterValidator(validate_provider_node_definition)]
+EffectDefinitionDiscriminated = Annotated[WorkflowNodeEnvelope, AfterValidator(validate_provider_node_definition)]
+QueryDefinitionDiscriminated = Annotated[WorkflowNodeEnvelope, AfterValidator(validate_provider_node_definition)]
+GateDefinitionDiscriminated = Annotated[WorkflowNodeEnvelope, AfterValidator(validate_provider_node_definition)]
 
 WorkflowNodeType = TriggerType | GateType | EffectType | QueryType
 
@@ -147,15 +146,68 @@ class TriggerEvent(BaseModel):
 _NODE_SCHEMA_RESOLVERS: dict[str, Any] | None = None
 
 
+def _materialize_with_model(model_class: type[BaseModel], node: WorkflowNodeEnvelope) -> BaseModel:
+    payload = {
+        "id": node.id,
+        "display_name": node.display_name,
+        "type": node.type,
+        "outputs": node.outputs,
+        **dict(node.config),
+    }
+    return model_class.model_validate(payload)
+
+
+def _builtin_node_schema_resolvers() -> dict[str, Any]:
+    from agent_sandbox.events import provider_models
+
+    models_by_type: dict[str, type[BaseModel]] = {
+        "trigger:cron": provider_models.CronTriggerDefinition,
+        "trigger:ticket:created": provider_models.TicketCreatedTriggerDefinition,
+        "trigger:ticket:changed": provider_models.TicketChangedTriggerDefinition,
+        "trigger:script-run-request": provider_models.ScriptRunRequestTriggerDefinition,
+        "trigger:discord:new-message": provider_models.DiscordNewMessageTriggerDefinition,
+        "trigger:teams:new-message": provider_models.TeamsNewMessageTriggerDefinition,
+        "trigger:email:new-message": provider_models.EmailNewMessageTriggerDefinition,
+        "trigger:pull-request:new-feedback": provider_models.PullRequestNewFeedbackTriggerDefinition,
+        "trigger:review:new-request": provider_models.ReviewNewRequestTriggerDefinition,
+        "trigger:git:push": provider_models.GitPushTriggerDefinition,
+        "trigger:agent:run:completed": provider_models.AgentRunCompletedTriggerDefinition,
+        "trigger:agent:prompt:new": provider_models.AgentPromptNewTriggerDefinition,
+        "gate:filter": GateFilterDefinition,
+        "gate:map": GateMapDefinition,
+        "gate:merge": GateMergeDefinition,
+        "gate:await-agent": GateAwaitAgentDefinition,
+        "gate:for": GateForDefinition,
+        "effect:vm:create": provider_models.VmCreateEffectDefinition,
+        "effect:vm:start": provider_models.VmStartEffectDefinition,
+        "effect:vm:stop": provider_models.VmStopEffectDefinition,
+        "effect:agent:prompt": provider_models.AgentPromptEffectDefinition,
+        "effect:agent:enqueue-prompt": provider_models.AgentEnqueuePromptEffectDefinition,
+        "effect:bash:script": provider_models.BashScriptEffectDefinition,
+        "effect:vm:exec": provider_models.VmExecEffectDefinition,
+        "effect:vm:copy-files": provider_models.VmCopyFilesEffectDefinition,
+        "effect:vm:delete-files": provider_models.VmDeleteFilesEffectDefinition,
+        "effect:issue:update-state": provider_models.IssueUpdateStateEffectDefinition,
+        "effect:session:update-metadata": provider_models.SessionUpdateMetadataEffectDefinition,
+        "effect:git:promote-agent-branch": provider_models.GitPromoteAgentBranchEffectDefinition,
+        "effect:pr:create": provider_models.PrCreateEffectDefinition,
+        "query:vm:run-state": provider_models.VmRunStateQueryDefinition,
+        "query:git:pr-note": provider_models.GitPrNoteQueryDefinition,
+        "query:session-context": provider_models.SessionContextQueryDefinition,
+        "query:issue:get": provider_models.IssueGetQueryDefinition,
+    }
+    return {
+        node_type: (lambda node, model=model: _materialize_with_model(model, node))
+        for node_type, model in models_by_type.items()
+    }
+
+
 def materialize_node_definition(node: WorkflowNodeEnvelope) -> BaseModel:
     global _NODE_SCHEMA_RESOLVERS
     if _NODE_SCHEMA_RESOLVERS is None:
-        from agent_sandbox.workflow_plugins import NODE_DEFINITION_RESOLVERS
-
-        _NODE_SCHEMA_RESOLVERS = dict(NODE_DEFINITION_RESOLVERS)
+        _NODE_SCHEMA_RESOLVERS = _builtin_node_schema_resolvers()
 
     resolver = _NODE_SCHEMA_RESOLVERS.get(node.type)
     if resolver is None:
         return node
     return resolver(node)
-

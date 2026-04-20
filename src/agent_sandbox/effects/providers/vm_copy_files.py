@@ -12,7 +12,6 @@ from typing import Any
 
 import yaml
 
-from agent_sandbox.admin_service import _resolve_private_key_path, _ssh_options
 from agent_sandbox.workflow_binding import resolve_workflow_bindings
 
 from .base import EffectProviderBase
@@ -95,6 +94,8 @@ class VmCopyFilesEffectProvider(EffectProviderBase):
             vm_user=vm_user,
             directory_path=directory_path,
         )
+        from agent_sandbox.admin_service import _resolve_private_key_path, _ssh_options
+
         ssh_private_key_path = _resolve_private_key_path()
         if ssh_private_key_path is None:
             raise RuntimeError(

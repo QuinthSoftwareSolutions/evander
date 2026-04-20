@@ -10,6 +10,7 @@ from agent_sandbox.queries.providers.schemas import (
     SessionContextQueryDefinition,
     VmRunStateQueryDefinition,
 )
+from agent_sandbox.schema_bootstrap import _QUERY_OUTPUT_SCHEMAS
 from agent_sandbox.workflow.contracts import WorkflowNodeEnvelope, register_node_output_schema
 
 _QUERY_MODEL_BY_TYPE = {
@@ -18,14 +19,6 @@ _QUERY_MODEL_BY_TYPE = {
     "query:session-context": SessionContextQueryDefinition,
     "query:issue:get": IssueGetQueryDefinition,
 }
-
-_QUERY_OUTPUT_SCHEMAS = {
-    "query:vm:run-state": {"vm_name": {"type": "string"}, "is_running": {"type": "boolean"}},
-    "query:git:pr-note": {"body": {"type": "string"}, "has_note": {"type": "boolean"}},
-    "query:session-context": {"session_id": {"type": "string"}, "metadata": {"type": "object"}},
-    "query:issue:get": {"issue_id": {"type": "string"}, "title": {"type": "string"}, "state": {"type": "string"}},
-}
-
 
 def _materialize_with_model(model_class: type[BaseModel], node: WorkflowNodeEnvelope) -> BaseModel:
     payload = {

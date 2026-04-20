@@ -29,6 +29,14 @@ class MergeGateProvider(GateProviderBase):
 
         del graph
         shared_output_keys = tuple(sorted((gate.outputs or {}).keys()))
+        if not shared_output_keys and inputs_by_source:
+            runtime_keys = {"__node_outputs", "__branch_port", "__for_execution_ids"}
+            source_key_sets = [
+                {key for key in payload if key not in runtime_keys}
+                for payload in inputs_by_source.values()
+            ]
+            if source_key_sets:
+                shared_output_keys = tuple(sorted(set.intersection(*source_key_sets)))
         resolved_config = {"shared_output_keys": list(shared_output_keys)}
         outputs = {key: queue_record.payload[key] for key in shared_output_keys if key in queue_record.payload}
         worker._write_gate_record(

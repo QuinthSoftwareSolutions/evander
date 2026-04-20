@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, Protocol, TypeVar
+from typing import Any, Callable, Protocol, TypeVar
 
 TNode = TypeVar("TNode")
 TResult = TypeVar("TResult")
@@ -43,8 +43,17 @@ class QueryNodeExecutor(Protocol):
 
 
 class ProviderEffectNodeExecutor:
-    def __init__(self, provider_factory: Any) -> None:
-        self.provider_factory = provider_factory
+    def __init__(self, provider_factory: Any | None = None, *, provider_factory_getter: Callable[[], Any] | None = None) -> None:
+        if provider_factory is None and provider_factory_getter is None:
+            raise ValueError("ProviderEffectNodeExecutor requires a provider factory or provider factory getter")
+        self._provider_factory = provider_factory
+        self._provider_factory_getter = provider_factory_getter
+
+    @property
+    def provider_factory(self) -> Any:
+        if self._provider_factory_getter is not None:
+            return self._provider_factory_getter()
+        return self._provider_factory
 
     def prepare_resolved_config(self, **kwargs: Any) -> dict[str, Any]:
         effect = kwargs["effect"]
@@ -63,8 +72,17 @@ class ProviderEffectNodeExecutor:
 
 
 class ProviderQueryNodeExecutor:
-    def __init__(self, provider_factory: Any) -> None:
-        self.provider_factory = provider_factory
+    def __init__(self, provider_factory: Any | None = None, *, provider_factory_getter: Callable[[], Any] | None = None) -> None:
+        if provider_factory is None and provider_factory_getter is None:
+            raise ValueError("ProviderQueryNodeExecutor requires a provider factory or provider factory getter")
+        self._provider_factory = provider_factory
+        self._provider_factory_getter = provider_factory_getter
+
+    @property
+    def provider_factory(self) -> Any:
+        if self._provider_factory_getter is not None:
+            return self._provider_factory_getter()
+        return self._provider_factory
 
     def execute(self, **kwargs: Any) -> dict[str, Any]:
         query = kwargs["query"]

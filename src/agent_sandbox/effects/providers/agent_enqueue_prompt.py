@@ -4,7 +4,6 @@ from collections.abc import Mapping
 from typing import Any
 from uuid import uuid4
 
-from agent_sandbox.admin_service import _resolve_vm_name_from_target, _resolve_session_target
 from agent_sandbox.agent_prompt_queue import AgentPromptQueueStore, QueuedAgentPromptRecord
 from agent_sandbox.events.provider_models import AgentEnqueuePromptEffectDefinition
 
@@ -114,6 +113,8 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
         context = self._context()
         if context.session_lookup is None:
             raise RuntimeError("effect:agent:enqueue-prompt session_lookup is not available")
+        from agent_sandbox.admin_service import _resolve_vm_name_from_target
+
         vm_name = _resolve_vm_name_from_target(target, context.session_lookup.read_all_sessions())
         if not vm_name:
             raise ValueError(f"Unknown VM target: {target}")
@@ -124,6 +125,8 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
         try:
             if context.session_lookup is None:
                 return None
+            from agent_sandbox.admin_service import _resolve_session_target
+
             session_id, _manifest = _resolve_session_target(target, context.session_lookup.read_all_sessions())
         except ValueError:
             return None

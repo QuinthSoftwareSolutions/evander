@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Literal
-
 from agent_sandbox.effects.providers.schemas import (
     AgentEnqueuePromptEffectDefinition,
     AgentPromptEffectDefinition,
@@ -17,6 +15,12 @@ from agent_sandbox.effects.providers.schemas import (
     VmExecEffectDefinition,
     VmStartEffectDefinition,
     VmStopEffectDefinition,
+)
+from agent_sandbox.events.provider_types import (
+    EmailProvider,
+    PrFeedbackProvider,
+    validate_email_provider,
+    validate_pr_feedback_provider,
 )
 from agent_sandbox.queries.providers.schemas import (
     GitPrNoteQueryDefinition,
@@ -42,25 +46,4 @@ from agent_sandbox.triggers.providers.schemas import (
     TicketChangedTriggerDefinition,
     TicketCreatedTriggerDefinition,
 )
-
-EmailProvider = Literal["json_store", "gmail", "graph"]
-PrFeedbackProvider = Literal["local", "github", "ado"]
-
-
-def validate_email_provider(value: object) -> str:
-    normalized = str(value).strip().lower()
-    allowed = {"json_store", "gmail", "graph"}
-    if normalized not in allowed:
-        ordered = ", ".join(sorted(allowed))
-        raise ValueError(f"Unsupported email provider: {normalized!r}. Allowed providers: {ordered}")
-    return normalized
-
-
-def validate_pr_feedback_provider(value: object) -> str:
-    normalized = str(value).strip().lower()
-    if normalized not in {"local", "github", "ado"}:
-        raise ValueError(
-            f"Unsupported pull-request feedback provider: {normalized!r}. Allowed providers: ado, github, local"
-        )
-    return normalized
 

@@ -4,7 +4,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-from agent_sandbox.events.models import EffectDefinitionDiscriminated, materialize_node_definition
+from agent_sandbox.events.models import EffectDefinitionDiscriminated, WorkflowNodeEnvelope, materialize_node_definition
 from agent_sandbox.provider_runtime.contracts import (
     AgentResumer,
     GitBranchPromoter,
@@ -39,6 +39,31 @@ class EffectRuntimeContext(ProviderRuntimeBase):
     session_metadata_updater: SessionMetadataUpdater | None = None
     git_branch_promoter: GitBranchPromoter | None = None
     pull_request_creator: PullRequestCreator | None = None
+    admin_service: Any | None = None
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if self.admin_service is None:
+            return
+        for field_name, method_name in (
+            ("vm_creator", "create_vm"),
+            ("agent_resumer", "resume_agent"),
+            ("vm_power_controller", "start_vm"),
+            ("vm_inventory", "list_vms"),
+            ("vm_executor", "vm_exec"),
+            ("vm_file_copier", "vm_copy_files"),
+            ("vm_file_deleter", "vm_delete_files"),
+            ("issue_updater", "update_issue"),
+            ("session_metadata_updater", "session_update_metadata"),
+            ("git_branch_promoter", "promote_agent_branch"),
+            ("pull_request_creator", "pr_create"),
+        ):
+            if getattr(self, field_name) is None and hasattr(self.admin_service, method_name):
+                object.__setattr__(self, field_name, self.admin_service)
+        if self.session_lookup is None:
+            session_lookup = _session_lookup_from_admin_service(self.admin_service)
+            if session_lookup is not None:
+                object.__setattr__(self, "session_lookup", session_lookup)
 
 
 class EffectProvider(Protocol):
@@ -86,6 +111,8 @@ class EffectProviderBase:
         effect_definition: EffectDefinitionDiscriminated,
         runtime_context: EffectRuntimeContext,
     ) -> None:
+        if type(effect_definition) is WorkflowNodeEnvelope:
+            effect_definition = self.validate_definition(effect_definition)
         self.effect_definition = effect_definition
         self.runtime_context = runtime_context
 
@@ -140,6 +167,8 @@ class EffectProviderBase:
 
     @classmethod
     def validate_definition(cls, effect_definition: EffectDefinitionDiscriminated) -> EffectDefinitionDiscriminated:
+        if type(effect_definition) is not WorkflowNodeEnvelope:
+            return effect_definition
         return materialize_node_definition(effect_definition)
 
     @classmethod
@@ -181,3 +210,21 @@ class EffectLifecycleHookBase:
     def on_completion_fan_out(self, *, worker: Any, queue_record: Any, graph: Any) -> int:
         del worker, queue_record, graph
         return 0
+
+
+def _session_lookup_from_admin_service(admin_service: Any) -> SessionLookup | None:
+    if hasattr(admin_service, "read_all_sessions"):
+        return admin_service
+    sessions = getattr(getattr(admin_service, "runtime", None), "sessions", None)
+    read_all = getattr(sessions, "read_all", None)
+    if callable(read_all):
+        return _SessionLookupAdapter(sessions)
+    return None
+
+
+class _SessionLookupAdapter:
+    def __init__(self, sessions: Any) -> None:
+        self._sessions = sessions
+
+    def read_all_sessions(self) -> Mapping[str, Any]:
+        return self._sessions.read_all()

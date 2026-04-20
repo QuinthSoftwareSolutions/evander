@@ -4,7 +4,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from agent_sandbox.events.models import QueryDefinitionDiscriminated, materialize_node_definition
+from agent_sandbox.events.models import QueryDefinitionDiscriminated, WorkflowNodeEnvelope, materialize_node_definition
 from agent_sandbox.provider_runtime.contracts import (
     GitPrNoteReader,
     IssueReader,
@@ -53,6 +53,8 @@ class QueryProviderBase:
         query_definition: QueryDefinitionDiscriminated,
         runtime_context: QueryRuntimeContext,
     ) -> None:
+        if type(query_definition) is WorkflowNodeEnvelope:
+            query_definition = self.validate_definition(query_definition)
         self.query_definition = query_definition
         self.runtime_context = runtime_context
 
@@ -61,6 +63,8 @@ class QueryProviderBase:
         return {}
     @classmethod
     def validate_definition(cls, query_definition: QueryDefinitionDiscriminated) -> QueryDefinitionDiscriminated:
+        if type(query_definition) is not WorkflowNodeEnvelope:
+            return query_definition
         return materialize_node_definition(query_definition)
 
     @classmethod

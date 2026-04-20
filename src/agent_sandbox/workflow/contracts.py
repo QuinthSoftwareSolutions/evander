@@ -29,8 +29,9 @@ class WorkflowNodeEnvelope(BaseModel):
             config = {}
         if not isinstance(config, dict):
             return value
+        model_fields = set(cls.model_fields)
         for key in list(payload.keys()):
-            if key in {"id", "display_name", "type", "config", "outputs"}:
+            if key in model_fields:
                 continue
             config[key] = payload.pop(key)
         payload["config"] = config

@@ -8,9 +8,9 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from agent_sandbox.agent_completion_watcher import build_agent_run_completed_event
 from agent_sandbox.events.models import NODE_OUTPUTS_CONTEXT_KEY
 from agent_sandbox.gates.providers.base import GateProviderBase
+from agent_sandbox.orchestration.effect_extensions import list_vm_summaries_for_agent_reconciliation
 from agent_sandbox.storage import JsonStore
 from agent_sandbox.triggers.queue import TriggerQueueRecord
 from agent_sandbox.workflow_binding import resolve_workflow_bindings
@@ -281,7 +281,7 @@ class AwaitAgentGateProvider(GateProviderBase):
         pending_by_key = self._store().read_all()
         if not pending_by_key:
             return
-        summaries = _list_vm_summaries(worker)
+        summaries = list_vm_summaries_for_agent_reconciliation(worker)
         summaries_by_vm_name: dict[str, list[Any]] = {}
         summaries_by_session_id: dict[str, list[Any]] = {}
         for summary in summaries:
@@ -356,7 +356,7 @@ class AwaitAgentGateProvider(GateProviderBase):
         return self._store().get(f"{pending.gate_id}:{pending.dispatch_id}") is None
 
     def _build_completion_event(self, *, worker: Any, pending: AwaitAgentPendingRecord, log_skips: bool, key: str | None):
-        summaries = _list_vm_summaries(worker)
+        summaries = list_vm_summaries_for_agent_reconciliation(worker)
         session_id, vm_name = _await_agent_pending_target(pending, summaries=summaries)
         if not vm_name:
             return None
@@ -365,6 +365,8 @@ class AwaitAgentGateProvider(GateProviderBase):
             return None
         if str(getattr(matching_summary, "agent_state", "") or "").strip() == "running":
             return None
+        from agent_sandbox.agent_completion_watcher import build_agent_run_completed_event
+
         event = build_agent_run_completed_event(
             trigger_id="__await-agent-completion__",
             dispatch_id=pending.dispatch_id,
@@ -376,17 +378,6 @@ class AwaitAgentGateProvider(GateProviderBase):
         if log_skips:
             logger.info("Await-agent completion event prepared key=%s dispatch_id=%s vm_name=%s event_id=%s", key, pending.dispatch_id, vm_name, event.event_id)
         return event
-
-
-def _list_vm_summaries(worker: Any) -> list[Any]:
-    provider = worker._get_gate_provider("gate:await-agent")
-    runtime_context = getattr(provider, "runtime_context", None)
-    vm_inventory = getattr(runtime_context, "vm_inventory", None)
-    if vm_inventory is None:
-        return []
-    return list(vm_inventory.list_vms(include_inactive=True, omit_state=False, vm_user="agent", directory_path=None, direct_only=False))
-
-
 def _await_agent_pending_target(pending: AwaitAgentPendingRecord, *, summaries: list[Any] | None = None) -> tuple[str | None, str | None]:
     session_id = str(pending.session_id or "").strip() or None
     vm_name = str(pending.vm_name or "").strip() or None

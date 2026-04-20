@@ -79,11 +79,41 @@ class SessionContextReader(Protocol):
 
 
 @dataclass(frozen=True)
+class ProviderRuntimePorts:
+    vm_creator: VmCreator | None = None
+    agent_resumer: AgentResumer | None = None
+    vm_power_controller: VmPowerController | None = None
+    vm_inventory: VmInventory | None = None
+    gate_vm_inventory: GateVmInventory | None = None
+    vm_executor: VmExecutor | None = None
+    vm_file_copier: VmFileCopier | None = None
+    vm_file_deleter: VmFileDeleter | None = None
+    session_lookup: SessionLookup | None = None
+    issue_updater: IssueUpdater | None = None
+    session_metadata_updater: SessionMetadataUpdater | None = None
+    git_branch_promoter: GitBranchPromoter | None = None
+    pull_request_creator: PullRequestCreator | None = None
+    git_pr_note_reader: GitPrNoteReader | None = None
+    issue_reader: IssueReader | None = None
+    session_context_reader: SessionContextReader | None = None
+    admin_service: Any | None = None
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class ProviderRuntimeBase:
-    provider_config: Mapping[str, Any]
+    provider_config: Mapping[str, Any] = field(default_factory=dict)
+    resolved_config: Any | None = None
     env: Mapping[str, str] = field(default_factory=lambda: dict(os.environ))
     secret_resolver: Callable[[str], str | None] | None = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        provider_config = dict(self.provider_config)
+        if not provider_config and self.resolved_config is not None:
+            provider_config = dict(_config_to_mapping(self.resolved_config))
+        object.__setattr__(self, "provider_config", provider_config)
+        object.__setattr__(self, "resolved_config", _config_to_namespace(provider_config))
 
     def resolve_secret(self, ref: str) -> str | None:
         normalized_ref = ref.strip()
@@ -101,6 +131,25 @@ class ProviderRuntimeBase:
             raise KeyError(f"Missing provider config path: {key}")
         return Path(str(value))
 
-    @property
-    def resolved_config(self) -> Any:
-        return SimpleNamespace(**dict(self.provider_config))
+
+def _config_to_mapping(config: Any) -> Mapping[str, Any]:
+    if isinstance(config, Mapping):
+        return dict(config)
+    model_dump = getattr(config, "model_dump", None)
+    if callable(model_dump):
+        return model_dump(mode="json")
+    if hasattr(config, "__dataclass_fields__"):
+        return {name: getattr(config, name) for name in config.__dataclass_fields__}
+    if hasattr(config, "__dict__"):
+        return dict(vars(config))
+    raise TypeError(f"resolved_config must be mapping-like, got {type(config).__name__}")
+
+
+def _config_to_namespace(config: Mapping[str, Any]) -> SimpleNamespace:
+    return SimpleNamespace(**{key: _normalize_config_value(key, value) for key, value in config.items()})
+
+
+def _normalize_config_value(key: str, value: Any) -> Any:
+    if isinstance(value, str) and (key.endswith("_path") or key.endswith("_dir")):
+        return Path(value)
+    return value

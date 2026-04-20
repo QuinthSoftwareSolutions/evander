@@ -2,9 +2,14 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol
 
-from agent_sandbox.events.models import TriggerDefinitionDiscriminated, TriggerEvent, materialize_node_definition
+from agent_sandbox.events.models import (
+    TriggerDefinitionDiscriminated,
+    TriggerEvent,
+    WorkflowNodeEnvelope,
+    materialize_node_definition,
+)
 from agent_sandbox.provider_runtime.contracts import ProviderRuntimeBase
 
 
@@ -19,7 +24,7 @@ class TriggerRuntimeContext(ProviderRuntimeBase):
     retain a single host-side control point for environment and secret access.
     """
 
-    pass
+    admin_service: Any | None = None
 
 
 class TriggerProvider(Protocol):
@@ -55,6 +60,8 @@ class TriggerProviderBase:
         trigger_definition: TriggerDefinitionDiscriminated,
         runtime_context: TriggerRuntimeContext,
     ) -> None:
+        if type(trigger_definition) is WorkflowNodeEnvelope:
+            trigger_definition = self.validate_definition(trigger_definition)
         self.trigger_definition = trigger_definition
         self.runtime_context = runtime_context
 
@@ -62,4 +69,6 @@ class TriggerProviderBase:
         return []
     @classmethod
     def validate_definition(cls, trigger_definition: TriggerDefinitionDiscriminated) -> TriggerDefinitionDiscriminated:
+        if type(trigger_definition) is not WorkflowNodeEnvelope:
+            return trigger_definition
         return materialize_node_definition(trigger_definition)

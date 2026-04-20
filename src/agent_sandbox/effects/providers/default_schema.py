@@ -19,6 +19,7 @@ from agent_sandbox.effects.providers.schemas import (
     VmStartEffectDefinition,
     VmStopEffectDefinition,
 )
+from agent_sandbox.schema_bootstrap import _EFFECT_OUTPUT_SCHEMAS
 from agent_sandbox.workflow.contracts import WorkflowNodeEnvelope, register_node_output_schema
 
 _EFFECT_MODEL_BY_TYPE = {
@@ -36,23 +37,6 @@ _EFFECT_MODEL_BY_TYPE = {
     "effect:git:promote-agent-branch": GitPromoteAgentBranchEffectDefinition,
     "effect:pr:create": PrCreateEffectDefinition,
 }
-
-_EFFECT_OUTPUT_SCHEMAS = {
-    "effect:vm:create": {"success": {"type": "boolean"}, "session_id": {"type": "string"}, "vm_name": {"type": "string"}},
-    "effect:vm:start": {"success": {"type": "boolean"}, "message": {"type": "string"}},
-    "effect:vm:stop": {"success": {"type": "boolean"}, "message": {"type": "string"}},
-    "effect:agent:prompt": {"dispatch_id": {"type": "string"}, "thread_id": {"type": "string"}, "success": {"type": "boolean"}},
-    "effect:agent:enqueue-prompt": {"dispatch_id": {"type": "string"}, "thread_id": {"type": "string"}, "success": {"type": "boolean"}},
-    "effect:bash:script": {"success": {"type": "boolean"}, "exit_code": {"type": "integer"}, "stdout": {"type": "string"}, "stderr": {"type": "string"}},
-    "effect:vm:exec": {"success": {"type": "boolean"}, "exit_code": {"type": "integer"}, "stdout": {"type": "string"}, "stderr": {"type": "string"}},
-    "effect:vm:copy-files": {"success": {"type": "boolean"}, "copied_count": {"type": "integer"}},
-    "effect:vm:delete-files": {"success": {"type": "boolean"}, "deleted_count": {"type": "integer"}},
-    "effect:issue:update-state": {"success": {"type": "boolean"}, "state": {"type": "string"}},
-    "effect:session:update-metadata": {"success": {"type": "boolean"}, "metadata": {"type": "object"}},
-    "effect:git:promote-agent-branch": {"success": {"type": "boolean"}, "review_branch": {"type": "string"}},
-    "effect:pr:create": {"success": {"type": "boolean"}, "pr_id": {"type": "string"}, "pr_url": {"type": "string"}},
-}
-
 
 def _materialize_with_model(model_class: type[BaseModel], node: WorkflowNodeEnvelope) -> BaseModel:
     payload = {
