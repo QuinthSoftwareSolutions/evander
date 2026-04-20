@@ -35,7 +35,7 @@ class _BindingReference:
 @dataclass(frozen=True)
 class _BindingExpression:
     primary: _BindingReference
-    fallback: _BindingReference | Any | None = None
+    fallback: _BindingReference | "_BindingExpression" | Any | None = None
     has_fallback: bool = False
 
 
@@ -107,6 +107,8 @@ def resolve_workflow_bindings(
                     raise
                 return _render_expression_placeholder(expression)
             fallback = expression.fallback
+            if isinstance(fallback, _BindingExpression):
+                return _consume_expression(fallback)
             if isinstance(fallback, _BindingReference):
                 return _consume_reference(fallback)
             return fallback
@@ -150,7 +152,9 @@ def resolve_workflow_bindings(
         rendered = f"{expression.primary.node_id}.{expression.primary.output_path}"
         if expression.has_fallback:
             fallback = expression.fallback
-            if isinstance(fallback, _BindingReference):
+            if isinstance(fallback, _BindingExpression):
+                fallback_text = _render_expression_text(fallback)
+            elif isinstance(fallback, _BindingReference):
                 fallback_text = f"{fallback.node_id}.{fallback.output_path}"
             else:
                 fallback_text = json.dumps(fallback)
@@ -239,12 +243,29 @@ def _parse_binding_reference(reference: str, *, source_text: str) -> _BindingRef
 def _parse_fallback_value(value: str, *, source_text: str) -> _BindingReference | Any:
     if not value:
         raise BindingResolutionError(f"Malformed output reference in string: {source_text!r}")
+    _fallback_primary, nested_fallback_text = _split_fallback_expression(value)
+    if nested_fallback_text is not None:
+        return _parse_binding_expression(value, source_text=source_text)
     if _OUTPUT_REF_NAME_RE.fullmatch(value):
         return _parse_binding_reference(value, source_text=source_text)
     try:
         return json.loads(value)
     except json.JSONDecodeError as exc:
         raise BindingResolutionError(f"Malformed output reference in string: {source_text!r}") from exc
+
+
+def _render_expression_text(expression: _BindingExpression) -> str:
+    rendered = f"{expression.primary.node_id}.{expression.primary.output_path}"
+    if expression.has_fallback:
+        fallback = expression.fallback
+        if isinstance(fallback, _BindingExpression):
+            fallback_text = _render_expression_text(fallback)
+        elif isinstance(fallback, _BindingReference):
+            fallback_text = f"{fallback.node_id}.{fallback.output_path}"
+        else:
+            fallback_text = json.dumps(fallback)
+        rendered = f"{rendered} ?? {fallback_text}"
+    return rendered
 
 
 __all__ = [
