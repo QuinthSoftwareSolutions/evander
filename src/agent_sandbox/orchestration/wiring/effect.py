@@ -17,6 +17,12 @@ from ...runtime import RuntimeContext
 from ...triggers.queue import TriggerEventQueue
 from ...workflow_events import WorkflowEventJournal
 from ...workflow_plugins import load_provider_plugins
+from ..effect_extensions import (
+    CompletionDispatchHook,
+    LifecycleReconciliationHook,
+    SpecialEventHandler,
+)
+from ..providers import build_agent_default_effect_handlers
 
 
 @dataclass(frozen=True)
@@ -33,6 +39,9 @@ class EffectWorkerWiring:
     provider_factory: EffectProviderFactory
     query_provider_factory: QueryProviderFactory
     gate_provider_factory: GateProviderFactory
+    special_event_handlers: tuple[SpecialEventHandler, ...]
+    lifecycle_reconciliation_hooks: tuple[LifecycleReconciliationHook, ...]
+    completion_dispatch_hooks: tuple[CompletionDispatchHook, ...]
 
 
 def build_effect_worker_wiring(
@@ -41,6 +50,7 @@ def build_effect_worker_wiring(
     worker_config: TriggerOrchestratorWorkerGlobalConfig,
     runtime: RuntimeContext,
     provider_config_resolver: ProviderConfigResolver | None = None,
+    include_default_domain_handlers: bool = True,
 ) -> EffectWorkerWiring:
     from ...effect_orchestrator import JsonExecutionStore, JsonGateExecutionStore, _resolve_worker_path
 
@@ -104,6 +114,15 @@ def build_effect_worker_wiring(
         admin_service=AdminService(config.runtime_dir),
         env=dict(os.environ),
     )
+    special_event_handlers: tuple[SpecialEventHandler, ...] = ()
+    lifecycle_reconciliation_hooks: tuple[LifecycleReconciliationHook, ...] = ()
+    completion_dispatch_hooks: tuple[CompletionDispatchHook, ...] = ()
+    if include_default_domain_handlers:
+        (
+            special_event_handlers,
+            lifecycle_reconciliation_hooks,
+            completion_dispatch_hooks,
+        ) = build_agent_default_effect_handlers(provider_factory=provider_factory)
     return EffectWorkerWiring(
         provider_config_resolver=resolver,
         workflow_event_journal=workflow_event_journal,
@@ -117,4 +136,7 @@ def build_effect_worker_wiring(
         provider_factory=provider_factory,
         query_provider_factory=query_provider_factory,
         gate_provider_factory=gate_provider_factory,
+        special_event_handlers=special_event_handlers,
+        lifecycle_reconciliation_hooks=lifecycle_reconciliation_hooks,
+        completion_dispatch_hooks=completion_dispatch_hooks,
     )

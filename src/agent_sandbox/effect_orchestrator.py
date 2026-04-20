@@ -10,13 +10,12 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import RLock
-from typing import Any, Generic, TypeVar
+from typing import Any, Generic, Literal, TypeVar
 
 from pydantic import BaseModel, Field
 
 from .config import GatewayConfig, OrchestrationCoreConfig, TriggerOrchestratorWorkerGlobalConfig
 from .effects.registry import EffectProviderFactory, EffectProviderRegistry
-from .effects.providers.lifecycle_hooks import build_effect_lifecycle_hooks
 from .events.models import (
     EffectDefinitionDiscriminated,
     GateDefinitionDiscriminated,
@@ -71,6 +70,7 @@ from .workflow_engine import OrchestrationLoop
 from .workflow_plugins import load_provider_plugins
 from .orchestration.kernels import PollingKernelConfig, PollingOrchestratorKernel
 from .orchestration.wiring import EffectWorkerWiring, build_effect_worker_wiring
+from .orchestration.effect_extensions import SpecialEventResult
 
 logger = logging.getLogger(__name__)
 
@@ -221,7 +221,9 @@ class EffectOrchestratorWorker:
         self.query_executor_registry = NodeExecutorRegistry()
         self._register_default_node_executors()
         self._gate_providers: dict[str, Any] = {}
-        self._effect_lifecycle_hooks = build_effect_lifecycle_hooks(provider_factory=self.provider_factory)
+        self._special_event_handlers = resolved_wiring.special_event_handlers
+        self._lifecycle_reconciliation_hooks = resolved_wiring.lifecycle_reconciliation_hooks
+        self._completion_dispatch_hooks = resolved_wiring.completion_dispatch_hooks
         self.event_queue.reset_inflight()
         self._kernel = PollingOrchestratorKernel(
             config=PollingKernelConfig(
@@ -242,11 +244,7 @@ class EffectOrchestratorWorker:
         return self._kernel.run_once_with_lock()
 
     def force_complete_await_agent(self, dispatch_id: str) -> bool:
-        graph = _build_execution_graph(self.worker_config)
-        provider = self._get_gate_provider("gate:await-agent")
-        if provider is None:
-            return False
-        return bool(provider.force_complete(worker=self, graph=graph, dispatch_id=dispatch_id))
+        return self._run_force_complete_hooks(dispatch_id=dispatch_id)
 
     def run_once(self) -> EffectOrchestratorCycleResult:
         latest_config, _changed = self._config_reloader.get_latest()
@@ -337,8 +335,12 @@ class EffectOrchestratorWorker:
         outbound_edges = _matching_outbound_edges(queue_record=queue_record, graph=graph)
         is_agent_completion_event = queue_record.trigger_type == "trigger:agent:run:completed"
         source_node_exists = queue_record.trigger_id in graph.nodes_by_id
-        if is_agent_completion_event and not source_node_exists:
-            self._handle_agent_completion_event(queue_record=queue_record, graph=graph)
+        if not source_node_exists and self._run_special_event_handlers(
+            queue_record=queue_record,
+            graph=graph,
+            phase="pre",
+            source_node_exists=False,
+        ):
             return 0
 
         if not source_node_exists:
@@ -417,18 +419,17 @@ class EffectOrchestratorWorker:
                 execution_count += 1
 
         if is_agent_completion_event:
-            self._handle_agent_completion_event(queue_record=queue_record, graph=graph)
+            self._run_special_event_handlers(
+                queue_record=queue_record,
+                graph=graph,
+                phase="post",
+                source_node_exists=True,
+            )
 
         return execution_count
 
-    def _handle_agent_completion_event(
-        self,
-        *,
-        queue_record: TriggerQueueRecord,
-        graph: ExecutionGraph,
-    ) -> None:
-        self._run_completion_fan_out_hooks(queue_record=queue_record, graph=graph)
-        self._handle_gate_completion_event(queue_record=queue_record, graph=graph)
+    def _build_execution_graph(self) -> ExecutionGraph:
+        return _build_execution_graph(self.worker_config)
 
     def _get_gate_provider(self, gate_type: str) -> Any | None:
         cached = self._gate_providers.get(gate_type)
@@ -459,23 +460,45 @@ class EffectOrchestratorWorker:
         except KeyError:
             return None
 
-    def _run_completion_fan_out_hooks(self, *, queue_record: TriggerQueueRecord, graph: ExecutionGraph) -> int:
-        fan_out_count = 0
-        for hook in self._effect_lifecycle_hooks:
-            fan_out_count += int(hook.on_completion_fan_out(worker=self, queue_record=queue_record, graph=graph) or 0)
-        return fan_out_count
-
     def _run_waiting_reconciliation_hooks(self) -> int:
         reconciled = 0
-        for hook in self._effect_lifecycle_hooks:
-            reconciled += int(hook.on_waiting_reconciliation(worker=self) or 0)
+        graph = self._build_execution_graph()
+        for hook in self._lifecycle_reconciliation_hooks:
+            reconciled += int(hook.reconcile(worker=self, graph=graph) or 0)
         return reconciled
 
     def _run_post_completion_dispatch_hooks(self) -> int:
         dispatched = 0
-        for hook in self._effect_lifecycle_hooks:
-            dispatched += int(hook.on_post_completion_dispatch(worker=self) or 0)
+        for hook in self._completion_dispatch_hooks:
+            dispatched += int(hook.dispatch(worker=self) or 0)
         return dispatched
+
+    def _run_special_event_handlers(
+        self,
+        *,
+        queue_record: TriggerQueueRecord,
+        graph: ExecutionGraph,
+        phase: Literal["pre", "post"],
+        source_node_exists: bool,
+    ) -> bool:
+        consumed = False
+        for handler in self._special_event_handlers:
+            result = handler.handle_event(
+                worker=self,
+                queue_record=queue_record,
+                graph=graph,
+                phase=phase,
+                source_node_exists=source_node_exists,
+            )
+            normalized = result or SpecialEventResult()
+            consumed = consumed or normalized.consume_event
+        return consumed
+
+    def _run_force_complete_hooks(self, *, dispatch_id: str) -> bool:
+        for handler in self._special_event_handlers:
+            if bool(handler.force_complete(worker=self, dispatch_id=dispatch_id)):
+                return True
+        return False
 
     def _dispatch_registered_gate(
         self,
