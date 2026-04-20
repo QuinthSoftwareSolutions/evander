@@ -3,7 +3,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from agent_sandbox.events.models import IssueGetQueryDefinition, QueryDefinitionDiscriminated, WorkflowNodeEnvelope
+from agent_sandbox.events.models import QueryDefinitionDiscriminated, WorkflowNodeEnvelope
+from agent_sandbox.events.provider_models import IssueGetQueryDefinition
 
 from .base import QueryProviderBase
 from .issue_get_schema import IssueGetQueryConfigSchema

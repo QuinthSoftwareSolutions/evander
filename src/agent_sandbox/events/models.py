@@ -23,9 +23,6 @@ GateType: TypeAlias = str
 EffectType: TypeAlias = str
 QueryType: TypeAlias = str
 
-EmailProvider = Literal["json_store", "gmail", "graph"]
-PrFeedbackProvider = Literal["local", "github", "ado"]
-
 OutputName = Annotated[str, StringConstraints(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")]
 OutputReferenceString = Annotated[str, StringConstraints(pattern=r"^\$\([A-Za-z_][A-Za-z0-9_]*\)$")]
 InterpolatedString = Annotated[str, StringConstraints(pattern=r".*\$\([A-Za-z_][A-Za-z0-9_]*\).*")]
@@ -162,62 +159,3 @@ def materialize_node_definition(node: WorkflowNodeEnvelope) -> BaseModel:
         return node
     return resolver(node)
 
-
-def validate_email_provider(value: object) -> str:
-    normalized = str(value).strip().lower()
-    allowed = {"json_store", "gmail", "graph"}
-    if normalized not in allowed:
-        ordered = ", ".join(sorted(allowed))
-        raise ValueError(f"Unsupported email provider: {normalized!r}. Allowed providers: {ordered}")
-    return normalized
-
-
-def validate_pr_feedback_provider(value: object) -> str:
-    normalized = str(value).strip().lower()
-    if normalized not in {"local", "github", "ado"}:
-        raise ValueError(
-            f"Unsupported pull-request feedback provider: {normalized!r}. Allowed providers: ado, github, local"
-        )
-    return normalized
-
-
-from agent_sandbox.effects.providers.schemas import (  # noqa: E402
-    AgentEnqueuePromptEffectDefinition,
-    AgentPromptEffectDefinition,
-    BashScriptEffectDefinition,
-    GitPromoteAgentBranchEffectDefinition,
-    IssueUpdateStateEffectDefinition,
-    PrCreateEffectDefinition,
-    SessionUpdateMetadataEffectDefinition,
-    VmCopyFilesEffectDefinition,
-    VmCopyFilesItemDefinition,
-    VmCreateEffectDefinition,
-    VmDeleteFilesEffectDefinition,
-    VmExecEffectDefinition,
-    VmStartEffectDefinition,
-    VmStopEffectDefinition,
-)
-from agent_sandbox.queries.providers.schemas import (  # noqa: E402
-    GitPrNoteQueryDefinition,
-    IssueGetQueryDefinition,
-    SessionContextQueryDefinition,
-    VmRunStateQueryDefinition,
-)
-from agent_sandbox.triggers.providers.schemas import (  # noqa: E402
-    AgentPromptNewTriggerDefinition,
-    AgentRunCompletedTriggerDefinition,
-    CronTriggerDefinition,
-    DiscordNewMessageTriggerDefinition,
-    EmailNewMessageTriggerDefinition,
-    GitPushTriggerDefinition,
-    PullRequestNewFeedbackTriggerDefinition,
-    ReviewNewRequestTriggerDefinition,
-    ScriptRunRequestTriggerDefinition,
-    TeamsContentFilterDefinition,
-    TeamsMentionFilterDefinition,
-    TeamsMessageFilterDefinition,
-    TeamsNewMessageTriggerDefinition,
-    TeamsTargetDefinition,
-    TicketChangedTriggerDefinition,
-    TicketCreatedTriggerDefinition,
-)

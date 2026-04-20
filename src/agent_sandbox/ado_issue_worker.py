@@ -28,7 +28,8 @@ from .directory_config import (
     get_domain_base_config,
     validate_effective_domain_payload,
 )
-from .events.models import PullRequestNewFeedbackTriggerDefinition, TriggerEvent
+from .events.models import TriggerEvent
+from .events.provider_models import PullRequestNewFeedbackTriggerDefinition
 from .models import DirectoryPath, LocalIssueRecord, PrFeedbackItem, RemoteIssueReference, SessionManifest, ToolName
 from .pr_feedback_worker import AzureDevOpsFeedbackAdapter, FeedbackEnvelope, PrFeedbackStore, _stream_key
 from .policy_config import EffectivePolicyConfig

@@ -6,7 +6,7 @@ from uuid import uuid4
 
 from agent_sandbox.admin_service import _resolve_vm_name_from_target, _resolve_session_target
 from agent_sandbox.agent_prompt_queue import AgentPromptQueueStore, QueuedAgentPromptRecord
-from agent_sandbox.events.models import AgentEnqueuePromptEffectDefinition
+from agent_sandbox.events.provider_models import AgentEnqueuePromptEffectDefinition
 
 from .base import EffectProviderBase
 from .lifecycle_hooks import AgentEnqueuePromptQueueDispatchHook

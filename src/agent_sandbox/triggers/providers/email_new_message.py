@@ -8,7 +8,8 @@ from agent_sandbox.email.graph_provider import GraphEmailProvider
 from agent_sandbox.email.providers import EmailMessageSummary, JsonEmailProvider
 from agent_sandbox.models import DraftMessage, EmailMessage
 from agent_sandbox.storage import JsonStore
-from agent_sandbox.events.models import EmailNewMessageTriggerDefinition, TriggerEvent
+from agent_sandbox.events.models import TriggerEvent
+from agent_sandbox.events.provider_models import EmailNewMessageTriggerDefinition
 from agent_sandbox.triggers.providers._cursor_state import TriggerCursorStore
 from agent_sandbox.triggers.providers.base import TriggerProviderBase
 

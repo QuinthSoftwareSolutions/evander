@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from agent_sandbox.events.models import VmCreateEffectDefinition
+from agent_sandbox.events.provider_models import VmCreateEffectDefinition
 
 from .base import EffectProviderBase
 

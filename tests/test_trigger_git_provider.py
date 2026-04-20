@@ -4,7 +4,7 @@ import subprocess
 from pathlib import Path
 
 from agent_sandbox.config import GatewayConfig
-from agent_sandbox.events.models import GitPushTriggerDefinition
+from agent_sandbox.events.provider_models import GitPushTriggerDefinition
 from agent_sandbox.triggers.providers.base import TriggerRuntimeContext
 from agent_sandbox.triggers.providers.git_push import GitPushTriggerProvider, build_git_push_payloads
 

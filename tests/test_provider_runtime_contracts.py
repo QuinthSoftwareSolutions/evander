@@ -7,7 +7,11 @@ from typing import Any
 
 from agent_sandbox.effects.providers.agent_enqueue_prompt import AgentEnqueuePromptEffectProvider
 from agent_sandbox.effects.providers.base import EffectRuntimeContext
-from agent_sandbox.events.models import AgentEnqueuePromptEffectDefinition, IssueGetQueryDefinition, VmRunStateQueryDefinition
+from agent_sandbox.events.provider_models import (
+    AgentEnqueuePromptEffectDefinition,
+    IssueGetQueryDefinition,
+    VmRunStateQueryDefinition,
+)
 from agent_sandbox.models import SessionManifest, ToolName, VmSummary
 from agent_sandbox.queries.providers.issue_get import IssueGetQueryProvider
 from agent_sandbox.queries.providers.vm_run_state import VmRunStateQueryProvider

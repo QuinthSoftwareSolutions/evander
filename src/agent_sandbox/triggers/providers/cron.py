@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from agent_sandbox.events.models import CronTriggerDefinition, TriggerDefinitionDiscriminated, TriggerEvent, WorkflowNodeEnvelope
+from agent_sandbox.events.models import TriggerDefinitionDiscriminated, TriggerEvent, WorkflowNodeEnvelope
+from agent_sandbox.events.provider_models import CronTriggerDefinition
 from agent_sandbox.triggers.providers._cursor_state import TriggerCursorStore
 from agent_sandbox.triggers.providers.base import TriggerProviderBase
 from agent_sandbox.triggers.providers.cron_schema import CronTriggerConfigSchema

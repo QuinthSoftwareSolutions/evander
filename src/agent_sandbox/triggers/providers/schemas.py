@@ -4,7 +4,13 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from agent_sandbox.events.models import EmailProvider, PrFeedbackProvider, TriggerDefinition
+from agent_sandbox.events.models import TriggerDefinition
+from agent_sandbox.events.provider_models import (
+    EmailProvider,
+    PrFeedbackProvider,
+    validate_email_provider,
+    validate_pr_feedback_provider,
+)
 from agent_sandbox.workflow.contracts import normalize_directory_paths, normalize_string_list
 
 
@@ -116,8 +122,6 @@ class EmailNewMessageTriggerDefinition(TriggerDefinition):
     @field_validator("provider", mode="before")
     @classmethod
     def validate_provider(cls, value: object) -> str:
-        from agent_sandbox.events.models import validate_email_provider
-
         return validate_email_provider(value)
 
     @field_validator("mailbox_ids", mode="before")
@@ -135,8 +139,6 @@ class PullRequestNewFeedbackTriggerDefinition(TriggerDefinition):
     @field_validator("provider", mode="before")
     @classmethod
     def validate_provider(cls, value: object) -> str:
-        from agent_sandbox.events.models import validate_pr_feedback_provider
-
         return validate_pr_feedback_provider(value)
 
     @field_validator("organization_url", mode="before")

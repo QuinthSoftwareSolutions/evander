@@ -5,7 +5,7 @@ from pathlib import Path
 
 from agent_sandbox.agent_prompt_store import AgentPromptRecord, AgentPromptStore
 from agent_sandbox.config import GatewayConfig
-from agent_sandbox.events.models import AgentPromptNewTriggerDefinition
+from agent_sandbox.events.provider_models import AgentPromptNewTriggerDefinition
 from agent_sandbox.models import SessionManifest
 from agent_sandbox.storage import JsonStore
 from agent_sandbox.triggers.providers.agent_prompt_new import AgentPromptNewTriggerProvider

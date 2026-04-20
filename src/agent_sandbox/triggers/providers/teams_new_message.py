@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from agent_sandbox.events.models import TeamsMessageFilterDefinition, TeamsNewMessageTriggerDefinition, TriggerEvent
+from agent_sandbox.events.models import TriggerEvent
+from agent_sandbox.events.provider_models import TeamsMessageFilterDefinition, TeamsNewMessageTriggerDefinition
 from agent_sandbox.services import normalize_teams_target, teams_target_from_message
 from agent_sandbox.teams_inbox_store import TeamsInboxMessage, TeamsInboxStore
 from agent_sandbox.triggers.providers._cursor_state import TriggerCursorStore

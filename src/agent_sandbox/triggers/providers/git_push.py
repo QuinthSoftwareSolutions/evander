@@ -8,7 +8,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from agent_sandbox.events.models import GitPushTriggerDefinition, TriggerEvent
+from agent_sandbox.events.models import TriggerEvent
+from agent_sandbox.events.provider_models import GitPushTriggerDefinition
 from agent_sandbox.triggers.providers.base import TriggerHookHandler, TriggerProviderBase
 
 
