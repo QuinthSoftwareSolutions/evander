@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,6 +18,7 @@ from agent_sandbox.effect_orchestrator import (
     EffectOrchestratorWorker,
     _await_agent_pending_target,
     build_effect_orchestrator_worker,
+    main,
 )
 from agent_sandbox.agent_prompt_queue import QueuedAgentPromptRecord
 from agent_sandbox.events.models import TriggerEvent
@@ -116,6 +118,15 @@ def _await_agent_store(worker: EffectOrchestratorWorker):
     provider = worker._get_gate_provider("gate:await-agent")
     assert provider is not None
     return provider.load_state()
+
+
+def test_effect_orchestrator_main_help_does_not_crash(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sys, "argv", ["agent-sandbox-effect-orchestrator", "--help"])
+
+    with pytest.raises(SystemExit) as excinfo:
+        main()
+
+    assert excinfo.value.code == 0
 
 
 def test_build_effect_orchestrator_worker_accepts_injected_services(tmp_path: Path) -> None:
