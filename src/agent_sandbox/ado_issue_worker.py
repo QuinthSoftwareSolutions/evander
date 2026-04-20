@@ -42,6 +42,7 @@ from .triggers.providers.pull_request_new_feedback import _parse_dt
 from .triggers.queue import TriggerEventQueue
 from .vm_defaults_config import VmDefaultsConfigResolver
 from .worker_directory_context import WorkerDirectoryContextResolver, log_shadow_context
+from .workflow_runtime_config import load_trigger_orchestrator_worker_global_config
 
 _LOG = logging.getLogger(__name__)
 _DEFAULT_ADO_MSSQL_SA_PASSWORD_ENV = "MSSQL_SA_PASSWORD"
@@ -1878,8 +1879,10 @@ def _load_trigger_orchestrator_worker_config(config: WorkerConfig) -> TriggerOrc
     config_path = _trigger_orchestrator_config_path(config)
     if not config_path.exists():
         return None
-    raw = json.loads(config_path.read_text(encoding="utf-8"))
-    return TriggerOrchestratorWorkerGlobalConfig.model_validate(raw)
+    return load_trigger_orchestrator_worker_global_config(
+        config_path.parents[2],
+        base_config=GatewayConfig(runtime_dir=config.runtime_dir),
+    )
 def _load_ado_pr_feedback_session_bindings(
     *,
     runtime_dir: Path,
@@ -1898,6 +1901,7 @@ def _load_ado_pr_feedback_session_bindings(
 
     session_directory_paths: dict[str, str] = {}
     session_vm_ids: dict[str, str] = {}
+    session_ado_projects: dict[str, str] = {}
     sessions_path = runtime_dir / "sessions.json"
     if sessions_path.exists():
         try:
@@ -1911,10 +1915,15 @@ def _load_ado_pr_feedback_session_bindings(
                 normalized_session_id = str(session_id).strip()
                 normalized_directory_path = str(raw_session.get("directory_path", "root")).strip() or "root"
                 normalized_vm_id = str(raw_session.get("vm_id", "")).strip()
+                raw_metadata = raw_session.get("metadata")
+                metadata = raw_metadata if isinstance(raw_metadata, dict) else {}
+                normalized_ado_project = str(metadata.get("ado_project", "")).strip()
                 if normalized_session_id:
                     session_directory_paths[normalized_session_id] = normalized_directory_path
                     if normalized_vm_id:
                         session_vm_ids[normalized_session_id] = normalized_vm_id
+                    if normalized_ado_project:
+                        session_ado_projects[normalized_session_id] = normalized_ado_project
 
     bindings: dict[tuple[str, str], dict[str, str]] = {}
     for raw in entries.values():
@@ -1937,6 +1946,7 @@ def _load_ado_pr_feedback_session_bindings(
             "pr_id": pr_id,
             "session_id": session_id,
             "vm_id": session_vm_ids.get(session_id, ""),
+            "ado_project": session_ado_projects.get(session_id, ""),
         }
     return bindings
 
@@ -1952,6 +1962,19 @@ def _latest_cursor_value(*values: str | None) -> str | None:
             latest = parsed
             latest_raw = value
     return latest_raw
+
+
+def _ado_project_for_feedback_stream(
+    *,
+    repo: str,
+    binding: dict[str, str],
+    trigger: PullRequestNewFeedbackTriggerDefinition,
+    config: WorkerConfig,
+) -> str:
+    parts = [part.strip() for part in repo.split("/") if part.strip()]
+    if len(parts) >= 3:
+        return parts[-2]
+    return binding.get("ado_project") or trigger.project or config.project
 
 
 def _publish_directory_pr_feedback_events(
@@ -1996,12 +2019,6 @@ def _publish_directory_pr_feedback_events(
     published_count = 0
 
     for trigger in triggers:
-        adapter = AzureDevOpsFeedbackAdapter(
-            organization_url=trigger.organization_url or config.organization_url,
-            project=trigger.project or config.project,
-            pat=pat,
-            pat_env_name=pat_env_name,
-        )
         state = cursor_store.get(trigger.id)
         state_cursors = state.get("stream_cursors", {})
         if not isinstance(state_cursors, dict):
@@ -2011,6 +2028,18 @@ def _publish_directory_pr_feedback_events(
         discovered: list[tuple[dict[str, str], PrFeedbackItem]] = []
 
         for repo, pr_id in sorted(bindings.keys()):
+            binding = bindings.get((repo, pr_id), {})
+            adapter = AzureDevOpsFeedbackAdapter(
+                organization_url=trigger.organization_url or config.organization_url,
+                project=_ado_project_for_feedback_stream(
+                    repo=repo,
+                    binding=binding,
+                    trigger=trigger,
+                    config=config,
+                ),
+                pat=pat,
+                pat_env_name=pat_env_name,
+            )
             stream_key = _stream_key("azure_devops", repo, pr_id)
             result = adapter.poll(
                 client=client,
