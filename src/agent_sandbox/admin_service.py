@@ -2464,7 +2464,24 @@ class AdminService:
         legacy_config_path: str | Path | None = None,
         config_path: str | Path | None = None,
     ) -> None:
-        from .admin_facades import SessionAdminFacade, TeamsAdminFacade, WorkerAdminFacade
+        from .admin_facades import (
+            SessionAdminDependencies,
+            SessionAdminFacade,
+            TeamsAdminDependencies,
+            TeamsAdminFacade,
+            WorkerAdminDependencies,
+            WorkerAdminFacade,
+        )
+        from .admin_services import (
+            IssueGitAdminDependencies,
+            IssueGitAdminService,
+            IssueGitAdminSupport,
+            OperationsAdminService,
+            VmAgentAdminDependencies,
+            VmAgentAdminService,
+            VmAgentAdminSupport,
+            WorkflowConfigAdminService,
+        )
 
         candidate_runtime = Path(runtime_dir)
         explicit_legacy = Path(legacy_config_path or config_path) if (legacy_config_path or config_path) else None
@@ -2514,9 +2531,117 @@ class AdminService:
                 session_store=self.runtime.sessions,
             )
         )
-        self.session_admin = SessionAdminFacade(self)
-        self.teams_admin = TeamsAdminFacade(self)
-        self.worker_admin = WorkerAdminFacade(self)
+        self.session_admin = SessionAdminFacade(
+            SessionAdminDependencies(
+                runtime=self.runtime,
+                config=self.config,
+                normalize_directory_path=lambda directory_path: self.issue_git_support.normalize_directory_path(directory_path),
+                direct_owned_entity_ids=lambda directory_path, **kwargs: self.issue_git_support.direct_owned_entity_ids(directory_path, **kwargs),
+            )
+        )
+        self.teams_admin = TeamsAdminFacade(
+            TeamsAdminDependencies(
+                runtime=self.runtime,
+                normalize_directory_reference=self._normalize_directory_reference,
+            )
+        )
+        self.worker_admin = WorkerAdminFacade(
+            WorkerAdminDependencies(
+                runtime=self.runtime,
+                config=self.config,
+                agent_control_store=self.agent_control_store,
+                normalize_directory_path=lambda directory_path: self.issue_git_support.normalize_directory_path(directory_path),
+                direct_owned_entity_ids=lambda directory_path, **kwargs: self.issue_git_support.direct_owned_entity_ids(directory_path, **kwargs),
+                read_worker_global_config=self._read_worker_global_config,
+                write_worker_global_config=self._write_worker_global_config,
+                read_workflow_editor_document=self._read_workflow_editor_document,
+                read_workflow_editor_catalog=self._read_workflow_editor_catalog,
+                validate_workflow_editor_document=self._validate_workflow_editor_document,
+                save_workflow_editor_document=self._save_workflow_editor_document,
+                read_workflow_run_snapshot=self._read_workflow_run_snapshot,
+                workflow_event_journal=self._workflow_event_journal,
+                upsert_trigger_config=self._upsert_trigger_config,
+                delete_trigger_config=self._delete_trigger_config,
+                upsert_effect_config=self._upsert_effect_config,
+                delete_effect_config=self._delete_effect_config,
+            )
+        )
+        self.workflow_config_admin = WorkflowConfigAdminService(self.worker_admin)
+        self.issue_git_support = IssueGitAdminSupport(
+            project_dir=self.project_dir,
+            runtime=self.runtime,
+            config=self.config,
+            local_issue_store=self.local_issue_store,
+            local_issue_counter_path=self.local_issue_counter_path,
+            local_issue_create_lock_path=self.local_issue_create_lock_path,
+            local_issue_yaml_dir=self.local_issue_yaml_dir,
+            issue_service=self.issue_service,
+            directory_admin=self.directory_admin,
+            directory_ownership=self.directory_ownership,
+        )
+        self.vm_agent_support = VmAgentAdminSupport(
+            config=self.config,
+            runtime=self.runtime,
+            project_dir=self.project_dir,
+            local_issue_store=self.local_issue_store,
+            worker_admin=self.worker_admin,
+            workflow_config_admin=self.workflow_config_admin,
+            directory_admin=self.directory_admin,
+            get_privileged_helper=lambda: self._privileged_helper,
+            get_use_privileged_helper=lambda: self.use_privileged_helper,
+        )
+        self.issue_git_admin = IssueGitAdminService(
+            IssueGitAdminDependencies(
+                project_dir=self.issue_git_support.project_dir,
+                runtime=self.issue_git_support.runtime,
+                config=self.issue_git_support.config,
+                local_issue_store=self.issue_git_support.local_issue_store,
+                local_issue_yaml_dir=self.issue_git_support.local_issue_yaml_dir,
+                issue_service=self.issue_git_support.issue_service,
+                normalize_directory_path=self.issue_git_support.normalize_directory_path,
+                local_issue_creation_lock=self.issue_git_support.local_issue_creation_lock,
+                next_local_issue_number=self.issue_git_support.next_local_issue_number,
+                canonical_local_issue_id=self.issue_git_support.canonical_local_issue_id,
+                resolve_local_issue_record=self.issue_git_support.resolve_local_issue_record,
+                resolve_local_issue_key=self.issue_git_support.resolve_local_issue_key,
+                proxy_target_for_issue=self.issue_git_support.proxy_target_for_issue,
+                refresh_proxy_cache_from_remote=self.issue_git_support.refresh_proxy_cache_from_remote,
+                write_local_issue_yaml=self.issue_git_support.write_local_issue_yaml,
+                direct_owned_entity_ids=self.issue_git_support.direct_owned_entity_ids,
+            )
+        )
+        self.vm_agent_admin = VmAgentAdminService(
+            VmAgentAdminDependencies(
+                config=self.vm_agent_support.config,
+                runtime=self.vm_agent_support.runtime,
+                project_dir=self.vm_agent_support.project_dir,
+                local_issue_store=self.vm_agent_support.local_issue_store,
+                worker_admin=self.vm_agent_support.worker_admin,
+                get_privileged_helper=self.vm_agent_support.get_privileged_helper,
+                get_use_privileged_helper=self.vm_agent_support.get_use_privileged_helper,
+                normalize_directory_path=self.vm_agent_support.normalize_directory_path,
+                read_worker_global_config=self.vm_agent_support.read_worker_global_config,
+                resolve_agent_model_for_session=self.vm_agent_support.resolve_agent_model_for_session,
+                resolve_vm_defaults=self.vm_agent_support.resolve_vm_defaults,
+                resolve_issue_setup=self.vm_agent_support.resolve_issue_setup,
+                build_setup_issue_vm_invocation=self.vm_agent_support.build_setup_issue_vm_invocation,
+                resolve_local_issue_record=self.vm_agent_support.resolve_local_issue_record,
+                resolve_local_issue_key=self.vm_agent_support.resolve_local_issue_key,
+                resolve_repo_source=self.vm_agent_support.resolve_repo_source,
+                sync_repo_into_bare_remote=self.vm_agent_support.sync_repo_into_bare_remote,
+                clone_repo_into_vm=self.vm_agent_support.clone_repo_into_vm,
+            )
+        )
+        self.operations_admin = OperationsAdminService(
+            project_dir=self.project_dir,
+            get_privileged_helper=lambda: self._privileged_helper,
+            set_privileged_helper=lambda helper: setattr(self, "_privileged_helper", helper),
+            teams_admin=self.teams_admin,
+            session_admin=self.session_admin,
+            worker_admin=self.worker_admin,
+            directory_admin=self.directory_admin,
+            privileged_helper_factory=lambda **kwargs: PrivilegedHelperSession(**kwargs),
+        )
 
     @property
     def directory_scoped_config_enabled(self) -> bool:
@@ -2585,7 +2710,7 @@ class AdminService:
         }
 
     def teams_auth_login(self, *, directory: str = "root") -> DeviceCodeLoginSession:
-        return self.teams_admin.login(directory=directory)
+        return self.operations_admin.teams_auth_login(directory=directory)
 
     def teams_auth_complete_login(
         self,
@@ -2594,20 +2719,20 @@ class AdminService:
         directory: str = "root",
         timeout_seconds: float | None = None,
     ) -> dict[str, object]:
-        return self.teams_admin.complete_login(
+        return self.operations_admin.teams_auth_complete_login(
             login_session,
             directory=directory,
             timeout_seconds=timeout_seconds,
         )
 
     def teams_auth_status(self, *, directory: str = "root") -> dict[str, object]:
-        return self.teams_admin.status(directory=directory)
+        return self.operations_admin.teams_auth_status(directory=directory)
 
     def teams_auth_logout(self, *, directory: str = "root") -> dict[str, object]:
-        return self.teams_admin.logout(directory=directory)
+        return self.operations_admin.teams_auth_logout(directory=directory)
 
     def teams_auth_list(self) -> list[dict[str, object]]:
-        return self.teams_admin.list()
+        return self.operations_admin.teams_auth_list()
 
     def teams_auth_list_channels(
         self,
@@ -2617,7 +2742,7 @@ class AdminService:
         channel_name: str | None = None,
         include_all: bool = False,
     ) -> dict[str, object]:
-        return self.teams_admin.list_channels(
+        return self.operations_admin.teams_auth_list_channels(
             directory=directory,
             team_id=team_id,
             channel_name=channel_name,
@@ -2653,20 +2778,13 @@ class AdminService:
         return channels
 
     def unlock_privileged_operations(self) -> str:
-        helper = self._privileged_helper
-        if helper is None:
-            helper = PrivilegedHelperSession(python_executable=sys.executable, project_dir=self.project_dir)
-            self._privileged_helper = helper
-        helper.start()
-        return "Privileged operations unlocked."
+        return self.operations_admin.unlock_privileged_operations()
 
     def lock_privileged_operations(self) -> None:
-        if self._privileged_helper is not None:
-            self._privileged_helper.close()
-            self._privileged_helper = None
+        return self.operations_admin.lock_privileged_operations()
 
     def privileged_operations_unlocked(self) -> bool:
-        return self._privileged_helper is not None and self._privileged_helper.is_running()
+        return self.operations_admin.privileged_operations_unlocked()
 
     def _session_ids_by_vm(self) -> dict[str, list[str]]:
         mapping: dict[str, list[str]] = {}
@@ -3060,7 +3178,7 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
         directory_path: str | None = None,
         direct_only: bool = False,
     ) -> list[SessionSummary]:
-        return self.session_admin.list_sessions(
+        return self.operations_admin.list_sessions(
             include_expired=include_expired,
             expired_only=expired_only,
             directory_path=directory_path,
@@ -3073,7 +3191,7 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
         session_id: str | None = None,
         include_disabled: bool = True,
     ) -> list[dict[str, Any]]:
-        return self.session_admin.list_wake_schedules(
+        return self.operations_admin.list_wake_schedules(
             session_id=session_id,
             include_disabled=include_disabled,
         )
@@ -3141,7 +3259,7 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
         source: str | None = "admin_cli",
         metadata: dict[str, Any] | None = None,
     ) -> WakeScheduledRequest:
-        return self.session_admin.create_wake_schedule(
+        return self.operations_admin.create_wake_schedule(
             session_id=session_id,
             prompt=prompt,
             resume_at=resume_at,
@@ -3163,7 +3281,7 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
         resume_mode: str | None = None,
         enabled: bool | None = None,
     ) -> WakeScheduledRequest:
-        return self.session_admin.edit_wake_schedule(
+        return self.operations_admin.edit_wake_schedule(
             request_id,
             resume_at=resume_at,
             cron=cron,
@@ -3173,25 +3291,25 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
         )
 
     def delete_wake_schedule(self, request_id: str) -> bool:
-        return self.session_admin.delete_wake_schedule(request_id)
+        return self.operations_admin.delete_wake_schedule(request_id)
 
     def renew_session(self, target: str, *, extension: str = "1d") -> SessionActionResult:
-        return self.session_admin.renew_session(target, extension=extension)
+        return self.operations_admin.renew_session(target, extension=extension)
 
     def revoke_session(self, target: str) -> SessionActionResult:
-        return self.session_admin.revoke_session(target)
+        return self.operations_admin.revoke_session(target)
 
     def delete_session(self, target: str) -> SessionActionResult:
-        return self.session_admin.delete_session(target)
+        return self.operations_admin.delete_session(target)
 
     def set_session_allowed_tools(self, target: str, allowed_tools: list[str | ToolName]) -> SessionActionResult:
-        return self.session_admin.set_session_allowed_tools(target, allowed_tools)
+        return self.operations_admin.set_session_allowed_tools(target, allowed_tools)
 
     def set_session_allowed_script_names(self, target: str, allowed_script_names: list[str]) -> SessionActionResult:
-        return self.session_admin.set_session_allowed_script_names(target, allowed_script_names)
+        return self.operations_admin.set_session_allowed_script_names(target, allowed_script_names)
 
     def set_session_model(self, target: str, model: str) -> SessionActionResult:
-        return self.session_admin.set_session_model(target, model)
+        return self.operations_admin.set_session_model(target, model)
 
     def list_vms(
         self,
@@ -3202,7 +3320,7 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
         directory_path: str | None = None,
         direct_only: bool = False,
     ) -> list[VmSummary]:
-        return self.worker_admin.list_vms(
+        return self.vm_agent_admin.list_vms(
             include_inactive=include_inactive,
             omit_state=omit_state,
             vm_user=vm_user,
@@ -3211,16 +3329,16 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
         )
 
     def list_background_workers(self) -> list[WorkerSummary]:
-        return self.worker_admin.list_background_workers()
+        return self.operations_admin.list_background_workers()
 
     def get_background_worker_log_snapshot(self, worker_id: str, *, lines: int = 200) -> str:
-        return self.worker_admin.get_background_worker_log_snapshot(worker_id, lines=lines)
+        return self.operations_admin.get_background_worker_log_snapshot(worker_id, lines=lines)
 
     def start_background_worker(self, worker_id: str) -> WorkerActionResult:
-        return self.worker_admin.start_background_worker(worker_id)
+        return self.operations_admin.start_background_worker(worker_id)
 
     def stop_background_worker(self, worker_id: str) -> WorkerActionResult:
-        return self.worker_admin.stop_background_worker(worker_id)
+        return self.operations_admin.stop_background_worker(worker_id)
 
     def get_agent_log_snapshot(
         self,
@@ -3230,132 +3348,13 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
         repo_name: str | None = None,
         vm_user: str = "agent",
     ) -> str:
-        vm_name = _resolve_vm_name_from_target(target, self.runtime.sessions.read_all())
-        if not vm_name:
-            return "Agent log unavailable: no VM target selected."
-        vm_state = _dominfo_field(vm_name, "State")
-        if vm_state != "running":
-            return f"Agent log unavailable: {vm_name} is not running."
-        vm_ip = _resolve_vm_ip(vm_name)
-        if not vm_ip:
-            return f"Agent log unavailable: could not determine IP for {vm_name}."
-        ssh_private_key_path = _resolve_private_key_path()
-        if ssh_private_key_path is None:
-            return "Agent log unavailable: missing SSH private key for guest access."
-
-        remote_script = r"""
-set -euo pipefail
-
-LOG_DIR="$HOME/.agent-sandbox"
-RESOLVED_REPO_NAME="${REPO_NAME:-}"
-TAIL_LINES="${TAIL_LINES:-50}"
-
-if [[ -z "${RESOLVED_REPO_NAME}" ]]; then
-  shopt -s nullglob
-  candidates=()
-  for path in "${LOG_DIR}"/agent-*.pid "${LOG_DIR}"/agent-*.log; do
-    name="$(basename "${path}")"
-    name="${name#agent-}"
-    name="${name%.pid}"
-    name="${name%.log}"
-    if [[ -n "${name}" ]]; then
-      candidates+=("${name}")
-    fi
-  done
-  if [[ -f "${LOG_DIR}/codex-heartbeat-run.log" || -f "${LOG_DIR}/codex-heartbeat.pid" ]]; then
-    candidates+=("codex-heartbeat")
-  fi
-  shopt -u nullglob
-
-  if [[ ${#candidates[@]} -eq 0 ]]; then
-    echo "No guest agent logs or pid files found under ${LOG_DIR}"
-    exit 0
-  fi
-
-  mapfile -t unique_candidates < <(printf '%s\n' "${candidates[@]}" | sort -u)
-  if [[ ${#unique_candidates[@]} -ne 1 ]]; then
-    echo "Multiple guest agent logs found under ${LOG_DIR}; pass an explicit repo name."
-    printf 'Candidates:\n'
-    printf '  %s\n' "${unique_candidates[@]}"
-    exit 0
-  fi
-
-  RESOLVED_REPO_NAME="${unique_candidates[0]}"
-fi
-
-if [[ "${RESOLVED_REPO_NAME}" == "codex-heartbeat" ]]; then
-  LOG_PATH="${LOG_DIR}/codex-heartbeat-run.log"
-else
-  LOG_PATH="${LOG_DIR}/agent-${RESOLVED_REPO_NAME}.log"
-fi
-if [[ ! -f "${LOG_PATH}" ]]; then
-  echo "No guest agent log found at ${LOG_PATH}"
-  exit 0
-fi
-
-echo "Repo: ${RESOLVED_REPO_NAME}"
-echo "Log: ${LOG_PATH}"
-echo
-tail -n "${TAIL_LINES}" "${LOG_PATH}"
-"""
-        result = _run_subprocess(
-            [
-                "ssh",
-                *_ssh_options(vm_name, vm_ip, ssh_private_key_path),
-                f"{vm_user}@{vm_ip}",
-                "env",
-                f"REPO_NAME={repo_name or ''}",
-                f"TAIL_LINES={lines}",
-                "bash",
-                "-s",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=20.0,
-            input=remote_script,
-        )
-        output = (result.stdout or "").strip()
-        error = (result.stderr or "").strip()
-        if result.returncode != 0 and error:
-            return f"Agent log unavailable: {error}"
-        return output or error or "Agent log is empty."
+        return self.vm_agent_admin.get_agent_log_snapshot(target, lines=lines, repo_name=repo_name, vm_user=vm_user)
 
     def start_vm(self, target: str) -> VmActionResult:
-        vm_name = _resolve_vm_name(target)
-        current_state = _dominfo_field(vm_name, "State")
-        if current_state is None:
-            return VmActionResult(success=False, vm_name=vm_name, action="start", message=f"VM not found: {vm_name}")
-        if current_state == "running":
-            return VmActionResult(success=True, vm_name=vm_name, action="start", message=f"VM already running: {vm_name}")
-        result = _run_virsh(["start", vm_name])
-        if result.returncode != 0:
-            stderr = (result.stderr or "").strip()
-            return VmActionResult(success=False, vm_name=vm_name, action="start", message=stderr or f"Failed to start {vm_name}")
-        return VmActionResult(success=True, vm_name=vm_name, action="start", message=f"Started VM {vm_name}")
+        return self.vm_agent_admin.start_vm(target)
 
     def shutdown_vm(self, target: str, *, timeout_seconds: int = 60) -> VmActionResult:
-        vm_name = _resolve_vm_name(target)
-        current_state = _dominfo_field(vm_name, "State")
-        if current_state is None:
-            return VmActionResult(success=False, vm_name=vm_name, action="shutdown", message=f"VM not found: {vm_name}")
-        if current_state != "running":
-            return VmActionResult(success=True, vm_name=vm_name, action="shutdown", message=f"VM already stopped: {vm_name}")
-        result = _run_virsh(["shutdown", vm_name])
-        if result.returncode != 0:
-            stderr = (result.stderr or "").strip()
-            return VmActionResult(success=False, vm_name=vm_name, action="shutdown", message=stderr or f"Failed to request shutdown for {vm_name}")
-        deadline = time.monotonic() + timeout_seconds
-        while time.monotonic() < deadline:
-            state = _dominfo_field(vm_name, "State")
-            if state and state != "running":
-                return VmActionResult(success=True, vm_name=vm_name, action="shutdown", message=f"Shut down VM {vm_name}")
-            time.sleep(2)
-        return VmActionResult(
-            success=False,
-            vm_name=vm_name,
-            action="shutdown",
-            message=f"Timed out waiting for {vm_name} to shut down after {timeout_seconds}s",
-        )
+        return self.vm_agent_admin.shutdown_vm(target, timeout_seconds=timeout_seconds)
 
     def _run_script(self, script_name: str, args: list[str], *, env: dict[str, str] | None = None) -> VmActionResult:
         script_path = Path(__file__).resolve().parents[2] / "scripts" / script_name
@@ -3379,149 +3378,13 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
         )
 
     def enable_agent(self, target: str, *, vm_user: str = "agent") -> VmActionResult:
-        vm_name = _resolve_vm_name_from_target(target, self.runtime.sessions.read_all())
-        return self._run_script(
-            "set_issue_agent_state.sh",
-            ["--state", "enable", "--vm-name", vm_name, "--vm-user", vm_user, "--host-state-path", str(self.config.host_agent_control_state_path)],
-        )
+        return self.vm_agent_admin.enable_agent(target, vm_user=vm_user)
 
     def disable_agent(self, target: str, *, vm_user: str = "agent") -> VmActionResult:
-        vm_name = _resolve_vm_name_from_target(target, self.runtime.sessions.read_all())
-        return self._run_script(
-            "set_issue_agent_state.sh",
-            ["--state", "disable", "--vm-name", vm_name, "--vm-user", vm_user, "--host-state-path", str(self.config.host_agent_control_state_path)],
-        )
+        return self.vm_agent_admin.disable_agent(target, vm_user=vm_user)
 
     def kill_agent(self, target: str, pid: int, *, vm_user: str = "agent") -> VmActionResult:
-        sessions = self.runtime.sessions.read_all()
-        vm_name = _resolve_vm_name_from_target(target, sessions)
-        if pid <= 0:
-            return VmActionResult(
-                success=False,
-                vm_name=vm_name,
-                action="kill_agent",
-                message=f"Invalid agent pid: {pid}",
-            )
-        current_state = _dominfo_field(vm_name, "State")
-        if current_state is None:
-            return VmActionResult(success=False, vm_name=vm_name, action="kill_agent", message=f"VM not found: {vm_name}")
-        if current_state != "running":
-            return VmActionResult(
-                success=False,
-                vm_name=vm_name,
-                action="kill_agent",
-                message=f"VM is not running: {vm_name}",
-            )
-        try:
-            vm_ip, ssh_private_key_path = _resolve_vm_ssh_access(vm_name, vm_user)
-        except RuntimeError as exc:
-            return VmActionResult(success=False, vm_name=vm_name, action="kill_agent", message=str(exc))
-
-        remote_script = r"""
-set -euo pipefail
-
-TARGET_PID="${TARGET_PID:-}"
-LOG_DIR="${HOME}/.agent-sandbox"
-
-is_valid_agent_pid() {
-  local pid="$1"
-  local cmdline_path="/proc/${pid}/cmdline"
-  local cmdline=""
-
-  [[ -n "${pid}" && "${pid}" =~ ^[0-9]+$ ]] || return 1
-  kill -0 "${pid}" >/dev/null 2>&1 || return 1
-  [[ -r "${cmdline_path}" ]] || return 1
-  cmdline="$(tr '\000' ' ' < "${cmdline_path}" 2>/dev/null || true)"
-  [[ -n "${cmdline}" ]] || return 1
-  [[ "${cmdline}" == *"agent_runner_exec"* || "${cmdline}" == *"agent_runner_resume_last"* ]]
-}
-
-read_state_value() {
-  local state_path="$1"
-  local key="$2"
-  [[ -f "${state_path}" ]] || return 1
-  awk -F= -v target_key="${key}" '$1 == target_key {print substr($0, index($0, "=") + 1); exit}' "${state_path}" 2>/dev/null
-}
-
-write_idle_state() {
-  local state_path="$1"
-  local repo_name="$2"
-  local dispatch_id="$3"
-  local now tmp_path
-
-  now="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-  tmp_path="${state_path}.tmp"
-  {
-    printf "status=idle\n"
-    printf "phase=terminated_by_admin\n"
-    printf "repo=%s\n" "${repo_name}"
-    printf "pid=%s\n" "${TARGET_PID}"
-    printf "updated_at=%s\n" "${now}"
-    if [[ -n "${dispatch_id}" ]]; then
-      printf "dispatch_id=%s\n" "${dispatch_id}"
-    fi
-    printf "exit_code=143\n"
-  } > "${tmp_path}"
-  mv "${tmp_path}" "${state_path}"
-}
-
-remove_matching_pid_file() {
-  local pid_file="$1"
-  local file_pid=""
-  [[ -f "${pid_file}" ]] || return 0
-  file_pid="$(cat "${pid_file}" 2>/dev/null || true)"
-  if [[ "${file_pid}" == "${TARGET_PID}" ]]; then
-    rm -f "${pid_file}"
-  fi
-}
-
-if ! is_valid_agent_pid "${TARGET_PID}"; then
-  echo "Guest agent pid is not active or not managed by agent-sandbox: ${TARGET_PID}" >&2
-  exit 1
-fi
-
-matched_states=()
-shopt -s nullglob
-for state_path in "${LOG_DIR}"/agent-*.state "${LOG_DIR}/codex-resume-last.state"; do
-  state_pid="$(read_state_value "${state_path}" "pid" || true)"
-  if [[ "${state_pid}" == "${TARGET_PID}" ]]; then
-    matched_states+=("${state_path}")
-  fi
-done
-
-kill "${TARGET_PID}" >/dev/null 2>&1 || true
-sleep 1
-if kill -0 "${TARGET_PID}" >/dev/null 2>&1; then
-  kill -9 "${TARGET_PID}" >/dev/null 2>&1 || true
-fi
-
-for state_path in "${matched_states[@]}"; do
-  repo_name="$(read_state_value "${state_path}" "repo" || true)"
-  dispatch_id="$(read_state_value "${state_path}" "dispatch_id" || true)"
-  write_idle_state "${state_path}" "${repo_name}" "${dispatch_id}"
-done
-
-for pid_file in "${LOG_DIR}"/agent-*.pid "${LOG_DIR}/codex-heartbeat.pid"; do
-  remove_matching_pid_file "${pid_file}"
-done
-shopt -u nullglob
-
-printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@]}"
-"""
-        completed = _run_subprocess(
-            ["ssh", *_ssh_options(vm_name, vm_ip, ssh_private_key_path), f"{vm_user}@{vm_ip}", "env", f"TARGET_PID={pid}", "bash", "-s"],
-            capture_output=True,
-            text=True,
-            timeout=20.0,
-            input=remote_script,
-        )
-        message = (completed.stdout or completed.stderr or "").strip()
-        return VmActionResult(
-            success=completed.returncode == 0,
-            vm_name=vm_name,
-            action="kill_agent",
-            message=message or f"kill_agent exited with code {completed.returncode}",
-        )
+        return self.vm_agent_admin.kill_agent(target, pid, vm_user=vm_user)
 
     def resume_agent(
         self,
@@ -3534,79 +3397,14 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
         resume_thread_id: str | None = None,
         resume_mode: str = "new_context",
     ) -> VmActionResult:
-        sessions = self.runtime.sessions.read_all()
-        vm_name = _resolve_vm_name_from_target(target, sessions)
-        session_id: str | None = None
-        directory_path: str | None = None
-        manifest: SessionManifest | None = None
-        effective_resume_thread_id: str | None = None
-        try:
-            session_id, manifest = _resolve_session_target(target, sessions)
-            resolved_model = str(model or "").strip() or self._resolve_agent_model_for_session(manifest)
-            directory_path = manifest.directory_path
-            stored_resume_thread_id = str(manifest.metadata.get("agent_thread_id") or "").strip() or None
-            effective_resume_thread_id = str(resume_thread_id or "").strip() or stored_resume_thread_id
-        except ValueError as exc:
-            return VmActionResult(
-                success=False,
-                vm_name=vm_name,
-                action="resume_issue_agent",
-                message=str(exc),
-            )
-        script_path = Path(__file__).resolve().parents[2] / "scripts" / "resume_issue_agent.sh"
-        normalized_resume_mode = str(resume_mode).strip() or "new_context"
-        if normalized_resume_mode not in {"same_context", "new_context"}:
-            return VmActionResult(
-                success=False,
-                vm_name=vm_name,
-                action="resume_issue_agent",
-                message=f"Unsupported resume mode: {resume_mode}",
-            )
-        args = [
-            str(script_path),
-            "--prompt",
+        return self.vm_agent_admin.resume_agent(
+            target,
             prompt,
-            "--vm-name",
-            vm_name,
-            "--vm-user",
-            vm_user,
-            "--host-control-state-path",
-            str(self.config.host_agent_control_state_path),
-            *(["--dispatch-id", dispatch_id] if dispatch_id else []),
-            *(["--resume-thread-id", effective_resume_thread_id] if effective_resume_thread_id else ["--resume-mode", normalized_resume_mode]),
-        ]
-        completed = _run_subprocess(args, capture_output=True, text=True, env=os.environ | {"AGENT_MODEL": resolved_model})
-        stdout = completed.stdout or ""
-        stderr = completed.stderr or ""
-        thread_id: str | None = None
-        message_lines: list[str] = []
-        for line in stdout.splitlines():
-            if line.startswith("thread_id="):
-                candidate = line.partition("=")[2].strip()
-                if candidate:
-                    thread_id = candidate
-                continue
-            message_lines.append(line)
-        message = "\n".join(line for line in message_lines if line.strip()).strip() or stderr.strip()
-        resolved_thread_id = thread_id or effective_resume_thread_id
-        if completed.returncode == 0 and session_id and manifest is not None and resolved_thread_id:
-            updated_metadata = dict(manifest.metadata)
-            updated_metadata["agent_thread_id"] = resolved_thread_id
-            self.runtime.sessions.put(session_id, manifest.model_copy(update={"metadata": updated_metadata}))
-        if completed.returncode == 0 and dispatch_id:
-            self._spawn_agent_completion_watcher(
-                vm_name=vm_name,
-                dispatch_id=dispatch_id,
-                vm_user=vm_user,
-                session_id=session_id,
-                directory_path=directory_path,
-            )
-        return VmActionResult(
-            success=completed.returncode == 0,
-            vm_name=vm_name,
-            action="resume_issue_agent",
-            message=message or f"resume_issue_agent.sh exited with code {completed.returncode}",
-            thread_id=resolved_thread_id,
+            model=model,
+            vm_user=vm_user,
+            dispatch_id=dispatch_id,
+            resume_thread_id=resume_thread_id,
+            resume_mode=resume_mode,
         )
 
     def _spawn_agent_completion_watcher(
@@ -3680,34 +3478,16 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
         timeout_seconds: float | None = None,
         check: bool = True,
     ) -> dict[str, Any]:
-        sessions = self.runtime.sessions.read_all()
-        vm_name = _resolve_vm_name_from_target(target, sessions)
-        vm_ip, ssh_private_key_path = _resolve_vm_ssh_access(vm_name, vm_user)
-        remote_script = _remote_shell_script(
+        return self.vm_agent_admin.vm_exec(
+            target,
             command=command,
+            vm_user=vm_user,
             working_directory=working_directory,
             environment=environment,
+            stdin=stdin,
+            timeout_seconds=timeout_seconds,
+            check=check,
         )
-        completed = _run_subprocess(
-            ["ssh", *_ssh_options(vm_name, vm_ip, ssh_private_key_path), f"{vm_user}@{vm_ip}", "bash", "-s"],
-            capture_output=True,
-            text=True,
-            timeout=timeout_seconds,
-            input=f"{remote_script}{stdin or ''}",
-        )
-        stdout = completed.stdout or ""
-        stderr = completed.stderr or ""
-        success = completed.returncode == 0 or not check
-        message = (stderr or stdout).strip() or f"vm_exec exited with code {completed.returncode}"
-        return {
-            "success": success,
-            "vm_name": vm_name,
-            "action": "vm_exec",
-            "message": message,
-            "exit_code": completed.returncode,
-            "stdout": stdout,
-            "stderr": stderr,
-        }
 
     def vm_copy_files(
         self,
@@ -3716,136 +3496,7 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
         files: list[dict[str, Any]],
         vm_user: str = "agent",
     ) -> dict[str, Any]:
-        sessions = self.runtime.sessions.read_all()
-        vm_name = _resolve_vm_name_from_target(target, sessions)
-        vm_ip, ssh_private_key_path = _resolve_vm_ssh_access(vm_name, vm_user)
-        copied_paths: list[str] = []
-
-        for index, file_spec in enumerate(files):
-            destination_path = str(file_spec.get("destination_path") or "").strip()
-            if not destination_path:
-                raise ValueError(f"files[{index}] destination_path is required")
-            source_path_raw = file_spec.get("source_path")
-            content_raw = file_spec.get("content")
-            if bool(source_path_raw) == bool(content_raw):
-                raise ValueError(f"files[{index}] must provide exactly one of source_path or content")
-            overwrite = bool(file_spec.get("overwrite", True))
-            mode = str(file_spec.get("mode") or "").strip()
-            parent_path = str(Path(destination_path).parent)
-            prelude = [
-                "set -euo pipefail",
-                f"mkdir -p {shlex.quote(parent_path)}",
-            ]
-            if not overwrite:
-                prelude.append(f"if [ -e {shlex.quote(destination_path)} ]; then exit 17; fi")
-            prep_script = "\n".join(prelude) + "\n"
-
-            if source_path_raw:
-                source_path = Path(str(source_path_raw)).expanduser().resolve()
-                if not source_path.exists():
-                    raise ValueError(f"files[{index}] source_path does not exist: {source_path}")
-                if source_path.is_dir():
-                    completed = _run_subprocess(
-                        [
-                            "ssh",
-                            *_ssh_options(vm_name, vm_ip, ssh_private_key_path),
-                            f"{vm_user}@{vm_ip}",
-                            "bash",
-                            "-s",
-                        ],
-                        capture_output=True,
-                        text=True,
-                        input=prep_script,
-                    )
-                    if completed.returncode != 0:
-                        raise RuntimeError((completed.stderr or completed.stdout or "").strip() or "remote directory prep failed")
-                    scp_result = _run_subprocess(
-                        [
-                            "scp",
-                            "-r",
-                            *_ssh_options(vm_name, vm_ip, ssh_private_key_path),
-                            str(source_path),
-                            f"{vm_user}@{vm_ip}:{destination_path}",
-                        ],
-                        capture_output=True,
-                        text=True,
-                    )
-                    if scp_result.returncode != 0:
-                        raise RuntimeError((scp_result.stderr or scp_result.stdout or "").strip() or "scp failed")
-                    if mode:
-                        chmod_result = _run_subprocess(
-                            ["ssh", *_ssh_options(vm_name, vm_ip, ssh_private_key_path), f"{vm_user}@{vm_ip}", "chmod", "-R", mode, destination_path],
-                            capture_output=True,
-                            text=True,
-                        )
-                        if chmod_result.returncode != 0:
-                            raise RuntimeError((chmod_result.stderr or chmod_result.stdout or "").strip() or "chmod failed")
-                else:
-                    completed = _run_subprocess(
-                        [
-                            "ssh",
-                            *_ssh_options(vm_name, vm_ip, ssh_private_key_path),
-                            f"{vm_user}@{vm_ip}",
-                            "bash",
-                            "-s",
-                        ],
-                        capture_output=True,
-                        text=True,
-                        input=prep_script,
-                    )
-                    if completed.returncode != 0:
-                        raise RuntimeError((completed.stderr or completed.stdout or "").strip() or "remote file prep failed")
-                    scp_result = _run_subprocess(
-                        [
-                            "scp",
-                            *_ssh_options(vm_name, vm_ip, ssh_private_key_path),
-                            str(source_path),
-                            f"{vm_user}@{vm_ip}:{destination_path}",
-                        ],
-                        capture_output=True,
-                        text=True,
-                    )
-                    if scp_result.returncode != 0:
-                        raise RuntimeError((scp_result.stderr or scp_result.stdout or "").strip() or "scp failed")
-                    if mode:
-                        chmod_result = _run_subprocess(
-                            ["ssh", *_ssh_options(vm_name, vm_ip, ssh_private_key_path), f"{vm_user}@{vm_ip}", "chmod", mode, destination_path],
-                            capture_output=True,
-                            text=True,
-                        )
-                        if chmod_result.returncode != 0:
-                            raise RuntimeError((chmod_result.stderr or chmod_result.stdout or "").strip() or "chmod failed")
-            else:
-                content_text = str(content_raw if content_raw is not None else "")
-                encoded_content = base64.b64encode(content_text.encode("utf-8")).decode("ascii")
-                remote_script = "\n".join(
-                    prelude
-                    + [
-                        f"python3 - <<'PY'\nimport base64\nfrom pathlib import Path\nPath({destination_path!r}).write_bytes(base64.b64decode({encoded_content!r}))\nPY"
-                    ]
-                    + ([f"chmod {shlex.quote(mode)} {shlex.quote(destination_path)}"] if mode else [])
-                ) + "\n"
-                completed = _run_subprocess(
-                    ["ssh", *_ssh_options(vm_name, vm_ip, ssh_private_key_path), f"{vm_user}@{vm_ip}", "bash", "-s"],
-                    capture_output=True,
-                    text=True,
-                    input=remote_script,
-                )
-                if completed.returncode != 0:
-                    if completed.returncode == 17:
-                        raise RuntimeError(f"Destination already exists: {destination_path}")
-                    raise RuntimeError((completed.stderr or completed.stdout or "").strip() or "remote content write failed")
-            copied_paths.append(destination_path)
-
-        message = f"Copied {len(copied_paths)} path(s) into {vm_name}"
-        return {
-            "success": True,
-            "vm_name": vm_name,
-            "action": "vm_copy_files",
-            "message": message,
-            "copied_count": len(copied_paths),
-            "copied_paths": copied_paths,
-        }
+        return self.vm_agent_admin.vm_copy_files(target, files=files, vm_user=vm_user)
 
     def vm_delete_files(
         self,
@@ -3856,42 +3507,13 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
         recursive: bool = False,
         missing_ok: bool = True,
     ) -> dict[str, Any]:
-        if not paths:
-            raise ValueError("paths must not be empty")
-        sessions = self.runtime.sessions.read_all()
-        vm_name = _resolve_vm_name_from_target(target, sessions)
-        vm_ip, ssh_private_key_path = _resolve_vm_ssh_access(vm_name, vm_user)
-        normalized_paths: list[str] = []
-        for index, raw_path in enumerate(paths):
-            path = str(raw_path or "").strip()
-            if not path:
-                raise ValueError(f"paths[{index}] must be a non-empty string")
-            if path.startswith("~") or not path.startswith("/"):
-                raise ValueError(f"paths[{index}] must be an absolute guest path")
-            normalized_paths.append(PurePosixPath(path).as_posix())
-
-        rm_flag = "-rf" if recursive else "-f"
-        commands = ["set -euo pipefail"]
-        if not missing_ok:
-            commands.extend(f"test -e {shlex.quote(path)}" for path in normalized_paths)
-        commands.extend(f"rm {rm_flag} -- {shlex.quote(path)}" for path in normalized_paths)
-        completed = _run_subprocess(
-            ["ssh", *_ssh_options(vm_name, vm_ip, ssh_private_key_path), f"{vm_user}@{vm_ip}", "bash", "-s"],
-            capture_output=True,
-            text=True,
-            input="\n".join(commands) + "\n",
+        return self.vm_agent_admin.vm_delete_files(
+            target,
+            paths=paths,
+            vm_user=vm_user,
+            recursive=recursive,
+            missing_ok=missing_ok,
         )
-        if completed.returncode != 0:
-            raise RuntimeError((completed.stderr or completed.stdout or "").strip() or "remote delete failed")
-        return {
-            "success": True,
-            "vm_name": vm_name,
-            "action": "vm_delete_files",
-            "message": f"Deleted {len(normalized_paths)} path(s) from {vm_name}",
-            "deleted_count": len(normalized_paths),
-            "deleted_paths": normalized_paths,
-            "vm_user": vm_user,
-        }
 
     def pr_create(
         self,
@@ -3911,79 +3533,22 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
         draft: bool | None = None,
         fill: bool = True,
     ) -> dict[str, Any]:
-        if body and body_file:
-            raise ValueError("Provide either body or body_file, not both")
-
-        script_path = self.project_dir / "scripts" / "open_agent_pr.sh"
-        cmd = [str(script_path), "--create-pr"]
-        if draft is True:
-            cmd.append("--draft")
-        elif draft is False:
-            cmd.append("--no-draft")
-        if provider:
-            cmd.extend(["--provider", provider])
-        if project:
-            cmd.extend(["--project", project])
-        if base_branch:
-            cmd.extend(["--base", base_branch])
-        if session_id:
-            cmd.extend(["--session-id", session_id])
-        if work_item_id:
-            cmd.extend(["--work-item-id", work_item_id])
-        if title:
-            cmd.extend(["--title", title])
-        if not fill:
-            cmd.append("--no-fill")
-
-        body_file_path: Path | None = None
-        try:
-            if body is not None:
-                tmp = tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".md", delete=False)
-                with tmp:
-                    tmp.write(body)
-                body_file_path = Path(tmp.name)
-                cmd.extend(["--body-file", str(body_file_path)])
-            elif body_file:
-                cmd.extend(["--body-file", body_file])
-
-            cmd.append(host_repo_path)
-            if local_branch:
-                cmd.append(local_branch)
-            if origin_branch:
-                cmd.append(origin_branch)
-
-            env = os.environ.copy()
-            if canonical_origin_url:
-                env["AGENT_SANDBOX_CANONICAL_ORIGIN_URL"] = canonical_origin_url
-
-            completed = _run_subprocess(cmd, capture_output=True, text=True, env=env)
-            stdout = completed.stdout or ""
-            stderr = completed.stderr or ""
-            if completed.returncode != 0:
-                raise RuntimeError((stderr or stdout).strip() or f"open_agent_pr.sh exited with code {completed.returncode}")
-
-            result_payload: dict[str, Any] = {}
-            for line in stdout.splitlines():
-                if not line.startswith("AGENT_PR_RESULT "):
-                    continue
-                raw_json = line.removeprefix("AGENT_PR_RESULT ").strip()
-                parsed = json.loads(raw_json)
-                if isinstance(parsed, dict):
-                    result_payload = parsed
-                    break
-
-            message = (stderr or stdout).strip() or "PR prepared"
-            return {
-                "success": True,
-                "action": "pr_create",
-                "message": message,
-                "stdout": stdout,
-                "stderr": stderr,
-                **result_payload,
-            }
-        finally:
-            if body_file_path is not None:
-                body_file_path.unlink(missing_ok=True)
+        return self.issue_git_admin.pr_create(
+            host_repo_path=host_repo_path,
+            local_branch=local_branch,
+            origin_branch=origin_branch,
+            canonical_origin_url=canonical_origin_url,
+            provider=provider,
+            project=project,
+            base_branch=base_branch,
+            session_id=session_id,
+            work_item_id=work_item_id,
+            title=title,
+            body=body,
+            body_file=body_file,
+            draft=draft,
+            fill=fill,
+        )
 
     def promote_agent_branch(
         self,
@@ -3995,41 +3560,14 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
         review_branch: str | None = None,
         remote_name: str | None = None,
     ) -> dict[str, Any]:
-        if not bare_repo_path and not bare_repo_name:
-            raise ValueError("Provide either bare_repo_path or bare_repo_name")
-        if bare_repo_path and bare_repo_name:
-            raise ValueError("Provide either bare_repo_path or bare_repo_name, not both")
-
-        script_path = self.project_dir / "scripts" / "promote_agent_branch.sh"
-        cmd = [str(script_path)]
-        if remote_name:
-            cmd.extend(["--remote-name", remote_name])
-        cmd.append(host_repo_path)
-        cmd.append(bare_repo_path or bare_repo_name or "")
-        cmd.append(agent_branch)
-        if review_branch:
-            cmd.append(review_branch)
-
-        completed = _run_subprocess(cmd, capture_output=True, text=True)
-        stdout = completed.stdout or ""
-        stderr = completed.stderr or ""
-        if completed.returncode != 0:
-            raise RuntimeError((stderr or stdout).strip() or f"promote_agent_branch.sh exited with code {completed.returncode}")
-
-        resolved_review_branch = review_branch or self._derive_review_branch(agent_branch)
-        message = (stderr or stdout).strip() or "Agent branch promoted"
-        return {
-            "success": True,
-            "action": "git_promote_agent_branch",
-            "message": message,
-            "stdout": stdout,
-            "stderr": stderr,
-            "host_repo_path": host_repo_path,
-            "bare_repo_path": bare_repo_path or bare_repo_name,
-            "agent_branch": agent_branch,
-            "review_branch": resolved_review_branch,
-            "remote_name": remote_name or "agent-dropbox-auto",
-        }
+        return self.issue_git_admin.promote_agent_branch(
+            host_repo_path=host_repo_path,
+            bare_repo_path=bare_repo_path,
+            bare_repo_name=bare_repo_name,
+            agent_branch=agent_branch,
+            review_branch=review_branch,
+            remote_name=remote_name,
+        )
 
     @staticmethod
     def _derive_review_branch(agent_branch: str) -> str:
@@ -4046,138 +3584,24 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
         remote_name: str | None = None,
         notes_ref: str | None = None,
     ) -> dict[str, Any]:
-        resolved_remote_name = (remote_name or "").strip() or "agent-dropbox-auto"
-        resolved_notes_ref = (notes_ref or "").strip() or "refs/notes/agent-pr"
-
-        remote_url_result = _run_subprocess(
-            ["git", "-C", host_repo_path, "remote", "get-url", resolved_remote_name],
-            capture_output=True,
-            text=True,
+        return self.issue_git_admin.git_pr_note_query(
+            host_repo_path=host_repo_path,
+            local_branch=local_branch,
+            remote_name=remote_name,
+            notes_ref=notes_ref,
         )
-        if remote_url_result.returncode != 0:
-            raise RuntimeError(
-                (remote_url_result.stderr or remote_url_result.stdout or "").strip()
-                or f"Failed to resolve remote URL for {resolved_remote_name}"
-            )
-        remote_url = (remote_url_result.stdout or "").strip()
-        local_notes_ref = self._derive_local_pr_notes_ref(remote_url)
-
-        fetch_result = _run_subprocess(
-            [
-                "git",
-                "-C",
-                host_repo_path,
-                "fetch",
-                resolved_remote_name,
-                f"+{resolved_notes_ref}:{local_notes_ref}",
-            ],
-            capture_output=True,
-            text=True,
-        )
-        if fetch_result.returncode != 0:
-            return {
-                "body": None,
-                "has_note": False,
-                "local_branch": local_branch,
-                "host_repo_path": host_repo_path,
-                "notes_ref": resolved_notes_ref,
-                "local_notes_ref": local_notes_ref,
-                "remote_name": resolved_remote_name,
-                "commit_sha": None,
-            }
-
-        rev_parse_result = _run_subprocess(
-            ["git", "-C", host_repo_path, "rev-parse", local_branch],
-            capture_output=True,
-            text=True,
-        )
-        if rev_parse_result.returncode != 0:
-            raise RuntimeError(
-                (rev_parse_result.stderr or rev_parse_result.stdout or "").strip()
-                or f"Failed to resolve branch {local_branch}"
-        )
-        commit_sha = (rev_parse_result.stdout or "").strip()
-
-        def read_note(target_sha: str) -> str | None:
-            note_result = _run_subprocess(
-                ["git", "-C", host_repo_path, "notes", f"--ref={local_notes_ref}", "show", target_sha],
-                capture_output=True,
-                text=True,
-            )
-            if note_result.returncode != 0:
-                return None
-            return (note_result.stdout or "").strip() or None
-
-        body = read_note(commit_sha)
-        if body is None:
-            rev_list_result = _run_subprocess(
-                [
-                    "git",
-                    "-C",
-                    host_repo_path,
-                    "rev-list",
-                    "--first-parent",
-                    "--max-count=25",
-                    local_branch,
-                ],
-                capture_output=True,
-                text=True,
-            )
-            if rev_list_result.returncode == 0:
-                for candidate_sha in (line.strip() for line in (rev_list_result.stdout or "").splitlines()):
-                    if not candidate_sha or candidate_sha == commit_sha:
-                        continue
-                    body = read_note(candidate_sha)
-                    if body is not None:
-                        break
-
-        has_note = body is not None
-
-        return {
-            "body": body,
-            "has_note": has_note,
-            "local_branch": local_branch,
-            "host_repo_path": host_repo_path,
-            "notes_ref": resolved_notes_ref,
-            "local_notes_ref": local_notes_ref,
-            "remote_name": resolved_remote_name,
-            "commit_sha": commit_sha,
-        }
 
     def session_update_metadata(self, *, target: str, metadata: Mapping[str, Any]) -> dict[str, Any]:
-        session_id, manifest = _resolve_session_target(target, self.runtime.sessions.read_all())
-        merged_metadata = _deep_merge_mapping(manifest.metadata, metadata)
-        updated_manifest = manifest.model_copy(update={"metadata": merged_metadata})
-        self.runtime.sessions.put(session_id, updated_manifest)
-        return {
-            "success": True,
-            "action": "session_update_metadata",
-            "message": f"Updated metadata for {session_id}",
-            "session_id": session_id,
-            "vm_name": updated_manifest.vm_id,
-            "directory_path": updated_manifest.directory_path,
-            "metadata": dict(updated_manifest.metadata),
-        }
+        return self.issue_git_admin.session_update_metadata(target=target, metadata=metadata)
 
     def session_context_query(self, *, target: str) -> dict[str, Any]:
-        session_id, manifest = _resolve_session_target(target, self.runtime.sessions.read_all())
-        return {
-            "session_id": session_id,
-            "vm_name": manifest.vm_id,
-            "directory_path": manifest.directory_path,
-            "metadata": dict(manifest.metadata),
-            "created_at": manifest.created_at.isoformat(),
-            "expires_at": manifest.expires_at.isoformat(),
-            "model": manifest.model,
-        }
+        return self.issue_git_admin.session_context_query(target=target)
 
     @staticmethod
     def _derive_local_pr_notes_ref(remote_url: str) -> str:
-        repo_name = Path(remote_url.strip()).name
-        if repo_name.endswith(".git"):
-            repo_name = repo_name[:-4]
-        repo_name = re.sub(r"[^a-z0-9._-]+", "-", repo_name.lower()).strip("-") or "bare-repo"
-        return f"refs/notes/agent-pr-cache/{repo_name}"
+        from .admin_services.issue_git_service import IssueGitAdminService
+
+        return IssueGitAdminService._derive_local_pr_notes_ref(remote_url)
 
     def list_local_issues(
         self,
@@ -4187,7 +3611,7 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
         states: set[str] | None = None,
         exclude_states: set[str] | None = None,
     ) -> list[LocalIssueRecord]:
-        return self.list_issues(
+        return self.issue_git_admin.list_local_issues(
             directory_path=directory_path,
             direct_only=direct_only,
             states=states,
@@ -4282,23 +3706,12 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
         states: set[str] | None = None,
         exclude_states: set[str] | None = None,
     ) -> list[LocalIssueRecord]:
-        normalized_directory_path = self._normalize_directory_path(directory_path)
-        normalized_states = {value.strip() for value in (states or set()) if value.strip()} or None
-        normalized_excluded_states = {
-            value.strip() for value in (exclude_states or set()) if value.strip()
-        } or None
-        issues = sorted(self.local_issue_store.read_all().values(), key=_issue_number_sort_key)
-        filtered: list[LocalIssueRecord] = []
-        for issue in issues:
-            issue_state = (issue.state or "").strip()
-            if normalized_states is not None and issue_state not in normalized_states:
-                continue
-            if normalized_excluded_states is not None and issue_state in normalized_excluded_states:
-                continue
-            filtered.append(issue)
-        if direct_only or directory_path is not None:
-            return [issue for issue in filtered if issue.directory_path == normalized_directory_path]
-        return filtered
+        return self.issue_git_admin.list_issues(
+            directory_path=directory_path,
+            direct_only=direct_only,
+            states=states,
+            exclude_states=exclude_states,
+        )
 
     def _refresh_approval_request(self, request: ApprovalRequest) -> ApprovalRequest:
         session = self.runtime.sessions.get(request.session_id)
@@ -4362,25 +3775,15 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
         tool_name: str | None = None,
         min_age_seconds: int | None = None,
     ) -> list[ApprovalRequest]:
-        requests = [
-            self._refresh_approval_request(request)
-            for request in self.runtime.approvals.read_all().values()
-        ]
-        filtered = [
-            request
-            for request in requests
-            if self._approval_matches_filters(
-                request,
-                statuses=statuses,
-                directory_path=directory_path,
-                direct_only=direct_only,
-                session_id=session_id,
-                vm_id=vm_id,
-                tool_name=tool_name,
-                min_age_seconds=min_age_seconds,
-            )
-        ]
-        return sorted(filtered, key=_approval_sort_key)
+        return self.issue_git_admin.list_approval_requests(
+            statuses=statuses,
+            directory_path=directory_path,
+            direct_only=direct_only,
+            session_id=session_id,
+            vm_id=vm_id,
+            tool_name=tool_name,
+            min_age_seconds=min_age_seconds,
+        )
 
     def approval_queue_health(
         self,
@@ -4393,7 +3796,7 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
         tool_name: str | None = None,
         min_age_seconds: int | None = None,
     ) -> ApprovalQueueHealth:
-        requests = self.list_approval_requests(
+        return self.issue_git_admin.approval_queue_health(
             statuses=statuses,
             directory_path=directory_path,
             direct_only=direct_only,
@@ -4402,27 +3805,9 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
             tool_name=tool_name,
             min_age_seconds=min_age_seconds,
         )
-        health = ApprovalQueueHealth(total=len(requests))
-        pending_ages: list[int] = []
-        for request in requests:
-            if request.status == ApprovalStatus.PENDING:
-                health.pending += 1
-                pending_ages.append(int((_utc_now() - request.created_at).total_seconds()))
-            elif request.status == ApprovalStatus.APPROVED:
-                health.approved += 1
-            elif request.status == ApprovalStatus.DENIED:
-                health.denied += 1
-            elif request.status == ApprovalStatus.EXPIRED:
-                health.expired += 1
-        if pending_ages:
-            health.oldest_pending_age_seconds = max(pending_ages)
-        return health
 
     def get_approval_request(self, request_id: str) -> ApprovalRequest:
-        request = self.runtime.approvals.get(request_id)
-        if request is None:
-            raise ValueError(f"Unknown approval request: {request_id}")
-        return self._refresh_approval_request(request)
+        return self.issue_git_admin.get_approval_request(request_id)
 
     def _approval_audit_context(self, request: ApprovalRequest, *, limit: int = 8) -> list[dict[str, Any]]:
         if not self.config.audit_log_path.exists():
@@ -4451,18 +3836,7 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
         return matches
 
     def get_approval_review(self, request_id: str) -> dict[str, Any]:
-        request = self.get_approval_request(request_id)
-        age_seconds = int((_utc_now() - request.created_at).total_seconds())
-        expires_in_seconds = int((request.expires_at - _utc_now()).total_seconds())
-        request_payload = request.model_dump(mode="json")
-        request_payload["payload"] = _redact_sensitive_payload(request.payload)
-        return {
-            "request": request_payload,
-            "redacted_payload": request_payload["payload"],
-            "audit_context": self._approval_audit_context(request),
-            "age_seconds": age_seconds,
-            "expires_in_seconds": expires_in_seconds,
-        }
+        return self.issue_git_admin.get_approval_review(request_id)
 
     def decide_approval_request(
         self,
@@ -4472,45 +3846,12 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
         approve: bool,
         reason: str,
     ) -> ApprovalRequest:
-        request = self.get_approval_request(request_id)
-        normalized_approver = approver.strip()
-        normalized_reason = reason.strip()
-        if not normalized_approver:
-            raise ValueError("approver is required")
-        if not normalized_reason:
-            raise ValueError("reason is required")
-        if request.status != ApprovalStatus.PENDING:
-            raise ValueError(f"Approval request {request_id} is not pending")
-        decision_status = ApprovalStatus.APPROVED if approve else ApprovalStatus.DENIED
-        decided_at = _utc_now()
-        request.status = decision_status
-        request.approver = normalized_approver
-        request.decision_at = decided_at
-        request.decision_reason = normalized_reason
-        request.decision_history.append(
-            ApprovalDecisionRecord(
-                status=decision_status,
-                approver=normalized_approver,
-                reason=normalized_reason,
-                decided_at=decided_at,
-            )
+        return self.issue_git_admin.decide_approval_request(
+            request_id,
+            approver=approver,
+            approve=approve,
+            reason=reason,
         )
-        self.runtime.approvals.put(request.request_id, request)
-        self.runtime.audit.log_decision(
-            event_type="approval_decision",
-            session_id=request.session_id,
-            vm_id=request.vm_id,
-            decision=request.status.value,
-            reason=normalized_reason,
-            args={
-                "request_id": request.request_id,
-                "tool_name": request.tool_name or request.action_type,
-                "approver": normalized_approver,
-                "payload_digest": request.payload_digest,
-            },
-            result={"status": request.status.value},
-        )
-        return request
 
     def list_actionable_local_issues(
         self,
@@ -4518,18 +3859,7 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
         directory_path: str,
         states: set[str] | None = None,
     ) -> list[LocalIssueRecord]:
-        normalized_directory_path = self._normalize_directory_path(directory_path)
-        issues = self.list_issues(directory_path=normalized_directory_path, direct_only=True)
-        actionable: list[LocalIssueRecord] = []
-        for issue in issues:
-            if self._proxy_target_for_issue(issue) is not None:
-                continue
-            if issue.source_type != "local_manual":
-                continue
-            if states is not None and (issue.state or "New") not in states:
-                continue
-            actionable.append(issue)
-        return actionable
+        return self.issue_git_admin.list_actionable_local_issues(directory_path=directory_path, states=states)
 
     def _resolve_local_issue_key(self, identifier: str) -> str | None:
         normalized = identifier.strip()
@@ -4551,37 +3881,37 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
         )
 
     def list_direct_owned_entity_ids(self, directory_path: str, *, kind: str) -> list[str]:
-        return sorted(self._direct_owned_entity_ids(directory_path, kind=kind))
+        return self.issue_git_admin.list_direct_owned_entity_ids(directory_path, kind=kind)
 
     def list_directory_tree(self):
-        return self.directory_admin.tree("root")
+        return self.operations_admin.list_directory_tree()
 
     def get_directory(self, reference: str):
-        return self.directory_admin.get(self._normalize_directory_path(reference))
+        return self.operations_admin.get_directory(reference)
 
     def create_directory_child(self, parent: str, name: str):
-        return self.directory_admin.create_child(parent=self._normalize_directory_path(parent), name=name)
+        return self.operations_admin.create_directory_child(parent, name)
 
     def read_directory_domain_config(self, directory_path: str, domain: str):
-        return self.directory_admin.read_domain_config(self._normalize_directory_path(directory_path), domain=domain)
+        return self.operations_admin.read_directory_domain_config(directory_path, domain)
 
     def write_directory_domain_config(self, directory_path: str, domain: str, payload: dict[str, object]):
-        return self.directory_admin.write_domain_config(self._normalize_directory_path(directory_path), domain=domain, payload=payload)
+        return self.operations_admin.write_directory_domain_config(directory_path, domain, payload)
 
     def compute_directory_effective_config(self, directory_path: str, domain: str):
-        return self.directory_admin.compute_effective_config(self._normalize_directory_path(directory_path), domain=domain)
+        return self.operations_admin.compute_directory_effective_config(directory_path, domain)
 
     def read_worker_global_config(self, worker_id: str):
-        return self.worker_admin.read_worker_global_config(worker_id)
+        return self.workflow_config_admin.read_worker_global_config(worker_id)
 
     def write_worker_global_config(self, worker_id: str, payload: dict[str, object]):
-        return self.worker_admin.write_worker_global_config(worker_id, payload)
+        return self.workflow_config_admin.write_worker_global_config(worker_id, payload)
 
     def read_workflow_editor_document(self) -> WorkflowEditorDocumentPayload:
-        return self.worker_admin.read_workflow_editor_document()
+        return self.workflow_config_admin.read_workflow_editor_document()
 
     def read_workflow_editor_catalog(self) -> WorkflowEditorCatalogPayload:
-        return self.worker_admin.read_workflow_editor_catalog()
+        return self.workflow_config_admin.read_workflow_editor_catalog()
 
     def validate_workflow_editor_document(
         self,
@@ -4589,7 +3919,7 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
         config: dict[str, object],
         layout: dict[str, object] | None = None,
     ) -> WorkflowEditorValidationPayload:
-        return self.worker_admin.validate_workflow_editor_document(config=config, layout=layout)
+        return self.workflow_config_admin.validate_workflow_editor_document(config=config, layout=layout)
 
     def save_workflow_editor_document(
         self,
@@ -4597,25 +3927,25 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
         config: dict[str, object],
         layout: dict[str, object] | None = None,
     ) -> WorkflowEditorSavePayload:
-        return self.worker_admin.save_workflow_editor_document(config=config, layout=layout)
+        return self.workflow_config_admin.save_workflow_editor_document(config=config, layout=layout)
 
     def read_workflow_run_snapshot(self) -> WorkflowRunSnapshotPayload:
-        return self.worker_admin.read_workflow_run_snapshot()
+        return self.workflow_config_admin.read_workflow_run_snapshot()
 
     def workflow_event_journal(self) -> WorkflowEventJournal:
-        return self.worker_admin.workflow_event_journal()
+        return self.workflow_config_admin.workflow_event_journal()
 
     def upsert_trigger_config(self, trigger_id: str, payload: dict[str, object]) -> TriggerConfigMutationPayload:
-        return self.worker_admin.upsert_trigger_config(trigger_id, payload)
+        return self.workflow_config_admin.upsert_trigger_config(trigger_id, payload)
 
     def delete_trigger_config(self, trigger_id: str) -> TriggerConfigMutationPayload:
-        return self.worker_admin.delete_trigger_config(trigger_id)
+        return self.workflow_config_admin.delete_trigger_config(trigger_id)
 
     def upsert_effect_config(self, effect_id: str, payload: dict[str, object]) -> EffectConfigMutationPayload:
-        return self.worker_admin.upsert_effect_config(effect_id, payload)
+        return self.workflow_config_admin.upsert_effect_config(effect_id, payload)
 
     def delete_effect_config(self, effect_id: str) -> EffectConfigMutationPayload:
-        return self.worker_admin.delete_effect_config(effect_id)
+        return self.workflow_config_admin.delete_effect_config(effect_id)
 
     def _worker_global_config_path(self, worker_id: str) -> Path | None:
         relative = _WORKER_GLOBAL_CONFIG_PATHS.get(worker_id)
@@ -5331,7 +4661,7 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
         directory_path: str = "root",
         metadata: dict[str, Any] | None = None,
     ) -> LocalIssueRecord:
-        return self.create_issue(
+        return self.issue_git_admin.create_local_issue(
             title=title,
             body=body,
             repo_source=repo_source,
@@ -5349,22 +4679,13 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
         state: str,
         repo_source: str | None = None,
     ) -> LocalIssueRecord:
-        issue = self._resolve_local_issue_record(issue_identifier)
-        if issue.source_type != "local_manual":
-            raise ValueError("Only local manual issues can be edited from the admin GUI.")
-        normalized_title = title.strip()
-        if not normalized_title:
-            raise ValueError("title is required")
-        normalized_state = _normalize_local_issue_state(state, allow_empty=False)
-        now = _utc_now()
-        issue.title = normalized_title
-        issue.body = body.strip()
-        issue.state = normalized_state
-        issue.repo_source = repo_source.strip() if repo_source else None
-        issue.updated_at = now
-        self.local_issue_store.put(issue.issue_id, issue)
-        self._write_local_issue_yaml(issue, updated_at=now)
-        return issue
+        return self.issue_git_admin.update_local_issue(
+            issue_identifier,
+            title=title,
+            body=body,
+            state=state,
+            repo_source=repo_source,
+        )
 
     def _write_local_issue_yaml(self, issue: LocalIssueRecord, *, updated_at: datetime | None = None) -> None:
         yaml_path = Path(issue.yaml_path)
@@ -5411,147 +4732,14 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
         directory_path: str = "root",
         metadata: dict[str, Any] | None = None,
     ) -> LocalIssueRecord:
-        now = _utc_now()
-        normalized_directory_path = self._normalize_directory_path(directory_path)
-        merged_metadata: dict[str, Any] = dict(metadata or {})
-        source_value = "local_gui"
-        source_type = "local_manual"
-        remote_reference: RemoteIssueReference | None = None
-        state_value: str | None = "New"
-        url_value: str | None = None
-        comments_value: list[dict[str, str]] = []
-        with self._local_issue_creation_lock():
-            if yaml_path:
-                source_path = Path(yaml_path)
-                source_text = source_path.read_text(encoding="utf-8")
-                try:
-                    yaml_payload = json.loads(json.dumps(yaml.safe_load(source_text) or {}))
-                except Exception:
-                    yaml_payload = {}
-                issue_number = _extract_issue_number_from_payload(yaml_payload) or _read_issue_number_from_yaml(source_path)
-                target_yaml_path = self.local_issue_yaml_dir / f"{issue_number}.yaml"
-                target_yaml_path.write_text(source_text, encoding="utf-8")
-                yaml_text = target_yaml_path.read_text(encoding="utf-8")
-                try:
-                    yaml_payload = json.loads(json.dumps(yaml.safe_load(yaml_text) or {}))
-                except Exception:
-                    yaml_payload = {}
-                raw_source = yaml_payload.get("source")
-                if isinstance(raw_source, str) and raw_source.strip():
-                    source_value = raw_source.strip()
-                elif isinstance(raw_source, dict):
-                    source_value = "proxy_azure_devops"
-                    source_type = "remote_proxy"
-                    merged_metadata["remote"] = {
-                        "provider": "azure_devops",
-                        "organization": str(raw_source.get("organization") or "").strip(),
-                        "project": str(raw_source.get("project") or "").strip(),
-                        "work_item_url": str(raw_source.get("work_item_url") or "").strip(),
-                        "issue_id": issue_number,
-                    }
-                    remote_reference = RemoteIssueReference(
-                        provider="azure_devops",
-                        organization=str(raw_source.get("organization") or "").strip() or None,
-                        project=str(raw_source.get("project") or "").strip() or None,
-                        work_item_id=issue_number,
-                        work_item_url=str(raw_source.get("work_item_url") or "").strip() or None,
-                        last_synced_at=now,
-                    )
-                if "url" in yaml_payload or "state" in yaml_payload or "comments" in yaml_payload:
-                    if source_value == "local_gui":
-                        source_value = "proxy_azure_devops"
-                    source_type = "remote_proxy"
-                    merged_metadata["proxy_cache"] = {
-                        "url": str(yaml_payload.get("url") or "").strip(),
-                        "state": str(yaml_payload.get("state") or "").strip(),
-                        "comments": list(yaml_payload.get("comments") or []),
-                        "updated_at": str(yaml_payload.get("updated_date") or "").strip(),
-                    }
-                    merged_metadata.setdefault("remote", {"provider": "azure_devops", "issue_id": issue_number})
-                state_value = str(yaml_payload.get("state") or "").strip() or None
-                url_value = str(yaml_payload.get("url") or "").strip() or None
-                comments_value = [
-                    dict(comment)
-                    for comment in list(yaml_payload.get("comments") or [])
-                    if isinstance(comment, dict)
-                ]
-                raw_steps = yaml_payload.get("steps")
-                if isinstance(raw_steps, list):
-                    normalized_steps = [str(step).strip() for step in raw_steps if str(step).strip()]
-                    if normalized_steps:
-                        merged_metadata["steps"] = normalized_steps
-                raw_plan_summary = yaml_payload.get("plan_summary")
-                if isinstance(raw_plan_summary, str):
-                    normalized_plan_summary = raw_plan_summary.strip()
-                    if normalized_plan_summary:
-                        merged_metadata["plan_summary"] = normalized_plan_summary
-                if not title:
-                    parsed_title = yaml_payload.get("title")
-                    normalized_title = str(parsed_title or "").strip() if isinstance(parsed_title, str) else ""
-                    if normalized_title:
-                        title = normalized_title
-                    else:
-                        title_match = re.search(r"(?m)^\s*title\s*:\s*[\"']?(.*?)[\"']?\s*$", yaml_text)
-                        title = title_match.group(1).strip() if title_match else ""
-                    if not title:
-                        title = f"Local issue {issue_number}"
-                if not body:
-                    parsed_body = yaml_payload.get("body")
-                    normalized_body = str(parsed_body or "").strip() if isinstance(parsed_body, str) else ""
-                    if normalized_body:
-                        body = normalized_body
-                    else:
-                        body_match = re.search(r"(?m)^\s*body\s*:\s*[\"']?(.*?)[\"']?\s*$", yaml_text)
-                        body = body_match.group(1).strip() if body_match else str(yaml_payload.get("description") or "").strip()
-            else:
-                if not title.strip():
-                    raise ValueError("title is required when yaml_path is not provided")
-                issue_number = self._next_local_issue_number()
-                target_yaml_path = self.local_issue_yaml_dir / f"{issue_number}.yaml"
-                yaml_text = (
-                    f"issue_number: {issue_number}\n"
-                    f"title: {json.dumps(title.strip())}\n"
-                    f"body: {json.dumps(body.strip())}\n"
-                    f"state: {json.dumps('New')}\n"
-                    f"source: local_gui\n"
-                    f"created_at: {json.dumps(now.isoformat())}\n"
-                )
-                target_yaml_path.write_text(yaml_text, encoding="utf-8")
-            if remote_reference is not None and remote_reference.provider == "azure_devops":
-                issue_id = _scoped_issue_id(
-                    issue_number,
-                    directory_path=normalized_directory_path,
-                    provider="azure_devops",
-                    organization=remote_reference.organization,
-                    project=remote_reference.project,
-                )
-            else:
-                issue_id = self._canonical_local_issue_id(issue_number, normalized_directory_path)
-            existing_record = self.local_issue_store.get(issue_id)
-            record = LocalIssueRecord(
-                issue_id=issue_id,
-                issue_number=issue_number,
-                title=title.strip() or f"Local issue {issue_number}",
-                body=body.strip(),
-                yaml_path=str(target_yaml_path),
-                directory_path=normalized_directory_path,
-                repo_source=repo_source.strip() if repo_source else None,
-                source_type=source_type,
-                remote_reference=remote_reference,
-                state=(
-                    state_value
-                    if source_type == "remote_proxy"
-                    else _normalize_local_issue_state(state_value, allow_empty=False)
-                ),
-                url=url_value,
-                comments=comments_value,
-                source=source_value,
-                metadata=merged_metadata,
-                created_at=existing_record.created_at if existing_record is not None else now,
-                updated_at=now,
-            )
-            self.local_issue_store.put(record.issue_id, record)
-            return record
+        return self.issue_git_admin.create_issue(
+            title=title,
+            body=body,
+            repo_source=repo_source,
+            yaml_path=yaml_path,
+            directory_path=directory_path,
+            metadata=metadata,
+        )
 
     def _refresh_proxy_cache_from_remote(
         self,
@@ -5598,31 +4786,11 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
         include_remote_comments: bool = True,
         sync_proxy_cache: bool = True,
     ) -> dict[str, object]:
-        issue = self._resolve_local_issue_record(issue_id)
-        base_payload = issue.model_dump(mode="json")
-        proxy_target = self._proxy_target_for_issue(issue)
-        if proxy_target is None:
-            return {
-                **base_payload,
-                "source_type": "local",
-            }
-        provider, remote_issue_id = proxy_target
-        remote_payload = self.issue_service.read_remote_issue(
-            provider=provider,
-            remote_issue_id=remote_issue_id,
-            directory_path=issue.directory_path,
-            include_comments=include_remote_comments,
+        return self.issue_git_admin.get_issue(
+            issue_id,
+            include_remote_comments=include_remote_comments,
+            sync_proxy_cache=sync_proxy_cache,
         )
-        if sync_proxy_cache:
-            issue = self._refresh_proxy_cache_from_remote(issue, remote_payload)
-            base_payload = issue.model_dump(mode="json")
-        return {
-            **base_payload,
-            "source_type": "proxy",
-            "provider": provider,
-            "remote_issue_id": remote_issue_id,
-            **remote_payload,
-        }
 
     def read_issue(
         self,
@@ -5631,7 +4799,7 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
         include_remote_comments: bool = True,
         sync_proxy_cache: bool = True,
     ) -> dict[str, object]:
-        return self.get_issue(
+        return self.issue_git_admin.read_issue(
             issue_number,
             include_remote_comments=include_remote_comments,
             sync_proxy_cache=sync_proxy_cache,
@@ -5644,37 +4812,7 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
         *,
         sync_proxy_cache: bool = True,
     ) -> dict[str, object]:
-        normalized_comment = comment.strip()
-        if not normalized_comment:
-            raise ValueError("comment must be non-empty")
-        issue = self._resolve_local_issue_record(issue_id)
-        proxy_target = self._proxy_target_for_issue(issue)
-        if proxy_target is None:
-            issue.metadata = dict(issue.metadata)
-            comments = list(issue.comments or issue.metadata.get("comments") or [])
-            comments.append({"text": normalized_comment, "created_at": _utc_now().isoformat()})
-            issue.metadata["comments"] = comments
-            issue.comments = comments
-            issue.updated_at = _utc_now()
-            self.local_issue_store.put(issue.issue_id, issue)
-            return {"issue_number": issue.issue_number, "source_type": "local", "comment_added": True}
-
-        provider, remote_issue_id = proxy_target
-        result = self.issue_service.post_remote_comment(
-            provider=provider,
-            remote_issue_id=remote_issue_id,
-            directory_path=issue.directory_path,
-            comment=normalized_comment,
-        )
-        if sync_proxy_cache:
-            remote_payload = self.issue_service.read_remote_issue(
-                provider=provider,
-                remote_issue_id=remote_issue_id,
-                directory_path=issue.directory_path,
-                include_comments=True,
-            )
-            self._refresh_proxy_cache_from_remote(issue, remote_payload)
-        return {"issue_number": issue.issue_number, "source_type": "proxy", **result}
+        return self.issue_git_admin.add_issue_comment(issue_id, comment, sync_proxy_cache=sync_proxy_cache)
 
     def post_issue_comment(
         self,
@@ -5683,7 +4821,11 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
         *,
         sync_proxy_cache: bool = True,
     ) -> dict[str, object]:
-        return self.add_issue_comment(issue_number, comment, sync_proxy_cache=sync_proxy_cache)
+        return self.issue_git_admin.post_issue_comment(
+            issue_number,
+            comment,
+            sync_proxy_cache=sync_proxy_cache,
+        )
 
     def set_issue_plan(
         self,
@@ -5691,29 +4833,7 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
         steps: list[str],
         summary: str | None = None,
     ) -> dict[str, object]:
-        normalized_steps = [str(step).strip() for step in steps if str(step).strip()]
-        if not normalized_steps:
-            raise ValueError("steps must contain at least one non-empty item")
-        normalized_summary = str(summary or "").strip() or None
-
-        issue = self._resolve_local_issue_record(issue_id)
-        issue.metadata = dict(issue.metadata)
-        issue.metadata["steps"] = normalized_steps
-        if normalized_summary is not None:
-            issue.metadata["plan_summary"] = normalized_summary
-        else:
-            issue.metadata.pop("plan_summary", None)
-        issue.updated_at = _utc_now()
-        self.local_issue_store.put(issue.issue_id, issue)
-        self._write_local_issue_yaml(issue, updated_at=issue.updated_at)
-        return {
-            "issue_number": issue.issue_number,
-            "source_type": "local",
-            "updated": True,
-            "steps": normalized_steps,
-            "step_count": len(normalized_steps),
-            "summary": normalized_summary,
-        }
+        return self.issue_git_admin.set_issue_plan(issue_id, steps, summary=summary)
 
     def set_issue_state(
         self,
@@ -5722,12 +4842,7 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
         *,
         sync_proxy_cache: bool = True,
     ) -> dict[str, object]:
-        return self.update_issue(
-            issue_id,
-            state=state,
-            fields=None,
-            sync_proxy_cache=sync_proxy_cache,
-        )
+        return self.issue_git_admin.set_issue_state(issue_id, state, sync_proxy_cache=sync_proxy_cache)
 
     def update_issue(
         self,
@@ -5737,69 +4852,19 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
         fields: dict[str, object] | None = None,
         sync_proxy_cache: bool = True,
     ) -> dict[str, object]:
-        issue = self._resolve_local_issue_record(issue_id)
-        proxy_target = self._proxy_target_for_issue(issue)
-        if proxy_target is None:
-            issue.metadata = dict(issue.metadata)
-            if state is not None:
-                normalized_state = _normalize_local_issue_state(state, allow_empty=False)
-                issue.metadata["state"] = normalized_state
-                issue.state = normalized_state
-            if fields:
-                local_fields = dict(issue.metadata.get("fields") or {})
-                local_fields.update(fields)
-                issue.metadata["fields"] = local_fields
-            issue.sync_derived_fields()
-            issue.updated_at = _utc_now()
-            self.local_issue_store.put(issue.issue_id, issue)
-            self._write_local_issue_yaml(issue, updated_at=issue.updated_at)
-            return {"issue_number": issue.issue_number, "source_type": "local", "updated": True}
-
-        provider, remote_issue_id = proxy_target
-        result = self.issue_service.update_remote_issue(
-            provider=provider,
-            remote_issue_id=remote_issue_id,
-            directory_path=issue.directory_path,
+        return self.issue_git_admin.update_issue(
+            issue_id,
             state=state,
             fields=fields,
+            sync_proxy_cache=sync_proxy_cache,
         )
-        if sync_proxy_cache:
-            remote_payload = self.issue_service.read_remote_issue(
-                provider=provider,
-                remote_issue_id=remote_issue_id,
-                directory_path=issue.directory_path,
-                include_comments=True,
-            )
-            self._refresh_proxy_cache_from_remote(issue, remote_payload)
-        return {"issue_number": issue.issue_number, "source_type": "proxy", **result}
 
     def claim_next_issue(
         self,
         *,
         session_id: str,
     ) -> LocalIssueRecord | None:
-        session = self.runtime.sessions.get(session_id)
-        if session is None:
-            raise ValueError(f"Unknown session: {session_id}")
-        candidates = sorted(
-            self.list_actionable_local_issues(directory_path=session.directory_path, states={"Committed"}),
-            key=_issue_priority_sort_key,
-        )
-        if not candidates:
-            return None
-        issue = candidates[0]
-        issue.metadata = dict(issue.metadata)
-        local_fields = _local_issue_fields(issue)
-        local_fields["claimed_by_session_id"] = session_id
-        if session.vm_id:
-            local_fields["claimed_by_vm_id"] = session.vm_id
-        local_fields["claimed_at"] = _utc_now().isoformat()
-        issue.metadata["fields"] = local_fields
-        issue.state = "In Progress"
-        issue.metadata["state"] = issue.state
-        issue.updated_at = _utc_now()
-        self.local_issue_store.put(issue.issue_id, issue)
-        return issue
+        return self.issue_git_admin.claim_next_issue(session_id=session_id)
 
     def complete_issue(
         self,
@@ -5808,30 +4873,7 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
         issue_id: str,
         summary: str,
     ) -> LocalIssueRecord:
-        session = self.runtime.sessions.get(session_id)
-        if session is None:
-            raise ValueError(f"Unknown session: {session_id}")
-        normalized_summary = summary.strip()
-        if not normalized_summary:
-            raise ValueError("summary must be non-empty")
-        issue = self._resolve_local_issue_record(issue_id)
-        if self._proxy_target_for_issue(issue) is not None:
-            raise ValueError("Only local issues can be completed through the issue orchestrator.")
-        if issue.state != "In Progress":
-            raise ValueError(f"Issue {issue.issue_number} must be In Progress before completion.")
-        issue.metadata = dict(issue.metadata)
-        local_fields = _local_issue_fields(issue)
-        local_fields["completed_summary"] = normalized_summary
-        local_fields["completed_by_session_id"] = session_id
-        if session.vm_id:
-            local_fields["completed_by_vm_id"] = session.vm_id
-        local_fields["completed_at"] = _utc_now().isoformat()
-        issue.metadata["fields"] = local_fields
-        issue.state = "Completed"
-        issue.metadata["state"] = issue.state
-        issue.updated_at = _utc_now()
-        self.local_issue_store.put(issue.issue_id, issue)
-        return issue
+        return self.issue_git_admin.complete_issue(session_id=session_id, issue_id=issue_id, summary=summary)
 
     def create_issue_vm(
         self,
@@ -5858,126 +4900,28 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
         start_agent: bool = True,
         directory_path: str = "root",
     ) -> VmActionResult:
-        issue_input = issue
-        issue_number = _resolve_issue_number(issue_input)
-        local_issue: LocalIssueRecord | None = None
-        candidate_issue_path = Path(issue_input)
-        if candidate_issue_path.is_file():
-            local_issue = self._resolve_local_issue_record(issue_input)
-            issue_number = local_issue.issue_number
-            issue_input = local_issue.yaml_path
-        else:
-            try:
-                local_issue = self._resolve_local_issue_record(issue_input)
-                issue_number = local_issue.issue_number
-                issue_input = local_issue.yaml_path
-            except ValueError as exc:
-                if not str(exc).startswith("Unknown local issue identifier: "):
-                    return VmActionResult(
-                        success=False,
-                        vm_name=f"vm-{issue_number}",
-                        action="create_issue_vm",
-                        message=str(exc),
-                    )
-        resolved_session_id = session_id or _default_issue_session_id(issue_number)
-        resolved_vm_name = f"vm-{issue_number}"
-        normalized_directory_path = self._normalize_directory_path(
-            local_issue.directory_path if local_issue is not None and directory_path == "root" else directory_path
-        )
-        policy = self.runtime.policy_config.resolve_for_directory(normalized_directory_path)
-        if self.runtime.sessions.get(resolved_session_id) is not None:
-            return VmActionResult(
-                success=False,
-                vm_name=resolved_vm_name,
-                action="create_issue_vm",
-                message=f"Session already exists: {resolved_session_id}",
-            )
-        if mssql and not os.environ.get("MSSQL_SA_PASSWORD", "").strip():
-            return VmActionResult(
-                success=False,
-                vm_name=resolved_vm_name,
-                action="create_issue_vm",
-                message="MSSQL_SA_PASSWORD must be set when --mssql is used.",
-            )
-
-        manifest = _build_issue_session_manifest(
-            policy=policy,
-            session_id=resolved_session_id,
-            vm_id=resolved_vm_name,
-            issue_number=issue_number,
-            directory_path=normalized_directory_path,
+        return self.vm_agent_admin.create_issue_vm(
+            issue=issue,
+            session_id=session_id,
+            model=model,
+            repo_source=repo_source,
+            vm_user=vm_user,
             ttl_hours=ttl_hours,
-            discord_channels=discord_channels or [],
-            email_mailboxes=email_mailboxes or [],
-            email_folders=email_folders or [],
-        )
-        normalized_model = (model or "").strip() or None
-        if normalized_model is not None:
-            manifest.model = normalized_model
-        else:
-            try:
-                manifest.model = self._resolve_agent_model_for_session(manifest)
-            except ValueError:
-                manifest.model = None
-        self.runtime.sessions.put(resolved_session_id, manifest)
-
-        def _issue_vm_failure(message: str) -> VmActionResult:
-            try:
-                preserved_vm = _dominfo_field(resolved_vm_name, "State") is not None
-            except RuntimeError:
-                preserved_vm = False
-            if not preserved_vm:
-                self.runtime.sessions.delete(resolved_session_id)
-            detail = message
-            if preserved_vm:
-                detail = (
-                    f"{detail}\n"
-                    f"VM {resolved_vm_name} and session {resolved_session_id} were preserved for inspection."
-                )
-            return VmActionResult(
-                success=False,
-                vm_name=resolved_vm_name,
-                action="create_issue_vm",
-                message=detail,
-            )
-
-        try:
-            setup_script = Path(__file__).resolve().parents[2] / "scripts" / "setup_issue_vm.sh"
-            root_dir = Path(__file__).resolve().parents[2]
-            vm_defaults = self._resolve_vm_defaults(normalized_directory_path)
-            issue_setup = self._resolve_issue_setup(normalized_directory_path, root_dir=root_dir)
-            cmd, run_env = self._build_setup_issue_vm_invocation(
-                setup_script=setup_script,
-                issue=issue_input,
-                session_id=resolved_session_id,
-                vm_user=vm_user,
-                start_agent=start_agent,
-                python=python,
-                dotnet=dotnet,
-                nuget=nuget,
-                mssql=mssql,
-                mssql_init_root=mssql_init_root,
-                playwright=playwright,
-                codex_skills=codex_skills,
-                frontend_deps=frontend_deps,
-                frontend_host_checkout=frontend_host_checkout,
-                frontend_install_roots=frontend_install_roots,
-                repo_source=repo_source,
-                vm_defaults=vm_defaults,
-                issue_setup=issue_setup,
-            )
-            completed = _run_subprocess(cmd, capture_output=True, text=True, env=run_env)
-        except Exception as exc:
-            return _issue_vm_failure(str(exc) or f"Failed to create VM {resolved_vm_name}")
-
-        message = (completed.stdout or completed.stderr or "").strip()
-        if completed.returncode != 0:
-            return _issue_vm_failure(message or f"setup_issue_vm.sh exited with code {completed.returncode}")
-        return VmActionResult(
-            success=True,
-            vm_name=resolved_vm_name,
-            action="create_issue_vm",
-            message=message or f"Created issue VM {resolved_vm_name}",
+            discord_channels=discord_channels,
+            email_mailboxes=email_mailboxes,
+            email_folders=email_folders,
+            python=python,
+            dotnet=dotnet,
+            nuget=nuget,
+            mssql=mssql,
+            mssql_init_root=mssql_init_root,
+            playwright=playwright,
+            codex_skills=codex_skills,
+            frontend_deps=frontend_deps,
+            frontend_host_checkout=frontend_host_checkout,
+            frontend_install_roots=frontend_install_roots,
+            start_agent=start_agent,
+            directory_path=directory_path,
         )
 
     def create_issue_vm_from_local_issue(
@@ -5996,27 +4940,10 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
         playwright: bool = False,
         codex_skills: list[str] | None = None,
     ) -> VmActionResult:
-        try:
-            issue_key = self._resolve_local_issue_key(issue_identifier)
-        except ValueError as exc:
-            return VmActionResult(
-                success=False,
-                vm_name=f"vm-{issue_identifier}",
-                action="create_issue_vm",
-                message=str(exc),
-            )
-        issue = self.local_issue_store.get(issue_key) if issue_key is not None else None
-        if issue is None:
-            return VmActionResult(
-                success=False,
-                vm_name=f"vm-{issue_identifier}",
-                action="create_issue_vm",
-                message=f"Unknown local issue: {issue_identifier}",
-            )
-        return self.create_issue_vm(
-            issue=issue.yaml_path,
+        return self.vm_agent_admin.create_issue_vm_from_local_issue(
+            issue_identifier,
             model=model,
-            repo_source=repo_source or issue.repo_source,
+            repo_source=repo_source,
             vm_user=vm_user,
             start_agent=start_agent,
             python=python,
@@ -6026,7 +4953,6 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
             mssql_init_root=mssql_init_root,
             playwright=playwright,
             codex_skills=codex_skills,
-            directory_path=issue.directory_path,
         )
 
     def create_vm(
@@ -6056,419 +4982,37 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
         frontend_install_roots: list[str] | None = None,
         directory_path: str = "root",
     ) -> VmActionResult:
-        resolved_vm_name = vm_name.strip()
-        if not resolved_vm_name:
-            return VmActionResult(success=False, vm_name="", action="create_vm", message="VM name is required.")
-        if _dominfo_field(resolved_vm_name, "State") is not None:
-            return VmActionResult(
-                success=False,
-                vm_name=resolved_vm_name,
-                action="create_vm",
-                message=f"VM already exists: {resolved_vm_name}",
-            )
-
-        normalized_directory_path = self._normalize_directory_path(directory_path)
-        policy = self.runtime.policy_config.resolve_for_directory(normalized_directory_path)
-        resolved_session_id = session_id.strip() if session_id and session_id.strip() else _default_vm_session_id(resolved_vm_name)
-        if self.runtime.sessions.get(resolved_session_id) is not None:
-            return VmActionResult(
-                success=False,
-                vm_name=resolved_vm_name,
-                action="create_vm",
-                message=f"Session already exists: {resolved_session_id}",
-            )
-        if python and not (repo_source or "").strip():
-            return VmActionResult(
-                success=False,
-                vm_name=resolved_vm_name,
-                action="create_vm",
-                message="repo_source is required when Python bootstrap is enabled.",
-            )
-        if frontend_deps and not (repo_source or "").strip():
-            return VmActionResult(
-                success=False,
-                vm_name=resolved_vm_name,
-                action="create_vm",
-                message="repo_source is required when frontend dependency bootstrap is enabled.",
-            )
-        normalized_frontend_install_roots = [item.strip() for item in (frontend_install_roots or []) if item and item.strip()]
-        normalized_codex_skills = [item.strip() for item in (codex_skills or []) if item and item.strip()]
-        if frontend_deps and not normalized_frontend_install_roots:
-            return VmActionResult(
-                success=False,
-                vm_name=resolved_vm_name,
-                action="create_vm",
-                message="frontend_install_roots is required when frontend dependency bootstrap is enabled.",
-            )
-        if mssql and not os.environ.get("MSSQL_SA_PASSWORD", "").strip():
-            return VmActionResult(
-                success=False,
-                vm_name=resolved_vm_name,
-                action="create_vm",
-                message="MSSQL_SA_PASSWORD must be set when MSSQL bootstrap is enabled.",
-            )
-
-        manifest = _build_issue_session_manifest(
-            policy=policy,
-            session_id=resolved_session_id,
-            vm_id=resolved_vm_name,
-            issue_number=None,
-            directory_path=normalized_directory_path,
+        return self.vm_agent_admin.create_vm(
+            vm_name=vm_name,
+            session_id=session_id,
+            labels=labels,
+            model=model,
+            repo_source=repo_source,
+            vm_user=vm_user,
             ttl_hours=ttl_hours,
-            extra_allowed_tools=allowed_tools,
+            allowed_tools=allowed_tools,
             allowed_script_names=allowed_script_names,
-            discord_channels=discord_channels or [],
-            email_mailboxes=email_mailboxes or [],
-            email_folders=email_folders or [],
-        )
-        normalized_labels = _normalize_session_labels(labels or {})
-        if normalized_labels:
-            manifest.metadata = dict(manifest.metadata)
-            manifest.metadata["labels"] = normalized_labels
-        normalized_model = (model or "").strip() or None
-        if normalized_model is not None:
-            manifest.model = normalized_model
-        else:
-            try:
-                manifest.model = self._resolve_agent_model_for_session(manifest)
-            except ValueError:
-                manifest.model = None
-        self.runtime.sessions.put(resolved_session_id, manifest)
-
-        root_dir = Path(__file__).resolve().parents[2]
-        vm_defaults = self._resolve_vm_defaults(normalized_directory_path)
-        issue_setup = self._resolve_issue_setup(normalized_directory_path, root_dir=root_dir)
-        setup_script = root_dir / "scripts" / "setup_vm.sh"
-        python_script = root_dir / "scripts" / "bootstrap_python_vm.sh"
-        frontend_deps_script = root_dir / "scripts" / "bootstrap_frontend_deps_vm.sh"
-        run_env = os.environ.copy()
-        run_env.update(vm_defaults.guest_environment())
-        if manifest.model:
-            run_env["AGENT_MODEL"] = manifest.model
-
-        try:
-            resolved_repo_path: str | None = None
-            resolved_repo_name: str | None = None
-            guest_repo_root: str | None = None
-            guest_remote_url: str | None = None
-            resolved_frontend_host_checkout: str | None = None
-            vm_ip: str | None = None
-            helper = self._privileged_helper if self.use_privileged_helper else None
-            if helper is not None and not helper.is_running():
-                helper.start()
-            setup_args = []
-            if dotnet:
-                setup_args.append("--dotnet")
-            if nuget:
-                setup_args.append("--nuget")
-            if mssql:
-                setup_args.append("--mssql")
-                if mssql_init_root is not None:
-                    setup_args.extend(["--mssql-init-root", mssql_init_root])
-            if playwright:
-                setup_args.append("--playwright")
-            for skill_name in normalized_codex_skills:
-                setup_args.extend(["--codex-skill", skill_name])
-            setup_args.extend([resolved_vm_name, resolved_session_id, vm_user])
-            if helper is not None:
-                response = helper.call(
-                    "run_script",
-                    script_path=str(setup_script),
-                    args=setup_args,
-                    env=run_env,
-                )
-                message = _combined_process_message(
-                    str(response.get("stdout") or ""),
-                    str(response.get("stderr") or ""),
-                )
-            else:
-                allowed_env_keys = (
-                    "SSH_PUBLIC_KEY_FILE",
-                    "SSH_PRIVATE_KEY_PATH",
-                    "GATEWAY_URL",
-                    "LLM_BASE_URL",
-                    "AGENT_MODEL",
-                    "NUGET_RELAY_BASE_URL",
-                    "AGENT_SANDBOX_RUNTIME_DIR",
-                    "VM_STORAGE_DIR",
-                    "SHARED_NUGET_CACHE_DIR",
-                    "SHARED_NUGET_CACHE_TAG",
-                    "SHARED_NUGET_CACHE_MODE",
-                    "RAM_MB",
-                    "VCPUS",
-                    "DISK_SIZE_GB",
-                    "VM_WAIT_IP_TIMEOUT_SECONDS",
-                    "VM_WAIT_SSH_TIMEOUT_SECONDS",
-                    "MSSQL_SA_PASSWORD",
-                )
-                launch_step = _sudo_env_command(
-                    [str(setup_script), *setup_args],
-                    run_env,
-                    allowed_env_keys,
-                )
-                completed = _run_subprocess(launch_step, capture_output=True, text=True, env=run_env)
-                message = _combined_process_message(completed.stdout, completed.stderr)
-                if completed.returncode != 0 and _can_prompt_for_privileges():
-                    launch_step = _pkexec_env_command(
-                        [str(setup_script), *setup_args],
-                        run_env,
-                        allowed_env_keys,
-                    )
-                    completed = _run_subprocess(launch_step, capture_output=True, text=True, env=run_env)
-                    message = _combined_process_message(completed.stdout, completed.stderr)
-                if completed.returncode != 0:
-                    raise RuntimeError(message or f"{setup_script.name} exited with code {completed.returncode}")
-            messages: list[str] = []
-            if message:
-                messages.append(message)
-            if helper is not None:
-                vm_ip = str(helper.call("virsh_domifaddr", vm_name=resolved_vm_name).get("ip") or "")
-            else:
-                vm_ip = _resolve_vm_ip(resolved_vm_name)
-            if vm_ip:
-                run_env["AGENT_SANDBOX_VM_IP"] = vm_ip
-
-            if (repo_source or "").strip():
-                resolved_repo_path, resolved_repo_name = self._resolve_repo_source(repo_source.strip())
-                resolved_frontend_host_checkout = frontend_host_checkout.strip() if frontend_host_checkout and frontend_host_checkout.strip() else resolved_repo_path
-                self._sync_repo_into_bare_remote(
-                    resolved_repo_name,
-                    resolved_repo_path,
-                    issue_setup=issue_setup,
-                    repo_source=repo_source.strip(),
-                )
-                guest_repo_root = self._clone_repo_into_vm(
-                    vm_name=resolved_vm_name,
-                    vm_user=vm_user,
-                    session_id=resolved_session_id,
-                    repo_name=resolved_repo_name,
-                    issue_setup=issue_setup,
-                    vm_ip=vm_ip,
-                )
-                guest_remote_url = f"ssh://{issue_setup.git_ssh_alias}{issue_setup.git_root}/{resolved_repo_name}.git"
-            if frontend_deps:
-                if not resolved_frontend_host_checkout:
-                    raise RuntimeError("Frontend dependency bootstrap requires a host checkout root.")
-                completed = _run_subprocess(
-                    [
-                        str(frontend_deps_script),
-                        "--vm-user",
-                        vm_user,
-                        resolved_vm_name,
-                        resolved_frontend_host_checkout,
-                        *normalized_frontend_install_roots,
-                    ],
-                    capture_output=True,
-                    text=True,
-                    env=run_env,
-                )
-                message = _combined_process_message(completed.stdout, completed.stderr)
-                if completed.returncode != 0:
-                    raise RuntimeError(message or f"{frontend_deps_script.name} exited with code {completed.returncode}")
-                if message:
-                    messages.append(message)
-            if python:
-                if not resolved_repo_path or not guest_repo_root:
-                    raise RuntimeError("Python bootstrap requires a resolved guest repo checkout.")
-                python_run_env = run_env | {
-                    "HOST_PYTHON_BIN": _resolve_host_python_with_pip(),
-                }
-                completed = _run_subprocess(
-                    [str(python_script), "--vm-user", vm_user, resolved_vm_name, resolved_repo_path, guest_repo_root],
-                    capture_output=True,
-                    text=True,
-                    env=python_run_env,
-                )
-                message = _combined_process_message(completed.stdout, completed.stderr)
-                if completed.returncode != 0:
-                    raise RuntimeError(message or f"{python_script.name} exited with code {completed.returncode}")
-                if message:
-                    messages.append(message)
-        except Exception as exc:
-            preserved_vm = _dominfo_field(resolved_vm_name, "State") is not None
-            if not preserved_vm:
-                self.runtime.sessions.delete(resolved_session_id)
-            detail = f"Failed to create VM {resolved_vm_name}: {exc}"
-            if preserved_vm:
-                detail = (
-                    f"{detail}\n"
-                    f"VM {resolved_vm_name} and session {resolved_session_id} were preserved for inspection."
-                )
-            return VmActionResult(
-                success=False,
-                vm_name=resolved_vm_name,
-                action="create_vm",
-                message=detail,
-            )
-
-        summary = messages[-1] if messages else f"Created VM {resolved_vm_name}"
-        return VmActionResult(
-            success=True,
-            vm_name=resolved_vm_name,
-            action="create_vm",
-            message=summary,
-            target_dir=guest_repo_root,
-            guest_repo_name=resolved_repo_name,
-            remote_url=guest_remote_url,
+            discord_channels=discord_channels,
+            email_mailboxes=email_mailboxes,
+            email_folders=email_folders,
+            python=python,
+            dotnet=dotnet,
+            nuget=nuget,
+            mssql=mssql,
+            mssql_init_root=mssql_init_root,
+            playwright=playwright,
+            codex_skills=codex_skills,
+            frontend_deps=frontend_deps,
+            frontend_host_checkout=frontend_host_checkout,
+            frontend_install_roots=frontend_install_roots,
+            directory_path=directory_path,
         )
 
     def destroy_vm(self, target: str) -> VmActionResult:
-        vm_name = target.strip()
-        if not vm_name:
-            return VmActionResult(success=False, vm_name="", action="destroy_vm", message="VM name is required.")
-        issue_number = _extract_issue_number(vm_name)
-        if issue_number is not None and vm_name == f"vm-{issue_number}":
-            return self.destroy_issue_vm(issue_number)
-
-        root_dir = Path(__file__).resolve().parents[2]
-        destroy_script = root_dir / "scripts" / "destroy_agent_vm.sh"
-        helper = self._privileged_helper if self.use_privileged_helper else None
-        if helper is not None and not helper.is_running():
-            helper.start()
-        if helper is not None:
-            response = helper.call("destroy_vm", script_path=str(destroy_script), vm_name=vm_name)
-            message = str(response.get("stdout") or response.get("stderr") or "").strip()
-        else:
-            completed = _run_subprocess(
-                ["pkexec", str(destroy_script), vm_name],
-                capture_output=True,
-                text=True,
-            )
-            message = (completed.stdout or completed.stderr or "").strip()
-            if completed.returncode != 0:
-                return VmActionResult(
-                    success=False,
-                    vm_name=vm_name,
-                    action="destroy_vm",
-                    message=message or f"destroy-vm exited with code {completed.returncode}",
-                )
-
-        sessions = self.runtime.sessions.read_all()
-        session_ids = _matching_vm_session_ids(vm_name, sessions)
-        if session_ids:
-            remaining_sessions = {
-                session_id: manifest for session_id, manifest in sessions.items() if session_id not in session_ids
-            }
-            self.runtime.sessions.write_all(remaining_sessions)
-        removed_approvals = _prune_approvals_for_sessions(self.runtime, session_ids=session_ids)
-        removed_pr_map_entries, removed_streams = _prune_pr_map(self.config.pr_map_path, session_ids=session_ids)
-        removed_cursors, removed_feedback = _prune_pr_feedback_store(
-            self.config.runtime_dir / "pr-feedback-store.json",
-            streams=removed_streams,
-        )
-        summary = (
-            f"Destroyed VM {vm_name}; "
-            f"removed_sessions={len(session_ids)} "
-            f"removed_pr_map_entries={removed_pr_map_entries} "
-            f"removed_approvals={removed_approvals} "
-            f"removed_feedback_cursors={removed_cursors} "
-            f"removed_feedback_items={removed_feedback}"
-        )
-        if message:
-            summary = f"{message}\n{summary}"
-        return VmActionResult(success=True, vm_name=vm_name, action="destroy_vm", message=summary)
+        return self.vm_agent_admin.destroy_vm(target)
 
     def destroy_issue_vm(self, target: str) -> VmActionResult:
-        issue_number = _extract_issue_number(target) or target
-        vm_name = f"vm-{issue_number}" if issue_number else target
-        root_dir = Path(__file__).resolve().parents[2]
-        destroy_script = root_dir / "scripts" / "destroy_agent_vm.sh"
-
-        completed = _run_subprocess(
-            ["pkexec", str(destroy_script), vm_name],
-            capture_output=True,
-            text=True,
-        )
-        message = (completed.stdout or completed.stderr or "").strip()
-        if completed.returncode != 0:
-            return VmActionResult(
-                success=False,
-                vm_name=vm_name,
-                action="destroy_issue_vm",
-                message=message or f"destroy-issue-vm exited with code {completed.returncode}",
-            )
-
-        sessions = self.runtime.sessions.read_all()
-        session_ids = _matching_issue_session_ids(issue_number, sessions)
-        if session_ids:
-            remaining_sessions = {
-                session_id: manifest for session_id, manifest in sessions.items() if session_id not in session_ids
-            }
-            self.runtime.sessions.write_all(remaining_sessions)
-        removed_approvals = _prune_approvals_for_sessions(self.runtime, session_ids=session_ids)
-        removed_pr_map_entries, removed_streams = _prune_pr_map(self.config.pr_map_path, session_ids=session_ids)
-        removed_cursors, removed_feedback = _prune_pr_feedback_store(
-            self.config.runtime_dir / "pr-feedback-store.json",
-            streams=removed_streams,
-        )
-        bare_repo_removed, bare_repo_path = _remove_issue_bare_repo(
-            issue_number,
-            root_dir=root_dir,
-            runtime_dir=self.config.runtime_dir,
-        )
-        summary = (
-            f"Destroyed issue VM {vm_name}; "
-            f"removed_sessions={len(session_ids)} "
-            f"removed_pr_map_entries={removed_pr_map_entries} "
-            f"removed_approvals={removed_approvals} "
-            f"removed_feedback_cursors={removed_cursors} "
-            f"removed_feedback_items={removed_feedback} "
-            f"bare_repo_removed={bare_repo_removed} "
-            f"bare_repo_path={bare_repo_path}"
-        )
-        if message:
-            summary = f"{message}\n{summary}"
-        return VmActionResult(
-            success=True,
-            vm_name=vm_name,
-            action="destroy_issue_vm",
-            message=summary,
-        )
+        return self.vm_agent_admin.destroy_issue_vm(target)
 
     def delete_local_issue(self, issue_identifier: str) -> VmActionResult:
-        try:
-            issue_key = self._resolve_local_issue_key(issue_identifier)
-        except ValueError as exc:
-            return VmActionResult(
-                success=False,
-                vm_name=f"vm-{issue_identifier}",
-                action="delete_local_issue",
-                message=str(exc),
-            )
-        issue = self.local_issue_store.get(issue_key) if issue_key is not None else None
-        if issue is None:
-            return VmActionResult(
-                success=False,
-                vm_name=f"vm-{issue_identifier}",
-                action="delete_local_issue",
-                message=f"Unknown local issue: {issue_identifier}",
-            )
-        issue_number = issue.issue_number
-
-        vm_name = f"vm-{issue_number}"
-        existing_vm_state = _dominfo_field(vm_name, "State")
-        sessions = self.runtime.sessions.read_all()
-        has_session = any(
-            session_id == issue_number
-            or session_id.startswith(f"issue-{issue_number}-")
-            or session.vm_id == vm_name
-            for session_id, session in sessions.items()
-        )
-        if existing_vm_state is not None or has_session:
-            return VmActionResult(
-                success=False,
-                vm_name=vm_name,
-                action="delete_local_issue",
-                message=f"Destroy {vm_name} before deleting local issue {issue_number}.",
-            )
-
-        self.local_issue_store.delete(issue.issue_id)
-        yaml_path = Path(issue.yaml_path)
-        if yaml_path.exists():
-            yaml_path.unlink()
-        return VmActionResult(
-            success=True,
-            vm_name=vm_name,
-            action="delete_local_issue",
-            message=f"Deleted local issue {issue_number}",
-        )
+        return self.issue_git_admin.delete_local_issue(issue_identifier)

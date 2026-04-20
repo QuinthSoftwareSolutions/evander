@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from dataclasses import dataclass
+from typing import Any
+from urllib.parse import quote
+
+import httpx
 
 from . import admin_service as admin_service_module
 from .admin_service import (
@@ -18,19 +22,144 @@ from .admin_service import (
 )
 from .workflow_events import WorkflowEventJournal
 from .directories import DirectoryService
+from .config import GatewayConfig
 from .models import SessionActionResult, SessionSummary, ToolName, VmSummary, WakeScheduledRequest, WakeScheduleDefinition
-from .teams_auth import DeviceCodeLoginSession
+from .teams_auth import (
+    DeviceCodeLoginSession,
+    JsonTeamsIdentityCredentialStore,
+    MicrosoftDeviceCodeAuthConfig,
+    TeamsAuthCredentials,
+    TeamsDeviceCodeTokenProvider,
+)
 
-if TYPE_CHECKING:
-    from .admin_service import AdminService
+
+@dataclass(frozen=True)
+class TeamsAdminDependencies:
+    runtime: Any
+    normalize_directory_reference: Any
+
+
+@dataclass(frozen=True)
+class SessionAdminDependencies:
+    runtime: Any
+    config: Any
+    normalize_directory_path: Any
+    direct_owned_entity_ids: Any
+
+
+@dataclass(frozen=True)
+class WorkerAdminDependencies:
+    runtime: Any
+    config: Any
+    agent_control_store: Any
+    normalize_directory_path: Any
+    direct_owned_entity_ids: Any
+    read_worker_global_config: Any
+    write_worker_global_config: Any
+    read_workflow_editor_document: Any
+    read_workflow_editor_catalog: Any
+    validate_workflow_editor_document: Any
+    save_workflow_editor_document: Any
+    read_workflow_run_snapshot: Any
+    workflow_event_journal: Any
+    upsert_trigger_config: Any
+    delete_trigger_config: Any
+    upsert_effect_config: Any
+    delete_effect_config: Any
 
 
 class TeamsAdminFacade:
-    def __init__(self, service: "AdminService") -> None:
-        self._service = service
+    def __init__(self, dependencies: TeamsAdminDependencies) -> None:
+        self._deps = dependencies
+
+    def _teams_auth_provider_for_directory(
+        self,
+        directory_path: str | None,
+    ) -> tuple[str, GatewayConfig, str, TeamsDeviceCodeTokenProvider]:
+        normalized_directory = self._deps.normalize_directory_reference(directory_path)
+        resolved_config = self._deps.runtime.provider_config.resolve_for_directory(normalized_directory)
+        if resolved_config.teams_backend != "delegated_graph_api":
+            raise ValueError(
+                f"Directory '{normalized_directory}' is not configured for delegated Teams auth "
+                f"(teams_backend={resolved_config.teams_backend!r})."
+            )
+        identity_id = str(resolved_config.teams_delegated_identity_id or "").strip()
+        if not identity_id:
+            raise ValueError(
+                f"Directory '{normalized_directory}' is missing teams_delegated_identity_id."
+            )
+        client_id = str(resolved_config.teams_delegated_client_id or "").strip()
+        if not client_id:
+            raise ValueError(
+                f"Directory '{normalized_directory}' is missing teams_delegated_client_id."
+            )
+        provider = TeamsDeviceCodeTokenProvider(
+            MicrosoftDeviceCodeAuthConfig(
+                client_id=client_id,
+                tenant_id=resolved_config.teams_delegated_tenant_id,
+                scopes=resolved_config.teams_delegated_scopes,
+                authority_base_url=resolved_config.teams_delegated_authority_base_url,
+                timeout_seconds=resolved_config.teams_timeout_seconds,
+            ),
+            JsonTeamsIdentityCredentialStore(
+                resolved_config.teams_delegated_credential_store_path,
+                identity_id,
+            ),
+        )
+        return normalized_directory, resolved_config, identity_id, provider
+
+    def _teams_auth_payload(
+        self,
+        *,
+        directory_path: str,
+        config: GatewayConfig,
+        identity_id: str,
+        credentials: TeamsAuthCredentials | None,
+    ) -> dict[str, object]:
+        return {
+            "directory_path": directory_path,
+            "identity_id": identity_id,
+            "backend": config.teams_backend,
+            "authenticated": credentials is not None,
+            "status": "authenticated" if credentials is not None else "reauth-required",
+            "account_identifier": identity_id,
+            "tenant_id": config.teams_delegated_tenant_id,
+            "scopes": list(config.teams_delegated_scopes),
+            "expires_at": credentials.expires_at if credentials is not None else None,
+            "issued_at": credentials.issued_at if credentials is not None else None,
+            "store_path": str(config.teams_delegated_credential_store_path),
+        }
+
+    def _teams_graph_list_channels(
+        self,
+        config: GatewayConfig,
+        provider: TeamsDeviceCodeTokenProvider,
+        *,
+        team_id: str,
+    ) -> list[dict[str, Any]]:
+        encoded_team_id = quote(team_id, safe="")
+        next_url = f"{config.teams_graph_api_base_url}/teams/{encoded_team_id}/channels"
+        channels: list[dict[str, Any]] = []
+        with httpx.Client(timeout=config.teams_timeout_seconds) as client:
+            while next_url:
+                response = client.get(
+                    next_url,
+                    headers={
+                        "Authorization": f"Bearer {provider.get_bearer_token()}",
+                        "Content-Type": "application/json",
+                    },
+                )
+                response.raise_for_status()
+                payload = response.json()
+                for item in payload.get("value", []):
+                    if isinstance(item, dict):
+                        channels.append(item)
+                raw_next = payload.get("@odata.nextLink")
+                next_url = str(raw_next).strip() if raw_next else ""
+        return channels
 
     def login(self, *, directory: str = "root") -> DeviceCodeLoginSession:
-        normalized_directory, config, identity_id, provider = self._service._teams_auth_provider_for_directory(directory)
+        normalized_directory, config, identity_id, provider = self._teams_auth_provider_for_directory(directory)
         session = provider.begin_device_code_login()
         metadata = dict(session.metadata)
         metadata.update(
@@ -49,9 +178,9 @@ class TeamsAdminFacade:
         directory: str = "root",
         timeout_seconds: float | None = None,
     ) -> dict[str, object]:
-        normalized_directory, config, identity_id, provider = self._service._teams_auth_provider_for_directory(directory)
+        normalized_directory, config, identity_id, provider = self._teams_auth_provider_for_directory(directory)
         credentials = provider.complete_device_code_login(login_session, timeout_seconds=timeout_seconds)
-        return self._service._teams_auth_payload(
+        return self._teams_auth_payload(
             directory_path=normalized_directory,
             config=config,
             identity_id=identity_id,
@@ -59,8 +188,8 @@ class TeamsAdminFacade:
         )
 
     def status(self, *, directory: str = "root") -> dict[str, object]:
-        normalized_directory, config, identity_id, provider = self._service._teams_auth_provider_for_directory(directory)
-        return self._service._teams_auth_payload(
+        normalized_directory, config, identity_id, provider = self._teams_auth_provider_for_directory(directory)
+        return self._teams_auth_payload(
             directory_path=normalized_directory,
             config=config,
             identity_id=identity_id,
@@ -68,7 +197,7 @@ class TeamsAdminFacade:
         )
 
     def logout(self, *, directory: str = "root") -> dict[str, object]:
-        normalized_directory, config, identity_id, provider = self._service._teams_auth_provider_for_directory(directory)
+        normalized_directory, config, identity_id, provider = self._teams_auth_provider_for_directory(directory)
         provider.clear_credentials()
         return {
             "directory_path": normalized_directory,
@@ -80,16 +209,16 @@ class TeamsAdminFacade:
         }
 
     def list(self) -> list[dict[str, object]]:
-        directory_service = DirectoryService(self._service.runtime.directories)
+        directory_service = DirectoryService(self._deps.runtime.directories)
         directory_paths = ["root", *[item.path for item in directory_service.list_descendants("root")]]
         entries: list[dict[str, object]] = []
         for directory_path in directory_paths:
-            resolved_config = self._service.runtime.provider_config.resolve_for_directory(directory_path)
+            resolved_config = self._deps.runtime.provider_config.resolve_for_directory(directory_path)
             if resolved_config.teams_backend != "delegated_graph_api":
                 continue
-            _, config, identity_id, provider = self._service._teams_auth_provider_for_directory(directory_path)
+            _, config, identity_id, provider = self._teams_auth_provider_for_directory(directory_path)
             entries.append(
-                self._service._teams_auth_payload(
+                self._teams_auth_payload(
                     directory_path=directory_path,
                     config=config,
                     identity_id=identity_id,
@@ -106,7 +235,7 @@ class TeamsAdminFacade:
         channel_name: str | None = None,
         include_all: bool = False,
     ) -> dict[str, object]:
-        normalized_directory, config, identity_id, provider = self._service._teams_auth_provider_for_directory(directory)
+        normalized_directory, config, identity_id, provider = self._teams_auth_provider_for_directory(directory)
         normalized_team_id = str(team_id or "").strip()
         if not normalized_team_id:
             raise ValueError("team_id is required")
@@ -114,7 +243,7 @@ class TeamsAdminFacade:
         if not normalized_channel_name and not include_all:
             raise ValueError("channel_name is required unless include_all=True")
 
-        channels = self._service._teams_graph_list_channels(config, provider, team_id=normalized_team_id)
+        channels = self._teams_graph_list_channels(config, provider, team_id=normalized_team_id)
         matches: list[dict[str, object]] = []
         for channel in channels:
             display_name = str(channel.get("displayName") or "").strip()
@@ -144,8 +273,8 @@ class TeamsAdminFacade:
 
 
 class SessionAdminFacade:
-    def __init__(self, service: "AdminService") -> None:
-        self._service = service
+    def __init__(self, dependencies: SessionAdminDependencies) -> None:
+        self._deps = dependencies
 
     def list_sessions(
         self,
@@ -159,12 +288,12 @@ class SessionAdminFacade:
             raise ValueError("include_expired and expired_only cannot both be true")
 
         now = admin_service_module._utc_now()
-        normalized_directory_path = self._service._normalize_directory_path(directory_path)
+        normalized_directory_path = self._deps.normalize_directory_path(directory_path)
         owned_session_ids = (
-            self._service._direct_owned_entity_ids(normalized_directory_path, kind="session") if direct_only else set()
+            self._deps.direct_owned_entity_ids(normalized_directory_path, kind="session") if direct_only else set()
         )
         summaries: list[SessionSummary] = []
-        for session_id, manifest in sorted(self._service.runtime.sessions.read_all().items(), key=admin_service_module._session_sort_key):
+        for session_id, manifest in sorted(self._deps.runtime.sessions.read_all().items(), key=admin_service_module._session_sort_key):
             if direct_only:
                 if session_id not in owned_session_ids:
                     continue
@@ -191,7 +320,7 @@ class SessionAdminFacade:
         session_id: str | None = None,
         include_disabled: bool = True,
     ) -> list[dict[str, Any]]:
-        payload = self._service.runtime.wake_store.read_raw()
+        payload = self._deps.runtime.wake_store.read_raw()
         raw_requests = payload.get("requests")
         raw_dispatches = payload.get("dispatches")
         if not isinstance(raw_requests, dict):
@@ -278,7 +407,7 @@ class SessionAdminFacade:
             schedule=schedule,
             enabled=bool(enabled),
         )
-        return self._service.runtime.wake_store.schedule_resume_request(
+        return self._deps.runtime.wake_store.schedule_resume_request(
             session_id=normalized_session_id,
             prompt=normalized_prompt,
             schedule=schedule,
@@ -299,7 +428,7 @@ class SessionAdminFacade:
         resume_mode: str | None = None,
         enabled: bool | None = None,
     ) -> WakeScheduledRequest:
-        existing = self._service.runtime.wake_store.get_request(request_id.strip())
+        existing = self._deps.runtime.wake_store.get_request(request_id.strip())
         if existing is None:
             raise ValueError(f"Wake schedule not found: {request_id}")
         updated_prompt = existing.resume_prompt.prompt if prompt is None else str(prompt).strip()
@@ -337,20 +466,20 @@ class SessionAdminFacade:
             existing.next_run_at = existing.schedule.resume_at
         elif cron_changed:
             existing.next_run_at = admin_service_module._utc_now()
-        self._service.runtime.wake_store.upsert_request(existing)
+        self._deps.runtime.wake_store.upsert_request(existing)
         return existing
 
     def delete_wake_schedule(self, request_id: str) -> bool:
         normalized = request_id.strip()
         if not normalized:
             raise ValueError("request_id cannot be empty")
-        return self._service.runtime.wake_store.delete_request(normalized)
+        return self._deps.runtime.wake_store.delete_request(normalized)
 
     def renew_session(self, target: str, *, extension: str = "1d") -> SessionActionResult:
-        session_id, manifest = admin_service_module._resolve_session_target(target, self._service.runtime.sessions.read_all())
+        session_id, manifest = admin_service_module._resolve_session_target(target, self._deps.runtime.sessions.read_all())
         previous_expires_at = manifest.expires_at
         manifest.expires_at = admin_service_module._utc_now() + admin_service_module._parse_session_extension(extension)
-        self._service.runtime.sessions.put(session_id, manifest)
+        self._deps.runtime.sessions.put(session_id, manifest)
         return SessionActionResult(
             success=True,
             session_id=session_id,
@@ -363,10 +492,10 @@ class SessionAdminFacade:
         )
 
     def revoke_session(self, target: str) -> SessionActionResult:
-        session_id, manifest = admin_service_module._resolve_session_target(target, self._service.runtime.sessions.read_all())
+        session_id, manifest = admin_service_module._resolve_session_target(target, self._deps.runtime.sessions.read_all())
         previous_expires_at = manifest.expires_at
         manifest.expires_at = admin_service_module._utc_now()
-        self._service.runtime.sessions.put(session_id, manifest)
+        self._deps.runtime.sessions.put(session_id, manifest)
         return SessionActionResult(
             success=True,
             session_id=session_id,
@@ -379,8 +508,8 @@ class SessionAdminFacade:
         )
 
     def delete_session(self, target: str) -> SessionActionResult:
-        session_id, _ = admin_service_module._resolve_session_target(target, self._service.runtime.sessions.read_all())
-        self._service.runtime.sessions.delete(session_id)
+        session_id, _ = admin_service_module._resolve_session_target(target, self._deps.runtime.sessions.read_all())
+        self._deps.runtime.sessions.delete(session_id)
         return SessionActionResult(
             success=True,
             session_id=session_id,
@@ -389,7 +518,7 @@ class SessionAdminFacade:
         )
 
     def set_session_allowed_tools(self, target: str, allowed_tools: list[str | ToolName]) -> SessionActionResult:
-        session_id, manifest = admin_service_module._resolve_session_target(target, self._service.runtime.sessions.read_all())
+        session_id, manifest = admin_service_module._resolve_session_target(target, self._deps.runtime.sessions.read_all())
         normalized_tools: list[ToolName] = []
         seen: set[ToolName] = set()
         for tool in allowed_tools:
@@ -399,7 +528,7 @@ class SessionAdminFacade:
             seen.add(normalized_tool)
             normalized_tools.append(normalized_tool)
         manifest.allowed_tools = normalized_tools
-        self._service.runtime.sessions.put(session_id, manifest)
+        self._deps.runtime.sessions.put(session_id, manifest)
         return SessionActionResult(
             success=True,
             session_id=session_id,
@@ -408,9 +537,9 @@ class SessionAdminFacade:
         )
 
     def set_session_allowed_script_names(self, target: str, allowed_script_names: list[str]) -> SessionActionResult:
-        session_id, manifest = admin_service_module._resolve_session_target(target, self._service.runtime.sessions.read_all())
+        session_id, manifest = admin_service_module._resolve_session_target(target, self._deps.runtime.sessions.read_all())
         manifest.allowed_script_names = admin_service_module._normalize_allowed_script_names(allowed_script_names)
-        self._service.runtime.sessions.put(session_id, manifest)
+        self._deps.runtime.sessions.put(session_id, manifest)
         return SessionActionResult(
             success=True,
             session_id=session_id,
@@ -419,12 +548,12 @@ class SessionAdminFacade:
         )
 
     def set_session_model(self, target: str, model: str) -> SessionActionResult:
-        session_id, manifest = admin_service_module._resolve_session_target(target, self._service.runtime.sessions.read_all())
+        session_id, manifest = admin_service_module._resolve_session_target(target, self._deps.runtime.sessions.read_all())
         normalized_model = str(model).strip()
         if not normalized_model:
             raise ValueError("model must be non-empty")
         manifest.model = normalized_model
-        self._service.runtime.sessions.put(session_id, manifest)
+        self._deps.runtime.sessions.put(session_id, manifest)
         return SessionActionResult(
             success=True,
             session_id=session_id,
@@ -433,7 +562,7 @@ class SessionAdminFacade:
         )
 
     def _active_wake_requests(self, *, exclude_request_id: str | None = None) -> list[WakeScheduledRequest]:
-        payload = self._service.runtime.wake_store.read_raw()
+        payload = self._deps.runtime.wake_store.read_raw()
         raw_requests = payload.get("requests", {})
         if not isinstance(raw_requests, dict):
             return []
@@ -459,7 +588,7 @@ class SessionAdminFacade:
         if not enabled:
             return
         active_requests = self._active_wake_requests(exclude_request_id=exclude_request_id)
-        max_active_per_session = self._service.config.host_heartbeat_schedule_max_active_per_session
+        max_active_per_session = self._deps.config.host_heartbeat_schedule_max_active_per_session
         if max_active_per_session is not None:
             active_for_session = sum(1 for request in active_requests if request.session_id == session_id)
             if active_for_session >= max_active_per_session:
@@ -467,10 +596,10 @@ class SessionAdminFacade:
                     "Wake schedule limit reached for session "
                     f"{session_id}: max_active_per_session={max_active_per_session}"
                 )
-        max_active_total = self._service.config.host_heartbeat_schedule_max_active_total
+        max_active_total = self._deps.config.host_heartbeat_schedule_max_active_total
         if max_active_total is not None and len(active_requests) >= max_active_total:
             raise ValueError(f"Wake schedule limit reached: max_active_total={max_active_total}")
-        min_interval_seconds = self._service.config.host_heartbeat_schedule_min_interval_seconds
+        min_interval_seconds = self._deps.config.host_heartbeat_schedule_min_interval_seconds
         cron = str(schedule.cron or "").strip()
         if min_interval_seconds is not None and cron:
             actual_interval_seconds = admin_service_module._cron_min_interval_seconds(cron)
@@ -484,8 +613,47 @@ class SessionAdminFacade:
 
 
 class WorkerAdminFacade:
-    def __init__(self, service: "AdminService") -> None:
-        self._service = service
+    def __init__(self, dependencies: WorkerAdminDependencies) -> None:
+        self._deps = dependencies
+
+    def _session_ids_by_vm(self) -> dict[str, list[str]]:
+        mapping: dict[str, list[str]] = {}
+        for session_id, session in self._deps.runtime.sessions.read_all().items():
+            if session.vm_id:
+                mapping.setdefault(session.vm_id, []).append(session_id)
+        for session_ids in mapping.values():
+            session_ids.sort()
+        return mapping
+
+    def _directory_paths_by_vm(self) -> dict[str, list[str]]:
+        mapping: dict[str, set[str]] = {}
+        for session in self._deps.runtime.sessions.read_all().values():
+            if session.vm_id:
+                mapping.setdefault(session.vm_id, set()).add(session.directory_path)
+        return {vm_id: sorted(paths) for vm_id, paths in mapping.items()}
+
+    def _labels_by_vm(self) -> dict[str, dict[str, str]]:
+        mapping: dict[str, dict[str, str] | None] = {}
+        sessions = self._deps.runtime.sessions.read_all()
+        for session_id in sorted(sessions):
+            session = sessions[session_id]
+            if not session.vm_id:
+                continue
+            labels = admin_service_module._normalize_session_labels(session.metadata.get("labels"))
+            current = mapping.get(session.vm_id)
+            if current is None:
+                mapping[session.vm_id] = dict(labels)
+                continue
+            mapping[session.vm_id] = {
+                key: value
+                for key, value in current.items()
+                if labels.get(key) == value
+            }
+        return {
+            vm_id: labels
+            for vm_id, labels in mapping.items()
+            if labels
+        }
 
     def list_vms(
         self,
@@ -497,11 +665,11 @@ class WorkerAdminFacade:
         direct_only: bool = False,
     ) -> list[VmSummary]:
         vm_names = admin_service_module._virsh_lines(["list", "--all" if include_inactive else "--state-running", "--name"])
-        session_ids_by_vm = self._service._session_ids_by_vm()
-        labels_by_vm = self._service._labels_by_vm()
-        directory_paths_by_vm = self._service._directory_paths_by_vm()
-        normalized_directory_path = self._service._normalize_directory_path(directory_path)
-        owned_vm_ids = self._service._direct_owned_entity_ids(normalized_directory_path, kind="vm") if direct_only else set()
+        session_ids_by_vm = self._session_ids_by_vm()
+        labels_by_vm = self._labels_by_vm()
+        directory_paths_by_vm = self._directory_paths_by_vm()
+        normalized_directory_path = self._deps.normalize_directory_path(directory_path)
+        owned_vm_ids = self._deps.direct_owned_entity_ids(normalized_directory_path, kind="vm") if direct_only else set()
         summaries: list[VmSummary] = []
         for vm_name in vm_names:
             vm_directory_paths = directory_paths_by_vm.get(vm_name, [])
@@ -513,7 +681,7 @@ class WorkerAdminFacade:
             elif directory_path is not None and normalized_directory_path not in vm_directory_paths:
                 continue
             libvirt_state = admin_service_module._dominfo_field(vm_name, "State") or "unknown"
-            host_control_status = self._service.agent_control_store.status_for_vm(vm_name)
+            host_control_status = self._deps.agent_control_store.status_for_vm(vm_name)
             ip_address = admin_service_module._resolve_vm_ip(vm_name) if libvirt_state == "running" else None
             if libvirt_state != "running":
                 agent_state = "disabled" if host_control_status == "disabled" else "inactive_vm"
@@ -656,16 +824,16 @@ class WorkerAdminFacade:
         )
 
     def read_worker_global_config(self, worker_id: str):
-        return self._service._read_worker_global_config(worker_id)
+        return self._deps.read_worker_global_config(worker_id)
 
     def write_worker_global_config(self, worker_id: str, payload: dict[str, object]):
-        return self._service._write_worker_global_config(worker_id, payload)
+        return self._deps.write_worker_global_config(worker_id, payload)
 
     def read_workflow_editor_document(self) -> WorkflowEditorDocumentPayload:
-        return self._service._read_workflow_editor_document()
+        return self._deps.read_workflow_editor_document()
 
     def read_workflow_editor_catalog(self) -> WorkflowEditorCatalogPayload:
-        return self._service._read_workflow_editor_catalog()
+        return self._deps.read_workflow_editor_catalog()
 
     def validate_workflow_editor_document(
         self,
@@ -673,7 +841,7 @@ class WorkerAdminFacade:
         config: dict[str, object],
         layout: dict[str, object] | None = None,
     ) -> WorkflowEditorValidationPayload:
-        return self._service._validate_workflow_editor_document(config=config, layout=layout)
+        return self._deps.validate_workflow_editor_document(config=config, layout=layout)
 
     def save_workflow_editor_document(
         self,
@@ -681,25 +849,32 @@ class WorkerAdminFacade:
         config: dict[str, object],
         layout: dict[str, object] | None = None,
     ) -> WorkflowEditorSavePayload:
-        return self._service._save_workflow_editor_document(config=config, layout=layout)
+        return self._deps.save_workflow_editor_document(config=config, layout=layout)
 
     def read_workflow_run_snapshot(self) -> WorkflowRunSnapshotPayload:
-        return self._service._read_workflow_run_snapshot()
+        return self._deps.read_workflow_run_snapshot()
 
     def workflow_event_journal(self) -> WorkflowEventJournal:
-        return self._service._workflow_event_journal()
+        return self._deps.workflow_event_journal()
 
     def upsert_trigger_config(self, trigger_id: str, payload: dict[str, object]) -> TriggerConfigMutationPayload:
-        return self._service._upsert_trigger_config(trigger_id, payload)
+        return self._deps.upsert_trigger_config(trigger_id, payload)
 
     def delete_trigger_config(self, trigger_id: str) -> TriggerConfigMutationPayload:
-        return self._service._delete_trigger_config(trigger_id)
+        return self._deps.delete_trigger_config(trigger_id)
 
     def upsert_effect_config(self, effect_id: str, payload: dict[str, object]) -> EffectConfigMutationPayload:
-        return self._service._upsert_effect_config(effect_id, payload)
+        return self._deps.upsert_effect_config(effect_id, payload)
 
     def delete_effect_config(self, effect_id: str) -> EffectConfigMutationPayload:
-        return self._service._delete_effect_config(effect_id)
+        return self._deps.delete_effect_config(effect_id)
 
 
-__all__ = ["SessionAdminFacade", "TeamsAdminFacade", "WorkerAdminFacade"]
+__all__ = [
+    "SessionAdminDependencies",
+    "SessionAdminFacade",
+    "TeamsAdminDependencies",
+    "TeamsAdminFacade",
+    "WorkerAdminDependencies",
+    "WorkerAdminFacade",
+]
