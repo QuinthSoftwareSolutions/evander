@@ -72,7 +72,7 @@ from .models import (
 from .runtime import RuntimeContext, build_runtime
 from .storage import JsonStore
 from .workflow_events import WorkflowEventJournal, workflow_event_journal_path
-from .workflow_runtime_config import compile_worker_global_config_with_diagnostics
+from .workflow_runtime_config import _compose_configured_workflow_ir, compile_worker_global_config_with_diagnostics
 from .teams_auth import (
     DeviceCodeLoginSession,
     JsonTeamsIdentityCredentialStore,
@@ -3993,6 +3993,79 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
         encoded = json.dumps(config, sort_keys=True, separators=(",", ":")).encode("utf-8")
         return hashlib.sha256(encoded).hexdigest()
 
+    def _workflow_editor_pack_path(self, pack_reference: object) -> Path:
+        text = str(pack_reference).strip()
+        if not text:
+            raise ValueError("workflow pack reference must be a non-empty string")
+        normalized = text if text.endswith(".json") else f"{text}.json"
+        relative = Path(normalized)
+        if relative.is_absolute() or ".." in relative.parts:
+            raise ValueError("workflow pack reference must stay under config/workflow-packs")
+        return self.project_dir / "config" / "workflow-packs" / relative
+
+    def _compose_workflow_editor_config(self, payload: dict[str, object]) -> dict[str, object]:
+        candidate = json.loads(json.dumps(payload))
+        if not isinstance(candidate, dict):
+            return payload
+        return _compose_configured_workflow_ir(project_dir=self.project_dir, payload=candidate)
+
+    def _workflow_editor_pack_backed_save_paths(
+        self,
+        raw_config: dict[str, object],
+    ) -> tuple[Path, list[object]] | None:
+        workflow_packs = raw_config.get("workflow_packs")
+        inline_ir = raw_config.get("workflow_ir")
+        if not isinstance(workflow_packs, list) or not workflow_packs:
+            return None
+        if isinstance(inline_ir, dict):
+            raise ValueError(
+                "Workflow editor cannot save configs that combine workflow_packs with inline workflow_ir; "
+                "edit the pack files directly."
+            )
+        if len(workflow_packs) != 1:
+            raise ValueError(
+                "Workflow editor can only save a config backed by one workflow pack; edit multi-pack configs directly."
+            )
+        return self._workflow_editor_pack_path(workflow_packs[0]), workflow_packs
+
+    def _write_workflow_editor_pack_config(
+        self,
+        *,
+        config_path: Path,
+        pack_path: Path,
+        workflow_packs: list[object],
+        validated_config: dict[str, object],
+    ) -> None:
+        if pack_path.exists():
+            pack_payload = json.loads(pack_path.read_text(encoding="utf-8"))
+            if not isinstance(pack_payload, dict):
+                raise ValueError(f"workflow pack file {pack_path} must contain a JSON object")
+        else:
+            raise ValueError(f"workflow pack file {pack_path} does not exist")
+
+        existing_ir = pack_payload.get("ir")
+        ir_version = "v1"
+        if isinstance(existing_ir, dict):
+            ir_version = str(existing_ir.get("version") or "v1")
+        nodes: list[object] = []
+        for key in ("triggers", "gates", "effects", "queries"):
+            values = validated_config.get(key, [])
+            if isinstance(values, list):
+                nodes.extend(values)
+        pack_payload["ir"] = {
+            "version": ir_version,
+            "nodes": nodes,
+            "edges": validated_config.get("edges", []),
+        }
+
+        graph_keys = {"triggers", "gates", "effects", "queries", "edges"}
+        wrapper_config = {key: value for key, value in validated_config.items() if key not in graph_keys}
+        wrapper_config["workflow_packs"] = workflow_packs
+        wrapper_config.pop("workflow_ir", None)
+
+        self._write_json_file_atomic(config_path, wrapper_config)
+        self._write_json_file_atomic(pack_path, pack_payload)
+
     def _write_json_file_atomic(self, path: Path, payload: dict[str, object]) -> None:
         encoded = json.dumps(payload, indent=2, sort_keys=True).encode("utf-8")
         with tempfile.NamedTemporaryFile(
@@ -4029,7 +4102,8 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
         else:
             model = _WORKER_GLOBAL_CONFIG_MODELS["trigger-orchestrator"]
             raw_config = model.model_validate(self.config.model_dump(mode="json")).model_dump(mode="json", exclude_none=True)
-        normalized_candidate = self._normalize_workflow_editor_config(raw_config)
+        composed_config = self._compose_workflow_editor_config(raw_config)
+        normalized_candidate = self._normalize_workflow_editor_config(composed_config)
         normalized_config = self._validate_worker_global_config_payload("trigger-orchestrator", normalized_candidate)
         layout_path = self._workflow_editor_layout_path()
         layout_exists = layout_path.exists()
@@ -4094,14 +4168,32 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
         config: dict[str, object],
         layout: dict[str, object] | None = None,
     ) -> WorkflowEditorSavePayload:
-        validation = self._validate_workflow_editor_document(config=config, layout=layout)
         config_path = self._worker_global_config_path("trigger-orchestrator")
         if config_path is None:
             raise ValueError("Unknown worker: trigger-orchestrator")
+        raw_config: dict[str, object] = {}
+        if config_path.exists():
+            loaded_config = json.loads(config_path.read_text(encoding="utf-8"))
+            if not isinstance(loaded_config, dict):
+                raise ValueError(f"worker config file {config_path} must contain a JSON object")
+            raw_config = loaded_config
+
+        validation = self._validate_workflow_editor_document(config=config, layout=layout)
         layout_path = self._workflow_editor_layout_path()
         config_path.parent.mkdir(parents=True, exist_ok=True)
         layout_path.parent.mkdir(parents=True, exist_ok=True)
-        self._write_json_file_atomic(config_path, validation.config)
+        pack_save = self._workflow_editor_pack_backed_save_paths(raw_config)
+        if pack_save is None:
+            self._write_json_file_atomic(config_path, validation.config)
+        else:
+            pack_path, workflow_packs = pack_save
+            pack_path.parent.mkdir(parents=True, exist_ok=True)
+            self._write_workflow_editor_pack_config(
+                config_path=config_path,
+                pack_path=pack_path,
+                workflow_packs=workflow_packs,
+                validated_config=validation.config,
+            )
         self._write_json_file_atomic(layout_path, validation.layout)
         saved_at = datetime.fromtimestamp(config_path.stat().st_mtime, tz=UTC)
         revision = self._workflow_editor_revision(validation.config)
