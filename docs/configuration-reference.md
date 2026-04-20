@@ -141,6 +141,10 @@ provided via `workflow_packs` + optional inline `workflow_ir`, which compose int
 `triggers`/`gates`/`effects`/`queries`/`edges` at load time.
 Provider plugin loading is configured separately under `provider_loader`.
 
+### Orchestration-core runtime profile template
+
+For orchestration-only deployments, use `config/trigger-orchestrator/orchestration-core.config.json.example` as the starting point. It sets an explicit runtime path (`runtime/orchestration-core`) and defaults provider loading to `profiles/core-minimal` (no built-ins) with entry-point loading disabled.
+
 | Parameter | Found in | Consumed by |
 |---|---|---|
 | `runtime_dir` | `config/trigger-orchestrator/config.json` | `src/agent_sandbox/config.py` runtime path defaults for trigger orchestrator state files. |

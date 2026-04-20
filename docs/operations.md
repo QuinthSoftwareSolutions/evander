@@ -914,6 +914,7 @@ sudo journalctl -u agent-sandbox-issue-orchestrator.service -f
 - The scaffold includes `agent-sandbox-trigger-orchestrator`, a singleton host worker that polls
   configured triggers and persists trigger events to a durable queue.
 - Global worker config lives at `config/trigger-orchestrator/config.json`.
+- For orchestration-only production deployments, start from `config/trigger-orchestrator/orchestration-core.config.json.example` (uses `runtime/orchestration-core` + `profiles/core-minimal`).
 - Runtime defaults (when config fields are null/omitted):
   - queue: `runtime/trigger-orchestrator-events.json`
   - cursor: `runtime/trigger-orchestrator-cursors.json`

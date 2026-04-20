@@ -7,6 +7,7 @@ from pathlib import Path
 from agent_sandbox.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
 from agent_sandbox.effect_orchestrator import EffectOrchestratorWorker
 from agent_sandbox.events.models import TriggerEvent
+from agent_sandbox.orchestration.wiring import build_effect_worker_wiring, build_trigger_worker_wiring
 from agent_sandbox.trigger_orchestrator import TriggerOrchestratorWorker
 from agent_sandbox.workflow_engine import OrchestrationLoop
 
@@ -80,13 +81,16 @@ def test_effect_queue_delivery_semantics_are_preserved(tmp_path: Path) -> None:
     assert queue_payload["event-1"]["delivery_state"] == "delivered"
 
 
-def test_orchestration_only_profile_runs_without_domain_providers(tmp_path: Path) -> None:
+def test_core_minimal_profile_smoke_builds_trigger_and_effect_workers_without_builtin_providers(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
     worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
         {
             "runtime_dir": runtime_dir,
-            "provider_loader": {"provider_profile": "profiles/core-minimal"},
+            "provider_loader": {
+                "provider_profile": "profiles/core-minimal",
+                "provider_entry_points_enabled": False,
+            },
             "triggers": [],
             "gates": [],
             "effects": [],
@@ -95,7 +99,21 @@ def test_orchestration_only_profile_runs_without_domain_providers(tmp_path: Path
         }
     )
 
-    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
-    result = worker.run_once()
+    trigger_wiring = build_trigger_worker_wiring(
+        config=config,
+        worker_config=worker_config,
+        runtime=None,  # type: ignore[arg-type]
+    )
+    effect_wiring = build_effect_worker_wiring(
+        config=config,
+        worker_config=worker_config,
+        runtime=None,  # type: ignore[arg-type]
+    )
 
-    assert result.events_processed == 0
+    assert trigger_wiring.provider_factory.registry.registered_types() == ()
+    assert effect_wiring.provider_factory.registry.registered_types() == ()
+    assert effect_wiring.gate_provider_factory.registry.registered_types() == ()
+    assert effect_wiring.query_provider_factory.registry.registered_types() == ()
+    assert effect_wiring.special_event_handlers == ()
+    assert effect_wiring.lifecycle_reconciliation_hooks == ()
+    assert effect_wiring.completion_dispatch_hooks == ()

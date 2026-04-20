@@ -100,6 +100,25 @@ When adding new code, ask:
 If both apply, keep the boundary narrow: shell should launch and sequence, Python should decide and
 validate.
 
+## Orchestration Core vs Domain Pack Layering
+
+The trigger/effect runtime is designed as two layers with explicit ownership boundaries:
+
+- **Orchestration core (production-safe baseline)**
+  - Owns queueing, graph traversal, lock/cursor/execution stores, and worker polling.
+  - Lives primarily in `src/agent_sandbox/workflow_engine/`, `src/agent_sandbox/orchestration/`, and `src/agent_sandbox/workflow_runtime_config.py`.
+  - Uses `profiles/core-minimal` to avoid loading domain provider packages by default.
+- **Domain packs (opt-in convenience layer)**
+  - Own provider implementations and domain-specific default handlers used by built-in workflows.
+  - Lives under provider modules such as `src/agent_sandbox/providers/` and orchestration handler helpers in `src/agent_sandbox/orchestration/providers/`.
+  - Enabled by selecting `profiles/agent-default` or by adding explicit plugin modules.
+
+### Ownership boundary rules
+
+1. Core runtime modules must stay provider-neutral and should not require domain package imports when running with `profiles/core-minimal`.
+2. Domain behavior belongs in provider plugins/handler packs that can be layered onto core at config time.
+3. `agent-default` remains the convenience default for broad compatibility, but orchestration-only deployments should use the dedicated orchestration-core config template (`config/trigger-orchestrator/orchestration-core.config.json.example`).
+
 ## Host-Driven Feedback Heartbeat (Design)
 
 This model keeps feedback polling on the host while preserving host-side policy and secret
