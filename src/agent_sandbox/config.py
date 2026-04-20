@@ -29,8 +29,7 @@ from .events.models import (
     TriggerDefinitionDiscriminated,
 )
 from .schema_bootstrap import bootstrap_default_node_schemas
-from .workflow_graph import build_inbound_edge_index, would_form_cycle
-from .workflow_plugins import load_provider_plugins
+from .workflow_validation import validate_workflow_graph
 
 _HTTP_URL_ADAPTER = TypeAdapter(AnyHttpUrl)
 bootstrap_default_node_schemas()
@@ -607,95 +606,14 @@ class OrchestrationCoreConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_graph_edges(self) -> OrchestrationCoreConfig:
-        nodes_by_id = {node.id: node for node in (*self.triggers, *self.gates, *self.effects, *self.queries)}
-        inbound_edges = build_inbound_edge_index(self.edges)
-        downstream_non_cyclic: dict[str, list[str]] = {}
-        outbound_edges_by_source: dict[str, list[EdgeDefinition]] = {}
-        for edge in self.edges:
-            outbound_edges_by_source.setdefault(edge.source_id, []).append(edge)
-            if bool(getattr(edge, "allow_cycle", False)):
-                continue
-            if would_form_cycle(edge.source_id, edge.target_id, downstream_non_cyclic):
-                raise ValueError(f"Non-cyclic edges cannot form a cycle: {edge.source_id} -> {edge.target_id}")
-            downstream_non_cyclic.setdefault(edge.source_id, []).append(edge.target_id)
-
-        missing_endpoints: list[str] = []
-        self_edges: list[str] = []
-        for edge in self.edges:
-            source_known = edge.source_id in nodes_by_id
-            target_known = edge.target_id in nodes_by_id
-            if edge.source_id == edge.target_id:
-                self_edges.append(edge.source_id)
-            if not source_known:
-                missing_endpoints.append(edge.source_id)
-            if not target_known:
-                missing_endpoints.append(edge.target_id)
-
-        missing_endpoints = sorted(set(missing_endpoints))
-        if missing_endpoints:
-            missing_list = ", ".join(missing_endpoints)
-            raise ValueError(f"Edge endpoints must reference existing node IDs: {missing_list}")
-
-        self_edges = sorted(set(self_edges))
-        if self_edges:
-            self_edge_list = ", ".join(self_edges)
-            raise ValueError(f"Edges cannot connect a node to itself: {self_edge_list}")
-
-        reachable_node_ids = {node.id for node in self.triggers}
-        stack = [node.id for node in self.triggers]
-        while stack:
-            current = stack.pop()
-            for edge in outbound_edges_by_source.get(current, ()):
-                if edge.target_id in reachable_node_ids:
-                    continue
-                reachable_node_ids.add(edge.target_id)
-                stack.append(edge.target_id)
-
-        inbound_errors: list[str] = []
-        for node in self.triggers:
-            inbound_count = len(inbound_edges.get(node.id, ()))
-            if inbound_count != 0:
-                inbound_errors.append(f"trigger {node.id} must have 0 inbound edges, found {inbound_count}")
-        provider_catalog = load_provider_plugins(
-            module_names=(),
-            include_entry_points=False,
-            include_builtin=True,
+        errors = validate_workflow_graph(
+            nodes=(*self.triggers, *self.gates, *self.effects, *self.queries),
+            edges=self.edges,
+            trigger_node_ids=(trigger.id for trigger in self.triggers),
+            node_capabilities=None,
         )
-        node_capabilities = {
-            **{node_type: provider.node_capability() for node_type, provider in provider_catalog.gate_providers.items()},
-            **{node_type: provider.node_capability() for node_type, provider in provider_catalog.effect_providers.items()},
-            **{node_type: provider.node_capability() for node_type, provider in provider_catalog.query_providers.items()},
-        }
-        for node in (*self.gates, *self.effects, *self.queries):
-            if node.id not in reachable_node_ids:
-                continue
-            capability = node_capabilities.get(node.type)
-            if capability is None:
-                continue
-            inbound = list(inbound_edges.get(node.id, ()))
-            inbound_count = len(inbound)
-            if capability.min_inbound is not None and inbound_count < capability.min_inbound:
-                inbound_errors.append(f"{node.type} {node.id} must have at least {capability.min_inbound} inbound edge(s), found {inbound_count}")
-            if capability.max_inbound is not None and inbound_count > capability.max_inbound:
-                inbound_errors.append(f"{node.type} {node.id} must have at most {capability.max_inbound} inbound edge(s), found {inbound_count}")
-            if capability.non_cyclic_inbound_exact is not None:
-                non_cyclic_count = sum(1 for edge in inbound if not bool(getattr(edge, "allow_cycle", False)))
-                if non_cyclic_count != capability.non_cyclic_inbound_exact:
-                    inbound_errors.append(
-                        f"{node.type} {node.id} must have exactly {capability.non_cyclic_inbound_exact} non-cyclic inbound edge(s), found {non_cyclic_count}"
-                    )
-            if capability.allowed_source_ports is not None:
-                outbound_ports = [edge.source_port for edge in outbound_edges_by_source.get(node.id, ())]
-                invalid_ports = [port for port in outbound_ports if port not in capability.allowed_source_ports]
-                if invalid_ports:
-                    inbound_errors.append(
-                        f"{node.type} {node.id} uses invalid source_port value(s): {', '.join(sorted({str(port) for port in invalid_ports}))}"
-                    )
-            for required_port in sorted(capability.required_source_ports):
-                if not any(edge.source_port == required_port for edge in outbound_edges_by_source.get(node.id, ())):
-                    inbound_errors.append(f"{node.type} {node.id} must have an outbound edge with source_port={required_port}")
-        if inbound_errors:
-            raise ValueError("; ".join(inbound_errors))
+        if errors:
+            raise ValueError("; ".join(errors))
         return self
 
     @model_validator(mode="after")

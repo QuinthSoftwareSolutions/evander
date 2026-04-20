@@ -604,42 +604,43 @@ def test_trigger_orchestrator_for_gate_accepts_body_done_ports_and_cycle_return(
     assert config.gates[0].type == "gate:for"
 
 
-def test_trigger_orchestrator_for_gate_rejects_missing_done_edge() -> None:
-    with pytest.raises(ValueError, match="gate:for for-1 must have an outbound edge with source_port=done"):
-        TriggerOrchestratorWorkerGlobalConfig.model_validate(
-            {
-                "runtime_dir": "/tmp/agent-sandbox-runtime",
-                "triggers": [
-                    {
-                        "id": "trigger-1",
-                        "display_name": "Tick",
-                        "type": "trigger:cron",
-                        "expression": "* * * * *",
-                    }
-                ],
-                "gates": [
-                    {
-                        "id": "for-1",
-                        "display_name": "Iterate steps",
-                        "type": "gate:for",
-                        "items": ["a", "b"],
-                    }
-                ],
-                "effects": [
-                    {
-                        "id": "effect-body",
-                        "display_name": "Body",
-                        "type": "effect:vm:exec",
-                        "target": "session-1",
-                        "command": "echo body",
-                    }
-                ],
-                "edges": [
-                    {"source_id": "trigger-1", "target_id": "for-1"},
-                    {"source_id": "for-1", "source_port": "body", "target_id": "effect-body"},
-                ],
-            }
-        )
+def test_trigger_orchestrator_for_gate_allows_missing_done_edge_in_core_validation() -> None:
+    config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": "/tmp/agent-sandbox-runtime",
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Tick",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+            "gates": [
+                {
+                    "id": "for-1",
+                    "display_name": "Iterate steps",
+                    "type": "gate:for",
+                    "items": ["a", "b"],
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-body",
+                    "display_name": "Body",
+                    "type": "effect:vm:exec",
+                    "target": "session-1",
+                    "command": "echo body",
+                }
+            ],
+            "edges": [
+                {"source_id": "trigger-1", "target_id": "for-1"},
+                {"source_id": "for-1", "source_port": "body", "target_id": "effect-body"},
+            ],
+        }
+    )
+
+    assert config.gates[0].type == "gate:for"
 
 
 def test_trigger_orchestrator_allows_orphaned_draft_subgraphs() -> None:

@@ -112,3 +112,24 @@ def test_compile_trigger_orchestrator_config_with_diagnostics_reports_await_agen
 
     assert any(item.code == "await_agent_upstream_type" for item in diagnostics)
     assert collect_domain_validation_diagnostics(worker_config)
+
+
+def test_collect_domain_validation_diagnostics_reports_capability_errors(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "triggers": [{"id": "cron-1", "display_name": "Every minute", "type": "trigger:cron", "expression": "* * * * *"}],
+            "gates": [{"id": "for-1", "display_name": "Iterate", "type": "gate:for", "items": ["a", "b"]}],
+            "effects": [{"id": "effect-1", "display_name": "Exec", "type": "effect:vm:exec", "target": "vm-1", "command": "echo hi"}],
+            "edges": [
+                {"source_id": "cron-1", "target_id": "for-1"},
+                {"source_id": "for-1", "source_port": "body", "target_id": "effect-1"},
+            ],
+        }
+    )
+
+    diagnostics = collect_domain_validation_diagnostics(worker_config)
+
+    assert any(item.code == "node_capability" for item in diagnostics)
+    assert any("must have an outbound edge with source_port=done" in item.message for item in diagnostics)
