@@ -3,7 +3,8 @@ from __future__ import annotations
 from datetime import UTC
 
 from agent_sandbox.agent_prompt_store import AgentPromptStore
-from agent_sandbox.events.models import AgentPromptNewTriggerDefinition, TriggerEvent
+from agent_sandbox.events.models import TriggerEvent
+from agent_sandbox.events.provider_models import AgentPromptNewTriggerDefinition
 from agent_sandbox.models import SessionManifest
 from agent_sandbox.storage import JsonStore
 

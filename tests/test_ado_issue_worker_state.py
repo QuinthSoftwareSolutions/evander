@@ -26,7 +26,7 @@ from agent_sandbox.ado_issue_worker import (
     run_worker_command,
     update_work_item_state,
 )
-from agent_sandbox.events.models import PullRequestNewFeedbackTriggerDefinition
+from agent_sandbox.events.provider_models import PullRequestNewFeedbackTriggerDefinition
 from agent_sandbox.models import LocalIssueRecord
 from agent_sandbox.pr_feedback_worker import FeedbackEnvelope
 from agent_sandbox.services import PrFeedbackService

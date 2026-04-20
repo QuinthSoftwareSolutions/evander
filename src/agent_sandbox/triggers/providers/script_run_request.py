@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from datetime import UTC
 
-from agent_sandbox.events.models import ScriptRunRequestTriggerDefinition, TriggerEvent
+from agent_sandbox.events.models import TriggerEvent
+from agent_sandbox.events.provider_models import ScriptRunRequestTriggerDefinition
 from agent_sandbox.script_run_request_store import ScriptRunRequestStore
 
 from ._cursor_state import TriggerCursorStore

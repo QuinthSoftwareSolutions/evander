@@ -5,7 +5,8 @@ import subprocess
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from agent_sandbox.events.models import BashScriptEffectDefinition, EffectDefinitionDiscriminated, WorkflowNodeEnvelope
+from agent_sandbox.events.models import EffectDefinitionDiscriminated, WorkflowNodeEnvelope
+from agent_sandbox.events.provider_models import BashScriptEffectDefinition
 
 from .base import EffectProviderBase
 from .bash_script_schema import BashScriptEffectConfigSchema

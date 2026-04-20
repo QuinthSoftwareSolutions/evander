@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from agent_sandbox.config import GatewayConfig
-from agent_sandbox.events.models import (
+from agent_sandbox.events.provider_models import (
     GitPrNoteQueryDefinition,
     IssueGetQueryDefinition,
     SessionContextQueryDefinition,

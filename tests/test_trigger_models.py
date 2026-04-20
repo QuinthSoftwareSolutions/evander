@@ -4,12 +4,16 @@ import pytest
 from pydantic import TypeAdapter
 
 from agent_sandbox.events.models import (
-    AgentPromptEffectDefinition,
-    AgentPromptNewTriggerDefinition,
-    AgentRunCompletedTriggerDefinition,
     ConfigValue,
     EffectDefinitionDiscriminated,
     GateDefinitionDiscriminated,
+    TriggerDefinitionDiscriminated,
+    TriggerEvent,
+)
+from agent_sandbox.events.provider_models import (
+    AgentPromptEffectDefinition,
+    AgentPromptNewTriggerDefinition,
+    AgentRunCompletedTriggerDefinition,
     GitPromoteAgentBranchEffectDefinition,
     GitPushTriggerDefinition,
     IssueUpdateStateEffectDefinition,
@@ -19,8 +23,6 @@ from agent_sandbox.events.models import (
     ScriptRunRequestTriggerDefinition,
     SessionContextQueryDefinition,
     SessionUpdateMetadataEffectDefinition,
-    TriggerDefinitionDiscriminated,
-    TriggerEvent,
 )
 
 

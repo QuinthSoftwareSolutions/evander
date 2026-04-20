@@ -6,8 +6,8 @@ from typing import Any
 from uuid import uuid4
 
 from agent_sandbox.agent_completion_watcher import build_agent_run_completed_event
-from agent_sandbox.events.models import AgentPromptEffectDefinition
 from agent_sandbox.events.models import NODE_OUTPUTS_CONTEXT_KEY
+from agent_sandbox.events.provider_models import AgentPromptEffectDefinition
 from agent_sandbox.triggers.queue import TriggerQueueRecord
 
 from .base import EffectProviderBase

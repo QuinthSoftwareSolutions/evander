@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from agent_sandbox.config import GatewayConfig
-from agent_sandbox.events.models import ReviewNewRequestTriggerDefinition
+from agent_sandbox.events.provider_models import ReviewNewRequestTriggerDefinition
 from agent_sandbox.review_request_store import ReviewRequestRecord, ReviewRequestStore
 from agent_sandbox.triggers.providers.base import TriggerRuntimeContext
 from agent_sandbox.triggers.providers.review_new_request import ReviewNewRequestTriggerProvider

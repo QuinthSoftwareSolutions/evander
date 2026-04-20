@@ -4,7 +4,8 @@ from datetime import UTC, datetime
 
 from agent_sandbox.discord_inbox_store import DiscordInboxStore
 from agent_sandbox.models import DiscordMessageEnvelope
-from agent_sandbox.events.models import DiscordNewMessageTriggerDefinition, TriggerEvent
+from agent_sandbox.events.models import TriggerEvent
+from agent_sandbox.events.provider_models import DiscordNewMessageTriggerDefinition
 from agent_sandbox.triggers.providers._cursor_state import TriggerCursorStore
 from agent_sandbox.triggers.providers.base import TriggerProviderBase
 

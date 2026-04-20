@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from agent_sandbox.config import GatewayConfig
-from agent_sandbox.events.models import ScriptRunRequestTriggerDefinition
+from agent_sandbox.events.provider_models import ScriptRunRequestTriggerDefinition
 from agent_sandbox.models import ScriptRunRequestRecord, SessionManifest
 from agent_sandbox.script_run_request_store import ScriptRunRequestStore
 from agent_sandbox.storage import JsonStore

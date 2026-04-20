@@ -13,11 +13,11 @@ from agent_sandbox.effects.registry import (
 )
 from pydantic import BaseModel, Field
 
-from agent_sandbox.events.models import (
+from agent_sandbox.events.models import WorkflowNodeEnvelope
+from agent_sandbox.events.provider_models import (
     AgentEnqueuePromptEffectDefinition,
     AgentPromptEffectDefinition,
     VmCreateEffectDefinition,
-    WorkflowNodeEnvelope,
 )
 from agent_sandbox.models import SessionManifest, ToolName, VmActionResult
 
