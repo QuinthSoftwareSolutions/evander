@@ -81,3 +81,98 @@ def test_get_latest_detects_config_file_replacement(tmp_path: Path) -> None:
 
     assert changed is True
     assert latest.poll_interval_seconds == 9
+
+
+def test_load_config_compiles_await_agent_templates_to_explicit_triggers(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    project_dir = tmp_path
+    path = _config_path(project_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "triggers": [
+                    {
+                        "id": "cron-1",
+                        "display_name": "Every minute",
+                        "type": "trigger:cron",
+                        "expression": "* * * * *",
+                    }
+                ],
+                "effects": [
+                    {
+                        "id": "effect-1",
+                        "display_name": "Prompt",
+                        "type": "effect:agent:prompt",
+                        "session_id": "session-1",
+                        "prompt": "Continue",
+                    }
+                ],
+                "gates": [
+                    {
+                        "id": "await-agent-1",
+                        "display_name": "Await agent",
+                        "type": "gate:await-agent",
+                        "session_id": "session-1",
+                        "outputs": {},
+                    }
+                ],
+                "edges": [
+                    {"source_id": "cron-1", "target_id": "effect-1"},
+                    {"source_id": "effect-1", "target_id": "await-agent-1"},
+                ],
+                "workflow_transforms": ["await_agent_completion"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_trigger_orchestrator_worker_global_config(project_dir, base_config=GatewayConfig(runtime_dir=runtime_dir))
+
+    assert any(trigger.type == "trigger:agent:run:completed" for trigger in config.triggers)
+    await_gate = next(gate for gate in config.gates if gate.type == "gate:await-agent")
+    assert await_gate.completion_trigger_id == "__await-agent-completion__"
+
+
+def test_load_config_composes_workflow_pack_ir(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    project_dir = tmp_path
+    path = _config_path(project_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    packs_dir = project_dir / "config" / "workflow-packs"
+    packs_dir.mkdir(parents=True, exist_ok=True)
+    (packs_dir / "synthetic-trivial.v1.json").write_text(
+        json.dumps(
+            {
+                "pack_id": "synthetic-trivial",
+                "pack_version": "v1",
+                "ir": {
+                    "version": "v1",
+                    "nodes": [
+                        {
+                            "id": "trigger-cron-synthetic",
+                            "display_name": "Synthetic tick",
+                            "type": "trigger:cron",
+                            "expression": "* * * * *",
+                        },
+                        {
+                            "id": "effect-log-synthetic",
+                            "display_name": "Synthetic script",
+                            "type": "effect:bash:script",
+                            "script_path": "/bin/echo",
+                            "args": ["synthetic-workflow"],
+                        },
+                    ],
+                    "edges": [{"source_id": "trigger-cron-synthetic", "target_id": "effect-log-synthetic"}],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    path.write_text(json.dumps({"workflow_packs": ["synthetic-trivial.v1.json"]}), encoding="utf-8")
+
+    config = load_trigger_orchestrator_worker_global_config(project_dir, base_config=GatewayConfig(runtime_dir=runtime_dir))
+
+    assert [trigger.id for trigger in config.triggers] == ["trigger-cron-synthetic"]
+    assert [effect.id for effect in config.effects] == ["effect-log-synthetic"]
+    assert len(config.edges) == 1

@@ -6,53 +6,55 @@ import logging
 import os
 import random
 import time
-from copy import deepcopy
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import RLock
-from typing import Any, Generic, TypeVar
+from typing import Any, Generic, Literal, TypeVar
 
 from pydantic import BaseModel, Field
 
-from .admin_service import AdminService
-from .agent_prompt_queue import AgentPromptQueueStore, QueuedAgentPromptRecord
-from .agent_completion_watcher import build_agent_run_completed_event
-from .config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
-from .effects.registry import EffectProviderFactory
+from .config import GatewayConfig, OrchestrationCoreConfig, TriggerOrchestratorWorkerGlobalConfig
+from .effects.registry import EffectProviderFactory, EffectProviderRegistry
 from .events.models import (
     EffectDefinitionDiscriminated,
     GateDefinitionDiscriminated,
+    materialize_node_definition,
     NODE_OUTPUTS_CONTEXT_KEY,
     QueryDefinitionDiscriminated,
     validate_output_mapping_keys,
     TriggerDefinitionDiscriminated,
     TriggerEvent,
 )
+from .gates.registry import GateProviderFactory, GateProviderRegistry
 from .gate_runtime import (
     GateRuntimeError,
-    filter_when_matches,
-    filter_payload_matches,
     require_object_payload,
 )
 from .host_heartbeat_worker import _single_instance_lock
+from .orchestration.adapters import (
+    EffectCompletionPublisherAdapter,
+    EffectDependencyResolverAdapter,
+    EffectEventFetcherAdapter,
+    EffectLoopExecution,
+    EffectExecutionRecorderAdapter,
+)
 from .provider_config import ProviderConfigResolver
-from .queries.registry import QueryProviderFactory
-from .runtime import RuntimeContext, build_runtime
-from .storage import JsonStore
+from .queries.registry import QueryProviderFactory, QueryProviderRegistry
+from .runtime import RuntimeContext
+from .app_bootstrap import build_runtime
+from .platform_integrations import PlatformServiceBundle, RuntimeAssemblyInterface
 from .triggers.queue import TriggerEventQueue, TriggerQueueRecord
 from .workflow_runtime_config import (
     FixedTriggerOrchestratorWorkerGlobalConfigReloader,
     TriggerOrchestratorWorkerGlobalConfigReloader,
     load_trigger_orchestrator_worker_global_config,
 )
-from .workflow_events import NotifyingJsonStore, WorkflowEventJournal
+from .workflow_events import WorkflowEventJournal
 from .workflow_binding import (
     BindingResolutionError,
     resolve_effect_config_bindings,
-    resolve_gate_map_bindings,
-    resolve_workflow_bindings,
 )
 from .workflow_graph import (
     WorkflowGraphCycleError,
@@ -62,18 +64,38 @@ from .workflow_graph import (
     index_declared_outputs,
     would_form_cycle,
 )
+from .workflow_engine.node_executors import (
+    NodeExecutorRegistry,
+    ProviderEffectNodeExecutor,
+    ProviderQueryNodeExecutor,
+)
+from .workflow_engine import OrchestrationLoop
+from .workflow_plugins import load_provider_plugins
+from .orchestration.kernels import PollingKernelConfig, PollingOrchestratorKernel
+from .orchestration.wiring import EffectWorkerWiring, build_effect_worker_wiring
+from .orchestration.effect_extensions import SpecialEventResult
+from .gates.providers.await_agent import AwaitAgentPendingRecord, _await_agent_pending_target
 
 logger = logging.getLogger(__name__)
 
-_MAX_GRAPH_DEPTH = 16
-_MAX_EVENTS_PER_CYCLE = 200
-_AWAIT_AGENT_STALE_GRACE_SECONDS = 120
+_DEFAULT_MAX_GRAPH_DEPTH = 16
+_DEFAULT_MAX_EVENTS_PER_CYCLE = 200
 _BRANCH_PORT_PAYLOAD_KEY = "__branch_port"
 _FOR_EXECUTION_IDS_PAYLOAD_KEY = "__for_execution_ids"
 WorkflowNodeDefinition = (
     TriggerDefinitionDiscriminated | GateDefinitionDiscriminated | EffectDefinitionDiscriminated | QueryDefinitionDiscriminated
 )
 TRecord = TypeVar("TRecord", bound=BaseModel)
+
+
+class _LockManager:
+    def lock(self, path: Path):
+        return _single_instance_lock(path)
+
+
+class _Sleeper:
+    def sleep(self, seconds: float) -> None:
+        time.sleep(seconds)
 
 
 class EffectExecutionRecord(BaseModel):
@@ -123,28 +145,6 @@ class GateExecutionRecord(BaseModel):
     config_revision: str | None = None
 
 
-class AwaitAgentPendingRecord(BaseModel):
-    gate_id: str = Field(min_length=1)
-    dispatch_id: str = Field(min_length=1)
-    prompt_event_id: str = Field(min_length=1)
-    prompt_source_node_id: str = Field(min_length=1)
-    trace_id: str = Field(min_length=1)
-    session_id: str | None = None
-    vm_name: str | None = None
-    payload: dict[str, Any] = Field(default_factory=dict)
-    occurred_at: datetime
-
-
-class ForGateStateRecord(BaseModel):
-    key: str = Field(min_length=1)
-    gate_id: str = Field(min_length=1)
-    trace_id: str = Field(min_length=1)
-    for_execution_id: str = Field(min_length=1)
-    next_index: int = Field(ge=0)
-    item_count: int = Field(ge=0)
-    updated_at: datetime
-
-
 @dataclass(frozen=True)
 class ExecutionGraph:
     nodes_by_id: dict[str, WorkflowNodeDefinition]
@@ -177,130 +177,82 @@ class EffectOrchestratorWorker:
         self,
         *,
         config: GatewayConfig,
-        worker_config: TriggerOrchestratorWorkerGlobalConfig,
+        core_config: OrchestrationCoreConfig | None = None,
+        worker_config: TriggerOrchestratorWorkerGlobalConfig | None = None,
         config_reloader: TriggerOrchestratorWorkerGlobalConfigReloader | None = None,
         runtime: RuntimeContext,
+        provider_config_resolver: ProviderConfigResolver | None = None,
+        wiring: EffectWorkerWiring | None = None,
     ) -> None:
         self.config = config
-        self.worker_config = worker_config
-        self._config_reloader = config_reloader or FixedTriggerOrchestratorWorkerGlobalConfigReloader(worker_config)
+        selected_config = core_config or worker_config
+        if selected_config is None:
+            raise ValueError("EffectOrchestratorWorker requires either core_config or worker_config")
+        self.worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(selected_config.model_dump(mode="json"))
+        self._config_reloader = config_reloader or FixedTriggerOrchestratorWorkerGlobalConfigReloader(self.worker_config)
         self.runtime = runtime
-        self.workflow_event_journal = WorkflowEventJournal(worker_config.workflow_event_journal_path)
-        self.event_queue = TriggerEventQueue(
-            worker_config.event_queue_store_path,
-            journal_path=worker_config.workflow_event_journal_path,
+        resolved_wiring = wiring or build_effect_worker_wiring(
+            config=config,
+            worker_config=self.worker_config,
+            runtime=runtime,
+            provider_config_resolver=provider_config_resolver,
         )
-        self.lock_path = _resolve_worker_path(
-            worker_config,
-            "gate_lock_path",
-            fallback=worker_config.effect_lock_path or (worker_config.runtime_dir / "effect-orchestrator.lock"),
-        )
-        self.cursor_path = _resolve_worker_path(
-            worker_config,
-            "gate_cursor_store_path",
-            fallback=worker_config.effect_cursor_store_path or (worker_config.runtime_dir / "effect-orchestrator-cursors.json"),
-        )
-        self.execution_store_path = worker_config.effect_execution_store_path
-        self.execution_store = JsonExecutionStore(
-            self.execution_store_path,
-            journal_path=worker_config.workflow_event_journal_path,
-        )
+        self.provider_config_resolver = resolved_wiring.provider_config_resolver
+        self.workflow_event_journal = resolved_wiring.workflow_event_journal
+        self.event_queue = resolved_wiring.event_queue
+        self.lock_path = resolved_wiring.lock_path
+        self.cursor_path = resolved_wiring.cursor_path
+        self.execution_store_path = self.worker_config.effect_execution_store_path
+        self.execution_store = resolved_wiring.execution_store
         self.gate_execution_store_path = _resolve_worker_path(
-            worker_config,
+            self.worker_config,
             "gate_execution_store_path",
-            fallback=worker_config.runtime_dir / "gate-orchestrator-executions.json",
+            fallback=self.worker_config.runtime_dir / "gate-orchestrator-executions.json",
         )
-        self.gate_execution_store = JsonGateExecutionStore(
-            self.gate_execution_store_path,
-            journal_path=worker_config.workflow_event_journal_path,
-        )
-        self.await_agent_store = NotifyingJsonStore(
-            worker_config.runtime_dir / "await-agent-pending.json",
-            AwaitAgentPendingRecord,
-            journal_path=worker_config.workflow_event_journal_path,
-            source="await_agent_pending",
-        )
-        self.queued_agent_prompt_store = AgentPromptQueueStore(worker_config.runtime_dir / "queued-agent-prompts.json")
-        self.for_gate_state_store = JsonStore(worker_config.runtime_dir / "for-gate-state.json", ForGateStateRecord)
-        self._executor = ThreadPoolExecutor(
-            max_workers=max(1, min(32, max(1, (os.cpu_count() or 1) * 4))),
-            thread_name_prefix="effect-orchestrator",
-        )
+        self.gate_execution_store = resolved_wiring.gate_execution_store
+        self.queued_agent_prompt_store = resolved_wiring.queued_agent_prompt_store
+        self._executor = resolved_wiring.executor
         self._inflight: dict[str, InflightExecution] = {}
         self._inflight_lock = RLock()
         self._last_graph_revision: str | None = None
         self._last_graph_node_count = 0
         self._last_graph_edge_count = 0
-        self.provider_factory = EffectProviderFactory(
-            ProviderConfigResolver(config),
-            admin_service=AdminService(config.runtime_dir),
-            env=dict(os.environ),
-        )
-        self.query_provider_factory = QueryProviderFactory(
-            ProviderConfigResolver(config),
-            admin_service=AdminService(config.runtime_dir),
-            env=dict(os.environ),
-        )
+        self.provider_factory = resolved_wiring.provider_factory
+        self.query_provider_factory = resolved_wiring.query_provider_factory
+        self.gate_provider_factory = resolved_wiring.gate_provider_factory
+        self.agent_run_status_port = getattr(resolved_wiring, "agent_run_status_port", None)
+        self.agent_prompt_dispatch_port = getattr(resolved_wiring, "agent_prompt_dispatch_port", None)
+        self._effect_provider_class_registry = getattr(self.provider_factory, "registry", None)
+        self.gate_executor_registry = NodeExecutorRegistry()
+        self.effect_executor_registry = NodeExecutorRegistry()
+        self.query_executor_registry = NodeExecutorRegistry()
+        self._register_default_node_executors()
+        self._gate_providers: dict[str, Any] = {}
+        self._gate_provider_factory_cache_id = id(self.gate_provider_factory)
+        self._special_event_handlers = resolved_wiring.special_event_handlers
+        self._lifecycle_reconciliation_hooks = resolved_wiring.lifecycle_reconciliation_hooks
+        self._completion_dispatch_hooks = resolved_wiring.completion_dispatch_hooks
         self.event_queue.reset_inflight()
+        self._kernel = PollingOrchestratorKernel(
+            config=PollingKernelConfig(
+                poll_interval_seconds=self.worker_config.poll_interval_seconds,
+                jitter_seconds=self.worker_config.jitter_seconds,
+                lock_path=self.lock_path,
+            ),
+            lock_manager=_LockManager(),
+            sleeper=_Sleeper(),
+            run_cycle=self.run_once,
+            get_sleep_seconds=lambda result: result.next_sleep_seconds,
+        )
 
     def run_forever(self) -> None:
-        with _single_instance_lock(self.lock_path):
-            logger.info(
-                "Workflow orchestrator started poll_interval=%.3f jitter=%.3f lock=%s",
-                self.worker_config.poll_interval_seconds,
-                self.worker_config.jitter_seconds,
-                self.lock_path,
-            )
-            while True:
-                try:
-                    result = self.run_once()
-                except Exception:
-                    logger.exception("Workflow orchestrator cycle failed")
-                    time.sleep(
-                        _compute_backoff_sleep_seconds(
-                            poll_interval_seconds=self.worker_config.poll_interval_seconds,
-                            jitter_seconds=self.worker_config.jitter_seconds,
-                        )
-                    )
-                    continue
-                logger.debug(
-                    "Workflow orchestrator cycle complete pending=%d processed=%d executed=%d published=%d sleep_seconds=%.3f",
-                    result.pending_events_scanned,
-                    result.events_processed,
-                    result.effect_executions,
-                    result.completion_events_published,
-                    result.next_sleep_seconds,
-                )
-                time.sleep(result.next_sleep_seconds)
+        self._kernel.run_forever()
 
     def run_once_with_lock(self) -> EffectOrchestratorCycleResult:
-        with _single_instance_lock(self.lock_path):
-            return self.run_once()
+        return self._kernel.run_once_with_lock()
 
     def force_complete_await_agent(self, dispatch_id: str) -> bool:
-        normalized_dispatch_id = str(dispatch_id or "").strip()
-        if not normalized_dispatch_id:
-            raise ValueError("dispatch_id is required")
-        _key, pending = next(
-            (
-                (record_key, record)
-                for record_key, record in self.await_agent_store.read_all().items()
-                if record.dispatch_id == normalized_dispatch_id
-            ),
-            (None, None),
-        )
-        if pending is None:
-            return False
-        graph = _build_execution_graph(self.worker_config)
-        completed = self._complete_pending_await_agent_directly(
-            pending=pending,
-            gate=graph.gates_by_id.get(pending.gate_id),
-            log_skips=True,
-            key=_key,
-        )
-        if completed:
-            self.run_once_with_lock()
-        return completed
+        return self._run_force_complete_hooks(dispatch_id=dispatch_id)
 
     def run_once(self) -> EffectOrchestratorCycleResult:
         latest_config, _changed = self._config_reloader.get_latest()
@@ -319,27 +271,58 @@ class EffectOrchestratorWorker:
             node_count=len(graph.nodes_by_id),
             edge_count=len(latest_config.edges),
         )
-        self._reconcile_await_agent_pending(graph=graph)
-        completion_events_published += self._complete_pending_await_agent_gates_directly(graph=graph)
-        completion_events_published += self._complete_waiting_agent_prompt_effects_directly()
-        completion_events_published += self._dispatch_queued_agent_prompts_directly()
+        completion_events_published += self._reconcile_gate_providers(graph=graph)
+        completion_events_published += self._run_waiting_reconciliation_hooks()
 
         completed_count, published_count = self._reap_completed_futures()
         effect_executions_completed += completed_count
         completion_events_published += published_count
-        completion_events_published += self._dispatch_queued_agent_prompts_directly()
+        completion_events_published += self._run_post_completion_dispatch_hooks()
 
-        while events_processed < _MAX_EVENTS_PER_CYCLE:
-            pending = self.event_queue.list_pending(limit=1)
-            if not pending:
-                break
-            pending_events_scanned += 1
-            queue_record = pending[0]
-            execution_count = self._process_event_record(queue_record, graph=graph, config_revision=config_revision)
+        loop = OrchestrationLoop[
+            TriggerQueueRecord,
+            tuple[ExecutionGraph, str, dict[str, Any]],
+            EffectLoopExecution,
+        ](
+            event_fetcher=EffectEventFetcherAdapter(
+                fetch_pending=lambda: (self.event_queue.list_pending(limit=1) or [None])[0]
+            ),
+            dependency_resolver=EffectDependencyResolverAdapter(
+                dependency_factory=lambda _queue_record: (graph, config_revision, cursor_payload)
+            ),
+            execution_recorder=EffectExecutionRecorderAdapter(
+                record_event_processed=lambda queue_record: (
+                    self._update_event_delivery_state(queue_record.event_id),
+                    _update_cursor_payload(cursor_payload, queue_record),
+                )
+            ),
+            completion_publisher=EffectCompletionPublisherAdapter(),
+        )
+
+        def _resolve_and_execute(
+            queue_record: TriggerQueueRecord,
+            dependency: tuple[ExecutionGraph, str, dict[str, Any]],
+        ) -> EffectLoopExecution:
+            nonlocal effect_executions_started
+            resolved_graph, resolved_config_revision, _cursor = dependency
+            execution_count = self._process_event_record(
+                queue_record,
+                graph=resolved_graph,
+                config_revision=resolved_config_revision,
+            )
             effect_executions_started += execution_count
-            events_processed += 1
-            self._update_event_delivery_state(queue_record.event_id)
-            _update_cursor_payload(cursor_payload, queue_record)
+            return EffectLoopExecution(
+                queue_record=queue_record,
+                execution_count=execution_count,
+                published_count=0,
+            )
+
+        loop_result = loop.run_once(
+            max_events=max(1, int(getattr(latest_config, "max_events_per_cycle", _DEFAULT_MAX_EVENTS_PER_CYCLE))),
+            resolve_and_execute=_resolve_and_execute,
+        )
+        pending_events_scanned = loop_result.events_scanned
+        events_processed = loop_result.events_scanned
 
         _save_cursor_payload(self.cursor_path, cursor_payload)
         next_sleep_seconds = _compute_next_sleep_seconds(
@@ -365,8 +348,12 @@ class EffectOrchestratorWorker:
         outbound_edges = _matching_outbound_edges(queue_record=queue_record, graph=graph)
         is_agent_completion_event = queue_record.trigger_type == "trigger:agent:run:completed"
         source_node_exists = queue_record.trigger_id in graph.nodes_by_id
-        if is_agent_completion_event and not source_node_exists:
-            self._handle_agent_completion_event(queue_record=queue_record, graph=graph)
+        if not source_node_exists and self._run_special_event_handlers(
+            queue_record=queue_record,
+            graph=graph,
+            phase="pre",
+            source_node_exists=False,
+        ):
             return 0
 
         if not source_node_exists:
@@ -407,8 +394,9 @@ class EffectOrchestratorWorker:
                 )
                 continue
 
-            depth = _compute_depth(target_node_id, graph.downstream_index)
-            if depth > _MAX_GRAPH_DEPTH:
+            max_graph_depth = max(1, int(getattr(self.worker_config, "max_graph_depth", _DEFAULT_MAX_GRAPH_DEPTH)))
+            depth = _compute_depth(target_node_id, graph.downstream_index, max_graph_depth=max_graph_depth)
+            if depth > max_graph_depth:
                 self._write_skipped_node_record(
                     queue_record=queue_record,
                     node=node,
@@ -444,21 +432,161 @@ class EffectOrchestratorWorker:
                 execution_count += 1
 
         if is_agent_completion_event:
-            self._handle_agent_completion_event(queue_record=queue_record, graph=graph)
+            self._run_special_event_handlers(
+                queue_record=queue_record,
+                graph=graph,
+                phase="post",
+                source_node_exists=True,
+            )
 
         return execution_count
 
-    def _handle_agent_completion_event(
+    def _build_execution_graph(self) -> ExecutionGraph:
+        return _build_execution_graph(self.worker_config)
+
+    def _get_gate_provider(self, gate_type: str) -> Any | None:
+        if id(self.gate_provider_factory) != self._gate_provider_factory_cache_id:
+            self._gate_providers.clear()
+            self._gate_provider_factory_cache_id = id(self.gate_provider_factory)
+        cached = self._gate_providers.get(gate_type)
+        if cached is not None:
+            return cached
+        try:
+            provider = self.gate_provider_factory.build(gate_type)  # type: ignore[arg-type]
+        except KeyError:
+            return None
+        provider.load_state(worker=self)
+        self._gate_providers[gate_type] = provider
+        return provider
+
+    def _register_default_node_executors(self) -> None:
+        provider_effect_executor = ProviderEffectNodeExecutor(provider_factory_getter=lambda: self.provider_factory)
+        provider_query_executor = ProviderQueryNodeExecutor(provider_factory_getter=lambda: self.query_provider_factory)
+
+        for gate_type in self.gate_provider_factory.registry.registered_types():
+            self.gate_executor_registry.register(gate_type, gate_type)
+        for effect_type in self.provider_factory.registry.registered_types():
+            self.effect_executor_registry.register(effect_type, provider_effect_executor)
+        for query_type in self.query_provider_factory.registry.registered_types():
+            self.query_executor_registry.register(query_type, provider_query_executor)
+
+    def _effect_provider_class(self, effect_type: str) -> Any | None:
+        registry = getattr(self.provider_factory, "registry", None)
+        if registry is None:
+            registry = self._effect_provider_class_registry
+        if registry is None:
+            return None
+        try:
+            return registry.resolve(effect_type)  # type: ignore[arg-type]
+        except (AttributeError, KeyError):
+            return None
+
+    def _run_waiting_reconciliation_hooks(self) -> int:
+        reconciled = 0
+        graph = self._build_execution_graph()
+        for hook in self._lifecycle_reconciliation_hooks:
+            reconciled += int(hook.reconcile(worker=self, graph=graph) or 0)
+        return reconciled
+
+    def _run_post_completion_dispatch_hooks(self) -> int:
+        dispatched = 0
+        for hook in self._completion_dispatch_hooks:
+            dispatched += int(hook.dispatch(worker=self) or 0)
+        return dispatched
+
+    def _run_special_event_handlers(
         self,
         *,
         queue_record: TriggerQueueRecord,
         graph: ExecutionGraph,
-    ) -> None:
-        self._complete_waiting_agent_prompt_effects(queue_record=queue_record)
-        for gate in graph.gates_by_id.values():
-            if getattr(gate, "type", "") != "gate:await-agent":
+        phase: Literal["pre", "post"],
+        source_node_exists: bool,
+    ) -> bool:
+        consumed = False
+        for handler in self._special_event_handlers:
+            result = handler.handle_event(
+                worker=self,
+                queue_record=queue_record,
+                graph=graph,
+                phase=phase,
+                source_node_exists=source_node_exists,
+            )
+            normalized = result or SpecialEventResult()
+            consumed = consumed or normalized.consume_event
+        return consumed
+
+    def _run_force_complete_hooks(self, *, dispatch_id: str) -> bool:
+        for handler in self._special_event_handlers:
+            if bool(handler.force_complete(worker=self, dispatch_id=dispatch_id)):
+                return True
+        return False
+
+    def _dispatch_registered_gate(
+        self,
+        *,
+        queue_record: TriggerQueueRecord,
+        gate: GateDefinitionDiscriminated,
+        graph: ExecutionGraph,
+        started_at: datetime,
+        config_revision: str,
+        upstream_payload: dict[str, dict[str, Any]],
+        upstream_output_names: dict[str, set[str]],
+        inputs_by_source: dict[str, dict[str, Any]],
+        input_event_ids_by_source: dict[str, str],
+        input_occurred_at_by_source: dict[str, datetime],
+    ) -> bool:
+        if self.gate_executor_registry.get(gate.type) is None:
+            return False
+        provider = self._get_gate_provider(gate.type)
+        if provider is None:
+            return False
+        materialized_gate = materialize_node_definition(gate)
+        return bool(
+            provider.execute(
+                worker=self,
+                queue_record=queue_record,
+                gate=materialized_gate,
+                graph=graph,
+                started_at=started_at,
+                config_revision=config_revision,
+                upstream_payload=upstream_payload,
+                upstream_output_names=upstream_output_names,
+                inputs_by_source=inputs_by_source,
+                input_event_ids_by_source=input_event_ids_by_source,
+                input_occurred_at_by_source=input_occurred_at_by_source,
+            )
+        )
+
+    def _handle_gate_completion_event(self, *, queue_record: TriggerQueueRecord, graph: ExecutionGraph) -> int:
+        completed = 0
+        for gate_type in {gate.type for gate in graph.gates_by_id.values()}:
+            provider = self._get_gate_provider(gate_type)
+            if provider is None:
                 continue
-            self._execute_await_agent_completion(queue_record=queue_record, gate=gate)
+            completed += int(provider.handle_completion_event(worker=self, queue_record=queue_record, graph=graph) or 0)
+        return completed
+
+    def _reconcile_gate_providers(self, *, graph: ExecutionGraph) -> int:
+        reconciled = 0
+        for gate_type in {gate.type for gate in graph.gates_by_id.values()}:
+            provider = self._get_gate_provider(gate_type)
+            if provider is None:
+                continue
+            reconciled += int(provider.reconcile(worker=self, graph=graph) or 0)
+        return reconciled
+
+    @staticmethod
+    def _require_object_payload(value: Any, *, gate_type: str) -> dict[str, Any]:
+        return require_object_payload(value, gate_type=gate_type)
+
+    @staticmethod
+    def _system_value_resolver_for(*, started_at: datetime, queue_record: TriggerQueueRecord, node_id: str):
+        return _system_value_resolver(
+            started_at=started_at,
+            trace_id=queue_record.trace_id,
+            event_id=queue_record.event_id,
+            node_id=node_id,
+        )
 
     def _dispatch_query(
         self,
@@ -604,8 +732,19 @@ class EffectOrchestratorWorker:
             return False
 
         resolved_config = resolved.resolved_config if isinstance(resolved.resolved_config, dict) else {}
+        executor = self.effect_executor_registry.get(effect.type)
+        if executor is None:
+            self._write_failed_effect_record(
+                queue_record=queue_record,
+                effect=effect,
+                started_at=started_at,
+                resolved_config=resolved_config,
+                config_revision=config_revision,
+                error=f"no_effect_executor_registered:{effect.type}",
+            )
+            return False
         try:
-            resolved_config = _prepare_effect_resolved_config(
+            resolved_config = executor.prepare_resolved_config(
                 effect=effect,
                 resolved_config=resolved_config,
                 upstream_payload=upstream_payload,
@@ -674,149 +813,32 @@ class EffectOrchestratorWorker:
         input_occurred_at_by_source = {queue_record.trigger_id: queue_record.occurred_at}
 
         try:
-            if gate.type == "gate:filter":
-                raw_filter_config = gate.when if gate.when is not None else gate.match
-                resolved = resolve_workflow_bindings(
-                    raw_filter_config,
-                    upstream_payload,
-                    upstream_output_names,
-                    system_value_resolver=_system_value_resolver(
-                        started_at=started_at,
-                        trace_id=queue_record.trace_id,
-                        event_id=queue_record.event_id,
-                        node_id=gate.id,
-                    ),
-                    strict_validation=True,
-                )
-                resolved_filter = resolved.resolved_config
-                resolved_config = {"when": resolved_filter} if gate.when is not None else {"match": resolved_filter}
-                matches = (
-                    filter_when_matches(resolved_filter)
-                    if gate.when is not None
-                    else filter_payload_matches(resolved_filter, queue_record.payload)
-                )
-                if matches:
-                    outputs = {
-                        key: value
-                        for key, value in queue_record.payload.items()
-                        if key not in {NODE_OUTPUTS_CONTEXT_KEY, _BRANCH_PORT_PAYLOAD_KEY, _FOR_EXECUTION_IDS_PAYLOAD_KEY}
-                    }
-                    self._write_gate_record(
-                        queue_record=queue_record,
-                        gate=gate,
-                        status="succeeded",
-                        started_at=started_at,
-                        resolved_config=resolved_config,
-                        outputs=outputs,
-                        inputs_by_source=inputs_by_source,
-                        input_event_ids_by_source=input_event_ids_by_source,
-                        input_occurred_at_by_source=input_occurred_at_by_source,
-                        config_revision=config_revision,
-                        publish_completion_event=True,
-                    )
-                    return
-
-                self._write_gate_record(
-                    queue_record=queue_record,
-                    gate=gate,
-                    status="dropped",
-                    started_at=started_at,
-                    resolved_config=resolved_config,
-                    outputs={},
-                    inputs_by_source=inputs_by_source,
-                    input_event_ids_by_source=input_event_ids_by_source,
-                    input_occurred_at_by_source=input_occurred_at_by_source,
-                    config_revision=config_revision,
-                )
-                return
-
-            if gate.type == "gate:map":
-                resolved = resolve_gate_map_bindings(
-                    gate.template,
-                    upstream_payload,
-                    upstream_output_names,
-                    system_value_resolver=_system_value_resolver(
-                        started_at=started_at,
-                        trace_id=queue_record.trace_id,
-                        event_id=queue_record.event_id,
-                        node_id=gate.id,
-                    ),
-                    strict_validation=True,
-                )
-                outputs = require_object_payload(resolved.resolved_config, gate_type="gate:map")
-                self._write_gate_record(
-                    queue_record=queue_record,
-                    gate=gate,
-                    status="succeeded",
-                    started_at=started_at,
-                    resolved_config={"template": outputs},
-                    outputs=outputs,
-                    inputs_by_source=inputs_by_source,
-                    input_event_ids_by_source=input_event_ids_by_source,
-                    input_occurred_at_by_source=input_occurred_at_by_source,
-                    config_revision=config_revision,
-                    publish_completion_event=True,
-                )
-                return
-
-            if gate.type == "gate:await-agent":
-                resolved = resolve_workflow_bindings(
-                    {
-                        "session_id": gate.session_id,
-                        "vm_name": gate.vm_name,
-                    },
-                    upstream_payload,
-                    upstream_output_names,
-                    system_value_resolver=_system_value_resolver(
-                        started_at=started_at,
-                        trace_id=queue_record.trace_id,
-                        event_id=queue_record.event_id,
-                        node_id=gate.id,
-                    ),
-                    strict_validation=True,
-                )
-                self._register_await_agent_prompt(
-                    queue_record=queue_record,
-                    gate=gate,
-                    resolved_config=require_object_payload(resolved.resolved_config, gate_type="gate:await-agent"),
-                    config_revision=config_revision,
-                )
-                return
-
-            if gate.type == "gate:for":
-                resolved = resolve_workflow_bindings(
-                    {
-                        "items": gate.items,
-                    },
-                    upstream_payload,
-                    upstream_output_names,
-                    system_value_resolver=_system_value_resolver(
-                        started_at=started_at,
-                        trace_id=queue_record.trace_id,
-                        event_id=queue_record.event_id,
-                        node_id=gate.id,
-                    ),
-                    strict_validation=True,
-                )
-                self._execute_for_gate(
-                    queue_record=queue_record,
-                    gate=gate,
-                    graph=graph,
-                    resolved_config=require_object_payload(resolved.resolved_config, gate_type="gate:for"),
-                    inputs_by_source=inputs_by_source,
-                    input_event_ids_by_source=input_event_ids_by_source,
-                    input_occurred_at_by_source=input_occurred_at_by_source,
-                    started_at=started_at,
-                    config_revision=config_revision,
-                )
-                return
-
-            self._execute_merge_gate(
+            if self._dispatch_registered_gate(
                 queue_record=queue_record,
                 gate=gate,
                 graph=graph,
                 started_at=started_at,
                 config_revision=config_revision,
+                upstream_payload=upstream_payload,
+                upstream_output_names=upstream_output_names,
+                inputs_by_source=inputs_by_source,
+                input_event_ids_by_source=input_event_ids_by_source,
+                input_occurred_at_by_source=input_occurred_at_by_source,
+            ):
+                return
+
+            self._write_gate_record(
+                queue_record=queue_record,
+                gate=gate,
+                status="failed",
+                started_at=started_at,
+                resolved_config={},
+                outputs={},
+                inputs_by_source=inputs_by_source,
+                input_event_ids_by_source=input_event_ids_by_source,
+                input_occurred_at_by_source=input_occurred_at_by_source,
+                config_revision=config_revision,
+                error=f"no_gate_provider_registered:{gate.type}",
             )
         except (BindingResolutionError, GateRuntimeError) as exc:
             self._write_gate_record(
@@ -833,558 +855,20 @@ class EffectOrchestratorWorker:
                 error=str(exc),
             )
 
-    def _execute_merge_gate(
+    def _execute_provider(self, *, effect: EffectDefinitionDiscriminated, resolved_config: dict[str, Any]) -> dict[str, Any]:
+        executor = self.effect_executor_registry.resolve(effect.type)
+        return dict(executor.execute(effect=effect, resolved_config=resolved_config) or {})
+
+    def _execute_query_provider(
         self,
         *,
-        queue_record: TriggerQueueRecord,
-        gate: GateDefinitionDiscriminated,
-        graph: ExecutionGraph,
-        started_at: datetime,
-        config_revision: str,
-    ) -> None:
-        previous = self.gate_execution_store.find_latest_by_gate_id(gate.id)
-        inputs_by_source = deepcopy(previous.inputs_by_source) if previous is not None else {}
-        input_event_ids_by_source = dict(previous.input_event_ids_by_source) if previous is not None else {}
-        input_occurred_at_by_source = dict(previous.input_occurred_at_by_source) if previous is not None else {}
-
-        inputs_by_source[queue_record.trigger_id] = dict(queue_record.payload)
-        input_event_ids_by_source[queue_record.trigger_id] = queue_record.event_id
-        input_occurred_at_by_source[queue_record.trigger_id] = queue_record.occurred_at
-
-        required_source_ids = tuple(_edge_source_id(edge) for edge in graph.inbound_index.get(gate.id, ()))
-        shared_output_keys = tuple(sorted((gate.outputs or {}).keys()))
-        resolved_config = {"shared_output_keys": list(shared_output_keys)}
-        outputs = {key: queue_record.payload[key] for key in shared_output_keys if key in queue_record.payload}
-        self._write_gate_record(
-            queue_record=queue_record,
-            gate=gate,
-            status="succeeded",
-            started_at=started_at,
-            resolved_config=resolved_config,
-            outputs=outputs,
-            inputs_by_source=inputs_by_source,
-            input_event_ids_by_source=input_event_ids_by_source,
-            input_occurred_at_by_source=input_occurred_at_by_source,
-            config_revision=config_revision,
-            publish_completion_event=True,
-        )
-
-    def _register_await_agent_prompt(
-        self,
-        *,
-        queue_record: TriggerQueueRecord,
-        gate: GateDefinitionDiscriminated,
+        query: QueryDefinitionDiscriminated,
         resolved_config: dict[str, Any],
-        config_revision: str,
-    ) -> None:
-        started_at = datetime.now(UTC)
-        dispatch_id = str(queue_record.payload.get("dispatch_id") or "").strip()
-        session_id = str(resolved_config.get("session_id") or "").strip() or None
-        vm_name = str(resolved_config.get("vm_name") or "").strip() or None
-        if not dispatch_id:
-            self._write_gate_record(
-                queue_record=queue_record,
-                gate=gate,
-                status="failed",
-                started_at=started_at,
-                resolved_config=resolved_config,
-                outputs={},
-                inputs_by_source={queue_record.trigger_id: dict(queue_record.payload)},
-                input_event_ids_by_source={queue_record.trigger_id: queue_record.event_id},
-                input_occurred_at_by_source={queue_record.trigger_id: queue_record.occurred_at},
-                config_revision=config_revision,
-                error="gate:await-agent requires upstream effect output dispatch_id",
-            )
-            return
-        if session_id is None and vm_name is None:
-            self._write_gate_record(
-                queue_record=queue_record,
-                gate=gate,
-                status="failed",
-                started_at=started_at,
-                resolved_config=resolved_config,
-                outputs={},
-                inputs_by_source={queue_record.trigger_id: dict(queue_record.payload)},
-                input_event_ids_by_source={queue_record.trigger_id: queue_record.event_id},
-                input_occurred_at_by_source={queue_record.trigger_id: queue_record.occurred_at},
-                config_revision=config_revision,
-                error="gate:await-agent requires resolved session_id or vm_name",
-            )
-            return
+    ) -> dict[str, Any]:
+        executor = self.query_executor_registry.resolve(query.type)
+        return dict(executor.execute(query=query, resolved_config=resolved_config) or {})
 
-        key = f"{gate.id}:{dispatch_id}"
-        self.await_agent_store.put(
-            key,
-            AwaitAgentPendingRecord(
-                gate_id=gate.id,
-                dispatch_id=dispatch_id,
-                prompt_event_id=queue_record.event_id,
-                prompt_source_node_id=queue_record.trigger_id,
-                trace_id=queue_record.trace_id,
-                session_id=session_id,
-                vm_name=vm_name,
-                payload=dict(queue_record.payload),
-                occurred_at=queue_record.occurred_at,
-            ),
-        )
-        self._write_gate_record(
-            queue_record=queue_record,
-            gate=gate,
-            status="waiting",
-            started_at=started_at,
-            resolved_config={
-                **resolved_config,
-                "dispatch_id": dispatch_id,
-                "completion_trigger_id": getattr(gate, "completion_trigger_id", None),
-            },
-            outputs={},
-            inputs_by_source={queue_record.trigger_id: dict(queue_record.payload)},
-            input_event_ids_by_source={queue_record.trigger_id: queue_record.event_id},
-            input_occurred_at_by_source={queue_record.trigger_id: queue_record.occurred_at},
-            config_revision=config_revision,
-        )
-
-    def _execute_for_gate(
-        self,
-        *,
-        queue_record: TriggerQueueRecord,
-        gate: GateDefinitionDiscriminated,
-        graph: ExecutionGraph,
-        resolved_config: dict[str, Any],
-        inputs_by_source: dict[str, dict[str, Any]],
-        input_event_ids_by_source: dict[str, str],
-        input_occurred_at_by_source: dict[str, datetime],
-        started_at: datetime,
-        config_revision: str,
-    ) -> None:
-        raw_items = resolved_config.get("items")
-        if not isinstance(raw_items, list):
-            self._write_gate_record(
-                queue_record=queue_record,
-                gate=gate,
-                status="failed",
-                started_at=started_at,
-                resolved_config=resolved_config,
-                outputs={},
-                inputs_by_source=inputs_by_source,
-                input_event_ids_by_source=input_event_ids_by_source,
-                input_occurred_at_by_source=input_occurred_at_by_source,
-                config_revision=config_revision,
-                error="gate:for items must resolve to an array",
-            )
-            return
-
-        for_execution_id = _resolve_for_gate_execution_id(
-            queue_record=queue_record,
-            gate=gate,
-            graph=graph,
-        )
-        state_key = _for_gate_state_key(
-            gate_id=gate.id,
-            trace_id=queue_record.trace_id,
-            for_execution_id=for_execution_id,
-        )
-        existing_state = self.for_gate_state_store.get(state_key)
-        next_index = existing_state.next_index if existing_state is not None else 0
-        item_count = len(raw_items)
-
-        if next_index < item_count:
-            outputs = {
-                "current_element": raw_items[next_index],
-                "current_index": next_index,
-                "item_count": item_count,
-                "is_done": False,
-            }
-            branch_port = "body"
-            next_state = ForGateStateRecord(
-                key=state_key,
-                gate_id=gate.id,
-                trace_id=queue_record.trace_id,
-                for_execution_id=for_execution_id,
-                next_index=next_index + 1,
-                item_count=item_count,
-                updated_at=datetime.now(UTC),
-            )
-        else:
-            outputs = {
-                "current_index": item_count,
-                "item_count": item_count,
-                "is_done": True,
-            }
-            branch_port = "done"
-            next_state = ForGateStateRecord(
-                key=state_key,
-                gate_id=gate.id,
-                trace_id=queue_record.trace_id,
-                for_execution_id=for_execution_id,
-                next_index=item_count,
-                item_count=item_count,
-                updated_at=datetime.now(UTC),
-            )
-
-        self.for_gate_state_store.put(state_key, next_state)
-        self._write_gate_record(
-            queue_record=queue_record,
-            gate=gate,
-            status="succeeded",
-            started_at=started_at,
-            resolved_config=resolved_config,
-            outputs=outputs,
-            inputs_by_source=inputs_by_source,
-            input_event_ids_by_source=input_event_ids_by_source,
-            input_occurred_at_by_source=input_occurred_at_by_source,
-            config_revision=config_revision,
-            publish_completion_event=True,
-            branch_port=branch_port,
-            for_execution_ids={gate.id: for_execution_id},
-        )
-
-    def _execute_await_agent_completion(
-        self,
-        *,
-        queue_record: TriggerQueueRecord,
-        gate: GateDefinitionDiscriminated,
-    ) -> None:
-        started_at = datetime.now(UTC)
-        dispatch_id = str(queue_record.payload.get("dispatch_id") or "").strip()
-        if not dispatch_id:
-            return
-        key = f"{gate.id}:{dispatch_id}"
-        pending = self.await_agent_store.get(key)
-        if pending is None:
-            return
-
-        outputs = {
-            key_name: value
-            for key_name, value in queue_record.payload.items()
-            if key_name not in {NODE_OUTPUTS_CONTEXT_KEY, _BRANCH_PORT_PAYLOAD_KEY, _FOR_EXECUTION_IDS_PAYLOAD_KEY}
-        }
-        merged_payload = _payload_with_node_output_context(
-            source_payload=pending.payload,
-            source_node_id=pending.prompt_source_node_id,
-            completed_node_id=queue_record.trigger_id,
-            outputs=outputs,
-            reset_context=False,
-        )
-        merged_queue_record = TriggerQueueRecord(
-            event_id=queue_record.event_id,
-            trigger_id=queue_record.trigger_id,
-            trigger_type=queue_record.trigger_type,
-            trace_id=queue_record.trace_id,
-            occurred_at=queue_record.occurred_at,
-            payload=merged_payload,
-            delivery_state=queue_record.delivery_state,
-            delivered_at=queue_record.delivered_at,
-            idempotency_key=queue_record.idempotency_key,
-        )
-        self._write_gate_record(
-            queue_record=merged_queue_record,
-            gate=gate,
-            status="succeeded",
-            started_at=started_at,
-            resolved_config={"dispatch_id": dispatch_id, "completion_trigger_id": getattr(gate, "completion_trigger_id", None)},
-            outputs=outputs,
-            inputs_by_source={
-                pending.prompt_source_node_id: dict(pending.payload),
-                queue_record.trigger_id: dict(queue_record.payload),
-            },
-            input_event_ids_by_source={
-                pending.prompt_source_node_id: pending.prompt_event_id,
-                queue_record.trigger_id: queue_record.event_id,
-            },
-            input_occurred_at_by_source={
-                pending.prompt_source_node_id: pending.occurred_at,
-                queue_record.trigger_id: queue_record.occurred_at,
-            },
-            publish_completion_event=True,
-        )
-        self.await_agent_store.delete(key)
-
-    def _reconcile_await_agent_pending(self, *, graph: ExecutionGraph) -> None:
-        pending_by_key = self.await_agent_store.read_all()
-        if not pending_by_key:
-            return
-
-        try:
-            summaries = self._list_vm_summaries_for_await_agent_reconciliation()
-        except Exception:
-            logger.exception("Await-agent reconciliation failed while listing VMs")
-            return
-
-        summaries_by_vm_name: dict[str, list[Any]] = {}
-        summaries_by_session_id: dict[str, list[Any]] = {}
-        for summary in summaries:
-            vm_name = str(getattr(summary, "vm_name", "") or "").strip()
-            if vm_name:
-                summaries_by_vm_name.setdefault(vm_name, []).append(summary)
-            for session_id in getattr(summary, "session_ids", []) or ():
-                normalized_session_id = str(session_id or "").strip()
-                if normalized_session_id:
-                    summaries_by_session_id.setdefault(normalized_session_id, []).append(summary)
-
-        now = datetime.now(UTC)
-        for key, pending in pending_by_key.items():
-            if pending.gate_id not in graph.gates_by_id:
-                logger.info(
-                    "Removing stale await-agent record with missing gate key=%s gate_id=%s dispatch_id=%s",
-                    key,
-                    pending.gate_id,
-                    pending.dispatch_id,
-                )
-                self.await_agent_store.delete(key)
-                continue
-
-            if (now - pending.occurred_at).total_seconds() < _AWAIT_AGENT_STALE_GRACE_SECONDS:
-                continue
-
-            session_id, vm_name = _await_agent_pending_target(pending)
-            candidate_summaries: list[Any] = []
-            if session_id:
-                candidate_summaries.extend(summaries_by_session_id.get(session_id, ()))
-            if vm_name:
-                candidate_summaries.extend(summaries_by_vm_name.get(vm_name, ()))
-            session_id, vm_name = _await_agent_pending_target(pending, summaries=candidate_summaries)
-            if not candidate_summaries:
-                logger.info(
-                    "Keeping await-agent record with no matching VM summary key=%s dispatch_id=%s session_id=%s vm_name=%s",
-                    key,
-                    pending.dispatch_id,
-                    session_id,
-                    vm_name,
-                )
-                continue
-
-            matches_active_dispatch = any(
-                str(getattr(summary, "dispatch_id", "") or "").strip() == pending.dispatch_id
-                and str(getattr(summary, "agent_state", "") or "").strip() == "running"
-                for summary in candidate_summaries
-            )
-            if matches_active_dispatch:
-                continue
-
-            has_replaced_or_unavailable_summary = any(
-                (
-                    str(getattr(summary, "dispatch_id", "") or "").strip()
-                    and str(getattr(summary, "dispatch_id", "") or "").strip() != pending.dispatch_id
-                )
-                or str(getattr(summary, "libvirt_state", "") or "").strip() != "running"
-                for summary in candidate_summaries
-            )
-            if has_replaced_or_unavailable_summary:
-                logger.info(
-                    "Removing stale await-agent record after replaced or unavailable VM state key=%s dispatch_id=%s session_id=%s vm_name=%s",
-                    key,
-                    pending.dispatch_id,
-                    session_id,
-                    vm_name,
-                )
-                self.await_agent_store.delete(key)
-
-    def _complete_pending_await_agent_gates_directly(self, *, graph: ExecutionGraph) -> int:
-        pending_by_key = self.await_agent_store.read_all()
-        if not pending_by_key:
-            return 0
-
-        completed = 0
-        for key, pending in pending_by_key.items():
-            gate = graph.gates_by_id.get(pending.gate_id)
-            if gate is None:
-                continue
-            if self._complete_pending_await_agent_directly(pending=pending, gate=gate, log_skips=True, key=key):
-                completed += 1
-        return completed
-
-    def _dispatch_queued_agent_prompts_directly(self) -> int:
-        queued = self.queued_agent_prompt_store.read_all()
-        if not queued:
-            return 0
-        try:
-            summaries = self._list_vm_summaries_for_await_agent_reconciliation()
-        except Exception:
-            logger.exception("Queued agent-prompt reconciliation failed while listing VMs")
-            return 0
-
-        dispatched = 0
-        for queue_key, record in queued.items():
-            if not self._queued_prompt_target_is_idle(record=record, summaries=summaries):
-                continue
-            dispatch_id = f"dispatch-{record.effect_id}-{hashlib.sha256((queue_key + record.updated_at.isoformat()).encode('utf-8')).hexdigest()[:12]}"
-            result = self.provider_factory.admin_service.resume_agent(
-                target=record.target,
-                prompt=record.prompt,
-                model=record.model,
-                vm_user=record.vm_user,
-                dispatch_id=dispatch_id,
-                resume_thread_id=record.resume_thread_id,
-            )
-            if not bool(getattr(result, "success", False)):
-                logger.warning(
-                    "Queued agent prompt dispatch failed queue_key=%s vm_name=%s message=%s",
-                    queue_key,
-                    record.vm_name,
-                    str(getattr(result, "message", "") or "").strip(),
-                )
-                continue
-            self.queued_agent_prompt_store.delete(queue_key)
-            dispatched += 1
-        return dispatched
-
-    @staticmethod
-    def _queued_prompt_target_is_idle(*, record: QueuedAgentPromptRecord, summaries: list[Any]) -> bool:
-        matching_summary = next(
-            (
-                summary
-                for summary in summaries
-                if str(getattr(summary, "vm_name", "") or "").strip() == record.vm_name
-            ),
-            None,
-        )
-        if matching_summary is None:
-            return False
-        return str(getattr(matching_summary, "agent_state", "") or "").strip() != "running"
-
-    def _complete_pending_await_agent_directly(
-        self,
-        *,
-        pending: AwaitAgentPendingRecord,
-        gate: GateDefinitionDiscriminated | None,
-        log_skips: bool = False,
-        key: str | None = None,
-    ) -> bool:
-        if gate is None or getattr(gate, "type", "") != "gate:await-agent":
-            return False
-        event = self._build_completion_event_for_pending(pending, log_skips=log_skips, key=key)
-        if event is None:
-            return False
-        queue_record = TriggerQueueRecord(
-            event_id=event.event_id,
-            trigger_id=event.trigger_id,
-            trigger_type=event.trigger_type,
-            trace_id=event.trace_id or pending.trace_id,
-            occurred_at=event.occurred_at,
-            payload=event.payload,
-            delivery_state="delivered",
-            delivered_at=datetime.now(UTC),
-            idempotency_key=f"__await-agent-completion__:{pending.dispatch_id}",
-        )
-        self._execute_await_agent_completion(queue_record=queue_record, gate=gate)
-        return self.await_agent_store.get(f"{pending.gate_id}:{pending.dispatch_id}") is None
-
-    def _build_completion_event_for_pending(
-        self,
-        pending: AwaitAgentPendingRecord,
-        *,
-        log_skips: bool = False,
-        key: str | None = None,
-    ) -> TriggerEvent | None:
-        try:
-            summaries = self._list_vm_summaries_for_await_agent_reconciliation()
-        except Exception:
-            logger.exception("Await-agent completion publish failed while listing VMs dispatch_id=%s", pending.dispatch_id)
-            return None
-
-        session_id, vm_name = _await_agent_pending_target(pending, summaries=summaries)
-        if not vm_name:
-            if log_skips:
-                logger.info(
-                    "Await-agent completion publish skipped missing_vm_name key=%s dispatch_id=%s session_id=%s",
-                    key,
-                    pending.dispatch_id,
-                    session_id,
-                )
-            return None
-        matching_summary = self._match_completion_summary(
-            summaries=summaries,
-            pending=pending,
-            vm_name=vm_name,
-            session_id=session_id,
-        )
-        if matching_summary is None:
-            if log_skips:
-                candidate_summaries = [
-                    {
-                        "vm_name": str(getattr(summary, "vm_name", "") or "").strip() or None,
-                        "session_ids": list(getattr(summary, "session_ids", []) or []),
-                        "agent_state": str(getattr(summary, "agent_state", "") or "").strip() or None,
-                        "dispatch_id": str(getattr(summary, "dispatch_id", "") or "").strip() or None,
-                        "libvirt_state": str(getattr(summary, "libvirt_state", "") or "").strip() or None,
-                    }
-                    for summary in summaries
-                    if str(getattr(summary, "vm_name", "") or "").strip() == vm_name
-                ]
-                logger.info(
-                    "Await-agent completion publish skipped no_matching_summary key=%s dispatch_id=%s vm_name=%s session_id=%s candidates=%s",
-                    key,
-                    pending.dispatch_id,
-                    vm_name,
-                    session_id,
-                    candidate_summaries,
-                )
-            return None
-        agent_state = str(getattr(matching_summary, "agent_state", "") or "").strip()
-        if agent_state == "running":
-            if log_skips:
-                logger.info(
-                    "Await-agent completion publish skipped still_running key=%s dispatch_id=%s vm_name=%s",
-                    key,
-                    pending.dispatch_id,
-                    vm_name,
-                )
-            return None
-
-        event = build_agent_run_completed_event(
-            trigger_id="__await-agent-completion__",
-            dispatch_id=pending.dispatch_id,
-            vm_user="agent",
-            summary=matching_summary,
-            session_id=session_id,
-            directory_path=(getattr(matching_summary, "directory_paths", None) or [None])[0],
-        )
-        if log_skips:
-            logger.info(
-                "Await-agent completion event prepared key=%s dispatch_id=%s vm_name=%s agent_state=%s event_id=%s",
-                key,
-                pending.dispatch_id,
-                vm_name,
-                agent_state,
-                event.event_id,
-            )
-        return event
-
-    @staticmethod
-    def _match_completion_summary(
-        *,
-        summaries: list[Any],
-        pending: AwaitAgentPendingRecord,
-        vm_name: str,
-        session_id: str | None,
-    ) -> Any | None:
-        exact_match = next(
-            (
-                summary
-                for summary in summaries
-                if str(getattr(summary, "vm_name", "") or "").strip() == vm_name
-                and str(getattr(summary, "dispatch_id", "") or "").strip() == pending.dispatch_id
-            ),
-            None,
-        )
-        if exact_match is not None:
-            return exact_match
-        if not session_id:
-            return None
-        return next(
-            (
-                summary
-                for summary in summaries
-                if str(getattr(summary, "vm_name", "") or "").strip() == vm_name
-                and session_id in {str(item or "").strip() for item in (getattr(summary, "session_ids", []) or [])}
-                and not str(getattr(summary, "dispatch_id", "") or "").strip()
-                and str(getattr(summary, "agent_state", "") or "").strip() != "running"
-            ),
-            None,
-        )
-
-    def _list_vm_summaries_for_await_agent_reconciliation(self) -> list[Any]:
+    def _list_vm_summaries_for_reconciliation(self) -> list[Any]:
         admin_service = getattr(self.provider_factory, "admin_service", None)
         if admin_service is None:
             return []
@@ -1398,18 +882,8 @@ class EffectOrchestratorWorker:
             )
         )
 
-    def _execute_provider(self, *, effect: EffectDefinitionDiscriminated, resolved_config: dict[str, Any]) -> dict[str, Any]:
-        provider = self.provider_factory.build(effect)
-        return dict(provider.execute(resolved_config=resolved_config) or {})
-
-    def _execute_query_provider(
-        self,
-        *,
-        query: QueryDefinitionDiscriminated,
-        resolved_config: dict[str, Any],
-    ) -> dict[str, Any]:
-        provider = self.query_provider_factory.build(query)
-        return dict(provider.execute(resolved_config=resolved_config) or {})
+    def _list_vm_summaries_for_await_agent_reconciliation(self) -> list[Any]:
+        return self._list_vm_summaries_for_reconciliation()
 
     def _reap_completed_futures(self) -> tuple[int, int]:
         completed_count = 0
@@ -1429,7 +903,11 @@ class EffectOrchestratorWorker:
             finished_at = datetime.now(UTC)
             try:
                 outputs = dict(future.result() or {})
-                if self._effect_waits_for_completion(record=record, outputs=outputs):
+                provider_class = self._effect_provider_class(record.effect_type)
+                waits_for_completion = bool(
+                    provider_class is not None and provider_class.on_execution_started(record=record, outputs=outputs)
+                )
+                if waits_for_completion:
                     record.status = "waiting"
                     record.outputs = outputs
                     record.published_event_id = None
@@ -1437,6 +915,8 @@ class EffectOrchestratorWorker:
                     record.finished_at = finished_at
                     self.execution_store.put(record)
                     self._update_event_delivery_state(record.event_id)
+                    if provider_class is not None:
+                        provider_class.on_execution_waiting(worker=self, record=record)
                     continue
                 published_event_id = self._publish_completion_event_from_record(record=record, outputs=outputs)
                 record.status = "succeeded"
@@ -1463,183 +943,6 @@ class EffectOrchestratorWorker:
             self._update_event_delivery_state(record.event_id)
 
         return completed_count, published_count
-
-    @staticmethod
-    def _effect_waits_for_completion(*, record: EffectExecutionRecord, outputs: dict[str, Any]) -> bool:
-        if record.effect_type != "effect:agent:prompt":
-            return False
-        if outputs.get("success") is False:
-            return False
-        if str(outputs.get("output_mode") or "").strip() != "on_completion":
-            return False
-        return bool(str(outputs.get("dispatch_id") or "").strip())
-
-    def _complete_waiting_agent_prompt_effects(self, *, queue_record: TriggerQueueRecord) -> int:
-        dispatch_id = str(queue_record.payload.get("dispatch_id") or "").strip()
-        if not dispatch_id:
-            return 0
-
-        finalized = 0
-        for record in self.execution_store.read_all().values():
-            if record.effect_type != "effect:agent:prompt" or record.status != "waiting":
-                continue
-            record_dispatch_id = str(record.outputs.get("dispatch_id") or "").strip()
-            if record_dispatch_id != dispatch_id:
-                continue
-
-            finished_at = datetime.now(UTC)
-            merged_outputs = {
-                **record.outputs,
-                **{
-                    key: value
-                    for key, value in queue_record.payload.items()
-                    if key not in {NODE_OUTPUTS_CONTEXT_KEY, _BRANCH_PORT_PAYLOAD_KEY, _FOR_EXECUTION_IDS_PAYLOAD_KEY}
-                },
-            }
-            published_event_id = self._publish_completion_event_from_record(record=record, outputs=merged_outputs)
-            record.status = "succeeded"
-            record.outputs = merged_outputs
-            record.published_event_id = published_event_id
-            record.completion_event_enqueued_at = finished_at
-            record.finished_at = finished_at
-            self.execution_store.put(record)
-            self._update_event_delivery_state(record.event_id)
-            finalized += 1
-        return finalized
-
-    def _complete_waiting_agent_prompt_effects_directly(self) -> int:
-        waiting_records = [
-            record
-            for record in self.execution_store.read_all().values()
-            if record.effect_type == "effect:agent:prompt" and record.status == "waiting"
-        ]
-        if not waiting_records:
-            return 0
-
-        try:
-            summaries = self._list_vm_summaries_for_await_agent_reconciliation()
-        except Exception:
-            logger.exception("Waiting agent-prompt reconciliation failed while listing VMs")
-            return 0
-
-        completed = 0
-        for record in waiting_records:
-            queue_record = self._build_completion_queue_record_for_waiting_agent_prompt(record=record, summaries=summaries)
-            if queue_record is None:
-                continue
-            if self._complete_waiting_agent_prompt_effects(queue_record=queue_record):
-                completed += 1
-        return completed
-
-    def _build_completion_queue_record_for_waiting_agent_prompt(
-        self,
-        *,
-        record: EffectExecutionRecord,
-        summaries: list[Any],
-    ) -> TriggerQueueRecord | None:
-        dispatch_id = str(record.outputs.get("dispatch_id") or "").strip()
-        if not dispatch_id:
-            return None
-
-        session_id, vm_name = self._waiting_agent_prompt_target(record=record)
-        matching_summary = self._match_waiting_agent_prompt_summary(
-            summaries=summaries,
-            dispatch_id=dispatch_id,
-            session_id=session_id,
-            vm_name=vm_name,
-            record=record,
-        )
-        if matching_summary is None:
-            return None
-        if str(getattr(matching_summary, "agent_state", "") or "").strip() == "running":
-            return None
-
-        completion_event = build_agent_run_completed_event(
-            trigger_id="__await-agent-completion__",
-            dispatch_id=dispatch_id,
-            vm_user=str(record.resolved_config.get("vm_user") or "agent"),
-            summary=matching_summary,
-            session_id=session_id,
-            directory_path=(getattr(matching_summary, "directory_paths", None) or [None])[0],
-        )
-        return TriggerQueueRecord(
-            event_id=completion_event.event_id,
-            trigger_id=completion_event.trigger_id,
-            trigger_type=completion_event.trigger_type,
-            trace_id=completion_event.trace_id or record.trace_id,
-            occurred_at=completion_event.occurred_at,
-            payload=completion_event.payload,
-            delivery_state="delivered",
-            delivered_at=datetime.now(UTC),
-            idempotency_key=f"__await-agent-completion__:{dispatch_id}",
-        )
-
-    @staticmethod
-    def _waiting_agent_prompt_target(record: EffectExecutionRecord) -> tuple[str | None, str | None]:
-        session_id = str(record.resolved_config.get("session_id") or "").strip() or None
-        vm_name = str(record.resolved_config.get("vm_name") or "").strip() or None
-        target = str(record.resolved_config.get("target") or "").strip() or None
-        if target and vm_name is None and target.startswith("vm-"):
-            vm_name = target
-        if target and session_id is None and not target.startswith("vm-"):
-            session_id = target
-        return session_id, vm_name
-
-    @staticmethod
-    def _match_waiting_agent_prompt_summary(
-        *,
-        summaries: list[Any],
-        dispatch_id: str,
-        session_id: str | None,
-        vm_name: str | None,
-        record: EffectExecutionRecord,
-    ) -> Any | None:
-        exact_match = next(
-            (
-                summary
-                for summary in summaries
-                if str(getattr(summary, "dispatch_id", "") or "").strip() == dispatch_id
-                and (vm_name is None or str(getattr(summary, "vm_name", "") or "").strip() == vm_name)
-                and (
-                    session_id is None
-                    or session_id in {str(item or "").strip() for item in (getattr(summary, "session_ids", []) or [])}
-                )
-            ),
-            None,
-        )
-        if exact_match is not None:
-            return exact_match
-
-        if (datetime.now(UTC) - record.finished_at).total_seconds() < _AWAIT_AGENT_STALE_GRACE_SECONDS:
-            return None
-
-        if vm_name is not None:
-            vm_match = next(
-                (
-                    summary
-                    for summary in summaries
-                    if str(getattr(summary, "vm_name", "") or "").strip() == vm_name
-                    and not str(getattr(summary, "dispatch_id", "") or "").strip()
-                    and str(getattr(summary, "agent_state", "") or "").strip() != "running"
-                ),
-                None,
-            )
-            if vm_match is not None:
-                return vm_match
-
-        if session_id is None:
-            return None
-
-        return next(
-            (
-                summary
-                for summary in summaries
-                if session_id in {str(item or "").strip() for item in (getattr(summary, "session_ids", []) or [])}
-                and not str(getattr(summary, "dispatch_id", "") or "").strip()
-                and str(getattr(summary, "agent_state", "") or "").strip() != "running"
-            ),
-            None,
-        )
 
     def _update_event_delivery_state(self, event_id: str) -> None:
         if self._event_has_inflight_effects(event_id):
@@ -1988,6 +1291,7 @@ def build_effect_orchestrator_worker(
     config: GatewayConfig,
     *,
     project_dir: Path | None = None,
+    services: RuntimeAssemblyInterface | None = None,
 ) -> EffectOrchestratorWorker:
     resolved_project_dir = Path(project_dir) if project_dir is not None else Path.cwd()
     worker_config = load_trigger_orchestrator_worker_global_config(resolved_project_dir, base_config=config)
@@ -2002,7 +1306,8 @@ def build_effect_orchestrator_worker(
             "runtime_dir": worker_config.runtime_dir,
         }
     )
-    runtime = build_runtime(effective_config)
+    service_bundle = services or PlatformServiceBundle(runtime_builder=build_runtime)
+    runtime = service_bundle.build_runtime(effective_config)
     return EffectOrchestratorWorker(
         config=effective_config,
         worker_config=worker_config,
@@ -2067,17 +1372,11 @@ def _build_execution_graph(worker_config: TriggerOrchestratorWorkerGlobalConfig)
 
 
 def _extract_effect_config(effect: EffectDefinitionDiscriminated) -> dict[str, Any]:
-    payload = effect.model_dump(mode="json")
-    for field_name in ("id", "display_name", "type", "outputs"):
-        payload.pop(field_name, None)
-    return payload
+    return dict(effect.config)
 
 
 def _extract_query_config(query: QueryDefinitionDiscriminated) -> dict[str, Any]:
-    payload = query.model_dump(mode="json")
-    for field_name in ("id", "display_name", "type", "outputs"):
-        payload.pop(field_name, None)
-    return payload
+    return dict(query.config)
 
 
 def _execution_idempotency_key(event_id: str, node_id: str) -> str:
@@ -2188,51 +1487,6 @@ def _completion_event_id(*, parent_event_id: str, node_id: str, prefix: str) -> 
     return f"{prefix}:{node_id}:{hashlib.sha1(parent_event_id.encode('utf-8')).hexdigest()[:12]}"
 
 
-def _prepare_effect_resolved_config(
-    *,
-    effect: EffectDefinitionDiscriminated,
-    resolved_config: dict[str, Any],
-    upstream_payload: dict[str, dict[str, Any]],
-    declared_upstream_output_names: dict[str, set[str] | list[str] | tuple[str, ...]],
-    system_value_resolver,
-) -> dict[str, Any]:
-    if effect.type != "effect:vm:copy-files":
-        return resolved_config
-    next_config = deepcopy(resolved_config)
-    raw_files = next_config.get("files")
-    if not isinstance(raw_files, list):
-        return next_config
-    for index, raw_entry in enumerate(raw_files):
-        if not isinstance(raw_entry, dict):
-            continue
-        source_format = str(raw_entry.get("source_format") or "").strip().lower()
-        if source_format not in {"", "file", "template"}:
-            raise ValueError(f"effect:vm:copy-files files[{index}] source_format must be one of: file, template")
-        if source_format != "template":
-            continue
-        source_path = str(raw_entry.get("source_path") or "").strip()
-        if not source_path:
-            raise ValueError(f"effect:vm:copy-files files[{index}] source_path is required for template sources")
-        template_path = Path(source_path).expanduser().resolve()
-        if not template_path.exists():
-            raise ValueError(f"effect:vm:copy-files template source does not exist: {template_path}")
-        if template_path.is_dir():
-            raise ValueError(f"effect:vm:copy-files template source must be a file: {template_path}")
-        template_text = template_path.read_text(encoding="utf-8")
-        rendered = resolve_workflow_bindings(
-            template_text,
-            upstream_payload=upstream_payload,
-            declared_upstream_output_names=declared_upstream_output_names,
-            system_value_resolver=system_value_resolver,
-            strict_validation=True,
-        ).resolved_config
-        if not isinstance(rendered, str):
-            raise ValueError(f"effect:vm:copy-files template source must resolve to text: {template_path}")
-        raw_entry["content"] = rendered
-        raw_entry.pop("source_path", None)
-    return next_config
-
-
 def _config_revision_hash(worker_config: TriggerOrchestratorWorkerGlobalConfig) -> str:
     payload = worker_config.model_dump(mode="json")
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -2243,11 +1497,11 @@ def _json_sha256(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
-def _compute_depth(node_id: str, downstream_index: dict[str, tuple[str, ...]]) -> int:
+def _compute_depth(node_id: str, downstream_index: dict[str, tuple[str, ...]], *, max_graph_depth: int) -> int:
     try:
         return compute_downstream_depth(node_id, downstream_index)
     except WorkflowGraphCycleError:
-        return _MAX_GRAPH_DEPTH + 1
+        return max(1, int(max_graph_depth)) + 1
 
 
 def _is_gate(node: WorkflowNodeDefinition) -> bool:
@@ -2321,31 +1575,6 @@ def _matching_outbound_edges(*, queue_record: TriggerQueueRecord, graph: Executi
     return tuple(matched)
 
 
-def _for_gate_state_key(*, gate_id: str, trace_id: str, for_execution_id: str) -> str:
-    return f"{gate_id}:{trace_id}:{for_execution_id}"
-
-
-def _resolve_for_gate_execution_id(
-    *,
-    queue_record: TriggerQueueRecord,
-    gate: GateDefinitionDiscriminated,
-    graph: ExecutionGraph,
-) -> str:
-    inbound_edge = _matching_inbound_edge(queue_record=queue_record, target_node_id=gate.id, graph=graph)
-    if inbound_edge is not None and _edge_allows_cycle(inbound_edge):
-        for_execution_id = _for_execution_id_from_payload(queue_record.payload, gate_id=gate.id)
-        if for_execution_id is not None:
-            return for_execution_id
-    return queue_record.event_id
-
-
-def _matching_inbound_edge(*, queue_record: TriggerQueueRecord, target_node_id: str, graph: ExecutionGraph) -> Any | None:
-    for edge in graph.inbound_index.get(target_node_id, ()):
-        if _edge_source_id(edge) == queue_record.trigger_id:
-            return edge
-    return None
-
-
 def _for_execution_ids_from_payload(payload: dict[str, Any]) -> dict[str, str]:
     raw_value = payload.get(_FOR_EXECUTION_IDS_PAYLOAD_KEY)
     if not isinstance(raw_value, dict):
@@ -2359,11 +1588,6 @@ def _for_execution_ids_from_payload(payload: dict[str, Any]) -> dict[str, str]:
         if normalized_gate_id and normalized_execution_id is not None:
             normalized[normalized_gate_id] = normalized_execution_id
     return normalized
-
-
-def _for_execution_id_from_payload(payload: dict[str, Any], *, gate_id: str) -> str | None:
-    return _for_execution_ids_from_payload(payload).get(gate_id)
-
 
 def _merged_for_execution_ids(*, source_payload: dict[str, Any], for_execution_ids: dict[str, str] | None) -> dict[str, str]:
     merged = _for_execution_ids_from_payload(source_payload)
@@ -2402,40 +1626,6 @@ def _compute_backoff_sleep_seconds(*, poll_interval_seconds: float, jitter_secon
     if jitter_seconds > 0:
         delay += random.uniform(0.0, jitter_seconds)
     return max(1.0, delay)
-
-
-def _await_agent_pending_target(
-    pending: AwaitAgentPendingRecord,
-    *,
-    summaries: list[Any] | None = None,
-) -> tuple[str | None, str | None]:
-    session_id = str(pending.session_id or "").strip() or None
-    vm_name = str(pending.vm_name or "").strip() or None
-    if not summaries:
-        return session_id, vm_name
-
-    if session_id is None and vm_name is not None:
-        session_id = next(
-            (
-                str(session or "").strip()
-                for summary in summaries
-                if str(getattr(summary, "vm_name", "") or "").strip() == vm_name
-                for session in (getattr(summary, "session_ids", []) or [])
-                if str(session or "").strip()
-            ),
-            None,
-        )
-    if vm_name is None and session_id is not None:
-        vm_name = next(
-            (
-                str(getattr(summary, "vm_name", "") or "").strip()
-                for summary in summaries
-                if session_id in {str(item or "").strip() for item in (getattr(summary, "session_ids", []) or [])}
-                and str(getattr(summary, "vm_name", "") or "").strip()
-            ),
-            None,
-        )
-    return session_id, vm_name
 
 
 def _load_cursor_payload(path: Path) -> dict[str, Any]:

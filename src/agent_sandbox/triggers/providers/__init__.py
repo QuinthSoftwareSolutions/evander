@@ -1,13 +1,7 @@
-from .base import PushTriggerProvider, TriggerHookHandler, TriggerProvider, TriggerProviderBase, TriggerRuntimeContext
-from .agent_run_completed import AgentRunCompletedTriggerProvider
-from .cron import CronTriggerProvider
-from .discord_new_message import DiscordNewMessageTriggerProvider
-from .email_new_message import EmailNewMessageTriggerProvider
-from .git_push import GitPushTriggerProvider
-from .pull_request_new_feedback import PullRequestNewFeedbackTriggerProvider
-from .script_run_request import ScriptRunRequestTriggerProvider
-from .ticket_changed import TicketChangedTriggerProvider
-from .ticket_created import TicketCreatedTriggerProvider
+from __future__ import annotations
+
+from importlib import import_module
+from typing import Any
 
 __all__ = [
     "AgentRunCompletedTriggerProvider",
@@ -25,3 +19,29 @@ __all__ = [
     "TriggerProviderBase",
     "TriggerRuntimeContext",
 ]
+
+_EXPORT_MODULES = {
+    "AgentRunCompletedTriggerProvider": ".agent_run_completed",
+    "CronTriggerProvider": ".cron",
+    "DiscordNewMessageTriggerProvider": ".discord_new_message",
+    "EmailNewMessageTriggerProvider": ".email_new_message",
+    "GitPushTriggerProvider": ".git_push",
+    "PullRequestNewFeedbackTriggerProvider": ".pull_request_new_feedback",
+    "PushTriggerProvider": ".base",
+    "ScriptRunRequestTriggerProvider": ".script_run_request",
+    "TicketChangedTriggerProvider": ".ticket_changed",
+    "TicketCreatedTriggerProvider": ".ticket_created",
+    "TriggerHookHandler": ".base",
+    "TriggerProvider": ".base",
+    "TriggerProviderBase": ".base",
+    "TriggerRuntimeContext": ".base",
+}
+
+
+def __getattr__(name: str) -> Any:
+    module_name = _EXPORT_MODULES.get(name)
+    if module_name is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    value = getattr(import_module(module_name, __name__), name)
+    globals()[name] = value
+    return value

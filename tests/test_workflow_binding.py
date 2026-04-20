@@ -148,6 +148,63 @@ def test_workflow_binding_resolution_supports_output_reference_fallback() -> Non
     assert result.trace.consumed_output_keys == ("effect_1.thread_id",)
 
 
+def test_workflow_binding_resolution_supports_chained_output_reference_fallbacks() -> None:
+    result = resolve_workflow_bindings(
+        {
+            "agent_thread_id": (
+                "${{effect-agent-enqueue-prompt-1.thread_id "
+                "?? query-session-context-3.metadata.agent_thread_id "
+                "?? null}}"
+            )
+        },
+        {
+            "effect-agent-enqueue-prompt-1": {"queued": True},
+            "query-session-context-3": {"metadata": {"agent_thread_id": "thread-from-session"}},
+        },
+        {
+            "effect-agent-enqueue-prompt-1": {"thread_id", "queued"},
+            "query-session-context-3": {"metadata"},
+        },
+    )
+
+    assert result.resolved_config == {"agent_thread_id": "thread-from-session"}
+    assert result.trace.consumed_output_keys == ("query-session-context-3.metadata.agent_thread_id",)
+
+
+def test_workflow_binding_resolution_supports_chained_literal_fallback() -> None:
+    result = resolve_workflow_bindings(
+        {"agent_thread_id": "${{effect_1.thread_id ?? query_1.metadata.agent_thread_id ?? null}}"},
+        {
+            "effect_1": {"queued": True},
+            "query_1": {"metadata": {}},
+        },
+        {
+            "effect_1": {"thread_id", "queued"},
+            "query_1": {"metadata"},
+        },
+    )
+
+    assert result.resolved_config == {"agent_thread_id": None}
+    assert result.trace.consumed_output_keys == ()
+
+
+def test_workflow_binding_resolution_uses_first_available_chained_fallback() -> None:
+    result = resolve_workflow_bindings(
+        {"agent_thread_id": "${{effect_1.thread_id ?? query_1.metadata.agent_thread_id ?? null}}"},
+        {
+            "effect_1": {"thread_id": "thread-from-effect"},
+            "query_1": {"metadata": {"agent_thread_id": "thread-from-session"}},
+        },
+        {
+            "effect_1": {"thread_id"},
+            "query_1": {"metadata"},
+        },
+    )
+
+    assert result.resolved_config == {"agent_thread_id": "thread-from-effect"}
+    assert result.trace.consumed_output_keys == ("effect_1.thread_id",)
+
+
 def test_workflow_binding_resolution_rejects_malformed_fallback_expression() -> None:
     with pytest.raises(BindingResolutionError, match="Malformed"):
         resolve_workflow_bindings(

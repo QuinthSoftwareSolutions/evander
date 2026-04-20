@@ -11,7 +11,14 @@ from agent_sandbox.effects.registry import (
     EffectProviderFactory,
     EffectProviderRegistry,
 )
-from agent_sandbox.events.models import AgentEnqueuePromptEffectDefinition, AgentPromptEffectDefinition, VmCreateEffectDefinition
+from pydantic import BaseModel, Field
+
+from agent_sandbox.events.models import WorkflowNodeEnvelope
+from agent_sandbox.events.provider_models import (
+    AgentEnqueuePromptEffectDefinition,
+    AgentPromptEffectDefinition,
+    VmCreateEffectDefinition,
+)
 from agent_sandbox.models import SessionManifest, ToolName, VmActionResult
 
 
@@ -74,6 +81,19 @@ class _AdminServiceStub:
 
 class _RecordingProvider(EffectProviderBase):
     pass
+
+
+class _CustomEffectSchema(BaseModel):
+    greeting: str = Field(min_length=1)
+
+
+class _CustomSchemaProvider(EffectProviderBase):
+    @classmethod
+    def validate_definition(cls, effect_definition):
+        assert isinstance(effect_definition, WorkflowNodeEnvelope)
+        validated = _CustomEffectSchema.model_validate(effect_definition.config)
+        effect_definition.config = validated.model_dump()
+        return effect_definition
 
 
 def test_default_registry_includes_all_known_effect_types() -> None:
@@ -247,6 +267,29 @@ def test_agent_prompt_provider_emits_thread_id() -> None:
     assert admin_service.resume_calls[0]["target"] == "session-42"
     assert admin_service.resume_calls[0]["dispatch_id"] == output["dispatch_id"]
     assert admin_service.resume_calls[0]["resume_thread_id"] == "thread-123"
+
+
+def test_factory_supports_new_provider_types_without_events_model_edit() -> None:
+    effect = WorkflowNodeEnvelope(
+        id="custom-1",
+        display_name="Custom",
+        type="effect:custom:test",
+        config={"greeting": "hello"},
+    )
+    registry = EffectProviderRegistry(initial={})
+    registry.register("effect:custom:test", _CustomSchemaProvider)  # type: ignore[arg-type]
+    admin_service = _AdminServiceStub(create_vm_calls=[], resume_calls=[])
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ResolverStub(),
+        registry=registry,
+        admin_service=admin_service,
+    )
+
+    provider = factory.build(effect)
+
+    assert isinstance(provider, _CustomSchemaProvider)
+    assert provider.effect_definition is not None
+    assert provider.effect_definition.config == {"greeting": "hello"}
 
 
 def test_agent_enqueue_prompt_provider_dispatches_immediately_when_idle() -> None:

@@ -1,0 +1,93 @@
+from __future__ import annotations
+
+from collections.abc import Iterable
+
+from .config import TriggerOrchestratorWorkerGlobalConfig
+from .provider_profiles import resolve_provider_module_names
+from .workflow_plugins import load_provider_plugins
+from .workflow_transforms import WorkflowTransform
+from .workflow_validation import WorkflowValidationDiagnostic, validate_workflow_graph
+
+
+def compile_trigger_orchestrator_structure(
+    worker_config: TriggerOrchestratorWorkerGlobalConfig,
+) -> TriggerOrchestratorWorkerGlobalConfig:
+    """Validate and normalize workflow structure without domain-specific rewrites."""
+    return TriggerOrchestratorWorkerGlobalConfig.model_validate(worker_config.model_dump(mode="json"))
+
+
+def apply_workflow_transforms(
+    worker_config: TriggerOrchestratorWorkerGlobalConfig,
+    *,
+    transforms: Iterable[WorkflowTransform] | None = None,
+) -> TriggerOrchestratorWorkerGlobalConfig:
+    compiled = worker_config
+    for transform in transforms or ():
+        compiled = compile_trigger_orchestrator_structure(transform(compiled))
+    return compiled
+
+
+def compile_trigger_orchestrator_config(
+    worker_config: TriggerOrchestratorWorkerGlobalConfig,
+    *,
+    transforms: Iterable[WorkflowTransform] | None = None,
+) -> TriggerOrchestratorWorkerGlobalConfig:
+    compiled = compile_trigger_orchestrator_structure(worker_config)
+    return apply_workflow_transforms(compiled, transforms=transforms)
+
+
+def compile_trigger_orchestrator_config_with_diagnostics(
+    worker_config: TriggerOrchestratorWorkerGlobalConfig,
+    *,
+    transforms: Iterable[WorkflowTransform] | None = None,
+) -> tuple[TriggerOrchestratorWorkerGlobalConfig, list[WorkflowValidationDiagnostic]]:
+    compiled = compile_trigger_orchestrator_config(worker_config, transforms=transforms)
+    return compiled, collect_domain_validation_diagnostics(compiled)
+
+
+def collect_domain_validation_diagnostics(
+    worker_config: TriggerOrchestratorWorkerGlobalConfig,
+) -> list[WorkflowValidationDiagnostic]:
+    nodes_by_id = {node.id: node for node in (*worker_config.triggers, *worker_config.gates, *worker_config.effects, *worker_config.queries)}
+    diagnostics: list[WorkflowValidationDiagnostic] = []
+    provider_catalog = load_provider_plugins(
+        module_names=resolve_provider_module_names(
+            profile_name=worker_config.provider_profile,
+            extra_modules=worker_config.provider_loader.provider_modules,
+        ),
+        include_entry_points=worker_config.provider_loader.provider_entry_points_enabled,
+        include_builtin=worker_config.provider_include_builtin,
+    )
+    node_capabilities = {
+        **{node_type: provider.node_capability() for node_type, provider in provider_catalog.gate_providers.items()},
+        **{node_type: provider.node_capability() for node_type, provider in provider_catalog.effect_providers.items()},
+        **{node_type: provider.node_capability() for node_type, provider in provider_catalog.query_providers.items()},
+    }
+    capability_messages = validate_workflow_graph(
+        nodes=(*worker_config.triggers, *worker_config.gates, *worker_config.effects, *worker_config.queries),
+        edges=worker_config.edges,
+        trigger_node_ids=(trigger.id for trigger in worker_config.triggers),
+        node_capabilities=node_capabilities,
+    )
+    diagnostics.extend(
+        WorkflowValidationDiagnostic(code="node_capability", message=message) for message in capability_messages
+    )
+    inbound_edges: dict[str, list[object]] = {}
+    for edge in worker_config.edges:
+        inbound_edges.setdefault(edge.target_id, []).append(edge)
+    for gate in worker_config.gates:
+        provider = provider_catalog.gate_providers.get(gate.type)
+        if provider is None:
+            continue
+        diagnostics.extend(provider.validate_graph_node(node=gate, nodes_by_id=nodes_by_id, inbound_edges=inbound_edges))
+    for effect in worker_config.effects:
+        provider = provider_catalog.effect_providers.get(effect.type)
+        if provider is None:
+            continue
+        diagnostics.extend(provider.validate_graph_node(node=effect, nodes_by_id=nodes_by_id, inbound_edges=inbound_edges))
+    for query in worker_config.queries:
+        provider = provider_catalog.query_providers.get(query.type)
+        if provider is None:
+            continue
+        diagnostics.extend(provider.validate_graph_node(node=query, nodes_by_id=nodes_by_id, inbound_edges=inbound_edges))
+    return diagnostics

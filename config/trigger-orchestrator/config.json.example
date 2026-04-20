@@ -5,5 +5,12 @@
   "lock_path": null,
   "event_queue_store_path": null,
   "event_queue_cursor_store_path": null,
-  "triggers": []
+  "workflow_transforms": [],
+  "triggers": [],
+  "provider_loader": {
+    "provider_profile": "profiles/agent-default",
+    "include_builtin": null,
+    "provider_modules": [],
+    "provider_entry_points_enabled": true
+  }
 }

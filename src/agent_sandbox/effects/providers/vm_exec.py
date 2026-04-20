@@ -5,8 +5,6 @@ import subprocess
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from agent_sandbox.admin_service import _resolve_private_key_path, _resolve_vm_ip, _ssh_options
-
 from .base import EffectProviderBase
 
 
@@ -23,7 +21,7 @@ class VmExecEffectProvider(EffectProviderBase):
         environment = self._normalize_environment(payload.get("environment"))
 
         context = self._context()
-        vm_exec = getattr(context.admin_service, "vm_exec", None)
+        vm_exec = getattr(context.vm_executor, "vm_exec", None)
         if callable(vm_exec):
             result = vm_exec(
                 target=vm_name,
@@ -100,16 +98,9 @@ class VmExecEffectProvider(EffectProviderBase):
 
     def _lookup_session(self, session_id: str) -> Any | None:
         context = self._context()
-        sessions = getattr(getattr(context.admin_service, "runtime", None), "sessions", None)
-        if sessions is None:
-            raise RuntimeError("VmExecEffectProvider requires admin_service.runtime.sessions")
-        getter = getattr(sessions, "get", None)
-        if callable(getter):
-            return getter(session_id)
-        reader = getattr(sessions, "read_all", None)
-        if callable(reader):
-            return reader().get(session_id)
-        raise RuntimeError("Unsupported session store interface")
+        if context.session_lookup is None:
+            raise RuntimeError("VmExecEffectProvider requires session_lookup")
+        return context.session_lookup.read_all_sessions().get(session_id)
 
     def _context(self):
         if self.runtime_context is None:
@@ -129,6 +120,8 @@ class VmExecEffectProvider(EffectProviderBase):
         stdin: str | None,
         environment: Mapping[str, str],
     ) -> dict[str, Any]:
+        from agent_sandbox.admin_service import _resolve_private_key_path, _resolve_vm_ip, _ssh_options
+
         vm_ip = _resolve_vm_ip(vm_name)
         ssh_private_key_path = _resolve_private_key_path()
         if not vm_ip:

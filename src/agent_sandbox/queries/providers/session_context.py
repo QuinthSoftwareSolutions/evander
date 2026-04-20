@@ -17,7 +17,7 @@ class SessionContextQueryProvider(QueryProviderBase):
             raise ValueError("query:session-context requires target, session_id, or vm_name")
 
         context = self._context()
-        query_fn = getattr(context.admin_service, "session_context_query", None)
+        query_fn = getattr(context.session_context_reader, "session_context_query", None)
         if not callable(query_fn):
             raise RuntimeError("AdminService.session_context_query is not available")
         result = query_fn(target=target)

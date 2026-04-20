@@ -136,7 +136,14 @@ This JSON file stores the workflow orchestrator worker's global settings.
 Trigger definitions are currently global (host-wide) and are **not** directory-scoped; this keeps
 provider secret resolution and cross-directory event ingestion centralized until a directory-resolved
 workflow inheritance model is introduced. Triggers, gates, and effects all live in the same graph
-config, with explicit edges describing routing between node ids.
+config, with explicit edges describing routing between node ids. Domain workflows can now be
+provided via `workflow_packs` + optional inline `workflow_ir`, which compose into executable
+`triggers`/`gates`/`effects`/`queries`/`edges` at load time.
+Provider plugin loading is configured separately under `provider_loader`.
+
+### Orchestration-core runtime profile template
+
+For orchestration-only deployments, use `config/trigger-orchestrator/orchestration-core.config.json.example` as the starting point. It sets an explicit runtime path (`runtime/orchestration-core`) and defaults provider loading to `profiles/core-minimal` (no built-ins) with entry-point loading disabled.
 
 | Parameter | Found in | Consumed by |
 |---|---|---|
@@ -146,6 +153,9 @@ config, with explicit edges describing routing between node ids.
 | `lock_path` | `config/trigger-orchestrator/config.json` | Trigger orchestrator single-instance lock file path. |
 | `event_queue_store_path` | `config/trigger-orchestrator/config.json` | Trigger orchestrator persisted event queue store path. |
 | `event_queue_cursor_store_path` | `config/trigger-orchestrator/config.json` | Trigger orchestrator event queue cursor/checkpoint store path. |
+| `workflow_packs` | `config/trigger-orchestrator/config.json` | Ordered workflow-pack filenames under `config/workflow-packs/` to compose into executable IR. |
+| `workflow_ir` | `config/trigger-orchestrator/config.json` | Optional inline IR overlay (`version`, `nodes`, `edges`) merged after pack composition. |
+| `workflow_transforms` | `config/trigger-orchestrator/config.json` | Optional ordered transform plugin names (for example `await_agent_completion`) applied after structural compile/validation. |
 | `triggers` | `config/trigger-orchestrator/config.json` | Trigger orchestrator trigger definition list (`src/agent_sandbox/triggers/models.py`). |
 | `gate_execution_store_path` | `config/trigger-orchestrator/config.json` | Gate execution log path (idempotency keys, merge state, resolved config snapshots, outputs, failures). |
 | `gate_cursor_store_path` | `config/trigger-orchestrator/config.json` | Gate orchestrator cursor/checkpoint path. |
@@ -153,6 +163,12 @@ config, with explicit edges describing routing between node ids.
 | `effects` | `config/trigger-orchestrator/config.json` | Effect definition list (`src/agent_sandbox/events/models.py`). Effects no longer take `upstream_id`; they are wired with edges. |
 | `gates` | `config/trigger-orchestrator/config.json` | Gate definition list (filter/map/merge nodes). |
 | `edges` | `config/trigger-orchestrator/config.json` | Explicit graph wiring between triggers, gates, and effects. |
+| `max_graph_depth` | `config/trigger-orchestrator/config.json` | Maximum allowed downstream graph depth during workflow execution safety checks. |
+| `max_events_per_cycle` | `config/trigger-orchestrator/config.json` | Maximum workflow events processed per effect-orchestrator cycle. |
+| `provider_loader.provider_profile` | `config/trigger-orchestrator/config.json` | Selects a named provider loading profile (for example `profiles/core-minimal` or compatibility `profiles/agent-default`). |
+| `provider_loader.include_builtin` | `config/trigger-orchestrator/config.json` | Optional override for implicit built-in provider loading; defaults from selected profile. |
+| `provider_loader.provider_modules` | `config/trigger-orchestrator/config.json` | Additional provider plugin Python modules to load after selected profile modules. |
+| `provider_loader.provider_entry_points_enabled` | `config/trigger-orchestrator/config.json` | Enables provider plugin discovery via Python entry points. |
 
 ### Trigger definition schema keys
 

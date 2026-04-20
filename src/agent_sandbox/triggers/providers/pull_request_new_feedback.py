@@ -8,7 +8,8 @@ import httpx
 
 from agent_sandbox.models import PrFeedbackItem
 from agent_sandbox.pr_feedback_worker import AzureDevOpsFeedbackAdapter, GitHubFeedbackAdapter, _stream_key
-from agent_sandbox.events.models import PullRequestNewFeedbackTriggerDefinition, TriggerEvent
+from agent_sandbox.events.models import TriggerEvent
+from agent_sandbox.events.provider_models import PullRequestNewFeedbackTriggerDefinition
 from agent_sandbox.triggers.providers._cursor_state import TriggerCursorStore
 from agent_sandbox.triggers.providers.base import TriggerProviderBase
 

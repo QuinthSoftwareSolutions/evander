@@ -499,9 +499,8 @@ def test_effect_regression_provider_execution_failure_records_failed_status(
 
 def test_effect_regression_cycle_detection_skips_execution(tmp_path: Path, report_collector: dict[str, Any]) -> None:
     runtime_dir = tmp_path / "runtime"
-    worker = EffectOrchestratorWorker(
-        config=GatewayConfig(runtime_dir=runtime_dir),
-        worker_config=TriggerOrchestratorWorkerGlobalConfig.model_validate(
+    with pytest.raises(ValueError, match="Non-cyclic edges cannot form a cycle"):
+        TriggerOrchestratorWorkerGlobalConfig.model_validate(
             {
                 "runtime_dir": runtime_dir,
                 "poll_interval_seconds": 1,
@@ -512,33 +511,14 @@ def test_effect_regression_cycle_detection_skips_execution(tmp_path: Path, repor
                 ],
                 "edges": [_edge("effect-b", "effect-a"), _edge("effect-a", "effect-b")],
             }
-        ),
-        runtime=None,  # type: ignore[arg-type]
-    )
-    worker.provider_factory = _Factory({})
-    worker.event_queue.publish(
-        TriggerEvent(
-            event_id="event-cycle",
-            trigger_id="effect-a",
-            trigger_type="effect:agent:prompt",
-            occurred_at=datetime(2026, 4, 4, 12, 0, tzinfo=timezone.utc),
-            payload={},
         )
-    )
-
-    worker.run_once()
-
-    payload = json.loads((runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8"))
-    record = next(iter(payload.values()))
-    assert record["status"] == "skipped"
-    assert record["error"] == "cycle_detected"
 
     _record_result(
         report_collector,
         requirement_id="regression:cycle-detection",
         status="pass",
         coverage=["regression tests for failure handling"],
-        details="Cyclic graphs are skipped and recorded with a terminal skip reason.",
+        details="Invalid non-cyclic graph cycles are rejected at config validation time.",
     )
 
 

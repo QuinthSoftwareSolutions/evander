@@ -5,10 +5,29 @@ import subprocess
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from agent_sandbox.events.models import EffectDefinitionDiscriminated, WorkflowNodeEnvelope
+from agent_sandbox.events.provider_models import BashScriptEffectDefinition
+
 from .base import EffectProviderBase
+from .bash_script_schema import BashScriptEffectConfigSchema
 
 
 class BashScriptEffectProvider(EffectProviderBase):
+    @classmethod
+    def validate_definition(cls, effect_definition: EffectDefinitionDiscriminated) -> EffectDefinitionDiscriminated:
+        if isinstance(effect_definition, WorkflowNodeEnvelope):
+            config = BashScriptEffectConfigSchema.model_validate(effect_definition.config).model_dump()
+            return BashScriptEffectDefinition.model_validate(
+                {
+                    "id": effect_definition.id,
+                    "display_name": effect_definition.display_name,
+                    "type": effect_definition.type,
+                    "outputs": effect_definition.outputs,
+                    **config,
+                }
+            )
+        return super().validate_definition(effect_definition)
+
     def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
         payload = dict(resolved_config or {})
         script_path = self._normalize_required_string(payload.get("script_path"), field_name="script_path")

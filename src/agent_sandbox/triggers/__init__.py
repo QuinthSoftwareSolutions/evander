@@ -1,6 +1,7 @@
-from agent_sandbox.events.models import TriggerDefinitionDiscriminated, TriggerEvent
+from __future__ import annotations
 
-from .queue import TriggerEventQueue, TriggerQueueRecord
+from importlib import import_module
+from typing import Any
 
 __all__ = [
     "TriggerDefinitionDiscriminated",
@@ -8,3 +9,19 @@ __all__ = [
     "TriggerEventQueue",
     "TriggerQueueRecord",
 ]
+
+_EXPORT_MODULES = {
+    "TriggerDefinitionDiscriminated": "agent_sandbox.events.models",
+    "TriggerEvent": "agent_sandbox.events.models",
+    "TriggerEventQueue": ".queue",
+    "TriggerQueueRecord": ".queue",
+}
+
+
+def __getattr__(name: str) -> Any:
+    module_name = _EXPORT_MODULES.get(name)
+    if module_name is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    value = getattr(import_module(module_name, __name__), name)
+    globals()[name] = value
+    return value

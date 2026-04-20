@@ -17,7 +17,7 @@ class IssueUpdateStateEffectProvider(EffectProviderBase):
         sync_proxy_cache = self._coerce_bool(payload.get("sync_proxy_cache"), default=True)
 
         context = self._context()
-        update_fn = getattr(context.admin_service, "update_issue", None)
+        update_fn = getattr(context.issue_updater, "update_issue", None)
         if not callable(update_fn):
             raise RuntimeError("AdminService.update_issue is not available")
 

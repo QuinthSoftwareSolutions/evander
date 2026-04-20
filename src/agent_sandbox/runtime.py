@@ -170,7 +170,7 @@ class RuntimeContext:
         )
 
 
-def build_runtime(config: GatewayConfig) -> RuntimeContext:
+def _build_runtime_context(config: GatewayConfig) -> RuntimeContext:
     migrate_local_issues_to_unified_schema(config)
     directories = DirectoryStore(config.directories_store_path)
     directories.ensure_root()
@@ -233,6 +233,12 @@ def build_runtime(config: GatewayConfig) -> RuntimeContext:
         agent_prompt_store=agent_prompt_store,
         script_run_request_store=script_run_request_store,
     )
+
+
+def build_runtime(config: GatewayConfig) -> RuntimeContext:
+    from .app_bootstrap import build_runtime as build_bootstrapped_runtime
+
+    return build_bootstrapped_runtime(config)
 
 
 def _build_email_provider(

@@ -12,7 +12,9 @@ class VmStartEffectProvider(EffectProviderBase):
         target = self._resolve_target(payload)
 
         context = self._context()
-        result = context.admin_service.start_vm(target)
+        if context.vm_power_controller is None:
+            raise RuntimeError("effect:vm:start vm_power_controller is not available")
+        result = context.vm_power_controller.start_vm(target)
         return {
             "success": bool(result.success),
             "action": "start",

@@ -2,12 +2,29 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from agent_sandbox.events.models import CronTriggerDefinition, TriggerEvent
+from agent_sandbox.events.models import TriggerDefinitionDiscriminated, TriggerEvent, WorkflowNodeEnvelope
+from agent_sandbox.events.provider_models import CronTriggerDefinition
 from agent_sandbox.triggers.providers._cursor_state import TriggerCursorStore
 from agent_sandbox.triggers.providers.base import TriggerProviderBase
+from agent_sandbox.triggers.providers.cron_schema import CronTriggerConfigSchema
 
 
 class CronTriggerProvider(TriggerProviderBase):
+    @classmethod
+    def validate_definition(cls, trigger_definition: TriggerDefinitionDiscriminated) -> TriggerDefinitionDiscriminated:
+        if isinstance(trigger_definition, WorkflowNodeEnvelope):
+            config = CronTriggerConfigSchema.model_validate(trigger_definition.config).model_dump()
+            return CronTriggerDefinition.model_validate(
+                {
+                    "id": trigger_definition.id,
+                    "display_name": trigger_definition.display_name,
+                    "type": trigger_definition.type,
+                    "outputs": trigger_definition.outputs,
+                    **config,
+                }
+            )
+        return super().validate_definition(trigger_definition)
+
     def poll(self) -> list[TriggerEvent]:
         trigger = self._trigger()
         cursor_store = self._cursor_store()

@@ -2,17 +2,25 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Event
 
+import pytest
+
 from agent_sandbox.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
+from agent_sandbox.effects.providers.base import EffectRuntimeContext
+from agent_sandbox.effects.providers.vm_copy_files import VmCopyFilesEffectProvider
 from agent_sandbox.effect_orchestrator import (
     AwaitAgentPendingRecord,
     EffectOrchestratorWorker,
     _await_agent_pending_target,
+    build_effect_orchestrator_worker,
+    main,
 )
+from agent_sandbox.agent_prompt_queue import QueuedAgentPromptRecord
 from agent_sandbox.events.models import TriggerEvent
 from agent_sandbox.models import VmSummary
 
@@ -66,8 +74,79 @@ class _StaticReloader:
         return self._config, changed
 
 
+class _AgentRunStatusPortStub:
+    def __init__(self, summaries: list[object]) -> None:
+        self.summaries = summaries
+
+    def list_vm_summaries(self) -> list[object]:
+        return list(self.summaries)
+
+
+class _AgentPromptDispatchPortStub:
+    def __init__(self, resume_calls: list[dict[str, object]], result: object) -> None:
+        self.resume_calls = resume_calls
+        self.result = result
+
+    def dispatch_agent_prompt(
+        self,
+        *,
+        target: str,
+        prompt: str,
+        model: str | None = None,
+        vm_user: str = "agent",
+        dispatch_id: str | None = None,
+        resume_thread_id: str | None = None,
+    ) -> object:
+        self.resume_calls.append(
+            {
+                "target": target,
+                "prompt": prompt,
+                "model": model,
+                "vm_user": vm_user,
+                "dispatch_id": dispatch_id,
+                "resume_thread_id": resume_thread_id,
+            }
+        )
+        return self.result
+
+
 def _edge(source_id: str, target_id: str) -> dict[str, str]:
     return {"source_id": source_id, "target_id": target_id}
+
+
+def _await_agent_store(worker: EffectOrchestratorWorker):
+    provider = worker._get_gate_provider("gate:await-agent")
+    assert provider is not None
+    return provider.load_state()
+
+
+def test_effect_orchestrator_main_help_does_not_crash(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sys, "argv", ["agent-sandbox-effect-orchestrator", "--help"])
+
+    with pytest.raises(SystemExit) as excinfo:
+        main()
+
+    assert excinfo.value.code == 0
+
+
+def test_build_effect_orchestrator_worker_accepts_injected_services(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+
+    class _InjectedServices:
+        def __init__(self) -> None:
+            self.called_with: GatewayConfig | None = None
+
+        def build_runtime(self, cfg: GatewayConfig):
+            self.called_with = cfg
+            return object()
+
+    services = _InjectedServices()
+    worker = build_effect_orchestrator_worker(config, project_dir=tmp_path, services=services)
+
+    assert services.called_with is not None
+    assert services.called_with.runtime_dir == runtime_dir
+    assert worker.runtime is not None
 
 
 def test_effect_orchestrator_run_once_uses_reloaded_worker_config_for_sleep(tmp_path: Path) -> None:
@@ -917,42 +996,22 @@ def test_effect_orchestrator_supports_disambiguated_references_for_same_key_name
 
 def test_effect_orchestrator_depth_protection_skips_cyclic_graph(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
-    config = GatewayConfig(runtime_dir=runtime_dir)
-    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
-        {
-            "runtime_dir": runtime_dir,
-            "poll_interval_seconds": 1,
-            "jitter_seconds": 0,
-            "effects": [
-                {"id": "effect-a", "display_name": "A", "type": "effect:agent:prompt", "prompt": "A"},
-                {"id": "effect-b", "display_name": "B", "type": "effect:agent:prompt", "prompt": "B"},
-            ],
-            "edges": [
-                _edge("effect-b", "effect-a"),
-                _edge("effect-a", "effect-b"),
-            ],
-        }
-    )
-    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
-    worker.provider_factory = _Factory({})
-
-    worker.event_queue.publish(
-        TriggerEvent(
-            event_id="event-cycle-1",
-            trigger_id="effect-a",
-            trigger_type="trigger:cron",
-            occurred_at=datetime(2026, 4, 4, 12, 0, tzinfo=timezone.utc),
-            payload={},
+    with pytest.raises(ValueError, match="Non-cyclic edges cannot form a cycle"):
+        TriggerOrchestratorWorkerGlobalConfig.model_validate(
+            {
+                "runtime_dir": runtime_dir,
+                "poll_interval_seconds": 1,
+                "jitter_seconds": 0,
+                "effects": [
+                    {"id": "effect-a", "display_name": "A", "type": "effect:agent:prompt", "prompt": "A"},
+                    {"id": "effect-b", "display_name": "B", "type": "effect:agent:prompt", "prompt": "B"},
+                ],
+                "edges": [
+                    _edge("effect-b", "effect-a"),
+                    _edge("effect-a", "effect-b"),
+                ],
+            }
         )
-    )
-
-    worker.run_once()
-
-    execution_payload = json.loads((runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8"))
-    record = next(iter(execution_payload.values()))
-    assert record["effect_id"] == "effect-b"
-    assert record["status"] == "skipped"
-    assert record["error"] == "cycle_detected"
 
 
 def test_effect_orchestrator_dispatches_without_waiting_for_long_effect(tmp_path: Path) -> None:
@@ -1619,19 +1678,25 @@ def test_agent_enqueue_prompt_dispatches_queued_prompt_when_target_agent_becomes
                     "prompt": "hello",
                 }
             ],
-            "edges": [_edge("trigger-1", "effect-1")],
+                "edges": [_edge("trigger-1", "effect-1")],
         }
     )
     worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
-    summaries = [
-        [
-            VmSummary(
-                vm_name="vm-1",
-                libvirt_state="running",
-                agent_state="running",
-                session_ids=[],
-            )
-        ],
+    resume_calls: list[dict[str, object]] = []
+    worker.queued_agent_prompt_store.put(
+        QueuedAgentPromptRecord(
+            queue_key="vm-1",
+            target="vm-1",
+            vm_name="vm-1",
+            session_id=None,
+            prompt="hello",
+            model=None,
+            vm_user="agent",
+            resume_thread_id=None,
+            effect_id="effect-1",
+        )
+    )
+    worker.agent_run_status_port = _AgentRunStatusPortStub(
         [
             VmSummary(
                 vm_name="vm-1",
@@ -1639,12 +1704,59 @@ def test_agent_enqueue_prompt_dispatches_queued_prompt_when_target_agent_becomes
                 agent_state="idle",
                 session_ids=[],
             )
-        ],
-    ]
-    monkeypatch.setattr(
-        worker.provider_factory.admin_service,
-        "list_vms",
-        lambda **kwargs: summaries.pop(0) if summaries else [],
+        ]
+    )
+    worker.agent_prompt_dispatch_port = _AgentPromptDispatchPortStub(
+        resume_calls,
+        type("Result", (), {"success": True, "thread_id": "thread-queued"})(),
+    )
+
+    worker._run_post_completion_dispatch_hooks()
+
+    assert len(resume_calls) == 1
+    assert resume_calls[0]["target"] == "vm-1"
+    queued_store_path = runtime_dir / "queued-agent-prompts.json"
+    queued_payload = json.loads(queued_store_path.read_text(encoding="utf-8")) if queued_store_path.exists() else {}
+    assert queued_payload == {}
+
+
+def test_agent_enqueue_prompt_queue_dispatch_hook_is_neutral_when_provider_absent(tmp_path: Path, monkeypatch) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {"id": "trigger-1", "display_name": "Tick", "type": "trigger:cron", "expression": "* * * * *"}
+            ],
+            "effects": [
+                {
+                    "id": "effect-1",
+                    "display_name": "Prompt",
+                    "type": "effect:agent:prompt",
+                    "vm_name": "vm-1",
+                    "prompt": "hello",
+                }
+            ],
+            "edges": [_edge("trigger-1", "effect-1")],
+        }
+    )
+    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+
+    worker.queued_agent_prompt_store.put(
+        QueuedAgentPromptRecord(
+            queue_key="vm-1",
+            target="vm-1",
+            vm_name="vm-1",
+            session_id=None,
+            prompt="queued",
+            model=None,
+            vm_user="agent",
+            resume_thread_id=None,
+            effect_id="effect-enqueue",
+        )
     )
     resume_calls: list[dict[str, object]] = []
     monkeypatch.setattr(
@@ -1654,26 +1766,11 @@ def test_agent_enqueue_prompt_dispatches_queued_prompt_when_target_agent_becomes
         or type("Result", (), {"success": True, "thread_id": "thread-queued"})(),
     )
 
-    worker.event_queue.publish(
-        TriggerEvent(
-            event_id="event-enqueue-1",
-            trigger_id="trigger-1",
-            trigger_type="trigger:cron",
-            occurred_at=datetime(2026, 4, 4, 12, 0, tzinfo=timezone.utc),
-            payload={},
-            trace_id="trace-enqueue-1",
-        )
-    )
-
-    worker.run_once()
-    worker.run_once()
     worker.run_once()
 
-    assert len(resume_calls) == 1
-    assert resume_calls[0]["target"] == "vm-1"
-    queued_store_path = runtime_dir / "queued-agent-prompts.json"
-    queued_payload = json.loads(queued_store_path.read_text(encoding="utf-8")) if queued_store_path.exists() else {}
-    assert queued_payload == {}
+    assert resume_calls == []
+    queued_payload = json.loads((runtime_dir / "queued-agent-prompts.json").read_text(encoding="utf-8"))
+    assert "vm-1" in queued_payload
 
 
 def test_filter_gate_when_drops_payload_when_predicate_is_false(tmp_path: Path) -> None:
@@ -1811,12 +1908,25 @@ def test_vm_copy_files_template_source_renders_bindings_before_dispatch(tmp_path
         }
     )
     worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
-    worker.provider_factory = _Factory(
-        {
-            "effect-1": {"session_id": "session-123", "vm_name": "vm-issue-14084", "success": True},
-            "effect-2": {"success": True},
-        }
-    )
+    class _VmFileCopierStub:
+        def vm_copy_files(self, **kwargs):
+            return {"success": True, "action": "vm_copy_files", **kwargs}
+
+    class _TemplateAwareFactory:
+        def build(self, effect):
+            if effect.id == "effect-2":
+                provider = VmCopyFilesEffectProvider()
+                provider.initialize(
+                    effect_definition=effect,
+                    runtime_context=EffectRuntimeContext(
+                        vm_file_copier=_VmFileCopierStub(),
+                        metadata={"directory_path": "root/team-a"},
+                    ),
+                )
+                return provider
+            return _Provider({"session_id": "session-123", "vm_name": "vm-issue-14084", "success": True})
+
+    worker.provider_factory = _TemplateAwareFactory()
 
     worker.event_queue.publish(
         TriggerEvent(
@@ -2026,7 +2136,7 @@ def test_await_agent_gate_releases_follow_up_from_in_process_vm_poll(tmp_path: P
             },
         }
     )
-    monkeypatch.setattr(worker, "_list_vm_summaries_for_await_agent_reconciliation", lambda: [])
+    worker.agent_run_status_port = _AgentRunStatusPortStub([])
 
     worker.event_queue.publish(
         TriggerEvent(
@@ -2042,7 +2152,7 @@ def test_await_agent_gate_releases_follow_up_from_in_process_vm_poll(tmp_path: P
     for _ in range(4):
         worker.run_once()
 
-    pending = worker.await_agent_store.get("await-agent-1:dispatch-effect-1-abc123")
+    pending = _await_agent_store(worker).get("await-agent-1:dispatch-effect-1-abc123")
     assert pending is not None
     pending.session_id = "session-42"
     pending.vm_name = "vm-issue-42"
@@ -2050,26 +2160,22 @@ def test_await_agent_gate_releases_follow_up_from_in_process_vm_poll(tmp_path: P
         "session_id": "session-42",
         "vm_name": "vm-issue-42",
     }
-    worker.await_agent_store.put("await-agent-1:dispatch-effect-1-abc123", pending)
+    _await_agent_store(worker).put("await-agent-1:dispatch-effect-1-abc123", pending)
 
-    monkeypatch.setattr(
-        worker,
-        "_list_vm_summaries_for_await_agent_reconciliation",
-        lambda: [
-            VmSummary(
-                vm_name="vm-issue-42",
-                session_ids=["session-42"],
-                labels={},
-                directory_paths=["root/team-a"],
-                libvirt_state="running",
-                ip_address="192.0.2.10",
-                agent_state="idle",
-                agent_repo_names=["repo-a"],
-                last_state_update_at=datetime(2026, 4, 4, 12, 5, tzinfo=timezone.utc),
-                dispatch_id="dispatch-effect-1-abc123",
-            )
-        ],
-    )
+    worker.agent_run_status_port.summaries = [
+        VmSummary(
+            vm_name="vm-issue-42",
+            session_ids=["session-42"],
+            labels={},
+            directory_paths=["root/team-a"],
+            libvirt_state="running",
+            ip_address="192.0.2.10",
+            agent_state="idle",
+            agent_repo_names=["repo-a"],
+            last_state_update_at=datetime(2026, 4, 4, 12, 5, tzinfo=timezone.utc),
+            dispatch_id="dispatch-effect-1-abc123",
+        )
+    ]
 
     for _ in range(6):
         worker.run_once()
@@ -2163,7 +2269,7 @@ def test_await_agent_gate_preserves_upstream_node_outputs_for_follow_up_bindings
     for _ in range(4):
         worker.run_once()
 
-    pending = worker.await_agent_store.get("await-agent-1:dispatch-effect-1-abc123")
+    pending = _await_agent_store(worker).get("await-agent-1:dispatch-effect-1-abc123")
     assert pending is not None
     pending.session_id = "session-42"
     pending.vm_name = "vm-issue-42"
@@ -2171,7 +2277,7 @@ def test_await_agent_gate_preserves_upstream_node_outputs_for_follow_up_bindings
         "session_id": "session-42",
         "vm_name": "vm-issue-42",
     }
-    worker.await_agent_store.put("await-agent-1:dispatch-effect-1-abc123", pending)
+    _await_agent_store(worker).put("await-agent-1:dispatch-effect-1-abc123", pending)
 
     monkeypatch.setattr(
         worker,
@@ -2285,11 +2391,11 @@ def test_force_complete_await_agent_releases_follow_up(tmp_path: Path, monkeypat
     for _ in range(4):
         worker.run_once()
 
-    pending = worker.await_agent_store.get("await-agent-1:dispatch-effect-1-abc123")
+    pending = _await_agent_store(worker).get("await-agent-1:dispatch-effect-1-abc123")
     assert pending is not None
     pending.session_id = "session-42"
     pending.vm_name = "vm-issue-42"
-    worker.await_agent_store.put("await-agent-1:dispatch-effect-1-abc123", pending)
+    _await_agent_store(worker).put("await-agent-1:dispatch-effect-1-abc123", pending)
     monkeypatch.setattr(
         worker,
         "_list_vm_summaries_for_await_agent_reconciliation",
@@ -2369,7 +2475,7 @@ def test_waiting_agent_prompt_reconciliation_completes_from_idle_matching_dispat
             },
         }
     )
-    monkeypatch.setattr(worker, "_list_vm_summaries_for_await_agent_reconciliation", lambda: [])
+    worker.agent_run_status_port = _AgentRunStatusPortStub([])
 
     worker.event_queue.publish(
         TriggerEvent(
@@ -2385,24 +2491,20 @@ def test_waiting_agent_prompt_reconciliation_completes_from_idle_matching_dispat
     for _ in range(4):
         worker.run_once()
 
-    monkeypatch.setattr(
-        worker,
-        "_list_vm_summaries_for_await_agent_reconciliation",
-        lambda: [
-            VmSummary(
-                vm_name="vm-issue-42",
-                session_ids=["session-42"],
-                labels={},
-                directory_paths=["root/team-a"],
-                libvirt_state="running",
-                ip_address="192.0.2.10",
-                agent_state="idle",
-                agent_repo_names=["repo-a"],
-                last_state_update_at=datetime(2026, 4, 4, 12, 5, tzinfo=timezone.utc),
-                dispatch_id="dispatch-effect-1-abc123",
-            )
-        ],
-    )
+    worker.agent_run_status_port.summaries = [
+        VmSummary(
+            vm_name="vm-issue-42",
+            session_ids=["session-42"],
+            labels={},
+            directory_paths=["root/team-a"],
+            libvirt_state="running",
+            ip_address="192.0.2.10",
+            agent_state="idle",
+            agent_repo_names=["repo-a"],
+            last_state_update_at=datetime(2026, 4, 4, 12, 5, tzinfo=timezone.utc),
+            dispatch_id="dispatch-effect-1-abc123",
+        )
+    ]
 
     for _ in range(6):
         worker.run_once()
@@ -2602,11 +2704,11 @@ def test_await_agent_gate_releases_when_settled_summary_lacks_dispatch_id(tmp_pa
     for _ in range(4):
         worker.run_once()
 
-    pending = worker.await_agent_store.get("await-agent-1:dispatch-effect-1-abc123")
+    pending = _await_agent_store(worker).get("await-agent-1:dispatch-effect-1-abc123")
     assert pending is not None
     pending.session_id = "session-42"
     pending.vm_name = "vm-issue-42"
-    worker.await_agent_store.put("await-agent-1:dispatch-effect-1-abc123", pending)
+    _await_agent_store(worker).put("await-agent-1:dispatch-effect-1-abc123", pending)
     monkeypatch.setattr(
         worker,
         "_list_vm_summaries_for_await_agent_reconciliation",
@@ -2684,7 +2786,7 @@ def test_await_agent_reconciliation_completes_idle_pending_record_without_dispat
         payload={},
         occurred_at=datetime(2026, 4, 4, 11, 50, tzinfo=timezone.utc),
     )
-    worker.await_agent_store.put("await-agent-1:dispatch-old", pending)
+    _await_agent_store(worker).put("await-agent-1:dispatch-old", pending)
     monkeypatch.setattr(
         worker,
         "_list_vm_summaries_for_await_agent_reconciliation",
@@ -2705,7 +2807,7 @@ def test_await_agent_reconciliation_completes_idle_pending_record_without_dispat
 
     worker.run_once()
 
-    assert worker.await_agent_store.read_all() == {}
+    assert _await_agent_store(worker).read_all() == {}
 
 
 def test_await_agent_reconciliation_keeps_pending_record_without_matching_summary(tmp_path: Path, monkeypatch) -> None:
@@ -2759,12 +2861,12 @@ def test_await_agent_reconciliation_keeps_pending_record_without_matching_summar
         payload={},
         occurred_at=datetime(2026, 4, 4, 11, 50, tzinfo=timezone.utc),
     )
-    worker.await_agent_store.put("await-agent-1:dispatch-missing", pending)
+    _await_agent_store(worker).put("await-agent-1:dispatch-missing", pending)
     monkeypatch.setattr(worker, "_list_vm_summaries_for_await_agent_reconciliation", lambda: [])
 
     worker.run_once()
 
-    assert worker.await_agent_store.read_all() == {"await-agent-1:dispatch-missing": pending}
+    assert _await_agent_store(worker).read_all() == {"await-agent-1:dispatch-missing": pending}
 
 
 def test_await_agent_reconciliation_keeps_settled_current_dispatch_record(tmp_path: Path, monkeypatch) -> None:
@@ -2818,7 +2920,7 @@ def test_await_agent_reconciliation_keeps_settled_current_dispatch_record(tmp_pa
         payload={},
         occurred_at=datetime(2026, 4, 4, 11, 50, tzinfo=timezone.utc),
     )
-    worker.await_agent_store.put("await-agent-1:dispatch-current", pending)
+    _await_agent_store(worker).put("await-agent-1:dispatch-current", pending)
     monkeypatch.setattr(
         worker,
         "_list_vm_summaries_for_await_agent_reconciliation",
@@ -2839,7 +2941,7 @@ def test_await_agent_reconciliation_keeps_settled_current_dispatch_record(tmp_pa
 
     worker.run_once()
 
-    assert worker.await_agent_store.read_all() == {}
+    assert _await_agent_store(worker).read_all() == {}
 
 
 def test_await_agent_pending_target_can_fill_missing_vm_name_from_session_summary() -> None:

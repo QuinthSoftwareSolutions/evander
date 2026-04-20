@@ -1341,6 +1341,124 @@ def test_workflow_editor_document_uses_runtime_parent_as_project_root(
     assert document.layout["nodes"]["cron-15m"] == {"x": 42.0, "y": 12.0}
 
 
+def test_workflow_editor_document_composes_workflow_pack_config(tmp_path: Path) -> None:
+    packs_dir = tmp_path / "config" / "workflow-packs"
+    packs_dir.mkdir(parents=True, exist_ok=True)
+    (packs_dir / "demo.v1.json").write_text(
+        json.dumps(
+            {
+                "pack_id": "demo",
+                "pack_version": "v1",
+                "ir": {
+                    "version": "v1",
+                    "nodes": [
+                        {
+                            "id": "cron-15m",
+                            "display_name": "Every 15 minutes",
+                            "type": "trigger:cron",
+                            "expression": "*/15 * * * *",
+                        },
+                        {
+                            "id": "prompt-agent",
+                            "display_name": "Prompt agent",
+                            "type": "effect:agent:prompt",
+                            "prompt": "Summarize",
+                        },
+                    ],
+                    "edges": [{"source_id": "cron-15m", "target_id": "prompt-agent"}],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    config_root = tmp_path / "config" / "trigger-orchestrator"
+    config_root.mkdir(parents=True, exist_ok=True)
+    (config_root / "config.json").write_text(
+        json.dumps({"runtime_dir": str(tmp_path / "runtime"), "workflow_packs": ["demo.v1.json"]}),
+        encoding="utf-8",
+    )
+
+    document = AdminService(write_config(tmp_path)).read_workflow_editor_document()
+
+    assert document.config["workflow_packs"] == ["demo.v1.json"]
+    assert [trigger["id"] for trigger in document.config["triggers"]] == ["cron-15m"]
+    assert [effect["id"] for effect in document.config["effects"]] == ["prompt-agent"]
+    assert document.config["edges"] == [{"source_id": "cron-15m", "target_id": "prompt-agent"}]
+
+
+def test_workflow_editor_save_updates_single_workflow_pack_without_flattening_wrapper(tmp_path: Path) -> None:
+    packs_dir = tmp_path / "config" / "workflow-packs"
+    packs_dir.mkdir(parents=True, exist_ok=True)
+    pack_path = packs_dir / "demo.v1.json"
+    pack_path.write_text(
+        json.dumps(
+            {
+                "pack_id": "demo",
+                "pack_version": "v1",
+                "description": "Demo workflow",
+                "ir": {
+                    "version": "v1",
+                    "nodes": [
+                        {
+                            "id": "cron-15m",
+                            "display_name": "Every 15 minutes",
+                            "type": "trigger:cron",
+                            "expression": "*/15 * * * *",
+                        },
+                        {
+                            "id": "prompt-agent",
+                            "display_name": "Prompt agent",
+                            "type": "effect:agent:prompt",
+                            "prompt": "Summarize",
+                        },
+                    ],
+                    "edges": [{"source_id": "cron-15m", "target_id": "prompt-agent"}],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    config_root = tmp_path / "config" / "trigger-orchestrator"
+    config_root.mkdir(parents=True, exist_ok=True)
+    config_path = config_root / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "runtime_dir": str(tmp_path / "runtime"),
+                "poll_interval_seconds": 12,
+                "workflow_packs": ["demo.v1.json"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    service = AdminService(write_config(tmp_path))
+    document = service.read_workflow_editor_document()
+    edited_config = dict(document.config)
+    effects = [dict(effect) for effect in edited_config["effects"]]
+    effects[0]["display_name"] = "Prompt agent with context"
+    edited_config["effects"] = effects
+
+    save_result = service.save_workflow_editor_document(
+        config=edited_config,
+        layout={"nodes": {"cron-15m": {"x": 100, "y": 50}, "prompt-agent": {"x": 300, "y": 50}}},
+    )
+
+    wrapper_config = json.loads(config_path.read_text(encoding="utf-8"))
+    assert wrapper_config["workflow_packs"] == ["demo.v1.json"]
+    assert wrapper_config["poll_interval_seconds"] == 12.0
+    for graph_key in ("triggers", "gates", "effects", "queries", "edges"):
+        assert graph_key not in wrapper_config
+
+    pack_payload = json.loads(pack_path.read_text(encoding="utf-8"))
+    assert pack_payload["description"] == "Demo workflow"
+    saved_effect = next(node for node in pack_payload["ir"]["nodes"] if node["id"] == "prompt-agent")
+    assert saved_effect["display_name"] == "Prompt agent with context"
+    assert save_result.config["effects"][0]["display_name"] == "Prompt agent with context"
+
+    reread = service.read_workflow_editor_document()
+    assert reread.config["effects"][0]["display_name"] == "Prompt agent with context"
+
+
 def test_workflow_editor_validation_rejects_unknown_layout_nodes(tmp_path: Path) -> None:
     service = AdminService(write_config(tmp_path))
 

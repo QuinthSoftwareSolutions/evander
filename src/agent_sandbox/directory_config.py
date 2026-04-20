@@ -104,6 +104,7 @@ DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
             "teams_retry_max_backoff_seconds",
             "teams_timeout_seconds",
             "teams_read_reaction_emoji",
+            "provider_state",
         }
     ),
     "email": frozenset(

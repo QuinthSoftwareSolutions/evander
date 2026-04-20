@@ -1,0 +1,20 @@
+{
+  "runtime_dir": "runtime/orchestration-core",
+  "poll_interval_seconds": 30,
+  "jitter_seconds": 5,
+  "lock_path": null,
+  "event_queue_store_path": null,
+  "event_queue_cursor_store_path": null,
+  "workflow_transforms": [],
+  "triggers": [],
+  "gates": [],
+  "effects": [],
+  "queries": [],
+  "edges": [],
+  "provider_loader": {
+    "provider_profile": "profiles/core-minimal",
+    "include_builtin": null,
+    "provider_modules": [],
+    "provider_entry_points_enabled": false
+  }
+}

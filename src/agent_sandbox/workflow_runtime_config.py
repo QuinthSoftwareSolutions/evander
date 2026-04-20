@@ -4,8 +4,12 @@ import hashlib
 import json
 import logging
 from pathlib import Path
+from typing import Any
 
 from .config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
+from .workflow_compiler import compile_trigger_orchestrator_config, compile_trigger_orchestrator_config_with_diagnostics
+from .workflow_transforms import resolve_workflow_transforms
+from .workflow_packs import compose_workflow_ir
 
 logger = logging.getLogger(__name__)
 
@@ -30,11 +34,14 @@ def load_trigger_orchestrator_worker_global_config(
     base_payload = _base_worker_global_payload(base_config)
     path = _worker_global_config_path(project_dir)
     if not path.exists():
-        return TriggerOrchestratorWorkerGlobalConfig.model_validate(base_payload)
+        return _compile_worker_global_config(TriggerOrchestratorWorkerGlobalConfig.model_validate(base_payload))
     raw = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
         raise ValueError(f"worker config file {path} must contain a JSON object")
-    return TriggerOrchestratorWorkerGlobalConfig.model_validate({**base_payload, **raw})
+    raw = _compose_configured_workflow_ir(project_dir=project_dir, payload=raw)
+    return _compile_worker_global_config(
+        TriggerOrchestratorWorkerGlobalConfig.model_validate({**base_payload, **raw})
+    )
 
 
 class TriggerOrchestratorWorkerGlobalConfigReloader:
@@ -91,11 +98,53 @@ class TriggerOrchestratorWorkerGlobalConfigReloader:
 
     def _load_from_path(self) -> TriggerOrchestratorWorkerGlobalConfig:
         if not self._path.exists():
-            return TriggerOrchestratorWorkerGlobalConfig.model_validate(self._base_payload)
+            return _compile_worker_global_config(
+                TriggerOrchestratorWorkerGlobalConfig.model_validate(self._base_payload)
+            )
         raw = json.loads(self._path.read_text(encoding="utf-8"))
         if not isinstance(raw, dict):
             raise ValueError(f"worker config file {self._path} must contain a JSON object")
-        return TriggerOrchestratorWorkerGlobalConfig.model_validate({**self._base_payload, **raw})
+        raw = _compose_configured_workflow_ir(project_dir=self._path.parents[2], payload=raw)
+        return _compile_worker_global_config(
+            TriggerOrchestratorWorkerGlobalConfig.model_validate({**self._base_payload, **raw})
+        )
+
+
+def _compile_worker_global_config(
+    worker_config: TriggerOrchestratorWorkerGlobalConfig,
+) -> TriggerOrchestratorWorkerGlobalConfig:
+    transforms = resolve_workflow_transforms(worker_config.workflow_transforms)
+    return compile_trigger_orchestrator_config(worker_config, transforms=transforms)
+
+
+def compile_worker_global_config_with_diagnostics(
+    worker_config: TriggerOrchestratorWorkerGlobalConfig,
+) -> tuple[TriggerOrchestratorWorkerGlobalConfig, list[str]]:
+    transforms = resolve_workflow_transforms(worker_config.workflow_transforms)
+    compiled, diagnostics = compile_trigger_orchestrator_config_with_diagnostics(worker_config, transforms=transforms)
+    return compiled, [item.message for item in diagnostics]
+
+
+def _compose_configured_workflow_ir(*, project_dir: Path, payload: dict[str, Any]) -> dict[str, Any]:
+    configured_packs = payload.get("workflow_packs")
+    inline_ir = payload.get("workflow_ir")
+    has_configured_packs = isinstance(configured_packs, list) and bool(configured_packs)
+    has_inline_ir = isinstance(inline_ir, dict)
+    if not has_configured_packs and not has_inline_ir:
+        return payload
+
+    composition = compose_workflow_ir(
+        project_dir=project_dir,
+        workflow_packs=configured_packs if has_configured_packs else [],
+        inline_ir=inline_ir if has_inline_ir else None,
+    )
+    merged = dict(payload)
+    merged["triggers"] = composition.triggers
+    merged["gates"] = composition.gates
+    merged["effects"] = composition.effects
+    merged["queries"] = composition.queries
+    merged["edges"] = composition.edges
+    return merged
 
 
 class FixedTriggerOrchestratorWorkerGlobalConfigReloader:

@@ -27,7 +27,7 @@ class GitPromoteAgentBranchEffectProvider(EffectProviderBase):
             raise ValueError("effect:git:promote-agent-branch requires agent_branch")
 
         context = self._context()
-        promote = getattr(context.admin_service, "promote_agent_branch", None)
+        promote = getattr(context.git_branch_promoter, "promote_agent_branch", None)
         if not callable(promote):
             raise RuntimeError("AdminService.promote_agent_branch is not available")
 

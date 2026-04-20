@@ -26,7 +26,7 @@ from agent_sandbox.ado_issue_worker import (
     run_worker_command,
     update_work_item_state,
 )
-from agent_sandbox.events.models import PullRequestNewFeedbackTriggerDefinition
+from agent_sandbox.events.provider_models import PullRequestNewFeedbackTriggerDefinition
 from agent_sandbox.models import LocalIssueRecord
 from agent_sandbox.pr_feedback_worker import FeedbackEnvelope
 from agent_sandbox.services import PrFeedbackService
@@ -392,6 +392,60 @@ def test_process_work_item_upserts_unified_issue_and_refreshes_yaml(
     assert parsed["description"] == "Second description"
     assert parsed["state"] == "In Progress"
     assert parsed["tags"] == ["truman", "backend"]
+
+
+def test_process_work_item_refresh_preserves_local_issue_plan_metadata(
+    worker_config: WorkerConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = ProcessedWorkItemStore(worker_config.processed_store_path)
+
+    def successful_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="ok", stderr="")
+
+    monkeypatch.setattr("agent_sandbox.ado_issue_worker.subprocess.run", successful_run)
+
+    item = {
+        "id": 14758,
+        "title": "Initial title",
+        "description": "First description",
+        "tags": ["truman"],
+        "state": "Committed",
+        "url": "https://example/14758",
+        "updated_date": "2026-04-13T12:07:37.687000Z",
+        "comments": [],
+    }
+    assert process_work_item(item, config=worker_config, store=store) is True
+
+    local_issues_store = JsonStore(worker_config.runtime_dir / "local-issues.json", LocalIssueRecord)
+    record = next(iter(local_issues_store.read_all().values()))
+    record.metadata = {
+        **record.metadata,
+        "steps": ["Inspect code", "Write patch", "Run tests"],
+        "plan_summary": "Fix the issue and verify it.",
+    }
+    local_issues_store.put(record.issue_id, record)
+    yaml_path = worker_config.yaml_output_dir / "work-item-14758.yaml"
+    parsed = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
+    parsed["steps"] = ["Inspect code", "Write patch", "Run tests"]
+    parsed["plan_summary"] = "Fix the issue and verify it."
+    yaml_path.write_text(yaml.safe_dump(parsed, sort_keys=False), encoding="utf-8")
+
+    refreshed = {
+        **item,
+        "title": "Updated title",
+        "description": "Second description",
+        "updated_date": "2026-04-20T13:21:59.140483Z",
+    }
+    assert process_work_item(refreshed, config=worker_config, store=store) is False
+
+    reread_record = next(iter(local_issues_store.read_all().values()))
+    reread_yaml = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
+    assert reread_record.metadata["steps"] == ["Inspect code", "Write patch", "Run tests"]
+    assert reread_record.metadata["plan_summary"] == "Fix the issue and verify it."
+    assert reread_yaml["steps"] == ["Inspect code", "Write patch", "Run tests"]
+    assert reread_yaml["plan_summary"] == "Fix the issue and verify it."
+    assert reread_yaml["title"] == "Updated title"
 
 
 def test_process_work_item_creates_session_manifest_before_setup(

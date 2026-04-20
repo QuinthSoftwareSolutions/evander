@@ -4,12 +4,17 @@ import pytest
 from pydantic import TypeAdapter
 
 from agent_sandbox.events.models import (
-    AgentPromptEffectDefinition,
-    AgentPromptNewTriggerDefinition,
-    AgentRunCompletedTriggerDefinition,
     ConfigValue,
     EffectDefinitionDiscriminated,
     GateDefinitionDiscriminated,
+    TriggerDefinitionDiscriminated,
+    TriggerEvent,
+    materialize_node_definition,
+)
+from agent_sandbox.events.provider_models import (
+    AgentPromptEffectDefinition,
+    AgentPromptNewTriggerDefinition,
+    AgentRunCompletedTriggerDefinition,
     GitPromoteAgentBranchEffectDefinition,
     GitPushTriggerDefinition,
     IssueUpdateStateEffectDefinition,
@@ -19,8 +24,6 @@ from agent_sandbox.events.models import (
     ScriptRunRequestTriggerDefinition,
     SessionContextQueryDefinition,
     SessionUpdateMetadataEffectDefinition,
-    TriggerDefinitionDiscriminated,
-    TriggerEvent,
 )
 
 
@@ -28,13 +31,15 @@ from agent_sandbox.events.models import (
 def test_ticket_created_trigger_normalizes_directories() -> None:
     adapter = TypeAdapter(TriggerDefinitionDiscriminated)
 
-    trigger = adapter.validate_python(
-        {
-            "id": "t-1",
-            "display_name": "Ticket created",
-            "type": "trigger:ticket:created",
-            "directories": [" root/team-a ", "", "root/team-a/subdir"],
-        }
+    trigger = materialize_node_definition(
+        adapter.validate_python(
+            {
+                "id": "t-1",
+                "display_name": "Ticket created",
+                "type": "trigger:ticket:created",
+                "directories": [" root/team-a ", "", "root/team-a/subdir"],
+            }
+        )
     )
 
     assert trigger.directories == ["root/team-a", "root/team-a/subdir"]
@@ -60,14 +65,16 @@ def test_email_trigger_validates_provider_enum() -> None:
 def test_teams_trigger_normalizes_filters() -> None:
     adapter = TypeAdapter(TriggerDefinitionDiscriminated)
 
-    trigger = adapter.validate_python(
-        {
-            "id": "t-teams",
-            "display_name": "Teams",
-            "type": "trigger:teams:new-message",
-            "targets": [{"target": " team-a/channel-1 "}, {"target": "team-b/channel-9/"}],
-            "user_ids": " user-a ",
-        }
+    trigger = materialize_node_definition(
+        adapter.validate_python(
+            {
+                "id": "t-teams",
+                "display_name": "Teams",
+                "type": "trigger:teams:new-message",
+                "targets": [{"target": " team-a/channel-1 "}, {"target": "team-b/channel-9/"}],
+                "user_ids": " user-a ",
+            }
+        )
     )
 
     assert [item.target for item in trigger.targets] == ["team-a/channel-1", "team-b/channel-9"]
@@ -77,22 +84,22 @@ def test_teams_trigger_normalizes_filters() -> None:
 def test_teams_trigger_accepts_per_target_message_filter() -> None:
     adapter = TypeAdapter(TriggerDefinitionDiscriminated)
 
-    trigger = adapter.validate_python(
-        {
-            "id": "t-teams",
-            "display_name": "Teams",
-            "type": "trigger:teams:new-message",
-            "targets": [
-                {
-                    "target": "chat:19:abc@thread.v2",
-                    "message_filter": {
-                        "mentions": {
-                            "user_ids": [" 143e5b02-868f-4f0c-a262-cf509b6c09e5 "]
-                        }
-                    },
-                }
-            ],
-        }
+    trigger = materialize_node_definition(
+        adapter.validate_python(
+            {
+                "id": "t-teams",
+                "display_name": "Teams",
+                "type": "trigger:teams:new-message",
+                "targets": [
+                    {
+                        "target": "chat:19:abc@thread.v2",
+                        "message_filter": {
+                            "mentions": {"user_ids": [" 143e5b02-868f-4f0c-a262-cf509b6c09e5 "]}
+                        },
+                    }
+                ],
+            }
+        )
     )
 
     assert trigger.targets[0].message_filter is not None
@@ -264,14 +271,16 @@ def test_await_agent_gate_requires_session_id_or_vm_name() -> None:
 def test_await_agent_gate_accepts_single_selector() -> None:
     adapter = TypeAdapter(GateDefinitionDiscriminated)
 
-    gate = adapter.validate_python(
-        {
-            "id": "g-2",
-            "display_name": "Await agent",
-            "type": "gate:await-agent",
-            "session_id": "${{effect-1.session_id}}",
-            "outputs": {},
-        }
+    gate = materialize_node_definition(
+        adapter.validate_python(
+            {
+                "id": "g-2",
+                "display_name": "Await agent",
+                "type": "gate:await-agent",
+                "session_id": "${{effect-1.session_id}}",
+                "outputs": {},
+            }
+        )
     )
 
     assert gate.session_id == "${{effect-1.session_id}}"

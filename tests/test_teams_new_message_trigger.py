@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from agent_sandbox.config import GatewayConfig
-from agent_sandbox.events.models import TeamsNewMessageTriggerDefinition
+from agent_sandbox.events.provider_models import TeamsNewMessageTriggerDefinition
 from agent_sandbox.teams_inbox_store import TeamsInboxMessage, TeamsInboxStore
 from agent_sandbox.triggers.providers.base import TriggerRuntimeContext
 from agent_sandbox.triggers.providers.teams_new_message import TeamsNewMessageTriggerProvider

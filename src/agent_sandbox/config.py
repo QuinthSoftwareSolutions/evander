@@ -20,17 +20,19 @@ from pydantic import (
 )
 
 from .models import DirectoryPath
+from .provider_profiles import DEFAULT_PROVIDER_PROFILE_NAME, resolve_provider_profile
 from .events.models import (
     EdgeDefinition,
     EffectDefinitionDiscriminated,
     GateDefinitionDiscriminated,
     QueryDefinitionDiscriminated,
     TriggerDefinitionDiscriminated,
-    effective_node_output_schema,
 )
-from .workflow_graph import build_inbound_edge_index, index_declared_outputs, merge_declared_output_intersection
+from .schema_bootstrap import bootstrap_default_node_schemas
+from .workflow_validation import validate_workflow_graph
 
 _HTTP_URL_ADAPTER = TypeAdapter(AnyHttpUrl)
+bootstrap_default_node_schemas()
 
 
 class MailboxConfig(BaseModel):
@@ -176,6 +178,7 @@ class GatewayConfig(BaseModel):
     host_heartbeat_schedule_max_active_total: int | None = Field(default=None, ge=1)
     host_heartbeat_schedule_min_interval_seconds: float | None = Field(default=None, gt=0)
     pr_map_path: Path = Path("/var/lib/agent-sandbox/pr-map.json")
+    provider_state: dict[str, Any] = Field(default_factory=dict)
     email_mailboxes: list[MailboxConfig] = Field(
         default_factory=lambda: [
             MailboxConfig(
@@ -561,7 +564,7 @@ class TeamsIngestWorkerGlobalConfig(BaseModel):
         return self
 
 
-class TriggerOrchestratorWorkerGlobalConfig(BaseModel):
+class OrchestrationCoreConfig(BaseModel):
     runtime_dir: Path = Path("runtime")
     poll_interval_seconds: float = Field(default=30.0, gt=0)
     jitter_seconds: float = Field(default=5.0, ge=0)
@@ -574,14 +577,19 @@ class TriggerOrchestratorWorkerGlobalConfig(BaseModel):
     effect_execution_store_path: Path | None = None
     effect_cursor_store_path: Path | None = None
     effect_lock_path: Path | None = None
+    workflow_packs: list[str] = Field(default_factory=list)
+    workflow_ir: dict[str, Any] | None = None
+    workflow_transforms: list[str] = Field(default_factory=list)
     triggers: list[TriggerDefinitionDiscriminated] = Field(default_factory=list)
     gates: list[GateDefinitionDiscriminated] = Field(default_factory=list)
     edges: list[EdgeDefinition] = Field(default_factory=list)
     effects: list[EffectDefinitionDiscriminated] = Field(default_factory=list)
     queries: list[QueryDefinitionDiscriminated] = Field(default_factory=list)
+    max_graph_depth: int = Field(default=16, ge=1)
+    max_events_per_cycle: int = Field(default=200, ge=1)
 
     @model_validator(mode="after")
-    def validate_unique_graph_node_ids(self) -> TriggerOrchestratorWorkerGlobalConfig:
+    def validate_unique_graph_node_ids(self) -> OrchestrationCoreConfig:
         node_ids = (
             [node.id for node in self.triggers]
             + [node.id for node in self.gates]
@@ -597,159 +605,19 @@ class TriggerOrchestratorWorkerGlobalConfig(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def validate_graph_edges(self) -> TriggerOrchestratorWorkerGlobalConfig:
-        nodes_by_id = {node.id: node for node in (*self.triggers, *self.gates, *self.effects, *self.queries)}
-        node_outputs = index_declared_outputs(self.triggers, self.gates, self.effects, self.queries)
-        inbound_edges = build_inbound_edge_index(self.edges)
-        outbound_edges_by_source: dict[str, list[EdgeDefinition]] = {}
-        for edge in self.edges:
-            outbound_edges_by_source.setdefault(edge.source_id, []).append(edge)
-
-        missing_endpoints: list[str] = []
-        self_edges: list[str] = []
-        for edge in self.edges:
-            source_known = edge.source_id in nodes_by_id
-            target_known = edge.target_id in nodes_by_id
-            if edge.source_id == edge.target_id:
-                self_edges.append(edge.source_id)
-            if not source_known:
-                missing_endpoints.append(edge.source_id)
-            if not target_known:
-                missing_endpoints.append(edge.target_id)
-
-        missing_endpoints = sorted(set(missing_endpoints))
-        if missing_endpoints:
-            missing_list = ", ".join(missing_endpoints)
-            raise ValueError(f"Edge endpoints must reference existing node IDs: {missing_list}")
-
-        self_edges = sorted(set(self_edges))
-        if self_edges:
-            self_edge_list = ", ".join(self_edges)
-            raise ValueError(f"Edges cannot connect a node to itself: {self_edge_list}")
-
-        reachable_node_ids = {node.id for node in self.triggers}
-        stack = [node.id for node in self.triggers]
-        while stack:
-            current = stack.pop()
-            for edge in outbound_edges_by_source.get(current, ()):
-                if edge.target_id in reachable_node_ids:
-                    continue
-                reachable_node_ids.add(edge.target_id)
-                stack.append(edge.target_id)
-
-        inbound_errors: list[str] = []
-        for node in self.triggers:
-            inbound_count = len(inbound_edges.get(node.id, ()))
-            if inbound_count != 0:
-                inbound_errors.append(f"trigger {node.id} must have 0 inbound edges, found {inbound_count}")
-        for gate in self.gates:
-            if gate.id not in reachable_node_ids:
-                continue
-            inbound_count = len(inbound_edges.get(gate.id, ()))
-            if gate.type == "gate:filter" and inbound_count != 1:
-                inbound_errors.append(f"gate:filter {gate.id} must have exactly 1 inbound edge, found {inbound_count}")
-            elif gate.type == "gate:map" and inbound_count != 1:
-                inbound_errors.append(f"gate:map {gate.id} must have exactly 1 inbound edge, found {inbound_count}")
-            elif gate.type == "gate:merge" and inbound_count < 1:
-                inbound_errors.append(f"gate:merge {gate.id} must have at least 1 inbound edge, found {inbound_count}")
-            elif gate.type == "gate:await-agent" and inbound_count != 1:
-                inbound_errors.append(f"gate:await-agent {gate.id} must have exactly 1 inbound edge, found {inbound_count}")
-            elif gate.type == "gate:for":
-                if inbound_count < 1:
-                    inbound_errors.append(f"gate:for {gate.id} must have at least 1 inbound edge, found {inbound_count}")
-                entry_edges = [
-                    edge for edge in inbound_edges.get(gate.id, ()) if not bool(getattr(edge, "allow_cycle", False))
-                ]
-                if len(entry_edges) != 1:
-                    inbound_errors.append(
-                        f"gate:for {gate.id} must have exactly 1 non-cyclic inbound edge, found {len(entry_edges)}"
-                    )
-        for effect in self.effects:
-            if effect.id not in reachable_node_ids:
-                continue
-            inbound_count = len(inbound_edges.get(effect.id, ()))
-            if inbound_count != 1:
-                inbound_errors.append(f"effect {effect.id} must have exactly 1 inbound edge, found {inbound_count}")
-        for query in self.queries:
-            if query.id not in reachable_node_ids:
-                continue
-            inbound_count = len(inbound_edges.get(query.id, ()))
-            if inbound_count != 1:
-                inbound_errors.append(f"query {query.id} must have exactly 1 inbound edge, found {inbound_count}")
-        if inbound_errors:
-            raise ValueError("; ".join(inbound_errors))
-
-        for gate in self.gates:
-            if gate.id not in reachable_node_ids:
-                continue
-            upstream_ids = [edge.source_id for edge in inbound_edges.get(gate.id, ())]
-            if gate.type == "gate:filter":
-                upstream_outputs = node_outputs.get(upstream_ids[0], {})
-                if gate.outputs is None:
-                    gate.outputs = upstream_outputs
-                actual_outputs = dict(gate.outputs or {})
-                if not actual_outputs:
-                    gate.outputs = upstream_outputs
-                    actual_outputs = upstream_outputs
-                if actual_outputs != upstream_outputs:
-                    raise ValueError(f"gate:filter {gate.id} outputs must match its single upstream outputs")
-            elif gate.type == "gate:await-agent":
-                upstream_node = nodes_by_id[upstream_ids[0]]
-                if upstream_node.type != "effect:agent:prompt":
-                    raise ValueError(f"gate:await-agent {gate.id} inbound edge must come from effect:agent:prompt")
-                completion_outputs = effective_node_output_schema({"type": "trigger:agent:run:completed"})
-                if gate.outputs is None:
-                    gate.outputs = completion_outputs
-                actual_outputs = dict(gate.outputs or {})
-                if not actual_outputs:
-                    gate.outputs = completion_outputs
-                    actual_outputs = completion_outputs
-                if actual_outputs != completion_outputs:
-                    raise ValueError(f"gate:await-agent {gate.id} outputs must match agent completion outputs")
-            elif gate.type == "gate:merge":
-                upstream_outputs = [node_outputs.get(upstream_id, {}) for upstream_id in upstream_ids]
-                expected_outputs = merge_declared_output_intersection(*upstream_outputs)
-                if gate.outputs is None:
-                    gate.outputs = expected_outputs
-                actual_outputs = dict(gate.outputs or {})
-                if not actual_outputs:
-                    gate.outputs = expected_outputs
-                    actual_outputs = expected_outputs
-                if actual_outputs != expected_outputs:
-                    raise ValueError(
-                        f"gate:merge {gate.id} outputs must equal the compatible intersection of upstream outputs"
-                    )
-            elif gate.type == "gate:for":
-                expected_outputs = effective_node_output_schema(gate)
-                if gate.outputs is None:
-                    gate.outputs = expected_outputs
-                actual_outputs = dict(gate.outputs or {})
-                if not actual_outputs:
-                    gate.outputs = expected_outputs
-                    actual_outputs = expected_outputs
-                if actual_outputs != expected_outputs:
-                    raise ValueError(f"gate:for {gate.id} outputs must match for-loop outputs")
-
-                outbound_edges = list(outbound_edges_by_source.get(gate.id, ()))
-                body_edges = [edge for edge in outbound_edges if edge.source_port == "body"]
-                done_edges = [edge for edge in outbound_edges if edge.source_port == "done"]
-                unlabeled_edges = [edge for edge in outbound_edges if edge.source_port is None]
-                invalid_ports = [
-                    edge.source_port for edge in outbound_edges if edge.source_port not in {None, "body", "done"}
-                ]
-                if len(body_edges) != 1:
-                    raise ValueError(f"gate:for {gate.id} must have exactly 1 outbound body edge")
-                if len(done_edges) != 1:
-                    raise ValueError(f"gate:for {gate.id} must have exactly 1 outbound done edge")
-                if unlabeled_edges:
-                    raise ValueError(f"gate:for {gate.id} outbound edges must declare source_port=body or source_port=done")
-                if invalid_ports:
-                    invalid = ", ".join(sorted({port for port in invalid_ports if port is not None}))
-                    raise ValueError(f"gate:for {gate.id} uses invalid source_port value(s): {invalid}")
+    def validate_graph_edges(self) -> OrchestrationCoreConfig:
+        errors = validate_workflow_graph(
+            nodes=(*self.triggers, *self.gates, *self.effects, *self.queries),
+            edges=self.edges,
+            trigger_node_ids=(trigger.id for trigger in self.triggers),
+            node_capabilities=None,
+        )
+        if errors:
+            raise ValueError("; ".join(errors))
         return self
 
     @model_validator(mode="after")
-    def apply_runtime_path_defaults(self) -> TriggerOrchestratorWorkerGlobalConfig:
+    def apply_runtime_path_defaults(self) -> OrchestrationCoreConfig:
         if self.lock_path is None:
             self.lock_path = self.runtime_dir / "trigger-orchestrator.lock"
         if self.event_queue_store_path is None:
@@ -769,6 +637,56 @@ class TriggerOrchestratorWorkerGlobalConfig(BaseModel):
         if self.effect_lock_path is None:
             self.effect_lock_path = self.runtime_dir / "effect-orchestrator.lock"
         return self
+
+
+class OrchestrationProviderLoaderConfig(BaseModel):
+    provider_profile: str = DEFAULT_PROVIDER_PROFILE_NAME
+    include_builtin: bool | None = None
+    provider_modules: list[str] = Field(default_factory=list)
+    provider_entry_points_enabled: bool = True
+
+    @field_validator("provider_profile")
+    @classmethod
+    def validate_provider_profile(cls, value: str) -> str:
+        return resolve_provider_profile(value).name
+
+
+class TriggerOrchestratorWorkerGlobalConfig(OrchestrationCoreConfig):
+    provider_loader: OrchestrationProviderLoaderConfig = Field(default_factory=OrchestrationProviderLoaderConfig)
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_legacy_provider_loader_settings(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        legacy_keys = [key for key in ("provider_modules", "provider_entry_points_enabled") if key in value]
+        if legacy_keys:
+            key_list = ", ".join(legacy_keys)
+            raise ValueError(
+                f"Legacy trigger-orchestrator config keys are no longer supported: {key_list}. "
+                "Move these keys under provider_loader."
+            )
+        return value
+
+    @property
+    def provider_modules(self) -> list[str]:
+        return list(self.provider_loader.provider_modules)
+
+    @property
+    def provider_profile(self) -> str:
+        return self.provider_loader.provider_profile
+
+    @property
+    def provider_include_builtin(self) -> bool:
+        override = self.provider_loader.include_builtin
+        if override is not None:
+            return override
+        profile = resolve_provider_profile(self.provider_loader.provider_profile)
+        return profile.include_builtin
+
+    @property
+    def provider_entry_points_enabled(self) -> bool:
+        return self.provider_loader.provider_entry_points_enabled
 
 
 def load_config(path: str | Path) -> GatewayConfig:

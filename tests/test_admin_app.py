@@ -209,23 +209,39 @@ def test_create_wake_schedule_uses_admin_ui_source() -> None:
     assert captured["kwargs"]["source"] == "admin_ui"
 
 
-def test_directory_config_domain_help_text_calls_out_discord_fields() -> None:
-    discord_help = admin_app._directory_config_domain_help_text("discord")
-    policy_help = admin_app._directory_config_domain_help_text("policy")
-    providers_help = admin_app._directory_config_domain_help_text("providers")
+def test_directory_config_domain_help_text_calls_out_communications_fields() -> None:
+    communications_help = admin_app._directory_config_domain_help_text("communications")
 
-    assert discord_help is not None
-    assert "Per-directory Discord configuration" in discord_help
-    assert policy_help is not None
-    assert "discord_operator_user_allowlist" in policy_help
-    assert providers_help is not None
-    assert "discord_backend" in providers_help
-    assert "discord_bot_token_env" in providers_help
+    assert communications_help is not None
+    assert "Messaging integrations for Discord and Teams" in communications_help
+    assert admin_app._directory_config_domain_help_text("access_policy") is not None
+    assert admin_app._directory_config_domain_help_text("providers") is None
     assert admin_app._directory_config_domain_help_text("email") is None
 
 
-def test_directory_config_tab_field_sources_expose_composite_discord_tab() -> None:
-    field_sources = admin_app._directory_config_tab_field_sources("discord")
+def test_directory_config_domain_help_text_legacy_tab_names_return_none() -> None:
+    assert admin_app._directory_config_domain_help_text("discord") is None
+    assert admin_app._directory_config_domain_help_text("teams") is None
+
+
+def test_directory_config_tab_field_sources_omit_discord_fields_from_access_policy_and_providers_tabs() -> None:
+    policy_fields = {
+        field_name
+        for _domain, field_name in admin_app._directory_config_tab_field_sources("access_policy")
+    }
+    provider_fields = {
+        field_name
+        for _domain, field_name in admin_app._directory_config_tab_field_sources("providers")
+    }
+
+    assert "discord_operator_user_allowlist" not in policy_fields
+    assert "discord_operator_channel_allowlist" not in policy_fields
+    assert "discord_backend" not in provider_fields
+    assert "discord_bot_token_env" not in provider_fields
+
+
+def test_directory_config_tab_field_sources_expose_composite_communications_tab() -> None:
+    field_sources = admin_app._directory_config_tab_field_sources("communications")
     field_domains = {field_name: domain for domain, field_name in field_sources}
 
     assert ("providers", "discord_backend") in field_sources
@@ -234,10 +250,36 @@ def test_directory_config_tab_field_sources_expose_composite_discord_tab() -> No
     assert field_domains["discord_bot_token_env"] == "providers"
     assert field_domains["discord_read_reaction_emoji"] == "providers"
     assert field_domains["discord_poll_operator_dms"] == "policy"
-    assert admin_app._directory_config_tab_underlying_domains("discord") == ("providers", "policy")
+    assert admin_app._directory_config_tab_underlying_domains("communications") == ("providers", "policy")
 
 
-def test_collect_config_form_payloads_by_domain_splits_discord_tab_fields() -> None:
+def test_directory_config_tab_field_sources_include_teams_mixed_scope_in_communications_tab() -> None:
+    field_sources = admin_app._directory_config_tab_field_sources("communications")
+    field_domains = {field_name: domain for domain, field_name in field_sources}
+
+    assert ("providers", "teams_backend") in field_sources
+    assert ("providers", "teams_graph_api_base_url") in field_sources
+    assert ("worker_global:teams-ingest", "poll_interval_seconds") in field_sources
+    assert ("worker_global:teams-ingest", "directories") in field_sources
+    assert field_domains["teams_backend"] == "providers"
+    assert field_domains["poll_interval_seconds"] == "worker_global:teams-ingest"
+    assert admin_app._directory_config_tab_underlying_domains("communications") == ("providers", "policy")
+    assert admin_app._directory_config_tab_worker_global_sources("communications") == ("teams-ingest",)
+
+
+def test_directory_config_legacy_redirects_point_to_communications_tab() -> None:
+    discord_redirect = admin_app._directory_config_legacy_redirect("discord")
+    teams_redirect = admin_app._directory_config_legacy_redirect("teams")
+
+    assert discord_redirect is not None
+    assert discord_redirect["new_key"] == "communications"
+    assert "non-blocking migration hint" in discord_redirect["message"]
+    assert teams_redirect is not None
+    assert teams_redirect["new_key"] == "communications"
+    assert admin_app._directory_config_legacy_redirect("communications") is None
+
+
+def test_collect_config_form_payloads_by_source_splits_discord_tab_fields() -> None:
     class DummyCheckbox:
         def __init__(self, checked: bool) -> None:
             self._checked = checked
@@ -248,7 +290,7 @@ def test_collect_config_form_payloads_by_domain_splits_discord_tab_fields() -> N
     window = SimpleNamespace(
         _selected_directory_path="root/team-a",
         _config_widgets={
-            "discord": {
+            "communications": {
                 "field_specs": {
                     "discord_backend": {
                         "include_checkbox": DummyCheckbox(True),
@@ -275,12 +317,127 @@ def test_collect_config_form_payloads_by_domain_splits_discord_tab_fields() -> N
         _collect_config_form_payload=lambda domain: admin_app.MainWindow._collect_config_form_payload(window, domain),
     )
 
-    payloads = admin_app.MainWindow._collect_config_form_payloads_by_domain(window, "discord")
+    payloads = admin_app.MainWindow._collect_config_form_payloads_by_source(window, "communications")
 
     assert payloads == {
         "providers": {"discord_backend": "bot_api"},
         "policy": {"discord_operator_user_allowlist": ["123456789012345678"]},
     }
+
+
+def test_collect_config_form_payloads_by_source_filters_scope() -> None:
+    class DummyCheckbox:
+        def __init__(self, checked: bool) -> None:
+            self._checked = checked
+
+        def isChecked(self) -> bool:
+            return self._checked
+
+    window = SimpleNamespace(
+        _selected_directory_path="root/team-a",
+        _config_widgets={
+            "communications": {
+                "field_specs": {
+                    "teams_backend": {
+                        "include_checkbox": DummyCheckbox(True),
+                        "clear_checkbox": DummyCheckbox(False),
+                        "kind": "literal",
+                        "control": object(),
+                    },
+                    "poll_interval_seconds": {
+                        "include_checkbox": DummyCheckbox(True),
+                        "clear_checkbox": DummyCheckbox(False),
+                        "kind": "float",
+                        "control": object(),
+                    },
+                },
+                "field_domains": {
+                    "teams_backend": "providers",
+                    "poll_interval_seconds": "worker_global:teams-ingest",
+                },
+            }
+        },
+        _read_config_field_control_value=lambda spec: (
+            "graph_api" if spec["kind"] == "literal" else 45.0
+        ),
+        _collect_config_form_payload=lambda domain: admin_app.MainWindow._collect_config_form_payload(window, domain),
+    )
+
+    directory_payloads = admin_app.MainWindow._collect_config_form_payloads_by_source(
+        window, "communications", source_filter=lambda source_domain: not source_domain.startswith("worker_global:")
+    )
+    worker_payloads = admin_app.MainWindow._collect_config_form_payloads_by_source(
+        window, "communications", source_filter=lambda source_domain: source_domain.startswith("worker_global:")
+    )
+
+    assert directory_payloads == {"providers": {"teams_backend": "graph_api"}}
+    assert worker_payloads == {"worker_global:teams-ingest": {"poll_interval_seconds": 45.0}}
+
+
+def test_save_config_domain_routes_mixed_scope_writes() -> None:
+    writes: list[tuple[str, str, dict[str, object]]] = []
+
+    class DummyResult:
+        def __init__(self) -> None:
+            self.ok = True
+            self.errors = []
+
+    class DummyText:
+        def __init__(self) -> None:
+            self.value = ""
+
+        def setPlainText(self, value: str) -> None:
+            self.value = value
+
+    class DummyLabel:
+        def __init__(self) -> None:
+            self.value = ""
+
+        def setText(self, value: str) -> None:
+            self.value = value
+
+    service = SimpleNamespace(
+        directory_scoped_config_enabled=True,
+        write_directory_domain_config=lambda directory_path, source_domain, payload: (
+            writes.append(("directory", source_domain, payload)) or DummyResult()
+        ),
+        write_worker_global_config=lambda worker_id, payload: (
+            writes.append(("worker", worker_id, payload)) or DummyResult()
+        ),
+    )
+    window = SimpleNamespace(
+        service=service,
+        _selected_directory_path="root/team-a",
+        _config_widgets={
+            "communications": {
+                "validation_view": DummyText(),
+            }
+        },
+        _config_dirty_domains={"communications"},
+        config_status_label=DummyLabel(),
+        refresh_configuration=lambda: writes.append(("refresh", "", {})),
+        _collect_config_form_payloads_by_source=lambda domain, source_filter=None: (
+            admin_app.MainWindow._collect_config_form_payloads_by_source(window, domain, source_filter=source_filter)
+        ),
+        _collect_config_form_payload=lambda _domain: {
+            "teams_backend": "graph_api",
+            "poll_interval_seconds": 60.0,
+        },
+    )
+    window._config_widgets["communications"]["field_domains"] = {
+        "teams_backend": "providers",
+        "poll_interval_seconds": "worker_global:teams-ingest",
+    }
+
+    admin_app.MainWindow.save_config_domain(
+        window, "communications", source_filter=lambda source_domain: not source_domain.startswith("worker_global:")
+    )
+    admin_app.MainWindow.save_config_domain(
+        window, "communications", source_filter=lambda source_domain: source_domain.startswith("worker_global:")
+    )
+
+    assert ("directory", "providers", {"teams_backend": "graph_api"}) in writes
+    assert ("worker", "teams-ingest", {"poll_interval_seconds": 60.0}) in writes
 
 
 def test_preferred_agent_log_repo_name_uses_single_detected_repo() -> None:

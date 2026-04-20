@@ -5,18 +5,63 @@ import os
 import shlex
 import subprocess
 import tempfile
+from copy import deepcopy
 from collections.abc import Mapping, Sequence
 from pathlib import Path, PurePosixPath
 from typing import Any
 
 import yaml
 
-from agent_sandbox.admin_service import _resolve_private_key_path, _ssh_options
+from agent_sandbox.workflow_binding import resolve_workflow_bindings
 
 from .base import EffectProviderBase
 
 
 class VmCopyFilesEffectProvider(EffectProviderBase):
+    def normalize_resolved_config(
+        self,
+        *,
+        resolved_config: Mapping[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        upstream_payload = kwargs.get("upstream_payload")
+        declared_upstream_output_names = kwargs.get("declared_upstream_output_names")
+        system_value_resolver = kwargs.get("system_value_resolver")
+
+        next_config = deepcopy(dict(resolved_config or {}))
+        raw_files = next_config.get("files")
+        if not isinstance(raw_files, list):
+            return next_config
+        for index, raw_entry in enumerate(raw_files):
+            if not isinstance(raw_entry, dict):
+                continue
+            source_format = str(raw_entry.get("source_format") or "").strip().lower()
+            if source_format not in {"", "file", "template"}:
+                raise ValueError(f"effect:vm:copy-files files[{index}] source_format must be one of: file, template")
+            if source_format != "template":
+                continue
+            source_path = str(raw_entry.get("source_path") or "").strip()
+            if not source_path:
+                raise ValueError(f"effect:vm:copy-files files[{index}] source_path is required for template sources")
+            template_path = Path(source_path).expanduser().resolve()
+            if not template_path.exists():
+                raise ValueError(f"effect:vm:copy-files template source does not exist: {template_path}")
+            if template_path.is_dir():
+                raise ValueError(f"effect:vm:copy-files template source must be a file: {template_path}")
+            template_text = template_path.read_text(encoding="utf-8")
+            rendered = resolve_workflow_bindings(
+                template_text,
+                upstream_payload=upstream_payload,
+                declared_upstream_output_names=declared_upstream_output_names,
+                system_value_resolver=system_value_resolver,
+                strict_validation=True,
+            ).resolved_config
+            if not isinstance(rendered, str):
+                raise ValueError(f"effect:vm:copy-files template source must resolve to text: {template_path}")
+            raw_entry["content"] = rendered
+            raw_entry.pop("source_path", None)
+        return next_config
+
     def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
         context = self._context()
         payload = dict(resolved_config or {})
@@ -26,7 +71,7 @@ class VmCopyFilesEffectProvider(EffectProviderBase):
             raise ValueError("effect:vm:copy-files requires at least one file entry")
         target = self._resolve_target(payload)
 
-        vm_copy_files = getattr(context.admin_service, "vm_copy_files", None)
+        vm_copy_files = getattr(context.vm_file_copier, "vm_copy_files", None)
         if callable(vm_copy_files):
             result = vm_copy_files(target=target, files=files, vm_user=vm_user)
             if not isinstance(result, Mapping):
@@ -49,6 +94,8 @@ class VmCopyFilesEffectProvider(EffectProviderBase):
             vm_user=vm_user,
             directory_path=directory_path,
         )
+        from agent_sandbox.admin_service import _resolve_private_key_path, _ssh_options
+
         ssh_private_key_path = _resolve_private_key_path()
         if ssh_private_key_path is None:
             raise RuntimeError(
@@ -126,10 +173,9 @@ class VmCopyFilesEffectProvider(EffectProviderBase):
             vm_name = target
             return vm_name, explicit_vm_ip
 
-        admin_service = context.admin_service
-        list_vms = getattr(admin_service, "list_vms", None)
+        list_vms = getattr(context.vm_inventory, "list_vms", None)
         if not callable(list_vms):
-            raise RuntimeError("VmCopyFilesEffectProvider requires AdminService.list_vms()")
+            raise RuntimeError("VmCopyFilesEffectProvider requires vm_inventory.list_vms()")
 
         summaries = list_vms(include_inactive=True, omit_state=True, vm_user=vm_user, directory_path=directory_path)
         matches: list[tuple[str, str]] = []

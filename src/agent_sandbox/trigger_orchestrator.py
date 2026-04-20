@@ -12,21 +12,40 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from .config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
-from .admin_service import AdminService
+from .config import GatewayConfig, OrchestrationCoreConfig, TriggerOrchestratorWorkerGlobalConfig
 from .provider_config import ProviderConfigResolver
-from .runtime import RuntimeContext, build_runtime
-from .events.models import AgentRunCompletedTriggerDefinition, TriggerDefinitionDiscriminated, validate_output_mapping_keys
+from .runtime import RuntimeContext
+from .app_bootstrap import build_runtime
+from .platform_integrations import PlatformServiceBundle, RuntimeAssemblyInterface
+from .events.models import TriggerDefinitionDiscriminated, validate_output_mapping_keys
+from .orchestration.adapters import (
+    TriggerCompletionPublisherAdapter,
+    TriggerDependencyResolverAdapter,
+    TriggerEventFetcherAdapter,
+    TriggerExecutionRecorderAdapter,
+)
+from .workflow_engine import OrchestrationLoop
 from .triggers.queue import TriggerEventQueue
-from .triggers.registry import TriggerProviderFactory
 from .workflow_runtime_config import (
     FixedTriggerOrchestratorWorkerGlobalConfigReloader,
     TriggerOrchestratorWorkerGlobalConfigReloader,
     load_trigger_orchestrator_worker_global_config,
 )
 from .host_heartbeat_worker import _single_instance_lock
+from .orchestration.kernels import PollingKernelConfig, PollingOrchestratorKernel
+from .orchestration.wiring import TriggerWorkerWiring, build_trigger_worker_wiring
 
 logger = logging.getLogger(__name__)
+
+
+class _LockManager:
+    def lock(self, path: Path):
+        return _single_instance_lock(path)
+
+
+class _Sleeper:
+    def sleep(self, seconds: float) -> None:
+        time.sleep(seconds)
 
 
 @dataclass(frozen=True)
@@ -38,62 +57,50 @@ class TriggerOrchestratorCycleResult:
 
 
 class TriggerOrchestratorWorker:
-    _AWAIT_AGENT_COMPLETION_TRIGGER_ID = "__await-agent-completion__"
-
     def __init__(
         self,
         *,
         config: GatewayConfig,
-        worker_config: TriggerOrchestratorWorkerGlobalConfig,
+        core_config: OrchestrationCoreConfig | None = None,
+        worker_config: TriggerOrchestratorWorkerGlobalConfig | None = None,
         config_reloader: TriggerOrchestratorWorkerGlobalConfigReloader | None = None,
         runtime: RuntimeContext,
+        provider_config_resolver: ProviderConfigResolver | None = None,
+        wiring: TriggerWorkerWiring | None = None,
     ) -> None:
         self.config = config
-        self.worker_config = worker_config
-        self._config_reloader = config_reloader or FixedTriggerOrchestratorWorkerGlobalConfigReloader(worker_config)
+        selected_config = core_config or worker_config
+        if selected_config is None:
+            raise ValueError("TriggerOrchestratorWorker requires either core_config or worker_config")
+        self.worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(selected_config.model_dump(mode="json"))
+        self._config_reloader = config_reloader or FixedTriggerOrchestratorWorkerGlobalConfigReloader(self.worker_config)
         self.runtime = runtime
-        self.event_queue = TriggerEventQueue(
-            worker_config.event_queue_store_path,
-            journal_path=worker_config.workflow_event_journal_path,
+        resolved_wiring = wiring or build_trigger_worker_wiring(
+            config=config,
+            worker_config=self.worker_config,
+            runtime=runtime,
+            provider_config_resolver=provider_config_resolver,
         )
-        self.provider_factory = TriggerProviderFactory(
-            ProviderConfigResolver(config),
-            admin_service=AdminService(config.runtime_dir),
-            env=dict(os.environ),
+        self.provider_config_resolver = resolved_wiring.provider_config_resolver
+        self.event_queue = resolved_wiring.event_queue
+        self.provider_factory = resolved_wiring.provider_factory
+        self._kernel = PollingOrchestratorKernel(
+            config=PollingKernelConfig(
+                poll_interval_seconds=self.worker_config.poll_interval_seconds,
+                jitter_seconds=self.worker_config.jitter_seconds,
+                lock_path=self.worker_config.lock_path,
+            ),
+            lock_manager=_LockManager(),
+            sleeper=_Sleeper(),
+            run_cycle=self.run_once,
+            get_sleep_seconds=lambda result: result.next_sleep_seconds,
         )
 
     def run_forever(self) -> None:
-        with _single_instance_lock(self.worker_config.lock_path):
-            logger.info(
-                "Trigger orchestrator started poll_interval=%.3f jitter=%.3f lock=%s",
-                self.worker_config.poll_interval_seconds,
-                self.worker_config.jitter_seconds,
-                self.worker_config.lock_path,
-            )
-            while True:
-                try:
-                    result = self.run_once()
-                except Exception:
-                    logger.exception("Trigger orchestrator cycle failed")
-                    time.sleep(
-                        _compute_backoff_sleep_seconds(
-                            poll_interval_seconds=self.worker_config.poll_interval_seconds,
-                            jitter_seconds=self.worker_config.jitter_seconds,
-                        )
-                    )
-                    continue
-                logger.debug(
-                    "Trigger orchestrator cycle complete triggers=%d discovered=%d published=%d sleep_seconds=%.3f",
-                    result.configured_triggers,
-                    result.events_discovered,
-                    result.events_published,
-                    result.next_sleep_seconds,
-                )
-                time.sleep(result.next_sleep_seconds)
+        self._kernel.run_forever()
 
     def run_once_with_lock(self) -> TriggerOrchestratorCycleResult:
-        with _single_instance_lock(self.worker_config.lock_path):
-            return self.run_once()
+        return self._kernel.run_once_with_lock()
 
     def run_once(self) -> TriggerOrchestratorCycleResult:
         latest_config, changed = self._config_reloader.get_latest()
@@ -113,57 +120,63 @@ class TriggerOrchestratorWorker:
         events_published = 0
         cursor_payload = _load_cursor_payload(latest_config.event_queue_cursor_store_path)
 
-        for trigger in configured_triggers:
-            provider = providers.get(trigger.id)
-            if provider is None:
-                continue
-            try:
-                events = provider.poll()
-            except Exception:
-                logger.exception(
+        loop = OrchestrationLoop[
+            TriggerDefinitionDiscriminated,
+            Any,
+            Any,
+        ](
+            event_fetcher=TriggerEventFetcherAdapter(triggers=configured_triggers),
+            dependency_resolver=TriggerDependencyResolverAdapter(
+                providers_by_id=providers,
+                update_cursor_state=lambda trigger, discovered, event_ids: self._update_cursor_state(
+                    cursor_payload,
+                    trigger=trigger,
+                    discovered=discovered,
+                    event_ids=event_ids,
+                ),
+                on_poll_error=lambda trigger: logger.exception(
                     "Trigger poll failed trigger_id=%s trigger_type=%s",
                     trigger.id,
                     trigger.type,
+                ),
+            ),
+            execution_recorder=TriggerExecutionRecorderAdapter(),
+            completion_publisher=TriggerCompletionPublisherAdapter(),
+        )
+
+        def _resolve_and_execute(trigger: TriggerDefinitionDiscriminated, event: Any) -> Any | None:
+            trace_id = _normalize_trace_id(getattr(event, "trace_id", None))
+            event = event.model_copy(update={"trace_id": trace_id})
+            try:
+                validate_output_mapping_keys(
+                    event.payload,
+                    context=f"{trigger.type} {trigger.id} runtime outputs",
                 )
-                continue
+            except ValueError:
+                logger.exception(
+                    "Trigger event rejected trigger_id=%s trigger_type=%s event_id=%s trace_id=%s",
+                    trigger.id,
+                    trigger.type,
+                    event.event_id,
+                    trace_id,
+                )
+                return None
+            already_queued = self.event_queue.contains(event.event_id)
+            record = self.event_queue.publish(event)
+            if not already_queued and record.event_id == event.event_id:
+                logger.debug(
+                    "Trigger event published trigger_id=%s trigger_type=%s event_id=%s trace_id=%s",
+                    trigger.id,
+                    trigger.type,
+                    event.event_id,
+                    trace_id,
+                )
+                return {"published": True}
+            return None
 
-            discovered_for_trigger = len(events)
-            events_discovered += discovered_for_trigger
-            for event in events:
-                trace_id = _normalize_trace_id(event.trace_id)
-                event = event.model_copy(update={"trace_id": trace_id})
-                try:
-                    validate_output_mapping_keys(
-                        event.payload,
-                        context=f"{trigger.type} {trigger.id} runtime outputs",
-                    )
-                except ValueError:
-                    logger.exception(
-                        "Trigger event rejected trigger_id=%s trigger_type=%s event_id=%s trace_id=%s",
-                        trigger.id,
-                        trigger.type,
-                        event.event_id,
-                        trace_id,
-                    )
-                    continue
-                already_queued = self.event_queue.contains(event.event_id)
-                record = self.event_queue.publish(event)
-                if not already_queued and record.event_id == event.event_id:
-                    events_published += 1
-                    logger.debug(
-                        "Trigger event published trigger_id=%s trigger_type=%s event_id=%s trace_id=%s",
-                        trigger.id,
-                        trigger.type,
-                        event.event_id,
-                        trace_id,
-                    )
-
-            self._update_cursor_state(
-                cursor_payload,
-                trigger=trigger,
-                discovered=discovered_for_trigger,
-                event_ids=[event.event_id for event in events],
-            )
+        loop_result = loop.run_once(max_events=len(configured_triggers), resolve_and_execute=_resolve_and_execute)
+        events_discovered = loop_result.dependencies_resolved
+        events_published = loop_result.executions_recorded
 
         _save_cursor_payload(latest_config.event_queue_cursor_store_path, cursor_payload)
         sleep_config = previous_config if changed else latest_config
@@ -181,21 +194,7 @@ class TriggerOrchestratorWorker:
     def _configured_triggers(
         self, worker_config: TriggerOrchestratorWorkerGlobalConfig
     ) -> list[TriggerDefinitionDiscriminated]:
-        triggers = list(worker_config.triggers)
-        has_await_agent = any(getattr(gate, "type", "") == "gate:await-agent" for gate in worker_config.gates)
-        has_explicit_completion_trigger = any(
-            getattr(trigger, "type", "") == "trigger:agent:run:completed" for trigger in triggers
-        )
-        if has_await_agent and not has_explicit_completion_trigger:
-            triggers.append(
-                AgentRunCompletedTriggerDefinition(
-                    id=self._AWAIT_AGENT_COMPLETION_TRIGGER_ID,
-                    display_name="Await agent completion",
-                    type="trigger:agent:run:completed",
-                    vm_user="agent",
-                )
-            )
-        return triggers
+        return list(worker_config.triggers)
 
     def _load_configured_providers(
         self,
@@ -256,6 +255,7 @@ def build_trigger_orchestrator_worker(
     config: GatewayConfig,
     *,
     project_dir: Path | None = None,
+    services: RuntimeAssemblyInterface | None = None,
 ) -> TriggerOrchestratorWorker:
     resolved_project_dir = Path(project_dir) if project_dir is not None else Path.cwd()
     worker_config = load_trigger_orchestrator_worker_global_config(resolved_project_dir, base_config=config)
@@ -270,7 +270,8 @@ def build_trigger_orchestrator_worker(
             "runtime_dir": worker_config.runtime_dir,
         }
     )
-    runtime = build_runtime(effective_config)
+    service_bundle = services or PlatformServiceBundle(runtime_builder=build_runtime)
+    runtime = service_bundle.build_runtime(effective_config)
     return TriggerOrchestratorWorker(
         config=effective_config,
         worker_config=worker_config,

@@ -4,17 +4,23 @@ from collections.abc import Mapping
 from typing import Any
 from uuid import uuid4
 
-from agent_sandbox.admin_service import _resolve_vm_name_from_target, _resolve_session_target
 from agent_sandbox.agent_prompt_queue import AgentPromptQueueStore, QueuedAgentPromptRecord
-from agent_sandbox.events.models import AgentEnqueuePromptEffectDefinition
+from agent_sandbox.events.provider_models import AgentEnqueuePromptEffectDefinition
 
 from .base import EffectProviderBase
+from .lifecycle_hooks import AgentEnqueuePromptQueueDispatchHook
 
 
 class AgentEnqueuePromptEffectProvider(EffectProviderBase):
+    @classmethod
+    def lifecycle_hooks(cls) -> tuple[type[AgentEnqueuePromptQueueDispatchHook], ...]:
+        return (AgentEnqueuePromptQueueDispatchHook,)
+
     def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
         effect = self._effect()
         context = self._context()
+        if context.agent_resumer is None or context.vm_inventory is None or context.session_lookup is None:
+            raise RuntimeError("effect:agent:enqueue-prompt runtime services are not available")
 
         payload = {
             "target": effect.target,
@@ -62,7 +68,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             }
 
         dispatch_id = self._make_dispatch_id(effect_id=effect.id)
-        result = context.admin_service.resume_agent(
+        result = context.agent_resumer.resume_agent(
             target=target,
             prompt=prompt,
             model=model,
@@ -84,7 +90,9 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
 
     def _find_vm_summary(self, *, vm_name: str, vm_user: str) -> Any | None:
         context = self._context()
-        for summary in context.admin_service.list_vms(include_inactive=True, vm_user=vm_user):
+        if context.vm_inventory is None:
+            return None
+        for summary in context.vm_inventory.list_vms(include_inactive=True, vm_user=vm_user):
             if str(getattr(summary, "vm_name", "") or "").strip() == vm_name:
                 return summary
         return None
@@ -103,7 +111,11 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
 
     def _resolve_vm_name(self, target: str) -> str:
         context = self._context()
-        vm_name = _resolve_vm_name_from_target(target, context.admin_service.runtime.sessions.read_all())
+        if context.session_lookup is None:
+            raise RuntimeError("effect:agent:enqueue-prompt session_lookup is not available")
+        from agent_sandbox.admin_service import _resolve_vm_name_from_target
+
+        vm_name = _resolve_vm_name_from_target(target, context.session_lookup.read_all_sessions())
         if not vm_name:
             raise ValueError(f"Unknown VM target: {target}")
         return vm_name
@@ -111,7 +123,11 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
     def _resolve_session_id(self, target: str) -> str | None:
         context = self._context()
         try:
-            session_id, _manifest = _resolve_session_target(target, context.admin_service.runtime.sessions.read_all())
+            if context.session_lookup is None:
+                return None
+            from agent_sandbox.admin_service import _resolve_session_target
+
+            session_id, _manifest = _resolve_session_target(target, context.session_lookup.read_all_sessions())
         except ValueError:
             return None
         return session_id

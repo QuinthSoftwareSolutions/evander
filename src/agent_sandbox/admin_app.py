@@ -46,6 +46,71 @@ _DISCORD_CONFIG_FIELDS: tuple[tuple[str, str], ...] = (
     ("policy", "discord_operator_user_allowlist"),
     ("policy", "discord_poll_operator_dms"),
 )
+_TEAMS_PROVIDER_CONFIG_FIELDS: tuple[tuple[str, str], ...] = tuple(
+    ("providers", field_name)
+    for field_name in sorted(
+        name for name in DIRECTORY_CONFIG_DOMAIN_FIELDS["providers"] if name.startswith("teams_")
+    )
+)
+_TEAMS_WORKER_GLOBAL_CONFIG_FIELDS: tuple[tuple[str, str], ...] = tuple(
+    ("worker_global:teams-ingest", field_name)
+    for field_name in TeamsIngestWorkerGlobalConfig.model_fields
+)
+_DIRECTORY_CONFIG_UI_TAB_FIELD_SOURCES: dict[str, tuple[tuple[str, str], ...]] = {
+    "communications": (
+        *_DISCORD_CONFIG_FIELDS,
+        *_TEAMS_PROVIDER_CONFIG_FIELDS,
+        *_TEAMS_WORKER_GLOBAL_CONFIG_FIELDS,
+    ),
+    "access_policy": tuple(
+        ("policy", field_name)
+        for field_name in sorted(
+            DIRECTORY_CONFIG_DOMAIN_FIELDS["policy"]
+            - {name for source_domain, name in _DISCORD_CONFIG_FIELDS if source_domain == "policy"}
+        )
+    ),
+    "providers": tuple(
+        ("providers", field_name)
+        for field_name in sorted(
+            DIRECTORY_CONFIG_DOMAIN_FIELDS["providers"]
+            - {
+                name
+                for source_domain, name in (*_DISCORD_CONFIG_FIELDS, *_TEAMS_PROVIDER_CONFIG_FIELDS)
+                if source_domain == "providers"
+            }
+        )
+    ),
+    "email": tuple(("email", field_name) for field_name in sorted(DIRECTORY_CONFIG_DOMAIN_FIELDS["email"])),
+    "heartbeat": tuple(
+        ("heartbeat", field_name) for field_name in sorted(DIRECTORY_CONFIG_DOMAIN_FIELDS["heartbeat"])
+    ),
+    "vm_runtime": tuple(("vm", field_name) for field_name in sorted(DIRECTORY_CONFIG_DOMAIN_FIELDS["vm"])),
+    "issue_setup": tuple(
+        ("issue_setup", field_name) for field_name in sorted(DIRECTORY_CONFIG_DOMAIN_FIELDS["issue_setup"])
+    ),
+    "ado_worker": tuple(
+        ("ado_worker", field_name) for field_name in sorted(DIRECTORY_CONFIG_DOMAIN_FIELDS["ado_worker"])
+    ),
+    "automation": tuple(
+        ("automation", field_name) for field_name in sorted(DIRECTORY_CONFIG_DOMAIN_FIELDS["automation"])
+    ),
+    "pr_template": tuple(
+        ("pr_template", field_name) for field_name in sorted(DIRECTORY_CONFIG_DOMAIN_FIELDS["pr_template"])
+    ),
+}
+_DIRECTORY_CONFIG_UI_TAB_ORDER: tuple[str, ...] = tuple(_DIRECTORY_CONFIG_UI_TAB_FIELD_SOURCES)
+_DIRECTORY_CONFIG_UI_TAB_TITLES: dict[str, str] = {
+    "communications": "Communications",
+    "access_policy": "Access Policy",
+    "providers": "Provider Integrations",
+    "email": "Email",
+    "heartbeat": "Heartbeat Prompts",
+    "vm_runtime": "VM Runtime",
+    "issue_setup": "Issue Setup",
+    "ado_worker": "ADO Worker",
+    "automation": "Automation",
+    "pr_template": "PR Template",
+}
 
 try:
     from PySide6.QtCore import QObject, QRunnable, QSettings, QThreadPool, QTimer, Qt, Signal
@@ -924,21 +989,41 @@ def _config_field_tooltip(field_name: str) -> str:
 
 
 def _directory_config_domain_help_text(domain: str) -> str | None:
-    if domain == "discord":
+    if domain == "communications":
         return (
-            "Per-directory Discord configuration. This combines Discord adapter settings from "
-            "`providers` with Discord policy fields from `policy`."
+            "Messaging integrations for Discord and Teams, including backend/API connectivity, "
+            "channel and user routing allowlists, read-reaction behavior, and polling controls "
+            "for inbound message handling."
         )
-    if domain == "policy":
+    if domain == "access_policy":
         return (
-            "Session-scoped Discord policy lives here, including "
-            "`discord_operator_user_allowlist`."
+            "Directory-level guardrails for approvals, recipient and mailbox restrictions, and "
+            "audit redaction defaults."
         )
-    if domain == "providers":
-        return (
-            "Host-side Discord adapter settings live here, including "
-            "`discord_backend` and `discord_bot_token_env`."
-        )
+    if domain == "vm_runtime":
+        return "VM network and relay endpoint settings used when launching and wiring guest runtime access."
+    if domain == "automation":
+        return "Role and capacity controls that govern automated issue intake and worker assignment."
+    if domain == "heartbeat":
+        return "Prompt templates used by host heartbeat resumes for unread PR and Discord activity."
+    if domain == "issue_setup":
+        return "Repository bootstrap and post-execution defaults applied during issue VM setup."
+    if domain == "ado_worker":
+        return "ADO ingestion and VM bootstrap behavior for directory-scoped issue provisioning."
+    if domain == "pr_template":
+        return "Default markdown scaffold prepended to automated pull request descriptions."
+    return None
+
+
+def _directory_config_legacy_redirect(tab_key: str) -> dict[str, str] | None:
+    if tab_key in {"discord", "teams"}:
+        return {
+            "new_key": "communications",
+            "message": (
+                f"Legacy directory config tab '{tab_key}' now lives under 'communications'; "
+                "this is a non-blocking migration hint for older UI/API references."
+            ),
+        }
     return None
 
 
@@ -947,20 +1032,37 @@ def _worker_global_config_tooltip(field_name: str) -> str:
 
 
 def _directory_config_tab_field_sources(tab_key: str) -> tuple[tuple[str, str], ...]:
-    if tab_key == "discord":
-        return _DISCORD_CONFIG_FIELDS
-    field_names = set(DIRECTORY_CONFIG_DOMAIN_FIELDS[tab_key])
-    if tab_key == "issue_setup":
-        field_names.add("default_model")
-    return tuple((tab_key, field_name) for field_name in sorted(field_names))
+    return _DIRECTORY_CONFIG_UI_TAB_FIELD_SOURCES[tab_key]
 
 
 def _directory_config_tab_underlying_domains(tab_key: str) -> tuple[str, ...]:
-    return tuple(dict.fromkeys(domain for domain, _field_name in _directory_config_tab_field_sources(tab_key)))
+    return tuple(
+        dict.fromkeys(
+            domain
+            for domain, _field_name in _directory_config_tab_field_sources(tab_key)
+            if not domain.startswith("worker_global:")
+        )
+    )
+
+
+def _directory_config_tab_worker_global_sources(tab_key: str) -> tuple[str, ...]:
+    sources: list[str] = []
+    for source_domain, _field_name in _directory_config_tab_field_sources(tab_key):
+        if source_domain.startswith("worker_global:"):
+            worker_id = source_domain.split(":", 1)[1]
+            if worker_id not in sources:
+                sources.append(worker_id)
+    return tuple(sources)
+
+
+def _directory_config_scope_label(source_domain: str) -> str:
+    if source_domain.startswith("worker_global:"):
+        return "Global worker"
+    return "Directory override"
 
 
 def _directory_config_tab_title(tab_key: str) -> str:
-    return tab_key
+    return _DIRECTORY_CONFIG_UI_TAB_TITLES.get(tab_key, tab_key)
 
 
 def _root_config_field_starts_editable(domain: str, field_name: str, raw_config: dict[str, Any]) -> bool:
@@ -1198,7 +1300,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self.config_status_label.setWordWrap(True)
         self.config_tabs = QTabWidget()
         self._config_widgets: dict[str, dict[str, object]] = {}
-        for domain in [*DIRECTORY_CONFIG_DOMAIN_FILENAMES.keys(), "discord"]:
+        for domain in _DIRECTORY_CONFIG_UI_TAB_ORDER:
             page = QWidget()
             page_layout = QVBoxLayout(page)
             domain_help = _directory_config_domain_help_text(domain)
@@ -1215,7 +1317,8 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             field_sources = _directory_config_tab_field_sources(domain)
             for source_domain, field_name in field_sources:
                 editor = self._build_config_field_editor(domain, field_name)
-                label = QLabel(_pretty_config_field_name(field_name))
+                scope_label = _directory_config_scope_label(source_domain)
+                label = QLabel(f"{_pretty_config_field_name(field_name)} ({scope_label})")
                 tooltip = _config_field_tooltip(field_name)
                 if tooltip:
                     label.setToolTip(tooltip)
@@ -1226,6 +1329,23 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             validation_view.setPlaceholderText("Validation diagnostics will appear here.")
             save_button = QPushButton("Save")
             save_button.clicked.connect(lambda _checked=False, domain=domain: self.save_config_domain(domain))
+            save_directory_button = None
+            save_worker_button = None
+            if any(source_domain.startswith("worker_global:") for source_domain, _field_name in field_sources):
+                save_button.setVisible(False)
+                tab_title = _directory_config_tab_title(domain)
+                save_directory_button = QPushButton(f"Save {tab_title} Directory Settings")
+                save_directory_button.clicked.connect(
+                    lambda _checked=False, domain=domain: self.save_config_domain(
+                        domain, source_filter=lambda source_domain: not source_domain.startswith("worker_global:")
+                    )
+                )
+                save_worker_button = QPushButton(f"Save {tab_title} Worker Settings")
+                save_worker_button.clicked.connect(
+                    lambda _checked=False, domain=domain: self.save_config_domain(
+                        domain, source_filter=lambda source_domain: source_domain.startswith("worker_global:")
+                    )
+                )
             view_parent_defaults_button = QPushButton("View Parent Defaults")
             view_parent_defaults_button.clicked.connect(
                 lambda _checked=False, domain=domain: self.show_parent_defaults_dialog(domain)
@@ -1236,6 +1356,10 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             )
             action_row = QHBoxLayout()
             action_row.addWidget(save_button)
+            if save_directory_button is not None:
+                action_row.addWidget(save_directory_button)
+            if save_worker_button is not None:
+                action_row.addWidget(save_worker_button)
             action_row.addWidget(view_parent_defaults_button)
             action_row.addWidget(view_effective_button)
             action_row.addStretch(1)
@@ -1250,8 +1374,11 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
                 "field_specs": field_specs,
                 "field_domains": {field_name: source_domain for source_domain, field_name in field_sources},
                 "underlying_domains": _directory_config_tab_underlying_domains(domain),
+                "worker_global_sources": _directory_config_tab_worker_global_sources(domain),
                 "validation_view": validation_view,
                 "save_button": save_button,
+                "save_directory_button": save_directory_button,
+                "save_worker_button": save_worker_button,
                 "view_parent_defaults_button": view_parent_defaults_button,
                 "view_effective_button": view_effective_button,
                 "latest_parent_defaults_payload": None,
@@ -2742,14 +2869,22 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             payload[field_name] = self._read_config_field_control_value(spec)
         return payload
 
-    def _collect_config_form_payloads_by_domain(self, domain: str) -> dict[str, dict[str, Any]]:
+    def _collect_config_form_payloads_by_source(self, domain: str, source_filter=None) -> dict[str, dict[str, Any]]:
         payload = self._collect_config_form_payload(domain)
         field_domains = self._config_widgets[domain]["field_domains"]
-        payloads_by_domain: dict[str, dict[str, Any]] = {}
+        payloads_by_source: dict[str, dict[str, Any]] = {}
         for field_name, value in payload.items():
             source_domain = field_domains[field_name]
-            payloads_by_domain.setdefault(source_domain, {})[field_name] = value
-        return payloads_by_domain
+            if source_filter is not None and not source_filter(source_domain):
+                continue
+            payloads_by_source.setdefault(source_domain, {})[field_name] = value
+        if source_filter is None:
+            selected_sources = set(field_domains.values())
+        else:
+            selected_sources = {source for source in field_domains.values() if source_filter(source)}
+        for source_domain in selected_sources:
+            payloads_by_source.setdefault(source_domain, {})
+        return payloads_by_source
 
     def _apply_directory_feature_state(self) -> None:
         enabled = self.service.directory_scoped_config_enabled
@@ -2766,6 +2901,10 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
                 else:
                     self._update_config_field_enabled_state_from_spec(spec)
             widgets["save_button"].setEnabled(enabled)
+            if widgets.get("save_directory_button") is not None:
+                widgets["save_directory_button"].setEnabled(enabled)
+            if widgets.get("save_worker_button") is not None:
+                widgets["save_worker_button"].setEnabled(enabled)
         if not enabled:
             self.config_status_label.setText(
                 "Directory-scoped config is disabled; using root configuration defaults."
@@ -2867,6 +3006,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
                 state[f"parent:{domain}"] = (
                     self.service.compute_directory_effective_config(parent_path, domain) if parent_path else None
                 )
+            state["worker_global:teams-ingest"] = self.service.read_worker_global_config("teams-ingest")
             return state
 
         worker = _ActionWorker(load_config_state)
@@ -2892,6 +3032,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self.config_status_label.setText(f"Configuration for {selected_directory}")
         for domain, widgets in self._config_widgets.items():
             underlying_domains = widgets["underlying_domains"]
+            worker_global_sources = widgets.get("worker_global_sources", ())
             raw_config: dict[str, Any] = {}
             parent_effective_config: dict[str, Any] = {}
             latest_parent_payload: dict[str, Any] | None = None
@@ -2928,6 +3069,21 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
                     diagnostics.extend(diag.message for diag in effective_result.validation_diagnostics)
                 else:
                     error_messages.extend([error.message for error in getattr(effective_result, "errors", [])])
+            for worker_id in worker_global_sources:
+                worker_result = payload.get(f"worker_global:{worker_id}")
+                if getattr(worker_result, "ok", False) and worker_result.data is not None:
+                    worker_config = worker_result.data.config
+                    if isinstance(worker_config, dict):
+                        raw_config.update(worker_config)
+                    if latest_effective_payload is None:
+                        latest_effective_payload = {"resolution": {}, "validation_diagnostics": []}
+                    latest_effective_payload["resolution"][f"worker_global:{worker_id}"] = {
+                        "worker_id": worker_id,
+                        "path": worker_result.data.path,
+                        "config": worker_config,
+                    }
+                else:
+                    error_messages.extend([error.message for error in getattr(worker_result, "errors", [])])
             if domain not in self._config_dirty_domains:
                 self._populate_config_form(
                     domain,
@@ -2996,7 +3152,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         layout.addWidget(buttons)
         dialog.exec()
 
-    def save_config_domain(self, domain: str) -> None:
+    def save_config_domain(self, domain: str, source_filter=None) -> None:
         if not self.service.directory_scoped_config_enabled:
             self.config_status_label.setText(
                 "Directory-scoped config is disabled; save is unavailable until enable_directory_scoped_config=true."
@@ -3004,13 +3160,16 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             return
         widgets = self._config_widgets[domain]
         try:
-            payloads_by_domain = self._collect_config_form_payloads_by_domain(domain)
+            payloads_by_domain = self._collect_config_form_payloads_by_source(domain, source_filter=source_filter)
         except (json.JSONDecodeError, ValueError) as exc:
             QMessageBox.warning(self, "Save configuration", f"Invalid configuration value: {exc}")
             return
-        for source_domain in widgets["underlying_domains"]:
-            payload = payloads_by_domain.get(source_domain, {})
-            result = self.service.write_directory_domain_config(self._selected_directory_path, source_domain, payload)
+        for source_domain, payload in payloads_by_domain.items():
+            if source_domain.startswith("worker_global:"):
+                worker_id = source_domain.split(":", 1)[1]
+                result = self.service.write_worker_global_config(worker_id, payload)
+            else:
+                result = self.service.write_directory_domain_config(self._selected_directory_path, source_domain, payload)
             if not result.ok:
                 message = result.errors[0].message if result.errors else "Save failed."
                 widgets["validation_view"].setPlainText(message)
