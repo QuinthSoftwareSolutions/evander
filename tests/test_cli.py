@@ -1241,6 +1241,7 @@ def test_create_issue_vm_persists_expected_manifest_shape(tmp_path: Path, monkey
         "approval_check",
         "discord_get_commands",
         "discord_post_status",
+        "add_message_reaction",
         "has_pending_discord_messages",
         "list_unread_discord_messages",
         "list_all_discord_messages",

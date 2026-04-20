@@ -240,16 +240,16 @@ def test_teams_get_messages_supports_limit_and_includes_session_authored_message
         "team-a/channel-1/msg-3",
     ]
     assert result["next_cursor"] == "team-a/channel-1/msg-3"
-    assert context.teams_service.reaction_calls == [("team-a/channel-1", "msg-3", "👀", "session-1")]
+    assert context.teams_service.reaction_calls == []
 
 
-def test_teams_get_messages_uses_configured_reaction_emoji(tmp_path: Path) -> None:
+def test_add_message_reaction_adds_teams_reaction_to_allowlisted_target(tmp_path: Path) -> None:
     context = make_context(tmp_path)
     context.sessions.put(
         "session-1",
         SessionManifest(
             session_id="session-1",
-            allowed_tools=[ToolName.TEAMS_GET_MESSAGES],
+            allowed_tools=[ToolName.ADD_MESSAGE_REACTION],
             teams_channel_allowlist=["team-a/channel-1"],
             expires_at=datetime.now(UTC) + timedelta(hours=1),
         ),
@@ -273,14 +273,23 @@ def test_teams_get_messages_uses_configured_reaction_emoji(tmp_path: Path) -> No
             ),
         ]
     )
-    fake_teams.read_reaction_emoji = "heart"
     context.teams_service = fake_teams
     server = create_server(context)
 
-    result = call_tool(server, "teams_get_messages", {"session_id": "session-1"})
+    result = call_tool(
+        server,
+        "add_message_reaction",
+        {
+            "session_id": "session-1",
+            "provider": "teams",
+            "channel_target": "team-a/channel-1",
+            "message_id": "msg-3",
+            "emoji": "heart",
+        },
+    )
 
-    assert [entry["cursor"] for entry in result["messages"]] == ["team-a/channel-1/msg-3"]
     assert context.teams_service.reaction_calls == [("team-a/channel-1", "msg-3", "heart", "session-1")]
+    assert result["status"] == "reacted"
 
 
 def test_teams_get_messages_includes_status_messages_from_other_sessions_in_same_channel(tmp_path: Path) -> None:
@@ -324,16 +333,16 @@ def test_teams_get_messages_includes_status_messages_from_other_sessions_in_same
 
     assert [entry["cursor"] for entry in result["messages"]] == ["team-a/channel-1/msg-2"]
     assert result["next_cursor"] == "team-a/channel-1/msg-2"
-    assert context.teams_service.reaction_calls == [("team-a/channel-1", "msg-2", "👀", "session-1")]
+    assert context.teams_service.reaction_calls == []
 
 
-def test_teams_get_messages_reaction_failure_is_best_effort_and_audited(tmp_path: Path) -> None:
+def test_add_message_reaction_audits_teams_adapter_failure(tmp_path: Path) -> None:
     context = make_context(tmp_path)
     context.sessions.put(
         "session-1",
         SessionManifest(
             session_id="session-1",
-            allowed_tools=[ToolName.TEAMS_GET_MESSAGES],
+            allowed_tools=[ToolName.ADD_MESSAGE_REACTION],
             teams_channel_allowlist=["team-a/channel-1"],
             expires_at=datetime.now(UTC) + timedelta(hours=1),
         ),
@@ -367,20 +376,29 @@ def test_teams_get_messages_reaction_failure_is_best_effort_and_audited(tmp_path
     context.teams_service = fake_teams
     server = create_server(context)
 
-    result = call_tool(server, "teams_get_messages", {"session_id": "session-1"})
+    with pytest.raises(ToolError):
+        call_tool(
+            server,
+            "add_message_reaction",
+            {
+                "session_id": "session-1",
+                "provider": "teams",
+                "channel_target": "team-a/channel-1",
+                "message_id": "msg-3",
+                "emoji": "heart",
+            },
+        )
 
-    assert [entry["cursor"] for entry in result["messages"]] == ["team-a/channel-1/msg-3"]
     events = read_audit_events(context.config.audit_log_path)
     assert any(
-        event["tool_name"] == ToolName.TEAMS_GET_MESSAGES.value
-        and event["result"].get("error_class") == "reaction_side_effect_error"
-        and event["args"].get("cursor") == "team-a/channel-1/msg-3"
+        event["tool_name"] == ToolName.ADD_MESSAGE_REACTION.value
+        and event["result"].get("error_class") == "adapter_http_error"
         and event["args"].get("message_id") == "msg-3"
         for event in events
     )
 
 
-def test_teams_get_messages_repeated_reads_with_cursor_are_idempotent_for_reaction_failures(
+def test_teams_get_messages_repeated_reads_with_cursor_do_not_retry_reactions(
     tmp_path: Path,
 ) -> None:
     context = make_context(tmp_path)
@@ -431,14 +449,14 @@ def test_teams_get_messages_repeated_reads_with_cursor_are_idempotent_for_reacti
 
     assert [entry["cursor"] for entry in first["messages"]] == ["team-a/channel-1/msg-3"]
     assert second["messages"] == []
-    assert context.teams_service.reaction_calls == [("team-a/channel-1", "msg-3", "👀", "session-1")]
+    assert context.teams_service.reaction_calls == []
     reaction_failure_events = [
         event
         for event in read_audit_events(context.config.audit_log_path)
         if event["tool_name"] == ToolName.TEAMS_GET_MESSAGES.value
         and event["result"].get("error_class") == "reaction_side_effect_error"
     ]
-    assert len(reaction_failure_events) == 1
+    assert reaction_failure_events == []
 
 
 def test_teams_post_status_posts_to_allowlisted_channel_and_thread(tmp_path: Path) -> None:

@@ -1156,6 +1156,79 @@ def test_handle_save_selected_session_model_requires_non_empty_input() -> None:
     assert window.session_model_status_label.text == "Model is required."
 
 
+def test_handle_save_selected_session_tools_success_callback_accepts_action_result() -> None:
+    class DummyCheckbox:
+        def __init__(self, checked: bool) -> None:
+            self.checked = checked
+
+        def isChecked(self) -> bool:
+            return self.checked
+
+    captured: dict[str, object] = {}
+
+    def run_action(*args, **kwargs) -> None:
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+
+    saved: list[tuple[str, list[str]]] = []
+    window = SimpleNamespace(
+        selected_session_summary=lambda: SimpleNamespace(session_id="session-1"),
+        session_tools_checkboxes={
+            admin_app.ToolName.APPROVAL_CHECK: DummyCheckbox(True),
+            admin_app.ToolName.APPROVAL_SUBMIT: DummyCheckbox(False),
+        },
+        service=SimpleNamespace(set_session_allowed_tools=object()),
+        run_action=run_action,
+        _handle_session_tools_save_success=lambda session_id, selected_tools: saved.append(
+            (session_id, selected_tools)
+        ),
+    )
+
+    admin_app.MainWindow.handle_save_selected_session_tools(window)
+    captured["kwargs"]["on_success"](SimpleNamespace(success=True, message="updated"))
+
+    assert captured["args"][0] == "Update allowed tools for session-1"
+    assert captured["args"][2:] == ("session-1", [admin_app.ToolName.APPROVAL_CHECK.value])
+    assert saved == [("session-1", [admin_app.ToolName.APPROVAL_CHECK.value])]
+
+
+def test_handle_save_selected_session_model_success_callback_accepts_action_result() -> None:
+    class DummyEdit:
+        def text(self) -> str:
+            return " gpt-5.4 "
+
+    class DummyLabel:
+        def __init__(self) -> None:
+            self.text = ""
+
+        def setText(self, value: str) -> None:
+            self.text = value
+
+    captured: dict[str, object] = {}
+
+    def run_action(*args, **kwargs) -> None:
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+
+    saved: list[tuple[str, str]] = []
+    window = SimpleNamespace(
+        selected_session_summary=lambda: SimpleNamespace(session_id="session-1"),
+        session_model_edit=DummyEdit(),
+        session_model_status_label=DummyLabel(),
+        service=SimpleNamespace(set_session_model=object()),
+        run_action=run_action,
+        _handle_session_model_save_success=lambda session_id, model: saved.append((session_id, model)),
+    )
+
+    admin_app.MainWindow.handle_save_selected_session_model(window)
+    captured["kwargs"]["on_success"](SimpleNamespace(success=True, message="updated"))
+
+    assert window.session_model_status_label.text == ""
+    assert captured["args"][0] == "Update model for session-1"
+    assert captured["args"][2:] == ("session-1", "gpt-5.4")
+    assert saved == [("session-1", "gpt-5.4")]
+
+
 def test_show_new_vm_dialog_calls_generic_create_vm(monkeypatch) -> None:
     captured: dict[str, object] = {}
     monkeypatch.setattr(admin_app, "QDialog", SimpleNamespace(DialogCode=SimpleNamespace(Accepted=1)))

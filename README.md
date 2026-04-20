@@ -541,8 +541,10 @@ See [live-smoke-tests.md](/home/jonathan/agent-sandbox/docs/live-smoke-tests.md)
     `discord_channel_allowlist` **or** its `author_id` is in global
     `discord_operator_user_allowlist`.
   - Commands that satisfy neither condition are denied and audited as denied tool attempts.
-  - For `discord_post_status`, only session allowlisted `channel_id` values are permitted;
-    operator user allowlists do not bypass post destination checks.
+  - For `discord_post_status` and Discord `add_message_reaction`, only session allowlisted
+    `channel_id` values are permitted; operator user allowlists do not bypass destination checks.
+  - Message reads do not apply automatic read reactions. Agents must call `add_message_reaction`
+    when a reaction is intended.
 - There is currently no built-in Discord retry/backoff loop in the `bot_api` adapter. HTTP
   failures (timeouts, 4xx/5xx, transport errors) surface back to the MCP caller. Policy denials
   are written to `audit_log_path` (default runtime path `runtime/audit.jsonl`).
@@ -590,8 +592,8 @@ See [live-smoke-tests.md](/home/jonathan/agent-sandbox/docs/live-smoke-tests.md)
   - `teams_graph_access_token_env: <ENV_VAR_NAME>`
   - optional `teams_graph_api_base_url` when you need a non-default Graph endpoint
 - The access token referenced by `teams_graph_access_token_env` must be able to read Microsoft
-  Teams channel and chat messages and, if you enable outbound status posts, create
-  channel/chat messages and replies for the teams targets you plan to use.
+  Teams channel and chat messages and, if you enable outbound status posts or explicit reactions,
+  create channel/chat messages, replies, and reactions for the teams targets you plan to use.
 - `trigger:teams:new-message` message arrival is driven by host-side Teams ingest polling on the
   host, not by the host-heartbeat worker. Host-heartbeat remains the PR/Discord feedback wakeup
   loop.
@@ -609,7 +611,7 @@ See [live-smoke-tests.md](/home/jonathan/agent-sandbox/docs/live-smoke-tests.md)
   ```json
   {
     "session_id": "teams-session",
-    "allowed_tools": ["teams_get_messages", "teams_post_status"],
+    "allowed_tools": ["teams_get_messages", "teams_post_status", "add_message_reaction"],
     "teams_channel_allowlist": ["<team-id>/<channel-id>"],
     "teams_chat_allowlist": ["chat:<chat-id>"]
   }
@@ -635,6 +637,12 @@ See [live-smoke-tests.md](/home/jonathan/agent-sandbox/docs/live-smoke-tests.md)
   - `channel_target`
   - `message`
   - optional `thread_id` to reply into an existing channel thread
+- The `add_message_reaction` gateway tool accepts:
+  - `provider`: `teams` or `discord`
+  - `message_id`
+  - `emoji` / Teams reaction name
+  - `channel_target` for Teams, or `channel_id` for Discord
+  It is explicit only; `teams_get_messages` and Discord unread reads do not automatically react.
 - When the target is a chat, the adapter uses the `chat:<chat-id>` identifier instead of a
   team/channel pair.
 - `teams_post_status` writes via:

@@ -41,6 +41,11 @@ class GateProviderConfig(BaseModel):
     runtime_dir: Path
 
 
+class ProviderSessionManifest(BaseModel):
+    session_id: str
+    directory_path: str = "root"
+
+
 class ProviderConfigResolver:
     def __init__(
         self,
@@ -48,6 +53,7 @@ class ProviderConfigResolver:
         *,
         directory_store: DirectoryStore | None = None,
         session_store: JsonStore[SessionManifest] | None = None,
+        provider_session_store: JsonStore[ProviderSessionManifest] | None = None,
     ) -> None:
         self.config = config
         self.directory_store = directory_store or DirectoryStore(config.directories_store_path)
@@ -55,6 +61,7 @@ class ProviderConfigResolver:
         self.directory_service = DirectoryService(self.directory_store)
         self.config_store = DirectoryConfigStore(self.directory_store, runtime_dir=config.runtime_dir)
         self.session_store = session_store or JsonStore(config.session_store_path, SessionManifest)
+        self.provider_session_store = provider_session_store or JsonStore(config.session_store_path, ProviderSessionManifest)
         self.resolver = DirectoryConfigResolver(
             self.directory_service,
             base_gateway_config=config,
@@ -79,7 +86,10 @@ class ProviderConfigResolver:
         return GatewayConfig.model_validate(payload)
 
     def resolve_for_session_id(self, session_id: str) -> GatewayConfig:
-        return self.resolve_for_session_manifest(self.get_session_manifest(session_id))
+        session = self.provider_session_store.get(session_id)
+        if session is None:
+            raise ValueError(f"unknown session: {session_id}")
+        return self.resolve_for_session_manifest(session)
 
     def get_session_manifest(self, session_id: str) -> SessionManifest:
         session = self.session_store.get(session_id)
@@ -87,7 +97,7 @@ class ProviderConfigResolver:
             raise ValueError(f"unknown session: {session_id}")
         return session
 
-    def resolve_for_session_manifest(self, session: SessionManifest) -> GatewayConfig:
+    def resolve_for_session_manifest(self, session: SessionManifest | ProviderSessionManifest) -> GatewayConfig:
         return self.resolve_for_directory(session.directory_path)
 
     def resolve_trigger_provider_config(self, directory_path: str | None) -> TriggerProviderConfig:

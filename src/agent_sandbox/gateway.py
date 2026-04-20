@@ -75,9 +75,6 @@ from .services import normalize_pr_feedback_provider
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_READ_REACTION_EMOJI = "👀"
-
-
 def _normalize_issue_status_filters(statuses: list[str] | None) -> set[str]:
     if not statuses:
         return {"closed", "completed"}
@@ -350,169 +347,6 @@ def _filter_teams_messages_for_session(
             continue
         messages.append(message.model_dump(mode="json"))
     return messages, denied_count, next_cursor
-
-
-def _is_session_authored_discord_status_message(message: dict[str, Any], session_id: str) -> bool:
-    raw = message.get("raw")
-    if not isinstance(raw, dict):
-        return False
-    return raw.get("source") == "discord_bot_api_status" and str(raw.get("session_id") or "") == session_id
-
-
-def _is_session_authored_teams_status_message(message: dict[str, Any], session_id: str) -> bool:
-    metadata = message.get("metadata")
-    if not isinstance(metadata, dict):
-        return False
-    return (
-        metadata.get("source") == "teams_graph_api_status"
-        and str(metadata.get("session_id") or "") == session_id
-    )
-
-
-def _build_teams_channel_target(message: dict[str, Any]) -> str | None:
-    chat_id = str(message.get("chat_id") or "").strip()
-    if chat_id:
-        return f"chat:{chat_id}"
-    team_id = str(message.get("team_id") or "").strip()
-    channel_id = str(message.get("channel_id") or "").strip()
-    if team_id and channel_id:
-        return f"{team_id}/{channel_id}"
-    return None
-
-
-def _reaction_error_details(exc: Exception) -> dict[str, Any]:
-    details: dict[str, Any] = {"error": str(exc)}
-    if isinstance(exc, httpx.HTTPStatusError):
-        response = exc.response
-        details["status_code"] = response.status_code
-        with contextlib.suppress(Exception):
-            details["response_text"] = response.text
-    return details
-
-
-def _is_benign_reaction_error(exc: Exception) -> bool:
-    if not isinstance(exc, httpx.HTTPStatusError):
-        return False
-    status_code = exc.response.status_code
-    if status_code in {409, 412}:
-        return True
-    response_text = ""
-    with contextlib.suppress(Exception):
-        response_text = exc.response.text.lower()
-    return status_code == 400 and any(token in response_text for token in ("already", "exists", "duplicate"))
-
-
-def _apply_discord_read_reactions(
-    context: RuntimeContext,
-    *,
-    session_id: str,
-    messages: list[dict[str, Any]],
-    args: dict[str, Any],
-    audit_failure_cb: Any,
-) -> None:
-    discord_service = context.discord_service_for_session(session_id)
-    read_reaction = str(
-        getattr(discord_service, "read_reaction_emoji", _DEFAULT_READ_REACTION_EMOJI)
-    ).strip() or _DEFAULT_READ_REACTION_EMOJI
-    for message in messages:
-        if _is_session_authored_discord_status_message(message, session_id):
-            continue
-        message_id = str(message.get("message_id") or "").strip()
-        channel_id = str(message.get("channel_id") or "").strip()
-        if not message_id or not channel_id:
-            continue
-        try:
-            discord_service.add_reaction(
-                channel_id=channel_id,
-                message_id=message_id,
-                emoji=read_reaction,
-                session_id=session_id,
-            )
-        except Exception as exc:  # noqa: BLE001
-            if _is_benign_reaction_error(exc):
-                continue
-            details = _reaction_error_details(exc)
-            logger.warning(
-                "Failed to apply Discord read reaction",
-                extra={
-                    "session_id": session_id,
-                    "message_id": message_id,
-                    "provider_response": details,
-                },
-                exc_info=exc,
-            )
-            audit_failure_cb(
-                session_id,
-                ToolName.LIST_UNREAD_DISCORD_MESSAGES,
-                {
-                    **args,
-                    "message_id": message_id,
-                    "channel_id": channel_id,
-                    "reaction": read_reaction,
-                    "reaction_provider_response": details,
-                },
-                str(exc),
-                decision="error",
-                error_class="reaction_side_effect_error",
-            )
-
-
-def _apply_teams_read_reactions(
-    context: RuntimeContext,
-    *,
-    session_id: str,
-    messages: list[dict[str, Any]],
-    args: dict[str, Any],
-    audit_failure_cb: Any,
-) -> None:
-    teams_service = context.teams_service_for_session(session_id)
-    read_reaction = str(
-        getattr(teams_service, "read_reaction_emoji", _DEFAULT_READ_REACTION_EMOJI)
-    ).strip() or _DEFAULT_READ_REACTION_EMOJI
-    for message in messages:
-        if _is_session_authored_teams_status_message(message, session_id):
-            continue
-        message_id = str(message.get("message_id") or "").strip()
-        cursor = str(message.get("cursor") or "").strip()
-        channel_target = _build_teams_channel_target(message)
-        if not message_id or not channel_target:
-            continue
-        try:
-            teams_service.add_reaction(
-                channel_target=channel_target,
-                message_id=message_id,
-                reaction=read_reaction,
-                session_id=session_id,
-            )
-        except Exception as exc:  # noqa: BLE001
-            if _is_benign_reaction_error(exc):
-                continue
-            details = _reaction_error_details(exc)
-            logger.warning(
-                "Failed to apply Teams read reaction",
-                extra={
-                    "session_id": session_id,
-                    "cursor": cursor,
-                    "message_id": message_id,
-                    "provider_response": details,
-                },
-                exc_info=exc,
-            )
-            audit_failure_cb(
-                session_id,
-                ToolName.TEAMS_GET_MESSAGES,
-                {
-                    **args,
-                    "cursor": cursor,
-                    "message_id": message_id,
-                    "channel_target": channel_target,
-                    "reaction": read_reaction,
-                    "reaction_provider_response": details,
-                },
-                str(exc),
-                decision="error",
-                error_class="reaction_side_effect_error",
-            )
 
 
 def _visible_vm_summaries_for_session(
@@ -2753,13 +2587,6 @@ def create_server(context: RuntimeContext) -> FastMCP:
             if limit is not None:
                 messages = messages[-limit:]
                 next_cursor = messages[-1]["cursor"] if messages else since_cursor
-            _apply_teams_read_reactions(
-                context,
-                session_id=session_id,
-                messages=messages,
-                args=args,
-                audit_failure_cb=audit_failure,
-            )
             result = {"messages": messages, "next_cursor": next_cursor}
             audit_success(
                 session_id,
@@ -2830,13 +2657,6 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 limit=limit,
             )
             result = response.model_dump(mode="json")
-            _apply_discord_read_reactions(
-                context,
-                session_id=session_id,
-                messages=result.get("messages", []),
-                args=args,
-                audit_failure_cb=audit_failure,
-            )
             audit_success(
                 session_id,
                 ToolName.LIST_UNREAD_DISCORD_MESSAGES,
@@ -2894,6 +2714,82 @@ def create_server(context: RuntimeContext) -> FastMCP:
             audit_failure(
                 session_id,
                 ToolName.TEAMS_GET_MESSAGES,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
+    def add_message_reaction(
+        session_id: str,
+        provider: str,
+        message_id: str,
+        emoji: str,
+        channel_id: str | None = None,
+        channel_target: str | None = None,
+    ) -> dict[str, Any]:
+        args = {
+            "session_id": session_id,
+            "provider": provider,
+            "message_id": message_id,
+            "emoji": emoji,
+            "channel_id": channel_id,
+            "channel_target": channel_target,
+        }
+        try:
+            session = context.policy.require_tool(session_id, ToolName.ADD_MESSAGE_REACTION)
+            normalized_provider = str(provider or "").strip().lower()
+            normalized_message_id = str(message_id or "").strip()
+            normalized_emoji = str(emoji or "").strip()
+            if not normalized_message_id:
+                raise ToolError("message_id is required")
+            if not normalized_emoji:
+                raise ToolError("emoji is required")
+            if normalized_provider == "discord":
+                normalized_channel_id = str(channel_id or "").strip()
+                if not normalized_channel_id:
+                    raise ToolError("channel_id is required for Discord reactions")
+                context.policy.require_discord_channel(session, normalized_channel_id)
+                result = context.discord_service_for_session(session_id).add_reaction(
+                    channel_id=normalized_channel_id,
+                    message_id=normalized_message_id,
+                    emoji=normalized_emoji,
+                    session_id=session_id,
+                )
+            elif normalized_provider == "teams":
+                normalized_target = context.policy.require_teams_channel_target(
+                    session,
+                    str(channel_target or "").strip(),
+                )
+                result = context.teams_service_for_session(session_id).add_reaction(
+                    channel_target=normalized_target,
+                    message_id=normalized_message_id,
+                    reaction=normalized_emoji,
+                    session_id=session_id,
+                )
+            else:
+                raise ToolError("provider must be either 'discord' or 'teams'")
+            audit_success(session_id, ToolName.ADD_MESSAGE_REACTION, args, result)
+            return result
+        except PolicyError as exc:
+            audit_failure(session_id, ToolName.ADD_MESSAGE_REACTION, args, str(exc))
+            raise
+        except httpx.HTTPError as exc:
+            audit_failure(
+                session_id,
+                ToolName.ADD_MESSAGE_REACTION,
+                args,
+                str(exc),
+                decision="error",
+                error_class="adapter_http_error",
+            )
+            raise
+        except Exception as exc:
+            audit_failure(
+                session_id,
+                ToolName.ADD_MESSAGE_REACTION,
                 args,
                 str(exc),
                 decision="error",

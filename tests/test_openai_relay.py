@@ -1,5 +1,6 @@
 import asyncio
 import gzip
+import json
 import os
 import time
 from contextlib import asynccontextmanager
@@ -153,6 +154,53 @@ def test_relay_uses_session_directory_provider_overlay(tmp_path: Path) -> None:
         },
     )
     write_session(config, session_id="session-team-a", directory_path="root/team-a")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["authorization"] = request.headers.get("authorization", "")
+        captured["url"] = str(request.url)
+        return httpx.Response(200, json={"id": "resp_test", "object": "response"})
+
+    transport = httpx.MockTransport(handler)
+    app = create_app(config, transport=transport)
+    client = TestClient(app)
+    os.environ["TEAM_A_OPENAI_TOKEN"] = "team-a-key"
+    os.environ.pop("OPENAI_API_KEY", None)
+
+    response = client.post("/v1/session/session-team-a/responses", json={"model": "gpt-5.2-codex", "input": "hello"})
+
+    assert response.status_code == 200
+    assert captured["authorization"] == "Bearer team-a-key"
+    assert captured["url"] == "https://team-a.example/v1/responses"
+
+
+def test_relay_ignores_unknown_allowed_tools_when_resolving_session(tmp_path: Path) -> None:
+    captured: dict[str, str] = {}
+    config = make_config(tmp_path)
+    directory_store = DirectoryStore(config.directories_store_path)
+    directory_store.ensure_root()
+    directory_service = DirectoryService(directory_store)
+    directory_service.create(parent="root", name="team-a")
+    DirectoryConfigStore(directory_store, runtime_dir=config.runtime_dir).write(
+        "root/team-a",
+        domain="providers",
+        payload={
+            "openai_api_base_url": "https://team-a.example/v1",
+            "openai_api_key_env": "TEAM_A_OPENAI_TOKEN",
+        },
+    )
+    config.session_store_path.write_text(
+        json.dumps(
+            {
+                "session-team-a": {
+                    "session_id": "session-team-a",
+                    "directory_path": "root/team-a",
+                    "allowed_tools": ["future_tool_name"],
+                    "expires_at": "2099-01-01T00:00:00Z",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
 
     def handler(request: httpx.Request) -> httpx.Response:
         captured["authorization"] = request.headers.get("authorization", "")

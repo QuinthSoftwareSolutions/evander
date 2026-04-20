@@ -973,6 +973,7 @@ def _build_issue_session_manifest(
             [
                 ToolName.DISCORD_GET_COMMANDS,
                 ToolName.DISCORD_POST_STATUS,
+                ToolName.ADD_MESSAGE_REACTION,
                 ToolName.HAS_PENDING_DISCORD_MESSAGES,
                 ToolName.LIST_UNREAD_DISCORD_MESSAGES,
                 ToolName.LIST_ALL_DISCORD_MESSAGES,
@@ -1618,6 +1619,7 @@ def create_session(
         allowed_tools=[
             ToolName.DISCORD_GET_COMMANDS,
             ToolName.DISCORD_POST_STATUS,
+            ToolName.ADD_MESSAGE_REACTION,
             ToolName.HAS_PENDING_DISCORD_MESSAGES,
             ToolName.LIST_UNREAD_DISCORD_MESSAGES,
             ToolName.LIST_ALL_DISCORD_MESSAGES,

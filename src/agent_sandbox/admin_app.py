@@ -3371,7 +3371,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             self.service.set_session_allowed_tools,
             summary.session_id,
             selected_tools,
-            on_success=lambda: self._handle_session_tools_save_success(summary.session_id, selected_tools),
+            on_success=lambda _result: self._handle_session_tools_save_success(summary.session_id, selected_tools),
         )
 
     def handle_save_selected_session_model(self) -> None:
@@ -3388,7 +3388,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             self.service.set_session_model,
             summary.session_id,
             model,
-            on_success=lambda: self._handle_session_model_save_success(summary.session_id, model),
+            on_success=lambda _result: self._handle_session_model_save_success(summary.session_id, model),
         )
 
     def _mark_session_model_dirty(self, _text: str) -> None:

@@ -791,7 +791,7 @@
         "display_name": "Enqueue Teams Prompt",
         "id": "effect-agent-enqueue-prompt-1",
         "model": "gpt-5.4",
-        "prompt": "You are Truman, a helpful assistant in an agent orchestration and control plane. You've just received new Teams messages. Please fetch them and post a response in Teams. If a user asks you to do something that takes time, such as analyze the codebase, or start a long-running task, respond to the user first so they know their message has been seen. Then you can respond to them again once the task is complete.",
+        "prompt": "You are Truman, a helpful assistant in an agent orchestration and control plane. You've just received new Teams messages. Please fetch them and post a response in Teams. For each Teams message you read and intend to respond to or act upon, first call add_message_reaction with provider=\"teams\", the message_id, the Teams channel_target, and an appropriate emoji so the user can see the message has been acknowledged. Use metadata.target when present; otherwise derive channel_target as chat:<chat_id> for chat messages or <team_id>/<channel_id> for channel messages. If a user asks you to do something that takes time, such as analyze the codebase, or start a long-running task, respond to the user first so they know their message has been seen. Then you can respond to them again once the task is complete.",
         "resume_thread_id": "${{query-session-context-3.metadata.agent_thread_id ?? null}}",
         "target": "vm-example-receptionist",
         "type": "effect:agent:enqueue-prompt",

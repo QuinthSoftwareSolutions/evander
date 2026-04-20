@@ -526,6 +526,10 @@ Example MCP call:
 - Posting precedence for `discord_post_status`:
   - Destination `channel_id` must be in `session.discord_channel_allowlist`.
   - `discord_operator_user_allowlist` does not override post destination checks.
+- Reaction precedence for `add_message_reaction`:
+  - `provider=discord` requires `channel_id` in `session.discord_channel_allowlist`.
+  - `provider=teams` requires `channel_target` in `session.teams_channel_allowlist`.
+  - Message reads do not apply automatic read reactions; agents must call this tool explicitly.
 - Retry/backoff and failure handling:
   - The Discord `bot_api` adapter retries transient failures with exponential backoff and jitter.
   - Retries apply to connection/time-out failures plus HTTP `429` and `5xx` responses.
