@@ -11,7 +11,7 @@ from ...config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
 from ...effects.registry import EffectProviderFactory, EffectProviderRegistry
 from ...gates.registry import GateProviderFactory, GateProviderRegistry
 from ...provider_config import ProviderConfigResolver
-from ...provider_profiles import resolve_provider_module_names
+from ...provider_profiles import is_pure_orchestration_core_profile, resolve_provider_module_names
 from ...queries.registry import QueryProviderFactory, QueryProviderRegistry
 from ...runtime import RuntimeContext
 from ...triggers.queue import TriggerEventQueue
@@ -22,7 +22,6 @@ from ..effect_extensions import (
     LifecycleReconciliationHook,
     SpecialEventHandler,
 )
-from ..providers import build_agent_default_effect_handlers
 
 
 @dataclass(frozen=True)
@@ -117,7 +116,9 @@ def build_effect_worker_wiring(
     special_event_handlers: tuple[SpecialEventHandler, ...] = ()
     lifecycle_reconciliation_hooks: tuple[LifecycleReconciliationHook, ...] = ()
     completion_dispatch_hooks: tuple[CompletionDispatchHook, ...] = ()
-    if include_default_domain_handlers:
+    if include_default_domain_handlers and not is_pure_orchestration_core_profile(worker_config.provider_profile):
+        from ..providers import build_agent_default_effect_handlers
+
         (
             special_event_handlers,
             lifecycle_reconciliation_hooks,
