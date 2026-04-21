@@ -108,6 +108,54 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
     assert [field["key"] for field in issue_get["fields"]] == ["issue_id"]
     vm_create = next(node for node in catalog_payload["nodes"] if node["type"] == "effect:vm:create")
     assert any(field["key"] == "allowed_script_names" for field in vm_create["fields"])
+    vm_clone_repo = next(node for node in catalog_payload["nodes"] if node["type"] == "effect:vm:clone-repo")
+    assert [field["key"] for field in vm_clone_repo["fields"]] == [
+        "target",
+        "session_id",
+        "vm_name",
+        "repo_source",
+        "clone_branch",
+        "vm_user",
+        "directory_path",
+    ]
+    vm_bootstrap_python = next(node for node in catalog_payload["nodes"] if node["type"] == "effect:vm:bootstrap-python")
+    assert [field["key"] for field in vm_bootstrap_python["fields"]] == [
+        "target",
+        "session_id",
+        "vm_name",
+        "host_checkout",
+        "target_dir",
+        "vm_user",
+    ]
+    vm_bootstrap_frontend = next(node for node in catalog_payload["nodes"] if node["type"] == "effect:vm:bootstrap-frontend")
+    assert [field["key"] for field in vm_bootstrap_frontend["fields"]] == [
+        "target",
+        "session_id",
+        "vm_name",
+        "host_checkout",
+        "install_roots",
+        "vm_user",
+    ]
+    assert [field["key"] for field in vm_create["fields"]] == [
+        "vm_name",
+        "session_id",
+        "labels",
+        "model",
+        "vm_user",
+        "ttl_hours",
+        "allowed_tools",
+        "allowed_script_names",
+        "discord_channels",
+        "email_mailboxes",
+        "email_folders",
+        "dotnet",
+        "nuget",
+        "mssql",
+        "mssql_init_root",
+        "playwright",
+        "codex_skills",
+        "directory_path",
+    ]
 
 
 def test_admin_web_exposes_workflow_run_stream(tmp_path: Path) -> None:
@@ -480,9 +528,9 @@ def test_admin_web_load_normalizes_stale_filter_outputs(tmp_path: Path) -> None:
 
     assert response.status_code == 200
     outputs = response.json()["config"]["gates"][0]["outputs"]
-    assert outputs["target_dir"] == {"type": "string"}
-    assert outputs["guest_repo_name"] == {"type": "string"}
-    assert outputs["remote_url"] == {"type": "string"}
+    assert outputs["message"] == {"type": "string"}
+    assert outputs["session_id"] == {"type": "string"}
+    assert outputs["vm_name"] == {"type": "string"}
 
 
 def test_admin_web_load_normalizes_await_agent_outputs_without_completion_trigger(tmp_path: Path) -> None:

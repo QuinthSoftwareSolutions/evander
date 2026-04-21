@@ -64,7 +64,8 @@ If you want the shortest host-side setup path for an issue VM, combine both step
 ```
 
 `setup_issue_git_vm.sh` forwards the same freshness and pinning flags to
-`mirror_issue_repo.sh`, and `setup_issue_vm.sh` forwards them again for the full bring-up path.
+`mirror_issue_repo.sh`. VM creation is now separate; after the VM is up, clone the mirrored repo
+with `agent-sandbox-cli clone-repo-into-vm`.
 
 That bootstraps guest Git SSH and refreshes the `14084_repo.git` host mirror in one command.
 
@@ -225,7 +226,7 @@ The automation fetches that notes ref before it calls `open_agent_pr.sh`, then t
 note attached to the pushed commit SHA only.
 
 Guest VMs should treat that tip note as the canonical full PR summary snapshot for the current
-branch, not as a per-commit delta log. `setup_issue_vm.sh` installs a `git agent-pr-note` helper
+branch, not as a per-commit delta log. The repo-clone path installs a `git agent-pr-note` helper
 that keeps a branch-local aggregate cache, rewrites the full note onto each new `HEAD`, and lets
 agents append later updates without losing earlier summary content.
 

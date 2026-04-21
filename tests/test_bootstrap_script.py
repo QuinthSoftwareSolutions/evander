@@ -91,17 +91,6 @@ def test_launch_script_can_derive_public_key_from_private_key() -> None:
     assert 'Alternatively set SSH_PRIVATE_KEY_PATH to derive the public key automatically.' in script
 
 
-def test_setup_issue_vm_can_derive_public_key_from_private_key() -> None:
-    script = (ROOT / "scripts" / "setup_issue_vm.sh").read_text(encoding="utf-8")
-
-    assert 'ssh-keygen -y -f "${SSH_PRIVATE_KEY_PATH}" > "${DERIVED_PUBLIC_KEY_FILE}"' in script
-    assert 'Alternatively set SSH_PRIVATE_KEY_PATH to derive the public key automatically.' in script
-    assert 'HTTP_TARGET_RELAY_BASE_URL="${HTTP_TARGET_RELAY_BASE_URL:-}"' in script
-    assert "--codex-skill" in script
-    assert 'BOOTSTRAP_CODEX_SKILLS=()' in script
-    assert 'BOOTSTRAP_PROVIDER_ARGS+=("--skill" "${skill}")' in script
-
-
 def test_guest_heartbeat_assets_exist() -> None:
     root = ROOT / "scripts" / "guest"
 

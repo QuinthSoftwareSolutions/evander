@@ -10,7 +10,7 @@ Follow the background guest agent log for an issue VM from the host.
 Arguments:
   issue-number  Issue identifier used to derive the VM name.
   lines         Number of log lines to print before following. Default: 10
-  repo-name     Repo basename used by setup_issue_vm.sh. Default: auto-detect
+  repo-name     Repo basename used by guest agent logs. Default: auto-detect
   vm-user       Guest user to inspect. Default: agent
 EOF
 }

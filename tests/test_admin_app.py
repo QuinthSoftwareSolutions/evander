@@ -1244,8 +1244,6 @@ def test_show_new_vm_dialog_calls_generic_create_vm(monkeypatch) -> None:
             return {
                 "vm_name": "lab-vm",
                 "session_id": "lab-session",
-                "repo_source": "/src/repo",
-                "python": True,
                 "dotnet": True,
                 "nuget": False,
                 "playwright": True,
@@ -1269,8 +1267,6 @@ def test_show_new_vm_dialog_calls_generic_create_vm(monkeypatch) -> None:
         "directory_path": "root/team",
         "vm_name": "lab-vm",
         "session_id": "lab-session",
-        "repo_source": "/src/repo",
-        "python": True,
         "dotnet": True,
         "nuget": False,
         "playwright": True,

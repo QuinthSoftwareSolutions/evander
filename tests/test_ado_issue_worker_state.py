@@ -63,7 +63,7 @@ def worker_config(tmp_path: Path) -> WorkerConfig:
         yaml_output_dir=tmp_path / "yaml",
         setup_log_dir=tmp_path / "setup-logs",
         processed_store_path=tmp_path / "state" / "processed.json",
-        setup_script_path=Path("scripts/setup_issue_vm.sh"),
+        setup_script_path=Path("scripts/setup_vm.sh"),
         prewarm_target="My.slnx",
         repo_path=None,
         setup_vms=True,
@@ -924,7 +924,7 @@ def test_build_setup_command_includes_optional_arguments(tmp_path: Path) -> None
         yaml_output_dir=tmp_path / "yaml",
         setup_log_dir=tmp_path / "setup-logs",
         processed_store_path=tmp_path / "state" / "processed.json",
-        setup_script_path=Path("scripts/setup_issue_vm.sh"),
+        setup_script_path=Path("scripts/setup_vm.sh"),
         prewarm_target="real-target",
         repo_path="/tmp/repo",
         setup_vms=True,
@@ -950,25 +950,17 @@ def test_build_setup_command_includes_optional_arguments(tmp_path: Path) -> None
         gateway_config_path=gateway_config_path,
         session_ttl_hours=8,
     )
-    cmd = _build_setup_command(config, tmp_path / "work-item-10.yaml", session_id="sess-1")
+    cmd = _build_setup_command(config, tmp_path / "work-item-10.yaml", session_id="sess-1", work_item_id=10)
     assert cmd == [
-        "scripts/setup_issue_vm.sh",
+        "scripts/setup_vm.sh",
         "--dotnet",
         "--nuget",
         "--mssql",
         "--mssql-init-root",
         "/tmp/mssql-init",
         "--playwright",
-        "--frontend-deps",
-        "--frontend-host-checkout",
-        "/tmp/repo",
-        "--frontend-install-root",
-        "/tmp/repo/Src/Clients",
-        "--frontend-install-root",
-        "/tmp/repo/Src/Clients/AdminClient",
-        str(tmp_path / "work-item-10.yaml"),
         "real-target",
-        "/tmp/repo",
+        "vm-10",
         "sess-1",
         "agent",
     ]
@@ -987,7 +979,7 @@ def test_build_setup_command_omits_disabled_bootstraps_and_nuget_prewarm_target(
         yaml_output_dir=tmp_path / "yaml",
         setup_log_dir=tmp_path / "setup-logs",
         processed_store_path=tmp_path / "state" / "processed.json",
-        setup_script_path=Path("scripts/setup_issue_vm.sh"),
+        setup_script_path=Path("scripts/setup_vm.sh"),
         prewarm_target="real-target",
         repo_path="/tmp/repo",
         setup_vms=True,
@@ -1014,12 +1006,11 @@ def test_build_setup_command_omits_disabled_bootstraps_and_nuget_prewarm_target(
         session_ttl_hours=8,
     )
 
-    cmd = _build_setup_command(config, tmp_path / "work-item-10.yaml", session_id="sess-1")
+    cmd = _build_setup_command(config, tmp_path / "work-item-10.yaml", session_id="sess-1", work_item_id=10)
     assert cmd == [
-        "scripts/setup_issue_vm.sh",
+        "scripts/setup_vm.sh",
         "--mssql",
-        str(tmp_path / "work-item-10.yaml"),
-        "/tmp/repo",
+        "vm-10",
         "sess-1",
         "agent",
     ]
@@ -1890,8 +1881,10 @@ def test_setup_issue_vm_invocation_once_per_newly_eligible_item(
         assert process_work_item(item, config=worker_config, store=store) is False
 
     assert len(calls) == 2
-    called_yaml_paths = {Path(next(arg for arg in cmd if arg.endswith(".yaml"))).name for cmd in calls}
-    assert called_yaml_paths == {"work-item-501.yaml", "work-item-502.yaml"}
+    assert calls[0][-2] == "vm-501"
+    assert calls[1][-2] == "vm-502"
+    assert calls[0][-1].startswith("issue-501-")
+    assert calls[1][-1].startswith("issue-502-")
 
 
 def test_fetch_work_item_comments_normalizes_and_truncates(

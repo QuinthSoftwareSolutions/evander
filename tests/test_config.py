@@ -337,12 +337,10 @@ def test_trigger_orchestrator_filter_gate_accepts_when_predicates() -> None:
                     "display_name": "VM create succeeded",
                     "type": "gate:filter",
                     "outputs": {
-                        "guest_repo_name": {"type": "string"},
                         "session_id": {"type": "string"},
                         "labels": {"type": "object"},
-                        "remote_url": {"type": "string"},
                         "success": {"type": "boolean"},
-                        "target_dir": {"type": "string"},
+                        "message": {"type": "string"},
                         "vm_name": {"type": "string"},
                     },
                     "when": {

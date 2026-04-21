@@ -108,7 +108,7 @@ def test_help_groups_commands_by_panel_then_alphabetically() -> None:
     assert "migrate-pr-template-to-root" in output
     assert "migrate-directory-ownership" in output
     assert "Backfill missing directory ownership fields" in output
-    assert "create-issue-vm" in output and "Create and bootstrap an issue VM." in output
+    assert "create-issue-vm" in output and "Create an issue VM." in output
     assert "create-vm" in output and "Create and bootstrap a standalone VM." in output
     assert "teams-auth" in output
     assert "host-heartbeat" in output and "Run the host heartbeat worker." in output
@@ -1194,7 +1194,8 @@ def test_create_issue_vm_creates_manifest_before_invoking_setup_script(tmp_path:
     )
 
     assert result.exit_code == 0
-    assert captured_cmd[-3:] == ["1234", "issue-1234-session", "agent"]
+    assert any(str(part).endswith("/scripts/setup_vm.sh") for part in captured_cmd)
+    assert captured_cmd[-3:] == ["vm-1234", "issue-1234-session", "agent"]
 
 
 def test_create_issue_vm_persists_expected_manifest_shape(tmp_path: Path, monkeypatch) -> None:
@@ -1252,23 +1253,23 @@ def test_create_issue_vm_persists_expected_manifest_shape(tmp_path: Path, monkey
     assert manifest["metadata"] == {"issue_number": "14084"}
 
 
-def test_create_issue_vm_builds_setup_issue_vm_command_correctly(tmp_path: Path, monkeypatch) -> None:
+def test_create_issue_vm_uses_admin_service(tmp_path: Path, monkeypatch) -> None:
     config_path = write_config(tmp_path)
     runner = CliRunner()
-    captured_cmd: list[str] = []
+    captured_kwargs: dict[str, object] = {}
 
     init_result = runner.invoke(app, ["init-state", "--config", str(config_path)])
     assert init_result.exit_code == 0
 
-    def fake_run(
-        cmd: list[str],
-        **kwargs,
-    ) -> subprocess.CompletedProcess[str]:
-        nonlocal captured_cmd
-        captured_cmd = cmd
-        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+    class FakeAdminService:
+        def __init__(self, config) -> None:
+            captured_kwargs["config"] = config
 
-    monkeypatch.setattr("agent_sandbox.admin_service.subprocess.run", fake_run)
+        def create_issue_vm(self, **kwargs):
+            captured_kwargs["kwargs"] = kwargs
+            return VmActionResult(success=True, vm_name="vm-14084", action="create_issue_vm", message="ok")
+
+    monkeypatch.setattr("agent_sandbox.cli.AdminService", FakeAdminService)
 
     with monkeypatch.context() as m:
         m.setenv("MSSQL_SA_PASSWORD", "SecretPassw0rd!")
@@ -1280,8 +1281,6 @@ def test_create_issue_vm_builds_setup_issue_vm_command_correctly(tmp_path: Path,
                 str(config_path),
                 "--session-id",
                 "session-14084",
-                "--no-start-agent",
-                "--python",
                 "--dotnet",
                 "--nuget",
                 "/tmp/project.slnx",
@@ -1289,8 +1288,6 @@ def test_create_issue_vm_builds_setup_issue_vm_command_correctly(tmp_path: Path,
                 "--mssql-init-root",
                 "/tmp/mssql-init",
                 "--playwright",
-                "--repo-source",
-                "/src/repo",
                 "--model",
                 "gpt-5.2-codex",
                 "14084",
@@ -1298,24 +1295,22 @@ def test_create_issue_vm_builds_setup_issue_vm_command_correctly(tmp_path: Path,
         )
 
     assert result.exit_code == 0
-    assert captured_cmd[0].endswith("/scripts/setup_issue_vm.sh")
-    assert captured_cmd[1:7] == [
-        "--dry-run",
-        "--python",
-        "--dotnet",
-        "--nuget",
-        "--mssql",
-        "--mssql-init-root",
-    ]
-    assert captured_cmd[7] == "/tmp/mssql-init"
-    assert "--playwright" in captured_cmd
-    assert captured_cmd[-5:] == [
-        "14084",
-        "/tmp/project.slnx",
-        "/src/repo",
-        "session-14084",
-        "agent",
-    ]
+    assert captured_kwargs["kwargs"] == {
+        "issue": "14084",
+        "session_id": "session-14084",
+        "vm_user": "agent",
+        "ttl_hours": None,
+        "discord_channels": [],
+        "email_mailboxes": [],
+        "email_folders": [],
+        "dotnet": True,
+        "nuget": "/tmp/project.slnx",
+        "mssql": True,
+        "mssql_init_root": "/tmp/mssql-init",
+        "playwright": True,
+        "codex_skills": [],
+        "model": "gpt-5.2-codex",
+    }
 
 
 def test_create_issue_vm_uses_root_vm_defaults_overlay_for_guest_env(tmp_path: Path, monkeypatch) -> None:
@@ -1519,9 +1514,6 @@ def test_create_vm_creates_manifest_before_invoking_launch_flow(tmp_path: Path, 
             "root/team",
             "--session-id",
             "lab-session",
-            "--repo-source",
-            "/src/repo",
-            "--python",
             "--dotnet",
             "--nuget",
             "--playwright",
@@ -1538,13 +1530,11 @@ def test_create_vm_creates_manifest_before_invoking_launch_flow(tmp_path: Path, 
         "vm_name": "lab-vm",
         "session_id": "lab-session",
         "model": None,
-        "repo_source": "/src/repo",
         "vm_user": "agent",
         "ttl_hours": None,
         "discord_channels": [],
         "email_mailboxes": [],
         "email_folders": [],
-        "python": True,
         "dotnet": True,
         "nuget": True,
         "mssql": False,
@@ -1568,6 +1558,140 @@ def test_create_vm_rejects_mssql_init_root_without_mssql(tmp_path: Path) -> None
 
     assert result.exit_code != 0
     assert "--mssql-init-root requires --mssql" in result.output
+
+
+def test_clone_repo_into_vm_uses_admin_service(tmp_path: Path, monkeypatch) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+    captured_kwargs: dict[str, object] = {}
+
+    assert runner.invoke(app, ["init-state", "--config", str(config_path)]).exit_code == 0
+
+    class FakeAdminService:
+        def __init__(self, config) -> None:
+            captured_kwargs["config"] = config
+
+        def clone_repo_into_vm(self, **kwargs):
+            captured_kwargs["kwargs"] = kwargs
+            return VmActionResult(success=True, vm_name=kwargs["vm_name"], action="clone_repo_into_vm", message="ok")
+
+    monkeypatch.setattr("agent_sandbox.cli.AdminService", FakeAdminService)
+
+    result = runner.invoke(
+        app,
+        [
+            "clone-repo-into-vm",
+            "--config",
+            str(config_path),
+            "--directory-path",
+            "root/team",
+            "--session-id",
+            "lab-session",
+            "--repo-source",
+            "/src/repo",
+            "--clone-branch",
+            "release/1.2",
+            "lab-vm",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured_kwargs["kwargs"] == {
+        "vm_name": "lab-vm",
+        "session_id": "lab-session",
+        "repo_source": "/src/repo",
+        "clone_branch": "release/1.2",
+        "vm_user": "agent",
+        "directory_path": "root/team",
+    }
+
+
+def test_bootstrap_python_in_vm_uses_admin_service(tmp_path: Path, monkeypatch) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+    captured_kwargs: dict[str, object] = {}
+
+    assert runner.invoke(app, ["init-state", "--config", str(config_path)]).exit_code == 0
+
+    class FakeAdminService:
+        def __init__(self, config) -> None:
+            captured_kwargs["config"] = config
+
+        def bootstrap_python_in_vm(self, **kwargs):
+            captured_kwargs["kwargs"] = kwargs
+            return VmActionResult(success=True, vm_name=kwargs["vm_name"], action="bootstrap_python_in_vm", message="ok")
+
+    monkeypatch.setattr("agent_sandbox.cli.AdminService", FakeAdminService)
+
+    result = runner.invoke(
+        app,
+        [
+            "bootstrap-python-in-vm",
+            "--config",
+            str(config_path),
+            "--session-id",
+            "lab-session",
+            "--host-checkout",
+            "/src/repo",
+            "--target-dir",
+            "/home/agent/repo",
+            "lab-vm",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured_kwargs["kwargs"] == {
+        "vm_name": "lab-vm",
+        "session_id": "lab-session",
+        "host_checkout": "/src/repo",
+        "target_dir": "/home/agent/repo",
+        "vm_user": "agent",
+    }
+
+
+def test_bootstrap_frontend_in_vm_uses_admin_service(tmp_path: Path, monkeypatch) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+    captured_kwargs: dict[str, object] = {}
+
+    assert runner.invoke(app, ["init-state", "--config", str(config_path)]).exit_code == 0
+
+    class FakeAdminService:
+        def __init__(self, config) -> None:
+            captured_kwargs["config"] = config
+
+        def bootstrap_frontend_in_vm(self, **kwargs):
+            captured_kwargs["kwargs"] = kwargs
+            return VmActionResult(success=True, vm_name=kwargs["vm_name"], action="bootstrap_frontend_in_vm", message="ok")
+
+    monkeypatch.setattr("agent_sandbox.cli.AdminService", FakeAdminService)
+
+    result = runner.invoke(
+        app,
+        [
+            "bootstrap-frontend-in-vm",
+            "--config",
+            str(config_path),
+            "--session-id",
+            "lab-session",
+            "--host-checkout",
+            "/src/repo",
+            "--install-root",
+            "/src/repo/Src/Clients",
+            "--install-root",
+            "/src/repo/Src/Admin",
+            "lab-vm",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured_kwargs["kwargs"] == {
+        "vm_name": "lab-vm",
+        "session_id": "lab-session",
+        "host_checkout": "/src/repo",
+        "install_roots": ["/src/repo/Src/Clients", "/src/repo/Src/Admin"],
+        "vm_user": "agent",
+    }
 
 
 def test_attach_pr_feedback_updates_existing_session(tmp_path: Path) -> None:

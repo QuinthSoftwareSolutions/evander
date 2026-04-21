@@ -21,6 +21,15 @@ class AdminServiceProviderAdapter:
     def create_vm(self, **kwargs: Any) -> Any:
         return self._admin_service.create_vm(**kwargs)
 
+    def clone_repo_into_vm(self, **kwargs: Any) -> Any:
+        return self._admin_service.clone_repo_into_vm(**kwargs)
+
+    def bootstrap_python_in_vm(self, **kwargs: Any) -> Any:
+        return self._admin_service.bootstrap_python_in_vm(**kwargs)
+
+    def bootstrap_frontend_in_vm(self, **kwargs: Any) -> Any:
+        return self._admin_service.bootstrap_frontend_in_vm(**kwargs)
+
     def resume_agent(self, **kwargs: Any) -> Any:
         return self._admin_service.resume_agent(**kwargs)
 
@@ -91,6 +100,9 @@ def build_provider_runtime_ports(
     provider_metadata = _extract_mapping_attr(provider_runtime, "metadata")
     return ProviderRuntimePorts(
         vm_creator=_pick(provider_runtime, "vm_creator", admin_adapter),
+        vm_repo_cloner=_pick(provider_runtime, "vm_repo_cloner", admin_adapter),
+        vm_python_bootstrapper=_pick(provider_runtime, "vm_python_bootstrapper", admin_adapter),
+        vm_frontend_bootstrapper=_pick(provider_runtime, "vm_frontend_bootstrapper", admin_adapter),
         agent_resumer=_pick(provider_runtime, "agent_resumer", admin_adapter),
         vm_power_controller=_pick(provider_runtime, "vm_power_controller", admin_adapter),
         vm_inventory=_pick(provider_runtime, "vm_inventory", admin_adapter),

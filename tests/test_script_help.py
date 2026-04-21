@@ -38,7 +38,6 @@ SCRIPTS = [
     "set_issue_agent_state.sh",
     "guest/setup_review_repo.sh",
     "setup_issue_git_vm.sh",
-    "setup_issue_vm.sh",
     "setup_vm.sh",
     "tail_issue_vm_log.sh",
 ]

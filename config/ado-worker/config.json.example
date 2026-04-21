@@ -5,7 +5,7 @@
   "yaml_output_dir": null,
   "setup_log_dir": null,
   "processed_store_path": null,
-  "setup_script_path": "scripts/setup_issue_vm.sh",
+  "setup_script_path": "scripts/setup_vm.sh",
   "ado_work_items_azure_devops_pat_env": "ADO_WORK_ITEMS_AZURE_DEVOPS_PAT",
   "setup_timeout_seconds": 1800,
   "setup_concurrency_limit": 1,

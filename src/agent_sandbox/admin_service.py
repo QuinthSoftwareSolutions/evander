@@ -737,7 +737,6 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("session_id", "Session ID", "string", bindable=True),
             _field("labels", "Labels", "json", bindable=True),
             _field("model", "Model", "string", bindable=True),
-            _field("repo_source", "Repo source", "string", bindable=True),
             _field("vm_user", "VM user", "string", bindable=True),
             _field("ttl_hours", "TTL hours", "number", bindable=True),
             _field(
@@ -755,17 +754,53 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("discord_channels", "Discord channels", "string_list"),
             _field("email_mailboxes", "Email mailboxes", "string_list"),
             _field("email_folders", "Email folders", "string_list"),
-            _field("python", "Python", "boolean", bindable=True),
             _field("dotnet", "Dotnet", "boolean", bindable=True),
             _field("nuget", "NuGet", "boolean", bindable=True),
             _field("mssql", "MSSQL", "boolean", bindable=True),
             _field("mssql_init_root", "MSSQL init root", "string", bindable=True),
             _field("playwright", "Playwright", "boolean", bindable=True),
             _field("codex_skills", "Codex skills", "string_list"),
-            _field("frontend_deps", "Frontend deps", "boolean", bindable=True),
-            _field("frontend_host_checkout", "Frontend host checkout", "string", bindable=True),
-            _field("frontend_install_roots", "Frontend install roots", "string_list"),
             _field("directory_path", "Directory path", "string", bindable=True),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="effect",
+        type="effect:vm:clone-repo",
+        label="VM clone repo",
+        fields=[
+            _field("target", "Target", "string", bindable=True),
+            _field("session_id", "Session ID", "string", bindable=True),
+            _field("vm_name", "VM name", "string", bindable=True),
+            _field("repo_source", "Repo source", "string", required=True, bindable=True),
+            _field("clone_branch", "Clone branch", "string", bindable=True),
+            _field("vm_user", "VM user", "string", bindable=True),
+            _field("directory_path", "Directory path", "string", bindable=True),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="effect",
+        type="effect:vm:bootstrap-python",
+        label="VM bootstrap Python",
+        fields=[
+            _field("target", "Target", "string", bindable=True),
+            _field("session_id", "Session ID", "string", bindable=True),
+            _field("vm_name", "VM name", "string", bindable=True),
+            _field("host_checkout", "Host checkout", "string", required=True, bindable=True),
+            _field("target_dir", "Target dir", "string", required=True, bindable=True),
+            _field("vm_user", "VM user", "string", bindable=True),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="effect",
+        type="effect:vm:bootstrap-frontend",
+        label="VM bootstrap frontend",
+        fields=[
+            _field("target", "Target", "string", bindable=True),
+            _field("session_id", "Session ID", "string", bindable=True),
+            _field("vm_name", "VM name", "string", bindable=True),
+            _field("host_checkout", "Host checkout", "string", required=True, bindable=True),
+            _field("install_roots", "Install roots", "string_list"),
+            _field("vm_user", "VM user", "string", bindable=True),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(
@@ -2625,7 +2660,6 @@ class AdminService:
                 resolve_agent_model_for_session=self.vm_agent_support.resolve_agent_model_for_session,
                 resolve_vm_defaults=self.vm_agent_support.resolve_vm_defaults,
                 resolve_issue_setup=self.vm_agent_support.resolve_issue_setup,
-                build_setup_issue_vm_invocation=self.vm_agent_support.build_setup_issue_vm_invocation,
                 resolve_local_issue_record=self.vm_agent_support.resolve_local_issue_record,
                 resolve_local_issue_key=self.vm_agent_support.resolve_local_issue_key,
                 resolve_repo_source=self.vm_agent_support.resolve_repo_source,
@@ -2874,77 +2908,6 @@ class AdminService:
         resolved_session_id, _ = _resolve_session_target(target, sessions)
         return self._resolve_agent_model_for_session(resolved_session_id)
 
-    def _build_setup_issue_vm_invocation(
-        self,
-        *,
-        setup_script: Path,
-        issue: str,
-        session_id: str,
-        vm_user: str,
-        start_agent: bool,
-        python: bool,
-        dotnet: bool,
-        nuget: str | None,
-        mssql: bool,
-        mssql_init_root: str | None,
-        playwright: bool,
-        codex_skills: list[str] | None,
-        frontend_deps: bool,
-        frontend_host_checkout: str | None,
-        frontend_install_roots: list[str] | None,
-        repo_source: str | None,
-        vm_defaults: EffectiveVmDefaultsConfig,
-        issue_setup: EffectiveIssueSetupConfig,
-    ) -> tuple[list[str], dict[str, str]]:
-        agent_model = self._resolve_agent_model_for_session(session_id)
-        cmd = [str(setup_script)]
-        if not start_agent:
-            cmd.append("--dry-run")
-        if python:
-            cmd.append("--python")
-        if dotnet:
-            cmd.append("--dotnet")
-        if nuget is not None:
-            cmd.append("--nuget")
-        if mssql:
-            cmd.append("--mssql")
-        if mssql_init_root is not None:
-            cmd.extend(["--mssql-init-root", mssql_init_root])
-        if playwright:
-            cmd.append("--playwright")
-        for skill_name in codex_skills or []:
-            cmd.extend(["--codex-skill", skill_name])
-        if frontend_deps:
-            cmd.append("--frontend-deps")
-        if frontend_host_checkout is not None:
-            cmd.extend(["--frontend-host-checkout", frontend_host_checkout])
-        for install_root in frontend_install_roots or []:
-            cmd.extend(["--frontend-install-root", install_root])
-        cmd.append(issue)
-        if nuget is not None:
-            cmd.append(nuget)
-        if repo_source is not None:
-            cmd.append(repo_source)
-        cmd.extend([session_id, vm_user])
-
-        run_env = os.environ.copy()
-        run_env.update(vm_defaults.guest_environment())
-        run_env.update(
-            {
-                "AGENT_SANDBOX_GIT_ROOT": issue_setup.git_root,
-                "AGENT_SANDBOX_GIT_HOST": issue_setup.git_host,
-                "AGENT_SANDBOX_GIT_USER": issue_setup.git_user,
-                "AGENT_SANDBOX_GIT_SSH_ALIAS": issue_setup.git_ssh_alias,
-                "AGENT_MODEL": agent_model,
-                "ENABLE_GUEST_HEARTBEAT": "1" if issue_setup.enable_guest_heartbeat else "0",
-                "GUEST_HEARTBEAT_PROMPT": issue_setup.guest_heartbeat_prompt,
-                "AGENT_SANDBOX_AZURE_DEVOPS_PR_PAT_ENV": issue_setup.issue_setup_azure_devops_pr_pat_env,
-            }
-        )
-        if issue_setup.post_exec_verification_prompt is not None:
-            run_env["AGENT_POST_EXEC_VERIFICATION_PROMPT"] = issue_setup.post_exec_verification_prompt
-        return cmd, run_env
-
     def _resolve_repo_source(self, repo_source: str) -> tuple[str, str]:
         resolve_script = self.project_dir / "scripts" / "resolve_repo_source.sh"
         path_result = _run_subprocess([str(resolve_script), "--path-only", repo_source], capture_output=True, text=True)
@@ -3095,6 +3058,7 @@ class AdminService:
         session_id: str,
         repo_name: str,
         issue_setup: EffectiveIssueSetupConfig,
+        clone_branch: str | None = None,
         issue_number: str | None = None,
         vm_ip: str | None = None,
     ) -> str:
@@ -3121,10 +3085,18 @@ class AdminService:
         remote_url = f"ssh://{issue_setup.git_ssh_alias}{issue_setup.git_root}/{repo_name}.git"
         guest_repo_root = f"/home/{vm_user}/{repo_name}"
         agent_pr_note_helper_b64 = _guest_agent_pr_note_helper_b64(self.project_dir)
+        clone_branch_line = ""
+        clone_command = 'git clone "${REMOTE_URL}" "${TARGET_DIR}"'
+        if clone_branch:
+            clone_command = 'git clone --branch "${CLONE_BRANCH}" "${REMOTE_URL}" "${TARGET_DIR}"'
+            clone_branch_line = f'CLONE_BRANCH="{clone_branch}"\n'
         issue_config_line = ""
         if issue_number:
             issue_config_line = f'git -C "${{TARGET_DIR}}" config agent-sandbox.issueNumber "{issue_number}"\n'
         branch_suffix_line = 'git -C "${TARGET_DIR}" config agent-sandbox.branchSuffix "${VM_NAME}"\n'
+        base_branch_config_line = ""
+        if clone_branch:
+            base_branch_config_line = 'git -C "${TARGET_DIR}" config agent-sandbox.baseBranch "${CLONE_BRANCH}"\n'
         remote_script = f"""
 set -euo pipefail
 . ~/.profile
@@ -3133,16 +3105,17 @@ REMOTE_URL="{remote_url}"
 SESSION_ID="{session_id}"
 VM_NAME="{vm_name}"
 AGENT_PR_NOTE_HELPER_B64="{agent_pr_note_helper_b64}"
+{clone_branch_line}\
 if [[ -e "${{TARGET_DIR}}" ]]; then
   echo "Guest repo path already exists: ${{TARGET_DIR}}" >&2
   exit 1
 fi
-git clone "${{REMOTE_URL}}" "${{TARGET_DIR}}"
+{clone_command}
 git -C "${{TARGET_DIR}}" remote add agent "${{REMOTE_URL}}"
 git -C "${{TARGET_DIR}}" config user.name "Truman Bot"
 git -C "${{TARGET_DIR}}" config user.email "truman@quinth.se"
 git -C "${{TARGET_DIR}}" config agent-sandbox.sessionId "${{SESSION_ID}}"
-{issue_config_line}{branch_suffix_line}install -d -m 0755 "${{TARGET_DIR}}/.agent-sandbox/bin"
+{issue_config_line}{branch_suffix_line}{base_branch_config_line}install -d -m 0755 "${{TARGET_DIR}}/.agent-sandbox/bin"
 python3 - "${{TARGET_DIR}}/.agent-sandbox/bin/agent-pr-note" "${{AGENT_PR_NOTE_HELPER_B64}}" <<'PY'
 import base64
 import os
@@ -4974,46 +4947,34 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
         issue: str,
         session_id: str | None = None,
         model: str | None = None,
-        repo_source: str | None = None,
         vm_user: str = "agent",
         ttl_hours: int | None = None,
         discord_channels: list[str] | None = None,
         email_mailboxes: list[str] | None = None,
         email_folders: list[str] | None = None,
-        python: bool = False,
         dotnet: bool = False,
         nuget: str | None = None,
         mssql: bool = False,
         mssql_init_root: str | None = None,
         playwright: bool = False,
         codex_skills: list[str] | None = None,
-        frontend_deps: bool = False,
-        frontend_host_checkout: str | None = None,
-        frontend_install_roots: list[str] | None = None,
-        start_agent: bool = True,
         directory_path: str = "root",
     ) -> VmActionResult:
         return self.vm_agent_admin.create_issue_vm(
             issue=issue,
             session_id=session_id,
             model=model,
-            repo_source=repo_source,
             vm_user=vm_user,
             ttl_hours=ttl_hours,
             discord_channels=discord_channels,
             email_mailboxes=email_mailboxes,
             email_folders=email_folders,
-            python=python,
             dotnet=dotnet,
             nuget=nuget,
             mssql=mssql,
             mssql_init_root=mssql_init_root,
             playwright=playwright,
             codex_skills=codex_skills,
-            frontend_deps=frontend_deps,
-            frontend_host_checkout=frontend_host_checkout,
-            frontend_install_roots=frontend_install_roots,
-            start_agent=start_agent,
             directory_path=directory_path,
         )
 
@@ -5022,10 +4983,7 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
         issue_identifier: str,
         *,
         model: str | None = None,
-        repo_source: str | None = None,
         vm_user: str = "agent",
-        start_agent: bool = True,
-        python: bool = False,
         dotnet: bool = False,
         nuget: str | None = None,
         mssql: bool = False,
@@ -5036,10 +4994,7 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
         return self.vm_agent_admin.create_issue_vm_from_local_issue(
             issue_identifier,
             model=model,
-            repo_source=repo_source,
             vm_user=vm_user,
-            start_agent=start_agent,
-            python=python,
             dotnet=dotnet,
             nuget=nuget,
             mssql=mssql,
@@ -5055,7 +5010,6 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
         session_id: str | None = None,
         labels: dict[str, str] | None = None,
         model: str | None = None,
-        repo_source: str | None = None,
         vm_user: str = "agent",
         ttl_hours: int | None = None,
         allowed_tools: list[str | ToolName] | None = None,
@@ -5063,16 +5017,12 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
         discord_channels: list[str] | None = None,
         email_mailboxes: list[str] | None = None,
         email_folders: list[str] | None = None,
-        python: bool = False,
         dotnet: bool = False,
         nuget: bool = False,
         mssql: bool = False,
         mssql_init_root: str | None = None,
         playwright: bool = False,
         codex_skills: list[str] | None = None,
-        frontend_deps: bool = False,
-        frontend_host_checkout: str | None = None,
-        frontend_install_roots: list[str] | None = None,
         directory_path: str = "root",
     ) -> VmActionResult:
         return self.vm_agent_admin.create_vm(
@@ -5080,7 +5030,6 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
             session_id=session_id,
             labels=labels,
             model=model,
-            repo_source=repo_source,
             vm_user=vm_user,
             ttl_hours=ttl_hours,
             allowed_tools=allowed_tools,
@@ -5088,17 +5037,66 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
             discord_channels=discord_channels,
             email_mailboxes=email_mailboxes,
             email_folders=email_folders,
-            python=python,
             dotnet=dotnet,
             nuget=nuget,
             mssql=mssql,
             mssql_init_root=mssql_init_root,
             playwright=playwright,
             codex_skills=codex_skills,
-            frontend_deps=frontend_deps,
-            frontend_host_checkout=frontend_host_checkout,
-            frontend_install_roots=frontend_install_roots,
             directory_path=directory_path,
+        )
+
+    def clone_repo_into_vm(
+        self,
+        *,
+        vm_name: str,
+        session_id: str | None = None,
+        repo_source: str,
+        clone_branch: str | None = None,
+        vm_user: str = "agent",
+        directory_path: str = "root",
+    ) -> VmActionResult:
+        return self.vm_agent_admin.clone_repo_into_vm(
+            vm_name=vm_name,
+            session_id=session_id,
+            repo_source=repo_source,
+            clone_branch=clone_branch,
+            vm_user=vm_user,
+            directory_path=directory_path,
+        )
+
+    def bootstrap_python_in_vm(
+        self,
+        *,
+        vm_name: str,
+        session_id: str | None = None,
+        host_checkout: str,
+        target_dir: str,
+        vm_user: str = "agent",
+    ) -> VmActionResult:
+        return self.vm_agent_admin.bootstrap_python_in_vm(
+            vm_name=vm_name,
+            session_id=session_id,
+            host_checkout=host_checkout,
+            target_dir=target_dir,
+            vm_user=vm_user,
+        )
+
+    def bootstrap_frontend_in_vm(
+        self,
+        *,
+        vm_name: str,
+        session_id: str | None = None,
+        host_checkout: str,
+        install_roots: list[str] | None,
+        vm_user: str = "agent",
+    ) -> VmActionResult:
+        return self.vm_agent_admin.bootstrap_frontend_in_vm(
+            vm_name=vm_name,
+            session_id=session_id,
+            host_checkout=host_checkout,
+            install_roots=install_roots,
+            vm_user=vm_user,
         )
 
     def destroy_vm(self, target: str) -> VmActionResult:

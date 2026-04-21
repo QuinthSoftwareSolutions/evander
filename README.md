@@ -7,7 +7,7 @@
 - A Python MCP gateway with policy-gated Discord and email tool surfaces
 - A host-side OpenAI relay that keeps the API key on the host and exposes an OpenAI-compatible endpoint to guests
 - A host-side NuGet relay that proxies nuget.org and private Azure Artifacts feeds for guests
-- A host-side Azure DevOps backlog worker that polls tagged work items and drives `setup_issue_vm.sh`
+- A host-side Azure DevOps backlog worker that polls tagged work items and drives issue VM bring-up
 - A host-side workflow orchestrator that polls provider triggers, evaluates gates, and persists durable queue events for downstream workers/hooks
 - A host-side Teams ingest worker that polls Microsoft Graph and feeds `trigger:teams:new-message` orchestration
 - A host-side shared NuGet cache that can be mounted read-only into guests for faster cold restores
@@ -315,8 +315,8 @@ Issue handling is now a single local abstraction in both Desktop and CLI flows:
 - Desktop/CLI read/comment/state operations use the same command surface for both types; proxy
   records forward those operations to Azure DevOps and refresh the local cache afterward
 - VM setup can target either a local issue number (`77`) or proxy identifier forms like
-  `proxy:ado/77`, and both resolve through the same local issue record before invoking
-  `setup_issue_vm.sh`
+  `proxy:ado/77`, and both resolve through the same local issue record before invoking the
+  shared issue-VM create flow
 - ADO backlog create operations can include `parent_backlog_item_id`; when provided, the create
   patch appends a `System.LinkTypes.Hierarchy-Reverse` relation in the same org/project context.
   The parent ID must be non-empty digits. If that validation fails, the request is rejected before
@@ -343,39 +343,35 @@ agent-sandbox-cli directories show root
 
 ## Local Git Remotes
 
-For the full issue-VM bring-up path in one command, use:
+Issue VM creation is now separate from repo setup. Create the VM first:
 
 ```bash
-MSSQL_SA_PASSWORD='your-strong-password' ./scripts/setup_issue_vm.sh --python --dotnet --nuget --mssql --mssql-init-root /path/to/mssql-init --playwright --frontend-deps --frontend-install-root /path/to/repo/Src/Clients /path/to/issue.yaml /path/to/project-or-solution.slnx
+MSSQL_SA_PASSWORD='your-strong-password' ./.venv/bin/agent-sandbox-cli create-issue-vm 14084 --dotnet --nuget /path/to/project-or-solution.slnx --mssql --mssql-init-root /path/to/mssql-init --playwright
 ```
 
-`setup_issue_vm.sh` now resolves host-dependent paths in this order:
+Then clone the repo and run any repo-specific bootstraps you need:
 
-1. explicit `repo-source` argument (third positional argument)
-2. `AGENT_SANDBOX_DEFAULT_REPO_SOURCE`
-3. repo-relative fallback: the agent-sandbox repo root
+```bash
+./.venv/bin/agent-sandbox-cli clone-repo-into-vm vm-14084 --repo-source /path/to/local/repo
+./.venv/bin/agent-sandbox-cli bootstrap-python-in-vm vm-14084 --host-checkout /path/to/local/repo --target-dir /home/agent/$(basename /path/to/local/repo)
+./.venv/bin/agent-sandbox-cli bootstrap-frontend-in-vm vm-14084 --host-checkout /path/to/local/repo --install-root /path/to/local/repo/Src/Clients
+```
 
-When `session-id` is omitted, `setup_issue_vm.sh` now generates one automatically in the form
+When `session-id` is omitted, `create-issue-vm` generates one automatically in the form
 `issue-<issue-number>-<utc timestamp>-<pid>`. That keeps review branches distinct across multiple
 agents or reruns for the same issue.
 
-Toolchain bootstraps are now opt-in:
+Toolchain bootstraps are opt-in and split by concern:
 
-- `--python` runs `bootstrap_python_vm.sh` and creates a repo-local `.venv` from a host-built wheelhouse
-- `--dotnet` runs `bootstrap_dotnet_vm.sh`
-- `--nuget` runs `bootstrap_nuget_vm.sh` and host `prewarm_nuget_cache.sh` (requires `project-or-solution`)
-- `--mssql` runs `bootstrap_mssql_vm.sh` and requires `MSSQL_SA_PASSWORD` in the environment
-- `--mssql-init-root PATH` copies a host init bundle into `/var/opt/mssql/init` and executes `init.sql`
-- `--playwright` runs `bootstrap_playwright_vm.sh`, which also provides `node`, `npm`, and `npx`
-- `--frontend-deps` runs `bootstrap_frontend_deps_vm.sh`
-- `--frontend-install-root PATH` selects one frontend install root and may be repeated
-- `--frontend-host-checkout PATH` overrides the host checkout used for frontend snapshots when `repo-source` is remote
+- `create-issue-vm --dotnet` runs `bootstrap_dotnet_vm.sh`
+- `create-issue-vm --nuget PATH` runs `bootstrap_nuget_vm.sh` and host `prewarm_nuget_cache.sh`
+- `create-issue-vm --mssql` runs `bootstrap_mssql_vm.sh` and requires `MSSQL_SA_PASSWORD`
+- `create-issue-vm --playwright` runs `bootstrap_playwright_vm.sh`
+- `bootstrap-python-in-vm` runs `bootstrap_python_vm.sh` against a cloned repo
+- `bootstrap-frontend-in-vm` runs `bootstrap_frontend_deps_vm.sh` against a cloned repo
 
-When `--frontend-deps` is enabled, each install root must live under the selected host checkout and
-already contain `package.json` plus `node_modules`. For local repo sources, `setup_issue_vm.sh`
-uses the resolved local repo checkout by default. For remote repo sources, pass
-`--frontend-host-checkout` so the helper can snapshot dependencies from a host checkout and
-restore them into the matching relative paths inside the guest clone.
+For frontend bootstrapping, each install root must live under the selected host checkout and
+already contain `package.json` plus `node_modules`.
 
 The guest clone URL is also derived from configurable Git-root settings:
 
@@ -391,10 +387,6 @@ the host repo basename, for example `/home/agent/AcmePlatform`. It also writes a
 `AGENT_TASK.yaml`, configures a repo-local `git push-agent` alias for the safe
 session-namespaced push pattern, and starts a background agent run inside the guest by
 default. The guest-side agent log, PID, and state files live under `/home/agent/.agent-sandbox/`.
-Use `--no-start-agent` with `agent-sandbox-cli create-issue-vm` or `--dry-run` with
-`setup_issue_vm.sh` if you want the VM prepared without starting the agent process. The
-helper still accepts a raw issue number as the first argument for the older workflow, but
-YAML is the preferred input for long-running agent sessions.
 When `--python` is enabled, the guest repo also gets a repo-local `.venv`. Activate it with
 `. .venv/bin/activate`, then run `python -m pytest -q` and `python -m ruff check` from inside
 the guest clone.

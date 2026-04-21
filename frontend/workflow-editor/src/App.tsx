@@ -230,6 +230,7 @@ function buildNodes(
   catalog: WorkflowEditorCatalog,
   nodeActivity: Record<string, WorkflowNodeActivityCounts> = {},
   currentPositions: Record<string, { x: number; y: number }> = {},
+  selectedNodeIds: string[] = [],
 ): Node<GraphNodeData>[] {
   const collections = nodeCollections(config);
   const ordered = [
@@ -247,6 +248,7 @@ function buildNodes(
       id: node.id,
       type: "workflowNode",
       position,
+      selected: selectedNodeIds.includes(node.id),
       data: {
         id: node.id,
         displayName: node.display_name,
@@ -339,6 +341,26 @@ function cloneNodeConfig(node: WorkflowNodeConfig): WorkflowNodeConfig {
   return JSON.parse(JSON.stringify(node)) as WorkflowNodeConfig;
 }
 
+function flattenWorkflowNodeConfig(node: WorkflowNodeConfig): WorkflowNodeConfig {
+  const clonedNode = cloneNodeConfig(node);
+  const nestedConfig = isRecord(clonedNode.config) ? clonedNode.config : undefined;
+  if (!nestedConfig) return clonedNode;
+  const { config: _config, ...rest } = clonedNode;
+  return {
+    ...nestedConfig,
+    ...rest,
+  };
+}
+
+function normalizeWorkflowConfigShape(config: WorkflowConfig): WorkflowConfig {
+  const nextConfig = cloneConfig(config);
+  nextConfig.triggers = (nextConfig.triggers ?? []).map(flattenWorkflowNodeConfig);
+  nextConfig.gates = (nextConfig.gates ?? []).map(flattenWorkflowNodeConfig);
+  nextConfig.effects = (nextConfig.effects ?? []).map(flattenWorkflowNodeConfig);
+  nextConfig.queries = (nextConfig.queries ?? []).map(flattenWorkflowNodeConfig);
+  return nextConfig;
+}
+
 function isEditableEventTarget(target: EventTarget | null): boolean {
   return (
     target instanceof HTMLInputElement ||
@@ -413,7 +435,28 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
     return { id, display_name: "New prompt", type, prompt: "Describe the next action." };
   }
   if (kind === "effect" && type === "effect:vm:create") {
-    return { id, display_name: "New VM effect", type, frontend_install_roots: [] };
+    return { id, display_name: "New VM effect", type };
+  }
+  if (kind === "effect" && type === "effect:vm:clone-repo") {
+    return { id, display_name: "Clone repo into VM", type, repo_source: "/path/to/repo", clone_branch: "main" };
+  }
+  if (kind === "effect" && type === "effect:vm:bootstrap-python") {
+    return {
+      id,
+      display_name: "Bootstrap Python in VM",
+      type,
+      host_checkout: "/path/to/repo",
+      target_dir: "/home/agent/repo",
+    };
+  }
+  if (kind === "effect" && type === "effect:vm:bootstrap-frontend") {
+    return {
+      id,
+      display_name: "Bootstrap frontend deps in VM",
+      type,
+      host_checkout: "/path/to/repo",
+      install_roots: ["/path/to/repo/Src/Clients"],
+    };
   }
   if (kind === "effect" && type === "effect:vm:start") {
     return { id, display_name: "VM start", type };
@@ -847,9 +890,27 @@ function declaredOutputsForNode(node: WorkflowNodeConfig | undefined, config?: W
       vm_name: { type: "string" },
       labels: { type: "object" },
       success: { type: "boolean" },
+      message: { type: "string" },
+    },
+    "effect:vm:clone-repo": {
+      session_id: { type: "string" },
+      vm_name: { type: "string" },
+      success: { type: "boolean" },
       target_dir: { type: "string" },
       guest_repo_name: { type: "string" },
       remote_url: { type: "string" },
+    },
+    "effect:vm:bootstrap-python": {
+      session_id: { type: "string" },
+      vm_name: { type: "string" },
+      success: { type: "boolean" },
+      message: { type: "string" },
+    },
+    "effect:vm:bootstrap-frontend": {
+      session_id: { type: "string" },
+      vm_name: { type: "string" },
+      success: { type: "boolean" },
+      message: { type: "string" },
     },
     "effect:vm:start": {
       success: { type: "boolean" },
@@ -1179,6 +1240,7 @@ export default function App() {
   const [flowNodes, setFlowNodes] = useState<Node<GraphNodeData>[]>([]);
   const [flowEdges, setFlowEdges] = useState<Edge[]>([]);
   const [flowInstance, setFlowInstance] = useState<ReactFlowInstance | null>(null);
+  const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([]);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [inspectorNodeId, setInspectorNodeId] = useState("");
@@ -1199,7 +1261,7 @@ export default function App() {
       fetchJson<WorkflowRunSnapshot>("/api/workflow-editor/runs"),
     ])
       .then(([payload, catalogPayload, runSnapshotPayload]) => {
-        const normalizedConfig = normalizeDerivedNodeFields(payload.config);
+        const normalizedConfig = normalizeDerivedNodeFields(normalizeWorkflowConfigShape(payload.config));
         setCatalog(catalogPayload);
         setRunSnapshot(runSnapshotPayload);
         setDocument({ ...payload, config: normalizedConfig });
@@ -1240,6 +1302,7 @@ export default function App() {
         catalog,
         runSnapshot?.node_activity ?? {},
         currentPositionsFromNodes(currentNodes),
+        currentNodes.filter((node) => node.selected).map((node) => node.id),
       ),
     );
     setFlowEdges(buildEdges(document.config));
@@ -1256,7 +1319,7 @@ export default function App() {
   const config = document?.config ?? emptyConfig();
   const layout = document?.layout ?? emptyLayout();
   const activeRuns = runSnapshot?.runs ?? [];
-  const selectedNode = selectedNodeId ? nodeById(config, selectedNodeId) : undefined;
+  const selectedNode = selectedNodeIds.length === 1 && selectedNodeId ? nodeById(config, selectedNodeId) : undefined;
   const selectedCatalogEntry = selectedNode ? getCatalogEntry(catalog, selectedNode.type) : undefined;
   const selectedEdge = selectedEdgeId
     ? config.edges.find((edge) => edgeId(edge) === selectedEdgeId)
@@ -1338,9 +1401,19 @@ export default function App() {
     appShellRef.current?.focus();
   }, [selectedEdgeId]);
 
+  useEffect(() => {
+    const nextSelectedNodeIds = flowNodes.filter((node) => node.selected).map((node) => node.id);
+    setSelectedNodeIds(nextSelectedNodeIds);
+    setSelectedNodeId((currentSelectedNodeId) => {
+      if (nextSelectedNodeIds.length === 0) return null;
+      if (currentSelectedNodeId && nextSelectedNodeIds.includes(currentSelectedNodeId)) return currentSelectedNodeId;
+      return nextSelectedNodeIds[nextSelectedNodeIds.length - 1] ?? null;
+    });
+  }, [flowNodes]);
+
   function patchDocument(nextConfig: WorkflowConfig, nextLayout: WorkflowLayout) {
     if (!document) return;
-    const normalizedConfig = normalizeDerivedNodeFields(nextConfig);
+    const normalizedConfig = normalizeDerivedNodeFields(normalizeWorkflowConfigShape(nextConfig));
     const nextDocument = {
       ...document,
       config: normalizedConfig,
@@ -1348,6 +1421,23 @@ export default function App() {
     };
     setDocument(nextDocument);
     setSaveState("idle");
+  }
+
+  function setProgrammaticSelection(nextNodeIds: string[], preferredNodeId: string | null = null) {
+    const uniqueNodeIds = Array.from(new Set(nextNodeIds));
+    setSelectedNodeIds(uniqueNodeIds);
+    setSelectedNodeId((currentSelectedNodeId) => {
+      if (uniqueNodeIds.length === 0) return null;
+      if (preferredNodeId && uniqueNodeIds.includes(preferredNodeId)) return preferredNodeId;
+      if (currentSelectedNodeId && uniqueNodeIds.includes(currentSelectedNodeId)) return currentSelectedNodeId;
+      return uniqueNodeIds[uniqueNodeIds.length - 1] ?? null;
+    });
+    setFlowNodes((currentNodes) =>
+      currentNodes.map((node) => {
+        const isSelected = uniqueNodeIds.includes(node.id);
+        return node.selected === isSelected ? node : { ...node, selected: isSelected };
+      }),
+    );
   }
 
   function updateNodePositions(changes: NodeChange[]) {
@@ -1365,6 +1455,27 @@ export default function App() {
       (edge) => edgeId(edge) !== selectedEdgeId,
     );
     patchDocument(nextConfig, cloneLayout(document.layout));
+    setSelectedEdgeId(null);
+    setError(null);
+  }
+
+  function deleteNodes(nodeIds: string[]) {
+    if (!document || nodeIds.length === 0) return;
+    const deletedNodeIds = new Set(nodeIds);
+    const nextConfig = cloneConfig(document.config);
+    nextConfig.triggers = (nextConfig.triggers ?? []).filter((node) => !deletedNodeIds.has(node.id));
+    nextConfig.gates = (nextConfig.gates ?? []).filter((node) => !deletedNodeIds.has(node.id));
+    nextConfig.effects = (nextConfig.effects ?? []).filter((node) => !deletedNodeIds.has(node.id));
+    nextConfig.queries = (nextConfig.queries ?? []).filter((node) => !deletedNodeIds.has(node.id));
+    nextConfig.edges = nextConfig.edges.filter(
+      (edge) => !deletedNodeIds.has(edge.source_id) && !deletedNodeIds.has(edge.target_id),
+    );
+    const nextLayout = cloneLayout(document.layout);
+    for (const nodeId of deletedNodeIds) {
+      delete nextLayout.nodes[nodeId];
+    }
+    patchDocument(nextConfig, nextLayout);
+    setProgrammaticSelection([]);
     setSelectedEdgeId(null);
     setError(null);
   }
@@ -1402,7 +1513,7 @@ export default function App() {
       const nextLayout = cloneLayout(document.layout);
       nextLayout.nodes[nextId] = { x: currentPosition.x + 40, y: currentPosition.y + 40 };
       patchDocument(nextConfig, nextLayout);
-      setSelectedNodeId(nextId);
+      setProgrammaticSelection([nextId], nextId);
       setSelectedEdgeId(null);
       setError(null);
       return;
@@ -1413,10 +1524,12 @@ export default function App() {
     deleteSelectedEdge();
   }
 
-  function persistNodePosition(nodeId: string, position: { x: number; y: number }) {
+  function persistNodePositions(nodes: Node[]) {
     if (!document) return;
     const nextLayout = cloneLayout(document.layout);
-    nextLayout.nodes[nodeId] = position;
+    for (const node of nodes) {
+      nextLayout.nodes[node.id] = node.position;
+    }
     setDocument({
       ...document,
       layout: nextLayout,
@@ -1442,27 +1555,31 @@ export default function App() {
         1,
     );
     patchDocument(nextConfig, nextLayout);
-    setSelectedNodeId(node.id);
+    setProgrammaticSelection([node.id], node.id);
     setSelectedEdgeId(null);
     setError(null);
   }
 
   function deleteSelectedNode() {
+    deleteNodes(selectedNodeIds);
+  }
+
+  function selectDownstreamBranch() {
     if (!document || !selectedNodeId) return;
-    const nextConfig = cloneConfig(document.config);
-    nextConfig.triggers = (nextConfig.triggers ?? []).filter((node) => node.id !== selectedNodeId);
-    nextConfig.gates = (nextConfig.gates ?? []).filter((node) => node.id !== selectedNodeId);
-    nextConfig.effects = (nextConfig.effects ?? []).filter((node) => node.id !== selectedNodeId);
-    nextConfig.queries = (nextConfig.queries ?? []).filter((node) => node.id !== selectedNodeId);
-    nextConfig.edges = nextConfig.edges.filter(
-      (edge) => edge.source_id !== selectedNodeId && edge.target_id !== selectedNodeId,
-    );
-    const nextLayout = cloneLayout(document.layout);
-    delete nextLayout.nodes[selectedNodeId];
-    patchDocument(nextConfig, nextLayout);
-    setSelectedNodeId(null);
+    const queuedNodeIds = [selectedNodeId];
+    const selectedNodeSet = new Set<string>();
+    while (queuedNodeIds.length > 0) {
+      const currentNodeId = queuedNodeIds.shift();
+      if (!currentNodeId || selectedNodeSet.has(currentNodeId)) continue;
+      selectedNodeSet.add(currentNodeId);
+      for (const edge of document.config.edges) {
+        if (edge.source_id === currentNodeId && !selectedNodeSet.has(edge.target_id)) {
+          queuedNodeIds.push(edge.target_id);
+        }
+      }
+    }
+    setProgrammaticSelection([...selectedNodeSet], selectedNodeId);
     setSelectedEdgeId(null);
-    setError(null);
   }
 
   function applyInspectorChanges() {
@@ -1542,7 +1659,7 @@ export default function App() {
         delete nextLayout.nodes[selectedNode.id];
       }
       patchDocument(nextConfig, nextLayout);
-      setSelectedNodeId(rawId);
+      setProgrammaticSelection([rawId], rawId);
       setSelectedEdgeId(null);
       setError(null);
     } catch (reason) {
@@ -1594,6 +1711,10 @@ export default function App() {
     );
     patchDocument(nextConfig, cloneLayout(document.layout));
     setSelectedEdgeId(null);
+  }
+
+  function onNodesDelete(deletedNodes: Node[]) {
+    deleteNodes(deletedNodes.map((node) => node.id));
   }
 
   async function validateDocument() {
@@ -2254,6 +2375,22 @@ export default function App() {
           ) : null}
         </div>
 
+        {selectedNodeIds.length > 1 ? (
+          <div className="sidebar-section inspector">
+            <div className="section-label">Selection</div>
+            <div className="inspector-summary">
+              <div>{selectedNodeIds.length} nodes selected</div>
+            </div>
+            <button onClick={() => setProgrammaticSelection([])}>Clear selection</button>
+            <button onClick={selectDownstreamBranch} disabled={!selectedNodeId}>
+              Select downstream branch
+            </button>
+            <button className="danger" onClick={deleteSelectedNode}>
+              Delete selected nodes
+            </button>
+          </div>
+        ) : null}
+
         {selectedNode ? (
           <div className="sidebar-section inspector">
             <div className="section-label">Inspector</div>
@@ -2261,6 +2398,7 @@ export default function App() {
               <div>{selectedNode.type}</div>
               <div>{selectedNode.id}</div>
             </div>
+            <button onClick={selectDownstreamBranch}>Select downstream branch</button>
             <label className="inspector-label">
               <span>Node id</span>
               <input value={inspectorNodeId} onChange={(event) => setInspectorNodeId(event.target.value)} />
@@ -2325,18 +2463,19 @@ export default function App() {
             appShellRef.current?.focus();
           }}
           onEdgeClick={(_, edge) => {
-            setSelectedNodeId(null);
+            setProgrammaticSelection([]);
             setSelectedEdgeId(edge.id);
           }}
-          onNodeDragStop={(_, node) => persistNodePosition(node.id, node.position)}
+          onNodeDragStop={(_, node, nodes) => persistNodePositions(nodes.length > 0 ? nodes : [node])}
           onPaneClick={() => {
-            setSelectedNodeId(null);
             setSelectedEdgeId(null);
           }}
           onConnect={onConnect}
           onEdgesDelete={onEdgesDelete}
+          onNodesDelete={onNodesDelete}
           fitView
           deleteKeyCode={["Backspace", "Delete"]}
+          multiSelectionKeyCode={["Control", "Meta"]}
         >
           <MiniMap />
           <Controls />

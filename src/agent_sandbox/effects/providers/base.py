@@ -13,7 +13,10 @@ from agent_sandbox.provider_runtime.contracts import (
     PullRequestCreator,
     SessionLookup,
     SessionMetadataUpdater,
+    VmFrontendBootstrapper,
+    VmPythonBootstrapper,
     VmCreator,
+    VmRepoCloner,
     VmExecutor,
     VmFileCopier,
     VmFileDeleter,
@@ -28,6 +31,9 @@ class EffectRuntimeContext(ProviderRuntimeBase):
     """Host-side runtime inputs used by effect providers."""
 
     vm_creator: VmCreator | None = None
+    vm_repo_cloner: VmRepoCloner | None = None
+    vm_python_bootstrapper: VmPythonBootstrapper | None = None
+    vm_frontend_bootstrapper: VmFrontendBootstrapper | None = None
     agent_resumer: AgentResumer | None = None
     vm_power_controller: VmPowerController | None = None
     vm_inventory: VmInventory | None = None
@@ -47,6 +53,9 @@ class EffectRuntimeContext(ProviderRuntimeBase):
             return
         for field_name, method_name in (
             ("vm_creator", "create_vm"),
+            ("vm_repo_cloner", "clone_repo_into_vm"),
+            ("vm_python_bootstrapper", "bootstrap_python_in_vm"),
+            ("vm_frontend_bootstrapper", "bootstrap_frontend_in_vm"),
             ("agent_resumer", "resume_agent"),
             ("vm_power_controller", "start_vm"),
             ("vm_inventory", "list_vms"),

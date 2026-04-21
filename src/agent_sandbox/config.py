@@ -368,7 +368,7 @@ class AdoWorkerGlobalConfig(BaseModel):
     yaml_output_dir: Path | None = None
     setup_log_dir: Path | None = None
     processed_store_path: Path | None = None
-    setup_script_path: Path = Path("scripts/setup_issue_vm.sh")
+    setup_script_path: Path = Path("scripts/setup_vm.sh")
     ado_work_items_azure_devops_pat_env: str = "ADO_WORK_ITEMS_AZURE_DEVOPS_PAT"
     setup_timeout_seconds: float = Field(default=1800.0, gt=0)
     setup_concurrency_limit: int = Field(default=1, ge=1)
@@ -405,7 +405,7 @@ class AdoWorkerGlobalConfig(BaseModel):
         if self.processed_store_path is None:
             self.processed_store_path = self.runtime_dir / "ado-processed-work-items.json"
         if self.setup_lock_path is None:
-            self.setup_lock_path = self.runtime_dir / "setup-issue-vm.lock"
+            self.setup_lock_path = self.runtime_dir / "setup-vm.lock"
         return self
 
 

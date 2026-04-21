@@ -224,9 +224,27 @@ _EFFECT_OUTPUT_SCHEMAS = {
         "vm_name": {"type": "string"},
         "labels": {"type": "object"},
         "success": {"type": "boolean"},
+        "message": {"type": "string"},
+    },
+    "effect:vm:clone-repo": {
+        "session_id": {"type": "string"},
+        "vm_name": {"type": "string"},
+        "success": {"type": "boolean"},
         "target_dir": {"type": "string"},
         "guest_repo_name": {"type": "string"},
         "remote_url": {"type": "string"},
+    },
+    "effect:vm:bootstrap-python": {
+        "session_id": {"type": "string"},
+        "vm_name": {"type": "string"},
+        "success": {"type": "boolean"},
+        "message": {"type": "string"},
+    },
+    "effect:vm:bootstrap-frontend": {
+        "session_id": {"type": "string"},
+        "vm_name": {"type": "string"},
+        "success": {"type": "boolean"},
+        "message": {"type": "string"},
     },
     "effect:vm:start": {
         "success": {"type": "boolean"},

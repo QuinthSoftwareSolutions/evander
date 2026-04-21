@@ -283,7 +283,7 @@ Storage layout for directory config:
 - `./scripts/bootstrap_frontend_deps_vm.sh <vm-name> <host-checkout-root> <install-root> [install-root ...]` copies a host-seeded Node runtime into `~/toolchains/node-v24.14.0`.
 - It snapshots each selected install root under `~/frontend-deps-runtime/install-roots/<relative-path>`.
 - Each install root must already contain `package.json` and `node_modules` on the host.
-- `setup_issue_vm.sh` restores those snapshots into the matching relative paths inside the guest clone so Angular builds can use the copied dependency trees offline.
+- `bootstrap-frontend-in-vm` restores those snapshots into the matching relative paths inside the guest clone so Angular builds can use the copied dependency trees offline.
 - It appends the Node `PATH` export to `~/.profile` and `~/.bashrc`.
 
 ## VM .NET Bootstrap
@@ -806,7 +806,7 @@ agent-sandbox-cli create-session real-session --runtime-dir runtime
 - The scaffold includes `agent-sandbox-ado-worker` and the equivalent foreground CLI command
   `agent-sandbox-cli poll-ado-backlog`.
 - The worker polls Azure DevOps work items in `Committed` state tagged `truman`, writes YAML
-  payloads under `ADO_YAML_OUTPUT_DIR`, and invokes `scripts/setup_issue_vm.sh`.
+  payloads under `ADO_YAML_OUTPUT_DIR`, and invokes `scripts/setup_vm.sh`.
 - The same worker now owns Azure DevOps PR feedback ingestion for configured PR streams; it
   updates `runtime/pr-feedback-store.json` and publishes `trigger:pull-request:new-feedback`
   events without depending on `agent-sandbox-host-heartbeat`.
@@ -824,7 +824,7 @@ agent-sandbox-cli create-session real-session --runtime-dir runtime
   `ADO_FRONTEND_INSTALL_ROOTS` and can optionally use `ADO_FRONTEND_HOST_CHECKOUT`
   when the mirrored repo source is remote.
 - Directory-scoped `ado_worker` config can set `ado_repo_source` to control the repo source path
-  or remote URL passed to `setup_issue_vm.sh` for each directory.
+  or remote URL later passed to `clone_repo_into_vm(...)` for each directory.
 - Preferred configuration now lives in directory domain `ado_worker` (`ado-worker.json`) so values
   inherit through directory ancestry and appear in the Admin GUI automatically.
 - Global worker settings now live in `config/ado-worker/config.json` and are edited from the
@@ -1051,54 +1051,35 @@ sudo systemctl status agent-sandbox-issue-orchestrator.service
 
 ## Local Git Remote Flow
 
-For the common issue workflow, you can do the full host-side setup in one command:
+For the common issue workflow, create the VM first:
 
 ```bash
-MSSQL_SA_PASSWORD='your-strong-password' ./scripts/setup_issue_vm.sh --python --dotnet --nuget --mssql --mssql-init-root /path/to/mssql-init --playwright --frontend-deps --frontend-install-root /path/to/repo/Src/Clients /path/to/issue.yaml /path/to/project-or-solution.slnx
+MSSQL_SA_PASSWORD='your-strong-password' ./.venv/bin/agent-sandbox-cli create-issue-vm 14084 --dotnet --nuget /path/to/project-or-solution.slnx --mssql --mssql-init-root /path/to/mssql-init --playwright
 ```
 
-`setup_issue_vm.sh` path defaults are configurable so host-specific `/home/...` paths are not
-hard-coded:
+Then clone the repo and apply repo-specific bootstraps as needed:
 
-- repo source precedence:
-  1. explicit third positional argument
-  2. `AGENT_SANDBOX_DEFAULT_REPO_SOURCE`
-  3. repo-relative fallback (`<agent-sandbox-repo-root>`)
-- guest clone remote root:
-  - `AGENT_SANDBOX_GIT_ROOT` from the `root` issue setup config or host environment, plus
-    `/${ISSUE_NUMBER}_repo.git`
-  - `AGENT_SANDBOX_GIT_ROOT` must exist on the host before guest clone starts
-- clone URL SSH alias:
-  - `AGENT_SANDBOX_GIT_SSH_ALIAS` (default `agent-sandbox-git-host`)
+```bash
+./.venv/bin/agent-sandbox-cli clone-repo-into-vm vm-14084 --repo-source /path/to/local/repo
+./.venv/bin/agent-sandbox-cli bootstrap-python-in-vm vm-14084 --host-checkout /path/to/local/repo --target-dir /home/agent/$(basename /path/to/local/repo)
+./.venv/bin/agent-sandbox-cli bootstrap-frontend-in-vm vm-14084 --host-checkout /path/to/local/repo --install-root /path/to/local/repo/Src/Clients
+```
 
-That launches `vm-14084`, bootstraps provider runtime tooling plus any requested optional toolchains, and
-configures the issue-numbered Git mirror and guest SSH path. It also clones the mirrored repo into
-the guest user's home directory using the source repo basename. The cloned repo gets a
-`git push-agent` alias, the guest home gets a short `AGENTS.md` note describing the expected
-push pattern, the issue YAML is copied into the repo root as `AGENT_TASK.yaml`, and a background
-agent run starts in the guest by default. The guest-side agent PID, state, and log live under
-`/home/agent/.agent-sandbox/`. Use `--no-start-agent` with `agent-sandbox-cli create-issue-vm`
-or `--dry-run` with `setup_issue_vm.sh` if you want the VM prepared without starting the agent
-process. The helper still accepts a raw issue number as the first argument for the older
-workflow, but YAML is the preferred input when you want the task definition to stay available on
-disk during long agent runs.
-Optional toolchain flags for `setup_issue_vm.sh`:
+`create-issue-vm` still resolves issue-scoped Git settings from the `root` issue setup config,
+including `AGENT_SANDBOX_GIT_ROOT` and `AGENT_SANDBOX_GIT_SSH_ALIAS`, so later repo clone steps
+can use the issue-numbered host mirror.
 
-- `--python`: run `bootstrap_python_vm.sh` and create a repo-local `.venv` from a host-built wheelhouse
-- `--dotnet`: run `bootstrap_dotnet_vm.sh`
-- `--nuget`: run `bootstrap_nuget_vm.sh` and prewarm the shared NuGet cache on the host (requires `project-or-solution`)
-- `--mssql`: run `bootstrap_mssql_vm.sh` and require `MSSQL_SA_PASSWORD` in the environment
-- `--mssql-init-root PATH`: copy a host init bundle into `/var/opt/mssql/init` and execute `init.sql`
-- `--playwright`: run `bootstrap_playwright_vm.sh`, which also provides `node`, `npm`, and `npx`
-- `--frontend-deps`: run `bootstrap_frontend_deps_vm.sh`
-- `--frontend-install-root PATH`: select one frontend install root and repeat as needed
-- `--frontend-host-checkout PATH`: override the host checkout used for frontend snapshots when `repo-source` is remote
+Toolchain bootstraps are now split by concern:
 
-When `--frontend-deps` is enabled, each install root must be inside the selected host checkout and
-already contain `package.json` plus `node_modules`. For local repo sources, `setup_issue_vm.sh`
-uses the resolved local checkout automatically. For remote repo sources, pass
-`--frontend-host-checkout` so the helper can snapshot dependencies from a host checkout and
-restore them into the matching relative paths inside the guest clone.
+- `create-issue-vm --dotnet` runs `bootstrap_dotnet_vm.sh`
+- `create-issue-vm --nuget PATH` runs `bootstrap_nuget_vm.sh` and prewarms the shared NuGet cache
+- `create-issue-vm --mssql` runs `bootstrap_mssql_vm.sh` and requires `MSSQL_SA_PASSWORD`
+- `create-issue-vm --playwright` runs `bootstrap_playwright_vm.sh`
+- `bootstrap-python-in-vm` runs `bootstrap_python_vm.sh` against a cloned repo
+- `bootstrap-frontend-in-vm` runs `bootstrap_frontend_deps_vm.sh` against a cloned repo
+
+When frontend bootstrapping is enabled, each install root must be inside the selected host
+checkout and already contain `package.json` plus `node_modules`.
 
 When `--python` is enabled, the guest clone also gets a repo-local `.venv`. Activate it with
 `. .venv/bin/activate`, then run `python -m pytest -q` and `python -m ruff check` from inside
@@ -1142,12 +1123,15 @@ After that initial setup, a guest-side `git fetch` or `git pull` against the iss
 restricted host Git wrapper to refresh the mirror from its configured source before serving the read.
 That keeps the guest on the latest mirrored refs without granting the guest direct access to the
 canonical remote.
-Mirror freshness flags are accepted and forwarded through both setup helpers:
+The cloned repo also gets `AGENT_TASK.yaml` in the repo root, a repo-local `git push-agent`
+alias, and the guest-home `AGENTS.md` guidance file during the repo-clone step.
+Mirror freshness flags are accepted and forwarded through the git-setup helper and the repo-clone
+step:
 
 ```bash
 ./scripts/setup_issue_git_vm.sh --remote-name origin vm-real 14084 /path/to/local/repo
-./scripts/setup_issue_vm.sh /path/to/issue.yaml /path/to/project.slnx /path/to/local/repo
-./scripts/setup_issue_vm.sh --no-sync-remote /path/to/issue.yaml /path/to/project.slnx /path/to/local/repo
+./.venv/bin/agent-sandbox-cli clone-repo-into-vm vm-real --repo-source /path/to/local/repo
+./.venv/bin/agent-sandbox-cli clone-repo-into-vm vm-real --repo-source https://example.com/org/repo.git
 ```
 
 Issue mirrors now carry a `post-receive` hook. When the bare repo has a trusted clone mapping,

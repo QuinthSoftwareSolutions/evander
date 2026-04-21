@@ -1410,13 +1410,11 @@ def test_filter_gate_when_can_match_ancestor_effect_outputs(tmp_path: Path) -> N
                     "display_name": "Create succeeded",
                     "type": "gate:filter",
                     "outputs": {
-                        "guest_repo_name": {"type": "string"},
                         "session_id": {"type": "string"},
                         "vm_name": {"type": "string"},
                         "labels": {"type": "object"},
-                        "remote_url": {"type": "string"},
                         "success": {"type": "boolean"},
-                        "target_dir": {"type": "string"},
+                        "message": {"type": "string"},
                     },
                     "when": {
                         "all": [
@@ -1795,13 +1793,11 @@ def test_filter_gate_when_drops_payload_when_predicate_is_false(tmp_path: Path) 
                     "display_name": "Create succeeded",
                     "type": "gate:filter",
                     "outputs": {
-                        "guest_repo_name": {"type": "string"},
                         "session_id": {"type": "string"},
                         "vm_name": {"type": "string"},
                         "labels": {"type": "object"},
-                        "remote_url": {"type": "string"},
                         "success": {"type": "boolean"},
-                        "target_dir": {"type": "string"},
+                        "message": {"type": "string"},
                     },
                     "when": {"all": [{"left": "${{effect-1.success}}", "equals": True}]},
                 }

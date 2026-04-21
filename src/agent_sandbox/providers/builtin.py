@@ -11,7 +11,10 @@ from agent_sandbox.effects.providers.git_promote_agent_branch import GitPromoteA
 from agent_sandbox.effects.providers.issue_update_state import IssueUpdateStateEffectProvider
 from agent_sandbox.effects.providers.pr_create import PrCreateEffectProvider
 from agent_sandbox.effects.providers.session_update_metadata import SessionUpdateMetadataEffectProvider
+from agent_sandbox.effects.providers.vm_bootstrap_frontend import VmBootstrapFrontendEffectProvider
+from agent_sandbox.effects.providers.vm_bootstrap_python import VmBootstrapPythonEffectProvider
 from agent_sandbox.effects.providers.vm_copy_files import VmCopyFilesEffectProvider
+from agent_sandbox.effects.providers.vm_clone_repo import VmCloneRepoEffectProvider
 from agent_sandbox.effects.providers.vm_create import VmCreateEffectProvider
 from agent_sandbox.effects.providers.vm_delete_files import VmDeleteFilesEffectProvider
 from agent_sandbox.effects.providers.vm_exec import VmExecEffectProvider
@@ -65,6 +68,9 @@ def register_providers() -> dict[str, dict[str, type]]:
         },
         effect_providers={
             "effect:vm:create": VmCreateEffectProvider,
+            "effect:vm:clone-repo": VmCloneRepoEffectProvider,
+            "effect:vm:bootstrap-python": VmBootstrapPythonEffectProvider,
+            "effect:vm:bootstrap-frontend": VmBootstrapFrontendEffectProvider,
             "effect:vm:start": VmStartEffectProvider,
             "effect:vm:stop": VmStopEffectProvider,
             "effect:agent:prompt": AgentPromptEffectProvider,

@@ -116,7 +116,7 @@ class AdoWorkerRuntimeConfig:
             workspace_root=workspace_root,
             json_keys=("setup_script_path", "ADO_SETUP_ISSUE_VM_SCRIPT"),
             env_name="ADO_SETUP_ISSUE_VM_SCRIPT",
-            default=workspace_root / "scripts" / "setup_issue_vm.sh",
+            default=workspace_root / "scripts" / "setup_vm.sh",
         )
         ado_work_items_azure_devops_pat_env = _resolve_string_setting(
             raw_config,
@@ -150,7 +150,7 @@ class AdoWorkerRuntimeConfig:
             workspace_root=workspace_root,
             json_keys=("setup_lock_path", "ADO_SETUP_LOCK_PATH"),
             env_name="ADO_SETUP_LOCK_PATH",
-            default=runtime_dir / "setup-issue-vm.lock",
+            default=runtime_dir / "setup-vm.lock",
         )
         fetch_retry_count = int(
             _resolve_numeric_setting(
@@ -1586,7 +1586,7 @@ def _ensure_issue_session_manifest(
     runtime.sessions.put(session_id, manifest)
 
 
-def _build_setup_command(config: WorkerConfig, yaml_path: Path, *, session_id: str) -> list[str]:
+def _build_setup_command(config: WorkerConfig, yaml_path: Path, *, session_id: str, work_item_id: int) -> list[str]:
     cmd = [str(config.setup_script_path)]
     if config.bootstrap_dotnet:
         cmd.append("--dotnet")
@@ -1598,18 +1598,9 @@ def _build_setup_command(config: WorkerConfig, yaml_path: Path, *, session_id: s
             cmd.extend(["--mssql-init-root", config.mssql_init_root])
     if config.bootstrap_playwright:
         cmd.append("--playwright")
-    if config.bootstrap_frontend_deps:
-        cmd.append("--frontend-deps")
-        if config.frontend_host_checkout:
-            cmd.extend(["--frontend-host-checkout", config.frontend_host_checkout])
-        for install_root in config.frontend_install_roots:
-            cmd.extend(["--frontend-install-root", install_root])
-    cmd.append(str(yaml_path))
     if config.bootstrap_nuget:
         cmd.append(config.prewarm_target)
-    if config.repo_path:
-        cmd.append(config.repo_path)
-    cmd.append(session_id)
+    cmd.extend([f"vm-{work_item_id}", session_id])
     if config.vm_user:
         cmd.append(config.vm_user)
     return cmd
@@ -1725,7 +1716,7 @@ def process_work_item(
             prefix=f"work_item={work_item_id} shadow_readiness",
             context=shadow_context,
         )
-    cmd = _build_setup_command(config, yaml_path, session_id=session_id)
+    cmd = _build_setup_command(config, yaml_path, session_id=session_id, work_item_id=work_item_id)
     run_env = os.environ.copy()
     run_env["AGENT_SANDBOX_AZURE_DEVOPS_PR_PAT_ENV"] = config.pat_env_var_name
     if config.bootstrap_mssql and config.mssql_sa_password:

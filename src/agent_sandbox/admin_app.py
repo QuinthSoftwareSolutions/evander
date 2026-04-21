@@ -336,10 +336,8 @@ class CreateVmDialog(QDialog):  # type: ignore[misc]
         layout = QVBoxLayout(self)
         form = QFormLayout()
 
-        self.repo_source_edit = QLineEdit(repo_source or "")
         self.model_edit = QLineEdit()
         self.model_edit.setPlaceholderText("Optional; uses directory default when empty")
-        self.python_checkbox = QCheckBox("Bootstrap Python")
         self.dotnet_checkbox = QCheckBox("Bootstrap .NET")
         self.nuget_checkbox = QCheckBox("Bootstrap NuGet")
         self.nuget_target_edit = QLineEdit()
@@ -365,12 +363,7 @@ class CreateVmDialog(QDialog):  # type: ignore[misc]
         )
         self.mssql_hint_label.setWordWrap(True)
         self.mssql_hint_label.setVisible(not self.mssql_available)
-        self.start_agent_checkbox = QCheckBox("Start agent after provisioning")
-        self.start_agent_checkbox.setChecked(True)
-
-        form.addRow("Repo source", self.repo_source_edit)
         form.addRow("Model", self.model_edit)
-        form.addRow("", self.python_checkbox)
         form.addRow("", self.dotnet_checkbox)
         form.addRow("", self.nuget_checkbox)
         form.addRow("NuGet target", self.nuget_target_row)
@@ -379,8 +372,6 @@ class CreateVmDialog(QDialog):  # type: ignore[misc]
         form.addRow("", self.mssql_hint_label)
         form.addRow("MSSQL init root", self.mssql_init_root_row)
         layout.addLayout(form)
-        layout.addWidget(self.start_agent_checkbox)
-
         self.nuget_checkbox.toggled.connect(self._update_state)
         self.mssql_checkbox.toggled.connect(self._update_state)
         self._update_state()
@@ -398,15 +389,12 @@ class CreateVmDialog(QDialog):  # type: ignore[misc]
         nuget = self.nuget_target_edit.text().strip() or None
         mssql_init_root = self.mssql_init_root_edit.text().strip() or None
         return {
-            "repo_source": self.repo_source_edit.text().strip() or None,
             "model": self.model_edit.text().strip() or None,
-            "python": self.python_checkbox.isChecked(),
             "dotnet": self.dotnet_checkbox.isChecked(),
             "nuget": nuget if self.nuget_checkbox.isChecked() else None,
             "playwright": self.playwright_checkbox.isChecked(),
             "mssql": self.mssql_checkbox.isChecked(),
             "mssql_init_root": mssql_init_root if self.mssql_checkbox.isChecked() else None,
-            "start_agent": self.start_agent_checkbox.isChecked(),
         }
 
 
@@ -422,11 +410,8 @@ class CreateStandaloneVmDialog(QDialog):  # type: ignore[misc]
         self.vm_name_edit.setPlaceholderText("lab-vm-1")
         self.session_id_edit = QLineEdit()
         self.session_id_edit.setPlaceholderText("Optional; generated when empty")
-        self.repo_source_edit = QLineEdit()
-        self.repo_source_edit.setPlaceholderText("/path/to/repo or git@host:repo.git")
         self.model_edit = QLineEdit()
         self.model_edit.setPlaceholderText("Optional; uses directory default when empty")
-        self.python_checkbox = QCheckBox("Bootstrap Python")
         self.dotnet_checkbox = QCheckBox("Bootstrap .NET")
         self.nuget_checkbox = QCheckBox("Bootstrap NuGet")
         self.playwright_checkbox = QCheckBox("Bootstrap Playwright")
@@ -446,17 +431,10 @@ class CreateStandaloneVmDialog(QDialog):  # type: ignore[misc]
         )
         self.mssql_hint_label.setWordWrap(True)
         self.mssql_hint_label.setVisible(not self.mssql_available)
-        self.python_hint_label = QLabel(
-            "Python bootstrap installs into a cloned guest repo checkout, so it requires Repo source."
-        )
-        self.python_hint_label.setWordWrap(True)
 
         form.addRow("VM name", self.vm_name_edit)
         form.addRow("Session ID", self.session_id_edit)
-        form.addRow("Repo source", self.repo_source_edit)
         form.addRow("Model", self.model_edit)
-        form.addRow("", self.python_checkbox)
-        form.addRow("", self.python_hint_label)
         form.addRow("", self.dotnet_checkbox)
         form.addRow("", self.nuget_checkbox)
         form.addRow("", self.playwright_checkbox)
@@ -465,7 +443,6 @@ class CreateStandaloneVmDialog(QDialog):  # type: ignore[misc]
         form.addRow("MSSQL init root", self.mssql_init_root_row)
         layout.addLayout(form)
 
-        self.repo_source_edit.textChanged.connect(self._update_state)
         self.mssql_checkbox.toggled.connect(self._update_state)
         self._update_state()
 
@@ -476,19 +453,12 @@ class CreateStandaloneVmDialog(QDialog):  # type: ignore[misc]
 
     def _update_state(self) -> None:
         self.mssql_init_root_row.setVisible(self.mssql_checkbox.isChecked())
-        repo_available = bool(self.repo_source_edit.text().strip())
-        self.python_checkbox.setEnabled(repo_available)
-        self.python_hint_label.setVisible(not repo_available)
-        if not repo_available:
-            self.python_checkbox.setChecked(False)
 
     def payload(self) -> dict[str, object]:
         return {
             "vm_name": self.vm_name_edit.text().strip(),
             "session_id": self.session_id_edit.text().strip() or None,
-            "repo_source": self.repo_source_edit.text().strip() or None,
             "model": self.model_edit.text().strip() or None,
-            "python": self.python_checkbox.isChecked(),
             "dotnet": self.dotnet_checkbox.isChecked(),
             "nuget": self.nuget_checkbox.isChecked(),
             "playwright": self.playwright_checkbox.isChecked(),
@@ -653,13 +623,13 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
         "Optional Azure DevOps team filter list used by the ADO worker when selecting work items."
     ),
     "ado_project_or_solution": (
-        "Project or solution path handed to setup_issue_vm.sh for repo bootstrap and prewarm tasks."
+        "Project or solution path handed to issue VM setup for NuGet prewarm tasks."
     ),
     "ado_prewarm_target": (
         "Optional override target for prewarm steps; falls back to ado_project_or_solution when unset."
     ),
     "ado_repo_source": (
-        "Host repo path or remote URL passed to setup_issue_vm.sh for guest repo mirroring."
+        "Default host repo path or remote URL associated with ADO-created issue records."
     ),
     "create_prs_automatically": (
         "When enabled, post-receive automation opens upstream pull requests for promoted agent branches."
@@ -671,7 +641,7 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
         "Enable or disable VM setup in the legacy ADO worker for this directory while still allowing Azure issue ingestion."
     ),
     "ado_bootstrap_dotnet": (
-        "Enable or disable dotnet/bootstrap steps in setup_issue_vm.sh for ADO worker-created VMs."
+        "Enable or disable dotnet/bootstrap steps for ADO worker-created VMs."
     ),
     "ado_bootstrap_nuget": (
         "Enable or disable NuGet bootstrap setup for ADO worker-created VMs."
@@ -785,7 +755,7 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
         "Optional one-time follow-up prompt injected after the primary post-exec run."
     ),
     "enable_guest_heartbeat": (
-        "When enabled, setup_issue_vm.sh writes guest heartbeat integration settings for Codex sessions."
+        "When enabled, issue VM setup writes guest heartbeat integration settings for Codex sessions."
     ),
     "guest_heartbeat_prompt": (
         "Prompt used by guest heartbeat wake-ups when enable_guest_heartbeat is true."
