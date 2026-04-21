@@ -7,6 +7,22 @@
   --admin-tooltip-text: #f5fbff;
   --admin-tooltip-shadow: 0 20px 44px rgba(13, 28, 37, 0.28);
   --admin-tooltip-accent: rgba(132, 193, 221, 0.28);
+  --admin-login-bg:
+    radial-gradient(circle at 20% 20%, rgba(132, 189, 210, 0.46), transparent 28%),
+    radial-gradient(circle at 78% 18%, rgba(134, 210, 176, 0.3), transparent 24%),
+    radial-gradient(circle at 50% 60%, rgba(196, 172, 118, 0.18), transparent 44%),
+    linear-gradient(180deg, #eef4f6 0%, #e4edef 100%);
+  --admin-login-card-bg: rgba(247, 251, 252, 0.84);
+  --admin-login-card-border: rgba(93, 136, 153, 0.18);
+  --admin-login-card-shadow: 0 24px 60px rgba(51, 84, 98, 0.16);
+  --admin-login-title: #16303d;
+  --admin-login-text: #58707c;
+  --admin-login-noise-opacity: 0.08;
+  --admin-login-aurora-opacity: 0.26;
+  --admin-login-aurora-left: radial-gradient(circle, rgba(94, 182, 221, 0.4), transparent 65%);
+  --admin-login-aurora-right: radial-gradient(circle, rgba(126, 212, 173, 0.3), transparent 62%);
+  --admin-login-logo-opacity: 0.2;
+  --admin-login-logo-filter: drop-shadow(0 28px 56px rgba(102, 142, 159, 0.18));
 }
 
 :root[data-theme="dark"] {
@@ -16,6 +32,22 @@
   --admin-tooltip-text: #e6f2f8;
   --admin-tooltip-shadow: 0 22px 48px rgba(0, 0, 0, 0.46);
   --admin-tooltip-accent: rgba(99, 165, 196, 0.28);
+  --admin-login-bg:
+    radial-gradient(circle at 20% 20%, rgba(18, 92, 125, 0.38), transparent 28%),
+    radial-gradient(circle at 78% 18%, rgba(17, 142, 103, 0.26), transparent 22%),
+    radial-gradient(circle at 50% 60%, rgba(17, 53, 92, 0.22), transparent 45%),
+    linear-gradient(180deg, #08131d 0%, #04080d 100%);
+  --admin-login-card-bg: rgba(14, 25, 32, 0.9);
+  --admin-login-card-border: rgba(124, 170, 190, 0.16);
+  --admin-login-card-shadow: 0 24px 60px rgba(0, 0, 0, 0.32);
+  --admin-login-title: #f1f6fa;
+  --admin-login-text: #a7bac8;
+  --admin-login-noise-opacity: 0.12;
+  --admin-login-aurora-opacity: 0.34;
+  --admin-login-aurora-left: radial-gradient(circle, rgba(77, 195, 255, 0.55), transparent 65%);
+  --admin-login-aurora-right: radial-gradient(circle, rgba(104, 255, 193, 0.36), transparent 62%);
+  --admin-login-logo-opacity: 0.18;
+  --admin-login-logo-filter: drop-shadow(0 30px 64px rgba(0, 0, 0, 0.28));
 }
 
 * {
@@ -193,6 +225,12 @@ body {
   font-size: 0.98rem;
   box-shadow: 0 10px 24px rgba(17, 43, 58, 0.14);
   cursor: pointer;
+  transition:
+    background 220ms ease,
+    color 220ms ease,
+    border-color 220ms ease,
+    box-shadow 220ms ease,
+    opacity 220ms ease;
 }
 
 .admin-shell-button:disabled {
@@ -649,10 +687,119 @@ body {
   display: grid;
   place-items: center;
   padding: 2rem;
+  position: relative;
+  overflow: hidden;
+  background: var(--admin-login-bg);
+  transition: background 420ms ease;
+}
+
+.admin-login-background,
+.admin-login-flow-canvas,
+.admin-login-noise,
+.admin-login-aurora {
+  position: absolute;
+  inset: 0;
+}
+
+.admin-login-background {
+  pointer-events: none;
+}
+
+.admin-login-flow-canvas {
+  opacity: 0.82;
+  transition: opacity 320ms ease;
+}
+
+.admin-login-noise {
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
+  background-size: 80px 80px;
+  mask-image: radial-gradient(circle at center, black 40%, transparent 95%);
+  opacity: var(--admin-login-noise-opacity);
+  transition: opacity 420ms ease;
+}
+
+.admin-login-aurora {
+  filter: blur(90px);
+  opacity: var(--admin-login-aurora-opacity);
+  animation: admin-login-drift 18s ease-in-out infinite alternate;
+  transition: opacity 420ms ease, background 420ms ease;
+}
+
+.admin-login-aurora-left {
+  top: 12%;
+  left: -8%;
+  width: 32rem;
+  height: 32rem;
+  background: var(--admin-login-aurora-left);
+}
+
+.admin-login-aurora-right {
+  right: -10%;
+  bottom: 10%;
+  width: 34rem;
+  height: 34rem;
+  background: var(--admin-login-aurora-right);
+  animation-duration: 22s;
+}
+
+.admin-login-stage {
+  position: relative;
+  z-index: 1;
+  width: min(100%, 52rem);
+  display: grid;
+  justify-items: center;
+}
+
+.admin-login-logo-layer {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  z-index: 0;
+  width: auto;
+  height: min(88vh, 56rem);
+  transform: translate(-50%, -56%);
+  pointer-events: none;
+  display: grid;
+  place-items: center;
+}
+
+.admin-login-logo-hero {
+  display: block;
+  width: auto;
+  height: 100%;
+  max-width: min(92vw, 72rem);
+  opacity: var(--admin-login-logo-opacity);
+  filter: var(--admin-login-logo-filter);
+  transition:
+    opacity 420ms ease,
+    filter 420ms ease;
 }
 
 .admin-login-card {
   width: min(100%, 28rem);
+  border-color: var(--admin-login-card-border);
+  background: var(--admin-login-card-bg);
+  box-shadow: var(--admin-login-card-shadow);
+  color: var(--admin-login-title);
+  transition:
+    background 320ms ease,
+    border-color 320ms ease,
+    box-shadow 320ms ease,
+    color 320ms ease;
+  position: relative;
+  z-index: 1;
+}
+
+.admin-login-card h1 {
+  color: var(--admin-login-title);
+  transition: color 320ms ease;
+}
+
+.admin-login-card p {
+  color: var(--admin-login-text);
+  transition: color 320ms ease;
 }
 
 .admin-login-form,
@@ -660,6 +807,14 @@ body {
   display: grid;
   gap: 0.9rem;
   margin-top: 1.2rem;
+}
+
+.admin-login-form input {
+  transition:
+    background 220ms ease,
+    color 220ms ease,
+    border-color 220ms ease,
+    box-shadow 220ms ease;
 }
 
 .admin-login-action {
@@ -673,6 +828,15 @@ body {
   border-radius: 12px;
   background: #f9dfd8;
   color: #6f2d22;
+}
+
+@keyframes admin-login-drift {
+  from {
+    transform: translate3d(-2%, -1%, 0) scale(1);
+  }
+  to {
+    transform: translate3d(3%, 2%, 0) scale(1.08);
+  }
 }
 
 button,

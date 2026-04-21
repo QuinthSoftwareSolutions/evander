@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useState, type ReactNode } from "react";
+import { FormEvent, useEffect, useRef, useState, type ReactNode } from "react";
 
 import logoDark from "../logo-dark.png";
 import logoLight from "../logo-light.png";
@@ -71,6 +71,41 @@ const TABS: ReadonlyArray<{ key: AdminTab; label: string; shortLabel: string; de
   { key: "workflow", label: "Workflow", shortLabel: "Flow", description: "Workflow editor and runtime activity." },
 ];
 
+const LOGIN_BACKGROUND_NODES = [
+  { x: 0.08, y: 0.2, radius: 3.1, hue: "#7ce8ff", phase: 0.2 },
+  { x: 0.26, y: 0.26, radius: 4.3, hue: "#f4ce7a", phase: 1.1 },
+  { x: 0.43, y: 0.19, radius: 3.4, hue: "#91ffc7", phase: 2.2 },
+  { x: 0.63, y: 0.27, radius: 4.5, hue: "#7ce8ff", phase: 0.8 },
+  { x: 0.82, y: 0.2, radius: 3.3, hue: "#91ffc7", phase: 1.9 },
+  { x: 0.16, y: 0.54, radius: 2.9, hue: "#91ffc7", phase: 0.5 },
+  { x: 0.34, y: 0.47, radius: 4.2, hue: "#7ce8ff", phase: 1.7 },
+  { x: 0.56, y: 0.58, radius: 3.6, hue: "#f4ce7a", phase: 2.8 },
+  { x: 0.76, y: 0.49, radius: 4.4, hue: "#91ffc7", phase: 3.2 },
+  { x: 0.92, y: 0.56, radius: 3.1, hue: "#7ce8ff", phase: 1.4 },
+  { x: 0.12, y: 0.82, radius: 2.8, hue: "#7ce8ff", phase: 2.6 },
+  { x: 0.31, y: 0.73, radius: 4.1, hue: "#91ffc7", phase: 0.9 },
+  { x: 0.5, y: 0.81, radius: 3.5, hue: "#f4ce7a", phase: 1.8 },
+  { x: 0.7, y: 0.72, radius: 4.2, hue: "#7ce8ff", phase: 2.9 },
+  { x: 0.9, y: 0.8, radius: 3.2, hue: "#91ffc7", phase: 0.3 },
+] as const;
+
+const LOGIN_BACKGROUND_EDGES = [
+  { from: 0, to: 1, icons: ["mail", "chat"], speed: 0.00023, phase: 0.03 },
+  { from: 1, to: 2, icons: ["review", "agent"], speed: 0.00022, phase: 0.16 },
+  { from: 2, to: 3, icons: ["code", "script"], speed: 0.00025, phase: 0.29 },
+  { from: 3, to: 4, icons: ["pr", "git"], speed: 0.00024, phase: 0.42 },
+  { from: 5, to: 6, icons: ["chat", "mail"], speed: 0.00021, phase: 0.11 },
+  { from: 6, to: 7, icons: ["agent", "vm"], speed: 0.00023, phase: 0.31 },
+  { from: 7, to: 8, icons: ["code", "review"], speed: 0.00022, phase: 0.53 },
+  { from: 8, to: 9, icons: ["pr", "git"], speed: 0.00024, phase: 0.71 },
+  { from: 10, to: 11, icons: ["mail", "script"], speed: 0.0002, phase: 0.09 },
+  { from: 11, to: 12, icons: ["vm", "agent"], speed: 0.00021, phase: 0.28 },
+  { from: 12, to: 13, icons: ["code", "review"], speed: 0.00023, phase: 0.47 },
+  { from: 13, to: 14, icons: ["git", "pr"], speed: 0.00022, phase: 0.66 },
+  { from: 1, to: 6, icons: ["mail", "chat"], speed: 0.00015, phase: 0.22 },
+  { from: 7, to: 13, icons: ["agent", "vm"], speed: 0.00014, phase: 0.58 },
+] as const;
+
 function currentTab(): AdminTab {
   const raw = window.location.hash.replace(/^#/, "").trim();
   if (TABS.some((tab) => tab.key === raw)) {
@@ -80,6 +115,449 @@ function currentTab(): AdminTab {
 }
 
 type AdminTheme = "light" | "dark";
+
+function LoginBackgroundCanvas({ theme }: { theme: AdminTheme }) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  useEffect(() => {
+    const canvasElement = canvasRef.current;
+    if (!canvasElement) return;
+    const contextValue = canvasElement.getContext("2d");
+    if (!contextValue) return;
+    const canvas = canvasElement;
+    const context = contextValue;
+    const palette =
+      theme === "dark"
+        ? {
+            edge: "rgba(140, 205, 236, 0.14)",
+            rippleCore: "rgba(124, 232, 255, 0.85)",
+            rippleMid: "rgba(145, 255, 199, 0.3)",
+            cursorCore: 0.08,
+            cursorMid: 0.04,
+            bubbleFill: "rgba(7, 18, 28, 0.78)",
+            bubbleInset: "rgba(255, 255, 255, 0.04)",
+          }
+        : {
+            edge: "rgba(48, 109, 142, 0.28)",
+            rippleCore: "rgba(37, 125, 175, 0.92)",
+            rippleMid: "rgba(62, 171, 130, 0.46)",
+            cursorCore: 0.15,
+            cursorMid: 0.08,
+            bubbleFill: "rgba(12, 28, 40, 0.86)",
+            bubbleInset: "rgba(255, 255, 255, 0.06)",
+          };
+
+    let frame = 0;
+    let iconSerial = 0;
+    const pointer = {
+      x: -10_000,
+      y: -10_000,
+      targetX: -10_000,
+      targetY: -10_000,
+      renderedX: -10_000,
+      renderedY: -10_000,
+      active: false,
+      targetInfluence: 0,
+      influence: 0,
+      lastMoveAt: 0,
+      lastFrameAt: 0,
+    };
+    const iconBursts: Array<{
+      x: number;
+      y: number;
+      glyph: string;
+      tint: string;
+      bornAt: number;
+      lifetime: number;
+      offset: number;
+    }> = [];
+    const iconCooldowns = new Map<number, number>();
+
+    function drawRoundedRect(x: number, y: number, width: number, height: number, radius: number) {
+      const r = Math.min(radius, width / 2, height / 2);
+      context.beginPath();
+      context.moveTo(x + r, y);
+      context.lineTo(x + width - r, y);
+      context.quadraticCurveTo(x + width, y, x + width, y + r);
+      context.lineTo(x + width, y + height - r);
+      context.quadraticCurveTo(x + width, y + height, x + width - r, y + height);
+      context.lineTo(x + r, y + height);
+      context.quadraticCurveTo(x, y + height, x, y + height - r);
+      context.lineTo(x, y + r);
+      context.quadraticCurveTo(x, y, x + r, y);
+      context.closePath();
+    }
+
+    function iconForType(type: string): { glyph: string; tint: string } {
+      if (type === "mail") return { glyph: "mail", tint: "#7ce8ff" };
+      if (type === "chat") return { glyph: "chat", tint: "#91ffc7" };
+      if (type === "git") return { glyph: "branch", tint: "#f4ce7a" };
+      if (type === "pr") return { glyph: "merge", tint: "#7ce8ff" };
+      if (type === "review") return { glyph: "check", tint: "#91ffc7" };
+      if (type === "vm") return { glyph: "screen", tint: "#f4ce7a" };
+      if (type === "code") return { glyph: "code", tint: "#7ce8ff" };
+      if (type === "script") return { glyph: "terminal", tint: "#91ffc7" };
+      if (type === "agent") return { glyph: "spark", tint: "#f4ce7a" };
+      return { glyph: "spark", tint: "#7ce8ff" };
+    }
+
+    function drawGlyph(glyph: string, centerX: number, centerY: number, size: number, tint: string) {
+      const s = size;
+      context.save();
+      context.strokeStyle = tint;
+      context.fillStyle = tint;
+      context.lineWidth = 1.4;
+      context.lineCap = "round";
+      context.lineJoin = "round";
+
+      if (glyph === "mail") {
+        drawRoundedRect(centerX - s * 0.7, centerY - s * 0.45, s * 1.4, s * 0.9, 3);
+        context.stroke();
+        context.beginPath();
+        context.moveTo(centerX - s * 0.68, centerY - s * 0.38);
+        context.lineTo(centerX, centerY + s * 0.02);
+        context.lineTo(centerX + s * 0.68, centerY - s * 0.38);
+        context.stroke();
+      } else if (glyph === "chat") {
+        drawRoundedRect(centerX - s * 0.68, centerY - s * 0.48, s * 1.28, s * 0.9, 4);
+        context.stroke();
+        context.beginPath();
+        context.moveTo(centerX - s * 0.18, centerY + s * 0.42);
+        context.lineTo(centerX - s * 0.02, centerY + s * 0.68);
+        context.lineTo(centerX + s * 0.12, centerY + s * 0.38);
+        context.stroke();
+      } else if (glyph === "branch") {
+        context.beginPath();
+        context.arc(centerX - s * 0.46, centerY - s * 0.46, s * 0.18, 0, Math.PI * 2);
+        context.arc(centerX + s * 0.46, centerY - s * 0.12, s * 0.18, 0, Math.PI * 2);
+        context.arc(centerX - s * 0.12, centerY + s * 0.46, s * 0.18, 0, Math.PI * 2);
+        context.fill();
+        context.beginPath();
+        context.moveTo(centerX - s * 0.28, centerY - s * 0.38);
+        context.lineTo(centerX + s * 0.28, centerY - s * 0.16);
+        context.lineTo(centerX - s * 0.02, centerY + s * 0.28);
+        context.stroke();
+      } else if (glyph === "merge") {
+        context.beginPath();
+        context.moveTo(centerX - s * 0.5, centerY - s * 0.4);
+        context.lineTo(centerX - s * 0.12, centerY - s * 0.4);
+        context.lineTo(centerX + s * 0.18, centerY - s * 0.06);
+        context.lineTo(centerX + s * 0.5, centerY - s * 0.06);
+        context.moveTo(centerX - s * 0.5, centerY + s * 0.4);
+        context.lineTo(centerX - s * 0.12, centerY + s * 0.4);
+        context.lineTo(centerX + s * 0.18, centerY + s * 0.06);
+        context.lineTo(centerX + s * 0.5, centerY + s * 0.06);
+        context.stroke();
+      } else if (glyph === "check") {
+        context.beginPath();
+        context.moveTo(centerX - s * 0.45, centerY + s * 0.02);
+        context.lineTo(centerX - s * 0.1, centerY + s * 0.34);
+        context.lineTo(centerX + s * 0.5, centerY - s * 0.34);
+        context.stroke();
+      } else if (glyph === "screen") {
+        drawRoundedRect(centerX - s * 0.72, centerY - s * 0.52, s * 1.44, s * 0.94, 3);
+        context.stroke();
+        context.beginPath();
+        context.moveTo(centerX - s * 0.18, centerY + s * 0.56);
+        context.lineTo(centerX + s * 0.18, centerY + s * 0.56);
+        context.moveTo(centerX, centerY + s * 0.42);
+        context.lineTo(centerX, centerY + s * 0.56);
+        context.stroke();
+      } else if (glyph === "code") {
+        context.beginPath();
+        context.moveTo(centerX - s * 0.46, centerY);
+        context.lineTo(centerX - s * 0.12, centerY - s * 0.3);
+        context.moveTo(centerX - s * 0.46, centerY);
+        context.lineTo(centerX - s * 0.12, centerY + s * 0.3);
+        context.moveTo(centerX + s * 0.46, centerY);
+        context.lineTo(centerX + s * 0.12, centerY - s * 0.3);
+        context.moveTo(centerX + s * 0.46, centerY);
+        context.lineTo(centerX + s * 0.12, centerY + s * 0.3);
+        context.moveTo(centerX + s * 0.04, centerY - s * 0.38);
+        context.lineTo(centerX - s * 0.04, centerY + s * 0.38);
+        context.stroke();
+      } else if (glyph === "terminal") {
+        drawRoundedRect(centerX - s * 0.72, centerY - s * 0.5, s * 1.44, s * 1, 3);
+        context.stroke();
+        context.beginPath();
+        context.moveTo(centerX - s * 0.42, centerY - s * 0.1);
+        context.lineTo(centerX - s * 0.18, centerY + s * 0.12);
+        context.lineTo(centerX - s * 0.42, centerY + s * 0.34);
+        context.moveTo(centerX - s * 0.02, centerY + s * 0.34);
+        context.lineTo(centerX + s * 0.34, centerY + s * 0.34);
+        context.stroke();
+      } else {
+        context.beginPath();
+        context.arc(centerX, centerY, s * 0.16, 0, Math.PI * 2);
+        context.fill();
+        context.beginPath();
+        context.moveTo(centerX, centerY - s * 0.52);
+        context.lineTo(centerX, centerY + s * 0.52);
+        context.moveTo(centerX - s * 0.52, centerY);
+        context.lineTo(centerX + s * 0.52, centerY);
+        context.stroke();
+      }
+
+      context.restore();
+    }
+
+    function drawIconBubble(x: number, y: number, glyph: string, tint: string, opacity: number, offset: number) {
+      const drawX = x + offset - 13;
+      const drawY = y - 33;
+
+      context.save();
+      context.globalAlpha = opacity;
+      context.shadowBlur = 14;
+      context.shadowColor = tint;
+      context.fillStyle = palette.bubbleFill;
+      context.strokeStyle = tint;
+      context.lineWidth = 1.1;
+      drawRoundedRect(drawX, drawY, 26, 26, 8);
+      context.fill();
+      context.stroke();
+      context.shadowBlur = 0;
+      context.fillStyle = palette.bubbleInset;
+      drawRoundedRect(drawX + 1.2, drawY + 1.2, 23.6, 23.6, 7);
+      context.fill();
+      drawGlyph(glyph, drawX + 13, drawY + 13, 9.5, tint);
+      context.restore();
+    }
+
+    function spawnIconBurst(x: number, y: number, type: string, time: number) {
+      const { glyph, tint } = iconForType(type);
+      const offset = (iconSerial % 2 === 0 ? -1 : 1) * (12 + (iconSerial % 3) * 6);
+      iconSerial += 1;
+      iconBursts.push({
+        x,
+        y,
+        glyph,
+        tint,
+        bornAt: time,
+        lifetime: 1500,
+        offset,
+      });
+    }
+
+    function drawIconBursts(time: number) {
+      for (let index = iconBursts.length - 1; index >= 0; index -= 1) {
+        const burst = iconBursts[index];
+        const age = time - burst.bornAt;
+        if (age >= burst.lifetime) {
+          iconBursts.splice(index, 1);
+          continue;
+        }
+        const progress = age / burst.lifetime;
+        const rise = progress * 20;
+        const opacity = (1 - progress) * 0.78;
+        drawIconBubble(burst.x, burst.y - rise, burst.glyph, burst.tint, opacity, burst.offset);
+      }
+    }
+
+    function resize() {
+      const dpr = window.devicePixelRatio || 1;
+      const width = window.innerWidth;
+      const height = window.innerHeight;
+      canvas.width = Math.floor(width * dpr);
+      canvas.height = Math.floor(height * dpr);
+      canvas.style.width = `${width}px`;
+      canvas.style.height = `${height}px`;
+      context.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
+
+    function cursorInfluence(x: number, y: number, radius: number) {
+      if (pointer.influence <= 0.001) return { strength: 0, offsetX: 0, offsetY: 0 };
+      const dx = x - pointer.renderedX;
+      const dy = y - pointer.renderedY;
+      const distance = Math.hypot(dx, dy) || 1;
+      if (distance >= radius) return { strength: 0, offsetX: 0, offsetY: 0 };
+      const strength = ((radius - distance) / radius) ** 2 * pointer.influence;
+      const push = strength * 18;
+      return {
+        strength,
+        offsetX: (dx / distance) * push,
+        offsetY: (dy / distance) * push,
+      };
+    }
+
+    function interactiveNodePosition(node: (typeof LOGIN_BACKGROUND_NODES)[number], width: number, height: number) {
+      const baseX = node.x * width;
+      const baseY = node.y * height;
+      const influence = cursorInfluence(baseX, baseY, 180);
+      return {
+        x: baseX + influence.offsetX,
+        y: baseY + influence.offsetY,
+        strength: influence.strength,
+      };
+    }
+
+    function drawNode(x: number, y: number, radius: number, color: string, glow: number) {
+      context.save();
+      context.shadowBlur = 18 + glow * 10;
+      context.shadowColor = color;
+      context.fillStyle = color;
+      context.globalAlpha = 0.95;
+      context.beginPath();
+      context.arc(x, y, radius + glow, 0, Math.PI * 2);
+      context.fill();
+      context.globalAlpha = 0.16;
+      context.beginPath();
+      context.arc(x, y, radius * 4 + glow * 6, 0, Math.PI * 2);
+      context.fill();
+      context.restore();
+    }
+
+    function draw(time: number) {
+      const width = window.innerWidth;
+      const height = window.innerHeight;
+      context.clearRect(0, 0, width, height);
+      iconSerial = 0;
+      const deltaMs = pointer.lastFrameAt > 0 ? Math.min(48, time - pointer.lastFrameAt) : 16;
+      pointer.lastFrameAt = time;
+      const settleDecay = Math.exp(-deltaMs / 420);
+      pointer.targetInfluence *= settleDecay;
+      const followFactor = 1 - Math.exp(-deltaMs / 140);
+      pointer.renderedX += (pointer.targetX - pointer.renderedX) * followFactor;
+      pointer.renderedY += (pointer.targetY - pointer.renderedY) * followFactor;
+      const influenceFactor = 1 - Math.exp(-deltaMs / 220);
+      pointer.influence += (pointer.targetInfluence - pointer.influence) * influenceFactor;
+      if (pointer.influence < 0.003) {
+        pointer.influence = 0;
+      }
+      const positionedNodes = LOGIN_BACKGROUND_NODES.map((node) => interactiveNodePosition(node, width, height));
+
+      LOGIN_BACKGROUND_EDGES.forEach((edge, edgeIndex) => {
+        const start = positionedNodes[edge.from];
+        const end = positionedNodes[edge.to];
+        const startX = start.x;
+        const startY = start.y;
+        const endX = end.x;
+        const endY = end.y;
+        const midX = (startX + endX) / 2;
+        const midY = (startY + endY) / 2;
+        const edgeInfluence = cursorInfluence(midX, midY, 220);
+        const normalX = endY - startY;
+        const normalY = -(endX - startX);
+        const normalLength = Math.hypot(normalX, normalY) || 1;
+        const curveAmount = edgeInfluence.strength * 24;
+        const controlX = midX + (normalX / normalLength) * curveAmount;
+        const controlY = midY + (normalY / normalLength) * curveAmount;
+
+        context.save();
+        context.strokeStyle =
+          theme === "dark"
+            ? `rgba(140, 205, 236, ${0.14 + edgeInfluence.strength * 0.22})`
+            : `rgba(48, 109, 142, ${0.28 + edgeInfluence.strength * 0.26})`;
+        context.lineWidth = (theme === "dark" ? 1.2 : 1.45) + edgeInfluence.strength * 1.15;
+        context.beginPath();
+        context.moveTo(startX, startY);
+        context.quadraticCurveTo(controlX, controlY, endX, endY);
+        context.stroke();
+
+        const progress = ((time * edge.speed + edge.phase) % 1 + 1) % 1;
+        const inverse = 1 - progress;
+        const pulseX = inverse * inverse * startX + 2 * inverse * progress * controlX + progress * progress * endX;
+        const pulseY = inverse * inverse * startY + 2 * inverse * progress * controlY + progress * progress * endY;
+        const gradient = context.createRadialGradient(pulseX, pulseY, 0, pulseX, pulseY, 18);
+        gradient.addColorStop(0, palette.rippleCore);
+        gradient.addColorStop(0.5, palette.rippleMid);
+        gradient.addColorStop(1, theme === "dark" ? "rgba(124, 232, 255, 0)" : "rgba(37, 125, 175, 0)");
+        context.fillStyle = gradient;
+        context.beginPath();
+        context.arc(pulseX, pulseY, 18, 0, Math.PI * 2);
+        context.fill();
+        context.restore();
+        const distanceToEnd = Math.hypot(endX - pulseX, endY - pulseY);
+        const lastBurstAt = iconCooldowns.get(edgeIndex) ?? -Infinity;
+        if (distanceToEnd < 22 && time - lastBurstAt > 850) {
+          const iconType = edge.icons[Math.floor((time * 0.001 + edge.phase) % edge.icons.length)];
+          spawnIconBurst(endX, endY, iconType, time);
+          iconCooldowns.set(edgeIndex, time);
+        }
+      });
+
+      drawIconBursts(time);
+
+      LOGIN_BACKGROUND_NODES.forEach((node, index) => {
+        const position = positionedNodes[index];
+        const glow = 0.8 + Math.sin(time * 0.0012 + node.phase) * 0.4 + position.strength * 0.65;
+        const color =
+          theme === "dark"
+            ? node.hue
+            : node.hue === "#7ce8ff"
+            ? "#236f9f"
+            : node.hue === "#91ffc7"
+            ? "#2e8d72"
+            : "#b27b22";
+        drawNode(position.x, position.y, node.radius, color, glow);
+      });
+
+      if (pointer.influence > 0) {
+        const rippleRadius = 100 + pointer.influence * 40;
+        const ripple = context.createRadialGradient(pointer.renderedX, pointer.renderedY, 0, pointer.renderedX, pointer.renderedY, rippleRadius);
+        ripple.addColorStop(
+          0,
+          theme === "dark"
+            ? `rgba(124, 232, 255, ${palette.cursorCore * pointer.influence})`
+            : `rgba(37, 125, 175, ${palette.cursorCore * pointer.influence})`,
+        );
+        ripple.addColorStop(
+          0.4,
+          theme === "dark"
+            ? `rgba(124, 232, 255, ${palette.cursorMid * pointer.influence})`
+            : `rgba(62, 171, 130, ${palette.cursorMid * pointer.influence})`,
+        );
+        ripple.addColorStop(1, theme === "dark" ? "rgba(124, 232, 255, 0)" : "rgba(37, 125, 175, 0)");
+        context.fillStyle = ripple;
+        context.beginPath();
+        context.arc(pointer.renderedX, pointer.renderedY, rippleRadius, 0, Math.PI * 2);
+        context.fill();
+      }
+
+      frame = window.requestAnimationFrame(draw);
+    }
+
+    function handlePointerMove(event: PointerEvent) {
+      const now = performance.now();
+      const previousX = pointer.targetX;
+      const previousY = pointer.targetY;
+      if (pointer.lastMoveAt > 0) {
+        const elapsed = Math.max(8, now - pointer.lastMoveAt);
+        const distance = Math.hypot(event.clientX - previousX, event.clientY - previousY);
+        const instantaneousVelocity = distance / elapsed;
+        const velocityInfluence = Math.min(1, instantaneousVelocity / 1.15);
+        pointer.targetInfluence = Math.max(pointer.targetInfluence * 0.72, velocityInfluence);
+      } else {
+        pointer.renderedX = event.clientX;
+        pointer.renderedY = event.clientY;
+      }
+      pointer.x = event.clientX;
+      pointer.y = event.clientY;
+      pointer.targetX = event.clientX;
+      pointer.targetY = event.clientY;
+      pointer.lastMoveAt = now;
+      pointer.active = true;
+    }
+
+    function handlePointerLeave() {
+      pointer.active = false;
+      pointer.targetInfluence *= 0.92;
+    }
+
+    resize();
+    frame = window.requestAnimationFrame(draw);
+    window.addEventListener("resize", resize);
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerleave", handlePointerLeave);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.removeEventListener("resize", resize);
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerleave", handlePointerLeave);
+    };
+  }, [theme]);
+
+  return <canvas ref={canvasRef} className="admin-login-flow-canvas" aria-hidden="true" />;
+}
 
 function getInitialTheme(): AdminTheme {
   if (typeof window === "undefined") return "light";
@@ -496,13 +974,26 @@ function LoginScreen({
 
   return (
     <div className="admin-login-shell">
+      <div className="admin-login-background" aria-hidden="true">
+        <LoginBackgroundCanvas theme={theme} />
+        <div className="admin-login-noise" />
+        <div className="admin-login-aurora admin-login-aurora-left" />
+        <div className="admin-login-aurora admin-login-aurora-right" />
+      </div>
+      <div className="admin-login-stage">
+      <div className="admin-login-logo-layer" aria-hidden="true">
+        <img
+          className="admin-login-logo-hero"
+          src={theme === "dark" ? logoDark : logoLight}
+          alt=""
+        />
+      </div>
       <div className="admin-login-toolbar">
         <button type="button" className="admin-shell-button admin-shell-button-muted" onClick={onToggleTheme}>
           {theme === "dark" ? "Light mode" : "Dark mode"}
         </button>
       </div>
       <div className="admin-login-card">
-        <div className="eyebrow">Agent Sandbox</div>
         <h1>Admin Sign In</h1>
         <p>
           {session.auth_mode === "azure_sso"
@@ -538,6 +1029,7 @@ function LoginScreen({
             </button>
           </div>
         ) : null}
+      </div>
       </div>
     </div>
   );
