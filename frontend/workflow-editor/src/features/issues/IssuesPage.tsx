@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { fetchJson, formatTimestamp } from "../admin/api";
 import { useAdminUi } from "../admin/AdminContext";
-import { type IssueCreateResponse, type IssueDetail, type IssueListResponse, type IssueRecord, type IssueYamlResponse, type VmActionResponse } from "../admin/types";
+import { type IssueCreateResponse, type IssueDetail, type IssueListResponse, type IssueRecord, type VmActionResponse } from "../admin/types";
 
 type IssueMode = "manual" | "import";
 
@@ -53,26 +53,95 @@ const EMPTY_FORM: IssueFormState = {
 const REFRESH_MS = 10000;
 const ISSUE_SELECTION_STORAGE_KEY = "admin-web:issues:selected-issue";
 
+type IssueMetadataEntry = {
+  label: string;
+  items: string[] | null;
+  value: string | null;
+};
+
 function issueSummaryText(issue: IssueDetail): string {
+  const summaryText = issueBodyText(issue);
   const lines = [
     `Issue: ${issue.issue_number}`,
     `Title: ${issue.title}`,
     `State: ${issue.state ?? ""}`,
+    `Source: ${issueSourceLabel(issue.source_type)}`,
     `Directory: ${issue.directory_path ?? "root"}`,
-    `Repo source: ${issue.repo_source ?? ""}`,
-    `YAML: ${issue.yaml_path ?? ""}`,
+    `Repo source: ${issue.repo_source ?? "None"}`,
   ];
   if (issue.reason) {
     lines.push(`Reason: ${issue.reason}`);
   }
-  const description = String(issue.description ?? issue.body ?? "").trim();
-  if (description) {
-    lines.push("", "Description:", description);
-  }
-  if (issue.metadata && Object.keys(issue.metadata).length > 0) {
-    lines.push("", "Metadata:", JSON.stringify(issue.metadata, null, 2));
+  if (summaryText) {
+    lines.push("", summaryText);
   }
   return lines.join("\n");
+}
+
+function htmlToPlainText(value: string | null | undefined): string {
+  const raw = String(value ?? "").trim();
+  if (!raw) return "";
+  if (typeof document === "undefined") {
+    return raw.replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ").replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, "&").replace(/\s+/g, " ").trim();
+  }
+  const element = document.createElement("div");
+  element.innerHTML = raw;
+  return (element.textContent || element.innerText || "")
+    .replace(/\u00a0/g, " ")
+    .replace(/\s+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function issueBodyText(issue: IssueDetail): string {
+  return htmlToPlainText(issue.description ?? issue.body ?? "");
+}
+
+function issueSourceLabel(sourceType: string | null | undefined): string {
+  const normalized = String(sourceType ?? "").trim();
+  if (normalized === "local_manual") return "Local issue";
+  if (normalized === "remote_proxy") return "Remote issue";
+  if (normalized === "local") return "Local issue";
+  if (normalized === "proxy") return "Remote issue";
+  return normalized || "Unknown";
+}
+
+function metadataValueLabel(value: unknown): string {
+  if (value == null) return "";
+  if (typeof value === "string") return value.trim();
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (Array.isArray(value)) {
+    return value.map((item) => metadataValueLabel(item)).filter(Boolean).join(", ");
+  }
+  if (typeof value === "object") {
+    return Object.entries(value as Record<string, unknown>)
+      .map(([key, item]) => `${key}: ${metadataValueLabel(item)}`)
+      .filter((item) => !item.endsWith(": "))
+      .join(" · ");
+  }
+  return String(value);
+}
+
+function metadataLabel(key: string): string {
+  return key
+    .replace(/_/g, " ")
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function issueMetadataDisplayEntries(issue: IssueDetail): IssueMetadataEntry[] {
+  return Object.entries(issue.metadata ?? {})
+    .filter(([key]) => !["proxy_cache", "remote"].includes(key))
+    .map(([key, rawValue]) => {
+      const label = metadataLabel(key);
+      if (Array.isArray(rawValue)) {
+        const items = rawValue.map((item) => metadataValueLabel(item).trim()).filter((item) => item.length > 0);
+        return { label, items: items.length > 0 ? items : null, value: null };
+      }
+      const value = metadataValueLabel(rawValue).trim();
+      return { label, items: null, value: value.length > 0 ? value : null };
+    })
+    .filter((entry) => (entry.items && entry.items.length > 0) || entry.value);
 }
 
 function issueFormFromDetail(issue: IssueDetail): IssueFormState {
@@ -97,6 +166,17 @@ function vmOptionsPayload(options: VmOptionsState) {
     mssql: options.mssql,
     mssql_init_root: options.mssql ? options.mssqlInitRoot.trim() || null : null,
   };
+}
+
+function issueStateClass(state: string | null | undefined): string {
+  const normalized = String(state ?? "New").trim().toLowerCase();
+  if (normalized.includes("progress") || normalized === "approved") {
+    return "running";
+  }
+  if (normalized === "closed" || normalized === "completed") {
+    return "failed";
+  }
+  return "idle";
 }
 
 function VmOptionsEditor({
@@ -174,11 +254,9 @@ function VmOptionsEditor({
 export function IssuesPage() {
   const { privilegedUnlocked, selectedDirectoryPath } = useAdminUi();
   const [stateFilter, setStateFilter] = useState("active");
-  const [directOnly, setDirectOnly] = useState(true);
   const [items, setItems] = useState<IssueRecord[]>([]);
   const [selectedIssueId, setSelectedIssueId] = useState<string>("");
   const [selectedIssue, setSelectedIssue] = useState<IssueDetail | null>(null);
-  const [yamlPayload, setYamlPayload] = useState<IssueYamlResponse | null>(null);
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState(false);
   const [creatingVm, setCreatingVm] = useState(false);
@@ -211,13 +289,23 @@ export function IssuesPage() {
     () => items.find((item) => item.issue_id === selectedIssueId) ?? null,
     [items, selectedIssueId],
   );
+  const sortedItems = useMemo(
+    () =>
+      [...items].sort((left, right) =>
+        left.issue_number.localeCompare(right.issue_number, undefined, {
+          numeric: true,
+          sensitivity: "base",
+        }),
+      ),
+    [items],
+  );
   const mutationLocked = !privilegedUnlocked;
 
   const refreshList = useCallback(async () => {
     const query = new URLSearchParams({
       state_filter: stateFilter,
       directory_path: selectedDirectoryPath,
-      direct_only: String(directOnly),
+      direct_only: "true",
     });
     const payload = await fetchJson<IssueListResponse>(`/api/admin/issues?${query.toString()}`);
     setItems(payload.items);
@@ -227,7 +315,7 @@ export function IssuesPage() {
       }
       return payload.items[0]?.issue_id ?? "";
     });
-  }, [stateFilter, selectedDirectoryPath, directOnly]);
+  }, [stateFilter, selectedDirectoryPath]);
 
   useEffect(() => {
     let cancelled = false;
@@ -254,51 +342,29 @@ export function IssuesPage() {
   useEffect(() => {
     if (!selectedIssueId) {
       setSelectedIssue(null);
-      setYamlPayload(null);
       return;
     }
     let cancelled = false;
-    setYamlPayload(null);
     fetchJson<IssueDetail>(`/api/admin/issues/${encodeURIComponent(selectedIssueId)}`)
-      .then(async (issuePayload) => {
+      .then((issuePayload) => {
         if (cancelled) return;
         setSelectedIssue(issuePayload);
         if (!editing) {
           setForm(issueFormFromDetail(issuePayload));
         }
-        try {
-          const yaml = await fetchJson<IssueYamlResponse>(`/api/admin/issues/${encodeURIComponent(selectedIssueId)}/yaml`);
-          if (!cancelled) {
-            setYamlPayload(yaml);
-            setError(null);
-          }
-        } catch (reason) {
-          if (!cancelled) {
-            setYamlPayload(null);
-            setError(null);
-          }
+        if (!cancelled) {
+          setError(null);
         }
       })
       .catch((reason) => {
         if (cancelled) return;
         setSelectedIssue(null);
-        setYamlPayload(null);
         setError(reason instanceof Error ? reason.message : String(reason));
       });
     return () => {
       cancelled = true;
     };
   }, [selectedIssueId, editing]);
-
-  async function handleManualRefresh() {
-    try {
-      await refreshList();
-      setStatus("Refreshed issue list.");
-      setError(null);
-    } catch (reason: unknown) {
-      setError(reason instanceof Error ? reason.message : String(reason));
-    }
-  }
 
   async function handleCreateIssue() {
     if (form.mode === "manual" && !form.title.trim()) {
@@ -381,7 +447,6 @@ export function IssuesPage() {
       setEditing(false);
       setCreatingVm(false);
       setSelectedIssue(null);
-      setYamlPayload(null);
       await refreshList();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
@@ -414,20 +479,22 @@ export function IssuesPage() {
   }
 
   const showingForm = creating || editing;
-  const issueCountLabel = `${items.length} ${items.length === 1 ? "issue" : "issues"}`;
   const activeIssueState = selectedIssue?.state ?? selectedIssueRecord?.state ?? "New";
+  const selectedIssueBodyText = useMemo(() => (selectedIssue ? issueBodyText(selectedIssue) : ""), [selectedIssue]);
+  const selectedIssueMetadata = useMemo(() => (selectedIssue ? issueMetadataDisplayEntries(selectedIssue) : []), [selectedIssue]);
 
   return (
-    <div className="feature-page">
+    <div className="feature-page issues-page">
       <section className="feature-sidebar">
         <div className="feature-sidebar-header">
           <div>
             <div className="eyebrow">Local issues</div>
             <h1>Issues</h1>
           </div>
-          <div className="inline-actions">
+          <div className="inline-actions compact-actions">
             <button
               type="button"
+              className={creating ? "" : "primary"}
               onClick={() => {
                 setCreating((current) => !current);
                 setEditing(false);
@@ -439,15 +506,12 @@ export function IssuesPage() {
             >
               {creating ? "Cancel" : "New issue"}
             </button>
-            <button type="button" onClick={() => void handleManualRefresh()}>
-              Refresh
-            </button>
           </div>
         </div>
         {mutationLocked ? (
           <div className="callout warning-callout">Unlock privileged operations to create, edit, delete, or launch work from issues.</div>
         ) : null}
-        <div className="toolbar-grid">
+        <div className="toolbar-grid issues-filter-grid">
           <label className="field-stack">
             <span>State</span>
             <select value={stateFilter} onChange={(event) => setStateFilter(event.target.value)}>
@@ -460,35 +524,13 @@ export function IssuesPage() {
               ))}
             </select>
           </label>
-          <div className="panel section-panel">
-            <div className="feature-list-title-row">
-              <strong>Directory scope</strong>
-              <span className="panel-meta">{selectedDirectoryPath}</span>
-            </div>
-            <div className="feature-list-meta">{directOnly ? "Direct matches only" : "Including descendants"}</div>
-          </div>
-          <label className="checkbox-row">
-            <input type="checkbox" checked={directOnly} onChange={(event) => setDirectOnly(event.target.checked)} />
-            <span>Direct only</span>
-          </label>
         </div>
-        <div className="panel section-panel">
-          <div className="feature-list-title-row">
-            <strong>Queue</strong>
-            <span className="panel-meta">{issueCountLabel}</span>
-          </div>
-          <div className="feature-list-meta">Directory scope: {selectedDirectoryPath}</div>
-          <div className="feature-list-meta">
-            View: {stateFilter === "active" ? "Active issues" : stateFilter}
-            {directOnly ? " · direct only" : " · including descendants"}
-          </div>
-        </div>
-        <div className="feature-list">
-          {items.map((item) => (
+        <div className="feature-list issue-list">
+          {sortedItems.map((item) => (
             <button
               key={item.issue_id}
               type="button"
-              className={`feature-list-item${item.issue_id === selectedIssueId ? " selected" : ""}`}
+              className={`feature-list-item issue-list-item${item.issue_id === selectedIssueId ? " selected" : ""}`}
               onClick={() => {
                 setSelectedIssueId(item.issue_id);
                 setCreating(false);
@@ -497,15 +539,15 @@ export function IssuesPage() {
                 setValidation(null);
               }}
             >
-              <div className="feature-list-title-row">
+              <div className="feature-list-title-row issue-list-item-row">
                 <strong>{item.issue_number}</strong>
-                <span>{item.state ?? "New"}</span>
+                <span className={`status-pill issue-state-pill state-${issueStateClass(item.state)}`}>
+                  {item.state ?? "New"}
+                </span>
               </div>
-              <div>{item.title}</div>
-              <div className="feature-list-meta">{item.repo_source ?? "No repo source"}</div>
             </button>
           ))}
-          {items.length === 0 ? <div className="empty-state">No issues found for the selected directory scope.</div> : null}
+          {items.length === 0 ? <div className="empty-state">No issues found for {selectedDirectoryPath}.</div> : null}
         </div>
       </section>
 
@@ -692,7 +734,7 @@ export function IssuesPage() {
             </div>
           </article>
         ) : selectedIssue ? (
-          <div className="feature-grid">
+          <div className="feature-grid issues-detail-grid">
             <div className="panel detail-panel">
               <div className="panel-heading">
                 <div>
@@ -704,16 +746,11 @@ export function IssuesPage() {
               <div className="detail-stack">
                 <div className="detail-grid">
                   <div><span>Issue</span><strong>{selectedIssue.issue_number}</strong></div>
-                  <div><span>Source type</span><strong>{selectedIssue.source_type ?? "unknown"}</strong></div>
+                  <div><span>Source</span><strong>{issueSourceLabel(selectedIssue.source_type)}</strong></div>
                   <div><span>Updated</span><strong>{formatTimestamp(selectedIssue.updated_at)}</strong></div>
-                  <div><span>Repo source</span><strong>{selectedIssue.repo_source ?? "None"}</strong></div>
-                  <div><span>Directory</span><strong>{selectedIssue.directory_path ?? "root"}</strong></div>
-                  <div><span>YAML path</span><strong>{selectedIssue.yaml_path ?? "No file"}</strong></div>
-                </div>
-
-                <div className="detail-block">
-                  <div className="section-label">Summary</div>
-                  <pre>{issueSummaryText(selectedIssue)}</pre>
+                  <div><span>Repo source</span><strong className="issue-meta-value issue-path-value" title={selectedIssue.repo_source ?? "None"}>{selectedIssue.repo_source ?? "None"}</strong></div>
+                  <div><span>Directory</span><strong className="issue-meta-value issue-path-value" title={selectedIssue.directory_path ?? "root"}>{selectedIssue.directory_path ?? "root"}</strong></div>
+                  <div><span>YAML path</span><strong className="issue-meta-value issue-path-value" title={selectedIssue.yaml_path ?? "No file"}>{selectedIssue.yaml_path ?? "No file"}</strong></div>
                 </div>
 
                 {creatingVm ? (
@@ -730,68 +767,34 @@ export function IssuesPage() {
               </div>
             </div>
 
-            <div className="detail-stack">
-              <div className="detail-block">
-                <div className="detail-block-heading">
-                  <div>
-                    <div className="section-label">YAML</div>
-                    <strong>{yamlPayload?.issue_number ?? selectedIssue.issue_number}</strong>
-                  </div>
-                  <span className="panel-meta">{yamlPayload?.path ?? "No file"}</span>
-                </div>
-                <pre>{yamlPayload?.yaml_text ?? "No YAML available."}</pre>
-              </div>
-
-              <div className="detail-block">
-                <div className="section-label">Body</div>
-                <pre>{selectedIssue.body?.trim() ? selectedIssue.body : "No body content."}</pre>
-              </div>
-            </div>
-
-            <div className="panel section-panel">
+            <div className="panel section-panel issue-summary-panel">
               <div className="panel-heading">
                 <div>
-                  <div className="section-label">Actions</div>
-                  <h2>Issue operations</h2>
+                  <div className="section-label">Summary</div>
+                  <h2>Issue summary</h2>
                 </div>
-                <span>{activeIssueState}</span>
               </div>
-              <div className="feature-list-meta">
-                Use edit for metadata changes, create VM to launch work from this issue, or delete to remove the local issue record.
-              </div>
-              <div className="feature-toolbar-actions">
-                {selectedIssue.can_create_vm ? (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setCreatingVm((current) => !current);
-                      setVmOptions({ ...EMPTY_VM_OPTIONS });
-                      setEditing(false);
-                      setValidation(null);
-                    }}
-                    disabled={mutationLocked}
-                  >
-                    {creatingVm ? "Cancel VM" : "Create VM"}
-                  </button>
-                ) : null}
-                {selectedIssue.can_edit ? (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setEditing(true);
-                      setValidation(null);
-                    }}
-                    disabled={mutationLocked}
-                  >
-                    Edit issue
-                  </button>
-                ) : null}
-                {selectedIssue.can_delete ? (
-                  <button className="danger" type="button" onClick={() => void handleDeleteIssue()} disabled={busy === "delete" || mutationLocked}>
-                    Delete issue
-                  </button>
-                ) : null}
-              </div>
+              <div className="issue-copy-block issue-body-block">{selectedIssueBodyText || issueSummaryText(selectedIssue) || "No summary available."}</div>
+              {selectedIssueMetadata.length > 0 ? (
+                <dl className="property-grid vm-label-grid issue-metadata-list">
+                  {selectedIssueMetadata.map((entry) => (
+                    <div key={entry.label}>
+                      <dt>{entry.label}</dt>
+                      <dd>
+                        {entry.items ? (
+                          <ol className="issue-metadata-items">
+                            {entry.items.map((item) => (
+                              <li key={item}>{item}</li>
+                            ))}
+                          </ol>
+                        ) : (
+                          entry.value
+                        )}
+                      </dd>
+                    </div>
+                  ))}
+                </dl>
+              ) : null}
             </div>
           </div>
         ) : (

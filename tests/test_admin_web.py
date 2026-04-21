@@ -10,7 +10,7 @@ from starlette.testclient import TestClient
 
 from agent_sandbox.admin_service import AdminService
 from agent_sandbox.admin_web import _workflow_run_events, create_app
-from agent_sandbox.models import SessionSummary, VmActionResult, VmSummary
+from agent_sandbox.models import LocalIssueRecord, SessionSummary, VmActionResult, VmSummary
 
 
 def write_config(tmp_path: Path, *, enable_directory_scoped_config: bool = False) -> Path:
@@ -1145,6 +1145,100 @@ def test_admin_web_reads_issue_yaml_by_canonical_issue_id(tmp_path: Path) -> Non
     assert payload["issue_id"] == created_issue.issue_id
     assert payload["issue_number"] == created_issue.issue_number
     assert "title:" in payload["yaml_text"]
+
+
+def test_admin_web_reads_issue_detail_for_scoped_issue_id_with_slash(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    yaml_path = tmp_path / "team-issue.yaml"
+    yaml_path.write_text("issue_number: 7\ntitle: Team issue\nbody: Team body\n", encoding="utf-8")
+    issue = LocalIssueRecord(
+        issue_id="root/team::local::7",
+        issue_number="7",
+        title="Team issue",
+        body="Team body",
+        yaml_path=str(yaml_path),
+        directory_path="root/team",
+    )
+    service.local_issue_store.put(issue.issue_id, issue)
+    client = TestClient(create_app(service))
+
+    response = client.get(f"/api/admin/issues/{issue.issue_id}")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["issue_id"] == issue.issue_id
+    assert payload["directory_path"] == "root/team"
+
+
+def test_admin_web_reads_issue_yaml_for_scoped_issue_id_with_slash(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    yaml_path = tmp_path / "team-issue.yaml"
+    yaml_path.write_text("issue_number: 9\ntitle: Team issue\nbody: Team body\n", encoding="utf-8")
+    issue = LocalIssueRecord(
+        issue_id="root/team::local::9",
+        issue_number="9",
+        title="Team issue",
+        body="Team body",
+        yaml_path=str(yaml_path),
+        directory_path="root/team",
+    )
+    service.local_issue_store.put(issue.issue_id, issue)
+    client = TestClient(create_app(service))
+
+    response = client.get(f"/api/admin/issues/{issue.issue_id}/yaml")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["issue_id"] == issue.issue_id
+    assert "title:" in payload["yaml_text"]
+
+
+def test_admin_web_issue_detail_uses_cached_proxy_data_without_remote_credentials(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    yaml_path = tmp_path / "proxy-issue.yaml"
+    yaml_path.write_text("issue_number: 14378\ntitle: Proxy issue\nbody: Local body\n", encoding="utf-8")
+    issue = LocalIssueRecord(
+        issue_id="root::azure_devops::14378",
+        issue_number="14378",
+        title="Proxy issue",
+        body="Local body",
+        yaml_path=str(yaml_path),
+        directory_path="root",
+        source_type="remote_proxy",
+        source="azure_devops",
+        metadata={
+            "remote": {"provider": "azure_devops", "issue_id": "14378"},
+            "proxy_cache": {
+                "title": "Cached remote title",
+                "description": "Cached remote description",
+                "state": "In Progress",
+                "url": "https://example.invalid/work-items/14378",
+                "comments": [{"text": "cached comment"}],
+            },
+        },
+    )
+    service.local_issue_store.put(issue.issue_id, issue)
+
+    class _Adapter:
+        provider_name = "azure_devops"
+
+        def read_issue(self, **kwargs):
+            raise AssertionError("web detail view should not fetch remote issue data")
+
+    service.issue_service.adapters["azure_devops"] = _Adapter()
+    client = TestClient(create_app(service))
+
+    response = client.get(f"/api/admin/issues/{issue.issue_id}")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["source_type"] == "remote_proxy"
+    assert payload["detail_source_type"] == "proxy"
+    assert payload["provider"] == "azure_devops"
+    assert payload["remote_issue_id"] == "14378"
+    assert payload["title"] == "Cached remote title"
+    assert payload["body"] == "Cached remote description"
+    assert payload["state"] == "In Progress"
 
 
 def test_admin_web_creates_standalone_vm(tmp_path: Path, monkeypatch) -> None:

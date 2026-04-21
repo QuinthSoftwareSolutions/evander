@@ -213,6 +213,32 @@ def _issue_detail_payload(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _local_issue_detail_payload(service: AdminService, issue: LocalIssueRecord) -> dict[str, Any]:
+    payload = issue.model_dump(mode="json")
+    payload["local_source_type"] = issue.source_type
+    proxy_target = service._proxy_target_for_issue(issue)
+    proxy_cache = issue.metadata.get("proxy_cache") if isinstance(issue.metadata.get("proxy_cache"), dict) else {}
+    if proxy_target is None:
+        payload["source_type"] = "local"
+        return _issue_detail_payload(payload)
+
+    provider, remote_issue_id = proxy_target
+    payload.update(
+        {
+            "source_type": "proxy",
+            "provider": provider,
+            "remote_issue_id": remote_issue_id,
+            "title": str(proxy_cache.get("title") or issue.title),
+            "description": str(proxy_cache.get("description") or issue.description or issue.body),
+            "body": str(proxy_cache.get("description") or issue.body),
+            "state": str(proxy_cache.get("state") or issue.state or "") or None,
+            "url": str(proxy_cache.get("url") or issue.url or "") or None,
+            "comments": _jsonable(proxy_cache.get("comments") or issue.comments or []),
+        }
+    )
+    return _issue_detail_payload(payload)
+
+
 def _action_payload(result: VmActionResult) -> dict[str, Any]:
     return {
         "success": result.success,
@@ -381,11 +407,9 @@ def vm_issue_routes(service: AdminService, _auth: AdminWebAuth) -> list[BaseRout
         issue_id = request.path_params["issue_id"]
         try:
             local_issue = _resolve_local_issue_record(service, issue_id)
-            payload = service.get_issue(issue_id)
         except ValueError as exc:
             return json_error(str(exc), status_code=404)
-        payload["local_source_type"] = local_issue.source_type
-        return JSONResponse(_issue_detail_payload(payload))
+        return JSONResponse(_local_issue_detail_payload(service, local_issue))
 
     async def create_issue(request: Request) -> JSONResponse:
         try:
@@ -481,11 +505,11 @@ def vm_issue_routes(service: AdminService, _auth: AdminWebAuth) -> list[BaseRout
         Route("/api/admin/vms/{vm_name:str}/actions/{action:str}", mutate_vm, methods=["POST"]),
         Route("/api/admin/issues", list_issues, methods=["GET"]),
         Route("/api/admin/issues", create_issue, methods=["POST"]),
-        Route("/api/admin/issues/{issue_id:str}", get_issue, methods=["GET"]),
-        Route("/api/admin/issues/{issue_id:str}", update_issue, methods=["PUT"]),
-        Route("/api/admin/issues/{issue_id:str}", delete_issue, methods=["DELETE"]),
-        Route("/api/admin/issues/{issue_id:str}/yaml", get_issue_yaml, methods=["GET"]),
-        Route("/api/admin/issues/{issue_id:str}/create-vm", create_vm_from_issue, methods=["POST"]),
+        Route("/api/admin/issues/{issue_id:path}/yaml", get_issue_yaml, methods=["GET"]),
+        Route("/api/admin/issues/{issue_id:path}/create-vm", create_vm_from_issue, methods=["POST"]),
+        Route("/api/admin/issues/{issue_id:path}", get_issue, methods=["GET"]),
+        Route("/api/admin/issues/{issue_id:path}", update_issue, methods=["PUT"]),
+        Route("/api/admin/issues/{issue_id:path}", delete_issue, methods=["DELETE"]),
     ]
 
 

@@ -8,9 +8,16 @@ export async function fetchJson<T>(path: string, init?: RequestInit): Promise<T>
       ...(init?.headers ?? {}),
     },
   });
-  const payload = (await response.json()) as T & { error?: string };
+  const contentType = response.headers.get("content-type") ?? "";
+  let payload: unknown;
+  if (contentType.includes("application/json")) {
+    payload = (await response.json()) as T & { error?: string };
+  } else {
+    const text = await response.text();
+    throw new Error(text.trim() || `${response.status} ${response.statusText}`);
+  }
   if (!response.ok && typeof payload === "object" && payload && "error" in payload) {
-    throw new Error(String(payload.error));
+    throw new Error(String((payload as { error?: string }).error));
   }
   return payload as T;
 }

@@ -1,6 +1,6 @@
 :root {
   color: #1e2933;
-  background: #ecf1ef;
+  background: #dfe7e4;
   font-family: "Avenir Next", "Segoe UI", "Helvetica Neue", sans-serif;
 }
 
@@ -24,9 +24,9 @@ body,
 body {
   min-height: 100vh;
   background:
-    radial-gradient(circle at top left, rgba(196, 224, 214, 0.72), transparent 28%),
-    radial-gradient(circle at top right, rgba(239, 219, 186, 0.55), transparent 24%),
-    linear-gradient(135deg, #eef3f0 0%, #e8eeec 45%, #dfe8e4 100%);
+    radial-gradient(circle at top left, rgba(173, 204, 194, 0.62), transparent 28%),
+    radial-gradient(circle at top right, rgba(224, 203, 171, 0.42), transparent 24%),
+    linear-gradient(135deg, #e1e8e5 0%, #d9e1de 45%, #d1dbd7 100%);
 }
 
 :root[data-theme="dark"] body {
@@ -58,7 +58,7 @@ body {
   gap: 1.25rem;
   padding: 1.5rem 1.75rem 1.2rem;
   border-bottom: 1px solid rgba(42, 71, 66, 0.12);
-  background: rgba(247, 250, 248, 0.86);
+  background: rgba(234, 241, 238, 0.9);
   backdrop-filter: blur(18px);
 }
 
@@ -96,7 +96,7 @@ body {
   padding: 0.55rem 0.85rem;
   border: 1px solid rgba(22, 52, 69, 0.1);
   border-radius: 18px;
-  background: rgba(255, 255, 255, 0.7);
+  background: rgba(239, 245, 242, 0.84);
   min-width: 12rem;
 }
 
@@ -143,7 +143,7 @@ body {
 }
 
 .admin-shell-button-muted {
-  background: rgba(247, 250, 248, 0.92);
+  background: rgba(231, 238, 235, 0.96);
   color: #274051;
 }
 
@@ -167,7 +167,7 @@ body {
   gap: 0.65rem;
   padding: 1.25rem;
   border-right: 1px solid rgba(42, 71, 66, 0.12);
-  background: rgba(247, 250, 248, 0.72);
+  background: rgba(232, 239, 236, 0.78);
   backdrop-filter: blur(18px);
 }
 
@@ -201,7 +201,7 @@ body {
   place-items: center;
   border: 1px solid rgba(33, 87, 107, 0.12);
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.82);
+  background: rgba(239, 245, 242, 0.94);
   color: #214f69;
   font-size: 1rem;
   line-height: 1;
@@ -210,7 +210,7 @@ body {
 }
 
 .admin-shell-nav-toggle:hover {
-  background: rgba(240, 248, 246, 0.96);
+  background: rgba(229, 238, 234, 0.98);
 }
 
 .admin-shell-nav-toggle:disabled {
@@ -240,7 +240,7 @@ body {
   padding: 0.95rem 1rem;
   border: 1px solid rgba(23, 53, 60, 0.08);
   border-radius: 18px;
-  background: rgba(255, 255, 255, 0.64);
+  background: rgba(237, 244, 241, 0.82);
   color: #183142;
   text-align: left;
   cursor: pointer;
@@ -259,7 +259,7 @@ body {
 
 .admin-shell-tab.active {
   border-color: rgba(33, 87, 107, 0.24);
-  background: linear-gradient(180deg, rgba(223, 240, 237, 0.96) 0%, rgba(244, 249, 247, 0.98) 100%);
+  background: linear-gradient(180deg, rgba(215, 232, 228, 0.96) 0%, rgba(233, 239, 236, 0.98) 100%);
   box-shadow: 0 14px 36px rgba(17, 43, 58, 0.12);
 }
 
@@ -324,7 +324,7 @@ body {
   grid-template-rows: auto minmax(0, 1fr);
   border: 1px solid rgba(42, 71, 66, 0.12);
   border-radius: 28px;
-  background: rgba(252, 254, 253, 0.98);
+  background: rgba(240, 245, 243, 0.98);
   box-shadow: 0 24px 60px rgba(22, 45, 52, 0.18);
   overflow: hidden;
 }
@@ -361,7 +361,7 @@ body {
   padding: 0.9rem 1rem;
   border: 1px solid rgba(33, 87, 107, 0.12);
   border-radius: 18px;
-  background: rgba(238, 246, 244, 0.7);
+  background: rgba(228, 237, 234, 0.88);
 }
 
 .directory-tree-list {
@@ -385,7 +385,7 @@ body {
   padding: 0.8rem 0.95rem;
   border: 1px solid rgba(23, 53, 60, 0.1);
   border-radius: 16px;
-  background: rgba(248, 252, 250, 0.96);
+  background: rgba(238, 244, 241, 0.98);
   color: #183142;
   text-align: left;
   cursor: pointer;
@@ -403,7 +403,7 @@ body {
 
 .directory-tree-button.selected {
   border-color: rgba(33, 87, 107, 0.28);
-  background: linear-gradient(180deg, rgba(223, 240, 237, 0.96) 0%, rgba(244, 249, 247, 0.98) 100%);
+  background: linear-gradient(180deg, rgba(213, 230, 226, 0.96) 0%, rgba(232, 238, 235, 0.98) 100%);
   box-shadow: 0 14px 32px rgba(17, 43, 58, 0.1);
 }
 
@@ -412,7 +412,7 @@ body {
   overflow: hidden;
   border: 1px solid rgba(42, 71, 66, 0.12);
   border-radius: 28px;
-  background: rgba(252, 254, 253, 0.86);
+  background: rgba(236, 242, 240, 0.92);
   box-shadow: 0 24px 60px rgba(22, 45, 52, 0.09);
 }
 
@@ -443,7 +443,7 @@ body {
 
 .admin-workflow-panel .workflow-topbar {
   padding: 0.85rem 1.1rem 0.8rem;
-  background: linear-gradient(180deg, rgba(248, 252, 250, 0.94) 0%, rgba(248, 252, 250, 0.82) 100%);
+  background: linear-gradient(180deg, rgba(236, 242, 239, 0.96) 0%, rgba(231, 238, 234, 0.88) 100%);
 }
 
 .admin-workflow-panel .workflow-topbar h1 {
@@ -478,7 +478,7 @@ body {
   padding: 1.6rem;
   border: 1px solid rgba(42, 71, 66, 0.1);
   border-radius: 28px;
-  background: rgba(252, 254, 253, 0.94);
+  background: rgba(239, 245, 242, 0.96);
   box-shadow: 0 22px 52px rgba(22, 45, 52, 0.1);
 }
 
@@ -532,7 +532,7 @@ select {
   overflow: auto;
   min-height: 0;
   border-right: 1px solid rgba(71, 56, 37, 0.12);
-  background: rgba(255, 250, 241, 0.86);
+  background: rgba(243, 238, 229, 0.88);
   backdrop-filter: blur(14px);
 }
 
@@ -541,7 +541,7 @@ select {
   padding: 1rem;
   border: 1px solid rgba(91, 67, 37, 0.12);
   border-radius: 18px;
-  background: rgba(255, 252, 246, 0.92);
+  background: rgba(247, 242, 235, 0.94);
   box-shadow: 0 14px 38px rgba(47, 34, 20, 0.06);
 }
 
@@ -1194,8 +1194,8 @@ select {
 .admin-page {
   min-height: 100vh;
   background:
-    radial-gradient(circle at top left, rgba(232, 209, 164, 0.45), transparent 28%),
-    linear-gradient(180deg, #f5efe3 0%, #efe6d8 100%);
+    radial-gradient(circle at top left, rgba(212, 191, 150, 0.34), transparent 28%),
+    linear-gradient(180deg, #e9e3d8 0%, #e1d9cc 100%);
 }
 
 .admin-topbar,
@@ -1206,7 +1206,7 @@ select {
   gap: 1rem;
   padding: 1rem 1.5rem;
   border-bottom: 1px solid rgba(71, 56, 37, 0.12);
-  background: rgba(255, 250, 241, 0.82);
+  background: rgba(242, 236, 227, 0.86);
   backdrop-filter: blur(14px);
 }
 
@@ -1219,7 +1219,7 @@ select {
 .tab-button {
   border: 1px solid rgba(93, 75, 48, 0.16);
   border-radius: 999px;
-  background: rgba(255, 250, 241, 0.86);
+  background: rgba(242, 236, 227, 0.9);
   color: #4c3b28;
 }
 
@@ -1234,13 +1234,13 @@ select {
   display: grid;
   grid-template-columns: minmax(260px, 320px) 1fr;
   min-height: calc(100vh - 88px);
-  background: rgba(255, 250, 241, 0.3);
+  background: rgba(243, 237, 228, 0.38);
 }
 
 .feature-sidebar {
   padding: 1rem;
   border-right: 1px solid rgba(71, 56, 37, 0.12);
-  background: rgba(255, 250, 241, 0.68);
+  background: rgba(241, 236, 227, 0.74);
 }
 
 .feature-sidebar-header,
@@ -1285,7 +1285,7 @@ select {
 .panel {
   border: 1px solid rgba(71, 56, 37, 0.12);
   border-radius: 16px;
-  background: rgba(255, 251, 245, 0.96);
+  background: rgba(246, 241, 234, 0.96);
   padding: 1rem;
   box-shadow: 0 10px 30px rgba(56, 43, 27, 0.07);
   min-width: 0;
@@ -1312,12 +1312,16 @@ select {
   gap: 0.4rem;
 }
 
+.issue-list {
+  gap: 0.4rem;
+}
+
 .feature-list-item {
   text-align: left;
   padding: 0.85rem 0.95rem;
   border: 1px solid rgba(93, 75, 48, 0.12);
   border-radius: 14px;
-  background: rgba(255, 250, 241, 0.92);
+  background: rgba(244, 239, 231, 0.94);
 }
 
 .vm-list-item {
@@ -1333,7 +1337,7 @@ select {
 
 .vm-list-item:hover {
   border-color: rgba(45, 95, 168, 0.22);
-  background: rgba(250, 244, 233, 0.98);
+  background: rgba(241, 234, 223, 0.98);
   box-shadow: 0 12px 24px rgba(56, 43, 27, 0.08);
   transform: translateY(-1px);
 }
@@ -1342,12 +1346,46 @@ select {
   transform: translateY(-1px);
 }
 
+.issue-list-item {
+  padding: 0.65rem 0.8rem;
+  border-radius: 0;
+  cursor: pointer;
+  transition:
+    border-color 160ms ease,
+    box-shadow 160ms ease,
+    background 160ms ease,
+    transform 160ms ease;
+}
+
+.issue-list-item:hover {
+  border-color: rgba(45, 95, 168, 0.22);
+  background: rgba(241, 234, 223, 0.98);
+  box-shadow: 0 12px 24px rgba(56, 43, 27, 0.08);
+  transform: translateY(-1px);
+}
+
+.issue-list-item.selected:hover {
+  transform: translateY(-1px);
+}
+
 .vm-list-item-row {
   align-items: center;
   gap: 0.6rem;
 }
 
+.issue-list-item-row {
+  align-items: center;
+  gap: 0.6rem;
+}
+
 .vm-list-item strong {
+  display: block;
+  min-width: 0;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+
+.issue-list-item strong {
   display: block;
   min-width: 0;
   line-height: 1.2;
@@ -1381,6 +1419,17 @@ select {
   min-width: 1.7rem;
   justify-content: center;
   padding-inline: 0.38rem;
+}
+
+.issues-page .issue-state-pill {
+  margin-left: auto;
+  letter-spacing: 0.03em;
+  font-size: 0.68rem;
+  white-space: nowrap;
+}
+
+.issues-filter-grid {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .feature-list-item.selected {
@@ -1421,7 +1470,7 @@ select {
   padding: 0.9rem;
   border: 1px solid rgba(93, 75, 48, 0.14);
   border-radius: 12px;
-  background: #fffdf9;
+  background: #f3efe8;
   font-family: "SFMono-Regular", "Consolas", monospace;
   font-size: 0.88rem;
   line-height: 1.5;
@@ -1582,7 +1631,7 @@ select {
 .empty-state {
   padding: 0.9rem;
   border-radius: 12px;
-  background: rgba(244, 237, 226, 0.9);
+  background: rgba(232, 226, 216, 0.92);
   color: #6d5c4c;
 }
 
@@ -1614,7 +1663,7 @@ select {
   padding: 1rem;
   border: 1px solid rgba(71, 56, 37, 0.12);
   border-radius: 16px;
-  background: rgba(255, 251, 245, 0.96);
+  background: rgba(246, 241, 234, 0.96);
 }
 
 .admin-toolbar label,
@@ -1662,6 +1711,9 @@ select {
 .detail-grid strong {
   display: block;
   margin-top: 0.25rem;
+  color: inherit;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .split-layout {
@@ -1720,6 +1772,115 @@ select {
   margin: 0;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+.issue-copy-block {
+  white-space: pre-wrap;
+  line-height: 1.58;
+  color: inherit;
+}
+
+.issue-body-block {
+  max-height: 24rem;
+  overflow: auto;
+}
+
+.issue-summary-panel {
+  min-width: 0;
+}
+
+.issue-metadata-list {
+  grid-template-columns: 1fr;
+  margin: 0;
+  padding-top: 0.25rem;
+}
+
+.issue-metadata-items {
+  margin: 0;
+  padding-left: 1.2rem;
+}
+
+.issue-metadata-items li + li {
+  margin-top: 0.35rem;
+}
+
+.issues-detail-grid {
+  align-items: start;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.issues-page .feature-content,
+.vms-page .feature-content {
+  padding-top: 0.8rem;
+}
+
+.issues-page .feature-toolbar h2,
+.vms-page .feature-toolbar h2 {
+  margin: 0 0 0.25rem;
+}
+
+.issues-page .warning-callout + .issues-filter-grid {
+  margin-top: 0.4rem;
+}
+
+:where(.field-stack, .admin-toolbar .field-stack):has(select) {
+  position: relative;
+}
+
+:where(.field-stack, .admin-toolbar .field-stack):has(select)::after {
+  content: "";
+  position: absolute;
+  right: 0.95rem;
+  bottom: 1.05rem;
+  width: 0;
+  height: 0;
+  border-left: 0.32rem solid transparent;
+  border-right: 0.32rem solid transparent;
+  border-top: 0.42rem solid #526571;
+  pointer-events: none;
+}
+
+:where(.field-stack select, .admin-toolbar select) {
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  padding-right: 2.7rem;
+}
+
+.issues-page .issues-filter-grid .field-stack select {
+  border-radius: 0;
+}
+
+.issue-meta-value {
+  line-height: 1.35;
+}
+
+.issue-path-value,
+.issue-path-inline {
+  overflow-wrap: anywhere;
+}
+
+.issue-path-value {
+  font-family: "SFMono-Regular", "Consolas", monospace;
+  font-size: 0.92rem;
+}
+
+.issue-yaml-disclosure {
+  gap: 0.75rem;
+}
+
+.issue-yaml-disclosure .compact-disclosure-summary {
+  align-items: start;
+}
+
+.issue-yaml-disclosure .compact-disclosure-summary > span:first-child {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.issue-yaml-view {
+  max-height: 28rem;
+  overflow: auto;
 }
 
 .inline-button {
@@ -1788,7 +1949,7 @@ select {
   padding: 1rem 1.1rem;
   border: 1px solid rgba(32, 69, 78, 0.12);
   border-radius: 22px;
-  background: rgba(250, 252, 251, 0.88);
+  background: rgba(235, 241, 238, 0.92);
   box-shadow: 0 18px 42px rgba(22, 45, 52, 0.06);
 }
 
@@ -1814,7 +1975,7 @@ select {
   padding: 0.78rem 0.88rem;
   border: 1px solid rgba(42, 76, 90, 0.14);
   border-radius: 14px;
-  background: rgba(255, 255, 255, 0.94);
+  background: rgba(244, 248, 246, 0.96);
   color: #1f3340;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.65);
 }
@@ -1829,7 +1990,7 @@ select {
   padding: 0.72rem 1rem;
   border: 1px solid rgba(24, 55, 70, 0.14);
   border-radius: 999px;
-  background: rgba(245, 248, 247, 0.95);
+  background: rgba(233, 239, 236, 0.96);
   color: #1d3442;
   font-weight: 700;
   cursor: pointer;
@@ -1881,7 +2042,7 @@ select {
 .admin-panel {
   border: 1px solid rgba(32, 69, 78, 0.12);
   border-radius: 28px;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.95) 0%, rgba(248, 251, 250, 0.94) 100%);
+  background: linear-gradient(180deg, rgba(242, 247, 245, 0.96) 0%, rgba(232, 239, 236, 0.95) 100%);
   box-shadow: 0 22px 48px rgba(22, 45, 52, 0.07);
   overflow: hidden;
 }
@@ -1932,7 +2093,7 @@ select {
   letter-spacing: 0.08em;
   text-transform: uppercase;
   text-align: left;
-  background: rgba(244, 248, 247, 0.96);
+  background: rgba(231, 238, 235, 0.97);
 }
 
 .admin-table tbody td {
@@ -1977,7 +2138,7 @@ select {
   padding: 0.95rem 1rem;
   border: 1px solid rgba(32, 69, 78, 0.08);
   border-radius: 18px;
-  background: rgba(241, 247, 245, 0.72);
+  background: rgba(228, 236, 232, 0.84);
 }
 
 .detail-list dt {
@@ -2120,7 +2281,7 @@ select {
   padding: 1rem 1.05rem;
   border: 1px solid rgba(32, 69, 78, 0.1);
   border-radius: 18px;
-  background: #f8fbfa;
+  background: #edf3f1;
   color: #1a2f3a;
   font-family: "SFMono-Regular", "Consolas", monospace;
   font-size: 0.84rem;
@@ -2490,6 +2651,12 @@ select {
 }
 
 :root[data-theme="dark"] .inspector-label input,
+:root[data-theme="dark"] .field-inline input,
+:root[data-theme="dark"] .field-stack input,
+:root[data-theme="dark"] .field-stack textarea,
+:root[data-theme="dark"] .field-stack select,
+:root[data-theme="dark"] .admin-toolbar input,
+:root[data-theme="dark"] .admin-toolbar select,
 :root[data-theme="dark"] .sidebar textarea,
 :root[data-theme="dark"] .sidebar input[type="text"],
 :root[data-theme="dark"] .sidebar input[type="number"],
@@ -2501,12 +2668,40 @@ select {
   border-color: rgba(124, 142, 154, 0.2);
   background: #101c24;
   color: #d7e3ea;
+  color-scheme: dark;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.02);
+}
+
+:root[data-theme="dark"] :where(.field-stack, .admin-toolbar .field-stack):has(select)::after {
+  border-top-color: #d7e3ea;
 }
 
 :root[data-theme="dark"] .admin-page {
   background:
     radial-gradient(circle at top left, rgba(135, 104, 46, 0.2), transparent 28%),
     linear-gradient(180deg, #18120d 0%, #111a20 100%);
+}
+
+:root[data-theme="dark"] .panel-heading h2,
+:root[data-theme="dark"] .detail-grid strong,
+:root[data-theme="dark"] .detail-block,
+:root[data-theme="dark"] .detail-block strong,
+:root[data-theme="dark"] .config-field-card,
+:root[data-theme="dark"] .issue-copy-block {
+  color: #d7e3ea;
+}
+
+:root[data-theme="dark"] .detail-block,
+:root[data-theme="dark"] .issue-yaml-disclosure,
+:root[data-theme="dark"] .config-field-card {
+  border-color: rgba(128, 106, 66, 0.18);
+  background: rgba(29, 26, 21, 0.9);
+  box-shadow: 0 14px 38px rgba(0, 0, 0, 0.2);
+}
+
+:root[data-theme="dark"] .issue-path-value,
+:root[data-theme="dark"] .issue-path-inline {
+  color: #c7d7e0;
 }
 
 :root[data-theme="dark"] .node-card {
