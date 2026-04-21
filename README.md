@@ -219,6 +219,9 @@ sudo systemctl start agent-sandbox-discord-wake.service
 sudo systemctl start agent-sandbox-scheduled-wake.service
 ```
 
+For a fresh-host Ubuntu 24.04 deployment path that wraps this same repo-native flow with Ansible,
+see `ansible/README.md`.
+
 ### Trigger orchestrator
 
 The scaffold includes `agent-sandbox-trigger-orchestrator`, a host-side worker that:

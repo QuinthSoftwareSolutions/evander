@@ -1,0 +1,28 @@
+---
+- name: Deploy agent-sandbox to Ubuntu 24.04 hosts
+  hosts: agent_sandbox_hosts
+  become: true
+  vars:
+    agent_sandbox_repo_parent: "{{ agent_sandbox_deploy_path | dirname }}"
+    agent_sandbox_expected_runtime_dir: "{{ agent_sandbox_deploy_path }}/runtime"
+  pre_tasks:
+    - name: Assert the runtime directory matches the repo-native service layout
+      ansible.builtin.assert:
+        that:
+          - agent_sandbox_runtime_dir == agent_sandbox_expected_runtime_dir
+        fail_msg: >-
+          agent_sandbox_runtime_dir must currently be {{ agent_sandbox_expected_runtime_dir }}
+          because scripts/install_systemd_units.sh renders systemd units that hardcode
+          {{ agent_sandbox_deploy_path }}/runtime.
+        success_msg: Runtime directory matches the repo-native systemd layout.
+
+  roles:
+    - role: host_prereqs
+    - role: repo_checkout
+    - role: python_env
+    - role: runtime_bootstrap
+    - role: service_config
+    - role: systemd_install
+    - role: network_vm_bootstrap
+    - role: service_runtime
+    - role: verification

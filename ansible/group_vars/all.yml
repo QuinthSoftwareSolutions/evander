@@ -1,0 +1,176 @@
+---
+# Core deploy contract.
+agent_sandbox_repo_url: "git@example.com:your-org/agent-sandbox.git"
+agent_sandbox_repo_version: "main"
+agent_sandbox_deploy_path: "/opt/agent-sandbox"
+agent_sandbox_runtime_dir: "{{ agent_sandbox_deploy_path }}/runtime"
+agent_sandbox_run_user: "agent-sandbox"
+agent_sandbox_manage_run_user: true
+agent_sandbox_service_profile: "full"
+agent_sandbox_allowed_tcp_ports:
+  - 22
+  - 8000
+  - 11434
+  - 11666
+  - 11777
+
+# Host prerequisites.
+agent_sandbox_host_packages:
+  - openssh-server
+  - git
+  - curl
+  - qemu-system-x86
+  - qemu-utils
+  - libvirt-daemon-system
+  - libvirt-clients
+  - virtinst
+  - cloud-image-utils
+  - ovmf
+  - nftables
+  - python3
+  - python3-pip
+  - python3-venv
+
+# Install profile for the Python package.
+agent_sandbox_python_install_extras: "[dev]"
+
+# Repo-native scripts currently render units that point at deploy_path/runtime.
+agent_sandbox_vm_storage_dir: "/var/lib/libvirt/images/agent-sandbox"
+agent_sandbox_base_image_path: "{{ agent_sandbox_vm_storage_dir }}/images/ubuntu-24.04-server-cloudimg-amd64.img"
+
+# Optional shared secret env file loaded by several systemd units.
+agent_sandbox_render_shared_secrets_env: false
+agent_sandbox_shared_secrets_env: {}
+
+# Per-service environment files.
+agent_sandbox_firewall_env:
+  ALLOWED_TCP_PORTS: "{{ agent_sandbox_allowed_tcp_ports | join(' ') }}"
+
+agent_sandbox_gateway_env:
+  AZURE_DEVOPS_PR_PAT: ""
+
+agent_sandbox_openai_relay_env:
+  OPENAI_API_KEY: ""
+
+agent_sandbox_nuget_relay_env:
+  AZURE_ARTIFACTS_PAT: ""
+
+agent_sandbox_http_target_relay_env: {}
+
+agent_sandbox_ado_worker_env:
+  ADO_WORK_ITEMS_AZURE_DEVOPS_PAT: ""
+
+# Worker/global JSON config files.
+agent_sandbox_ado_worker_config:
+  runtime_dir: "runtime"
+  poll_interval_seconds: 30
+  directories: []
+  yaml_output_dir: null
+  setup_log_dir: null
+  processed_store_path: null
+  setup_script_path: "scripts/setup_vm.sh"
+  ado_work_items_azure_devops_pat_env: "ADO_WORK_ITEMS_AZURE_DEVOPS_PAT"
+  setup_timeout_seconds: 1800
+  setup_concurrency_limit: 1
+  setup_lock_path: null
+  fetch_retry_count: 2
+  fetch_retry_backoff_seconds: 2.0
+  include_comments: true
+  comments_max_count: 20
+  comment_text_max_chars: 4000
+
+agent_sandbox_discord_ingest_config:
+  runtime_dir: "runtime"
+  directories: []
+  poll_interval_seconds: 30
+  jitter_seconds: 5
+  backoff_seconds: 60
+  lock_path: null
+
+agent_sandbox_discord_wake_config:
+  runtime_dir: "runtime"
+  directories: []
+  poll_interval_seconds: 30
+  jitter_seconds: 5
+  cooldown_seconds: 60
+  lock_path: null
+  session_cooldown_path: null
+  busy_check_script_path: "scripts/check_session_vm_busy.sh"
+  resume_script_path: "scripts/resume_issue_agent.sh"
+  wake_state_path: null
+  vm_user: "agent"
+  resume_timeout_seconds: 1200
+
+agent_sandbox_scheduled_wake_config:
+  runtime_dir: "runtime"
+  directories: []
+  poll_interval_seconds: 30
+  jitter_seconds: 5
+  cooldown_seconds: 60
+  lock_path: null
+  session_cooldown_path: null
+  busy_check_script_path: "scripts/check_session_vm_busy.sh"
+  resume_script_path: "scripts/resume_issue_agent.sh"
+  wake_state_path: null
+  vm_user: "agent"
+  resume_timeout_seconds: 1200
+  scheduled_wake_prefix_text: "You have unread PR comments. Please fetch them with list_unread_feedback."
+
+agent_sandbox_teams_ingest_config:
+  runtime_dir: "runtime"
+  directories: []
+  poll_interval_seconds: 30
+  jitter_seconds: 5
+  backoff_seconds: 60
+  lock_path: null
+
+agent_sandbox_host_heartbeat_config:
+  runtime_dir: "runtime"
+  host_heartbeat_directory_paths: []
+  host_heartbeat_poll_interval_seconds: 30
+  host_heartbeat_jitter_seconds: 5
+  host_heartbeat_cooldown_seconds: 60
+  host_heartbeat_http_timeout_seconds: 30
+  host_heartbeat_lock_path: null
+  host_heartbeat_session_cooldown_path: null
+  host_busy_check_script_path: "scripts/check_session_vm_busy.sh"
+  host_resume_script_path: "scripts/resume_issue_agent.sh"
+  host_heartbeat_wake_state_path: null
+  host_heartbeat_vm_user: "agent"
+  host_heartbeat_resume_timeout_seconds: 1200
+  host_heartbeat_stream_conflict_policy: "fanout"
+  host_heartbeat_scheduled_wake_prefix_text: "You have unread PR comments. Please fetch them with list_unread_feedback."
+  host_heartbeat_schedule_max_active_per_session: null
+  host_heartbeat_schedule_max_active_total: null
+  host_heartbeat_schedule_min_interval_seconds: null
+
+agent_sandbox_trigger_orchestrator_config:
+  runtime_dir: "runtime"
+  poll_interval_seconds: 30
+  jitter_seconds: 5
+  lock_path: null
+  event_queue_store_path: null
+  event_queue_cursor_store_path: null
+  workflow_packs:
+    - "agent-default.v1.json"
+  workflow_transforms: []
+  provider_loader:
+    provider_profile: "profiles/agent-default"
+    include_builtin: null
+    provider_modules: []
+    provider_entry_points_enabled: true
+
+# Full current stack by default, with explicit toggle points for operators.
+agent_sandbox_services:
+  gateway: true
+  firewall: true
+  openai_relay: true
+  nuget_relay: true
+  http_target_relay: true
+  ado_worker: true
+  discord_ingest: true
+  discord_wake: true
+  scheduled_wake: true
+  teams_ingest: true
+  effect_orchestrator: true
+  trigger_orchestrator: true

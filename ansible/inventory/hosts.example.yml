@@ -1,0 +1,7 @@
+all:
+  children:
+    agent_sandbox_hosts:
+      hosts:
+        ubuntu2404-host:
+          ansible_host: 192.0.2.10
+          ansible_user: ubuntu
