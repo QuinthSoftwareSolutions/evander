@@ -144,6 +144,51 @@ agent-sandbox-cli list-vms --all --json
 agent-sandbox-cli list-local-issues --json
 ```
 
+## Admin Web Authentication
+
+The browser admin surface supports three auth modes:
+
+- `none`: no sign-in required. This remains the default when
+  `AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE` is unset and `AGENT_SANDBOX_ADMIN_WEB_PASSWORD` is also unset.
+- `local_password`: the existing local username/password form. If
+  `AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE` is unset but `AGENT_SANDBOX_ADMIN_WEB_PASSWORD` is set, this mode is selected automatically for backward compatibility.
+- `azure_sso`: Microsoft Entra browser sign-in through OIDC Authorization Code + PKCE.
+
+Required local session settings:
+
+- `AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET`
+- optional `AGENT_SANDBOX_ADMIN_WEB_SESSION_TTL_SECONDS`
+- optional `AGENT_SANDBOX_ADMIN_WEB_COOKIE_SECURE=true`
+
+`local_password` settings:
+
+- `AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE=local_password`
+- `AGENT_SANDBOX_ADMIN_WEB_USERNAME`
+- `AGENT_SANDBOX_ADMIN_WEB_PASSWORD`
+
+`azure_sso` settings:
+
+- `AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE=azure_sso`
+- `AGENT_SANDBOX_ADMIN_WEB_AZURE_TENANT_ID`
+- `AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_ID`
+- `AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_SECRET`
+- `AGENT_SANDBOX_ADMIN_WEB_AZURE_REDIRECT_URI`
+  or `AGENT_SANDBOX_ADMIN_WEB_PUBLIC_BASE_URL`
+- optional `AGENT_SANDBOX_ADMIN_WEB_AZURE_AUTHORITY_BASE_URL`
+- `AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS`
+- optional `AGENT_SANDBOX_ADMIN_WEB_AZURE_POST_LOGIN_REDIRECT`
+
+Azure SSO enabling sequence:
+
+1. Register a confidential Microsoft Entra web application for the admin web.
+2. Add the exact admin callback URI to the app registration.
+3. Allow OpenID scopes `openid profile email`.
+4. Set the trusted tenant id in `AGENT_SANDBOX_ADMIN_WEB_AZURE_TENANT_ID`.
+5. Add each permitted operator UPN/email-style login to `AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS`.
+6. Restart `agent-sandbox-admin-web`.
+
+The admin backend performs the token exchange server-side, validates issuer/audience/tenant, then mints the same local signed session cookie used by the password flow. Privileged lock/unlock behavior remains tied to that local admin session rather than the upstream Azure token.
+
 ## Directory Operations
 
 Directory ownership defaults to `root`. The directory tree is host-managed, with immutable `root`

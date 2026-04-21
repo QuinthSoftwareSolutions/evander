@@ -6,10 +6,12 @@ from pathlib import Path
 from types import MethodType
 from types import SimpleNamespace
 
+import pytest
 from starlette.testclient import TestClient
 
 from agent_sandbox.admin_service import AdminService
 from agent_sandbox.admin_web import _workflow_run_events, create_app
+from agent_sandbox.admin_web_shared import AdminWebConfig
 from agent_sandbox.models import LocalIssueRecord, SessionSummary, VmActionResult, VmSummary
 
 
@@ -879,6 +881,7 @@ def test_admin_web_session_endpoint_reports_auth_disabled_by_default(tmp_path: P
     response = client.get("/api/auth/session")
 
     assert response.status_code == 200
+    assert response.json()["auth_mode"] == "none"
     assert response.json()["auth_required"] is False
     assert response.json()["authenticated"] is True
 
@@ -895,8 +898,276 @@ def test_admin_web_requires_login_when_password_configured(tmp_path: Path, monke
 
     assert unauthorized.status_code == 401
     assert login.status_code == 200
+    assert login.json()["auth_mode"] == "local_password"
     assert login.json()["authenticated"] is True
     assert authorized.status_code == 200
+
+
+def test_admin_web_config_defaults_to_none_without_password(monkeypatch) -> None:
+    monkeypatch.delenv("AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE", raising=False)
+    monkeypatch.delenv("AGENT_SANDBOX_ADMIN_WEB_PASSWORD", raising=False)
+
+    config = AdminWebConfig.from_env()
+
+    assert config.auth_mode == "none"
+    assert config.auth_required is False
+
+
+def test_admin_web_config_maps_password_only_deployments_to_local_password(monkeypatch) -> None:
+    monkeypatch.delenv("AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE", raising=False)
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_PASSWORD", "swordfish")
+
+    config = AdminWebConfig.from_env()
+
+    assert config.auth_mode == "local_password"
+    assert config.auth_required is True
+
+
+def test_admin_web_config_rejects_incomplete_azure_sso(monkeypatch) -> None:
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE", "azure_sso")
+    monkeypatch.delenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_TENANT_ID", raising=False)
+    monkeypatch.delenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_ID", raising=False)
+    monkeypatch.delenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_SECRET", raising=False)
+    monkeypatch.delenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_REDIRECT_URI", raising=False)
+    monkeypatch.delenv("AGENT_SANDBOX_ADMIN_WEB_PUBLIC_BASE_URL", raising=False)
+    monkeypatch.delenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS", raising=False)
+
+    with pytest.raises(ValueError, match="Azure SSO admin auth is incomplete"):
+        AdminWebConfig.from_env()
+
+
+def test_admin_web_session_payload_reports_local_password_mode(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_PASSWORD", "swordfish")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET", "test-secret")
+
+    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    response = client.get("/api/auth/session")
+
+    assert response.status_code == 200
+    assert response.json()["auth_mode"] == "local_password"
+    assert response.json()["authenticated"] is False
+    assert response.json()["available_login_methods"] == ["password"]
+
+
+def test_admin_web_session_payload_reports_azure_sso_mode(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE", "azure_sso")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET", "test-secret")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_TENANT_ID", "tenant-123")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_ID", "client-123")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_SECRET", "secret-123")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_REDIRECT_URI", "https://admin.example.test/api/auth/azure-sso/callback")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS", "operator@example.com")
+
+    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    response = client.get("/api/auth/session")
+
+    assert response.status_code == 200
+    assert response.json()["auth_mode"] == "azure_sso"
+    assert response.json()["authenticated"] is False
+    assert response.json()["available_login_methods"] == ["azure_sso"]
+    assert response.json()["azure_sso_login_url"] == "/api/auth/azure-sso/start"
+
+
+def test_admin_web_azure_mode_requires_login(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE", "azure_sso")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET", "test-secret")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_TENANT_ID", "tenant-123")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_ID", "client-123")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_SECRET", "secret-123")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_REDIRECT_URI", "https://admin.example.test/api/auth/azure-sso/callback")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS", "operator@example.com")
+
+    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+
+    response = client.get("/api/workflow-editor/document")
+
+    assert response.status_code == 401
+
+
+def test_admin_web_azure_start_login_redirects_and_sets_state(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE", "azure_sso")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET", "test-secret")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_TENANT_ID", "tenant-123")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_ID", "client-123")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_SECRET", "secret-123")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_REDIRECT_URI", "https://admin.example.test/api/auth/azure-sso/callback")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS", "operator@example.com")
+
+    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+
+    response = client.get("/api/auth/azure-sso/start?next=%2Fworkflow", follow_redirects=False)
+
+    assert response.status_code == 307
+    assert response.headers["location"].startswith("https://login.microsoftonline.com/tenant-123/oauth2/v2.0/authorize?")
+    assert "agent_sandbox_admin_oidc=" in response.headers.get("set-cookie", "")
+
+
+def test_admin_web_azure_callback_rejects_bad_state(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE", "azure_sso")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET", "test-secret")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_TENANT_ID", "tenant-123")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_ID", "client-123")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_SECRET", "secret-123")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_REDIRECT_URI", "https://admin.example.test/api/auth/azure-sso/callback")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS", "operator@example.com")
+    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+
+    start = client.get("/api/auth/azure-sso/start", follow_redirects=False)
+    assert start.status_code == 307
+
+    response = client.get("/api/auth/azure-sso/callback?code=test-code&state=wrong-state", follow_redirects=False)
+
+    assert response.status_code == 401
+    assert response.json()["error"] == "Invalid Azure sign-in state"
+
+
+def test_admin_web_azure_callback_rejects_wrong_tenant(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE", "azure_sso")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET", "test-secret")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_TENANT_ID", "tenant-123")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_ID", "client-123")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_SECRET", "secret-123")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_REDIRECT_URI", "https://admin.example.test/api/auth/azure-sso/callback")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS", "operator@example.com")
+    app = create_app(AdminService(write_config(tmp_path)))
+    client = TestClient(app)
+
+    async def fake_exchange(*, code: str, code_verifier: str) -> dict[str, str]:
+        return {"id_token": "stub-token"}
+
+    async def fake_validate(id_token: str) -> dict[str, str]:
+        return {
+            "sub": "subject-1",
+            "name": "Operator",
+            "preferred_username": "operator@example.com",
+            "tid": "wrong-tenant",
+        }
+
+    app.state.auth._exchange_azure_code_for_token = fake_exchange  # type: ignore[method-assign]
+    app.state.auth._validate_azure_id_token = fake_validate  # type: ignore[method-assign]
+
+    start = client.get("/api/auth/azure-sso/start", follow_redirects=False)
+    state = start.headers["location"].split("state=")[1].split("&", 1)[0]
+
+    response = client.get(f"/api/auth/azure-sso/callback?code=test-code&state={state}", follow_redirects=False)
+
+    assert response.status_code == 401
+    assert response.json()["error"] == "Azure sign-in tenant is not allowed"
+
+
+def test_admin_web_azure_callback_rejects_non_allowlisted_user(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE", "azure_sso")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET", "test-secret")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_TENANT_ID", "tenant-123")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_ID", "client-123")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_SECRET", "secret-123")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_REDIRECT_URI", "https://admin.example.test/api/auth/azure-sso/callback")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS", "operator@example.com")
+    app = create_app(AdminService(write_config(tmp_path)))
+    client = TestClient(app)
+
+    async def fake_exchange(*, code: str, code_verifier: str) -> dict[str, str]:
+        return {"id_token": "stub-token"}
+
+    async def fake_validate(id_token: str) -> dict[str, str]:
+        return {
+            "sub": "subject-1",
+            "name": "Other User",
+            "preferred_username": "other@example.com",
+            "tid": "tenant-123",
+        }
+
+    app.state.auth._exchange_azure_code_for_token = fake_exchange  # type: ignore[method-assign]
+    app.state.auth._validate_azure_id_token = fake_validate  # type: ignore[method-assign]
+
+    start = client.get("/api/auth/azure-sso/start", follow_redirects=False)
+    state = start.headers["location"].split("state=")[1].split("&", 1)[0]
+
+    response = client.get(f"/api/auth/azure-sso/callback?code=test-code&state={state}", follow_redirects=False)
+
+    assert response.status_code == 401
+    assert response.json()["error"] == "Azure sign-in user is not allowed"
+
+
+def test_admin_web_azure_callback_accepts_allowlisted_user_and_sets_local_session(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE", "azure_sso")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET", "test-secret")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_TENANT_ID", "tenant-123")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_ID", "client-123")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_SECRET", "secret-123")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_REDIRECT_URI", "https://admin.example.test/api/auth/azure-sso/callback")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS", "operator@example.com")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_POST_LOGIN_REDIRECT", "/#workflow")
+    app = create_app(AdminService(write_config(tmp_path)))
+    client = TestClient(app)
+
+    async def fake_exchange(*, code: str, code_verifier: str) -> dict[str, str]:
+        return {"id_token": "stub-token"}
+
+    async def fake_validate(id_token: str) -> dict[str, str]:
+        return {
+            "sub": "subject-1",
+            "name": "Operator",
+            "preferred_username": "operator@example.com",
+            "tid": "tenant-123",
+            "oid": "object-1",
+            "iss": "https://login.microsoftonline.com/tenant-123/v2.0",
+        }
+
+    app.state.auth._exchange_azure_code_for_token = fake_exchange  # type: ignore[method-assign]
+    app.state.auth._validate_azure_id_token = fake_validate  # type: ignore[method-assign]
+
+    start = client.get("/api/auth/azure-sso/start", follow_redirects=False)
+    state = start.headers["location"].split("state=")[1].split("&", 1)[0]
+    callback = client.get(f"/api/auth/azure-sso/callback?code=test-code&state={state}", follow_redirects=False)
+    session = client.get("/api/auth/session")
+
+    assert callback.status_code == 303
+    assert callback.headers["location"] == "/#workflow"
+    assert "agent_sandbox_admin_session=" in callback.headers.get("set-cookie", "")
+    assert session.status_code == 200
+    assert session.json()["authenticated"] is True
+    assert session.json()["auth_mode"] == "azure_sso"
+    assert session.json()["username"] == "operator@example.com"
+    assert session.json()["display_name"] == "Operator"
+
+
+def test_admin_web_logout_clears_azure_local_session_cookie(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE", "azure_sso")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET", "test-secret")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_TENANT_ID", "tenant-123")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_ID", "client-123")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_SECRET", "secret-123")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_REDIRECT_URI", "https://admin.example.test/api/auth/azure-sso/callback")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS", "operator@example.com")
+    app = create_app(AdminService(write_config(tmp_path)))
+    client = TestClient(app)
+
+    async def fake_exchange(*, code: str, code_verifier: str) -> dict[str, str]:
+        return {"id_token": "stub-token"}
+
+    async def fake_validate(id_token: str) -> dict[str, str]:
+        return {
+            "sub": "subject-1",
+            "name": "Operator",
+            "preferred_username": "operator@example.com",
+            "tid": "tenant-123",
+            "oid": "object-1",
+            "iss": "https://login.microsoftonline.com/tenant-123/v2.0",
+        }
+
+    app.state.auth._exchange_azure_code_for_token = fake_exchange  # type: ignore[method-assign]
+    app.state.auth._validate_azure_id_token = fake_validate  # type: ignore[method-assign]
+
+    start = client.get("/api/auth/azure-sso/start", follow_redirects=False)
+    state = start.headers["location"].split("state=")[1].split("&", 1)[0]
+    client.get(f"/api/auth/azure-sso/callback?code=test-code&state={state}", follow_redirects=False)
+
+    response = client.post("/api/auth/logout")
+
+    assert response.status_code == 200
+    assert response.json()["authenticated"] is False
+    assert response.json()["auth_mode"] == "azure_sso"
 
 
 def test_admin_web_exposes_admin_domain_smoke_endpoints(tmp_path: Path) -> None:

@@ -14,10 +14,14 @@ import { WorkersScreen } from "./features/workers/WorkersScreen";
 import { Tooltip } from "./features/admin/Tooltip";
 
 type AdminSession = {
+  auth_mode: "none" | "local_password" | "azure_sso";
   auth_required: boolean;
   authenticated: boolean;
   username: string | null;
+  display_name: string | null;
   session_id: string | null;
+  available_login_methods: string[];
+  azure_sso_login_url: string | null;
   privileged_operations: {
     unlocked: boolean;
   };
@@ -468,17 +472,21 @@ function DirectoryChooserModal({
 }
 
 function LoginScreen({
+  session,
   theme,
   onToggleTheme,
   error,
   loading,
   onSubmit,
+  onAzureSignIn,
 }: {
+  session: AdminSession;
   theme: AdminTheme;
   onToggleTheme: () => void;
   error: string | null;
   loading: boolean;
   onSubmit: (username: string, password: string) => Promise<void>;
+  onAzureSignIn: () => void;
 }) {
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -493,23 +501,44 @@ function LoginScreen({
           {theme === "dark" ? "Light mode" : "Dark mode"}
         </button>
       </div>
-      <form className="admin-login-card" onSubmit={handleSubmit}>
+      <div className="admin-login-card">
         <div className="eyebrow">Agent Sandbox</div>
         <h1>Admin Sign In</h1>
-        <p>Authenticate to access the multi-user admin surface.</p>
-        <label className="inspector-label">
-          <span>Username</span>
-          <input name="username" defaultValue="admin" autoComplete="username" />
-        </label>
-        <label className="inspector-label">
-          <span>Password</span>
-          <input name="password" type="password" autoComplete="current-password" />
-        </label>
-        {error ? <div className="admin-login-error">{error}</div> : null}
-        <button className="primary" type="submit" disabled={loading}>
-          {loading ? "Signing in..." : "Sign in"}
-        </button>
-      </form>
+        <p>
+          {session.auth_mode === "azure_sso"
+            ? "Authenticate with Microsoft Entra to access the multi-user admin surface."
+            : "Authenticate to access the multi-user admin surface."}
+        </p>
+        {session.auth_mode === "local_password" ? (
+          <form onSubmit={handleSubmit}>
+            <label className="inspector-label">
+              <span>Username</span>
+              <input name="username" defaultValue="admin" autoComplete="username" />
+            </label>
+            <label className="inspector-label">
+              <span>Password</span>
+              <input name="password" type="password" autoComplete="current-password" />
+            </label>
+            {error ? <div className="admin-login-error">{error}</div> : null}
+            <button className="primary" type="submit" disabled={loading}>
+              {loading ? "Signing in..." : "Sign in"}
+            </button>
+          </form>
+        ) : null}
+        {session.auth_mode === "azure_sso" ? (
+          <>
+            {error ? <div className="admin-login-error">{error}</div> : null}
+            <button
+              className="primary"
+              type="button"
+              disabled={loading || !session.azure_sso_login_url}
+              onClick={onAzureSignIn}
+            >
+              {loading ? "Redirecting..." : "Sign in with Microsoft"}
+            </button>
+          </>
+        ) : null}
+      </div>
     </div>
   );
 }
@@ -707,6 +736,14 @@ export default function AdminRoot() {
     }
   }
 
+  function startAzureSignIn() {
+    if (!session?.azure_sso_login_url) {
+      return;
+    }
+    setAuthBusy(true);
+    window.location.assign(`${API_BASE}${session.azure_sso_login_url}`);
+  }
+
   async function setPrivilegeLock(unlock: boolean) {
     setAuthBusy(true);
     try {
@@ -768,13 +805,7 @@ export default function AdminRoot() {
 
   if (session.auth_required && !session.authenticated) {
     return (
-      <LoginScreen
-        theme={theme}
-        onToggleTheme={() => setTheme((current) => (current === "dark" ? "light" : "dark"))}
-        error={sessionError}
-        loading={authBusy}
-        onSubmit={signIn}
-      />
+      <LoginScreen session={session} theme={theme} onToggleTheme={() => setTheme((current) => (current === "dark" ? "light" : "dark"))} error={sessionError} loading={authBusy} onSubmit={signIn} onAzureSignIn={startAzureSignIn} />
     );
   }
 
@@ -839,7 +870,7 @@ export default function AdminRoot() {
                 <strong>{selectedDirectoryPath}</strong>
               </div>
               <div className="admin-identity">
-                <span>{session.username ?? "local operator"}</span>
+                <span>{session.display_name ?? session.username ?? "local operator"}</span>
                 <span className={`admin-privilege ${privilegeUnlocked ? "unlocked" : ""}`}>
                   {privilegeUnlocked ? "Privileges unlocked" : "Privileges locked"}
                 </span>
@@ -853,9 +884,11 @@ export default function AdminRoot() {
               >
                 {privilegeUnlocked ? "Lock" : "Unlock"}
               </button>
-              <button className="admin-shell-button admin-shell-button-muted" onClick={() => void signOut()} disabled={authBusy}>
-                Sign out
-              </button>
+              {session.auth_mode !== "none" ? (
+                <button className="admin-shell-button admin-shell-button-muted" onClick={() => void signOut()} disabled={authBusy}>
+                  Sign out
+                </button>
+              ) : null}
             </div>
           </div>
         </header>

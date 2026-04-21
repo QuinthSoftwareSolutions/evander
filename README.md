@@ -222,6 +222,58 @@ sudo systemctl start agent-sandbox-scheduled-wake.service
 For a fresh-host Ubuntu 24.04 deployment path that wraps this same repo-native flow with Ansible,
 see `ansible/README.md`.
 
+## Admin Web Authentication
+
+`agent-sandbox-admin-web` now supports three explicit auth modes:
+
+- `none`: default when no auth mode is configured and `AGENT_SANDBOX_ADMIN_WEB_PASSWORD` is unset.
+- `local_password`: current username/password flow with the existing signed local session cookie.
+- `azure_sso`: Microsoft Entra browser sign-in using OIDC Authorization Code + PKCE, followed by the same local signed session cookie used by the rest of the admin API.
+
+Backward compatibility is preserved:
+
+- If `AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE` is unset and `AGENT_SANDBOX_ADMIN_WEB_PASSWORD` is unset, the admin web stays in `none`.
+- If `AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE` is unset and `AGENT_SANDBOX_ADMIN_WEB_PASSWORD` is set, the admin web behaves as `local_password`.
+
+Common auth env vars:
+
+- `AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE=none|local_password|azure_sso`
+- `AGENT_SANDBOX_ADMIN_WEB_USERNAME` for `local_password` mode. Default: `admin`
+- `AGENT_SANDBOX_ADMIN_WEB_PASSWORD` for `local_password` mode
+- `AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET` for the signed local session cookie
+- `AGENT_SANDBOX_ADMIN_WEB_SESSION_TTL_SECONDS` for the local session lifetime
+- `AGENT_SANDBOX_ADMIN_WEB_COOKIE_SECURE=true|false`
+
+Azure SSO env vars:
+
+- `AGENT_SANDBOX_ADMIN_WEB_AZURE_TENANT_ID`
+- `AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_ID`
+- `AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_SECRET`
+- `AGENT_SANDBOX_ADMIN_WEB_AZURE_REDIRECT_URI`
+  or `AGENT_SANDBOX_ADMIN_WEB_PUBLIC_BASE_URL`, which is combined with `/api/auth/azure-sso/callback`
+- `AGENT_SANDBOX_ADMIN_WEB_AZURE_AUTHORITY_BASE_URL`
+  Default: `https://login.microsoftonline.com`
+- `AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS`
+  Comma-separated allowlist of user principal names / email-style logins, for example
+  `alice@example.com,bob@example.com`
+- `AGENT_SANDBOX_ADMIN_WEB_AZURE_POST_LOGIN_REDIRECT`
+  Default: `/`
+
+Azure SSO is optional and disabled by default. To enable it:
+
+1. Register a confidential Microsoft Entra web application.
+2. Add the admin web callback URL as a redirect URI.
+3. Ensure the app can request OpenID scopes: `openid profile email`.
+4. Set the tenant you intend to trust with `AGENT_SANDBOX_ADMIN_WEB_AZURE_TENANT_ID`.
+5. Set `AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS` to the exact UPN/email-style identities that may use the admin UI.
+
+The admin web only trusts a sign-in when both checks pass:
+
+- the ID token is issued for the configured tenant and client
+- the human-managed login identifier is explicitly allowlisted
+
+Sign-out clears only the local admin session cookie. v1 does not force Microsoft global logout.
+
 ### Trigger orchestrator
 
 The scaffold includes `agent-sandbox-trigger-orchestrator`, a host-side worker that:

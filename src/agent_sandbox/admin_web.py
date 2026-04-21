@@ -7,13 +7,13 @@ import uvicorn
 from starlette.applications import Starlette
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, JSONResponse, Response
+from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
 from .admin_service import AdminService
 from .admin_web_sessions_approvals import session_approval_routes
-from .admin_web_shared import AdminWebAuth, AdminWebConfig, json_error
+from .admin_web_shared import AZURE_SSO_START_PATH, AdminWebAuth, AdminWebConfig, json_error
 from .admin_web_vms_issues import vm_issue_routes
 from .admin_web_workflow import workflow_routes, workflow_run_events
 from .admin_web_workers_config import worker_config_routes
@@ -102,14 +102,52 @@ def create_app(service: AdminService) -> Starlette:
             return json_error(str(exc), status_code=401)
         response = JSONResponse(
             {
+                "auth_mode": auth.config.auth_mode,
                 "auth_required": auth.config.auth_required,
                 "authenticated": True,
                 "username": auth.config.username,
+                "display_name": auth.config.username,
                 "session_id": None,
+                "available_login_methods": ["password"] if auth.config.auth_mode == "local_password" else [],
+                "azure_sso_login_url": AZURE_SSO_START_PATH if auth.config.auth_mode == "azure_sso" else None,
                 "privileged_operations": {"unlocked": False},
             }
         )
         auth.attach_session_cookie(response, token)
+        return response
+
+    async def azure_login_start(request: Request) -> Response:
+        try:
+            redirect_url, state, code_verifier, next_path = auth.build_azure_login_redirect(request.query_params.get("next"))
+        except ValueError as exc:
+            return json_error(str(exc), status_code=400)
+        response = RedirectResponse(redirect_url, status_code=307)
+        auth.attach_pending_azure_login(response, state=state, code_verifier=code_verifier, next_path=next_path)
+        return response
+
+    async def azure_login_callback(request: Request) -> Response:
+        if request.query_params.get("error"):
+            response = json_error(
+                str(request.query_params.get("error_description") or request.query_params["error"]),
+                status_code=401,
+            )
+            auth.clear_pending_azure_login(response)
+            return response
+        code = str(request.query_params.get("code") or "")
+        state = str(request.query_params.get("state") or "")
+        if not code or not state:
+            response = json_error("Azure sign-in callback is missing code or state", status_code=400)
+            auth.clear_pending_azure_login(response)
+            return response
+        try:
+            token, post_login_redirect = await auth.exchange_azure_callback(request, code, state)
+        except ValueError as exc:
+            response = json_error(str(exc), status_code=401)
+            auth.clear_pending_azure_login(response)
+            return response
+        response = RedirectResponse(post_login_redirect, status_code=303)
+        auth.attach_session_cookie(response, token)
+        auth.clear_pending_azure_login(response)
         return response
 
     async def get_session(request: Request) -> JSONResponse:
@@ -125,14 +163,25 @@ def create_app(service: AdminService) -> Starlette:
         auth.logout(request)
         response = JSONResponse(
             {
+                "auth_mode": auth.config.auth_mode,
                 "auth_required": auth.config.auth_required,
-                "authenticated": False,
-                "username": None,
+                "authenticated": not auth.config.auth_required,
+                "username": auth.config.username if not auth.config.auth_required else None,
+                "display_name": auth.config.username if not auth.config.auth_required else None,
                 "session_id": None,
+                "available_login_methods": (
+                    []
+                    if auth.config.auth_mode == "none"
+                    else ["password"]
+                    if auth.config.auth_mode == "local_password"
+                    else ["azure_sso"]
+                ),
+                "azure_sso_login_url": AZURE_SSO_START_PATH if auth.config.auth_mode == "azure_sso" else None,
                 "privileged_operations": {"unlocked": False},
             }
         )
         auth.clear_session_cookie(response)
+        auth.clear_pending_azure_login(response)
         return response
 
     async def get_admin_state(request: Request) -> JSONResponse:
@@ -178,6 +227,8 @@ def create_app(service: AdminService) -> Starlette:
     routes = [
         Route("/healthz", health, methods=["GET"]),
         Route("/api/auth/login", login, methods=["POST"]),
+        Route(AZURE_SSO_START_PATH, azure_login_start, methods=["GET"]),
+        Route("/api/auth/azure-sso/callback", azure_login_callback, methods=["GET"]),
         Route("/api/auth/session", get_session, methods=["GET"]),
         Route("/api/auth/logout", logout, methods=["POST"]),
         Route("/api/admin/state", get_admin_state, methods=["GET"]),
@@ -194,6 +245,7 @@ def create_app(service: AdminService) -> Starlette:
         routes.append(Route("/", index, methods=["GET"]))
 
     app = Starlette(debug=False, routes=routes)
+    app.state.auth = auth
     app.add_middleware(AuthMiddleware, auth=auth)
     return app
 
