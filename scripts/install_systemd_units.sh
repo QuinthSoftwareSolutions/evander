@@ -334,6 +334,10 @@ render_unit \
   "${SYSTEMD_DIR}/agent-sandbox-gateway.service"
 
 render_unit \
+  "${ROOT_DIR}/systemd/agent-sandbox-admin-web.service.template" \
+  "${SYSTEMD_DIR}/agent-sandbox-admin-web.service"
+
+render_unit \
   "${ROOT_DIR}/systemd/agent-sandbox-openai-relay.service.template" \
   "${SYSTEMD_DIR}/agent-sandbox-openai-relay.service"
 
@@ -379,6 +383,7 @@ render_unit \
 
 systemctl daemon-reload
 systemctl enable agent-sandbox-gateway.service
+systemctl enable agent-sandbox-admin-web.service
 systemctl enable agent-sandbox-openai-relay.service
 systemctl enable agent-sandbox-firewall.service
 systemctl enable agent-sandbox-nuget-relay.service
@@ -394,6 +399,7 @@ systemctl enable agent-sandbox-trigger-orchestrator.service
 cat <<EOF
 Installed systemd units:
   agent-sandbox-gateway.service
+  agent-sandbox-admin-web.service
   agent-sandbox-openai-relay.service
   agent-sandbox-firewall.service
   agent-sandbox-nuget-relay.service
@@ -412,8 +418,10 @@ Next steps:
   3. Populate ${ROOT_DIR}/config/teams-ingest/config.json from the example file if you want to override Teams ingest defaults.
   4. Populate ${ROOT_DIR}/config/trigger-orchestrator/config.json from the example file if you want to enable the trigger orchestrator scaffold.
   5. Export the required host secrets in the service manager environment, or source ${ROOT_DIR}/secrets.env if you keep one there.
-  6. Optionally edit ${ROOT_DIR}/config/firewall.env to change allowed host ports.
-  7. Start services:
+  6. Populate ${ROOT_DIR}/config/admin-web.env from the example file and set host/auth settings for the admin UI.
+  7. Optionally edit ${ROOT_DIR}/config/firewall.env to change allowed host ports.
+  8. Start services:
+     sudo systemctl start agent-sandbox-admin-web.service
      sudo systemctl start agent-sandbox-firewall.service
      sudo systemctl start agent-sandbox-gateway.service
      sudo systemctl start agent-sandbox-openai-relay.service

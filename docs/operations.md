@@ -16,6 +16,9 @@ Install these packages on the Ubuntu host before using the scripts:
 For a reproducible fresh-host Ubuntu 24.04 deployment path that wraps the same repo-native
 bootstrap sequence with Ansible, see `ansible/README.md`.
 
+If Admin Web is part of the deployed surface, treat `agent-sandbox-admin-web` as a managed host
+service and configure `config/admin-web.env` before exposing it beyond localhost.
+
 ## Bootstrap Flow
 
 1. Install Python dependencies with `uv`.

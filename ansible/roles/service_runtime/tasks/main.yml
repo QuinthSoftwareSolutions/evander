@@ -2,6 +2,8 @@
 - name: Define managed systemd service map
   ansible.builtin.set_fact:
     agent_sandbox_systemd_units:
+      - key: admin_web
+        unit: agent-sandbox-admin-web.service
       - key: gateway
         unit: agent-sandbox-gateway.service
       - key: firewall

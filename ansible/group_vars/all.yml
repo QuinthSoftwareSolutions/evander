@@ -49,6 +49,16 @@ agent_sandbox_firewall_env:
 agent_sandbox_gateway_env:
   AZURE_DEVOPS_PR_PAT: ""
 
+agent_sandbox_admin_web_env:
+  ADMIN_WEB_HOST: "0.0.0.0"
+  ADMIN_WEB_PORT: "8100"
+  AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE: "local_password"
+  AGENT_SANDBOX_ADMIN_WEB_USERNAME: "admin"
+  AGENT_SANDBOX_ADMIN_WEB_PASSWORD: "replace-with-real-password"
+  AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET: "replace-with-random-secret"
+  AGENT_SANDBOX_ADMIN_WEB_SESSION_TTL_SECONDS: "43200"
+  AGENT_SANDBOX_ADMIN_WEB_COOKIE_SECURE: "false"
+
 agent_sandbox_openai_relay_env:
   OPENAI_API_KEY: ""
 
@@ -162,6 +172,7 @@ agent_sandbox_trigger_orchestrator_config:
 
 # Full current stack by default, with explicit toggle points for operators.
 agent_sandbox_services:
+  admin_web: true
   gateway: true
   firewall: true
   openai_relay: true

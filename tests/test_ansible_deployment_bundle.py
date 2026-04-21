@@ -52,6 +52,8 @@ def test_ansible_group_vars_document_required_contract_and_service_toggles() -> 
     assert "agent_sandbox_allowed_tcp_ports" in text
     assert "11777" in text
     assert "agent_sandbox_services:" in text
+    assert "agent_sandbox_admin_web_env:" in text
+    assert "admin_web: true" in text
     assert "http_target_relay: true" in text
     assert "trigger_orchestrator: true" in text
     assert "effect_orchestrator: true" in text

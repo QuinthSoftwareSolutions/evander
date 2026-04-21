@@ -209,7 +209,9 @@ Install the gateway and relay services:
 ```bash
 ./scripts/install_systemd_units.sh --preflight
 sudo ./scripts/install_systemd_units.sh
+$EDITOR config/admin-web.env
 $EDITOR config/firewall.env
+sudo systemctl start agent-sandbox-admin-web.service
 sudo systemctl start agent-sandbox-firewall.service
 sudo systemctl start agent-sandbox-gateway.service
 sudo systemctl start agent-sandbox-openai-relay.service
@@ -221,6 +223,9 @@ sudo systemctl start agent-sandbox-scheduled-wake.service
 
 For a fresh-host Ubuntu 24.04 deployment path that wraps this same repo-native flow with Ansible,
 see `ansible/README.md`.
+
+When you expose `agent-sandbox-admin-web` beyond localhost, configure auth in `config/admin-web.env`
+and put TLS plus ingress policy in front of the service.
 
 ## Admin Web Authentication
 

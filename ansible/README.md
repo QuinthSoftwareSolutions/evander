@@ -57,6 +57,7 @@ Core defaults:
 
 Service toggles:
 
+- `agent_sandbox_services.admin_web`
 - `agent_sandbox_services.gateway`
 - `agent_sandbox_services.firewall`
 - `agent_sandbox_services.openai_relay`
@@ -73,6 +74,7 @@ Service toggles:
 Secret-bearing variables should come from encrypted inventory or Ansible Vault. The playbook
 renders these host-local managed artifacts with restricted permissions:
 
+- `config/admin-web.env`
 - `config/firewall.env`
 - `config/gateway.env`
 - `config/openai-relay.env`
@@ -126,6 +128,7 @@ The verification role checks:
 
 - selected systemd units are enabled and active
 - disabled units remain installed but not enabled/started
+- Admin Web responds on the configured host port
 - libvirt network `agent-sandbox` exists
 - nftables table `inet agent_sandbox` exists
 - the Ubuntu 24.04 base cloud image is present under libvirt-accessible storage
@@ -137,6 +140,11 @@ After the playbook completes, common manual follow-ups are:
 ```bash
 cd /opt/agent-sandbox
 ./.venv/bin/agent-sandbox-cli status --runtime-dir runtime
+curl -I http://127.0.0.1:8100/healthz
+sudo systemctl status agent-sandbox-admin-web.service
 sudo systemctl status agent-sandbox-gateway.service
 sudo virsh net-info agent-sandbox
 ```
+
+If you expose Admin Web beyond localhost, set `config/admin-web.env` from Vault-backed variables,
+enable authentication, and prefer TLS plus ingress policy in front of the service.

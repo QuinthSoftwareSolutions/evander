@@ -44,6 +44,7 @@ def test_install_systemd_units_preflight_checks_for_mssql_worker_password_when_e
     assert 'agent-sandbox-teams-ingest.service' in text
     assert 'agent-sandbox-trigger-orchestrator.service' in text
     assert 'agent-sandbox-http-target-relay.service' in text
+    assert 'agent-sandbox-admin-web.service' in text
 
 
 def test_install_systemd_units_no_longer_requires_removed_per_service_env_files() -> None:
@@ -83,9 +84,13 @@ def test_service_templates_use_optional_shared_secrets_env() -> None:
     trigger_orchestrator = (
         repo / "systemd" / "agent-sandbox-trigger-orchestrator.service.template"
     ).read_text(encoding="utf-8")
+    admin_web = (repo / "systemd" / "agent-sandbox-admin-web.service.template").read_text(encoding="utf-8")
 
     assert "EnvironmentFile=-__PROJECT_DIR__/config/gateway.env" in gateway
     assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in gateway
+    assert "EnvironmentFile=-__PROJECT_DIR__/config/admin-web.env" in admin_web
+    assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in admin_web
+    assert "ExecStart=__PROJECT_DIR__/.venv/bin/agent-sandbox-admin-web --runtime-dir __PROJECT_DIR__/runtime --host ${ADMIN_WEB_HOST} --port ${ADMIN_WEB_PORT}" in admin_web
     assert "EnvironmentFile=-__PROJECT_DIR__/config/openai-relay.env" in openai
     assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in openai
     assert "EnvironmentFile=-__PROJECT_DIR__/config/nuget-relay.env" in nuget

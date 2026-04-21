@@ -510,7 +510,7 @@ function LoginScreen({
             : "Authenticate to access the multi-user admin surface."}
         </p>
         {session.auth_mode === "local_password" ? (
-          <form onSubmit={handleSubmit}>
+          <form className="admin-login-form" onSubmit={handleSubmit}>
             <label className="inspector-label">
               <span>Username</span>
               <input name="username" defaultValue="admin" autoComplete="username" />
@@ -520,23 +520,23 @@ function LoginScreen({
               <input name="password" type="password" autoComplete="current-password" />
             </label>
             {error ? <div className="admin-login-error">{error}</div> : null}
-            <button className="primary" type="submit" disabled={loading}>
+            <button className="admin-shell-button admin-login-action" type="submit" disabled={loading}>
               {loading ? "Signing in..." : "Sign in"}
             </button>
           </form>
         ) : null}
         {session.auth_mode === "azure_sso" ? (
-          <>
+          <div className="admin-login-actions">
             {error ? <div className="admin-login-error">{error}</div> : null}
             <button
-              className="primary"
+              className="admin-shell-button admin-login-action"
               type="button"
               disabled={loading || !session.azure_sso_login_url}
               onClick={onAzureSignIn}
             >
               {loading ? "Redirecting..." : "Sign in with Microsoft"}
             </button>
-          </>
+          </div>
         ) : null}
       </div>
     </div>
