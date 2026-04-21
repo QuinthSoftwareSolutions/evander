@@ -1,0 +1,17 @@
+---
+- name: Run systemd install preflight
+  ansible.builtin.command:
+    cmd: "./scripts/install_systemd_units.sh --preflight"
+  args:
+    chdir: "{{ agent_sandbox_deploy_path }}"
+  changed_when: false
+  environment:
+    SUDO_USER: "{{ agent_sandbox_run_user }}"
+
+- name: Install repo-native systemd units
+  ansible.builtin.command:
+    cmd: "./scripts/install_systemd_units.sh"
+  args:
+    chdir: "{{ agent_sandbox_deploy_path }}"
+  environment:
+    SUDO_USER: "{{ agent_sandbox_run_user }}"

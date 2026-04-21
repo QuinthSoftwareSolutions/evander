@@ -1,0 +1,16 @@
+---
+- name: Create the repo virtualenv with uv
+  ansible.builtin.command:
+    cmd: "uv venv {{ agent_sandbox_deploy_path }}/.venv"
+    creates: "{{ agent_sandbox_deploy_path }}/.venv/bin/python"
+  args:
+    chdir: "{{ agent_sandbox_deploy_path }}"
+  become_user: "{{ agent_sandbox_run_user }}"
+
+- name: Install the repo into the virtualenv
+  ansible.builtin.command:
+    cmd: "uv pip install --python {{ agent_sandbox_deploy_path }}/.venv/bin/python -e .{{ agent_sandbox_python_install_extras }}"
+  args:
+    chdir: "{{ agent_sandbox_deploy_path }}"
+  become_user: "{{ agent_sandbox_run_user }}"
+  changed_when: false

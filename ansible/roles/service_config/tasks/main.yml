@@ -1,0 +1,78 @@
+---
+- name: Render managed env files
+  ansible.builtin.template:
+    src: env_file.j2
+    dest: "{{ agent_sandbox_deploy_path }}/{{ item.path }}"
+    owner: "{{ agent_sandbox_run_user }}"
+    group: "{{ agent_sandbox_run_user }}"
+    mode: "{{ item.mode }}"
+  vars:
+    env_map: "{{ item.env }}"
+  loop:
+    - path: "config/firewall.env"
+      env: "{{ agent_sandbox_firewall_env }}"
+      mode: "0640"
+    - path: "config/gateway.env"
+      env: "{{ agent_sandbox_gateway_env }}"
+      mode: "0600"
+    - path: "config/openai-relay.env"
+      env: "{{ agent_sandbox_openai_relay_env }}"
+      mode: "0600"
+    - path: "config/nuget-relay.env"
+      env: "{{ agent_sandbox_nuget_relay_env }}"
+      mode: "0600"
+    - path: "config/http-target-relay.env"
+      env: "{{ agent_sandbox_http_target_relay_env }}"
+      mode: "0640"
+    - path: "config/ado-worker.env"
+      env: "{{ agent_sandbox_ado_worker_env }}"
+      mode: "0600"
+
+- name: Render optional shared secrets.env
+  ansible.builtin.template:
+    src: env_file.j2
+    dest: "{{ agent_sandbox_deploy_path }}/secrets.env"
+    owner: "{{ agent_sandbox_run_user }}"
+    group: "{{ agent_sandbox_run_user }}"
+    mode: "0600"
+  vars:
+    env_map: "{{ agent_sandbox_shared_secrets_env }}"
+  when: agent_sandbox_render_shared_secrets_env | bool
+
+- name: Remove secrets.env when disabled
+  ansible.builtin.file:
+    path: "{{ agent_sandbox_deploy_path }}/secrets.env"
+    state: absent
+  when: not (agent_sandbox_render_shared_secrets_env | bool)
+
+- name: Render managed worker/global JSON config
+  ansible.builtin.template:
+    src: json_file.j2
+    dest: "{{ agent_sandbox_deploy_path }}/{{ item.path }}"
+    owner: "{{ agent_sandbox_run_user }}"
+    group: "{{ agent_sandbox_run_user }}"
+    mode: "{{ item.mode }}"
+  vars:
+    json_payload: "{{ item.payload }}"
+  loop:
+    - path: "config/ado-worker/config.json"
+      payload: "{{ agent_sandbox_ado_worker_config }}"
+      mode: "0600"
+    - path: "config/discord-ingest/config.json"
+      payload: "{{ agent_sandbox_discord_ingest_config }}"
+      mode: "0640"
+    - path: "config/discord-wake/config.json"
+      payload: "{{ agent_sandbox_discord_wake_config }}"
+      mode: "0640"
+    - path: "config/scheduled-wake/config.json"
+      payload: "{{ agent_sandbox_scheduled_wake_config }}"
+      mode: "0640"
+    - path: "config/teams-ingest/config.json"
+      payload: "{{ agent_sandbox_teams_ingest_config }}"
+      mode: "0640"
+    - path: "config/host-heartbeat/config.json"
+      payload: "{{ agent_sandbox_host_heartbeat_config }}"
+      mode: "0640"
+    - path: "config/trigger-orchestrator/config.json"
+      payload: "{{ agent_sandbox_trigger_orchestrator_config }}"
+      mode: "0640"

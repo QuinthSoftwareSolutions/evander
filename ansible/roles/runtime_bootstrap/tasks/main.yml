@@ -1,0 +1,26 @@
+---
+- name: Ensure managed config directories exist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ agent_sandbox_run_user }}"
+    group: "{{ agent_sandbox_run_user }}"
+    mode: "0750"
+  loop:
+    - "{{ agent_sandbox_deploy_path }}/config"
+    - "{{ agent_sandbox_deploy_path }}/config/ado-worker"
+    - "{{ agent_sandbox_deploy_path }}/config/discord-ingest"
+    - "{{ agent_sandbox_deploy_path }}/config/discord-wake"
+    - "{{ agent_sandbox_deploy_path }}/config/host-heartbeat"
+    - "{{ agent_sandbox_deploy_path }}/config/scheduled-wake"
+    - "{{ agent_sandbox_deploy_path }}/config/teams-ingest"
+    - "{{ agent_sandbox_deploy_path }}/config/trigger-orchestrator"
+    - "{{ agent_sandbox_runtime_dir }}"
+
+- name: Initialize repo runtime state
+  ansible.builtin.command:
+    cmd: "./.venv/bin/agent-sandbox-cli init-state --runtime-dir runtime"
+  args:
+    chdir: "{{ agent_sandbox_deploy_path }}"
+  become_user: "{{ agent_sandbox_run_user }}"
+  changed_when: false

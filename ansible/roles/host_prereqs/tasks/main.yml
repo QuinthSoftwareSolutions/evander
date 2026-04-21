@@ -1,0 +1,36 @@
+---
+- name: Update apt cache
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Install host prerequisite packages
+  ansible.builtin.apt:
+    name: "{{ agent_sandbox_host_packages }}"
+    state: present
+
+- name: Ensure the service account exists
+  ansible.builtin.user:
+    name: "{{ agent_sandbox_run_user }}"
+    shell: /bin/bash
+    create_home: true
+    groups:
+      - libvirt
+      - kvm
+    append: true
+    state: present
+  when: agent_sandbox_manage_run_user | bool
+
+- name: Ensure the deploy root parent exists
+  ansible.builtin.file:
+    path: "{{ agent_sandbox_repo_parent }}"
+    state: directory
+    owner: "{{ agent_sandbox_run_user }}"
+    group: "{{ agent_sandbox_run_user }}"
+    mode: "0755"
+
+- name: Install uv for repo bootstrap
+  ansible.builtin.pip:
+    name: uv
+    executable: pip3
+    extra_args: --break-system-packages
