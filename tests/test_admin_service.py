@@ -13,6 +13,7 @@ from typing import Any
 import agent_sandbox.admin_service as admin_service
 import httpx
 import pytest
+from agent_sandbox.admin_facades import WorkerAdminDependencies, WorkerAdminFacade
 from agent_sandbox.admin_service import AdminService
 from agent_sandbox.models import ApprovalRequest, ApprovalStatus, SessionManifest, ToolName
 
@@ -978,55 +979,83 @@ def test_admin_service_reads_and_writes_ado_worker_global_config(tmp_path: Path)
     assert reread.config["include_comments"] is False
 
 
-def test_admin_service_reads_and_writes_host_heartbeat_worker_global_config(tmp_path: Path) -> None:
+def test_admin_service_reads_and_writes_discord_wake_worker_global_config(tmp_path: Path) -> None:
     service = AdminService(write_config(tmp_path))
 
-    read_result = service.read_worker_global_config("host-heartbeat")
+    read_result = service.read_worker_global_config("discord-wake")
     assert read_result.exists is False
-    assert read_result.path == str(tmp_path / "config" / "host-heartbeat" / "config.json")
-    assert read_result.config["host_heartbeat_poll_interval_seconds"] == 30.0
-    assert read_result.config["host_heartbeat_directory_paths"] == []
+    assert read_result.path == str(tmp_path / "config" / "discord-wake" / "config.json")
+    assert read_result.config["poll_interval_seconds"] == 30.0
+    assert read_result.config["directories"] == []
 
     write_result = service.write_worker_global_config(
-        "host-heartbeat",
+        "discord-wake",
         {
             "runtime_dir": str(tmp_path / "runtime"),
-            "host_heartbeat_directory_paths": ["root/team-a", "root/team-b"],
-            "host_heartbeat_poll_interval_seconds": 12.5,
-            "host_heartbeat_jitter_seconds": 1.5,
-            "host_heartbeat_cooldown_seconds": 90.0,
-            "host_heartbeat_http_timeout_seconds": 15.0,
-            "host_heartbeat_lock_path": None,
-            "host_heartbeat_session_cooldown_path": None,
-            "host_busy_check_script_path": "scripts/check_session_vm_busy.sh",
-            "host_resume_script_path": "scripts/resume_issue_agent.sh",
-            "host_heartbeat_wake_state_path": None,
-            "host_heartbeat_vm_user": "worker",
-            "host_heartbeat_resume_timeout_seconds": 600.0,
-            "host_heartbeat_stream_conflict_policy": "reject",
-            "host_heartbeat_scheduled_wake_prefix_text": "Scheduled wake prefix.",
-            "host_heartbeat_schedule_max_active_per_session": 3,
-            "host_heartbeat_schedule_max_active_total": 20,
-            "host_heartbeat_schedule_min_interval_seconds": 120.0,
+            "directories": ["root/team-a", "root/team-b"],
+            "poll_interval_seconds": 12.5,
+            "jitter_seconds": 1.5,
+            "cooldown_seconds": 90.0,
+            "lock_path": None,
+            "session_cooldown_path": None,
+            "busy_check_script_path": "scripts/check_session_vm_busy.sh",
+            "resume_script_path": "scripts/resume_issue_agent.sh",
+            "wake_state_path": None,
+            "vm_user": "worker",
+            "resume_timeout_seconds": 600.0,
         },
     )
-    assert write_result.config["host_heartbeat_stream_conflict_policy"] == "reject"
-    assert write_result.config["host_heartbeat_scheduled_wake_prefix_text"] == "Scheduled wake prefix."
+    assert write_result.config["directories"] == ["root/team-a", "root/team-b"]
+    assert write_result.config["vm_user"] == "worker"
 
-    config_path = tmp_path / "config" / "host-heartbeat" / "config.json"
+    config_path = tmp_path / "config" / "discord-wake" / "config.json"
     payload = json.loads(config_path.read_text(encoding="utf-8"))
-    assert payload["host_heartbeat_directory_paths"] == ["root/team-a", "root/team-b"]
-    assert payload["host_heartbeat_poll_interval_seconds"] == 12.5
-    assert payload["host_heartbeat_stream_conflict_policy"] == "reject"
-    assert payload["host_heartbeat_vm_user"] == "worker"
-    assert payload["host_heartbeat_schedule_max_active_per_session"] == 3
-    assert payload["host_heartbeat_schedule_max_active_total"] == 20
-    assert payload["host_heartbeat_schedule_min_interval_seconds"] == 120.0
+    assert payload["directories"] == ["root/team-a", "root/team-b"]
+    assert payload["poll_interval_seconds"] == 12.5
+    assert payload["vm_user"] == "worker"
 
-    reread = service.read_worker_global_config("host-heartbeat")
-    assert reread.config["host_heartbeat_directory_paths"] == ["root/team-a", "root/team-b"]
-    assert reread.config["host_heartbeat_stream_conflict_policy"] == "reject"
-    assert reread.config["host_heartbeat_scheduled_wake_prefix_text"] == "Scheduled wake prefix."
+    reread = service.read_worker_global_config("discord-wake")
+    assert reread.config["directories"] == ["root/team-a", "root/team-b"]
+    assert reread.config["vm_user"] == "worker"
+
+
+def test_admin_service_reads_and_writes_scheduled_wake_worker_global_config(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+
+    read_result = service.read_worker_global_config("scheduled-wake")
+    assert read_result.exists is False
+    assert read_result.path == str(tmp_path / "config" / "scheduled-wake" / "config.json")
+    assert read_result.config["poll_interval_seconds"] == 30.0
+    assert read_result.config["directories"] == []
+
+    write_result = service.write_worker_global_config(
+        "scheduled-wake",
+        {
+            "runtime_dir": str(tmp_path / "runtime"),
+            "directories": ["root/team-a"],
+            "poll_interval_seconds": 20.0,
+            "jitter_seconds": 2.0,
+            "cooldown_seconds": 90.0,
+            "lock_path": None,
+            "session_cooldown_path": None,
+            "busy_check_script_path": "scripts/check_session_vm_busy.sh",
+            "resume_script_path": "scripts/resume_issue_agent.sh",
+            "wake_state_path": None,
+            "vm_user": "worker",
+            "resume_timeout_seconds": 600.0,
+            "scheduled_wake_prefix_text": "Scheduled wake prefix.",
+        },
+    )
+    assert write_result.config["directories"] == ["root/team-a"]
+    assert write_result.config["scheduled_wake_prefix_text"] == "Scheduled wake prefix."
+
+    config_path = tmp_path / "config" / "scheduled-wake" / "config.json"
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    assert payload["directories"] == ["root/team-a"]
+    assert payload["scheduled_wake_prefix_text"] == "Scheduled wake prefix."
+
+    reread = service.read_worker_global_config("scheduled-wake")
+    assert reread.config["directories"] == ["root/team-a"]
 
 
 def test_admin_service_reads_and_writes_discord_ingest_worker_global_config(tmp_path: Path) -> None:
@@ -2199,6 +2228,28 @@ def test_list_background_workers_reads_systemd_state(tmp_path: Path, monkeypatch
             "ExecMainCode": "1",
             "ExecMainStatus": "0",
         },
+        "agent-sandbox-discord-wake.service": {
+            "ActiveState": "active",
+            "SubState": "running",
+            "Result": "success",
+            "UnitFileState": "enabled",
+            "Description": "Discord wake worker",
+            "MainPID": "555",
+            "LoadState": "loaded",
+            "ExecMainCode": "1",
+            "ExecMainStatus": "0",
+        },
+        "agent-sandbox-scheduled-wake.service": {
+            "ActiveState": "failed",
+            "SubState": "failed",
+            "Result": "failed",
+            "UnitFileState": "enabled",
+            "Description": "Scheduled wake worker",
+            "MainPID": "0",
+            "LoadState": "loaded",
+            "ExecMainCode": "1",
+            "ExecMainStatus": "2",
+        },
         "agent-sandbox-teams-ingest.service": {
             "ActiveState": "inactive",
             "SubState": "dead",
@@ -2209,17 +2260,6 @@ def test_list_background_workers_reads_systemd_state(tmp_path: Path, monkeypatch
             "LoadState": "loaded",
             "ExecMainCode": "1",
             "ExecMainStatus": "0",
-        },
-        "agent-sandbox-host-heartbeat.service": {
-            "ActiveState": "failed",
-            "SubState": "failed",
-            "Result": "failed",
-            "UnitFileState": "enabled",
-            "Description": "Host heartbeat worker",
-            "MainPID": "0",
-            "LoadState": "loaded",
-            "ExecMainCode": "1",
-            "ExecMainStatus": "2",
         },
         "agent-sandbox-issue-orchestrator.service": {
             "ActiveState": "inactive",
@@ -2262,8 +2302,9 @@ def test_list_background_workers_reads_systemd_state(tmp_path: Path, monkeypatch
     assert [summary.worker_id for summary in summaries] == [
         "ado",
         "discord-ingest",
+        "discord-wake",
+        "scheduled-wake",
         "teams-ingest",
-        "host-heartbeat",
         "issue-orchestrator",
         "effect-orchestrator",
         "trigger-orchestrator",
@@ -2275,21 +2316,24 @@ def test_list_background_workers_reads_systemd_state(tmp_path: Path, monkeypatch
     assert summaries[1].running is True
     assert summaries[1].failed is False
     assert summaries[1].main_pid == 456
-    assert summaries[2].running is False
+    assert summaries[2].running is True
     assert summaries[2].failed is False
-    assert summaries[2].unit_file_state == "disabled"
+    assert summaries[2].main_pid == 555
     assert summaries[3].running is False
     assert summaries[3].failed is True
     assert summaries[3].detail == "load=loaded, exec=1:2"
     assert summaries[4].running is False
     assert summaries[4].failed is False
     assert summaries[4].unit_file_state == "disabled"
-    assert summaries[5].running is True
+    assert summaries[5].running is False
     assert summaries[5].failed is False
-    assert summaries[5].main_pid == 777
+    assert summaries[5].unit_file_state == "disabled"
     assert summaries[6].running is True
     assert summaries[6].failed is False
-    assert summaries[6].main_pid == 789
+    assert summaries[6].main_pid == 777
+    assert summaries[7].running is True
+    assert summaries[7].failed is False
+    assert summaries[7].main_pid == 789
 
 
 def test_list_background_workers_marks_unavailable_when_systemctl_fails(tmp_path: Path, monkeypatch) -> None:
@@ -2360,13 +2404,13 @@ def test_stop_background_worker_controls_systemd_unit(tmp_path: Path, monkeypatc
 
     monkeypatch.setattr("agent_sandbox.admin_service._run_systemd_control", _fake_control)
 
-    result = service.stop_background_worker("host-heartbeat")
+    result = service.stop_background_worker("discord-wake")
 
-    assert calls == [("stop", "agent-sandbox-host-heartbeat.service")]
+    assert calls == [("stop", "agent-sandbox-discord-wake.service")]
     assert result.success is True
-    assert result.worker_id == "host-heartbeat"
+    assert result.worker_id == "discord-wake"
     assert result.action == "stop"
-    assert "Stopped Host Heartbeat Worker" == result.message
+    assert "Stopped Discord Wake Worker" == result.message
 
 
 def test_background_worker_actions_reject_unknown_worker(tmp_path: Path) -> None:
@@ -2440,6 +2484,34 @@ def test_set_issue_plan_clears_existing_summary_when_omitted(tmp_path: Path) -> 
     assert result["summary"] is None
     assert "plan_summary" not in read_result["metadata"]
     assert "plan_summary:" not in yaml_text
+
+
+def test_worker_admin_dependencies_backwards_compatible_without_clear_workflow_run() -> None:
+    facade = WorkerAdminFacade(
+        WorkerAdminDependencies(
+            runtime=object(),
+            config=object(),
+            agent_control_store=object(),
+            normalize_directory_path=lambda directory_path: directory_path or "root",
+            direct_owned_entity_ids=lambda directory_path, **kwargs: set(),
+            read_worker_global_config=lambda worker_id: {"worker_id": worker_id},
+            write_worker_global_config=lambda worker_id, payload: {"worker_id": worker_id, "payload": payload},
+            read_workflow_editor_document=lambda: {"kind": "document"},
+            read_workflow_editor_catalog=lambda: {"kind": "catalog"},
+            validate_workflow_editor_document=lambda **kwargs: {"kind": "validation", **kwargs},
+            save_workflow_editor_document=lambda **kwargs: {"kind": "save", **kwargs},
+            read_workflow_run_snapshot=lambda: {"kind": "snapshot"},
+            workflow_event_journal=lambda: object(),
+            upsert_trigger_config=lambda trigger_id, payload: {"trigger_id": trigger_id, "payload": payload},
+            delete_trigger_config=lambda trigger_id: {"trigger_id": trigger_id},
+            upsert_effect_config=lambda effect_id, payload: {"effect_id": effect_id, "payload": payload},
+            delete_effect_config=lambda effect_id: {"effect_id": effect_id},
+        )
+    )
+
+    assert facade.read_workflow_editor_document() == {"kind": "document"}
+    with pytest.raises(NotImplementedError, match="clear_workflow_run is not configured"):
+        facade.clear_workflow_run("evt-1")
 
 
 def test_get_issue_returns_full_local_record_for_closed_issue(tmp_path: Path) -> None:
@@ -3152,6 +3224,48 @@ def test_clone_repo_into_vm_honors_clone_branch_and_records_base_branch(tmp_path
     assert 'CLONE_BRANCH="release/1.2"' in remote_script
     assert 'git clone --branch "${CLONE_BRANCH}" "${REMOTE_URL}" "${TARGET_DIR}"' in remote_script
     assert 'config agent-sandbox.baseBranch "${CLONE_BRANCH}"' in remote_script
+
+
+def test_clone_repo_into_vm_preserves_canonical_remote_for_remote_sources(tmp_path: Path, monkeypatch: Any) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    captured_ssh_input: list[str] = []
+    remote_source = "git@ssh.dev.azure.com:v3/example/project/sample-repo"
+
+    monkeypatch.setattr("agent_sandbox.admin_service._dominfo_field", lambda vm_name, field_name: None)
+    monkeypatch.setattr("agent_sandbox.admin_service._resolve_vm_ip", lambda vm_name: "192.168.250.10")
+    monkeypatch.setattr("agent_sandbox.admin_service._resolve_private_key_path", lambda: Path("/tmp/test-key"))
+
+    def _fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        if cmd[0].endswith("resolve_repo_source.sh") and "--path-only" in cmd:
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="/src/repo-cache/sample-repo\n", stderr="")
+        if cmd[0].endswith("resolve_repo_source.sh") and "--name-only" in cmd:
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="sample-repo\n", stderr="")
+        if cmd[:5] == ["git", "-C", "/src/repo-cache/sample-repo", "symbolic-ref", "--quiet"]:
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="origin/main\n", stderr="")
+        if cmd[:4] == ["git", "-C", "/src/repo-cache/sample-repo", "branch"]:
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="main\n", stderr="")
+        if cmd[0] == "ssh":
+            captured_ssh_input.append(str(kwargs.get("input") or ""))
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="ok", stderr="")
+
+    monkeypatch.setattr("agent_sandbox.admin_service.subprocess.run", _fake_run)
+
+    service.create_vm(
+        vm_name="lab-vm",
+        session_id="issue-14724-lab-session",
+    )
+    result = service.clone_repo_into_vm(
+        vm_name="lab-vm",
+        session_id="issue-14724-lab-session",
+        repo_source=remote_source,
+    )
+
+    assert result.success is True
+    remote_script = captured_ssh_input[-1]
+    assert f'CANONICAL_REMOTE_URL="{remote_source}"' in remote_script
+    assert 'git -C "${TARGET_DIR}" remote set-url origin "${CANONICAL_REMOTE_URL}"' in remote_script
+    assert 'git -C "${TARGET_DIR}" config "url.${REMOTE_URL}.insteadOf" "${CANONICAL_REMOTE_URL}"' in remote_script
+    assert 'git -C "${TARGET_DIR}" remote add agent "${REMOTE_URL}"' in remote_script
 
 
 def test_bootstrap_python_in_vm_runs_python_bootstrap(tmp_path: Path, monkeypatch: Any) -> None:

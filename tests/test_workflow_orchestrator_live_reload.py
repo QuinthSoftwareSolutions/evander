@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
+import json
 
 from agent_sandbox.admin_service import AdminService
 from agent_sandbox.config import GatewayConfig
@@ -189,3 +190,118 @@ def test_workers_keep_last_known_good_config_when_reload_payload_is_invalid(tmp_
     assert trigger_worker.worker_config.triggers[0].id == "trigger-stable"
     assert effect_worker.worker_config.effects[0].id == "effect-stable"
     assert "keeping last-known-good" in caplog.text
+
+
+def test_workers_reload_when_referenced_workflow_pack_changes(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+
+    packs_dir = tmp_path / "config" / "workflow-packs"
+    packs_dir.mkdir(parents=True, exist_ok=True)
+    pack_path = packs_dir / "reloadable.v1.json"
+    pack_path.write_text(
+        json.dumps(
+            {
+                "pack_id": "reloadable",
+                "pack_version": "v1",
+                "ir": {
+                    "version": "v1",
+                    "nodes": [
+                        {
+                            "id": "trigger-pack-old",
+                            "display_name": "Trigger old",
+                            "type": "trigger:cron",
+                            "expression": "* * * * *",
+                        },
+                        {
+                            "id": "effect-pack-old",
+                            "display_name": "Effect old",
+                            "type": "effect:agent:prompt",
+                            "prompt": "run",
+                        },
+                    ],
+                    "edges": [{"source_id": "trigger-pack-old", "target_id": "effect-pack-old"}],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    _workflow_config_path(tmp_path).parent.mkdir(parents=True, exist_ok=True)
+    _workflow_config_path(tmp_path).write_text(
+        json.dumps(
+            {
+                "runtime_dir": str(runtime_dir),
+                "poll_interval_seconds": 1,
+                "jitter_seconds": 0,
+                "workflow_packs": ["reloadable.v1.json"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    trigger_worker = build_trigger_orchestrator_worker(config, project_dir=tmp_path)
+    effect_worker = build_effect_orchestrator_worker(config, project_dir=tmp_path)
+
+    trigger_events: dict[str, list[TriggerEvent]] = {}
+    executed_effect_ids: list[str] = []
+    trigger_worker.provider_factory.build = lambda trigger: _QueuedTriggerProvider(trigger.id, trigger_events)  # type: ignore[assignment]
+    effect_worker.provider_factory.build = lambda effect: _RecordingEffectProvider(effect.id, executed_effect_ids)  # type: ignore[assignment]
+
+    trigger_events["trigger-pack-old"] = [
+        TriggerEvent(
+            event_id="event-pack-old-1",
+            trigger_id="trigger-pack-old",
+            trigger_type="trigger:cron",
+            occurred_at=datetime(2026, 4, 19, 14, 0, tzinfo=timezone.utc),
+            payload={"version": "old"},
+        )
+    ]
+
+    trigger_worker.run_once()
+    effect_worker.run_once()
+
+    assert executed_effect_ids == ["effect-pack-old"]
+
+    pack_path.write_text(
+        json.dumps(
+            {
+                "pack_id": "reloadable",
+                "pack_version": "v1",
+                "ir": {
+                    "version": "v1",
+                    "nodes": [
+                        {
+                            "id": "trigger-pack-new",
+                            "display_name": "Trigger new",
+                            "type": "trigger:cron",
+                            "expression": "*/5 * * * *",
+                        },
+                        {
+                            "id": "effect-pack-new",
+                            "display_name": "Effect new",
+                            "type": "effect:agent:prompt",
+                            "prompt": "run",
+                        },
+                    ],
+                    "edges": [{"source_id": "trigger-pack-new", "target_id": "effect-pack-new"}],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    trigger_events["trigger-pack-new"] = [
+        TriggerEvent(
+            event_id="event-pack-new-1",
+            trigger_id="trigger-pack-new",
+            trigger_type="trigger:cron",
+            occurred_at=datetime(2026, 4, 19, 14, 1, tzinfo=timezone.utc),
+            payload={"version": "new"},
+        )
+    ]
+
+    trigger_worker.run_once()
+    effect_worker.run_once()
+
+    assert executed_effect_ids == ["effect-pack-old", "effect-pack-new"]
+    assert trigger_worker.worker_config.triggers[0].id == "trigger-pack-new"
+    assert effect_worker.worker_config.effects[0].id == "effect-pack-new"

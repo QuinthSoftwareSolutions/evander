@@ -1719,7 +1719,7 @@ def test_gate_and_order_items_ignores_non_committed_states(worker_config: Worker
     assert skipped == 3
 
 
-def test_gate_and_order_items_appends_acceptance_criteria_to_description(
+def test_gate_and_order_items_appends_bug_sections_to_description(
     worker_config: WorkerConfig,
 ) -> None:
     matched, skipped = gate_and_order_items(
@@ -1730,6 +1730,8 @@ def test_gate_and_order_items_appends_acceptance_criteria_to_description(
                 "fields": {
                     "System.Title": "criteria",
                     "System.Description": "Implement the change",
+                    "Microsoft.VSTS.TCM.ReproSteps": "1. Launch app\n2. Click save",
+                    "Microsoft.VSTS.TCM.SystemInfo": "Browser: Edge",
                     "Microsoft.VSTS.Common.AcceptanceCriteria": "It passes validation",
                     "System.Tags": "truman",
                     "System.State": "Committed",
@@ -1744,7 +1746,10 @@ def test_gate_and_order_items_appends_acceptance_criteria_to_description(
 
     assert skipped == 0
     assert matched[0]["description"] == (
-        "Implement the change\n\nAcceptance Criteria\n\nIt passes validation"
+        "Implement the change\n\n"
+        "Repro Steps\n\n1. Launch app\n2. Click save\n\n"
+        "System Info\n\nBrowser: Edge\n\n"
+        "Acceptance Criteria\n\nIt passes validation"
     )
 
 
@@ -1814,7 +1819,7 @@ def test_process_work_item_writes_yaml_with_required_issue_number_and_metadata(
     assert parsed["generated_at"]
 
 
-def test_process_work_item_writes_yaml_with_acceptance_criteria_appended_to_description(
+def test_process_work_item_writes_yaml_with_bug_sections_appended_to_description(
     worker_config: WorkerConfig,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1827,8 +1832,13 @@ def test_process_work_item_writes_yaml_with_acceptance_criteria_appended_to_desc
 
     item = {
         "id": 402,
-        "title": "YAML acceptance criteria",
-        "description": "Contains details\n\nAcceptance Criteria\n\nMeets the acceptance bar",
+        "title": "YAML bug sections",
+        "description": (
+            "Contains details\n\n"
+            "Repro Steps\n\nOpen the dialog\n\n"
+            "System Info\n\nOS: Ubuntu\n\n"
+            "Acceptance Criteria\n\nMeets the acceptance bar"
+        ),
         "tags": ["backend", "truman"],
         "state": "Committed",
         "url": "https://example/402",
@@ -1839,7 +1849,12 @@ def test_process_work_item_writes_yaml_with_acceptance_criteria_appended_to_desc
 
     yaml_path = worker_config.yaml_output_dir / "work-item-402.yaml"
     parsed = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
-    assert parsed["description"] == "Contains details\n\nAcceptance Criteria\n\nMeets the acceptance bar"
+    assert parsed["description"] == (
+        "Contains details\n\n"
+        "Repro Steps\n\nOpen the dialog\n\n"
+        "System Info\n\nOS: Ubuntu\n\n"
+        "Acceptance Criteria\n\nMeets the acceptance bar"
+    )
 
 
 def test_setup_issue_vm_invocation_once_per_newly_eligible_item(
@@ -1975,6 +1990,8 @@ def test_fetch_work_item_batch_requests_acceptance_criteria_field(
     assert items == []
     assert str(captured["url"]).endswith("/_apis/wit/workitemsbatch")
     assert captured["params"] == {"api-version": "7.1"}
+    assert "Microsoft.VSTS.TCM.ReproSteps" in captured["json"]["fields"]
+    assert "Microsoft.VSTS.TCM.SystemInfo" in captured["json"]["fields"]
     assert "Microsoft.VSTS.Common.AcceptanceCriteria" in captured["json"]["fields"]
 
 

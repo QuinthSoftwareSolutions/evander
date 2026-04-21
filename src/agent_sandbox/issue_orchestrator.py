@@ -19,15 +19,15 @@ from .directory_config import (
     get_domain_base_config,
     validate_effective_domain_payload,
 )
-from .host_heartbeat_worker import (
-    _compute_next_sleep_seconds,
-    _is_session_in_cooldown,
-    _probe_agent_dispatch_state,
-    _set_session_cooldown,
-    _single_instance_lock,
-)
 from .models import DirectoryPath, SessionManifest
 from .runtime import RuntimeContext, build_runtime
+from .wake_dispatch import (
+    compute_next_sleep_seconds,
+    is_session_in_cooldown,
+    probe_agent_dispatch_state,
+    set_session_cooldown,
+    single_instance_lock,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +73,7 @@ class IssueOrchestratorWorker:
         self.cooldown_state_path = worker_config.runtime_dir / "issue-orchestrator-session-cooldown.json"
 
     def run_forever(self) -> None:
-        with _single_instance_lock(self.worker_config.lock_path):
+        with single_instance_lock(self.worker_config.lock_path):
             while True:
                 result = self.run_once()
                 logger.debug(
@@ -85,7 +85,7 @@ class IssueOrchestratorWorker:
                 time.sleep(result.next_sleep_seconds)
 
     def run_once_with_lock(self) -> IssueOrchestratorCycleResult:
-        with _single_instance_lock(self.worker_config.lock_path):
+        with single_instance_lock(self.worker_config.lock_path):
             return self.run_once()
 
     def run_once(self) -> IssueOrchestratorCycleResult:
@@ -131,13 +131,13 @@ class IssueOrchestratorWorker:
                     continue
                 if self._resume_session(session, prompt=prompt):
                     resumed_sessions += 1
-                    _set_session_cooldown(
+                    set_session_cooldown(
                         path=self.cooldown_state_path,
                         session_id=session.session_id,
                         cooldown_seconds=self.worker_config.cooldown_seconds,
                     )
 
-        next_sleep_seconds = _compute_next_sleep_seconds(
+        next_sleep_seconds = compute_next_sleep_seconds(
             poll_interval_seconds=self.worker_config.poll_interval_seconds,
             jitter_seconds=self.worker_config.jitter_seconds,
             cooldown_seconds=self.worker_config.cooldown_seconds,
@@ -251,9 +251,9 @@ class IssueOrchestratorWorker:
             return False
         if self.agent_control_store.is_disabled(session.vm_id):
             return False
-        if _is_session_in_cooldown(path=self.cooldown_state_path, session_id=session.session_id):
+        if is_session_in_cooldown(path=self.cooldown_state_path, session_id=session.session_id):
             return False
-        dispatch_state = _probe_agent_dispatch_state(
+        dispatch_state = probe_agent_dispatch_state(
             session_id=session.session_id,
             vm_id=session.vm_id,
             script_path=self.worker_config.busy_check_script_path,

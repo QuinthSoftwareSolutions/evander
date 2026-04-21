@@ -1,0 +1,15 @@
+{
+  "runtime_dir": "runtime",
+  "directories": [],
+  "poll_interval_seconds": 30,
+  "jitter_seconds": 5,
+  "cooldown_seconds": 60,
+  "lock_path": null,
+  "session_cooldown_path": null,
+  "busy_check_script_path": "scripts/check_session_vm_busy.sh",
+  "resume_script_path": "scripts/resume_issue_agent.sh",
+  "wake_state_path": null,
+  "vm_user": "agent",
+  "resume_timeout_seconds": 1200,
+  "scheduled_wake_prefix_text": "You have unread PR comments. Please fetch them with list_unread_feedback."
+}

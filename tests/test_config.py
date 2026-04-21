@@ -3,8 +3,9 @@ import pytest
 from agent_sandbox.config import (
     AdoWorkerGlobalConfig,
     DiscordIngestWorkerGlobalConfig,
+    DiscordWakeWorkerGlobalConfig,
     GatewayConfig,
-    HostHeartbeatWorkerGlobalConfig,
+    ScheduledWakeWorkerGlobalConfig,
     TeamsIngestWorkerGlobalConfig,
     TriggerOrchestratorWorkerGlobalConfig,
 )
@@ -200,25 +201,40 @@ def test_host_heartbeat_poll_interval_must_be_positive() -> None:
         GatewayConfig.model_validate({"host_heartbeat_poll_interval_seconds": 0})
 
 
-def test_host_heartbeat_worker_global_config_defaults_follow_runtime_dir() -> None:
-    config = HostHeartbeatWorkerGlobalConfig.model_validate({"runtime_dir": "/tmp/agent-sandbox-runtime"})
-    assert str(config.host_heartbeat_lock_path) == "/tmp/agent-sandbox-runtime/host-heartbeat.lock"
-    assert str(config.host_heartbeat_session_cooldown_path) == "/tmp/agent-sandbox-runtime/host-heartbeat-session-cooldown.json"
-    assert str(config.host_heartbeat_wake_state_path) == "/tmp/agent-sandbox-runtime/host-heartbeat-wake-state.json"
-    assert config.host_heartbeat_directory_paths == []
-    assert config.host_heartbeat_schedule_max_active_per_session is None
-    assert config.host_heartbeat_schedule_max_active_total is None
-    assert config.host_heartbeat_schedule_min_interval_seconds is None
+def test_discord_wake_worker_global_config_defaults_follow_runtime_dir() -> None:
+    config = DiscordWakeWorkerGlobalConfig.model_validate({"runtime_dir": "/tmp/agent-sandbox-runtime"})
+    assert str(config.lock_path) == "/tmp/agent-sandbox-runtime/discord-wake.lock"
+    assert str(config.session_cooldown_path) == "/tmp/agent-sandbox-runtime/discord-wake-session-cooldown.json"
+    assert str(config.wake_state_path) == "/tmp/agent-sandbox-runtime/discord-wake-state.json"
+    assert config.directories == []
 
 
-def test_host_heartbeat_worker_global_config_directory_paths_are_normalized() -> None:
-    config = HostHeartbeatWorkerGlobalConfig.model_validate(
+def test_discord_wake_worker_global_config_directory_paths_are_normalized() -> None:
+    config = DiscordWakeWorkerGlobalConfig.model_validate(
         {
             "runtime_dir": "/tmp/agent-sandbox-runtime",
-            "host_heartbeat_directory_paths": [" root/team-a ", "root/team-a/subdir", "  "],
+            "directories": [" root/team-a ", "root/team-a/subdir", "  "],
         }
     )
-    assert config.host_heartbeat_directory_paths == ["root/team-a", "root/team-a/subdir"]
+    assert config.directories == ["root/team-a", "root/team-a/subdir"]
+
+
+def test_scheduled_wake_worker_global_config_defaults_follow_runtime_dir() -> None:
+    config = ScheduledWakeWorkerGlobalConfig.model_validate({"runtime_dir": "/tmp/agent-sandbox-runtime"})
+    assert str(config.lock_path) == "/tmp/agent-sandbox-runtime/scheduled-wake.lock"
+    assert str(config.session_cooldown_path) == "/tmp/agent-sandbox-runtime/scheduled-wake-session-cooldown.json"
+    assert str(config.wake_state_path) == "/tmp/agent-sandbox-runtime/scheduled-wake-state.json"
+    assert config.directories == []
+
+
+def test_scheduled_wake_worker_global_config_directory_paths_are_normalized() -> None:
+    config = ScheduledWakeWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": "/tmp/agent-sandbox-runtime",
+            "directories": [" root/team-a ", "root/team-a/subdir", "  "],
+        }
+    )
+    assert config.directories == ["root/team-a", "root/team-a/subdir"]
 
 
 def test_discord_ingest_worker_global_config_defaults_follow_runtime_dir() -> None:

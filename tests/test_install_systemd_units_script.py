@@ -68,7 +68,10 @@ def test_service_templates_use_optional_shared_secrets_env() -> None:
     http_target = (repo / "systemd" / "agent-sandbox-http-target-relay.service.template").read_text(
         encoding="utf-8"
     )
-    heartbeat = (repo / "systemd" / "agent-sandbox-host-heartbeat.service.template").read_text(
+    discord_wake = (repo / "systemd" / "agent-sandbox-discord-wake.service.template").read_text(
+        encoding="utf-8"
+    )
+    scheduled_wake = (repo / "systemd" / "agent-sandbox-scheduled-wake.service.template").read_text(
         encoding="utf-8"
     )
     teams_ingest = (repo / "systemd" / "agent-sandbox-teams-ingest.service.template").read_text(
@@ -93,8 +96,14 @@ def test_service_templates_use_optional_shared_secrets_env() -> None:
     assert "EnvironmentFile=-__PROJECT_DIR__/config/http-target-relay.env" in http_target
     assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in http_target
     assert "ExecStart=__PROJECT_DIR__/.venv/bin/agent-sandbox-http-target-relay" in http_target
-    assert "EnvironmentFile=-__PROJECT_DIR__/config/host-heartbeat.env" in heartbeat
-    assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in heartbeat
+    assert "Environment=DISCORD_WAKE_LOG_LEVEL=INFO" in discord_wake
+    assert "--log-level ${DISCORD_WAKE_LOG_LEVEL}" in discord_wake
+    assert "ExecStart=__PROJECT_DIR__/.venv/bin/agent-sandbox-discord-wake" in discord_wake
+    assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in discord_wake
+    assert "Environment=SCHEDULED_WAKE_LOG_LEVEL=INFO" in scheduled_wake
+    assert "--log-level ${SCHEDULED_WAKE_LOG_LEVEL}" in scheduled_wake
+    assert "ExecStart=__PROJECT_DIR__/.venv/bin/agent-sandbox-scheduled-wake" in scheduled_wake
+    assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in scheduled_wake
     assert "Environment=TEAMS_INGEST_LOG_LEVEL=INFO" in teams_ingest
     assert "ExecStart=__PROJECT_DIR__/scripts/run_teams_ingest.sh" in teams_ingest
     assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in teams_ingest

@@ -294,6 +294,7 @@ class VmAgentAdminSupport:
         session_id: str,
         repo_name: str,
         issue_setup: Any,
+        repo_source: str | None = None,
         clone_branch: str | None = None,
         issue_number: str | None = None,
         vm_ip: str | None = None,
@@ -319,6 +320,7 @@ class VmAgentAdminSupport:
             raise RuntimeError(f"Unable to resolve SSH access for {vm_name}")
 
         remote_url = f"ssh://{issue_setup.git_ssh_alias}{issue_setup.git_root}/{repo_name}.git"
+        canonical_remote_url = repo_source.strip() if repo_source and _admin_service._is_remote_git_source(repo_source) else ""
         guest_repo_root = f"/home/{vm_user}/{repo_name}"
         agent_pr_note_helper_b64 = _admin_service._guest_agent_pr_note_helper_b64(self.project_dir)
         clone_branch_line = ""
@@ -338,6 +340,7 @@ set -euo pipefail
 . ~/.profile
 TARGET_DIR="{guest_repo_root}"
 REMOTE_URL="{remote_url}"
+CANONICAL_REMOTE_URL="{canonical_remote_url}"
 SESSION_ID="{session_id}"
 VM_NAME="{vm_name}"
 AGENT_PR_NOTE_HELPER_B64="{agent_pr_note_helper_b64}"
@@ -347,7 +350,13 @@ if [[ -e "${{TARGET_DIR}}" ]]; then
   exit 1
 fi
 {clone_command}
-git -C "${{TARGET_DIR}}" remote add agent "${{REMOTE_URL}}"
+if [[ -n "${{CANONICAL_REMOTE_URL}}" ]]; then
+  git -C "${{TARGET_DIR}}" remote set-url origin "${{CANONICAL_REMOTE_URL}}"
+  git -C "${{TARGET_DIR}}" config "url.${{REMOTE_URL}}.insteadOf" "${{CANONICAL_REMOTE_URL}}"
+  git -C "${{TARGET_DIR}}" remote add agent "${{REMOTE_URL}}"
+else
+  git -C "${{TARGET_DIR}}" remote add agent "${{REMOTE_URL}}"
+fi
 git -C "${{TARGET_DIR}}" config user.name "Truman Bot"
 git -C "${{TARGET_DIR}}" config user.email "truman@quinth.se"
 git -C "${{TARGET_DIR}}" config agent-sandbox.sessionId "${{SESSION_ID}}"
@@ -1576,6 +1585,7 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
                 session_id=resolved_session_id,
                 repo_name=resolved_repo_name,
                 issue_setup=issue_setup,
+                repo_source=normalized_repo_source,
                 clone_branch=normalized_clone_branch or None,
                 vm_ip=vm_ip,
             )

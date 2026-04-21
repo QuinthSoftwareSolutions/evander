@@ -282,7 +282,7 @@ When combining Git push automation with PR feedback handling:
 
 1. Complete Git remote setup (`bootstrap_git_vm.sh` + mirror/setup issue helper).
 2. For Azure DevOps PR feedback, ensure `agent-sandbox-ado-worker` is running so feedback ingestion and trigger publication continue.
-3. Keep `agent-sandbox-host-heartbeat.service` only if you still need Discord inbox wakeups, scheduled resumes, or legacy non-ADO feedback polling.
+3. Keep `agent-sandbox-discord-wake.service` and `agent-sandbox-scheduled-wake.service` running if you rely on Discord inbox wakeups or scheduled resumes.
 4. Ensure session policy allows feedback tools for the target provider/repo/PR stream.
 5. In agent logic, post replies with `post_pr_feedback_reply(..., idempotency_key=...)` before `git push-agent` when feedback requires code changes.
 

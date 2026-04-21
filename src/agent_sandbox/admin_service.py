@@ -19,6 +19,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import quote
+from uuid import uuid4
 
 import httpx
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError
@@ -28,10 +29,11 @@ from .agent_control import AgentControlStore
 from .bootstrap import load_host_bootstrap_config, load_runtime_gateway_config, resolve_project_dir
 from .config import (
     AdoWorkerGlobalConfig,
+    DiscordWakeWorkerGlobalConfig,
     DiscordIngestWorkerGlobalConfig,
     GatewayConfig,
-    HostHeartbeatWorkerGlobalConfig,
     IssueOrchestratorWorkerGlobalConfig,
+    ScheduledWakeWorkerGlobalConfig,
     TeamsIngestWorkerGlobalConfig,
     TriggerOrchestratorWorkerGlobalConfig,
 )
@@ -85,17 +87,20 @@ from .events.models import (
     EffectDefinitionDiscriminated,
     GateDefinitionDiscriminated,
     QueryDefinitionDiscriminated,
+    TriggerEvent,
     TriggerDefinitionDiscriminated,
     effective_node_output_schema,
     materialize_node_definition,
 )
+from .triggers.queue import TriggerEventQueue
 from .workflow_graph import build_inbound_edge_index, merge_declared_output_intersection
 
 _WORKER_DEFINITIONS: tuple[tuple[str, str, str], ...] = (
     ("ado", "ADO Worker", "agent-sandbox-ado-worker.service"),
     ("discord-ingest", "Discord Ingest Worker", "agent-sandbox-discord-ingest.service"),
+    ("discord-wake", "Discord Wake Worker", "agent-sandbox-discord-wake.service"),
+    ("scheduled-wake", "Scheduled Wake Worker", "agent-sandbox-scheduled-wake.service"),
     ("teams-ingest", "Teams Ingest Worker", "agent-sandbox-teams-ingest.service"),
-    ("host-heartbeat", "Host Heartbeat Worker", "agent-sandbox-host-heartbeat.service"),
     ("issue-orchestrator", "Issue Orchestrator Worker", "agent-sandbox-issue-orchestrator.service"),
     ("effect-orchestrator", "Effect Orchestrator Worker", "agent-sandbox-effect-orchestrator.service"),
     ("trigger-orchestrator", "Trigger Orchestrator Worker", "agent-sandbox-trigger-orchestrator.service"),
@@ -104,8 +109,9 @@ _WORKER_DEFINITIONS: tuple[tuple[str, str, str], ...] = (
 _WORKER_GLOBAL_CONFIG_PATHS: dict[str, str] = {
     "ado": "config/ado-worker/config.json",
     "discord-ingest": "config/discord-ingest/config.json",
+    "discord-wake": "config/discord-wake/config.json",
+    "scheduled-wake": "config/scheduled-wake/config.json",
     "teams-ingest": "config/teams-ingest/config.json",
-    "host-heartbeat": "config/host-heartbeat/config.json",
     "issue-orchestrator": "config/issue-orchestrator/config.json",
     "effect-orchestrator": "config/trigger-orchestrator/config.json",
     "trigger-orchestrator": "config/trigger-orchestrator/config.json",
@@ -114,8 +120,9 @@ _WORKER_GLOBAL_CONFIG_PATHS: dict[str, str] = {
 _WORKER_GLOBAL_CONFIG_MODELS: dict[str, type[BaseModel]] = {
     "ado": AdoWorkerGlobalConfig,
     "discord-ingest": DiscordIngestWorkerGlobalConfig,
+    "discord-wake": DiscordWakeWorkerGlobalConfig,
+    "scheduled-wake": ScheduledWakeWorkerGlobalConfig,
     "teams-ingest": TeamsIngestWorkerGlobalConfig,
-    "host-heartbeat": HostHeartbeatWorkerGlobalConfig,
     "issue-orchestrator": IssueOrchestratorWorkerGlobalConfig,
     "effect-orchestrator": TriggerOrchestratorWorkerGlobalConfig,
     "trigger-orchestrator": TriggerOrchestratorWorkerGlobalConfig,
@@ -305,10 +312,12 @@ class WorkflowRunNodeActivityPayload(BaseModel):
     started_at: datetime | None = None
     finished_at: datetime | None = None
     dispatch_id: str | None = None
+    error: str | None = None
 
 
 class WorkflowRunSummaryPayload(BaseModel):
     event_id: str
+    run_state: str = "active"
     trace_id: str | None = None
     source_node_id: str | None = None
     source_trigger_type: str | None = None
@@ -316,6 +325,11 @@ class WorkflowRunSummaryPayload(BaseModel):
     occurred_at: datetime | None = None
     latest_activity_at: datetime | None = None
     active_nodes: list[WorkflowRunNodeActivityPayload] = Field(default_factory=list)
+    failed_node_id: str | None = None
+    failed_node_status: str | None = None
+    failed_at: datetime | None = None
+    error: str | None = None
+    resumable: bool = False
 
 
 class WorkflowRunSnapshotPayload(BaseModel):
@@ -323,6 +337,25 @@ class WorkflowRunSnapshotPayload(BaseModel):
     generated_at: datetime
     runs: list[WorkflowRunSummaryPayload] = Field(default_factory=list)
     node_activity: dict[str, dict[str, int]] = Field(default_factory=dict)
+
+
+class WorkflowRunClearPayload(BaseModel):
+    worker_id: str = "trigger-orchestrator"
+    event_id: str
+    cleared_at: datetime
+    queue_records_updated: int = 0
+    effect_records_updated: int = 0
+    gate_records_updated: int = 0
+    await_agent_records_removed: int = 0
+
+
+class WorkflowRunResumePayload(BaseModel):
+    worker_id: str = "trigger-orchestrator"
+    event_id: str
+    resumed_at: datetime
+    resume_event_id: str
+    source_node_id: str
+    target_node_id: str
 
 
 class WorkflowEditorFieldOption(BaseModel):
@@ -1550,6 +1583,15 @@ def _resolve_canonical_origin_url_for_repo(repo_path: str, remote_name: str = "o
     return remote_url
 
 
+def _is_remote_git_source(source: str) -> bool:
+    text = str(source or "").strip()
+    if not text:
+        return False
+    if re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", text):
+        return True
+    return bool(re.match(r"^[^/@:\s]+@[^:\s]+:.+", text))
+
+
 def _mirror_remote_name_for_repo(repo_path: str) -> str:
     current_branch_result = _run_subprocess(
         ["git", "-C", repo_path, "branch", "--show-current"],
@@ -2595,6 +2637,8 @@ class AdminService:
                 validate_workflow_editor_document=self._validate_workflow_editor_document,
                 save_workflow_editor_document=self._save_workflow_editor_document,
                 read_workflow_run_snapshot=self._read_workflow_run_snapshot,
+                clear_workflow_run=self._clear_workflow_run,
+                resume_workflow_run=self._resume_workflow_run,
                 workflow_event_journal=self._workflow_event_journal,
                 upsert_trigger_config=self._upsert_trigger_config,
                 delete_trigger_config=self._delete_trigger_config,
@@ -3058,6 +3102,7 @@ class AdminService:
         session_id: str,
         repo_name: str,
         issue_setup: EffectiveIssueSetupConfig,
+        repo_source: str | None = None,
         clone_branch: str | None = None,
         issue_number: str | None = None,
         vm_ip: str | None = None,
@@ -3083,6 +3128,7 @@ class AdminService:
             raise RuntimeError(f"Unable to resolve SSH access for {vm_name}")
 
         remote_url = f"ssh://{issue_setup.git_ssh_alias}{issue_setup.git_root}/{repo_name}.git"
+        canonical_remote_url = repo_source.strip() if repo_source and _is_remote_git_source(repo_source) else ""
         guest_repo_root = f"/home/{vm_user}/{repo_name}"
         agent_pr_note_helper_b64 = _guest_agent_pr_note_helper_b64(self.project_dir)
         clone_branch_line = ""
@@ -3102,6 +3148,7 @@ set -euo pipefail
 . ~/.profile
 TARGET_DIR="{guest_repo_root}"
 REMOTE_URL="{remote_url}"
+CANONICAL_REMOTE_URL="{canonical_remote_url}"
 SESSION_ID="{session_id}"
 VM_NAME="{vm_name}"
 AGENT_PR_NOTE_HELPER_B64="{agent_pr_note_helper_b64}"
@@ -3111,7 +3158,13 @@ if [[ -e "${{TARGET_DIR}}" ]]; then
   exit 1
 fi
 {clone_command}
-git -C "${{TARGET_DIR}}" remote add agent "${{REMOTE_URL}}"
+if [[ -n "${{CANONICAL_REMOTE_URL}}" ]]; then
+  git -C "${{TARGET_DIR}}" remote set-url origin "${{CANONICAL_REMOTE_URL}}"
+  git -C "${{TARGET_DIR}}" config "url.${{REMOTE_URL}}.insteadOf" "${{CANONICAL_REMOTE_URL}}"
+  git -C "${{TARGET_DIR}}" remote add agent "${{REMOTE_URL}}"
+else
+  git -C "${{TARGET_DIR}}" remote add agent "${{REMOTE_URL}}"
+fi
 git -C "${{TARGET_DIR}}" config user.name "Truman Bot"
 git -C "${{TARGET_DIR}}" config user.email "truman@quinth.se"
 git -C "${{TARGET_DIR}}" config agent-sandbox.sessionId "${{SESSION_ID}}"
@@ -3906,6 +3959,12 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
     def read_workflow_run_snapshot(self) -> WorkflowRunSnapshotPayload:
         return self.workflow_config_admin.read_workflow_run_snapshot()
 
+    def clear_workflow_run(self, event_id: str) -> WorkflowRunClearPayload:
+        return self.workflow_config_admin.clear_workflow_run(event_id)
+
+    def resume_workflow_run(self, event_id: str) -> WorkflowRunResumePayload:
+        return self.workflow_config_admin.resume_workflow_run(event_id)
+
     def workflow_event_journal(self) -> WorkflowEventJournal:
         return self.workflow_config_admin.workflow_event_journal()
 
@@ -4181,27 +4240,11 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
         )
 
     def _read_workflow_run_snapshot(self) -> WorkflowRunSnapshotPayload:
-        worker_config = self._read_worker_global_config("trigger-orchestrator").config
-        runtime_dir = _resolve_path_setting(
-            base_dir=self.project_dir,
-            value=worker_config.get("runtime_dir"),
-            fallback=self.config.runtime_dir,
-        )
-        event_queue_store_path = _resolve_path_setting(
-            base_dir=self.project_dir,
-            value=worker_config.get("event_queue_store_path"),
-            fallback=runtime_dir / "trigger-orchestrator-events.json",
-        )
-        effect_execution_store_path = _resolve_path_setting(
-            base_dir=self.project_dir,
-            value=worker_config.get("effect_execution_store_path"),
-            fallback=runtime_dir / "effect-orchestrator-executions.json",
-        )
-        gate_execution_store_path = _resolve_path_setting(
-            base_dir=self.project_dir,
-            value=worker_config.get("gate_execution_store_path"),
-            fallback=runtime_dir / "gate-orchestrator-executions.json",
-        )
+        stores = self._workflow_run_store_paths()
+        runtime_dir = stores["runtime_dir"]
+        event_queue_store_path = stores["event_queue_store_path"]
+        effect_execution_store_path = stores["effect_execution_store_path"]
+        gate_execution_store_path = stores["gate_execution_store_path"]
         runs_by_event: dict[str, dict[str, object]] = {}
         node_activity: dict[str, dict[str, int]] = {}
 
@@ -4230,6 +4273,8 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
             started_at: datetime | None = None,
             finished_at: datetime | None = None,
             dispatch_id: str | None = None,
+            error: str | None = None,
+            resumable: bool = False,
         ) -> None:
             normalized_node_id = str(node_id or "").strip()
             if not normalized_node_id:
@@ -4254,6 +4299,19 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
                 not isinstance(previous_latest, datetime) or latest_activity_at > previous_latest
             ):
                 run["latest_activity_at"] = latest_activity_at
+            if status == "failed":
+                run["run_state"] = "errored"
+                previous_failed_at = run.get("failed_at")
+                if latest_activity_at is not None and (
+                    not isinstance(previous_failed_at, datetime) or latest_activity_at >= previous_failed_at
+                ):
+                    run["failed_node_id"] = normalized_node_id
+                    run["failed_node_status"] = status
+                    run["failed_at"] = latest_activity_at
+                    run["error"] = error
+                    run["resumable"] = resumable
+            elif run.get("run_state") != "errored":
+                run["run_state"] = "active"
             active_nodes = run.setdefault("active_nodes", [])
             assert isinstance(active_nodes, list)
             active_nodes.append(
@@ -4264,6 +4322,7 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
                     started_at=started_at,
                     finished_at=finished_at,
                     dispatch_id=dispatch_id,
+                    error=error,
                 )
             )
             node_status_counts = node_activity.setdefault(normalized_node_id, {})
@@ -4297,7 +4356,9 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
             if not isinstance(raw_record, dict):
                 continue
             status = str(raw_record.get("status") or "").strip()
-            if status not in {"running", "waiting"}:
+            if raw_record.get("dismissed_at"):
+                continue
+            if status not in {"running", "waiting", "failed"}:
                 continue
             event_id = str(raw_record.get("event_id") or execution_id).strip()
             node_id = str(raw_record.get("effect_id") or "").strip()
@@ -4311,6 +4372,8 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
                 source_trigger_type=_coerce_optional_string(raw_record.get("source_trigger_type")),
                 started_at=_coerce_optional_datetime(raw_record.get("started_at")),
                 finished_at=_coerce_optional_datetime(raw_record.get("finished_at")),
+                error=_coerce_optional_string(raw_record.get("error")),
+                resumable=bool(_coerce_optional_string(raw_record.get("source_node_id")) and isinstance(raw_record.get("input_payload"), dict)),
             )
 
         gate_payload = _read_json_object(gate_execution_store_path)
@@ -4318,7 +4381,9 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
             if not isinstance(raw_record, dict):
                 continue
             status = str(raw_record.get("status") or "").strip()
-            if status not in {"running", "waiting"}:
+            if raw_record.get("dismissed_at"):
+                continue
+            if status not in {"running", "waiting", "failed"}:
                 continue
             event_id = str(raw_record.get("event_id") or execution_id).strip()
             node_id = str(raw_record.get("gate_id") or "").strip()
@@ -4332,6 +4397,8 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
                 source_trigger_type=_coerce_optional_string(raw_record.get("source_trigger_type")),
                 started_at=_coerce_optional_datetime(raw_record.get("started_at")),
                 finished_at=_coerce_optional_datetime(raw_record.get("finished_at")),
+                error=_coerce_optional_string(raw_record.get("error")),
+                resumable=bool(_coerce_optional_string(raw_record.get("source_node_id")) and isinstance(raw_record.get("input_payload"), dict)),
             )
 
         await_agent_payload = _read_json_object(
@@ -4383,6 +4450,292 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
             runs=runs,
             node_activity={node_id: dict(sorted(counts.items())) for node_id, counts in sorted(node_activity.items())},
         )
+
+    def _clear_workflow_run(self, event_id: str) -> WorkflowRunClearPayload:
+        normalized_event_id = str(event_id or "").strip()
+        if not normalized_event_id:
+            raise ValueError("Workflow run event_id is required.")
+
+        stores = self._workflow_run_store_paths()
+        runtime_dir = stores["runtime_dir"]
+        event_queue_store_path = stores["event_queue_store_path"]
+        effect_execution_store_path = stores["effect_execution_store_path"]
+        gate_execution_store_path = stores["gate_execution_store_path"]
+        await_agent_store_path = stores["await_agent_store_path"]
+        legacy_await_agent_store_path = stores["legacy_await_agent_store_path"]
+
+        cleared_at = _utc_now()
+        cleared_at_text = cleared_at.isoformat()
+        clear_reason = "manual_clear_stale_workflow_runs"
+        clear_error = "Manually cleared stale workflow run from editor state."
+
+        queue_payload = _read_json_object(event_queue_store_path)
+        queue_records_updated = 0
+        for record_key, raw_record in queue_payload.items():
+            if not isinstance(raw_record, dict):
+                continue
+            record_event_id = str(raw_record.get("event_id") or record_key).strip()
+            if record_event_id != normalized_event_id:
+                continue
+            delivery_state = str(raw_record.get("delivery_state") or "").strip()
+            if delivery_state == "delivered":
+                continue
+            raw_record["delivery_state"] = "delivered"
+            raw_record["delivered_at"] = cleared_at_text
+            raw_record["clear_reason"] = clear_reason
+            raw_record["error"] = clear_error
+            queue_records_updated += 1
+
+        effect_payload = _read_json_object(effect_execution_store_path)
+        effect_records_updated = 0
+        for execution_id, raw_record in effect_payload.items():
+            if not isinstance(raw_record, dict):
+                continue
+            record_event_id = str(raw_record.get("event_id") or execution_id).strip()
+            if record_event_id != normalized_event_id:
+                continue
+            status = str(raw_record.get("status") or "").strip()
+            if status == "failed":
+                raw_record["dismissed_at"] = cleared_at_text
+                raw_record["dismiss_reason"] = "manual_dismiss_errored_workflow_run"
+                effect_records_updated += 1
+                continue
+            if status not in {"running", "waiting"}:
+                continue
+            raw_record["status"] = "failed"
+            raw_record["finished_at"] = cleared_at_text
+            raw_record["cleared_at"] = cleared_at_text
+            raw_record["clear_reason"] = clear_reason
+            raw_record["error"] = clear_error
+            raw_record["dismissed_at"] = cleared_at_text
+            raw_record["dismiss_reason"] = "manual_clear_stale_workflow_runs"
+            effect_records_updated += 1
+
+        gate_payload = _read_json_object(gate_execution_store_path)
+        gate_records_updated = 0
+        for execution_id, raw_record in gate_payload.items():
+            if not isinstance(raw_record, dict):
+                continue
+            record_event_id = str(raw_record.get("event_id") or execution_id).strip()
+            if record_event_id != normalized_event_id:
+                continue
+            status = str(raw_record.get("status") or "").strip()
+            if status == "failed":
+                raw_record["dismissed_at"] = cleared_at_text
+                raw_record["dismiss_reason"] = "manual_dismiss_errored_workflow_run"
+                gate_records_updated += 1
+                continue
+            if status not in {"running", "waiting"}:
+                continue
+            raw_record["status"] = "failed"
+            raw_record["finished_at"] = cleared_at_text
+            raw_record["cleared_at"] = cleared_at_text
+            raw_record["clear_reason"] = clear_reason
+            raw_record["error"] = clear_error
+            raw_record["dismissed_at"] = cleared_at_text
+            raw_record["dismiss_reason"] = "manual_clear_stale_workflow_runs"
+            gate_records_updated += 1
+
+        await_agent_records_removed = 0
+        await_agent_payload = _read_json_object(await_agent_store_path)
+        matching_await_keys = [
+            record_key
+            for record_key, raw_record in await_agent_payload.items()
+            if isinstance(raw_record, dict)
+            and ((_coerce_optional_string(raw_record.get("prompt_event_id")) or record_key) == normalized_event_id)
+        ]
+        for record_key in matching_await_keys:
+            del await_agent_payload[record_key]
+            await_agent_records_removed += 1
+
+        legacy_await_agent_payload = _read_json_object(legacy_await_agent_store_path)
+        legacy_matching_await_keys = [
+            record_key
+            for record_key, raw_record in legacy_await_agent_payload.items()
+            if isinstance(raw_record, dict)
+            and ((_coerce_optional_string(raw_record.get("prompt_event_id")) or record_key) == normalized_event_id)
+        ]
+        for record_key in legacy_matching_await_keys:
+            del legacy_await_agent_payload[record_key]
+            await_agent_records_removed += 1
+
+        if (
+            queue_records_updated == 0
+            and effect_records_updated == 0
+            and gate_records_updated == 0
+            and await_agent_records_removed == 0
+        ):
+            raise ValueError(f"Workflow run not found or already inactive: {normalized_event_id}")
+
+        self._write_json_file_atomic(event_queue_store_path, queue_payload)
+        self._write_json_file_atomic(effect_execution_store_path, effect_payload)
+        self._write_json_file_atomic(gate_execution_store_path, gate_payload)
+        await_agent_store_path.parent.mkdir(parents=True, exist_ok=True)
+        self._write_json_file_atomic(await_agent_store_path, await_agent_payload)
+        if legacy_await_agent_store_path.exists() or legacy_await_agent_payload:
+            legacy_await_agent_store_path.parent.mkdir(parents=True, exist_ok=True)
+            self._write_json_file_atomic(legacy_await_agent_store_path, legacy_await_agent_payload)
+        self._workflow_event_journal().append(
+            "workflow.run.cleared",
+            source="workflow_editor",
+            subject_id=normalized_event_id,
+            payload={
+                "queue_records_updated": queue_records_updated,
+                "effect_records_updated": effect_records_updated,
+                "gate_records_updated": gate_records_updated,
+                "await_agent_records_removed": await_agent_records_removed,
+            },
+        )
+        return WorkflowRunClearPayload(
+            event_id=normalized_event_id,
+            cleared_at=cleared_at,
+            queue_records_updated=queue_records_updated,
+            effect_records_updated=effect_records_updated,
+            gate_records_updated=gate_records_updated,
+            await_agent_records_removed=await_agent_records_removed,
+        )
+
+    def _resume_workflow_run(self, event_id: str) -> WorkflowRunResumePayload:
+        normalized_event_id = str(event_id or "").strip()
+        if not normalized_event_id:
+            raise ValueError("Workflow run event_id is required.")
+
+        stores = self._workflow_run_store_paths()
+        event_queue_store_path = stores["event_queue_store_path"]
+        effect_execution_store_path = stores["effect_execution_store_path"]
+        gate_execution_store_path = stores["gate_execution_store_path"]
+
+        failed_record = self._latest_resumable_failed_workflow_record(
+            event_id=normalized_event_id,
+            effect_payload=_read_json_object(effect_execution_store_path),
+            gate_payload=_read_json_object(gate_execution_store_path),
+        )
+        if failed_record is None:
+            raise ValueError(f"Workflow run is not resumable: {normalized_event_id}")
+
+        resumed_at = _utc_now()
+        source_node_id = str(failed_record["source_node_id"])
+        source_trigger_type = str(failed_record["source_trigger_type"])
+        target_node_id = str(failed_record["node_id"])
+        input_payload = dict(failed_record["input_payload"])
+        input_payload["__resume_target_node_id"] = target_node_id
+        input_payload["__resume_source_event_id"] = normalized_event_id
+        resume_event_id = f"{normalized_event_id}:resume:{uuid4().hex[:12]}"
+
+        TriggerEventQueue(event_queue_store_path).publish(
+            TriggerEvent(
+                event_id=resume_event_id,
+                trigger_id=source_node_id,
+                trigger_type=source_trigger_type,
+                trace_id=str(failed_record["trace_id"]),
+                occurred_at=resumed_at,
+                payload=input_payload,
+            )
+        )
+        self._workflow_event_journal().append(
+            "workflow.run.resumed",
+            source="workflow_editor",
+            subject_id=normalized_event_id,
+            payload={
+                "resume_event_id": resume_event_id,
+                "source_node_id": source_node_id,
+                "target_node_id": target_node_id,
+            },
+        )
+        return WorkflowRunResumePayload(
+            event_id=normalized_event_id,
+            resumed_at=resumed_at,
+            resume_event_id=resume_event_id,
+            source_node_id=source_node_id,
+            target_node_id=target_node_id,
+        )
+
+    def _workflow_run_store_paths(self) -> dict[str, Path]:
+        worker_config = self._read_worker_global_config("trigger-orchestrator").config
+        runtime_dir = _resolve_path_setting(
+            base_dir=self.project_dir,
+            value=worker_config.get("runtime_dir"),
+            fallback=self.config.runtime_dir,
+        )
+        return {
+            "runtime_dir": runtime_dir,
+            "event_queue_store_path": _resolve_path_setting(
+                base_dir=self.project_dir,
+                value=worker_config.get("event_queue_store_path"),
+                fallback=runtime_dir / "trigger-orchestrator-events.json",
+            ),
+            "effect_execution_store_path": _resolve_path_setting(
+                base_dir=self.project_dir,
+                value=worker_config.get("effect_execution_store_path"),
+                fallback=runtime_dir / "effect-orchestrator-executions.json",
+            ),
+            "gate_execution_store_path": _resolve_path_setting(
+                base_dir=self.project_dir,
+                value=worker_config.get("gate_execution_store_path"),
+                fallback=runtime_dir / "gate-orchestrator-executions.json",
+            ),
+            "await_agent_store_path": runtime_dir / "providers" / "gates" / "await-agent" / "pending.json",
+            "legacy_await_agent_store_path": runtime_dir / "await-agent-pending.json",
+        }
+
+    def _latest_resumable_failed_workflow_record(
+        self,
+        *,
+        event_id: str,
+        effect_payload: dict[str, object],
+        gate_payload: dict[str, object],
+    ) -> dict[str, object] | None:
+        candidates: list[dict[str, object]] = []
+
+        def collect(records: dict[str, object], *, node_id_field: str) -> None:
+            for record_key, raw_record in records.items():
+                if not isinstance(raw_record, dict):
+                    continue
+                if raw_record.get("dismissed_at"):
+                    continue
+                if str(raw_record.get("event_id") or record_key).strip() != event_id:
+                    continue
+                if str(raw_record.get("status") or "").strip() != "failed":
+                    continue
+                source_node_id = _coerce_optional_string(raw_record.get("source_node_id"))
+                source_trigger_type = _coerce_optional_string(raw_record.get("source_trigger_type"))
+                node_id = _coerce_optional_string(raw_record.get(node_id_field))
+                trace_id = _coerce_optional_string(raw_record.get("trace_id"))
+                input_payload = raw_record.get("input_payload")
+                if (
+                    source_node_id is None
+                    or source_trigger_type is None
+                    or node_id is None
+                    or trace_id is None
+                    or not isinstance(input_payload, dict)
+                ):
+                    continue
+                finished_at = _coerce_optional_datetime(raw_record.get("finished_at"))
+                started_at = _coerce_optional_datetime(raw_record.get("started_at"))
+                candidates.append(
+                    {
+                        "node_id": node_id,
+                        "source_node_id": source_node_id,
+                        "source_trigger_type": source_trigger_type,
+                        "trace_id": trace_id,
+                        "input_payload": dict(input_payload),
+                        "finished_at": finished_at,
+                        "started_at": started_at,
+                    }
+                )
+
+        collect(effect_payload, node_id_field="effect_id")
+        collect(gate_payload, node_id_field="gate_id")
+        if not candidates:
+            return None
+        candidates.sort(
+            key=lambda item: (
+                item.get("finished_at") or item.get("started_at") or datetime.min.replace(tzinfo=UTC),
+                str(item.get("node_id") or ""),
+            ),
+            reverse=True,
+        )
+        return candidates[0]
 
     def _workflow_event_journal(self) -> WorkflowEventJournal:
         worker_config = self._read_worker_global_config("trigger-orchestrator").config

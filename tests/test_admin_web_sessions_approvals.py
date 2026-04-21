@@ -1,0 +1,280 @@
+from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
+from starlette.testclient import TestClient
+
+from agent_sandbox.admin_service import AdminService
+from agent_sandbox.admin_web import create_app
+from agent_sandbox.models import ApprovalRequest, ApprovalStatus, SessionManifest, ToolName
+
+
+def write_config(tmp_path: Path) -> Path:
+    runtime_dir = tmp_path / "runtime"
+    config_path = tmp_path / "gateway.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                f'runtime_dir: "{runtime_dir}"',
+                f'audit_log_path: "{runtime_dir / "audit.jsonl"}"',
+                f'session_store_path: "{runtime_dir / "sessions.json"}"',
+                f'approval_store_path: "{runtime_dir / "approvals.json"}"',
+                f'draft_store_path: "{runtime_dir / "drafts.json"}"',
+                f'email_store_path: "{runtime_dir / "emails.json"}"',
+                f'discord_command_store_path: "{runtime_dir / "discord_commands.json"}"',
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return config_path
+
+
+def test_admin_web_exposes_approvals_index_detail_and_decision(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.sessions.put(
+        "issue-14084-session",
+        SessionManifest(
+            session_id="issue-14084-session",
+            vm_id="vm-14084",
+            allowed_tools=[ToolName.APPROVAL_SUBMIT, ToolName.APPROVAL_CHECK],
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+        ),
+    )
+    service.runtime.approvals.put(
+        "approval-1",
+        ApprovalRequest(
+            request_id="approval-1",
+            session_id="issue-14084-session",
+            action_type="email_send_approved",
+            tool_name="email_send_approved",
+            payload_digest="digest",
+            human_summary="Send release email",
+            payload={"token": "secret", "body": "hello"},
+            directory_path="root",
+            vm_id="vm-14084",
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    client = TestClient(create_app(service))
+
+    index_response = client.get("/api/admin/approvals?statuses=pending")
+    detail_response = client.get("/api/admin/approvals/approval-1")
+    decision_response = client.post(
+        "/api/admin/approvals/approval-1/decision",
+        json={"approver": "alice", "approve": False, "reason": "unsafe"},
+    )
+
+    assert index_response.status_code == 200
+    assert index_response.json()["health"]["pending"] == 1
+    assert index_response.json()["items"][0]["request_id"] == "approval-1"
+    assert detail_response.status_code == 200
+    assert detail_response.json()["request"]["tool_name"] == "email_send_approved"
+    assert detail_response.json()["request"]["payload"]["token"] == "<redacted>"
+    assert detail_response.json()["redacted_payload"]["token"] == "<redacted>"
+    assert decision_response.status_code == 200
+    assert decision_response.json()["request"]["status"] == "denied"
+
+
+def test_admin_web_approval_detail_falls_back_to_action_type_for_tool_name(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.sessions.put(
+        "issue-14084-session",
+        SessionManifest(
+            session_id="issue-14084-session",
+            vm_id="vm-14084",
+            allowed_tools=[ToolName.APPROVAL_SUBMIT, ToolName.APPROVAL_CHECK],
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+        ),
+    )
+    service.runtime.approvals.put(
+        "approval-2",
+        ApprovalRequest(
+            request_id="approval-2",
+            session_id="issue-14084-session",
+            action_type="shell_exec_approved",
+            tool_name=None,
+            payload_digest="digest",
+            human_summary="Run approved shell command",
+            payload={"secret": "top-secret", "command": "echo ok"},
+            directory_path="root",
+            vm_id="vm-14084",
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    client = TestClient(create_app(service))
+
+    detail_response = client.get("/api/admin/approvals/approval-2")
+
+    assert detail_response.status_code == 200
+    assert detail_response.json()["request"]["tool_name"] == "shell_exec_approved"
+    assert detail_response.json()["request"]["payload"]["secret"] == "<redacted>"
+
+
+def test_admin_web_rejects_invalid_approval_decisions(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.sessions.put(
+        "issue-14084-session",
+        SessionManifest(
+            session_id="issue-14084-session",
+            vm_id="vm-14084",
+            allowed_tools=[ToolName.APPROVAL_SUBMIT, ToolName.APPROVAL_CHECK],
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+        ),
+    )
+    service.runtime.approvals.put(
+        "approval-1",
+        ApprovalRequest(
+            request_id="approval-1",
+            session_id="issue-14084-session",
+            action_type="email_send_approved",
+            tool_name="email_send_approved",
+            payload_digest="digest",
+            human_summary="Send release email",
+            payload={"body": "hello"},
+            directory_path="root",
+            vm_id="vm-14084",
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    client = TestClient(create_app(service))
+
+    missing_approver = client.post(
+        "/api/admin/approvals/approval-1/decision",
+        json={"approver": "", "approve": True, "reason": "ship it"},
+    )
+    missing_reason = client.post(
+        "/api/admin/approvals/approval-1/decision",
+        json={"approver": "alice", "approve": True, "reason": ""},
+    )
+    bad_approve_type = client.post(
+        "/api/admin/approvals/approval-1/decision",
+        json={"approver": "alice", "approve": "yes", "reason": "ship it"},
+    )
+
+    assert missing_approver.status_code == 400
+    assert missing_approver.json()["error"] == "Approver is required."
+    assert missing_reason.status_code == 400
+    assert missing_reason.json()["error"] == "Reason is required."
+    assert bad_approve_type.status_code == 400
+    assert bad_approve_type.json()["error"] == "approve must be a boolean."
+
+
+def test_admin_web_exposes_sessions_catalog_list_detail_and_mutations(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.sessions.put(
+        "issue-14085-session",
+        SessionManifest(
+            session_id="issue-14085-session",
+            vm_id="vm-14085",
+            model="gpt-5.3-codex",
+            allowed_tools=[ToolName.APPROVAL_CHECK],
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+        ),
+    )
+    client = TestClient(create_app(service))
+
+    catalog_response = client.get("/api/admin/sessions/catalog")
+    list_response = client.get("/api/admin/sessions")
+    detail_response = client.get("/api/admin/sessions/issue-14085-session")
+    model_response = client.put(
+        "/api/admin/sessions/issue-14085-session/model",
+        json={"model": "gpt-5.5"},
+    )
+    tools_response = client.put(
+        "/api/admin/sessions/issue-14085-session/allowed-tools",
+        json={"allowed_tools": ["approval_check", "approval_submit"]},
+    )
+    renew_response = client.post(
+        "/api/admin/sessions/issue-14085-session/renew",
+        json={"extension": "6h"},
+    )
+    revoke_response = client.post("/api/admin/sessions/issue-14085-session/revoke")
+
+    assert catalog_response.status_code == 200
+    assert any(item["value"] == "approval_check" for item in catalog_response.json()["tool_options"])
+    assert list_response.status_code == 200
+    assert list_response.json()["items"][0]["session_id"] == "issue-14085-session"
+    assert list_response.json()["active_items"][0]["session_id"] == "issue-14085-session"
+    assert list_response.json()["counts"]["active"] == 1
+    assert detail_response.status_code == 200
+    assert detail_response.json()["session"]["model"] == "gpt-5.3-codex"
+    assert detail_response.json()["summary_json"]["session_id"] == "issue-14085-session"
+    assert model_response.status_code == 200
+    assert model_response.json()["action"] == "set_session_model"
+    assert model_response.json()["session"]["model"] == "gpt-5.5"
+    assert tools_response.status_code == 200
+    assert tools_response.json()["action"] == "set_session_allowed_tools"
+    assert tools_response.json()["session"]["allowed_tools"] == ["approval_check", "approval_submit"]
+    assert renew_response.status_code == 200
+    assert renew_response.json()["action"] == "renew_session"
+    assert revoke_response.status_code == 200
+    assert revoke_response.json()["action"] == "revoke_session"
+
+
+def test_admin_web_rejects_blank_session_model(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.sessions.put(
+        "issue-14085-session",
+        SessionManifest(
+            session_id="issue-14085-session",
+            vm_id="vm-14085",
+            allowed_tools=[ToolName.APPROVAL_CHECK],
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+        ),
+    )
+    client = TestClient(create_app(service))
+
+    response = client.put(
+        "/api/admin/sessions/issue-14085-session/model",
+        json={"model": ""},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"] == "Model is required."
+
+
+def test_admin_web_exposes_wake_schedule_crud(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.sessions.put(
+        "issue-14086-session",
+        SessionManifest(
+            session_id="issue-14086-session",
+            vm_id="vm-14086",
+            allowed_tools=[ToolName.SCHEDULE_RESUME],
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+        ),
+    )
+    client = TestClient(create_app(service))
+
+    create_response = client.post(
+        "/api/admin/sessions/issue-14086-session/wake-schedules",
+        json={
+            "prompt": "Resume work",
+            "cron": "*/15 * * * *",
+            "resume_mode": "same_context",
+            "enabled": True,
+        },
+    )
+    request_id = create_response.json()["item"]["request_id"]
+    list_response = client.get("/api/admin/sessions/issue-14086-session/wake-schedules")
+    update_response = client.patch(
+        f"/api/admin/sessions/wake-schedules/{request_id}",
+        json={"prompt": "Resume carefully", "enabled": False},
+    )
+    update_resume_response = client.patch(
+        f"/api/admin/sessions/wake-schedules/{request_id}",
+        json={"resume_at": (datetime.now(UTC) + timedelta(minutes=15)).isoformat(), "cron": None},
+    )
+    delete_response = client.delete(f"/api/admin/sessions/wake-schedules/{request_id}")
+
+    assert create_response.status_code == 200
+    assert create_response.json()["item"]["schedule_kind"] == "cron"
+    assert list_response.status_code == 200
+    assert list_response.json()["items"][0]["request_id"] == request_id
+    assert update_response.status_code == 200
+    assert update_response.json()["item"]["enabled"] is False
+    assert update_resume_response.status_code == 200
+    assert update_resume_response.json()["item"]["schedule_kind"] == "resume_at"
+    assert delete_response.status_code == 200
+    assert delete_response.json()["ok"] is True

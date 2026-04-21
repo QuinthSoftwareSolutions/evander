@@ -31,6 +31,7 @@ import {
   type WorkflowRunSnapshot,
   type WorkflowRunSummary,
 } from "./types";
+import { useAdminUi } from "./features/admin/AdminContext";
 
 type GraphNodeData = {
   id: string;
@@ -49,6 +50,20 @@ type SaveState = "idle" | "saving" | "saved";
 type BindingOption = {
   value: string;
   label: string;
+};
+
+type SnapGuide = {
+  orientation: "horizontal" | "vertical";
+  position: number;
+};
+
+type NodeBounds = {
+  left: number;
+  centerX: number;
+  right: number;
+  top: number;
+  centerY: number;
+  bottom: number;
 };
 
 const SYSTEM_BINDING_OPTIONS: ReadonlyArray<BindingOption> = [
@@ -80,7 +95,10 @@ const NODE_GROUPS: ReadonlyArray<{
 ];
 
 const RUNTIME_POLL_INTERVAL_MS = 5000;
-const NODE_STATUS_ORDER = ["running", "waiting", "inflight", "pending"] as const;
+const NODE_STATUS_ORDER = ["failed", "running", "waiting", "inflight", "pending"] as const;
+const SNAP_THRESHOLD = 12;
+const FALLBACK_NODE_WIDTH = 212;
+const FALLBACK_NODE_HEIGHT = 108;
 
 function WorkflowNodeCard({ data, selected }: NodeProps) {
   const nodeData = data as GraphNodeData;
@@ -620,6 +638,83 @@ function currentPositionsFromNodes(nodes: Node<GraphNodeData>[]): Record<string,
   return Object.fromEntries(nodes.map((node) => [node.id, node.position]));
 }
 
+function nodeBounds(node: Node): NodeBounds {
+  const width = node.measured?.width ?? node.width ?? FALLBACK_NODE_WIDTH;
+  const height = node.measured?.height ?? node.height ?? FALLBACK_NODE_HEIGHT;
+  const left = node.position.x;
+  const top = node.position.y;
+  return {
+    left,
+    centerX: left + width / 2,
+    right: left + width,
+    top,
+    centerY: top + height / 2,
+    bottom: top + height,
+  };
+}
+
+function closestSnapDelta(sourceAnchors: number[], targetAnchors: number[]): { delta: number; guide: number } | null {
+  let closest: { delta: number; guide: number } | null = null;
+  for (const sourceAnchor of sourceAnchors) {
+    for (const targetAnchor of targetAnchors) {
+      const delta = targetAnchor - sourceAnchor;
+      if (Math.abs(delta) > SNAP_THRESHOLD) continue;
+      if (!closest || Math.abs(delta) < Math.abs(closest.delta)) {
+        closest = { delta, guide: targetAnchor };
+      }
+    }
+  }
+  return closest;
+}
+
+function snapDraggedNodes(activeNode: Node, draggedNodes: Node<GraphNodeData>[], allNodes: Node<GraphNodeData>[]) {
+  const stationaryNodes = allNodes.filter((node) => !draggedNodes.some((dragged) => dragged.id === node.id));
+  if (stationaryNodes.length === 0) {
+    return { snappedNodes: draggedNodes, guides: [] as SnapGuide[] };
+  }
+  const activeBounds = nodeBounds(activeNode);
+  let bestX: { delta: number; guide: number } | null = null;
+  let bestY: { delta: number; guide: number } | null = null;
+
+  for (const candidate of stationaryNodes) {
+    const candidateBounds = nodeBounds(candidate);
+    const xSnap = closestSnapDelta(
+      [activeBounds.left, activeBounds.centerX, activeBounds.right],
+      [candidateBounds.left, candidateBounds.centerX, candidateBounds.right],
+    );
+    if (xSnap && (!bestX || Math.abs(xSnap.delta) < Math.abs(bestX.delta))) {
+      bestX = xSnap;
+    }
+    const ySnap = closestSnapDelta(
+      [activeBounds.top, activeBounds.centerY, activeBounds.bottom],
+      [candidateBounds.top, candidateBounds.centerY, candidateBounds.bottom],
+    );
+    if (ySnap && (!bestY || Math.abs(ySnap.delta) < Math.abs(bestY.delta))) {
+      bestY = ySnap;
+    }
+  }
+
+  if (!bestX && !bestY) {
+    return { snappedNodes: draggedNodes, guides: [] as SnapGuide[] };
+  }
+
+  const xDelta = bestX?.delta ?? 0;
+  const yDelta = bestY?.delta ?? 0;
+  return {
+    snappedNodes: draggedNodes.map((node) => ({
+      ...node,
+      position: {
+        x: node.position.x + xDelta,
+        y: node.position.y + yDelta,
+      },
+    })),
+    guides: [
+      ...(bestX ? [{ orientation: "vertical" as const, position: bestX.guide }] : []),
+      ...(bestY ? [{ orientation: "horizontal" as const, position: bestY.guide }] : []),
+    ],
+  };
+}
+
 function formatRuntimeTimestamp(value: string | null | undefined): string {
   if (!value) return "Unknown time";
   const date = new Date(value);
@@ -629,7 +724,8 @@ function formatRuntimeTimestamp(value: string | null | undefined): string {
 
 function summarizeRunNode(activity: WorkflowRunNodeActivity): string {
   const countLabel = activity.count > 1 ? ` x${activity.count}` : "";
-  return `${activity.node_id} ${activity.status}${countLabel}`;
+  const errorLabel = activity.error ? `: ${activity.error}` : "";
+  return `${activity.node_id} ${activity.status}${countLabel}${errorLabel}`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -1231,6 +1327,7 @@ function activeEffectTargetKey(values: Record<string, unknown>): EffectTargetKey
 }
 
 export default function App() {
+  const { privilegedUnlocked } = useAdminUi();
   const appShellRef = useRef<HTMLDivElement | null>(null);
   const hasAutoFitRef = useRef(false);
   const copiedNodeRef = useRef<WorkflowNodeConfig | null>(null);
@@ -1251,8 +1348,12 @@ export default function App() {
   const [inspectorStringListDrafts, setInspectorStringListDrafts] = useState<Record<string, string>>({});
   const [inspectorFieldModes, setInspectorFieldModes] = useState<Record<string, "literal" | "bind" | "template">>({});
   const [rawJsonDraft, setRawJsonDraft] = useState("{}");
+  const [clearingRunIds, setClearingRunIds] = useState<Record<string, boolean>>({});
+  const [resumingRunIds, setResumingRunIds] = useState<Record<string, boolean>>({});
+  const [snapGuides, setSnapGuides] = useState<SnapGuide[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [saveState, setSaveState] = useState<SaveState>("idle");
+  const editLocked = !privilegedUnlocked;
 
   useEffect(() => {
     Promise.all([
@@ -1293,6 +1394,55 @@ export default function App() {
     return () => stream.close();
   }, []);
 
+  async function clearWorkflowRun(eventId: string, runState?: string) {
+    const normalizedEventId = eventId.trim();
+    if (!normalizedEventId || clearingRunIds[normalizedEventId] || editLocked) return;
+    const verb = runState === "errored" ? "Dismiss" : "Clear";
+    if (!window.confirm(`${verb} workflow run ${normalizedEventId}?`)) return;
+    setClearingRunIds((current) => ({ ...current, [normalizedEventId]: true }));
+    try {
+      await fetchJson(`/api/workflow-editor/runs/${encodeURIComponent(normalizedEventId)}`, {
+        method: "DELETE",
+      });
+      setRunSnapshot((current) => {
+        if (!current) return current;
+        return {
+          ...current,
+          runs: current.runs.filter((run) => run.event_id !== normalizedEventId),
+        };
+      });
+      setError(null);
+    } catch (reason: unknown) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setClearingRunIds((current) => {
+        const next = { ...current };
+        delete next[normalizedEventId];
+        return next;
+      });
+    }
+  }
+
+  async function resumeWorkflowRun(eventId: string) {
+    const normalizedEventId = eventId.trim();
+    if (!normalizedEventId || resumingRunIds[normalizedEventId] || editLocked) return;
+    setResumingRunIds((current) => ({ ...current, [normalizedEventId]: true }));
+    try {
+      await fetchJson(`/api/workflow-editor/runs/${encodeURIComponent(normalizedEventId)}/resume`, {
+        method: "POST",
+      });
+      setError(null);
+    } catch (reason: unknown) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setResumingRunIds((current) => {
+        const next = { ...current };
+        delete next[normalizedEventId];
+        return next;
+      });
+    }
+  }
+
   useEffect(() => {
     if (!document) return;
     setFlowNodes((currentNodes) =>
@@ -1318,7 +1468,7 @@ export default function App() {
 
   const config = document?.config ?? emptyConfig();
   const layout = document?.layout ?? emptyLayout();
-  const activeRuns = runSnapshot?.runs ?? [];
+  const visibleRuns = runSnapshot?.runs ?? [];
   const selectedNode = selectedNodeIds.length === 1 && selectedNodeId ? nodeById(config, selectedNodeId) : undefined;
   const selectedCatalogEntry = selectedNode ? getCatalogEntry(catalog, selectedNode.type) : undefined;
   const selectedEdge = selectedEdgeId
@@ -1444,12 +1594,23 @@ export default function App() {
     setFlowNodes((currentNodes) => applyNodeChanges(changes, currentNodes) as Node<GraphNodeData>[]);
   }
 
+  function updateDraggedNodePositions(activeNode: Node, draggedNodes: Node[]) {
+    setFlowNodes((currentNodes) => {
+      const draggedNodeIds = new Set(draggedNodes.map((node) => node.id));
+      const typedDraggedNodes = draggedNodes as Node<GraphNodeData>[];
+      const { snappedNodes, guides } = snapDraggedNodes(activeNode, typedDraggedNodes, currentNodes);
+      setSnapGuides(guides);
+      const snappedById = new Map(snappedNodes.map((node) => [node.id, node]));
+      return currentNodes.map((node) => snappedById.get(node.id) ?? node);
+    });
+  }
+
   function updateEdgeChanges(changes: Parameters<typeof applyEdgeChanges>[0]) {
     setFlowEdges((currentEdges) => applyEdgeChanges(changes, currentEdges));
   }
 
   function deleteSelectedEdge() {
-    if (!document || !selectedEdgeId) return;
+    if (!document || !selectedEdgeId || editLocked) return;
     const nextConfig = cloneConfig(document.config);
     nextConfig.edges = nextConfig.edges.filter(
       (edge) => edgeId(edge) !== selectedEdgeId,
@@ -1460,7 +1621,7 @@ export default function App() {
   }
 
   function deleteNodes(nodeIds: string[]) {
-    if (!document || nodeIds.length === 0) return;
+    if (!document || nodeIds.length === 0 || editLocked) return;
     const deletedNodeIds = new Set(nodeIds);
     const nextConfig = cloneConfig(document.config);
     nextConfig.triggers = (nextConfig.triggers ?? []).filter((node) => !deletedNodeIds.has(node.id));
@@ -1492,7 +1653,7 @@ export default function App() {
       return;
     }
     if (isPaste) {
-      if (!document || !copiedNodeRef.current) return;
+      if (!document || !copiedNodeRef.current || editLocked) return;
       event.preventDefault();
       const templateNode = copiedNodeRef.current;
       const templateKind = nodeKindFromType(templateNode.type);
@@ -1525,7 +1686,8 @@ export default function App() {
   }
 
   function persistNodePositions(nodes: Node[]) {
-    if (!document) return;
+    if (!document || editLocked) return;
+    setSnapGuides([]);
     const nextLayout = cloneLayout(document.layout);
     for (const node of nodes) {
       nextLayout.nodes[node.id] = node.position;
@@ -1538,7 +1700,7 @@ export default function App() {
   }
 
   function addNode(kind: WorkflowNodeKind, type: string) {
-    if (!document) return;
+    if (!document || editLocked) return;
     const nextConfig = cloneConfig(document.config);
     nextConfig.triggers ??= [];
     nextConfig.gates ??= [];
@@ -1583,7 +1745,7 @@ export default function App() {
   }
 
   function applyInspectorChanges() {
-    if (!document || !selectedNode) return;
+    if (!document || !selectedNode || editLocked) return;
     try {
       const rawId = inspectorNodeId.trim();
       const rawName = inspectorDisplayName.trim();
@@ -1668,7 +1830,7 @@ export default function App() {
   }
 
   function onConnect(connection: Connection) {
-    if (!document || !connection.source || !connection.target) return;
+    if (!document || !connection.source || !connection.target || editLocked) return;
     const validationError = validateConnection(
       document.config,
       catalog,
@@ -1703,7 +1865,7 @@ export default function App() {
   }
 
   function onEdgesDelete(deletedEdges: Edge[]) {
-    if (!document) return;
+    if (!document || editLocked) return;
     const deleted = new Set(deletedEdges.map((edge) => edge.id));
     const nextConfig = cloneConfig(document.config);
     nextConfig.edges = nextConfig.edges.filter(
@@ -1714,6 +1876,7 @@ export default function App() {
   }
 
   function onNodesDelete(deletedNodes: Node[]) {
+    if (editLocked) return;
     deleteNodes(deletedNodes.map((node) => node.id));
   }
 
@@ -1733,7 +1896,7 @@ export default function App() {
   }
 
   async function saveDocument() {
-    if (!document) return;
+    if (!document || editLocked) return;
     setSaveState("saving");
     setError(null);
     try {
@@ -1814,7 +1977,7 @@ export default function App() {
     if (!hasCollapsedTargetUi || !effectTargetField) return null;
     const value = inspectorKnownValues[effectTargetKey];
     const mode = inspectorFieldModes[effectTargetKey] ?? fieldValueMode(effectTargetField, value);
-    const isDisabled = effectTargetField.read_only;
+    const isDisabled = effectTargetField.read_only || editLocked;
     const targetTypeLabel = selectedNode?.type === "effect:agent:prompt" ? "Prompt target type" : "Target type";
     const targetPlaceholder =
       effectTargetKey === "session_id"
@@ -1938,6 +2101,7 @@ export default function App() {
   }
 
   function addObjectListItem(key: string, field: WorkflowEditorFieldDefinition) {
+    if (editLocked) return;
     setInspectorKnownValues((current) => {
       const currentItems = Array.isArray(current[key]) ? [...current[key]] : [];
       const nextItem = Object.fromEntries(
@@ -1951,6 +2115,7 @@ export default function App() {
   }
 
   function removeObjectListItem(key: string, index: number) {
+    if (editLocked) return;
     setInspectorKnownValues((current) => {
       const currentItems = Array.isArray(current[key]) ? [...current[key]] : [];
       currentItems.splice(index, 1);
@@ -1961,7 +2126,7 @@ export default function App() {
   function renderField(field: WorkflowEditorFieldDefinition) {
     const value = inspectorKnownValues[field.key];
     const mode = inspectorFieldModes[field.key] ?? fieldValueMode(field, value);
-    const isDisabled = field.read_only;
+    const isDisabled = field.read_only || editLocked;
 
     if (field.kind === "string") {
       return (
@@ -2194,7 +2359,7 @@ export default function App() {
               <div key={`${field.key}-${index}`} className="object-list-item">
                 <div className="object-list-title">
                   <span>Item {index + 1}</span>
-                  <button type="button" className="subtle-button" onClick={() => removeObjectListItem(field.key, index)}>
+                  <button type="button" className="subtle-button" onClick={() => removeObjectListItem(field.key, index)} disabled={isDisabled}>
                     Remove
                   </button>
                 </div>
@@ -2282,7 +2447,7 @@ export default function App() {
               </div>
             );
           })}
-          <button type="button" className="subtle-button" onClick={() => addObjectListItem(field.key, field)}>
+          <button type="button" className="subtle-button" onClick={() => addObjectListItem(field.key, field)} disabled={isDisabled}>
             Add item
           </button>
         </div>
@@ -2298,190 +2463,243 @@ export default function App() {
   }));
 
   return (
-    <div className="app-shell" ref={appShellRef} tabIndex={-1} onKeyDown={handleAppShellKeyDown}>
-      <aside className="sidebar">
-        <div className="sidebar-section">
-          <div className="eyebrow">Workflow editor</div>
-          <h1>Workflow editor</h1>
-          <p>Drag nodes, connect edges, and edit typed node config with literals or upstream bindings.</p>
-        </div>
+    <div className="admin-page workflow-embedded-page">
+      <div className="app-shell" ref={appShellRef} tabIndex={-1} onKeyDown={handleAppShellKeyDown}>
+          <aside className="sidebar">
+            {editLocked ? <div className="callout warning-callout workflow-lock-callout">Unlock privileged operations to modify workflow state or clear runtime runs.</div> : null}
 
-        <details className="sidebar-section current-runs-section">
-          <summary className="current-runs-summary">
-            <span className="section-label current-runs-label">Current runs</span>
-            <span className="current-runs-count">{activeRuns.length}</span>
-          </summary>
-          <p className="runtime-summary">
-            {activeRuns.length === 0
-              ? "No active workflow runs."
-              : `${activeRuns.length} active ${activeRuns.length === 1 ? "run" : "runs"} on the graph.`}
-          </p>
-          <div className="runtime-runs">
-            {activeRuns.map((run: WorkflowRunSummary) => (
-              <div key={run.event_id} className="runtime-run-card">
-                <div className="runtime-run-header">
-                  <div className="runtime-run-event">{run.event_id}</div>
-                  <div className={`runtime-run-state state-${run.delivery_state ?? "active"}`}>
-                    {run.delivery_state ?? "active"}
-                  </div>
-                </div>
-                <div className="runtime-run-meta">
-                  Last activity {formatRuntimeTimestamp(run.latest_activity_at ?? run.occurred_at)}
-                </div>
-                <div className="runtime-run-nodes">
-                  {run.active_nodes.map((activity, index) => (
-                    <div key={`${run.event_id}-${activity.node_id}-${activity.status}-${index}`} className="runtime-run-node">
-                      {summarizeRunNode(activity)}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ))}
-          </div>
-        </details>
-
-        <div className="sidebar-section">
-          <div className="section-label">Create</div>
-          {createEntriesByKind.map((group) => (
-            <details key={group.kind} className="create-group" open={group.kind === "trigger"}>
-              <summary className="create-group-summary">
-                <span>{group.label}</span>
-                <span className="create-group-count">{group.entries.length}</span>
+            <details className="sidebar-section current-runs-section">
+              <summary className="current-runs-summary">
+                <span className="section-label current-runs-label">Current runs</span>
+                <span className="current-runs-count">{visibleRuns.length}</span>
               </summary>
-              <p className="create-group-description">{group.description}</p>
-              <div className="create-group-actions">
-                {group.entries.map((entry) => (
-                  <button key={entry.type} onClick={() => addNode(entry.kind, entry.type)}>
-                    {entry.label}
-                  </button>
+              <p className="runtime-summary">
+                {visibleRuns.length === 0
+                  ? "No active or errored workflow runs."
+                  : `${visibleRuns.length} ${visibleRuns.length === 1 ? "run" : "runs"} visible on the graph.`}
+              </p>
+              <div className="runtime-runs">
+                {visibleRuns.map((run: WorkflowRunSummary) => (
+                  <div key={run.event_id} className="runtime-run-card">
+                    <div className="runtime-run-header">
+                      <div className="runtime-run-event">{run.event_id}</div>
+                      <div className={`runtime-run-state state-${run.run_state === "errored" ? "failed" : run.delivery_state ?? "active"}`}>
+                        {run.run_state === "errored" ? "errored" : run.delivery_state ?? "active"}
+                      </div>
+                    </div>
+                    <div className="runtime-run-meta">
+                      Last activity {formatRuntimeTimestamp(run.latest_activity_at ?? run.occurred_at)}
+                    </div>
+                    {run.run_state === "errored" ? (
+                      <div className="runtime-run-error">
+                        Failed at <strong>{run.failed_node_id ?? "unknown node"}</strong>
+                        {run.error ? `: ${run.error}` : ""}
+                      </div>
+                    ) : null}
+                    <div className="runtime-run-nodes">
+                      {run.active_nodes.map((activity, index) => (
+                        <div key={`${run.event_id}-${activity.node_id}-${activity.status}-${index}`} className="runtime-run-node">
+                          {summarizeRunNode(activity)}
+                        </div>
+                      ))}
+                    </div>
+                    <div className="runtime-run-actions">
+                      {run.run_state === "errored" && run.resumable ? (
+                        <button
+                          type="button"
+                          className="subtle-button"
+                          onClick={() => void resumeWorkflowRun(run.event_id)}
+                          disabled={Boolean(resumingRunIds[run.event_id]) || editLocked}
+                        >
+                          {resumingRunIds[run.event_id] ? "Resuming..." : "Resume from failure"}
+                        </button>
+                      ) : null}
+                      <button
+                        type="button"
+                        className="subtle-button runtime-run-clear"
+                          onClick={() => void clearWorkflowRun(run.event_id, run.run_state)}
+                        disabled={Boolean(clearingRunIds[run.event_id]) || editLocked}
+                      >
+                        {clearingRunIds[run.event_id]
+                          ? run.run_state === "errored"
+                            ? "Dismissing..."
+                            : "Clearing..."
+                          : run.run_state === "errored"
+                            ? "Dismiss run"
+                            : "Clear run"}
+                      </button>
+                    </div>
+                  </div>
                 ))}
               </div>
             </details>
-          ))}
-        </div>
 
-        <div className="sidebar-section">
-          <div className="section-label">Save</div>
-          <button onClick={() => void validateDocument()}>Validate</button>
-          <button className="primary" onClick={() => void saveDocument()}>
-            {saveState === "saving" ? "Saving..." : "Save workflow"}
-          </button>
-          {error ? <div className="error-box save-error-box">{error}</div> : null}
-          {document ? (
-            <div className="path-note">
-              <div>{document.config_path}</div>
-              <div>{document.layout_path}</div>
+            <div className="sidebar-section">
+              <div className="section-label">Create</div>
+              {createEntriesByKind.map((group) => (
+                <details key={group.kind} className="create-group" open={group.kind === "trigger"}>
+                  <summary className="create-group-summary">
+                    <span>{group.label}</span>
+                    <span className="create-group-count">{group.entries.length}</span>
+                  </summary>
+                  <p className="create-group-description">{group.description}</p>
+                  <div className="create-group-actions">
+                    {group.entries.map((entry) => (
+                      <button key={entry.type} onClick={() => addNode(entry.kind, entry.type)} disabled={editLocked}>
+                        {entry.label}
+                      </button>
+                    ))}
+                  </div>
+                </details>
+              ))}
             </div>
-          ) : null}
-        </div>
 
-        {selectedNodeIds.length > 1 ? (
-          <div className="sidebar-section inspector">
-            <div className="section-label">Selection</div>
-            <div className="inspector-summary">
-              <div>{selectedNodeIds.length} nodes selected</div>
+            <div className="sidebar-section">
+              <div className="section-label">Save</div>
+              <button onClick={() => void validateDocument()}>Validate</button>
+              <button className="primary" onClick={() => void saveDocument()} disabled={editLocked}>
+                {saveState === "saving" ? "Saving..." : "Save workflow"}
+              </button>
+              {error ? <div className="error-box save-error-box">{error}</div> : null}
+              {document ? (
+                <div className="path-note">
+                  <div>{document.config_path}</div>
+                  <div>{document.layout_path}</div>
+                </div>
+              ) : null}
             </div>
-            <button onClick={() => setProgrammaticSelection([])}>Clear selection</button>
-            <button onClick={selectDownstreamBranch} disabled={!selectedNodeId}>
-              Select downstream branch
-            </button>
-            <button className="danger" onClick={deleteSelectedNode}>
-              Delete selected nodes
-            </button>
-          </div>
-        ) : null}
 
-        {selectedNode ? (
-          <div className="sidebar-section inspector">
-            <div className="section-label">Inspector</div>
-            <div className="inspector-summary">
-              <div>{selectedNode.type}</div>
-              <div>{selectedNode.id}</div>
-            </div>
-            <button onClick={selectDownstreamBranch}>Select downstream branch</button>
-            <label className="inspector-label">
-              <span>Node id</span>
-              <input value={inspectorNodeId} onChange={(event) => setInspectorNodeId(event.target.value)} />
-            </label>
-            <label className="inspector-label">
-              <span>Display name</span>
-              <input
-                value={inspectorDisplayName}
-                onChange={(event) => setInspectorDisplayName(event.target.value)}
-              />
-            </label>
-
-            {renderEffectTargetField()}
-            {inspectorFields.map((field) => renderField(field))}
-
-            {Object.keys(inspectorUnknownValues).length > 0 ? (
-              <details className="raw-json-panel">
-                <summary>Additional raw JSON</summary>
-                <p className="field-description">These keys are preserved because they are not in the current catalog.</p>
-                <textarea value={rawJsonDraft} rows={8} readOnly />
-              </details>
+            {selectedNodeIds.length > 1 ? (
+              <div className="sidebar-section inspector">
+                <div className="section-label">Selection</div>
+                <div className="inspector-summary">
+                  <div>{selectedNodeIds.length} nodes selected</div>
+                </div>
+                <button onClick={() => setProgrammaticSelection([])}>Clear selection</button>
+                <button onClick={selectDownstreamBranch} disabled={!selectedNodeId}>
+                  Select downstream branch
+                </button>
+                <button className="danger" onClick={deleteSelectedNode} disabled={editLocked}>
+                  Delete selected nodes
+                </button>
+              </div>
             ) : null}
 
-            <button className="primary" onClick={applyInspectorChanges}>
-              Apply node changes
-            </button>
-            <button className="danger" onClick={deleteSelectedNode}>
-              Delete node
-            </button>
-          </div>
-        ) : null}
+            {selectedNode ? (
+              <div className="sidebar-section inspector">
+                <div className="section-label">Inspector</div>
+                <div className="inspector-summary">
+                  <div>{selectedNode.type}</div>
+                  <div>{selectedNode.id}</div>
+                </div>
+                <button onClick={selectDownstreamBranch}>Select downstream branch</button>
+                <label className="inspector-label">
+                  <span>Node id</span>
+                  <input value={inspectorNodeId} onChange={(event) => setInspectorNodeId(event.target.value)} />
+                </label>
+                <label className="inspector-label">
+                  <span>Display name</span>
+                  <input
+                    value={inspectorDisplayName}
+                    onChange={(event) => setInspectorDisplayName(event.target.value)}
+                  />
+                </label>
 
-        {selectedEdge ? (
-          <div className="sidebar-section inspector">
-            <div className="section-label">Edge</div>
-            <div className="inspector-summary">
-              <div>{selectedEdge.source_id}</div>
-              {selectedEdge.source_port ? <div>Port: {selectedEdge.source_port}</div> : null}
-              <div>{selectedEdge.target_id}</div>
-              {selectedEdge.allow_cycle ? <div>Cycle return</div> : null}
-            </div>
-            <button className="danger" onClick={deleteSelectedEdge}>
-              Delete edge
-            </button>
-          </div>
-        ) : null}
+                {renderEffectTargetField()}
+                {inspectorFields.map((field) => renderField(field))}
 
-        {error ? <div className="error-box">{error}</div> : null}
-      </aside>
+                {Object.keys(inspectorUnknownValues).length > 0 ? (
+                  <details className="raw-json-panel">
+                    <summary>Additional raw JSON</summary>
+                    <p className="field-description">These keys are preserved because they are not in the current catalog.</p>
+                    <textarea value={rawJsonDraft} rows={8} readOnly />
+                  </details>
+                ) : null}
 
-      <main className="canvas-shell">
-        <ReactFlow
-          nodes={flowNodes}
-          edges={flowEdges}
-          nodeTypes={nodeTypes}
-          onInit={setFlowInstance}
-          onNodesChange={updateNodePositions}
-          onEdgesChange={updateEdgeChanges}
-          onNodeClick={(_, node) => {
-            setSelectedNodeId(node.id);
-            setSelectedEdgeId(null);
-            appShellRef.current?.focus();
-          }}
-          onEdgeClick={(_, edge) => {
-            setProgrammaticSelection([]);
-            setSelectedEdgeId(edge.id);
-          }}
-          onNodeDragStop={(_, node, nodes) => persistNodePositions(nodes.length > 0 ? nodes : [node])}
-          onPaneClick={() => {
-            setSelectedEdgeId(null);
-          }}
-          onConnect={onConnect}
-          onEdgesDelete={onEdgesDelete}
-          onNodesDelete={onNodesDelete}
-          fitView
-          deleteKeyCode={["Backspace", "Delete"]}
-          multiSelectionKeyCode={["Control", "Meta"]}
-        >
-          <MiniMap />
-          <Controls />
-          <Background gap={20} size={1} />
-        </ReactFlow>
-      </main>
+                <button className="primary" onClick={applyInspectorChanges} disabled={editLocked}>
+                  Apply node changes
+                </button>
+                <button className="danger" onClick={deleteSelectedNode} disabled={editLocked}>
+                  Delete node
+                </button>
+              </div>
+            ) : null}
+
+            {selectedEdge ? (
+              <div className="sidebar-section inspector">
+                <div className="section-label">Edge</div>
+                <div className="inspector-summary">
+                  <div>{selectedEdge.source_id}</div>
+                  {selectedEdge.source_port ? <div>Port: {selectedEdge.source_port}</div> : null}
+                  <div>{selectedEdge.target_id}</div>
+                  {selectedEdge.allow_cycle ? <div>Cycle return</div> : null}
+                </div>
+                <button className="danger" onClick={deleteSelectedEdge} disabled={editLocked}>
+                  Delete edge
+                </button>
+              </div>
+            ) : null}
+
+            {error ? <div className="error-box">{error}</div> : null}
+          </aside>
+
+          <main className="canvas-shell">
+            <ReactFlow
+              nodes={flowNodes}
+              edges={flowEdges}
+              nodeTypes={nodeTypes}
+              onInit={setFlowInstance}
+              onNodesChange={updateNodePositions}
+              onEdgesChange={updateEdgeChanges}
+              onNodeClick={(_, node) => {
+                setSelectedNodeId(node.id);
+                setSelectedEdgeId(null);
+                appShellRef.current?.focus();
+              }}
+              onEdgeClick={(_, edge) => {
+                setProgrammaticSelection([]);
+                setSelectedEdgeId(edge.id);
+              }}
+              onNodeDrag={(_, node, nodes) => updateDraggedNodePositions(node, nodes.length > 0 ? nodes : [node])}
+              onNodeDragStop={(_, node, nodes) => persistNodePositions(nodes.length > 0 ? nodes : [node])}
+              onPaneClick={() => {
+                setSelectedEdgeId(null);
+                setSnapGuides([]);
+              }}
+              onConnect={onConnect}
+              onEdgesDelete={onEdgesDelete}
+              onNodesDelete={onNodesDelete}
+              nodesDraggable={!editLocked}
+              nodesConnectable={!editLocked}
+              elementsSelectable
+              fitView
+              deleteKeyCode={["Backspace", "Delete"]}
+              multiSelectionKeyCode={["Control", "Meta"]}
+            >
+              <MiniMap />
+              <Controls />
+              <Background gap={20} size={1} />
+            </ReactFlow>
+            {flowInstance
+              ? snapGuides.map((guide) => {
+                  const viewport = flowInstance.getViewport();
+                  const scaledPosition = guide.position * viewport.zoom;
+                  const offset = guide.orientation === "vertical" ? viewport.x : viewport.y;
+                  const style =
+                    guide.orientation === "vertical"
+                      ? { left: `${scaledPosition + offset}px` }
+                      : { top: `${scaledPosition + offset}px` };
+                  return (
+                    <div
+                      key={`${guide.orientation}-${guide.position}`}
+                      className={`snap-guide snap-guide-${guide.orientation}`}
+                      style={style}
+                    />
+                  );
+                })
+              : null}
+          </main>
+        </div>
     </div>
   );
 }

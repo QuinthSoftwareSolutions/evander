@@ -215,7 +215,8 @@ sudo systemctl start agent-sandbox-gateway.service
 sudo systemctl start agent-sandbox-openai-relay.service
 sudo systemctl start agent-sandbox-nuget-relay.service
 sudo systemctl start agent-sandbox-ado-worker.service
-sudo systemctl start agent-sandbox-host-heartbeat.service
+sudo systemctl start agent-sandbox-discord-wake.service
+sudo systemctl start agent-sandbox-scheduled-wake.service
 ```
 
 ### Trigger orchestrator
@@ -228,7 +229,7 @@ The scaffold includes `agent-sandbox-trigger-orchestrator`, a host-side worker t
 - persists discovered events into a durable queue (`runtime/trigger-orchestrator-events.json` by default)
 - records per-trigger cursor/checkpoint metadata (`runtime/trigger-orchestrator-cursors.json` by default)
 - also accepts `trigger:teams:new-message` events, which are sourced from host-side Teams ingest
-  polling rather than from host-heartbeat
+  polling rather than from the wake workers
 
 One-shot cycle execution is supported for ops/debugging:
 
@@ -587,8 +588,8 @@ See [live-smoke-tests.md](/home/jonathan/agent-sandbox/docs/live-smoke-tests.md)
   Teams channel and chat messages and, if you enable outbound status posts or explicit reactions,
   create channel/chat messages, replies, and reactions for the teams targets you plan to use.
 - `trigger:teams:new-message` message arrival is driven by host-side Teams ingest polling on the
-  host, not by the host-heartbeat worker. Host-heartbeat remains the PR/Discord feedback wakeup
-  loop.
+  host, not by the wake workers. Discord inbox wakeups and scheduled resumes are handled by
+  `agent-sandbox-discord-wake` and `agent-sandbox-scheduled-wake`.
 - `trigger:teams:new-message` is a wake signal only. It fires at most once per poll cycle when any
   new allowlisted Teams messages have arrived, and it does not include message content in the
   trigger payload. Agents that need message context should call `teams_get_messages`.
@@ -760,7 +761,7 @@ Use this when you want the guest to wake only for new review feedback and post t
 1. Include PR feedback tools/stream metadata in the session manifest (same `session_id` the guest uses).
 2. Bootstrap a provider runtime in the guest (`./scripts/bootstrap_codex_vm.sh <vm-name>` or `./scripts/bootstrap_copilot_vm.sh <vm-name>`).
 3. For Azure DevOps PR feedback, keep `agent-sandbox-ado-worker` running; it now owns Azure DevOps feedback ingestion and trigger publication.
-4. `agent-sandbox-host-heartbeat.service` is no longer required for Azure DevOps PR feedback ingestion. Keep it only if you still rely on Discord inbox wakeups, scheduled resumes, or legacy non-ADO feedback polling.
+4. `agent-sandbox-discord-wake.service` and `agent-sandbox-scheduled-wake.service` cover Discord inbox wakeups and scheduled resumes. No separate heartbeat worker is required for Azure DevOps PR feedback ingestion.
 5. Use MCP calls from the agent in this order:
    `has_pending_feedback` → `list_unread_feedback` → `post_pr_feedback_reply` (with an idempotency key).
    Use `list_pull_requests(session_id, provider, repo, status?, creator_id?, reviewer_id?, top?, cursor?)`
@@ -794,7 +795,7 @@ Example `get_pull_request` result shape (Azure DevOps):
 ### Expected timing behavior
 
 - Azure DevOps feedback pickup is driven by `agent-sandbox-ado-worker` cadence and updates the shared host feedback store plus trigger queue.
-- `agent-sandbox-host-heartbeat` no longer polls Azure DevOps PR feedback streams.
+- `agent-sandbox-discord-wake` and `agent-sandbox-scheduled-wake` do not poll Azure DevOps PR feedback streams.
 - Guests consume pending feedback via MCP tools by default.
 - Provider bootstrap scripts default `ENABLE_GUEST_HEARTBEAT=0`, which keeps
   `agent-heartbeat.timer` disabled for new guests.
@@ -803,7 +804,7 @@ Example `get_pull_request` result shape (Azure DevOps):
   `GUEST_HEARTBEAT_PROMPT` to override the resume prompt per agent.
 - Migration note for existing VMs: disable any previously enabled guest timer if you want host-only wakeups:
 - Agent enable/disable control is now mirrored in host state at `runtime/host-agent-control-state.json`,
-  so the host heartbeat worker can continue ignoring disabled agents even while their VMs are shut down.
+  so the wake workers can continue ignoring disabled agents even while their VMs are shut down.
 - Guests consume pending feedback via MCP tools by default.
 - Provider bootstrap scripts default `ENABLE_GUEST_HEARTBEAT=0`, which keeps
   `agent-heartbeat.timer` disabled for new guests.
@@ -847,15 +848,16 @@ Example `get_pull_request` result shape (Azure DevOps):
   - Human-readable: `agent-sandbox-cli status --runtime-dir runtime`
   - Machine-readable: `agent-sandbox-cli status --runtime-dir runtime --json`
   - The command summarizes config loading, runtime path permissions, key systemd units, gateway/relay reachability, and session expiration health.
-- **Host heartbeat lock contention:** worker exits because another instance is running.
-  - Check the configured lock path (`host_heartbeat_lock_path`) and active systemd processes before restarting.
+- **Wake worker lock contention:** a wake worker exits because another instance is running.
+  - Check the configured worker lock path and active systemd processes before restarting.
 - **Provider API failures while replying:** gateway tool errors from GitHub/Azure DevOps calls.
   - Validate host tokens (`GITHUB_TOKEN`/configured env, `AZURE_DEVOPS_PR_PAT`/configured env).
   - Retry with the **same idempotency key** so `post_pr_feedback_reply` deduplicates safely.
 
 ### Audit/log locations and healthy signals
 
-- Host heartbeat service logs: `journalctl -u agent-sandbox-host-heartbeat.service`.
+- Discord wake service logs: `journalctl -u agent-sandbox-discord-wake.service`.
+- Scheduled wake service logs: `journalctl -u agent-sandbox-scheduled-wake.service`.
 - Host runtime: `runtime/pr-feedback-store.json`, `runtime/pr-reply-idempotency.json`,
   `runtime/host-agent-control-state.json`, `runtime/audit.jsonl`.
 - Healthy pattern:

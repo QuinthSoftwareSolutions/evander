@@ -29,10 +29,11 @@ from .bootstrap import (
     resolve_runtime_dir,
 )
 from .config import GatewayConfig, load_config
+from .discord_wake_worker import build_discord_wake_worker
 from .directories import DirectoryService
-from .host_heartbeat_worker import build_host_heartbeat_worker
 from .issue_orchestrator import build_issue_orchestrator_worker
 from .effect_orchestrator import build_effect_orchestrator_worker
+from .scheduled_wake_worker import build_scheduled_wake_worker
 from .trigger_orchestrator import build_trigger_orchestrator_worker
 from .host_config import DEFAULT_RUNTIME_DIR
 from .migrations import (
@@ -1360,7 +1361,8 @@ def status(config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR, as_json: Annotated[bo
             "agent-sandbox-gateway.service",
             "agent-sandbox-openai-relay.service",
             "agent-sandbox-http-target-relay.service",
-            "agent-sandbox-host-heartbeat.service",
+            "agent-sandbox-discord-wake.service",
+            "agent-sandbox-scheduled-wake.service",
         ]
         unit_statuses = [_get_systemd_unit_state(unit) for unit in units]
         report["systemd_units"] = [asdict(unit_status) for unit_status in unit_statuses]
@@ -3306,15 +3308,15 @@ def teams_ingest(
 
 
 @app.command(
-    "host-heartbeat",
+    "discord-wake",
     rich_help_panel="Background Workers",
-    short_help="Run the host heartbeat worker.",
+    short_help="Run the Discord wake worker.",
 )
-def host_heartbeat(
+def discord_wake(
     config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
     run_once: Annotated[
         bool,
-        typer.Option("--once", help="Run a single heartbeat cycle and exit."),
+        typer.Option("--once", help="Run a single Discord wake cycle and exit."),
     ] = False,
     log_level: Annotated[str, typer.Option("--log-level", help="Python logging level.")] = "INFO",
 ) -> None:
@@ -3327,12 +3329,46 @@ def host_heartbeat(
     )
 
     cfg = _load_runtime_config_from_option(config)
-    worker = build_host_heartbeat_worker(cfg, project_dir=_project_dir_for_config_option(config))
+    worker = build_discord_wake_worker(cfg, project_dir=_project_dir_for_config_option(config))
     if run_once:
         result = worker.run_once_with_lock()
         typer.echo(
-            f"Host heartbeat cycle complete streams={result.streams_polled} "
-            f"discovered={result.discovered_feedback} sleep_seconds={result.next_sleep_seconds:.3f}"
+            f"Discord wake cycle complete channels={result.channels_polled} "
+            f"pending={result.pending_channels} sleep_seconds={result.next_sleep_seconds:.3f}"
+        )
+        return
+
+    worker.run_forever()
+
+
+@app.command(
+    "scheduled-wake",
+    rich_help_panel="Background Workers",
+    short_help="Run the scheduled wake worker.",
+)
+def scheduled_wake(
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
+    run_once: Annotated[
+        bool,
+        typer.Option("--once", help="Run a single scheduled wake cycle and exit."),
+    ] = False,
+    log_level: Annotated[str, typer.Option("--log-level", help="Python logging level.")] = "INFO",
+) -> None:
+    logging_level = getattr(logging, log_level.upper(), None)
+    if not isinstance(logging_level, int):
+        raise typer.BadParameter(f"Invalid --log-level value: {log_level}")
+    logging.basicConfig(
+        level=logging_level,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+
+    cfg = _load_runtime_config_from_option(config)
+    worker = build_scheduled_wake_worker(cfg, project_dir=_project_dir_for_config_option(config))
+    if run_once:
+        result = worker.run_once_with_lock()
+        typer.echo(
+            f"Scheduled wake cycle complete due={result.requests_due} "
+            f"dispatched={result.wakes_dispatched} sleep_seconds={result.next_sleep_seconds:.3f}"
         )
         return
 

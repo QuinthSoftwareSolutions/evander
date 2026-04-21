@@ -361,12 +361,16 @@ render_unit \
   "${SYSTEMD_DIR}/agent-sandbox-discord-ingest.service"
 
 render_unit \
-  "${ROOT_DIR}/systemd/agent-sandbox-teams-ingest.service.template" \
-  "${SYSTEMD_DIR}/agent-sandbox-teams-ingest.service"
+  "${ROOT_DIR}/systemd/agent-sandbox-discord-wake.service.template" \
+  "${SYSTEMD_DIR}/agent-sandbox-discord-wake.service"
 
 render_unit \
-  "${ROOT_DIR}/systemd/agent-sandbox-host-heartbeat.service.template" \
-  "${SYSTEMD_DIR}/agent-sandbox-host-heartbeat.service"
+  "${ROOT_DIR}/systemd/agent-sandbox-scheduled-wake.service.template" \
+  "${SYSTEMD_DIR}/agent-sandbox-scheduled-wake.service"
+
+render_unit \
+  "${ROOT_DIR}/systemd/agent-sandbox-teams-ingest.service.template" \
+  "${SYSTEMD_DIR}/agent-sandbox-teams-ingest.service"
 
 render_unit \
   "${ROOT_DIR}/systemd/agent-sandbox-issue-orchestrator.service.template" \
@@ -388,8 +392,9 @@ systemctl enable agent-sandbox-nuget-relay.service
 systemctl enable agent-sandbox-http-target-relay.service
 systemctl enable agent-sandbox-ado-worker.service
 systemctl enable agent-sandbox-discord-ingest.service
+systemctl enable agent-sandbox-discord-wake.service
+systemctl enable agent-sandbox-scheduled-wake.service
 systemctl enable agent-sandbox-teams-ingest.service
-systemctl enable agent-sandbox-host-heartbeat.service
 systemctl enable agent-sandbox-issue-orchestrator.service
 systemctl enable agent-sandbox-effect-orchestrator.service
 systemctl enable agent-sandbox-trigger-orchestrator.service
@@ -403,8 +408,9 @@ Installed systemd units:
   agent-sandbox-http-target-relay.service
   agent-sandbox-ado-worker.service
   agent-sandbox-discord-ingest.service
+  agent-sandbox-discord-wake.service
+  agent-sandbox-scheduled-wake.service
   agent-sandbox-teams-ingest.service
-  agent-sandbox-host-heartbeat.service
   agent-sandbox-issue-orchestrator.service
   agent-sandbox-effect-orchestrator.service
   agent-sandbox-trigger-orchestrator.service
@@ -425,8 +431,9 @@ Next steps:
      sudo systemctl start agent-sandbox-http-target-relay.service
      sudo systemctl start agent-sandbox-ado-worker.service
      sudo systemctl start agent-sandbox-discord-ingest.service
+     sudo systemctl start agent-sandbox-discord-wake.service
+     sudo systemctl start agent-sandbox-scheduled-wake.service
      sudo systemctl start agent-sandbox-teams-ingest.service
-     sudo systemctl start agent-sandbox-host-heartbeat.service
      sudo systemctl start agent-sandbox-issue-orchestrator.service
      sudo systemctl start agent-sandbox-effect-orchestrator.service
      sudo systemctl start agent-sandbox-trigger-orchestrator.service

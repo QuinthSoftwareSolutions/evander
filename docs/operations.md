@@ -598,42 +598,29 @@ without exposing provider credentials in the VM.
 - Advance cursor only after the fetched items are durably handled.
 - Keep handlers idempotent by feedback ID to tolerate retries/replays.
 
-### Host heartbeat worker
+### Wake workers
 
-- `agent-sandbox-cli host-heartbeat` is now limited to Discord inbox wakeups, scheduled resumes, and legacy non-ADO feedback paths.
+- `agent-sandbox-cli discord-wake` owns Discord inbox wakeups and resumes.
+- `agent-sandbox-cli scheduled-wake` owns scheduled resume dispatch.
 - Azure DevOps PR feedback ingestion is owned by `agent-sandbox-ado-worker`, which writes `runtime/pr-feedback-store.json` and publishes `trigger:pull-request:new-feedback` events directly.
 - Recommended service lifecycle commands:
-  - `sudo systemctl start agent-sandbox-host-heartbeat.service`
-  - `sudo systemctl stop agent-sandbox-host-heartbeat.service`
-  - `sudo systemctl status agent-sandbox-host-heartbeat.service`
-- Cadence and resume behavior are controlled by `config/host-heartbeat/config.json`:
-  - `host_heartbeat_directory_paths` (canonical directories to process; the worker skips polling when the list is empty)
-  - `host_heartbeat_poll_interval_seconds`
-  - `host_heartbeat_jitter_seconds`
-  - `host_heartbeat_cooldown_seconds`
-  - `host_heartbeat_http_timeout_seconds`
-  - `host_heartbeat_lock_path` (single-instance lock file)
-  - `host_heartbeat_session_cooldown_path`
-  - `host_busy_check_script_path`
-  - `host_resume_script_path`
-  - `host_heartbeat_wake_state_path`
-  - `host_heartbeat_vm_user`
-  - `host_heartbeat_resume_timeout_seconds`
-  - `host_heartbeat_stream_conflict_policy`
-  - `host_heartbeat_scheduled_wake_prefix_text` (applied as `prefix + scheduled prompt` for MCP-triggered schedule dispatches)
-  - `host_heartbeat_schedule_max_active_per_session` (optional scheduling guardrail)
-  - `host_heartbeat_schedule_max_active_total` (optional scheduling guardrail)
-  - `host_heartbeat_schedule_min_interval_seconds` (optional scheduling guardrail)
-- `host_heartbeat_pr_resume_prompt` and `host_heartbeat_discord_resume_prompt` remain directory-scoped in `heartbeat.json`.
-- The host heartbeat worker runs one pass per configured directory and resolves the effective PR/Discord wake prompt text from that directory's config before dispatching a resume.
+  - `sudo systemctl start agent-sandbox-discord-wake.service`
+  - `sudo systemctl stop agent-sandbox-discord-wake.service`
+  - `sudo systemctl status agent-sandbox-discord-wake.service`
+  - `sudo systemctl start agent-sandbox-scheduled-wake.service`
+  - `sudo systemctl stop agent-sandbox-scheduled-wake.service`
+  - `sudo systemctl status agent-sandbox-scheduled-wake.service`
+- Discord wake cadence and resume behavior are controlled by `config/discord-wake/config.json`.
+- Scheduled wake cadence and resume behavior are controlled by `config/scheduled-wake/config.json`.
+- `discord_resume_prompt` remains directory-scoped and is surfaced in the admin GUI under Communications; it is used by the Discord wake worker.
+- `scheduled_wake_prefix_text` lives in the scheduled-wake worker global config and is used as the shared prompt prefix for scheduled wake dispatch.
 - MCP-triggered scheduled resumes are always dispatched with `resume_mode=same_context`.
 - Wake schedule CRUD is available in the CLI under `wake-schedules`:
   - create one-time wake: `agent-sandbox-cli wake-schedules create --runtime-dir runtime --session-id issue-11-session --resume-at 2026-04-01T10:30:00Z --prompt "Resume pending work."`
   - create recurring wake: `agent-sandbox-cli wake-schedules create --runtime-dir runtime --session-id issue-11-session --cron "*/10 * * * *" --prompt "Periodic check-in." --mode new_context`
   - edit existing wake: `agent-sandbox-cli wake-schedules edit <request-id> --cron "*/15 * * * *" --prompt "Updated prompt"`
   - delete wake: `agent-sandbox-cli wake-schedules delete <request-id>`
-- Agent control state is mirrored on the host in `runtime/host-agent-control-state.json`; the host heartbeat worker checks that file before probing or resuming a session so disabled agents stay ignored even when their VMs are powered off.
-- The host heartbeat worker still reads session manifests through runtime state for wake routing, but Azure DevOps PR feedback store updates now come from `agent-sandbox-ado-worker`.
+- Agent control state is mirrored on the host in `runtime/host-agent-control-state.json`; the wake workers check that file before probing or resuming a session so disabled agents stay ignored even when their VMs are powered off.
 - Guests no longer run `agent-heartbeat.service` or `agent-heartbeat.timer` by default.
 - Provider bootstrap scripts default `ENABLE_GUEST_HEARTBEAT=0`, which disables the guest timer on bootstrap.
 - Set `ENABLE_GUEST_HEARTBEAT=1` during bootstrap to install and enable `agent-heartbeat.timer` inside the guest.
@@ -973,8 +960,8 @@ You can run the wrapper directly on the host for validation:
   Microsoft Graph on the host and writes into the Teams message store consumed by trigger
   orchestration.
 - The ingest worker uses the same delegated Teams auth settings described above.
-- This polling path is independent from `agent-sandbox-host-heartbeat`; host-heartbeat now covers
-  Discord/scheduled wake behavior while Azure DevOps PR feedback ingestion stays with
+- This polling path is independent from the wake workers; Discord/scheduled wake behavior now stays with
+  `agent-sandbox-discord-wake` and `agent-sandbox-scheduled-wake` while Azure DevOps PR feedback ingestion stays with
   `agent-sandbox-ado-worker`.
 
 Git hook ingestion path:

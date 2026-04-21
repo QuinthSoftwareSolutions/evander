@@ -99,10 +99,12 @@ export type WorkflowRunNodeActivity = {
   started_at?: string | null;
   finished_at?: string | null;
   dispatch_id?: string | null;
+  error?: string | null;
 };
 
 export type WorkflowRunSummary = {
   event_id: string;
+  run_state: string;
   trace_id?: string | null;
   source_node_id?: string | null;
   source_trigger_type?: string | null;
@@ -110,6 +112,11 @@ export type WorkflowRunSummary = {
   occurred_at?: string | null;
   latest_activity_at?: string | null;
   active_nodes: WorkflowRunNodeActivity[];
+  failed_node_id?: string | null;
+  failed_node_status?: string | null;
+  failed_at?: string | null;
+  error?: string | null;
+  resumable?: boolean;
 };
 
 export type WorkflowNodeActivityCounts = Record<string, number>;

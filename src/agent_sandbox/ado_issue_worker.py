@@ -824,14 +824,29 @@ def _normalize_tags(raw_tags: str | None) -> set[str]:
     return {tag.strip().lower() for tag in raw_tags.split(";") if tag.strip()}
 
 
-def _combine_description_and_acceptance_criteria(description: str, acceptance_criteria: str) -> str:
+def _combine_description_with_ado_sections(
+    description: str,
+    *,
+    repro_steps: str = "",
+    system_info: str = "",
+    acceptance_criteria: str = "",
+) -> str:
+    parts: list[str] = []
+
     description = description.strip()
-    acceptance_criteria = acceptance_criteria.strip()
-    if not acceptance_criteria:
-        return description
-    if not description:
-        return f"Acceptance Criteria\n\n{acceptance_criteria}"
-    return f"{description}\n\nAcceptance Criteria\n\n{acceptance_criteria}"
+    if description:
+        parts.append(description)
+
+    for header, content in (
+        ("Repro Steps", repro_steps),
+        ("System Info", system_info),
+        ("Acceptance Criteria", acceptance_criteria),
+    ):
+        normalized_content = content.strip()
+        if normalized_content:
+            parts.append(f"{header}\n\n{normalized_content}")
+
+    return "\n\n".join(parts)
 
 
 def _parse_ado_datetime(value: str | None) -> datetime:
@@ -1002,6 +1017,8 @@ def fetch_work_item_batch(
                 "System.Id",
                 "System.Title",
                 "System.Description",
+                "Microsoft.VSTS.TCM.ReproSteps",
+                "Microsoft.VSTS.TCM.SystemInfo",
                 "Microsoft.VSTS.Common.AcceptanceCriteria",
                 "System.Tags",
                 "System.State",
@@ -1147,9 +1164,11 @@ def gate_and_order_items(items: list[dict[str, Any]], config: WorkerConfig) -> t
             {
                 "id": work_item_id,
                 "title": str(fields.get("System.Title", "")).strip(),
-                "description": _combine_description_and_acceptance_criteria(
+                "description": _combine_description_with_ado_sections(
                     str(fields.get("System.Description", "") or ""),
-                    str(fields.get("Microsoft.VSTS.Common.AcceptanceCriteria", "") or ""),
+                    repro_steps=str(fields.get("Microsoft.VSTS.TCM.ReproSteps", "") or ""),
+                    system_info=str(fields.get("Microsoft.VSTS.TCM.SystemInfo", "") or ""),
+                    acceptance_criteria=str(fields.get("Microsoft.VSTS.Common.AcceptanceCriteria", "") or ""),
                 ),
                 "tags": sorted(normalized_tags),
                 "state": state,

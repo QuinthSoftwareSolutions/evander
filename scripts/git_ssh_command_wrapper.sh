@@ -135,7 +135,7 @@ stage_mirror_fetch_refspec() {
   source_ref="${refspec%%:*}"
   destination_ref="${refspec#*:}"
 
-  if [[ -z "${source_ref}" || -z "${destination_ref}" || "${source_ref}" == "${destination_ref}" ]]; then
+  if [[ -z "${source_ref}" || -z "${destination_ref}" ]]; then
     echo "Unsupported mirror refspec: ${force_prefix}${refspec}" >&2
     exit 1
   fi
@@ -375,6 +375,13 @@ auto_refresh_mirror() {
 
   if (( ${#mirror_refspecs[@]} > 0 )); then
     fetch_refspecs=("${mirror_refspecs[@]}")
+  elif [[ "${source_mode}" == "remote" ]]; then
+    mapfile -t fetch_refspecs < <(build_remote_tracking_refspecs "${resolved_repo_path}" "${mirror_remote_name}")
+    if (( ${#fetch_refspecs[@]} == 0 )); then
+      mapfile -t fetch_refspecs < <(
+        build_safe_default_refspecs "${resolved_repo_path}" "${mirror_remote_name}" "${default_base_branch}"
+      )
+    fi
   elif [[ "${source_mode}" == "local" ]] && [[ "${mirror_sync_remote}" =~ ^(1|true|yes|on)$ ]]; then
     mapfile -t fetch_refspecs < <(build_remote_tracking_refspecs "${resolved_repo_path}" "${mirror_remote_name}")
     if (( ${#fetch_refspecs[@]} == 0 )); then

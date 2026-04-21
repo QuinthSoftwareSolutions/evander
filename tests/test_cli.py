@@ -111,7 +111,8 @@ def test_help_groups_commands_by_panel_then_alphabetically() -> None:
     assert "create-issue-vm" in output and "Create an issue VM." in output
     assert "create-vm" in output and "Create and bootstrap a standalone VM." in output
     assert "teams-auth" in output
-    assert "host-heartbeat" in output and "Run the host heartbeat worker." in output
+    assert "discord-wake" in output and "Run the Discord wake worker." in output
+    assert "scheduled-wake" in output and "Run the scheduled wake worker." in output
     assert "teams-ingest" in output and "Run the Teams ingest worker." in output
     assert "trigger-orchestrator" in output and "Run the trigger orchestrator worker." in output
 
@@ -3841,7 +3842,7 @@ def test_trigger_orchestrator_once_runs_single_cycle(tmp_path: Path, monkeypatch
     assert "discovered=5" in result.output
     assert "published=4" in result.output
 
-def test_host_heartbeat_once_runs_single_cycle(tmp_path: Path, monkeypatch) -> None:
+def test_discord_wake_once_runs_single_cycle(tmp_path: Path, monkeypatch) -> None:
     config_path = write_config(tmp_path)
     runner = CliRunner()
     calls: list[str] = []
@@ -3849,7 +3850,7 @@ def test_host_heartbeat_once_runs_single_cycle(tmp_path: Path, monkeypatch) -> N
     class _FakeWorker:
         def run_once_with_lock(self):
             calls.append("run_once_with_lock")
-            return SimpleNamespace(streams_polled=3, discovered_feedback=1, next_sleep_seconds=31.5)
+            return SimpleNamespace(channels_polled=3, pending_channels=1, next_sleep_seconds=31.5)
 
         def run_once(self):
             raise AssertionError("run_once should not be called directly in --once mode")
@@ -3857,17 +3858,43 @@ def test_host_heartbeat_once_runs_single_cycle(tmp_path: Path, monkeypatch) -> N
         def run_forever(self) -> None:
             raise AssertionError("run_forever should not be called in --once mode")
 
-    monkeypatch.setattr("agent_sandbox.cli.build_host_heartbeat_worker", lambda cfg, **kwargs: _FakeWorker())
+    monkeypatch.setattr("agent_sandbox.cli.build_discord_wake_worker", lambda cfg, **kwargs: _FakeWorker())
 
     result = runner.invoke(
         app,
-        ["host-heartbeat", "--config", str(config_path), "--once", "--log-level", "DEBUG"],
+        ["discord-wake", "--config", str(config_path), "--once", "--log-level", "DEBUG"],
     )
 
     assert result.exit_code == 0
     assert calls == ["run_once_with_lock"]
-    assert "streams=3" in result.output
-    assert "discovered=1" in result.output
+    assert "channels=3" in result.output
+    assert "pending=1" in result.output
+
+
+def test_scheduled_wake_once_runs_single_cycle(tmp_path: Path, monkeypatch) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+    calls: list[str] = []
+
+    class _FakeWorker:
+        def run_once_with_lock(self):
+            calls.append("run_once_with_lock")
+            return SimpleNamespace(requests_due=3, wakes_dispatched=1, next_sleep_seconds=31.5)
+
+        def run_forever(self) -> None:
+            raise AssertionError("run_forever should not be called in --once mode")
+
+    monkeypatch.setattr("agent_sandbox.cli.build_scheduled_wake_worker", lambda cfg, **kwargs: _FakeWorker())
+
+    result = runner.invoke(
+        app,
+        ["scheduled-wake", "--config", str(config_path), "--once", "--log-level", "DEBUG"],
+    )
+
+    assert result.exit_code == 0
+    assert calls == ["run_once_with_lock"]
+    assert "due=3" in result.output
+    assert "dispatched=1" in result.output
 
 
 def test_teams_ingest_once_runs_single_cycle(tmp_path: Path, monkeypatch) -> None:

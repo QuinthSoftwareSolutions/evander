@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from types import UnionType
 from pathlib import Path
@@ -13,9 +14,10 @@ from pydantic import BaseModel
 from .admin_service import ISSUE_STATES, AdminService
 from .config import (
     AdoWorkerGlobalConfig,
+    DiscordWakeWorkerGlobalConfig,
     GatewayConfig,
-    HostHeartbeatWorkerGlobalConfig,
     IssueOrchestratorWorkerGlobalConfig,
+    ScheduledWakeWorkerGlobalConfig,
     TeamsIngestWorkerGlobalConfig,
     TriggerOrchestratorWorkerGlobalConfig,
 )
@@ -45,6 +47,7 @@ _DISCORD_CONFIG_FIELDS: tuple[tuple[str, str], ...] = (
     ("policy", "discord_inbox_routes"),
     ("policy", "discord_operator_user_allowlist"),
     ("policy", "discord_poll_operator_dms"),
+    ("heartbeat", "discord_resume_prompt"),
 )
 _TEAMS_PROVIDER_CONFIG_FIELDS: tuple[tuple[str, str], ...] = tuple(
     ("providers", field_name)
@@ -52,15 +55,10 @@ _TEAMS_PROVIDER_CONFIG_FIELDS: tuple[tuple[str, str], ...] = tuple(
         name for name in DIRECTORY_CONFIG_DOMAIN_FIELDS["providers"] if name.startswith("teams_")
     )
 )
-_TEAMS_WORKER_GLOBAL_CONFIG_FIELDS: tuple[tuple[str, str], ...] = tuple(
-    ("worker_global:teams-ingest", field_name)
-    for field_name in TeamsIngestWorkerGlobalConfig.model_fields
-)
 _DIRECTORY_CONFIG_UI_TAB_FIELD_SOURCES: dict[str, tuple[tuple[str, str], ...]] = {
     "communications": (
         *_DISCORD_CONFIG_FIELDS,
         *_TEAMS_PROVIDER_CONFIG_FIELDS,
-        *_TEAMS_WORKER_GLOBAL_CONFIG_FIELDS,
     ),
     "access_policy": tuple(
         ("policy", field_name)
@@ -81,9 +79,6 @@ _DIRECTORY_CONFIG_UI_TAB_FIELD_SOURCES: dict[str, tuple[tuple[str, str], ...]] =
         )
     ),
     "email": tuple(("email", field_name) for field_name in sorted(DIRECTORY_CONFIG_DOMAIN_FIELDS["email"])),
-    "heartbeat": tuple(
-        ("heartbeat", field_name) for field_name in sorted(DIRECTORY_CONFIG_DOMAIN_FIELDS["heartbeat"])
-    ),
     "vm_runtime": tuple(("vm", field_name) for field_name in sorted(DIRECTORY_CONFIG_DOMAIN_FIELDS["vm"])),
     "issue_setup": tuple(
         ("issue_setup", field_name) for field_name in sorted(DIRECTORY_CONFIG_DOMAIN_FIELDS["issue_setup"])
@@ -104,12 +99,252 @@ _DIRECTORY_CONFIG_UI_TAB_TITLES: dict[str, str] = {
     "access_policy": "Access Policy",
     "providers": "Provider Integrations",
     "email": "Email",
-    "heartbeat": "Heartbeat Prompts",
     "vm_runtime": "VM Runtime",
     "issue_setup": "Issue Setup",
     "ado_worker": "ADO Worker",
     "automation": "Automation",
     "pr_template": "PR Template",
+}
+
+
+@dataclass(frozen=True)
+class _ConfigTabSectionSpec:
+    title: str
+    field_sources: tuple[tuple[str, str], ...]
+    label_prefixes: tuple[str, ...] = ()
+
+
+_DIRECTORY_CONFIG_TAB_SECTIONS: dict[str, tuple[_ConfigTabSectionSpec, ...]] = {
+    "communications": (
+        _ConfigTabSectionSpec("Discord", _DISCORD_CONFIG_FIELDS, ("discord_",)),
+        _ConfigTabSectionSpec("Teams", _TEAMS_PROVIDER_CONFIG_FIELDS, ("teams_",)),
+    ),
+    "access_policy": (
+        _ConfigTabSectionSpec(
+            "Session defaults",
+            (
+                ("policy", "approval_ttl_seconds"),
+                ("policy", "default_session_ttl_seconds"),
+            ),
+        ),
+        _ConfigTabSectionSpec(
+            "Email",
+            (
+                ("policy", "email_draft_domain_allowlist"),
+                ("policy", "email_draft_recipient_allowlist"),
+                ("policy", "email_folder_allowlist_by_mailbox"),
+                ("policy", "email_mailbox_allowlist"),
+                ("policy", "email_send_enabled"),
+            ),
+            ("email_",),
+        ),
+        _ConfigTabSectionSpec(
+            "PR feedback",
+            (("policy", "pr_reply_require_approval"),),
+        ),
+        _ConfigTabSectionSpec(
+            "Audit",
+            (("policy", "redacted_keys"),),
+        ),
+    ),
+    "providers": (
+        _ConfigTabSectionSpec(
+            "Agent prompt",
+            (
+                ("providers", "agent_prompt_token_secret_env"),
+                ("providers", "agent_prompt_token_ttl_seconds"),
+            ),
+            ("agent_prompt_token_",),
+        ),
+        _ConfigTabSectionSpec(
+            "Azure DevOps",
+            (
+                ("providers", "azure_devops_organization_url"),
+                ("providers", "azure_devops_pat_env"),
+                ("providers", "azure_devops_pr_pat_env"),
+                ("providers", "azure_devops_project"),
+            ),
+            ("azure_devops_",),
+        ),
+        _ConfigTabSectionSpec(
+            "GitHub",
+            (("providers", "github_token_env"),),
+            ("github_",),
+        ),
+        _ConfigTabSectionSpec(
+            "HTTP target relay",
+            (("providers", "http_target_relay_timeout_seconds"),),
+            ("http_target_relay_",),
+        ),
+        _ConfigTabSectionSpec(
+            "NuGet",
+            (
+                ("providers", "nuget_azure_feed_base_url"),
+                ("providers", "nuget_azure_pat_env"),
+                ("providers", "nuget_public_feed_base_url"),
+                ("providers", "nuget_relay_timeout_seconds"),
+            ),
+            ("nuget_",),
+        ),
+        _ConfigTabSectionSpec(
+            "OpenAI",
+            (
+                ("providers", "openai_api_base_url"),
+                ("providers", "openai_api_key_env"),
+                ("providers", "openai_relay_timeout_seconds"),
+            ),
+            ("openai_",),
+        ),
+        _ConfigTabSectionSpec(
+            "State",
+            (("providers", "provider_state"),),
+        ),
+    ),
+    "email": (
+        _ConfigTabSectionSpec(
+            "Mailboxes",
+            (
+                ("email", "email_mailboxes"),
+                ("email", "email_provider_timeout_seconds"),
+            ),
+            ("email_",),
+        ),
+    ),
+    "vm_runtime": (
+        _ConfigTabSectionSpec(
+            "Network",
+            (("vm", "bind_network_cidr"),),
+        ),
+        _ConfigTabSectionSpec(
+            "Gateway",
+            (("vm", "gateway_url"),),
+        ),
+        _ConfigTabSectionSpec(
+            "HTTP target relay",
+            (
+                ("vm", "http_target_relay_host"),
+                ("vm", "http_target_relay_port"),
+            ),
+            ("http_target_relay_",),
+        ),
+        _ConfigTabSectionSpec(
+            "NuGet relay",
+            (
+                ("vm", "nuget_relay_host"),
+                ("vm", "nuget_relay_port"),
+            ),
+            ("nuget_relay_",),
+        ),
+        _ConfigTabSectionSpec(
+            "OpenAI relay",
+            (
+                ("vm", "openai_relay_host"),
+                ("vm", "openai_relay_port"),
+            ),
+            ("openai_relay_",),
+        ),
+    ),
+    "issue_setup": (
+        _ConfigTabSectionSpec(
+            "Agent defaults",
+            (
+                ("issue_setup", "default_model"),
+                ("issue_setup", "post_exec_verification_prompt"),
+            ),
+        ),
+        _ConfigTabSectionSpec(
+            "Git transport",
+            (
+                ("issue_setup", "git_host"),
+                ("issue_setup", "git_root"),
+                ("issue_setup", "git_ssh_alias"),
+                ("issue_setup", "git_user"),
+            ),
+            ("git_",),
+        ),
+        _ConfigTabSectionSpec(
+            "Guest heartbeat",
+            (
+                ("issue_setup", "enable_guest_heartbeat"),
+                ("issue_setup", "guest_heartbeat_prompt"),
+            ),
+            ("guest_",),
+        ),
+        _ConfigTabSectionSpec(
+            "Azure DevOps",
+            (("issue_setup", "issue_setup_azure_devops_pr_pat_env"),),
+            ("issue_setup_", "azure_devops_"),
+        ),
+    ),
+    "ado_worker": (
+        _ConfigTabSectionSpec(
+            "Filters",
+            (
+                ("ado_worker", "ado_area_filters"),
+                ("ado_worker", "ado_team_filters"),
+            ),
+            ("ado_",),
+        ),
+        _ConfigTabSectionSpec(
+            "Repo and prewarm",
+            (
+                ("ado_worker", "ado_project_or_solution"),
+                ("ado_worker", "ado_prewarm_target"),
+                ("ado_worker", "ado_repo_source"),
+            ),
+            ("ado_",),
+        ),
+        _ConfigTabSectionSpec(
+            "Automation",
+            (
+                ("ado_worker", "ado_setup_vms"),
+                ("ado_worker", "create_prs_as_draft"),
+                ("ado_worker", "create_prs_automatically"),
+            ),
+            ("ado_",),
+        ),
+        _ConfigTabSectionSpec(
+            "Bootstrap",
+            (
+                ("ado_worker", "ado_bootstrap_dotnet"),
+                ("ado_worker", "ado_bootstrap_nuget"),
+                ("ado_worker", "ado_bootstrap_playwright"),
+                ("ado_worker", "ado_bootstrap_frontend_deps"),
+            ),
+            ("ado_bootstrap_",),
+        ),
+        _ConfigTabSectionSpec(
+            "Frontend",
+            (
+                ("ado_worker", "ado_frontend_host_checkout"),
+                ("ado_worker", "ado_frontend_install_roots"),
+            ),
+            ("ado_frontend_",),
+        ),
+        _ConfigTabSectionSpec(
+            "MSSQL",
+            (
+                ("ado_worker", "ado_bootstrap_mssql"),
+                ("ado_worker", "ado_mssql_init_root"),
+                ("ado_worker", "ado_mssql_sa_password_env"),
+            ),
+            ("ado_bootstrap_", "ado_mssql_"),
+        ),
+    ),
+    "automation": (
+        _ConfigTabSectionSpec(
+            "Capacity",
+            (("automation", "approved_issue_cap"),),
+        ),
+        _ConfigTabSectionSpec(
+            "Roles",
+            (
+                ("automation", "originator_roles"),
+                ("automation", "prioritizer_roles"),
+                ("automation", "worker_roles"),
+            ),
+        ),
+    ),
 }
 
 try:
@@ -540,6 +775,22 @@ def _pretty_config_field_name(name: str) -> str:
     return name.replace("_", " ")
 
 
+def _directory_config_tab_sections(tab_key: str) -> tuple[_ConfigTabSectionSpec, ...]:
+    return _DIRECTORY_CONFIG_TAB_SECTIONS.get(tab_key, ())
+
+
+def _config_field_display_name(field_name: str, *, prefixes: tuple[str, ...] = ()) -> str:
+    display_name = field_name
+    while True:
+        for prefix in prefixes:
+            if display_name.startswith(prefix):
+                display_name = display_name.removeprefix(prefix)
+                break
+        else:
+            break
+    return _pretty_config_field_name(display_name)
+
+
 def _unwrap_optional_annotation(annotation: Any) -> Any:
     origin = get_origin(annotation)
     if origin in {UnionType} or str(origin) == "typing.Union":
@@ -782,8 +1033,8 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
     "host_heartbeat_pr_resume_prompt": (
         "Prompt text passed to the resume script when waking an agent session for unread PR comments."
     ),
-    "host_heartbeat_discord_resume_prompt": (
-        "Prompt text passed to the resume script when waking an agent session for unread Discord messages."
+    "discord_resume_prompt": (
+        "Prompt text passed to the Discord wake worker when waking an agent session for unread Discord messages."
     ),
     "host_heartbeat_resume_timeout_seconds": (
         "Timeout in seconds for the host resume script invocation."
@@ -843,10 +1094,6 @@ WORKER_GLOBAL_CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
         "Canonical directory paths the worker should process on each cycle. "
         "One path per line; an empty list means the worker skips polling."
     ),
-    "host_heartbeat_directory_paths": (
-        "Canonical directory paths the host heartbeat worker should process on each cycle. "
-        "One path per line; an empty list means the worker skips polling."
-    ),
     "yaml_output_dir": "Directory where fetched work items are rendered as YAML before setup runs.",
     "setup_log_dir": "Directory where setup invocation logs are written.",
     "processed_store_path": "JSON state file used to remember work items that have already been handled.",
@@ -860,22 +1107,8 @@ WORKER_GLOBAL_CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
     "include_comments": "Whether fetched work item comments are attached to the YAML payloads.",
     "comments_max_count": "Maximum number of comments fetched per work item.",
     "comment_text_max_chars": "Maximum number of comment characters kept per comment.",
-    "host_heartbeat_poll_interval_seconds": "Base polling interval in seconds for the host heartbeat worker.",
-    "host_heartbeat_jitter_seconds": "Random delay added to each host heartbeat sleep interval.",
-    "host_heartbeat_cooldown_seconds": "Minimum cooldown in seconds before the host heartbeat worker retries the same session.",
-    "host_heartbeat_http_timeout_seconds": "HTTP client timeout in seconds for host heartbeat polling cycles.",
-    "host_heartbeat_lock_path": "Single-instance lock file for the host heartbeat worker.",
-    "host_heartbeat_session_cooldown_path": "JSON state file used by the host heartbeat worker for session cooldown tracking.",
     "host_busy_check_script_path": "Host script used to determine whether a session VM is busy before resuming it.",
     "host_resume_script_path": "Host script invoked to resume a session VM when feedback is waiting.",
-    "host_heartbeat_wake_state_path": "Host-side JSON state file written by the resume workflow.",
-    "host_heartbeat_vm_user": "Guest username passed to the host resume script.",
-    "host_heartbeat_resume_timeout_seconds": "Timeout in seconds for the host resume script invocation.",
-    "host_heartbeat_stream_conflict_policy": "How the host heartbeat worker handles one PR feedback stream matching multiple sessions.",
-    "host_heartbeat_scheduled_wake_prefix_text": "Static text prepended to MCP-scheduled resume prompts before dispatch.",
-    "host_heartbeat_schedule_max_active_per_session": "Optional cap on active scheduled wake requests per session.",
-    "host_heartbeat_schedule_max_active_total": "Optional cap on active scheduled wake requests across all sessions.",
-    "host_heartbeat_schedule_min_interval_seconds": "Optional minimum allowed interval for recurring scheduled wakes.",
     "jitter_seconds": "Random delay added to each worker sleep interval.",
     "backoff_seconds": "Sleep interval used after an ingest cycle fails before retrying.",
     "cooldown_seconds": "Minimum cooldown before the issue orchestrator retries the same session.",
@@ -885,6 +1118,8 @@ WORKER_GLOBAL_CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
     "wake_state_path": "Host-side JSON state file written by issue orchestrator resume attempts.",
     "vm_user": "Guest username passed to the issue orchestrator resume script.",
     "resume_timeout_seconds": "Timeout in seconds for an issue orchestrator resume invocation.",
+    "session_cooldown_path": "JSON state file used by the wake worker for per-session cooldown tracking.",
+    "scheduled_wake_prefix_text": "Static text prepended to MCP-scheduled resume prompts before dispatch.",
     "event_queue_store_path": "JSON queue file used by trigger/effect orchestration to persist pending events.",
     "event_queue_cursor_store_path": "JSON cursor state file written by the trigger orchestrator to track poll progress.",
     "workflow_event_journal_path": "JSONL journal used to notify workflow editor streams about runtime state changes.",
@@ -897,8 +1132,9 @@ WORKER_GLOBAL_CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
 
 WORKER_GLOBAL_CONFIG_MODELS: dict[str, type[BaseModel]] = {
     "ado": AdoWorkerGlobalConfig,
+    "discord-wake": DiscordWakeWorkerGlobalConfig,
+    "scheduled-wake": ScheduledWakeWorkerGlobalConfig,
     "teams-ingest": TeamsIngestWorkerGlobalConfig,
-    "host-heartbeat": HostHeartbeatWorkerGlobalConfig,
     "issue-orchestrator": IssueOrchestratorWorkerGlobalConfig,
     "trigger-orchestrator": TriggerOrchestratorWorkerGlobalConfig,
 }
@@ -920,8 +1156,9 @@ def _config_field_kind(field_name: str) -> tuple[str, tuple[Any, ...]]:
     field_models = (
         GatewayConfig.model_fields,
         AdoWorkerGlobalConfig.model_fields,
+        DiscordWakeWorkerGlobalConfig.model_fields,
+        ScheduledWakeWorkerGlobalConfig.model_fields,
         TeamsIngestWorkerGlobalConfig.model_fields,
-        HostHeartbeatWorkerGlobalConfig.model_fields,
         TriggerOrchestratorWorkerGlobalConfig.model_fields,
         AdoWorkerDirectoryConfig.model_fields,
         IssueSetupDirectoryConfig.model_fields,
@@ -962,7 +1199,8 @@ def _directory_config_domain_help_text(domain: str) -> str | None:
     if domain == "communications":
         return (
             "Messaging integrations for Discord and Teams, including backend/API connectivity, "
-            "channel and user routing allowlists, read-reaction behavior, and polling controls "
+            "channel and user routing allowlists, read-reaction behavior, polling controls, and "
+            "Discord wake prompt behavior "
             "for inbound message handling."
         )
     if domain == "access_policy":
@@ -974,8 +1212,6 @@ def _directory_config_domain_help_text(domain: str) -> str | None:
         return "VM network and relay endpoint settings used when launching and wiring guest runtime access."
     if domain == "automation":
         return "Role and capacity controls that govern automated issue intake and worker assignment."
-    if domain == "heartbeat":
-        return "Prompt templates used by host heartbeat resumes for unread PR and Discord activity."
     if domain == "issue_setup":
         return "Repository bootstrap and post-execution defaults applied during issue VM setup."
     if domain == "ado_worker":
@@ -1010,29 +1246,24 @@ def _directory_config_tab_underlying_domains(tab_key: str) -> tuple[str, ...]:
         dict.fromkeys(
             domain
             for domain, _field_name in _directory_config_tab_field_sources(tab_key)
-            if not domain.startswith("worker_global:")
         )
     )
 
 
-def _directory_config_tab_worker_global_sources(tab_key: str) -> tuple[str, ...]:
-    sources: list[str] = []
-    for source_domain, _field_name in _directory_config_tab_field_sources(tab_key):
-        if source_domain.startswith("worker_global:"):
-            worker_id = source_domain.split(":", 1)[1]
-            if worker_id not in sources:
-                sources.append(worker_id)
-    return tuple(sources)
-
-
 def _directory_config_scope_label(source_domain: str) -> str:
-    if source_domain.startswith("worker_global:"):
-        return "Global worker"
     return "Directory override"
 
 
 def _directory_config_tab_title(tab_key: str) -> str:
     return _DIRECTORY_CONFIG_UI_TAB_TITLES.get(tab_key, tab_key)
+
+
+def _directory_config_field_label(tab_key: str, source_domain: str, field_name: str) -> str:
+    field_source = (source_domain, field_name)
+    for section in _directory_config_tab_sections(tab_key):
+        if field_source in section.field_sources:
+            return _config_field_display_name(field_name, prefixes=section.label_prefixes)
+    return _config_field_display_name(field_name)
 
 
 def _root_config_field_starts_editable(domain: str, field_name: str, raw_config: dict[str, Any]) -> bool:
@@ -1281,41 +1512,39 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             form_scroll = QScrollArea()
             form_scroll.setWidgetResizable(True)
             form_container = QWidget()
-            form_layout = QFormLayout(form_container)
+            form_layout = None
+            form_container_layout = QVBoxLayout(form_container)
+            form_container_layout.setContentsMargins(0, 0, 0, 0)
+            form_container_layout.setSpacing(8)
+            if _directory_config_tab_sections(domain):
+                section_layouts = self._build_grouped_config_sections(domain, form_container_layout)
+            else:
+                form_layout = QFormLayout()
+                form_container_layout.addLayout(form_layout)
+                section_layouts = None
             form_scroll.setWidget(form_container)
             field_specs: dict[str, dict[str, object]] = {}
             field_sources = _directory_config_tab_field_sources(domain)
             for source_domain, field_name in field_sources:
                 editor = self._build_config_field_editor(domain, field_name)
                 scope_label = _directory_config_scope_label(source_domain)
-                label = QLabel(f"{_pretty_config_field_name(field_name)} ({scope_label})")
+                label_text = _directory_config_field_label(domain, source_domain, field_name)
+                label = QLabel(f"{label_text} ({scope_label})")
                 tooltip = _config_field_tooltip(field_name)
                 if tooltip:
                     label.setToolTip(tooltip)
-                form_layout.addRow(label, editor["container"])
+                target_layout = form_layout
+                if section_layouts is not None:
+                    target_layout = section_layouts[(source_domain, field_name)]
+                assert target_layout is not None
+                target_layout.addRow(label, editor["container"])
                 field_specs[field_name] = editor
+            form_container_layout.addStretch(1)
             validation_view = QTextEdit()
             validation_view.setReadOnly(True)
             validation_view.setPlaceholderText("Validation diagnostics will appear here.")
             save_button = QPushButton("Save")
             save_button.clicked.connect(lambda _checked=False, domain=domain: self.save_config_domain(domain))
-            save_directory_button = None
-            save_worker_button = None
-            if any(source_domain.startswith("worker_global:") for source_domain, _field_name in field_sources):
-                save_button.setVisible(False)
-                tab_title = _directory_config_tab_title(domain)
-                save_directory_button = QPushButton(f"Save {tab_title} Directory Settings")
-                save_directory_button.clicked.connect(
-                    lambda _checked=False, domain=domain: self.save_config_domain(
-                        domain, source_filter=lambda source_domain: not source_domain.startswith("worker_global:")
-                    )
-                )
-                save_worker_button = QPushButton(f"Save {tab_title} Worker Settings")
-                save_worker_button.clicked.connect(
-                    lambda _checked=False, domain=domain: self.save_config_domain(
-                        domain, source_filter=lambda source_domain: source_domain.startswith("worker_global:")
-                    )
-                )
             view_parent_defaults_button = QPushButton("View Parent Defaults")
             view_parent_defaults_button.clicked.connect(
                 lambda _checked=False, domain=domain: self.show_parent_defaults_dialog(domain)
@@ -1326,10 +1555,6 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             )
             action_row = QHBoxLayout()
             action_row.addWidget(save_button)
-            if save_directory_button is not None:
-                action_row.addWidget(save_directory_button)
-            if save_worker_button is not None:
-                action_row.addWidget(save_worker_button)
             action_row.addWidget(view_parent_defaults_button)
             action_row.addWidget(view_effective_button)
             action_row.addStretch(1)
@@ -1344,11 +1569,8 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
                 "field_specs": field_specs,
                 "field_domains": {field_name: source_domain for source_domain, field_name in field_sources},
                 "underlying_domains": _directory_config_tab_underlying_domains(domain),
-                "worker_global_sources": _directory_config_tab_worker_global_sources(domain),
                 "validation_view": validation_view,
                 "save_button": save_button,
-                "save_directory_button": save_directory_button,
-                "save_worker_button": save_worker_button,
                 "view_parent_defaults_button": view_parent_defaults_button,
                 "view_effective_button": view_effective_button,
                 "latest_parent_defaults_payload": None,
@@ -1660,6 +1882,23 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self.update_worker_action_bar()
         self._update_vm_splitter_layout()
         self._update_privilege_status()
+
+    def _build_grouped_config_sections(
+        self, domain: str, parent_layout: QVBoxLayout
+    ) -> dict[tuple[str, str], QFormLayout]:
+        section_layouts: dict[tuple[str, str], QFormLayout] = {}
+        for index, section_spec in enumerate(_directory_config_tab_sections(domain)):
+            section_form = QFormLayout()
+            section_form.setContentsMargins(12, 0, 0, 0)
+            section_body = QWidget()
+            section_body.setLayout(section_form)
+            section = CollapsibleSection(section_spec.title, section_body)
+            if index != 0:
+                section.toggle_button.setChecked(False)
+            parent_layout.addWidget(section)
+            for field_source in section_spec.field_sources:
+                section_layouts[field_source] = section_form
+        return section_layouts
 
     def append_log(self, message: str) -> None:
         self.log_view.append(message)
@@ -2871,10 +3110,6 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
                 else:
                     self._update_config_field_enabled_state_from_spec(spec)
             widgets["save_button"].setEnabled(enabled)
-            if widgets.get("save_directory_button") is not None:
-                widgets["save_directory_button"].setEnabled(enabled)
-            if widgets.get("save_worker_button") is not None:
-                widgets["save_worker_button"].setEnabled(enabled)
         if not enabled:
             self.config_status_label.setText(
                 "Directory-scoped config is disabled; using root configuration defaults."
@@ -2976,7 +3211,6 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
                 state[f"parent:{domain}"] = (
                     self.service.compute_directory_effective_config(parent_path, domain) if parent_path else None
                 )
-            state["worker_global:teams-ingest"] = self.service.read_worker_global_config("teams-ingest")
             return state
 
         worker = _ActionWorker(load_config_state)
@@ -3002,7 +3236,6 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self.config_status_label.setText(f"Configuration for {selected_directory}")
         for domain, widgets in self._config_widgets.items():
             underlying_domains = widgets["underlying_domains"]
-            worker_global_sources = widgets.get("worker_global_sources", ())
             raw_config: dict[str, Any] = {}
             parent_effective_config: dict[str, Any] = {}
             latest_parent_payload: dict[str, Any] | None = None
@@ -3039,21 +3272,6 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
                     diagnostics.extend(diag.message for diag in effective_result.validation_diagnostics)
                 else:
                     error_messages.extend([error.message for error in getattr(effective_result, "errors", [])])
-            for worker_id in worker_global_sources:
-                worker_result = payload.get(f"worker_global:{worker_id}")
-                if getattr(worker_result, "ok", False) and worker_result.data is not None:
-                    worker_config = worker_result.data.config
-                    if isinstance(worker_config, dict):
-                        raw_config.update(worker_config)
-                    if latest_effective_payload is None:
-                        latest_effective_payload = {"resolution": {}, "validation_diagnostics": []}
-                    latest_effective_payload["resolution"][f"worker_global:{worker_id}"] = {
-                        "worker_id": worker_id,
-                        "path": worker_result.data.path,
-                        "config": worker_config,
-                    }
-                else:
-                    error_messages.extend([error.message for error in getattr(worker_result, "errors", [])])
             if domain not in self._config_dirty_domains:
                 self._populate_config_form(
                     domain,
@@ -3135,11 +3353,7 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             QMessageBox.warning(self, "Save configuration", f"Invalid configuration value: {exc}")
             return
         for source_domain, payload in payloads_by_domain.items():
-            if source_domain.startswith("worker_global:"):
-                worker_id = source_domain.split(":", 1)[1]
-                result = self.service.write_worker_global_config(worker_id, payload)
-            else:
-                result = self.service.write_directory_domain_config(self._selected_directory_path, source_domain, payload)
+            result = self.service.write_directory_domain_config(self._selected_directory_path, source_domain, payload)
             if not result.ok:
                 message = result.errors[0].message if result.errors else "Save failed."
                 widgets["validation_view"].setPlainText(message)

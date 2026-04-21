@@ -116,7 +116,7 @@ DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
     "heartbeat": frozenset(
         {
             "host_heartbeat_pr_resume_prompt",
-            "host_heartbeat_discord_resume_prompt",
+            "discord_resume_prompt",
         }
     ),
     "vm": frozenset(
