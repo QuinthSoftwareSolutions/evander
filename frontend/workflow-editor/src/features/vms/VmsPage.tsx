@@ -3,6 +3,7 @@ import type { Dispatch, ReactNode, SetStateAction } from "react";
 
 import { fetchJson, formatTimestamp } from "../admin/api";
 import { useAdminUi } from "../admin/AdminContext";
+import { Tooltip } from "../admin/Tooltip";
 import { type VmActionResponse, type VmListResponse, type VmLogResponse, type VmRecord } from "../admin/types";
 
 type ActionLogEntry = {
@@ -428,13 +429,14 @@ export function VmsPage() {
             >
               <div className="feature-list-title-row vm-list-item-row">
                 <strong>{item.vm_name}</strong>
-                <span
-                  className={`status-pill vm-status-pill state-${item.libvirt_state === "running" ? "running" : "idle"}`}
-                  aria-label={item.libvirt_state === "running" ? "VM running" : "VM stopped"}
-                  title={item.libvirt_state === "running" ? "VM running" : "VM stopped"}
-                >
-                  {item.libvirt_state === "running" ? <VmRunningIcon /> : <VmStoppedIcon />}
-                </span>
+                <Tooltip content={item.libvirt_state === "running" ? "VM is currently running." : "VM is currently stopped."}>
+                  <span
+                    className={`status-pill vm-status-pill state-${item.libvirt_state === "running" ? "running" : "idle"}`}
+                    aria-label={item.libvirt_state === "running" ? "VM running" : "VM stopped"}
+                  >
+                    {item.libvirt_state === "running" ? <VmRunningIcon /> : <VmStoppedIcon />}
+                  </span>
+                </Tooltip>
               </div>
             </button>
           ))}
@@ -453,112 +455,123 @@ export function VmsPage() {
             </p>
           </div>
           {selectedVm ? (
-            <div className="feature-toolbar-actions">
-              <span className={`status-pill state-${selectedVm.libvirt_state === "running" ? "running" : "idle"}`}>
-                VM {selectedVm.libvirt_state}
-              </span>
-              <span className={`status-pill state-${selectedVm.agent.state === "running" ? "running" : selectedVm.agent.state === "disabled" ? "failed" : "idle"}`}>
-                Agent {selectedVm.agent.state}
-              </span>
+            <div className="feature-toolbar-actions icon-actions">
+              <Tooltip content={`Host libvirt state for ${selectedVm.vm_name}: ${selectedVm.libvirt_state}.`}>
+                <span className={`status-pill state-${selectedVm.libvirt_state === "running" ? "running" : "idle"}`}>
+                  VM {selectedVm.libvirt_state}
+                </span>
+              </Tooltip>
+              <Tooltip content={`Guest agent state for ${selectedVm.vm_name}: ${selectedVm.agent.state}.`}>
+                <span className={`status-pill state-${selectedVm.agent.state === "running" ? "running" : selectedVm.agent.state === "disabled" ? "failed" : "idle"}`}>
+                  Agent {selectedVm.agent.state}
+                </span>
+              </Tooltip>
               {showStart ? (
-                <button
-                  type="button"
-                  onClick={() => void runVmAction("start")}
-                  disabled={actionDisabled}
-                  aria-label={busyAction === "start" ? "Starting VM" : "Start VM"}
-                  title={busyAction === "start" ? "Starting VM" : "Start VM"}
-                >
-                  {busyAction === "start" ? "…" : <StartIcon />}
-                </button>
+                <Tooltip content="Start the selected VM through libvirt on the host.">
+                  <button
+                    type="button"
+                    onClick={() => void runVmAction("start")}
+                    disabled={actionDisabled}
+                    aria-label={busyAction === "start" ? "Starting VM" : "Start VM"}
+                  >
+                    {busyAction === "start" ? "…" : <StartIcon />}
+                  </button>
+                </Tooltip>
               ) : null}
               {showShutdown ? (
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (window.confirm(`Shut down ${selectedVm.vm_name}?`)) {
-                      void runVmAction("shutdown");
-                    }
-                  }}
-                  disabled={actionDisabled}
-                  aria-label={busyAction === "shutdown" ? "Shutting down VM" : "Shut down VM"}
-                  title={busyAction === "shutdown" ? "Shut down VM" : "Shut down VM"}
-                >
-                  {busyAction === "shutdown" ? "…" : <PowerIcon />}
-                </button>
+                <Tooltip content="Request a graceful guest shutdown for the selected VM.">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (window.confirm(`Shut down ${selectedVm.vm_name}?`)) {
+                        void runVmAction("shutdown");
+                      }
+                    }}
+                    disabled={actionDisabled}
+                    aria-label={busyAction === "shutdown" ? "Shutting down VM" : "Shut down VM"}
+                  >
+                    {busyAction === "shutdown" ? "…" : <PowerIcon />}
+                  </button>
+                </Tooltip>
               ) : null}
               {showEnable ? (
-                <button
-                  type="button"
-                  onClick={() => void runVmAction("enable-agent")}
-                  disabled={actionDisabled}
-                  aria-label="Enable agent"
-                  title="Enable agent"
-                >
-                  <EnableIcon />
-                </button>
+                <Tooltip content="Enable the guest agent so prompts and session automation can run again.">
+                  <button
+                    type="button"
+                    onClick={() => void runVmAction("enable-agent")}
+                    disabled={actionDisabled}
+                    aria-label="Enable agent"
+                  >
+                    <EnableIcon />
+                  </button>
+                </Tooltip>
               ) : null}
               {showDisable ? (
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (window.confirm(`Disable the agent for ${selectedVm.vm_name}?`)) {
-                      void runVmAction("disable-agent");
-                    }
-                  }}
-                  disabled={actionDisabled}
-                  aria-label="Disable agent"
-                  title="Disable agent"
-                >
-                  <DisableIcon />
-                </button>
+                <Tooltip content="Disable the guest agent without shutting down the VM.">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (window.confirm(`Disable the agent for ${selectedVm.vm_name}?`)) {
+                        void runVmAction("disable-agent");
+                      }
+                    }}
+                    disabled={actionDisabled}
+                    aria-label="Disable agent"
+                  >
+                    <DisableIcon />
+                  </button>
+                </Tooltip>
               ) : null}
               {showKill ? (
+                <Tooltip content="Force-kill the currently running guest agent process.">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (window.confirm(`Kill the running agent on ${selectedVm.vm_name}?`)) {
+                        void runVmAction("kill-agent", { pid: selectedVm.agent.pid });
+                      }
+                    }}
+                    disabled={actionDisabled}
+                    aria-label="Kill agent"
+                  >
+                    <KillAgentIcon />
+                  </button>
+                </Tooltip>
+              ) : null}
+              {showResume ? (
+                <Tooltip content={showResumeForm ? "Collapse the resume form." : "Open the resume form and send a prompt into the current session."}>
+                  <button
+                    type="button"
+                    className={showResumeForm ? "primary" : ""}
+                    onClick={() => {
+                      setShowResumeForm((current) => !current);
+                      setInlineValidation("");
+                    }}
+                    disabled={actionDisabled}
+                    aria-label={resumeButtonLabel}
+                  >
+                    {showResumeForm ? <ExpandResumeIcon /> : <ResumeIcon />}
+                  </button>
+                </Tooltip>
+              ) : null}
+              <Tooltip content="Destroy the VM and remove its associated local host-side state.">
                 <button
                   type="button"
+                  className="danger"
                   onClick={() => {
-                    if (window.confirm(`Kill the running agent on ${selectedVm.vm_name}?`)) {
-                      void runVmAction("kill-agent", { pid: selectedVm.agent.pid });
+                    const message = selectedVm.issue_number
+                      ? `Destroy ${selectedVm.vm_name} and remove its associated issue-VM state?`
+                      : `Destroy ${selectedVm.vm_name} and remove its local session state?`;
+                    if (window.confirm(message)) {
+                      void runVmAction("destroy");
                     }
                   }}
                   disabled={actionDisabled}
-                  aria-label="Kill agent"
-                  title="Kill agent"
+                  aria-label="Destroy VM"
                 >
-                  <KillAgentIcon />
+                  <DestroyIcon />
                 </button>
-              ) : null}
-              {showResume ? (
-                <button
-                  type="button"
-                  className={showResumeForm ? "primary" : ""}
-                  onClick={() => {
-                    setShowResumeForm((current) => !current);
-                    setInlineValidation("");
-                  }}
-                  disabled={actionDisabled}
-                  aria-label={resumeButtonLabel}
-                  title={resumeButtonLabel}
-                >
-                  {showResumeForm ? <ExpandResumeIcon /> : <ResumeIcon />}
-                </button>
-              ) : null}
-              <button
-                type="button"
-                className="danger"
-                onClick={() => {
-                  const message = selectedVm.issue_number
-                    ? `Destroy ${selectedVm.vm_name} and remove its associated issue-VM state?`
-                    : `Destroy ${selectedVm.vm_name} and remove its local session state?`;
-                  if (window.confirm(message)) {
-                    void runVmAction("destroy");
-                  }
-                }}
-                disabled={actionDisabled}
-                aria-label="Destroy VM"
-                title="Destroy VM"
-              >
-                <DestroyIcon />
-              </button>
+              </Tooltip>
             </div>
           ) : null}
         </div>

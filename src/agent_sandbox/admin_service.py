@@ -32,7 +32,6 @@ from .config import (
     DiscordWakeWorkerGlobalConfig,
     DiscordIngestWorkerGlobalConfig,
     GatewayConfig,
-    IssueOrchestratorWorkerGlobalConfig,
     ScheduledWakeWorkerGlobalConfig,
     TeamsIngestWorkerGlobalConfig,
     TriggerOrchestratorWorkerGlobalConfig,
@@ -101,7 +100,6 @@ _WORKER_DEFINITIONS: tuple[tuple[str, str, str], ...] = (
     ("discord-wake", "Discord Wake Worker", "agent-sandbox-discord-wake.service"),
     ("scheduled-wake", "Scheduled Wake Worker", "agent-sandbox-scheduled-wake.service"),
     ("teams-ingest", "Teams Ingest Worker", "agent-sandbox-teams-ingest.service"),
-    ("issue-orchestrator", "Issue Orchestrator Worker", "agent-sandbox-issue-orchestrator.service"),
     ("effect-orchestrator", "Effect Orchestrator Worker", "agent-sandbox-effect-orchestrator.service"),
     ("trigger-orchestrator", "Trigger Orchestrator Worker", "agent-sandbox-trigger-orchestrator.service"),
 )
@@ -112,7 +110,6 @@ _WORKER_GLOBAL_CONFIG_PATHS: dict[str, str] = {
     "discord-wake": "config/discord-wake/config.json",
     "scheduled-wake": "config/scheduled-wake/config.json",
     "teams-ingest": "config/teams-ingest/config.json",
-    "issue-orchestrator": "config/issue-orchestrator/config.json",
     "effect-orchestrator": "config/trigger-orchestrator/config.json",
     "trigger-orchestrator": "config/trigger-orchestrator/config.json",
 }
@@ -123,7 +120,6 @@ _WORKER_GLOBAL_CONFIG_MODELS: dict[str, type[BaseModel]] = {
     "discord-wake": DiscordWakeWorkerGlobalConfig,
     "scheduled-wake": ScheduledWakeWorkerGlobalConfig,
     "teams-ingest": TeamsIngestWorkerGlobalConfig,
-    "issue-orchestrator": IssueOrchestratorWorkerGlobalConfig,
     "effect-orchestrator": TriggerOrchestratorWorkerGlobalConfig,
     "trigger-orchestrator": TriggerOrchestratorWorkerGlobalConfig,
 }

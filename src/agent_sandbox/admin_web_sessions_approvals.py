@@ -97,10 +97,10 @@ def _wake_schedule_payload(item: dict[str, Any]) -> dict[str, Any]:
     payload = _iso(item)
     schedule = payload.pop("schedule", {}) if isinstance(payload.get("schedule"), dict) else {}
     resume_prompt = payload.pop("resume_prompt", {}) if isinstance(payload.get("resume_prompt"), dict) else {}
-    payload["cron"] = schedule.get("cron")
-    payload["resume_at"] = schedule.get("resume_at")
-    payload["prompt"] = resume_prompt.get("prompt")
-    payload["metadata"] = resume_prompt.get("metadata", {})
+    payload["cron"] = schedule.get("cron", payload.get("cron"))
+    payload["resume_at"] = schedule.get("resume_at", payload.get("resume_at"))
+    payload["prompt"] = resume_prompt.get("prompt", payload.get("prompt"))
+    payload["metadata"] = resume_prompt.get("metadata", payload.get("metadata", {}))
     payload["schedule_kind"] = "cron" if payload.get("cron") else "resume_at"
     return payload
 

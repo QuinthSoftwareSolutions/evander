@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 
 import { fetchJson } from "../admin/api";
 import { useAdminUi } from "../admin/AdminContext";
+import { Tooltip } from "../admin/Tooltip";
+import { RefreshIcon, SaveIcon, StartIcon, StopIcon } from "../admin/PageActionIcons";
 
 type WorkerSummary = {
   worker_id: string;
@@ -465,39 +467,51 @@ export function WorkersScreen() {
               {selectedSummary?.description ?? "Inspect status, tail logs, and edit worker-global settings."}
             </p>
           </div>
-          <div className="feature-toolbar-actions">
+          <div className="feature-toolbar-actions icon-actions">
             {selectedSummary?.running ? (
-              <button
-                type="button"
-                onClick={() => void handleWorkerAction("stop")}
-                disabled={!selectedWorkerId || acting !== null || saving || loading || mutationLocked}
-              >
-                {acting === "stop" ? "Stopping..." : "Stop"}
-              </button>
+              <Tooltip content="Stop the selected background worker service.">
+                <button
+                  type="button"
+                  onClick={() => void handleWorkerAction("stop")}
+                  disabled={!selectedWorkerId || acting !== null || saving || loading || mutationLocked}
+                  aria-label={acting === "stop" ? "Stopping worker" : "Stop worker"}
+                >
+                  {acting === "stop" ? "…" : <StopIcon />}
+                </button>
+              </Tooltip>
             ) : (
+              <Tooltip content="Start the selected background worker service.">
+                <button
+                  type="button"
+                  onClick={() => void handleWorkerAction("start")}
+                  disabled={!selectedWorkerId || acting !== null || saving || loading || mutationLocked}
+                  aria-label={acting === "start" ? "Starting worker" : "Start worker"}
+                >
+                  {acting === "start" ? "…" : <StartIcon />}
+                </button>
+              </Tooltip>
+            )}
+            <Tooltip content="Reload the selected worker summary, config, and recent log.">
               <button
                 type="button"
-                onClick={() => void handleWorkerAction("start")}
-                disabled={!selectedWorkerId || acting !== null || saving || loading || mutationLocked}
+                onClick={() => void reloadSelectedWorker({ preserveDraft: isDirty })}
+                disabled={!selectedWorkerId || loading || acting !== null || saving}
+                aria-label={loading ? "Reloading worker" : "Reload worker"}
               >
-                {acting === "start" ? "Starting..." : "Start"}
+                {loading ? "…" : <RefreshIcon />}
               </button>
-            )}
-            <button
-              type="button"
-              onClick={() => void reloadSelectedWorker({ preserveDraft: isDirty })}
-              disabled={!selectedWorkerId || loading || acting !== null || saving}
-            >
-              {loading ? "Reloading..." : "Reload"}
-            </button>
-            <button
-              type="button"
-              className="primary"
-              onClick={() => void handleSaveConfig()}
-              disabled={!selectedWorkerId || saving || acting !== null || loading || !detail?.config_schema || !isDirty || mutationLocked}
-            >
-              {saving ? "Saving..." : "Save settings"}
-            </button>
+            </Tooltip>
+            <Tooltip content="Save the current worker-global settings back to the host config file.">
+              <button
+                type="button"
+                className="primary"
+                onClick={() => void handleSaveConfig()}
+                disabled={!selectedWorkerId || saving || acting !== null || loading || !detail?.config_schema || !isDirty || mutationLocked}
+                aria-label={saving ? "Saving worker settings" : "Save worker settings"}
+              >
+                {saving ? "…" : <SaveIcon />}
+              </button>
+            </Tooltip>
           </div>
         </div>
 
@@ -505,78 +519,64 @@ export function WorkersScreen() {
         {error ? <div className="callout error-callout">{error}</div> : null}
         {isDirty ? <div className="callout warning-callout">Unsaved worker settings are being preserved across refreshes. Switching workers will discard them.</div> : null}
 
-        <div className="feature-grid">
-          <article className="panel detail-panel">
-            <div className="panel-header">
-              <div>
-                <h3>Overview</h3>
-                <p className="muted-text">
-                  Current unit state, service health, and any systemd-reported failure context.
-                </p>
-              </div>
-              {selectedSummary ? (
-                <span className={`status-pill state-${selectedSummary.failed ? "failed" : selectedSummary.running ? "running" : "idle"}`}>
-                  {selectedSummary.failed ? "failed" : selectedSummary.running ? "running" : selectedSummary.active_state}
-                </span>
-              ) : null}
+        <article className="panel detail-panel worker-overview-panel">
+          <div className="panel-header">
+            <div>
+              <h3>Overview</h3>
+              <p className="muted-text">
+                Current unit state and service health for the selected worker.
+              </p>
             </div>
             {selectedSummary ? (
-              <div className="detail-stack">
-                <div className="detail-grid">
-                  <div><span>Name</span><strong>{selectedSummary.name}</strong></div>
-                  <div><span>Unit</span><strong>{selectedSummary.unit}</strong></div>
-                  <div><span>Main PID</span><strong>{selectedSummary.main_pid ?? "n/a"}</strong></div>
-                  <div><span>Active state</span><strong>{selectedSummary.active_state}</strong></div>
-                  <div><span>Sub state</span><strong>{selectedSummary.sub_state ?? "n/a"}</strong></div>
-                  <div><span>Result</span><strong>{selectedSummary.result ?? "n/a"}</strong></div>
-                </div>
-
-                <div className="detail-block">
-                  <div className="section-label">Unit file state</div>
-                  <p>{selectedSummary.unit_file_state ?? "n/a"}</p>
-                </div>
-
-                <div className="detail-block">
-                  <div className="section-label">Systemd detail</div>
-                  <p>{selectedSummary.detail ?? "No extra unit detail was reported."}</p>
-                </div>
-              </div>
-            ) : (
-              <div className="empty-state">Select a worker to inspect it.</div>
-            )}
-          </article>
-
-          <article className="panel">
-            <div className="panel-header">
-              <div>
-                <h3>Global settings</h3>
-                <p className="muted-text">
-                  Edit the worker-global configuration file that backs this service.
-                </p>
-              </div>
-              <span className="panel-meta">
-                {detail?.config.path ?? ""}
-                {detail?.config.exists ? " · file exists" : " · using current defaults"}
+              <span className={`status-pill state-${selectedSummary.failed ? "failed" : selectedSummary.running ? "running" : "idle"}`}>
+                {selectedSummary.failed ? "failed" : selectedSummary.running ? "running" : selectedSummary.active_state}
               </span>
+            ) : null}
+          </div>
+          {selectedSummary ? (
+            <div className="detail-grid">
+              <div><span>Name</span><strong>{selectedSummary.name}</strong></div>
+              <div><span>Unit</span><strong>{selectedSummary.unit}</strong></div>
+              <div><span>Main PID</span><strong>{selectedSummary.main_pid ?? "n/a"}</strong></div>
+              <div><span>Active state</span><strong>{selectedSummary.active_state}</strong></div>
+              <div><span>Sub state</span><strong>{selectedSummary.sub_state ?? "n/a"}</strong></div>
+              <div><span>Result</span><strong>{selectedSummary.result ?? "n/a"}</strong></div>
             </div>
-            {detail?.config_schema ? (
-              <div className="config-field-grid">
-                {detail.config_schema.fields.map((field) => (
-                  <div key={field.field_name} className="config-field-card">
-                    <div className="feature-list-title-row">
-                      <strong>{field.label}</strong>
-                      <span className="panel-meta">{field.kind}</span>
-                    </div>
-                    {renderField(field)}
-                    {field.tooltip ? <div className="panel-meta">{field.tooltip}</div> : null}
+          ) : (
+            <div className="empty-state">Select a worker to inspect it.</div>
+          )}
+        </article>
+
+        <article className="panel">
+          <div className="panel-header">
+            <div>
+              <h3>Global settings</h3>
+              <p className="muted-text">
+                Edit the worker-global configuration file that backs this service.
+              </p>
+            </div>
+            <span className="panel-meta">
+              {detail?.config.path ?? ""}
+              {detail?.config.exists ? " · file exists" : " · using current defaults"}
+            </span>
+          </div>
+          {detail?.config_schema ? (
+            <div className="config-field-grid">
+              {detail.config_schema.fields.map((field) => (
+                <div key={field.field_name} className="config-field-card">
+                  <div className="feature-list-title-row">
+                    <strong>{field.label}</strong>
+                    <span className="panel-meta">{field.kind}</span>
                   </div>
-                ))}
-              </div>
-            ) : (
-              <div className="empty-state">Global settings are unavailable for this worker. It may not expose an editable schema.</div>
-            )}
-          </article>
-        </div>
+                  {renderField(field)}
+                  {field.tooltip ? <div className="panel-meta">{field.tooltip}</div> : null}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="empty-state">Global settings are unavailable for this worker. It may not expose an editable schema.</div>
+          )}
+        </article>
 
         <article className="panel">
           <div className="panel-header">
@@ -592,7 +592,7 @@ export function WorkersScreen() {
               {loading ? "Reloading..." : "Reload log"}
             </button>
           </div>
-          <pre className="log-view">
+          <pre className="log-view worker-log-view">
             {selectedWorkerId
               ? logText || "No recent log lines were returned for this worker."
               : "Select a worker to load the current journal tail."}

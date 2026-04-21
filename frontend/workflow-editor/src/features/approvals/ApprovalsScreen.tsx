@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import { fetchJson, formatRelativeSeconds, formatTimestamp } from "../admin/api";
 import { useAdminUi } from "../admin/AdminContext";
+import { Tooltip } from "../admin/Tooltip";
 
 type ApprovalStatus = "pending" | "approved" | "denied" | "expired";
 
@@ -272,7 +273,9 @@ export function ApprovalsScreen() {
                     {item.status}
                   </span>
                 </div>
-                <div className="feature-list-meta">{displayToolName(item)}</div>
+                <Tooltip content={`Requested tool/action: ${displayToolName(item)}`} inline={false}>
+                  <div className="feature-list-meta">{displayToolName(item)}</div>
+                </Tooltip>
                 <div className="feature-list-meta">{item.session_id}{item.vm_id ? ` • ${item.vm_id}` : ""}</div>
                 <div className="feature-list-meta">{formatTimestamp(item.created_at)}</div>
               </button>
@@ -323,7 +326,7 @@ export function ApprovalsScreen() {
             <div className="stack-layout">
               <dl className="property-grid">
                 <div><dt>Status</dt><dd>{detail.request.status}</dd></div>
-                <div><dt>Tool</dt><dd>{displayToolName(detail.request)}</dd></div>
+                <div><dt>Tool</dt><dd><Tooltip content={`Requested tool/action: ${displayToolName(detail.request)}`}>{displayToolName(detail.request)}</Tooltip></dd></div>
                 <div><dt>Session</dt><dd>{detail.request.session_id}</dd></div>
                 <div><dt>VM</dt><dd>{detail.request.vm_id ?? "n/a"}</dd></div>
                 <div><dt>Created</dt><dd>{formatTimestamp(detail.request.created_at)}</dd></div>
@@ -339,8 +342,8 @@ export function ApprovalsScreen() {
                 </div>
                 <div className="panel-body">
                 <p>{detail.request.human_summary}</p>
-                <p className="muted-copy">Directory: {detail.request.directory_path}</p>
-                <p className="muted-copy">Payload digest: {detail.request.payload_digest}</p>
+                <p className="muted-copy">Directory: <Tooltip content={`Directory scope for this approval request: ${detail.request.directory_path}`}><span>{detail.request.directory_path}</span></Tooltip></p>
+                <p className="muted-copy">Payload digest: <Tooltip content={`Payload digest: ${detail.request.payload_digest}`}><span>{detail.request.payload_digest}</span></Tooltip></p>
                 </div>
               </article>
 

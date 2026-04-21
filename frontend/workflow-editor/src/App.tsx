@@ -3,9 +3,7 @@ import {
   applyEdgeChanges,
   applyNodeChanges,
   Background,
-  Controls,
   Handle,
-  MiniMap,
   Position,
   ReactFlow,
   type ReactFlowInstance,
@@ -32,6 +30,7 @@ import {
   type WorkflowRunSummary,
 } from "./types";
 import { useAdminUi } from "./features/admin/AdminContext";
+import { Tooltip } from "./features/admin/Tooltip";
 
 type GraphNodeData = {
   id: string;
@@ -94,6 +93,47 @@ const NODE_GROUPS: ReadonlyArray<{
   { kind: "query", label: "Queries", description: "Read workflow state without producing a side effect." },
 ];
 
+const NODE_KIND_DESCRIPTIONS: Record<WorkflowNodeKind, string> = {
+  trigger: "Triggers start workflow execution from incoming events.",
+  gate: "Gates transform, filter, fan out, or combine workflow data between nodes.",
+  effect: "Effects perform side effects such as VM actions, session updates, Git operations, or agent prompts.",
+  query: "Queries read workflow or environment state without causing a side effect.",
+};
+
+const NODE_TYPE_DESCRIPTIONS: Record<string, string> = {
+  "trigger:cron": "Start a workflow on a recurring cron schedule.",
+  "trigger:ticket:created": "Start when a tracked ticket is created.",
+  "trigger:ticket:changed": "Start when a tracked ticket changes state or metadata.",
+  "trigger:discord:new-message": "Start from new Discord messages that match the configured filters.",
+  "trigger:teams:new-message": "Start from new Microsoft Teams messages that match the configured targets.",
+  "trigger:email:new-message": "Start from newly ingested email messages for the configured mailbox scope.",
+  "trigger:pull-request:new-feedback": "Start when new pull-request feedback arrives from the configured provider.",
+  "trigger:git:push": "Start from Git push events captured by the host-side bare-repo hook.",
+  "trigger:agent:run:completed": "Start when a guest agent run completes.",
+  "gate:filter": "Allow only matching events to continue downstream.",
+  "gate:map": "Project upstream outputs into a new payload shape.",
+  "gate:merge": "Merge compatible inbound event streams into one downstream path.",
+  "gate:await-agent": "Pause the workflow until a selected agent session completes.",
+  "gate:for": "Iterate over an array and execute the body branch for each item.",
+  "effect:agent:prompt": "Send a prompt to an agent session.",
+  "effect:vm:create": "Create a VM for the workflow.",
+  "effect:vm:clone-repo": "Clone a repository into a target VM.",
+  "effect:vm:bootstrap-python": "Bootstrap a Python checkout and environment in a VM.",
+  "effect:vm:bootstrap-frontend": "Bootstrap frontend dependencies in a VM.",
+  "effect:vm:start": "Start an existing VM.",
+  "effect:vm:stop": "Stop an existing VM.",
+  "effect:vm:exec": "Run a shell command inside a VM.",
+  "effect:vm:copy-files": "Copy rendered file content into a VM.",
+  "effect:vm:delete-files": "Delete files from a VM.",
+  "effect:session:update-metadata": "Patch session metadata on the host.",
+  "effect:git:promote-agent-branch": "Promote an agent branch into a trusted host checkout.",
+  "effect:pr:create": "Create a pull request from the host side.",
+  "query:vm:run-state": "Read the current run state for a VM.",
+  "query:git:pr-note": "Read pull-request note context from a host checkout.",
+  "query:session-context": "Read session context and metadata.",
+  "query:issue:get": "Read a local issue record by id.",
+};
+
 const RUNTIME_POLL_INTERVAL_MS = 5000;
 const NODE_STATUS_ORDER = ["failed", "running", "waiting", "inflight", "pending"] as const;
 const SNAP_THRESHOLD = 12;
@@ -102,6 +142,8 @@ const FALLBACK_NODE_HEIGHT = 108;
 
 function WorkflowNodeCard({ data, selected }: NodeProps) {
   const nodeData = data as GraphNodeData;
+  const kindDescription = NODE_KIND_DESCRIPTIONS[nodeData.kind];
+  const typeDescription = NODE_TYPE_DESCRIPTIONS[nodeData.type] ?? `${nodeData.type} node.`;
   return (
     <div
       className={`node-card node-${nodeData.kind}${selected ? " selected" : ""}${
@@ -115,10 +157,11 @@ function WorkflowNodeCard({ data, selected }: NodeProps) {
               key={`input-${port.key}`}
               className="workflow-port"
               style={{ top: `${30 + index * 24}px` }}
-              title={port.description ?? undefined}
             >
-              <Handle id={port.key} type="target" position={Position.Left} className="workflow-handle" />
-              <span className="workflow-port-label">{port.label}</span>
+              <Tooltip content={port.description ?? `${port.label} input port.`} className="workflow-port-tooltip" inline={false}>
+                <Handle id={port.key} type="target" position={Position.Left} className="workflow-handle" />
+                <span className="workflow-port-label">{port.label}</span>
+              </Tooltip>
             </div>
           ))}
         </div>
@@ -127,14 +170,18 @@ function WorkflowNodeCard({ data, selected }: NodeProps) {
       )}
       <div className="node-drag-surface">
         <div className="node-heading">
-          <div className="node-kind">{nodeData.kind}</div>
+          <Tooltip content={`${kindDescription} ${typeDescription}`}>
+            <div className="node-kind">{nodeData.kind}</div>
+          </Tooltip>
           {nodeData.activeRunCount > 0 && nodeData.statusLabel ? (
             <div className={`node-runtime-badge status-${nodeData.dominantStatus ?? "active"}`}>
               {nodeData.statusLabel}
             </div>
           ) : null}
         </div>
-        <div className="node-title">{nodeData.displayName}</div>
+        <Tooltip content={typeDescription}>
+          <div className="node-title">{nodeData.displayName}</div>
+        </Tooltip>
         <div className="node-id">{nodeData.id}</div>
       </div>
       {nodeData.outputPorts.length > 0 ? (
@@ -144,10 +191,11 @@ function WorkflowNodeCard({ data, selected }: NodeProps) {
               key={`output-${port.key}`}
               className="workflow-port workflow-port-output"
               style={{ top: `${30 + index * 24}px` }}
-              title={port.description ?? undefined}
             >
-              <span className="workflow-port-label">{port.label}</span>
-              <Handle id={port.key} type="source" position={Position.Right} className="workflow-handle" />
+              <Tooltip content={port.description ?? `${port.label} output port.`} className="workflow-port-tooltip" inline={false}>
+                <span className="workflow-port-label">{port.label}</span>
+                <Handle id={port.key} type="source" position={Position.Right} className="workflow-handle" />
+              </Tooltip>
             </div>
           ))}
         </div>
@@ -751,6 +799,10 @@ function objectListJsonDraftKey(fieldKey: string, index: number, itemFieldKey: s
 
 function getCatalogEntry(catalog: WorkflowEditorCatalog, type: string) {
   return catalog.nodes.find((entry) => entry.type === type);
+}
+
+function nodeTypeDescription(type: string, kind: WorkflowNodeKind): string {
+  return NODE_TYPE_DESCRIPTIONS[type] ?? NODE_KIND_DESCRIPTIONS[kind];
 }
 
 function directUpstreamNodeIds(config: WorkflowConfig, targetId: string): string[] {
@@ -2539,15 +2591,19 @@ export default function App() {
               {createEntriesByKind.map((group) => (
                 <details key={group.kind} className="create-group" open={group.kind === "trigger"}>
                   <summary className="create-group-summary">
-                    <span>{group.label}</span>
+                    <Tooltip content={group.description}>
+                      <span>{group.label}</span>
+                    </Tooltip>
                     <span className="create-group-count">{group.entries.length}</span>
                   </summary>
                   <p className="create-group-description">{group.description}</p>
                   <div className="create-group-actions">
                     {group.entries.map((entry) => (
-                      <button key={entry.type} onClick={() => addNode(entry.kind, entry.type)} disabled={editLocked}>
-                        {entry.label}
-                      </button>
+                      <Tooltip key={entry.type} content={nodeTypeDescription(entry.type, entry.kind)} inline={false}>
+                        <button onClick={() => addNode(entry.kind, entry.type)} disabled={editLocked}>
+                          {entry.label}
+                        </button>
+                      </Tooltip>
                     ))}
                   </div>
                 </details>
@@ -2676,8 +2732,6 @@ export default function App() {
               deleteKeyCode={["Backspace", "Delete"]}
               multiSelectionKeyCode={["Control", "Meta"]}
             >
-              <MiniMap />
-              <Controls />
               <Background gap={20} size={1} />
             </ReactFlow>
             {flowInstance

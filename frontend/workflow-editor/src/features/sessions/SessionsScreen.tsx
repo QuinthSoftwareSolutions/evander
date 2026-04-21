@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 
 import { fetchJson, formatTimestamp } from "../admin/api";
 import { useAdminUi } from "../admin/AdminContext";
+import { DeleteIcon, ExtendIcon, RevokeIcon } from "../admin/PageActionIcons";
+import { Tooltip } from "../admin/Tooltip";
 
 type SessionRecord = {
   session_id: string;
@@ -40,6 +42,8 @@ type WakeSchedule = {
   schedule_kind: "cron" | "resume_at";
 };
 
+type WakeScheduleKind = "cron" | "resume_at";
+
 type SessionDetailResponse = {
   session: SessionRecord;
   wake_schedules: WakeSchedule[];
@@ -58,9 +62,59 @@ type SessionMutationResponse = {
   session?: SessionRecord;
 };
 
+type ToolOption = SessionCatalogResponse["tool_options"][number];
+
 type TabKey = "active" | "expired";
 
 const POLL_INTERVAL_MS = 10000;
+const TOOL_DESCRIPTION_FALLBACK = "Allow the session to invoke this MCP tool when the agent needs it.";
+
+const TOOL_DESCRIPTIONS: Record<string, string> = {
+  create_ado_backlog_item: "Create a new Azure DevOps backlog item on the host using the configured project defaults.",
+  query_ado_backlog_items: "Search Azure DevOps backlog items with the host-side query filters and return matching work items.",
+  list_ado_current_iteration_backlog_items: "List backlog items assigned to the current Azure DevOps iteration for the configured project.",
+  get_ado_backlog_item: "Fetch a single Azure DevOps backlog item with its latest host-side details.",
+  create_local_issue: "Create a local issue record in the selected directory so the session can track work inside agent-sandbox.",
+  list_issues: "List local issues that the session is allowed to inspect in the current directory scope.",
+  get_issue: "Read the details of a specific local issue, including status, metadata, and body content.",
+  set_issue_plan: "Store or update the implementation plan attached to a local issue.",
+  approve_issue: "Mark a local issue as approved so execution work can proceed.",
+  commit_issue: "Move a local issue into the committed state once work is ready to start.",
+  reject_issue: "Reject a local issue instead of approving it for execution.",
+  claim_next_issue: "Claim the next available local issue that matches the current session scope.",
+  complete_issue: "Mark a local issue as completed after the work has been finished.",
+  get_agent_status: "Inspect the current guest agent state, including whether it is running and what it is doing.",
+  get_agent_logs: "Fetch recent logs for the guest agent attached to this session.",
+  prompt_agent: "Send a new prompt to the guest agent running in this session.",
+  list_pending_agent_prompts: "List prompts queued for the guest agent that have not been handled yet.",
+  respond_to_agent: "Reply to a pending agent prompt or approval-style checkpoint from the guest agent.",
+  schedule_resume: "Create or update a host-managed wake schedule that resumes this session later.",
+  run_script: "Run an approved host-side script on behalf of the session.",
+  copilot_host_auth: "Bridge host-managed GitHub Copilot authentication into the guest when that provider is in use.",
+  discord_get_commands: "Read Discord command traffic that the host has ingested for this session or directory.",
+  discord_post_status: "Post a Discord status update from the host on behalf of the session.",
+  has_pending_discord_messages: "Check whether the session has Discord messages waiting to be reviewed.",
+  list_unread_discord_messages: "List unread Discord messages available to the session.",
+  list_all_discord_messages: "List all Discord messages visible to the session within its policy scope.",
+  add_message_reaction: "Add a reaction to an approved Discord message from the host side.",
+  teams_get_messages: "Read Microsoft Teams messages made available to the session by the host ingest worker.",
+  teams_post_status: "Post a Microsoft Teams status update from the host on behalf of the session.",
+  email_list_unread: "List unread email messages available to the session through the host email provider.",
+  email_get_message: "Open a specific email message that the session is allowed to inspect.",
+  email_create_draft: "Create an email draft on the host without sending it yet.",
+  email_send_approved: "Send a previously approved email draft through the host email provider.",
+  approval_submit: "Submit an approval request when the session needs a guarded action reviewed by a human.",
+  approval_check: "Check the current state of an approval request that the session previously submitted.",
+  has_pending_feedback: "Check whether any pull request or review feedback is waiting for the session.",
+  list_unread_feedback: "List unread review feedback items that need the session’s attention.",
+  list_all_feedback: "List all review feedback visible to the session within its scope.",
+  post_pr_feedback_reply: "Post a reply to pull request feedback using the host integration.",
+  list_pull_requests: "List pull requests available to the session through the configured host provider.",
+  get_pull_request: "Fetch the latest details for a specific pull request.",
+  request_pr_review: "Request reviewers on a pull request from the host side.",
+  post_pr_comment: "Post a pull request comment using the host integration.",
+  submit_pr_review: "Submit a pull request review decision and review body from the host side.",
+};
 
 function toDatetimeLocalValue(value: string | null | undefined): string {
   if (!value) return "";
@@ -76,6 +130,112 @@ function toDatetimeLocalValue(value: string | null | undefined): string {
 
 function sortTools(values: string[]): string[] {
   return [...values].sort((left, right) => left.localeCompare(right));
+}
+
+function describeTool(tool: ToolOption): string {
+  return TOOL_DESCRIPTIONS[tool.value] ?? `${tool.label} tool. ${TOOL_DESCRIPTION_FALLBACK}`;
+}
+
+const sessionListCollator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+
+const TOOL_GROUP_ORDER = [
+  "Issue intake",
+  "Azure DevOps",
+  "Pull requests",
+  "Approvals",
+  "Agent control",
+  "Discord",
+  "Teams",
+  "Email",
+  "Feedback",
+  "Other",
+] as const;
+
+function groupToolOption(tool: ToolOption): string {
+  const { value } = tool;
+  if ([
+    "create_local_issue",
+    "list_issues",
+    "get_issue",
+    "set_issue_plan",
+    "approve_issue",
+    "commit_issue",
+    "reject_issue",
+    "claim_next_issue",
+    "complete_issue",
+  ].includes(value)) {
+    return "Issue intake";
+  }
+  if ([
+    "create_ado_backlog_item",
+    "query_ado_backlog_items",
+    "list_ado_current_iteration_backlog_items",
+    "get_ado_backlog_item",
+  ].includes(value)) {
+    return "Azure DevOps";
+  }
+  if ([
+    "list_pull_requests",
+    "get_pull_request",
+    "request_pr_review",
+    "post_pr_comment",
+    "submit_pr_review",
+    "post_pr_feedback_reply",
+  ].includes(value)) {
+    return "Pull requests";
+  }
+  if (value.startsWith("approval_")) {
+    return "Approvals";
+  }
+  if ([
+    "get_agent_status",
+    "get_agent_logs",
+    "prompt_agent",
+    "list_pending_agent_prompts",
+    "respond_to_agent",
+    "schedule_resume",
+    "run_script",
+    "copilot_host_auth",
+  ].includes(value)) {
+    return "Agent control";
+  }
+  if ([
+    "discord_get_commands",
+    "discord_post_status",
+    "has_pending_discord_messages",
+    "list_unread_discord_messages",
+    "list_all_discord_messages",
+    "add_message_reaction",
+  ].includes(value)) {
+    return "Discord";
+  }
+  if (["teams_get_messages", "teams_post_status"].includes(value)) {
+    return "Teams";
+  }
+  if (["email_list_unread", "email_get_message", "email_create_draft", "email_send_approved"].includes(value)) {
+    return "Email";
+  }
+  if (["has_pending_feedback", "list_unread_feedback", "list_all_feedback"].includes(value)) {
+    return "Feedback";
+  }
+  return "Other";
+}
+
+function groupTools(toolOptions: ToolOption[]) {
+  const groups = new Map<string, ToolOption[]>();
+  for (const tool of toolOptions) {
+    const group = groupToolOption(tool);
+    const current = groups.get(group);
+    if (current) current.push(tool);
+    else groups.set(group, [tool]);
+  }
+  return TOOL_GROUP_ORDER
+    .map((name) => ({ name, items: groups.get(name) ?? [] }))
+    .filter((group) => group.items.length > 0)
+    .map((group) => ({
+      ...group,
+      items: [...group.items].sort((left, right) => left.label.localeCompare(right.label, undefined, { sensitivity: "base" })),
+    }));
 }
 
 function matchesFilter(item: SessionRecord, query: string): boolean {
@@ -95,6 +255,76 @@ function pickSessionIdForTab(response: SessionListResponse, tab: TabKey, preferr
   return tabItems[0]?.session_id ?? "";
 }
 
+function RenewSessionModal({
+  open,
+  sessionId,
+  renewExtension,
+  presets,
+  busy,
+  locked,
+  onChange,
+  onClose,
+  onSubmit,
+}: {
+  open: boolean;
+  sessionId: string;
+  renewExtension: string;
+  presets: string[];
+  busy: boolean;
+  locked: boolean;
+  onChange: (value: string) => void;
+  onClose: () => void;
+  onSubmit: () => void;
+}) {
+  if (!open) return null;
+  return (
+    <div className="modal-backdrop" onClick={onClose} role="presentation">
+      <div
+        className="modal-card session-renew-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="session-renew-modal-title"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="modal-header">
+          <div>
+            <div className="eyebrow">Session renewal</div>
+            <h2 id="session-renew-modal-title">Extend session</h2>
+            <p>Choose how long to extend <strong>{sessionId}</strong>.</p>
+          </div>
+          <div className="inline-actions">
+            <button type="button" className="admin-shell-button admin-shell-button-muted" onClick={onClose}>
+              Cancel
+            </button>
+          </div>
+        </div>
+        <div className="modal-body">
+          <label className="field-stack">
+            <span>Extend by</span>
+            <input
+              autoFocus
+              list="renew-extension-presets-modal"
+              value={renewExtension}
+              onChange={(event) => onChange(event.target.value)}
+              disabled={locked || busy}
+            />
+            <datalist id="renew-extension-presets-modal">
+              {presets.map((preset) => (
+                <option key={preset} value={preset} />
+              ))}
+            </datalist>
+          </label>
+          <div className="feature-toolbar-actions session-renew-actions">
+                  <button type="button" className="primary" onClick={onSubmit} disabled={locked || busy}>
+                    {busy ? "Extending..." : "Extend"}
+                  </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function SessionsScreen() {
   const { privilegedUnlocked, selectedDirectoryPath } = useAdminUi();
   const [response, setResponse] = useState<SessionListResponse | null>(null);
@@ -102,9 +332,9 @@ export function SessionsScreen() {
   const [detail, setDetail] = useState<SessionDetailResponse | null>(null);
   const [catalog, setCatalog] = useState<SessionCatalogResponse | null>(null);
   const [activeTab, setActiveTab] = useState<TabKey>("active");
-  const [directOnly, setDirectOnly] = useState(true);
   const [sessionFilter, setSessionFilter] = useState("");
   const [renewExtension, setRenewExtension] = useState("1d");
+  const [showRenewModal, setShowRenewModal] = useState(false);
   const [modelDraft, setModelDraft] = useState("");
   const [modelDirty, setModelDirty] = useState(false);
   const [modelBoundSessionId, setModelBoundSessionId] = useState("");
@@ -114,6 +344,7 @@ export function SessionsScreen() {
   const [wakePrompt, setWakePrompt] = useState("");
   const [wakeCron, setWakeCron] = useState("");
   const [wakeResumeAt, setWakeResumeAt] = useState("");
+  const [wakeScheduleKind, setWakeScheduleKind] = useState<WakeScheduleKind>("cron");
   const [wakeMode, setWakeMode] = useState("same_context");
   const [wakeEnabled, setWakeEnabled] = useState(true);
   const [editingWakeRequestId, setEditingWakeRequestId] = useState("");
@@ -128,7 +359,7 @@ export function SessionsScreen() {
     const query = new URLSearchParams({
       include_expired: "true",
       directory_path: selectedDirectoryPath,
-      direct_only: String(directOnly),
+      direct_only: "true",
     });
     const payload = await fetchJson<SessionListResponse>(`/api/admin/sessions?${query.toString()}`);
     setResponse(payload);
@@ -168,7 +399,7 @@ export function SessionsScreen() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [activeTab, selectedDirectoryPath, directOnly]);
+  }, [activeTab, selectedDirectoryPath]);
 
   useEffect(() => {
     const nextItems = activeTab === "active" ? response?.active_items ?? [] : response?.expired_items ?? [];
@@ -238,7 +469,9 @@ export function SessionsScreen() {
 
   const visibleItems = useMemo(() => {
     const source = activeTab === "active" ? response?.active_items ?? [] : response?.expired_items ?? [];
-    return source.filter((item) => matchesFilter(item, sessionFilter));
+    return source
+      .filter((item) => matchesFilter(item, sessionFilter))
+      .sort((left, right) => sessionListCollator.compare(left.session_id, right.session_id));
   }, [activeTab, response?.active_items, response?.expired_items, sessionFilter]);
 
   useEffect(() => {
@@ -258,14 +491,25 @@ export function SessionsScreen() {
     [detail?.wake_schedules, editingWakeRequestId],
   );
   const mutationLocked = !privilegedUnlocked;
+  const groupedToolOptions = useMemo(() => groupTools(catalog?.tool_options ?? []), [catalog?.tool_options]);
 
   function resetWakeEditor() {
     setEditingWakeRequestId("");
     setWakePrompt("");
     setWakeCron("");
     setWakeResumeAt("");
+    setWakeScheduleKind("cron");
     setWakeMode("same_context");
     setWakeEnabled(true);
+  }
+
+  function setScheduleKind(kind: WakeScheduleKind) {
+    setWakeScheduleKind(kind);
+    if (kind === "cron") {
+      setWakeResumeAt("");
+    } else {
+      setWakeCron("");
+    }
   }
 
   function bindWakeSchedule(requestId: string) {
@@ -275,6 +519,7 @@ export function SessionsScreen() {
     setWakePrompt(item.prompt);
     setWakeCron(item.cron ?? "");
     setWakeResumeAt(toDatetimeLocalValue(item.resume_at));
+    setWakeScheduleKind(item.schedule_kind === "resume_at" ? "resume_at" : "cron");
     setWakeMode(item.resume_mode);
     setWakeEnabled(item.enabled);
   }
@@ -308,6 +553,9 @@ export function SessionsScreen() {
       );
       setStatus(payload.message);
       setError(null);
+      if (action === "renew") {
+        setShowRenewModal(false);
+      }
       const refreshedSessions = await refreshSessions();
       const nextSelectedSessionId = action === "delete"
         ? pickSessionIdForTab(refreshedSessions, activeTab)
@@ -392,18 +640,67 @@ export function SessionsScreen() {
     }
   }
 
+  async function saveSessionSettings() {
+    if (!selectedSession || (!modelDirty && !toolsDirty)) return;
+    if (modelDirty && !modelDraft.trim()) {
+      setModelStatus("Model is required.");
+      return;
+    }
+
+    setBusy("settings");
+    try {
+      if (modelDirty) {
+        const payload = await fetchJson<SessionMutationResponse>(
+          `/api/admin/sessions/${encodeURIComponent(selectedSession.session_id)}/model`,
+          {
+            method: "PUT",
+            body: JSON.stringify({ model: modelDraft.trim() }),
+          },
+        );
+        setStatus(payload.message);
+        setModelStatus("Saved.");
+        setModelDirty(false);
+        setModelBoundSessionId(selectedSession.session_id);
+      }
+
+      if (toolsDirty) {
+        const payload = await fetchJson<SessionMutationResponse>(
+          `/api/admin/sessions/${encodeURIComponent(selectedSession.session_id)}/allowed-tools`,
+          {
+            method: "PUT",
+            body: JSON.stringify({ allowed_tools: toolsDraft }),
+          },
+        );
+        setStatus(payload.message);
+        setToolsStatus("Saved.");
+        setToolsDirty(false);
+        setToolsBoundSessionId(selectedSession.session_id);
+      }
+
+      setError(null);
+      await refreshSessions();
+      await refreshSelectedSessionDetail(selectedSession.session_id);
+    } catch (reason) {
+      if (modelDirty) setModelStatus(null);
+      if (toolsDirty) setToolsStatus(null);
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function submitWakeSchedule(mode: "create" | "update") {
     if (!selectedSession) return;
     if (!wakePrompt.trim()) {
       setError("Wake prompt is required.");
       return;
     }
-    if (!wakeCron.trim() && !wakeResumeAt.trim()) {
-      setError("Provide either a cron expression or a resume timestamp.");
+    if (wakeScheduleKind === "cron" && !wakeCron.trim()) {
+      setError("Cron expression is required for recurring schedules.");
       return;
     }
-    if (wakeCron.trim() && wakeResumeAt.trim()) {
-      setError("Choose either a cron expression or a resume timestamp, not both.");
+    if (wakeScheduleKind === "resume_at" && !wakeResumeAt.trim()) {
+      setError("Resume timestamp is required for one-time schedules.");
       return;
     }
     setBusy(mode === "create" ? "wake-create" : "wake-update");
@@ -415,8 +712,8 @@ export function SessionsScreen() {
         method: mode === "create" ? "POST" : "PATCH",
         body: JSON.stringify({
           prompt: wakePrompt.trim(),
-          cron: wakeCron.trim() || null,
-          resume_at: wakeResumeAt ? new Date(wakeResumeAt).toISOString() : null,
+          cron: wakeScheduleKind === "cron" ? wakeCron.trim() || null : null,
+          resume_at: wakeScheduleKind === "resume_at" && wakeResumeAt ? new Date(wakeResumeAt).toISOString() : null,
           resume_mode: wakeMode,
           enabled: wakeEnabled,
         }),
@@ -478,56 +775,42 @@ export function SessionsScreen() {
   }
 
   return (
-    <div className="feature-page">
+    <div className="feature-page sessions-page">
       <section className="feature-sidebar">
         <div className="feature-sidebar-header">
           <div>
             <div className="eyebrow">Session control</div>
             <h1>Sessions</h1>
           </div>
-          <button type="button" onClick={() => void refreshSessions()}>
-            Refresh
-          </button>
         </div>
         {mutationLocked ? <div className="callout warning-callout">Unlock privileged operations to renew, revoke, edit, or schedule sessions.</div> : null}
-        <div className="panel section-panel">
-          <div className="feature-list-title-row">
-            <strong>Directory scope</strong>
-            <span className="panel-meta">{selectedDirectoryPath}</span>
-          </div>
-          <div className="feature-list-meta">{directOnly ? "Direct matches only" : "Including descendants"}</div>
-        </div>
-        <label className="checkbox-row">
-          <input type="checkbox" checked={directOnly} onChange={(event) => setDirectOnly(event.target.checked)} />
-          <span>Direct directory only</span>
-        </label>
         <label className="field-stack">
           <span>Find session</span>
           <input value={sessionFilter} onChange={(event) => setSessionFilter(event.target.value)} placeholder="session, VM, issue, model" />
         </label>
-        <div className="inline-actions">
-          <button type="button" className={activeTab === "active" ? "primary" : ""} onClick={() => setActiveTab("active")}>
-            Active ({response?.counts.active ?? 0})
-          </button>
-          <button type="button" className={activeTab === "expired" ? "primary" : ""} onClick={() => setActiveTab("expired")}>
-            Expired ({response?.counts.expired ?? 0})
-          </button>
+        <div className="toolbar-grid sessions-filter-grid">
+          <label className="field-stack">
+            <span>State</span>
+            <select value={activeTab} onChange={(event) => setActiveTab(event.target.value as TabKey)}>
+              <option value="active">Active ({response?.counts.active ?? 0})</option>
+              <option value="expired">Expired ({response?.counts.expired ?? 0})</option>
+            </select>
+          </label>
         </div>
-        <div className="feature-list">
+        <div className="feature-list session-list">
           {visibleItems.map((item) => (
             <button
               key={item.session_id}
               type="button"
-              className={`feature-list-item${item.session_id === selectedSessionId ? " selected" : ""}`}
+              className={`feature-list-item session-list-item${item.session_id === selectedSessionId ? " selected" : ""}`}
               onClick={() => setSelectedSessionId(item.session_id)}
             >
-              <div className="feature-list-title-row">
-                <strong>{item.session_id}</strong>
-                <span className={`status-pill state-${item.is_expired ? "failed" : "running"}`}>{item.is_expired ? "Expired" : "Active"}</span>
+              <div className="feature-list-title-row session-list-item-row">
+                <Tooltip content={`Session id: ${item.session_id}`}>
+                  <strong>{item.session_id}</strong>
+                </Tooltip>
+                <span className={`status-pill session-state-pill state-${item.is_expired ? "failed" : "running"}`}>{item.is_expired ? "Expired" : "Active"}</span>
               </div>
-              <div className="feature-list-meta">{item.issue_number ? `Issue ${item.issue_number}` : "No linked issue"}</div>
-              <div className="feature-list-meta">{item.vm_id ?? "No VM attached"}</div>
-              <div className="feature-list-meta">{item.model ?? "No model configured"}</div>
             </button>
           ))}
           {visibleItems.length === 0 ? <div className="empty-state">No sessions matched the current view.</div> : null}
@@ -544,11 +827,47 @@ export function SessionsScreen() {
             </p>
           </div>
           {selectedSession ? (
-            <div className="feature-toolbar-actions">
-              <span className={`status-pill state-${selectedSession.is_expired ? "failed" : "running"}`}>
-                {selectedSession.is_expired ? "Expired" : "Active"}
-              </span>
-              <span className="panel-meta">{selectedSession.vm_id ?? "No VM"}</span>
+            <div className="feature-toolbar-actions icon-actions">
+              <Tooltip content={selectedSession.is_expired ? "This session has expired and can no longer be resumed until it is renewed." : "This session is active and can still be used by its guest agent."}>
+                <span className={`status-pill state-${selectedSession.is_expired ? "failed" : "running"}`}>
+                  {selectedSession.is_expired ? "Expired" : "Active"}
+                </span>
+              </Tooltip>
+              <Tooltip content={selectedSession.vm_id ? `Attached VM: ${selectedSession.vm_id}` : "This session is not currently attached to a VM."}>
+                <span className="panel-meta">{selectedSession.vm_id ?? "No VM"}</span>
+              </Tooltip>
+              <Tooltip content="Extend the session expiry without changing the current session identity or attached VM.">
+                <button
+                  type="button"
+                  className="primary"
+                  onClick={() => setShowRenewModal(true)}
+                  disabled={busy === "renew" || mutationLocked}
+                  aria-label="Extend session"
+                >
+                  <ExtendIcon />
+                </button>
+              </Tooltip>
+              <Tooltip content="Revoke the session so further guest access is denied even before the expiry time.">
+                <button
+                  type="button"
+                  onClick={() => void runSessionAction("revoke")}
+                  disabled={busy === "revoke" || mutationLocked}
+                  aria-label={busy === "revoke" ? "Revoking session" : "Revoke session"}
+                >
+                  {busy === "revoke" ? "…" : <RevokeIcon />}
+                </button>
+              </Tooltip>
+              <Tooltip content="Delete the session record and remove its saved local state from the host control plane.">
+                <button
+                  className="danger"
+                  type="button"
+                  onClick={() => void runSessionAction("delete")}
+                  disabled={busy === "delete" || mutationLocked}
+                  aria-label={busy === "delete" ? "Deleting session" : "Delete session"}
+                >
+                  {busy === "delete" ? "…" : <DeleteIcon />}
+                </button>
+              </Tooltip>
             </div>
           ) : null}
         </div>
@@ -560,7 +879,6 @@ export function SessionsScreen() {
             <article className="panel">
               <div className="panel-header">
                 <h3>Session overview</h3>
-                <span className="panel-meta">{selectedSession.directory_path}</span>
               </div>
               <div className="panel-body">
                 <dl className="property-grid">
@@ -571,30 +889,6 @@ export function SessionsScreen() {
                   <div><dt>Created</dt><dd>{formatTimestamp(selectedSession.created_at)}</dd></div>
                   <div><dt>Expires</dt><dd>{formatTimestamp(selectedSession.expires_at)}</dd></div>
                 </dl>
-                <div className="inline-actions">
-                  <label className="field-stack">
-                    <span>Extend by</span>
-                    <input
-                      list="renew-extension-presets"
-                      value={renewExtension}
-                      onChange={(event) => setRenewExtension(event.target.value)}
-                    />
-                    <datalist id="renew-extension-presets">
-                      {(catalog?.renew_extension_presets ?? []).map((preset) => (
-                        <option key={preset} value={preset} />
-                      ))}
-                    </datalist>
-                  </label>
-                  <button type="button" onClick={() => void runSessionAction("renew")} disabled={busy === "renew" || mutationLocked}>
-                    {busy === "renew" ? "Extending..." : "Extend"}
-                  </button>
-                  <button type="button" onClick={() => void runSessionAction("revoke")} disabled={busy === "revoke" || mutationLocked}>
-                    {busy === "revoke" ? "Revoking..." : "Revoke"}
-                  </button>
-                  <button className="danger" type="button" onClick={() => void runSessionAction("delete")} disabled={busy === "delete" || mutationLocked}>
-                    {busy === "delete" ? "Deleting..." : "Delete"}
-                  </button>
-                </div>
               </div>
             </article>
             <div className="feature-grid">
@@ -603,10 +897,11 @@ export function SessionsScreen() {
                   <h3>Model and tools</h3>
                   <span className="panel-meta">{modelDirty || toolsDirty ? "Unsaved changes" : "In sync"}</span>
                 </div>
-                <div className="panel-body">
+                <div className="panel-body session-tools-panel">
                   <label className="field-stack">
                     <span>Model</span>
                     <input
+                      list="session-model-suggestions"
                       value={modelDraft}
                       onChange={(event) => {
                         setModelDraft(event.target.value);
@@ -616,42 +911,72 @@ export function SessionsScreen() {
                       placeholder="Required to start or resume the agent"
                       disabled={mutationLocked}
                     />
+                    <datalist id="session-model-suggestions">
+                      <option value="gpt-5.4" />
+                      <option value="gpt-5.4-mini" />
+                      <option value="gpt-5.4-nano" />
+                    </datalist>
                   </label>
                   {modelStatus ? <div className="success-box">{modelStatus}</div> : null}
-                  <button type="button" onClick={() => void saveModel()} disabled={busy === "model" || mutationLocked}>
-                    {busy === "model" ? "Saving..." : "Save model"}
-                  </button>
                   <div className="field-stack">
                     <span>Allowed tools</span>
-                    <div className="feature-list compact-list">
-                      {(catalog?.tool_options ?? []).map((tool) => (
-                        <label key={tool.value} className="checkbox-row">
-                          <input
-                            type="checkbox"
-                            checked={toolsDraft.includes(tool.value)}
-                            onChange={() => toggleTool(tool.value)}
-                            disabled={mutationLocked}
-                          />
-                          <span>{tool.label}</span>
-                        </label>
-                      ))}
+                    <div className="session-tool-groups">
+                      {groupedToolOptions.map((group) => {
+                        const enabledCount = group.items.filter((tool) => toolsDraft.includes(tool.value)).length;
+                        return (
+                          <details key={group.name} className="compact-disclosure session-tool-group">
+                            <summary className="compact-disclosure-summary session-tool-group-summary">
+                              <span>{group.name}</span>
+                              <span className="panel-meta">{enabledCount} of {group.items.length} enabled</span>
+                            </summary>
+                            <div className="feature-list compact-list session-tool-list">
+                              {group.items.map((tool) => {
+                                const toolDescription = describeTool(tool);
+                                return (
+                                  <label key={tool.value} className="session-tool-row">
+                                    <input
+                                      type="checkbox"
+                                      checked={toolsDraft.includes(tool.value)}
+                                      onChange={() => toggleTool(tool.value)}
+                                      disabled={mutationLocked}
+                                    />
+                                    <Tooltip
+                                      content={toolDescription}
+                                      className="session-tool-copy"
+                                      focusable
+                                      ariaLabel={`${tool.label}: ${toolDescription}`}
+                                    >
+                                      <span>{tool.label}</span>
+                                    </Tooltip>
+                                  </label>
+                                );
+                              })}
+                            </div>
+                          </details>
+                        );
+                      })}
                     </div>
                   </div>
                   {toolsStatus ? <div className="success-box">{toolsStatus}</div> : null}
-                  <button type="button" onClick={() => void saveTools()} disabled={busy === "tools" || mutationLocked}>
-                    {busy === "tools" ? "Saving..." : "Save tools"}
-                  </button>
+                  <div className="feature-toolbar-actions session-panel-actions">
+                    <button
+                      type="button"
+                      className="primary"
+                      onClick={() => void saveSessionSettings()}
+                      disabled={busy === "settings" || mutationLocked || (!modelDirty && !toolsDirty)}
+                    >
+                      {busy === "settings" ? "Saving..." : "Save changes"}
+                    </button>
+                  </div>
                 </div>
               </article>
               <article className="panel">
                 <div className="panel-header">
                   <h3>Wake schedules</h3>
-                  <span className="panel-meta">{detail?.wake_schedules.length ?? 0} configured</span>
-                </div>
-                <div className="panel-body">
-                  <div className="inline-actions">
-                    <button type="button" onClick={resetWakeEditor} disabled={mutationLocked}>
-                      New schedule
+                  <div className="feature-toolbar-actions session-wake-actions">
+                    <span className="panel-meta">{detail?.wake_schedules.length ?? 0} configured</span>
+                    <button type="button" onClick={resetWakeEditor} disabled={mutationLocked || (!editingWakeRequestId && !wakePrompt && !wakeCron && !wakeResumeAt && wakeMode === "same_context" && wakeEnabled)}>
+                      Create new
                     </button>
                     {selectedWakeSchedule ? (
                       <button type="button" onClick={() => void toggleWakeScheduleEnabled(selectedWakeSchedule)} disabled={busy === `wake-toggle-${selectedWakeSchedule.request_id}` || mutationLocked}>
@@ -659,18 +984,44 @@ export function SessionsScreen() {
                       </button>
                     ) : null}
                   </div>
+                </div>
+                <div className="panel-body">
                   <label className="field-stack">
                     <span>Prompt</span>
                     <textarea rows={4} value={wakePrompt} onChange={(event) => setWakePrompt(event.target.value)} disabled={mutationLocked} />
                   </label>
-                  <label className="field-stack">
-                    <span>Cron</span>
-                    <input value={wakeCron} onChange={(event) => setWakeCron(event.target.value)} placeholder="*/30 * * * *" disabled={mutationLocked} />
-                  </label>
-                  <label className="field-stack">
-                    <span>Resume at</span>
-                    <input type="datetime-local" value={wakeResumeAt} onChange={(event) => setWakeResumeAt(event.target.value)} disabled={mutationLocked} />
-                  </label>
+                  <div className="field-stack">
+                    <span>Schedule type</span>
+                    <div className="inline-actions compact-actions session-schedule-type-toggle">
+                      <button
+                        type="button"
+                        className={wakeScheduleKind === "cron" ? "primary" : ""}
+                        onClick={() => setScheduleKind("cron")}
+                        disabled={mutationLocked}
+                      >
+                        Recurring
+                      </button>
+                      <button
+                        type="button"
+                        className={wakeScheduleKind === "resume_at" ? "primary" : ""}
+                        onClick={() => setScheduleKind("resume_at")}
+                        disabled={mutationLocked}
+                      >
+                        One time
+                      </button>
+                    </div>
+                  </div>
+                  {wakeScheduleKind === "cron" ? (
+                    <label className="field-stack">
+                      <span>Cron</span>
+                      <input value={wakeCron} onChange={(event) => setWakeCron(event.target.value)} placeholder="*/30 * * * *" disabled={mutationLocked} />
+                    </label>
+                  ) : (
+                    <label className="field-stack">
+                      <span>Resume at</span>
+                      <input type="datetime-local" value={wakeResumeAt} onChange={(event) => setWakeResumeAt(event.target.value)} disabled={mutationLocked} />
+                    </label>
+                  )}
                   <label className="field-stack">
                     <span>Resume mode</span>
                     <select value={wakeMode} onChange={(event) => setWakeMode(event.target.value)} disabled={mutationLocked}>
@@ -683,9 +1034,10 @@ export function SessionsScreen() {
                     <input type="checkbox" checked={wakeEnabled} onChange={(event) => setWakeEnabled(event.target.checked)} disabled={mutationLocked} />
                     <span>Enabled</span>
                   </label>
-                  <div className="inline-actions">
+                  <div className="feature-toolbar-actions session-panel-actions">
                     <button
                       type="button"
+                      className="primary"
                       onClick={() => void submitWakeSchedule(editingWakeRequestId ? "update" : "create")}
                       disabled={busy === "wake-create" || busy === "wake-update" || mutationLocked}
                     >
@@ -724,16 +1076,29 @@ export function SessionsScreen() {
               </article>
             </div>
             <article className="panel">
-              <div className="panel-header">
-                <h3>Session detail</h3>
-                <span className="panel-meta">{detailError ? "Unavailable" : "Live summary"}</span>
-              </div>
-              <pre className="log-view">
-                {detailError
-                  ? detailError
-                  : JSON.stringify(detail?.summary_json ?? selectedSession, null, 2)}
-              </pre>
+              <details className="compact-disclosure">
+                <summary className="compact-disclosure-summary feature-list-title-row">
+                  <h3>Session detail</h3>
+                  <span className="panel-meta">{detailError ? "Unavailable" : "Live summary"}</span>
+                </summary>
+                <pre className="log-view">
+                  {detailError
+                    ? detailError
+                    : JSON.stringify(detail?.summary_json ?? selectedSession, null, 2)}
+                </pre>
+              </details>
             </article>
+            <RenewSessionModal
+              open={showRenewModal}
+              sessionId={selectedSession.session_id}
+              renewExtension={renewExtension}
+              presets={catalog?.renew_extension_presets ?? []}
+              busy={busy === "renew"}
+              locked={mutationLocked}
+              onChange={setRenewExtension}
+              onClose={() => setShowRenewModal(false)}
+              onSubmit={() => void runSessionAction("renew")}
+            />
           </div>
         ) : (
           <div className="empty-state">Select a session to inspect its details.</div>

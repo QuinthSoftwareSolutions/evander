@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { fetchJson, formatTimestamp } from "../admin/api";
 import { useAdminUi } from "../admin/AdminContext";
+import { CreateVmIcon, DeleteIcon, EditIcon } from "../admin/PageActionIcons";
+import { Tooltip } from "../admin/Tooltip";
 import { type IssueCreateResponse, type IssueDetail, type IssueListResponse, type IssueRecord, type VmActionResponse } from "../admin/types";
 
 type IssueMode = "manual" | "import";
@@ -560,38 +562,46 @@ export function IssuesPage() {
             </p>
           </div>
           {!showingForm && selectedIssue ? (
-            <div className="feature-toolbar-actions">
+            <div className="feature-toolbar-actions icon-actions">
               {selectedIssue.can_create_vm ? (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setCreatingVm((current) => !current);
-                    setVmOptions({ ...EMPTY_VM_OPTIONS });
-                    setValidation(null);
-                  }}
-                  disabled={mutationLocked}
-                >
-                  {creatingVm ? "Cancel VM" : "Create VM"}
-                </button>
+                <Tooltip content={creatingVm ? "Close the inline VM creation panel for this issue." : "Create a VM for the selected issue using the configured bootstrap options."}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCreatingVm((current) => !current);
+                      setVmOptions({ ...EMPTY_VM_OPTIONS });
+                      setValidation(null);
+                    }}
+                    disabled={mutationLocked}
+                    aria-label={creatingVm ? "Cancel VM creation" : "Create VM"}
+                  >
+                    <CreateVmIcon />
+                  </button>
+                </Tooltip>
               ) : null}
               {selectedIssue.can_edit ? (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setEditing(true);
-                    setCreating(false);
-                    setCreatingVm(false);
-                    setValidation(null);
-                  }}
-                  disabled={mutationLocked}
-                >
-                  Edit
-                </button>
+                <Tooltip content="Edit the selected local issue record and save changes back to disk.">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEditing(true);
+                      setCreating(false);
+                      setCreatingVm(false);
+                      setValidation(null);
+                    }}
+                    disabled={mutationLocked}
+                    aria-label="Edit issue"
+                  >
+                    <EditIcon />
+                  </button>
+                </Tooltip>
               ) : null}
               {selectedIssue.can_delete ? (
-                <button className="danger" type="button" onClick={() => void handleDeleteIssue()} disabled={busy === "delete" || mutationLocked}>
-                  Delete
-                </button>
+                <Tooltip content="Delete the selected local issue record from the host-side store.">
+                  <button className="danger" type="button" onClick={() => void handleDeleteIssue()} disabled={busy === "delete" || mutationLocked} aria-label="Delete issue">
+                    <DeleteIcon />
+                  </button>
+                </Tooltip>
               ) : null}
             </div>
           ) : null}
@@ -748,9 +758,9 @@ export function IssuesPage() {
                   <div><span>Issue</span><strong>{selectedIssue.issue_number}</strong></div>
                   <div><span>Source</span><strong>{issueSourceLabel(selectedIssue.source_type)}</strong></div>
                   <div><span>Updated</span><strong>{formatTimestamp(selectedIssue.updated_at)}</strong></div>
-                  <div><span>Repo source</span><strong className="issue-meta-value issue-path-value" title={selectedIssue.repo_source ?? "None"}>{selectedIssue.repo_source ?? "None"}</strong></div>
-                  <div><span>Directory</span><strong className="issue-meta-value issue-path-value" title={selectedIssue.directory_path ?? "root"}>{selectedIssue.directory_path ?? "root"}</strong></div>
-                  <div><span>YAML path</span><strong className="issue-meta-value issue-path-value" title={selectedIssue.yaml_path ?? "No file"}>{selectedIssue.yaml_path ?? "No file"}</strong></div>
+                  <div><span>Repo source</span><Tooltip content={selectedIssue.repo_source ?? "No repo source is recorded for this issue."}><strong className="issue-meta-value issue-path-value">{selectedIssue.repo_source ?? "None"}</strong></Tooltip></div>
+                  <div><span>Directory</span><Tooltip content={`Directory scope: ${selectedIssue.directory_path ?? "root"}`}><strong className="issue-meta-value issue-path-value">{selectedIssue.directory_path ?? "root"}</strong></Tooltip></div>
+                  <div><span>YAML path</span><Tooltip content={selectedIssue.yaml_path ?? "This issue does not currently have a YAML file path."}><strong className="issue-meta-value issue-path-value">{selectedIssue.yaml_path ?? "No file"}</strong></Tooltip></div>
                 </div>
 
                 {creatingVm ? (

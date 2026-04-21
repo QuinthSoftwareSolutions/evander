@@ -2261,17 +2261,6 @@ def test_list_background_workers_reads_systemd_state(tmp_path: Path, monkeypatch
             "ExecMainCode": "1",
             "ExecMainStatus": "0",
         },
-        "agent-sandbox-issue-orchestrator.service": {
-            "ActiveState": "inactive",
-            "SubState": "dead",
-            "Result": "success",
-            "UnitFileState": "disabled",
-            "Description": "Issue orchestrator worker",
-            "MainPID": "0",
-            "LoadState": "loaded",
-            "ExecMainCode": "1",
-            "ExecMainStatus": "0",
-        },
         "agent-sandbox-effect-orchestrator.service": {
             "ActiveState": "active",
             "SubState": "running",
@@ -2305,7 +2294,6 @@ def test_list_background_workers_reads_systemd_state(tmp_path: Path, monkeypatch
         "discord-wake",
         "scheduled-wake",
         "teams-ingest",
-        "issue-orchestrator",
         "effect-orchestrator",
         "trigger-orchestrator",
     ]
@@ -2325,15 +2313,12 @@ def test_list_background_workers_reads_systemd_state(tmp_path: Path, monkeypatch
     assert summaries[4].running is False
     assert summaries[4].failed is False
     assert summaries[4].unit_file_state == "disabled"
-    assert summaries[5].running is False
+    assert summaries[5].running is True
     assert summaries[5].failed is False
-    assert summaries[5].unit_file_state == "disabled"
+    assert summaries[5].main_pid == 777
     assert summaries[6].running is True
     assert summaries[6].failed is False
-    assert summaries[6].main_pid == 777
-    assert summaries[7].running is True
-    assert summaries[7].failed is False
-    assert summaries[7].main_pid == 789
+    assert summaries[6].main_pid == 789
 
 
 def test_list_background_workers_marks_unavailable_when_systemctl_fails(tmp_path: Path, monkeypatch) -> None:

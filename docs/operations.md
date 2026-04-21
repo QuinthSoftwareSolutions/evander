@@ -879,25 +879,15 @@ Failure recovery:
   sudo systemctl restart agent-sandbox-ado-worker.service
   ```
 
-## Host-Side Issue Orchestrator
+## Retired Issue Orchestrator
 
-- The scaffold includes `agent-sandbox-issue-orchestrator`, a dedicated host-side worker for the
-  new `root/agent-sandbox/test` issue-generation workflow.
-- This worker is separate from `agent-sandbox-ado-worker` and `agent-sandbox-host-heartbeat`; it
-  does not change their behavior or scheduling.
-- The orchestrator is intended to manage a small, role-based set of VM sessions that generate,
-  triage, and implement local issues in that directory without affecting the existing APP or PR
-  feedback flows.
-- The worker reads its global settings from `config/issue-orchestrator/config.json`.
-- The directory automation policy for `root/agent-sandbox/test` remains isolated from the ADO and
-  feedback workers so the new workflow can evolve without changing existing issue handling.
-
-Runbook:
+- `agent-sandbox-issue-orchestrator` is obsolete and should remain disabled.
+- `scripts/install_systemd_units.sh` no longer installs or enables
+  `agent-sandbox-issue-orchestrator.service`.
+- Existing hosts that still have the old unit installed should disable it explicitly:
 
 ```bash
-sudo systemctl start agent-sandbox-issue-orchestrator.service
-sudo systemctl status agent-sandbox-issue-orchestrator.service
-sudo journalctl -u agent-sandbox-issue-orchestrator.service -f
+sudo systemctl disable --now agent-sandbox-issue-orchestrator.service
 ```
 
 ## Host-Side Trigger Orchestrator
@@ -995,7 +985,6 @@ This creates:
 - `agent-sandbox-http-target-relay.service`
 - `agent-sandbox-ado-worker.service`
 - `agent-sandbox-host-heartbeat.service`
-- `agent-sandbox-issue-orchestrator.service`
 
 Before running install mode, ensure preflight is clean (or only warning-only), then:
 
@@ -1003,19 +992,17 @@ Before running install mode, ensure preflight is clean (or only warning-only), t
 2. Ensure `runtime/directory-config/root/ado-worker.json` exists and the PAT variable named by
    `ado_work_items_azure_devops_pat_env` in `config/ado-worker/config.json` is exported for the
    service user.
-3. Ensure `config/issue-orchestrator/config.json` exists if you plan to enable the new
-   orchestrator scaffold.
-4. Ensure the needed service env vars are available. The rendered units will load optional
+3. Ensure the needed service env vars are available. The rendered units will load optional
    per-service `config/*.env` files and optional repo-root `secrets.env`.
-5. Ensure `OPENAI_API_KEY` is available for the OpenAI relay and `AZURE_ARTIFACTS_PAT` when the
+4. Ensure `OPENAI_API_KEY` is available for the OpenAI relay and `AZURE_ARTIFACTS_PAT` when the
    NuGet relay needs private Azure Artifacts access. The HTTP target relay is auth-transparent and
    exists to enforce destination allowlisting for approved external web endpoints. In the APP demo
    workflow, guests authenticate to APP interactively or with guest-managed bearer tokens/cookies
    through that relay path.
-6. For private PR feedback polling, ensure the service environment exposes `GITHUB_TOKEN`
+5. For private PR feedback polling, ensure the service environment exposes `GITHUB_TOKEN`
    and/or `AZURE_DEVOPS_PR_PAT` and ensure the effective `root` provider config sets the correct
    `azure_devops_organization_url`, `azure_devops_project`, and `azure_devops_pr_pat_env`.
-7. Start and inspect services:
+6. Start and inspect services:
 
 ```bash
 sudo systemctl start agent-sandbox-firewall.service
@@ -1025,7 +1012,6 @@ sudo systemctl start agent-sandbox-nuget-relay.service
 sudo systemctl start agent-sandbox-http-target-relay.service
 sudo systemctl start agent-sandbox-ado-worker.service
 sudo systemctl start agent-sandbox-host-heartbeat.service
-sudo systemctl start agent-sandbox-issue-orchestrator.service
 sudo systemctl status agent-sandbox-firewall.service
 sudo systemctl status agent-sandbox-gateway.service
 sudo systemctl status agent-sandbox-openai-relay.service
@@ -1033,7 +1019,6 @@ sudo systemctl status agent-sandbox-nuget-relay.service
 sudo systemctl status agent-sandbox-http-target-relay.service
 sudo systemctl status agent-sandbox-ado-worker.service
 sudo systemctl status agent-sandbox-host-heartbeat.service
-sudo systemctl status agent-sandbox-issue-orchestrator.service
 ```
 
 ## Local Git Remote Flow

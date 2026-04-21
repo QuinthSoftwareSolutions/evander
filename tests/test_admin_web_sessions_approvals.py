@@ -278,3 +278,33 @@ def test_admin_web_exposes_wake_schedule_crud(tmp_path: Path) -> None:
     assert update_resume_response.json()["item"]["schedule_kind"] == "resume_at"
     assert delete_response.status_code == 200
     assert delete_response.json()["ok"] is True
+
+
+def test_admin_web_session_detail_preserves_cron_wake_schedule_kind(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.sessions.put(
+        "issue-14086-session",
+        SessionManifest(
+            session_id="issue-14086-session",
+            vm_id="vm-14086",
+            allowed_tools=[ToolName.SCHEDULE_RESUME],
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+        ),
+    )
+    service.create_wake_schedule(
+        session_id="issue-14086-session",
+        prompt="Resume work",
+        cron="*/30 * * * *",
+        resume_mode="same_context",
+        enabled=True,
+        source="admin_web",
+    )
+    client = TestClient(create_app(service))
+
+    response = client.get("/api/admin/sessions/issue-14086-session")
+
+    assert response.status_code == 200
+    item = response.json()["wake_schedules"][0]
+    assert item["cron"] == "*/30 * * * *"
+    assert item["resume_at"] is None
+    assert item["schedule_kind"] == "cron"

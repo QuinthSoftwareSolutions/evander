@@ -1,15 +1,17 @@
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useEffect, useState, type ReactNode } from "react";
 
+import logoDark from "../logo-dark.png";
+import logoLight from "../logo-light.png";
 import WorkflowEditorApp from "./App";
 import { fetchJson } from "./features/admin/api";
 import { AdminUiContext } from "./features/admin/AdminContext";
 import type { AdminResult, DirectoryTreeNode } from "./features/admin/AdminContext";
-import { ApprovalsScreen } from "./features/approvals/ApprovalsScreen";
 import { ConfigurationScreen } from "./features/configuration/ConfigurationScreen";
 import { IssuesPage } from "./features/issues/IssuesPage";
 import { SessionsScreen } from "./features/sessions/SessionsScreen";
 import { VmsPage } from "./features/vms/VmsPage";
 import { WorkersScreen } from "./features/workers/WorkersScreen";
+import { Tooltip } from "./features/admin/Tooltip";
 
 type AdminSession = {
   auth_required: boolean;
@@ -41,10 +43,11 @@ type DirectoryStateResponse = {
   tree: AdminResult<DirectoryTreeNode>;
 };
 
+type DirectoryMutationResult = AdminResult<unknown>;
+
 type AdminTab =
   | "vms"
   | "issues"
-  | "approvals"
   | "sessions"
   | "configuration"
   | "workers"
@@ -58,7 +61,6 @@ const THEME_STORAGE_KEY = "admin-web:theme";
 const TABS: ReadonlyArray<{ key: AdminTab; label: string; shortLabel: string; description: string }> = [
   { key: "vms", label: "VMs", shortLabel: "VMs", description: "Lifecycle, logs, and agent control." },
   { key: "issues", label: "Issues", shortLabel: "Issues", description: "Local issue intake and VM creation." },
-  { key: "approvals", label: "Approvals", shortLabel: "Review", description: "Queued review requests and decisions." },
   { key: "sessions", label: "Sessions", shortLabel: "Sessions", description: "Session state, tools, and wake schedules." },
   { key: "configuration", label: "Configuration", shortLabel: "Config", description: "Directory-scoped config and policy." },
   { key: "workers", label: "Workers", shortLabel: "Workers", description: "Background worker state, logs, and settings." },
@@ -97,28 +99,156 @@ function PlaceholderView({ title, description }: { title: string; description: s
   );
 }
 
+function expandedDirectoryAncestors(path: string): string[] {
+  const normalized = path.trim() || "root";
+  if (normalized === "root") {
+    return ["root"];
+  }
+  const segments = normalized.split("/").filter(Boolean);
+  const ancestors = ["root"];
+  let current = "";
+  for (const segment of segments) {
+    current = current ? `${current}/${segment}` : segment;
+    ancestors.push(current);
+  }
+  return ancestors;
+}
+
+function findDirectoryNode(root: DirectoryTreeNode | null, path: string): DirectoryTreeNode | null {
+  if (!root) return null;
+  if (root.directory.path === path) return root;
+  for (const child of root.children) {
+    const match = findDirectoryNode(child, path);
+    if (match) {
+      return match;
+    }
+  }
+  return null;
+}
+
+function DirectoryActionIcon({ children, viewBox = "0 0 24 24" }: { children: ReactNode; viewBox?: string }) {
+  return (
+    <svg aria-hidden="true" viewBox={viewBox} fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+      {children}
+    </svg>
+  );
+}
+
+function DirectoryAddIcon() {
+  return (
+    <DirectoryActionIcon>
+      <path d="M12 5v14" />
+      <path d="M5 12h14" />
+    </DirectoryActionIcon>
+  );
+}
+
+function DirectoryDeleteIcon() {
+  return (
+    <DirectoryActionIcon>
+      <path d="M4.5 7.5h15" />
+      <path d="M9.5 4.5h5" />
+      <path d="M8.5 7.5v10" />
+      <path d="M15.5 7.5v10" />
+      <path d="M6.5 7.5l.8 11a1.5 1.5 0 0 0 1.5 1.4h6.4a1.5 1.5 0 0 0 1.5-1.4l.8-11" />
+    </DirectoryActionIcon>
+  );
+}
+
 function DirectoryTreeBranch({
   node,
   selectedPath,
+  expandedPaths,
+  onToggle,
+  canCreate,
+  canDelete,
+  mutationBusy,
+  onRequestCreate,
+  onRequestDelete,
   onSelect,
 }: {
   node: DirectoryTreeNode;
   selectedPath: string;
+  expandedPaths: Record<string, boolean>;
+  onToggle: (path: string) => void;
+  canCreate: boolean;
+  canDelete: boolean;
+  mutationBusy: boolean;
+  onRequestCreate: (path: string) => void;
+  onRequestDelete: (path: string) => void;
   onSelect: (path: string) => void;
 }) {
+  const hasChildren = node.children.length > 0;
+  const isExpanded = expandedPaths[node.directory.path] ?? false;
+  const canDeleteNode = canDelete && node.directory.path !== "root" && !hasChildren;
   return (
     <li>
-      <button
-        type="button"
-        className={`directory-tree-button${node.directory.path === selectedPath ? " selected" : ""}`}
-        onClick={() => onSelect(node.directory.path)}
-      >
-        <span>{node.directory.path}</span>
-      </button>
-      {node.children.length > 0 ? (
+      <div className="directory-tree-row">
+        {hasChildren ? (
+          <button
+            type="button"
+            className="directory-tree-toggle"
+            aria-label={isExpanded ? `Collapse ${node.directory.path}` : `Expand ${node.directory.path}`}
+            aria-expanded={isExpanded}
+            onClick={() => onToggle(node.directory.path)}
+          >
+            <span aria-hidden="true">{isExpanded ? "▾" : "▸"}</span>
+          </button>
+        ) : (
+          <span className="directory-tree-spacer" aria-hidden="true" />
+        )}
+        <button
+          type="button"
+          className={`directory-tree-button${node.directory.path === selectedPath ? " selected" : ""}`}
+          onClick={() => onSelect(node.directory.path)}
+        >
+          <span className="directory-tree-label">{node.directory.path}</span>
+        </button>
+        <div className="directory-tree-actions">
+          {canCreate ? (
+            <Tooltip content={`Create a child directory under ${node.directory.path}.`}>
+              <button
+                type="button"
+                className="directory-tree-action-button"
+                aria-label={`Create child directory under ${node.directory.path}`}
+                onClick={() => onRequestCreate(node.directory.path)}
+                disabled={mutationBusy}
+              >
+                <DirectoryAddIcon />
+              </button>
+            </Tooltip>
+          ) : null}
+          {canDeleteNode ? (
+            <Tooltip content={`Delete ${node.directory.path}. Only empty directories can be removed.`}>
+              <button
+                type="button"
+                className="directory-tree-action-button danger"
+                aria-label={`Delete ${node.directory.path}`}
+                onClick={() => onRequestDelete(node.directory.path)}
+                disabled={mutationBusy}
+              >
+                <DirectoryDeleteIcon />
+              </button>
+            </Tooltip>
+          ) : null}
+        </div>
+      </div>
+      {hasChildren && isExpanded ? (
         <ul className="directory-tree-list">
           {node.children.map((child) => (
-            <DirectoryTreeBranch key={child.directory.path} node={child} selectedPath={selectedPath} onSelect={onSelect} />
+            <DirectoryTreeBranch
+              key={child.directory.path}
+              node={child}
+              selectedPath={selectedPath}
+              expandedPaths={expandedPaths}
+              onToggle={onToggle}
+              canCreate={canCreate}
+              canDelete={canDelete}
+              mutationBusy={mutationBusy}
+              onRequestCreate={onRequestCreate}
+              onRequestDelete={onRequestDelete}
+              onSelect={onSelect}
+            />
           ))}
         </ul>
       ) : null}
@@ -131,22 +261,122 @@ function DirectoryChooserModal({
   loading,
   error,
   selectedPath,
+  privilegedUnlocked,
+  directoryScopedConfigEnabled,
   tree,
   onClose,
-  onRefresh,
+  onRefreshState,
   onSelect,
 }: {
   open: boolean;
   loading: boolean;
   error: string | null;
   selectedPath: string;
+  privilegedUnlocked: boolean;
+  directoryScopedConfigEnabled: boolean;
   tree: AdminResult<DirectoryTreeNode> | null;
   onClose: () => void;
-  onRefresh: () => Promise<void>;
+  onRefreshState: (path?: string) => Promise<void>;
   onSelect: (path: string) => void;
 }) {
+  const [expandedPaths, setExpandedPaths] = useState<Record<string, boolean>>({});
+  const [createParentPath, setCreateParentPath] = useState<string | null>(null);
+  const [newDirectoryName, setNewDirectoryName] = useState("");
+  const [mutationBusy, setMutationBusy] = useState(false);
+  const [mutationError, setMutationError] = useState<string | null>(null);
+  const [mutationStatus, setMutationStatus] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+    setExpandedPaths((current) => {
+      const next = { ...current };
+      for (const path of expandedDirectoryAncestors(selectedPath)) {
+        next[path] = true;
+      }
+      return next;
+    });
+  }, [open, selectedPath]);
+
   if (!open) return null;
   const root = tree?.ok ? tree.data : null;
+  const canCreate = directoryScopedConfigEnabled && privilegedUnlocked;
+  const canDelete = directoryScopedConfigEnabled && privilegedUnlocked;
+
+  async function handleCreateDirectory() {
+    if (!createParentPath) {
+      return;
+    }
+    const name = newDirectoryName.trim();
+    if (!name) {
+      setMutationError("Directory name is required.");
+      return;
+    }
+    setMutationBusy(true);
+    setMutationError(null);
+    setMutationStatus(null);
+    try {
+      const result = await fetchJson<DirectoryMutationResult>("/api/configuration/directories", {
+        method: "POST",
+        body: JSON.stringify({ parent_path: createParentPath, name }),
+      });
+      if (!result.ok) {
+        throw new Error(result.errors[0]?.message ?? "Directory create failed.");
+      }
+      const createdPath = `${createParentPath}/${name}`;
+      setNewDirectoryName("");
+      setCreateParentPath(null);
+      await onRefreshState(createdPath);
+      setExpandedPaths((current) => {
+        const next = { ...current };
+        for (const path of expandedDirectoryAncestors(createdPath)) {
+          next[path] = true;
+        }
+        return next;
+      });
+      setMutationStatus(`Created ${createdPath}.`);
+    } catch (reason) {
+      setMutationError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setMutationBusy(false);
+    }
+  }
+
+  async function handleDeleteDirectory(path: string) {
+    const node = findDirectoryNode(root, path);
+    if (!canDelete || !node || path === "root" || node.children.length > 0) {
+      return;
+    }
+    if (
+      !window.confirm(
+        `Delete ${path}?\n\nDeletion is only allowed for non-root directories with no child directories and no VMs with sessions.`,
+      )
+    ) {
+      return;
+    }
+    setMutationBusy(true);
+    setMutationError(null);
+    setMutationStatus(null);
+    try {
+      const result = await fetchJson<DirectoryMutationResult>(
+        `/api/configuration/directories?directory_path=${encodeURIComponent(path)}`,
+        { method: "DELETE" },
+      );
+      if (!result.ok) {
+        throw new Error(result.errors[0]?.message ?? "Directory delete failed.");
+      }
+      const deletedPath = path;
+      const parentPath = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "root";
+      await onRefreshState(selectedPath === path ? parentPath || "root" : selectedPath);
+      setMutationStatus(`Deleted ${deletedPath}.`);
+    } catch (reason) {
+      setMutationError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setMutationBusy(false);
+    }
+  }
+
   return (
     <div className="modal-backdrop" onClick={onClose} role="presentation">
       <div
@@ -163,9 +393,6 @@ function DirectoryChooserModal({
             <p>Select the shared directory context for directory-scoped admin views.</p>
           </div>
           <div className="inline-actions">
-            <button type="button" onClick={() => void onRefresh()} disabled={loading}>
-              {loading ? "Refreshing..." : "Refresh"}
-            </button>
             <button type="button" className="admin-shell-button admin-shell-button-muted" onClick={onClose}>
               Close
             </button>
@@ -176,16 +403,66 @@ function DirectoryChooserModal({
             <span className="section-label">Current directory</span>
             <strong>{selectedPath}</strong>
           </div>
+          {mutationStatus ? <div className="callout success-callout">{mutationStatus}</div> : null}
+          {mutationError ? <div className="callout error-callout">{mutationError}</div> : null}
           {error ? <div className="callout error-callout">{error}</div> : null}
           {loading && !root ? <div className="empty-state">Loading directories…</div> : null}
           {!loading && tree && !tree.ok ? <div className="empty-state">The directory tree could not be loaded.</div> : null}
           {root ? (
             <ul className="directory-tree-list root">
-              <DirectoryTreeBranch node={root} selectedPath={selectedPath} onSelect={onSelect} />
+              <DirectoryTreeBranch
+                node={root}
+                selectedPath={selectedPath}
+                expandedPaths={expandedPaths}
+                onToggle={(path) => setExpandedPaths((current) => ({ ...current, [path]: !(current[path] ?? false) }))}
+                canCreate={canCreate}
+                canDelete={canDelete}
+                mutationBusy={loading || mutationBusy}
+                onRequestCreate={(path) => {
+                  setCreateParentPath(path);
+                  setNewDirectoryName("");
+                  setMutationError(null);
+                }}
+                onRequestDelete={(path) => void handleDeleteDirectory(path)}
+                onSelect={onSelect}
+              />
             </ul>
           ) : null}
         </div>
       </div>
+      {createParentPath ? (
+        <div className="modal-backdrop nested-modal-backdrop" onClick={() => setCreateParentPath(null)} role="presentation">
+          <div className="modal-card directory-create-modal" onClick={(event) => event.stopPropagation()} role="dialog" aria-modal="true">
+            <div className="modal-header">
+              <div>
+                <div className="eyebrow">Directory</div>
+                <h2>Create child directory</h2>
+                <p>Create a child under {createParentPath}.</p>
+              </div>
+            </div>
+            <div className="modal-body">
+              <div className="field-stack">
+                <input
+                  type="text"
+                  value={newDirectoryName}
+                  placeholder="New child directory"
+                  onChange={(event) => setNewDirectoryName(event.target.value)}
+                  disabled={mutationBusy}
+                  autoFocus
+                />
+              </div>
+              <div className="inline-actions">
+                <button type="button" className="admin-shell-button admin-shell-button-muted" onClick={() => setCreateParentPath(null)} disabled={mutationBusy}>
+                  Cancel
+                </button>
+                <button type="button" className="admin-shell-button" onClick={() => void handleCreateDirectory()} disabled={mutationBusy}>
+                  {mutationBusy ? "Working..." : "Create"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -525,65 +802,80 @@ export default function AdminRoot() {
       <div className={`admin-shell${workflowFocus ? " workflow-focus" : ""}${workflowSidebarCollapsed ? " workflow-sidebar-collapsed" : ""}`}>
         <header className="admin-shell-header">
           <div className="admin-shell-brand">
-            <div className="eyebrow">Agent Sandbox</div>
-            <h1>Castor Control Plane</h1>
-            <p>{activeTab.description}</p>
+            <div className="admin-shell-brand-lockup">
+              <div className="admin-shell-brand-copy">
+                <div className="admin-shell-title-row">
+                  <img
+                    className="admin-shell-logo"
+                    src={theme === "dark" ? logoDark : logoLight}
+                    alt="Castor Control Plane logo"
+                  />
+                  <h1>Castor Control Plane</h1>
+                </div>
+                <p>{activeTab.description}</p>
+              </div>
+            </div>
           </div>
           <div className="admin-shell-actions">
-            <button
-              className="admin-shell-button admin-shell-button-muted"
-              onClick={() => setTheme((current) => (current === "dark" ? "light" : "dark"))}
-              disabled={authBusy}
-            >
-              {theme === "dark" ? "Light mode" : "Dark mode"}
-            </button>
-            <div className="admin-directory-context">
-              <span className="section-label">Directory</span>
-              <strong>{selectedDirectoryPath}</strong>
+            <div className="admin-shell-action-group">
+              <button
+                className="admin-shell-button admin-shell-button-muted"
+                onClick={() => setTheme((current) => (current === "dark" ? "light" : "dark"))}
+                disabled={authBusy}
+              >
+                {theme === "dark" ? "Light mode" : "Dark mode"}
+              </button>
+              <button
+                className="admin-shell-button admin-shell-button-muted"
+                onClick={() => setDirectoryPickerOpen(true)}
+                disabled={authBusy}
+              >
+                Choose directory
+              </button>
             </div>
-            <button
-              className="admin-shell-button admin-shell-button-muted"
-              onClick={() => setDirectoryPickerOpen(true)}
-              disabled={authBusy}
-            >
-              Choose directory
-            </button>
-            <div className="admin-identity">
-              <span>{session.username ?? "local operator"}</span>
-              <span className={`admin-privilege ${privilegeUnlocked ? "unlocked" : ""}`}>
-                {privilegeUnlocked ? "Privileges unlocked" : "Privileges locked"}
-              </span>
+            <div className="admin-shell-info-group">
+              <div className="admin-directory-context">
+                <span className="section-label">Directory</span>
+                <strong>{selectedDirectoryPath}</strong>
+              </div>
+              <div className="admin-identity">
+                <span>{session.username ?? "local operator"}</span>
+                <span className={`admin-privilege ${privilegeUnlocked ? "unlocked" : ""}`}>
+                  {privilegeUnlocked ? "Privileges unlocked" : "Privileges locked"}
+                </span>
+              </div>
             </div>
-            <button
-              className="admin-shell-button"
-              onClick={() => void setPrivilegeLock(!privilegeUnlocked)}
-              disabled={authBusy || adminState === null}
-            >
-              {privilegeUnlocked ? "Lock" : "Unlock"}
-            </button>
-            <button className="admin-shell-button admin-shell-button-muted" onClick={() => void signOut()} disabled={authBusy}>
-              Sign out
-            </button>
+            <div className="admin-shell-action-group">
+              <button
+                className="admin-shell-button"
+                onClick={() => void setPrivilegeLock(!privilegeUnlocked)}
+                disabled={authBusy || adminState === null}
+              >
+                {privilegeUnlocked ? "Lock" : "Unlock"}
+              </button>
+              <button className="admin-shell-button admin-shell-button-muted" onClick={() => void signOut()} disabled={authBusy}>
+                Sign out
+              </button>
+            </div>
           </div>
         </header>
 
         <div className="admin-shell-layout">
-          <nav className={`admin-shell-nav${workflowSidebarCollapsed && workflowFocus ? " collapsed" : ""}`} aria-label="Admin sections">
+          <nav className={`admin-shell-nav${workflowSidebarCollapsed ? " collapsed" : ""}`} aria-label="Admin sections">
             <div className="admin-shell-nav-header">
               <div className="admin-shell-nav-header-row">
                 <div className="section-label">Sections</div>
-                {workflowFocus ? (
+                <Tooltip content={workflowSidebarCollapsed ? "Expand the left navigation sections." : "Collapse the left navigation sections."}>
                   <button
                     type="button"
                     className="admin-shell-nav-toggle"
                     onClick={() => setWorkflowSidebarCollapsed((current) => !current)}
                     disabled={authBusy}
                     aria-label={workflowSidebarCollapsed ? "Expand sections" : "Collapse sections"}
-                    title={workflowSidebarCollapsed ? "Expand sections" : "Collapse sections"}
                   >
                     <span aria-hidden="true">≡</span>
                   </button>
-                ) : null}
+                </Tooltip>
               </div>
               <p>Operational views for machines, policy, reviews, and workflow state.</p>
             </div>
@@ -596,7 +888,7 @@ export default function AdminRoot() {
                   setSelectedTab(tab.key);
                 }}
               >
-                <span>{workflowSidebarCollapsed && workflowFocus ? tab.shortLabel : tab.label}</span>
+                <span>{workflowSidebarCollapsed ? tab.shortLabel : tab.label}</span>
                 <small>{tab.description}</small>
               </button>
             ))}
@@ -611,8 +903,6 @@ export default function AdminRoot() {
               <VmsPage />
             ) : selectedTab === "issues" ? (
               <IssuesPage />
-            ) : selectedTab === "approvals" ? (
-              <ApprovalsScreen />
             ) : selectedTab === "configuration" ? (
               <ConfigurationScreen />
             ) : selectedTab === "workers" ? (
@@ -630,9 +920,11 @@ export default function AdminRoot() {
         loading={directoryStateLoading}
         error={directoryStateError}
         selectedPath={selectedDirectoryPath}
+        privilegedUnlocked={privilegeUnlocked}
+        directoryScopedConfigEnabled={adminState?.directory_scoped_config_enabled ?? false}
         tree={directoryTree}
         onClose={() => setDirectoryPickerOpen(false)}
-        onRefresh={() => loadDirectoryState(selectedDirectoryPath)}
+        onRefreshState={(path) => loadDirectoryState(path ?? selectedDirectoryPath)}
         onSelect={(path) => {
           setSelectedDirectoryPath(path);
           setDirectoryPickerOpen(false);

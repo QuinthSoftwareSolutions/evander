@@ -16,7 +16,6 @@ from .config import (
     AdoWorkerGlobalConfig,
     DiscordWakeWorkerGlobalConfig,
     GatewayConfig,
-    IssueOrchestratorWorkerGlobalConfig,
     ScheduledWakeWorkerGlobalConfig,
     TeamsIngestWorkerGlobalConfig,
     TriggerOrchestratorWorkerGlobalConfig,
@@ -314,7 +313,6 @@ _WORKER_GLOBAL_CONFIG_MODELS: dict[str, type[BaseModel]] = {
     "discord-wake": DiscordWakeWorkerGlobalConfig,
     "scheduled-wake": ScheduledWakeWorkerGlobalConfig,
     "teams-ingest": TeamsIngestWorkerGlobalConfig,
-    "issue-orchestrator": IssueOrchestratorWorkerGlobalConfig,
     "trigger-orchestrator": TriggerOrchestratorWorkerGlobalConfig,
 }
 _WORKER_GLOBAL_CONFIG_TOOLTIPS: dict[str, str] = {

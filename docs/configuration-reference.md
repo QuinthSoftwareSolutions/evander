@@ -87,8 +87,10 @@ defaulting to `ADO_WORK_ITEMS_AZURE_DEVOPS_PAT`.
 
 ## `config/issue-orchestrator/config.json`
 
-This JSON file stores the new issue orchestrator worker's global settings. The scaffold keeps this
-worker separate from the ADO and PR-feedback workers, so its config is intentionally isolated.
+This JSON file stores the retired issue orchestrator worker's global settings. The worker is
+obsolete, `scripts/install_systemd_units.sh` no longer installs/enables its systemd unit, and new
+deployments should leave this config unused unless they are intentionally reviving that legacy
+scaffold.
 
 | Parameter | Found in | Consumed by |
 |---|---|---|
