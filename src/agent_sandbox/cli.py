@@ -45,6 +45,7 @@ from .migrations import (
 from .email.providers import JsonEmailProvider, MultiMailboxEmailProvider
 from .models import ApprovalStatus, DiscordCommandEnvelope, EmailMessage, SessionManifest, ToolName
 from .policy_config import EffectivePolicyConfig, PolicyConfigResolver
+from .pr_feedback_worker import PrFeedbackStore
 from .provider_config import ProviderConfigResolver
 from .runtime import build_runtime
 from .teams_auth import TeamsAuthError
@@ -797,44 +798,11 @@ def _prune_pr_map_for_issue_numbers(
 
 
 def _prune_pr_feedback_store(path: Path, *, streams: set[tuple[str, str, str]]) -> tuple[int, int]:
-    if not path.exists() or not streams:
+    if not streams:
         return 0, 0
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    if not path.exists():
         return 0, 0
-
-    removed_cursor_count = 0
-    cursors = payload.get("cursors")
-    if isinstance(cursors, dict):
-        for provider, repo, pr_id in streams:
-            stream_key = f"{provider}:{repo}:{pr_id}"
-            if stream_key in cursors:
-                cursors.pop(stream_key, None)
-                removed_cursor_count += 1
-
-    removed_feedback_count = 0
-    feedback = payload.get("feedback")
-    if isinstance(feedback, dict):
-        kept_feedback: dict[str, object] = {}
-        for feedback_id, raw_feedback in feedback.items():
-            if not isinstance(raw_feedback, dict):
-                kept_feedback[feedback_id] = raw_feedback
-                continue
-            key = (
-                str(raw_feedback.get("provider", "")).strip(),
-                str(raw_feedback.get("repo", "")).strip(),
-                str(raw_feedback.get("pr_id", "")).strip(),
-            )
-            if key in streams:
-                removed_feedback_count += 1
-                continue
-            kept_feedback[feedback_id] = raw_feedback
-        payload["feedback"] = kept_feedback
-
-    if removed_cursor_count or removed_feedback_count:
-        path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-    return removed_cursor_count, removed_feedback_count
+    return PrFeedbackStore(path).prune_streams(streams)
 
 
 def _prune_approvals_for_sessions(runtime: object, *, session_ids: set[str]) -> int:

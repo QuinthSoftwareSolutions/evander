@@ -32,7 +32,7 @@ from .models import (
     TeamsMessageEnvelope,
 )
 from .discord_inbox_store import DiscordInboxStore
-from .pr_feedback_worker import PrFeedbackStore, _stream_key
+from .pr_feedback_worker import PrFeedbackRepository, PrFeedbackStore, _stream_key
 from .email.providers import EmailDraft, EmailMessageDetail, EmailMessageSummary, EmailProvider
 from .storage import JsonStore
 
@@ -1375,9 +1375,15 @@ class DiscordInboxService:
 
 
 class PrFeedbackService:
-    def __init__(self, store_path: Path, *, ignored_feedback_store_path: Path | None = None) -> None:
+    def __init__(
+        self,
+        store_path: Path,
+        *,
+        ignored_feedback_store_path: Path | None = None,
+        repository: PrFeedbackRepository | None = None,
+    ) -> None:
         self.store_path = store_path
-        self.store = PrFeedbackStore(store_path)
+        self.store: PrFeedbackRepository = repository or PrFeedbackStore(store_path)
         self.ignored_feedback_store_path = ignored_feedback_store_path
 
     def has_pending_feedback(
@@ -1485,9 +1491,10 @@ class PrFeedbackService:
         return ListUnreadFeedbackResponse(feedback=items, next_cursor=next_cursor)
 
     def _read_store(self) -> dict[str, Any]:
-        if not self.store_path.exists():
-            return {"feedback": {}}
-        return json.loads(self.store_path.read_text(encoding="utf-8"))
+        payload = self.store.read_raw()
+        if "feedback" not in payload:
+            payload["feedback"] = {}
+        return payload
 
     def _read_ignored_feedback_ids(self) -> set[str]:
         path = self.ignored_feedback_store_path

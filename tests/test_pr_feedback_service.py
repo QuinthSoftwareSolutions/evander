@@ -8,6 +8,41 @@ from agent_sandbox.pr_feedback_worker import FeedbackEnvelope, PrFeedbackStore
 from agent_sandbox.services import PrFeedbackService
 
 
+class _InMemoryFeedbackRepo:
+    def __init__(self, payload: dict[str, object]) -> None:
+        self.payload = payload
+        self.advanced: list[tuple[str, str, str | None]] = []
+
+    def get_cursor(self, stream_key: str) -> str | None:
+        return None
+
+    def set_cursor(self, stream_key: str, cursor: str | None) -> None:
+        del stream_key, cursor
+
+    def add_feedback_if_new(self, envelope: FeedbackEnvelope) -> bool:
+        del envelope
+        return False
+
+    def get_session_cursor(self, session_id: str, stream_key: str) -> str | None:
+        del session_id, stream_key
+        return None
+
+    def advance_session_cursor(self, session_id: str, stream_key: str, cursor: str | None) -> str | None:
+        self.advanced.append((session_id, stream_key, cursor))
+        return cursor
+
+    def has_unread_feedback(self, *, session_id: str, streams: list[dict[str, str]]) -> bool:
+        del session_id, streams
+        return False
+
+    def read_raw(self) -> dict[str, object]:
+        return dict(self.payload)
+
+    def prune_streams(self, streams: set[tuple[str, str, str]]) -> tuple[int, int]:
+        del streams
+        return (0, 0)
+
+
 def _write_store(path: Path) -> None:
     path.write_text(
         json.dumps(
@@ -244,3 +279,31 @@ def test_list_all_feedback_includes_items_regardless_of_read_cursor(tmp_path: Pa
 
     assert [item.feedback_id for item in response.feedback] == ["github:review:1", "github:review:2"]
     assert response.next_cursor == "2026-01-02T00:00:00Z"
+
+
+def test_list_unread_feedback_can_use_repository_contract_without_file_reads(tmp_path: Path) -> None:
+    store_path = tmp_path / "missing-pr-feedback-store.json"
+    repository = _InMemoryFeedbackRepo(
+        {
+            "feedback": {
+                "github:review:1": {
+                    "feedback_id": "github:review:1",
+                    "provider": "github",
+                    "repo": "org/repo",
+                    "pr_id": "17",
+                    "author": "reviewer-1",
+                    "body": "Looks good",
+                    "created_at": "2026-01-01T00:00:00Z",
+                }
+            }
+        }
+    )
+    service = PrFeedbackService(store_path, repository=repository)
+
+    response = service.list_unread_feedback(
+        streams=[{"provider": "github", "repo": "org/repo", "pr_id": "17"}],
+        session_id="session-1",
+    )
+
+    assert [item.feedback_id for item in response.feedback] == ["github:review:1"]
+    assert repository.advanced == [("session-1", "github:org/repo:17", "2026-01-01T00:00:00Z")]
