@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import RLock
-from typing import Any, Generic, Literal, TypeVar
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -51,7 +51,6 @@ from .workflow_runtime_config import (
     TriggerOrchestratorWorkerGlobalConfigReloader,
     load_trigger_orchestrator_worker_global_config,
 )
-from .workflow_events import WorkflowEventJournal
 from .workflow_binding import (
     BindingResolutionError,
     resolve_effect_config_bindings,
@@ -75,6 +74,12 @@ from .orchestration.kernels import PollingKernelConfig, PollingOrchestratorKerne
 from .orchestration.wiring import EffectWorkerWiring, build_effect_worker_wiring
 from .orchestration.effect_extensions import SpecialEventResult
 from .gates.providers.await_agent import AwaitAgentPendingRecord, _await_agent_pending_target
+from .orchestration_repositories import (
+    EffectExecutionRepository,
+    GateExecutionRepository,
+    JsonEffectCursorRepository,
+    JsonExecutionRepository,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -85,7 +90,6 @@ _FOR_EXECUTION_IDS_PAYLOAD_KEY = "__for_execution_ids"
 WorkflowNodeDefinition = (
     TriggerDefinitionDiscriminated | GateDefinitionDiscriminated | EffectDefinitionDiscriminated | QueryDefinitionDiscriminated
 )
-TRecord = TypeVar("TRecord", bound=BaseModel)
 
 
 class _LockManager:
@@ -202,14 +206,15 @@ class EffectOrchestratorWorker:
         self.event_queue = resolved_wiring.event_queue
         self.lock_path = resolved_wiring.lock_path
         self.cursor_path = resolved_wiring.cursor_path
+        self.cursor_repository = resolved_wiring.effect_cursor_repository
         self.execution_store_path = self.worker_config.effect_execution_store_path
-        self.execution_store = resolved_wiring.execution_store
+        self.execution_store: EffectExecutionRepository = resolved_wiring.execution_store
         self.gate_execution_store_path = _resolve_worker_path(
             self.worker_config,
             "gate_execution_store_path",
             fallback=self.worker_config.runtime_dir / "gate-orchestrator-executions.json",
         )
-        self.gate_execution_store = resolved_wiring.gate_execution_store
+        self.gate_execution_store: GateExecutionRepository = resolved_wiring.gate_execution_store
         self.queued_agent_prompt_store = resolved_wiring.queued_agent_prompt_store
         self._executor = resolved_wiring.executor
         self._inflight: dict[str, InflightExecution] = {}
@@ -258,7 +263,7 @@ class EffectOrchestratorWorker:
         latest_config, _changed = self._config_reloader.get_latest()
         self.worker_config = latest_config
         config_revision = _config_revision_hash(latest_config)
-        cursor_payload = _load_cursor_payload(self.cursor_path)
+        cursor_payload = self.cursor_repository.load()
         pending_events_scanned = 0
         events_processed = 0
         effect_executions_started = 0
@@ -324,7 +329,7 @@ class EffectOrchestratorWorker:
         pending_events_scanned = loop_result.events_scanned
         events_processed = loop_result.events_scanned
 
-        _save_cursor_payload(self.cursor_path, cursor_payload)
+        self.cursor_repository.save(cursor_payload)
         next_sleep_seconds = _compute_next_sleep_seconds(
             poll_interval_seconds=self.worker_config.poll_interval_seconds,
             jitter_seconds=self.worker_config.jitter_seconds,
@@ -1217,59 +1222,12 @@ class EffectOrchestratorWorker:
         self._last_graph_edge_count = edge_count
 
 
-class _JsonRecordStore(Generic[TRecord]):
-    def __init__(self, path: Path, model: type[TRecord], *, journal_path: Path | None = None, source: str | None = None) -> None:
-        self.path = path
-        self.model = model
-        self._journal = WorkflowEventJournal(journal_path) if journal_path is not None else None
-        self._journal_source = source
-        self._lock = RLock()
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        if not self.path.exists():
-            self.path.write_text("{}", encoding="utf-8")
-
-    def read_all(self) -> dict[str, TRecord]:
-        with self._lock:
-            payload = self._read_payload()
-            return {key: self.model.model_validate(value) for key, value in payload.items()}
-
-    def put(self, record: TRecord) -> None:
-        with self._lock:
-            payload = self._read_payload()
-            payload[getattr(record, "execution_id")] = record.model_dump(mode="json")
-            self.path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-        if self._journal is not None and self._journal_source is not None:
-            self._journal.append(
-                "workflow.execution.updated",
-                source=self._journal_source,
-                subject_id=str(getattr(record, "execution_id")),
-                payload={
-                    "event_id": str(getattr(record, "event_id", "")),
-                    "status": str(getattr(record, "status", "")),
-                },
-            )
-
-    def find_by_idempotency_key(self, idempotency_key: str) -> TRecord | None:
-        with self._lock:
-            for value in self._read_payload().values():
-                record = self.model.model_validate(value)
-                if getattr(record, "idempotency_key") == idempotency_key:
-                    return record
-        return None
-
-    def _read_payload(self) -> dict[str, Any]:
-        payload = json.loads(self.path.read_text(encoding="utf-8"))
-        if not isinstance(payload, dict):
-            return {}
-        return payload
-
-
-class JsonExecutionStore(_JsonRecordStore[EffectExecutionRecord]):
+class JsonExecutionStore(JsonExecutionRepository[EffectExecutionRecord]):
     def __init__(self, path: Path, *, journal_path: Path | None = None) -> None:
         super().__init__(path, EffectExecutionRecord, journal_path=journal_path, source="effect_execution")
 
 
-class JsonGateExecutionStore(_JsonRecordStore[GateExecutionRecord]):
+class JsonGateExecutionStore(JsonExecutionRepository[GateExecutionRecord]):
     def __init__(self, path: Path, *, journal_path: Path | None = None) -> None:
         super().__init__(path, GateExecutionRecord, journal_path=journal_path, source="gate_execution")
 
@@ -1628,24 +1586,8 @@ def _compute_backoff_sleep_seconds(*, poll_interval_seconds: float, jitter_secon
     return max(1.0, delay)
 
 
-def _load_cursor_payload(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        return {}
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        logger.warning("Unable to read effect orchestrator cursor state path=%s", path, exc_info=True)
-        return {}
-    if not isinstance(payload, dict):
-        return {}
-    return payload
-
-
-def _save_cursor_payload(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_suffix(f"{path.suffix}.tmp")
-    tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-    tmp_path.replace(path)
+def build_effect_cursor_repository(path: Path) -> JsonEffectCursorRepository:
+    return JsonEffectCursorRepository(path)
 
 
 def _update_cursor_payload(payload: dict[str, Any], queue_record: TriggerQueueRecord) -> None:
