@@ -48,6 +48,7 @@ from .policy_config import EffectivePolicyConfig, PolicyConfigResolver
 from .pr_feedback_worker import PrFeedbackStore
 from .provider_config import ProviderConfigResolver
 from .runtime import build_runtime
+from .session_manifest_repository import JsonSessionManifestRepository
 from .teams_auth import TeamsAuthError
 from .vm_defaults_config import EffectiveVmDefaultsConfig, VmDefaultsConfigResolver
 
@@ -1361,36 +1362,32 @@ def status(config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR, as_json: Annotated[bo
         }:
             report["overall"] = "degraded"
 
-        if cfg.session_store_path.exists():
-            try:
-                raw_sessions = json.loads(cfg.session_store_path.read_text(encoding="utf-8"))
-                sessions = [
-                    SessionManifest.model_validate(value)
-                    for value in raw_sessions.values()
-                ]
-            except (json.JSONDecodeError, ValidationError, OSError) as exc:
-                report["overall"] = "degraded"
-                report["sessions"] = {
-                    "total": 0,
-                    "active": 0,
-                    "expired": 0,
-                    "next_expiration": None,
-                    "last_expiration": None,
-                    "error": str(exc),
-                }
-            else:
-                now = datetime.now(UTC)
-                active = [session for session in sessions if session.expires_at > now]
-                expired = [session for session in sessions if session.expires_at <= now]
-                next_expiration = min((session.expires_at for session in active), default=None)
-                last_expiration = max((session.expires_at for session in sessions), default=None)
-                report["sessions"] = {
-                    "total": len(sessions),
-                    "active": len(active),
-                    "expired": len(expired),
-                    "next_expiration": next_expiration.isoformat() if next_expiration else None,
-                    "last_expiration": last_expiration.isoformat() if last_expiration else None,
-                }
+        session_repository = JsonSessionManifestRepository(cfg.session_store_path)
+        try:
+            sessions = list(session_repository.read_all().values())
+        except (json.JSONDecodeError, ValidationError, OSError) as exc:
+            report["overall"] = "degraded"
+            report["sessions"] = {
+                "total": 0,
+                "active": 0,
+                "expired": 0,
+                "next_expiration": None,
+                "last_expiration": None,
+                "error": str(exc),
+            }
+        else:
+            now = datetime.now(UTC)
+            active = [session for session in sessions if session.expires_at > now]
+            expired = [session for session in sessions if session.expires_at <= now]
+            next_expiration = min((session.expires_at for session in active), default=None)
+            last_expiration = max((session.expires_at for session in sessions), default=None)
+            report["sessions"] = {
+                "total": len(sessions),
+                "active": len(active),
+                "expired": len(expired),
+                "next_expiration": next_expiration.isoformat() if next_expiration else None,
+                "last_expiration": last_expiration.isoformat() if last_expiration else None,
+            }
 
     if as_json:
         typer.echo(json.dumps(report, indent=2, sort_keys=True))
