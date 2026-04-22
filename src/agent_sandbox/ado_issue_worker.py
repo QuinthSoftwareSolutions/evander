@@ -35,6 +35,7 @@ from .pr_feedback_worker import AzureDevOpsFeedbackAdapter, FeedbackEnvelope, Pr
 from .policy_config import EffectivePolicyConfig
 from .provider_config import ProviderConfigResolver
 from .runtime import build_runtime
+from .session_manifest_repository import JsonSessionManifestRepository
 from .services import _normalize_ignored_feedback_payload
 from .storage import JsonStore
 from .triggers.providers._cursor_state import TriggerCursorStore
@@ -1898,23 +1899,16 @@ def _load_ado_pr_feedback_session_bindings(
 
     session_directory_paths: dict[str, str] = {}
     session_vm_ids: dict[str, str] = {}
-    sessions_path = runtime_dir / "sessions.json"
-    if sessions_path.exists():
-        try:
-            sessions_payload = json.loads(sessions_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            sessions_payload = {}
-        if isinstance(sessions_payload, dict):
-            for session_id, raw_session in sessions_payload.items():
-                if not isinstance(raw_session, dict):
-                    continue
-                normalized_session_id = str(session_id).strip()
-                normalized_directory_path = str(raw_session.get("directory_path", "root")).strip() or "root"
-                normalized_vm_id = str(raw_session.get("vm_id", "")).strip()
-                if normalized_session_id:
-                    session_directory_paths[normalized_session_id] = normalized_directory_path
-                    if normalized_vm_id:
-                        session_vm_ids[normalized_session_id] = normalized_vm_id
+    session_repository = JsonSessionManifestRepository(runtime_dir / "sessions.json")
+    for session_id, manifest in session_repository.read_all_safe().items():
+        normalized_session_id = str(session_id).strip()
+        if not normalized_session_id:
+            continue
+        normalized_directory_path = str(manifest.directory_path or "root").strip() or "root"
+        normalized_vm_id = str(manifest.vm_id or "").strip()
+        session_directory_paths[normalized_session_id] = normalized_directory_path
+        if normalized_vm_id:
+            session_vm_ids[normalized_session_id] = normalized_vm_id
 
     bindings: dict[tuple[str, str], dict[str, str]] = {}
     for raw in entries.values():
