@@ -320,33 +320,14 @@ class SessionAdminFacade:
         session_id: str | None = None,
         include_disabled: bool = True,
     ) -> list[dict[str, Any]]:
-        payload = self._deps.runtime.wake_store.read_raw()
-        raw_requests = payload.get("requests")
-        raw_dispatches = payload.get("dispatches")
-        if not isinstance(raw_requests, dict):
-            return []
-        latest_dispatch_by_request_id: dict[str, dict[str, Any]] = {}
-        if isinstance(raw_dispatches, dict):
-            for raw_value in raw_dispatches.values():
-                if not isinstance(raw_value, dict):
-                    continue
-                dispatch_request_id = str(raw_value.get("request_id") or "").strip()
-                if not dispatch_request_id:
-                    continue
-                dispatched_at = str(raw_value.get("dispatched_at") or "")
-                current = latest_dispatch_by_request_id.get(dispatch_request_id)
-                if current is None or dispatched_at > str(current.get("dispatched_at") or ""):
-                    latest_dispatch_by_request_id[dispatch_request_id] = raw_value
+        requests = self._deps.runtime.wake_store.list_requests(
+            session_id=session_id,
+            include_disabled=include_disabled,
+        )
+        latest_dispatch_by_request_id = self._deps.runtime.wake_store.latest_dispatch_by_request_id()
 
         schedules: list[dict[str, Any]] = []
-        for raw_value in raw_requests.values():
-            if not isinstance(raw_value, dict):
-                continue
-            request = WakeScheduledRequest.model_validate(raw_value)
-            if session_id and request.session_id != session_id:
-                continue
-            if not include_disabled and not request.enabled:
-                continue
+        for request in requests:
             dispatch = latest_dispatch_by_request_id.get(request.request_id)
             schedules.append(
                 {
@@ -364,10 +345,10 @@ class SessionAdminFacade:
                     "next_run_at": request.next_run_at,
                     "last_dispatch": (
                         {
-                            "dispatch_id": dispatch.get("dispatch_id"),
-                            "status": dispatch.get("status"),
-                            "error": dispatch.get("error"),
-                            "dispatched_at": dispatch.get("dispatched_at"),
+                            "dispatch_id": dispatch.dispatch_id,
+                            "status": dispatch.status,
+                            "error": dispatch.error,
+                            "dispatched_at": dispatch.dispatched_at,
                         }
                         if dispatch is not None
                         else None
@@ -562,20 +543,10 @@ class SessionAdminFacade:
         )
 
     def _active_wake_requests(self, *, exclude_request_id: str | None = None) -> list[WakeScheduledRequest]:
-        payload = self._deps.runtime.wake_store.read_raw()
-        raw_requests = payload.get("requests", {})
-        if not isinstance(raw_requests, dict):
-            return []
-        active: list[WakeScheduledRequest] = []
-        for raw_value in raw_requests.values():
-            if not isinstance(raw_value, dict):
-                continue
-            request = WakeScheduledRequest.model_validate(raw_value)
-            if exclude_request_id and request.request_id == exclude_request_id:
-                continue
-            if request.enabled:
-                active.append(request)
-        return active
+        requests = self._deps.runtime.wake_store.list_requests(include_disabled=False)
+        if not exclude_request_id:
+            return requests
+        return [request for request in requests if request.request_id != exclude_request_id]
 
     def _enforce_wake_schedule_guardrails(
         self,

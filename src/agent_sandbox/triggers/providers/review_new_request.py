@@ -5,7 +5,7 @@ from pathlib import Path
 
 from agent_sandbox.events.models import TriggerEvent
 from agent_sandbox.events.provider_models import ReviewNewRequestTriggerDefinition
-from agent_sandbox.review_request_store import ReviewRequestStore
+from agent_sandbox.review_request_store import ReviewRequestRepository, ReviewRequestStore
 from agent_sandbox.triggers.providers.base import TriggerProviderBase
 
 
@@ -41,7 +41,7 @@ class ReviewNewRequestTriggerProvider(TriggerProviderBase):
             raise RuntimeError("ReviewNewRequestTriggerProvider initialized with wrong definition")
         return self.trigger_definition
 
-    def _store(self) -> ReviewRequestStore:
+    def _store(self) -> ReviewRequestRepository:
         return ReviewRequestStore(self._runtime_dir() / "review-request-store.json")
 
     def _runtime_dir(self) -> Path:
