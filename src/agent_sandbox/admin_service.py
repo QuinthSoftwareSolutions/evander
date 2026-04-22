@@ -74,6 +74,13 @@ from .runtime import RuntimeContext, build_runtime
 from .storage import JsonStore
 from .workflow_events import WorkflowEventJournal, workflow_event_journal_path
 from .workflow_runtime_config import _compose_configured_workflow_ir, compile_worker_global_config_with_diagnostics
+from .trigger_repositories import (
+    JsonTriggerEventRepository,
+    TriggerConfigDocument,
+    TriggerRepository,
+    TriggerEventRepository,
+    WorkerConfigTriggerRepository,
+)
 from .teams_auth import (
     DeviceCodeLoginSession,
     JsonTeamsIdentityCredentialStore,
@@ -2610,6 +2617,11 @@ class AdminService:
             directory_admin=self.directory_admin,
             privileged_helper_factory=lambda **kwargs: PrivilegedHelperSession(**kwargs),
         )
+        self.trigger_repository: TriggerRepository = WorkerConfigTriggerRepository(
+            read_config=self._read_trigger_document,
+            write_config=self._write_trigger_document,
+        )
+        self.trigger_event_repository: TriggerEventRepository = JsonTriggerEventRepository()
 
     @property
     def directory_scoped_config_enabled(self) -> bool:
@@ -3946,6 +3958,14 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
         path.write_text(json.dumps(config, indent=2, sort_keys=True), encoding="utf-8")
         return WorkerGlobalConfigWritePayload(worker_id=worker_id, path=str(path), config=config)
 
+    def _read_trigger_document(self) -> TriggerConfigDocument:
+        payload = self._read_worker_global_config("trigger-orchestrator")
+        return TriggerConfigDocument(path=payload.path, config=payload.config)
+
+    def _write_trigger_document(self, config: dict[str, object]) -> TriggerConfigDocument:
+        payload = self._write_worker_global_config("trigger-orchestrator", config)
+        return TriggerConfigDocument(path=payload.path, config=payload.config)
+
     def _validate_worker_global_config_payload(self, worker_id: str, payload: dict[str, object]) -> dict[str, object]:
         model = _WORKER_GLOBAL_CONFIG_MODELS[worker_id]
         try:
@@ -4263,7 +4283,7 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
             node_status_counts = node_activity.setdefault(normalized_node_id, {})
             node_status_counts[status] = node_status_counts.get(status, 0) + 1
 
-        queue_payload = _read_json_object(event_queue_store_path)
+        queue_payload = self.trigger_event_repository.read_events(event_queue_store_path)
         for event_id, raw_record in queue_payload.items():
             if not isinstance(raw_record, dict):
                 continue
@@ -4520,7 +4540,7 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
             raise _safe_validation_error(exc, context="Invalid trigger config") from exc
         normalized_payload = validated_trigger.model_dump(mode="json", exclude_none=True)
 
-        current = self._read_worker_global_config("trigger-orchestrator")
+        current = self.trigger_repository.read_document()
         config = dict(current.config)
         existing_triggers_raw = config.get("triggers", [])
         if not isinstance(existing_triggers_raw, list):
@@ -4536,7 +4556,7 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
         if not replacing:
             existing_triggers.append(normalized_payload)
         config["triggers"] = existing_triggers
-        write_result = self._write_worker_global_config("trigger-orchestrator", config)
+        write_result = self.trigger_repository.write_document(config)
         return TriggerConfigMutationPayload(
             trigger_id=normalized_trigger_id,
             operation="updated" if replacing else "added",
@@ -4548,7 +4568,7 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
         normalized_trigger_id = str(trigger_id).strip()
         if not normalized_trigger_id:
             raise ValueError("trigger_id is required")
-        current = self._read_worker_global_config("trigger-orchestrator")
+        current = self.trigger_repository.read_document()
         config = dict(current.config)
         triggers_raw = config.get("triggers", [])
         if not isinstance(triggers_raw, list):
@@ -4566,7 +4586,7 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
         if not removed:
             raise ValueError(f"Trigger not found: {normalized_trigger_id}")
         config["triggers"] = filtered
-        write_result = self._write_worker_global_config("trigger-orchestrator", config)
+        write_result = self.trigger_repository.write_document(config)
         return TriggerConfigMutationPayload(
             trigger_id=normalized_trigger_id,
             operation="deleted",
