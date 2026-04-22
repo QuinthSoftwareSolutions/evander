@@ -9,7 +9,7 @@ import httpx
 from pydantic import BaseModel
 
 from .models import RequestPrReviewResponse, SessionManifest
-from .review_request_store import ReviewRequestRecord, ReviewRequestStore
+from .review_request_store import ReviewRequestRecord, ReviewRequestRepository, ReviewRequestStore
 from .services import normalize_pr_feedback_provider
 from .storage import JsonStore
 from .config import GatewayConfig
@@ -108,7 +108,7 @@ class ReviewRequestService:
         self,
         *,
         providers: dict[str, ReviewRequestProvider],
-        store: ReviewRequestStore,
+        store: ReviewRequestRepository,
         session_store: JsonStore[SessionManifest],
     ) -> None:
         self.providers = providers

@@ -29,6 +29,7 @@ from .pr_feedback_worker import (
     build_pr_feedback_worker,
 )
 from .runtime import RuntimeContext, build_runtime
+from .wake_store import WakeRequestRepository
 from .worker_directory_context import WorkerDirectoryContextResolver, log_shadow_context
 from .models import DirectoryPath, WakeDispatchRecord, WakeResumePromptPayload, WakeScheduledRequest
 
@@ -1223,18 +1224,10 @@ def _load_pr_map_entries(path: Path) -> dict[tuple[str, str, str], dict[str, Any
     return entries
 
 
-def _load_due_wake_requests(*, wake_store: Any, now_utc: datetime) -> list[WakeScheduledRequest]:
-    payload = wake_store.read_raw()
-    raw_requests = payload.get("requests", {})
-    if not isinstance(raw_requests, dict):
-        return []
+def _load_due_wake_requests(*, wake_store: WakeRequestRepository, now_utc: datetime) -> list[WakeScheduledRequest]:
+    raw_requests = wake_store.list_requests(include_disabled=False)
     due: list[WakeScheduledRequest] = []
-    for raw_value in raw_requests.values():
-        if not isinstance(raw_value, dict):
-            continue
-        request = _parse_wake_request(raw_value)
-        if request is None or not request.enabled:
-            continue
+    for request in raw_requests:
         next_run_at = request.next_run_at
         if next_run_at is None:
             cron = (request.schedule.cron or "").strip()
@@ -1253,7 +1246,7 @@ def _load_due_wake_requests(*, wake_store: Any, now_utc: datetime) -> list[WakeS
 
 def _advance_cron_wake_request(
     *,
-    wake_store: Any,
+    wake_store: WakeRequestRepository,
     request: WakeScheduledRequest,
     now_utc: datetime,
     mark_consumed: bool,
@@ -1273,14 +1266,6 @@ def _advance_cron_wake_request(
     next_base = request.next_run_at or now_utc
     request.next_run_at = _next_cron_time(cron, next_base)
     wake_store.upsert_request(request)
-
-
-def _parse_wake_request(raw_value: dict[str, Any]) -> WakeScheduledRequest | None:
-    try:
-        return WakeScheduledRequest.model_validate(raw_value)
-    except Exception:
-        logger.warning("Skipping invalid wake request entry=%r", raw_value, exc_info=True)
-        return None
 
 
 def _next_cron_time(expression: str, base: datetime) -> datetime | None:

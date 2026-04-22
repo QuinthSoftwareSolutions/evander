@@ -65,7 +65,7 @@ from .teams_auth import (
     MicrosoftDeviceCodeAuthConfig,
     TeamsDeviceCodeTokenProvider,
 )
-from .wake_store import WakeRequestStore
+from .wake_store import WakeRequestRepository, WakeRequestStore
 
 
 @dataclass(slots=True)
@@ -92,7 +92,7 @@ class RuntimeContext:
     email_cursors: EmailCursorRepository
     discord_commands: DiscordRecordsRepository
     teams_messages: TeamsRecordsRepository
-    wake_store: WakeRequestStore
+    wake_store: WakeRequestRepository
     agent_prompt_store: AgentPromptStore
     script_run_request_store: ScriptRunRequestStore
 

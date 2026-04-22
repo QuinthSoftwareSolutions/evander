@@ -4,7 +4,7 @@ import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Lock
-from typing import Any
+from typing import Any, Protocol
 from uuid import uuid4
 
 from .models import (
@@ -16,6 +16,42 @@ from .models import (
 )
 
 _WAKE_RETENTION = timedelta(days=90)
+
+
+class WakeRequestRepository(Protocol):
+    """Repository contract for scheduled wake requests and dispatch history."""
+
+    def upsert_request(self, request: WakeScheduledRequest) -> None: ...
+
+    def get_request(self, request_id: str) -> WakeScheduledRequest | None: ...
+
+    def delete_request(self, request_id: str) -> bool: ...
+
+    def record_dispatch(self, dispatch: WakeDispatchRecord) -> None: ...
+
+    def schedule_resume_request(
+        self,
+        *,
+        session_id: str,
+        prompt: str,
+        schedule: WakeScheduleDefinition,
+        request_id: str | None,
+        source: str | None,
+        resume_mode: str,
+        enabled: bool,
+        metadata: dict[str, Any],
+    ) -> WakeScheduledRequest: ...
+
+    def list_requests(
+        self,
+        *,
+        session_id: str | None = None,
+        include_disabled: bool = True,
+    ) -> list[WakeScheduledRequest]: ...
+
+    def latest_dispatch_by_request_id(self) -> dict[str, WakeDispatchRecord]: ...
+
+    def read_raw(self) -> dict[str, Any]: ...
 
 
 class WakeRequestStore:
@@ -133,6 +169,53 @@ class WakeRequestStore:
     def read_raw(self) -> dict[str, Any]:
         with self._lock:
             return self._read_raw()
+
+    def list_requests(
+        self,
+        *,
+        session_id: str | None = None,
+        include_disabled: bool = True,
+    ) -> list[WakeScheduledRequest]:
+        with self._lock:
+            payload = self._read_raw()
+            raw_requests = payload.get("requests", {})
+            if not isinstance(raw_requests, dict):
+                return []
+            requests: list[WakeScheduledRequest] = []
+            for raw_value in raw_requests.values():
+                if not isinstance(raw_value, dict):
+                    continue
+                try:
+                    request = WakeScheduledRequest.model_validate(raw_value)
+                except Exception:
+                    continue
+                if session_id and request.session_id != session_id:
+                    continue
+                if not include_disabled and not request.enabled:
+                    continue
+                requests.append(request)
+            return requests
+
+    def latest_dispatch_by_request_id(self) -> dict[str, WakeDispatchRecord]:
+        with self._lock:
+            payload = self._read_raw()
+            raw_dispatches = payload.get("dispatches", {})
+            if not isinstance(raw_dispatches, dict):
+                return {}
+            latest: dict[str, WakeDispatchRecord] = {}
+            for raw_value in raw_dispatches.values():
+                if not isinstance(raw_value, dict):
+                    continue
+                try:
+                    dispatch = WakeDispatchRecord.model_validate(raw_value)
+                except Exception:
+                    continue
+                if not dispatch.request_id:
+                    continue
+                current = latest.get(dispatch.request_id)
+                if current is None or dispatch.dispatched_at > current.dispatched_at:
+                    latest[dispatch.request_id] = dispatch
+            return latest
 
     def _compact(self, payload: dict[str, Any]) -> None:
         cutoff = datetime.now(UTC) - _WAKE_RETENTION

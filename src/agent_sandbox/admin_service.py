@@ -3177,20 +3177,10 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
         )
 
     def _active_wake_requests(self, *, exclude_request_id: str | None = None) -> list[WakeScheduledRequest]:
-        payload = self.runtime.wake_store.read_raw()
-        raw_requests = payload.get("requests", {})
-        if not isinstance(raw_requests, dict):
-            return []
-        active: list[WakeScheduledRequest] = []
-        for raw_value in raw_requests.values():
-            if not isinstance(raw_value, dict):
-                continue
-            request = WakeScheduledRequest.model_validate(raw_value)
-            if exclude_request_id and request.request_id == exclude_request_id:
-                continue
-            if request.enabled:
-                active.append(request)
-        return active
+        requests = self.runtime.wake_store.list_requests(include_disabled=False)
+        if not exclude_request_id:
+            return requests
+        return [request for request in requests if request.request_id != exclude_request_id]
 
     def _enforce_wake_schedule_guardrails(
         self,
