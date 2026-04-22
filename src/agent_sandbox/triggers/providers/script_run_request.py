@@ -4,9 +4,9 @@ from datetime import UTC
 
 from agent_sandbox.events.models import TriggerEvent
 from agent_sandbox.events.provider_models import ScriptRunRequestTriggerDefinition
-from agent_sandbox.script_run_request_store import ScriptRunRequestStore
+from agent_sandbox.script_run_request_store import ScriptRunRequestRepository, ScriptRunRequestStore
 
-from ._cursor_state import TriggerCursorStore
+from ._cursor_state import TriggerCursorRepository, TriggerCursorStore
 from .base import TriggerProviderBase
 
 
@@ -58,10 +58,10 @@ class ScriptRunRequestTriggerProvider(TriggerProviderBase):
             request_directory_path == directory_scope or request_directory_path.startswith(f"{directory_scope}/")
         )
 
-    def _store(self) -> ScriptRunRequestStore:
+    def _store(self) -> ScriptRunRequestRepository:
         return ScriptRunRequestStore(self.runtime_context.resolved_config.runtime_dir / "script-run-requests-store.json")
 
-    def _cursor_store(self) -> TriggerCursorStore:
+    def _cursor_store(self) -> TriggerCursorRepository:
         return TriggerCursorStore(self.runtime_context.resolved_config.runtime_dir / self._CURSOR_FILENAME)
 
     def _trigger(self) -> ScriptRunRequestTriggerDefinition:
