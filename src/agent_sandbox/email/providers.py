@@ -6,6 +6,7 @@ from typing import Any, Protocol
 from pydantic import BaseModel, Field
 
 from agent_sandbox.models import DraftMessage, EmailMessage
+from agent_sandbox.records_repository import EmailRecordsRepository
 from agent_sandbox.storage import JsonStore
 
 
@@ -101,7 +102,7 @@ class JsonEmailProvider:
 
     def __init__(
         self,
-        email_store: JsonStore[EmailMessage],
+        email_store: EmailRecordsRepository,
         draft_store: JsonStore[DraftMessage],
     ) -> None:
         self.email_store = email_store

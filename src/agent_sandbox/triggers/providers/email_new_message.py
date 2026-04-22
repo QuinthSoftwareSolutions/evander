@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from agent_sandbox.email.cursor_store import DurableCursorStore
+from agent_sandbox.cursor_repositories import JsonEmailCursorRepository
 from agent_sandbox.email.gmail_provider import GmailEmailProvider
 from agent_sandbox.email.graph_provider import GraphEmailProvider
 from agent_sandbox.email.providers import EmailMessageSummary, JsonEmailProvider
-from agent_sandbox.models import DraftMessage, EmailMessage
+from agent_sandbox.models import DraftMessage
+from agent_sandbox.records_repository import JsonEmailRecordsRepository
 from agent_sandbox.storage import JsonStore
 from agent_sandbox.events.models import TriggerEvent
 from agent_sandbox.events.provider_models import EmailNewMessageTriggerDefinition
@@ -81,7 +82,7 @@ class EmailNewMessageTriggerProvider(TriggerProviderBase):
         if trigger.provider == "json_store":
             config = self.runtime_context.resolved_config
             return JsonEmailProvider(
-                JsonStore(config.email_store_path, EmailMessage),
+                JsonEmailRecordsRepository(config.email_store_path),
                 JsonStore(config.draft_store_path, DraftMessage),
             )
 
@@ -89,7 +90,7 @@ class EmailNewMessageTriggerProvider(TriggerProviderBase):
             key: self.runtime_context.resolve_secret(value) or value
             for key, value in trigger.auth_secret_refs.items()
         }
-        provider_cursor_store = DurableCursorStore(runtime_dir / "trigger-email-provider-cursors.json")
+        provider_cursor_store = JsonEmailCursorRepository(runtime_dir / "trigger-email-provider-cursors.json")
         if trigger.provider == "gmail":
             return GmailEmailProvider(
                 account_identifier=trigger.account_identifier,

@@ -10,17 +10,14 @@ from .audit import AuditLogger
 from .directories import DirectoryStore
 from .models import (
     ApprovalRequest,
-    DiscordCommandEnvelope,
     DraftMessage,
-    EmailMessage,
     SessionManifest,
-    TeamsMessageEnvelope,
     ToolName,
 )
 from .migrations import migrate_local_issues_to_unified_schema
 from .config import GatewayConfig, MailboxConfig
 from .directory_config import load_root_gateway_config
-from .email.cursor_store import DurableCursorStore
+from .cursor_repositories import EmailCursorRepository, JsonEmailCursorRepository
 from .email.gmail_provider import GmailEmailProvider
 from .email.graph_provider import GraphEmailProvider
 from .email.providers import JsonEmailProvider, MultiMailboxEmailProvider
@@ -33,6 +30,14 @@ from .review_request_service import (
     _build_review_request_service,
 )
 from .review_request_store import ReviewRequestStore
+from .records_repository import (
+    DiscordRecordsRepository,
+    EmailRecordsRepository,
+    JsonDiscordRecordsRepository,
+    JsonEmailRecordsRepository,
+    JsonTeamsRecordsRepository,
+    TeamsRecordsRepository,
+)
 from .script_run_request_store import ScriptRunRequestStore
 from .services import (
     AzureDevOpsPrReplyProvider,
@@ -83,10 +88,10 @@ class RuntimeContext:
     approvals: JsonStore[ApprovalRequest]
     directories: DirectoryStore
     drafts: JsonStore[DraftMessage]
-    emails: JsonStore[EmailMessage]
-    email_cursors: DurableCursorStore
-    discord_commands: JsonStore[DiscordCommandEnvelope]
-    teams_messages: JsonStore[TeamsMessageEnvelope]
+    emails: EmailRecordsRepository
+    email_cursors: EmailCursorRepository
+    discord_commands: DiscordRecordsRepository
+    teams_messages: TeamsRecordsRepository
     wake_store: WakeRequestStore
     agent_prompt_store: AgentPromptStore
     script_run_request_store: ScriptRunRequestStore
@@ -184,12 +189,12 @@ def _build_runtime_context(config: GatewayConfig) -> RuntimeContext:
     sessions = JsonStore(config.session_store_path, SessionManifest)
     approvals = JsonStore(config.approval_store_path, ApprovalRequest)
     drafts = JsonStore(config.draft_store_path, DraftMessage)
-    emails = JsonStore(config.email_store_path, EmailMessage)
-    email_cursors = DurableCursorStore(config.email_cursor_store_path)
+    emails = JsonEmailRecordsRepository(config.email_store_path)
+    email_cursors = JsonEmailCursorRepository(config.email_cursor_store_path)
     policy_config = PolicyConfigResolver(config, directory_store=directories, session_store=sessions)
     provider_config = ProviderConfigResolver(config, directory_store=directories, session_store=sessions)
-    discord_commands = JsonStore(config.discord_command_store_path, DiscordCommandEnvelope)
-    teams_messages = JsonStore(config.teams_message_store_path, TeamsMessageEnvelope)
+    discord_commands = JsonDiscordRecordsRepository(config.discord_command_store_path)
+    teams_messages = JsonTeamsRecordsRepository(config.teams_message_store_path)
     discord_inbox_service = DiscordInboxService(config.runtime_dir / "discord-inbox-store.json")
     wake_store = WakeRequestStore(config.runtime_dir / "wake-requests-store.json")
     agent_prompt_store = AgentPromptStore(config.runtime_dir / "agent-prompt-store.json")
@@ -243,9 +248,9 @@ def build_runtime(config: GatewayConfig) -> RuntimeContext:
 
 def _build_email_provider(
     config: GatewayConfig,
-    emails: JsonStore[EmailMessage],
+    emails: EmailRecordsRepository,
     drafts: JsonStore[DraftMessage],
-    email_cursors: DurableCursorStore,
+    email_cursors: EmailCursorRepository,
 ) -> JsonEmailProvider | MultiMailboxEmailProvider:
     mailbox_configs = config.email_mailboxes or [
         MailboxConfig(mailbox_id="default", provider="json_store", account_identifier="default")
@@ -302,7 +307,7 @@ def _validate_mailbox_access_token_env_var(mailbox: MailboxConfig) -> None:
 
 def _build_discord_service(
     config: GatewayConfig,
-    command_store: JsonStore[DiscordCommandEnvelope],
+    command_store: DiscordRecordsRepository,
     sessions: JsonStore[SessionManifest],
     policy_config: PolicyConfigResolver,
     *,
@@ -359,7 +364,7 @@ def _build_discord_service(
 
 def _build_teams_service(
     config: GatewayConfig,
-    message_store: JsonStore[TeamsMessageEnvelope],
+    message_store: TeamsRecordsRepository,
     sessions: JsonStore[SessionManifest],
     *,
     directory_path: str | None = None,

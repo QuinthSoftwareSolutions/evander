@@ -32,9 +32,10 @@ from .models import (
     TeamsMessageEnvelope,
 )
 from .discord_inbox_store import DiscordInboxStore
+from .cursor_repositories import DiscordInboxCursorRepository
 from .pr_feedback_worker import PrFeedbackRepository, PrFeedbackStore, _stream_key
 from .email.providers import EmailDraft, EmailMessageDetail, EmailMessageSummary, EmailProvider
-from .storage import JsonStore
+from .records_repository import DiscordRecordsRepository, TeamsRecordsRepository
 
 _IGNORED_FEEDBACK_RETENTION = timedelta(days=90)
 _FENCED_CODE_BLOCK_RE = re.compile(r"```[^\n`]*\n?(.*?)```", re.DOTALL)
@@ -315,7 +316,7 @@ class TeamsTarget:
 class StubDiscordService:
     def __init__(
         self,
-        command_store: JsonStore[DiscordCommandEnvelope],
+        command_store: DiscordRecordsRepository,
         *,
         read_reaction_emoji: str = "👀",
     ) -> None:
@@ -374,7 +375,7 @@ class StubDiscordService:
 class DiscordBotApiService:
     def __init__(
         self,
-        command_store: JsonStore[DiscordCommandEnvelope],
+        command_store: DiscordRecordsRepository,
         *,
         token: str,
         api_base_url: str,
@@ -754,7 +755,7 @@ def teams_target_from_message(
 class StubTeamsService:
     def __init__(
         self,
-        message_store: JsonStore[TeamsMessageEnvelope],
+        message_store: TeamsRecordsRepository,
         *,
         read_reaction_emoji: str = "👀",
     ) -> None:
@@ -850,7 +851,7 @@ class StubTeamsService:
 class GraphTeamsService:
     def __init__(
         self,
-        message_store: JsonStore[TeamsMessageEnvelope],
+        message_store: TeamsRecordsRepository,
         *,
         token: str | None = None,
         token_provider: Callable[[], str] | None = None,
@@ -1217,9 +1218,14 @@ class GraphTeamsService:
 
 
 class DiscordInboxService:
-    def __init__(self, store_path: Path) -> None:
+    def __init__(
+        self,
+        store_path: Path,
+        *,
+        repository: DiscordInboxCursorRepository | None = None,
+    ) -> None:
         self.store_path = store_path
-        self.store = DiscordInboxStore(store_path)
+        self.store: DiscordInboxCursorRepository = repository or DiscordInboxStore(store_path)
 
     def has_pending_discord_messages(
         self,
