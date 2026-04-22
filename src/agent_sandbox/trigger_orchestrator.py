@@ -34,6 +34,7 @@ from .workflow_runtime_config import (
 from .host_heartbeat_worker import _single_instance_lock
 from .orchestration.kernels import PollingKernelConfig, PollingOrchestratorKernel
 from .orchestration.wiring import TriggerWorkerWiring, build_trigger_worker_wiring
+from .orchestration_repositories import GateCursorRepository
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +85,7 @@ class TriggerOrchestratorWorker:
         self.provider_config_resolver = resolved_wiring.provider_config_resolver
         self.event_queue = resolved_wiring.event_queue
         self.provider_factory = resolved_wiring.provider_factory
+        self.cursor_repository: GateCursorRepository = resolved_wiring.gate_cursor_repository
         self._kernel = PollingOrchestratorKernel(
             config=PollingKernelConfig(
                 poll_interval_seconds=self.worker_config.poll_interval_seconds,
@@ -118,7 +120,7 @@ class TriggerOrchestratorWorker:
         providers = self._load_configured_providers(latest_config, configured_triggers)
         events_discovered = 0
         events_published = 0
-        cursor_payload = _load_cursor_payload(latest_config.event_queue_cursor_store_path)
+        cursor_payload = self.cursor_repository.load()
 
         loop = OrchestrationLoop[
             TriggerDefinitionDiscriminated,
@@ -178,7 +180,7 @@ class TriggerOrchestratorWorker:
         events_discovered = loop_result.dependencies_resolved
         events_published = loop_result.executions_recorded
 
-        _save_cursor_payload(latest_config.event_queue_cursor_store_path, cursor_payload)
+        self.cursor_repository.save(cursor_payload)
         sleep_config = previous_config if changed else latest_config
         next_sleep_seconds = _compute_next_sleep_seconds(
             poll_interval_seconds=sleep_config.poll_interval_seconds,
@@ -323,22 +325,3 @@ def _compute_backoff_sleep_seconds(*, poll_interval_seconds: float, jitter_secon
         delay += random.uniform(0.0, jitter_seconds)
     return max(1.0, delay)
 
-
-def _load_cursor_payload(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        return {}
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        logger.warning("Unable to read trigger orchestrator cursor state path=%s", path, exc_info=True)
-        return {}
-    if not isinstance(payload, dict):
-        return {}
-    return payload
-
-
-def _save_cursor_payload(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_suffix(f"{path.suffix}.tmp")
-    tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-    tmp_path.replace(path)

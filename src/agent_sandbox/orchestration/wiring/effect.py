@@ -37,6 +37,7 @@ class EffectWorkerWiring:
     event_queue: TriggerEventQueue
     lock_path: Path
     cursor_path: Path
+    effect_cursor_repository: object
     execution_store: object
     gate_execution_store: object
     queued_agent_prompt_store: AgentPromptQueueStore
@@ -59,7 +60,12 @@ def build_effect_worker_wiring(
     provider_config_resolver: ProviderConfigResolver | None = None,
     include_default_domain_handlers: bool = True,
 ) -> EffectWorkerWiring:
-    from ...effect_orchestrator import JsonExecutionStore, JsonGateExecutionStore, _resolve_worker_path
+    from ...effect_orchestrator import (
+        JsonExecutionStore,
+        JsonGateExecutionStore,
+        _resolve_worker_path,
+        build_effect_cursor_repository,
+    )
 
     runtime_provider_resolver = getattr(runtime, "provider_config", None)
     resolver = provider_config_resolver or runtime_provider_resolver or ProviderConfigResolver(config)
@@ -78,6 +84,7 @@ def build_effect_worker_wiring(
         "gate_cursor_store_path",
         fallback=worker_config.effect_cursor_store_path or (worker_config.runtime_dir / "effect-orchestrator-cursors.json"),
     )
+    effect_cursor_repository = build_effect_cursor_repository(cursor_path)
     execution_store = JsonExecutionStore(
         worker_config.effect_execution_store_path,
         journal_path=worker_config.workflow_event_journal_path,
@@ -142,6 +149,7 @@ def build_effect_worker_wiring(
         event_queue=event_queue,
         lock_path=lock_path,
         cursor_path=cursor_path,
+        effect_cursor_repository=effect_cursor_repository,
         execution_store=execution_store,
         gate_execution_store=gate_execution_store,
         queued_agent_prompt_store=queued_agent_prompt_store,
