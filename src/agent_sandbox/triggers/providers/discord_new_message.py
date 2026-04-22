@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from agent_sandbox.discord_inbox_store import DiscordInboxStore
+from agent_sandbox.cursor_repositories import JsonDiscordInboxCursorRepository
 from agent_sandbox.models import DiscordMessageEnvelope
 from agent_sandbox.events.models import TriggerEvent
 from agent_sandbox.events.provider_models import DiscordNewMessageTriggerDefinition
@@ -17,7 +17,7 @@ class DiscordNewMessageTriggerProvider(TriggerProviderBase):
         state = cursor_store.get(trigger.id)
         cursor = _parse_dt(state.get("last_created_at"))
 
-        inbox_store = DiscordInboxStore(self._runtime_dir() / "discord-inbox-store.json")
+        inbox_store = JsonDiscordInboxCursorRepository(self._runtime_dir() / "discord-inbox-store.json")
         raw_messages = inbox_store.read_raw().get("messages", {})
 
         channel_filter = {value.strip() for value in trigger.channel_ids if value.strip()}
