@@ -4,12 +4,32 @@ import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Lock
-from typing import Any
+from typing import Any, Protocol
 from uuid import uuid4
 
 from .models import ScriptRunRequestRecord
 
 _SCRIPT_RUN_REQUEST_RETENTION = timedelta(days=90)
+
+
+class ScriptRunRequestRepository(Protocol):
+    """Repository contract for persisted script execution requests."""
+
+    def enqueue(
+        self,
+        *,
+        session_id: str,
+        directory_path: str,
+        script_name: str,
+        parameters: list[str],
+        request_id: str | None = None,
+        source: str = "mcp_tool",
+        metadata: dict[str, Any] | None = None,
+    ) -> ScriptRunRequestRecord: ...
+
+    def list_requests(self) -> list[ScriptRunRequestRecord]: ...
+
+    def read_raw(self) -> dict[str, Any]: ...
 
 
 class ScriptRunRequestStore:

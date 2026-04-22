@@ -38,7 +38,7 @@ from .records_repository import (
     JsonTeamsRecordsRepository,
     TeamsRecordsRepository,
 )
-from .script_run_request_store import ScriptRunRequestStore
+from .script_run_request_store import ScriptRunRequestRepository, ScriptRunRequestStore
 from .services import (
     AzureDevOpsPrReplyProvider,
     AzureDevOpsPrQueryProvider,
@@ -94,7 +94,7 @@ class RuntimeContext:
     teams_messages: TeamsRecordsRepository
     wake_store: WakeRequestRepository
     agent_prompt_store: AgentPromptStore
-    script_run_request_store: ScriptRunRequestStore
+    script_run_request_store: ScriptRunRequestRepository
 
     def resolve_provider_config_for_session(self, session_id: str) -> GatewayConfig:
         return self.provider_config.resolve_for_session_id(session_id)
