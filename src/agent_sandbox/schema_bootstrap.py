@@ -168,11 +168,14 @@ _TRIGGER_OUTPUT_SCHEMAS = {
             "type": "object",
             "properties": {
                 "vm_name": {"type": "string"},
+                "provider": {"type": "string"},
                 "issue_number": {"type": "string"},
                 "session_ids": {"type": "array", "items": {"type": "string"}},
                 "labels": {"type": "object"},
                 "directory_paths": {"type": "array", "items": {"type": "string"}},
+                "power_state": {"type": "string"},
                 "libvirt_state": {"type": "string"},
+                "provider_state": {"type": "string"},
                 "ip_address": {"type": "string"},
                 "agent_state": {"type": "string"},
                 "agent_repo_names": {"type": "array", "items": {"type": "string"}},
@@ -180,11 +183,14 @@ _TRIGGER_OUTPUT_SCHEMAS = {
             },
         },
         "vm_name": {"type": "string"},
+        "provider": {"type": "string"},
         "session_ids": {"type": "array"},
         "labels": {"type": "object"},
         "directory_paths": {"type": "array"},
         "agent_repo_names": {"type": "array"},
+        "power_state": {"type": "string"},
         "libvirt_state": {"type": "string"},
+        "provider_state": {"type": "string"},
         "agent_state": {"type": "string"},
         "previous_agent_state": {"type": "string"},
         "transition": {
@@ -220,6 +226,7 @@ _GATE_OUTPUT_SCHEMAS = {
 
 _EFFECT_OUTPUT_SCHEMAS = {
     "effect:vm:create": {
+        "provider": {"type": "string"},
         "session_id": {"type": "string"},
         "vm_name": {"type": "string"},
         "labels": {"type": "object"},
@@ -359,8 +366,11 @@ _EFFECT_OUTPUT_SCHEMAS = {
 _QUERY_OUTPUT_SCHEMAS = {
     "query:vm:run-state": {
         "vm_name": {"type": "string"},
+        "provider": {"type": "string"},
         "session_ids": {"type": "array"},
+        "power_state": {"type": "string"},
         "libvirt_state": {"type": "string"},
+        "provider_state": {"type": "string"},
         "state_code": {"type": "string"},
         "is_running": {"type": "boolean"},
         "is_terminal": {"type": "boolean"},

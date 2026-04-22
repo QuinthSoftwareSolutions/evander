@@ -1554,6 +1554,7 @@ def test_workflow_editor_validation_derives_filter_outputs_server_side(tmp_path:
 
     gate = next(item for item in result.config["gates"] if item["id"] == "gate-filter-1")
     assert gate["outputs"] == {
+        "provider": {"type": "string"},
         "session_id": {"type": "string"},
         "labels": {"type": "object"},
         "success": {"type": "boolean"},

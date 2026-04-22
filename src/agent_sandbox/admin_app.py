@@ -28,6 +28,7 @@ from .directory_config import (
     PrTemplateDirectoryConfig,
 )
 from .models import ApprovalStatus, ToolName
+from .vm_defaults_config import EffectiveVmDefaultsConfig
 ADMIN_APP_DEFAULT_RUNTIME_DIR = Path(__file__).resolve().parents[2] / "runtime"
 _ACTIVE_ISSUE_FILTER_LABEL = "Active"
 _ALL_ISSUE_FILTER_LABEL = "All"
@@ -210,6 +211,17 @@ _DIRECTORY_CONFIG_TAB_SECTIONS: dict[str, tuple[_ConfigTabSectionSpec, ...]] = {
         ),
     ),
     "vm_runtime": (
+        _ConfigTabSectionSpec(
+            "Provider",
+            (
+                ("vm", "provider"),
+                ("vm", "provider_defaults"),
+            ),
+        ),
+        _ConfigTabSectionSpec(
+            "Azure",
+            (("vm", "azure"),),
+        ),
         _ConfigTabSectionSpec(
             "Network",
             (("vm", "bind_network_cidr"),),
@@ -1161,6 +1173,7 @@ def _config_field_kind(field_name: str) -> tuple[str, tuple[Any, ...]]:
         AdoWorkerDirectoryConfig.model_fields,
         IssueSetupDirectoryConfig.model_fields,
         PrTemplateDirectoryConfig.model_fields,
+        EffectiveVmDefaultsConfig.model_fields,
     )
     annotation = None
     for model_fields in field_models:

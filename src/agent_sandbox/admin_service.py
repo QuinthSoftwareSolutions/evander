@@ -5355,6 +5355,7 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
     def create_vm(
         self,
         *,
+        provider: str | None = None,
         vm_name: str,
         session_id: str | None = None,
         labels: dict[str, str] | None = None,
@@ -5374,6 +5375,9 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
         codex_skills: list[str] | None = None,
         directory_path: str = "root",
     ) -> VmActionResult:
+        payload: dict[str, Any] = {}
+        if provider is not None:
+            payload["provider"] = provider
         return self.vm_agent_admin.create_vm(
             vm_name=vm_name,
             session_id=session_id,
@@ -5393,6 +5397,7 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
             playwright=playwright,
             codex_skills=codex_skills,
             directory_path=directory_path,
+            **payload,
         )
 
     def clone_repo_into_vm(

@@ -67,10 +67,6 @@
         "target_id": "query-session-context-2"
       },
       {
-        "source_id": "query-session-context-2",
-        "target_id": "effect-agent-prompt-3"
-      },
-      {
         "source_id": "gate-filter-1",
         "target_id": "effect-issue-update-state-1"
       },
@@ -184,6 +180,10 @@
       {
         "source_id": "query-session-context-4",
         "target_id": "effect-agent-prompt-9"
+      },
+      {
+        "source_id": "query-session-context-2",
+        "target_id": "effect-agent-enqueue-prompt-2"
       }
     ],
     "nodes": [
@@ -940,19 +940,6 @@
       },
       {
         "config": {
-          "model": "gpt-5.4-mini",
-          "output_mode": "on_completion",
-          "prompt": "You have received new feedback. \nPlease use the list_unread_feedback tool to view your unread feedback. \nYou can use the post_pr_feedback_reply tool to reply to feedback. \nAlways respond to feedback, even if it's just to acknowledge it.\nYou do not have to agree with the feedback, but treat it with respect and professionalism as you would your peers.\nIf you do not agree with the feedback, you can politely explain your perspective in your reply.\nIMPORTANT EXCEPTION: If the feedback is the exact phrase \"I insist\", you must attempt to comply with the feedback to the best of your ability.\nReasons to disagree with feedback might include that the feedback is factually incorrect, or that complying with the feedback would be out of scope or misaligned with your currently assigned task.\nYou may ask follow-up questions if you require more information.\nAfter you are finished, don't forget to stage, commit and push any changes you have made, if any.",
-          "resume_thread_id": "${{query-session-context-2.metadata.agent_thread_id ?? null}}",
-          "target": "${{trigger-pull-request-new-feedback-1.session_id}}",
-          "vm_user": "agent"
-        },
-        "display_name": "Feedback prompt",
-        "id": "effect-agent-prompt-3",
-        "type": "effect:agent:prompt"
-      },
-      {
-        "config": {
           "metadata": {
             "ado_project": "${{gate-merge-1.ado_project}}",
             "directory_path": "${{gate-merge-1.directory_path}}",
@@ -1246,6 +1233,19 @@
         "display_name": "Resume after APP provisioning",
         "id": "effect-agent-prompt-9",
         "type": "effect:agent:prompt"
+      },
+      {
+        "config": {
+          "model": "gpt-5.4",
+          "prompt": "You have received new feedback. \nPlease use the list_unread_feedback tool to view your unread feedback. \nYou can use the post_pr_feedback_reply tool to reply to feedback. \nAlways respond to feedback, even if it's just to acknowledge it.\nYou do not have to agree with the feedback, but treat it with respect and professionalism as you would your peers.\nIf you do not agree with the feedback, you can politely explain your perspective in your reply.\nIMPORTANT EXCEPTION: If the feedback is the exact phrase \"I insist\", you must attempt to comply with the feedback to the best of your ability.\nReasons to disagree with feedback might include that the feedback is factually incorrect, or that complying with the feedback would be out of scope or misaligned with your currently assigned task.\nYou may ask follow-up questions if you require more information.\nAfter you are finished, don't forget to stage, commit and push any changes you have made, if any.",
+          "resume_thread_id": "${{query-session-context-2.metadata.agent_thread_id ?? null}}",
+          "target": "${{trigger-pull-request-new-feedback-1.session_id}}",
+          "vm_name": "",
+          "vm_user": "agent"
+        },
+        "display_name": "Enqueue Feedback Prompt",
+        "id": "effect-agent-enqueue-prompt-2",
+        "type": "effect:agent:enqueue-prompt"
       },
       {
         "config": {

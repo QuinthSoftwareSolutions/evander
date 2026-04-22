@@ -128,11 +128,14 @@ def _selected_issue_state_filters(state_filter: str | None) -> tuple[set[str] | 
 def _vm_payload(summary: VmSummary) -> dict[str, Any]:
     return {
         "vm_name": summary.vm_name,
+        "provider": summary.provider,
         "issue_number": summary.issue_number,
         "session_ids": list(summary.session_ids),
         "labels": dict(summary.labels),
         "directory_paths": list(summary.directory_paths),
+        "power_state": summary.power_state,
         "libvirt_state": summary.libvirt_state,
+        "provider_state": summary.provider_state,
         "ip_address": summary.ip_address,
         "agent": {
             "state": summary.agent_state,
@@ -245,6 +248,8 @@ def _action_payload(result: VmActionResult) -> dict[str, Any]:
         "vm_name": result.vm_name,
         "action": result.action,
         "message": result.message,
+        "provider": result.provider,
+        "provider_operation_id": result.provider_operation_id,
         "thread_id": result.thread_id,
         "target_dir": result.target_dir,
         "guest_repo_name": result.guest_repo_name,

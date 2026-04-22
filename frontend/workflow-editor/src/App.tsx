@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import {
   applyEdgeChanges,
   applyNodeChanges,
@@ -139,6 +139,40 @@ const NODE_STATUS_ORDER = ["failed", "running", "waiting", "inflight", "pending"
 const SNAP_THRESHOLD = 12;
 const FALLBACK_NODE_WIDTH = 212;
 const FALLBACK_NODE_HEIGHT = 108;
+const WORKFLOW_SIDEBAR_WIDTH_STORAGE_KEY = "workflow-editor:sidebar-width";
+const WORKFLOW_SIDEBAR_DEFAULT_WIDTH = 320;
+const WORKFLOW_SIDEBAR_MIN_WIDTH = 320;
+const WORKFLOW_SIDEBAR_MAX_WIDTH = 760;
+const WORKFLOW_SIDEBAR_CANVAS_MIN_WIDTH = 420;
+const WORKFLOW_SIDEBAR_RESIZE_STEP = 32;
+const WORKFLOW_COMPACT_BREAKPOINT = 980;
+
+type SidebarResizeState = {
+  pointerId: number;
+  startX: number;
+  startWidth: number;
+};
+
+function readStoredWorkflowSidebarWidth(): number {
+  if (typeof window === "undefined") return WORKFLOW_SIDEBAR_DEFAULT_WIDTH;
+  const raw = window.localStorage.getItem(WORKFLOW_SIDEBAR_WIDTH_STORAGE_KEY);
+  if (!raw) return WORKFLOW_SIDEBAR_DEFAULT_WIDTH;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed)) return WORKFLOW_SIDEBAR_DEFAULT_WIDTH;
+  return Math.min(Math.max(parsed, WORKFLOW_SIDEBAR_MIN_WIDTH), WORKFLOW_SIDEBAR_MAX_WIDTH);
+}
+
+function maxWorkflowSidebarWidth(containerWidth: number): number {
+  return Math.max(
+    WORKFLOW_SIDEBAR_MIN_WIDTH,
+    Math.min(WORKFLOW_SIDEBAR_MAX_WIDTH, Math.floor(containerWidth - WORKFLOW_SIDEBAR_CANVAS_MIN_WIDTH)),
+  );
+}
+
+function clampWorkflowSidebarWidth(width: number, containerWidth: number): number {
+  const maxWidth = maxWorkflowSidebarWidth(containerWidth);
+  return Math.min(Math.max(width, WORKFLOW_SIDEBAR_MIN_WIDTH), maxWidth);
+}
 
 function WorkflowNodeCard({ data, selected }: NodeProps) {
   const nodeData = data as GraphNodeData;
@@ -1383,6 +1417,7 @@ export default function App() {
   const appShellRef = useRef<HTMLDivElement | null>(null);
   const hasAutoFitRef = useRef(false);
   const copiedNodeRef = useRef<WorkflowNodeConfig | null>(null);
+  const sidebarResizeRef = useRef<SidebarResizeState | null>(null);
   const [document, setDocument] = useState<WorkflowEditorDocument | null>(null);
   const [catalog, setCatalog] = useState<WorkflowEditorCatalog>(emptyCatalog());
   const [runSnapshot, setRunSnapshot] = useState<WorkflowRunSnapshot | null>(null);
@@ -1405,7 +1440,70 @@ export default function App() {
   const [snapGuides, setSnapGuides] = useState<SnapGuide[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [saveState, setSaveState] = useState<SaveState>("idle");
+  const [sidebarWidth, setSidebarWidth] = useState<number>(() => readStoredWorkflowSidebarWidth());
+  const [isResizingSidebar, setIsResizingSidebar] = useState(false);
   const editLocked = !privilegedUnlocked;
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(WORKFLOW_SIDEBAR_WIDTH_STORAGE_KEY, String(sidebarWidth));
+  }, [sidebarWidth]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const handleResize = () => {
+      if (window.innerWidth <= WORKFLOW_COMPACT_BREAKPOINT) return;
+      const containerWidth = appShellRef.current?.getBoundingClientRect().width ?? window.innerWidth;
+      setSidebarWidth((current) => clampWorkflowSidebarWidth(current, containerWidth));
+    };
+
+    handleResize();
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const handlePointerMove = (event: PointerEvent) => {
+      const resizeState = sidebarResizeRef.current;
+      if (!resizeState || event.pointerId !== resizeState.pointerId) return;
+      const containerWidth = appShellRef.current?.getBoundingClientRect().width ?? window.innerWidth;
+      const delta = event.clientX - resizeState.startX;
+      setSidebarWidth(clampWorkflowSidebarWidth(resizeState.startWidth + delta, containerWidth));
+    };
+
+    const stopResize = (event?: PointerEvent) => {
+      const resizeState = sidebarResizeRef.current;
+      if (!resizeState) return;
+      if (event && event.pointerId !== resizeState.pointerId) return;
+      sidebarResizeRef.current = null;
+      setIsResizingSidebar(false);
+    };
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", stopResize);
+    window.addEventListener("pointercancel", stopResize);
+
+    return () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", stopResize);
+      window.removeEventListener("pointercancel", stopResize);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isResizingSidebar || typeof globalThis.document === "undefined") return;
+    const previousCursor = globalThis.document.body.style.cursor;
+    const previousUserSelect = globalThis.document.body.style.userSelect;
+    globalThis.document.body.style.cursor = "col-resize";
+    globalThis.document.body.style.userSelect = "none";
+    return () => {
+      globalThis.document.body.style.cursor = previousCursor;
+      globalThis.document.body.style.userSelect = previousUserSelect;
+    };
+  }, [isResizingSidebar]);
 
   useEffect(() => {
     Promise.all([
@@ -1492,6 +1590,41 @@ export default function App() {
         delete next[normalizedEventId];
         return next;
       });
+    }
+  }
+
+  function startSidebarResize(event: ReactPointerEvent<HTMLDivElement>) {
+    if (event.button !== 0 || typeof window === "undefined" || window.innerWidth <= WORKFLOW_COMPACT_BREAKPOINT) return;
+    sidebarResizeRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startWidth: sidebarWidth,
+    };
+    setIsResizingSidebar(true);
+    event.preventDefault();
+  }
+
+  function handleSidebarResizeKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
+    if (typeof window === "undefined" || window.innerWidth <= WORKFLOW_COMPACT_BREAKPOINT) return;
+    const containerWidth = appShellRef.current?.getBoundingClientRect().width ?? window.innerWidth;
+    if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      setSidebarWidth((current) => clampWorkflowSidebarWidth(current - WORKFLOW_SIDEBAR_RESIZE_STEP, containerWidth));
+      return;
+    }
+    if (event.key === "ArrowRight") {
+      event.preventDefault();
+      setSidebarWidth((current) => clampWorkflowSidebarWidth(current + WORKFLOW_SIDEBAR_RESIZE_STEP, containerWidth));
+      return;
+    }
+    if (event.key === "Home") {
+      event.preventDefault();
+      setSidebarWidth(WORKFLOW_SIDEBAR_MIN_WIDTH);
+      return;
+    }
+    if (event.key === "End") {
+      event.preventDefault();
+      setSidebarWidth(maxWorkflowSidebarWidth(containerWidth));
     }
   }
 
@@ -2513,10 +2646,19 @@ export default function App() {
     ...group,
     entries: catalog.nodes.filter((entry) => entry.kind === group.kind),
   }));
+  const appShellStyle = {
+    "--workflow-sidebar-width": `${sidebarWidth}px`,
+  } as CSSProperties;
 
   return (
     <div className="admin-page workflow-embedded-page">
-      <div className="app-shell" ref={appShellRef} tabIndex={-1} onKeyDown={handleAppShellKeyDown}>
+      <div
+        className={`app-shell workflow-editor-shell${isResizingSidebar ? " is-resizing-sidebar" : ""}`}
+        ref={appShellRef}
+        style={appShellStyle}
+        tabIndex={-1}
+        onKeyDown={handleAppShellKeyDown}
+      >
           <aside className="sidebar">
             {editLocked ? <div className="callout warning-callout workflow-lock-callout">Unlock privileged operations to modify workflow state or clear runtime runs.</div> : null}
 
@@ -2698,6 +2840,19 @@ export default function App() {
 
             {error ? <div className="error-box">{error}</div> : null}
           </aside>
+
+          <div
+            className="workflow-sidebar-resize-handle"
+            role="separator"
+            aria-label="Resize workflow sidebar"
+            aria-orientation="vertical"
+            aria-valuemin={WORKFLOW_SIDEBAR_MIN_WIDTH}
+            aria-valuemax={maxWorkflowSidebarWidth(appShellRef.current?.getBoundingClientRect().width ?? sidebarWidth + WORKFLOW_SIDEBAR_CANVAS_MIN_WIDTH)}
+            aria-valuenow={sidebarWidth}
+            tabIndex={0}
+            onPointerDown={startSidebarResize}
+            onKeyDown={handleSidebarResizeKeyDown}
+          />
 
           <main className="canvas-shell">
             <ReactFlow

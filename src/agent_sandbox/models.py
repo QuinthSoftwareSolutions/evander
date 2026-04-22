@@ -115,6 +115,8 @@ class ApprovalStatus(str, Enum):
 class SessionManifest(BaseModel):
     session_id: str
     vm_id: str | None = None
+    vm_provider: str | None = None
+    vm_provider_id: str | None = None
     model: str | None = None
     directory_path: str = "root"
     allowed_tools: list[ToolName]
@@ -353,11 +355,14 @@ class SessionActionResult(BaseModel):
 
 class VmSummary(BaseModel):
     vm_name: str
+    provider: str = "libvirt"
     issue_number: str | None = None
     session_ids: list[str] = Field(default_factory=list)
     labels: dict[str, str] = Field(default_factory=dict)
     directory_paths: list[str] = Field(default_factory=list)
-    libvirt_state: str
+    power_state: str = Field(validation_alias=AliasChoices("power_state", "libvirt_state"))
+    provider_state: str | None = None
+    provider_details: dict[str, Any] = Field(default_factory=dict)
     ip_address: str | None = None
     agent_state: str
     agent_pid: int | None = None
@@ -365,12 +370,19 @@ class VmSummary(BaseModel):
     last_state_update_at: datetime | None = None
     dispatch_id: str | None = None
 
+    @property
+    def libvirt_state(self) -> str:
+        return self.power_state
+
 
 class VmActionResult(BaseModel):
     success: bool
     vm_name: str
     action: str
     message: str
+    provider: str = "libvirt"
+    provider_operation_id: str | None = None
+    provider_details: dict[str, Any] = Field(default_factory=dict)
     thread_id: str | None = None
     target_dir: str | None = None
     guest_repo_name: str | None = None

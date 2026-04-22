@@ -16,6 +16,7 @@ class VmCreateEffectProvider(EffectProviderBase):
             raise RuntimeError("effect:vm:create vm_creator is not available")
 
         payload = {
+            "provider": effect.provider,
             "vm_name": effect.vm_name,
             "session_id": effect.session_id,
             "labels": effect.labels,
@@ -49,6 +50,7 @@ class VmCreateEffectProvider(EffectProviderBase):
         )
 
         result = context.vm_creator.create_vm(
+            provider=self._normalize_optional_string(payload.get("provider")),
             vm_name=vm_name,
             session_id=session_id,
             labels=self._as_string_mapping(payload.get("labels")),
@@ -71,6 +73,7 @@ class VmCreateEffectProvider(EffectProviderBase):
 
         resolved_session_id = session_id or f"session-{vm_name}"
         return {
+            "provider": self._normalize_optional_string(getattr(result, "provider", None)) or self._normalize_optional_string(payload.get("provider")) or "libvirt",
             "session_id": resolved_session_id,
             "vm_name": result.vm_name or vm_name,
             "labels": self._as_string_mapping(payload.get("labels")) or {},

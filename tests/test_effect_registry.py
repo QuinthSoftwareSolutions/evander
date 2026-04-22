@@ -190,6 +190,7 @@ def test_vm_create_provider_returns_required_outputs() -> None:
     output = provider.execute()
 
     assert output == {
+        "provider": "libvirt",
         "session_id": "session-lab-vm",
         "vm_name": "lab-vm",
         "labels": {"workflow": "issue-worker", "role": "issue"},

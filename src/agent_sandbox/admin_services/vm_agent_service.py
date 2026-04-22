@@ -13,6 +13,7 @@ from typing import Any
 
 from .. import admin_service as _admin_service
 from ..models import VmActionResult, VmSummary
+from ..vm_provider import VmProviderRegistry, session_vm_provider
 
 
 @dataclass(frozen=True)
@@ -390,6 +391,21 @@ class VmAgentAdminService:
     def __init__(self, dependencies: VmAgentAdminDependencies) -> None:
         self._deps = dependencies
 
+    def _provider_registry(self) -> VmProviderRegistry:
+        dependency_view = SimpleNamespace(
+            runtime=self._deps.runtime,
+            normalize_directory_path=self._deps.normalize_directory_path,
+            resolve_vm_defaults=self._deps.resolve_vm_defaults,
+            resolve_agent_model_for_session=self._deps.resolve_agent_model_for_session,
+            get_privileged_helper=self._deps.get_privileged_helper,
+            get_use_privileged_helper=self._deps.get_use_privileged_helper,
+            direct_owned_entity_ids=getattr(self._deps.worker_admin, "_deps", SimpleNamespace()).direct_owned_entity_ids
+            if hasattr(getattr(self._deps.worker_admin, "_deps", None), "direct_owned_entity_ids")
+            else (lambda directory_path, kind="vm": set()),
+            agent_control_store=getattr(getattr(self._deps.worker_admin, "_deps", None), "agent_control_store", SimpleNamespace(status_for_vm=lambda vm_name: "enabled")),
+        )
+        return VmProviderRegistry(dependency_view)
+
     def _find_session_for_vm(self, vm_name: str) -> tuple[str | None, Any | None]:
         matches: list[tuple[str, Any]] = []
         for session_id, session in self._deps.runtime.sessions.read_all().items():
@@ -411,6 +427,15 @@ class VmAgentAdminService:
         directory_path: str | None = None,
         direct_only: bool = False,
     ) -> list[VmSummary]:
+        summaries = self._provider_registry().list_vms(
+            include_inactive=include_inactive,
+            omit_state=omit_state,
+            vm_user=vm_user,
+            directory_path=directory_path,
+            direct_only=direct_only,
+        )
+        if summaries:
+            return summaries
         return self._deps.worker_admin.list_vms(
             include_inactive=include_inactive,
             omit_state=omit_state,
@@ -518,40 +543,29 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
         return output or error or "Agent log is empty."
 
     def start_vm(self, target: str) -> VmActionResult:
-        vm_name = _admin_service._resolve_vm_name(target)
-        current_state = _admin_service._dominfo_field(vm_name, "State")
-        if current_state is None:
-            return VmActionResult(success=False, vm_name=vm_name, action="start", message=f"VM not found: {vm_name}")
-        if current_state == "running":
-            return VmActionResult(success=True, vm_name=vm_name, action="start", message=f"VM already running: {vm_name}")
-        result = _admin_service._run_virsh(["start", vm_name])
-        if result.returncode != 0:
-            stderr = (result.stderr or "").strip()
-            return VmActionResult(success=False, vm_name=vm_name, action="start", message=stderr or f"Failed to start {vm_name}")
-        return VmActionResult(success=True, vm_name=vm_name, action="start", message=f"Started VM {vm_name}")
+        sessions = self._deps.runtime.sessions.read_all()
+        provider, vm_name, session = self._provider_registry().resolve_target(
+            target=target,
+            sessions=sessions,
+            directory_path=str(getattr(sessions.get(target), "directory_path", "") or "root"),
+        )
+        directory_path = str(getattr(session, "directory_path", "") or "root")
+        return provider.start_vm(target=target, vm_name=vm_name, session=session, directory_path=directory_path)
 
     def shutdown_vm(self, target: str, *, timeout_seconds: int = 60) -> VmActionResult:
-        vm_name = _admin_service._resolve_vm_name(target)
-        current_state = _admin_service._dominfo_field(vm_name, "State")
-        if current_state is None:
-            return VmActionResult(success=False, vm_name=vm_name, action="shutdown", message=f"VM not found: {vm_name}")
-        if current_state != "running":
-            return VmActionResult(success=True, vm_name=vm_name, action="shutdown", message=f"VM already stopped: {vm_name}")
-        result = _admin_service._run_virsh(["shutdown", vm_name])
-        if result.returncode != 0:
-            stderr = (result.stderr or "").strip()
-            return VmActionResult(success=False, vm_name=vm_name, action="shutdown", message=stderr or f"Failed to request shutdown for {vm_name}")
-        deadline = time.monotonic() + timeout_seconds
-        while time.monotonic() < deadline:
-            state = _admin_service._dominfo_field(vm_name, "State")
-            if state and state != "running":
-                return VmActionResult(success=True, vm_name=vm_name, action="shutdown", message=f"Shut down VM {vm_name}")
-            time.sleep(2)
-        return VmActionResult(
-            success=False,
+        sessions = self._deps.runtime.sessions.read_all()
+        provider, vm_name, session = self._provider_registry().resolve_target(
+            target=target,
+            sessions=sessions,
+            directory_path=str(getattr(sessions.get(target), "directory_path", "") or "root"),
+        )
+        directory_path = str(getattr(session, "directory_path", "") or "root")
+        return provider.shutdown_vm(
+            target=target,
             vm_name=vm_name,
-            action="shutdown",
-            message=f"Timed out waiting for {vm_name} to shut down after {timeout_seconds}s",
+            session=session,
+            directory_path=directory_path,
+            timeout_seconds=timeout_seconds,
         )
 
     def _run_script(self, script_name: str, args: list[str], *, env: dict[str, str] | None = None) -> VmActionResult:
@@ -878,33 +892,25 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
         check: bool = True,
     ) -> dict[str, Any]:
         sessions = self._deps.runtime.sessions.read_all()
-        vm_name = _admin_service._resolve_vm_name_from_target(target, sessions)
-        vm_ip, ssh_private_key_path = _admin_service._resolve_vm_ssh_access(vm_name, vm_user)
-        remote_script = _admin_service._remote_shell_script(
+        provider, vm_name, session = self._provider_registry().resolve_target(
+            target=target,
+            sessions=sessions,
+            directory_path=str(getattr(sessions.get(target), "directory_path", "") or "root"),
+        )
+        directory_path = str(getattr(session, "directory_path", "") or "root")
+        return provider.vm_exec(
+            target=target,
+            vm_name=vm_name,
+            session=session,
+            vm_user=vm_user,
             command=command,
             working_directory=working_directory,
             environment=environment,
+            stdin=stdin,
+            timeout_seconds=timeout_seconds,
+            check=check,
+            directory_path=directory_path,
         )
-        completed = _admin_service._run_subprocess(
-            ["ssh", *_admin_service._ssh_options(vm_name, vm_ip, ssh_private_key_path), f"{vm_user}@{vm_ip}", "bash", "-s"],
-            capture_output=True,
-            text=True,
-            timeout=timeout_seconds,
-            input=f"{remote_script}{stdin or ''}",
-        )
-        stdout = completed.stdout or ""
-        stderr = completed.stderr or ""
-        success = completed.returncode == 0 or not check
-        message = (stderr or stdout).strip() or f"vm_exec exited with code {completed.returncode}"
-        return {
-            "success": success,
-            "vm_name": vm_name,
-            "action": "vm_exec",
-            "message": message,
-            "exit_code": completed.returncode,
-            "stdout": stdout,
-            "stderr": stderr,
-        }
 
     def vm_copy_files(
         self,
@@ -914,135 +920,20 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
         vm_user: str = "agent",
     ) -> dict[str, Any]:
         sessions = self._deps.runtime.sessions.read_all()
-        vm_name = _admin_service._resolve_vm_name_from_target(target, sessions)
-        vm_ip, ssh_private_key_path = _admin_service._resolve_vm_ssh_access(vm_name, vm_user)
-        copied_paths: list[str] = []
-
-        for index, file_spec in enumerate(files):
-            destination_path = str(file_spec.get("destination_path") or "").strip()
-            if not destination_path:
-                raise ValueError(f"files[{index}] destination_path is required")
-            source_path_raw = file_spec.get("source_path")
-            content_raw = file_spec.get("content")
-            if bool(source_path_raw) == bool(content_raw):
-                raise ValueError(f"files[{index}] must provide exactly one of source_path or content")
-            overwrite = bool(file_spec.get("overwrite", True))
-            mode = str(file_spec.get("mode") or "").strip()
-            parent_path = str(Path(destination_path).parent)
-            prelude = [
-                "set -euo pipefail",
-                f"mkdir -p {shlex.quote(parent_path)}",
-            ]
-            if not overwrite:
-                prelude.append(f"if [ -e {shlex.quote(destination_path)} ]; then exit 17; fi")
-            prep_script = "\n".join(prelude) + "\n"
-
-            if source_path_raw:
-                source_path = Path(str(source_path_raw)).expanduser().resolve()
-                if not source_path.exists():
-                    raise ValueError(f"files[{index}] source_path does not exist: {source_path}")
-                if source_path.is_dir():
-                    completed = _admin_service._run_subprocess(
-                        [
-                            "ssh",
-                            *_admin_service._ssh_options(vm_name, vm_ip, ssh_private_key_path),
-                            f"{vm_user}@{vm_ip}",
-                            "bash",
-                            "-s",
-                        ],
-                        capture_output=True,
-                        text=True,
-                        input=prep_script,
-                    )
-                    if completed.returncode != 0:
-                        raise RuntimeError((completed.stderr or completed.stdout or "").strip() or "remote directory prep failed")
-                    scp_result = _admin_service._run_subprocess(
-                        [
-                            "scp",
-                            "-r",
-                            *_admin_service._ssh_options(vm_name, vm_ip, ssh_private_key_path),
-                            str(source_path),
-                            f"{vm_user}@{vm_ip}:{destination_path}",
-                        ],
-                        capture_output=True,
-                        text=True,
-                    )
-                    if scp_result.returncode != 0:
-                        raise RuntimeError((scp_result.stderr or scp_result.stdout or "").strip() or "scp failed")
-                    if mode:
-                        chmod_result = _admin_service._run_subprocess(
-                            ["ssh", *_admin_service._ssh_options(vm_name, vm_ip, ssh_private_key_path), f"{vm_user}@{vm_ip}", "chmod", "-R", mode, destination_path],
-                            capture_output=True,
-                            text=True,
-                        )
-                        if chmod_result.returncode != 0:
-                            raise RuntimeError((chmod_result.stderr or chmod_result.stdout or "").strip() or "chmod failed")
-                else:
-                    completed = _admin_service._run_subprocess(
-                        [
-                            "ssh",
-                            *_admin_service._ssh_options(vm_name, vm_ip, ssh_private_key_path),
-                            f"{vm_user}@{vm_ip}",
-                            "bash",
-                            "-s",
-                        ],
-                        capture_output=True,
-                        text=True,
-                        input=prep_script,
-                    )
-                    if completed.returncode != 0:
-                        raise RuntimeError((completed.stderr or completed.stdout or "").strip() or "remote file prep failed")
-                    scp_result = _admin_service._run_subprocess(
-                        [
-                            "scp",
-                            *_admin_service._ssh_options(vm_name, vm_ip, ssh_private_key_path),
-                            str(source_path),
-                            f"{vm_user}@{vm_ip}:{destination_path}",
-                        ],
-                        capture_output=True,
-                        text=True,
-                    )
-                    if scp_result.returncode != 0:
-                        raise RuntimeError((scp_result.stderr or scp_result.stdout or "").strip() or "scp failed")
-                    if mode:
-                        chmod_result = _admin_service._run_subprocess(
-                            ["ssh", *_admin_service._ssh_options(vm_name, vm_ip, ssh_private_key_path), f"{vm_user}@{vm_ip}", "chmod", mode, destination_path],
-                            capture_output=True,
-                            text=True,
-                        )
-                        if chmod_result.returncode != 0:
-                            raise RuntimeError((chmod_result.stderr or chmod_result.stdout or "").strip() or "chmod failed")
-            else:
-                content_text = str(content_raw if content_raw is not None else "")
-                encoded_content = base64.b64encode(content_text.encode("utf-8")).decode("ascii")
-                remote_script = "\n".join(
-                    prelude
-                    + [
-                        f"python3 - <<'PY'\nimport base64\nfrom pathlib import Path\nPath({destination_path!r}).write_bytes(base64.b64decode({encoded_content!r}))\nPY"
-                    ]
-                    + ([f"chmod {shlex.quote(mode)} {shlex.quote(destination_path)}"] if mode else [])
-                ) + "\n"
-                completed = _admin_service._run_subprocess(
-                    ["ssh", *_admin_service._ssh_options(vm_name, vm_ip, ssh_private_key_path), f"{vm_user}@{vm_ip}", "bash", "-s"],
-                    capture_output=True,
-                    text=True,
-                    input=remote_script,
-                )
-                if completed.returncode != 0:
-                    if completed.returncode == 17:
-                        raise RuntimeError(f"Destination already exists: {destination_path}")
-                    raise RuntimeError((completed.stderr or completed.stdout or "").strip() or "remote content write failed")
-            copied_paths.append(destination_path)
-
-        message = f"Copied {len(copied_paths)} path(s) into {vm_name}"
-        return {
-            "success": True,
-            "vm_name": vm_name,
-            "action": "vm_copy_files",
-            "message": message,
-            "copied_count": len(copied_paths),
-            "copied_paths": copied_paths,
-        }
+        provider, vm_name, session = self._provider_registry().resolve_target(
+            target=target,
+            sessions=sessions,
+            directory_path=str(getattr(sessions.get(target), "directory_path", "") or "root"),
+        )
+        directory_path = str(getattr(session, "directory_path", "") or "root")
+        return provider.vm_copy_files(
+            target=target,
+            vm_name=vm_name,
+            session=session,
+            files=files,
+            vm_user=vm_user,
+            directory_path=directory_path,
+        )
 
     def vm_delete_files(
         self,
@@ -1053,42 +944,23 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
         recursive: bool = False,
         missing_ok: bool = True,
     ) -> dict[str, Any]:
-        if not paths:
-            raise ValueError("paths must not be empty")
         sessions = self._deps.runtime.sessions.read_all()
-        vm_name = _admin_service._resolve_vm_name_from_target(target, sessions)
-        vm_ip, ssh_private_key_path = _admin_service._resolve_vm_ssh_access(vm_name, vm_user)
-        normalized_paths: list[str] = []
-        for index, raw_path in enumerate(paths):
-            path = str(raw_path or "").strip()
-            if not path:
-                raise ValueError(f"paths[{index}] must be a non-empty string")
-            if path.startswith("~") or not path.startswith("/"):
-                raise ValueError(f"paths[{index}] must be an absolute guest path")
-            normalized_paths.append(PurePosixPath(path).as_posix())
-
-        rm_flag = "-rf" if recursive else "-f"
-        commands = ["set -euo pipefail"]
-        if not missing_ok:
-            commands.extend(f"test -e {shlex.quote(path)}" for path in normalized_paths)
-        commands.extend(f"rm {rm_flag} -- {shlex.quote(path)}" for path in normalized_paths)
-        completed = _admin_service._run_subprocess(
-            ["ssh", *_admin_service._ssh_options(vm_name, vm_ip, ssh_private_key_path), f"{vm_user}@{vm_ip}", "bash", "-s"],
-            capture_output=True,
-            text=True,
-            input="\n".join(commands) + "\n",
+        provider, vm_name, session = self._provider_registry().resolve_target(
+            target=target,
+            sessions=sessions,
+            directory_path=str(getattr(sessions.get(target), "directory_path", "") or "root"),
         )
-        if completed.returncode != 0:
-            raise RuntimeError((completed.stderr or completed.stdout or "").strip() or "remote delete failed")
-        return {
-            "success": True,
-            "vm_name": vm_name,
-            "action": "vm_delete_files",
-            "message": f"Deleted {len(normalized_paths)} path(s) from {vm_name}",
-            "deleted_count": len(normalized_paths),
-            "deleted_paths": normalized_paths,
-            "vm_user": vm_user,
-        }
+        directory_path = str(getattr(session, "directory_path", "") or "root")
+        return provider.vm_delete_files(
+            target=target,
+            vm_name=vm_name,
+            session=session,
+            paths=paths,
+            vm_user=vm_user,
+            recursive=recursive,
+            missing_ok=missing_ok,
+            directory_path=directory_path,
+        )
 
     def create_issue_vm(
         self,
@@ -1346,193 +1218,13 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
     def create_vm(
         self,
         *,
-        vm_name: str,
-        session_id: str | None = None,
-        labels: dict[str, str] | None = None,
-        model: str | None = None,
-        vm_user: str = "agent",
-        ttl_hours: int | None = None,
-        allowed_tools: list[str | Any] | None = None,
-        allowed_script_names: list[str] | None = None,
-        discord_channels: list[str] | None = None,
-        email_mailboxes: list[str] | None = None,
-        email_folders: list[str] | None = None,
-        dotnet: bool = False,
-        nuget: bool = False,
-        mssql: bool = False,
-        mssql_init_root: str | None = None,
-        playwright: bool = False,
-        codex_skills: list[str] | None = None,
-        directory_path: str = "root",
+        provider: str | None = None,
+        **kwargs: Any,
     ) -> VmActionResult:
-        resolved_vm_name = vm_name.strip()
-        if not resolved_vm_name:
-            return VmActionResult(success=False, vm_name="", action="create_vm", message="VM name is required.")
-        if _admin_service._dominfo_field(resolved_vm_name, "State") is not None:
-            return VmActionResult(
-                success=False,
-                vm_name=resolved_vm_name,
-                action="create_vm",
-                message=f"VM already exists: {resolved_vm_name}",
-            )
-
-        normalized_directory_path = self._deps.normalize_directory_path(directory_path)
-        policy = self._deps.runtime.policy_config.resolve_for_directory(normalized_directory_path)
-        resolved_session_id = session_id.strip() if session_id and session_id.strip() else _admin_service._default_vm_session_id(resolved_vm_name)
-        if self._deps.runtime.sessions.get(resolved_session_id) is not None:
-            return VmActionResult(
-                success=False,
-                vm_name=resolved_vm_name,
-                action="create_vm",
-                message=f"Session already exists: {resolved_session_id}",
-            )
-        normalized_codex_skills = [item.strip() for item in (codex_skills or []) if item and item.strip()]
-        if mssql and not os.environ.get("MSSQL_SA_PASSWORD", "").strip():
-            return VmActionResult(
-                success=False,
-                vm_name=resolved_vm_name,
-                action="create_vm",
-                message="MSSQL_SA_PASSWORD must be set when MSSQL bootstrap is enabled.",
-            )
-
-        manifest = _admin_service._build_issue_session_manifest(
-            policy=policy,
-            session_id=resolved_session_id,
-            vm_id=resolved_vm_name,
-            issue_number=None,
-            directory_path=normalized_directory_path,
-            ttl_hours=ttl_hours,
-            extra_allowed_tools=allowed_tools,
-            allowed_script_names=allowed_script_names,
-            discord_channels=discord_channels or [],
-            email_mailboxes=email_mailboxes or [],
-            email_folders=email_folders or [],
-        )
-        normalized_labels = _admin_service._normalize_session_labels(labels or {})
-        if normalized_labels:
-            manifest.metadata = dict(manifest.metadata)
-            manifest.metadata["labels"] = normalized_labels
-        normalized_model = (model or "").strip() or None
-        if normalized_model is not None:
-            manifest.model = normalized_model
-        else:
-            try:
-                manifest.model = self._deps.resolve_agent_model_for_session(manifest)
-            except ValueError:
-                manifest.model = None
-        self._deps.runtime.sessions.put(resolved_session_id, manifest)
-
-        root_dir = Path(__file__).resolve().parents[3]
-        vm_defaults = self._deps.resolve_vm_defaults(normalized_directory_path)
-        issue_setup = self._deps.resolve_issue_setup(normalized_directory_path, root_dir=root_dir)
-        setup_script = root_dir / "scripts" / "setup_vm.sh"
-        python_script = root_dir / "scripts" / "bootstrap_python_vm.sh"
-        frontend_deps_script = root_dir / "scripts" / "bootstrap_frontend_deps_vm.sh"
-        run_env = os.environ.copy()
-        run_env.update(vm_defaults.guest_environment())
-        if manifest.model:
-            run_env["AGENT_MODEL"] = manifest.model
-
-        try:
-            vm_ip: str | None = None
-            helper = self._deps.get_privileged_helper() if self._deps.get_use_privileged_helper() else None
-            if helper is not None and not helper.is_running():
-                helper.start()
-            setup_args: list[str] = []
-            if dotnet:
-                setup_args.append("--dotnet")
-            if nuget:
-                setup_args.append("--nuget")
-            if mssql:
-                setup_args.append("--mssql")
-                if mssql_init_root is not None:
-                    setup_args.extend(["--mssql-init-root", mssql_init_root])
-            if playwright:
-                setup_args.append("--playwright")
-            for skill_name in normalized_codex_skills:
-                setup_args.extend(["--codex-skill", skill_name])
-            setup_args.extend([resolved_vm_name, resolved_session_id, vm_user])
-            if helper is not None:
-                response = helper.call(
-                    "run_script",
-                    script_path=str(setup_script),
-                    args=setup_args,
-                    env=run_env,
-                )
-                message = _admin_service._combined_process_message(
-                    str(response.get("stdout") or ""),
-                    str(response.get("stderr") or ""),
-                )
-            else:
-                allowed_env_keys = (
-                    "SSH_PUBLIC_KEY_FILE",
-                    "SSH_PRIVATE_KEY_PATH",
-                    "GATEWAY_URL",
-                    "LLM_BASE_URL",
-                    "AGENT_MODEL",
-                    "NUGET_RELAY_BASE_URL",
-                    "AGENT_SANDBOX_RUNTIME_DIR",
-                    "VM_STORAGE_DIR",
-                    "SHARED_NUGET_CACHE_DIR",
-                    "SHARED_NUGET_CACHE_TAG",
-                    "SHARED_NUGET_CACHE_MODE",
-                    "RAM_MB",
-                    "VCPUS",
-                    "DISK_SIZE_GB",
-                    "VM_WAIT_IP_TIMEOUT_SECONDS",
-                    "VM_WAIT_SSH_TIMEOUT_SECONDS",
-                    "MSSQL_SA_PASSWORD",
-                )
-                launch_step = _admin_service._sudo_env_command(
-                    [str(setup_script), *setup_args],
-                    run_env,
-                    allowed_env_keys,
-                )
-                completed = _admin_service._run_subprocess(launch_step, capture_output=True, text=True, env=run_env)
-                message = _admin_service._combined_process_message(completed.stdout, completed.stderr)
-                if completed.returncode != 0 and _admin_service._can_prompt_for_privileges():
-                    launch_step = _admin_service._pkexec_env_command(
-                        [str(setup_script), *setup_args],
-                        run_env,
-                        allowed_env_keys,
-                    )
-                    completed = _admin_service._run_subprocess(launch_step, capture_output=True, text=True, env=run_env)
-                    message = _admin_service._combined_process_message(completed.stdout, completed.stderr)
-                if completed.returncode != 0:
-                    raise RuntimeError(message or f"{setup_script.name} exited with code {completed.returncode}")
-            messages: list[str] = []
-            if message:
-                messages.append(message)
-            if helper is not None:
-                vm_ip = str(helper.call("virsh_domifaddr", vm_name=resolved_vm_name).get("ip") or "")
-            else:
-                vm_ip = _admin_service._resolve_vm_ip(resolved_vm_name)
-            if vm_ip:
-                run_env["AGENT_SANDBOX_VM_IP"] = vm_ip
-        except Exception as exc:
-            preserved_vm = _admin_service._dominfo_field(resolved_vm_name, "State") is not None
-            if not preserved_vm:
-                self._deps.runtime.sessions.delete(resolved_session_id)
-            detail = f"Failed to create VM {resolved_vm_name}: {exc}"
-            if preserved_vm:
-                detail = (
-                    f"{detail}\n"
-                    f"VM {resolved_vm_name} and session {resolved_session_id} were preserved for inspection."
-                )
-            return VmActionResult(
-                success=False,
-                vm_name=resolved_vm_name,
-                action="create_vm",
-                message=detail,
-            )
-
-        summary = messages[-1] if messages else f"Created VM {resolved_vm_name}"
-        return VmActionResult(
-            success=True,
-            vm_name=resolved_vm_name,
-            action="create_vm",
-            message=summary,
-        )
+        directory_path = str(kwargs.get("directory_path") or "root")
+        resolved_provider = str(provider or self._deps.resolve_vm_defaults(directory_path).provider or "libvirt").strip() or "libvirt"
+        result = self._provider_registry().get(resolved_provider).create_vm(provider=resolved_provider, **kwargs)
+        return result
 
     def clone_repo_into_vm(
         self,

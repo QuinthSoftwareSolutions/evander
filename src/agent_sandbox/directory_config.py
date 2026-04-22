@@ -121,6 +121,9 @@ DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
     ),
     "vm": frozenset(
         {
+            "provider",
+            "provider_defaults",
+            "azure",
             "bind_network_cidr",
             "gateway_url",
             "http_target_relay_host",
@@ -306,6 +309,17 @@ def get_domain_base_config(config: GatewayConfig, domain: str) -> dict[str, Any]
                 or "AZURE_DEVOPS_PR_PAT"
             ),
         }
+    if domain == "vm":
+        return {
+            "bind_network_cidr": str(config.bind_network_cidr),
+            "gateway_url": config.gateway_url,
+            "http_target_relay_host": config.http_target_relay_host,
+            "http_target_relay_port": config.http_target_relay_port,
+            "nuget_relay_host": config.nuget_relay_host,
+            "nuget_relay_port": config.nuget_relay_port,
+            "openai_relay_host": config.openai_relay_host,
+            "openai_relay_port": config.openai_relay_port,
+        }
     if domain == "pr_template":
         return {"pr_template_markdown": ""}
     return {key: payload[key] for key in sorted(allowed_fields) if key in payload}
@@ -320,6 +334,11 @@ def validate_effective_domain_payload(domain: str, payload: dict[str, Any]) -> d
         return validated.model_dump(mode="json")
     if domain == "issue_setup":
         validated = EffectiveIssueSetupDirectoryConfig.model_validate(payload)
+        return validated.model_dump(mode="json")
+    if domain == "vm":
+        from .vm_defaults_config import EffectiveVmDefaultsConfig
+
+        validated = EffectiveVmDefaultsConfig.model_validate(payload)
         return validated.model_dump(mode="json")
     if domain == "pr_template":
         validated = PrTemplateDirectoryConfig.model_validate(payload)
@@ -463,6 +482,11 @@ class DirectoryConfigStore:
             return validated.model_dump(mode="json", include=set(payload))
         if domain == "ado_worker":
             validated = AdoWorkerDirectoryConfig.model_validate(payload)
+            return validated.model_dump(mode="json", include=set(payload))
+        if domain == "vm":
+            from .vm_defaults_config import EffectiveVmDefaultsConfig
+
+            validated = EffectiveVmDefaultsConfig.model_validate(payload)
             return validated.model_dump(mode="json", include=set(payload))
         if domain == "issue_setup":
             validated = IssueSetupDirectoryConfig.model_validate(payload)

@@ -10,6 +10,7 @@ from agent_sandbox.events.models import ConfigValue, EffectDefinition
 
 class VmCreateEffectDefinition(EffectDefinition):
     type: Literal["effect:vm:create"]
+    provider: ConfigValue | None = None
     vm_name: ConfigValue | None = None
     session_id: ConfigValue | None = None
     labels: ConfigValue | None = None

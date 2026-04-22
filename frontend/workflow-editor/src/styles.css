@@ -620,7 +620,7 @@ body {
 .admin-workflow-panel .app-shell {
   min-height: 0;
   height: 100%;
-  grid-template-columns: 320px minmax(0, 1fr);
+  grid-template-columns: var(--workflow-sidebar-width, 320px) 14px minmax(0, 1fr);
 }
 
 .admin-workflow-panel .sidebar,
@@ -648,6 +648,50 @@ body {
   padding: 1rem;
   overflow-y: auto;
   overflow-x: hidden;
+}
+
+.workflow-sidebar-resize-handle {
+  position: relative;
+  min-height: 0;
+  cursor: col-resize;
+  background: linear-gradient(180deg, rgba(95, 71, 42, 0.08) 0%, rgba(95, 71, 42, 0.04) 100%);
+}
+
+.workflow-sidebar-resize-handle::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, rgba(123, 93, 55, 0.1) 0%, rgba(123, 93, 55, 0.04) 100%);
+  opacity: 0;
+  transition: opacity 160ms ease;
+}
+
+.workflow-sidebar-resize-handle::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 4px;
+  height: 72px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgba(107, 78, 43, 0.48) 0%, rgba(107, 78, 43, 0.18) 100%);
+  transform: translate(-50%, -50%);
+  box-shadow: 0 0 0 1px rgba(255, 252, 247, 0.4);
+}
+
+.workflow-sidebar-resize-handle:hover::before,
+.workflow-editor-shell.is-resizing-sidebar .workflow-sidebar-resize-handle::before,
+.workflow-sidebar-resize-handle:focus-visible::before {
+  opacity: 1;
+}
+
+.workflow-sidebar-resize-handle:focus-visible {
+  outline: none;
+}
+
+.workflow-editor-shell.is-resizing-sidebar .canvas-shell,
+.workflow-editor-shell.is-resizing-sidebar .sidebar {
+  user-select: none;
 }
 
 .admin-workflow-panel .sidebar-section {
@@ -933,6 +977,10 @@ select {
   .admin-shell-layout,
   .app-shell {
     grid-template-columns: 1fr;
+  }
+
+  .workflow-sidebar-resize-handle {
+    display: none;
   }
 
   .admin-shell-header {
@@ -1306,6 +1354,7 @@ select {
   border: 1px solid rgba(178, 59, 26, 0.18);
   color: #8a3b1b;
   font-size: 0.82rem;
+  overflow-wrap: anywhere;
 }
 
 .runtime-run-nodes {
@@ -3455,6 +3504,19 @@ select {
 :root[data-theme="dark"] .sidebar button.danger {
   background: #8a3a36;
   color: #fff0ed;
+}
+
+:root[data-theme="dark"] .workflow-sidebar-resize-handle {
+  background: linear-gradient(180deg, rgba(143, 173, 189, 0.08) 0%, rgba(143, 173, 189, 0.03) 100%);
+}
+
+:root[data-theme="dark"] .workflow-sidebar-resize-handle::before {
+  background: linear-gradient(180deg, rgba(123, 175, 198, 0.14) 0%, rgba(123, 175, 198, 0.05) 100%);
+}
+
+:root[data-theme="dark"] .workflow-sidebar-resize-handle::after {
+  background: linear-gradient(180deg, rgba(158, 202, 221, 0.52) 0%, rgba(158, 202, 221, 0.2) 100%);
+  box-shadow: 0 0 0 1px rgba(10, 20, 27, 0.5);
 }
 
 :root[data-theme="dark"] .subtle-button {
