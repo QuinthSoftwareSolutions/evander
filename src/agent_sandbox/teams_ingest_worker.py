@@ -82,11 +82,7 @@ class TeamsIngestWorker:
 
     def run_once(self) -> TeamsIngestCycleResult:
         now = datetime.now(UTC)
-        active_sessions = [
-            session
-            for session in self.runtime.sessions.read_all().values()
-            if session.expires_at > now
-        ]
+        active_sessions = self.runtime.session_repository.list_active_sessions(now=now)
         directories = self._directories_to_scan(active_sessions)
         channel_targets_polled = 0
         for directory_path in directories:

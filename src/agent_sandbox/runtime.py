@@ -38,6 +38,7 @@ from .records_repository import (
     JsonTeamsRecordsRepository,
     TeamsRecordsRepository,
 )
+from .session_manifest_repository import JsonSessionManifestRepository, SessionManifestRepository
 from .script_run_request_store import ScriptRunRequestRepository, ScriptRunRequestStore
 from .services import (
     AzureDevOpsPrReplyProvider,
@@ -84,6 +85,7 @@ class RuntimeContext:
     pr_query_service: PrQueryService
     pr_publish_service: PrPublishService
     review_request_service: ReviewRequestService
+    session_repository: SessionManifestRepository
     sessions: JsonStore[SessionManifest]
     approvals: JsonStore[ApprovalRequest]
     directories: DirectoryStore
@@ -152,12 +154,12 @@ class RuntimeContext:
         resolved_config = self.resolve_provider_config_for_session(session_id)
         if resolved_config == self.config:
             return self.review_request_service
-        return _build_review_request_service(resolved_config, self.sessions)
+        return _build_review_request_service(resolved_config, self.session_repository)
 
     def teams_service_for_session(self, session_id: str) -> TeamsService:
         if not isinstance(self.teams_service, (StubTeamsService, GraphTeamsService)):
             return self.teams_service
-        session = self.sessions.get(session_id)
+        session = self.session_repository.get_session(session_id)
         if session is None:
             raise ValueError(f"unknown session: {session_id}")
         resolved_config = self.resolve_provider_config_for_session(session_id)
@@ -187,6 +189,7 @@ def _build_runtime_context(config: GatewayConfig) -> RuntimeContext:
         base_gateway_config=config,
     )
     sessions = JsonStore(config.session_store_path, SessionManifest)
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
     approvals = JsonStore(config.approval_store_path, ApprovalRequest)
     drafts = JsonStore(config.draft_store_path, DraftMessage)
     emails = JsonEmailRecordsRepository(config.email_store_path)
@@ -225,7 +228,8 @@ def _build_runtime_context(config: GatewayConfig) -> RuntimeContext:
         pr_reply_service=_build_pr_reply_service(root_provider_config),
         pr_query_service=_build_pr_query_service(root_provider_config),
         pr_publish_service=_build_pr_publish_service(root_provider_config),
-        review_request_service=_build_review_request_service(root_provider_config, sessions),
+        review_request_service=_build_review_request_service(root_provider_config, session_repository),
+        session_repository=session_repository,
         sessions=sessions,
         approvals=approvals,
         directories=directories,

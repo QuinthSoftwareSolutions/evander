@@ -17,12 +17,23 @@
 
 - `records_repository.py` is still mostly a thin JSON/document wrapper.
 - `cursor_repositories.py` still contains storage-shaped wrappers for email, Discord, and Teams cursor state.
-- Runtime-wide session access still mostly uses `JsonStore[SessionManifest]` directly outside the focused seams changed here.
-- Some orchestration callers still rely on compatibility methods like `read_all()` while the semantic contracts are adopted incrementally.
+- Some admin service and VM lifecycle flows still reach into `runtime.sessions` directly, especially where bulk pruning still depends on `write_all(...)`-style compatibility behavior.
+- Some orchestration and effect-provider callers still rely on compatibility methods like `read_all()` / `put()` while the semantic contracts are adopted incrementally.
+
+## Adoption progress in this pass
+
+- Session-heavy operational callers now use `SessionManifestRepository` semantics on important paths:
+  - CLI session lifecycle commands (`create-session`, `prune-sessions`, `list-sessions`, `renew-session`, `revoke-session`, `delete-session`)
+  - CLI session mutation commands (`set-session-model`, `add-tool-permission`, `revoke-tool-permission`, `attach-pr-feedback`)
+  - CLI issue-state pruning now deletes session manifests through repository lifecycle methods instead of rewriting raw session payloads
+  - `SessionAdminFacade`, `WorkerAdminFacade`, `DiscordIngestWorker`, `TeamsIngestWorker`, `IssueOrchestratorWorker`, and provider-runtime session lookup now read through the semantic repository
+- `ReviewRequestService` now depends on `SessionManifestRepository` instead of a raw `JsonStore[SessionManifest]` when resolving session-backed directory context.
+- `AgentPromptNewTriggerProvider` now discovers scoped sessions through `JsonSessionManifestRepository` instead of opening a raw `JsonStore`.
 
 ## Remaining work before SQLite
 
 - Replace direct `JsonStore` usage for sessions and other runtime state with the semantic repository contracts introduced here.
+- Migrate the remaining VM/admin service session mutation paths that still bulk-edit manifests through raw store operations.
 - Introduce typed stream/session key objects for PR feedback and inbox state so repository interfaces stop accepting ad hoc dict payloads.
 - Separate orchestration write paths from read/query paths where execution history and operational reporting need different access patterns.
 - Continue moving durable invariants into repositories only where they are genuinely persistence semantics rather than presentation/reporting logic.

@@ -99,6 +99,27 @@ class HostHeartbeatWorker:
             return
         log_decision(**kwargs)
 
+    def _session_repository(self) -> Any | None:
+        return getattr(self.runtime, "session_repository", None)
+
+    def _sessions_by_id(self) -> dict[str, Any]:
+        repository = self._session_repository()
+        if repository is not None:
+            return {session.session_id: session for session in repository.list_sessions()}
+        session_store = getattr(self.runtime, "sessions", None)
+        if session_store is None:
+            return {}
+        read_all = getattr(session_store, "read_all", None)
+        if callable(read_all):
+            return dict(read_all())
+        return {}
+
+    def _get_session(self, session_id: str) -> Any | None:
+        repository = self._session_repository()
+        if repository is not None:
+            return repository.get_session(session_id)
+        return self._sessions_by_id().get(session_id)
+
     def _root_worker_config(self) -> GatewayConfig:
         return self._resolve_worker_config_for_directory("root", source="host_heartbeat:root")
 
@@ -338,7 +359,7 @@ class HostHeartbeatWorker:
         wake_store = getattr(self.runtime, "wake_store", None)
         if wake_store is None:
             return
-        sessions_by_id = self.runtime.sessions.read_all()
+        sessions_by_id = self._sessions_by_id()
         for request in wake_store.find_due_requests(now_utc=now_utc):
             session = sessions_by_id.get(request.session_id)
             source = "scheduled_cron" if (request.schedule.cron or "").strip() else "scheduled_once"
@@ -906,16 +927,7 @@ class HostHeartbeatWorker:
         return dispatch_record
 
     def _resolve_agent_model_for_binding(self, binding: StreamSessionBinding) -> str | None:
-        session_store = getattr(self.runtime, "sessions", None)
-        session = None
-        if session_store is not None:
-            get_session = getattr(session_store, "get", None)
-            if callable(get_session):
-                session = get_session(binding.session_id)
-            else:
-                read_all = getattr(session_store, "read_all", None)
-                if callable(read_all):
-                    session = read_all().get(binding.session_id)
+        session = self._get_session(binding.session_id)
         if session is None:
             return os.environ.get("AGENT_MODEL") or None
         if not hasattr(self.runtime, "directories"):
@@ -949,7 +961,7 @@ class HostHeartbeatWorker:
         directory_path: str | None = None,
     ) -> dict[FeedbackStream, list[StreamSessionBinding]]:
         now = datetime.now(timezone.utc)
-        sessions_by_id = self.runtime.sessions.read_all()
+        sessions_by_id = self._sessions_by_id()
         stream_index: dict[tuple[str, str, str], list[StreamSessionBinding]] = {}
         scope_directory_path = DirectoryPath(segments=directory_path or "root").as_posix()
         scope_is_root = scope_directory_path == "root"
@@ -1075,7 +1087,7 @@ class HostHeartbeatWorker:
         )
 
     def _collect_pr_streams_for_session(self, binding: StreamSessionBinding) -> list[FeedbackStream]:
-        sessions_by_id = self.runtime.sessions.read_all()
+        sessions_by_id = self._sessions_by_id()
         session = sessions_by_id.get(binding.session_id)
         collected: dict[tuple[str, str, str], FeedbackStream] = {}
         if session is not None:
@@ -1114,7 +1126,7 @@ class HostHeartbeatWorker:
         scope_directory_path = DirectoryPath(segments=directory_path or "root").as_posix()
         scope_is_root = scope_directory_path == "root"
         mapped: dict[str, list[StreamSessionBinding]] = {}
-        for session in self.runtime.sessions.read_all().values():
+        for session in self._sessions_by_id().values():
             if session.expires_at <= now:
                 continue
             if not scope_is_root and not _directory_is_within_scope(session.directory_path, scope_directory_path):

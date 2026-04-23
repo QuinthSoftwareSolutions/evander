@@ -73,11 +73,7 @@ class DiscordIngestWorker:
 
     def run_once(self) -> DiscordIngestCycleResult:
         now = datetime.now(UTC)
-        active_sessions = [
-            session
-            for session in self.runtime.sessions.read_all().values()
-            if session.expires_at > now
-        ]
+        active_sessions = self.runtime.session_repository.list_active_sessions(now=now)
         directories = self._directories_to_scan(active_sessions)
         for directory_path in directories:
             routed_channels = self.runtime.policy_config.discord_inbox_routes_for_directory(directory_path)

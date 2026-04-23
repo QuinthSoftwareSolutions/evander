@@ -695,6 +695,22 @@ def _resolve_session_target(target: str, sessions: dict[str, SessionManifest]) -
     return resolved_session_id, sessions[resolved_session_id]
 
 
+def _runtime_session_repository(runtime: object) -> JsonSessionManifestRepository:
+    repository = getattr(runtime, "session_repository", None)
+    if isinstance(repository, JsonSessionManifestRepository):
+        return repository
+    config = getattr(runtime, "config", None)
+    path = getattr(config, "session_store_path", None)
+    if path is None:
+        raise RuntimeError("runtime session repository is unavailable")
+    return JsonSessionManifestRepository(path)
+
+
+def _runtime_sessions_by_id(runtime: object) -> dict[str, SessionManifest]:
+    repository = _runtime_session_repository(runtime)
+    return {session.session_id: session for session in repository.list_sessions()}
+
+
 def _session_sort_key(item: tuple[str, SessionManifest]) -> tuple[datetime, datetime, str]:
     session_id, manifest = item
     return (manifest.created_at, manifest.expires_at, session_id)
@@ -1629,7 +1645,7 @@ def create_session(
             manifest.model = None
     if manifest.email_send_enabled:
         manifest.allowed_tools.append(ToolName.EMAIL_SEND_APPROVED)
-    runtime.sessions.put(session_id, manifest)
+    _runtime_session_repository(runtime).upsert_session(manifest)
     typer.echo(f"Created session manifest {session_id}")
 
 
@@ -1651,7 +1667,8 @@ def prune_sessions(
     cfg = _load_runtime_config_from_option(config)
     runtime = build_runtime(cfg)
     policy = runtime.policy_config.resolve_for_directory("root")
-    sessions = runtime.sessions.read_all()
+    session_repository = _runtime_session_repository(runtime)
+    sessions = {session.session_id: session for session in session_repository.list_sessions()}
     now = datetime.now(UTC)
 
     if expired_only:
@@ -1664,7 +1681,7 @@ def prune_sessions(
         keys_to_delete = list(sessions.keys())
 
     for session_id in keys_to_delete:
-        runtime.sessions.delete(session_id)
+        session_repository.delete_session(session_id)
 
     mode = "expired" if expired_only else "all"
     typer.echo(f"Pruned {len(keys_to_delete)} {mode} session(s)")
@@ -1691,7 +1708,7 @@ def list_sessions(
 
     cfg = _load_runtime_config_from_option(config)
     runtime = build_runtime(cfg)
-    sessions = runtime.sessions.read_all()
+    sessions = _runtime_sessions_by_id(runtime)
     now = datetime.now(UTC)
 
     selected: list[tuple[str, SessionManifest]] = []
@@ -1736,13 +1753,14 @@ def renew_session(
 ) -> None:
     cfg = _load_runtime_config_from_option(config)
     runtime = build_runtime(cfg)
-    sessions = runtime.sessions.read_all()
+    session_repository = _runtime_session_repository(runtime)
+    sessions = {session.session_id: session for session in session_repository.list_sessions()}
     session_id, manifest = _resolve_session_target(target, sessions)
     duration = _parse_session_extension(extension)
     base_time = datetime.now(UTC)
     previous_expires_at = manifest.expires_at
     manifest.expires_at = base_time + duration
-    runtime.sessions.put(session_id, manifest)
+    session_repository.upsert_session(manifest)
     typer.echo(
         f"Renewed session {session_id} "
         f"(previous_expires_at={previous_expires_at.isoformat()} "
@@ -1761,11 +1779,12 @@ def revoke_session(
 ) -> None:
     cfg = _load_runtime_config_from_option(config)
     runtime = build_runtime(cfg)
-    sessions = runtime.sessions.read_all()
+    session_repository = _runtime_session_repository(runtime)
+    sessions = {session.session_id: session for session in session_repository.list_sessions()}
     session_id, manifest = _resolve_session_target(target, sessions)
     previous_expires_at = manifest.expires_at
     manifest.expires_at = datetime.now(UTC)
-    runtime.sessions.put(session_id, manifest)
+    session_repository.upsert_session(manifest)
     typer.echo(
         f"Revoked session {session_id} "
         f"(previous_expires_at={previous_expires_at.isoformat()} "
@@ -1784,9 +1803,9 @@ def delete_session(
 ) -> None:
     cfg = _load_runtime_config_from_option(config)
     runtime = build_runtime(cfg)
-    sessions = runtime.sessions.read_all()
+    sessions = _runtime_sessions_by_id(runtime)
     session_id, _ = _resolve_session_target(target, sessions)
-    runtime.sessions.delete(session_id)
+    _runtime_session_repository(runtime).delete_session(session_id)
     typer.echo(f"Deleted session {session_id}")
 
 
@@ -1800,7 +1819,8 @@ def delete_expired_sessions(
 ) -> None:
     cfg = _load_runtime_config_from_option(config)
     runtime = build_runtime(cfg)
-    sessions = runtime.sessions.read_all()
+    session_repository = _runtime_session_repository(runtime)
+    sessions = {session.session_id: session for session in session_repository.list_sessions()}
     now = datetime.now(UTC)
     expired_session_ids = [
         session_id
@@ -1808,7 +1828,7 @@ def delete_expired_sessions(
         if session.expires_at <= now
     ]
     for session_id in expired_session_ids:
-        runtime.sessions.delete(session_id)
+        session_repository.delete_session(session_id)
     typer.echo(f"Deleted {len(expired_session_ids)} expired session(s)")
 
 
@@ -1840,13 +1860,12 @@ def destroy_issue_vm(
     cfg = _load_runtime_config_from_option(config)
     runtime = build_runtime(cfg)
 
-    sessions = runtime.sessions.read_all()
+    session_repository = _runtime_session_repository(runtime)
+    sessions = {session.session_id: session for session in session_repository.list_sessions()}
     session_ids = _matching_issue_session_ids(issue_number, sessions)
     if session_ids:
-        remaining_sessions = {
-            session_id: manifest for session_id, manifest in sessions.items() if session_id not in session_ids
-        }
-        runtime.sessions.write_all(remaining_sessions)
+        for session_id in session_ids:
+            session_repository.delete_session(session_id)
     removed_approvals = _prune_approvals_for_sessions(runtime, session_ids=session_ids)
 
     removed_pr_map_entries, removed_streams = _prune_pr_map(cfg.pr_map_path, session_ids=session_ids)
@@ -1895,7 +1914,8 @@ def prune_orphaned_issue_state(
     }
     root_dir = Path(__file__).resolve().parents[2]
 
-    sessions = runtime.sessions.read_all()
+    session_repository = _runtime_session_repository(runtime)
+    sessions = {session.session_id: session for session in session_repository.list_sessions()}
     orphan_session_ids = {
         session_id
         for session_id, session in sessions.items()
@@ -1925,9 +1945,8 @@ def prune_orphaned_issue_state(
 
     session_streams = _session_streams_for_session_ids(sessions, session_ids=orphan_session_ids)
     if orphan_session_ids:
-        runtime.sessions.write_all(
-            {session_id: manifest for session_id, manifest in sessions.items() if session_id not in orphan_session_ids}
-        )
+        for session_id in orphan_session_ids:
+            session_repository.delete_session(session_id)
     removed_approvals = _prune_approvals_for_sessions(runtime, session_ids=orphan_session_ids)
 
     removed_pr_map_entries_a, removed_pr_map_streams_a = _prune_pr_map(
@@ -2316,7 +2335,11 @@ def logs(
 
 def _set_agent_control_state(target: str, *, action: str, vm_user: str, config: Path) -> None:
     normalized = target.strip()
-    cfg = _load_runtime_config_from_option(config)
+    try:
+        cfg = _load_runtime_config_from_option(config)
+    except ValueError:
+        runtime_dir, _ = _bootstrap_inputs(config)
+        cfg = GatewayConfig(runtime_dir=runtime_dir)
     script_path = Path(__file__).resolve().parents[2] / "scripts" / "set_issue_agent_state.sh"
     if normalized.isdigit() or (normalized.startswith("vm-") and normalized[3:].isdigit()):
         issue_number = _resolve_issue_number_or_raise(target)
@@ -2753,10 +2776,11 @@ def set_session_model(
         raise typer.BadParameter("Use either --model or --clear, not both.")
     cfg = _load_runtime_config_from_option(config)
     runtime = build_runtime(cfg)
-    sessions = runtime.sessions.read_all()
+    session_repository = _runtime_session_repository(runtime)
+    sessions = {session.session_id: session for session in session_repository.list_sessions()}
     session_id, manifest = _resolve_session_target(target, sessions)
     manifest.model = None if clear else model.strip()
-    runtime.sessions.put(session_id, manifest)
+    session_repository.upsert_session(manifest)
     if clear:
         typer.echo(f"Cleared model override for session {session_id}")
         return
@@ -2775,14 +2799,15 @@ def add_tool_permission(
 ) -> None:
     cfg = _load_runtime_config_from_option(config)
     runtime = build_runtime(cfg)
-    sessions = runtime.sessions.read_all()
+    session_repository = _runtime_session_repository(runtime)
+    sessions = {session.session_id: session for session in session_repository.list_sessions()}
     session_id, manifest = _resolve_session_target(target, sessions)
     if tool in manifest.allowed_tools:
         typer.echo(f"Tool permission {tool.value} already present on session {session_id}")
         return
 
     manifest.allowed_tools.append(tool)
-    runtime.sessions.put(session_id, manifest)
+    session_repository.upsert_session(manifest)
     typer.echo(f"Added tool permission {tool.value} to session {session_id}")
 
 
@@ -2798,14 +2823,15 @@ def revoke_tool_permission(
 ) -> None:
     cfg = _load_runtime_config_from_option(config)
     runtime = build_runtime(cfg)
-    sessions = runtime.sessions.read_all()
+    session_repository = _runtime_session_repository(runtime)
+    sessions = {session.session_id: session for session in session_repository.list_sessions()}
     session_id, manifest = _resolve_session_target(target, sessions)
     if tool not in manifest.allowed_tools:
         typer.echo(f"Tool permission {tool.value} not present on session {session_id}")
         return
 
     manifest.allowed_tools.remove(tool)
-    runtime.sessions.put(session_id, manifest)
+    session_repository.upsert_session(manifest)
     typer.echo(f"Revoked tool permission {tool.value} from session {session_id}")
 
 
@@ -2823,7 +2849,8 @@ def attach_pr_feedback(
 ) -> None:
     cfg = _load_runtime_config_from_option(config)
     runtime = build_runtime(cfg)
-    manifest = runtime.sessions.get(session_id)
+    session_repository = _runtime_session_repository(runtime)
+    manifest = session_repository.get_session(session_id)
     if manifest is None:
         raise typer.BadParameter(f"Unknown session: {session_id}")
 
@@ -2854,7 +2881,7 @@ def attach_pr_feedback(
         if tool not in manifest.allowed_tools:
             manifest.allowed_tools.append(tool)
 
-    runtime.sessions.put(session_id, manifest)
+    session_repository.upsert_session(manifest)
     typer.echo(
         f"Attached PR feedback stream {stream['provider']}:{stream['repo']}:{stream['pr_id']} "
         f"to session {session_id}"

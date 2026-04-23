@@ -43,7 +43,10 @@ class AdminServiceProviderAdapter:
         return self._admin_service.vm_delete_files(**kwargs)
 
     def read_all_sessions(self) -> Mapping[str, Any]:
-        return self._admin_service.runtime.sessions.read_all()
+        return {
+            session.session_id: session
+            for session in self._admin_service.runtime.session_repository.list_sessions()
+        }
 
     def update_issue(self, issue_id: str, **kwargs: Any) -> Any:
         return self._admin_service.update_issue(issue_id, **kwargs)
