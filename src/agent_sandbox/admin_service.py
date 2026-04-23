@@ -49,6 +49,7 @@ from .ownership import DirectoryOwnershipQueries
 from .policy_config import EffectivePolicyConfig
 from .pr_feedback_worker import PrFeedbackStore
 from .provider_config import ProviderConfigResolver
+from .session_manifest_repository import as_session_manifest_repository
 from .issue_service import IssueService
 from .vm_defaults_config import EffectiveVmDefaultsConfig, VmDefaultsConfigResolver
 from .models import (
@@ -185,7 +186,7 @@ def resolve_effective_issue_setup_config(
     provider_config = ProviderConfigResolver(
         config,
         directory_store=runtime.directories,
-        session_store=runtime.sessions,
+        session_store=as_session_manifest_repository(getattr(runtime, "session_repository", runtime.sessions)),
     ).resolve_for_directory(directory_path)
     provider_pat_env = provider_config.azure_devops_pr_pat_env.strip() or "AZURE_DEVOPS_PR_PAT"
     issue_setup_pat_env_raw = effective.get("issue_setup_azure_devops_pr_pat_env")
@@ -2495,7 +2496,7 @@ class AdminService:
         )
         self.directory_ownership = DirectoryOwnershipQueries(
             directories=self.directory_admin._directories,
-            sessions=self.runtime.sessions,
+            sessions=self.runtime.session_repository,
             pr_map_path=self.config.pr_map_path,
             ado_processed_store_path=self.config.runtime_dir / "ado-processed-work-items.json",
         )
@@ -2503,7 +2504,7 @@ class AdminService:
             ProviderConfigResolver(
                 self.config,
                 directory_store=self.runtime.directories,
-                session_store=self.runtime.sessions,
+                session_store=self.runtime.session_repository,
             )
         )
         self.session_admin = SessionAdminFacade(
@@ -2768,7 +2769,7 @@ class AdminService:
 
     def _session_ids_by_vm(self) -> dict[str, list[str]]:
         mapping: dict[str, list[str]] = {}
-        for session_id, session in self.runtime.sessions.read_all().items():
+        for session_id, session in self.runtime.session_repository.read_all().items():
             if session.vm_id:
                 mapping.setdefault(session.vm_id, []).append(session_id)
         for session_ids in mapping.values():
@@ -2777,14 +2778,14 @@ class AdminService:
 
     def _directory_paths_by_vm(self) -> dict[str, list[str]]:
         mapping: dict[str, set[str]] = {}
-        for session in self.runtime.sessions.read_all().values():
+        for session in self.runtime.session_repository.list_sessions():
             if session.vm_id:
                 mapping.setdefault(session.vm_id, set()).add(session.directory_path)
         return {vm_id: sorted(paths) for vm_id, paths in mapping.items()}
 
     def _labels_by_vm(self) -> dict[str, dict[str, str]]:
         mapping: dict[str, dict[str, str] | None] = {}
-        sessions = self.runtime.sessions.read_all()
+        sessions = self.runtime.session_repository.read_all()
         for session_id in sorted(sessions):
             session = sessions[session_id]
             if not session.vm_id:
@@ -2817,7 +2818,7 @@ class AdminService:
         resolver = VmDefaultsConfigResolver(
             self.config,
             directory_store=self.runtime.directories,
-            session_store=self.runtime.sessions,
+            session_store=self.runtime.session_repository,
         )
         return resolver.resolve_for_directory(directory_path)
 
@@ -2839,7 +2840,7 @@ class AdminService:
                 raise ValueError(
                     "Cannot resolve AGENT_MODEL: missing session id. Provide a valid session id or SessionManifest."
                 )
-            session = self.runtime.sessions.get(session_id)
+            session = self.runtime.session_repository.get_session(session_id)
             if session is None:
                 raise ValueError(
                     f"Cannot resolve AGENT_MODEL for session '{session_id}': session not found. "
@@ -2849,9 +2850,10 @@ class AdminService:
         return resolve_agent_model_for_manifest(session, issue_setup=issue_setup)
 
     def resolve_agent_model_for_target(self, target: str) -> str:
-        sessions = self.runtime.sessions.read_all()
-        resolved_session_id, _ = _resolve_session_target(target, sessions)
-        return self._resolve_agent_model_for_session(resolved_session_id)
+        session = self.runtime.session_repository.resolve_session_target(target)
+        if session is None:
+            raise ValueError(f"Unknown session target: {target}")
+        return self._resolve_agent_model_for_session(session.session_id)
 
     def _build_setup_issue_vm_invocation(
         self,
@@ -3684,7 +3686,7 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
         )
 
     def _refresh_approval_request(self, request: ApprovalRequest) -> ApprovalRequest:
-        session = self.runtime.sessions.get(request.session_id)
+        session = self.runtime.session_repository.get_session(request.session_id)
         mutated = False
         if not request.directory_path and session is not None:
             request.directory_path = session.directory_path

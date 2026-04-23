@@ -15,6 +15,7 @@ from .models import (
 )
 from .services import normalize_teams_target, teams_target_from_message
 from .policy_config import EffectivePolicyConfig, PolicyConfigResolver
+from .session_manifest_repository import SessionManifestRepository, as_session_manifest_repository
 from .storage import JsonStore
 
 
@@ -40,13 +41,13 @@ class PolicyEngine:
     def __init__(
         self,
         config: GatewayConfig,
-        session_store: JsonStore[SessionManifest],
+        session_store: SessionManifestRepository,
         approval_store: JsonStore[ApprovalRequest],
         *,
         policy_config: PolicyConfigResolver | None = None,
     ) -> None:
         self.config = config
-        self.session_store = session_store
+        self.session_store = as_session_manifest_repository(session_store)
         self.approval_store = approval_store
         self.policy_config = policy_config or PolicyConfigResolver(
             config,
@@ -54,7 +55,7 @@ class PolicyEngine:
         )
 
     def get_session(self, session_id: str) -> SessionManifest:
-        session = self.session_store.get(session_id)
+        session = self.session_store.get_session(session_id)
         if session is None:
             raise PolicyError(f"Unknown session: {session_id}")
         if session.expires_at <= datetime.now(UTC):
@@ -320,7 +321,7 @@ class PolicyEngine:
         request = self.approval_store.get(request_id)
         if request is None:
             raise PolicyError(f"Unknown approval request: {request_id}")
-        session = self.session_store.get(request.session_id)
+        session = self.session_store.get_session(request.session_id)
         if session is not None:
             redacted_payload = _redact_nested_payload(
                 self.effective_policy_for_session(session).redacted_keys,

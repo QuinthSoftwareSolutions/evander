@@ -29,6 +29,7 @@ from .pr_feedback_worker import (
     build_pr_feedback_worker,
 )
 from .runtime import RuntimeContext, build_runtime
+from .session_manifest_repository import as_session_manifest_repository
 from .wake_store import WakeRequestRepository
 from .worker_directory_context import WorkerDirectoryContextResolver, log_shadow_context
 from .models import DirectoryPath, WakeDispatchRecord, WakeResumePromptPayload, WakeScheduledRequest
@@ -1459,7 +1460,7 @@ def build_host_heartbeat_worker(config: GatewayConfig, *, project_dir: Path | No
     provider_config_resolver = ProviderConfigResolver(
         effective_config,
         directory_store=runtime.directories,
-        session_store=runtime.sessions,
+        session_store=as_session_manifest_repository(getattr(runtime, "session_repository", runtime.sessions)),
     )
     root_provider_config = provider_config_resolver.resolve_for_directory("root")
     github_token = os.environ.get(root_provider_config.github_token_env, "").strip()

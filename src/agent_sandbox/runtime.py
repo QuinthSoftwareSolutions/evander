@@ -38,7 +38,11 @@ from .records_repository import (
     JsonTeamsRecordsRepository,
     TeamsRecordsRepository,
 )
-from .session_manifest_repository import JsonSessionManifestRepository, SessionManifestRepository
+from .session_manifest_repository import (
+    JsonSessionManifestRepository,
+    SessionManifestRepository,
+    as_session_manifest_repository,
+)
 from .script_run_request_store import ScriptRunRequestRepository, ScriptRunRequestStore
 from .services import (
     AzureDevOpsPrReplyProvider,
@@ -116,7 +120,7 @@ class RuntimeContext:
         return _build_discord_service(
             resolved_config,
             self.discord_commands,
-            self.sessions,
+            self.session_repository,
             self.policy_config,
             session_id=session_id,
         )
@@ -168,10 +172,10 @@ class RuntimeContext:
         return _build_teams_service(
             resolved_config,
             self.teams_messages,
-            self.sessions,
+            self.session_repository,
             directory_path=session.directory_path,
             allowed_channel_targets_provider=lambda: _resolve_allowed_teams_channel_targets_for_session(
-                self.sessions,
+                self.session_repository,
                 session_id,
             ),
         )
@@ -194,8 +198,8 @@ def _build_runtime_context(config: GatewayConfig) -> RuntimeContext:
     drafts = JsonStore(config.draft_store_path, DraftMessage)
     emails = JsonEmailRecordsRepository(config.email_store_path)
     email_cursors = JsonEmailCursorRepository(config.email_cursor_store_path)
-    policy_config = PolicyConfigResolver(config, directory_store=directories, session_store=sessions)
-    provider_config = ProviderConfigResolver(config, directory_store=directories, session_store=sessions)
+    policy_config = PolicyConfigResolver(config, directory_store=directories, session_store=session_repository)
+    provider_config = ProviderConfigResolver(config, directory_store=directories, session_store=session_repository)
     discord_commands = JsonDiscordRecordsRepository(config.discord_command_store_path)
     teams_messages = JsonTeamsRecordsRepository(config.teams_message_store_path)
     discord_inbox_service = DiscordInboxService(config.runtime_dir / "discord-inbox-store.json")
@@ -203,11 +207,11 @@ def _build_runtime_context(config: GatewayConfig) -> RuntimeContext:
     agent_prompt_store = AgentPromptStore(config.runtime_dir / "agent-prompt-store.json")
     script_run_request_store = ScriptRunRequestStore(config.runtime_dir / "script-run-requests-store.json")
     root_provider_config = provider_config.resolve_for_directory("root")
-    discord_service = _build_discord_service(root_provider_config, discord_commands, sessions, policy_config)
+    discord_service = _build_discord_service(root_provider_config, discord_commands, session_repository, policy_config)
     teams_service = _build_teams_service(
         root_provider_config,
         teams_messages,
-        sessions,
+        session_repository,
         directory_path="root",
     )
 
@@ -216,7 +220,7 @@ def _build_runtime_context(config: GatewayConfig) -> RuntimeContext:
         policy_config=policy_config,
         provider_config=provider_config,
         audit=AuditLogger(config.audit_log_path),
-        policy=PolicyEngine(config, sessions, approvals, policy_config=policy_config),
+        policy=PolicyEngine(config, session_repository, approvals, policy_config=policy_config),
         email_service=EmailService(_build_email_provider(root_provider_config, emails, drafts, email_cursors)),
         discord_service=discord_service,
         teams_service=teams_service,
@@ -312,7 +316,7 @@ def _validate_mailbox_access_token_env_var(mailbox: MailboxConfig) -> None:
 def _build_discord_service(
     config: GatewayConfig,
     command_store: DiscordRecordsRepository,
-    sessions: JsonStore[SessionManifest],
+    sessions: SessionManifestRepository,
     policy_config: PolicyConfigResolver,
     *,
     session_id: str | None = None,
@@ -369,7 +373,7 @@ def _build_discord_service(
 def _build_teams_service(
     config: GatewayConfig,
     message_store: TeamsRecordsRepository,
-    sessions: JsonStore[SessionManifest],
+    sessions: SessionManifestRepository,
     *,
     directory_path: str | None = None,
     allowed_channel_targets_provider: Callable[[], list[str]] | None = None,
@@ -506,16 +510,17 @@ def _build_pr_query_service(config: GatewayConfig) -> PrQueryService:
 
 
 def _resolve_allowed_discord_channel_ids(
-    session_store: JsonStore[SessionManifest],
+    session_store: SessionManifestRepository,
     config: GatewayConfig,
     *,
     policy_config: PolicyConfigResolver | None = None,
     session_id: str | None = None,
 ) -> list[str]:
+    session_store = as_session_manifest_repository(session_store)
     if session_id is not None:
         if policy_config is not None:
             return policy_config.allowed_discord_channel_ids_for_session_id(session_id)
-        session = session_store.get(session_id)
+        session = session_store.get_session(session_id)
         if session is None:
             raise ValueError(f"unknown session: {session_id}")
         channel_ids = set(config.discord_operator_channel_allowlist)
@@ -529,9 +534,7 @@ def _resolve_allowed_discord_channel_ids(
         channel_ids.update(config.discord_operator_channel_allowlist)
     else:
         channel_ids.update(policy_config.allowed_discord_channel_ids_for_active_sessions())
-    for session in session_store.read_all().values():
-        if session.expires_at <= now:
-            continue
+    for session in session_store.list_active_sessions(now=now):
         if ToolName.DISCORD_GET_COMMANDS not in session.allowed_tools:
             continue
         channel_ids.update(session.discord_channel_allowlist)
@@ -539,13 +542,12 @@ def _resolve_allowed_discord_channel_ids(
 
 
 def _resolve_allowed_teams_channel_targets(
-    session_store: JsonStore[SessionManifest],
+    session_store: SessionManifestRepository,
 ) -> list[str]:
+    session_store = as_session_manifest_repository(session_store)
     now = datetime.now(UTC)
     targets: set[str] = set()
-    for session in session_store.read_all().values():
-        if session.expires_at <= now:
-            continue
+    for session in session_store.list_active_sessions(now=now):
         if ToolName.TEAMS_GET_MESSAGES not in session.allowed_tools:
             continue
         targets.update(session.teams_channel_allowlist)
@@ -553,10 +555,11 @@ def _resolve_allowed_teams_channel_targets(
 
 
 def _resolve_allowed_teams_channel_targets_for_session(
-    session_store: JsonStore[SessionManifest],
+    session_store: SessionManifestRepository,
     session_id: str,
 ) -> list[str]:
-    session = session_store.read_all().get(session_id)
+    session_store = as_session_manifest_repository(session_store)
+    session = session_store.get_session(session_id)
     if session is None:
         return []
     if session.expires_at <= datetime.now(UTC):

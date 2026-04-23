@@ -13,6 +13,11 @@ from .directory_config import (
 )
 from .directories import DirectoryService, DirectoryStore
 from .models import SessionManifest
+from .session_manifest_repository import (
+    JsonSessionManifestRepository,
+    SessionManifestRepository,
+    as_session_manifest_repository,
+)
 from .storage import JsonStore
 
 
@@ -47,14 +52,15 @@ class ProviderConfigResolver:
         config: GatewayConfig,
         *,
         directory_store: DirectoryStore | None = None,
-        session_store: JsonStore[SessionManifest] | None = None,
+        session_store: SessionManifestRepository | JsonStore[SessionManifest] | None = None,
     ) -> None:
         self.config = config
         self.directory_store = directory_store or DirectoryStore(config.directories_store_path)
         self.directory_store.ensure_root()
         self.directory_service = DirectoryService(self.directory_store)
         self.config_store = DirectoryConfigStore(self.directory_store, runtime_dir=config.runtime_dir)
-        self.session_store = session_store or JsonStore(config.session_store_path, SessionManifest)
+        raw_session_store = session_store or JsonSessionManifestRepository(config.session_store_path)
+        self.session_store = as_session_manifest_repository(raw_session_store)
         self.resolver = DirectoryConfigResolver(
             self.directory_service,
             base_gateway_config=config,
@@ -82,7 +88,7 @@ class ProviderConfigResolver:
         return self.resolve_for_session_manifest(self.get_session_manifest(session_id))
 
     def get_session_manifest(self, session_id: str) -> SessionManifest:
-        session = self.session_store.get(session_id)
+        session = self.session_store.get_session(session_id)
         if session is None:
             raise ValueError(f"unknown session: {session_id}")
         return session

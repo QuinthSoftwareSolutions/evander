@@ -17,7 +17,7 @@ from .directories import DirectoryService, DirectoryStore
 from .policy_config import EffectivePolicyConfig
 from .models import SessionManifest
 from .vm_defaults_config import EffectiveVmDefaultsConfig
-from .storage import JsonStore
+from .session_manifest_repository import JsonSessionManifestRepository
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +57,7 @@ class WorkerDirectoryContext:
 class WorkerDirectoryContextResolver:
     def __init__(self, config: GatewayConfig) -> None:
         self.config = config
-        self.sessions = JsonStore(config.session_store_path, SessionManifest)
+        self.sessions = JsonSessionManifestRepository(config.session_store_path)
         directory_store = DirectoryStore(config.directories_store_path)
         self.directories = DirectoryService(directory_store)
         self.config_store = DirectoryConfigStore(directory_store, runtime_dir=config.runtime_dir)
@@ -74,7 +74,7 @@ class WorkerDirectoryContextResolver:
     def resolve_for_session(self, session_id: str | None, *, fallback_directory_path: str | None = None, source: str) -> WorkerDirectoryContext:
         directory_path = fallback_directory_path or "root"
         if session_id:
-            session = self.sessions.get(session_id)
+            session = self.sessions.get_session(session_id)
             if session is not None:
                 directory_path = session.directory_path
         return self.resolve_for_directory(directory_path, session_id=session_id, source=source)
@@ -88,7 +88,7 @@ class WorkerDirectoryContextResolver:
     ):
         directory_path = fallback_directory_path or "root"
         if session_id:
-            session = self.sessions.get(session_id)
+            session = self.sessions.get_session(session_id)
             if session is not None:
                 directory_path = session.directory_path
         return self.resolve_effective_domain_for_directory(directory_path, domain=domain)

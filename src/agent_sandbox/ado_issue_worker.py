@@ -1573,7 +1573,7 @@ def _ensure_issue_session_manifest(
 ) -> None:
     cfg = _worker_runtime_config(config)
     runtime = build_runtime(cfg)
-    if runtime.sessions.get(session_id) is not None:
+    if runtime.session_repository.get_session(session_id) is not None:
         return
     policy = runtime.policy_config.resolve_for_directory(directory_path)
     manifest = _build_issue_session_manifest(
@@ -1583,7 +1583,7 @@ def _ensure_issue_session_manifest(
         directory_path=directory_path,
         ttl_hours=config.session_ttl_hours,
     )
-    runtime.sessions.put(session_id, manifest)
+    runtime.session_repository.upsert_session(manifest)
 
 
 def _build_setup_command(config: WorkerConfig, yaml_path: Path, *, session_id: str) -> list[str]:

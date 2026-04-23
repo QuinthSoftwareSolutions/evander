@@ -2430,7 +2430,7 @@ def resume_agent(
     cfg = _load_runtime_config_from_option(config)
     runtime = build_runtime(cfg)
     admin = AdminService(config)
-    sessions = runtime.sessions.read_all()
+    sessions = _runtime_sessions_by_id(runtime)
     try:
         resolved_session_id, _ = _resolve_session_target(normalized, sessions)
     except typer.BadParameter as exc:
