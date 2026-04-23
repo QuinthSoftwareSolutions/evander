@@ -339,7 +339,7 @@ class HostHeartbeatWorker:
         if wake_store is None:
             return
         sessions_by_id = self.runtime.sessions.read_all()
-        for request in _load_due_wake_requests(wake_store=wake_store, now_utc=now_utc):
+        for request in wake_store.find_due_requests(now_utc=now_utc):
             session = sessions_by_id.get(request.session_id)
             source = "scheduled_cron" if (request.schedule.cron or "").strip() else "scheduled_once"
             if session is None or session.expires_at <= now_utc:
@@ -1222,26 +1222,6 @@ def _load_pr_map_entries(path: Path) -> dict[tuple[str, str, str], dict[str, Any
             continue
         entries[(provider, repo, pr_id)] = raw_entry
     return entries
-
-
-def _load_due_wake_requests(*, wake_store: WakeRequestRepository, now_utc: datetime) -> list[WakeScheduledRequest]:
-    raw_requests = wake_store.list_requests(include_disabled=False)
-    due: list[WakeScheduledRequest] = []
-    for request in raw_requests:
-        next_run_at = request.next_run_at
-        if next_run_at is None:
-            cron = (request.schedule.cron or "").strip()
-            if cron:
-                next_run_at = _next_cron_time(cron, now_utc - timedelta(minutes=1))
-                if next_run_at is not None:
-                    request.next_run_at = next_run_at
-                    request.updated_at = now_utc
-                    wake_store.upsert_request(request)
-        if next_run_at is None or next_run_at > now_utc:
-            continue
-        due.append(request)
-    due.sort(key=lambda request: request.next_run_at or request.created_at)
-    return due
 
 
 def _advance_cron_wake_request(

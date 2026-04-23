@@ -31,6 +31,49 @@ class _InMemoryFeedbackRepo:
         self.advanced.append((session_id, stream_key, cursor))
         return cursor
 
+    def list_feedback_for_streams(
+        self,
+        *,
+        streams: list[dict[str, str]],
+        after: dict[tuple[str, str, str], str | None],
+        exclude_feedback_ids: set[str] | None = None,
+        limit: int | None = None,
+    ) -> list[FeedbackEnvelope]:
+        allowed_streams = {
+            (stream["provider"], stream["repo"], stream["pr_id"])
+            for stream in streams
+        }
+        ignored = exclude_feedback_ids or set()
+        items: list[FeedbackEnvelope] = []
+        for raw_value in self.payload.get("feedback", {}).values():
+            if not isinstance(raw_value, dict):
+                continue
+            candidate = FeedbackEnvelope.model_validate(raw_value)
+            key = (candidate.provider, candidate.repo, candidate.pr_id)
+            if key not in allowed_streams or candidate.feedback_id in ignored:
+                continue
+            cursor = after.get(key)
+            if cursor and candidate.created_at <= datetime.fromisoformat(cursor.replace("Z", "+00:00")):
+                continue
+            items.append(candidate)
+        items.sort(key=lambda item: item.created_at)
+        return items[:limit] if limit is not None else items
+
+    def mark_session_streams_read(
+        self,
+        *,
+        session_id: str,
+        streams: list[dict[str, str]],
+        cursor: str | None,
+    ) -> dict[str, str | None]:
+        for stream in streams:
+            stream_key = f"{stream['provider']}:{stream['repo']}:{stream['pr_id']}"
+            self.advanced.append((session_id, stream_key, cursor))
+        return {
+            f"{stream['provider']}:{stream['repo']}:{stream['pr_id']}": cursor
+            for stream in streams
+        }
+
     def has_unread_feedback(self, *, session_id: str, streams: list[dict[str, str]]) -> bool:
         del session_id, streams
         return False

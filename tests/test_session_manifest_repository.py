@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timedelta, timezone
 
+from agent_sandbox.models import SessionManifest
 from agent_sandbox.session_manifest_repository import JsonSessionManifestRepository
 
 
@@ -45,3 +46,25 @@ def test_read_all_safe_ignores_invalid_entries(tmp_path) -> None:
     sessions = repository.read_all_safe()
 
     assert set(sessions) == {"session-1"}
+
+
+def test_session_repository_supports_lifecycle_queries_and_mutations(tmp_path) -> None:
+    path = tmp_path / "sessions.json"
+    repository = JsonSessionManifestRepository(path)
+    now = datetime.now(timezone.utc)
+
+    active_manifest = SessionManifest.model_validate(_session_payload(session_id="active-session"))
+    expired_manifest = SessionManifest.model_validate(
+        {
+            **_session_payload(session_id="expired-session"),
+            "expires_at": (now - timedelta(minutes=1)).isoformat(),
+        }
+    )
+
+    repository.upsert_session(active_manifest)
+    repository.upsert_session(expired_manifest)
+
+    assert repository.get_session("active-session") == active_manifest
+    assert [session.session_id for session in repository.list_active_sessions(now=now)] == ["active-session"]
+    assert repository.delete_session("expired-session") is True
+    assert repository.delete_session("missing-session") is False

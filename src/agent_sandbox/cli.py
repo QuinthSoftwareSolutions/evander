@@ -1364,7 +1364,7 @@ def status(config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR, as_json: Annotated[bo
 
         session_repository = JsonSessionManifestRepository(cfg.session_store_path)
         try:
-            sessions = list(session_repository.read_all().values())
+            sessions = session_repository.list_sessions()
         except (json.JSONDecodeError, ValidationError, OSError) as exc:
             report["overall"] = "degraded"
             report["sessions"] = {
@@ -1377,7 +1377,7 @@ def status(config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR, as_json: Annotated[bo
             }
         else:
             now = datetime.now(UTC)
-            active = [session for session in sessions if session.expires_at > now]
+            active = session_repository.list_active_sessions(now=now)
             expired = [session for session in sessions if session.expires_at <= now]
             next_expiration = min((session.expires_at for session in active), default=None)
             last_expiration = max((session.expires_at for session in sessions), default=None)

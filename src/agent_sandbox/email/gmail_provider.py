@@ -4,11 +4,12 @@ import base64
 import os
 from datetime import UTC, datetime
 from email.message import EmailMessage as MimeMessage
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
 
-from agent_sandbox.cursor_repositories import EmailCursorRepository
+if TYPE_CHECKING:
+    from agent_sandbox.cursor_repositories import EmailCursorRepository
 
 from .cursor_store import EmailSyncCursor
 from .http_utils import ProviderRequestError, request_with_retries
@@ -27,7 +28,7 @@ class GmailEmailProvider:
         folder_mapping: dict[str, str],
         auth_secret_refs: dict[str, str],
         timeout_seconds: float,
-        cursor_store: EmailCursorRepository | None = None,
+        cursor_store: "EmailCursorRepository | None" = None,
         api_base_url: str = "https://gmail.googleapis.com/gmail/v1",
     ) -> None:
         self.account_identifier = account_identifier

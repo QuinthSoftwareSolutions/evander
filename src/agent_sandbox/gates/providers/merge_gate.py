@@ -18,7 +18,7 @@ class MergeGateProvider(GateProviderBase):
         config_revision = kwargs["config_revision"]
         graph = kwargs["graph"]
 
-        previous = worker.gate_execution_store.find_latest_by_gate_id(gate.id)
+        previous = worker.gate_execution_store.find_latest_execution_for_gate(gate.id)
         inputs_by_source = deepcopy(previous.inputs_by_source) if previous is not None else {}
         input_event_ids_by_source = dict(previous.input_event_ids_by_source) if previous is not None else {}
         input_occurred_at_by_source = dict(previous.input_occurred_at_by_source) if previous is not None else {}

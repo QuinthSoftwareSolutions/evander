@@ -17,7 +17,7 @@ class ReviewNewRequestTriggerProvider(TriggerProviderBase):
         store = self._store()
         directory_path = self._directory_path()
         lease_owner = f"{trigger.id}:{directory_path or 'root'}"
-        claimed = store.claim_ready_requests(
+        claimed = store.claim_review_requests(
             lease_owner=lease_owner,
             lease_seconds=self._LEASE_SECONDS,
             directory_path=directory_path,

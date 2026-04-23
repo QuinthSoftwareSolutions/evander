@@ -1900,8 +1900,8 @@ def _load_ado_pr_feedback_session_bindings(
     session_directory_paths: dict[str, str] = {}
     session_vm_ids: dict[str, str] = {}
     session_repository = JsonSessionManifestRepository(runtime_dir / "sessions.json")
-    for session_id, manifest in session_repository.read_all_safe().items():
-        normalized_session_id = str(session_id).strip()
+    for manifest in session_repository.list_sessions():
+        normalized_session_id = str(manifest.session_id).strip()
         if not normalized_session_id:
             continue
         normalized_directory_path = str(manifest.directory_path or "root").strip() or "root"

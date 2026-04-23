@@ -124,6 +124,16 @@ class ReviewRequestRepository(Protocol):
         now: datetime | None = None,
     ) -> list[ReviewRequestRecord]: ...
 
+    def claim_review_requests(
+        self,
+        *,
+        lease_owner: str,
+        lease_seconds: int = 300,
+        directory_path: str | None = None,
+        limit: int | None = None,
+        now: datetime | None = None,
+    ) -> list[ReviewRequestRecord]: ...
+
     def set_status(
         self,
         request_id: str,
@@ -254,6 +264,23 @@ class ReviewRequestStore:
             self._compact_requests(payload)
             self._atomic_write(payload)
             return claimed
+
+    def claim_review_requests(
+        self,
+        *,
+        lease_owner: str,
+        lease_seconds: int = 300,
+        directory_path: str | None = None,
+        limit: int | None = None,
+        now: datetime | None = None,
+    ) -> list[ReviewRequestRecord]:
+        return self.claim_ready_requests(
+            lease_owner=lease_owner,
+            lease_seconds=lease_seconds,
+            directory_path=directory_path,
+            limit=limit,
+            now=now,
+        )
 
     def set_status(
         self,

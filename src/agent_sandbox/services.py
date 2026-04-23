@@ -1450,11 +1450,6 @@ class PrFeedbackService:
         limit: int | None,
         persist_session_cursor: bool,
     ) -> ListUnreadFeedbackResponse:
-        payload = self._read_store()
-        allowed_streams = {
-            (stream["provider"], stream["repo"], stream["pr_id"])
-            for stream in streams
-        }
         stream_cursors = {
             (stream["provider"], stream["repo"], stream["pr_id"]): self._effective_cursor(
                 session_id=session_id,
@@ -1463,37 +1458,27 @@ class PrFeedbackService:
             )
             for stream in streams
         }
-        items: list[PrFeedbackItem] = []
         ignored_feedback_ids = self._read_ignored_feedback_ids()
-        for raw_value in payload.get("feedback", {}).values():
-            if not isinstance(raw_value, dict):
-                continue
-            candidate = PrFeedbackItem.model_validate(raw_value)
-            if candidate.feedback_id in ignored_feedback_ids:
-                continue
-            key = (candidate.provider, candidate.repo, candidate.pr_id)
-            if key not in allowed_streams:
-                continue
-            effective_cursor = stream_cursors.get(key)
-            if effective_cursor and candidate.created_at <= self._parse_cursor(effective_cursor):
-                continue
-            items.append(candidate)
-
-        items.sort(key=lambda item: item.created_at)
-        if limit is not None:
-            items = items[:limit]
+        items = [
+            PrFeedbackItem.model_validate(item.model_dump(mode="json"))
+            for item in self.store.list_feedback_for_streams(
+                streams=streams,
+                after=stream_cursors,
+                exclude_feedback_ids=ignored_feedback_ids,
+                limit=limit,
+            )
+        ]
         next_cursor = (
             items[-1].created_at.isoformat().replace("+00:00", "Z")
             if items
             else self._max_cursors(stream_cursors.values())
         )
         if persist_session_cursor and session_id is not None:
-            for stream in streams:
-                self.store.advance_session_cursor(
-                    session_id,
-                    _stream_key(stream["provider"], stream["repo"], stream["pr_id"]),
-                    next_cursor if next_cursor is not None else cursor,
-                )
+            self.store.mark_session_streams_read(
+                session_id=session_id,
+                streams=streams,
+                cursor=next_cursor if next_cursor is not None else cursor,
+            )
         return ListUnreadFeedbackResponse(feedback=items, next_cursor=next_cursor)
 
     def _read_store(self) -> dict[str, Any]:

@@ -138,3 +138,38 @@ def test_compaction_removes_old_disabled_requests_and_messages(tmp_path: Path) -
     assert "wake-old" not in compacted["requests"]
     assert "dispatch-old" not in compacted["dispatches"]
     assert "wake:dispatch-old" not in compacted["messages"]
+
+
+def test_find_due_requests_advances_first_cron_run_and_sorts_results(tmp_path: Path) -> None:
+    store = WakeRequestStore(tmp_path / "wake-store.json")
+    now = datetime(2026, 4, 1, 10, 30, tzinfo=UTC)
+
+    later = store.schedule_resume_request(
+        session_id="session-2",
+        prompt="Later wake",
+        schedule=WakeScheduleDefinition(resume_at=datetime(2026, 4, 1, 10, 29, tzinfo=UTC)),
+        request_id="wake-later",
+        source="gateway-tool",
+        resume_mode="same_context",
+        enabled=True,
+        metadata={},
+    )
+    store.upsert_request(later)
+    cron = store.schedule_resume_request(
+        session_id="session-1",
+        prompt="Cron wake",
+        schedule=WakeScheduleDefinition(cron="*/15 * * * *"),
+        request_id="wake-cron",
+        source="gateway-tool",
+        resume_mode="same_context",
+        enabled=True,
+        metadata={},
+    )
+    store.upsert_request(cron)
+
+    due = store.find_due_requests(now_utc=now)
+
+    assert [request.request_id for request in due] == ["wake-later", "wake-cron"]
+    refreshed = store.get_request("wake-cron")
+    assert refreshed is not None
+    assert refreshed.next_run_at == datetime(2026, 4, 1, 10, 30, tzinfo=UTC)

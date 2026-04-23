@@ -49,6 +49,8 @@ class WakeRequestRepository(Protocol):
         include_disabled: bool = True,
     ) -> list[WakeScheduledRequest]: ...
 
+    def find_due_requests(self, *, now_utc: datetime) -> list[WakeScheduledRequest]: ...
+
     def latest_dispatch_by_request_id(self) -> dict[str, WakeDispatchRecord]: ...
 
     def read_raw(self) -> dict[str, Any]: ...
@@ -217,6 +219,25 @@ class WakeRequestStore:
                     latest[dispatch.request_id] = dispatch
             return latest
 
+    def find_due_requests(self, *, now_utc: datetime) -> list[WakeScheduledRequest]:
+        due_requests: list[WakeScheduledRequest] = []
+        for request in self.list_requests(include_disabled=False):
+            next_run_at = request.next_run_at
+            if next_run_at is None:
+                cron = (request.schedule.cron or "").strip()
+                if cron:
+                    request.next_run_at = _next_cron_time(cron, now_utc - timedelta(minutes=1))
+                    request.updated_at = now_utc
+                    self.upsert_request(request)
+                    next_run_at = request.next_run_at
+                else:
+                    next_run_at = request.schedule.resume_at
+            if next_run_at is None or next_run_at > now_utc:
+                continue
+            due_requests.append(request)
+        due_requests.sort(key=lambda request: (request.next_run_at or request.created_at, request.request_id))
+        return due_requests
+
     def _compact(self, payload: dict[str, Any]) -> None:
         cutoff = datetime.now(UTC) - _WAKE_RETENTION
 
@@ -269,3 +290,65 @@ class WakeRequestStore:
         if parsed.tzinfo is None:
             return parsed.replace(tzinfo=UTC)
         return parsed.astimezone(UTC)
+
+
+def _next_cron_time(expression: str, base: datetime) -> datetime | None:
+    fields = expression.split()
+    if len(fields) != 5:
+        return None
+    minute_values = _parse_cron_field(fields[0], 0, 59)
+    hour_values = _parse_cron_field(fields[1], 0, 23)
+    day_values = _parse_cron_field(fields[2], 1, 31)
+    month_values = _parse_cron_field(fields[3], 1, 12)
+    weekday_values = _parse_cron_field(fields[4], 0, 6)
+    if any(value is None for value in (minute_values, hour_values, day_values, month_values, weekday_values)):
+        return None
+    assert minute_values is not None
+    assert hour_values is not None
+    assert day_values is not None
+    assert month_values is not None
+    assert weekday_values is not None
+    candidate = base.astimezone(UTC).replace(second=0, microsecond=0) + timedelta(minutes=1)
+    deadline = candidate + timedelta(days=366)
+    while candidate <= deadline:
+        cron_weekday = (candidate.weekday() + 1) % 7
+        if (
+            candidate.minute in minute_values
+            and candidate.hour in hour_values
+            and candidate.day in day_values
+            and candidate.month in month_values
+            and cron_weekday in weekday_values
+        ):
+            return candidate
+        candidate += timedelta(minutes=1)
+    return None
+
+
+def _parse_cron_field(token: str, lower: int, upper: int) -> set[int] | None:
+    normalized = token.strip()
+    if not normalized:
+        return None
+    if normalized == "*":
+        return set(range(lower, upper + 1))
+    values: set[int] = set()
+    for chunk in normalized.split(","):
+        part = chunk.strip()
+        if not part:
+            return None
+        if part.startswith("*/"):
+            try:
+                step = int(part[2:])
+            except ValueError:
+                return None
+            if step <= 0:
+                return None
+            values.update(range(lower, upper + 1, step))
+            continue
+        try:
+            value = int(part)
+        except ValueError:
+            return None
+        if value < lower or value > upper:
+            return None
+        values.add(value)
+    return values

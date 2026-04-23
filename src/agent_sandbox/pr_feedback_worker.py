@@ -67,6 +67,23 @@ class PrFeedbackRepository(Protocol):
 
     def advance_session_cursor(self, session_id: str, stream_key: str, cursor: str | None) -> str | None: ...
 
+    def list_feedback_for_streams(
+        self,
+        *,
+        streams: list[dict[str, str]],
+        after: dict[tuple[str, str, str], str | None],
+        exclude_feedback_ids: set[str] | None = None,
+        limit: int | None = None,
+    ) -> list[FeedbackEnvelope]: ...
+
+    def mark_session_streams_read(
+        self,
+        *,
+        session_id: str,
+        streams: list[dict[str, str]],
+        cursor: str | None,
+    ) -> dict[str, str | None]: ...
+
     def has_unread_feedback(self, *, session_id: str, streams: list[dict[str, str]]) -> bool: ...
 
     def read_raw(self) -> dict[str, Any]: ...
@@ -171,6 +188,83 @@ class PrFeedbackStore:
                 ):
                     return True
             return False
+
+    def list_feedback_for_streams(
+        self,
+        *,
+        streams: list[dict[str, str]],
+        after: dict[tuple[str, str, str], str | None],
+        exclude_feedback_ids: set[str] | None = None,
+        limit: int | None = None,
+    ) -> list[FeedbackEnvelope]:
+        with self._lock:
+            payload = self._read_raw()
+            feedback_items = payload.get("feedback", {})
+            if not isinstance(feedback_items, dict):
+                return []
+            allowed_streams = {
+                (stream["provider"], stream["repo"], stream["pr_id"])
+                for stream in streams
+            }
+            ignored_feedback_ids = exclude_feedback_ids or set()
+            items: list[FeedbackEnvelope] = []
+            for raw_value in feedback_items.values():
+                if not isinstance(raw_value, dict):
+                    continue
+                candidate = FeedbackEnvelope.model_validate(raw_value)
+                if candidate.feedback_id in ignored_feedback_ids:
+                    continue
+                key = (candidate.provider, candidate.repo, candidate.pr_id)
+                if key not in allowed_streams:
+                    continue
+                effective_cursor = after.get(key)
+                if effective_cursor and candidate.created_at <= _parse_dt(effective_cursor):
+                    continue
+                items.append(candidate)
+            items.sort(key=lambda item: item.created_at)
+            if limit is not None:
+                return items[:limit]
+            return items
+
+    def mark_session_streams_read(
+        self,
+        *,
+        session_id: str,
+        streams: list[dict[str, str]],
+        cursor: str | None,
+    ) -> dict[str, str | None]:
+        with self._lock:
+            payload = self._read_raw()
+            session_reads = payload.setdefault("session_reads", {})
+            if not isinstance(session_reads, dict):
+                session_reads = {}
+                payload["session_reads"] = session_reads
+            current_reads = session_reads.get(session_id)
+            if not isinstance(current_reads, dict):
+                current_reads = {}
+                session_reads[session_id] = current_reads
+
+            updated: dict[str, str | None] = {}
+            for stream in streams:
+                stream_key = _stream_key(stream["provider"], stream["repo"], stream["pr_id"])
+                current_cursor = current_reads.get(stream_key)
+                next_cursor = _latest_cursor(
+                    [
+                        str(current_cursor) if current_cursor is not None else None,
+                        cursor,
+                    ]
+                )
+                if next_cursor is None:
+                    current_reads.pop(stream_key, None)
+                else:
+                    current_reads[stream_key] = next_cursor
+                updated[stream_key] = next_cursor
+
+            if not current_reads:
+                session_reads.pop(session_id, None)
+            self._compact_feedback(payload)
+            self._atomic_write(payload)
+            return updated
 
     def read_raw(self) -> dict[str, Any]:
         with self._lock:

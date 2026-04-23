@@ -35,6 +35,10 @@ class JsonEmailRecordsRepository:
     def __init__(self, path: Path) -> None:
         self._store = JsonStore(path, EmailMessage)
 
+    @property
+    def model(self) -> type[EmailMessage]:
+        return self._store.model
+
     def get(self, message_id: str) -> EmailMessage | None:
         return self._store.get(message_id)
 
@@ -49,6 +53,10 @@ class JsonDiscordRecordsRepository:
     def __init__(self, path: Path) -> None:
         self._store = JsonStore(path, DiscordCommandEnvelope)
 
+    @property
+    def model(self) -> type[DiscordCommandEnvelope]:
+        return self._store.model
+
     def get(self, command_id: str) -> DiscordCommandEnvelope | None:
         return self._store.get(command_id)
 
@@ -62,6 +70,10 @@ class JsonDiscordRecordsRepository:
 class JsonTeamsRecordsRepository:
     def __init__(self, path: Path) -> None:
         self._store = JsonStore(path, TeamsMessageEnvelope)
+
+    @property
+    def model(self) -> type[TeamsMessageEnvelope]:
+        return self._store.model
 
     def get(self, cursor: str) -> TeamsMessageEnvelope | None:
         return self._store.get(cursor)

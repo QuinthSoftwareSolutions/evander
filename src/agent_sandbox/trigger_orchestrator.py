@@ -120,8 +120,6 @@ class TriggerOrchestratorWorker:
         providers = self._load_configured_providers(latest_config, configured_triggers)
         events_discovered = 0
         events_published = 0
-        cursor_payload = self.cursor_repository.load()
-
         loop = OrchestrationLoop[
             TriggerDefinitionDiscriminated,
             Any,
@@ -131,7 +129,6 @@ class TriggerOrchestratorWorker:
             dependency_resolver=TriggerDependencyResolverAdapter(
                 providers_by_id=providers,
                 update_cursor_state=lambda trigger, discovered, event_ids: self._update_cursor_state(
-                    cursor_payload,
                     trigger=trigger,
                     discovered=discovered,
                     event_ids=event_ids,
@@ -180,7 +177,6 @@ class TriggerOrchestratorWorker:
         events_discovered = loop_result.dependencies_resolved
         events_published = loop_result.executions_recorded
 
-        self.cursor_repository.save(cursor_payload)
         sleep_config = previous_config if changed else latest_config
         next_sleep_seconds = _compute_next_sleep_seconds(
             poll_interval_seconds=sleep_config.poll_interval_seconds,
@@ -218,26 +214,17 @@ class TriggerOrchestratorWorker:
 
     def _update_cursor_state(
         self,
-        payload: dict[str, Any],
         *,
         trigger: TriggerDefinitionDiscriminated,
         discovered: int,
         event_ids: list[str],
     ) -> None:
-        now = datetime.now(UTC).isoformat().replace("+00:00", "Z")
-        triggers_payload = payload.setdefault("triggers", {})
-        if not isinstance(triggers_payload, dict):
-            payload["triggers"] = {}
-            triggers_payload = payload["triggers"]
-        trigger_payload = {
-            "trigger_type": trigger.type,
-            "last_polled_at": now,
-            "last_discovered_count": discovered,
-            "last_event_ids": event_ids[-20:],
-        }
-        if event_ids:
-            trigger_payload["last_event_id"] = event_ids[-1]
-        triggers_payload[trigger.id] = trigger_payload
+        self.cursor_repository.record_trigger_poll(
+            trigger_id=trigger.id,
+            trigger_type=trigger.type,
+            discovered=discovered,
+            event_ids=event_ids,
+        )
 
 
 def _normalize_trace_id(value: str | None) -> str:
@@ -324,4 +311,3 @@ def _compute_backoff_sleep_seconds(*, poll_interval_seconds: float, jitter_secon
     if jitter_seconds > 0:
         delay += random.uniform(0.0, jitter_seconds)
     return max(1.0, delay)
-

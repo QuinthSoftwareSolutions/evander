@@ -6,7 +6,7 @@ import logging
 import os
 import random
 import time
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -263,7 +263,6 @@ class EffectOrchestratorWorker:
         latest_config, _changed = self._config_reloader.get_latest()
         self.worker_config = latest_config
         config_revision = _config_revision_hash(latest_config)
-        cursor_payload = self.cursor_repository.load()
         pending_events_scanned = 0
         events_processed = 0
         effect_executions_started = 0
@@ -293,12 +292,15 @@ class EffectOrchestratorWorker:
                 fetch_pending=lambda: (self.event_queue.list_pending(limit=1) or [None])[0]
             ),
             dependency_resolver=EffectDependencyResolverAdapter(
-                dependency_factory=lambda _queue_record: (graph, config_revision, cursor_payload)
+                dependency_factory=lambda _queue_record: (graph, config_revision, {})
             ),
             execution_recorder=EffectExecutionRecorderAdapter(
                 record_event_processed=lambda queue_record: (
                     self._update_event_delivery_state(queue_record.event_id),
-                    _update_cursor_payload(cursor_payload, queue_record),
+                    self.cursor_repository.record_processed_event(
+                        event_id=queue_record.event_id,
+                        source_node_id=queue_record.trigger_id,
+                    ),
                 )
             ),
             completion_publisher=EffectCompletionPublisherAdapter(),
@@ -328,8 +330,11 @@ class EffectOrchestratorWorker:
         )
         pending_events_scanned = loop_result.events_scanned
         events_processed = loop_result.events_scanned
+        if effect_executions_started:
+            self._wait_for_inflight_completion(timeout_seconds=0.05)
+        _completed_count, published_count = self._reap_completed_futures()
+        completion_events_published += published_count
 
-        self.cursor_repository.save(cursor_payload)
         next_sleep_seconds = _compute_next_sleep_seconds(
             poll_interval_seconds=self.worker_config.poll_interval_seconds,
             jitter_seconds=self.worker_config.jitter_seconds,
@@ -602,7 +607,7 @@ class EffectOrchestratorWorker:
         config_revision: str,
     ) -> bool:
         idempotency_key = _execution_idempotency_key(queue_record.event_id, query.id)
-        existing = self.execution_store.find_by_idempotency_key(idempotency_key)
+        existing = self.execution_store.find_execution_by_idempotency_key(idempotency_key)
         if existing is not None:
             if existing.status == "running":
                 with self._inflight_lock:
@@ -671,7 +676,7 @@ class EffectOrchestratorWorker:
             outputs={},
             config_revision=config_revision,
         )
-        self.execution_store.put(record)
+        self.execution_store.record_execution(record)
         future = self._executor.submit(self._execute_query_provider, query=query, resolved_config=resolved_config)
         with self._inflight_lock:
             self._inflight[idempotency_key] = InflightExecution(future=future, config_revision=config_revision)
@@ -686,7 +691,7 @@ class EffectOrchestratorWorker:
         config_revision: str,
     ) -> bool:
         idempotency_key = _execution_idempotency_key(queue_record.event_id, effect.id)
-        existing = self.execution_store.find_by_idempotency_key(idempotency_key)
+        existing = self.execution_store.find_execution_by_idempotency_key(idempotency_key)
         if existing is not None:
             if existing.status == "running":
                 with self._inflight_lock:
@@ -789,7 +794,7 @@ class EffectOrchestratorWorker:
             outputs={},
             config_revision=config_revision,
         )
-        self.execution_store.put(record)
+        self.execution_store.record_execution(record)
         future = self._executor.submit(self._execute_provider, effect=effect, resolved_config=resolved_config)
         with self._inflight_lock:
             self._inflight[idempotency_key] = InflightExecution(future=future, config_revision=config_revision)
@@ -804,7 +809,7 @@ class EffectOrchestratorWorker:
         config_revision: str,
     ) -> None:
         idempotency_key = _execution_idempotency_key(queue_record.event_id, gate.id)
-        if self.gate_execution_store.find_by_idempotency_key(idempotency_key) is not None:
+        if self.gate_execution_store.find_execution_by_idempotency_key(idempotency_key) is not None:
             return
 
         started_at = datetime.now(UTC)
@@ -902,7 +907,7 @@ class EffectOrchestratorWorker:
 
         for idempotency_key, future in to_finalize:
             completed_count += 1
-            record = self.execution_store.find_by_idempotency_key(idempotency_key)
+            record = self.execution_store.find_execution_by_idempotency_key(idempotency_key)
             if record is None:
                 continue
             finished_at = datetime.now(UTC)
@@ -918,7 +923,7 @@ class EffectOrchestratorWorker:
                     record.published_event_id = None
                     record.completion_event_enqueued_at = None
                     record.finished_at = finished_at
-                    self.execution_store.put(record)
+                    self.execution_store.record_execution(record)
                     self._update_event_delivery_state(record.event_id)
                     if provider_class is not None:
                         provider_class.on_execution_waiting(worker=self, record=record)
@@ -944,10 +949,17 @@ class EffectOrchestratorWorker:
                 record.status = "failed"
                 record.error = str(exc)
             record.finished_at = finished_at
-            self.execution_store.put(record)
+            self.execution_store.record_execution(record)
             self._update_event_delivery_state(record.event_id)
 
         return completed_count, published_count
+
+    def _wait_for_inflight_completion(self, *, timeout_seconds: float) -> None:
+        with self._inflight_lock:
+            futures = [inflight.future for inflight in self._inflight.values()]
+        if not futures:
+            return
+        wait(futures, timeout=timeout_seconds, return_when=FIRST_COMPLETED)
 
     def _update_event_delivery_state(self, event_id: str) -> None:
         if self._event_has_inflight_effects(event_id):
@@ -956,7 +968,7 @@ class EffectOrchestratorWorker:
         self.event_queue.mark_delivered(event_id)
 
     def _event_has_inflight_effects(self, event_id: str) -> bool:
-        for record in self.execution_store.read_all().values():
+        for record in self.execution_store.list_executions():
             if record.event_id != event_id:
                 continue
             if record.status != "running":
@@ -1069,10 +1081,10 @@ class EffectOrchestratorWorker:
         reason: str,
     ) -> None:
         idempotency_key = _execution_idempotency_key(queue_record.event_id, node_id)
-        if self.execution_store.find_by_idempotency_key(idempotency_key) is not None:
+        if self.execution_store.find_execution_by_idempotency_key(idempotency_key) is not None:
             return
         now = datetime.now(UTC)
-        self.execution_store.put(
+        self.execution_store.record_execution(
             EffectExecutionRecord(
                 execution_id=f"exec-{hashlib.sha1(idempotency_key.encode('utf-8')).hexdigest()[:16]}",
                 idempotency_key=idempotency_key,
@@ -1126,7 +1138,7 @@ class EffectOrchestratorWorker:
         error: str,
     ) -> None:
         idempotency_key = _execution_idempotency_key(queue_record.event_id, effect.id)
-        if self.execution_store.find_by_idempotency_key(idempotency_key) is not None:
+        if self.execution_store.find_execution_by_idempotency_key(idempotency_key) is not None:
             return
         finished_at = datetime.now(UTC)
         record = EffectExecutionRecord(
@@ -1148,7 +1160,7 @@ class EffectOrchestratorWorker:
             error=error,
             config_revision=config_revision,
         )
-        self.execution_store.put(record)
+        self.execution_store.record_execution(record)
 
     def _write_gate_record(
         self,
@@ -1169,7 +1181,7 @@ class EffectOrchestratorWorker:
         for_execution_ids: dict[str, str] | None = None,
     ) -> None:
         idempotency_key = _execution_idempotency_key(queue_record.event_id, gate.id)
-        if self.gate_execution_store.find_by_idempotency_key(idempotency_key) is not None:
+        if self.gate_execution_store.find_execution_by_idempotency_key(idempotency_key) is not None:
             return
         finished_at = datetime.now(UTC)
         record = GateExecutionRecord(
@@ -1202,7 +1214,7 @@ class EffectOrchestratorWorker:
                 for_execution_ids=for_execution_ids,
             )
             record.completion_event_enqueued_at = finished_at
-        self.gate_execution_store.put(record)
+        self.gate_execution_store.record_execution(record)
 
 
     def _log_graph_revision_change(self, *, config_revision: str, node_count: int, edge_count: int) -> None:
@@ -1232,8 +1244,11 @@ class JsonGateExecutionStore(JsonExecutionRepository[GateExecutionRecord]):
         super().__init__(path, GateExecutionRecord, journal_path=journal_path, source="gate_execution")
 
     def find_latest_by_gate_id(self, gate_id: str) -> GateExecutionRecord | None:
+        return self.find_latest_execution_for_gate(gate_id)
+
+    def find_latest_execution_for_gate(self, gate_id: str) -> GateExecutionRecord | None:
         latest: GateExecutionRecord | None = None
-        for record in self.read_all().values():
+        for record in self.list_executions():
             if record.gate_id != gate_id:
                 continue
             if latest is None or (record.finished_at, record.started_at, record.execution_id) > (
@@ -1588,10 +1603,3 @@ def _compute_backoff_sleep_seconds(*, poll_interval_seconds: float, jitter_secon
 
 def build_effect_cursor_repository(path: Path) -> JsonEffectCursorRepository:
     return JsonEffectCursorRepository(path)
-
-
-def _update_cursor_payload(payload: dict[str, Any], queue_record: TriggerQueueRecord) -> None:
-    now = datetime.now(UTC).isoformat().replace("+00:00", "Z")
-    payload["last_processed_event_id"] = queue_record.event_id
-    payload["last_processed_source_node_id"] = queue_record.trigger_id
-    payload["last_processed_at"] = now
