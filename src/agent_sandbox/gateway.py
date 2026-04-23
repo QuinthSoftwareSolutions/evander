@@ -425,7 +425,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
         token_redacted_keys = {"response_token", "issued_token", "token_hash"}
         if not session_id:
             return set(context.policy.policy_config.resolve_for_directory("root").redacted_keys) | token_redacted_keys
-        session = context.sessions.get(session_id)
+        session = context.session_repository.get_session(session_id)
         if session is None:
             return set(context.policy.policy_config.resolve_for_directory("root").redacted_keys) | token_redacted_keys
         return set(context.policy.effective_policy_for_session(session).redacted_keys) | token_redacted_keys
@@ -460,7 +460,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
     ) -> None:
         vm_id = None
         if session_id:
-            session = context.sessions.get(session_id)
+            session = context.session_repository.get_session(session_id)
             vm_id = None if session is None else session.vm_id
         context.audit.log(
             AuditEvent(

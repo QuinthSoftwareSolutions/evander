@@ -90,7 +90,7 @@ class RuntimeContext:
     pr_publish_service: PrPublishService
     review_request_service: ReviewRequestService
     session_repository: SessionManifestRepository
-    sessions: JsonStore[SessionManifest]
+    sessions: JsonSessionManifestRepository
     approvals: JsonStore[ApprovalRequest]
     directories: DirectoryStore
     drafts: JsonStore[DraftMessage]
@@ -192,7 +192,6 @@ def _build_runtime_context(config: GatewayConfig) -> RuntimeContext:
         host_config=host_config,
         base_gateway_config=config,
     )
-    sessions = JsonStore(config.session_store_path, SessionManifest)
     session_repository = JsonSessionManifestRepository(config.session_store_path)
     approvals = JsonStore(config.approval_store_path, ApprovalRequest)
     drafts = JsonStore(config.draft_store_path, DraftMessage)
@@ -234,7 +233,7 @@ def _build_runtime_context(config: GatewayConfig) -> RuntimeContext:
         pr_publish_service=_build_pr_publish_service(root_provider_config),
         review_request_service=_build_review_request_service(root_provider_config, session_repository),
         session_repository=session_repository,
-        sessions=sessions,
+        sessions=session_repository,
         approvals=approvals,
         directories=directories,
         drafts=drafts,

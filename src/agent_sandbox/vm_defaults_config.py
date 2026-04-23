@@ -21,7 +21,6 @@ from .session_manifest_repository import (
     SessionManifestRepository,
     as_session_manifest_repository,
 )
-from .storage import JsonStore
 
 
 class AzureVmProviderConfig(BaseModel):
@@ -75,7 +74,7 @@ class VmDefaultsConfigResolver:
         config: GatewayConfig,
         *,
         directory_store: DirectoryStore | None = None,
-        session_store: SessionManifestRepository | JsonStore[SessionManifest] | None = None,
+        session_store: SessionManifestRepository | None = None,
     ) -> None:
         self.config = config
         self.directory_store = directory_store or DirectoryStore(config.directories_store_path)

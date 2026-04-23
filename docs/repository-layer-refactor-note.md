@@ -37,12 +37,16 @@
   - `IssueGitAdminService` now resolves and updates session state through the session repository
   - `ado_issue_worker.py` now creates missing issue sessions through the repository rather than direct `runtime.sessions` access
 - `session_manifest_repository.py` now owns a small amount of operational lookup behavior (`list_sessions_for_vm`, `list_sessions_for_issue`, `resolve_session_target`, `resolve_vm_name_from_target`) so callers stop re-implementing session selection against raw payload maps.
+- The runtime session store no longer needs a dedicated `JsonStore[SessionManifest]` instance:
+  - `RuntimeContext.sessions` is now the `JsonSessionManifestRepository` itself, with short compatibility aliases retained on the repository for transitional callers
+  - `ScheduledWakeWorker`, `DiscordWakeWorker`, `VmProviderRegistry`/`vm_provider.py`, and gateway audit/redaction lookups now read session state through repository semantics instead of raw session-store maps
+- Test fixtures in repository-focused modules now seed session state through `JsonSessionManifestRepository` or `session_repository.upsert_session(...)` rather than constructing raw `JsonStore(SessionManifest)` instances.
 
 ## Remaining work before SQLite
 
 - Replace direct `JsonStore` usage for sessions and other runtime state with the semantic repository contracts introduced here.
-- Migrate the remaining VM/admin service session mutation paths that still bulk-edit manifests through raw store operations.
-  The biggest remaining seams are selected `admin_service.py` helpers plus any gateway-facing contexts that still expose `runtime.sessions` directly for compatibility.
+- Migrate the remaining compatibility-style session access in tests and older service contexts.
+  The biggest remaining seams are selected `admin_service.py` helpers plus gateway/admin/runtime tests that still call `runtime.sessions.put/get/read_all(...)` or `context.sessions.put(...)` even though the backing implementation is now the repository.
 - Introduce typed stream/session key objects for PR feedback and inbox state so repository interfaces stop accepting ad hoc dict payloads.
 - Separate orchestration write paths from read/query paths where execution history and operational reporting need different access patterns.
 - Continue moving durable invariants into repositories only where they are genuinely persistence semantics rather than presentation/reporting logic.

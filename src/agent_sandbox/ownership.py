@@ -9,7 +9,6 @@ from pydantic import BaseModel, Field
 from .directories import DirectoryService
 from .models import DirectoryInfo, SessionManifest
 from .session_manifest_repository import SessionManifestRepository, as_session_manifest_repository
-from .storage import JsonStore
 
 
 class OwnedEntity(BaseModel):
@@ -32,7 +31,7 @@ class DirectoryOwnershipQueries:
         self,
         *,
         directories: DirectoryService,
-        sessions: SessionManifestRepository | JsonStore[SessionManifest],
+        sessions: SessionManifestRepository,
         pr_map_path: Path | None = None,
         ado_processed_store_path: Path | None = None,
     ) -> None:

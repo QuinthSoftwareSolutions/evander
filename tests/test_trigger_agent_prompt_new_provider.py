@@ -7,7 +7,7 @@ from agent_sandbox.agent_prompt_store import AgentPromptRecord, AgentPromptStore
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.events.provider_models import AgentPromptNewTriggerDefinition
 from agent_sandbox.models import SessionManifest
-from agent_sandbox.storage import JsonStore
+from agent_sandbox.session_manifest_repository import JsonSessionManifestRepository
 from agent_sandbox.triggers.providers.agent_prompt_new import AgentPromptNewTriggerProvider
 from agent_sandbox.triggers.providers.base import TriggerRuntimeContext
 
@@ -24,9 +24,8 @@ def test_agent_prompt_new_trigger_emits_once_per_unread_message(tmp_path: Path) 
     runtime_dir = tmp_path / "runtime"
     runtime_dir.mkdir(parents=True, exist_ok=True)
     store = AgentPromptStore(runtime_dir / "agent-prompt-store.json")
-    sessions = JsonStore(runtime_dir / "sessions.json", SessionManifest)
-    sessions.put(
-        "target-a",
+    sessions = JsonSessionManifestRepository(runtime_dir / "sessions.json")
+    sessions.upsert_session(
         SessionManifest(
             session_id="target-a",
             directory_path="root/team-a",
@@ -34,8 +33,7 @@ def test_agent_prompt_new_trigger_emits_once_per_unread_message(tmp_path: Path) 
             expires_at=datetime.now(UTC) + timedelta(hours=1),
         ),
     )
-    sessions.put(
-        "target-b",
+    sessions.upsert_session(
         SessionManifest(
             session_id="target-b",
             directory_path="root/team-b",

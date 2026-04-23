@@ -97,9 +97,8 @@ class ScheduledWakeWorker:
         now_utc = datetime.now(UTC)
         requests_due = 0
         wakes_dispatched = 0
-        sessions_by_id = self.runtime.sessions.read_all()
         for request in _load_due_wake_requests(wake_store=wake_store, now_utc=now_utc):
-            session = sessions_by_id.get(request.session_id)
+            session = self.runtime.session_repository.get_session(request.session_id)
             if session is None:
                 continue
             if not any(directory_is_within_scope(session.directory_path, scope) for scope in self.worker_config.directories):

@@ -401,10 +401,13 @@ class VmAgentAdminService:
         try:
             resolved = repository.resolve_vm_name_from_target(target)
         except Exception:
-            resolved = ""
-        if resolved and resolved != str(target).strip():
+            sessions = repository.read_all()
+            return _admin_service._resolve_vm_name_from_target(target, sessions)
+        normalized_target = str(target or "").strip()
+        if resolved and resolved != normalized_target:
             return resolved
-        return _admin_service._resolve_vm_name_from_target(target, self._deps.runtime.sessions.read_all())
+        sessions = repository.read_all()
+        return _admin_service._resolve_vm_name_from_target(target, sessions)
 
     def _resolve_session_target(self, target: str):
         repository = self._session_repository()
@@ -414,7 +417,8 @@ class VmAgentAdminService:
             session = None
         if session is not None:
             return str(getattr(session, "session_id", "") or "").strip(), session
-        return _admin_service._resolve_session_target(target, self._deps.runtime.sessions.read_all())
+        sessions = repository.read_all()
+        return _admin_service._resolve_session_target(target, sessions)
 
     def _persist_session(self, session_id: str, manifest: Any) -> None:
         repository = self._session_repository()
@@ -445,7 +449,8 @@ class VmAgentAdminService:
 
     def _find_session_for_vm(self, vm_name: str) -> tuple[str | None, Any | None]:
         matches: list[tuple[str, Any]] = []
-        for session_id, session in self._deps.runtime.sessions.read_all().items():
+        for session in self._session_repository().list_sessions_for_vm(vm_name):
+            session_id = str(getattr(session, "session_id", "") or "").strip()
             if str(getattr(session, "vm_id", "") or "").strip() == vm_name:
                 matches.append((session_id, session))
         if len(matches) == 1:
@@ -454,6 +459,17 @@ class VmAgentAdminService:
             session_ids = ", ".join(sorted(session_id for session_id, _ in matches))
             raise ValueError(f"VM {vm_name!r} is associated with multiple sessions: {session_ids}")
         return None, None
+
+    def _resolve_provider_operation_target(self, target: str) -> tuple[Any, str, Any | None, str]:
+        repository = self._session_repository()
+        direct_session = repository.get_session(target)
+        provider, vm_name, session = self._provider_registry().resolve_target(
+            target=target,
+            session_repository=repository,
+            directory_path=str(getattr(direct_session, "directory_path", "") or "root"),
+        )
+        directory_path = str(getattr(session, "directory_path", "") or "root")
+        return provider, vm_name, session, directory_path
 
     def list_vms(
         self,
@@ -580,23 +596,11 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
         return output or error or "Agent log is empty."
 
     def start_vm(self, target: str) -> VmActionResult:
-        sessions = self._deps.runtime.sessions.read_all()
-        provider, vm_name, session = self._provider_registry().resolve_target(
-            target=target,
-            sessions=sessions,
-            directory_path=str(getattr(sessions.get(target), "directory_path", "") or "root"),
-        )
-        directory_path = str(getattr(session, "directory_path", "") or "root")
+        provider, vm_name, session, directory_path = self._resolve_provider_operation_target(target)
         return provider.start_vm(target=target, vm_name=vm_name, session=session, directory_path=directory_path)
 
     def shutdown_vm(self, target: str, *, timeout_seconds: int = 60) -> VmActionResult:
-        sessions = self._deps.runtime.sessions.read_all()
-        provider, vm_name, session = self._provider_registry().resolve_target(
-            target=target,
-            sessions=sessions,
-            directory_path=str(getattr(sessions.get(target), "directory_path", "") or "root"),
-        )
-        directory_path = str(getattr(session, "directory_path", "") or "root")
+        provider, vm_name, session, directory_path = self._resolve_provider_operation_target(target)
         return provider.shutdown_vm(
             target=target,
             vm_name=vm_name,
@@ -927,13 +931,7 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
         timeout_seconds: float | None = None,
         check: bool = True,
     ) -> dict[str, Any]:
-        sessions = self._deps.runtime.sessions.read_all()
-        provider, vm_name, session = self._provider_registry().resolve_target(
-            target=target,
-            sessions=sessions,
-            directory_path=str(getattr(sessions.get(target), "directory_path", "") or "root"),
-        )
-        directory_path = str(getattr(session, "directory_path", "") or "root")
+        provider, vm_name, session, directory_path = self._resolve_provider_operation_target(target)
         return provider.vm_exec(
             target=target,
             vm_name=vm_name,
@@ -955,13 +953,7 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
         files: list[dict[str, Any]],
         vm_user: str = "agent",
     ) -> dict[str, Any]:
-        sessions = self._deps.runtime.sessions.read_all()
-        provider, vm_name, session = self._provider_registry().resolve_target(
-            target=target,
-            sessions=sessions,
-            directory_path=str(getattr(sessions.get(target), "directory_path", "") or "root"),
-        )
-        directory_path = str(getattr(session, "directory_path", "") or "root")
+        provider, vm_name, session, directory_path = self._resolve_provider_operation_target(target)
         return provider.vm_copy_files(
             target=target,
             vm_name=vm_name,
@@ -980,13 +972,7 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
         recursive: bool = False,
         missing_ok: bool = True,
     ) -> dict[str, Any]:
-        sessions = self._deps.runtime.sessions.read_all()
-        provider, vm_name, session = self._provider_registry().resolve_target(
-            target=target,
-            sessions=sessions,
-            directory_path=str(getattr(sessions.get(target), "directory_path", "") or "root"),
-        )
-        directory_path = str(getattr(session, "directory_path", "") or "root")
+        provider, vm_name, session, directory_path = self._resolve_provider_operation_target(target)
         return provider.vm_delete_files(
             target=target,
             vm_name=vm_name,
@@ -1485,7 +1471,7 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
         resolved_session_id = session_id.strip() if session_id and session_id.strip() else inferred_session_id
         session = inferred_session
         if resolved_session_id:
-            session = self._deps.runtime.sessions.get(resolved_session_id)
+            session = self._session_repository().get_session(resolved_session_id)
             if session is None:
                 return (
                     "",

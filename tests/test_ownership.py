@@ -4,20 +4,19 @@ from pathlib import Path
 from agent_sandbox.directories import DirectoryService, DirectoryStore
 from agent_sandbox.models import SessionManifest, ToolName
 from agent_sandbox.ownership import DirectoryOwnershipQueries
-from agent_sandbox.storage import JsonStore
+from agent_sandbox.session_manifest_repository import JsonSessionManifestRepository
 
 
 def test_directory_ownership_queries_list_direct_entities_only_by_default(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     directory_store = DirectoryStore(runtime_dir / "directories.json")
     directory_service = DirectoryService(directory_store)
-    sessions = JsonStore(runtime_dir / "sessions.json", SessionManifest)
+    sessions = JsonSessionManifestRepository(runtime_dir / "sessions.json")
 
     team = directory_service.create(parent="root", name="team")
     child = directory_service.create(parent=team.id, name="child")
 
-    sessions.put(
-        "session-team",
+    sessions.upsert_session(
         SessionManifest(
             session_id="session-team",
             vm_id="vm-team",
@@ -27,8 +26,7 @@ def test_directory_ownership_queries_list_direct_entities_only_by_default(tmp_pa
             metadata={"issue_number": "101"},
         ),
     )
-    sessions.put(
-        "session-child",
+    sessions.upsert_session(
         SessionManifest(
             session_id="session-child",
             vm_id="vm-child",
@@ -117,13 +115,12 @@ def test_directory_ownership_queries_can_include_descendants_and_fallback_to_ses
     runtime_dir = tmp_path / "runtime"
     directory_store = DirectoryStore(runtime_dir / "directories.json")
     directory_service = DirectoryService(directory_store)
-    sessions = JsonStore(runtime_dir / "sessions.json", SessionManifest)
+    sessions = JsonSessionManifestRepository(runtime_dir / "sessions.json")
 
     team = directory_service.create(parent="root", name="team")
     child = directory_service.create(parent=team.id, name="child")
 
-    sessions.put(
-        "session-child",
+    sessions.upsert_session(
         SessionManifest(
             session_id="session-child",
             vm_id=None,

@@ -57,7 +57,7 @@ class ProviderConfigResolver:
         config: GatewayConfig,
         *,
         directory_store: DirectoryStore | None = None,
-        session_store: SessionManifestRepository | JsonStore[SessionManifest] | None = None,
+        session_store: SessionManifestRepository | None = None,
         provider_session_store: JsonStore[ProviderSessionManifest] | None = None,
     ) -> None:
         self.config = config

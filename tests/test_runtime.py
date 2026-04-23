@@ -217,8 +217,7 @@ def test_runtime_discord_service_for_session_uses_directory_provider_override(
         },
     )
     runtime = build_runtime(config)
-    runtime.sessions.put(
-        "session-team",
+    runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="session-team",
             allowed_tools=[ToolName.DISCORD_GET_COMMANDS],
@@ -278,8 +277,7 @@ def test_runtime_discord_service_for_session_uses_session_scoped_policy_inputs(
         },
     )
     runtime = build_runtime(config)
-    runtime.sessions.put(
-        "session-root",
+    runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="session-root",
             allowed_tools=[ToolName.DISCORD_GET_COMMANDS],
@@ -288,8 +286,7 @@ def test_runtime_discord_service_for_session_uses_session_scoped_policy_inputs(
             expires_at=datetime.now(UTC) + timedelta(hours=1),
         ),
     )
-    runtime.sessions.put(
-        "session-team",
+    runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="session-team",
             allowed_tools=[ToolName.DISCORD_GET_COMMANDS],
@@ -338,8 +335,7 @@ def test_runtime_email_service_for_session_uses_directory_provider_override(
         },
     )
     runtime = build_runtime(config)
-    runtime.sessions.put(
-        "session-team",
+    runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="session-team",
             allowed_tools=[ToolName.EMAIL_LIST_UNREAD],
@@ -367,8 +363,7 @@ def test_runtime_teams_service_for_session_uses_directory_provider_override_and_
     team_a = directories.create(parent="root", name="team-a")
     team_b = directories.create(parent="root", name="team-b")
     runtime = build_runtime(config)
-    runtime.sessions.put(
-        "session-a",
+    runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="session-a",
             directory_path=team_a.path,
@@ -377,8 +372,7 @@ def test_runtime_teams_service_for_session_uses_directory_provider_override_and_
             expires_at=datetime.now(UTC) + timedelta(hours=1),
         ),
     )
-    runtime.sessions.put(
-        "session-b",
+    runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="session-b",
             directory_path=team_b.path,
@@ -434,8 +428,7 @@ def test_runtime_teams_service_for_session_uses_directory_delegated_credentials(
         )
     )
     runtime = build_runtime(config)
-    runtime.sessions.put(
-        "session-team",
+    runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="session-team",
             directory_path=team.path,
@@ -472,8 +465,7 @@ def test_runtime_pr_reply_service_for_session_uses_directory_provider_override(
         },
     )
     runtime = build_runtime(config)
-    runtime.sessions.put(
-        "session-team",
+    runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="session-team",
             allowed_tools=[ToolName.POST_PR_FEEDBACK_REPLY],
@@ -515,8 +507,7 @@ def test_runtime_pr_publish_service_for_session_uses_directory_provider_override
         },
     )
     runtime = build_runtime(config)
-    runtime.sessions.put(
-        "session-team",
+    runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="session-team",
             allowed_tools=[ToolName.POST_PR_FEEDBACK_REPLY],
@@ -556,8 +547,7 @@ def test_runtime_pr_query_service_for_session_uses_directory_provider_override(
         },
     )
     runtime = build_runtime(config)
-    runtime.sessions.put(
-        "session-team",
+    runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="session-team",
             allowed_tools=[ToolName.LIST_PULL_REQUESTS],
@@ -580,8 +570,7 @@ def test_resolve_allowed_discord_channel_ids_uses_active_sessions_and_config(
     tmp_path: Path,
 ) -> None:
     runtime = build_runtime(make_config(tmp_path))
-    runtime.sessions.put(
-        "session-active",
+    runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="session-active",
             allowed_tools=[ToolName.DISCORD_GET_COMMANDS],
@@ -589,8 +578,7 @@ def test_resolve_allowed_discord_channel_ids_uses_active_sessions_and_config(
             expires_at=datetime.now(UTC) + timedelta(hours=1),
         ),
     )
-    runtime.sessions.put(
-        "session-stale",
+    runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="session-stale",
             allowed_tools=[ToolName.DISCORD_GET_COMMANDS],
@@ -598,8 +586,7 @@ def test_resolve_allowed_discord_channel_ids_uses_active_sessions_and_config(
             expires_at=datetime.now(UTC) - timedelta(minutes=1),
         ),
     )
-    runtime.sessions.put(
-        "session-without-tool",
+    runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="session-without-tool",
             allowed_tools=[ToolName.EMAIL_LIST_UNREAD],
@@ -609,7 +596,7 @@ def test_resolve_allowed_discord_channel_ids_uses_active_sessions_and_config(
     )
     config = make_config(tmp_path, discord_operator_channel_allowlist=["chan-operator"])
 
-    channel_ids = _resolve_allowed_discord_channel_ids(runtime.sessions, config)
+    channel_ids = _resolve_allowed_discord_channel_ids(runtime.session_repository, config)
 
     assert channel_ids == ["chan-operator", "chan-session"]
 
@@ -625,8 +612,7 @@ def test_resolve_allowed_discord_channel_ids_uses_effective_directory_policy(
     team = directories.create(parent="root", name="team")
     config_store.write("root", domain="policy", payload={"discord_operator_channel_allowlist": ["chan-root"]})
     config_store.write(team.path, domain="policy", payload={"discord_operator_channel_allowlist": ["chan-team"]})
-    runtime.sessions.put(
-        "session-active",
+    runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="session-active",
             directory_path=team.path,
@@ -637,7 +623,7 @@ def test_resolve_allowed_discord_channel_ids_uses_effective_directory_policy(
     )
 
     channel_ids = _resolve_allowed_discord_channel_ids(
-        runtime.sessions,
+        runtime.session_repository,
         config,
         policy_config=runtime.policy_config,
     )

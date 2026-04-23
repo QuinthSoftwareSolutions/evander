@@ -284,7 +284,7 @@ class IssueGitAdminService:
             session = None
         if session is not None:
             return str(getattr(session, "session_id", "") or "").strip(), session
-        return _admin_service._resolve_session_target(target, self._deps.runtime.sessions.read_all())
+        raise ValueError(f"Unknown session target: {target}")
 
     @staticmethod
     def _derive_review_branch(agent_branch: str) -> str:

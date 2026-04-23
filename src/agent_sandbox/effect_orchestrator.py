@@ -330,6 +330,10 @@ class EffectOrchestratorWorker:
         pending_events_scanned = loop_result.events_scanned
         events_processed = loop_result.events_scanned
 
+        # Give very short-running in-process effects a chance to settle before
+        # the second reap so the same cycle can publish their completion state.
+        self._wait_for_inflight_completion(timeout_seconds=0.01)
+
         # Reap futures again after dispatch so fast in-process effects do not
         # remain marked as running until an extra poll cycle.
         _completed_count, published_count = self._reap_completed_futures()

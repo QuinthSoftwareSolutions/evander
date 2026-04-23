@@ -64,6 +64,9 @@ class JsonSessionManifestRepository:
     def get_session(self, session_id: str) -> SessionManifest | None:
         return self.read_all_safe().get(session_id)
 
+    def get(self, session_id: str) -> SessionManifest | None:
+        return self.get_session(session_id)
+
     def list_sessions(self) -> list[SessionManifest]:
         return list(self.read_all_safe().values())
 
@@ -129,6 +132,12 @@ class JsonSessionManifestRepository:
             payload[manifest.session_id] = manifest.model_dump(mode="json")
             self._atomic_write(payload)
 
+    def put(self, session_id: str, manifest: SessionManifest) -> None:
+        resolved_manifest = manifest
+        if manifest.session_id != session_id:
+            resolved_manifest = manifest.model_copy(update={"session_id": session_id})
+        self.upsert_session(resolved_manifest)
+
     def delete_session(self, session_id: str) -> bool:
         with self._lock:
             payload = self._read_raw()
@@ -137,6 +146,18 @@ class JsonSessionManifestRepository:
             payload.pop(session_id, None)
             self._atomic_write(payload)
             return True
+
+    def delete(self, session_id: str) -> None:
+        self.delete_session(session_id)
+
+    def write_all(self, payload: dict[str, SessionManifest]) -> None:
+        with self._lock:
+            self._atomic_write(
+                {
+                    session_id: manifest.model_dump(mode="json")
+                    for session_id, manifest in payload.items()
+                }
+            )
 
     def _read_raw(self) -> dict[str, object]:
         payload = json.loads(self.path.read_text(encoding="utf-8"))
