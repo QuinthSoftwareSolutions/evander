@@ -45,12 +45,46 @@ normalize_fetch_source() {
   esac
 }
 
+resolve_fetch_remote() {
+  if git -C "${REPO_PATH}" remote get-url agent >/dev/null 2>&1; then
+    printf 'agent\n'
+    return
+  fi
+  if git -C "${REPO_PATH}" remote get-url origin >/dev/null 2>&1; then
+    printf 'origin\n'
+    return
+  fi
+  die "Missing agent/origin remote; cannot fetch review refs"
+}
+
+fetch_ref_into_local_ref() {
+  local ref="$1"
+  local local_ref="$2"
+  local remote_name="$3"
+
+  local fetch_source
+  fetch_source="$(normalize_fetch_source "${ref}")"
+  git -C "${REPO_PATH}" fetch --no-tags "${remote_name}" "${fetch_source}:${local_ref}" >/dev/null
+}
+
 resolve_commit() {
   local ref="$1"
   local explicit_commit="${2:-}"
   local local_ref="$3"
+  local remote_name="$4"
 
   if [[ -n "${explicit_commit}" ]]; then
+    if ! git -C "${REPO_PATH}" rev-parse --verify "${explicit_commit}^{commit}" >/dev/null 2>&1; then
+      fetch_ref_into_local_ref "${ref}" "${local_ref}" "${remote_name}"
+      if ! git -C "${REPO_PATH}" rev-parse --verify "${explicit_commit}^{commit}" >/dev/null 2>&1; then
+        local resolved
+        resolved="$(git -C "${REPO_PATH}" rev-parse --verify "${local_ref}^{commit}")"
+        printf 'warning: explicit commit %s for %s was not present after fetching %s; using %s instead\n' \
+          "${explicit_commit}" "${ref}" "${remote_name}" "${resolved}" >&2
+        printf '%s\n' "${resolved}"
+        return
+      fi
+    fi
     git -C "${REPO_PATH}" rev-parse --verify "${explicit_commit}^{commit}" >/dev/null
     git -C "${REPO_PATH}" update-ref "${local_ref}" "${explicit_commit}"
     git -C "${REPO_PATH}" rev-parse --verify "${explicit_commit}^{commit}"
@@ -65,11 +99,7 @@ resolve_commit() {
     return
   fi
 
-  git -C "${REPO_PATH}" remote get-url origin >/dev/null 2>&1 || die "Missing origin remote; cannot fetch ${ref}"
-
-  local fetch_source
-  fetch_source="$(normalize_fetch_source "${ref}")"
-  git -C "${REPO_PATH}" fetch --no-tags origin "${fetch_source}:${local_ref}" >/dev/null
+  fetch_ref_into_local_ref "${ref}" "${local_ref}" "${remote_name}"
   git -C "${REPO_PATH}" rev-parse --verify "${local_ref}^{commit}"
 }
 
@@ -152,9 +182,10 @@ require_repo
 
 BASE_LOCAL_REF="refs/agent-sandbox/review/base"
 HEAD_LOCAL_REF="refs/agent-sandbox/review/head"
+FETCH_REMOTE="$(resolve_fetch_remote)"
 
-BASE_COMMIT="$(resolve_commit "${BASE_REF}" "${BASE_COMMIT}" "${BASE_LOCAL_REF}")"
-HEAD_COMMIT="$(resolve_commit "${HEAD_REF}" "${HEAD_COMMIT}" "${HEAD_LOCAL_REF}")"
+BASE_COMMIT="$(resolve_commit "${BASE_REF}" "${BASE_COMMIT}" "${BASE_LOCAL_REF}" "${FETCH_REMOTE}")"
+HEAD_COMMIT="$(resolve_commit "${HEAD_REF}" "${HEAD_COMMIT}" "${HEAD_LOCAL_REF}" "${FETCH_REMOTE}")"
 
 git -C "${REPO_PATH}" checkout --detach "${HEAD_COMMIT}" >/dev/null
 git -C "${REPO_PATH}" reset --hard "${HEAD_COMMIT}" >/dev/null
