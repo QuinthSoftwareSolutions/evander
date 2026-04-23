@@ -4,22 +4,22 @@ from collections import defaultdict
 from pathlib import Path
 from uuid import uuid4
 
+from .directory_repository import DirectoryRepository, JsonDirectoryRepository
 from .models import Directory, DirectoryDetails, DirectoryInfo, DirectoryPath
-from .storage import JsonStore
 
 ROOT_DIRECTORY_ID = "root"
 
 
 class DirectoryStore:
-    def __init__(self, path: Path) -> None:
-        self._store = JsonStore(path, Directory)
+    def __init__(self, path: Path, repository: DirectoryRepository | None = None) -> None:
+        self._repository = repository or JsonDirectoryRepository(path)
 
     def ensure_root(self) -> None:
-        items = self._store.read_all()
+        items = self._repository.read_all()
         root = items.get(ROOT_DIRECTORY_ID)
         if root is None:
             items[ROOT_DIRECTORY_ID] = Directory(id=ROOT_DIRECTORY_ID, name=ROOT_DIRECTORY_ID, parent_id=None)
-            self._store.write_all(items)
+            self._repository.write_all(items)
             return
         if root.id != ROOT_DIRECTORY_ID or root.name != ROOT_DIRECTORY_ID or root.parent_id is not None:
             items[ROOT_DIRECTORY_ID] = Directory(
@@ -29,33 +29,37 @@ class DirectoryStore:
                 created_at=root.created_at,
                 metadata=root.metadata,
             )
-            self._store.write_all(items)
+            self._repository.write_all(items)
 
     def read_all(self) -> dict[str, Directory]:
         self.ensure_root()
-        items = self._store.read_all()
+        items = self._repository.read_all()
         self._validate_tree(items)
         return items
 
     def put(self, directory: Directory) -> None:
-        items = self._store.read_all()
+        items = self._repository.read_all()
         if directory.id == ROOT_DIRECTORY_ID:
             if directory.name != ROOT_DIRECTORY_ID or directory.parent_id is not None:
                 raise ValueError("root directory identity is immutable")
         items[directory.id] = directory
         self._validate_tree(items)
-        self._store.write_all(items)
+        self._repository.write_all(items)
 
     def delete(self, directory_id: str) -> None:
         if directory_id == ROOT_DIRECTORY_ID:
             raise ValueError("root directory cannot be deleted")
-        items = self._store.read_all()
+        items = self._repository.read_all()
         items.pop(directory_id, None)
         self._validate_tree(items)
-        self._store.write_all(items)
+        self._repository.write_all(items)
 
     def get(self, directory_id: str) -> Directory | None:
         return self.read_all().get(directory_id)
+
+    def write_all(self, items: dict[str, Directory]) -> None:
+        self._validate_tree(items)
+        self._repository.write_all(items)
 
     def validate_path(self, path: str) -> str:
         canonical = DirectoryPath(segments=path).as_posix()
@@ -206,8 +210,7 @@ class DirectoryService:
         return directory
 
     def _write(self, items: dict[str, Directory]) -> None:
-        self._store._validate_tree(items)
-        self._store._store.write_all(items)
+        self._store.write_all(items)
 
     def _to_info(self, directory: Directory, items: dict[str, Directory]) -> DirectoryInfo:
         return DirectoryInfo.from_directory(directory, path=self._path_for_id(directory.id, items))

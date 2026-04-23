@@ -107,9 +107,7 @@ class DiscordWakeWorker:
             return {}
         now = datetime.now(UTC)
         mapped: dict[str, list[SessionWakeBinding]] = {}
-        for session in self.runtime.sessions.read_all().values():
-            if session.expires_at <= now:
-                continue
+        for session in self.runtime.session_repository.list_active_sessions(now=now):
             if not directory_is_within_scope(session.directory_path, directory_path):
                 continue
             for channel_id in policy_config.discord_inbox_channel_ids_for_session_id(session.session_id):

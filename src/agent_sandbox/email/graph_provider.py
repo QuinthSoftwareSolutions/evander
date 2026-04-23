@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import os
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
 
-from .cursor_store import DurableCursorStore, EmailSyncCursor
+if TYPE_CHECKING:
+    from agent_sandbox.cursor_repositories import EmailCursorRepository
+
+from .cursor_store import EmailSyncCursor
 from .http_utils import ProviderRequestError, request_with_retries
 from .providers import EmailDraft, EmailMessageDetail, EmailMessageSummary
 
@@ -23,7 +26,7 @@ class GraphEmailProvider:
         folder_mapping: dict[str, str],
         auth_secret_refs: dict[str, str],
         timeout_seconds: float,
-        cursor_store: DurableCursorStore | None = None,
+        cursor_store: "EmailCursorRepository | None" = None,
         api_base_url: str = "https://graph.microsoft.com/v1.0",
     ) -> None:
         self.account_identifier = account_identifier

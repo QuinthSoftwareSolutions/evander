@@ -4,7 +4,7 @@ import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Lock
-from typing import Any, Literal
+from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -97,6 +97,55 @@ class ReviewRequestRecord(BaseModel):
         if not isinstance(value, dict):
             raise ValueError("metadata must be a mapping")
         return value
+
+
+class ReviewRequestRepository(Protocol):
+    """Repository contract for persisted review request workflow state."""
+
+    def add_request_if_new(self, request: ReviewRequestRecord) -> bool: ...
+
+    def get_request(self, request_id: str) -> ReviewRequestRecord | None: ...
+
+    def list_requests(
+        self,
+        *,
+        status: ReviewRequestStatus | None = None,
+        directory_path: str | None = None,
+        limit: int | None = None,
+    ) -> list[ReviewRequestRecord]: ...
+
+    def claim_ready_requests(
+        self,
+        *,
+        lease_owner: str,
+        lease_seconds: int = 300,
+        directory_path: str | None = None,
+        limit: int | None = None,
+        now: datetime | None = None,
+    ) -> list[ReviewRequestRecord]: ...
+
+    def claim_review_requests(
+        self,
+        *,
+        lease_owner: str,
+        lease_seconds: int = 300,
+        directory_path: str | None = None,
+        limit: int | None = None,
+        now: datetime | None = None,
+    ) -> list[ReviewRequestRecord]: ...
+
+    def set_status(
+        self,
+        request_id: str,
+        *,
+        status: ReviewRequestStatus,
+        updated_at: datetime | None = None,
+        lease_owner: str | None = None,
+        lease_expires_at: datetime | None = None,
+        clear_lease: bool = False,
+    ) -> ReviewRequestRecord | None: ...
+
+    def read_raw(self) -> dict[str, Any]: ...
 
 
 class ReviewRequestStore:
@@ -215,6 +264,23 @@ class ReviewRequestStore:
             self._compact_requests(payload)
             self._atomic_write(payload)
             return claimed
+
+    def claim_review_requests(
+        self,
+        *,
+        lease_owner: str,
+        lease_seconds: int = 300,
+        directory_path: str | None = None,
+        limit: int | None = None,
+        now: datetime | None = None,
+    ) -> list[ReviewRequestRecord]:
+        return self.claim_ready_requests(
+            lease_owner=lease_owner,
+            lease_seconds=lease_seconds,
+            directory_path=directory_path,
+            limit=limit,
+            now=now,
+        )
 
     def set_status(
         self,

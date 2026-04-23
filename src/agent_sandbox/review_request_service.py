@@ -8,10 +8,10 @@ from uuid import uuid4
 import httpx
 from pydantic import BaseModel
 
-from .models import RequestPrReviewResponse, SessionManifest
-from .review_request_store import ReviewRequestRecord, ReviewRequestStore
+from .models import RequestPrReviewResponse
+from .review_request_store import ReviewRequestRecord, ReviewRequestRepository, ReviewRequestStore
+from .session_manifest_repository import SessionManifestRepository
 from .services import normalize_pr_feedback_provider
-from .storage import JsonStore
 from .config import GatewayConfig
 
 
@@ -108,8 +108,8 @@ class ReviewRequestService:
         self,
         *,
         providers: dict[str, ReviewRequestProvider],
-        store: ReviewRequestStore,
-        session_store: JsonStore[SessionManifest],
+        store: ReviewRequestRepository,
+        session_store: SessionManifestRepository,
     ) -> None:
         self.providers = providers
         self.store = store
@@ -133,7 +133,7 @@ class ReviewRequestService:
     ) -> RequestPrReviewResponse:
         provider_name = normalize_pr_feedback_provider(provider)
         normalized_metadata = dict(metadata or {})
-        session = self.session_store.get(session_id)
+        session = self.session_store.get_session(session_id)
         resolved_directory = (
             directory_path.strip()
             if isinstance(directory_path, str) and directory_path.strip()
@@ -239,7 +239,7 @@ def _strip_ref_prefix(value: Any) -> str | None:
 
 def _build_review_request_service(
     config: GatewayConfig,
-    session_store: JsonStore[SessionManifest],
+    session_store: SessionManifestRepository,
 ) -> ReviewRequestService:
     github_token = os.environ.get(config.github_token_env, "").strip()
     azure_pat = os.environ.get(config.azure_devops_pr_pat_env, "").strip()

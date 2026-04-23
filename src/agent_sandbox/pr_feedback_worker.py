@@ -54,6 +54,43 @@ class FeedbackProviderAuthError(RuntimeError):
     """Raised when a feedback provider rejects the configured credentials."""
 
 
+class PrFeedbackRepository(Protocol):
+    """Repository contract for persisted PR feedback state."""
+
+    def get_cursor(self, stream_key: str) -> str | None: ...
+
+    def set_cursor(self, stream_key: str, cursor: str | None) -> None: ...
+
+    def add_feedback_if_new(self, envelope: FeedbackEnvelope) -> bool: ...
+
+    def get_session_cursor(self, session_id: str, stream_key: str) -> str | None: ...
+
+    def advance_session_cursor(self, session_id: str, stream_key: str, cursor: str | None) -> str | None: ...
+
+    def list_feedback_for_streams(
+        self,
+        *,
+        streams: list[dict[str, str]],
+        after: dict[tuple[str, str, str], str | None],
+        exclude_feedback_ids: set[str] | None = None,
+        limit: int | None = None,
+    ) -> list[FeedbackEnvelope]: ...
+
+    def mark_session_streams_read(
+        self,
+        *,
+        session_id: str,
+        streams: list[dict[str, str]],
+        cursor: str | None,
+    ) -> dict[str, str | None]: ...
+
+    def has_unread_feedback(self, *, session_id: str, streams: list[dict[str, str]]) -> bool: ...
+
+    def read_raw(self) -> dict[str, Any]: ...
+
+    def prune_streams(self, streams: set[tuple[str, str, str]]) -> tuple[int, int]: ...
+
+
 class PrFeedbackStore:
     """Atomic JSON-backed store for feedback, provider cursors, and session read cursors."""
 
@@ -151,6 +188,124 @@ class PrFeedbackStore:
                 ):
                     return True
             return False
+
+    def list_feedback_for_streams(
+        self,
+        *,
+        streams: list[dict[str, str]],
+        after: dict[tuple[str, str, str], str | None],
+        exclude_feedback_ids: set[str] | None = None,
+        limit: int | None = None,
+    ) -> list[FeedbackEnvelope]:
+        with self._lock:
+            payload = self._read_raw()
+            feedback_items = payload.get("feedback", {})
+            if not isinstance(feedback_items, dict):
+                return []
+            allowed_streams = {
+                (stream["provider"], stream["repo"], stream["pr_id"])
+                for stream in streams
+            }
+            ignored_feedback_ids = exclude_feedback_ids or set()
+            items: list[FeedbackEnvelope] = []
+            for raw_value in feedback_items.values():
+                if not isinstance(raw_value, dict):
+                    continue
+                candidate = FeedbackEnvelope.model_validate(raw_value)
+                if candidate.feedback_id in ignored_feedback_ids:
+                    continue
+                key = (candidate.provider, candidate.repo, candidate.pr_id)
+                if key not in allowed_streams:
+                    continue
+                effective_cursor = after.get(key)
+                if effective_cursor and candidate.created_at <= _parse_dt(effective_cursor):
+                    continue
+                items.append(candidate)
+            items.sort(key=lambda item: item.created_at)
+            if limit is not None:
+                return items[:limit]
+            return items
+
+    def mark_session_streams_read(
+        self,
+        *,
+        session_id: str,
+        streams: list[dict[str, str]],
+        cursor: str | None,
+    ) -> dict[str, str | None]:
+        with self._lock:
+            payload = self._read_raw()
+            session_reads = payload.setdefault("session_reads", {})
+            if not isinstance(session_reads, dict):
+                session_reads = {}
+                payload["session_reads"] = session_reads
+            current_reads = session_reads.get(session_id)
+            if not isinstance(current_reads, dict):
+                current_reads = {}
+                session_reads[session_id] = current_reads
+
+            updated: dict[str, str | None] = {}
+            for stream in streams:
+                stream_key = _stream_key(stream["provider"], stream["repo"], stream["pr_id"])
+                current_cursor = current_reads.get(stream_key)
+                next_cursor = _latest_cursor(
+                    [
+                        str(current_cursor) if current_cursor is not None else None,
+                        cursor,
+                    ]
+                )
+                if next_cursor is None:
+                    current_reads.pop(stream_key, None)
+                else:
+                    current_reads[stream_key] = next_cursor
+                updated[stream_key] = next_cursor
+
+            if not current_reads:
+                session_reads.pop(session_id, None)
+            self._compact_feedback(payload)
+            self._atomic_write(payload)
+            return updated
+
+    def read_raw(self) -> dict[str, Any]:
+        with self._lock:
+            return self._read_raw()
+
+    def prune_streams(self, streams: set[tuple[str, str, str]]) -> tuple[int, int]:
+        if not streams:
+            return 0, 0
+        with self._lock:
+            payload = self._read_raw()
+            removed_cursor_count = 0
+            cursors = payload.get("cursors")
+            if isinstance(cursors, dict):
+                for provider, repo, pr_id in streams:
+                    stream_key = _stream_key(provider, repo, pr_id)
+                    if stream_key in cursors:
+                        cursors.pop(stream_key, None)
+                        removed_cursor_count += 1
+
+            removed_feedback_count = 0
+            feedback = payload.get("feedback")
+            if isinstance(feedback, dict):
+                kept_feedback: dict[str, object] = {}
+                for feedback_id, raw_feedback in feedback.items():
+                    if not isinstance(raw_feedback, dict):
+                        kept_feedback[feedback_id] = raw_feedback
+                        continue
+                    key = (
+                        str(raw_feedback.get("provider", "")).strip(),
+                        str(raw_feedback.get("repo", "")).strip(),
+                        str(raw_feedback.get("pr_id", "")).strip(),
+                    )
+                    if key in streams:
+                        removed_feedback_count += 1
+                        continue
+                    kept_feedback[feedback_id] = raw_feedback
+                payload["feedback"] = kept_feedback
+
+            if removed_cursor_count or removed_feedback_count:
+                self._atomic_write(payload)
+            return removed_cursor_count, removed_feedback_count
 
     @staticmethod
     def _get_session_cursor_from_payload(payload: dict[str, Any], session_id: str, stream_key: str) -> str | None:

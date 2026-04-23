@@ -61,8 +61,7 @@ def test_discord_wake_worker_dispatches_resume_for_pending_channel(tmp_path: Pat
 
     config = GatewayConfig.model_validate({"runtime_dir": str(tmp_path / "runtime")})
     worker = build_discord_wake_worker(config, project_dir=project_dir)
-    worker.runtime.sessions.put(
-        "session-a",
+    worker.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="session-a",
             vm_id="vm-a",

@@ -27,6 +27,15 @@ class FakeStore:
     def put(self, key: str, value: object) -> None:
         self.items[key] = value
 
+    def get_session(self, key: str) -> object | None:
+        return self.get(key)
+
+    def upsert_session(self, value: object) -> None:
+        session_id = str(getattr(value, "session_id", "") or "").strip()
+        if not session_id:
+            raise ValueError("session_id is required")
+        self.put(session_id, value)
+
     def delete(self, key: str) -> None:
         self.items.pop(key, None)
 
@@ -62,9 +71,11 @@ def _build_issue_admin(tmp_path: Path) -> tuple[SimpleNamespace, FakeStore]:
     store = FakeStore()
     runtime = SimpleNamespace(
         sessions=FakeStore(),
+        session_repository=None,
         approvals=FakeStore(),
         audit=SimpleNamespace(log_decision=lambda **kwargs: None),
     )
+    runtime.session_repository = runtime.sessions
 
     def resolve_local_issue(issue_identifier: str) -> LocalIssueRecord:
         issue = store.get(issue_identifier)
@@ -179,11 +190,11 @@ def test_issue_git_admin_service_session_update_metadata_updates_store(tmp_path:
         expires_at=datetime.now(UTC) + timedelta(hours=1),
         metadata={"nested": {"one": 1}, "keep": True},
     )
-    admin.runtime.sessions.put("session-1", manifest)
+    admin.runtime.session_repository.upsert_session(manifest)
 
     result = service.session_update_metadata(target="session-1", metadata={"nested": {"two": 2}, "new": 3})
 
-    updated = admin.runtime.sessions.get("session-1")
+    updated = admin.runtime.session_repository.get_session("session-1")
     assert isinstance(updated, SessionManifest)
     assert updated.metadata == {"nested": {"one": 1, "two": 2}, "keep": True, "new": 3}
     assert result["session_id"] == "session-1"

@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+from agent_sandbox.cursor_repositories import JsonTeamsInboxCursorRepository
 from agent_sandbox.events.models import TriggerEvent
 from agent_sandbox.events.provider_models import TeamsMessageFilterDefinition, TeamsNewMessageTriggerDefinition
 from agent_sandbox.services import normalize_teams_target, teams_target_from_message
-from agent_sandbox.teams_inbox_store import TeamsInboxMessage, TeamsInboxStore
+from agent_sandbox.teams_inbox_store import TeamsInboxMessage
 from agent_sandbox.triggers.providers._cursor_state import TriggerCursorStore
 from agent_sandbox.triggers.providers.base import TriggerProviderBase
 
@@ -25,7 +26,9 @@ class TeamsNewMessageTriggerProvider(TriggerProviderBase):
         ]
         recent_cursor_set = set(recent_cursors)
 
-        inbox_store = TeamsInboxStore(self._resolved_config().runtime_dir / "teams-inbox-store.json")
+        inbox_store = JsonTeamsInboxCursorRepository(
+            self._resolved_config().runtime_dir / "teams-inbox-store.json"
+        )
         raw_messages = inbox_store.list_all_messages()
 
         target_filters = {

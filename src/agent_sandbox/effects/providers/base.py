@@ -224,6 +224,10 @@ class EffectLifecycleHookBase:
 def _session_lookup_from_admin_service(admin_service: Any) -> SessionLookup | None:
     if hasattr(admin_service, "read_all_sessions"):
         return admin_service
+    session_repository = getattr(getattr(admin_service, "runtime", None), "session_repository", None)
+    read_all = getattr(session_repository, "read_all", None)
+    if callable(read_all):
+        return _SessionLookupAdapter(session_repository)
     sessions = getattr(getattr(admin_service, "runtime", None), "sessions", None)
     read_all = getattr(sessions, "read_all", None)
     if callable(read_all):

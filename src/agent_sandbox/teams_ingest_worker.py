@@ -15,11 +15,12 @@ import httpx
 
 from .bootstrap import load_runtime_gateway_config
 from .config import GatewayConfig, TeamsIngestWorkerGlobalConfig
+from .cursor_repositories import JsonTeamsInboxCursorRepository, TeamsInboxCursorRepository
 from .models import DirectoryPath, SessionManifest, TeamsMessageEnvelope, ToolName
 from .runtime import RuntimeContext, _build_delegated_teams_token_provider, build_runtime
+from .records_repository import JsonTeamsRecordsRepository
 from .services import GraphTeamsService, normalize_teams_target, parse_teams_target
-from .storage import JsonStore
-from .teams_inbox_store import TeamsInboxMessage, TeamsInboxStore
+from .teams_inbox_store import TeamsInboxMessage
 
 logger = logging.getLogger(__name__)
 
@@ -39,13 +40,13 @@ class TeamsIngestWorker:
         config: GatewayConfig,
         worker_config: TeamsIngestWorkerGlobalConfig,
         runtime: RuntimeContext,
-        store: TeamsInboxStore | None = None,
+        store: TeamsInboxCursorRepository | None = None,
     ) -> None:
         self.config = config
         self.worker_config = worker_config
         self.runtime = runtime
         self.sessions = runtime.sessions
-        self.store = store or TeamsInboxStore(config.runtime_dir / "teams-inbox-store.json")
+        self.store = store or JsonTeamsInboxCursorRepository(config.runtime_dir / "teams-inbox-store.json")
 
     def run_forever(self) -> None:
         with _single_instance_lock(self.worker_config.lock_path):
@@ -81,11 +82,7 @@ class TeamsIngestWorker:
 
     def run_once(self) -> TeamsIngestCycleResult:
         now = datetime.now(UTC)
-        active_sessions = [
-            session
-            for session in self.runtime.sessions.read_all().values()
-            if session.expires_at > now
-        ]
+        active_sessions = self.runtime.session_repository.list_active_sessions(now=now)
         directories = self._directories_to_scan(active_sessions)
         channel_targets_polled = 0
         for directory_path in directories:
@@ -190,7 +187,7 @@ class TeamsIngestWorker:
         else:
             resolved_token_provider = token_provider
         return GraphTeamsService(
-            JsonStore(self.config.teams_message_store_path, TeamsMessageEnvelope),
+            JsonTeamsRecordsRepository(self.config.teams_message_store_path),
             token=token,
             token_provider=resolved_token_provider,
             api_base_url=provider_config.teams_graph_api_base_url,

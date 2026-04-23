@@ -13,6 +13,11 @@ from .directory_config import (
 )
 from .directories import DirectoryService, DirectoryStore
 from .models import SessionManifest
+from .session_manifest_repository import (
+    JsonSessionManifestRepository,
+    SessionManifestRepository,
+    as_session_manifest_repository,
+)
 from .storage import JsonStore
 
 
@@ -52,7 +57,7 @@ class ProviderConfigResolver:
         config: GatewayConfig,
         *,
         directory_store: DirectoryStore | None = None,
-        session_store: JsonStore[SessionManifest] | None = None,
+        session_store: SessionManifestRepository | None = None,
         provider_session_store: JsonStore[ProviderSessionManifest] | None = None,
     ) -> None:
         self.config = config
@@ -60,7 +65,8 @@ class ProviderConfigResolver:
         self.directory_store.ensure_root()
         self.directory_service = DirectoryService(self.directory_store)
         self.config_store = DirectoryConfigStore(self.directory_store, runtime_dir=config.runtime_dir)
-        self.session_store = session_store or JsonStore(config.session_store_path, SessionManifest)
+        raw_session_store = session_store or JsonSessionManifestRepository(config.session_store_path)
+        self.session_store = as_session_manifest_repository(raw_session_store)
         self.provider_session_store = provider_session_store or JsonStore(config.session_store_path, ProviderSessionManifest)
         self.resolver = DirectoryConfigResolver(
             self.directory_service,
@@ -86,13 +92,15 @@ class ProviderConfigResolver:
         return GatewayConfig.model_validate(payload)
 
     def resolve_for_session_id(self, session_id: str) -> GatewayConfig:
-        session = self.provider_session_store.get(session_id)
+        session = self.session_store.get_session(session_id)
+        if session is None:
+            session = self.provider_session_store.get(session_id)
         if session is None:
             raise ValueError(f"unknown session: {session_id}")
         return self.resolve_for_session_manifest(session)
 
     def get_session_manifest(self, session_id: str) -> SessionManifest:
-        session = self.session_store.get(session_id)
+        session = self.session_store.get_session(session_id)
         if session is None:
             raise ValueError(f"unknown session: {session_id}")
         return session

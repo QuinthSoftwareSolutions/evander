@@ -7,7 +7,8 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 from agent_sandbox.cli import EndpointStatus, UnitStatus, app
-from agent_sandbox.models import ApprovalRequest, LocalIssueRecord, VmActionResult, VmSummary
+from agent_sandbox.directories import DirectoryStore
+from agent_sandbox.models import ApprovalRequest, Directory, LocalIssueRecord, VmActionResult, VmSummary
 from agent_sandbox.teams_auth import InvalidClientConfigurationError
 
 UTC = timezone.utc
@@ -337,16 +338,11 @@ def test_init_state_creates_directories_store_with_root(tmp_path: Path) -> None:
     result = runner.invoke(app, ["init-state", "--config", str(config_path)])
     assert result.exit_code == 0
 
-    directories_payload = json.loads((tmp_path / "runtime" / "directories.json").read_text(encoding="utf-8"))
-    assert directories_payload == {
-        "root": {
-            "id": "root",
-            "name": "root",
-            "parent_id": None,
-            "created_at": directories_payload["root"]["created_at"],
-            "metadata": {},
-        }
-    }
+    directories = DirectoryStore(tmp_path / "runtime" / "directories.json").read_all()
+    assert directories["root"].id == "root"
+    assert directories["root"].name == "root"
+    assert directories["root"].parent_id is None
+    assert directories["root"].metadata == {}
 
 
 def test_migrate_directory_ownership_backfills_missing_fields_only(tmp_path: Path) -> None:
@@ -522,8 +518,8 @@ def test_migrate_global_config_to_root_materializes_all_domain_files(tmp_path: P
     assert (runtime_dir / "directory-config" / "root" / "issue-setup.json").exists()
     assert (runtime_dir / "directory-config" / "root" / "vm.json").exists()
 
-    directories_payload = json.loads((runtime_dir / "directories.json").read_text(encoding="utf-8"))
-    assert directories_payload["root"]["metadata"]["directory_config"]["domains"] == [
+    directories = DirectoryStore(runtime_dir / "directories.json").read_all()
+    assert directories["root"].metadata["directory_config"]["domains"] == [
         "ado_worker",
         "email",
         "heartbeat",
@@ -603,10 +599,17 @@ def test_migrate_global_config_to_root_recovers_when_metadata_lists_missing_root
 
     assert runner.invoke(app, ["init-state", "--config", str(config_path)]).exit_code == 0
     runtime_dir = tmp_path / "runtime"
-    directories_path = runtime_dir / "directories.json"
-    directories_payload = json.loads(directories_path.read_text(encoding="utf-8"))
-    directories_payload["root"]["metadata"] = {"directory_config": {"domains": ["providers"]}}
-    directories_path.write_text(json.dumps(directories_payload, indent=2, sort_keys=True), encoding="utf-8")
+    directories_store = DirectoryStore(runtime_dir / "directories.json")
+    directories = directories_store.read_all()
+    root = directories["root"]
+    directories["root"] = Directory(
+        id=root.id,
+        name=root.name,
+        parent_id=root.parent_id,
+        created_at=root.created_at,
+        metadata={"directory_config": {"domains": ["providers"]}},
+    )
+    directories_store.write_all(directories)
 
     result = runner.invoke(app, ["migrate-global-config-to-root", "--config", str(config_path)])
 
@@ -665,8 +668,8 @@ def test_migrate_ado_worker_env_to_root_materializes_root_domain_file(tmp_path: 
         "create_prs_automatically": True,
         "create_prs_as_draft": False,
     }
-    directories_payload = json.loads((runtime_dir / "directories.json").read_text(encoding="utf-8"))
-    assert "ado_worker" in directories_payload["root"]["metadata"]["directory_config"]["domains"]
+    directories = DirectoryStore(runtime_dir / "directories.json").read_all()
+    assert "ado_worker" in directories["root"].metadata["directory_config"]["domains"]
 
 
 def test_migrate_issue_setup_env_to_root_materializes_root_domain_file(tmp_path: Path) -> None:
@@ -719,8 +722,8 @@ def test_migrate_issue_setup_env_to_root_materializes_root_domain_file(tmp_path:
         "issue_setup_azure_devops_pr_pat_env": "TEAM_ISSUE_SETUP_ADO_PAT",
         "post_exec_verification_prompt": "verify everything",
     }
-    directories_payload = json.loads((runtime_dir / "directories.json").read_text(encoding="utf-8"))
-    assert "issue_setup" in directories_payload["root"]["metadata"]["directory_config"]["domains"]
+    directories = DirectoryStore(runtime_dir / "directories.json").read_all()
+    assert "issue_setup" in directories["root"].metadata["directory_config"]["domains"]
 
 
 def test_migrate_pr_template_to_root_materializes_root_domain_file(tmp_path: Path) -> None:
@@ -746,8 +749,8 @@ def test_migrate_pr_template_to_root_materializes_root_domain_file(tmp_path: Pat
     runtime_dir = tmp_path / "runtime"
     payload = json.loads((runtime_dir / "directory-config" / "root" / "pr-template.json").read_text(encoding="utf-8"))
     assert payload == {"pr_template_markdown": "Team checklist\n- [ ] Review\n"}
-    directories_payload = json.loads((runtime_dir / "directories.json").read_text(encoding="utf-8"))
-    assert "pr_template" in directories_payload["root"]["metadata"]["directory_config"]["domains"]
+    directories = DirectoryStore(runtime_dir / "directories.json").read_all()
+    assert "pr_template" in directories["root"].metadata["directory_config"]["domains"]
 
 
 def test_migrate_ado_worker_env_to_root_imports_env_file(tmp_path: Path) -> None:
@@ -788,7 +791,8 @@ def test_migrate_ado_worker_env_to_root_imports_env_file(tmp_path: Path) -> None
     assert payload["ado_area_filters"] == ["Root\\Area", "Root\\Other"]
     assert payload["ado_bootstrap_mssql"] is True
     assert "ado_mssql_sa_password_env" not in payload
-    assert "ado_worker" in json.loads((tmp_path / "runtime" / "directories.json").read_text(encoding="utf-8"))["root"]["metadata"]["directory_config"]["domains"]
+    directories = DirectoryStore(tmp_path / "runtime" / "directories.json").read_all()
+    assert "ado_worker" in directories["root"].metadata["directory_config"]["domains"]
 
 
 def test_migrate_issue_setup_env_to_root_imports_env_file_and_env_overrides(tmp_path: Path, monkeypatch) -> None:

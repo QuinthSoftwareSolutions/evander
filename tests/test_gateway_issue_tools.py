@@ -39,8 +39,7 @@ def call_tool(server, name: str, arguments: dict[str, object]):
 
 def test_get_issue_reads_closed_issue_without_list_filters(tmp_path: Path) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             directory_path="root",
@@ -69,8 +68,7 @@ def test_get_issue_reads_closed_issue_without_list_filters(tmp_path: Path) -> No
 
 def test_get_issue_requires_permission_in_gateway_issue_tools(tmp_path: Path) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             directory_path="root",
@@ -86,8 +84,7 @@ def test_get_issue_requires_permission_in_gateway_issue_tools(tmp_path: Path) ->
 
 def test_set_issue_plan_updates_issue_metadata(tmp_path: Path) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             directory_path="root",
@@ -129,8 +126,7 @@ def test_set_issue_plan_updates_issue_metadata(tmp_path: Path) -> None:
 
 def test_set_issue_plan_requires_permission(tmp_path: Path) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             directory_path="root",
@@ -151,8 +147,7 @@ def test_set_issue_plan_requires_permission(tmp_path: Path) -> None:
 
 def test_create_ado_backlog_item_success_with_allowed_tool(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             directory_path="root/team-a",
@@ -223,8 +218,7 @@ def test_create_ado_backlog_item_normalizes_assignee_identity_object(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             directory_path="root/team-a",
@@ -272,8 +266,7 @@ def test_create_ado_backlog_item_normalizes_assignee_identity_object(
 
 def test_create_ado_backlog_item_requires_permission(tmp_path: Path) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             directory_path="root/team-a",
@@ -348,8 +341,7 @@ def test_create_ado_backlog_item_validation_failures(
     error_match: str,
 ) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             directory_path="root/team-a",
@@ -365,8 +357,7 @@ def test_create_ado_backlog_item_validation_failures(
 
 def test_query_ado_backlog_items_requires_permission(tmp_path: Path) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             directory_path="root/team-a",
@@ -384,8 +375,7 @@ def test_query_ado_backlog_items_maps_request_into_issue_service(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             directory_path="root/team-a",
@@ -481,8 +471,7 @@ def test_query_ado_backlog_items_validation_failures(
     error_match: str,
 ) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             directory_path="root/team-a",
@@ -498,8 +487,7 @@ def test_query_ado_backlog_items_validation_failures(
 
 def test_list_ado_current_iteration_backlog_items_requires_permission(tmp_path: Path) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             directory_path="root/team-a",
@@ -517,8 +505,7 @@ def test_list_ado_current_iteration_backlog_items_maps_request_and_shape(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             directory_path="root/team-a",
@@ -611,8 +598,7 @@ def test_list_ado_current_iteration_backlog_items_errors_when_no_iteration_confi
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             directory_path="root/team-a",
@@ -646,8 +632,7 @@ def test_list_ado_current_iteration_backlog_items_errors_when_no_iteration_confi
 
 def test_get_ado_backlog_item_requires_permission(tmp_path: Path) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             directory_path="root/team-a",
@@ -665,8 +650,7 @@ def test_get_ado_backlog_item_maps_request_into_issue_service(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             directory_path="root/team-a",
@@ -745,8 +729,7 @@ def test_get_ado_backlog_item_validation_failures(
     error_match: str,
 ) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             directory_path="root/team-a",

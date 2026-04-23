@@ -32,8 +32,7 @@ def write_config(tmp_path: Path) -> Path:
 
 def test_admin_web_exposes_approvals_index_detail_and_decision(tmp_path: Path) -> None:
     service = AdminService(write_config(tmp_path))
-    service.runtime.sessions.put(
-        "issue-14084-session",
+    service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="issue-14084-session",
             vm_id="vm-14084",
@@ -78,8 +77,7 @@ def test_admin_web_exposes_approvals_index_detail_and_decision(tmp_path: Path) -
 
 def test_admin_web_approval_detail_falls_back_to_action_type_for_tool_name(tmp_path: Path) -> None:
     service = AdminService(write_config(tmp_path))
-    service.runtime.sessions.put(
-        "issue-14084-session",
+    service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="issue-14084-session",
             vm_id="vm-14084",
@@ -113,8 +111,7 @@ def test_admin_web_approval_detail_falls_back_to_action_type_for_tool_name(tmp_p
 
 def test_admin_web_rejects_invalid_approval_decisions(tmp_path: Path) -> None:
     service = AdminService(write_config(tmp_path))
-    service.runtime.sessions.put(
-        "issue-14084-session",
+    service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="issue-14084-session",
             vm_id="vm-14084",
@@ -162,8 +159,7 @@ def test_admin_web_rejects_invalid_approval_decisions(tmp_path: Path) -> None:
 
 def test_admin_web_exposes_sessions_catalog_list_detail_and_mutations(tmp_path: Path) -> None:
     service = AdminService(write_config(tmp_path))
-    service.runtime.sessions.put(
-        "issue-14085-session",
+    service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="issue-14085-session",
             vm_id="vm-14085",
@@ -214,8 +210,7 @@ def test_admin_web_exposes_sessions_catalog_list_detail_and_mutations(tmp_path: 
 
 def test_admin_web_rejects_blank_session_model(tmp_path: Path) -> None:
     service = AdminService(write_config(tmp_path))
-    service.runtime.sessions.put(
-        "issue-14085-session",
+    service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="issue-14085-session",
             vm_id="vm-14085",
@@ -236,8 +231,7 @@ def test_admin_web_rejects_blank_session_model(tmp_path: Path) -> None:
 
 def test_admin_web_exposes_wake_schedule_crud(tmp_path: Path) -> None:
     service = AdminService(write_config(tmp_path))
-    service.runtime.sessions.put(
-        "issue-14086-session",
+    service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="issue-14086-session",
             vm_id="vm-14086",
@@ -282,8 +276,7 @@ def test_admin_web_exposes_wake_schedule_crud(tmp_path: Path) -> None:
 
 def test_admin_web_session_detail_preserves_cron_wake_schedule_kind(tmp_path: Path) -> None:
     service = AdminService(write_config(tmp_path))
-    service.runtime.sessions.put(
-        "issue-14086-session",
+    service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="issue-14086-session",
             vm_id="vm-14086",

@@ -278,6 +278,13 @@ class SessionAdminFacade:
     def __init__(self, dependencies: SessionAdminDependencies) -> None:
         self._deps = dependencies
 
+    def _session_repository(self) -> Any:
+        return self._deps.runtime.session_repository
+
+    def _sessions_by_id(self) -> dict[str, Any]:
+        repository = self._session_repository()
+        return {session.session_id: session for session in repository.list_sessions()}
+
     def list_sessions(
         self,
         *,
@@ -295,7 +302,7 @@ class SessionAdminFacade:
             self._deps.direct_owned_entity_ids(normalized_directory_path, kind="session") if direct_only else set()
         )
         summaries: list[SessionSummary] = []
-        for session_id, manifest in sorted(self._deps.runtime.sessions.read_all().items(), key=admin_service_module._session_sort_key):
+        for session_id, manifest in sorted(self._sessions_by_id().items(), key=admin_service_module._session_sort_key):
             if direct_only:
                 if session_id not in owned_session_ids:
                     continue
@@ -322,33 +329,14 @@ class SessionAdminFacade:
         session_id: str | None = None,
         include_disabled: bool = True,
     ) -> list[dict[str, Any]]:
-        payload = self._deps.runtime.wake_store.read_raw()
-        raw_requests = payload.get("requests")
-        raw_dispatches = payload.get("dispatches")
-        if not isinstance(raw_requests, dict):
-            return []
-        latest_dispatch_by_request_id: dict[str, dict[str, Any]] = {}
-        if isinstance(raw_dispatches, dict):
-            for raw_value in raw_dispatches.values():
-                if not isinstance(raw_value, dict):
-                    continue
-                dispatch_request_id = str(raw_value.get("request_id") or "").strip()
-                if not dispatch_request_id:
-                    continue
-                dispatched_at = str(raw_value.get("dispatched_at") or "")
-                current = latest_dispatch_by_request_id.get(dispatch_request_id)
-                if current is None or dispatched_at > str(current.get("dispatched_at") or ""):
-                    latest_dispatch_by_request_id[dispatch_request_id] = raw_value
+        requests = self._deps.runtime.wake_store.list_requests(
+            session_id=session_id,
+            include_disabled=include_disabled,
+        )
+        latest_dispatch_by_request_id = self._deps.runtime.wake_store.latest_dispatch_by_request_id()
 
         schedules: list[dict[str, Any]] = []
-        for raw_value in raw_requests.values():
-            if not isinstance(raw_value, dict):
-                continue
-            request = WakeScheduledRequest.model_validate(raw_value)
-            if session_id and request.session_id != session_id:
-                continue
-            if not include_disabled and not request.enabled:
-                continue
+        for request in requests:
             dispatch = latest_dispatch_by_request_id.get(request.request_id)
             schedules.append(
                 {
@@ -366,10 +354,10 @@ class SessionAdminFacade:
                     "next_run_at": request.next_run_at,
                     "last_dispatch": (
                         {
-                            "dispatch_id": dispatch.get("dispatch_id"),
-                            "status": dispatch.get("status"),
-                            "error": dispatch.get("error"),
-                            "dispatched_at": dispatch.get("dispatched_at"),
+                            "dispatch_id": dispatch.dispatch_id,
+                            "status": dispatch.status,
+                            "error": dispatch.error,
+                            "dispatched_at": dispatch.dispatched_at,
                         }
                         if dispatch is not None
                         else None
@@ -478,10 +466,10 @@ class SessionAdminFacade:
         return self._deps.runtime.wake_store.delete_request(normalized)
 
     def renew_session(self, target: str, *, extension: str = "1d") -> SessionActionResult:
-        session_id, manifest = admin_service_module._resolve_session_target(target, self._deps.runtime.sessions.read_all())
+        session_id, manifest = admin_service_module._resolve_session_target(target, self._sessions_by_id())
         previous_expires_at = manifest.expires_at
         manifest.expires_at = admin_service_module._utc_now() + admin_service_module._parse_session_extension(extension)
-        self._deps.runtime.sessions.put(session_id, manifest)
+        self._session_repository().upsert_session(manifest)
         return SessionActionResult(
             success=True,
             session_id=session_id,
@@ -494,10 +482,10 @@ class SessionAdminFacade:
         )
 
     def revoke_session(self, target: str) -> SessionActionResult:
-        session_id, manifest = admin_service_module._resolve_session_target(target, self._deps.runtime.sessions.read_all())
+        session_id, manifest = admin_service_module._resolve_session_target(target, self._sessions_by_id())
         previous_expires_at = manifest.expires_at
         manifest.expires_at = admin_service_module._utc_now()
-        self._deps.runtime.sessions.put(session_id, manifest)
+        self._session_repository().upsert_session(manifest)
         return SessionActionResult(
             success=True,
             session_id=session_id,
@@ -510,8 +498,8 @@ class SessionAdminFacade:
         )
 
     def delete_session(self, target: str) -> SessionActionResult:
-        session_id, _ = admin_service_module._resolve_session_target(target, self._deps.runtime.sessions.read_all())
-        self._deps.runtime.sessions.delete(session_id)
+        session_id, _ = admin_service_module._resolve_session_target(target, self._sessions_by_id())
+        self._session_repository().delete_session(session_id)
         return SessionActionResult(
             success=True,
             session_id=session_id,
@@ -520,7 +508,7 @@ class SessionAdminFacade:
         )
 
     def set_session_allowed_tools(self, target: str, allowed_tools: list[str | ToolName]) -> SessionActionResult:
-        session_id, manifest = admin_service_module._resolve_session_target(target, self._deps.runtime.sessions.read_all())
+        session_id, manifest = admin_service_module._resolve_session_target(target, self._sessions_by_id())
         normalized_tools: list[ToolName] = []
         seen: set[ToolName] = set()
         for tool in allowed_tools:
@@ -530,7 +518,7 @@ class SessionAdminFacade:
             seen.add(normalized_tool)
             normalized_tools.append(normalized_tool)
         manifest.allowed_tools = normalized_tools
-        self._deps.runtime.sessions.put(session_id, manifest)
+        self._session_repository().upsert_session(manifest)
         return SessionActionResult(
             success=True,
             session_id=session_id,
@@ -539,9 +527,9 @@ class SessionAdminFacade:
         )
 
     def set_session_allowed_script_names(self, target: str, allowed_script_names: list[str]) -> SessionActionResult:
-        session_id, manifest = admin_service_module._resolve_session_target(target, self._deps.runtime.sessions.read_all())
+        session_id, manifest = admin_service_module._resolve_session_target(target, self._sessions_by_id())
         manifest.allowed_script_names = admin_service_module._normalize_allowed_script_names(allowed_script_names)
-        self._deps.runtime.sessions.put(session_id, manifest)
+        self._session_repository().upsert_session(manifest)
         return SessionActionResult(
             success=True,
             session_id=session_id,
@@ -550,12 +538,12 @@ class SessionAdminFacade:
         )
 
     def set_session_model(self, target: str, model: str) -> SessionActionResult:
-        session_id, manifest = admin_service_module._resolve_session_target(target, self._deps.runtime.sessions.read_all())
+        session_id, manifest = admin_service_module._resolve_session_target(target, self._sessions_by_id())
         normalized_model = str(model).strip()
         if not normalized_model:
             raise ValueError("model must be non-empty")
         manifest.model = normalized_model
-        self._deps.runtime.sessions.put(session_id, manifest)
+        self._session_repository().upsert_session(manifest)
         return SessionActionResult(
             success=True,
             session_id=session_id,
@@ -564,20 +552,10 @@ class SessionAdminFacade:
         )
 
     def _active_wake_requests(self, *, exclude_request_id: str | None = None) -> list[WakeScheduledRequest]:
-        payload = self._deps.runtime.wake_store.read_raw()
-        raw_requests = payload.get("requests", {})
-        if not isinstance(raw_requests, dict):
-            return []
-        active: list[WakeScheduledRequest] = []
-        for raw_value in raw_requests.values():
-            if not isinstance(raw_value, dict):
-                continue
-            request = WakeScheduledRequest.model_validate(raw_value)
-            if exclude_request_id and request.request_id == exclude_request_id:
-                continue
-            if request.enabled:
-                active.append(request)
-        return active
+        requests = self._deps.runtime.wake_store.list_requests(include_disabled=False)
+        if not exclude_request_id:
+            return requests
+        return [request for request in requests if request.request_id != exclude_request_id]
 
     def _enforce_wake_schedule_guardrails(
         self,
@@ -620,7 +598,9 @@ class WorkerAdminFacade:
 
     def _session_ids_by_vm(self) -> dict[str, list[str]]:
         mapping: dict[str, list[str]] = {}
-        for session_id, session in self._deps.runtime.sessions.read_all().items():
+        for session_id, session in {
+            session.session_id: session for session in self._deps.runtime.session_repository.list_sessions()
+        }.items():
             if session.vm_id:
                 mapping.setdefault(session.vm_id, []).append(session_id)
         for session_ids in mapping.values():
@@ -629,14 +609,16 @@ class WorkerAdminFacade:
 
     def _directory_paths_by_vm(self) -> dict[str, list[str]]:
         mapping: dict[str, set[str]] = {}
-        for session in self._deps.runtime.sessions.read_all().values():
+        for session in self._deps.runtime.session_repository.list_sessions():
             if session.vm_id:
                 mapping.setdefault(session.vm_id, set()).add(session.directory_path)
         return {vm_id: sorted(paths) for vm_id, paths in mapping.items()}
 
     def _labels_by_vm(self) -> dict[str, dict[str, str]]:
         mapping: dict[str, dict[str, str] | None] = {}
-        sessions = self._deps.runtime.sessions.read_all()
+        sessions = {
+            session.session_id: session for session in self._deps.runtime.session_repository.list_sessions()
+        }
         for session_id in sorted(sessions):
             session = sessions[session_id]
             if not session.vm_id:

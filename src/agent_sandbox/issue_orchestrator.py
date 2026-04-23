@@ -163,7 +163,7 @@ class IssueOrchestratorWorker:
         normalized_directory = DirectoryPath(segments=directory_path).as_posix()
         sessions = [
             session
-            for session in self.runtime.sessions.read_all().values()
+            for session in self.runtime.session_repository.list_active_sessions(now=now)
             if session.directory_path == normalized_directory and session.expires_at > now
         ]
         sessions.sort(key=lambda session: (session.session_id, session.vm_id or ""))

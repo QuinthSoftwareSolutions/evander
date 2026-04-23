@@ -68,6 +68,47 @@ def test_pr_feedback_store_persists_session_read_cursors(tmp_path: Path) -> None
     assert reloaded.get_session_cursor("session-1", stream_key) == "2026-03-21T00:00:00Z"
 
 
+def test_pr_feedback_store_lists_feedback_by_stream_and_marks_session_read(tmp_path: Path) -> None:
+    store = PrFeedbackStore(tmp_path / "runtime" / "pr-feedback-store.json")
+    stream = {"provider": "github", "repo": "org/repo", "pr_id": "123"}
+    store.add_feedback_if_new(
+        FeedbackEnvelope(
+            feedback_id="feedback-1",
+            provider="github",
+            repo="org/repo",
+            pr_id="123",
+            author="octocat",
+            body="first",
+            created_at=datetime(2026, 3, 20, 12, 0, tzinfo=timezone.utc),
+        )
+    )
+    store.add_feedback_if_new(
+        FeedbackEnvelope(
+            feedback_id="feedback-2",
+            provider="github",
+            repo="org/repo",
+            pr_id="123",
+            author="octocat",
+            body="second",
+            created_at=datetime(2026, 3, 21, 12, 0, tzinfo=timezone.utc),
+        )
+    )
+
+    items = store.list_feedback_for_streams(
+        streams=[stream],
+        after={("github", "org/repo", "123"): "2026-03-20T13:00:00Z"},
+    )
+    updated = store.mark_session_streams_read(
+        session_id="session-1",
+        streams=[stream],
+        cursor="2026-03-21T12:00:00Z",
+    )
+
+    assert [item.feedback_id for item in items] == ["feedback-2"]
+    assert updated == {"github:org/repo:123": "2026-03-21T12:00:00Z"}
+    assert store.get_session_cursor("session-1", "github:org/repo:123") == "2026-03-21T12:00:00Z"
+
+
 def test_pr_feedback_store_reports_unread_feedback_per_session(tmp_path: Path) -> None:
     store = PrFeedbackStore(tmp_path / "runtime" / "pr-feedback-store.json")
     envelope = FeedbackEnvelope(
@@ -144,6 +185,47 @@ def test_pr_feedback_store_keeps_recent_feedback_even_when_stream_cursor_has_adv
 
     payload = json.loads(path.read_text(encoding="utf-8"))
     assert list(payload["feedback"]) == ["github:issue_comment:1"]
+
+
+def test_pr_feedback_store_prune_streams_removes_matching_feedback_and_cursor(tmp_path: Path) -> None:
+    path = tmp_path / "runtime" / "pr-feedback-store.json"
+    store = PrFeedbackStore(path)
+    assert store.add_feedback_if_new(
+        FeedbackEnvelope(
+            feedback_id="github:issue_comment:1",
+            provider="github",
+            repo="org/repo",
+            pr_id="123",
+            thread_id="issue_comment:1",
+            comment_id="1",
+            author="octocat",
+            body="Needs tests",
+            created_at=datetime(2026, 3, 21, tzinfo=timezone.utc),
+        )
+    )
+    assert store.add_feedback_if_new(
+        FeedbackEnvelope(
+            feedback_id="github:issue_comment:2",
+            provider="github",
+            repo="other/repo",
+            pr_id="999",
+            thread_id="issue_comment:2",
+            comment_id="2",
+            author="octocat",
+            body="Keep me",
+            created_at=datetime(2026, 3, 22, tzinfo=timezone.utc),
+        )
+    )
+    store.set_cursor("github:org/repo:123", "2026-03-21T00:00:00Z")
+    store.set_cursor("github:other/repo:999", "2026-03-22T00:00:00Z")
+
+    removed_cursors, removed_feedback = store.prune_streams({("github", "org/repo", "123")})
+
+    assert removed_cursors == 1
+    assert removed_feedback == 1
+    payload = store.read_raw()
+    assert payload["cursors"] == {"github:other/repo:999": "2026-03-22T00:00:00Z"}
+    assert list(payload["feedback"]) == ["github:issue_comment:2"]
 
 
 def test_github_mapping_review_comment_edge_cases() -> None:

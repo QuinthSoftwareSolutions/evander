@@ -21,6 +21,7 @@ from ..models import (
     RemoteIssueReference,
     VmActionResult,
 )
+from ..session_manifest_repository import as_session_manifest_repository
 
 
 @dataclass(frozen=True)
@@ -270,6 +271,20 @@ class IssueGitAdminService:
 
     def __init__(self, dependencies: IssueGitAdminDependencies) -> None:
         self._deps = dependencies
+
+    def _session_repository(self):
+        runtime = self._deps.runtime
+        return as_session_manifest_repository(getattr(runtime, "session_repository", runtime.sessions))
+
+    def _resolve_session_target(self, target: str):
+        repository = self._session_repository()
+        try:
+            session = repository.resolve_session_target(target)
+        except Exception:
+            session = None
+        if session is not None:
+            return str(getattr(session, "session_id", "") or "").strip(), session
+        raise ValueError(f"Unknown session target: {target}")
 
     @staticmethod
     def _derive_review_branch(agent_branch: str) -> str:
@@ -533,10 +548,11 @@ class IssueGitAdminService:
 
     def session_update_metadata(self, *, target: str, metadata: Mapping[str, Any]) -> dict[str, Any]:
         admin = self._deps
-        session_id, manifest = _admin_service._resolve_session_target(target, admin.runtime.sessions.read_all())
+        session_repository = self._session_repository()
+        session_id, manifest = self._resolve_session_target(target)
         merged_metadata = _admin_service._deep_merge_mapping(manifest.metadata, metadata)
         updated_manifest = manifest.model_copy(update={"metadata": merged_metadata})
-        admin.runtime.sessions.put(session_id, updated_manifest)
+        session_repository.upsert_session(updated_manifest)
         return {
             "success": True,
             "action": "session_update_metadata",
@@ -549,7 +565,7 @@ class IssueGitAdminService:
 
     def session_context_query(self, *, target: str) -> dict[str, Any]:
         admin = self._deps
-        session_id, manifest = _admin_service._resolve_session_target(target, admin.runtime.sessions.read_all())
+        session_id, manifest = self._resolve_session_target(target)
         return {
             "session_id": session_id,
             "vm_name": manifest.vm_id,
@@ -604,7 +620,7 @@ class IssueGitAdminService:
 
     def _refresh_approval_request(self, request: ApprovalRequest) -> ApprovalRequest:
         admin = self._deps
-        session = admin.runtime.sessions.get(request.session_id)
+        session = self._session_repository().get_session(request.session_id)
         mutated = False
         if not request.directory_path and session is not None:
             request.directory_path = session.directory_path
@@ -1233,7 +1249,7 @@ class IssueGitAdminService:
         session_id: str,
     ) -> LocalIssueRecord | None:
         admin = self._deps
-        session = admin.runtime.sessions.get(session_id)
+        session = self._session_repository().get_session(session_id)
         if session is None:
             raise ValueError(f"Unknown session: {session_id}")
         candidates = sorted(
@@ -1264,7 +1280,7 @@ class IssueGitAdminService:
         summary: str,
     ) -> LocalIssueRecord:
         admin = self._deps
-        session = admin.runtime.sessions.get(session_id)
+        session = self._session_repository().get_session(session_id)
         if session is None:
             raise ValueError(f"Unknown session: {session_id}")
         normalized_summary = summary.strip()
@@ -1312,7 +1328,7 @@ class IssueGitAdminService:
 
         vm_name = f"vm-{issue_number}"
         existing_vm_state = _admin_service._dominfo_field(vm_name, "State")
-        sessions = admin.runtime.sessions.read_all()
+        sessions = self._session_repository().read_all()
         has_session = any(
             session_id == issue_number
             or session_id.startswith(f"issue-{issue_number}-")

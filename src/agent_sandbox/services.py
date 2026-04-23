@@ -32,9 +32,10 @@ from .models import (
     TeamsMessageEnvelope,
 )
 from .discord_inbox_store import DiscordInboxStore
-from .pr_feedback_worker import PrFeedbackStore, _stream_key
+from .cursor_repositories import DiscordInboxCursorRepository
+from .pr_feedback_worker import PrFeedbackRepository, PrFeedbackStore, _stream_key
 from .email.providers import EmailDraft, EmailMessageDetail, EmailMessageSummary, EmailProvider
-from .storage import JsonStore
+from .records_repository import DiscordRecordsRepository, TeamsRecordsRepository
 
 _IGNORED_FEEDBACK_RETENTION = timedelta(days=90)
 _FENCED_CODE_BLOCK_RE = re.compile(r"```[^\n`]*\n?(.*?)```", re.DOTALL)
@@ -320,7 +321,7 @@ class TeamsTarget:
 class StubDiscordService:
     def __init__(
         self,
-        command_store: JsonStore[DiscordCommandEnvelope],
+        command_store: DiscordRecordsRepository,
         *,
         read_reaction_emoji: str = "👀",
     ) -> None:
@@ -379,7 +380,7 @@ class StubDiscordService:
 class DiscordBotApiService:
     def __init__(
         self,
-        command_store: JsonStore[DiscordCommandEnvelope],
+        command_store: DiscordRecordsRepository,
         *,
         token: str,
         api_base_url: str,
@@ -771,7 +772,7 @@ def teams_target_from_message(
 class StubTeamsService:
     def __init__(
         self,
-        message_store: JsonStore[TeamsMessageEnvelope],
+        message_store: TeamsRecordsRepository,
         *,
         read_reaction_emoji: str = "👀",
     ) -> None:
@@ -882,7 +883,7 @@ class StubTeamsService:
 class GraphTeamsService:
     def __init__(
         self,
-        message_store: JsonStore[TeamsMessageEnvelope],
+        message_store: TeamsRecordsRepository,
         *,
         token: str | None = None,
         token_provider: Callable[[], str] | None = None,
@@ -1299,9 +1300,14 @@ class GraphTeamsService:
 
 
 class DiscordInboxService:
-    def __init__(self, store_path: Path) -> None:
+    def __init__(
+        self,
+        store_path: Path,
+        *,
+        repository: DiscordInboxCursorRepository | None = None,
+    ) -> None:
         self.store_path = store_path
-        self.store = DiscordInboxStore(store_path)
+        self.store: DiscordInboxCursorRepository = repository or DiscordInboxStore(store_path)
 
     def has_pending_discord_messages(
         self,
@@ -1457,9 +1463,15 @@ class DiscordInboxService:
 
 
 class PrFeedbackService:
-    def __init__(self, store_path: Path, *, ignored_feedback_store_path: Path | None = None) -> None:
+    def __init__(
+        self,
+        store_path: Path,
+        *,
+        ignored_feedback_store_path: Path | None = None,
+        repository: PrFeedbackRepository | None = None,
+    ) -> None:
         self.store_path = store_path
-        self.store = PrFeedbackStore(store_path)
+        self.store: PrFeedbackRepository = repository or PrFeedbackStore(store_path)
         self.ignored_feedback_store_path = ignored_feedback_store_path
 
     def has_pending_feedback(
@@ -1520,11 +1532,6 @@ class PrFeedbackService:
         limit: int | None,
         persist_session_cursor: bool,
     ) -> ListUnreadFeedbackResponse:
-        payload = self._read_store()
-        allowed_streams = {
-            (stream["provider"], stream["repo"], stream["pr_id"])
-            for stream in streams
-        }
         stream_cursors = {
             (stream["provider"], stream["repo"], stream["pr_id"]): self._effective_cursor(
                 session_id=session_id,
@@ -1533,43 +1540,34 @@ class PrFeedbackService:
             )
             for stream in streams
         }
-        items: list[PrFeedbackItem] = []
         ignored_feedback_ids = self._read_ignored_feedback_ids()
-        for raw_value in payload.get("feedback", {}).values():
-            if not isinstance(raw_value, dict):
-                continue
-            candidate = PrFeedbackItem.model_validate(raw_value)
-            if candidate.feedback_id in ignored_feedback_ids:
-                continue
-            key = (candidate.provider, candidate.repo, candidate.pr_id)
-            if key not in allowed_streams:
-                continue
-            effective_cursor = stream_cursors.get(key)
-            if effective_cursor and candidate.created_at <= self._parse_cursor(effective_cursor):
-                continue
-            items.append(candidate)
-
-        items.sort(key=lambda item: item.created_at)
-        if limit is not None:
-            items = items[:limit]
+        items = [
+            PrFeedbackItem.model_validate(item.model_dump(mode="json"))
+            for item in self.store.list_feedback_for_streams(
+                streams=streams,
+                after=stream_cursors,
+                exclude_feedback_ids=ignored_feedback_ids,
+                limit=limit,
+            )
+        ]
         next_cursor = (
             items[-1].created_at.isoformat().replace("+00:00", "Z")
             if items
             else self._max_cursors(stream_cursors.values())
         )
         if persist_session_cursor and session_id is not None:
-            for stream in streams:
-                self.store.advance_session_cursor(
-                    session_id,
-                    _stream_key(stream["provider"], stream["repo"], stream["pr_id"]),
-                    next_cursor if next_cursor is not None else cursor,
-                )
+            self.store.mark_session_streams_read(
+                session_id=session_id,
+                streams=streams,
+                cursor=next_cursor if next_cursor is not None else cursor,
+            )
         return ListUnreadFeedbackResponse(feedback=items, next_cursor=next_cursor)
 
     def _read_store(self) -> dict[str, Any]:
-        if not self.store_path.exists():
-            return {"feedback": {}}
-        return json.loads(self.store_path.read_text(encoding="utf-8"))
+        payload = self.store.read_raw()
+        if "feedback" not in payload:
+            payload["feedback"] = {}
+        return payload
 
     def _read_ignored_feedback_ids(self) -> set[str]:
         path = self.ignored_feedback_store_path

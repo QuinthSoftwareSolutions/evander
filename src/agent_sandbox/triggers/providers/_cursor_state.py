@@ -3,7 +3,15 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from threading import Lock
-from typing import Any
+from typing import Any, Protocol
+
+
+class TriggerCursorRepository(Protocol):
+    """Repository contract for persisted trigger cursor state."""
+
+    def get(self, trigger_id: str) -> dict[str, Any]: ...
+
+    def put(self, trigger_id: str, value: dict[str, Any]) -> None: ...
 
 
 class TriggerCursorStore:

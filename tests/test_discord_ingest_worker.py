@@ -55,8 +55,7 @@ def test_discord_ingest_worker_counts_active_sessions_in_configured_scope(tmp_pa
 
     config = GatewayConfig.model_validate({"runtime_dir": str(tmp_path / "runtime")})
     worker = build_discord_ingest_worker(config, project_dir=project_dir)
-    worker.sessions.put(
-        "session-a",
+    worker.sessions.upsert_session(
         SessionManifest(
             session_id="session-a",
             vm_id="vm-a",
@@ -65,8 +64,7 @@ def test_discord_ingest_worker_counts_active_sessions_in_configured_scope(tmp_pa
             expires_at=datetime.now(UTC) + timedelta(hours=1),
         ),
     )
-    worker.sessions.put(
-        "session-b",
+    worker.sessions.upsert_session(
         SessionManifest(
             session_id="session-b",
             vm_id="vm-b",

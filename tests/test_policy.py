@@ -15,6 +15,7 @@ from agent_sandbox.models import (
     ToolName,
 )
 from agent_sandbox.policy import PolicyEngine, PolicyError
+from agent_sandbox.session_manifest_repository import JsonSessionManifestRepository
 from agent_sandbox.storage import JsonStore
 
 
@@ -28,7 +29,7 @@ def make_engine(tmp_path: Path) -> PolicyEngine:
         email_store_path=tmp_path / "emails.json",
         discord_command_store_path=tmp_path / "discord.json",
     )
-    sessions = JsonStore(config.session_store_path, SessionManifest)
+    sessions = JsonSessionManifestRepository(config.session_store_path)
     approvals = JsonStore(config.approval_store_path, ApprovalRequest)
     return PolicyEngine(config, sessions, approvals)
 
@@ -50,7 +51,7 @@ def test_require_tool_rejects_unknown_tool(tmp_path: Path) -> None:
         allowed_tools=[ToolName.EMAIL_LIST_UNREAD],
         expires_at=datetime.now(UTC) + timedelta(hours=1),
     )
-    engine.session_store.put("s1", manifest)
+    engine.session_store.upsert_session(manifest)
 
     try:
         engine.require_tool("s1", ToolName.DISCORD_POST_STATUS)
@@ -62,8 +63,7 @@ def test_require_tool_rejects_unknown_tool(tmp_path: Path) -> None:
 
 def test_require_tool_schedule_resume_requires_vm_binding(tmp_path: Path) -> None:
     engine = make_engine(tmp_path)
-    engine.session_store.put(
-        "s1",
+    engine.session_store.upsert_session(
         SessionManifest(
             session_id="s1",
             allowed_tools=[ToolName.SCHEDULE_RESUME],
@@ -98,8 +98,7 @@ def test_require_approved_rejects_payload_mismatch(tmp_path: Path) -> None:
 
 def test_create_approval_persists_redacted_payload(tmp_path: Path) -> None:
     engine = make_engine(tmp_path)
-    engine.session_store.put(
-        "s1",
+    engine.session_store.upsert_session(
         SessionManifest(
             session_id="s1",
             allowed_tools=[ToolName.APPROVAL_SUBMIT],
@@ -126,8 +125,7 @@ def test_create_approval_persists_redacted_payload(tmp_path: Path) -> None:
 
 def test_get_approval_redacts_legacy_stored_payload(tmp_path: Path) -> None:
     engine = make_engine(tmp_path)
-    engine.session_store.put(
-        "s1",
+    engine.session_store.upsert_session(
         SessionManifest(
             session_id="s1",
             allowed_tools=[ToolName.APPROVAL_SUBMIT],
@@ -191,7 +189,7 @@ def test_require_discord_command_source_allows_operator_user(tmp_path: Path) -> 
         discord_command_store_path=tmp_path / "discord.json",
     )
     write_root_policy_overlay(config, {"discord_operator_user_allowlist": ["user-operator"]})
-    sessions = JsonStore(config.session_store_path, SessionManifest)
+    sessions = JsonSessionManifestRepository(config.session_store_path)
     approvals = JsonStore(config.approval_store_path, ApprovalRequest)
     engine = PolicyEngine(config, sessions, approvals)
     session = SessionManifest(
@@ -225,7 +223,7 @@ def test_require_email_send_enabled_uses_effective_directory_policy(tmp_path: Pa
         discord_command_store_path=tmp_path / "discord.json",
     )
     write_root_policy_overlay(config, {"email_send_enabled": True})
-    sessions = JsonStore(config.session_store_path, SessionManifest)
+    sessions = JsonSessionManifestRepository(config.session_store_path)
     approvals = JsonStore(config.approval_store_path, ApprovalRequest)
     engine = PolicyEngine(config, sessions, approvals)
     session = SessionManifest(
@@ -454,8 +452,7 @@ def test_require_email_mailbox_and_folder_for_mailbox(tmp_path: Path) -> None:
 
 def test_require_tool_for_feedback_tools_requires_stream_metadata(tmp_path: Path) -> None:
     engine = make_engine(tmp_path)
-    engine.session_store.put(
-        "s1",
+    engine.session_store.upsert_session(
         SessionManifest(
             session_id="s1",
             allowed_tools=[ToolName.HAS_PENDING_FEEDBACK],
@@ -469,8 +466,7 @@ def test_require_tool_for_feedback_tools_requires_stream_metadata(tmp_path: Path
 
 def test_require_tool_for_feedback_tools_accepts_valid_stream_metadata(tmp_path: Path) -> None:
     engine = make_engine(tmp_path)
-    engine.session_store.put(
-        "s1",
+    engine.session_store.upsert_session(
         SessionManifest(
             session_id="s1",
             allowed_tools=[ToolName.LIST_UNREAD_FEEDBACK],
@@ -486,8 +482,7 @@ def test_require_tool_for_feedback_tools_accepts_valid_stream_metadata(tmp_path:
 
 def test_require_tool_list_all_feedback_requires_stream_metadata(tmp_path: Path) -> None:
     engine = make_engine(tmp_path)
-    engine.session_store.put(
-        "s1",
+    engine.session_store.upsert_session(
         SessionManifest(
             session_id="s1",
             allowed_tools=[ToolName.LIST_ALL_FEEDBACK],

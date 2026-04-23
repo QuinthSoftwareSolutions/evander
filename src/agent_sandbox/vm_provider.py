@@ -13,6 +13,7 @@ from typing import Any, Protocol
 
 from . import admin_service as admin_service_module
 from .models import SessionManifest, VmActionResult, VmSummary
+from .session_manifest_repository import SessionManifestRepository, as_session_manifest_repository
 from .vm_power_state import normalize_power_state
 
 
@@ -37,6 +38,10 @@ def session_vm_provider_id(session: SessionManifest | Any | None, *, fallback_vm
     if provider_id:
         return provider_id
     return str(getattr(session, "vm_id", "") or "").strip() or fallback_vm_name
+
+
+def _runtime_session_repository(runtime: Any) -> SessionManifestRepository:
+    return as_session_manifest_repository(getattr(runtime, "session_repository", runtime.sessions))
 
 
 class AzureVmControlClientProtocol(Protocol):
@@ -232,9 +237,10 @@ class LibvirtVmProvider(VmProvider):
         direct_only: bool = False,
     ) -> list[VmSummary]:
         deps = self.context.dependencies
-        session_ids_by_vm = _session_ids_by_vm(deps.runtime.sessions.read_all())
-        labels_by_vm = _labels_by_vm(deps.runtime.sessions.read_all())
-        directory_paths_by_vm = _directory_paths_by_vm(deps.runtime.sessions.read_all())
+        session_repository = _runtime_session_repository(deps.runtime)
+        session_ids_by_vm = _session_ids_by_vm(session_repository.list_sessions())
+        labels_by_vm = _labels_by_vm(session_repository.list_sessions())
+        directory_paths_by_vm = _directory_paths_by_vm(session_repository.list_sessions())
         normalized_directory_path = deps.normalize_directory_path(directory_path)
         owned_vm_ids = deps.direct_owned_entity_ids(normalized_directory_path, kind="vm") if direct_only else set()
         vm_names = admin_service_module._virsh_lines(
@@ -306,7 +312,7 @@ class LibvirtVmProvider(VmProvider):
         result = dict(
             _libvirt_vm_exec(
                 kwargs["target"],
-                sessions=self.context.dependencies.runtime.sessions.read_all(),
+                session_repository=_runtime_session_repository(self.context.dependencies.runtime),
                 command=kwargs["command"],
                 vm_user=kwargs.get("vm_user", "agent"),
                 working_directory=kwargs.get("working_directory"),
@@ -323,7 +329,7 @@ class LibvirtVmProvider(VmProvider):
         result = dict(
             _libvirt_vm_copy_files(
                 kwargs["target"],
-                sessions=self.context.dependencies.runtime.sessions.read_all(),
+                session_repository=_runtime_session_repository(self.context.dependencies.runtime),
                 files=kwargs["files"],
                 vm_user=kwargs.get("vm_user", "agent"),
             )
@@ -335,7 +341,7 @@ class LibvirtVmProvider(VmProvider):
         result = dict(
             _libvirt_vm_delete_files(
                 kwargs["target"],
-                sessions=self.context.dependencies.runtime.sessions.read_all(),
+                session_repository=_runtime_session_repository(self.context.dependencies.runtime),
                 paths=kwargs["paths"],
                 vm_user=kwargs.get("vm_user", "agent"),
                 recursive=bool(kwargs.get("recursive", False)),
@@ -368,9 +374,10 @@ class AzureVmProvider(VmProvider):
         azure_config = getattr(vm_defaults, "azure", None)
         if azure_config is None or not str(getattr(azure_config, "resource_group", "") or "").strip():
             return []
-        session_ids_by_vm = _session_ids_by_vm(deps.runtime.sessions.read_all(), provider=self.name)
-        labels_by_vm = _labels_by_vm(deps.runtime.sessions.read_all(), provider=self.name)
-        directory_paths_by_vm = _directory_paths_by_vm(deps.runtime.sessions.read_all(), provider=self.name)
+        session_repository = _runtime_session_repository(deps.runtime)
+        session_ids_by_vm = _session_ids_by_vm(session_repository.list_sessions(), provider=self.name)
+        labels_by_vm = _labels_by_vm(session_repository.list_sessions(), provider=self.name)
+        directory_paths_by_vm = _directory_paths_by_vm(session_repository.list_sessions(), provider=self.name)
         normalized_directory_path = deps.normalize_directory_path(directory_path)
         owned_vm_ids = deps.direct_owned_entity_ids(normalized_directory_path, kind="vm") if direct_only else set()
         summaries: list[VmSummary] = []
@@ -599,8 +606,14 @@ class VmProviderRegistry:
             summaries.extend(self.get(provider_name).list_vms(**kwargs))
         return summaries
 
-    def resolve_target(self, *, target: str, sessions: Mapping[str, Any], directory_path: str = "root") -> tuple[VmProvider, str, Any | None]:
-        session = sessions.get(target)
+    def resolve_target(
+        self,
+        *,
+        target: str,
+        session_repository: SessionManifestRepository,
+        directory_path: str = "root",
+    ) -> tuple[VmProvider, str, Any | None]:
+        session = session_repository.get_session(target)
         if session is not None:
             vm_name = str(getattr(session, "vm_id", "") or "").strip()
             if not vm_name:
@@ -646,7 +659,8 @@ def _libvirt_create_vm(
     normalized_directory_path = deps.normalize_directory_path(directory_path)
     policy = deps.runtime.policy_config.resolve_for_directory(normalized_directory_path)
     resolved_session_id = session_id.strip() if session_id and session_id.strip() else admin_service_module._default_vm_session_id(resolved_vm_name)
-    if deps.runtime.sessions.get(resolved_session_id) is not None:
+    session_repository = _runtime_session_repository(deps.runtime)
+    if session_repository.get_session(resolved_session_id) is not None:
         return VmActionResult(
             success=False,
             vm_name=resolved_vm_name,
@@ -689,7 +703,7 @@ def _libvirt_create_vm(
             manifest.model = deps.resolve_agent_model_for_session(manifest)
         except ValueError:
             manifest.model = None
-    deps.runtime.sessions.put(resolved_session_id, manifest)
+    session_repository.upsert_session(manifest)
 
     root_dir = Path(__file__).resolve().parents[2]
     vm_defaults = deps.resolve_vm_defaults(normalized_directory_path)
@@ -756,7 +770,7 @@ def _libvirt_create_vm(
     except Exception as exc:
         preserved_vm = admin_service_module._dominfo_field(resolved_vm_name, "State") is not None
         if not preserved_vm:
-            deps.runtime.sessions.delete(resolved_session_id)
+            session_repository.delete_session(resolved_session_id)
         detail = f"Failed to create VM {resolved_vm_name}: {exc}"
         if preserved_vm:
             detail = f"{detail}\nVM {resolved_vm_name} and session {resolved_session_id} were preserved for inspection."
@@ -803,7 +817,7 @@ def _libvirt_shutdown_vm(target: str, *, timeout_seconds: int = 60) -> VmActionR
 def _libvirt_vm_exec(
     target: str,
     *,
-    sessions: Mapping[str, Any],
+    session_repository: SessionManifestRepository,
     command: str | list[str],
     vm_user: str = "agent",
     working_directory: str | None = None,
@@ -812,7 +826,7 @@ def _libvirt_vm_exec(
     timeout_seconds: float | None = None,
     check: bool = True,
 ) -> dict[str, Any]:
-    vm_name = admin_service_module._resolve_vm_name_from_target(target, sessions)
+    vm_name = session_repository.resolve_vm_name_from_target(target)
     vm_ip, ssh_private_key_path = admin_service_module._resolve_vm_ssh_access(vm_name, vm_user)
     remote_script = admin_service_module._remote_shell_script(command=command, working_directory=working_directory, environment=environment)
     completed = admin_service_module._run_subprocess(
@@ -832,11 +846,11 @@ def _libvirt_vm_exec(
 def _libvirt_vm_copy_files(
     target: str,
     *,
-    sessions: Mapping[str, Any],
+    session_repository: SessionManifestRepository,
     files: list[dict[str, Any]],
     vm_user: str = "agent",
 ) -> dict[str, Any]:
-    vm_name = admin_service_module._resolve_vm_name_from_target(target, sessions)
+    vm_name = session_repository.resolve_vm_name_from_target(target)
     vm_ip, ssh_private_key_path = admin_service_module._resolve_vm_ssh_access(vm_name, vm_user)
     copied_paths: list[str] = []
     for index, file_spec in enumerate(files):
@@ -909,7 +923,7 @@ def _libvirt_vm_copy_files(
 def _libvirt_vm_delete_files(
     target: str,
     *,
-    sessions: Mapping[str, Any],
+    session_repository: SessionManifestRepository,
     paths: list[str],
     vm_user: str = "agent",
     recursive: bool = False,
@@ -917,7 +931,7 @@ def _libvirt_vm_delete_files(
 ) -> dict[str, Any]:
     if not paths:
         raise ValueError("paths must not be empty")
-    vm_name = admin_service_module._resolve_vm_name_from_target(target, sessions)
+    vm_name = session_repository.resolve_vm_name_from_target(target)
     vm_ip, ssh_private_key_path = admin_service_module._resolve_vm_ssh_access(vm_name, vm_user)
     normalized_paths: list[str] = []
     for index, raw_path in enumerate(paths):
@@ -943,9 +957,10 @@ def _libvirt_vm_delete_files(
     return {"success": True, "vm_name": vm_name, "action": "vm_delete_files", "message": f"Deleted {len(normalized_paths)} path(s) from {vm_name}", "deleted_count": len(normalized_paths), "deleted_paths": normalized_paths, "vm_user": vm_user}
 
 
-def _session_ids_by_vm(sessions: Mapping[str, Any], *, provider: str | None = None) -> dict[str, list[str]]:
+def _session_ids_by_vm(sessions: list[Any], *, provider: str | None = None) -> dict[str, list[str]]:
     mapping: dict[str, list[str]] = {}
-    for session_id, session in sessions.items():
+    for session in sessions:
+        session_id = str(getattr(session, "session_id", "") or "").strip()
         vm_id = str(getattr(session, "vm_id", "") or "").strip()
         if not vm_id:
             continue
@@ -955,9 +970,9 @@ def _session_ids_by_vm(sessions: Mapping[str, Any], *, provider: str | None = No
     return {vm_id: sorted(session_ids) for vm_id, session_ids in mapping.items()}
 
 
-def _labels_by_vm(sessions: Mapping[str, Any], *, provider: str | None = None) -> dict[str, dict[str, str]]:
+def _labels_by_vm(sessions: list[Any], *, provider: str | None = None) -> dict[str, dict[str, str]]:
     mapping: dict[str, dict[str, str]] = {}
-    for session in sessions.values():
+    for session in sessions:
         vm_id = str(getattr(session, "vm_id", "") or "").strip()
         if not vm_id:
             continue
@@ -972,9 +987,9 @@ def _labels_by_vm(sessions: Mapping[str, Any], *, provider: str | None = None) -
     return {vm_id: labels for vm_id, labels in mapping.items() if labels}
 
 
-def _directory_paths_by_vm(sessions: Mapping[str, Any], *, provider: str | None = None) -> dict[str, list[str]]:
+def _directory_paths_by_vm(sessions: list[Any], *, provider: str | None = None) -> dict[str, list[str]]:
     mapping: dict[str, set[str]] = {}
-    for session in sessions.values():
+    for session in sessions:
         vm_id = str(getattr(session, "vm_id", "") or "").strip()
         directory_path = str(getattr(session, "directory_path", "") or "").strip()
         if not vm_id or not directory_path:

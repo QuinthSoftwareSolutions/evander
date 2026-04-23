@@ -3,7 +3,7 @@ from pathlib import Path
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.directories import DirectoryService, DirectoryStore
 from agent_sandbox.models import SessionManifest
-from agent_sandbox.storage import JsonStore
+from agent_sandbox.session_manifest_repository import JsonSessionManifestRepository
 from agent_sandbox.vm_defaults_config import VmDefaultsConfigResolver, render_vm_defaults_exports
 
 
@@ -58,9 +58,8 @@ def test_vm_defaults_resolver_uses_session_directory_path(tmp_path: Path) -> Non
     resolver = VmDefaultsConfigResolver(config, directory_store=directory_store)
     resolver.config_store.write(team.path, domain="vm-defaults", payload={"gateway_url": "http://team-gw:8000/mcp"})
 
-    sessions = JsonStore(config.session_store_path, SessionManifest)
-    sessions.put(
-        "session-1",
+    sessions = JsonSessionManifestRepository(config.session_store_path)
+    sessions.upsert_session(
         SessionManifest(
             session_id="session-1",
             directory_path=team.path,
@@ -98,9 +97,8 @@ def test_render_vm_defaults_exports_uses_session_scope_and_shell_exports(tmp_pat
         payload={"gateway_url": "http://10.0.0.8:9000/mcp", "openai_relay_port": 12000, "nuget_relay_port": 13000},
     )
 
-    sessions = JsonStore(config.session_store_path, SessionManifest)
-    sessions.put(
-        "session-1",
+    sessions = JsonSessionManifestRepository(config.session_store_path)
+    sessions.upsert_session(
         SessionManifest(
             session_id="session-1",
             directory_path=team.path,

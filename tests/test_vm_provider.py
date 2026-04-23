@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 from agent_sandbox.models import SessionManifest
+from agent_sandbox.session_manifest_repository import JsonSessionManifestRepository
 from agent_sandbox.vm_power_state import normalize_power_state
 from agent_sandbox.vm_provider import AzureVmProvider, VmProviderContext, session_vm_provider
 
@@ -50,9 +52,10 @@ class _AzureClientStub:
         raise AssertionError("not used")
 
 
-def test_azure_provider_lists_provider_neutral_vm_summaries() -> None:
-    sessions = {
-        "session-azure": SessionManifest(
+def test_azure_provider_lists_provider_neutral_vm_summaries(tmp_path: Path) -> None:
+    session_repository = JsonSessionManifestRepository(tmp_path / "sessions.json")
+    session_repository.upsert_session(
+        SessionManifest(
             session_id="session-azure",
             vm_id="vm-azure-1",
             vm_provider="azure",
@@ -60,9 +63,9 @@ def test_azure_provider_lists_provider_neutral_vm_summaries() -> None:
             directory_path="root/team",
             expires_at="2099-01-01T00:00:00Z",
         )
-    }
+    )
     dependencies = SimpleNamespace(
-        runtime=SimpleNamespace(sessions=SimpleNamespace(read_all=lambda: sessions)),
+        runtime=SimpleNamespace(session_repository=session_repository, sessions=session_repository),
         normalize_directory_path=lambda directory_path: directory_path or "root",
         resolve_vm_defaults=lambda directory_path: SimpleNamespace(
             azure=SimpleNamespace(resource_group="rg-agents"),

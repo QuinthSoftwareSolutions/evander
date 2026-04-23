@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 
 from .directories import DirectoryService
 from .models import DirectoryInfo, SessionManifest
-from .storage import JsonStore
+from .session_manifest_repository import SessionManifestRepository, as_session_manifest_repository
 
 
 class OwnedEntity(BaseModel):
@@ -31,12 +31,12 @@ class DirectoryOwnershipQueries:
         self,
         *,
         directories: DirectoryService,
-        sessions: JsonStore[SessionManifest],
+        sessions: SessionManifestRepository,
         pr_map_path: Path | None = None,
         ado_processed_store_path: Path | None = None,
     ) -> None:
         self._directories = directories
-        self._sessions = sessions
+        self._sessions = as_session_manifest_repository(sessions)
         self._pr_map_path = pr_map_path
         self._ado_processed_store_path = ado_processed_store_path
 
@@ -55,7 +55,7 @@ class DirectoryOwnershipQueries:
         if include_descendants:
             allowed_paths.update(item.path for item in descendants)
 
-        sessions = self._sessions.read_all()
+        sessions = {session.session_id: session for session in self._sessions.list_sessions()}
         entities: list[OwnedEntity] = []
         entities.extend(self._session_entities(sessions, allowed_paths=allowed_paths))
         entities.extend(self._pr_map_entities(sessions, allowed_paths=allowed_paths))

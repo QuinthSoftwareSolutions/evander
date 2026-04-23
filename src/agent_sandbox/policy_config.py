@@ -14,7 +14,11 @@ from .directory_config import (
 )
 from .directories import DirectoryService, DirectoryStore
 from .models import SessionManifest, ToolName
-from .storage import JsonStore
+from .session_manifest_repository import (
+    JsonSessionManifestRepository,
+    SessionManifestRepository,
+    as_session_manifest_repository,
+)
 
 
 class EffectivePolicyConfig(BaseModel):
@@ -41,14 +45,15 @@ class PolicyConfigResolver:
         config: GatewayConfig,
         *,
         directory_store: DirectoryStore | None = None,
-        session_store: JsonStore[SessionManifest] | None = None,
+        session_store: SessionManifestRepository | None = None,
     ) -> None:
         self.config = config
         self.directory_store = directory_store or DirectoryStore(config.directories_store_path)
         self.directory_store.ensure_root()
         self.directory_service = DirectoryService(self.directory_store)
         self.config_store = DirectoryConfigStore(self.directory_store, runtime_dir=config.runtime_dir)
-        self.session_store = session_store or JsonStore(config.session_store_path, SessionManifest)
+        raw_session_store = session_store or JsonSessionManifestRepository(config.session_store_path)
+        self.session_store = as_session_manifest_repository(raw_session_store)
         self.resolver = DirectoryConfigResolver(
             self.directory_service,
             base_gateway_config=config,
@@ -70,7 +75,7 @@ class PolicyConfigResolver:
         return EffectivePolicyConfig.model_validate(resolution.effective_config)
 
     def resolve_for_session_id(self, session_id: str) -> EffectivePolicyConfig:
-        session = self.session_store.get(session_id)
+        session = self.session_store.get_session(session_id)
         if session is None:
             raise ValueError(f"unknown session: {session_id}")
         return self.resolve_for_session_manifest(session)
@@ -81,9 +86,7 @@ class PolicyConfigResolver:
     def active_session_policies(self) -> list[EffectivePolicyConfig]:
         now = datetime.now(UTC)
         directories: set[str] = {"root"}
-        for session in self.session_store.read_all().values():
-            if session.expires_at <= now:
-                continue
+        for session in self.session_store.list_active_sessions(now=now):
             directories.add(self._normalize_directory_path(session.directory_path))
         return [self.resolve_for_directory(path) for path in sorted(directories)]
 
@@ -92,16 +95,14 @@ class PolicyConfigResolver:
         channel_ids: set[str] = set()
         for policy in self.active_session_policies():
             channel_ids.update(policy.discord_operator_channel_allowlist)
-        for session in self.session_store.read_all().values():
-            if session.expires_at <= now:
-                continue
+        for session in self.session_store.list_active_sessions(now=now):
             if ToolName.DISCORD_GET_COMMANDS not in session.allowed_tools:
                 continue
             channel_ids.update(session.discord_channel_allowlist)
         return sorted(channel_id.strip() for channel_id in channel_ids if channel_id.strip())
 
     def allowed_discord_channel_ids_for_session_id(self, session_id: str) -> list[str]:
-        session = self.session_store.get(session_id)
+        session = self.session_store.get_session(session_id)
         if session is None:
             raise ValueError(f"unknown session: {session_id}")
         policy = self.resolve_for_session_manifest(session)

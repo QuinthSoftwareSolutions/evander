@@ -116,8 +116,7 @@ def test_discord_get_commands_passes_since_cursor_and_filters_unallowlisted_sour
     tmp_path: Path,
 ) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             allowed_tools=[ToolName.DISCORD_GET_COMMANDS],
@@ -168,8 +167,7 @@ def test_discord_get_commands_passes_since_cursor_and_filters_unallowlisted_sour
 def test_list_unread_discord_messages_does_not_apply_read_reactions(tmp_path: Path) -> None:
     context = make_context(tmp_path)
     write_root_policy_overlay(context, {"discord_inbox_routes": {"chan-a": ["session-1"]}})
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             allowed_tools=[ToolName.LIST_UNREAD_DISCORD_MESSAGES],
@@ -231,8 +229,7 @@ def test_list_unread_discord_messages_does_not_apply_read_reactions(tmp_path: Pa
 
 def test_add_message_reaction_adds_discord_reaction_to_allowlisted_channel(tmp_path: Path) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             allowed_tools=[ToolName.ADD_MESSAGE_REACTION],
@@ -262,8 +259,7 @@ def test_add_message_reaction_adds_discord_reaction_to_allowlisted_channel(tmp_p
 
 def test_add_message_reaction_audits_discord_adapter_failure(tmp_path: Path) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             allowed_tools=[ToolName.ADD_MESSAGE_REACTION],
@@ -309,8 +305,7 @@ def test_list_unread_discord_messages_repeated_reads_do_not_retry_reactions(
 ) -> None:
     context = make_context(tmp_path)
     write_root_policy_overlay(context, {"discord_inbox_routes": {"chan-a": ["session-1"]}})
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             allowed_tools=[ToolName.LIST_UNREAD_DISCORD_MESSAGES],
@@ -368,8 +363,7 @@ def test_list_unread_discord_messages_repeated_reads_do_not_retry_reactions(
 
 def test_create_local_issue_uses_session_directory_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             directory_path="root/team-a",
@@ -453,8 +447,7 @@ def test_list_issues_defaults_to_open_states_in_session_directory(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             directory_path="root/team-a",
@@ -520,8 +513,7 @@ def test_list_issues_filters_by_requested_status_values(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             directory_path="root/team-a",
@@ -578,8 +570,7 @@ def test_list_issues_exposes_rejection_reason_from_metadata(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             directory_path="root/team-a",
@@ -652,8 +643,7 @@ def test_get_issue_passes_through_backend_payload(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             directory_path="root/team-a",
@@ -715,8 +705,7 @@ def test_get_issue_passes_through_backend_payload(
 
 def test_discord_post_status_posts_to_allowlisted_channel(tmp_path: Path) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             allowed_tools=[ToolName.DISCORD_POST_STATUS],
@@ -746,8 +735,7 @@ def test_discord_post_status_posts_to_allowlisted_channel(tmp_path: Path) -> Non
 
 def test_create_local_issue_requires_tool_permission(tmp_path: Path) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             allowed_tools=[],
@@ -770,8 +758,7 @@ def test_create_local_issue_requires_tool_permission(tmp_path: Path) -> None:
 
 def test_list_issues_requires_tool_permission(tmp_path: Path) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             allowed_tools=[],
@@ -791,8 +778,7 @@ def test_list_issues_requires_tool_permission(tmp_path: Path) -> None:
 
 def test_get_issue_requires_tool_permission(tmp_path: Path) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             allowed_tools=[],
@@ -815,8 +801,7 @@ def test_get_issue_requires_tool_permission(tmp_path: Path) -> None:
 
 def test_approve_issue_sets_approved_state_and_reason(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             directory_path="root/team-a",
@@ -870,8 +855,7 @@ def test_approve_issue_sets_approved_state_and_reason(tmp_path: Path, monkeypatc
 
 def test_reject_issue_sets_closed_state_and_reason(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             directory_path="root/team-a",
@@ -920,8 +904,7 @@ def test_reject_issue_sets_closed_state_and_reason(tmp_path: Path, monkeypatch: 
 
 def test_commit_issue_sets_committed_state_and_reason(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             directory_path="root/team-a",
@@ -970,8 +953,7 @@ def test_commit_issue_sets_committed_state_and_reason(tmp_path: Path, monkeypatc
 
 def test_commit_issue_requires_tool_permission(tmp_path: Path) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             allowed_tools=[],
@@ -994,8 +976,7 @@ def test_commit_issue_requires_tool_permission(tmp_path: Path) -> None:
 
 def test_claim_next_issue_passes_through_backend_payload(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             directory_path="root/team-a",
@@ -1035,8 +1016,7 @@ def test_claim_next_issue_passes_through_backend_payload(tmp_path: Path, monkeyp
 
 def test_complete_issue_passes_through_backend_payload(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             directory_path="root/team-a",
@@ -1087,8 +1067,7 @@ def test_complete_issue_passes_through_backend_payload(tmp_path: Path, monkeypat
 
 def test_approve_issue_requires_tool_permission(tmp_path: Path) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             allowed_tools=[],
@@ -1111,8 +1090,7 @@ def test_approve_issue_requires_tool_permission(tmp_path: Path) -> None:
 
 def test_reject_issue_requires_tool_permission(tmp_path: Path) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             allowed_tools=[],
@@ -1135,8 +1113,7 @@ def test_reject_issue_requires_tool_permission(tmp_path: Path) -> None:
 
 def test_claim_next_issue_requires_tool_permission(tmp_path: Path) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             allowed_tools=[],
@@ -1156,8 +1133,7 @@ def test_claim_next_issue_requires_tool_permission(tmp_path: Path) -> None:
 
 def test_complete_issue_requires_tool_permission(tmp_path: Path) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             allowed_tools=[],
@@ -1181,8 +1157,7 @@ def test_complete_issue_requires_tool_permission(tmp_path: Path) -> None:
 
 def test_get_agent_status_maps_backend_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             directory_path="root/team-a",
@@ -1241,8 +1216,7 @@ def test_get_agent_status_maps_backend_state(tmp_path: Path, monkeypatch: pytest
 
 def test_get_agent_status_allows_same_directory_peer_vm(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             directory_path="root/team-a",
@@ -1298,8 +1272,7 @@ def test_get_agent_status_allows_same_directory_peer_vm(tmp_path: Path, monkeypa
 
 def test_get_agent_status_rejects_cross_directory_vm(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             directory_path="root/team-a",
@@ -1345,8 +1318,7 @@ def test_get_agent_status_rejects_cross_directory_vm(tmp_path: Path, monkeypatch
 
 def test_get_agent_logs_returns_tail_from_service(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             directory_path="root/team-a",
@@ -1436,8 +1408,7 @@ def test_create_server_uses_configured_host_and_port(tmp_path: Path) -> None:
 
 def test_discord_post_status_rejects_non_allowlisted_channel(tmp_path: Path) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             allowed_tools=[ToolName.DISCORD_POST_STATUS],
@@ -1463,8 +1434,7 @@ def test_discord_post_status_rejects_non_allowlisted_channel(tmp_path: Path) -> 
 
 def test_discord_tool_contract_signatures_and_shapes_stable(tmp_path: Path) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
           session_id="session-1",
           allowed_tools=[ToolName.DISCORD_GET_COMMANDS, ToolName.DISCORD_POST_STATUS],
@@ -1519,8 +1489,7 @@ def test_discord_tool_contract_signatures_and_shapes_stable(tmp_path: Path) -> N
     assert post_result["status"] == "posted"
 def test_discord_get_commands_audits_adapter_http_error(tmp_path: Path) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",allowed_tools=[ToolName.DISCORD_GET_COMMANDS],
             discord_channel_allowlist=["chan-allowlisted"],
@@ -1552,8 +1521,7 @@ def test_discord_get_commands_audits_adapter_http_error(tmp_path: Path) -> None:
 
 def test_discord_post_status_audits_unexpected_adapter_error(tmp_path: Path) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             allowed_tools=[ToolName.DISCORD_POST_STATUS],
@@ -1591,8 +1559,7 @@ def test_discord_post_status_audits_unexpected_adapter_error(tmp_path: Path) -> 
 
 def test_discord_get_commands_emits_denied_and_allowed_audit_events(tmp_path: Path) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             allowed_tools=[ToolName.DISCORD_GET_COMMANDS],
@@ -1625,8 +1592,7 @@ def test_discord_get_commands_emits_denied_and_allowed_audit_events(tmp_path: Pa
   
 def test_email_tools_require_and_return_mailbox_id(tmp_path: Path) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             allowed_tools=[
@@ -1684,8 +1650,7 @@ def test_email_tools_require_and_return_mailbox_id(tmp_path: Path) -> None:
 
 def test_email_tools_enforce_mailbox_and_folder_allowlists(tmp_path: Path) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             allowed_tools=[ToolName.EMAIL_LIST_UNREAD],
@@ -1715,8 +1680,7 @@ def test_email_tools_enforce_mailbox_and_folder_allowlists(tmp_path: Path) -> No
 
 def test_email_create_draft_enforces_recipient_allowlist(tmp_path: Path) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             allowed_tools=[ToolName.EMAIL_CREATE_DRAFT],
@@ -1745,8 +1709,7 @@ def test_email_create_draft_enforces_recipient_allowlist(tmp_path: Path) -> None
 
 def test_email_send_approved_is_blocked_when_send_disabled(tmp_path: Path) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             allowed_tools=[ToolName.EMAIL_SEND_APPROVED],
@@ -1772,8 +1735,7 @@ def test_email_send_approved_is_blocked_when_send_disabled(tmp_path: Path) -> No
 
 def test_email_get_message_prevents_cross_mailbox_access(tmp_path: Path) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             allowed_tools=[ToolName.EMAIL_GET_MESSAGE],
@@ -1958,8 +1920,7 @@ class _FakePrReplyService:
 
 def test_email_provider_auth_failures_are_audited(tmp_path: Path) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             allowed_tools=[ToolName.EMAIL_LIST_UNREAD],
@@ -1992,8 +1953,7 @@ def test_email_provider_auth_failures_are_audited(tmp_path: Path) -> None:
 
 def test_email_provider_timeouts_are_audited(tmp_path: Path) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             allowed_tools=[ToolName.EMAIL_LIST_UNREAD],
@@ -2024,8 +1984,7 @@ def test_email_provider_timeouts_are_audited(tmp_path: Path) -> None:
 
 def test_audit_success_recursively_redacts_nested_payload_fields(tmp_path: Path) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             allowed_tools=[ToolName.APPROVAL_SUBMIT],
@@ -2081,8 +2040,7 @@ def test_audit_success_recursively_redacts_nested_payload_fields(tmp_path: Path)
 
 def test_audit_failure_recursively_redacts_nested_payload_fields(tmp_path: Path) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             allowed_tools=[],
@@ -2124,8 +2082,7 @@ def test_audit_failure_recursively_redacts_nested_payload_fields(tmp_path: Path)
 def test_audit_redaction_uses_directory_policy_redacted_keys(tmp_path: Path) -> None:
     context = make_context(tmp_path)
     write_root_policy_overlay(context, {"redacted_keys": ["api_key"]})
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             allowed_tools=[],
@@ -2154,8 +2111,7 @@ def test_audit_redaction_uses_directory_policy_redacted_keys(tmp_path: Path) -> 
 
 def test_has_pending_feedback_returns_minimal_heartbeat_payload(tmp_path: Path) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             allowed_tools=[ToolName.HAS_PENDING_FEEDBACK],
@@ -2176,8 +2132,7 @@ def test_has_pending_feedback_returns_minimal_heartbeat_payload(tmp_path: Path) 
 
 def test_list_unread_feedback_returns_items_and_audits_result_count(tmp_path: Path) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             allowed_tools=[ToolName.LIST_UNREAD_FEEDBACK],
@@ -2204,8 +2159,7 @@ def test_list_unread_feedback_returns_items_and_audits_result_count(tmp_path: Pa
 
 def test_schedule_resume_persists_request_and_audits_success(tmp_path: Path) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             vm_id="vm-real",
@@ -2257,8 +2211,7 @@ def test_schedule_resume_persists_request_and_audits_success(tmp_path: Path) -> 
 
 def test_schedule_resume_rejects_non_utc_timestamps(tmp_path: Path) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             vm_id="vm-real",
@@ -2282,8 +2235,7 @@ def test_schedule_resume_rejects_non_utc_timestamps(tmp_path: Path) -> None:
 
 def test_run_script_persists_request_and_audits_success(tmp_path: Path) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             allowed_tools=[ToolName.RUN_SCRIPT],
@@ -2325,8 +2277,7 @@ def test_run_script_persists_request_and_audits_success(tmp_path: Path) -> None:
 
 def test_list_all_feedback_returns_history_including_already_read_items(tmp_path: Path) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             allowed_tools=[ToolName.LIST_ALL_FEEDBACK],
@@ -2356,8 +2307,7 @@ def test_list_all_feedback_returns_history_including_already_read_items(tmp_path
 
 def test_post_pr_feedback_reply_calls_provider_and_audits_reply_identifiers(tmp_path: Path) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             allowed_tools=[ToolName.POST_PR_FEEDBACK_REPLY],
@@ -2398,8 +2348,7 @@ def test_post_pr_feedback_reply_calls_provider_and_audits_reply_identifiers(tmp_
 
 def test_post_pr_feedback_reply_normalizes_azure_devops_provider_alias(tmp_path: Path) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             allowed_tools=[ToolName.POST_PR_FEEDBACK_REPLY],
@@ -2442,8 +2391,7 @@ def test_post_pr_feedback_reply_normalizes_azure_devops_provider_alias(tmp_path:
 
 def test_post_pr_feedback_reply_rejects_missing_target_identifiers(tmp_path: Path) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             allowed_tools=[ToolName.POST_PR_FEEDBACK_REPLY],
@@ -2471,8 +2419,7 @@ def test_post_pr_feedback_reply_rejects_missing_target_identifiers(tmp_path: Pat
 def test_post_pr_feedback_reply_uses_directory_policy_for_approval_requirement(tmp_path: Path) -> None:
     context = make_context(tmp_path)
     write_root_policy_overlay(context, {"pr_reply_require_approval": True})
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             allowed_tools=[ToolName.POST_PR_FEEDBACK_REPLY],

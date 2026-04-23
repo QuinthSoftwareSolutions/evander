@@ -35,6 +35,7 @@ from .pr_feedback_worker import AzureDevOpsFeedbackAdapter, FeedbackEnvelope, Pr
 from .policy_config import EffectivePolicyConfig
 from .provider_config import ProviderConfigResolver
 from .runtime import build_runtime
+from .session_manifest_repository import JsonSessionManifestRepository
 from .services import _normalize_ignored_feedback_payload
 from .storage import JsonStore
 from .triggers.providers._cursor_state import TriggerCursorStore
@@ -1592,7 +1593,7 @@ def _ensure_issue_session_manifest(
 ) -> None:
     cfg = _worker_runtime_config(config)
     runtime = build_runtime(cfg)
-    if runtime.sessions.get(session_id) is not None:
+    if runtime.session_repository.get_session(session_id) is not None:
         return
     policy = runtime.policy_config.resolve_for_directory(directory_path)
     manifest = _build_issue_session_manifest(
@@ -1602,7 +1603,7 @@ def _ensure_issue_session_manifest(
         directory_path=directory_path,
         ttl_hours=config.session_ttl_hours,
     )
-    runtime.sessions.put(session_id, manifest)
+    runtime.session_repository.upsert_session(manifest)
 
 
 def _build_setup_command(config: WorkerConfig, yaml_path: Path, *, session_id: str, work_item_id: int) -> list[str]:
@@ -1911,29 +1912,22 @@ def _load_ado_pr_feedback_session_bindings(
 
     session_directory_paths: dict[str, str] = {}
     session_vm_ids: dict[str, str] = {}
+    session_repository = JsonSessionManifestRepository(runtime_dir / "sessions.json")
     session_ado_projects: dict[str, str] = {}
-    sessions_path = runtime_dir / "sessions.json"
-    if sessions_path.exists():
-        try:
-            sessions_payload = json.loads(sessions_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            sessions_payload = {}
-        if isinstance(sessions_payload, dict):
-            for session_id, raw_session in sessions_payload.items():
-                if not isinstance(raw_session, dict):
-                    continue
-                normalized_session_id = str(session_id).strip()
-                normalized_directory_path = str(raw_session.get("directory_path", "root")).strip() or "root"
-                normalized_vm_id = str(raw_session.get("vm_id", "")).strip()
-                raw_metadata = raw_session.get("metadata")
-                metadata = raw_metadata if isinstance(raw_metadata, dict) else {}
-                normalized_ado_project = str(metadata.get("ado_project", "")).strip()
-                if normalized_session_id:
-                    session_directory_paths[normalized_session_id] = normalized_directory_path
-                    if normalized_vm_id:
-                        session_vm_ids[normalized_session_id] = normalized_vm_id
-                    if normalized_ado_project:
-                        session_ado_projects[normalized_session_id] = normalized_ado_project
+    for manifest in session_repository.list_sessions():
+        normalized_session_id = str(manifest.session_id).strip()
+        if not normalized_session_id:
+            continue
+        normalized_directory_path = str(manifest.directory_path or "root").strip() or "root"
+        normalized_vm_id = str(manifest.vm_id or "").strip()
+        session_directory_paths[normalized_session_id] = normalized_directory_path
+        if normalized_vm_id:
+            session_vm_ids[normalized_session_id] = normalized_vm_id
+        metadata = getattr(manifest, "metadata", None)
+        if isinstance(metadata, dict):
+            normalized_ado_project = str(metadata.get("ado_project", "")).strip()
+            if normalized_ado_project:
+                session_ado_projects[normalized_session_id] = normalized_ado_project
 
     bindings: dict[tuple[str, str], dict[str, str]] = {}
     for raw in entries.values():

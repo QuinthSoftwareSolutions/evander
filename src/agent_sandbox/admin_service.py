@@ -48,7 +48,9 @@ from .host_config import DEFAULT_RUNTIME_DIR
 from .bootstrap import resolve_runtime_dir
 from .ownership import DirectoryOwnershipQueries
 from .policy_config import EffectivePolicyConfig
+from .pr_feedback_worker import PrFeedbackStore
 from .provider_config import ProviderConfigResolver
+from .session_manifest_repository import as_session_manifest_repository
 from .issue_service import IssueService
 from .vm_defaults_config import EffectiveVmDefaultsConfig, VmDefaultsConfigResolver
 from .models import (
@@ -74,6 +76,13 @@ from .runtime import RuntimeContext, build_runtime
 from .storage import JsonStore
 from .workflow_events import WorkflowEventJournal, workflow_event_journal_path
 from .workflow_runtime_config import _compose_configured_workflow_ir, compile_worker_global_config_with_diagnostics
+from .trigger_repositories import (
+    JsonTriggerEventRepository,
+    TriggerConfigDocument,
+    TriggerRepository,
+    TriggerEventRepository,
+    WorkerConfigTriggerRepository,
+)
 from .teams_auth import (
     DeviceCodeLoginSession,
     JsonTeamsIdentityCredentialStore,
@@ -180,7 +189,7 @@ def resolve_effective_issue_setup_config(
     provider_config = ProviderConfigResolver(
         config,
         directory_store=runtime.directories,
-        session_store=runtime.sessions,
+        session_store=as_session_manifest_repository(getattr(runtime, "session_repository", runtime.sessions)),
     ).resolve_for_directory(directory_path)
     provider_pat_env = provider_config.azure_devops_pr_pat_env.strip() or "AZURE_DEVOPS_PR_PAT"
     issue_setup_pat_env_raw = effective.get("issue_setup_azure_devops_pr_pat_env")
@@ -1673,44 +1682,11 @@ def _prune_pr_map(path: Path, *, session_ids: set[str]) -> tuple[int, set[tuple[
 
 
 def _prune_pr_feedback_store(path: Path, *, streams: set[tuple[str, str, str]]) -> tuple[int, int]:
-    if not path.exists() or not streams:
+    if not streams:
         return 0, 0
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    if not path.exists():
         return 0, 0
-
-    removed_cursor_count = 0
-    cursors = payload.get("cursors")
-    if isinstance(cursors, dict):
-        for provider, repo, pr_id in streams:
-            stream_key = f"{provider}:{repo}:{pr_id}"
-            if stream_key in cursors:
-                cursors.pop(stream_key, None)
-                removed_cursor_count += 1
-
-    removed_feedback_count = 0
-    feedback = payload.get("feedback")
-    if isinstance(feedback, dict):
-        kept_feedback: dict[str, object] = {}
-        for feedback_id, raw_feedback in feedback.items():
-            if not isinstance(raw_feedback, dict):
-                kept_feedback[feedback_id] = raw_feedback
-                continue
-            key = (
-                str(raw_feedback.get("provider", "")).strip(),
-                str(raw_feedback.get("repo", "")).strip(),
-                str(raw_feedback.get("pr_id", "")).strip(),
-            )
-            if key in streams:
-                removed_feedback_count += 1
-                continue
-            kept_feedback[feedback_id] = raw_feedback
-        payload["feedback"] = kept_feedback
-
-    if removed_cursor_count or removed_feedback_count:
-        path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-    return removed_cursor_count, removed_feedback_count
+    return PrFeedbackStore(path).prune_streams(streams)
 
 
 def _prune_approvals_for_sessions(runtime: RuntimeContext, *, session_ids: set[str]) -> int:
@@ -2594,7 +2570,7 @@ class AdminService:
         )
         self.directory_ownership = DirectoryOwnershipQueries(
             directories=self.directory_admin._directories,
-            sessions=self.runtime.sessions,
+            sessions=self.runtime.session_repository,
             pr_map_path=self.config.pr_map_path,
             ado_processed_store_path=self.config.runtime_dir / "ado-processed-work-items.json",
         )
@@ -2602,7 +2578,7 @@ class AdminService:
             ProviderConfigResolver(
                 self.config,
                 directory_store=self.runtime.directories,
-                session_store=self.runtime.sessions,
+                session_store=self.runtime.session_repository,
             )
         )
         self.session_admin = SessionAdminFacade(
@@ -2717,6 +2693,11 @@ class AdminService:
             directory_admin=self.directory_admin,
             privileged_helper_factory=lambda **kwargs: PrivilegedHelperSession(**kwargs),
         )
+        self.trigger_repository: TriggerRepository = WorkerConfigTriggerRepository(
+            read_config=self._read_trigger_document,
+            write_config=self._write_trigger_document,
+        )
+        self.trigger_event_repository: TriggerEventRepository = JsonTriggerEventRepository()
 
     @property
     def directory_scoped_config_enabled(self) -> bool:
@@ -2863,7 +2844,7 @@ class AdminService:
 
     def _session_ids_by_vm(self) -> dict[str, list[str]]:
         mapping: dict[str, list[str]] = {}
-        for session_id, session in self.runtime.sessions.read_all().items():
+        for session_id, session in self.runtime.session_repository.read_all().items():
             if session.vm_id:
                 mapping.setdefault(session.vm_id, []).append(session_id)
         for session_ids in mapping.values():
@@ -2872,14 +2853,14 @@ class AdminService:
 
     def _directory_paths_by_vm(self) -> dict[str, list[str]]:
         mapping: dict[str, set[str]] = {}
-        for session in self.runtime.sessions.read_all().values():
+        for session in self.runtime.session_repository.list_sessions():
             if session.vm_id:
                 mapping.setdefault(session.vm_id, set()).add(session.directory_path)
         return {vm_id: sorted(paths) for vm_id, paths in mapping.items()}
 
     def _labels_by_vm(self) -> dict[str, dict[str, str]]:
         mapping: dict[str, dict[str, str] | None] = {}
-        sessions = self.runtime.sessions.read_all()
+        sessions = self.runtime.session_repository.read_all()
         for session_id in sorted(sessions):
             session = sessions[session_id]
             if not session.vm_id:
@@ -2912,7 +2893,7 @@ class AdminService:
         resolver = VmDefaultsConfigResolver(
             self.config,
             directory_store=self.runtime.directories,
-            session_store=self.runtime.sessions,
+            session_store=self.runtime.session_repository,
         )
         return resolver.resolve_for_directory(directory_path)
 
@@ -2934,7 +2915,7 @@ class AdminService:
                 raise ValueError(
                     "Cannot resolve AGENT_MODEL: missing session id. Provide a valid session id or SessionManifest."
                 )
-            session = self.runtime.sessions.get(session_id)
+            session = self.runtime.session_repository.get_session(session_id)
             if session is None:
                 raise ValueError(
                     f"Cannot resolve AGENT_MODEL for session '{session_id}': session not found. "
@@ -2944,9 +2925,10 @@ class AdminService:
         return resolve_agent_model_for_manifest(session, issue_setup=issue_setup)
 
     def resolve_agent_model_for_target(self, target: str) -> str:
-        sessions = self.runtime.sessions.read_all()
-        resolved_session_id, _ = _resolve_session_target(target, sessions)
-        return self._resolve_agent_model_for_session(resolved_session_id)
+        session = self.runtime.session_repository.resolve_session_target(target)
+        if session is None:
+            raise ValueError(f"Unknown session target: {target}")
+        return self._resolve_agent_model_for_session(session.session_id)
 
     def _resolve_repo_source(self, repo_source: str) -> tuple[str, str]:
         resolve_script = self.project_dir / "scripts" / "resolve_repo_source.sh"
@@ -3220,20 +3202,10 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
         )
 
     def _active_wake_requests(self, *, exclude_request_id: str | None = None) -> list[WakeScheduledRequest]:
-        payload = self.runtime.wake_store.read_raw()
-        raw_requests = payload.get("requests", {})
-        if not isinstance(raw_requests, dict):
-            return []
-        active: list[WakeScheduledRequest] = []
-        for raw_value in raw_requests.values():
-            if not isinstance(raw_value, dict):
-                continue
-            request = WakeScheduledRequest.model_validate(raw_value)
-            if exclude_request_id and request.request_id == exclude_request_id:
-                continue
-            if request.enabled:
-                active.append(request)
-        return active
+        requests = self.runtime.wake_store.list_requests(include_disabled=False)
+        if not exclude_request_id:
+            return requests
+        return [request for request in requests if request.request_id != exclude_request_id]
 
     def _enforce_wake_schedule_guardrails(
         self,
@@ -3737,7 +3709,7 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
         )
 
     def _refresh_approval_request(self, request: ApprovalRequest) -> ApprovalRequest:
-        session = self.runtime.sessions.get(request.session_id)
+        session = self.runtime.session_repository.get_session(request.session_id)
         mutated = False
         if not request.directory_path and session is not None:
             request.directory_path = session.directory_path
@@ -4006,6 +3978,14 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(config, indent=2, sort_keys=True), encoding="utf-8")
         return WorkerGlobalConfigWritePayload(worker_id=worker_id, path=str(path), config=config)
+
+    def _read_trigger_document(self) -> TriggerConfigDocument:
+        payload = self._read_worker_global_config("trigger-orchestrator")
+        return TriggerConfigDocument(path=payload.path, config=payload.config)
+
+    def _write_trigger_document(self, config: dict[str, object]) -> TriggerConfigDocument:
+        payload = self._write_worker_global_config("trigger-orchestrator", config)
+        return TriggerConfigDocument(path=payload.path, config=payload.config)
 
     def _validate_worker_global_config_payload(self, worker_id: str, payload: dict[str, object]) -> dict[str, object]:
         model = _WORKER_GLOBAL_CONFIG_MODELS[worker_id]
@@ -4324,7 +4304,7 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
             node_status_counts = node_activity.setdefault(normalized_node_id, {})
             node_status_counts[status] = node_status_counts.get(status, 0) + 1
 
-        queue_payload = _read_json_object(event_queue_store_path)
+        queue_payload = self.trigger_event_repository.read_events(event_queue_store_path)
         for event_id, raw_record in queue_payload.items():
             if not isinstance(raw_record, dict):
                 continue
@@ -4875,7 +4855,7 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
             raise _safe_validation_error(exc, context="Invalid trigger config") from exc
         normalized_payload = validated_trigger.model_dump(mode="json", exclude_none=True)
 
-        current = self._read_worker_global_config("trigger-orchestrator")
+        current = self.trigger_repository.read_document()
         config = dict(current.config)
         existing_triggers_raw = config.get("triggers", [])
         if not isinstance(existing_triggers_raw, list):
@@ -4891,7 +4871,7 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
         if not replacing:
             existing_triggers.append(normalized_payload)
         config["triggers"] = existing_triggers
-        write_result = self._write_worker_global_config("trigger-orchestrator", config)
+        write_result = self.trigger_repository.write_document(config)
         return TriggerConfigMutationPayload(
             trigger_id=normalized_trigger_id,
             operation="updated" if replacing else "added",
@@ -4903,7 +4883,7 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
         normalized_trigger_id = str(trigger_id).strip()
         if not normalized_trigger_id:
             raise ValueError("trigger_id is required")
-        current = self._read_worker_global_config("trigger-orchestrator")
+        current = self.trigger_repository.read_document()
         config = dict(current.config)
         triggers_raw = config.get("triggers", [])
         if not isinstance(triggers_raw, list):
@@ -4921,7 +4901,7 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
         if not removed:
             raise ValueError(f"Trigger not found: {normalized_trigger_id}")
         config["triggers"] = filtered
-        write_result = self._write_worker_global_config("trigger-orchestrator", config)
+        write_result = self.trigger_repository.write_document(config)
         return TriggerConfigMutationPayload(
             trigger_id=normalized_trigger_id,
             operation="deleted",
