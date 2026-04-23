@@ -150,6 +150,27 @@ def test_create_server_registers_schedule_resume_tool(tmp_path) -> None:
     assert any(tool.name == "get_pull_request" for tool in server._tool_manager.list_tools())
 
 
+def test_request_pr_review_schema_advertises_allowed_provider_values(tmp_path: Path) -> None:
+    context = build_runtime(
+        GatewayConfig(
+            runtime_dir=tmp_path,
+            audit_log_path=tmp_path / "audit.jsonl",
+            session_store_path=tmp_path / "sessions.json",
+            approval_store_path=tmp_path / "approvals.json",
+            draft_store_path=tmp_path / "drafts.json",
+            email_store_path=tmp_path / "emails.json",
+            discord_command_store_path=tmp_path / "discord.json",
+        )
+    )
+    server = create_server(context)
+
+    request_pr_review_tool = next(tool for tool in server._tool_manager.list_tools() if tool.name == "request_pr_review")
+    provider_schema = request_pr_review_tool.parameters["properties"]["provider"]
+
+    assert provider_schema["type"] == "string"
+    assert provider_schema["enum"] == ["github", "azure_devops"]
+
+
 def test_run_script_enforces_tool_policy_and_script_allowlist(tmp_path: Path) -> None:
     context = build_runtime(
         GatewayConfig(

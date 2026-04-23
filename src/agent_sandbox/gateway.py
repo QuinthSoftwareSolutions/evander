@@ -7,7 +7,7 @@ import os
 from datetime import datetime, timezone
 from inspect import Parameter, signature
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 import httpx
@@ -2260,7 +2260,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
     @server.tool()
     def request_pr_review(
         session_id: str,
-        provider: str,
+        provider: Literal["github", "azure_devops"],
         repo: str,
         pr_id: str,
         requested_by: str | None = None,
