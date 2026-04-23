@@ -16,7 +16,7 @@ from agent_sandbox.directory_config import DirectoryConfigStore
 from agent_sandbox.directories import DirectoryService, DirectoryStore
 from agent_sandbox.models import SessionManifest
 from agent_sandbox.openai_relay import OpenAIRelay, create_app
-from agent_sandbox.storage import JsonStore
+from agent_sandbox.session_manifest_repository import JsonSessionManifestRepository
 
 
 def make_config(tmp_path: Path) -> GatewayConfig:
@@ -49,9 +49,8 @@ def write_session(
     session_id: str,
     directory_path: str = "root",
 ) -> None:
-    store = JsonStore(config.session_store_path, SessionManifest)
-    store.put(
-        session_id,
+    store = JsonSessionManifestRepository(config.session_store_path)
+    store.upsert_session(
         SessionManifest(
             session_id=session_id,
             directory_path=directory_path,

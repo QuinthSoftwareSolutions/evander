@@ -68,8 +68,7 @@ def write_provider_overlay(context, directory_path: str, payload: dict[str, obje
 
 def test_prompt_agent_and_respond_to_agent_round_trip(tmp_path: Path) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "sender",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="sender",
             allowed_tools=[ToolName.PROMPT_AGENT],
@@ -77,8 +76,7 @@ def test_prompt_agent_and_respond_to_agent_round_trip(tmp_path: Path) -> None:
             expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
         ),
     )
-    context.sessions.put(
-        "target",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="target",
             allowed_tools=[ToolName.RESPOND_TO_AGENT],
@@ -145,8 +143,7 @@ def test_prompt_agent_and_respond_to_agent_round_trip(tmp_path: Path) -> None:
 
 def test_prompt_agent_rejects_cross_directory_dispatch(tmp_path: Path) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "sender",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="sender",
             allowed_tools=[ToolName.PROMPT_AGENT],
@@ -154,8 +151,7 @@ def test_prompt_agent_rejects_cross_directory_dispatch(tmp_path: Path) -> None:
             expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
         ),
     )
-    context.sessions.put(
-        "target",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="target",
             allowed_tools=[ToolName.RESPOND_TO_AGENT],
@@ -179,8 +175,7 @@ def test_prompt_agent_rejects_cross_directory_dispatch(tmp_path: Path) -> None:
 
 def test_agent_prompt_tools_enforce_tool_permissions(tmp_path: Path) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "sender",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="sender",
             allowed_tools=[],
@@ -188,8 +183,7 @@ def test_agent_prompt_tools_enforce_tool_permissions(tmp_path: Path) -> None:
             expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
         ),
     )
-    context.sessions.put(
-        "target",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="target",
             allowed_tools=[],
@@ -234,8 +228,7 @@ def test_agent_prompt_tools_enforce_tool_permissions(tmp_path: Path) -> None:
 
 def test_prompt_agent_rejects_target_without_respond_permission(tmp_path: Path) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "sender",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="sender",
             allowed_tools=[ToolName.PROMPT_AGENT],
@@ -243,8 +236,7 @@ def test_prompt_agent_rejects_target_without_respond_permission(tmp_path: Path) 
             expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
         ),
     )
-    context.sessions.put(
-        "target",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="target",
             allowed_tools=[],
@@ -268,8 +260,7 @@ def test_prompt_agent_rejects_target_without_respond_permission(tmp_path: Path) 
 
 def test_list_pending_agent_prompts_reuses_issued_token_between_polls(tmp_path: Path) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "sender",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="sender",
             allowed_tools=[ToolName.PROMPT_AGENT],
@@ -277,8 +268,7 @@ def test_list_pending_agent_prompts_reuses_issued_token_between_polls(tmp_path: 
             expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
         ),
     )
-    context.sessions.put(
-        "target",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="target",
             allowed_tools=[ToolName.RESPOND_TO_AGENT],
@@ -319,8 +309,7 @@ def test_list_pending_agent_prompts_reuses_issued_token_between_polls(tmp_path: 
 
 def test_prompt_agent_honors_idempotency_key_for_retries(tmp_path: Path) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "sender",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="sender",
             allowed_tools=[ToolName.PROMPT_AGENT],
@@ -328,8 +317,7 @@ def test_prompt_agent_honors_idempotency_key_for_retries(tmp_path: Path) -> None
             expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
         ),
     )
-    context.sessions.put(
-        "target",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="target",
             allowed_tools=[ToolName.RESPOND_TO_AGENT],
@@ -371,8 +359,7 @@ def test_prompt_agent_honors_idempotency_key_for_retries(tmp_path: Path) -> None
 
 def test_prompt_agent_rejects_idempotency_key_reuse_for_different_request(tmp_path: Path) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "sender",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="sender",
             allowed_tools=[ToolName.PROMPT_AGENT],
@@ -380,8 +367,7 @@ def test_prompt_agent_rejects_idempotency_key_reuse_for_different_request(tmp_pa
             expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
         ),
     )
-    context.sessions.put(
-        "target",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="target",
             allowed_tools=[ToolName.RESPOND_TO_AGENT],
@@ -417,8 +403,7 @@ def test_prompt_agent_rejects_idempotency_key_reuse_for_different_request(tmp_pa
 
 def test_agent_prompt_tools_redact_response_token_in_audit_logs(tmp_path: Path) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "sender",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="sender",
             allowed_tools=[ToolName.PROMPT_AGENT],
@@ -426,8 +411,7 @@ def test_agent_prompt_tools_redact_response_token_in_audit_logs(tmp_path: Path) 
             expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
         ),
     )
-    context.sessions.put(
-        "target",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="target",
             allowed_tools=[ToolName.RESPOND_TO_AGENT],
@@ -470,8 +454,7 @@ def test_agent_prompt_tools_redact_response_token_in_audit_logs(tmp_path: Path) 
 
 def test_respond_to_agent_rejects_bad_signature_token(tmp_path: Path) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "sender",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="sender",
             allowed_tools=[ToolName.PROMPT_AGENT],
@@ -479,8 +462,7 @@ def test_respond_to_agent_rejects_bad_signature_token(tmp_path: Path) -> None:
             expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
         ),
     )
-    context.sessions.put(
-        "target",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="target",
             allowed_tools=[ToolName.RESPOND_TO_AGENT],
@@ -522,8 +504,7 @@ def test_respond_to_agent_rejects_expired_token(tmp_path: Path) -> None:
         agent_prompt_token_ttl_seconds=1,
     )
     context = build_runtime(config)
-    context.sessions.put(
-        "sender",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="sender",
             allowed_tools=[ToolName.PROMPT_AGENT],
@@ -531,8 +512,7 @@ def test_respond_to_agent_rejects_expired_token(tmp_path: Path) -> None:
             expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
         ),
     )
-    context.sessions.put(
-        "target",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="target",
             allowed_tools=[ToolName.RESPOND_TO_AGENT],
@@ -563,8 +543,7 @@ def test_respond_to_agent_rejects_expired_token(tmp_path: Path) -> None:
 
 def test_respond_to_agent_rejects_wrong_session_binding(tmp_path: Path) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "sender",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="sender",
             allowed_tools=[ToolName.PROMPT_AGENT],
@@ -572,8 +551,7 @@ def test_respond_to_agent_rejects_wrong_session_binding(tmp_path: Path) -> None:
             expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
         ),
     )
-    context.sessions.put(
-        "target",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="target",
             allowed_tools=[ToolName.RESPOND_TO_AGENT],
@@ -581,8 +559,7 @@ def test_respond_to_agent_rejects_wrong_session_binding(tmp_path: Path) -> None:
             expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
         ),
     )
-    context.sessions.put(
-        "wrong-target",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="wrong-target",
             allowed_tools=[ToolName.RESPOND_TO_AGENT],
@@ -622,8 +599,7 @@ def test_list_pending_agent_prompts_uses_directory_scoped_token_policy(tmp_path:
             "agent_prompt_token_ttl_seconds": 600,
         },
     )
-    context.sessions.put(
-        "sender",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="sender",
             allowed_tools=[ToolName.PROMPT_AGENT],
@@ -631,8 +607,7 @@ def test_list_pending_agent_prompts_uses_directory_scoped_token_policy(tmp_path:
             expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
         ),
     )
-    context.sessions.put(
-        "target",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="target",
             allowed_tools=[ToolName.RESPOND_TO_AGENT],

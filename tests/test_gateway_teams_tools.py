@@ -124,8 +124,7 @@ def test_teams_get_messages_passes_since_cursor_and_filters_unallowlisted_source
     tmp_path: Path,
 ) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             allowed_tools=[ToolName.TEAMS_GET_MESSAGES],
@@ -185,8 +184,7 @@ def test_teams_get_messages_supports_limit_and_includes_session_authored_message
     tmp_path: Path,
 ) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             allowed_tools=[ToolName.TEAMS_GET_MESSAGES],
@@ -263,8 +261,7 @@ def test_teams_get_messages_supports_limit_and_includes_session_authored_message
 
 def test_teams_get_messages_supports_before_cursor_for_older_history(tmp_path: Path) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             allowed_tools=[ToolName.TEAMS_GET_MESSAGES],
@@ -326,8 +323,7 @@ def test_teams_get_messages_supports_before_cursor_for_older_history(tmp_path: P
 
 def test_add_message_reaction_adds_teams_reaction_to_allowlisted_target(tmp_path: Path) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             allowed_tools=[ToolName.ADD_MESSAGE_REACTION],
@@ -375,8 +371,7 @@ def test_add_message_reaction_adds_teams_reaction_to_allowlisted_target(tmp_path
 
 def test_teams_get_messages_includes_status_messages_from_other_sessions_in_same_channel(tmp_path: Path) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             allowed_tools=[ToolName.TEAMS_GET_MESSAGES],
@@ -419,8 +414,7 @@ def test_teams_get_messages_includes_status_messages_from_other_sessions_in_same
 
 def test_add_message_reaction_audits_teams_adapter_failure(tmp_path: Path) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             allowed_tools=[ToolName.ADD_MESSAGE_REACTION],
@@ -483,8 +477,7 @@ def test_teams_get_messages_repeated_reads_with_cursor_do_not_retry_reactions(
     tmp_path: Path,
 ) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             allowed_tools=[ToolName.TEAMS_GET_MESSAGES],
@@ -542,8 +535,7 @@ def test_teams_get_messages_repeated_reads_with_cursor_do_not_retry_reactions(
 
 def test_teams_post_status_posts_to_allowlisted_channel_and_thread(tmp_path: Path) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             allowed_tools=[ToolName.TEAMS_POST_STATUS],
@@ -574,8 +566,7 @@ def test_teams_post_status_posts_to_allowlisted_channel_and_thread(tmp_path: Pat
 
 def test_teams_post_status_rejects_non_allowlisted_channel(tmp_path: Path) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             allowed_tools=[ToolName.TEAMS_POST_STATUS],
@@ -601,8 +592,7 @@ def test_teams_post_status_rejects_non_allowlisted_channel(tmp_path: Path) -> No
 
 def test_teams_post_status_audits_adapter_http_error(tmp_path: Path) -> None:
     context = make_context(tmp_path)
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             allowed_tools=[ToolName.TEAMS_POST_STATUS],
@@ -658,8 +648,7 @@ def test_teams_get_messages_fails_clearly_when_delegated_credentials_are_missing
         config.teams_delegated_credential_store_path,
         "root-identity",
     ).clear()
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             allowed_tools=[ToolName.TEAMS_GET_MESSAGES],

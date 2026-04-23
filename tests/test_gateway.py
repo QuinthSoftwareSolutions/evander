@@ -183,8 +183,7 @@ def test_run_script_enforces_tool_policy_and_script_allowlist(tmp_path: Path) ->
             discord_command_store_path=tmp_path / "discord.json",
         )
     )
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             allowed_tools=[],
@@ -202,8 +201,7 @@ def test_run_script_enforces_tool_policy_and_script_allowlist(tmp_path: Path) ->
             )
         )
 
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             allowed_tools=[ToolName.RUN_SCRIPT],
@@ -235,8 +233,7 @@ def test_list_pull_requests_enforces_tool_policy_and_validation(
             discord_command_store_path=tmp_path / "discord.json",
         )
     )
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             allowed_tools=[],
@@ -254,8 +251,7 @@ def test_list_pull_requests_enforces_tool_policy_and_validation(
             )
         )
 
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             allowed_tools=[ToolName.LIST_PULL_REQUESTS],
@@ -285,8 +281,7 @@ def test_get_pull_request_enforces_tool_policy(tmp_path: Path, monkeypatch: pyte
             discord_command_store_path=tmp_path / "discord.json",
         )
     )
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             allowed_tools=[],
@@ -318,8 +313,7 @@ def test_get_pull_request_allows_repo_scoped_pr_lookup(tmp_path: Path, monkeypat
             discord_command_store_path=tmp_path / "discord.json",
         )
     )
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             allowed_tools=[ToolName.GET_PULL_REQUEST],
@@ -368,8 +362,7 @@ def test_schedule_resume_enforces_tool_policy_and_validates_args(tmp_path) -> No
             discord_command_store_path=tmp_path / "discord.json",
         )
     )
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             allowed_tools=[],
@@ -390,8 +383,7 @@ def test_schedule_resume_enforces_tool_policy_and_validates_args(tmp_path) -> No
             )
         )
 
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             vm_id="vm-real",
@@ -425,8 +417,7 @@ def test_gateway_app_exposes_host_mediated_copilot_auth(tmp_path, monkeypatch: p
             discord_command_store_path=tmp_path / "discord.json",
         )
     )
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             allowed_tools=[ToolName.COPILOT_HOST_AUTH],
@@ -457,16 +448,14 @@ def test_gateway_app_rejects_missing_unauthorized_or_expired_copilot_auth_sessio
             discord_command_store_path=tmp_path / "discord.json",
         )
     )
-    context.sessions.put(
-        "active-session",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="active-session",
             allowed_tools=[],
             expires_at=datetime.now(UTC) + timedelta(hours=1),
         ),
     )
-    context.sessions.put(
-        "expired-session",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="expired-session",
             allowed_tools=[],
@@ -519,8 +508,7 @@ def test_gateway_app_reports_missing_host_token_for_copilot_auth(tmp_path, monke
             discord_command_store_path=tmp_path / "discord.json",
         )
     )
-    context.sessions.put(
-        "session-1",
+    context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             allowed_tools=[ToolName.COPILOT_HOST_AUTH],

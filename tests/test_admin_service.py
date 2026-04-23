@@ -323,8 +323,7 @@ def test_update_local_issue_rejects_proxy_issue(tmp_path: Path) -> None:
 
 def test_list_vms_collects_session_and_agent_state(tmp_path: Path, monkeypatch) -> None:
     service = AdminService(write_config(tmp_path))
-    service.runtime.sessions.put(
-        "issue-123-session",
+    service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="issue-123-session",
             vm_id="vm-123",
@@ -414,8 +413,7 @@ def test_run_virsh_falls_back_to_sudo_with_explicit_system_uri(monkeypatch: pyte
 
 def test_resume_agent_accepts_vm_name_without_vm_prefix(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     service = AdminService(write_config(tmp_path))
-    service.runtime.sessions.put(
-        "agent-sandbox-receptionist-vm-20260330T112127Z-1353036",
+    service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="agent-sandbox-receptionist-vm-20260330T112127Z-1353036",
             vm_id="agent-sandbox-receptionist-vm",
@@ -464,8 +462,7 @@ def test_resume_agent_accepts_vm_name_without_vm_prefix(tmp_path: Path, monkeypa
 
 def test_resume_agent_passes_explicit_resume_thread_id(tmp_path: Path, monkeypatch) -> None:
     service = AdminService(write_config(tmp_path))
-    service.runtime.sessions.put(
-        "receptionist-session",
+    service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="receptionist-session",
             vm_id="agent-sandbox-receptionist-vm",
@@ -520,8 +517,7 @@ def test_resume_agent_passes_explicit_resume_thread_id(tmp_path: Path, monkeypat
 
 def test_resume_agent_reuses_stored_session_thread_id(tmp_path: Path, monkeypatch) -> None:
     service = AdminService(write_config(tmp_path))
-    service.runtime.sessions.put(
-        "receptionist-session",
+    service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="receptionist-session",
             vm_id="agent-sandbox-receptionist-vm",
@@ -551,8 +547,7 @@ def test_resume_agent_reuses_stored_session_thread_id(tmp_path: Path, monkeypatc
 
 def test_resume_agent_persists_returned_thread_id_to_session_metadata(tmp_path: Path, monkeypatch) -> None:
     service = AdminService(write_config(tmp_path))
-    service.runtime.sessions.put(
-        "receptionist-session",
+    service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="receptionist-session",
             vm_id="agent-sandbox-receptionist-vm",
@@ -571,15 +566,14 @@ def test_resume_agent_persists_returned_thread_id_to_session_metadata(tmp_path: 
 
     assert result.success is True
     assert result.thread_id == "thread-fresh-1"
-    stored = service.runtime.sessions.get("receptionist-session")
+    stored = service.runtime.session_repository.get_session("receptionist-session")
     assert stored is not None
     assert stored.metadata["agent_thread_id"] == "thread-fresh-1"
 
 
 def test_resume_agent_supports_same_context_mode(tmp_path: Path, monkeypatch) -> None:
     service = AdminService(write_config(tmp_path))
-    service.runtime.sessions.put(
-        "receptionist-session",
+    service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="receptionist-session",
             vm_id="agent-sandbox-receptionist-vm",
@@ -610,8 +604,7 @@ def test_resume_agent_supports_same_context_mode(tmp_path: Path, monkeypatch) ->
 
 def test_resume_agent_uses_explicit_model_override(tmp_path: Path, monkeypatch) -> None:
     service = AdminService(write_config(tmp_path))
-    service.runtime.sessions.put(
-        "receptionist-session",
+    service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="receptionist-session",
             vm_id="agent-sandbox-receptionist-vm",
@@ -702,8 +695,7 @@ def test_get_agent_log_snapshot_accepts_codex_heartbeat_log(tmp_path: Path, monk
 
 def test_list_sessions_filters_active_and_expired(tmp_path: Path) -> None:
     service = AdminService(write_config(tmp_path))
-    service.runtime.sessions.put(
-        "issue-123-active",
+    service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="issue-123-active",
             vm_id="vm-123",
@@ -713,8 +705,7 @@ def test_list_sessions_filters_active_and_expired(tmp_path: Path) -> None:
             expires_at=datetime.now(UTC) + timedelta(hours=1),
         ),
     )
-    service.runtime.sessions.put(
-        "issue-123-expired",
+    service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="issue-123-expired",
             vm_id="vm-123",
@@ -743,8 +734,7 @@ def test_directory_filtered_lists_use_direct_owned_items_only(tmp_path: Path, mo
     assert root_dir.ok is True and root_dir.data is not None
     team_path = root_dir.data.details.directory.path
 
-    service.runtime.sessions.put(
-        "team-session",
+    service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="team-session",
             vm_id="vm-101",
@@ -754,8 +744,7 @@ def test_directory_filtered_lists_use_direct_owned_items_only(tmp_path: Path, mo
             metadata={"issue_number": "101"},
         ),
     )
-    service.runtime.sessions.put(
-        "root-session",
+    service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="root-session",
             vm_id="vm-root",
@@ -819,8 +808,7 @@ def test_list_approval_requests_filters_health_and_redacts_payload(tmp_path: Pat
     created = service.create_directory_child("root", "team")
     assert created.ok is True and created.data is not None
     team_path = created.data.details.directory.path
-    service.runtime.sessions.put(
-        "team-session",
+    service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="team-session",
             vm_id="vm-42",
@@ -883,8 +871,7 @@ def test_list_approval_requests_filters_health_and_redacts_payload(tmp_path: Pat
 
 def test_decide_approval_request_records_reason_history_and_audit(tmp_path: Path) -> None:
     service = AdminService(write_config(tmp_path))
-    service.runtime.sessions.put(
-        "session-1",
+    service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             vm_id="vm-1",
@@ -1694,7 +1681,7 @@ def test_create_issue_vm_uses_issue_directory_when_called_with_yaml_path(tmp_pat
         model="gpt-5.2-codex",
     )
 
-    manifest = service.runtime.sessions.get("issue-1-session")
+    manifest = service.runtime.session_repository.get_session("issue-1-session")
     assert result.success is True
     assert manifest is not None
     assert manifest.directory_path == team_path
@@ -1792,7 +1779,7 @@ def test_create_issue_vm_uses_yaml_path_owner_when_issue_number_is_ambiguous(tmp
         model="gpt-5.2-codex",
     )
 
-    manifest = service.runtime.sessions.get("issue-42-session")
+    manifest = service.runtime.session_repository.get_session("issue-42-session")
     assert result.success is True
     assert manifest is not None
     assert manifest.directory_path == team_a_path
@@ -1926,7 +1913,7 @@ def test_resolve_agent_model_prefers_session_model_over_issue_setup_default(tmp_
         model="gpt-5.3-codex",
         expires_at=datetime.now(UTC) + timedelta(hours=1),
     )
-    service.runtime.sessions.put(manifest.session_id, manifest)
+    service.runtime.session_repository.upsert_session(manifest)
 
     resolved = service._resolve_agent_model_for_session("session-1")
 
@@ -1943,7 +1930,7 @@ def test_resolve_agent_model_uses_issue_setup_default_when_session_model_missing
         allowed_tools=[],
         expires_at=datetime.now(UTC) + timedelta(hours=1),
     )
-    service.runtime.sessions.put(manifest.session_id, manifest)
+    service.runtime.session_repository.upsert_session(manifest)
 
     resolved = service._resolve_agent_model_for_session("session-1")
 
@@ -1959,7 +1946,7 @@ def test_resolve_agent_model_fails_when_session_and_issue_setup_models_missing(t
         allowed_tools=[],
         expires_at=datetime.now(UTC) + timedelta(hours=1),
     )
-    service.runtime.sessions.put(manifest.session_id, manifest)
+    service.runtime.session_repository.upsert_session(manifest)
 
     with pytest.raises(ValueError, match="missing session.model and missing issue_setup.default_model"):
         service._resolve_agent_model_for_session("session-1")
@@ -2006,7 +1993,7 @@ def test_create_issue_vm_deletes_session_when_setup_fails_before_vm_exists(tmp_p
 
     assert result.success is False
     assert result.message == "boom"
-    assert service.runtime.sessions.get("issue-1-session") is None
+    assert service.runtime.session_repository.get_session("issue-1-session") is None
 
 
 def test_create_issue_vm_deletes_session_when_dominfo_probe_fails(tmp_path: Path, monkeypatch: Any) -> None:
@@ -2029,7 +2016,7 @@ def test_create_issue_vm_deletes_session_when_dominfo_probe_fails(tmp_path: Path
 
     assert result.success is False
     assert result.message == "boom"
-    assert service.runtime.sessions.get("issue-1-session") is None
+    assert service.runtime.session_repository.get_session("issue-1-session") is None
 
 
 def test_admin_service_rejects_directory_edits_when_feature_flag_disabled(tmp_path: Path) -> None:
@@ -2043,8 +2030,7 @@ def test_admin_service_rejects_directory_edits_when_feature_flag_disabled(tmp_pa
 
 def test_renew_session_sets_expiration_from_now(tmp_path: Path) -> None:
     service = AdminService(write_config(tmp_path))
-    service.runtime.sessions.put(
-        "issue-14084-session",
+    service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="issue-14084-session",
             vm_id="vm-14084",
@@ -2057,7 +2043,7 @@ def test_renew_session_sets_expiration_from_now(tmp_path: Path) -> None:
     result = service.renew_session("14084", extension="6h")
     after = datetime.now(UTC)
 
-    renewed = service.runtime.sessions.get("issue-14084-session")
+    renewed = service.runtime.session_repository.get_session("issue-14084-session")
     assert renewed is not None
     assert result.success is True
     assert result.session_id == "issue-14084-session"
@@ -2066,8 +2052,7 @@ def test_renew_session_sets_expiration_from_now(tmp_path: Path) -> None:
 
 def test_revoke_session_expires_immediately(tmp_path: Path) -> None:
     service = AdminService(write_config(tmp_path))
-    service.runtime.sessions.put(
-        "session-1",
+    service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             vm_id="vm-1",
@@ -2080,7 +2065,7 @@ def test_revoke_session_expires_immediately(tmp_path: Path) -> None:
     result = service.revoke_session("session-1")
     after = datetime.now(UTC)
 
-    revoked = service.runtime.sessions.get("session-1")
+    revoked = service.runtime.session_repository.get_session("session-1")
     assert revoked is not None
     assert result.success is True
     assert before <= revoked.expires_at <= after
@@ -2088,8 +2073,7 @@ def test_revoke_session_expires_immediately(tmp_path: Path) -> None:
 
 def test_delete_session_removes_latest_matching_target(tmp_path: Path) -> None:
     service = AdminService(write_config(tmp_path))
-    service.runtime.sessions.put(
-        "issue-13301-older",
+    service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="issue-13301-older",
             vm_id="vm-13301",
@@ -2098,8 +2082,7 @@ def test_delete_session_removes_latest_matching_target(tmp_path: Path) -> None:
             expires_at=datetime.now(UTC) + timedelta(hours=1),
         ),
     )
-    service.runtime.sessions.put(
-        "issue-13301-newer",
+    service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="issue-13301-newer",
             vm_id="vm-13301",
@@ -2111,7 +2094,7 @@ def test_delete_session_removes_latest_matching_target(tmp_path: Path) -> None:
 
     result = service.delete_session("vm-13301")
 
-    remaining = service.runtime.sessions.read_all()
+    remaining = service.runtime.session_repository.read_all()
     assert result.success is True
     assert result.session_id == "issue-13301-newer"
     assert set(remaining) == {"issue-13301-older"}
@@ -2119,8 +2102,7 @@ def test_delete_session_removes_latest_matching_target(tmp_path: Path) -> None:
 
 def test_set_session_allowed_tools_updates_manifest(tmp_path: Path) -> None:
     service = AdminService(write_config(tmp_path))
-    service.runtime.sessions.put(
-        "issue-13302-session",
+    service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="issue-13302-session",
             vm_id="vm-13302",
@@ -2134,7 +2116,7 @@ def test_set_session_allowed_tools_updates_manifest(tmp_path: Path) -> None:
         [ToolName.COMPLETE_ISSUE.value, ToolName.COMPLETE_ISSUE.value, ToolName.APPROVAL_CHECK.value],
     )
 
-    updated = service.runtime.sessions.get("issue-13302-session")
+    updated = service.runtime.session_repository.get_session("issue-13302-session")
     assert result.success is True
     assert result.session_id == "issue-13302-session"
     assert updated is not None
@@ -2143,8 +2125,7 @@ def test_set_session_allowed_tools_updates_manifest(tmp_path: Path) -> None:
 
 def test_set_session_allowed_script_names_updates_manifest(tmp_path: Path) -> None:
     service = AdminService(write_config(tmp_path))
-    service.runtime.sessions.put(
-        "issue-13302-session",
+    service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="issue-13302-session",
             vm_id="vm-13302",
@@ -2159,7 +2140,7 @@ def test_set_session_allowed_script_names_updates_manifest(tmp_path: Path) -> No
         [" deploy-review ", "collect-logs", "deploy-review"],
     )
 
-    updated = service.runtime.sessions.get("issue-13302-session")
+    updated = service.runtime.session_repository.get_session("issue-13302-session")
     assert result.success is True
     assert result.session_id == "issue-13302-session"
     assert updated is not None
@@ -2168,8 +2149,7 @@ def test_set_session_allowed_script_names_updates_manifest(tmp_path: Path) -> No
 
 def test_set_session_model_updates_manifest(tmp_path: Path) -> None:
     service = AdminService(write_config(tmp_path))
-    service.runtime.sessions.put(
-        "issue-13303-session",
+    service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="issue-13303-session",
             vm_id="vm-13303",
@@ -2180,7 +2160,7 @@ def test_set_session_model_updates_manifest(tmp_path: Path) -> None:
 
     result = service.set_session_model("13303", "  gpt-5.5  ")
 
-    updated = service.runtime.sessions.get("issue-13303-session")
+    updated = service.runtime.session_repository.get_session("issue-13303-session")
     assert result.success is True
     assert result.session_id == "issue-13303-session"
     assert updated is not None
@@ -2189,8 +2169,7 @@ def test_set_session_model_updates_manifest(tmp_path: Path) -> None:
 
 def test_set_session_model_rejects_empty_value(tmp_path: Path) -> None:
     service = AdminService(write_config(tmp_path))
-    service.runtime.sessions.put(
-        "issue-13304-session",
+    service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="issue-13304-session",
             vm_id="vm-13304",
@@ -2657,8 +2636,7 @@ def test_claim_next_issue_prefers_highest_priority_committed_issue(tmp_path: Pat
     high = service.create_local_issue(title="High", body="x")
     service.update_issue(low.issue_number, state="Committed", fields={"Priority": "P2"})
     service.update_issue(high.issue_number, state="Committed", fields={"Priority": "P0"})
-    service.runtime.sessions.put(
-        "worker-session",
+    service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="worker-session",
             vm_id="issue-worker-1-vm",
@@ -2681,8 +2659,7 @@ def test_complete_issue_marks_claimed_issue_completed(tmp_path: Path) -> None:
     service = AdminService(write_config(tmp_path))
     issue = service.create_local_issue(title="Task", body="x")
     service.update_issue(issue.issue_number, state="Committed", fields={"Priority": "P1"})
-    service.runtime.sessions.put(
-        "worker-session",
+    service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="worker-session",
             vm_id="issue-worker-1-vm",
@@ -2955,7 +2932,7 @@ def test_create_vm_launches_generic_vm_and_bootstraps_selected_toolchains(tmp_pa
     assert setup_env["GATEWAY_URL"] == "http://10.20.30.40:8000/mcp"
     assert setup_env["LLM_BASE_URL"] == "http://10.20.30.40:12000/v1"
     assert setup_env["NUGET_RELAY_BASE_URL"] == "http://10.20.30.40:13000"
-    manifest = service.runtime.sessions.get("lab-session")
+    manifest = service.runtime.session_repository.get_session("lab-session")
     assert manifest is not None
     assert manifest.vm_id == "lab-vm"
     assert manifest.directory_path == team_path
@@ -3012,8 +2989,7 @@ def test_create_vm_surfaces_noninteractive_sudo_failure_without_pkexec_fallback(
 
 def test_list_vms_surfaces_shared_session_labels(tmp_path: Path, monkeypatch: Any) -> None:
     service = AdminService(write_config(tmp_path))
-    service.runtime.sessions.put(
-        "session-1",
+    service.runtime.session_repository.upsert_session(
         SessionManifest.model_validate(
             {
                 "session_id": "session-1",
@@ -3304,7 +3280,7 @@ def test_create_vm_merges_additional_allowed_tools_into_session_manifest(tmp_pat
     )
 
     assert result.success is True
-    manifest = service.runtime.sessions.get("lab-session")
+    manifest = service.runtime.session_repository.get_session("lab-session")
     assert manifest is not None
     assert ToolName.APPROVAL_SUBMIT in manifest.allowed_tools
     assert ToolName.APPROVAL_CHECK in manifest.allowed_tools
@@ -3329,7 +3305,7 @@ def test_create_vm_sets_allowed_script_names_on_session_manifest(tmp_path: Path,
     )
 
     assert result.success is True
-    manifest = service.runtime.sessions.get("lab-session")
+    manifest = service.runtime.session_repository.get_session("lab-session")
     assert manifest is not None
     assert manifest.allowed_script_names == ["deploy-review", "collect-logs"]
 
@@ -3441,7 +3417,7 @@ def test_create_vm_preserves_session_when_bootstrap_fails_after_launch(tmp_path:
         "Failed to create VM lab-vm: codex failed\n"
         "VM lab-vm and session lab-session were preserved for inspection."
     )
-    manifest = service.runtime.sessions.get("lab-session")
+    manifest = service.runtime.session_repository.get_session("lab-session")
     assert manifest is not None
     assert manifest.vm_id == "lab-vm"
 
@@ -3751,8 +3727,7 @@ def test_unlock_privileged_operations_starts_helper(monkeypatch, tmp_path: Path)
 
 def test_destroy_vm_prunes_generic_sessions_and_feedback_state(tmp_path: Path, monkeypatch: Any) -> None:
     service = AdminService(write_config(tmp_path))
-    service.runtime.sessions.put(
-        "lab-session",
+    service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="lab-session",
             vm_id="lab-vm",
@@ -3760,8 +3735,7 @@ def test_destroy_vm_prunes_generic_sessions_and_feedback_state(tmp_path: Path, m
             expires_at=datetime.now(UTC) + timedelta(hours=1),
         ),
     )
-    service.runtime.sessions.put(
-        "other-session",
+    service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="other-session",
             vm_id="other-vm",
@@ -3786,8 +3760,8 @@ def test_destroy_vm_prunes_generic_sessions_and_feedback_state(tmp_path: Path, m
     result = service.destroy_vm("lab-vm")
 
     assert result.success is True
-    assert service.runtime.sessions.get("lab-session") is None
-    assert service.runtime.sessions.get("other-session") is not None
+    assert service.runtime.session_repository.get_session("lab-session") is None
+    assert service.runtime.session_repository.get_session("other-session") is not None
     assert "removed_sessions=1" in result.message
     assert "removed_pr_map_entries=1" in result.message
 
