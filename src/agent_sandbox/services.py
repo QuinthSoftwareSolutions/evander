@@ -280,7 +280,12 @@ class DiscordService(Protocol):
 
 
 class TeamsService(Protocol):
-    def get_messages(self, since_cursor: str | None = None) -> list["TeamsMessageEnvelope"]: ...
+    def get_messages(
+        self,
+        since_cursor: str | None = None,
+        before_cursor: str | None = None,
+        limit: int | None = None,
+    ) -> list["TeamsMessageEnvelope"]: ...
 
     def post_status(
         self,
@@ -653,6 +658,18 @@ def _filter_teams_messages_since_cursor(
     return [message for message in messages if message.cursor > since_cursor]
 
 
+def _parse_teams_cursor(cursor: str | None) -> tuple[str, str] | None:
+    normalized = str(cursor or "").strip()
+    if not normalized:
+        return None
+    if "/" not in normalized:
+        return None
+    target, message_id = normalized.rsplit("/", 1)
+    if not target or not message_id:
+        return None
+    return target, message_id
+
+
 def _parse_graph_datetime(value: str | None) -> datetime:
     if not value:
         return datetime.now(UTC)
@@ -761,7 +778,14 @@ class StubTeamsService:
         self.message_store = message_store
         self.read_reaction_emoji = read_reaction_emoji
 
-    def get_messages(self, since_cursor: str | None = None) -> list[TeamsMessageEnvelope]:
+    def get_messages(
+        self,
+        since_cursor: str | None = None,
+        before_cursor: str | None = None,
+        limit: int | None = None,
+    ) -> list[TeamsMessageEnvelope]:
+        if since_cursor and before_cursor:
+            raise ValueError("since_cursor and before_cursor are mutually exclusive")
         messages = list(self.message_store.read_all().values())
         for message in messages:
             normalized_target = teams_target_from_message(
@@ -797,6 +821,14 @@ class StubTeamsService:
                 },
             }
         ordered = _sorted_teams_messages({message.cursor: message for message in messages})
+        if before_cursor is not None:
+            if any(message.cursor == before_cursor for message in ordered):
+                ordered = [message for message in ordered if message.cursor < before_cursor]
+            else:
+                ordered = [message for message in ordered if message.cursor < before_cursor]
+            if limit is not None:
+                ordered = ordered[-limit:]
+            return ordered
         return _filter_teams_messages_since_cursor(ordered, since_cursor)
 
     def post_status(
@@ -1057,11 +1089,28 @@ class GraphTeamsService:
             next_url = str(raw_next_url).strip() if raw_next_url else ""
             params = None
 
-    def get_messages(self, since_cursor: str | None = None) -> list[TeamsMessageEnvelope]:
+    def get_messages(
+        self,
+        since_cursor: str | None = None,
+        before_cursor: str | None = None,
+        limit: int | None = None,
+    ) -> list[TeamsMessageEnvelope]:
+        if since_cursor and before_cursor:
+            raise ValueError("since_cursor and before_cursor are mutually exclusive")
         messages: dict[str, TeamsMessageEnvelope] = dict(self.message_store.read_all())
+        since_cursor_parts = _parse_teams_cursor(since_cursor)
+        before_cursor_parts = _parse_teams_cursor(before_cursor)
         with httpx.Client(timeout=self.timeout_seconds) as client:
             for target in self._allowed_channel_targets():
                 parsed_target = parse_teams_target(target)
+                target_cursor = None
+                target_mode = "all"
+                if since_cursor_parts is not None and since_cursor_parts[0] == parsed_target.normalized:
+                    target_cursor = since_cursor_parts[1]
+                    target_mode = "since"
+                elif before_cursor_parts is not None and before_cursor_parts[0] == parsed_target.normalized:
+                    target_cursor = before_cursor_parts[1]
+                    target_mode = "before"
                 if parsed_target.kind == "chat":
                     iterator = self._iter_chat_messages(client, chat_id=parsed_target.chat_id or "")
                 else:
@@ -1070,24 +1119,57 @@ class GraphTeamsService:
                         team_id=parsed_target.team_id or "",
                         channel_id=parsed_target.channel_id or "",
                     )
+                target_count = 0
+                before_seen = target_mode != "before"
                 for message_payload in iterator:
-                    envelope = self._to_envelope(message_payload, target=parsed_target)
-                    envelope = self._preserve_status_source_metadata(
-                        known=messages.get(envelope.cursor),
-                        fetched=envelope,
-                    )
-                    messages[envelope.cursor] = envelope
-                    self.message_store.put(envelope.cursor, envelope)
-                    for reply_payload in message_payload.get("replies") or []:
-                        reply_envelope = self._to_envelope(reply_payload, target=parsed_target)
-                        reply_envelope = self._preserve_status_source_metadata(
-                            known=messages.get(reply_envelope.cursor),
-                            fetched=reply_envelope,
+                    payloads = [message_payload, *(message_payload.get("replies") or [])]
+                    stop_target = False
+                    for payload in payloads:
+                        envelope = self._to_envelope(payload, target=parsed_target)
+                        envelope = self._preserve_status_source_metadata(
+                            known=messages.get(envelope.cursor),
+                            fetched=envelope,
                         )
-                        messages[reply_envelope.cursor] = reply_envelope
-                        self.message_store.put(reply_envelope.cursor, reply_envelope)
+                        messages[envelope.cursor] = envelope
+                        self.message_store.put(envelope.cursor, envelope)
+
+                        if target_mode == "since":
+                            if envelope.message_id == target_cursor:
+                                stop_target = True
+                                break
+                            target_count += 1
+                            if limit is not None and target_count >= limit:
+                                stop_target = True
+                                break
+                            continue
+
+                        if target_mode == "before":
+                            if not before_seen:
+                                if envelope.message_id == target_cursor:
+                                    before_seen = True
+                                continue
+                            target_count += 1
+                            if limit is not None and target_count >= limit:
+                                stop_target = True
+                                break
+                            continue
+
+                        target_count += 1
+                        if limit is not None and target_count >= limit:
+                            stop_target = True
+                            break
+
+                    if stop_target:
+                        break
 
         ordered = _sorted_teams_messages(messages)
+        if before_cursor is not None:
+            ordered = [message for message in ordered if message.cursor < before_cursor]
+            if limit is not None:
+                ordered = ordered[-limit:]
+            return ordered
+        if limit is not None and since_cursor is None:
+            ordered = ordered[-limit:]
         return _filter_teams_messages_since_cursor(ordered, since_cursor)
 
     @staticmethod

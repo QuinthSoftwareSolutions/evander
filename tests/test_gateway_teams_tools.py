@@ -18,15 +18,29 @@ class FakeTeamsService:
     def __init__(self, messages: list[TeamsMessageEnvelope]) -> None:
         self.messages = messages
         self.last_since_cursor: str | None = None
+        self.last_before_cursor: str | None = None
+        self.last_limit: int | None = None
         self.post_calls: list[tuple[str, str, str, str | None]] = []
         self.reaction_calls: list[tuple[str, str, str, str]] = []
         self.reaction_error_by_message_id: dict[str, Exception] = {}
         self.read_reaction_emoji = "👀"
 
-    def get_messages(self, since_cursor: str | None = None) -> list[TeamsMessageEnvelope]:
+    def get_messages(
+        self,
+        since_cursor: str | None = None,
+        before_cursor: str | None = None,
+        limit: int | None = None,
+    ) -> list[TeamsMessageEnvelope]:
         self.last_since_cursor = since_cursor
+        self.last_before_cursor = before_cursor
+        self.last_limit = limit
+        if since_cursor is not None and before_cursor is not None:
+            raise ValueError("since_cursor and before_cursor are mutually exclusive")
+        if before_cursor is not None:
+            older = [message for message in self.messages if message.cursor < before_cursor]
+            return older[-limit:] if limit is not None else older
         if since_cursor is None:
-            return self.messages
+            return self.messages[-limit:] if limit is not None else self.messages
         seen_cursor = False
         filtered: list[TeamsMessageEnvelope] = []
         for message in self.messages:
@@ -35,7 +49,9 @@ class FakeTeamsService:
                 continue
             if message.cursor == since_cursor:
                 seen_cursor = True
-        return filtered if seen_cursor else self.messages
+        if not seen_cursor:
+            return self.messages[-limit:] if limit is not None else self.messages
+        return filtered[:limit] if limit is not None else filtered
 
     def post_status(
         self,
@@ -160,6 +176,7 @@ def test_teams_get_messages_passes_since_cursor_and_filters_unallowlisted_source
     )
 
     assert context.teams_service.last_since_cursor == "team-a/channel-1/msg-0"
+    assert context.teams_service.last_before_cursor is None
     assert [entry["cursor"] for entry in result["messages"]] == ["team-a/channel-1/msg-1"]
     assert result["next_cursor"] == "team-b/channel-9/msg-9"
 
@@ -240,7 +257,71 @@ def test_teams_get_messages_supports_limit_and_includes_session_authored_message
         "team-a/channel-1/msg-3",
     ]
     assert result["next_cursor"] == "team-a/channel-1/msg-3"
+    assert context.teams_service.last_limit == 2
     assert context.teams_service.reaction_calls == []
+
+
+def test_teams_get_messages_supports_before_cursor_for_older_history(tmp_path: Path) -> None:
+    context = make_context(tmp_path)
+    context.sessions.put(
+        "session-1",
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[ToolName.TEAMS_GET_MESSAGES],
+            teams_channel_allowlist=["team-a/channel-1"],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    context.teams_service = FakeTeamsService(
+        [
+            TeamsMessageEnvelope(
+                cursor="team-a/channel-1/msg-1",
+                message_id="msg-1",
+                author_id="user-1",
+                team_id="team-a",
+                channel_id="channel-1",
+                thread_id="msg-1",
+                content="one",
+                metadata={"source": "teams_graph_api", "team_id": "team-a", "channel_id": "channel-1"},
+            ),
+            TeamsMessageEnvelope(
+                cursor="team-a/channel-1/msg-2",
+                message_id="msg-2",
+                author_id="user-2",
+                team_id="team-a",
+                channel_id="channel-1",
+                thread_id="msg-1",
+                content="two",
+                metadata={"source": "teams_graph_api", "team_id": "team-a", "channel_id": "channel-1"},
+            ),
+            TeamsMessageEnvelope(
+                cursor="team-a/channel-1/msg-3",
+                message_id="msg-3",
+                author_id="user-3",
+                team_id="team-a",
+                channel_id="channel-1",
+                thread_id="msg-1",
+                content="three",
+                metadata={"source": "teams_graph_api", "team_id": "team-a", "channel_id": "channel-1"},
+            ),
+        ]
+    )
+    server = create_server(context)
+
+    result = call_tool(
+        server,
+        "teams_get_messages",
+        {"session_id": "session-1", "before_cursor": "team-a/channel-1/msg-3", "limit": 2},
+    )
+
+    assert context.teams_service.last_since_cursor is None
+    assert context.teams_service.last_before_cursor == "team-a/channel-1/msg-3"
+    assert context.teams_service.last_limit == 2
+    assert [entry["cursor"] for entry in result["messages"]] == [
+        "team-a/channel-1/msg-1",
+        "team-a/channel-1/msg-2",
+    ]
+    assert result["next_cursor"] == "team-a/channel-1/msg-2"
 
 
 def test_add_message_reaction_adds_teams_reaction_to_allowlisted_target(tmp_path: Path) -> None:

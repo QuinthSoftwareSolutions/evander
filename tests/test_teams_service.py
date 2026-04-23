@@ -308,6 +308,74 @@ def test_stub_teams_service_filters_by_cursor(tmp_path: Path) -> None:
     assert [message.cursor for message in messages] == ["team-a/channel-1/msg-2"]
 
 
+def test_graph_teams_service_before_cursor_limits_history_fetch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path.endswith("/chats/chat-1/messages") and request.url.params.get("$skiptoken") is None:
+            return httpx.Response(
+                200,
+                json={
+                    "value": [
+                        {
+                            "id": "msg-5",
+                            "createdDateTime": "2026-03-30T11:05:00Z",
+                            "body": {"content": "<p>five</p>", "contentType": "html"},
+                            "from": {"user": {"id": "user-5"}},
+                        },
+                        {
+                            "id": "msg-4",
+                            "createdDateTime": "2026-03-30T11:04:00Z",
+                            "body": {"content": "<p>four</p>", "contentType": "html"},
+                            "from": {"user": {"id": "user-4"}},
+                        },
+                    ],
+                    "@odata.nextLink": "https://graph.microsoft.com/v1.0/chats/chat-1/messages?$skiptoken=page-2",
+                },
+                request=request,
+            )
+        if request.url.path.endswith("/chats/chat-1/messages") and request.url.params.get("$skiptoken") == "page-2":
+            return httpx.Response(
+                200,
+                json={
+                    "value": [
+                        {
+                            "id": "msg-3",
+                            "createdDateTime": "2026-03-30T11:03:00Z",
+                            "body": {"content": "<p>three</p>", "contentType": "html"},
+                            "from": {"user": {"id": "user-3"}},
+                        },
+                        {
+                            "id": "msg-2",
+                            "createdDateTime": "2026-03-30T11:02:00Z",
+                            "body": {"content": "<p>two</p>", "contentType": "html"},
+                            "from": {"user": {"id": "user-2"}},
+                        },
+                    ]
+                },
+                request=request,
+            )
+        raise AssertionError(f"Unexpected request: {request.method} {request.url}")
+
+    transport = httpx.MockTransport(handler)
+    patch_httpx_client(monkeypatch, transport)
+    store = JsonStore(tmp_path / "teams.json", TeamsMessageEnvelope)
+    service = GraphTeamsService(
+        store,
+        token="graph-token",
+        api_base_url="https://graph.microsoft.com/v1.0",
+        poll_limit=2,
+        timeout_seconds=5.0,
+        allowed_channel_targets_provider=lambda: ["chat:chat-1"],
+    )
+
+    messages = service.get_messages(before_cursor="chat:chat-1/msg-4", limit=1)
+
+    assert [message.cursor for message in messages] == ["chat:chat-1/msg-3"]
+    assert len(requests) == 2
+
+
 def test_graph_teams_service_posts_status_and_thread_reply(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
