@@ -3,18 +3,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from ...vm_power_state import normalize_power_state
 from .base import QueryProviderBase
-
-
-_VM_STATE_CODE_BY_LIBVIRT_STATE: dict[str, str] = {
-    "running": "running",
-    "idle": "running",
-    "paused": "paused",
-    "in shutdown": "stopping",
-    "shut off": "shut_off",
-    "crashed": "crashed",
-    "pmsuspended": "suspended",
-}
 
 
 class VmRunStateQueryProvider(QueryProviderBase):
@@ -47,14 +37,17 @@ class VmRunStateQueryProvider(QueryProviderBase):
             )
 
         vm = selected[0]
-        libvirt_state = str(vm.libvirt_state or "unknown").strip().lower()
-        state_code = _VM_STATE_CODE_BY_LIBVIRT_STATE.get(libvirt_state, "unknown")
+        power_state = str(vm.power_state or "unknown").strip().lower()
+        state_code = normalize_power_state(power_state)
         is_running = state_code == "running"
-        is_terminal = state_code in {"shut_off", "crashed"}
+        is_terminal = state_code in {"stopped", "failed"}
         return {
             "vm_name": vm.vm_name,
+            "provider": vm.provider,
             "session_ids": list(vm.session_ids),
-            "libvirt_state": vm.libvirt_state,
+            "power_state": vm.power_state,
+            "libvirt_state": vm.power_state,
+            "provider_state": vm.provider_state,
             "state_code": state_code,
             "is_running": is_running,
             "is_terminal": is_terminal,

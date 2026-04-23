@@ -115,3 +115,36 @@ def test_render_vm_defaults_exports_uses_session_scope_and_shell_exports(tmp_pat
     assert 'export HTTP_TARGET_RELAY_BASE_URL=http://10.0.0.8:11777' in exports
     assert 'export LLM_BASE_URL=http://10.0.0.8:12000/v1' in exports
     assert 'export NUGET_RELAY_BASE_URL=http://10.0.0.8:13000' in exports
+
+
+def test_vm_defaults_resolver_supports_provider_and_azure_overlay(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    store = DirectoryStore(runtime_dir / "directories.json")
+    store.ensure_root()
+    service = DirectoryService(store)
+    config = GatewayConfig.model_validate({"runtime_dir": str(runtime_dir)})
+    resolver = VmDefaultsConfigResolver(config, directory_store=store)
+    team = service.create(parent="root", name="team")
+
+    resolver.config_store.write(
+        team.path,
+        domain="vm",
+        payload={
+            "provider": "azure",
+            "provider_defaults": {"ssh_port": "22"},
+            "azure": {
+                "subscription": "sub-123",
+                "resource_group": "rg-agents",
+                "region": "westeurope",
+                "virtual_network": "vnet-agents",
+                "subnet": "snet-private",
+            },
+        },
+    )
+
+    resolved = resolver.resolve_for_directory(team.path)
+
+    assert resolved.provider == "azure"
+    assert resolved.provider_defaults == {"ssh_port": "22"}
+    assert resolved.azure.subscription == "sub-123"
+    assert resolved.azure.resource_group == "rg-agents"

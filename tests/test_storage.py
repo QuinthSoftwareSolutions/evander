@@ -65,3 +65,22 @@ def test_json_store_delete_preserves_concurrent_updates(tmp_path: Path, monkeypa
     _run_concurrently(lambda: delete_key("a"), lambda: delete_key("b"), lambda: start.wait())
 
     assert set(store.read_all()) == {"c"}
+
+
+def test_json_store_read_all_treats_empty_file_as_empty_store(tmp_path: Path) -> None:
+    path = tmp_path / "store.json"
+    store = JsonStore(path, SampleRecord)
+
+    path.write_text("", encoding="utf-8")
+
+    assert store.read_all() == {}
+
+
+def test_json_store_write_all_recovers_from_empty_file(tmp_path: Path) -> None:
+    path = tmp_path / "store.json"
+    store = JsonStore(path, SampleRecord)
+    path.write_text("", encoding="utf-8")
+
+    store.write_all({"a": SampleRecord(value="a")})
+
+    assert store.read_all() == {"a": SampleRecord(value="a")}

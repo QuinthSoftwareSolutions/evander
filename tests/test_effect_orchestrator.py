@@ -16,13 +16,16 @@ from agent_sandbox.effects.providers.vm_copy_files import VmCopyFilesEffectProvi
 from agent_sandbox.effect_orchestrator import (
     AwaitAgentPendingRecord,
     EffectOrchestratorWorker,
+    ExecutionGraph,
     _await_agent_pending_target,
+    _matching_outbound_edges,
     build_effect_orchestrator_worker,
     main,
 )
 from agent_sandbox.agent_prompt_queue import QueuedAgentPromptRecord
 from agent_sandbox.events.models import TriggerEvent
 from agent_sandbox.models import VmSummary
+from agent_sandbox.triggers.queue import TriggerQueueRecord
 
 
 class _Provider:
@@ -118,6 +121,36 @@ def _await_agent_store(worker: EffectOrchestratorWorker):
     provider = worker._get_gate_provider("gate:await-agent")
     assert provider is not None
     return provider.load_state()
+
+
+def test_matching_outbound_edges_honors_resume_target_node() -> None:
+    queue_record = TriggerQueueRecord(
+        event_id="evt-1",
+        trigger_id="trigger-ticket",
+        trigger_type="trigger:ticket:created",
+        trace_id="trace-1",
+        occurred_at=datetime.now(timezone.utc),
+        payload={"__resume_target_node_id": "effect-b"},
+    )
+    graph = ExecutionGraph(
+        nodes_by_id={},
+        gates_by_id={},
+        effects_by_id={},
+        queries_by_id={},
+        outbound_index={
+            "trigger-ticket": (
+                _edge("trigger-ticket", "effect-a"),
+                _edge("trigger-ticket", "effect-b"),
+            )
+        },
+        downstream_index={},
+        inbound_index={},
+        declared_outputs={},
+    )
+
+    matched = _matching_outbound_edges(queue_record=queue_record, graph=graph)
+
+    assert [edge["target_id"] for edge in matched] == ["effect-b"]
 
 
 def test_effect_orchestrator_main_help_does_not_crash(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1410,13 +1443,11 @@ def test_filter_gate_when_can_match_ancestor_effect_outputs(tmp_path: Path) -> N
                     "display_name": "Create succeeded",
                     "type": "gate:filter",
                     "outputs": {
-                        "guest_repo_name": {"type": "string"},
                         "session_id": {"type": "string"},
                         "vm_name": {"type": "string"},
                         "labels": {"type": "object"},
-                        "remote_url": {"type": "string"},
                         "success": {"type": "boolean"},
-                        "target_dir": {"type": "string"},
+                        "message": {"type": "string"},
                     },
                     "when": {
                         "all": [
@@ -1795,13 +1826,11 @@ def test_filter_gate_when_drops_payload_when_predicate_is_false(tmp_path: Path) 
                     "display_name": "Create succeeded",
                     "type": "gate:filter",
                     "outputs": {
-                        "guest_repo_name": {"type": "string"},
                         "session_id": {"type": "string"},
                         "vm_name": {"type": "string"},
                         "labels": {"type": "object"},
-                        "remote_url": {"type": "string"},
                         "success": {"type": "boolean"},
-                        "target_dir": {"type": "string"},
+                        "message": {"type": "string"},
                     },
                     "when": {"all": [{"left": "${{effect-1.success}}", "equals": True}]},
                 }

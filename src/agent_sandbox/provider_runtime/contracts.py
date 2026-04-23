@@ -16,6 +16,18 @@ class VmCreator(Protocol):
     def create_vm(self, **kwargs: Any) -> Any: ...
 
 
+class VmRepoCloner(Protocol):
+    def clone_repo_into_vm(self, **kwargs: Any) -> Any: ...
+
+
+class VmPythonBootstrapper(Protocol):
+    def bootstrap_python_in_vm(self, **kwargs: Any) -> Any: ...
+
+
+class VmFrontendBootstrapper(Protocol):
+    def bootstrap_frontend_in_vm(self, **kwargs: Any) -> Any: ...
+
+
 class AgentResumer(Protocol):
     def resume_agent(self, **kwargs: Any) -> Any: ...
 
@@ -81,6 +93,9 @@ class SessionContextReader(Protocol):
 @dataclass(frozen=True)
 class ProviderRuntimePorts:
     vm_creator: VmCreator | None = None
+    vm_repo_cloner: VmRepoCloner | None = None
+    vm_python_bootstrapper: VmPythonBootstrapper | None = None
+    vm_frontend_bootstrapper: VmFrontendBootstrapper | None = None
     agent_resumer: AgentResumer | None = None
     vm_power_controller: VmPowerController | None = None
     vm_inventory: VmInventory | None = None

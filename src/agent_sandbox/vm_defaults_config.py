@@ -4,7 +4,7 @@ import shlex
 from pathlib import Path
 from urllib.parse import SplitResult, urlsplit, urlunsplit
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .bootstrap import load_runtime_gateway_config
 from .config import GatewayConfig, load_config
@@ -24,11 +24,31 @@ from .session_manifest_repository import (
 from .storage import JsonStore
 
 
+class AzureVmProviderConfig(BaseModel):
+    subscription: str | None = None
+    resource_group: str | None = None
+    region: str | None = None
+    virtual_network: str | None = None
+    subnet: str | None = None
+    private_relay_access: str = "required"
+    vm_size: str = "Standard_D4s_v5"
+    image_reference: str = "Canonical:ubuntu-24_04-lts:server:latest"
+    ssh_username: str = "agent"
+    ssh_public_key_path: str | None = None
+    tags: dict[str, str] = Field(default_factory=dict)
+
+
 class EffectiveVmDefaultsConfig(BaseModel):
+    provider: str = "libvirt"
+    provider_defaults: dict[str, str] = Field(default_factory=dict)
+    azure: AzureVmProviderConfig = Field(default_factory=AzureVmProviderConfig)
     bind_network_cidr: str = "192.168.250.0/24"
     gateway_url: str = "http://192.168.250.1:8000/mcp"
+    http_target_relay_host: str = "0.0.0.0"
     http_target_relay_port: int = 11777
+    nuget_relay_host: str = "0.0.0.0"
     nuget_relay_port: int = 11666
+    openai_relay_host: str = "0.0.0.0"
     openai_relay_port: int = 11434
 
     def guest_openai_base_url(self) -> str:

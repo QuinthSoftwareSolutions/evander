@@ -83,6 +83,85 @@ def test_get_latest_detects_config_file_replacement(tmp_path: Path) -> None:
     assert latest.poll_interval_seconds == 9
 
 
+def test_get_latest_detects_referenced_workflow_pack_change(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    project_dir = tmp_path
+    path = _config_path(project_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    packs_dir = project_dir / "config" / "workflow-packs"
+    packs_dir.mkdir(parents=True, exist_ok=True)
+    pack_path = packs_dir / "synthetic.v1.json"
+    pack_path.write_text(
+        json.dumps(
+            {
+                "pack_id": "synthetic",
+                "pack_version": "v1",
+                "ir": {
+                    "version": "v1",
+                    "nodes": [
+                        {
+                            "id": "trigger-old",
+                            "display_name": "Trigger old",
+                            "type": "trigger:cron",
+                            "expression": "* * * * *",
+                        },
+                        {
+                            "id": "effect-old",
+                            "display_name": "Effect old",
+                            "type": "effect:agent:prompt",
+                            "prompt": "old",
+                        },
+                    ],
+                    "edges": [{"source_id": "trigger-old", "target_id": "effect-old"}],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    path.write_text(json.dumps({"workflow_packs": ["synthetic.v1.json"]}), encoding="utf-8")
+    base_config = GatewayConfig(runtime_dir=runtime_dir)
+    initial_config = load_trigger_orchestrator_worker_global_config(project_dir, base_config=base_config)
+    reloader = TriggerOrchestratorWorkerGlobalConfigReloader(
+        project_dir=project_dir,
+        initial_config=initial_config,
+        base_config=base_config,
+    )
+
+    pack_path.write_text(
+        json.dumps(
+            {
+                "pack_id": "synthetic",
+                "pack_version": "v1",
+                "ir": {
+                    "version": "v1",
+                    "nodes": [
+                        {
+                            "id": "trigger-new",
+                            "display_name": "Trigger new",
+                            "type": "trigger:cron",
+                            "expression": "*/5 * * * *",
+                        },
+                        {
+                            "id": "effect-new",
+                            "display_name": "Effect new",
+                            "type": "effect:agent:prompt",
+                            "prompt": "new",
+                        },
+                    ],
+                    "edges": [{"source_id": "trigger-new", "target_id": "effect-new"}],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    latest, changed = reloader.get_latest()
+
+    assert changed is True
+    assert [trigger.id for trigger in latest.triggers] == ["trigger-new"]
+    assert [effect.id for effect in latest.effects] == ["effect-new"]
+
+
 def test_load_config_compiles_await_agent_templates_to_explicit_triggers(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     project_dir = tmp_path

@@ -649,7 +649,7 @@ def test_directory_config_resolver_keeps_heartbeat_prompts_directory_scoped_only
         domain="heartbeat",
         payload={
             "host_heartbeat_pr_resume_prompt": "team PR prompt",
-            "host_heartbeat_discord_resume_prompt": "team Discord prompt",
+            "discord_resume_prompt": "team Discord prompt",
             "host_heartbeat_poll_interval_seconds": 12.0,
             "host_busy_check_script_path": "/tmp/check.sh",
         },
@@ -658,7 +658,7 @@ def test_directory_config_resolver_keeps_heartbeat_prompts_directory_scoped_only
     read_payload = config_store.read(team.path, domain="heartbeat")
     assert read_payload == {
         "host_heartbeat_pr_resume_prompt": "team PR prompt",
-        "host_heartbeat_discord_resume_prompt": "team Discord prompt",
+        "discord_resume_prompt": "team Discord prompt",
     }
 
     resolution = resolver.resolve_domain(
@@ -669,5 +669,5 @@ def test_directory_config_resolver_keeps_heartbeat_prompts_directory_scoped_only
     )
 
     assert resolution.effective_config["host_heartbeat_pr_resume_prompt"] == "team PR prompt"
-    assert resolution.effective_config["host_heartbeat_discord_resume_prompt"] == "team Discord prompt"
+    assert resolution.effective_config["discord_resume_prompt"] == "team Discord prompt"
     assert "host_heartbeat_poll_interval_seconds" not in resolution.effective_config

@@ -87,8 +87,10 @@ defaulting to `ADO_WORK_ITEMS_AZURE_DEVOPS_PAT`.
 
 ## `config/issue-orchestrator/config.json`
 
-This JSON file stores the new issue orchestrator worker's global settings. The scaffold keeps this
-worker separate from the ADO and PR-feedback workers, so its config is intentionally isolated.
+This JSON file stores the retired issue orchestrator worker's global settings. The worker is
+obsolete, `scripts/install_systemd_units.sh` no longer installs/enables its systemd unit, and new
+deployments should leave this config unused unless they are intentionally reviving that legacy
+scaffold.
 
 | Parameter | Found in | Consumed by |
 |---|---|---|
@@ -201,7 +203,7 @@ tool appends to after validating that the calling session is allowed to invoke t
 script name. The checked-in global workflow currently filters that trigger down to
 `provision_exampleindustry_app_demo_environment.sh`, which wraps the existing host-side Example
 Industry APP Azure provisioning script and resumes the originating session with the JSON result.
-All three flows are independent from host-heartbeat; host-heartbeat continues to cover
+All three flows are independent from the wake workers; Discord inbox waking and scheduled resumes are covered by the dedicated wake workers while
 PR/Discord feedback wakeups.
 
 Example:
@@ -285,7 +287,10 @@ Type-specific keys:
 
 | `type` | Required keys | Optional keys |
 |---|---|---|
-| `effect:vm:create` | _none beyond envelope_ | `vm_name`, `session_id`, `model`, `repo_source`, `vm_user`, `ttl_hours`, `allowed_tools`, `allowed_script_names`, `discord_channels`, `email_mailboxes`, `email_folders`, `python`, `dotnet`, `nuget`, `mssql`, `mssql_init_root`, `playwright`, `directory_path`, `outputs` |
+| `effect:vm:create` | _none beyond envelope_ | `vm_name`, `session_id`, `model`, `vm_user`, `ttl_hours`, `allowed_tools`, `allowed_script_names`, `discord_channels`, `email_mailboxes`, `email_folders`, `dotnet`, `nuget`, `mssql`, `mssql_init_root`, `playwright`, `codex_skills`, `directory_path`, `outputs` |
+| `effect:vm:clone-repo` | `repo_source` | `target`, `session_id`, `vm_name`, `vm_user`, `directory_path`, `outputs` |
+| `effect:vm:bootstrap-python` | `host_checkout`, `target_dir` | `target`, `session_id`, `vm_name`, `vm_user`, `outputs` |
+| `effect:vm:bootstrap-frontend` | `host_checkout`, `install_roots` | `target`, `session_id`, `vm_name`, `vm_user`, `outputs` |
 | `effect:vm:start` | _none beyond envelope_ | `target`, `session_id`, `vm_name`, `outputs` |
 | `effect:vm:stop` | _none beyond envelope_ | `target`, `session_id`, `vm_name`, `timeout_seconds`, `outputs` |
 | `effect:agent:prompt` | `prompt` | `target`, `session_id`, `vm_name`, `vm_user`, `resume_thread_id`, `output_mode`, `outputs` |
@@ -481,12 +486,12 @@ root directory-scoped config and host environment:
 | Parameter | Found in | Consumed by |
 |---|---|---|
 | `AGENT_SANDBOX_GIT_ROOT` | `runtime/directory-config/root/issue-setup.json` | `src/agent_sandbox/cli.py` and git automation scripts (`create_git_remote.sh`, `git_ssh_command_wrapper.sh`, `promote_agent_branch.sh`). |
-| `AGENT_SANDBOX_GIT_HOST` | `runtime/directory-config/root/issue-setup.json` | `scripts/bootstrap_git_vm.sh`, `scripts/setup_issue_vm.sh`. |
-| `AGENT_SANDBOX_GIT_USER` | `runtime/directory-config/root/issue-setup.json` | `scripts/bootstrap_git_vm.sh`, `scripts/setup_issue_vm.sh`. |
-| `AGENT_SANDBOX_GIT_SSH_ALIAS` | `runtime/directory-config/root/issue-setup.json` | `scripts/bootstrap_git_vm.sh`, `scripts/setup_issue_vm.sh`. |
-| `ENABLE_GUEST_HEARTBEAT` | `runtime/directory-config/root/issue-setup.json` | `scripts/setup_issue_vm.sh` (guest heartbeat toggle). |
-| `GUEST_HEARTBEAT_PROMPT` | `runtime/directory-config/root/issue-setup.json` | `scripts/setup_issue_vm.sh` (guest heartbeat prompt). |
-| `AGENT_POST_EXEC_VERIFICATION_PROMPT` | `runtime/directory-config/root/issue-setup.json` | `scripts/setup_issue_vm.sh` (post-exec resume pass prompt). |
+| `AGENT_SANDBOX_GIT_HOST` | `runtime/directory-config/root/issue-setup.json` | `scripts/bootstrap_git_vm.sh`, `clone_repo_into_vm(...)`. |
+| `AGENT_SANDBOX_GIT_USER` | `runtime/directory-config/root/issue-setup.json` | `scripts/bootstrap_git_vm.sh`, `clone_repo_into_vm(...)`. |
+| `AGENT_SANDBOX_GIT_SSH_ALIAS` | `runtime/directory-config/root/issue-setup.json` | `scripts/bootstrap_git_vm.sh`, `clone_repo_into_vm(...)`. |
+| `ENABLE_GUEST_HEARTBEAT` | `runtime/directory-config/root/issue-setup.json` | `create_issue_vm(...)` (guest heartbeat toggle). |
+| `GUEST_HEARTBEAT_PROMPT` | `runtime/directory-config/root/issue-setup.json` | `create_issue_vm(...)` (guest heartbeat prompt). |
+| `AGENT_POST_EXEC_VERIFICATION_PROMPT` | `runtime/directory-config/root/issue-setup.json` | `create_issue_vm(...)` (post-exec resume prompt metadata). |
 | `AGENT_SANDBOX_AZURE_DEVOPS_PR_PAT_ENV` | `runtime/directory-config/root/providers.json` or host shell | `scripts/open_agent_pr.sh` (alternate env var name for Azure PR PAT). |
 | `AZURE_DEVOPS_PR_PAT` | host shell or `secrets.env` | `scripts/open_agent_pr.sh` (when provider is Azure DevOps). |
 | `AGENT_SANDBOX_PR_NOTES_REF` | host shell | `scripts/handle_agent_push.sh` (PR notes ref). |
@@ -577,7 +582,7 @@ environment.
 | `discord_retry_count` | legacy gateway YAML | `src/agent_sandbox/runtime.py` retry behavior. |
 | `discord_retry_base_backoff_seconds` | legacy gateway YAML | `src/agent_sandbox/runtime.py` retry backoff floor. |
 | `discord_retry_max_backoff_seconds` | legacy gateway YAML | `src/agent_sandbox/runtime.py` retry backoff ceiling. |
-| `discord_read_reaction_emoji` | legacy gateway YAML | `src/agent_sandbox/runtime.py` adapter config + `src/agent_sandbox/gateway.py` unread-message reaction side effect. |
+| `discord_read_reaction_emoji` | legacy gateway YAML | Legacy adapter config retained for compatibility. The gateway no longer applies unread-message read reactions automatically; use `add_message_reaction` explicitly. |
 | `discord_operator_user_allowlist` | legacy gateway YAML | `src/agent_sandbox/runtime.py` and `src/agent_sandbox/policy.py` authorization checks. |
 | `discord_operator_channel_allowlist` | legacy gateway YAML | `src/agent_sandbox/runtime.py` channel filter for operator events. |
 | `discord_poll_operator_dms` | legacy gateway YAML | `src/agent_sandbox/runtime.py` DM polling toggle. |
@@ -610,7 +615,7 @@ environment.
 | `azure_devops_organization_url` | legacy gateway YAML | `src/agent_sandbox/runtime.py` and `src/agent_sandbox/host_heartbeat_worker.py`. |
 | `azure_devops_project` | legacy gateway YAML | `src/agent_sandbox/runtime.py` and `src/agent_sandbox/host_heartbeat_worker.py`. |
 | `host_heartbeat_pr_resume_prompt` | legacy gateway YAML | `src/agent_sandbox/host_heartbeat_worker.py`. |
-| `host_heartbeat_discord_resume_prompt` | legacy gateway YAML | `src/agent_sandbox/host_heartbeat_worker.py`. |
+| `discord_resume_prompt` | legacy gateway YAML | `src/agent_sandbox/discord_wake_worker.py`. |
 | `pr_map_path` | legacy gateway YAML | `src/agent_sandbox/host_heartbeat_worker.py` PR map loading. |
 
 ## 4) Cloud-init template placeholders (`config/cloud-init-user-data.yaml`)
@@ -649,7 +654,7 @@ Supported directory config domains:
 | `policy.json` | Session/policy defaults and operator restrictions | `approval_ttl_seconds`, `default_session_ttl_seconds`, Discord/email allowlists, `email_send_enabled`, `pr_reply_require_approval`, `redacted_keys` |
 | `providers.json` | Upstream/provider endpoints and credentials-by-reference | Discord, OpenAI, HTTP target relay, NuGet, GitHub, Azure DevOps, Teams |
 | `email.json` | Mailbox provider definitions and email provider runtime settings | `email_mailboxes`, `email_provider_timeout_seconds` |
-| `heartbeat.json` | Host heartbeat worker behavior | `host_heartbeat_pr_resume_prompt`, `host_heartbeat_discord_resume_prompt` |
+| `heartbeat.json` | Directory-scoped wake prompt behavior | `host_heartbeat_pr_resume_prompt`, `discord_resume_prompt` |
 | `ado-worker.json` | Azure DevOps backlog worker setup/bootstrap behavior | `ado_area_filters`, `ado_team_filters`, `ado_project_or_solution`, `ado_prewarm_target`, `ado_repo_source`, `create_prs_automatically`, `create_prs_as_draft`, `ado_bootstrap_*`, `ado_mssql_sa_password_env`, frontend bootstrap fields |
 | `issue-setup.json` | VM issue setup/git hand-off defaults | `git_root`, `git_host`, `git_user`, `git_ssh_alias`, optional `default_model`, `post_exec_verification_prompt`, `enable_guest_heartbeat`, `guest_heartbeat_prompt`, optional `issue_setup_azure_devops_pr_pat_env` |
 | `pr-template.json` | Directory-scoped markdown boilerplate prepended to automated PR bodies | `pr_template_markdown` |
@@ -686,7 +691,7 @@ Key delegated Teams provider settings now include:
   `ChannelMessage.Read.All`, `ChannelMessage.Send`, and `Chat.ReadWrite`)
 - optional `teams_delegated_authority_base_url`
 - optional `teams_delegated_credential_store_path`
-- optional `teams_read_reaction_emoji` (default `👀`, used for unread-message read reactions)
+- optional `teams_read_reaction_emoji` (legacy compatibility field; read-side automatic reactions are disabled)
 - The app registration referenced by `teams_delegated_client_id` must support public client /
   device-code auth. If Microsoft returns `AADSTS7000218`, the registration currently requires a
   client secret or assertion and is incompatible with this flow.
@@ -700,7 +705,7 @@ These are not primarily defined in `*.env.example` but are explicit configuratio
 | Parameter | Found in | Consumed by |
 |---|---|---|
 | `AGENT_SANDBOX_GIT_ROOT` | `src/agent_sandbox/cli.py` | `agent-sandbox` CLI git-remote helpers (`resolve_git_root`). |
-| `MSSQL_SA_PASSWORD` | `src/agent_sandbox/cli.py`, `scripts/setup_issue_vm.sh`, bootstrap scripts | Required when MSSQL bootstrap paths are enabled. |
+| `MSSQL_SA_PASSWORD` | `src/agent_sandbox/cli.py`, `scripts/setup_vm.sh`, bootstrap scripts | Required when MSSQL bootstrap paths are enabled. |
 | Provider mailbox tokens (`GMAIL_*_ACCESS_TOKEN`, `GRAPH_*_ACCESS_TOKEN`, etc.) | Referenced indirectly in effective root directory config under `auth_secret_refs.access_token` | `src/agent_sandbox/runtime.py`, `src/agent_sandbox/email/gmail_provider.py`, `src/agent_sandbox/email/graph_provider.py`. |
 | Teams delegated Graph token env name (`teams_graph_access_token_env`, default `GRAPH_TEAMS_ACCESS_TOKEN`) | Referenced indirectly in effective provider config under `teams_graph_access_token_env` | `src/agent_sandbox/runtime.py`, `src/agent_sandbox/services.py`. |
 
@@ -752,7 +757,7 @@ The following environment variables are consumed directly by scripts as runtime 
 | `scripts/list_running_vms.sh` | `SSH_PRIVATE_KEY_PATH`, `VM_AGENT_LIST_CONNECT_TIMEOUT_SECONDS` |
 | `scripts/prewarm_nuget_cache.sh` | `SHARED_NUGET_CACHE_DIR`, `NUGET_CONFIG_FILE`, `NUGET_HTTP_CACHE_DIR`, `NUGET_TEMP_DIR` |
 | `scripts/resume_issue_agent.sh` | `SSH_PRIVATE_KEY_PATH`, `AGENT_PROVIDER`, `AGENT_MODEL`, `VM_WAIT_IP_TIMEOUT_SECONDS`, `VM_WAIT_SSH_TIMEOUT_SECONDS`, `RESUME_COMMAND_TIMEOUT_SECONDS` |
-| `scripts/setup_issue_vm.sh` | `SSH_PUBLIC_KEY_FILE`, `VM_WAIT_IP_TIMEOUT_SECONDS`, `VM_WAIT_SSH_TIMEOUT_SECONDS`, `SSH_PRIVATE_KEY_PATH`, `AGENT_PROVIDER`, `AGENT_MODEL` |
+| `scripts/setup_vm.sh` | `SSH_PUBLIC_KEY_FILE`, `VM_WAIT_IP_TIMEOUT_SECONDS`, `VM_WAIT_SSH_TIMEOUT_SECONDS`, `SSH_PRIVATE_KEY_PATH`, `AGENT_PROVIDER`, `AGENT_MODEL` |
 | `scripts/tail_issue_vm_log.sh` | `SSH_PRIVATE_KEY_PATH` |
 
 ### Notes on completeness

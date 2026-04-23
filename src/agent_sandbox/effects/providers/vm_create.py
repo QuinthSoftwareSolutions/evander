@@ -16,11 +16,11 @@ class VmCreateEffectProvider(EffectProviderBase):
             raise RuntimeError("effect:vm:create vm_creator is not available")
 
         payload = {
+            "provider": effect.provider,
             "vm_name": effect.vm_name,
             "session_id": effect.session_id,
             "labels": effect.labels,
             "model": effect.model,
-            "repo_source": effect.repo_source,
             "vm_user": effect.vm_user,
             "ttl_hours": effect.ttl_hours,
             "allowed_tools": effect.allowed_tools,
@@ -28,16 +28,12 @@ class VmCreateEffectProvider(EffectProviderBase):
             "discord_channels": effect.discord_channels,
             "email_mailboxes": effect.email_mailboxes,
             "email_folders": effect.email_folders,
-            "python": effect.python,
             "dotnet": effect.dotnet,
             "nuget": effect.nuget,
             "mssql": effect.mssql,
             "mssql_init_root": effect.mssql_init_root,
             "playwright": effect.playwright,
             "codex_skills": effect.codex_skills,
-            "frontend_deps": effect.frontend_deps,
-            "frontend_host_checkout": effect.frontend_host_checkout,
-            "frontend_install_roots": effect.frontend_install_roots,
             "directory_path": effect.directory_path,
         }
         if resolved_config:
@@ -54,11 +50,11 @@ class VmCreateEffectProvider(EffectProviderBase):
         )
 
         result = context.vm_creator.create_vm(
+            provider=self._normalize_optional_string(payload.get("provider")),
             vm_name=vm_name,
             session_id=session_id,
             labels=self._as_string_mapping(payload.get("labels")),
             model=self._normalize_optional_string(payload.get("model")),
-            repo_source=self._normalize_optional_string(payload.get("repo_source")),
             vm_user=vm_user,
             ttl_hours=self._as_int_or_none(payload.get("ttl_hours")),
             allowed_tools=self._as_string_list(payload.get("allowed_tools")),
@@ -66,29 +62,23 @@ class VmCreateEffectProvider(EffectProviderBase):
             discord_channels=self._as_string_list(payload.get("discord_channels")),
             email_mailboxes=self._as_string_list(payload.get("email_mailboxes")),
             email_folders=self._as_string_list(payload.get("email_folders")),
-            python=bool(payload.get("python", False)),
             dotnet=bool(payload.get("dotnet", False)),
             nuget=bool(payload.get("nuget", False)),
             mssql=bool(payload.get("mssql", False)),
             mssql_init_root=self._normalize_optional_string(payload.get("mssql_init_root")),
             playwright=bool(payload.get("playwright", False)),
             codex_skills=self._as_string_list(payload.get("codex_skills")),
-            frontend_deps=bool(payload.get("frontend_deps", False)),
-            frontend_host_checkout=self._normalize_optional_string(payload.get("frontend_host_checkout")),
-            frontend_install_roots=self._as_string_list(payload.get("frontend_install_roots")),
             directory_path=directory_path,
         )
 
         resolved_session_id = session_id or f"session-{vm_name}"
         return {
+            "provider": self._normalize_optional_string(getattr(result, "provider", None)) or self._normalize_optional_string(payload.get("provider")) or "libvirt",
             "session_id": resolved_session_id,
             "vm_name": result.vm_name or vm_name,
             "labels": self._as_string_mapping(payload.get("labels")) or {},
             "success": bool(result.success),
             "message": self._normalize_optional_string(getattr(result, "message", None)),
-            "target_dir": self._normalize_optional_string(getattr(result, "target_dir", None)),
-            "guest_repo_name": self._normalize_optional_string(getattr(result, "guest_repo_name", None)),
-            "remote_url": self._normalize_optional_string(getattr(result, "remote_url", None)),
         }
 
     def _effect(self) -> VmCreateEffectDefinition:

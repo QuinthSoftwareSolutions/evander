@@ -157,7 +157,7 @@ This sequence minimizes payload volume when there is no new feedback and support
 - A schedule can be either:
   - one-time (`resume_at` UTC timestamp), or
   - recurring (`cron` expression).
-- Due schedules are dispatched by the host heartbeat loop, not by guests directly.
+- Due schedules are dispatched by the host scheduled-wake loop, not by guests directly.
 - Prompt composition for scheduled wakes is:
   - `host_heartbeat_scheduled_wake_prefix_text + requested_prompt`.
 - MCP-created schedules are restricted to `resume_mode=same_context`; admin-created schedules may also use `new_context`.
@@ -177,7 +177,7 @@ This sequence minimizes payload volume when there is no new feedback and support
 
 - Provider credentials (Discord, email, OpenAI, etc.) remain **host-side only**.
 - Guest has access only to MCP tool interfaces over the private VM network.
-- The host heartbeat loop exchanges only policy-filtered feedback records and cursor metadata, never upstream provider secrets.
+- The host wake loops exchange only policy-filtered feedback records and cursor metadata, never upstream provider secrets.
 
 ## Trigger Orchestrator Ownership Boundary
 

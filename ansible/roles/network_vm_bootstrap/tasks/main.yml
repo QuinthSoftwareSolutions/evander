@@ -1,0 +1,25 @@
+---
+- name: Create the libvirt network
+  ansible.builtin.command:
+    cmd: "./scripts/create_libvirt_network.sh"
+  args:
+    chdir: "{{ agent_sandbox_deploy_path }}"
+  changed_when: false
+
+- name: Apply the repo-native firewall policy
+  ansible.builtin.command:
+    cmd: "./scripts/apply_firewall.sh"
+  args:
+    chdir: "{{ agent_sandbox_deploy_path }}"
+  environment:
+    ALLOWED_TCP_PORTS: "{{ agent_sandbox_allowed_tcp_ports | join(' ') }}"
+  changed_when: false
+
+- name: Download the base Ubuntu cloud image
+  ansible.builtin.command:
+    cmd: "./scripts/create_base_vm.sh"
+  args:
+    chdir: "{{ agent_sandbox_deploy_path }}"
+  environment:
+    VM_STORAGE_DIR: "{{ agent_sandbox_vm_storage_dir }}"
+  changed_when: false

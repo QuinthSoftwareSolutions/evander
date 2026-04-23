@@ -66,6 +66,8 @@ class WorkerAdminDependencies:
     delete_trigger_config: Any
     upsert_effect_config: Any
     delete_effect_config: Any
+    clear_workflow_run: Any | None = None
+    resume_workflow_run: Any | None = None
 
 
 class TeamsAdminFacade:
@@ -835,6 +837,16 @@ class WorkerAdminFacade:
 
     def read_workflow_run_snapshot(self) -> WorkflowRunSnapshotPayload:
         return self._deps.read_workflow_run_snapshot()
+
+    def clear_workflow_run(self, event_id: str):
+        if self._deps.clear_workflow_run is None:
+            raise NotImplementedError("clear_workflow_run is not configured for this worker admin facade.")
+        return self._deps.clear_workflow_run(event_id)
+
+    def resume_workflow_run(self, event_id: str):
+        if self._deps.resume_workflow_run is None:
+            raise NotImplementedError("resume_workflow_run is not configured for this worker admin facade.")
+        return self._deps.resume_workflow_run(event_id)
 
     def workflow_event_journal(self) -> WorkflowEventJournal:
         return self._deps.workflow_event_journal()

@@ -1,0 +1,16 @@
+[Unit]
+Description=Agent Sandbox Scheduled Wake Worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=__PROJECT_DIR__
+EnvironmentFile=-__PROJECT_DIR__/secrets.env
+Environment=SCHEDULED_WAKE_LOG_LEVEL=INFO
+ExecStart=__PROJECT_DIR__/.venv/bin/agent-sandbox-scheduled-wake --runtime-dir __PROJECT_DIR__/runtime --log-level ${SCHEDULED_WAKE_LOG_LEVEL}
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

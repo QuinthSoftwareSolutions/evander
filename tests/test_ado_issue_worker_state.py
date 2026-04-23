@@ -63,7 +63,7 @@ def worker_config(tmp_path: Path) -> WorkerConfig:
         yaml_output_dir=tmp_path / "yaml",
         setup_log_dir=tmp_path / "setup-logs",
         processed_store_path=tmp_path / "state" / "processed.json",
-        setup_script_path=Path("scripts/setup_issue_vm.sh"),
+        setup_script_path=Path("scripts/setup_vm.sh"),
         prewarm_target="My.slnx",
         repo_path=None,
         setup_vms=True,
@@ -924,7 +924,7 @@ def test_build_setup_command_includes_optional_arguments(tmp_path: Path) -> None
         yaml_output_dir=tmp_path / "yaml",
         setup_log_dir=tmp_path / "setup-logs",
         processed_store_path=tmp_path / "state" / "processed.json",
-        setup_script_path=Path("scripts/setup_issue_vm.sh"),
+        setup_script_path=Path("scripts/setup_vm.sh"),
         prewarm_target="real-target",
         repo_path="/tmp/repo",
         setup_vms=True,
@@ -950,25 +950,17 @@ def test_build_setup_command_includes_optional_arguments(tmp_path: Path) -> None
         gateway_config_path=gateway_config_path,
         session_ttl_hours=8,
     )
-    cmd = _build_setup_command(config, tmp_path / "work-item-10.yaml", session_id="sess-1")
+    cmd = _build_setup_command(config, tmp_path / "work-item-10.yaml", session_id="sess-1", work_item_id=10)
     assert cmd == [
-        "scripts/setup_issue_vm.sh",
+        "scripts/setup_vm.sh",
         "--dotnet",
         "--nuget",
         "--mssql",
         "--mssql-init-root",
         "/tmp/mssql-init",
         "--playwright",
-        "--frontend-deps",
-        "--frontend-host-checkout",
-        "/tmp/repo",
-        "--frontend-install-root",
-        "/tmp/repo/Src/Clients",
-        "--frontend-install-root",
-        "/tmp/repo/Src/Clients/AdminClient",
-        str(tmp_path / "work-item-10.yaml"),
         "real-target",
-        "/tmp/repo",
+        "vm-10",
         "sess-1",
         "agent",
     ]
@@ -987,7 +979,7 @@ def test_build_setup_command_omits_disabled_bootstraps_and_nuget_prewarm_target(
         yaml_output_dir=tmp_path / "yaml",
         setup_log_dir=tmp_path / "setup-logs",
         processed_store_path=tmp_path / "state" / "processed.json",
-        setup_script_path=Path("scripts/setup_issue_vm.sh"),
+        setup_script_path=Path("scripts/setup_vm.sh"),
         prewarm_target="real-target",
         repo_path="/tmp/repo",
         setup_vms=True,
@@ -1014,12 +1006,11 @@ def test_build_setup_command_omits_disabled_bootstraps_and_nuget_prewarm_target(
         session_ttl_hours=8,
     )
 
-    cmd = _build_setup_command(config, tmp_path / "work-item-10.yaml", session_id="sess-1")
+    cmd = _build_setup_command(config, tmp_path / "work-item-10.yaml", session_id="sess-1", work_item_id=10)
     assert cmd == [
-        "scripts/setup_issue_vm.sh",
+        "scripts/setup_vm.sh",
         "--mssql",
-        str(tmp_path / "work-item-10.yaml"),
-        "/tmp/repo",
+        "vm-10",
         "sess-1",
         "agent",
     ]
@@ -1728,7 +1719,7 @@ def test_gate_and_order_items_ignores_non_committed_states(worker_config: Worker
     assert skipped == 3
 
 
-def test_gate_and_order_items_appends_acceptance_criteria_to_description(
+def test_gate_and_order_items_appends_bug_sections_to_description(
     worker_config: WorkerConfig,
 ) -> None:
     matched, skipped = gate_and_order_items(
@@ -1739,6 +1730,8 @@ def test_gate_and_order_items_appends_acceptance_criteria_to_description(
                 "fields": {
                     "System.Title": "criteria",
                     "System.Description": "Implement the change",
+                    "Microsoft.VSTS.TCM.ReproSteps": "1. Launch app\n2. Click save",
+                    "Microsoft.VSTS.TCM.SystemInfo": "Browser: Edge",
                     "Microsoft.VSTS.Common.AcceptanceCriteria": "It passes validation",
                     "System.Tags": "truman",
                     "System.State": "Committed",
@@ -1753,7 +1746,10 @@ def test_gate_and_order_items_appends_acceptance_criteria_to_description(
 
     assert skipped == 0
     assert matched[0]["description"] == (
-        "Implement the change\n\nAcceptance Criteria\n\nIt passes validation"
+        "Implement the change\n\n"
+        "Repro Steps\n\n1. Launch app\n2. Click save\n\n"
+        "System Info\n\nBrowser: Edge\n\n"
+        "Acceptance Criteria\n\nIt passes validation"
     )
 
 
@@ -1823,7 +1819,7 @@ def test_process_work_item_writes_yaml_with_required_issue_number_and_metadata(
     assert parsed["generated_at"]
 
 
-def test_process_work_item_writes_yaml_with_acceptance_criteria_appended_to_description(
+def test_process_work_item_writes_yaml_with_bug_sections_appended_to_description(
     worker_config: WorkerConfig,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1836,8 +1832,13 @@ def test_process_work_item_writes_yaml_with_acceptance_criteria_appended_to_desc
 
     item = {
         "id": 402,
-        "title": "YAML acceptance criteria",
-        "description": "Contains details\n\nAcceptance Criteria\n\nMeets the acceptance bar",
+        "title": "YAML bug sections",
+        "description": (
+            "Contains details\n\n"
+            "Repro Steps\n\nOpen the dialog\n\n"
+            "System Info\n\nOS: Ubuntu\n\n"
+            "Acceptance Criteria\n\nMeets the acceptance bar"
+        ),
         "tags": ["backend", "truman"],
         "state": "Committed",
         "url": "https://example/402",
@@ -1848,7 +1849,12 @@ def test_process_work_item_writes_yaml_with_acceptance_criteria_appended_to_desc
 
     yaml_path = worker_config.yaml_output_dir / "work-item-402.yaml"
     parsed = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
-    assert parsed["description"] == "Contains details\n\nAcceptance Criteria\n\nMeets the acceptance bar"
+    assert parsed["description"] == (
+        "Contains details\n\n"
+        "Repro Steps\n\nOpen the dialog\n\n"
+        "System Info\n\nOS: Ubuntu\n\n"
+        "Acceptance Criteria\n\nMeets the acceptance bar"
+    )
 
 
 def test_setup_issue_vm_invocation_once_per_newly_eligible_item(
@@ -1890,8 +1896,10 @@ def test_setup_issue_vm_invocation_once_per_newly_eligible_item(
         assert process_work_item(item, config=worker_config, store=store) is False
 
     assert len(calls) == 2
-    called_yaml_paths = {Path(next(arg for arg in cmd if arg.endswith(".yaml"))).name for cmd in calls}
-    assert called_yaml_paths == {"work-item-501.yaml", "work-item-502.yaml"}
+    assert calls[0][-2] == "vm-501"
+    assert calls[1][-2] == "vm-502"
+    assert calls[0][-1].startswith("issue-501-")
+    assert calls[1][-1].startswith("issue-502-")
 
 
 def test_fetch_work_item_comments_normalizes_and_truncates(
@@ -1982,6 +1990,8 @@ def test_fetch_work_item_batch_requests_acceptance_criteria_field(
     assert items == []
     assert str(captured["url"]).endswith("/_apis/wit/workitemsbatch")
     assert captured["params"] == {"api-version": "7.1"}
+    assert "Microsoft.VSTS.TCM.ReproSteps" in captured["json"]["fields"]
+    assert "Microsoft.VSTS.TCM.SystemInfo" in captured["json"]["fields"]
     assert "Microsoft.VSTS.Common.AcceptanceCriteria" in captured["json"]["fields"]
 
 
@@ -2354,6 +2364,90 @@ def test_publish_directory_pr_feedback_events_enqueues_azure_feedback(
     )
 
 
+def test_publish_directory_pr_feedback_events_uses_session_ado_project(
+    worker_config: WorkerConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent_sandbox import ado_issue_worker as ado_worker
+
+    (worker_config.runtime_dir / "sessions.json").write_text(
+        json.dumps(
+            {
+                "session-6281": {
+                    "session_id": "session-6281",
+                    "directory_path": "root/team-a",
+                    "allowed_tools": [],
+                    "expires_at": "2026-04-22T00:00:00Z",
+                    "metadata": {"ado_project": "Example Industry Scanspac"},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    pr_map_path = worker_config.runtime_dir / "pr-map.json"
+    pr_map_path.write_text(
+        json.dumps(
+            {
+                "entries": {
+                    "azure_devops:exampleindustry/Scanspac/Scanspac:6281": {
+                        "provider": "azure_devops",
+                        "repo": "exampleindustry/Scanspac/Scanspac",
+                        "pr_id": "6281",
+                        "session_id": "session-6281",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    runtime_gateway_config = ado_worker.GatewayConfig.model_validate(
+        {
+            "runtime_dir": str(worker_config.runtime_dir),
+            "session_store_path": str(worker_config.runtime_dir / "sessions.json"),
+            "approval_store_path": str(worker_config.runtime_dir / "approvals.json"),
+            "draft_store_path": str(worker_config.runtime_dir / "drafts.json"),
+            "email_store_path": str(worker_config.runtime_dir / "emails.json"),
+            "discord_command_store_path": str(worker_config.runtime_dir / "discord_commands.json"),
+            "audit_log_path": str(worker_config.runtime_dir / "audit.jsonl"),
+            "pr_map_path": str(pr_map_path),
+            "azure_devops_pr_pat_env": "AZURE_DEVOPS_PR_PAT",
+        }
+    )
+    trigger = PullRequestNewFeedbackTriggerDefinition.model_validate(
+        {
+            "id": "trigger-pr-feedback",
+            "display_name": "PR feedback",
+            "type": "trigger:pull-request:new-feedback",
+            "provider": "ado",
+            "organization_url": "https://dev.azure.com/example-org",
+            "project": "Example Industry APP",
+        }
+    )
+
+    monkeypatch.setattr(ado_worker, "_load_ado_pr_feedback_triggers", lambda _config: [trigger])
+    monkeypatch.setenv("AZURE_DEVOPS_PR_PAT", "secret-pat")
+    observed_projects: list[str] = []
+
+    def fake_poll(self, *, client, repo, pr_id, cursor):
+        observed_projects.append(self.project)
+        assert repo == "exampleindustry/Scanspac/Scanspac"
+        assert pr_id == "6281"
+        return SimpleNamespace(feedback=[], next_cursor=cursor)
+
+    monkeypatch.setattr(ado_worker.AzureDevOpsFeedbackAdapter, "poll", fake_poll)
+
+    with httpx.Client() as client:
+        published = _publish_directory_pr_feedback_events(
+            client=client,
+            config=WorkerConfig(**{**worker_config.__dict__, "directory_path": "root/team-a"}),
+            runtime_gateway_config=runtime_gateway_config,
+            directory_path="root/team-a",
+        )
+
+    assert published == 0
+    assert observed_projects == ["Scanspac"]
+
+
 def test_publish_directory_pr_feedback_events_skips_ignored_feedback_ids(
     worker_config: WorkerConfig,
     monkeypatch: pytest.MonkeyPatch,
@@ -2574,6 +2668,53 @@ def test_publish_directory_pr_feedback_events_uses_configured_trigger_queue_path
     queue = TriggerEventQueue(queue_path)
     events = queue.list_pending(trigger_id="trigger-pr-feedback")
     assert len(events) == 1
+
+
+def test_load_ado_pr_feedback_triggers_resolves_workflow_packs(worker_config: WorkerConfig) -> None:
+    from agent_sandbox import ado_issue_worker as ado_worker
+
+    project_dir = worker_config.gateway_config_path.parent
+    (project_dir / "config" / "trigger-orchestrator").mkdir(parents=True)
+    (project_dir / "config" / "workflow-packs").mkdir(parents=True)
+    (project_dir / "config" / "trigger-orchestrator" / "config.json").write_text(
+        json.dumps(
+            {
+                "runtime_dir": str(worker_config.runtime_dir),
+                "workflow_packs": ["pr-feedback-only.v1.json"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (project_dir / "config" / "workflow-packs" / "pr-feedback-only.v1.json").write_text(
+        json.dumps(
+            {
+                "pack_id": "pr-feedback-only",
+                "pack_version": "v1",
+                "ir": {
+                    "version": "v1",
+                    "nodes": [
+                        {
+                            "id": "trigger-pr-feedback",
+                            "display_name": "PR feedback",
+                            "type": "trigger:pull-request:new-feedback",
+                            "provider": "ado",
+                            "organization_url": "https://dev.azure.com/example-org",
+                            "project": "Example Project",
+                        }
+                    ],
+                    "edges": [],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    triggers = ado_worker._load_ado_pr_feedback_triggers(worker_config)
+
+    assert [trigger.id for trigger in triggers] == ["trigger-pr-feedback"]
+    assert triggers[0].provider == "ado"
+
+
 def test_resolve_directory_worker_config_uses_each_directorys_own_project_or_solution(
     worker_config: WorkerConfig,
 ) -> None:

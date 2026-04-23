@@ -44,6 +44,12 @@ class WorkflowConfigAdminService:
     def read_workflow_run_snapshot(self):
         return self._worker_admin.read_workflow_run_snapshot()
 
+    def clear_workflow_run(self, event_id: str):
+        return self._worker_admin.clear_workflow_run(event_id)
+
+    def resume_workflow_run(self, event_id: str):
+        return self._worker_admin.resume_workflow_run(event_id)
+
     def workflow_event_journal(self):
         return self._worker_admin.workflow_event_journal()
 

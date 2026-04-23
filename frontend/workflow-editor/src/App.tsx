@@ -1,11 +1,9 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import {
   applyEdgeChanges,
   applyNodeChanges,
   Background,
-  Controls,
   Handle,
-  MiniMap,
   Position,
   ReactFlow,
   type ReactFlowInstance,
@@ -31,6 +29,8 @@ import {
   type WorkflowRunSnapshot,
   type WorkflowRunSummary,
 } from "./types";
+import { useAdminUi } from "./features/admin/AdminContext";
+import { Tooltip } from "./features/admin/Tooltip";
 
 type GraphNodeData = {
   id: string;
@@ -49,6 +49,20 @@ type SaveState = "idle" | "saving" | "saved";
 type BindingOption = {
   value: string;
   label: string;
+};
+
+type SnapGuide = {
+  orientation: "horizontal" | "vertical";
+  position: number;
+};
+
+type NodeBounds = {
+  left: number;
+  centerX: number;
+  right: number;
+  top: number;
+  centerY: number;
+  bottom: number;
 };
 
 const SYSTEM_BINDING_OPTIONS: ReadonlyArray<BindingOption> = [
@@ -79,11 +93,91 @@ const NODE_GROUPS: ReadonlyArray<{
   { kind: "query", label: "Queries", description: "Read workflow state without producing a side effect." },
 ];
 
+const NODE_KIND_DESCRIPTIONS: Record<WorkflowNodeKind, string> = {
+  trigger: "Triggers start workflow execution from incoming events.",
+  gate: "Gates transform, filter, fan out, or combine workflow data between nodes.",
+  effect: "Effects perform side effects such as VM actions, session updates, Git operations, or agent prompts.",
+  query: "Queries read workflow or environment state without causing a side effect.",
+};
+
+const NODE_TYPE_DESCRIPTIONS: Record<string, string> = {
+  "trigger:cron": "Start a workflow on a recurring cron schedule.",
+  "trigger:ticket:created": "Start when a tracked ticket is created.",
+  "trigger:ticket:changed": "Start when a tracked ticket changes state or metadata.",
+  "trigger:discord:new-message": "Start from new Discord messages that match the configured filters.",
+  "trigger:teams:new-message": "Start from new Microsoft Teams messages that match the configured targets.",
+  "trigger:email:new-message": "Start from newly ingested email messages for the configured mailbox scope.",
+  "trigger:pull-request:new-feedback": "Start when new pull-request feedback arrives from the configured provider.",
+  "trigger:git:push": "Start from Git push events captured by the host-side bare-repo hook.",
+  "trigger:agent:run:completed": "Start when a guest agent run completes.",
+  "gate:filter": "Allow only matching events to continue downstream.",
+  "gate:map": "Project upstream outputs into a new payload shape.",
+  "gate:merge": "Merge compatible inbound event streams into one downstream path.",
+  "gate:await-agent": "Pause the workflow until a selected agent session completes.",
+  "gate:for": "Iterate over an array and execute the body branch for each item.",
+  "effect:agent:prompt": "Send a prompt to an agent session.",
+  "effect:vm:create": "Create a VM for the workflow.",
+  "effect:vm:clone-repo": "Clone a repository into a target VM.",
+  "effect:vm:bootstrap-python": "Bootstrap a Python checkout and environment in a VM.",
+  "effect:vm:bootstrap-frontend": "Bootstrap frontend dependencies in a VM.",
+  "effect:vm:start": "Start an existing VM.",
+  "effect:vm:stop": "Stop an existing VM.",
+  "effect:vm:exec": "Run a shell command inside a VM.",
+  "effect:vm:copy-files": "Copy rendered file content into a VM.",
+  "effect:vm:delete-files": "Delete files from a VM.",
+  "effect:session:update-metadata": "Patch session metadata on the host.",
+  "effect:git:promote-agent-branch": "Promote an agent branch into a trusted host checkout.",
+  "effect:pr:create": "Create a pull request from the host side.",
+  "query:vm:run-state": "Read the current run state for a VM.",
+  "query:git:pr-note": "Read pull-request note context from a host checkout.",
+  "query:session-context": "Read session context and metadata.",
+  "query:issue:get": "Read a local issue record by id.",
+};
+
 const RUNTIME_POLL_INTERVAL_MS = 5000;
-const NODE_STATUS_ORDER = ["running", "waiting", "inflight", "pending"] as const;
+const NODE_STATUS_ORDER = ["failed", "running", "waiting", "inflight", "pending"] as const;
+const SNAP_THRESHOLD = 12;
+const FALLBACK_NODE_WIDTH = 212;
+const FALLBACK_NODE_HEIGHT = 108;
+const WORKFLOW_SIDEBAR_WIDTH_STORAGE_KEY = "workflow-editor:sidebar-width";
+const WORKFLOW_SIDEBAR_DEFAULT_WIDTH = 320;
+const WORKFLOW_SIDEBAR_MIN_WIDTH = 320;
+const WORKFLOW_SIDEBAR_MAX_WIDTH = 760;
+const WORKFLOW_SIDEBAR_CANVAS_MIN_WIDTH = 420;
+const WORKFLOW_SIDEBAR_RESIZE_STEP = 32;
+const WORKFLOW_COMPACT_BREAKPOINT = 980;
+
+type SidebarResizeState = {
+  pointerId: number;
+  startX: number;
+  startWidth: number;
+};
+
+function readStoredWorkflowSidebarWidth(): number {
+  if (typeof window === "undefined") return WORKFLOW_SIDEBAR_DEFAULT_WIDTH;
+  const raw = window.localStorage.getItem(WORKFLOW_SIDEBAR_WIDTH_STORAGE_KEY);
+  if (!raw) return WORKFLOW_SIDEBAR_DEFAULT_WIDTH;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed)) return WORKFLOW_SIDEBAR_DEFAULT_WIDTH;
+  return Math.min(Math.max(parsed, WORKFLOW_SIDEBAR_MIN_WIDTH), WORKFLOW_SIDEBAR_MAX_WIDTH);
+}
+
+function maxWorkflowSidebarWidth(containerWidth: number): number {
+  return Math.max(
+    WORKFLOW_SIDEBAR_MIN_WIDTH,
+    Math.min(WORKFLOW_SIDEBAR_MAX_WIDTH, Math.floor(containerWidth - WORKFLOW_SIDEBAR_CANVAS_MIN_WIDTH)),
+  );
+}
+
+function clampWorkflowSidebarWidth(width: number, containerWidth: number): number {
+  const maxWidth = maxWorkflowSidebarWidth(containerWidth);
+  return Math.min(Math.max(width, WORKFLOW_SIDEBAR_MIN_WIDTH), maxWidth);
+}
 
 function WorkflowNodeCard({ data, selected }: NodeProps) {
   const nodeData = data as GraphNodeData;
+  const kindDescription = NODE_KIND_DESCRIPTIONS[nodeData.kind];
+  const typeDescription = NODE_TYPE_DESCRIPTIONS[nodeData.type] ?? `${nodeData.type} node.`;
   return (
     <div
       className={`node-card node-${nodeData.kind}${selected ? " selected" : ""}${
@@ -97,10 +191,11 @@ function WorkflowNodeCard({ data, selected }: NodeProps) {
               key={`input-${port.key}`}
               className="workflow-port"
               style={{ top: `${30 + index * 24}px` }}
-              title={port.description ?? undefined}
             >
-              <Handle id={port.key} type="target" position={Position.Left} className="workflow-handle" />
-              <span className="workflow-port-label">{port.label}</span>
+              <Tooltip content={port.description ?? `${port.label} input port.`} className="workflow-port-tooltip" inline={false}>
+                <Handle id={port.key} type="target" position={Position.Left} className="workflow-handle" />
+                <span className="workflow-port-label">{port.label}</span>
+              </Tooltip>
             </div>
           ))}
         </div>
@@ -109,14 +204,18 @@ function WorkflowNodeCard({ data, selected }: NodeProps) {
       )}
       <div className="node-drag-surface">
         <div className="node-heading">
-          <div className="node-kind">{nodeData.kind}</div>
+          <Tooltip content={`${kindDescription} ${typeDescription}`}>
+            <div className="node-kind">{nodeData.kind}</div>
+          </Tooltip>
           {nodeData.activeRunCount > 0 && nodeData.statusLabel ? (
             <div className={`node-runtime-badge status-${nodeData.dominantStatus ?? "active"}`}>
               {nodeData.statusLabel}
             </div>
           ) : null}
         </div>
-        <div className="node-title">{nodeData.displayName}</div>
+        <Tooltip content={typeDescription}>
+          <div className="node-title">{nodeData.displayName}</div>
+        </Tooltip>
         <div className="node-id">{nodeData.id}</div>
       </div>
       {nodeData.outputPorts.length > 0 ? (
@@ -126,10 +225,11 @@ function WorkflowNodeCard({ data, selected }: NodeProps) {
               key={`output-${port.key}`}
               className="workflow-port workflow-port-output"
               style={{ top: `${30 + index * 24}px` }}
-              title={port.description ?? undefined}
             >
-              <span className="workflow-port-label">{port.label}</span>
-              <Handle id={port.key} type="source" position={Position.Right} className="workflow-handle" />
+              <Tooltip content={port.description ?? `${port.label} output port.`} className="workflow-port-tooltip" inline={false}>
+                <span className="workflow-port-label">{port.label}</span>
+                <Handle id={port.key} type="source" position={Position.Right} className="workflow-handle" />
+              </Tooltip>
             </div>
           ))}
         </div>
@@ -230,6 +330,7 @@ function buildNodes(
   catalog: WorkflowEditorCatalog,
   nodeActivity: Record<string, WorkflowNodeActivityCounts> = {},
   currentPositions: Record<string, { x: number; y: number }> = {},
+  selectedNodeIds: string[] = [],
 ): Node<GraphNodeData>[] {
   const collections = nodeCollections(config);
   const ordered = [
@@ -247,6 +348,7 @@ function buildNodes(
       id: node.id,
       type: "workflowNode",
       position,
+      selected: selectedNodeIds.includes(node.id),
       data: {
         id: node.id,
         displayName: node.display_name,
@@ -339,6 +441,26 @@ function cloneNodeConfig(node: WorkflowNodeConfig): WorkflowNodeConfig {
   return JSON.parse(JSON.stringify(node)) as WorkflowNodeConfig;
 }
 
+function flattenWorkflowNodeConfig(node: WorkflowNodeConfig): WorkflowNodeConfig {
+  const clonedNode = cloneNodeConfig(node);
+  const nestedConfig = isRecord(clonedNode.config) ? clonedNode.config : undefined;
+  if (!nestedConfig) return clonedNode;
+  const { config: _config, ...rest } = clonedNode;
+  return {
+    ...nestedConfig,
+    ...rest,
+  };
+}
+
+function normalizeWorkflowConfigShape(config: WorkflowConfig): WorkflowConfig {
+  const nextConfig = cloneConfig(config);
+  nextConfig.triggers = (nextConfig.triggers ?? []).map(flattenWorkflowNodeConfig);
+  nextConfig.gates = (nextConfig.gates ?? []).map(flattenWorkflowNodeConfig);
+  nextConfig.effects = (nextConfig.effects ?? []).map(flattenWorkflowNodeConfig);
+  nextConfig.queries = (nextConfig.queries ?? []).map(flattenWorkflowNodeConfig);
+  return nextConfig;
+}
+
 function isEditableEventTarget(target: EventTarget | null): boolean {
   return (
     target instanceof HTMLInputElement ||
@@ -413,7 +535,28 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
     return { id, display_name: "New prompt", type, prompt: "Describe the next action." };
   }
   if (kind === "effect" && type === "effect:vm:create") {
-    return { id, display_name: "New VM effect", type, frontend_install_roots: [] };
+    return { id, display_name: "New VM effect", type };
+  }
+  if (kind === "effect" && type === "effect:vm:clone-repo") {
+    return { id, display_name: "Clone repo into VM", type, repo_source: "/path/to/repo", clone_branch: "main" };
+  }
+  if (kind === "effect" && type === "effect:vm:bootstrap-python") {
+    return {
+      id,
+      display_name: "Bootstrap Python in VM",
+      type,
+      host_checkout: "/path/to/repo",
+      target_dir: "/home/agent/repo",
+    };
+  }
+  if (kind === "effect" && type === "effect:vm:bootstrap-frontend") {
+    return {
+      id,
+      display_name: "Bootstrap frontend deps in VM",
+      type,
+      host_checkout: "/path/to/repo",
+      install_roots: ["/path/to/repo/Src/Clients"],
+    };
   }
   if (kind === "effect" && type === "effect:vm:start") {
     return { id, display_name: "VM start", type };
@@ -577,6 +720,83 @@ function currentPositionsFromNodes(nodes: Node<GraphNodeData>[]): Record<string,
   return Object.fromEntries(nodes.map((node) => [node.id, node.position]));
 }
 
+function nodeBounds(node: Node): NodeBounds {
+  const width = node.measured?.width ?? node.width ?? FALLBACK_NODE_WIDTH;
+  const height = node.measured?.height ?? node.height ?? FALLBACK_NODE_HEIGHT;
+  const left = node.position.x;
+  const top = node.position.y;
+  return {
+    left,
+    centerX: left + width / 2,
+    right: left + width,
+    top,
+    centerY: top + height / 2,
+    bottom: top + height,
+  };
+}
+
+function closestSnapDelta(sourceAnchors: number[], targetAnchors: number[]): { delta: number; guide: number } | null {
+  let closest: { delta: number; guide: number } | null = null;
+  for (const sourceAnchor of sourceAnchors) {
+    for (const targetAnchor of targetAnchors) {
+      const delta = targetAnchor - sourceAnchor;
+      if (Math.abs(delta) > SNAP_THRESHOLD) continue;
+      if (!closest || Math.abs(delta) < Math.abs(closest.delta)) {
+        closest = { delta, guide: targetAnchor };
+      }
+    }
+  }
+  return closest;
+}
+
+function snapDraggedNodes(activeNode: Node, draggedNodes: Node<GraphNodeData>[], allNodes: Node<GraphNodeData>[]) {
+  const stationaryNodes = allNodes.filter((node) => !draggedNodes.some((dragged) => dragged.id === node.id));
+  if (stationaryNodes.length === 0) {
+    return { snappedNodes: draggedNodes, guides: [] as SnapGuide[] };
+  }
+  const activeBounds = nodeBounds(activeNode);
+  let bestX: { delta: number; guide: number } | null = null;
+  let bestY: { delta: number; guide: number } | null = null;
+
+  for (const candidate of stationaryNodes) {
+    const candidateBounds = nodeBounds(candidate);
+    const xSnap = closestSnapDelta(
+      [activeBounds.left, activeBounds.centerX, activeBounds.right],
+      [candidateBounds.left, candidateBounds.centerX, candidateBounds.right],
+    );
+    if (xSnap && (!bestX || Math.abs(xSnap.delta) < Math.abs(bestX.delta))) {
+      bestX = xSnap;
+    }
+    const ySnap = closestSnapDelta(
+      [activeBounds.top, activeBounds.centerY, activeBounds.bottom],
+      [candidateBounds.top, candidateBounds.centerY, candidateBounds.bottom],
+    );
+    if (ySnap && (!bestY || Math.abs(ySnap.delta) < Math.abs(bestY.delta))) {
+      bestY = ySnap;
+    }
+  }
+
+  if (!bestX && !bestY) {
+    return { snappedNodes: draggedNodes, guides: [] as SnapGuide[] };
+  }
+
+  const xDelta = bestX?.delta ?? 0;
+  const yDelta = bestY?.delta ?? 0;
+  return {
+    snappedNodes: draggedNodes.map((node) => ({
+      ...node,
+      position: {
+        x: node.position.x + xDelta,
+        y: node.position.y + yDelta,
+      },
+    })),
+    guides: [
+      ...(bestX ? [{ orientation: "vertical" as const, position: bestX.guide }] : []),
+      ...(bestY ? [{ orientation: "horizontal" as const, position: bestY.guide }] : []),
+    ],
+  };
+}
+
 function formatRuntimeTimestamp(value: string | null | undefined): string {
   if (!value) return "Unknown time";
   const date = new Date(value);
@@ -586,7 +806,8 @@ function formatRuntimeTimestamp(value: string | null | undefined): string {
 
 function summarizeRunNode(activity: WorkflowRunNodeActivity): string {
   const countLabel = activity.count > 1 ? ` x${activity.count}` : "";
-  return `${activity.node_id} ${activity.status}${countLabel}`;
+  const errorLabel = activity.error ? `: ${activity.error}` : "";
+  return `${activity.node_id} ${activity.status}${countLabel}${errorLabel}`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -612,6 +833,10 @@ function objectListJsonDraftKey(fieldKey: string, index: number, itemFieldKey: s
 
 function getCatalogEntry(catalog: WorkflowEditorCatalog, type: string) {
   return catalog.nodes.find((entry) => entry.type === type);
+}
+
+function nodeTypeDescription(type: string, kind: WorkflowNodeKind): string {
+  return NODE_TYPE_DESCRIPTIONS[type] ?? NODE_KIND_DESCRIPTIONS[kind];
 }
 
 function directUpstreamNodeIds(config: WorkflowConfig, targetId: string): string[] {
@@ -847,9 +1072,27 @@ function declaredOutputsForNode(node: WorkflowNodeConfig | undefined, config?: W
       vm_name: { type: "string" },
       labels: { type: "object" },
       success: { type: "boolean" },
+      message: { type: "string" },
+    },
+    "effect:vm:clone-repo": {
+      session_id: { type: "string" },
+      vm_name: { type: "string" },
+      success: { type: "boolean" },
       target_dir: { type: "string" },
       guest_repo_name: { type: "string" },
       remote_url: { type: "string" },
+    },
+    "effect:vm:bootstrap-python": {
+      session_id: { type: "string" },
+      vm_name: { type: "string" },
+      success: { type: "boolean" },
+      message: { type: "string" },
+    },
+    "effect:vm:bootstrap-frontend": {
+      session_id: { type: "string" },
+      vm_name: { type: "string" },
+      success: { type: "boolean" },
+      message: { type: "string" },
     },
     "effect:vm:start": {
       success: { type: "boolean" },
@@ -1170,15 +1413,18 @@ function activeEffectTargetKey(values: Record<string, unknown>): EffectTargetKey
 }
 
 export default function App() {
+  const { privilegedUnlocked } = useAdminUi();
   const appShellRef = useRef<HTMLDivElement | null>(null);
   const hasAutoFitRef = useRef(false);
   const copiedNodeRef = useRef<WorkflowNodeConfig | null>(null);
+  const sidebarResizeRef = useRef<SidebarResizeState | null>(null);
   const [document, setDocument] = useState<WorkflowEditorDocument | null>(null);
   const [catalog, setCatalog] = useState<WorkflowEditorCatalog>(emptyCatalog());
   const [runSnapshot, setRunSnapshot] = useState<WorkflowRunSnapshot | null>(null);
   const [flowNodes, setFlowNodes] = useState<Node<GraphNodeData>[]>([]);
   const [flowEdges, setFlowEdges] = useState<Edge[]>([]);
   const [flowInstance, setFlowInstance] = useState<ReactFlowInstance | null>(null);
+  const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([]);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [inspectorNodeId, setInspectorNodeId] = useState("");
@@ -1189,8 +1435,75 @@ export default function App() {
   const [inspectorStringListDrafts, setInspectorStringListDrafts] = useState<Record<string, string>>({});
   const [inspectorFieldModes, setInspectorFieldModes] = useState<Record<string, "literal" | "bind" | "template">>({});
   const [rawJsonDraft, setRawJsonDraft] = useState("{}");
+  const [clearingRunIds, setClearingRunIds] = useState<Record<string, boolean>>({});
+  const [resumingRunIds, setResumingRunIds] = useState<Record<string, boolean>>({});
+  const [snapGuides, setSnapGuides] = useState<SnapGuide[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [saveState, setSaveState] = useState<SaveState>("idle");
+  const [sidebarWidth, setSidebarWidth] = useState<number>(() => readStoredWorkflowSidebarWidth());
+  const [isResizingSidebar, setIsResizingSidebar] = useState(false);
+  const editLocked = !privilegedUnlocked;
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(WORKFLOW_SIDEBAR_WIDTH_STORAGE_KEY, String(sidebarWidth));
+  }, [sidebarWidth]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const handleResize = () => {
+      if (window.innerWidth <= WORKFLOW_COMPACT_BREAKPOINT) return;
+      const containerWidth = appShellRef.current?.getBoundingClientRect().width ?? window.innerWidth;
+      setSidebarWidth((current) => clampWorkflowSidebarWidth(current, containerWidth));
+    };
+
+    handleResize();
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const handlePointerMove = (event: PointerEvent) => {
+      const resizeState = sidebarResizeRef.current;
+      if (!resizeState || event.pointerId !== resizeState.pointerId) return;
+      const containerWidth = appShellRef.current?.getBoundingClientRect().width ?? window.innerWidth;
+      const delta = event.clientX - resizeState.startX;
+      setSidebarWidth(clampWorkflowSidebarWidth(resizeState.startWidth + delta, containerWidth));
+    };
+
+    const stopResize = (event?: PointerEvent) => {
+      const resizeState = sidebarResizeRef.current;
+      if (!resizeState) return;
+      if (event && event.pointerId !== resizeState.pointerId) return;
+      sidebarResizeRef.current = null;
+      setIsResizingSidebar(false);
+    };
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", stopResize);
+    window.addEventListener("pointercancel", stopResize);
+
+    return () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", stopResize);
+      window.removeEventListener("pointercancel", stopResize);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isResizingSidebar || typeof globalThis.document === "undefined") return;
+    const previousCursor = globalThis.document.body.style.cursor;
+    const previousUserSelect = globalThis.document.body.style.userSelect;
+    globalThis.document.body.style.cursor = "col-resize";
+    globalThis.document.body.style.userSelect = "none";
+    return () => {
+      globalThis.document.body.style.cursor = previousCursor;
+      globalThis.document.body.style.userSelect = previousUserSelect;
+    };
+  }, [isResizingSidebar]);
 
   useEffect(() => {
     Promise.all([
@@ -1199,7 +1512,7 @@ export default function App() {
       fetchJson<WorkflowRunSnapshot>("/api/workflow-editor/runs"),
     ])
       .then(([payload, catalogPayload, runSnapshotPayload]) => {
-        const normalizedConfig = normalizeDerivedNodeFields(payload.config);
+        const normalizedConfig = normalizeDerivedNodeFields(normalizeWorkflowConfigShape(payload.config));
         setCatalog(catalogPayload);
         setRunSnapshot(runSnapshotPayload);
         setDocument({ ...payload, config: normalizedConfig });
@@ -1231,6 +1544,90 @@ export default function App() {
     return () => stream.close();
   }, []);
 
+  async function clearWorkflowRun(eventId: string, runState?: string) {
+    const normalizedEventId = eventId.trim();
+    if (!normalizedEventId || clearingRunIds[normalizedEventId] || editLocked) return;
+    const verb = runState === "errored" ? "Dismiss" : "Clear";
+    if (!window.confirm(`${verb} workflow run ${normalizedEventId}?`)) return;
+    setClearingRunIds((current) => ({ ...current, [normalizedEventId]: true }));
+    try {
+      await fetchJson(`/api/workflow-editor/runs/${encodeURIComponent(normalizedEventId)}`, {
+        method: "DELETE",
+      });
+      setRunSnapshot((current) => {
+        if (!current) return current;
+        return {
+          ...current,
+          runs: current.runs.filter((run) => run.event_id !== normalizedEventId),
+        };
+      });
+      setError(null);
+    } catch (reason: unknown) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setClearingRunIds((current) => {
+        const next = { ...current };
+        delete next[normalizedEventId];
+        return next;
+      });
+    }
+  }
+
+  async function resumeWorkflowRun(eventId: string) {
+    const normalizedEventId = eventId.trim();
+    if (!normalizedEventId || resumingRunIds[normalizedEventId] || editLocked) return;
+    setResumingRunIds((current) => ({ ...current, [normalizedEventId]: true }));
+    try {
+      await fetchJson(`/api/workflow-editor/runs/${encodeURIComponent(normalizedEventId)}/resume`, {
+        method: "POST",
+      });
+      setError(null);
+    } catch (reason: unknown) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setResumingRunIds((current) => {
+        const next = { ...current };
+        delete next[normalizedEventId];
+        return next;
+      });
+    }
+  }
+
+  function startSidebarResize(event: ReactPointerEvent<HTMLDivElement>) {
+    if (event.button !== 0 || typeof window === "undefined" || window.innerWidth <= WORKFLOW_COMPACT_BREAKPOINT) return;
+    sidebarResizeRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startWidth: sidebarWidth,
+    };
+    setIsResizingSidebar(true);
+    event.preventDefault();
+  }
+
+  function handleSidebarResizeKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
+    if (typeof window === "undefined" || window.innerWidth <= WORKFLOW_COMPACT_BREAKPOINT) return;
+    const containerWidth = appShellRef.current?.getBoundingClientRect().width ?? window.innerWidth;
+    if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      setSidebarWidth((current) => clampWorkflowSidebarWidth(current - WORKFLOW_SIDEBAR_RESIZE_STEP, containerWidth));
+      return;
+    }
+    if (event.key === "ArrowRight") {
+      event.preventDefault();
+      setSidebarWidth((current) => clampWorkflowSidebarWidth(current + WORKFLOW_SIDEBAR_RESIZE_STEP, containerWidth));
+      return;
+    }
+    if (event.key === "Home") {
+      event.preventDefault();
+      setSidebarWidth(WORKFLOW_SIDEBAR_MIN_WIDTH);
+      return;
+    }
+    if (event.key === "End") {
+      event.preventDefault();
+      setSidebarWidth(maxWorkflowSidebarWidth(containerWidth));
+    }
+  }
+
   useEffect(() => {
     if (!document) return;
     setFlowNodes((currentNodes) =>
@@ -1240,6 +1637,7 @@ export default function App() {
         catalog,
         runSnapshot?.node_activity ?? {},
         currentPositionsFromNodes(currentNodes),
+        currentNodes.filter((node) => node.selected).map((node) => node.id),
       ),
     );
     setFlowEdges(buildEdges(document.config));
@@ -1255,8 +1653,8 @@ export default function App() {
 
   const config = document?.config ?? emptyConfig();
   const layout = document?.layout ?? emptyLayout();
-  const activeRuns = runSnapshot?.runs ?? [];
-  const selectedNode = selectedNodeId ? nodeById(config, selectedNodeId) : undefined;
+  const visibleRuns = runSnapshot?.runs ?? [];
+  const selectedNode = selectedNodeIds.length === 1 && selectedNodeId ? nodeById(config, selectedNodeId) : undefined;
   const selectedCatalogEntry = selectedNode ? getCatalogEntry(catalog, selectedNode.type) : undefined;
   const selectedEdge = selectedEdgeId
     ? config.edges.find((edge) => edgeId(edge) === selectedEdgeId)
@@ -1338,9 +1736,19 @@ export default function App() {
     appShellRef.current?.focus();
   }, [selectedEdgeId]);
 
+  useEffect(() => {
+    const nextSelectedNodeIds = flowNodes.filter((node) => node.selected).map((node) => node.id);
+    setSelectedNodeIds(nextSelectedNodeIds);
+    setSelectedNodeId((currentSelectedNodeId) => {
+      if (nextSelectedNodeIds.length === 0) return null;
+      if (currentSelectedNodeId && nextSelectedNodeIds.includes(currentSelectedNodeId)) return currentSelectedNodeId;
+      return nextSelectedNodeIds[nextSelectedNodeIds.length - 1] ?? null;
+    });
+  }, [flowNodes]);
+
   function patchDocument(nextConfig: WorkflowConfig, nextLayout: WorkflowLayout) {
     if (!document) return;
-    const normalizedConfig = normalizeDerivedNodeFields(nextConfig);
+    const normalizedConfig = normalizeDerivedNodeFields(normalizeWorkflowConfigShape(nextConfig));
     const nextDocument = {
       ...document,
       config: normalizedConfig,
@@ -1350,8 +1758,36 @@ export default function App() {
     setSaveState("idle");
   }
 
+  function setProgrammaticSelection(nextNodeIds: string[], preferredNodeId: string | null = null) {
+    const uniqueNodeIds = Array.from(new Set(nextNodeIds));
+    setSelectedNodeIds(uniqueNodeIds);
+    setSelectedNodeId((currentSelectedNodeId) => {
+      if (uniqueNodeIds.length === 0) return null;
+      if (preferredNodeId && uniqueNodeIds.includes(preferredNodeId)) return preferredNodeId;
+      if (currentSelectedNodeId && uniqueNodeIds.includes(currentSelectedNodeId)) return currentSelectedNodeId;
+      return uniqueNodeIds[uniqueNodeIds.length - 1] ?? null;
+    });
+    setFlowNodes((currentNodes) =>
+      currentNodes.map((node) => {
+        const isSelected = uniqueNodeIds.includes(node.id);
+        return node.selected === isSelected ? node : { ...node, selected: isSelected };
+      }),
+    );
+  }
+
   function updateNodePositions(changes: NodeChange[]) {
     setFlowNodes((currentNodes) => applyNodeChanges(changes, currentNodes) as Node<GraphNodeData>[]);
+  }
+
+  function updateDraggedNodePositions(activeNode: Node, draggedNodes: Node[]) {
+    setFlowNodes((currentNodes) => {
+      const draggedNodeIds = new Set(draggedNodes.map((node) => node.id));
+      const typedDraggedNodes = draggedNodes as Node<GraphNodeData>[];
+      const { snappedNodes, guides } = snapDraggedNodes(activeNode, typedDraggedNodes, currentNodes);
+      setSnapGuides(guides);
+      const snappedById = new Map(snappedNodes.map((node) => [node.id, node]));
+      return currentNodes.map((node) => snappedById.get(node.id) ?? node);
+    });
   }
 
   function updateEdgeChanges(changes: Parameters<typeof applyEdgeChanges>[0]) {
@@ -1359,12 +1795,33 @@ export default function App() {
   }
 
   function deleteSelectedEdge() {
-    if (!document || !selectedEdgeId) return;
+    if (!document || !selectedEdgeId || editLocked) return;
     const nextConfig = cloneConfig(document.config);
     nextConfig.edges = nextConfig.edges.filter(
       (edge) => edgeId(edge) !== selectedEdgeId,
     );
     patchDocument(nextConfig, cloneLayout(document.layout));
+    setSelectedEdgeId(null);
+    setError(null);
+  }
+
+  function deleteNodes(nodeIds: string[]) {
+    if (!document || nodeIds.length === 0 || editLocked) return;
+    const deletedNodeIds = new Set(nodeIds);
+    const nextConfig = cloneConfig(document.config);
+    nextConfig.triggers = (nextConfig.triggers ?? []).filter((node) => !deletedNodeIds.has(node.id));
+    nextConfig.gates = (nextConfig.gates ?? []).filter((node) => !deletedNodeIds.has(node.id));
+    nextConfig.effects = (nextConfig.effects ?? []).filter((node) => !deletedNodeIds.has(node.id));
+    nextConfig.queries = (nextConfig.queries ?? []).filter((node) => !deletedNodeIds.has(node.id));
+    nextConfig.edges = nextConfig.edges.filter(
+      (edge) => !deletedNodeIds.has(edge.source_id) && !deletedNodeIds.has(edge.target_id),
+    );
+    const nextLayout = cloneLayout(document.layout);
+    for (const nodeId of deletedNodeIds) {
+      delete nextLayout.nodes[nodeId];
+    }
+    patchDocument(nextConfig, nextLayout);
+    setProgrammaticSelection([]);
     setSelectedEdgeId(null);
     setError(null);
   }
@@ -1381,7 +1838,7 @@ export default function App() {
       return;
     }
     if (isPaste) {
-      if (!document || !copiedNodeRef.current) return;
+      if (!document || !copiedNodeRef.current || editLocked) return;
       event.preventDefault();
       const templateNode = copiedNodeRef.current;
       const templateKind = nodeKindFromType(templateNode.type);
@@ -1402,7 +1859,7 @@ export default function App() {
       const nextLayout = cloneLayout(document.layout);
       nextLayout.nodes[nextId] = { x: currentPosition.x + 40, y: currentPosition.y + 40 };
       patchDocument(nextConfig, nextLayout);
-      setSelectedNodeId(nextId);
+      setProgrammaticSelection([nextId], nextId);
       setSelectedEdgeId(null);
       setError(null);
       return;
@@ -1413,10 +1870,13 @@ export default function App() {
     deleteSelectedEdge();
   }
 
-  function persistNodePosition(nodeId: string, position: { x: number; y: number }) {
-    if (!document) return;
+  function persistNodePositions(nodes: Node[]) {
+    if (!document || editLocked) return;
+    setSnapGuides([]);
     const nextLayout = cloneLayout(document.layout);
-    nextLayout.nodes[nodeId] = position;
+    for (const node of nodes) {
+      nextLayout.nodes[node.id] = node.position;
+    }
     setDocument({
       ...document,
       layout: nextLayout,
@@ -1425,7 +1885,7 @@ export default function App() {
   }
 
   function addNode(kind: WorkflowNodeKind, type: string) {
-    if (!document) return;
+    if (!document || editLocked) return;
     const nextConfig = cloneConfig(document.config);
     nextConfig.triggers ??= [];
     nextConfig.gates ??= [];
@@ -1442,31 +1902,35 @@ export default function App() {
         1,
     );
     patchDocument(nextConfig, nextLayout);
-    setSelectedNodeId(node.id);
+    setProgrammaticSelection([node.id], node.id);
     setSelectedEdgeId(null);
     setError(null);
   }
 
   function deleteSelectedNode() {
+    deleteNodes(selectedNodeIds);
+  }
+
+  function selectDownstreamBranch() {
     if (!document || !selectedNodeId) return;
-    const nextConfig = cloneConfig(document.config);
-    nextConfig.triggers = (nextConfig.triggers ?? []).filter((node) => node.id !== selectedNodeId);
-    nextConfig.gates = (nextConfig.gates ?? []).filter((node) => node.id !== selectedNodeId);
-    nextConfig.effects = (nextConfig.effects ?? []).filter((node) => node.id !== selectedNodeId);
-    nextConfig.queries = (nextConfig.queries ?? []).filter((node) => node.id !== selectedNodeId);
-    nextConfig.edges = nextConfig.edges.filter(
-      (edge) => edge.source_id !== selectedNodeId && edge.target_id !== selectedNodeId,
-    );
-    const nextLayout = cloneLayout(document.layout);
-    delete nextLayout.nodes[selectedNodeId];
-    patchDocument(nextConfig, nextLayout);
-    setSelectedNodeId(null);
+    const queuedNodeIds = [selectedNodeId];
+    const selectedNodeSet = new Set<string>();
+    while (queuedNodeIds.length > 0) {
+      const currentNodeId = queuedNodeIds.shift();
+      if (!currentNodeId || selectedNodeSet.has(currentNodeId)) continue;
+      selectedNodeSet.add(currentNodeId);
+      for (const edge of document.config.edges) {
+        if (edge.source_id === currentNodeId && !selectedNodeSet.has(edge.target_id)) {
+          queuedNodeIds.push(edge.target_id);
+        }
+      }
+    }
+    setProgrammaticSelection([...selectedNodeSet], selectedNodeId);
     setSelectedEdgeId(null);
-    setError(null);
   }
 
   function applyInspectorChanges() {
-    if (!document || !selectedNode) return;
+    if (!document || !selectedNode || editLocked) return;
     try {
       const rawId = inspectorNodeId.trim();
       const rawName = inspectorDisplayName.trim();
@@ -1542,7 +2006,7 @@ export default function App() {
         delete nextLayout.nodes[selectedNode.id];
       }
       patchDocument(nextConfig, nextLayout);
-      setSelectedNodeId(rawId);
+      setProgrammaticSelection([rawId], rawId);
       setSelectedEdgeId(null);
       setError(null);
     } catch (reason) {
@@ -1551,7 +2015,7 @@ export default function App() {
   }
 
   function onConnect(connection: Connection) {
-    if (!document || !connection.source || !connection.target) return;
+    if (!document || !connection.source || !connection.target || editLocked) return;
     const validationError = validateConnection(
       document.config,
       catalog,
@@ -1586,7 +2050,7 @@ export default function App() {
   }
 
   function onEdgesDelete(deletedEdges: Edge[]) {
-    if (!document) return;
+    if (!document || editLocked) return;
     const deleted = new Set(deletedEdges.map((edge) => edge.id));
     const nextConfig = cloneConfig(document.config);
     nextConfig.edges = nextConfig.edges.filter(
@@ -1594,6 +2058,11 @@ export default function App() {
     );
     patchDocument(nextConfig, cloneLayout(document.layout));
     setSelectedEdgeId(null);
+  }
+
+  function onNodesDelete(deletedNodes: Node[]) {
+    if (editLocked) return;
+    deleteNodes(deletedNodes.map((node) => node.id));
   }
 
   async function validateDocument() {
@@ -1612,7 +2081,7 @@ export default function App() {
   }
 
   async function saveDocument() {
-    if (!document) return;
+    if (!document || editLocked) return;
     setSaveState("saving");
     setError(null);
     try {
@@ -1693,7 +2162,7 @@ export default function App() {
     if (!hasCollapsedTargetUi || !effectTargetField) return null;
     const value = inspectorKnownValues[effectTargetKey];
     const mode = inspectorFieldModes[effectTargetKey] ?? fieldValueMode(effectTargetField, value);
-    const isDisabled = effectTargetField.read_only;
+    const isDisabled = effectTargetField.read_only || editLocked;
     const targetTypeLabel = selectedNode?.type === "effect:agent:prompt" ? "Prompt target type" : "Target type";
     const targetPlaceholder =
       effectTargetKey === "session_id"
@@ -1817,6 +2286,7 @@ export default function App() {
   }
 
   function addObjectListItem(key: string, field: WorkflowEditorFieldDefinition) {
+    if (editLocked) return;
     setInspectorKnownValues((current) => {
       const currentItems = Array.isArray(current[key]) ? [...current[key]] : [];
       const nextItem = Object.fromEntries(
@@ -1830,6 +2300,7 @@ export default function App() {
   }
 
   function removeObjectListItem(key: string, index: number) {
+    if (editLocked) return;
     setInspectorKnownValues((current) => {
       const currentItems = Array.isArray(current[key]) ? [...current[key]] : [];
       currentItems.splice(index, 1);
@@ -1840,7 +2311,7 @@ export default function App() {
   function renderField(field: WorkflowEditorFieldDefinition) {
     const value = inspectorKnownValues[field.key];
     const mode = inspectorFieldModes[field.key] ?? fieldValueMode(field, value);
-    const isDisabled = field.read_only;
+    const isDisabled = field.read_only || editLocked;
 
     if (field.kind === "string") {
       return (
@@ -2073,7 +2544,7 @@ export default function App() {
               <div key={`${field.key}-${index}`} className="object-list-item">
                 <div className="object-list-title">
                   <span>Item {index + 1}</span>
-                  <button type="button" className="subtle-button" onClick={() => removeObjectListItem(field.key, index)}>
+                  <button type="button" className="subtle-button" onClick={() => removeObjectListItem(field.key, index)} disabled={isDisabled}>
                     Remove
                   </button>
                 </div>
@@ -2161,7 +2632,7 @@ export default function App() {
               </div>
             );
           })}
-          <button type="button" className="subtle-button" onClick={() => addObjectListItem(field.key, field)}>
+          <button type="button" className="subtle-button" onClick={() => addObjectListItem(field.key, field)} disabled={isDisabled}>
             Add item
           </button>
         </div>
@@ -2175,174 +2646,269 @@ export default function App() {
     ...group,
     entries: catalog.nodes.filter((entry) => entry.kind === group.kind),
   }));
+  const appShellStyle = {
+    "--workflow-sidebar-width": `${sidebarWidth}px`,
+  } as CSSProperties;
 
   return (
-    <div className="app-shell" ref={appShellRef} tabIndex={-1} onKeyDown={handleAppShellKeyDown}>
-      <aside className="sidebar">
-        <div className="sidebar-section">
-          <div className="eyebrow">Workflow editor</div>
-          <h1>Workflow editor</h1>
-          <p>Drag nodes, connect edges, and edit typed node config with literals or upstream bindings.</p>
-        </div>
+    <div className="admin-page workflow-embedded-page">
+      <div
+        className={`app-shell workflow-editor-shell${isResizingSidebar ? " is-resizing-sidebar" : ""}`}
+        ref={appShellRef}
+        style={appShellStyle}
+        tabIndex={-1}
+        onKeyDown={handleAppShellKeyDown}
+      >
+          <aside className="sidebar">
+            {editLocked ? <div className="callout warning-callout workflow-lock-callout">Unlock privileged operations to modify workflow state or clear runtime runs.</div> : null}
 
-        <details className="sidebar-section current-runs-section">
-          <summary className="current-runs-summary">
-            <span className="section-label current-runs-label">Current runs</span>
-            <span className="current-runs-count">{activeRuns.length}</span>
-          </summary>
-          <p className="runtime-summary">
-            {activeRuns.length === 0
-              ? "No active workflow runs."
-              : `${activeRuns.length} active ${activeRuns.length === 1 ? "run" : "runs"} on the graph.`}
-          </p>
-          <div className="runtime-runs">
-            {activeRuns.map((run: WorkflowRunSummary) => (
-              <div key={run.event_id} className="runtime-run-card">
-                <div className="runtime-run-header">
-                  <div className="runtime-run-event">{run.event_id}</div>
-                  <div className={`runtime-run-state state-${run.delivery_state ?? "active"}`}>
-                    {run.delivery_state ?? "active"}
-                  </div>
-                </div>
-                <div className="runtime-run-meta">
-                  Last activity {formatRuntimeTimestamp(run.latest_activity_at ?? run.occurred_at)}
-                </div>
-                <div className="runtime-run-nodes">
-                  {run.active_nodes.map((activity, index) => (
-                    <div key={`${run.event_id}-${activity.node_id}-${activity.status}-${index}`} className="runtime-run-node">
-                      {summarizeRunNode(activity)}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ))}
-          </div>
-        </details>
-
-        <div className="sidebar-section">
-          <div className="section-label">Create</div>
-          {createEntriesByKind.map((group) => (
-            <details key={group.kind} className="create-group" open={group.kind === "trigger"}>
-              <summary className="create-group-summary">
-                <span>{group.label}</span>
-                <span className="create-group-count">{group.entries.length}</span>
+            <details className="sidebar-section current-runs-section">
+              <summary className="current-runs-summary">
+                <span className="section-label current-runs-label">Current runs</span>
+                <span className="current-runs-count">{visibleRuns.length}</span>
               </summary>
-              <p className="create-group-description">{group.description}</p>
-              <div className="create-group-actions">
-                {group.entries.map((entry) => (
-                  <button key={entry.type} onClick={() => addNode(entry.kind, entry.type)}>
-                    {entry.label}
-                  </button>
+              <p className="runtime-summary">
+                {visibleRuns.length === 0
+                  ? "No active or errored workflow runs."
+                  : `${visibleRuns.length} ${visibleRuns.length === 1 ? "run" : "runs"} visible on the graph.`}
+              </p>
+              <div className="runtime-runs">
+                {visibleRuns.map((run: WorkflowRunSummary) => (
+                  <div key={run.event_id} className="runtime-run-card">
+                    <div className="runtime-run-header">
+                      <div className="runtime-run-event">{run.event_id}</div>
+                      <div className={`runtime-run-state state-${run.run_state === "errored" ? "failed" : run.delivery_state ?? "active"}`}>
+                        {run.run_state === "errored" ? "errored" : run.delivery_state ?? "active"}
+                      </div>
+                    </div>
+                    <div className="runtime-run-meta">
+                      Last activity {formatRuntimeTimestamp(run.latest_activity_at ?? run.occurred_at)}
+                    </div>
+                    {run.run_state === "errored" ? (
+                      <div className="runtime-run-error">
+                        Failed at <strong>{run.failed_node_id ?? "unknown node"}</strong>
+                        {run.error ? `: ${run.error}` : ""}
+                      </div>
+                    ) : null}
+                    <div className="runtime-run-nodes">
+                      {run.active_nodes.map((activity, index) => (
+                        <div key={`${run.event_id}-${activity.node_id}-${activity.status}-${index}`} className="runtime-run-node">
+                          {summarizeRunNode(activity)}
+                        </div>
+                      ))}
+                    </div>
+                    <div className="runtime-run-actions">
+                      {run.run_state === "errored" && run.resumable ? (
+                        <button
+                          type="button"
+                          className="subtle-button"
+                          onClick={() => void resumeWorkflowRun(run.event_id)}
+                          disabled={Boolean(resumingRunIds[run.event_id]) || editLocked}
+                        >
+                          {resumingRunIds[run.event_id] ? "Resuming..." : "Resume from failure"}
+                        </button>
+                      ) : null}
+                      <button
+                        type="button"
+                        className="subtle-button runtime-run-clear"
+                          onClick={() => void clearWorkflowRun(run.event_id, run.run_state)}
+                        disabled={Boolean(clearingRunIds[run.event_id]) || editLocked}
+                      >
+                        {clearingRunIds[run.event_id]
+                          ? run.run_state === "errored"
+                            ? "Dismissing..."
+                            : "Clearing..."
+                          : run.run_state === "errored"
+                            ? "Dismiss run"
+                            : "Clear run"}
+                      </button>
+                    </div>
+                  </div>
                 ))}
               </div>
             </details>
-          ))}
-        </div>
 
-        <div className="sidebar-section">
-          <div className="section-label">Save</div>
-          <button onClick={() => void validateDocument()}>Validate</button>
-          <button className="primary" onClick={() => void saveDocument()}>
-            {saveState === "saving" ? "Saving..." : "Save workflow"}
-          </button>
-          {error ? <div className="error-box save-error-box">{error}</div> : null}
-          {document ? (
-            <div className="path-note">
-              <div>{document.config_path}</div>
-              <div>{document.layout_path}</div>
+            <div className="sidebar-section">
+              <div className="section-label">Create</div>
+              {createEntriesByKind.map((group) => (
+                <details key={group.kind} className="create-group" open={group.kind === "trigger"}>
+                  <summary className="create-group-summary">
+                    <Tooltip content={group.description}>
+                      <span>{group.label}</span>
+                    </Tooltip>
+                    <span className="create-group-count">{group.entries.length}</span>
+                  </summary>
+                  <p className="create-group-description">{group.description}</p>
+                  <div className="create-group-actions">
+                    {group.entries.map((entry) => (
+                      <Tooltip key={entry.type} content={nodeTypeDescription(entry.type, entry.kind)} inline={false}>
+                        <button onClick={() => addNode(entry.kind, entry.type)} disabled={editLocked}>
+                          {entry.label}
+                        </button>
+                      </Tooltip>
+                    ))}
+                  </div>
+                </details>
+              ))}
             </div>
-          ) : null}
-        </div>
 
-        {selectedNode ? (
-          <div className="sidebar-section inspector">
-            <div className="section-label">Inspector</div>
-            <div className="inspector-summary">
-              <div>{selectedNode.type}</div>
-              <div>{selectedNode.id}</div>
+            <div className="sidebar-section">
+              <div className="section-label">Save</div>
+              <button onClick={() => void validateDocument()}>Validate</button>
+              <button className="primary" onClick={() => void saveDocument()} disabled={editLocked}>
+                {saveState === "saving" ? "Saving..." : "Save workflow"}
+              </button>
+              {error ? <div className="error-box save-error-box">{error}</div> : null}
+              {document ? (
+                <div className="path-note">
+                  <div>{document.config_path}</div>
+                  <div>{document.layout_path}</div>
+                </div>
+              ) : null}
             </div>
-            <label className="inspector-label">
-              <span>Node id</span>
-              <input value={inspectorNodeId} onChange={(event) => setInspectorNodeId(event.target.value)} />
-            </label>
-            <label className="inspector-label">
-              <span>Display name</span>
-              <input
-                value={inspectorDisplayName}
-                onChange={(event) => setInspectorDisplayName(event.target.value)}
-              />
-            </label>
 
-            {renderEffectTargetField()}
-            {inspectorFields.map((field) => renderField(field))}
-
-            {Object.keys(inspectorUnknownValues).length > 0 ? (
-              <details className="raw-json-panel">
-                <summary>Additional raw JSON</summary>
-                <p className="field-description">These keys are preserved because they are not in the current catalog.</p>
-                <textarea value={rawJsonDraft} rows={8} readOnly />
-              </details>
+            {selectedNodeIds.length > 1 ? (
+              <div className="sidebar-section inspector">
+                <div className="section-label">Selection</div>
+                <div className="inspector-summary">
+                  <div>{selectedNodeIds.length} nodes selected</div>
+                </div>
+                <button onClick={() => setProgrammaticSelection([])}>Clear selection</button>
+                <button onClick={selectDownstreamBranch} disabled={!selectedNodeId}>
+                  Select downstream branch
+                </button>
+                <button className="danger" onClick={deleteSelectedNode} disabled={editLocked}>
+                  Delete selected nodes
+                </button>
+              </div>
             ) : null}
 
-            <button className="primary" onClick={applyInspectorChanges}>
-              Apply node changes
-            </button>
-            <button className="danger" onClick={deleteSelectedNode}>
-              Delete node
-            </button>
-          </div>
-        ) : null}
+            {selectedNode ? (
+              <div className="sidebar-section inspector">
+                <div className="section-label">Inspector</div>
+                <div className="inspector-summary">
+                  <div>{selectedNode.type}</div>
+                  <div>{selectedNode.id}</div>
+                </div>
+                <button onClick={selectDownstreamBranch}>Select downstream branch</button>
+                <label className="inspector-label">
+                  <span>Node id</span>
+                  <input value={inspectorNodeId} onChange={(event) => setInspectorNodeId(event.target.value)} />
+                </label>
+                <label className="inspector-label">
+                  <span>Display name</span>
+                  <input
+                    value={inspectorDisplayName}
+                    onChange={(event) => setInspectorDisplayName(event.target.value)}
+                  />
+                </label>
 
-        {selectedEdge ? (
-          <div className="sidebar-section inspector">
-            <div className="section-label">Edge</div>
-            <div className="inspector-summary">
-              <div>{selectedEdge.source_id}</div>
-              {selectedEdge.source_port ? <div>Port: {selectedEdge.source_port}</div> : null}
-              <div>{selectedEdge.target_id}</div>
-              {selectedEdge.allow_cycle ? <div>Cycle return</div> : null}
-            </div>
-            <button className="danger" onClick={deleteSelectedEdge}>
-              Delete edge
-            </button>
-          </div>
-        ) : null}
+                {renderEffectTargetField()}
+                {inspectorFields.map((field) => renderField(field))}
 
-        {error ? <div className="error-box">{error}</div> : null}
-      </aside>
+                {Object.keys(inspectorUnknownValues).length > 0 ? (
+                  <details className="raw-json-panel">
+                    <summary>Additional raw JSON</summary>
+                    <p className="field-description">These keys are preserved because they are not in the current catalog.</p>
+                    <textarea value={rawJsonDraft} rows={8} readOnly />
+                  </details>
+                ) : null}
 
-      <main className="canvas-shell">
-        <ReactFlow
-          nodes={flowNodes}
-          edges={flowEdges}
-          nodeTypes={nodeTypes}
-          onInit={setFlowInstance}
-          onNodesChange={updateNodePositions}
-          onEdgesChange={updateEdgeChanges}
-          onNodeClick={(_, node) => {
-            setSelectedNodeId(node.id);
-            setSelectedEdgeId(null);
-            appShellRef.current?.focus();
-          }}
-          onEdgeClick={(_, edge) => {
-            setSelectedNodeId(null);
-            setSelectedEdgeId(edge.id);
-          }}
-          onNodeDragStop={(_, node) => persistNodePosition(node.id, node.position)}
-          onPaneClick={() => {
-            setSelectedNodeId(null);
-            setSelectedEdgeId(null);
-          }}
-          onConnect={onConnect}
-          onEdgesDelete={onEdgesDelete}
-          fitView
-          deleteKeyCode={["Backspace", "Delete"]}
-        >
-          <MiniMap />
-          <Controls />
-          <Background gap={20} size={1} />
-        </ReactFlow>
-      </main>
+                <button className="primary" onClick={applyInspectorChanges} disabled={editLocked}>
+                  Apply node changes
+                </button>
+                <button className="danger" onClick={deleteSelectedNode} disabled={editLocked}>
+                  Delete node
+                </button>
+              </div>
+            ) : null}
+
+            {selectedEdge ? (
+              <div className="sidebar-section inspector">
+                <div className="section-label">Edge</div>
+                <div className="inspector-summary">
+                  <div>{selectedEdge.source_id}</div>
+                  {selectedEdge.source_port ? <div>Port: {selectedEdge.source_port}</div> : null}
+                  <div>{selectedEdge.target_id}</div>
+                  {selectedEdge.allow_cycle ? <div>Cycle return</div> : null}
+                </div>
+                <button className="danger" onClick={deleteSelectedEdge} disabled={editLocked}>
+                  Delete edge
+                </button>
+              </div>
+            ) : null}
+
+            {error ? <div className="error-box">{error}</div> : null}
+          </aside>
+
+          <div
+            className="workflow-sidebar-resize-handle"
+            role="separator"
+            aria-label="Resize workflow sidebar"
+            aria-orientation="vertical"
+            aria-valuemin={WORKFLOW_SIDEBAR_MIN_WIDTH}
+            aria-valuemax={maxWorkflowSidebarWidth(appShellRef.current?.getBoundingClientRect().width ?? sidebarWidth + WORKFLOW_SIDEBAR_CANVAS_MIN_WIDTH)}
+            aria-valuenow={sidebarWidth}
+            tabIndex={0}
+            onPointerDown={startSidebarResize}
+            onKeyDown={handleSidebarResizeKeyDown}
+          />
+
+          <main className="canvas-shell">
+            <ReactFlow
+              nodes={flowNodes}
+              edges={flowEdges}
+              nodeTypes={nodeTypes}
+              onInit={setFlowInstance}
+              onNodesChange={updateNodePositions}
+              onEdgesChange={updateEdgeChanges}
+              onNodeClick={(_, node) => {
+                setSelectedNodeId(node.id);
+                setSelectedEdgeId(null);
+                appShellRef.current?.focus();
+              }}
+              onEdgeClick={(_, edge) => {
+                setProgrammaticSelection([]);
+                setSelectedEdgeId(edge.id);
+              }}
+              onNodeDrag={(_, node, nodes) => updateDraggedNodePositions(node, nodes.length > 0 ? nodes : [node])}
+              onNodeDragStop={(_, node, nodes) => persistNodePositions(nodes.length > 0 ? nodes : [node])}
+              onPaneClick={() => {
+                setSelectedEdgeId(null);
+                setSnapGuides([]);
+              }}
+              onConnect={onConnect}
+              onEdgesDelete={onEdgesDelete}
+              onNodesDelete={onNodesDelete}
+              nodesDraggable={!editLocked}
+              nodesConnectable={!editLocked}
+              elementsSelectable
+              fitView
+              deleteKeyCode={["Backspace", "Delete"]}
+              multiSelectionKeyCode={["Control", "Meta"]}
+            >
+              <Background gap={20} size={1} />
+            </ReactFlow>
+            {flowInstance
+              ? snapGuides.map((guide) => {
+                  const viewport = flowInstance.getViewport();
+                  const scaledPosition = guide.position * viewport.zoom;
+                  const offset = guide.orientation === "vertical" ? viewport.x : viewport.y;
+                  const style =
+                    guide.orientation === "vertical"
+                      ? { left: `${scaledPosition + offset}px` }
+                      : { top: `${scaledPosition + offset}px` };
+                  return (
+                    <div
+                      key={`${guide.orientation}-${guide.position}`}
+                      className={`snap-guide snap-guide-${guide.orientation}`}
+                      style={style}
+                    />
+                  );
+                })
+              : null}
+          </main>
+        </div>
     </div>
   );
 }

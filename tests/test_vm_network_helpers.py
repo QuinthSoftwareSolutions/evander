@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_issue_vm_scripts_source_shared_network_helper() -> None:
-    setup = (ROOT / 'scripts' / 'setup_issue_vm.sh').read_text(encoding='utf-8')
+    setup = (ROOT / 'scripts' / 'setup_vm.sh').read_text(encoding='utf-8')
     check = (ROOT / 'scripts' / 'check_issue_vm.sh').read_text(encoding='utf-8')
 
     assert 'source "${SCRIPT_DIR}/lib/vm_network.sh"' in setup
@@ -19,7 +19,7 @@ def test_issue_vm_scripts_source_shared_network_helper() -> None:
 
 
 def test_issue_vm_timeout_env_names_are_standardized() -> None:
-    setup = (ROOT / 'scripts' / 'setup_issue_vm.sh').read_text(encoding='utf-8')
+    setup = (ROOT / 'scripts' / 'setup_vm.sh').read_text(encoding='utf-8')
     check = (ROOT / 'scripts' / 'check_issue_vm.sh').read_text(encoding='utf-8')
 
     for text in (setup, check):
@@ -44,7 +44,7 @@ def test_issue_vm_helpers_auto_detect_repo_name_when_omitted() -> None:
     check_script = (ROOT / 'scripts' / 'check_issue_vm.sh').read_text(encoding='utf-8')
 
     for text in (tail_script, check_script):
-        assert 'Repo basename used by setup_issue_vm.sh. Default: auto-detect' in text
+        assert 'Repo basename used by guest agent logs. Default: auto-detect' in text
         assert 'sort -u' in text
         assert 'agent-*.pid' in text
         assert 'agent-*.log' in text

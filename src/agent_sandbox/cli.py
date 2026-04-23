@@ -29,10 +29,11 @@ from .bootstrap import (
     resolve_runtime_dir,
 )
 from .config import GatewayConfig, load_config
+from .discord_wake_worker import build_discord_wake_worker
 from .directories import DirectoryService
-from .host_heartbeat_worker import build_host_heartbeat_worker
 from .issue_orchestrator import build_issue_orchestrator_worker
 from .effect_orchestrator import build_effect_orchestrator_worker
+from .scheduled_wake_worker import build_scheduled_wake_worker
 from .trigger_orchestrator import build_trigger_orchestrator_worker
 from .host_config import DEFAULT_RUNTIME_DIR
 from .migrations import (
@@ -958,6 +959,7 @@ def _build_issue_session_manifest(
             [
                 ToolName.DISCORD_GET_COMMANDS,
                 ToolName.DISCORD_POST_STATUS,
+                ToolName.ADD_MESSAGE_REACTION,
                 ToolName.HAS_PENDING_DISCORD_MESSAGES,
                 ToolName.LIST_UNREAD_DISCORD_MESSAGES,
                 ToolName.LIST_ALL_DISCORD_MESSAGES,
@@ -1344,7 +1346,8 @@ def status(config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR, as_json: Annotated[bo
             "agent-sandbox-gateway.service",
             "agent-sandbox-openai-relay.service",
             "agent-sandbox-http-target-relay.service",
-            "agent-sandbox-host-heartbeat.service",
+            "agent-sandbox-discord-wake.service",
+            "agent-sandbox-scheduled-wake.service",
         ]
         unit_statuses = [_get_systemd_unit_state(unit) for unit in units]
         report["systemd_units"] = [asdict(unit_status) for unit_status in unit_statuses]
@@ -1599,6 +1602,7 @@ def create_session(
         allowed_tools=[
             ToolName.DISCORD_GET_COMMANDS,
             ToolName.DISCORD_POST_STATUS,
+            ToolName.ADD_MESSAGE_REACTION,
             ToolName.HAS_PENDING_DISCORD_MESSAGES,
             ToolName.LIST_UNREAD_DISCORD_MESSAGES,
             ToolName.LIST_ALL_DISCORD_MESSAGES,
@@ -2551,10 +2555,6 @@ def create_vm(
         str | None,
         typer.Option("--session-id", help="Session identifier to create and pass into the VM launch flow."),
     ] = None,
-    repo_source: Annotated[
-        str | None,
-        typer.Option("--repo-source", help="Host repo path or remote URL to clone into the guest."),
-    ] = None,
     vm_user: Annotated[str, typer.Option("--vm-user", help="Guest user to configure.")] = "agent",
     ttl_hours: Annotated[int | None, typer.Option("--ttl-hours", help="Session time to live in hours.")] = None,
     discord_channel: Annotated[
@@ -2569,10 +2569,6 @@ def create_vm(
         list[str],
         typer.Option("--email-folder", help="Allowlisted email folder. Repeat for multiple folders."),
     ] = [],
-    python: Annotated[
-        bool,
-        typer.Option("--python", help="Bootstrap a guest-local Python virtualenv inside the cloned repo."),
-    ] = False,
     dotnet: Annotated[bool, typer.Option("--dotnet", help="Bootstrap the host .NET SDK into the guest.")] = False,
     nuget: Annotated[
         bool,
@@ -2609,13 +2605,11 @@ def create_vm(
     result = service.create_vm(
         vm_name=vm_name,
         session_id=session_id,
-        repo_source=repo_source,
         vm_user=vm_user,
         ttl_hours=ttl_hours,
         discord_channels=discord_channel,
         email_mailboxes=email_mailbox,
         email_folders=email_folder,
-        python=python,
         dotnet=dotnet,
         nuget=nuget,
         mssql=mssql,
@@ -2629,9 +2623,113 @@ def create_vm(
 
 
 @app.command(
+    "clone-repo-into-vm",
+    rich_help_panel="VM Operations",
+    short_help="Clone a repo into an existing VM/session.",
+)
+def clone_repo_into_vm(
+    vm_name: str,
+    repo_source: Annotated[
+        str,
+        typer.Option("--repo-source", help="Host repo path or remote URL to clone into the guest."),
+    ],
+    clone_branch: Annotated[
+        str | None,
+        typer.Option("--clone-branch", help="Branch to clone and record as the agent's main branch in the guest."),
+    ] = None,
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
+    directory_path: Annotated[
+        str,
+        typer.Option("--directory-path", help="Directory path that owns the VM/session."),
+    ] = "root",
+    session_id: Annotated[
+        str | None,
+        typer.Option("--session-id", help="Existing session identifier associated with the VM."),
+    ] = None,
+    vm_user: Annotated[str, typer.Option("--vm-user", help="Guest user to configure.")] = "agent",
+) -> None:
+    service = AdminService(config)
+    result = service.clone_repo_into_vm(
+        vm_name=vm_name,
+        session_id=session_id,
+        repo_source=repo_source,
+        clone_branch=clone_branch,
+        vm_user=vm_user,
+        directory_path=directory_path,
+    )
+    _echo_action_result_or_exit(result)
+
+
+@app.command(
+    "bootstrap-python-in-vm",
+    rich_help_panel="VM Operations",
+    short_help="Bootstrap Python tooling inside an existing guest repo.",
+)
+def bootstrap_python_in_vm(
+    vm_name: str,
+    host_checkout: Annotated[
+        str,
+        typer.Option("--host-checkout", help="Host checkout root used to build the guest-local Python environment."),
+    ],
+    target_dir: Annotated[
+        str,
+        typer.Option("--target-dir", help="Guest repo root inside the VM."),
+    ],
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
+    session_id: Annotated[
+        str | None,
+        typer.Option("--session-id", help="Existing session identifier associated with the VM."),
+    ] = None,
+    vm_user: Annotated[str, typer.Option("--vm-user", help="Guest user to configure.")] = "agent",
+) -> None:
+    service = AdminService(config)
+    result = service.bootstrap_python_in_vm(
+        vm_name=vm_name,
+        session_id=session_id,
+        host_checkout=host_checkout,
+        target_dir=target_dir,
+        vm_user=vm_user,
+    )
+    _echo_action_result_or_exit(result)
+
+
+@app.command(
+    "bootstrap-frontend-in-vm",
+    rich_help_panel="VM Operations",
+    short_help="Bootstrap frontend dependencies into an existing guest repo.",
+)
+def bootstrap_frontend_in_vm(
+    vm_name: str,
+    host_checkout: Annotated[
+        str,
+        typer.Option("--host-checkout", help="Host checkout root used to seed frontend dependencies."),
+    ],
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
+    install_root: Annotated[
+        list[str],
+        typer.Option("--install-root", help="Install root inside the host checkout. Repeat for multiple roots."),
+    ] = [],
+    session_id: Annotated[
+        str | None,
+        typer.Option("--session-id", help="Existing session identifier associated with the VM."),
+    ] = None,
+    vm_user: Annotated[str, typer.Option("--vm-user", help="Guest user to configure.")] = "agent",
+) -> None:
+    service = AdminService(config)
+    result = service.bootstrap_frontend_in_vm(
+        vm_name=vm_name,
+        session_id=session_id,
+        host_checkout=host_checkout,
+        install_roots=install_root,
+        vm_user=vm_user,
+    )
+    _echo_action_result_or_exit(result)
+
+
+@app.command(
     "create-issue-vm",
     rich_help_panel="Issue Lifecycle",
-    short_help="Create and bootstrap an issue VM.",
+    short_help="Create an issue VM.",
 )
 def create_issue_vm(
     issue: str,
@@ -2639,13 +2737,6 @@ def create_issue_vm(
     session_id: Annotated[
         str | None,
         typer.Option("--session-id", help="Session identifier to create and pass into the VM setup flow."),
-    ] = None,
-    repo_source: Annotated[
-        str | None,
-        typer.Option(
-            "--repo-source",
-            help="Host repo path or remote URL to mirror for guest Git access.",
-        ),
     ] = None,
     vm_user: Annotated[str, typer.Option("--vm-user", help="Guest user to configure.")] = "agent",
     ttl_hours: Annotated[int | None, typer.Option("--ttl-hours", help="Session time to live in hours.")] = None,
@@ -2661,9 +2752,6 @@ def create_issue_vm(
         list[str],
         typer.Option("--email-folder", help="Allowlisted email folder. Repeat for multiple folders."),
     ] = [],
-    python: Annotated[
-        bool, typer.Option("--python", help="Bootstrap a guest-local Python virtualenv for Python-first repos.")
-    ] = False,
     dotnet: Annotated[bool, typer.Option("--dotnet", help="Bootstrap the host .NET SDK into the guest.")] = False,
     nuget: Annotated[
         str | None,
@@ -2692,34 +2780,6 @@ def create_issue_vm(
             help="Codex skill directory name to copy into guest ~/.codex/skills. Repeat for multiple skills.",
         ),
     ] = [],
-    frontend_deps: Annotated[
-        bool,
-        typer.Option(
-            "--frontend-deps",
-            help="Bootstrap host-seeded frontend install roots into the guest.",
-        ),
-    ] = False,
-    frontend_host_checkout: Annotated[
-        str | None,
-        typer.Option(
-            "--frontend-host-checkout",
-            help="Host checkout root for frontend install roots.",
-        ),
-    ] = None,
-    frontend_install_root: Annotated[
-        list[str],
-        typer.Option(
-            "--frontend-install-root",
-            help="Install root inside the host checkout. Repeat for multiple roots.",
-        ),
-    ] = [],
-    start_agent: Annotated[
-        bool,
-        typer.Option(
-            "--start-agent/--no-start-agent",
-            help="Start the guest agent run after setup.",
-        ),
-    ] = True,
     model: Annotated[
         str | None,
         typer.Option("--model", help="Agent model override for the created session."),
@@ -2731,23 +2791,17 @@ def create_issue_vm(
     result = service.create_issue_vm(
         issue=issue,
         session_id=session_id,
-        repo_source=repo_source,
         vm_user=vm_user,
         ttl_hours=ttl_hours,
         discord_channels=discord_channel,
         email_mailboxes=email_mailbox,
         email_folders=email_folder,
-        python=python,
         dotnet=dotnet,
         nuget=nuget,
         mssql=mssql,
         mssql_init_root=mssql_init_root,
         playwright=playwright,
         codex_skills=codex_skill,
-        frontend_deps=frontend_deps,
-        frontend_host_checkout=frontend_host_checkout,
-        frontend_install_roots=frontend_install_root,
-        start_agent=start_agent,
         model=model,
     )
     _echo_action_result_or_exit(result)
@@ -3246,15 +3300,15 @@ def teams_ingest(
 
 
 @app.command(
-    "host-heartbeat",
+    "discord-wake",
     rich_help_panel="Background Workers",
-    short_help="Run the host heartbeat worker.",
+    short_help="Run the Discord wake worker.",
 )
-def host_heartbeat(
+def discord_wake(
     config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
     run_once: Annotated[
         bool,
-        typer.Option("--once", help="Run a single heartbeat cycle and exit."),
+        typer.Option("--once", help="Run a single Discord wake cycle and exit."),
     ] = False,
     log_level: Annotated[str, typer.Option("--log-level", help="Python logging level.")] = "INFO",
 ) -> None:
@@ -3267,12 +3321,46 @@ def host_heartbeat(
     )
 
     cfg = _load_runtime_config_from_option(config)
-    worker = build_host_heartbeat_worker(cfg, project_dir=_project_dir_for_config_option(config))
+    worker = build_discord_wake_worker(cfg, project_dir=_project_dir_for_config_option(config))
     if run_once:
         result = worker.run_once_with_lock()
         typer.echo(
-            f"Host heartbeat cycle complete streams={result.streams_polled} "
-            f"discovered={result.discovered_feedback} sleep_seconds={result.next_sleep_seconds:.3f}"
+            f"Discord wake cycle complete channels={result.channels_polled} "
+            f"pending={result.pending_channels} sleep_seconds={result.next_sleep_seconds:.3f}"
+        )
+        return
+
+    worker.run_forever()
+
+
+@app.command(
+    "scheduled-wake",
+    rich_help_panel="Background Workers",
+    short_help="Run the scheduled wake worker.",
+)
+def scheduled_wake(
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
+    run_once: Annotated[
+        bool,
+        typer.Option("--once", help="Run a single scheduled wake cycle and exit."),
+    ] = False,
+    log_level: Annotated[str, typer.Option("--log-level", help="Python logging level.")] = "INFO",
+) -> None:
+    logging_level = getattr(logging, log_level.upper(), None)
+    if not isinstance(logging_level, int):
+        raise typer.BadParameter(f"Invalid --log-level value: {log_level}")
+    logging.basicConfig(
+        level=logging_level,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+
+    cfg = _load_runtime_config_from_option(config)
+    worker = build_scheduled_wake_worker(cfg, project_dir=_project_dir_for_config_option(config))
+    if run_once:
+        result = worker.run_once_with_lock()
+        typer.echo(
+            f"Scheduled wake cycle complete due={result.requests_due} "
+            f"dispatched={result.wakes_dispatched} sleep_seconds={result.next_sleep_seconds:.3f}"
         )
         return
 

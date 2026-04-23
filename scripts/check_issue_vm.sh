@@ -9,7 +9,7 @@ Show the current status of the issue VM and the background guest agent run.
 
 Arguments:
   issue-number  Issue identifier used to derive the VM name.
-  repo-name     Repo basename used by setup_issue_vm.sh. Default: auto-detect
+  repo-name     Repo basename used by guest agent logs. Default: auto-detect
   vm-user       Guest user to inspect. Default: agent
 
 Environment:

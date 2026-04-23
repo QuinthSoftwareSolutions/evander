@@ -9,7 +9,7 @@ from typing import Any
 from .config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
 from .workflow_compiler import compile_trigger_orchestrator_config, compile_trigger_orchestrator_config_with_diagnostics
 from .workflow_transforms import resolve_workflow_transforms
-from .workflow_packs import compose_workflow_ir
+from .workflow_packs import _pack_path, compose_workflow_ir
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +53,7 @@ class TriggerOrchestratorWorkerGlobalConfigReloader:
         base_config: GatewayConfig | None = None,
     ) -> None:
         self._path = _worker_global_config_path(project_dir)
+        self._project_dir = project_dir
         self._base_payload = _base_worker_global_payload(base_config)
         self._current_config = initial_config
         self._last_fingerprint = self._compute_fingerprint()
@@ -84,17 +85,19 @@ class TriggerOrchestratorWorkerGlobalConfigReloader:
         self._last_fingerprint = fingerprint
         return self._current_config, changed
 
-    def _compute_fingerprint(self) -> tuple[int, int, int, str] | None:
-        try:
-            stat = self._path.stat()
-        except FileNotFoundError:
+    def _compute_fingerprint(self) -> tuple[tuple[int, int, int, str], ...] | None:
+        base_fingerprint = _file_fingerprint(self._path)
+        if base_fingerprint is None:
             return None
-        try:
-            payload = self._path.read_bytes()
-        except OSError:
-            return None
-        digest = hashlib.sha256(payload).hexdigest()
-        return stat.st_mtime_ns, stat.st_ino, stat.st_size, digest
+
+        fingerprints = [base_fingerprint]
+        for pack_path in self._workflow_pack_paths():
+            pack_fingerprint = _file_fingerprint(pack_path)
+            if pack_fingerprint is None:
+                fingerprints.append((0, 0, 0, f"missing:{pack_path}"))
+            else:
+                fingerprints.append(pack_fingerprint)
+        return tuple(fingerprints)
 
     def _load_from_path(self) -> TriggerOrchestratorWorkerGlobalConfig:
         if not self._path.exists():
@@ -108,6 +111,25 @@ class TriggerOrchestratorWorkerGlobalConfigReloader:
         return _compile_worker_global_config(
             TriggerOrchestratorWorkerGlobalConfig.model_validate({**self._base_payload, **raw})
         )
+
+    def _workflow_pack_paths(self) -> list[Path]:
+        try:
+            raw = json.loads(self._path.read_text(encoding="utf-8"))
+        except Exception:
+            return []
+        if not isinstance(raw, dict):
+            return []
+        configured_packs = raw.get("workflow_packs")
+        if not isinstance(configured_packs, list):
+            return []
+
+        paths: list[Path] = []
+        for pack_reference in configured_packs:
+            try:
+                paths.append(_pack_path(self._project_dir, str(pack_reference)))
+            except Exception:
+                continue
+        return paths
 
 
 def _compile_worker_global_config(
@@ -156,3 +178,16 @@ class FixedTriggerOrchestratorWorkerGlobalConfigReloader:
 
     def reload_now(self) -> tuple[TriggerOrchestratorWorkerGlobalConfig, bool]:
         return self._config, False
+
+
+def _file_fingerprint(path: Path) -> tuple[int, int, int, str] | None:
+    try:
+        stat = path.stat()
+    except FileNotFoundError:
+        return None
+    try:
+        payload = path.read_bytes()
+    except OSError:
+        return None
+    digest = hashlib.sha256(payload).hexdigest()
+    return stat.st_mtime_ns, stat.st_ino, stat.st_size, digest

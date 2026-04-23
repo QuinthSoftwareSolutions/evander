@@ -12,7 +12,10 @@ from agent_sandbox.effects.providers.schemas import (
     IssueUpdateStateEffectDefinition,
     PrCreateEffectDefinition,
     SessionUpdateMetadataEffectDefinition,
+    VmBootstrapFrontendEffectDefinition,
+    VmBootstrapPythonEffectDefinition,
     VmCopyFilesEffectDefinition,
+    VmCloneRepoEffectDefinition,
     VmCreateEffectDefinition,
     VmDeleteFilesEffectDefinition,
     VmExecEffectDefinition,
@@ -24,6 +27,9 @@ from agent_sandbox.workflow.contracts import WorkflowNodeEnvelope, register_node
 
 _EFFECT_MODEL_BY_TYPE = {
     "effect:vm:create": VmCreateEffectDefinition,
+    "effect:vm:clone-repo": VmCloneRepoEffectDefinition,
+    "effect:vm:bootstrap-python": VmBootstrapPythonEffectDefinition,
+    "effect:vm:bootstrap-frontend": VmBootstrapFrontendEffectDefinition,
     "effect:vm:start": VmStartEffectDefinition,
     "effect:vm:stop": VmStopEffectDefinition,
     "effect:agent:prompt": AgentPromptEffectDefinition,

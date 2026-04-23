@@ -1,0 +1,38 @@
+---
+- name: Define managed systemd service map
+  ansible.builtin.set_fact:
+    agent_sandbox_systemd_units:
+      - key: admin_web
+        unit: agent-sandbox-admin-web.service
+      - key: gateway
+        unit: agent-sandbox-gateway.service
+      - key: firewall
+        unit: agent-sandbox-firewall.service
+      - key: openai_relay
+        unit: agent-sandbox-openai-relay.service
+      - key: nuget_relay
+        unit: agent-sandbox-nuget-relay.service
+      - key: http_target_relay
+        unit: agent-sandbox-http-target-relay.service
+      - key: ado_worker
+        unit: agent-sandbox-ado-worker.service
+      - key: discord_ingest
+        unit: agent-sandbox-discord-ingest.service
+      - key: discord_wake
+        unit: agent-sandbox-discord-wake.service
+      - key: scheduled_wake
+        unit: agent-sandbox-scheduled-wake.service
+      - key: teams_ingest
+        unit: agent-sandbox-teams-ingest.service
+      - key: effect_orchestrator
+        unit: agent-sandbox-effect-orchestrator.service
+      - key: trigger_orchestrator
+        unit: agent-sandbox-trigger-orchestrator.service
+
+- name: Reconcile systemd service enablement and runtime state
+  ansible.builtin.systemd:
+    name: "{{ item.unit }}"
+    enabled: "{{ agent_sandbox_services[item.key] | bool }}"
+    state: "{{ 'started' if agent_sandbox_services[item.key] | bool else 'stopped' }}"
+    daemon_reload: true
+  loop: "{{ agent_sandbox_systemd_units }}"

@@ -69,6 +69,15 @@ class FakeVmAgentService:
     def create_vm(self, *args: Any, **kwargs: Any) -> str:
         return self._record("create_vm", *args, **kwargs)
 
+    def clone_repo_into_vm(self, *args: Any, **kwargs: Any) -> str:
+        return self._record("clone_repo_into_vm", *args, **kwargs)
+
+    def bootstrap_python_in_vm(self, *args: Any, **kwargs: Any) -> str:
+        return self._record("bootstrap_python_in_vm", *args, **kwargs)
+
+    def bootstrap_frontend_in_vm(self, *args: Any, **kwargs: Any) -> str:
+        return self._record("bootstrap_frontend_in_vm", *args, **kwargs)
+
     def destroy_vm(self, target: str) -> str:
         return self._record("destroy_vm", target)
 
@@ -162,11 +171,16 @@ class FakeAdmin:
         return SimpleNamespace(guest_environment=lambda: {})
 
     def _resolve_issue_setup(self, directory_path: str, *, root_dir: Path) -> SimpleNamespace:
-        return SimpleNamespace(git_ssh_alias="agent-sandbox-git-host", git_root="/srv/git")
-
-    def _build_setup_issue_vm_invocation(self, **kwargs: Any) -> tuple[list[str], dict[str, str]]:
-        self.last_setup_issue_vm_kwargs = kwargs
-        return ["setup-issue-vm"], {"SETUP": "1"}
+        return SimpleNamespace(
+            git_ssh_alias="agent-sandbox-git-host",
+            git_root="/srv/git",
+            git_host="127.0.0.1",
+            git_user="git",
+            post_exec_verification_prompt=None,
+            enable_guest_heartbeat=False,
+            guest_heartbeat_prompt="",
+            issue_setup_azure_devops_pr_pat_env="AZURE_DEVOPS_PR_PAT",
+        )
 
     def _resolve_local_issue_record(self, issue_identifier: str) -> FakeManifest:
         raise ValueError(f"Unknown local issue identifier: {issue_identifier}")
@@ -199,7 +213,6 @@ def _vm_agent_dependencies(admin: FakeAdmin) -> VmAgentAdminDependencies:
         resolve_agent_model_for_session=lambda session_or_id: admin._resolve_agent_model_for_session(session_or_id),
         resolve_vm_defaults=lambda directory_path: admin._resolve_vm_defaults(directory_path),
         resolve_issue_setup=lambda directory_path, **kwargs: admin._resolve_issue_setup(directory_path, **kwargs),
-        build_setup_issue_vm_invocation=lambda **kwargs: admin._build_setup_issue_vm_invocation(**kwargs),
         resolve_local_issue_record=lambda issue_identifier: admin._resolve_local_issue_record(issue_identifier),
         resolve_local_issue_key=lambda identifier: admin._resolve_local_issue_key(identifier),
         resolve_repo_source=lambda repo_source: admin._resolve_repo_source(repo_source),
@@ -244,32 +257,23 @@ def test_admin_service_delegates_vm_methods_to_vm_agent_service() -> None:
         issue="1",
         session_id="session-1",
         model="gpt-5",
-        repo_source="/repo",
         vm_user="service",
         ttl_hours=24,
         discord_channels=["chan"],
         email_mailboxes=["mailbox"],
         email_folders=["folder"],
-        python=True,
         dotnet=True,
         nuget="cache",
         mssql=True,
         mssql_init_root="/mssql",
         playwright=True,
         codex_skills=["skill"],
-        frontend_deps=True,
-        frontend_host_checkout="/checkout",
-        frontend_install_roots=["/checkout/app"],
-        start_agent=False,
         directory_path="root/team",
     ) == "create_issue_vm-result"
     assert admin.create_issue_vm_from_local_issue(
         "local-1",
         model="gpt-5",
-        repo_source="/repo",
         vm_user="service",
-        start_agent=False,
-        python=True,
         dotnet=True,
         nuget="cache",
         mssql=True,
@@ -282,7 +286,6 @@ def test_admin_service_delegates_vm_methods_to_vm_agent_service() -> None:
         session_id="session-2",
         labels={"team": "infra"},
         model="gpt-5",
-        repo_source="/repo",
         vm_user="service",
         ttl_hours=48,
         allowed_tools=["tool-a"],
@@ -290,18 +293,36 @@ def test_admin_service_delegates_vm_methods_to_vm_agent_service() -> None:
         discord_channels=["chan"],
         email_mailboxes=["mailbox"],
         email_folders=["folder"],
-        python=True,
         dotnet=True,
         nuget=True,
         mssql=True,
         mssql_init_root="/mssql",
         playwright=True,
         codex_skills=["skill"],
-        frontend_deps=True,
-        frontend_host_checkout="/checkout",
-        frontend_install_roots=["/checkout/app"],
         directory_path="root/team",
     ) == "create_vm-result"
+    assert admin.clone_repo_into_vm(
+        vm_name="vm-11",
+        session_id="session-2",
+        repo_source="/repo",
+        clone_branch="release/1.2",
+        vm_user="service",
+        directory_path="root/team",
+    ) == "clone_repo_into_vm-result"
+    assert admin.bootstrap_python_in_vm(
+        vm_name="vm-11",
+        session_id="session-2",
+        host_checkout="/repo",
+        target_dir="/home/agent/repo",
+        vm_user="service",
+    ) == "bootstrap_python_in_vm-result"
+    assert admin.bootstrap_frontend_in_vm(
+        vm_name="vm-11",
+        session_id="session-2",
+        host_checkout="/checkout",
+        install_roots=["/checkout/app"],
+        vm_user="service",
+    ) == "bootstrap_frontend_in_vm-result"
     assert admin.destroy_vm("vm-12") == "destroy_vm-result"
     assert admin.destroy_issue_vm("vm-13") == "destroy_issue_vm-result"
 
@@ -346,23 +367,17 @@ def test_admin_service_delegates_vm_methods_to_vm_agent_service() -> None:
                 "issue": "1",
                 "session_id": "session-1",
                 "model": "gpt-5",
-                "repo_source": "/repo",
                 "vm_user": "service",
                 "ttl_hours": 24,
                 "discord_channels": ["chan"],
                 "email_mailboxes": ["mailbox"],
                 "email_folders": ["folder"],
-                "python": True,
                 "dotnet": True,
                 "nuget": "cache",
                 "mssql": True,
                 "mssql_init_root": "/mssql",
                 "playwright": True,
                 "codex_skills": ["skill"],
-                "frontend_deps": True,
-                "frontend_host_checkout": "/checkout",
-                "frontend_install_roots": ["/checkout/app"],
-                "start_agent": False,
                 "directory_path": "root/team",
             },
         ),
@@ -371,10 +386,7 @@ def test_admin_service_delegates_vm_methods_to_vm_agent_service() -> None:
             ("local-1",),
             {
                 "model": "gpt-5",
-                "repo_source": "/repo",
                 "vm_user": "service",
-                "start_agent": False,
-                "python": True,
                 "dotnet": True,
                 "nuget": "cache",
                 "mssql": True,
@@ -391,7 +403,6 @@ def test_admin_service_delegates_vm_methods_to_vm_agent_service() -> None:
                 "session_id": "session-2",
                 "labels": {"team": "infra"},
                 "model": "gpt-5",
-                "repo_source": "/repo",
                 "vm_user": "service",
                 "ttl_hours": 48,
                 "allowed_tools": ["tool-a"],
@@ -399,17 +410,47 @@ def test_admin_service_delegates_vm_methods_to_vm_agent_service() -> None:
                 "discord_channels": ["chan"],
                 "email_mailboxes": ["mailbox"],
                 "email_folders": ["folder"],
-                "python": True,
                 "dotnet": True,
                 "nuget": True,
                 "mssql": True,
                 "mssql_init_root": "/mssql",
                 "playwright": True,
                 "codex_skills": ["skill"],
-                "frontend_deps": True,
-                "frontend_host_checkout": "/checkout",
-                "frontend_install_roots": ["/checkout/app"],
                 "directory_path": "root/team",
+            },
+        ),
+        CallRecord(
+            "clone_repo_into_vm",
+            (),
+            {
+                "vm_name": "vm-11",
+                "session_id": "session-2",
+                "repo_source": "/repo",
+                "clone_branch": "release/1.2",
+                "vm_user": "service",
+                "directory_path": "root/team",
+            },
+        ),
+        CallRecord(
+            "bootstrap_python_in_vm",
+            (),
+            {
+                "vm_name": "vm-11",
+                "session_id": "session-2",
+                "host_checkout": "/repo",
+                "target_dir": "/home/agent/repo",
+                "vm_user": "service",
+            },
+        ),
+        CallRecord(
+            "bootstrap_frontend_in_vm",
+            (),
+            {
+                "vm_name": "vm-11",
+                "session_id": "session-2",
+                "host_checkout": "/checkout",
+                "install_roots": ["/checkout/app"],
+                "vm_user": "service",
             },
         ),
         CallRecord("destroy_vm", ("vm-12",), {}),
@@ -515,13 +556,7 @@ def test_vm_agent_admin_service_create_issue_vm_uses_admin_helpers(monkeypatch: 
     monkeypatch.setattr(admin_service_module, "_run_subprocess", lambda *args, **kwargs: Completed())
     monkeypatch.setattr(admin_service_module, "_dominfo_field", lambda vm_name, field_name: None)
 
-    def fake_build_setup_issue_vm_invocation(**kwargs: Any) -> tuple[list[str], dict[str, str]]:
-        admin.last_setup_issue_vm_kwargs = kwargs
-        return ["setup-issue-vm"], {"SETUP": "1"}
-
-    admin._build_setup_issue_vm_invocation = fake_build_setup_issue_vm_invocation  # type: ignore[method-assign]
-
-    result = service.create_issue_vm(issue="7", session_id="session-1", start_agent=False)
+    result = service.create_issue_vm(issue="7", session_id="session-1")
 
     assert result.success is True
     assert result.vm_name == "vm-7"
@@ -529,5 +564,3 @@ def test_vm_agent_admin_service_create_issue_vm_uses_admin_helpers(monkeypatch: 
     assert result.message == "setup ok"
     assert sessions.put_records[0][0] == "session-1"
     assert sessions.put_records[0][1].model == "gpt-5"
-    assert admin.last_setup_issue_vm_kwargs["start_agent"] is False
-    assert admin.last_setup_issue_vm_kwargs["session_id"] == "session-1"

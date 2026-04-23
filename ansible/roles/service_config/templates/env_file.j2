@@ -1,0 +1,4 @@
+# Managed by Ansible.
+{% for key, value in env_map | dictsort %}
+{{ key }}={{ value | to_json }}
+{% endfor %}

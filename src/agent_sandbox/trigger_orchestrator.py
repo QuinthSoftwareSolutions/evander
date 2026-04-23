@@ -31,7 +31,7 @@ from .workflow_runtime_config import (
     TriggerOrchestratorWorkerGlobalConfigReloader,
     load_trigger_orchestrator_worker_global_config,
 )
-from .host_heartbeat_worker import _single_instance_lock
+from .wake_dispatch import single_instance_lock
 from .orchestration.kernels import PollingKernelConfig, PollingOrchestratorKernel
 from .orchestration.wiring import TriggerWorkerWiring, build_trigger_worker_wiring
 from .orchestration_repositories import GateCursorRepository
@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 
 class _LockManager:
     def lock(self, path: Path):
-        return _single_instance_lock(path)
+        return single_instance_lock(path)
 
 
 class _Sleeper:

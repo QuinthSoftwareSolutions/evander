@@ -17,6 +17,9 @@ from agent_sandbox.events.models import WorkflowNodeEnvelope
 from agent_sandbox.events.provider_models import (
     AgentEnqueuePromptEffectDefinition,
     AgentPromptEffectDefinition,
+    VmBootstrapFrontendEffectDefinition,
+    VmBootstrapPythonEffectDefinition,
+    VmCloneRepoEffectDefinition,
     VmCreateEffectDefinition,
 )
 from agent_sandbox.models import SessionManifest, ToolName, VmActionResult
@@ -30,6 +33,9 @@ class _ResolverStub:
 @dataclass
 class _AdminServiceStub:
     create_vm_calls: list[dict[str, object]]
+    clone_repo_into_vm_calls: list[dict[str, object]]
+    bootstrap_python_in_vm_calls: list[dict[str, object]]
+    bootstrap_frontend_in_vm_calls: list[dict[str, object]]
     resume_calls: list[dict[str, object]]
 
     def __post_init__(self) -> None:
@@ -49,6 +55,18 @@ class _AdminServiceStub:
     def create_vm(self, **kwargs):
         self.create_vm_calls.append(kwargs)
         return VmActionResult(success=True, vm_name=str(kwargs["vm_name"]), action="create_vm", message="ok")
+
+    def clone_repo_into_vm(self, **kwargs):
+        self.clone_repo_into_vm_calls.append(kwargs)
+        return VmActionResult(success=True, vm_name=str(kwargs["vm_name"]), action="clone_repo_into_vm", message="ok")
+
+    def bootstrap_python_in_vm(self, **kwargs):
+        self.bootstrap_python_in_vm_calls.append(kwargs)
+        return VmActionResult(success=True, vm_name=str(kwargs["vm_name"]), action="bootstrap_python_in_vm", message="ok")
+
+    def bootstrap_frontend_in_vm(self, **kwargs):
+        self.bootstrap_frontend_in_vm_calls.append(kwargs)
+        return VmActionResult(success=True, vm_name=str(kwargs["vm_name"]), action="bootstrap_frontend_in_vm", message="ok")
 
     def resume_agent(
         self,
@@ -99,6 +117,9 @@ class _CustomSchemaProvider(EffectProviderBase):
 def test_default_registry_includes_all_known_effect_types() -> None:
     assert set(DEFAULT_EFFECT_PROVIDER_REGISTRY) == {
         "effect:vm:create",
+        "effect:vm:clone-repo",
+        "effect:vm:bootstrap-python",
+        "effect:vm:bootstrap-frontend",
         "effect:vm:start",
         "effect:vm:stop",
         "effect:agent:prompt",
@@ -124,7 +145,13 @@ def test_factory_initializes_provider_with_runtime_context() -> None:
     )
     registry = EffectProviderRegistry()
     registry.register("effect:agent:prompt", _RecordingProvider)
-    admin_service = _AdminServiceStub(create_vm_calls=[], resume_calls=[])
+    admin_service = _AdminServiceStub(
+        create_vm_calls=[],
+        clone_repo_into_vm_calls=[],
+        bootstrap_python_in_vm_calls=[],
+        bootstrap_frontend_in_vm_calls=[],
+        resume_calls=[],
+    )
 
     factory = EffectProviderFactory(
         provider_config_resolver=_ResolverStub(),
@@ -150,81 +177,29 @@ def test_vm_create_provider_returns_required_outputs() -> None:
         labels={"workflow": "issue-worker", "role": "issue"},
         dotnet=True,
     )
-    admin_service = _AdminServiceStub(create_vm_calls=[], resume_calls=[])
+    admin_service = _AdminServiceStub(
+        create_vm_calls=[],
+        clone_repo_into_vm_calls=[],
+        bootstrap_python_in_vm_calls=[],
+        bootstrap_frontend_in_vm_calls=[],
+        resume_calls=[],
+    )
     factory = EffectProviderFactory(provider_config_resolver=_ResolverStub(), admin_service=admin_service)
 
     provider = factory.build(effect, directory_path="root/team-a")
     output = provider.execute()
 
     assert output == {
+        "provider": "libvirt",
         "session_id": "session-lab-vm",
         "vm_name": "lab-vm",
         "labels": {"workflow": "issue-worker", "role": "issue"},
         "success": True,
         "message": "ok",
-        "target_dir": None,
-        "guest_repo_name": None,
-        "remote_url": None,
     }
     assert admin_service.create_vm_calls[0]["directory_path"] == "root/team-a"
     assert admin_service.create_vm_calls[0]["labels"] == {"workflow": "issue-worker", "role": "issue"}
     assert admin_service.create_vm_calls[0]["dotnet"] is True
-
-
-def test_vm_create_provider_passes_through_repo_outputs() -> None:
-    effect = VmCreateEffectDefinition(
-        id="effect-vm",
-        display_name="Create VM",
-        type="effect:vm:create",
-        vm_name="lab-vm",
-        session_id="session-lab-vm",
-        repo_source="/tmp/repo",
-    )
-    admin_service = _AdminServiceStub(create_vm_calls=[], resume_calls=[])
-
-    def fake_create_vm(**kwargs):
-        admin_service.create_vm_calls.append(kwargs)
-        return VmActionResult(
-            success=True,
-            vm_name=str(kwargs["vm_name"]),
-            action="create_vm",
-            message="ok",
-            target_dir="/home/agent/RepoName",
-            guest_repo_name="RepoName",
-            remote_url="ssh://agent-sandbox-git-host/home/git/remotes/RepoName.git",
-        )
-
-    admin_service.create_vm = fake_create_vm  # type: ignore[method-assign]
-    factory = EffectProviderFactory(provider_config_resolver=_ResolverStub(), admin_service=admin_service)
-
-    provider = factory.build(effect, directory_path="root/team-a")
-    output = provider.execute()
-
-    assert output["target_dir"] == "/home/agent/RepoName"
-    assert output["guest_repo_name"] == "RepoName"
-    assert output["remote_url"] == "ssh://agent-sandbox-git-host/home/git/remotes/RepoName.git"
-
-
-def test_vm_create_provider_passes_frontend_deps_fields() -> None:
-    effect = VmCreateEffectDefinition(
-        id="effect-vm",
-        display_name="Create VM",
-        type="effect:vm:create",
-        vm_name="lab-vm",
-        repo_source="/tmp/repo",
-        frontend_deps=True,
-        frontend_host_checkout="/tmp/checkout",
-        frontend_install_roots=["/tmp/checkout/Src/Clients"],
-    )
-    admin_service = _AdminServiceStub(create_vm_calls=[], resume_calls=[])
-    factory = EffectProviderFactory(provider_config_resolver=_ResolverStub(), admin_service=admin_service)
-
-    provider = factory.build(effect, directory_path="root/team-a")
-    provider.execute()
-
-    assert admin_service.create_vm_calls[0]["frontend_deps"] is True
-    assert admin_service.create_vm_calls[0]["frontend_host_checkout"] == "/tmp/checkout"
-    assert admin_service.create_vm_calls[0]["frontend_install_roots"] == ["/tmp/checkout/Src/Clients"]
 
 
 def test_vm_create_provider_passes_codex_skills() -> None:
@@ -235,13 +210,144 @@ def test_vm_create_provider_passes_codex_skills() -> None:
         vm_name="lab-vm",
         codex_skills=["playwright", "exampleindustry-app-demo"],
     )
-    admin_service = _AdminServiceStub(create_vm_calls=[], resume_calls=[])
+    admin_service = _AdminServiceStub(
+        create_vm_calls=[],
+        clone_repo_into_vm_calls=[],
+        bootstrap_python_in_vm_calls=[],
+        bootstrap_frontend_in_vm_calls=[],
+        resume_calls=[],
+    )
     factory = EffectProviderFactory(provider_config_resolver=_ResolverStub(), admin_service=admin_service)
 
     provider = factory.build(effect, directory_path="root/team-a")
     provider.execute()
 
     assert admin_service.create_vm_calls[0]["codex_skills"] == ["playwright", "exampleindustry-app-demo"]
+
+
+def test_vm_clone_repo_provider_passes_through_repo_outputs() -> None:
+    effect = VmCloneRepoEffectDefinition(
+        id="effect-clone",
+        display_name="Clone repo",
+        type="effect:vm:clone-repo",
+        session_id="session-42",
+        repo_source="/tmp/repo",
+    )
+    admin_service = _AdminServiceStub(
+        create_vm_calls=[],
+        clone_repo_into_vm_calls=[],
+        bootstrap_python_in_vm_calls=[],
+        bootstrap_frontend_in_vm_calls=[],
+        resume_calls=[],
+    )
+
+    def fake_clone_repo_into_vm(**kwargs):
+        admin_service.clone_repo_into_vm_calls.append(kwargs)
+        return VmActionResult(
+            success=True,
+            vm_name=str(kwargs["vm_name"]),
+            action="clone_repo_into_vm",
+            message="clone ok",
+            target_dir="/home/agent/RepoName",
+            guest_repo_name="RepoName",
+            remote_url="ssh://agent-sandbox-git-host/home/git/remotes/RepoName.git",
+        )
+
+    admin_service.clone_repo_into_vm = fake_clone_repo_into_vm  # type: ignore[method-assign]
+    factory = EffectProviderFactory(provider_config_resolver=_ResolverStub(), admin_service=admin_service)
+
+    provider = factory.build(effect, directory_path="root/team-a")
+    output = provider.execute()
+
+    assert output == {
+        "success": True,
+        "message": "clone ok",
+        "session_id": "session-42",
+        "vm_name": "vm-42",
+        "target_dir": "/home/agent/RepoName",
+        "guest_repo_name": "RepoName",
+        "remote_url": "ssh://agent-sandbox-git-host/home/git/remotes/RepoName.git",
+    }
+    assert admin_service.clone_repo_into_vm_calls[0] == {
+        "vm_name": "vm-42",
+        "session_id": "session-42",
+        "repo_source": "/tmp/repo",
+        "clone_branch": None,
+        "vm_user": "agent",
+        "directory_path": "root/team-a",
+    }
+
+
+def test_vm_bootstrap_python_provider_passes_expected_arguments() -> None:
+    effect = VmBootstrapPythonEffectDefinition(
+        id="effect-python",
+        display_name="Bootstrap Python",
+        type="effect:vm:bootstrap-python",
+        session_id="session-42",
+        host_checkout="/tmp/repo",
+        target_dir="/home/agent/RepoName",
+    )
+    admin_service = _AdminServiceStub(
+        create_vm_calls=[],
+        clone_repo_into_vm_calls=[],
+        bootstrap_python_in_vm_calls=[],
+        bootstrap_frontend_in_vm_calls=[],
+        resume_calls=[],
+    )
+    factory = EffectProviderFactory(provider_config_resolver=_ResolverStub(), admin_service=admin_service)
+
+    provider = factory.build(effect, directory_path="root/team-a")
+    output = provider.execute()
+
+    assert output == {
+        "success": True,
+        "message": "ok",
+        "session_id": "session-42",
+        "vm_name": "vm-42",
+    }
+    assert admin_service.bootstrap_python_in_vm_calls[0] == {
+        "vm_name": "vm-42",
+        "session_id": "session-42",
+        "host_checkout": "/tmp/repo",
+        "target_dir": "/home/agent/RepoName",
+        "vm_user": "agent",
+    }
+
+
+def test_vm_bootstrap_frontend_provider_passes_expected_arguments() -> None:
+    effect = VmBootstrapFrontendEffectDefinition(
+        id="effect-frontend",
+        display_name="Bootstrap Frontend",
+        type="effect:vm:bootstrap-frontend",
+        session_id="session-42",
+        host_checkout="/tmp/checkout",
+        install_roots=["/tmp/checkout/Src/Clients"],
+    )
+    admin_service = _AdminServiceStub(
+        create_vm_calls=[],
+        clone_repo_into_vm_calls=[],
+        bootstrap_python_in_vm_calls=[],
+        bootstrap_frontend_in_vm_calls=[],
+        resume_calls=[],
+    )
+    factory = EffectProviderFactory(provider_config_resolver=_ResolverStub(), admin_service=admin_service)
+
+    provider = factory.build(effect, directory_path="root/team-a")
+    output = provider.execute()
+
+    assert output == {
+        "success": True,
+        "message": "ok",
+        "session_id": "session-42",
+        "vm_name": "vm-42",
+    }
+    assert admin_service.bootstrap_frontend_in_vm_calls[0] == {
+        "vm_name": "vm-42",
+        "session_id": "session-42",
+        "host_checkout": "/tmp/checkout",
+        "install_roots": ["/tmp/checkout/Src/Clients"],
+        "vm_user": "agent",
+    }
 
 
 def test_agent_prompt_provider_emits_thread_id() -> None:
@@ -254,7 +360,13 @@ def test_agent_prompt_provider_emits_thread_id() -> None:
         resume_thread_id="thread-123",
         output_mode="on_completion",
     )
-    admin_service = _AdminServiceStub(create_vm_calls=[], resume_calls=[])
+    admin_service = _AdminServiceStub(
+        create_vm_calls=[],
+        clone_repo_into_vm_calls=[],
+        bootstrap_python_in_vm_calls=[],
+        bootstrap_frontend_in_vm_calls=[],
+        resume_calls=[],
+    )
     factory = EffectProviderFactory(provider_config_resolver=_ResolverStub(), admin_service=admin_service)
 
     provider = factory.build(effect)
@@ -278,7 +390,13 @@ def test_factory_supports_new_provider_types_without_events_model_edit() -> None
     )
     registry = EffectProviderRegistry(initial={})
     registry.register("effect:custom:test", _CustomSchemaProvider)  # type: ignore[arg-type]
-    admin_service = _AdminServiceStub(create_vm_calls=[], resume_calls=[])
+    admin_service = _AdminServiceStub(
+        create_vm_calls=[],
+        clone_repo_into_vm_calls=[],
+        bootstrap_python_in_vm_calls=[],
+        bootstrap_frontend_in_vm_calls=[],
+        resume_calls=[],
+    )
     factory = EffectProviderFactory(
         provider_config_resolver=_ResolverStub(),
         registry=registry,
@@ -301,7 +419,13 @@ def test_agent_enqueue_prompt_provider_dispatches_immediately_when_idle() -> Non
         session_id="session-42",
         resume_thread_id="thread-123",
     )
-    admin_service = _AdminServiceStub(create_vm_calls=[], resume_calls=[])
+    admin_service = _AdminServiceStub(
+        create_vm_calls=[],
+        clone_repo_into_vm_calls=[],
+        bootstrap_python_in_vm_calls=[],
+        bootstrap_frontend_in_vm_calls=[],
+        resume_calls=[],
+    )
     admin_service.list_vms = lambda include_inactive=True, vm_user="agent": []  # type: ignore[attr-defined]
     factory = EffectProviderFactory(provider_config_resolver=_ResolverStub(), admin_service=admin_service)
 
@@ -322,7 +446,13 @@ def test_agent_prompt_provider_passes_model_override() -> None:
         session_id="session-42",
         model="gpt-5.4",
     )
-    admin_service = _AdminServiceStub(create_vm_calls=[], resume_calls=[])
+    admin_service = _AdminServiceStub(
+        create_vm_calls=[],
+        clone_repo_into_vm_calls=[],
+        bootstrap_python_in_vm_calls=[],
+        bootstrap_frontend_in_vm_calls=[],
+        resume_calls=[],
+    )
     factory = EffectProviderFactory(provider_config_resolver=_ResolverStub(), admin_service=admin_service)
 
     provider = factory.build(effect)
@@ -339,7 +469,13 @@ def test_agent_prompt_provider_starts_new_thread_when_resume_thread_id_missing()
         prompt="continue",
         session_id="session-42",
     )
-    admin_service = _AdminServiceStub(create_vm_calls=[], resume_calls=[])
+    admin_service = _AdminServiceStub(
+        create_vm_calls=[],
+        clone_repo_into_vm_calls=[],
+        bootstrap_python_in_vm_calls=[],
+        bootstrap_frontend_in_vm_calls=[],
+        resume_calls=[],
+    )
     factory = EffectProviderFactory(provider_config_resolver=_ResolverStub(), admin_service=admin_service)
 
     provider = factory.build(effect)

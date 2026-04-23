@@ -7,7 +7,7 @@
 - A Python MCP gateway with policy-gated Discord and email tool surfaces
 - A host-side OpenAI relay that keeps the API key on the host and exposes an OpenAI-compatible endpoint to guests
 - A host-side NuGet relay that proxies nuget.org and private Azure Artifacts feeds for guests
-- A host-side Azure DevOps backlog worker that polls tagged work items and drives `setup_issue_vm.sh`
+- A host-side Azure DevOps backlog worker that polls tagged work items and drives issue VM bring-up
 - A host-side workflow orchestrator that polls provider triggers, evaluates gates, and persists durable queue events for downstream workers/hooks
 - A host-side Teams ingest worker that polls Microsoft Graph and feeds `trigger:teams:new-message` orchestration
 - A host-side shared NuGet cache that can be mounted read-only into guests for faster cold restores
@@ -209,14 +209,75 @@ Install the gateway and relay services:
 ```bash
 ./scripts/install_systemd_units.sh --preflight
 sudo ./scripts/install_systemd_units.sh
+$EDITOR config/admin-web.env
 $EDITOR config/firewall.env
+sudo systemctl start agent-sandbox-admin-web.service
 sudo systemctl start agent-sandbox-firewall.service
 sudo systemctl start agent-sandbox-gateway.service
 sudo systemctl start agent-sandbox-openai-relay.service
 sudo systemctl start agent-sandbox-nuget-relay.service
 sudo systemctl start agent-sandbox-ado-worker.service
-sudo systemctl start agent-sandbox-host-heartbeat.service
+sudo systemctl start agent-sandbox-discord-wake.service
+sudo systemctl start agent-sandbox-scheduled-wake.service
 ```
+
+For a fresh-host Ubuntu 24.04 deployment path that wraps this same repo-native flow with Ansible,
+see `ansible/README.md`.
+
+When you expose `agent-sandbox-admin-web` beyond localhost, configure auth in `config/admin-web.env`
+and put TLS plus ingress policy in front of the service.
+
+## Admin Web Authentication
+
+`agent-sandbox-admin-web` now supports three explicit auth modes:
+
+- `none`: default when no auth mode is configured and `AGENT_SANDBOX_ADMIN_WEB_PASSWORD` is unset.
+- `local_password`: current username/password flow with the existing signed local session cookie.
+- `azure_sso`: Microsoft Entra browser sign-in using OIDC Authorization Code + PKCE, followed by the same local signed session cookie used by the rest of the admin API.
+
+Backward compatibility is preserved:
+
+- If `AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE` is unset and `AGENT_SANDBOX_ADMIN_WEB_PASSWORD` is unset, the admin web stays in `none`.
+- If `AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE` is unset and `AGENT_SANDBOX_ADMIN_WEB_PASSWORD` is set, the admin web behaves as `local_password`.
+
+Common auth env vars:
+
+- `AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE=none|local_password|azure_sso`
+- `AGENT_SANDBOX_ADMIN_WEB_USERNAME` for `local_password` mode. Default: `admin`
+- `AGENT_SANDBOX_ADMIN_WEB_PASSWORD` for `local_password` mode
+- `AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET` for the signed local session cookie
+- `AGENT_SANDBOX_ADMIN_WEB_SESSION_TTL_SECONDS` for the local session lifetime
+- `AGENT_SANDBOX_ADMIN_WEB_COOKIE_SECURE=true|false`
+
+Azure SSO env vars:
+
+- `AGENT_SANDBOX_ADMIN_WEB_AZURE_TENANT_ID`
+- `AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_ID`
+- `AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_SECRET`
+- `AGENT_SANDBOX_ADMIN_WEB_AZURE_REDIRECT_URI`
+  or `AGENT_SANDBOX_ADMIN_WEB_PUBLIC_BASE_URL`, which is combined with `/api/auth/azure-sso/callback`
+- `AGENT_SANDBOX_ADMIN_WEB_AZURE_AUTHORITY_BASE_URL`
+  Default: `https://login.microsoftonline.com`
+- `AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS`
+  Comma-separated allowlist of user principal names / email-style logins, for example
+  `alice@example.com,bob@example.com`
+- `AGENT_SANDBOX_ADMIN_WEB_AZURE_POST_LOGIN_REDIRECT`
+  Default: `/`
+
+Azure SSO is optional and disabled by default. To enable it:
+
+1. Register a confidential Microsoft Entra web application.
+2. Add the admin web callback URL as a redirect URI.
+3. Ensure the app can request OpenID scopes: `openid profile email`.
+4. Set the tenant you intend to trust with `AGENT_SANDBOX_ADMIN_WEB_AZURE_TENANT_ID`.
+5. Set `AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS` to the exact UPN/email-style identities that may use the admin UI.
+
+The admin web only trusts a sign-in when both checks pass:
+
+- the ID token is issued for the configured tenant and client
+- the human-managed login identifier is explicitly allowlisted
+
+Sign-out clears only the local admin session cookie. v1 does not force Microsoft global logout.
 
 ### Trigger orchestrator
 
@@ -228,7 +289,7 @@ The scaffold includes `agent-sandbox-trigger-orchestrator`, a host-side worker t
 - persists discovered events into a durable queue (`runtime/trigger-orchestrator-events.json` by default)
 - records per-trigger cursor/checkpoint metadata (`runtime/trigger-orchestrator-cursors.json` by default)
 - also accepts `trigger:teams:new-message` events, which are sourced from host-side Teams ingest
-  polling rather than from host-heartbeat
+  polling rather than from the wake workers
 
 One-shot cycle execution is supported for ops/debugging:
 
@@ -315,8 +376,8 @@ Issue handling is now a single local abstraction in both Desktop and CLI flows:
 - Desktop/CLI read/comment/state operations use the same command surface for both types; proxy
   records forward those operations to Azure DevOps and refresh the local cache afterward
 - VM setup can target either a local issue number (`77`) or proxy identifier forms like
-  `proxy:ado/77`, and both resolve through the same local issue record before invoking
-  `setup_issue_vm.sh`
+  `proxy:ado/77`, and both resolve through the same local issue record before invoking the
+  shared issue-VM create flow
 - ADO backlog create operations can include `parent_backlog_item_id`; when provided, the create
   patch appends a `System.LinkTypes.Hierarchy-Reverse` relation in the same org/project context.
   The parent ID must be non-empty digits. If that validation fails, the request is rejected before
@@ -343,39 +404,35 @@ agent-sandbox-cli directories show root
 
 ## Local Git Remotes
 
-For the full issue-VM bring-up path in one command, use:
+Issue VM creation is now separate from repo setup. Create the VM first:
 
 ```bash
-MSSQL_SA_PASSWORD='your-strong-password' ./scripts/setup_issue_vm.sh --python --dotnet --nuget --mssql --mssql-init-root /path/to/mssql-init --playwright --frontend-deps --frontend-install-root /path/to/repo/Src/Clients /path/to/issue.yaml /path/to/project-or-solution.slnx
+MSSQL_SA_PASSWORD='your-strong-password' ./.venv/bin/agent-sandbox-cli create-issue-vm 14084 --dotnet --nuget /path/to/project-or-solution.slnx --mssql --mssql-init-root /path/to/mssql-init --playwright
 ```
 
-`setup_issue_vm.sh` now resolves host-dependent paths in this order:
+Then clone the repo and run any repo-specific bootstraps you need:
 
-1. explicit `repo-source` argument (third positional argument)
-2. `AGENT_SANDBOX_DEFAULT_REPO_SOURCE`
-3. repo-relative fallback: the agent-sandbox repo root
+```bash
+./.venv/bin/agent-sandbox-cli clone-repo-into-vm vm-14084 --repo-source /path/to/local/repo
+./.venv/bin/agent-sandbox-cli bootstrap-python-in-vm vm-14084 --host-checkout /path/to/local/repo --target-dir /home/agent/$(basename /path/to/local/repo)
+./.venv/bin/agent-sandbox-cli bootstrap-frontend-in-vm vm-14084 --host-checkout /path/to/local/repo --install-root /path/to/local/repo/Src/Clients
+```
 
-When `session-id` is omitted, `setup_issue_vm.sh` now generates one automatically in the form
+When `session-id` is omitted, `create-issue-vm` generates one automatically in the form
 `issue-<issue-number>-<utc timestamp>-<pid>`. That keeps review branches distinct across multiple
 agents or reruns for the same issue.
 
-Toolchain bootstraps are now opt-in:
+Toolchain bootstraps are opt-in and split by concern:
 
-- `--python` runs `bootstrap_python_vm.sh` and creates a repo-local `.venv` from a host-built wheelhouse
-- `--dotnet` runs `bootstrap_dotnet_vm.sh`
-- `--nuget` runs `bootstrap_nuget_vm.sh` and host `prewarm_nuget_cache.sh` (requires `project-or-solution`)
-- `--mssql` runs `bootstrap_mssql_vm.sh` and requires `MSSQL_SA_PASSWORD` in the environment
-- `--mssql-init-root PATH` copies a host init bundle into `/var/opt/mssql/init` and executes `init.sql`
-- `--playwright` runs `bootstrap_playwright_vm.sh`, which also provides `node`, `npm`, and `npx`
-- `--frontend-deps` runs `bootstrap_frontend_deps_vm.sh`
-- `--frontend-install-root PATH` selects one frontend install root and may be repeated
-- `--frontend-host-checkout PATH` overrides the host checkout used for frontend snapshots when `repo-source` is remote
+- `create-issue-vm --dotnet` runs `bootstrap_dotnet_vm.sh`
+- `create-issue-vm --nuget PATH` runs `bootstrap_nuget_vm.sh` and host `prewarm_nuget_cache.sh`
+- `create-issue-vm --mssql` runs `bootstrap_mssql_vm.sh` and requires `MSSQL_SA_PASSWORD`
+- `create-issue-vm --playwright` runs `bootstrap_playwright_vm.sh`
+- `bootstrap-python-in-vm` runs `bootstrap_python_vm.sh` against a cloned repo
+- `bootstrap-frontend-in-vm` runs `bootstrap_frontend_deps_vm.sh` against a cloned repo
 
-When `--frontend-deps` is enabled, each install root must live under the selected host checkout and
-already contain `package.json` plus `node_modules`. For local repo sources, `setup_issue_vm.sh`
-uses the resolved local repo checkout by default. For remote repo sources, pass
-`--frontend-host-checkout` so the helper can snapshot dependencies from a host checkout and
-restore them into the matching relative paths inside the guest clone.
+For frontend bootstrapping, each install root must live under the selected host checkout and
+already contain `package.json` plus `node_modules`.
 
 The guest clone URL is also derived from configurable Git-root settings:
 
@@ -391,10 +448,6 @@ the host repo basename, for example `/home/agent/AcmePlatform`. It also writes a
 `AGENT_TASK.yaml`, configures a repo-local `git push-agent` alias for the safe
 session-namespaced push pattern, and starts a background agent run inside the guest by
 default. The guest-side agent log, PID, and state files live under `/home/agent/.agent-sandbox/`.
-Use `--no-start-agent` with `agent-sandbox-cli create-issue-vm` or `--dry-run` with
-`setup_issue_vm.sh` if you want the VM prepared without starting the agent process. The
-helper still accepts a raw issue number as the first argument for the older workflow, but
-YAML is the preferred input for long-running agent sessions.
 When `--python` is enabled, the guest repo also gets a repo-local `.venv`. Activate it with
 `. .venv/bin/activate`, then run `python -m pytest -q` and `python -m ruff check` from inside
 the guest clone.
@@ -541,8 +594,10 @@ See [live-smoke-tests.md](/home/jonathan/agent-sandbox/docs/live-smoke-tests.md)
     `discord_channel_allowlist` **or** its `author_id` is in global
     `discord_operator_user_allowlist`.
   - Commands that satisfy neither condition are denied and audited as denied tool attempts.
-  - For `discord_post_status`, only session allowlisted `channel_id` values are permitted;
-    operator user allowlists do not bypass post destination checks.
+  - For `discord_post_status` and Discord `add_message_reaction`, only session allowlisted
+    `channel_id` values are permitted; operator user allowlists do not bypass destination checks.
+  - Message reads do not apply automatic read reactions. Agents must call `add_message_reaction`
+    when a reaction is intended.
 - There is currently no built-in Discord retry/backoff loop in the `bot_api` adapter. HTTP
   failures (timeouts, 4xx/5xx, transport errors) surface back to the MCP caller. Policy denials
   are written to `audit_log_path` (default runtime path `runtime/audit.jsonl`).
@@ -590,11 +645,11 @@ See [live-smoke-tests.md](/home/jonathan/agent-sandbox/docs/live-smoke-tests.md)
   - `teams_graph_access_token_env: <ENV_VAR_NAME>`
   - optional `teams_graph_api_base_url` when you need a non-default Graph endpoint
 - The access token referenced by `teams_graph_access_token_env` must be able to read Microsoft
-  Teams channel and chat messages and, if you enable outbound status posts, create
-  channel/chat messages and replies for the teams targets you plan to use.
+  Teams channel and chat messages and, if you enable outbound status posts or explicit reactions,
+  create channel/chat messages, replies, and reactions for the teams targets you plan to use.
 - `trigger:teams:new-message` message arrival is driven by host-side Teams ingest polling on the
-  host, not by the host-heartbeat worker. Host-heartbeat remains the PR/Discord feedback wakeup
-  loop.
+  host, not by the wake workers. Discord inbox wakeups and scheduled resumes are handled by
+  `agent-sandbox-discord-wake` and `agent-sandbox-scheduled-wake`.
 - `trigger:teams:new-message` is a wake signal only. It fires at most once per poll cycle when any
   new allowlisted Teams messages have arrived, and it does not include message content in the
   trigger payload. Agents that need message context should call `teams_get_messages`.
@@ -609,7 +664,7 @@ See [live-smoke-tests.md](/home/jonathan/agent-sandbox/docs/live-smoke-tests.md)
   ```json
   {
     "session_id": "teams-session",
-    "allowed_tools": ["teams_get_messages", "teams_post_status"],
+    "allowed_tools": ["teams_get_messages", "teams_post_status", "add_message_reaction"],
     "teams_channel_allowlist": ["<team-id>/<channel-id>"],
     "teams_chat_allowlist": ["chat:<chat-id>"]
   }
@@ -635,6 +690,12 @@ See [live-smoke-tests.md](/home/jonathan/agent-sandbox/docs/live-smoke-tests.md)
   - `channel_target`
   - `message`
   - optional `thread_id` to reply into an existing channel thread
+- The `add_message_reaction` gateway tool accepts:
+  - `provider`: `teams` or `discord`
+  - `message_id`
+  - `emoji` / Teams reaction name
+  - `channel_target` for Teams, or `channel_id` for Discord
+  It is explicit only; `teams_get_messages` and Discord unread reads do not automatically react.
 - When the target is a chat, the adapter uses the `chat:<chat-id>` identifier instead of a
   team/channel pair.
 - `teams_post_status` writes via:
@@ -760,7 +821,7 @@ Use this when you want the guest to wake only for new review feedback and post t
 1. Include PR feedback tools/stream metadata in the session manifest (same `session_id` the guest uses).
 2. Bootstrap a provider runtime in the guest (`./scripts/bootstrap_codex_vm.sh <vm-name>` or `./scripts/bootstrap_copilot_vm.sh <vm-name>`).
 3. For Azure DevOps PR feedback, keep `agent-sandbox-ado-worker` running; it now owns Azure DevOps feedback ingestion and trigger publication.
-4. `agent-sandbox-host-heartbeat.service` is no longer required for Azure DevOps PR feedback ingestion. Keep it only if you still rely on Discord inbox wakeups, scheduled resumes, or legacy non-ADO feedback polling.
+4. `agent-sandbox-discord-wake.service` and `agent-sandbox-scheduled-wake.service` cover Discord inbox wakeups and scheduled resumes. No separate heartbeat worker is required for Azure DevOps PR feedback ingestion.
 5. Use MCP calls from the agent in this order:
    `has_pending_feedback` → `list_unread_feedback` → `post_pr_feedback_reply` (with an idempotency key).
    Use `list_pull_requests(session_id, provider, repo, status?, creator_id?, reviewer_id?, top?, cursor?)`
@@ -794,7 +855,7 @@ Example `get_pull_request` result shape (Azure DevOps):
 ### Expected timing behavior
 
 - Azure DevOps feedback pickup is driven by `agent-sandbox-ado-worker` cadence and updates the shared host feedback store plus trigger queue.
-- `agent-sandbox-host-heartbeat` no longer polls Azure DevOps PR feedback streams.
+- `agent-sandbox-discord-wake` and `agent-sandbox-scheduled-wake` do not poll Azure DevOps PR feedback streams.
 - Guests consume pending feedback via MCP tools by default.
 - Provider bootstrap scripts default `ENABLE_GUEST_HEARTBEAT=0`, which keeps
   `agent-heartbeat.timer` disabled for new guests.
@@ -803,7 +864,7 @@ Example `get_pull_request` result shape (Azure DevOps):
   `GUEST_HEARTBEAT_PROMPT` to override the resume prompt per agent.
 - Migration note for existing VMs: disable any previously enabled guest timer if you want host-only wakeups:
 - Agent enable/disable control is now mirrored in host state at `runtime/host-agent-control-state.json`,
-  so the host heartbeat worker can continue ignoring disabled agents even while their VMs are shut down.
+  so the wake workers can continue ignoring disabled agents even while their VMs are shut down.
 - Guests consume pending feedback via MCP tools by default.
 - Provider bootstrap scripts default `ENABLE_GUEST_HEARTBEAT=0`, which keeps
   `agent-heartbeat.timer` disabled for new guests.
@@ -847,15 +908,16 @@ Example `get_pull_request` result shape (Azure DevOps):
   - Human-readable: `agent-sandbox-cli status --runtime-dir runtime`
   - Machine-readable: `agent-sandbox-cli status --runtime-dir runtime --json`
   - The command summarizes config loading, runtime path permissions, key systemd units, gateway/relay reachability, and session expiration health.
-- **Host heartbeat lock contention:** worker exits because another instance is running.
-  - Check the configured lock path (`host_heartbeat_lock_path`) and active systemd processes before restarting.
+- **Wake worker lock contention:** a wake worker exits because another instance is running.
+  - Check the configured worker lock path and active systemd processes before restarting.
 - **Provider API failures while replying:** gateway tool errors from GitHub/Azure DevOps calls.
   - Validate host tokens (`GITHUB_TOKEN`/configured env, `AZURE_DEVOPS_PR_PAT`/configured env).
   - Retry with the **same idempotency key** so `post_pr_feedback_reply` deduplicates safely.
 
 ### Audit/log locations and healthy signals
 
-- Host heartbeat service logs: `journalctl -u agent-sandbox-host-heartbeat.service`.
+- Discord wake service logs: `journalctl -u agent-sandbox-discord-wake.service`.
+- Scheduled wake service logs: `journalctl -u agent-sandbox-scheduled-wake.service`.
 - Host runtime: `runtime/pr-feedback-store.json`, `runtime/pr-reply-idempotency.json`,
   `runtime/host-agent-control-state.json`, `runtime/audit.jsonl`.
 - Healthy pattern:

@@ -32,7 +32,7 @@ from .gate_runtime import (
     GateRuntimeError,
     require_object_payload,
 )
-from .host_heartbeat_worker import _single_instance_lock
+from .wake_dispatch import single_instance_lock
 from .orchestration.adapters import (
     EffectCompletionPublisherAdapter,
     EffectDependencyResolverAdapter,
@@ -94,7 +94,7 @@ WorkflowNodeDefinition = (
 
 class _LockManager:
     def lock(self, path: Path):
-        return _single_instance_lock(path)
+        return single_instance_lock(path)
 
 
 class _Sleeper:
@@ -278,8 +278,7 @@ class EffectOrchestratorWorker:
         completion_events_published += self._reconcile_gate_providers(graph=graph)
         completion_events_published += self._run_waiting_reconciliation_hooks()
 
-        completed_count, published_count = self._reap_completed_futures()
-        effect_executions_completed += completed_count
+        _completed_count, published_count = self._reap_completed_futures()
         completion_events_published += published_count
         completion_events_published += self._run_post_completion_dispatch_hooks()
 
@@ -330,8 +329,9 @@ class EffectOrchestratorWorker:
         )
         pending_events_scanned = loop_result.events_scanned
         events_processed = loop_result.events_scanned
-        if effect_executions_started:
-            self._wait_for_inflight_completion(timeout_seconds=0.05)
+
+        # Reap futures again after dispatch so fast in-process effects do not
+        # remain marked as running until an extra poll cycle.
         _completed_count, published_count = self._reap_completed_futures()
         completion_events_published += published_count
 
@@ -1536,8 +1536,11 @@ def _build_outbound_edge_index(edges: list[Any]) -> dict[str, tuple[Any, ...]]:
 
 def _matching_outbound_edges(*, queue_record: TriggerQueueRecord, graph: ExecutionGraph) -> tuple[Any, ...]:
     branch_port = _normalize_optional_string(queue_record.payload.get(_BRANCH_PORT_PAYLOAD_KEY))
+    resume_target_node_id = _normalize_optional_string(queue_record.payload.get("__resume_target_node_id"))
     matched: list[Any] = []
     for edge in graph.outbound_index.get(queue_record.trigger_id, ()):
+        if resume_target_node_id is not None and _edge_target_id(edge) != resume_target_node_id:
+            continue
         edge_port = _edge_source_port(edge)
         if branch_port is None:
             if edge_port is not None:

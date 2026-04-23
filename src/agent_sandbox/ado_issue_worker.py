@@ -43,6 +43,7 @@ from .triggers.providers.pull_request_new_feedback import _parse_dt
 from .triggers.queue import TriggerEventQueue
 from .vm_defaults_config import VmDefaultsConfigResolver
 from .worker_directory_context import WorkerDirectoryContextResolver, log_shadow_context
+from .workflow_runtime_config import load_trigger_orchestrator_worker_global_config
 
 _LOG = logging.getLogger(__name__)
 _DEFAULT_ADO_MSSQL_SA_PASSWORD_ENV = "MSSQL_SA_PASSWORD"
@@ -116,7 +117,7 @@ class AdoWorkerRuntimeConfig:
             workspace_root=workspace_root,
             json_keys=("setup_script_path", "ADO_SETUP_ISSUE_VM_SCRIPT"),
             env_name="ADO_SETUP_ISSUE_VM_SCRIPT",
-            default=workspace_root / "scripts" / "setup_issue_vm.sh",
+            default=workspace_root / "scripts" / "setup_vm.sh",
         )
         ado_work_items_azure_devops_pat_env = _resolve_string_setting(
             raw_config,
@@ -150,7 +151,7 @@ class AdoWorkerRuntimeConfig:
             workspace_root=workspace_root,
             json_keys=("setup_lock_path", "ADO_SETUP_LOCK_PATH"),
             env_name="ADO_SETUP_LOCK_PATH",
-            default=runtime_dir / "setup-issue-vm.lock",
+            default=runtime_dir / "setup-vm.lock",
         )
         fetch_retry_count = int(
             _resolve_numeric_setting(
@@ -824,14 +825,29 @@ def _normalize_tags(raw_tags: str | None) -> set[str]:
     return {tag.strip().lower() for tag in raw_tags.split(";") if tag.strip()}
 
 
-def _combine_description_and_acceptance_criteria(description: str, acceptance_criteria: str) -> str:
+def _combine_description_with_ado_sections(
+    description: str,
+    *,
+    repro_steps: str = "",
+    system_info: str = "",
+    acceptance_criteria: str = "",
+) -> str:
+    parts: list[str] = []
+
     description = description.strip()
-    acceptance_criteria = acceptance_criteria.strip()
-    if not acceptance_criteria:
-        return description
-    if not description:
-        return f"Acceptance Criteria\n\n{acceptance_criteria}"
-    return f"{description}\n\nAcceptance Criteria\n\n{acceptance_criteria}"
+    if description:
+        parts.append(description)
+
+    for header, content in (
+        ("Repro Steps", repro_steps),
+        ("System Info", system_info),
+        ("Acceptance Criteria", acceptance_criteria),
+    ):
+        normalized_content = content.strip()
+        if normalized_content:
+            parts.append(f"{header}\n\n{normalized_content}")
+
+    return "\n\n".join(parts)
 
 
 def _parse_ado_datetime(value: str | None) -> datetime:
@@ -1002,6 +1018,8 @@ def fetch_work_item_batch(
                 "System.Id",
                 "System.Title",
                 "System.Description",
+                "Microsoft.VSTS.TCM.ReproSteps",
+                "Microsoft.VSTS.TCM.SystemInfo",
                 "Microsoft.VSTS.Common.AcceptanceCriteria",
                 "System.Tags",
                 "System.State",
@@ -1147,9 +1165,11 @@ def gate_and_order_items(items: list[dict[str, Any]], config: WorkerConfig) -> t
             {
                 "id": work_item_id,
                 "title": str(fields.get("System.Title", "")).strip(),
-                "description": _combine_description_and_acceptance_criteria(
+                "description": _combine_description_with_ado_sections(
                     str(fields.get("System.Description", "") or ""),
-                    str(fields.get("Microsoft.VSTS.Common.AcceptanceCriteria", "") or ""),
+                    repro_steps=str(fields.get("Microsoft.VSTS.TCM.ReproSteps", "") or ""),
+                    system_info=str(fields.get("Microsoft.VSTS.TCM.SystemInfo", "") or ""),
+                    acceptance_criteria=str(fields.get("Microsoft.VSTS.Common.AcceptanceCriteria", "") or ""),
                 ),
                 "tags": sorted(normalized_tags),
                 "state": state,
@@ -1586,7 +1606,7 @@ def _ensure_issue_session_manifest(
     runtime.session_repository.upsert_session(manifest)
 
 
-def _build_setup_command(config: WorkerConfig, yaml_path: Path, *, session_id: str) -> list[str]:
+def _build_setup_command(config: WorkerConfig, yaml_path: Path, *, session_id: str, work_item_id: int) -> list[str]:
     cmd = [str(config.setup_script_path)]
     if config.bootstrap_dotnet:
         cmd.append("--dotnet")
@@ -1598,18 +1618,9 @@ def _build_setup_command(config: WorkerConfig, yaml_path: Path, *, session_id: s
             cmd.extend(["--mssql-init-root", config.mssql_init_root])
     if config.bootstrap_playwright:
         cmd.append("--playwright")
-    if config.bootstrap_frontend_deps:
-        cmd.append("--frontend-deps")
-        if config.frontend_host_checkout:
-            cmd.extend(["--frontend-host-checkout", config.frontend_host_checkout])
-        for install_root in config.frontend_install_roots:
-            cmd.extend(["--frontend-install-root", install_root])
-    cmd.append(str(yaml_path))
     if config.bootstrap_nuget:
         cmd.append(config.prewarm_target)
-    if config.repo_path:
-        cmd.append(config.repo_path)
-    cmd.append(session_id)
+    cmd.extend([f"vm-{work_item_id}", session_id])
     if config.vm_user:
         cmd.append(config.vm_user)
     return cmd
@@ -1725,7 +1736,7 @@ def process_work_item(
             prefix=f"work_item={work_item_id} shadow_readiness",
             context=shadow_context,
         )
-    cmd = _build_setup_command(config, yaml_path, session_id=session_id)
+    cmd = _build_setup_command(config, yaml_path, session_id=session_id, work_item_id=work_item_id)
     run_env = os.environ.copy()
     run_env["AGENT_SANDBOX_AZURE_DEVOPS_PR_PAT_ENV"] = config.pat_env_var_name
     if config.bootstrap_mssql and config.mssql_sa_password:
@@ -1879,8 +1890,10 @@ def _load_trigger_orchestrator_worker_config(config: WorkerConfig) -> TriggerOrc
     config_path = _trigger_orchestrator_config_path(config)
     if not config_path.exists():
         return None
-    raw = json.loads(config_path.read_text(encoding="utf-8"))
-    return TriggerOrchestratorWorkerGlobalConfig.model_validate(raw)
+    return load_trigger_orchestrator_worker_global_config(
+        config_path.parents[2],
+        base_config=GatewayConfig(runtime_dir=config.runtime_dir),
+    )
 def _load_ado_pr_feedback_session_bindings(
     *,
     runtime_dir: Path,
@@ -1900,6 +1913,7 @@ def _load_ado_pr_feedback_session_bindings(
     session_directory_paths: dict[str, str] = {}
     session_vm_ids: dict[str, str] = {}
     session_repository = JsonSessionManifestRepository(runtime_dir / "sessions.json")
+    session_ado_projects: dict[str, str] = {}
     for manifest in session_repository.list_sessions():
         normalized_session_id = str(manifest.session_id).strip()
         if not normalized_session_id:
@@ -1909,6 +1923,11 @@ def _load_ado_pr_feedback_session_bindings(
         session_directory_paths[normalized_session_id] = normalized_directory_path
         if normalized_vm_id:
             session_vm_ids[normalized_session_id] = normalized_vm_id
+        metadata = getattr(manifest, "metadata", None)
+        if isinstance(metadata, dict):
+            normalized_ado_project = str(metadata.get("ado_project", "")).strip()
+            if normalized_ado_project:
+                session_ado_projects[normalized_session_id] = normalized_ado_project
 
     bindings: dict[tuple[str, str], dict[str, str]] = {}
     for raw in entries.values():
@@ -1931,6 +1950,7 @@ def _load_ado_pr_feedback_session_bindings(
             "pr_id": pr_id,
             "session_id": session_id,
             "vm_id": session_vm_ids.get(session_id, ""),
+            "ado_project": session_ado_projects.get(session_id, ""),
         }
     return bindings
 
@@ -1946,6 +1966,19 @@ def _latest_cursor_value(*values: str | None) -> str | None:
             latest = parsed
             latest_raw = value
     return latest_raw
+
+
+def _ado_project_for_feedback_stream(
+    *,
+    repo: str,
+    binding: dict[str, str],
+    trigger: PullRequestNewFeedbackTriggerDefinition,
+    config: WorkerConfig,
+) -> str:
+    parts = [part.strip() for part in repo.split("/") if part.strip()]
+    if len(parts) >= 3:
+        return parts[-2]
+    return binding.get("ado_project") or trigger.project or config.project
 
 
 def _publish_directory_pr_feedback_events(
@@ -1990,12 +2023,6 @@ def _publish_directory_pr_feedback_events(
     published_count = 0
 
     for trigger in triggers:
-        adapter = AzureDevOpsFeedbackAdapter(
-            organization_url=trigger.organization_url or config.organization_url,
-            project=trigger.project or config.project,
-            pat=pat,
-            pat_env_name=pat_env_name,
-        )
         state = cursor_store.get(trigger.id)
         state_cursors = state.get("stream_cursors", {})
         if not isinstance(state_cursors, dict):
@@ -2005,6 +2032,18 @@ def _publish_directory_pr_feedback_events(
         discovered: list[tuple[dict[str, str], PrFeedbackItem]] = []
 
         for repo, pr_id in sorted(bindings.keys()):
+            binding = bindings.get((repo, pr_id), {})
+            adapter = AzureDevOpsFeedbackAdapter(
+                organization_url=trigger.organization_url or config.organization_url,
+                project=_ado_project_for_feedback_stream(
+                    repo=repo,
+                    binding=binding,
+                    trigger=trigger,
+                    config=config,
+                ),
+                pat=pat,
+                pat_env_name=pat_env_name,
+            )
             stream_key = _stream_key("azure_devops", repo, pr_id)
             result = adapter.poll(
                 client=client,

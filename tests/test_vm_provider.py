@@ -1,0 +1,92 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from types import SimpleNamespace
+from typing import Any
+
+from agent_sandbox.models import SessionManifest
+from agent_sandbox.vm_power_state import normalize_power_state
+from agent_sandbox.vm_provider import AzureVmProvider, VmProviderContext, session_vm_provider
+
+
+def test_normalize_power_state_supports_libvirt_and_azure_values() -> None:
+    assert normalize_power_state("running") == "running"
+    assert normalize_power_state("shut off") == "stopped"
+    assert normalize_power_state("PowerState/deallocated") == "stopped"
+    assert normalize_power_state("crashed") == "failed"
+
+
+def test_session_vm_provider_defaults_to_libvirt() -> None:
+    manifest = SessionManifest(
+        session_id="session-1",
+        vm_id="vm-1",
+        allowed_tools=[],
+        expires_at="2099-01-01T00:00:00Z",
+    )
+    assert session_vm_provider(manifest) == "libvirt"
+
+    azure_manifest = manifest.model_copy(update={"vm_provider": "azure"})
+    assert session_vm_provider(azure_manifest) == "azure"
+
+
+@dataclass
+class _AzureClientStub:
+    payload: list[dict[str, Any]]
+
+    def list_vms(self, *, config: Any, include_inactive: bool = True) -> list[dict[str, Any]]:
+        del config, include_inactive
+        return list(self.payload)
+
+    def create_vm(self, **kwargs: Any) -> dict[str, Any]:
+        raise AssertionError("not used")
+
+    def start_vm(self, **kwargs: Any) -> dict[str, Any]:
+        raise AssertionError("not used")
+
+    def stop_vm(self, **kwargs: Any) -> dict[str, Any]:
+        raise AssertionError("not used")
+
+    def resolve_private_ip(self, **kwargs: Any) -> str | None:
+        raise AssertionError("not used")
+
+
+def test_azure_provider_lists_provider_neutral_vm_summaries() -> None:
+    sessions = {
+        "session-azure": SessionManifest(
+            session_id="session-azure",
+            vm_id="vm-azure-1",
+            vm_provider="azure",
+            allowed_tools=[],
+            directory_path="root/team",
+            expires_at="2099-01-01T00:00:00Z",
+        )
+    }
+    dependencies = SimpleNamespace(
+        runtime=SimpleNamespace(sessions=SimpleNamespace(read_all=lambda: sessions)),
+        normalize_directory_path=lambda directory_path: directory_path or "root",
+        resolve_vm_defaults=lambda directory_path: SimpleNamespace(
+            azure=SimpleNamespace(resource_group="rg-agents"),
+        ),
+        direct_owned_entity_ids=lambda directory_path, kind="vm": {"vm-azure-1"},
+        agent_control_store=SimpleNamespace(status_for_vm=lambda vm_name: "enabled"),
+    )
+    provider = AzureVmProvider(
+        VmProviderContext(dependencies=dependencies),
+        client=_AzureClientStub(
+            payload=[
+                {
+                    "name": "vm-azure-1",
+                    "powerState": "PowerState/running",
+                    "privateIps": "10.0.0.5",
+                }
+            ]
+        ),
+    )
+
+    summaries = provider.list_vms(directory_path="root/team", direct_only=True)
+
+    assert len(summaries) == 1
+    assert summaries[0].provider == "azure"
+    assert summaries[0].power_state == "running"
+    assert summaries[0].provider_state == "PowerState/running"
+    assert summaries[0].ip_address == "10.0.0.5"

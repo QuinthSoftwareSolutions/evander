@@ -60,6 +60,7 @@ from pathlib import Path
 import fcntl
 
 from agent_sandbox.triggers.providers.git_push import build_git_push_payloads, git_push_trigger_matches_repo
+from agent_sandbox.workflow_packs import compose_workflow_ir
 
 def _resolve_repo(path_text: str) -> Path:
     return Path(path_text).expanduser().resolve()
@@ -70,6 +71,35 @@ def _load_config(path: Path) -> dict:
     if isinstance(payload, dict):
         return payload
     return {}
+
+
+def _resolve_git_push_triggers(*, config: dict, project_dir: Path) -> list[dict]:
+    triggers = config.get("triggers", [])
+    if isinstance(triggers, list) and triggers:
+        return triggers
+
+    configured_packs = config.get("workflow_packs")
+    inline_ir = config.get("workflow_ir")
+    has_configured_packs = isinstance(configured_packs, list) and bool(configured_packs)
+    has_inline_ir = isinstance(inline_ir, dict)
+    if not has_configured_packs and not has_inline_ir:
+        return []
+
+    composition = compose_workflow_ir(
+        project_dir=project_dir,
+        workflow_packs=configured_packs if has_configured_packs else [],
+        inline_ir=inline_ir if has_inline_ir else None,
+    )
+    normalized_triggers: list[dict] = []
+    for trigger in composition.triggers:
+        if not isinstance(trigger, dict):
+            continue
+        normalized = dict(trigger)
+        trigger_config = normalized.pop("config", None)
+        if isinstance(trigger_config, dict):
+            normalized.update(trigger_config)
+        normalized_triggers.append(normalized)
+    return normalized_triggers
 
 
 def _resolve_config_path(value: object, *, config_path: Path, project_dir: Path) -> Path:
@@ -122,9 +152,7 @@ def main() -> int:
     else:
         queue_store_path = runtime_dir / "trigger-orchestrator-events.json"
 
-    triggers = config.get("triggers", [])
-    if not isinstance(triggers, list):
-        triggers = []
+    triggers = _resolve_git_push_triggers(config=config, project_dir=project_dir)
 
     git_push_triggers = [
         trigger

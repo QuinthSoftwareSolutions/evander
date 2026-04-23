@@ -8,9 +8,18 @@
   "gate_execution_store_path": "runtime/gate-orchestrator-executions.json",
   "jitter_seconds": 1.0,
   "lock_path": "runtime/trigger-orchestrator.lock",
+  "max_events_per_cycle": 200,
+  "max_graph_depth": 16,
   "poll_interval_seconds": 5.0,
+  "provider_loader": {
+    "provider_entry_points_enabled": true,
+    "provider_modules": [],
+    "provider_profile": "profiles/agent-default"
+  },
   "runtime_dir": "runtime",
+  "workflow_event_journal_path": "runtime/workflow-events.jsonl",
   "workflow_packs": [
     "agent-default.v1.json"
-  ]
+  ],
+  "workflow_transforms": []
 }

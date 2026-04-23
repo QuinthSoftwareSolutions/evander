@@ -72,7 +72,7 @@ def test_main_accepts_runtime_dir_override(monkeypatch, tmp_path: Path) -> None:
 
 def test_config_field_kind_uses_multiline_editor_for_prompt_fields() -> None:
     assert admin_app._config_field_kind("host_heartbeat_pr_resume_prompt") == ("multiline_text", ())
-    assert admin_app._config_field_kind("host_heartbeat_discord_resume_prompt") == ("multiline_text", ())
+    assert admin_app._config_field_kind("discord_resume_prompt") == ("multiline_text", ())
     assert admin_app._config_field_kind("pr_template_markdown") == ("multiline_text", ())
     assert admin_app._config_field_kind("host_resume_script_path") == ("text", ())
 
@@ -91,12 +91,12 @@ def test_config_field_kind_supports_ado_worker_global_fields() -> None:
     assert admin_app._config_field_kind("ado_work_items_azure_devops_pat_env") == ("text", ())
 
 
-def test_config_field_kind_supports_host_heartbeat_worker_global_fields() -> None:
-    assert admin_app._config_field_kind("host_heartbeat_poll_interval_seconds") == ("float", ())
-    assert admin_app._config_field_kind("host_busy_check_script_path") == ("text", ())
-    assert admin_app._config_field_kind("host_heartbeat_wake_state_path") == ("text", ())
-    assert admin_app._config_field_kind("host_heartbeat_directory_paths") == ("string_list", ())
-    assert admin_app._config_field_kind("host_heartbeat_scheduled_wake_prefix_text") == ("text", ())
+def test_config_field_kind_supports_wake_worker_global_fields() -> None:
+    assert admin_app._config_field_kind("poll_interval_seconds") == ("float", ())
+    assert admin_app._config_field_kind("busy_check_script_path") == ("text", ())
+    assert admin_app._config_field_kind("wake_state_path") == ("text", ())
+    assert admin_app._config_field_kind("directories") == ("string_list", ())
+    assert admin_app._config_field_kind("scheduled_wake_prefix_text") == ("text", ())
 
 
 def test_directory_config_domains_include_ado_worker_and_issue_setup_tabs() -> None:
@@ -158,15 +158,14 @@ def test_refresh_issues_passes_selected_state_filters() -> None:
     }
 
 
-def test_worker_global_settings_tooltips_include_ado_and_host_heartbeat_fields() -> None:
+def test_worker_global_settings_tooltips_include_ado_and_wake_worker_fields() -> None:
     for field_name in {
         "directories",
         "ado_work_items_azure_devops_pat_env",
-        "host_heartbeat_directory_paths",
-        "host_heartbeat_poll_interval_seconds",
-        "host_heartbeat_jitter_seconds",
-        "host_busy_check_script_path",
-        "host_resume_script_path",
+        "poll_interval_seconds",
+        "jitter_seconds",
+        "busy_check_script_path",
+        "resume_script_path",
     }:
         assert field_name in admin_app.WORKER_GLOBAL_CONFIG_FIELD_TOOLTIPS
 
@@ -247,24 +246,124 @@ def test_directory_config_tab_field_sources_expose_composite_communications_tab(
     assert ("providers", "discord_backend") in field_sources
     assert ("providers", "discord_read_reaction_emoji") in field_sources
     assert ("policy", "discord_operator_user_allowlist") in field_sources
+    assert ("heartbeat", "discord_resume_prompt") in field_sources
     assert field_domains["discord_bot_token_env"] == "providers"
     assert field_domains["discord_read_reaction_emoji"] == "providers"
     assert field_domains["discord_poll_operator_dms"] == "policy"
-    assert admin_app._directory_config_tab_underlying_domains("communications") == ("providers", "policy")
+    assert field_domains["discord_resume_prompt"] == "heartbeat"
+    assert admin_app._directory_config_tab_underlying_domains("communications") == (
+        "providers",
+        "policy",
+        "heartbeat",
+    )
 
 
-def test_directory_config_tab_field_sources_include_teams_mixed_scope_in_communications_tab() -> None:
+def test_directory_config_tab_sections_match_expected_groupings() -> None:
+    communications_sections = {
+        section.title: section.field_sources
+        for section in admin_app._directory_config_tab_sections("communications")
+    }
+    provider_sections = {
+        section.title: section.field_sources
+        for section in admin_app._directory_config_tab_sections("providers")
+    }
+    issue_setup_sections = {
+        section.title: section.field_sources
+        for section in admin_app._directory_config_tab_sections("issue_setup")
+    }
+    ado_worker_sections = {
+        section.title: section.field_sources
+        for section in admin_app._directory_config_tab_sections("ado_worker")
+    }
+
+    assert set(communications_sections) == {"Discord", "Teams"}
+    assert ("providers", "discord_backend") in communications_sections["Discord"]
+    assert ("heartbeat", "discord_resume_prompt") in communications_sections["Discord"]
+    assert ("providers", "teams_read_reaction_emoji") in communications_sections["Teams"]
+
+    assert set(provider_sections) == {
+        "Agent prompt",
+        "Azure DevOps",
+        "GitHub",
+        "HTTP target relay",
+        "NuGet",
+        "OpenAI",
+        "State",
+    }
+    assert ("providers", "nuget_azure_pat_env") in provider_sections["NuGet"]
+    assert ("providers", "openai_api_key_env") in provider_sections["OpenAI"]
+
+    assert ("issue_setup", "git_root") in issue_setup_sections["Git transport"]
+    assert ("issue_setup", "issue_setup_azure_devops_pr_pat_env") in issue_setup_sections["Azure DevOps"]
+
+    assert ("ado_worker", "ado_bootstrap_nuget") in ado_worker_sections["Bootstrap"]
+    assert ("ado_worker", "ado_mssql_sa_password_env") in ado_worker_sections["MSSQL"]
+
+
+def test_directory_config_field_label_shortens_communications_prefixes() -> None:
+    assert (
+        admin_app._directory_config_field_label("communications", "providers", "discord_bot_token_env")
+        == "bot token env"
+    )
+    assert (
+        admin_app._directory_config_field_label("communications", "heartbeat", "discord_resume_prompt")
+        == "resume prompt"
+    )
+    assert (
+        admin_app._directory_config_field_label("communications", "providers", "teams_read_reaction_emoji")
+        == "read reaction emoji"
+    )
+    assert (
+        admin_app._directory_config_field_label("providers", "providers", "discord_bot_token_env")
+        == "discord bot token env"
+    )
+
+
+def test_directory_config_field_label_shortens_other_tab_prefixes() -> None:
+    assert (
+        admin_app._directory_config_field_label("providers", "providers", "azure_devops_pr_pat_env")
+        == "pr pat env"
+    )
+    assert (
+        admin_app._directory_config_field_label("providers", "providers", "nuget_relay_timeout_seconds")
+        == "relay timeout seconds"
+    )
+    assert (
+        admin_app._directory_config_field_label("vm_runtime", "vm", "openai_relay_port")
+        == "port"
+    )
+    assert (
+        admin_app._directory_config_field_label("issue_setup", "issue_setup", "git_ssh_alias")
+        == "ssh alias"
+    )
+    assert (
+        admin_app._directory_config_field_label(
+            "issue_setup", "issue_setup", "issue_setup_azure_devops_pr_pat_env"
+        )
+        == "pr pat env"
+    )
+    assert (
+        admin_app._directory_config_field_label("ado_worker", "ado_worker", "ado_bootstrap_frontend_deps")
+        == "frontend deps"
+    )
+    assert (
+        admin_app._directory_config_field_label("ado_worker", "ado_worker", "ado_mssql_init_root")
+        == "init root"
+    )
+
+
+def test_directory_config_tab_field_sources_include_teams_directory_scope_in_communications_tab() -> None:
     field_sources = admin_app._directory_config_tab_field_sources("communications")
     field_domains = {field_name: domain for domain, field_name in field_sources}
 
     assert ("providers", "teams_backend") in field_sources
     assert ("providers", "teams_graph_api_base_url") in field_sources
-    assert ("worker_global:teams-ingest", "poll_interval_seconds") in field_sources
-    assert ("worker_global:teams-ingest", "directories") in field_sources
     assert field_domains["teams_backend"] == "providers"
-    assert field_domains["poll_interval_seconds"] == "worker_global:teams-ingest"
-    assert admin_app._directory_config_tab_underlying_domains("communications") == ("providers", "policy")
-    assert admin_app._directory_config_tab_worker_global_sources("communications") == ("teams-ingest",)
+    assert admin_app._directory_config_tab_underlying_domains("communications") == (
+        "providers",
+        "policy",
+        "heartbeat",
+    )
 
 
 def test_directory_config_legacy_redirects_point_to_communications_tab() -> None:
@@ -325,56 +424,7 @@ def test_collect_config_form_payloads_by_source_splits_discord_tab_fields() -> N
     }
 
 
-def test_collect_config_form_payloads_by_source_filters_scope() -> None:
-    class DummyCheckbox:
-        def __init__(self, checked: bool) -> None:
-            self._checked = checked
-
-        def isChecked(self) -> bool:
-            return self._checked
-
-    window = SimpleNamespace(
-        _selected_directory_path="root/team-a",
-        _config_widgets={
-            "communications": {
-                "field_specs": {
-                    "teams_backend": {
-                        "include_checkbox": DummyCheckbox(True),
-                        "clear_checkbox": DummyCheckbox(False),
-                        "kind": "literal",
-                        "control": object(),
-                    },
-                    "poll_interval_seconds": {
-                        "include_checkbox": DummyCheckbox(True),
-                        "clear_checkbox": DummyCheckbox(False),
-                        "kind": "float",
-                        "control": object(),
-                    },
-                },
-                "field_domains": {
-                    "teams_backend": "providers",
-                    "poll_interval_seconds": "worker_global:teams-ingest",
-                },
-            }
-        },
-        _read_config_field_control_value=lambda spec: (
-            "graph_api" if spec["kind"] == "literal" else 45.0
-        ),
-        _collect_config_form_payload=lambda domain: admin_app.MainWindow._collect_config_form_payload(window, domain),
-    )
-
-    directory_payloads = admin_app.MainWindow._collect_config_form_payloads_by_source(
-        window, "communications", source_filter=lambda source_domain: not source_domain.startswith("worker_global:")
-    )
-    worker_payloads = admin_app.MainWindow._collect_config_form_payloads_by_source(
-        window, "communications", source_filter=lambda source_domain: source_domain.startswith("worker_global:")
-    )
-
-    assert directory_payloads == {"providers": {"teams_backend": "graph_api"}}
-    assert worker_payloads == {"worker_global:teams-ingest": {"poll_interval_seconds": 45.0}}
-
-
-def test_save_config_domain_routes_mixed_scope_writes() -> None:
+def test_save_config_domain_routes_directory_scope_writes() -> None:
     writes: list[tuple[str, str, dict[str, object]]] = []
 
     class DummyResult:
@@ -401,9 +451,6 @@ def test_save_config_domain_routes_mixed_scope_writes() -> None:
         write_directory_domain_config=lambda directory_path, source_domain, payload: (
             writes.append(("directory", source_domain, payload)) or DummyResult()
         ),
-        write_worker_global_config=lambda worker_id, payload: (
-            writes.append(("worker", worker_id, payload)) or DummyResult()
-        ),
     )
     window = SimpleNamespace(
         service=service,
@@ -421,23 +468,18 @@ def test_save_config_domain_routes_mixed_scope_writes() -> None:
         ),
         _collect_config_form_payload=lambda _domain: {
             "teams_backend": "graph_api",
-            "poll_interval_seconds": 60.0,
+            "discord_resume_prompt": "Resume Discord work",
         },
     )
     window._config_widgets["communications"]["field_domains"] = {
         "teams_backend": "providers",
-        "poll_interval_seconds": "worker_global:teams-ingest",
+        "discord_resume_prompt": "heartbeat",
     }
 
-    admin_app.MainWindow.save_config_domain(
-        window, "communications", source_filter=lambda source_domain: not source_domain.startswith("worker_global:")
-    )
-    admin_app.MainWindow.save_config_domain(
-        window, "communications", source_filter=lambda source_domain: source_domain.startswith("worker_global:")
-    )
+    admin_app.MainWindow.save_config_domain(window, "communications")
 
     assert ("directory", "providers", {"teams_backend": "graph_api"}) in writes
-    assert ("worker", "teams-ingest", {"poll_interval_seconds": 60.0}) in writes
+    assert ("directory", "heartbeat", {"discord_resume_prompt": "Resume Discord work"}) in writes
 
 
 def test_preferred_agent_log_repo_name_uses_single_detected_repo() -> None:
@@ -1156,6 +1198,79 @@ def test_handle_save_selected_session_model_requires_non_empty_input() -> None:
     assert window.session_model_status_label.text == "Model is required."
 
 
+def test_handle_save_selected_session_tools_success_callback_accepts_action_result() -> None:
+    class DummyCheckbox:
+        def __init__(self, checked: bool) -> None:
+            self.checked = checked
+
+        def isChecked(self) -> bool:
+            return self.checked
+
+    captured: dict[str, object] = {}
+
+    def run_action(*args, **kwargs) -> None:
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+
+    saved: list[tuple[str, list[str]]] = []
+    window = SimpleNamespace(
+        selected_session_summary=lambda: SimpleNamespace(session_id="session-1"),
+        session_tools_checkboxes={
+            admin_app.ToolName.APPROVAL_CHECK: DummyCheckbox(True),
+            admin_app.ToolName.APPROVAL_SUBMIT: DummyCheckbox(False),
+        },
+        service=SimpleNamespace(set_session_allowed_tools=object()),
+        run_action=run_action,
+        _handle_session_tools_save_success=lambda session_id, selected_tools: saved.append(
+            (session_id, selected_tools)
+        ),
+    )
+
+    admin_app.MainWindow.handle_save_selected_session_tools(window)
+    captured["kwargs"]["on_success"](SimpleNamespace(success=True, message="updated"))
+
+    assert captured["args"][0] == "Update allowed tools for session-1"
+    assert captured["args"][2:] == ("session-1", [admin_app.ToolName.APPROVAL_CHECK.value])
+    assert saved == [("session-1", [admin_app.ToolName.APPROVAL_CHECK.value])]
+
+
+def test_handle_save_selected_session_model_success_callback_accepts_action_result() -> None:
+    class DummyEdit:
+        def text(self) -> str:
+            return " gpt-5.4 "
+
+    class DummyLabel:
+        def __init__(self) -> None:
+            self.text = ""
+
+        def setText(self, value: str) -> None:
+            self.text = value
+
+    captured: dict[str, object] = {}
+
+    def run_action(*args, **kwargs) -> None:
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+
+    saved: list[tuple[str, str]] = []
+    window = SimpleNamespace(
+        selected_session_summary=lambda: SimpleNamespace(session_id="session-1"),
+        session_model_edit=DummyEdit(),
+        session_model_status_label=DummyLabel(),
+        service=SimpleNamespace(set_session_model=object()),
+        run_action=run_action,
+        _handle_session_model_save_success=lambda session_id, model: saved.append((session_id, model)),
+    )
+
+    admin_app.MainWindow.handle_save_selected_session_model(window)
+    captured["kwargs"]["on_success"](SimpleNamespace(success=True, message="updated"))
+
+    assert window.session_model_status_label.text == ""
+    assert captured["args"][0] == "Update model for session-1"
+    assert captured["args"][2:] == ("session-1", "gpt-5.4")
+    assert saved == [("session-1", "gpt-5.4")]
+
+
 def test_show_new_vm_dialog_calls_generic_create_vm(monkeypatch) -> None:
     captured: dict[str, object] = {}
     monkeypatch.setattr(admin_app, "QDialog", SimpleNamespace(DialogCode=SimpleNamespace(Accepted=1)))
@@ -1171,8 +1286,6 @@ def test_show_new_vm_dialog_calls_generic_create_vm(monkeypatch) -> None:
             return {
                 "vm_name": "lab-vm",
                 "session_id": "lab-session",
-                "repo_source": "/src/repo",
-                "python": True,
                 "dotnet": True,
                 "nuget": False,
                 "playwright": True,
@@ -1196,8 +1309,6 @@ def test_show_new_vm_dialog_calls_generic_create_vm(monkeypatch) -> None:
         "directory_path": "root/team",
         "vm_name": "lab-vm",
         "session_id": "lab-session",
-        "repo_source": "/src/repo",
-        "python": True,
         "dotnet": True,
         "nuget": False,
         "playwright": True,

@@ -41,34 +41,25 @@ def test_bare_repo_flow_includes_hook_and_azure_support() -> None:
 
 
 def test_issue_vm_setup_configures_agent_remote_for_push_alias() -> None:
-    setup_issue_vm = (ROOT / "scripts" / "setup_issue_vm.sh").read_text(encoding="utf-8")
+    clone_runtime = (ROOT / "src" / "agent_sandbox" / "admin_services" / "vm_agent_service.py").read_text(encoding="utf-8")
+    admin_service = (ROOT / "src" / "agent_sandbox" / "admin_service.py").read_text(encoding="utf-8")
     guest_agents_template = (ROOT / "templates" / "guest-AGENTS.md.tmpl").read_text(encoding="utf-8")
 
-    assert 'git -C "${TARGET_DIR}" remote add agent "${REMOTE_URL}"' in setup_issue_vm
-    assert 'AGENT_PR_NOTE_HELPER_B64="$(' in setup_issue_vm
-    assert "base64.b64encode(Path(sys.argv[1]).read_bytes()).decode()" in setup_issue_vm
-    assert 'AGENT_PR_NOTE_HELPER_B64=\'${AGENT_PR_NOTE_HELPER_B64}\'' in setup_issue_vm
-    assert 'python3 - "${TARGET_DIR}/.agent-sandbox/bin/agent-pr-note" "${AGENT_PR_NOTE_HELPER_B64}"' in setup_issue_vm
-    assert "target_path.write_bytes(base64.b64decode(sys.argv[2]))" in setup_issue_vm
-    assert 'config alias.agent-pr-note' in setup_issue_vm
-    assert 'config agent-sandbox.sessionId "${SESSION_ID}"' in setup_issue_vm
-    assert 'config agent-sandbox.issueNumber "${ISSUE_NUMBER}"' in setup_issue_vm
-    assert 'config agent-sandbox.branchSuffix "${AGENT_BRANCH_SUFFIX}"' in setup_issue_vm
-    assert '"${repo_root}/.agent-sandbox/bin/agent-pr-note" ensure-head' in setup_issue_vm
-    assert "templates/guest-AGENTS.md.tmpl" in setup_issue_vm
+    assert 'git -C "${{TARGET_DIR}}" remote add agent "${{REMOTE_URL}}"' in clone_runtime
+    assert 'AGENT_PR_NOTE_HELPER_B64="' in clone_runtime
+    assert "def _guest_agent_pr_note_helper_b64(project_dir: Path) -> str:" in admin_service
+    assert 'return base64.b64encode(helper_path.read_bytes()).decode("ascii")' in admin_service
+    assert 'python3 - "${{TARGET_DIR}}/.agent-sandbox/bin/agent-pr-note" "${{AGENT_PR_NOTE_HELPER_B64}}"' in clone_runtime
+    assert "target_path.write_bytes(base64.b64decode(sys.argv[2]))" in clone_runtime
+    assert 'config alias.agent-pr-note' in clone_runtime
+    assert 'config agent-sandbox.sessionId "${{SESSION_ID}}"' in clone_runtime
+    assert 'config agent-sandbox.issueNumber "{issue_number}"' in clone_runtime
+    assert 'config agent-sandbox.branchSuffix "${VM_NAME}"' in clone_runtime
     assert "Check the repository's root for an `AGENTS.md` file containing instructions local to the repository." in guest_agents_template
     assert "git push agent HEAD:refs/heads/agents/" in guest_agents_template
     assert "refs/notes/agent-pr" in guest_agents_template
-    assert "SESSION_ID is not set; refusing ambiguous agent push." in setup_issue_vm
-    assert 'SESSION_ID (${session_id}) does not match expected issue ${expected_issue_number}; refusing agent push.' in setup_issue_vm
-    assert "AGENT_BRANCH_SUFFIX/HOSTNAME is empty; refusing ambiguous agent push." in setup_issue_vm
-    assert 'session_id=${SESSION_ID:-$(git config --get agent-sandbox.sessionId || true)}' in setup_issue_vm
-    assert 'expected_issue_number=$(git config --get agent-sandbox.issueNumber || true)' in setup_issue_vm
-    assert 'case "${session_id}" in issue-${expected_issue_number}|issue-${expected_issue_number}-*)' in setup_issue_vm
-    assert 'suffix_source=${AGENT_BRANCH_SUFFIX:-$(git config --get agent-sandbox.branchSuffix || true)}' in setup_issue_vm
-    assert 'if [ -z "${session_id}" ]; then' in setup_issue_vm
-    assert 'if [ -z "${suffix}" ]; then' in setup_issue_vm
-    assert 'HEAD:refs/heads/agents/${session_id}/${branch}-${suffix}' in setup_issue_vm
+    assert "`push-agent` refuses to run when `SESSION_ID` is missing" in guest_agents_template
+    assert "suffix resolves empty" in guest_agents_template
     assert 'HEAD:refs/heads/agents/${SESSION_ID}/$(git rev-parse --abbrev-ref HEAD)-${AGENT_BRANCH_SUFFIX:-${HOSTNAME}} refs/notes/agent-pr' in guest_agents_template
 
 

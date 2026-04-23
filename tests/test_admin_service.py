@@ -13,6 +13,7 @@ from typing import Any
 import agent_sandbox.admin_service as admin_service
 import httpx
 import pytest
+from agent_sandbox.admin_facades import WorkerAdminDependencies, WorkerAdminFacade
 from agent_sandbox.admin_service import AdminService
 from agent_sandbox.models import ApprovalRequest, ApprovalStatus, SessionManifest, ToolName
 
@@ -978,55 +979,83 @@ def test_admin_service_reads_and_writes_ado_worker_global_config(tmp_path: Path)
     assert reread.config["include_comments"] is False
 
 
-def test_admin_service_reads_and_writes_host_heartbeat_worker_global_config(tmp_path: Path) -> None:
+def test_admin_service_reads_and_writes_discord_wake_worker_global_config(tmp_path: Path) -> None:
     service = AdminService(write_config(tmp_path))
 
-    read_result = service.read_worker_global_config("host-heartbeat")
+    read_result = service.read_worker_global_config("discord-wake")
     assert read_result.exists is False
-    assert read_result.path == str(tmp_path / "config" / "host-heartbeat" / "config.json")
-    assert read_result.config["host_heartbeat_poll_interval_seconds"] == 30.0
-    assert read_result.config["host_heartbeat_directory_paths"] == []
+    assert read_result.path == str(tmp_path / "config" / "discord-wake" / "config.json")
+    assert read_result.config["poll_interval_seconds"] == 30.0
+    assert read_result.config["directories"] == []
 
     write_result = service.write_worker_global_config(
-        "host-heartbeat",
+        "discord-wake",
         {
             "runtime_dir": str(tmp_path / "runtime"),
-            "host_heartbeat_directory_paths": ["root/team-a", "root/team-b"],
-            "host_heartbeat_poll_interval_seconds": 12.5,
-            "host_heartbeat_jitter_seconds": 1.5,
-            "host_heartbeat_cooldown_seconds": 90.0,
-            "host_heartbeat_http_timeout_seconds": 15.0,
-            "host_heartbeat_lock_path": None,
-            "host_heartbeat_session_cooldown_path": None,
-            "host_busy_check_script_path": "scripts/check_session_vm_busy.sh",
-            "host_resume_script_path": "scripts/resume_issue_agent.sh",
-            "host_heartbeat_wake_state_path": None,
-            "host_heartbeat_vm_user": "worker",
-            "host_heartbeat_resume_timeout_seconds": 600.0,
-            "host_heartbeat_stream_conflict_policy": "reject",
-            "host_heartbeat_scheduled_wake_prefix_text": "Scheduled wake prefix.",
-            "host_heartbeat_schedule_max_active_per_session": 3,
-            "host_heartbeat_schedule_max_active_total": 20,
-            "host_heartbeat_schedule_min_interval_seconds": 120.0,
+            "directories": ["root/team-a", "root/team-b"],
+            "poll_interval_seconds": 12.5,
+            "jitter_seconds": 1.5,
+            "cooldown_seconds": 90.0,
+            "lock_path": None,
+            "session_cooldown_path": None,
+            "busy_check_script_path": "scripts/check_session_vm_busy.sh",
+            "resume_script_path": "scripts/resume_issue_agent.sh",
+            "wake_state_path": None,
+            "vm_user": "worker",
+            "resume_timeout_seconds": 600.0,
         },
     )
-    assert write_result.config["host_heartbeat_stream_conflict_policy"] == "reject"
-    assert write_result.config["host_heartbeat_scheduled_wake_prefix_text"] == "Scheduled wake prefix."
+    assert write_result.config["directories"] == ["root/team-a", "root/team-b"]
+    assert write_result.config["vm_user"] == "worker"
 
-    config_path = tmp_path / "config" / "host-heartbeat" / "config.json"
+    config_path = tmp_path / "config" / "discord-wake" / "config.json"
     payload = json.loads(config_path.read_text(encoding="utf-8"))
-    assert payload["host_heartbeat_directory_paths"] == ["root/team-a", "root/team-b"]
-    assert payload["host_heartbeat_poll_interval_seconds"] == 12.5
-    assert payload["host_heartbeat_stream_conflict_policy"] == "reject"
-    assert payload["host_heartbeat_vm_user"] == "worker"
-    assert payload["host_heartbeat_schedule_max_active_per_session"] == 3
-    assert payload["host_heartbeat_schedule_max_active_total"] == 20
-    assert payload["host_heartbeat_schedule_min_interval_seconds"] == 120.0
+    assert payload["directories"] == ["root/team-a", "root/team-b"]
+    assert payload["poll_interval_seconds"] == 12.5
+    assert payload["vm_user"] == "worker"
 
-    reread = service.read_worker_global_config("host-heartbeat")
-    assert reread.config["host_heartbeat_directory_paths"] == ["root/team-a", "root/team-b"]
-    assert reread.config["host_heartbeat_stream_conflict_policy"] == "reject"
-    assert reread.config["host_heartbeat_scheduled_wake_prefix_text"] == "Scheduled wake prefix."
+    reread = service.read_worker_global_config("discord-wake")
+    assert reread.config["directories"] == ["root/team-a", "root/team-b"]
+    assert reread.config["vm_user"] == "worker"
+
+
+def test_admin_service_reads_and_writes_scheduled_wake_worker_global_config(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+
+    read_result = service.read_worker_global_config("scheduled-wake")
+    assert read_result.exists is False
+    assert read_result.path == str(tmp_path / "config" / "scheduled-wake" / "config.json")
+    assert read_result.config["poll_interval_seconds"] == 30.0
+    assert read_result.config["directories"] == []
+
+    write_result = service.write_worker_global_config(
+        "scheduled-wake",
+        {
+            "runtime_dir": str(tmp_path / "runtime"),
+            "directories": ["root/team-a"],
+            "poll_interval_seconds": 20.0,
+            "jitter_seconds": 2.0,
+            "cooldown_seconds": 90.0,
+            "lock_path": None,
+            "session_cooldown_path": None,
+            "busy_check_script_path": "scripts/check_session_vm_busy.sh",
+            "resume_script_path": "scripts/resume_issue_agent.sh",
+            "wake_state_path": None,
+            "vm_user": "worker",
+            "resume_timeout_seconds": 600.0,
+            "scheduled_wake_prefix_text": "Scheduled wake prefix.",
+        },
+    )
+    assert write_result.config["directories"] == ["root/team-a"]
+    assert write_result.config["scheduled_wake_prefix_text"] == "Scheduled wake prefix."
+
+    config_path = tmp_path / "config" / "scheduled-wake" / "config.json"
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    assert payload["directories"] == ["root/team-a"]
+    assert payload["scheduled_wake_prefix_text"] == "Scheduled wake prefix."
+
+    reread = service.read_worker_global_config("scheduled-wake")
+    assert reread.config["directories"] == ["root/team-a"]
 
 
 def test_admin_service_reads_and_writes_discord_ingest_worker_global_config(tmp_path: Path) -> None:
@@ -1525,12 +1554,11 @@ def test_workflow_editor_validation_derives_filter_outputs_server_side(tmp_path:
 
     gate = next(item for item in result.config["gates"] if item["id"] == "gate-filter-1")
     assert gate["outputs"] == {
-        "guest_repo_name": {"type": "string"},
+        "provider": {"type": "string"},
         "session_id": {"type": "string"},
         "labels": {"type": "object"},
-        "remote_url": {"type": "string"},
         "success": {"type": "boolean"},
-        "target_dir": {"type": "string"},
+        "message": {"type": "string"},
         "vm_name": {"type": "string"},
     }
 
@@ -1626,7 +1654,6 @@ def test_create_issue_vm_uses_directory_vm_defaults_overlay_for_guest_env(tmp_pa
         issue="123",
         session_id="issue-123-session",
         directory_path=team_path,
-        start_agent=False,
         model="gpt-5.2-codex",
     )
 
@@ -1664,7 +1691,6 @@ def test_create_issue_vm_uses_issue_directory_when_called_with_yaml_path(tmp_pat
     result = service.create_issue_vm(
         issue=issue.yaml_path,
         session_id="issue-1-session",
-        start_agent=False,
         model="gpt-5.2-codex",
     )
 
@@ -1763,7 +1789,6 @@ def test_create_issue_vm_uses_yaml_path_owner_when_issue_number_is_ambiguous(tmp
     result = service.create_issue_vm(
         issue=project_a_issue.yaml_path,
         session_id="issue-42-session",
-        start_agent=False,
         model="gpt-5.2-codex",
     )
 
@@ -1806,7 +1831,6 @@ def test_create_issue_vm_uses_issue_setup_domain_for_setup_env(tmp_path: Path, m
         issue="124",
         session_id="issue-124-session",
         directory_path=team_path,
-        start_agent=False,
         model="gpt-5.2-codex",
     )
 
@@ -1851,7 +1875,6 @@ def test_create_issue_vm_uses_issue_setup_azure_pat_override(tmp_path: Path, mon
         issue="125",
         session_id="issue-125-session",
         directory_path=team_path,
-        start_agent=False,
         model="gpt-5.2-codex",
     )
 
@@ -1880,7 +1903,6 @@ def test_create_issue_vm_uses_issue_setup_fallback_env_when_domain_missing(tmp_p
         issue="126",
         session_id="issue-126-session",
         directory_path="root",
-        start_agent=False,
         model="gpt-5.2-codex",
     )
 
@@ -1960,7 +1982,6 @@ def test_create_issue_vm_never_uses_pat_secret_as_env_var_name(tmp_path: Path, m
         issue="127",
         session_id="issue-127-session",
         directory_path="root",
-        start_agent=False,
         model="gpt-5.2-codex",
     )
 
@@ -1980,7 +2001,6 @@ def test_create_issue_vm_deletes_session_when_setup_fails_before_vm_exists(tmp_p
     result = service.create_issue_vm(
         issue=issue.issue_number,
         session_id="issue-1-session",
-        start_agent=False,
         model="gpt-5.2-codex",
     )
 
@@ -2004,7 +2024,6 @@ def test_create_issue_vm_deletes_session_when_dominfo_probe_fails(tmp_path: Path
     result = service.create_issue_vm(
         issue=issue.issue_number,
         session_id="issue-1-session",
-        start_agent=False,
         model="gpt-5.2-codex",
     )
 
@@ -2210,34 +2229,34 @@ def test_list_background_workers_reads_systemd_state(tmp_path: Path, monkeypatch
             "ExecMainCode": "1",
             "ExecMainStatus": "0",
         },
+        "agent-sandbox-discord-wake.service": {
+            "ActiveState": "active",
+            "SubState": "running",
+            "Result": "success",
+            "UnitFileState": "enabled",
+            "Description": "Discord wake worker",
+            "MainPID": "555",
+            "LoadState": "loaded",
+            "ExecMainCode": "1",
+            "ExecMainStatus": "0",
+        },
+        "agent-sandbox-scheduled-wake.service": {
+            "ActiveState": "failed",
+            "SubState": "failed",
+            "Result": "failed",
+            "UnitFileState": "enabled",
+            "Description": "Scheduled wake worker",
+            "MainPID": "0",
+            "LoadState": "loaded",
+            "ExecMainCode": "1",
+            "ExecMainStatus": "2",
+        },
         "agent-sandbox-teams-ingest.service": {
             "ActiveState": "inactive",
             "SubState": "dead",
             "Result": "success",
             "UnitFileState": "disabled",
             "Description": "Teams ingest worker",
-            "MainPID": "0",
-            "LoadState": "loaded",
-            "ExecMainCode": "1",
-            "ExecMainStatus": "0",
-        },
-        "agent-sandbox-host-heartbeat.service": {
-            "ActiveState": "failed",
-            "SubState": "failed",
-            "Result": "failed",
-            "UnitFileState": "enabled",
-            "Description": "Host heartbeat worker",
-            "MainPID": "0",
-            "LoadState": "loaded",
-            "ExecMainCode": "1",
-            "ExecMainStatus": "2",
-        },
-        "agent-sandbox-issue-orchestrator.service": {
-            "ActiveState": "inactive",
-            "SubState": "dead",
-            "Result": "success",
-            "UnitFileState": "disabled",
-            "Description": "Issue orchestrator worker",
             "MainPID": "0",
             "LoadState": "loaded",
             "ExecMainCode": "1",
@@ -2273,9 +2292,9 @@ def test_list_background_workers_reads_systemd_state(tmp_path: Path, monkeypatch
     assert [summary.worker_id for summary in summaries] == [
         "ado",
         "discord-ingest",
+        "discord-wake",
+        "scheduled-wake",
         "teams-ingest",
-        "host-heartbeat",
-        "issue-orchestrator",
         "effect-orchestrator",
         "trigger-orchestrator",
     ]
@@ -2286,9 +2305,9 @@ def test_list_background_workers_reads_systemd_state(tmp_path: Path, monkeypatch
     assert summaries[1].running is True
     assert summaries[1].failed is False
     assert summaries[1].main_pid == 456
-    assert summaries[2].running is False
+    assert summaries[2].running is True
     assert summaries[2].failed is False
-    assert summaries[2].unit_file_state == "disabled"
+    assert summaries[2].main_pid == 555
     assert summaries[3].running is False
     assert summaries[3].failed is True
     assert summaries[3].detail == "load=loaded, exec=1:2"
@@ -2371,13 +2390,13 @@ def test_stop_background_worker_controls_systemd_unit(tmp_path: Path, monkeypatc
 
     monkeypatch.setattr("agent_sandbox.admin_service._run_systemd_control", _fake_control)
 
-    result = service.stop_background_worker("host-heartbeat")
+    result = service.stop_background_worker("discord-wake")
 
-    assert calls == [("stop", "agent-sandbox-host-heartbeat.service")]
+    assert calls == [("stop", "agent-sandbox-discord-wake.service")]
     assert result.success is True
-    assert result.worker_id == "host-heartbeat"
+    assert result.worker_id == "discord-wake"
     assert result.action == "stop"
-    assert "Stopped Host Heartbeat Worker" == result.message
+    assert "Stopped Discord Wake Worker" == result.message
 
 
 def test_background_worker_actions_reject_unknown_worker(tmp_path: Path) -> None:
@@ -2451,6 +2470,34 @@ def test_set_issue_plan_clears_existing_summary_when_omitted(tmp_path: Path) -> 
     assert result["summary"] is None
     assert "plan_summary" not in read_result["metadata"]
     assert "plan_summary:" not in yaml_text
+
+
+def test_worker_admin_dependencies_backwards_compatible_without_clear_workflow_run() -> None:
+    facade = WorkerAdminFacade(
+        WorkerAdminDependencies(
+            runtime=object(),
+            config=object(),
+            agent_control_store=object(),
+            normalize_directory_path=lambda directory_path: directory_path or "root",
+            direct_owned_entity_ids=lambda directory_path, **kwargs: set(),
+            read_worker_global_config=lambda worker_id: {"worker_id": worker_id},
+            write_worker_global_config=lambda worker_id, payload: {"worker_id": worker_id, "payload": payload},
+            read_workflow_editor_document=lambda: {"kind": "document"},
+            read_workflow_editor_catalog=lambda: {"kind": "catalog"},
+            validate_workflow_editor_document=lambda **kwargs: {"kind": "validation", **kwargs},
+            save_workflow_editor_document=lambda **kwargs: {"kind": "save", **kwargs},
+            read_workflow_run_snapshot=lambda: {"kind": "snapshot"},
+            workflow_event_journal=lambda: object(),
+            upsert_trigger_config=lambda trigger_id, payload: {"trigger_id": trigger_id, "payload": payload},
+            delete_trigger_config=lambda trigger_id: {"trigger_id": trigger_id},
+            upsert_effect_config=lambda effect_id, payload: {"effect_id": effect_id, "payload": payload},
+            delete_effect_config=lambda effect_id: {"effect_id": effect_id},
+        )
+    )
+
+    assert facade.read_workflow_editor_document() == {"kind": "document"}
+    with pytest.raises(NotImplementedError, match="clear_workflow_run is not configured"):
+        facade.clear_workflow_run("evt-1")
 
 
 def test_get_issue_returns_full_local_record_for_closed_issue(tmp_path: Path) -> None:
@@ -2568,7 +2615,7 @@ def test_vm_and_delete_actions_reject_ambiguous_bare_number_across_directories(t
     service.create_local_issue(yaml_path=str(root_yaml), directory_path="root")
     service.create_local_issue(yaml_path=str(team_yaml), directory_path=team_path)
 
-    create_result = service.create_issue_vm_from_local_issue("7", start_agent=False)
+    create_result = service.create_issue_vm_from_local_issue("7")
     delete_result = service.delete_local_issue("7")
 
     assert create_result.success is False
@@ -2598,7 +2645,7 @@ def test_create_issue_vm_rejects_ambiguous_bare_local_issue_number_in_primary_pa
 
     monkeypatch.setattr("agent_sandbox.admin_service.subprocess.run", _fail_run)
 
-    result = service.create_issue_vm(issue="7", start_agent=False)
+    result = service.create_issue_vm(issue="7")
 
     assert result.success is False
     assert result.message.startswith("Ambiguous local issue identifier: 7.")
@@ -2838,11 +2885,11 @@ def test_create_issue_vm_accepts_unified_proxy_identifier(tmp_path: Path, monkey
 
     monkeypatch.setattr("agent_sandbox.admin_service.subprocess.run", _fake_run)
 
-    result = service.create_issue_vm(issue="proxy:ado/77", start_agent=False, model="gpt-5.2-codex")
+    result = service.create_issue_vm(issue="proxy:ado/77", model="gpt-5.2-codex")
 
     assert result.success is True
-    assert captured["cmd"][0].endswith("setup_issue_vm.sh")
-    assert captured["cmd"][-3] == issue.yaml_path
+    assert any(str(part).endswith("setup_vm.sh") for part in captured["cmd"])
+    assert "vm-77" in captured["cmd"]
     assert captured["cmd"][-1] == "agent"
 
 
@@ -3030,7 +3077,7 @@ def test_kill_agent_terminates_selected_guest_pid(tmp_path: Path, monkeypatch) -
     assert 'for pid_file in "${LOG_DIR}"/agent-*.pid "${LOG_DIR}/codex-heartbeat.pid"; do' in remote_script
 
 
-def test_create_vm_with_repo_source_clones_repo_and_bootstraps_python(tmp_path: Path, monkeypatch: Any) -> None:
+def test_clone_repo_into_vm_clones_repo(tmp_path: Path, monkeypatch: Any) -> None:
     service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
     captured_runs: list[tuple[list[str], dict[str, str] | None]] = []
 
@@ -3058,11 +3105,14 @@ def test_create_vm_with_repo_source_clones_repo_and_bootstraps_python(tmp_path: 
 
     monkeypatch.setattr("agent_sandbox.admin_service.subprocess.run", _fake_run)
 
-    result = service.create_vm(
+    service.create_vm(
+        vm_name="lab-vm",
+        session_id="lab-session",
+    )
+    result = service.clone_repo_into_vm(
         vm_name="lab-vm",
         session_id="lab-session",
         repo_source="/src/repo",
-        python=True,
     )
 
     assert result.success is True
@@ -3077,18 +3127,9 @@ def test_create_vm_with_repo_source_clones_repo_and_bootstraps_python(tmp_path: 
     )
     assert any(cmd[0].endswith("bootstrap_git_vm.sh") and cmd[1:] == ["lab-vm", "agent"] for cmd in captured_cmds)
     assert any(cmd[0] == "ssh" and cmd[-3:] == ["agent@192.168.250.10", "bash", "-s"] for cmd in captured_cmds)
-    python_runs = [
-        (cmd, env)
-        for cmd, env in captured_runs
-        if cmd[0].endswith("bootstrap_python_vm.sh")
-    ]
-    assert len(python_runs) == 1
-    assert python_runs[0][0][1:] == ["--vm-user", "agent", "lab-vm", "/src/repo", "/home/agent/sample-repo"]
-    assert python_runs[0][1] is not None
-    assert python_runs[0][1]["HOST_PYTHON_BIN"] == str(REPO_ROOT / ".venv" / "bin" / "python")
 
 
-def test_create_vm_with_repo_source_installs_agent_push_and_pr_note_helpers(tmp_path: Path, monkeypatch: Any) -> None:
+def test_clone_repo_into_vm_installs_agent_push_and_pr_note_helpers(tmp_path: Path, monkeypatch: Any) -> None:
     service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
     captured_ssh_input: list[str] = []
 
@@ -3111,7 +3152,11 @@ def test_create_vm_with_repo_source_installs_agent_push_and_pr_note_helpers(tmp_
 
     monkeypatch.setattr("agent_sandbox.admin_service.subprocess.run", _fake_run)
 
-    result = service.create_vm(
+    service.create_vm(
+        vm_name="lab-vm",
+        session_id="issue-14724-lab-session",
+    )
+    result = service.clone_repo_into_vm(
         vm_name="lab-vm",
         session_id="issue-14724-lab-session",
         repo_source="/src/repo",
@@ -3124,6 +3169,122 @@ def test_create_vm_with_repo_source_installs_agent_push_and_pr_note_helpers(tmp_
     assert "agent-pr-note\" ensure-head" in remote_script
     assert "refs/notes/agent-pr" in remote_script
     assert "config agent-sandbox.branchSuffix" in remote_script
+
+
+def test_clone_repo_into_vm_honors_clone_branch_and_records_base_branch(tmp_path: Path, monkeypatch: Any) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    captured_ssh_input: list[str] = []
+
+    monkeypatch.setattr("agent_sandbox.admin_service._dominfo_field", lambda vm_name, field_name: None)
+    monkeypatch.setattr("agent_sandbox.admin_service._resolve_vm_ip", lambda vm_name: "192.168.250.10")
+    monkeypatch.setattr("agent_sandbox.admin_service._resolve_private_key_path", lambda: Path("/tmp/test-key"))
+
+    def _fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        if cmd[0].endswith("resolve_repo_source.sh") and "--path-only" in cmd:
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="/src/repo\n", stderr="")
+        if cmd[0].endswith("resolve_repo_source.sh") and "--name-only" in cmd:
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="sample-repo\n", stderr="")
+        if cmd[:5] == ["git", "-C", "/src/repo", "symbolic-ref", "--quiet"]:
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="origin/main\n", stderr="")
+        if cmd[:4] == ["git", "-C", "/src/repo", "branch"]:
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="main\n", stderr="")
+        if cmd[0] == "ssh":
+            captured_ssh_input.append(str(kwargs.get("input") or ""))
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="ok", stderr="")
+
+    monkeypatch.setattr("agent_sandbox.admin_service.subprocess.run", _fake_run)
+
+    service.create_vm(
+        vm_name="lab-vm",
+        session_id="issue-14724-lab-session",
+    )
+    result = service.clone_repo_into_vm(
+        vm_name="lab-vm",
+        session_id="issue-14724-lab-session",
+        repo_source="/src/repo",
+        clone_branch="release/1.2",
+    )
+
+    assert result.success is True
+    remote_script = captured_ssh_input[-1]
+    assert 'CLONE_BRANCH="release/1.2"' in remote_script
+    assert 'git clone --branch "${CLONE_BRANCH}" "${REMOTE_URL}" "${TARGET_DIR}"' in remote_script
+    assert 'config agent-sandbox.baseBranch "${CLONE_BRANCH}"' in remote_script
+
+
+def test_clone_repo_into_vm_preserves_canonical_remote_for_remote_sources(tmp_path: Path, monkeypatch: Any) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    captured_ssh_input: list[str] = []
+    remote_source = "git@ssh.dev.azure.com:v3/example/project/sample-repo"
+
+    monkeypatch.setattr("agent_sandbox.admin_service._dominfo_field", lambda vm_name, field_name: None)
+    monkeypatch.setattr("agent_sandbox.admin_service._resolve_vm_ip", lambda vm_name: "192.168.250.10")
+    monkeypatch.setattr("agent_sandbox.admin_service._resolve_private_key_path", lambda: Path("/tmp/test-key"))
+
+    def _fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        if cmd[0].endswith("resolve_repo_source.sh") and "--path-only" in cmd:
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="/src/repo-cache/sample-repo\n", stderr="")
+        if cmd[0].endswith("resolve_repo_source.sh") and "--name-only" in cmd:
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="sample-repo\n", stderr="")
+        if cmd[:5] == ["git", "-C", "/src/repo-cache/sample-repo", "symbolic-ref", "--quiet"]:
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="origin/main\n", stderr="")
+        if cmd[:4] == ["git", "-C", "/src/repo-cache/sample-repo", "branch"]:
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="main\n", stderr="")
+        if cmd[0] == "ssh":
+            captured_ssh_input.append(str(kwargs.get("input") or ""))
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="ok", stderr="")
+
+    monkeypatch.setattr("agent_sandbox.admin_service.subprocess.run", _fake_run)
+
+    service.create_vm(
+        vm_name="lab-vm",
+        session_id="issue-14724-lab-session",
+    )
+    result = service.clone_repo_into_vm(
+        vm_name="lab-vm",
+        session_id="issue-14724-lab-session",
+        repo_source=remote_source,
+    )
+
+    assert result.success is True
+    remote_script = captured_ssh_input[-1]
+    assert f'CANONICAL_REMOTE_URL="{remote_source}"' in remote_script
+    assert 'git -C "${TARGET_DIR}" remote set-url origin "${CANONICAL_REMOTE_URL}"' in remote_script
+    assert 'git -C "${TARGET_DIR}" config "url.${REMOTE_URL}.insteadOf" "${CANONICAL_REMOTE_URL}"' in remote_script
+    assert 'git -C "${TARGET_DIR}" remote add agent "${REMOTE_URL}"' in remote_script
+
+
+def test_bootstrap_python_in_vm_runs_python_bootstrap(tmp_path: Path, monkeypatch: Any) -> None:
+    service = AdminService(write_config(tmp_path))
+    captured_runs: list[tuple[list[str], dict[str, str] | None]] = []
+
+    monkeypatch.setattr("agent_sandbox.admin_service._dominfo_field", lambda vm_name, field_name: None)
+    monkeypatch.setattr("agent_sandbox.admin_service._resolve_vm_ip", lambda vm_name: "192.168.250.10")
+    monkeypatch.setattr(
+        "agent_sandbox.admin_service._resolve_host_python_with_pip",
+        lambda: str(REPO_ROOT / ".venv" / "bin" / "python"),
+    )
+
+    def _fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        captured_runs.append((cmd, kwargs.get("env")))
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="ok", stderr="")
+
+    monkeypatch.setattr("agent_sandbox.admin_service.subprocess.run", _fake_run)
+
+    service.create_vm(vm_name="lab-vm", session_id="lab-session")
+    result = service.bootstrap_python_in_vm(
+        vm_name="lab-vm",
+        session_id="lab-session",
+        host_checkout="/src/repo",
+        target_dir="/home/agent/sample-repo",
+    )
+
+    assert result.success is True
+    python_runs = [(cmd, env) for cmd, env in captured_runs if cmd[0].endswith("bootstrap_python_vm.sh")]
+    assert len(python_runs) == 1
+    assert python_runs[0][0][1:] == ["--vm-user", "agent", "lab-vm", "/src/repo", "/home/agent/sample-repo"]
+    assert python_runs[0][1] is not None
+    assert python_runs[0][1]["HOST_PYTHON_BIN"] == str(REPO_ROOT / ".venv" / "bin" / "python")
 
 
 def test_create_vm_merges_additional_allowed_tools_into_session_manifest(tmp_path: Path, monkeypatch: Any) -> None:
@@ -3173,34 +3334,24 @@ def test_create_vm_sets_allowed_script_names_on_session_manifest(tmp_path: Path,
     assert manifest.allowed_script_names == ["deploy-review", "collect-logs"]
 
 
-def test_create_vm_with_frontend_deps_bootstraps_frontend_runtime(tmp_path: Path, monkeypatch: Any) -> None:
-    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+def test_bootstrap_frontend_in_vm_bootstraps_frontend_runtime(tmp_path: Path, monkeypatch: Any) -> None:
+    service = AdminService(write_config(tmp_path))
     captured_runs: list[tuple[list[str], dict[str, str] | None]] = []
 
     monkeypatch.setattr("agent_sandbox.admin_service._dominfo_field", lambda vm_name, field_name: None)
-    monkeypatch.setattr("agent_sandbox.admin_service._resolve_vm_ip", lambda vm_name: "192.168.250.10")
-    monkeypatch.setattr("agent_sandbox.admin_service._resolve_private_key_path", lambda: Path("/tmp/test-key"))
 
     def _fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         captured_runs.append((cmd, kwargs.get("env")))
-        if cmd[0].endswith("resolve_repo_source.sh") and "--path-only" in cmd:
-            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="/src/repo\n", stderr="")
-        if cmd[0].endswith("resolve_repo_source.sh") and "--name-only" in cmd:
-            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="sample-repo\n", stderr="")
-        if cmd[:5] == ["git", "-C", "/src/repo", "symbolic-ref", "--quiet"]:
-            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="origin/main\n", stderr="")
-        if cmd[:4] == ["git", "-C", "/src/repo", "branch"]:
-            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="main\n", stderr="")
         return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="ok", stderr="")
 
     monkeypatch.setattr("agent_sandbox.admin_service.subprocess.run", _fake_run)
 
-    result = service.create_vm(
+    service.create_vm(vm_name="lab-vm", session_id="lab-session")
+    result = service.bootstrap_frontend_in_vm(
         vm_name="lab-vm",
         session_id="lab-session",
-        repo_source="/src/repo",
-        frontend_deps=True,
-        frontend_install_roots=["/src/repo/Src/Clients", "/src/repo/Src/Admin"],
+        host_checkout="/src/repo",
+        install_roots=["/src/repo/Src/Clients", "/src/repo/Src/Admin"],
     )
 
     assert result.success is True
@@ -3254,18 +3405,17 @@ def test_create_vm_passes_codex_skills_to_setup_script(tmp_path: Path, monkeypat
     ]
 
 
-def test_create_vm_rejects_frontend_deps_without_install_roots(tmp_path: Path) -> None:
+def test_bootstrap_frontend_in_vm_requires_install_roots(tmp_path: Path) -> None:
     service = AdminService(write_config(tmp_path))
 
-    result = service.create_vm(
+    result = service.bootstrap_frontend_in_vm(
         vm_name="lab-vm",
-        session_id="lab-session",
-        repo_source="/src/repo",
-        frontend_deps=True,
+        host_checkout="/src/repo",
+        install_roots=[],
     )
 
     assert result.success is False
-    assert result.message == "frontend_install_roots is required when frontend dependency bootstrap is enabled."
+    assert result.message == "install_roots is required."
 
 
 def test_create_vm_preserves_session_when_bootstrap_fails_after_launch(tmp_path: Path, monkeypatch: Any) -> None:
@@ -3540,13 +3690,13 @@ def test_resolve_host_python_with_pip_bootstraps_pip_with_ensurepip(monkeypatch:
     assert attempts == ["/work/.venv/bin/python3"]
 
 
-def test_create_vm_requires_repo_source_for_python(tmp_path: Path) -> None:
+def test_bootstrap_python_in_vm_requires_host_checkout(tmp_path: Path) -> None:
     service = AdminService(write_config(tmp_path))
 
-    result = service.create_vm(vm_name="lab-vm", python=True)
+    result = service.bootstrap_python_in_vm(vm_name="lab-vm", host_checkout="", target_dir="/home/agent/repo")
 
     assert result.success is False
-    assert result.message == "repo_source is required when Python bootstrap is enabled."
+    assert result.message == "host_checkout is required."
 
 
 def test_wait_for_vm_ip_uses_pkexec_when_requested(monkeypatch) -> None:

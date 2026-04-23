@@ -35,15 +35,16 @@ def test_install_systemd_units_preflight_checks_for_mssql_worker_password_when_e
 
     assert 'config/ado-worker/config.json' in text
     assert 'runtime/directory-config/root/ado-worker.json' in text
-    assert 'config/issue-orchestrator/config.json' in text
     assert 'config/teams-ingest/config.json' in text
     assert 'config/trigger-orchestrator/config.json' in text
     assert 'secrets.env' in text
     assert 'config/ado-worker.env' not in text
-    assert 'agent-sandbox-issue-orchestrator.service' in text
+    assert 'config/issue-orchestrator/config.json' not in text
+    assert 'agent-sandbox-issue-orchestrator.service' not in text
     assert 'agent-sandbox-teams-ingest.service' in text
     assert 'agent-sandbox-trigger-orchestrator.service' in text
     assert 'agent-sandbox-http-target-relay.service' in text
+    assert 'agent-sandbox-admin-web.service' in text
 
 
 def test_install_systemd_units_no_longer_requires_removed_per_service_env_files() -> None:
@@ -68,7 +69,10 @@ def test_service_templates_use_optional_shared_secrets_env() -> None:
     http_target = (repo / "systemd" / "agent-sandbox-http-target-relay.service.template").read_text(
         encoding="utf-8"
     )
-    heartbeat = (repo / "systemd" / "agent-sandbox-host-heartbeat.service.template").read_text(
+    discord_wake = (repo / "systemd" / "agent-sandbox-discord-wake.service.template").read_text(
+        encoding="utf-8"
+    )
+    scheduled_wake = (repo / "systemd" / "agent-sandbox-scheduled-wake.service.template").read_text(
         encoding="utf-8"
     )
     teams_ingest = (repo / "systemd" / "agent-sandbox-teams-ingest.service.template").read_text(
@@ -77,15 +81,16 @@ def test_service_templates_use_optional_shared_secrets_env() -> None:
     discord_ingest = (repo / "systemd" / "agent-sandbox-discord-ingest.service.template").read_text(
         encoding="utf-8"
     )
-    orchestrator = (repo / "systemd" / "agent-sandbox-issue-orchestrator.service.template").read_text(
-        encoding="utf-8"
-    )
     trigger_orchestrator = (
         repo / "systemd" / "agent-sandbox-trigger-orchestrator.service.template"
     ).read_text(encoding="utf-8")
+    admin_web = (repo / "systemd" / "agent-sandbox-admin-web.service.template").read_text(encoding="utf-8")
 
     assert "EnvironmentFile=-__PROJECT_DIR__/config/gateway.env" in gateway
     assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in gateway
+    assert "EnvironmentFile=-__PROJECT_DIR__/config/admin-web.env" in admin_web
+    assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in admin_web
+    assert "ExecStart=__PROJECT_DIR__/.venv/bin/agent-sandbox-admin-web --runtime-dir __PROJECT_DIR__/runtime --host ${ADMIN_WEB_HOST} --port ${ADMIN_WEB_PORT}" in admin_web
     assert "EnvironmentFile=-__PROJECT_DIR__/config/openai-relay.env" in openai
     assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in openai
     assert "EnvironmentFile=-__PROJECT_DIR__/config/nuget-relay.env" in nuget
@@ -93,8 +98,14 @@ def test_service_templates_use_optional_shared_secrets_env() -> None:
     assert "EnvironmentFile=-__PROJECT_DIR__/config/http-target-relay.env" in http_target
     assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in http_target
     assert "ExecStart=__PROJECT_DIR__/.venv/bin/agent-sandbox-http-target-relay" in http_target
-    assert "EnvironmentFile=-__PROJECT_DIR__/config/host-heartbeat.env" in heartbeat
-    assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in heartbeat
+    assert "Environment=DISCORD_WAKE_LOG_LEVEL=INFO" in discord_wake
+    assert "--log-level ${DISCORD_WAKE_LOG_LEVEL}" in discord_wake
+    assert "ExecStart=__PROJECT_DIR__/.venv/bin/agent-sandbox-discord-wake" in discord_wake
+    assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in discord_wake
+    assert "Environment=SCHEDULED_WAKE_LOG_LEVEL=INFO" in scheduled_wake
+    assert "--log-level ${SCHEDULED_WAKE_LOG_LEVEL}" in scheduled_wake
+    assert "ExecStart=__PROJECT_DIR__/.venv/bin/agent-sandbox-scheduled-wake" in scheduled_wake
+    assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in scheduled_wake
     assert "Environment=TEAMS_INGEST_LOG_LEVEL=INFO" in teams_ingest
     assert "ExecStart=__PROJECT_DIR__/scripts/run_teams_ingest.sh" in teams_ingest
     assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in teams_ingest
@@ -108,10 +119,6 @@ def test_service_templates_use_optional_shared_secrets_env() -> None:
     assert "--log-level ${ADO_WORKER_LOG_LEVEL}" in (
         repo / "systemd" / "agent-sandbox-ado-worker.service.template"
     ).read_text(encoding="utf-8")
-    assert "Environment=ISSUE_ORCHESTRATOR_LOG_LEVEL=INFO" in orchestrator
-    assert "--log-level ${ISSUE_ORCHESTRATOR_LOG_LEVEL}" in orchestrator
-    assert "ExecStart=__PROJECT_DIR__/.venv/bin/agent-sandbox-issue-orchestrator" in orchestrator
-    assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in orchestrator
     assert "Environment=TRIGGER_ORCHESTRATOR_LOG_LEVEL=INFO" in trigger_orchestrator
     assert "--log-level ${TRIGGER_ORCHESTRATOR_LOG_LEVEL}" in trigger_orchestrator
     assert "agent-sandbox-cli trigger-orchestrator" in trigger_orchestrator

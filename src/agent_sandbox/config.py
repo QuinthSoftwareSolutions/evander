@@ -164,9 +164,11 @@ class GatewayConfig(BaseModel):
     host_heartbeat_pr_resume_prompt: str = (
         "You have unread PR comments. Please fetch them with list_unread_feedback."
     )
-    host_heartbeat_discord_resume_prompt: str = (
-        "You have unread Discord messages. Please fetch them with "
-        "list_unread_discord_messages and respond with discord_post_status if needed."
+    discord_resume_prompt: str = Field(
+        default=(
+            "You have unread Discord messages. Please fetch them with "
+            "list_unread_discord_messages and respond with discord_post_status if needed."
+        ),
     )
     host_heartbeat_vm_user: str = "agent"
     host_heartbeat_resume_timeout_seconds: float = Field(default=1200.0, gt=0)
@@ -368,7 +370,7 @@ class AdoWorkerGlobalConfig(BaseModel):
     yaml_output_dir: Path | None = None
     setup_log_dir: Path | None = None
     processed_store_path: Path | None = None
-    setup_script_path: Path = Path("scripts/setup_issue_vm.sh")
+    setup_script_path: Path = Path("scripts/setup_vm.sh")
     ado_work_items_azure_devops_pat_env: str = "ADO_WORK_ITEMS_AZURE_DEVOPS_PAT"
     setup_timeout_seconds: float = Field(default=1800.0, gt=0)
     setup_concurrency_limit: int = Field(default=1, ge=1)
@@ -405,7 +407,7 @@ class AdoWorkerGlobalConfig(BaseModel):
         if self.processed_store_path is None:
             self.processed_store_path = self.runtime_dir / "ado-processed-work-items.json"
         if self.setup_lock_path is None:
-            self.setup_lock_path = self.runtime_dir / "setup-issue-vm.lock"
+            self.setup_lock_path = self.runtime_dir / "setup-vm.lock"
         return self
 
 
@@ -529,6 +531,93 @@ class DiscordIngestWorkerGlobalConfig(BaseModel):
     def apply_runtime_path_defaults(self) -> DiscordIngestWorkerGlobalConfig:
         if self.lock_path is None:
             self.lock_path = self.runtime_dir / "discord-ingest.lock"
+        return self
+
+
+class DiscordWakeWorkerGlobalConfig(BaseModel):
+    runtime_dir: Path = Path("runtime")
+    directories: list[str] = Field(default_factory=list)
+    poll_interval_seconds: float = Field(default=30.0, gt=0)
+    jitter_seconds: float = Field(default=5.0, ge=0)
+    cooldown_seconds: float = Field(default=60.0, ge=0)
+    lock_path: Path | None = None
+    session_cooldown_path: Path | None = None
+    busy_check_script_path: Path = Path("scripts/check_session_vm_busy.sh")
+    resume_script_path: Path = Path("scripts/resume_issue_agent.sh")
+    wake_state_path: Path | None = None
+    vm_user: str = "agent"
+    resume_timeout_seconds: float = Field(default=1200.0, gt=0)
+
+    @field_validator("directories", mode="before")
+    @classmethod
+    def normalize_directories(cls, value: object) -> object:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            value = [value]
+        if not isinstance(value, (list, tuple)):
+            return value
+        normalized: list[str] = []
+        for item in value:
+            text = str(item).strip()
+            if not text:
+                continue
+            normalized.append(DirectoryPath(segments=text).as_posix())
+        return normalized
+
+    @model_validator(mode="after")
+    def apply_runtime_path_defaults(self) -> DiscordWakeWorkerGlobalConfig:
+        if self.lock_path is None:
+            self.lock_path = self.runtime_dir / "discord-wake.lock"
+        if self.session_cooldown_path is None:
+            self.session_cooldown_path = self.runtime_dir / "discord-wake-session-cooldown.json"
+        if self.wake_state_path is None:
+            self.wake_state_path = self.runtime_dir / "discord-wake-state.json"
+        return self
+
+
+class ScheduledWakeWorkerGlobalConfig(BaseModel):
+    runtime_dir: Path = Path("runtime")
+    directories: list[str] = Field(default_factory=list)
+    poll_interval_seconds: float = Field(default=30.0, gt=0)
+    jitter_seconds: float = Field(default=5.0, ge=0)
+    cooldown_seconds: float = Field(default=60.0, ge=0)
+    lock_path: Path | None = None
+    session_cooldown_path: Path | None = None
+    busy_check_script_path: Path = Path("scripts/check_session_vm_busy.sh")
+    resume_script_path: Path = Path("scripts/resume_issue_agent.sh")
+    wake_state_path: Path | None = None
+    vm_user: str = "agent"
+    resume_timeout_seconds: float = Field(default=1200.0, gt=0)
+    scheduled_wake_prefix_text: str = (
+        "You have unread PR comments. Please fetch them with list_unread_feedback."
+    )
+
+    @field_validator("directories", mode="before")
+    @classmethod
+    def normalize_directories(cls, value: object) -> object:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            value = [value]
+        if not isinstance(value, (list, tuple)):
+            return value
+        normalized: list[str] = []
+        for item in value:
+            text = str(item).strip()
+            if not text:
+                continue
+            normalized.append(DirectoryPath(segments=text).as_posix())
+        return normalized
+
+    @model_validator(mode="after")
+    def apply_runtime_path_defaults(self) -> ScheduledWakeWorkerGlobalConfig:
+        if self.lock_path is None:
+            self.lock_path = self.runtime_dir / "scheduled-wake.lock"
+        if self.session_cooldown_path is None:
+            self.session_cooldown_path = self.runtime_dir / "scheduled-wake-session-cooldown.json"
+        if self.wake_state_path is None:
+            self.wake_state_path = self.runtime_dir / "scheduled-wake-state.json"
         return self
 
 

@@ -13,6 +13,12 @@ Install these packages on the Ubuntu host before using the scripts:
 - `ovmf`
 - `nftables`
 
+For a reproducible fresh-host Ubuntu 24.04 deployment path that wraps the same repo-native
+bootstrap sequence with Ansible, see `ansible/README.md`.
+
+If Admin Web is part of the deployed surface, treat `agent-sandbox-admin-web` as a managed host
+service and configure `config/admin-web.env` before exposing it beyond localhost.
+
 ## Bootstrap Flow
 
 1. Install Python dependencies with `uv`.
@@ -140,6 +146,51 @@ For machine-readable scripting that matches the GUI data model, use:
 agent-sandbox-cli list-vms --all --json
 agent-sandbox-cli list-local-issues --json
 ```
+
+## Admin Web Authentication
+
+The browser admin surface supports three auth modes:
+
+- `none`: no sign-in required. This remains the default when
+  `AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE` is unset and `AGENT_SANDBOX_ADMIN_WEB_PASSWORD` is also unset.
+- `local_password`: the existing local username/password form. If
+  `AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE` is unset but `AGENT_SANDBOX_ADMIN_WEB_PASSWORD` is set, this mode is selected automatically for backward compatibility.
+- `azure_sso`: Microsoft Entra browser sign-in through OIDC Authorization Code + PKCE.
+
+Required local session settings:
+
+- `AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET`
+- optional `AGENT_SANDBOX_ADMIN_WEB_SESSION_TTL_SECONDS`
+- optional `AGENT_SANDBOX_ADMIN_WEB_COOKIE_SECURE=true`
+
+`local_password` settings:
+
+- `AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE=local_password`
+- `AGENT_SANDBOX_ADMIN_WEB_USERNAME`
+- `AGENT_SANDBOX_ADMIN_WEB_PASSWORD`
+
+`azure_sso` settings:
+
+- `AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE=azure_sso`
+- `AGENT_SANDBOX_ADMIN_WEB_AZURE_TENANT_ID`
+- `AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_ID`
+- `AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_SECRET`
+- `AGENT_SANDBOX_ADMIN_WEB_AZURE_REDIRECT_URI`
+  or `AGENT_SANDBOX_ADMIN_WEB_PUBLIC_BASE_URL`
+- optional `AGENT_SANDBOX_ADMIN_WEB_AZURE_AUTHORITY_BASE_URL`
+- `AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS`
+- optional `AGENT_SANDBOX_ADMIN_WEB_AZURE_POST_LOGIN_REDIRECT`
+
+Azure SSO enabling sequence:
+
+1. Register a confidential Microsoft Entra web application for the admin web.
+2. Add the exact admin callback URI to the app registration.
+3. Allow OpenID scopes `openid profile email`.
+4. Set the trusted tenant id in `AGENT_SANDBOX_ADMIN_WEB_AZURE_TENANT_ID`.
+5. Add each permitted operator UPN/email-style login to `AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS`.
+6. Restart `agent-sandbox-admin-web`.
+
+The admin backend performs the token exchange server-side, validates issuer/audience/tenant, then mints the same local signed session cookie used by the password flow. Privileged lock/unlock behavior remains tied to that local admin session rather than the upstream Azure token.
 
 ## Directory Operations
 
@@ -283,7 +334,7 @@ Storage layout for directory config:
 - `./scripts/bootstrap_frontend_deps_vm.sh <vm-name> <host-checkout-root> <install-root> [install-root ...]` copies a host-seeded Node runtime into `~/toolchains/node-v24.14.0`.
 - It snapshots each selected install root under `~/frontend-deps-runtime/install-roots/<relative-path>`.
 - Each install root must already contain `package.json` and `node_modules` on the host.
-- `setup_issue_vm.sh` restores those snapshots into the matching relative paths inside the guest clone so Angular builds can use the copied dependency trees offline.
+- `bootstrap-frontend-in-vm` restores those snapshots into the matching relative paths inside the guest clone so Angular builds can use the copied dependency trees offline.
 - It appends the Node `PATH` export to `~/.profile` and `~/.bashrc`.
 
 ## VM .NET Bootstrap
@@ -526,6 +577,10 @@ Example MCP call:
 - Posting precedence for `discord_post_status`:
   - Destination `channel_id` must be in `session.discord_channel_allowlist`.
   - `discord_operator_user_allowlist` does not override post destination checks.
+- Reaction precedence for `add_message_reaction`:
+  - `provider=discord` requires `channel_id` in `session.discord_channel_allowlist`.
+  - `provider=teams` requires `channel_target` in `session.teams_channel_allowlist`.
+  - Message reads do not apply automatic read reactions; agents must call this tool explicitly.
 - Retry/backoff and failure handling:
   - The Discord `bot_api` adapter retries transient failures with exponential backoff and jitter.
   - Retries apply to connection/time-out failures plus HTTP `429` and `5xx` responses.
@@ -594,42 +649,29 @@ without exposing provider credentials in the VM.
 - Advance cursor only after the fetched items are durably handled.
 - Keep handlers idempotent by feedback ID to tolerate retries/replays.
 
-### Host heartbeat worker
+### Wake workers
 
-- `agent-sandbox-cli host-heartbeat` is now limited to Discord inbox wakeups, scheduled resumes, and legacy non-ADO feedback paths.
+- `agent-sandbox-cli discord-wake` owns Discord inbox wakeups and resumes.
+- `agent-sandbox-cli scheduled-wake` owns scheduled resume dispatch.
 - Azure DevOps PR feedback ingestion is owned by `agent-sandbox-ado-worker`, which writes `runtime/pr-feedback-store.json` and publishes `trigger:pull-request:new-feedback` events directly.
 - Recommended service lifecycle commands:
-  - `sudo systemctl start agent-sandbox-host-heartbeat.service`
-  - `sudo systemctl stop agent-sandbox-host-heartbeat.service`
-  - `sudo systemctl status agent-sandbox-host-heartbeat.service`
-- Cadence and resume behavior are controlled by `config/host-heartbeat/config.json`:
-  - `host_heartbeat_directory_paths` (canonical directories to process; the worker skips polling when the list is empty)
-  - `host_heartbeat_poll_interval_seconds`
-  - `host_heartbeat_jitter_seconds`
-  - `host_heartbeat_cooldown_seconds`
-  - `host_heartbeat_http_timeout_seconds`
-  - `host_heartbeat_lock_path` (single-instance lock file)
-  - `host_heartbeat_session_cooldown_path`
-  - `host_busy_check_script_path`
-  - `host_resume_script_path`
-  - `host_heartbeat_wake_state_path`
-  - `host_heartbeat_vm_user`
-  - `host_heartbeat_resume_timeout_seconds`
-  - `host_heartbeat_stream_conflict_policy`
-  - `host_heartbeat_scheduled_wake_prefix_text` (applied as `prefix + scheduled prompt` for MCP-triggered schedule dispatches)
-  - `host_heartbeat_schedule_max_active_per_session` (optional scheduling guardrail)
-  - `host_heartbeat_schedule_max_active_total` (optional scheduling guardrail)
-  - `host_heartbeat_schedule_min_interval_seconds` (optional scheduling guardrail)
-- `host_heartbeat_pr_resume_prompt` and `host_heartbeat_discord_resume_prompt` remain directory-scoped in `heartbeat.json`.
-- The host heartbeat worker runs one pass per configured directory and resolves the effective PR/Discord wake prompt text from that directory's config before dispatching a resume.
+  - `sudo systemctl start agent-sandbox-discord-wake.service`
+  - `sudo systemctl stop agent-sandbox-discord-wake.service`
+  - `sudo systemctl status agent-sandbox-discord-wake.service`
+  - `sudo systemctl start agent-sandbox-scheduled-wake.service`
+  - `sudo systemctl stop agent-sandbox-scheduled-wake.service`
+  - `sudo systemctl status agent-sandbox-scheduled-wake.service`
+- Discord wake cadence and resume behavior are controlled by `config/discord-wake/config.json`.
+- Scheduled wake cadence and resume behavior are controlled by `config/scheduled-wake/config.json`.
+- `discord_resume_prompt` remains directory-scoped and is surfaced in the admin GUI under Communications; it is used by the Discord wake worker.
+- `scheduled_wake_prefix_text` lives in the scheduled-wake worker global config and is used as the shared prompt prefix for scheduled wake dispatch.
 - MCP-triggered scheduled resumes are always dispatched with `resume_mode=same_context`.
 - Wake schedule CRUD is available in the CLI under `wake-schedules`:
   - create one-time wake: `agent-sandbox-cli wake-schedules create --runtime-dir runtime --session-id issue-11-session --resume-at 2026-04-01T10:30:00Z --prompt "Resume pending work."`
   - create recurring wake: `agent-sandbox-cli wake-schedules create --runtime-dir runtime --session-id issue-11-session --cron "*/10 * * * *" --prompt "Periodic check-in." --mode new_context`
   - edit existing wake: `agent-sandbox-cli wake-schedules edit <request-id> --cron "*/15 * * * *" --prompt "Updated prompt"`
   - delete wake: `agent-sandbox-cli wake-schedules delete <request-id>`
-- Agent control state is mirrored on the host in `runtime/host-agent-control-state.json`; the host heartbeat worker checks that file before probing or resuming a session so disabled agents stay ignored even when their VMs are powered off.
-- The host heartbeat worker still reads session manifests through runtime state for wake routing, but Azure DevOps PR feedback store updates now come from `agent-sandbox-ado-worker`.
+- Agent control state is mirrored on the host in `runtime/host-agent-control-state.json`; the wake workers check that file before probing or resuming a session so disabled agents stay ignored even when their VMs are powered off.
 - Guests no longer run `agent-heartbeat.service` or `agent-heartbeat.timer` by default.
 - Provider bootstrap scripts default `ENABLE_GUEST_HEARTBEAT=0`, which disables the guest timer on bootstrap.
 - Set `ENABLE_GUEST_HEARTBEAT=1` during bootstrap to install and enable `agent-heartbeat.timer` inside the guest.
@@ -802,7 +844,7 @@ agent-sandbox-cli create-session real-session --runtime-dir runtime
 - The scaffold includes `agent-sandbox-ado-worker` and the equivalent foreground CLI command
   `agent-sandbox-cli poll-ado-backlog`.
 - The worker polls Azure DevOps work items in `Committed` state tagged `truman`, writes YAML
-  payloads under `ADO_YAML_OUTPUT_DIR`, and invokes `scripts/setup_issue_vm.sh`.
+  payloads under `ADO_YAML_OUTPUT_DIR`, and invokes `scripts/setup_vm.sh`.
 - The same worker now owns Azure DevOps PR feedback ingestion for configured PR streams; it
   updates `runtime/pr-feedback-store.json` and publishes `trigger:pull-request:new-feedback`
   events without depending on `agent-sandbox-host-heartbeat`.
@@ -820,7 +862,7 @@ agent-sandbox-cli create-session real-session --runtime-dir runtime
   `ADO_FRONTEND_INSTALL_ROOTS` and can optionally use `ADO_FRONTEND_HOST_CHECKOUT`
   when the mirrored repo source is remote.
 - Directory-scoped `ado_worker` config can set `ado_repo_source` to control the repo source path
-  or remote URL passed to `setup_issue_vm.sh` for each directory.
+  or remote URL later passed to `clone_repo_into_vm(...)` for each directory.
 - Preferred configuration now lives in directory domain `ado_worker` (`ado-worker.json`) so values
   inherit through directory ancestry and appear in the Admin GUI automatically.
 - Global worker settings now live in `config/ado-worker/config.json` and are edited from the
@@ -888,25 +930,15 @@ Failure recovery:
   sudo systemctl restart agent-sandbox-ado-worker.service
   ```
 
-## Host-Side Issue Orchestrator
+## Retired Issue Orchestrator
 
-- The scaffold includes `agent-sandbox-issue-orchestrator`, a dedicated host-side worker for the
-  new `root/agent-sandbox/test` issue-generation workflow.
-- This worker is separate from `agent-sandbox-ado-worker` and `agent-sandbox-host-heartbeat`; it
-  does not change their behavior or scheduling.
-- The orchestrator is intended to manage a small, role-based set of VM sessions that generate,
-  triage, and implement local issues in that directory without affecting the existing APP or PR
-  feedback flows.
-- The worker reads its global settings from `config/issue-orchestrator/config.json`.
-- The directory automation policy for `root/agent-sandbox/test` remains isolated from the ADO and
-  feedback workers so the new workflow can evolve without changing existing issue handling.
-
-Runbook:
+- `agent-sandbox-issue-orchestrator` is obsolete and should remain disabled.
+- `scripts/install_systemd_units.sh` no longer installs or enables
+  `agent-sandbox-issue-orchestrator.service`.
+- Existing hosts that still have the old unit installed should disable it explicitly:
 
 ```bash
-sudo systemctl start agent-sandbox-issue-orchestrator.service
-sudo systemctl status agent-sandbox-issue-orchestrator.service
-sudo journalctl -u agent-sandbox-issue-orchestrator.service -f
+sudo systemctl disable --now agent-sandbox-issue-orchestrator.service
 ```
 
 ## Host-Side Trigger Orchestrator
@@ -969,8 +1001,8 @@ You can run the wrapper directly on the host for validation:
   Microsoft Graph on the host and writes into the Teams message store consumed by trigger
   orchestration.
 - The ingest worker uses the same delegated Teams auth settings described above.
-- This polling path is independent from `agent-sandbox-host-heartbeat`; host-heartbeat now covers
-  Discord/scheduled wake behavior while Azure DevOps PR feedback ingestion stays with
+- This polling path is independent from the wake workers; Discord/scheduled wake behavior now stays with
+  `agent-sandbox-discord-wake` and `agent-sandbox-scheduled-wake` while Azure DevOps PR feedback ingestion stays with
   `agent-sandbox-ado-worker`.
 
 Git hook ingestion path:
@@ -1004,7 +1036,6 @@ This creates:
 - `agent-sandbox-http-target-relay.service`
 - `agent-sandbox-ado-worker.service`
 - `agent-sandbox-host-heartbeat.service`
-- `agent-sandbox-issue-orchestrator.service`
 
 Before running install mode, ensure preflight is clean (or only warning-only), then:
 
@@ -1012,19 +1043,17 @@ Before running install mode, ensure preflight is clean (or only warning-only), t
 2. Ensure `runtime/directory-config/root/ado-worker.json` exists and the PAT variable named by
    `ado_work_items_azure_devops_pat_env` in `config/ado-worker/config.json` is exported for the
    service user.
-3. Ensure `config/issue-orchestrator/config.json` exists if you plan to enable the new
-   orchestrator scaffold.
-4. Ensure the needed service env vars are available. The rendered units will load optional
+3. Ensure the needed service env vars are available. The rendered units will load optional
    per-service `config/*.env` files and optional repo-root `secrets.env`.
-5. Ensure `OPENAI_API_KEY` is available for the OpenAI relay and `AZURE_ARTIFACTS_PAT` when the
+4. Ensure `OPENAI_API_KEY` is available for the OpenAI relay and `AZURE_ARTIFACTS_PAT` when the
    NuGet relay needs private Azure Artifacts access. The HTTP target relay is auth-transparent and
    exists to enforce destination allowlisting for approved external web endpoints. In the APP demo
    workflow, guests authenticate to APP interactively or with guest-managed bearer tokens/cookies
    through that relay path.
-6. For private PR feedback polling, ensure the service environment exposes `GITHUB_TOKEN`
+5. For private PR feedback polling, ensure the service environment exposes `GITHUB_TOKEN`
    and/or `AZURE_DEVOPS_PR_PAT` and ensure the effective `root` provider config sets the correct
    `azure_devops_organization_url`, `azure_devops_project`, and `azure_devops_pr_pat_env`.
-7. Start and inspect services:
+6. Start and inspect services:
 
 ```bash
 sudo systemctl start agent-sandbox-firewall.service
@@ -1034,7 +1063,6 @@ sudo systemctl start agent-sandbox-nuget-relay.service
 sudo systemctl start agent-sandbox-http-target-relay.service
 sudo systemctl start agent-sandbox-ado-worker.service
 sudo systemctl start agent-sandbox-host-heartbeat.service
-sudo systemctl start agent-sandbox-issue-orchestrator.service
 sudo systemctl status agent-sandbox-firewall.service
 sudo systemctl status agent-sandbox-gateway.service
 sudo systemctl status agent-sandbox-openai-relay.service
@@ -1042,59 +1070,39 @@ sudo systemctl status agent-sandbox-nuget-relay.service
 sudo systemctl status agent-sandbox-http-target-relay.service
 sudo systemctl status agent-sandbox-ado-worker.service
 sudo systemctl status agent-sandbox-host-heartbeat.service
-sudo systemctl status agent-sandbox-issue-orchestrator.service
 ```
 
 ## Local Git Remote Flow
 
-For the common issue workflow, you can do the full host-side setup in one command:
+For the common issue workflow, create the VM first:
 
 ```bash
-MSSQL_SA_PASSWORD='your-strong-password' ./scripts/setup_issue_vm.sh --python --dotnet --nuget --mssql --mssql-init-root /path/to/mssql-init --playwright --frontend-deps --frontend-install-root /path/to/repo/Src/Clients /path/to/issue.yaml /path/to/project-or-solution.slnx
+MSSQL_SA_PASSWORD='your-strong-password' ./.venv/bin/agent-sandbox-cli create-issue-vm 14084 --dotnet --nuget /path/to/project-or-solution.slnx --mssql --mssql-init-root /path/to/mssql-init --playwright
 ```
 
-`setup_issue_vm.sh` path defaults are configurable so host-specific `/home/...` paths are not
-hard-coded:
+Then clone the repo and apply repo-specific bootstraps as needed:
 
-- repo source precedence:
-  1. explicit third positional argument
-  2. `AGENT_SANDBOX_DEFAULT_REPO_SOURCE`
-  3. repo-relative fallback (`<agent-sandbox-repo-root>`)
-- guest clone remote root:
-  - `AGENT_SANDBOX_GIT_ROOT` from the `root` issue setup config or host environment, plus
-    `/${ISSUE_NUMBER}_repo.git`
-  - `AGENT_SANDBOX_GIT_ROOT` must exist on the host before guest clone starts
-- clone URL SSH alias:
-  - `AGENT_SANDBOX_GIT_SSH_ALIAS` (default `agent-sandbox-git-host`)
+```bash
+./.venv/bin/agent-sandbox-cli clone-repo-into-vm vm-14084 --repo-source /path/to/local/repo
+./.venv/bin/agent-sandbox-cli bootstrap-python-in-vm vm-14084 --host-checkout /path/to/local/repo --target-dir /home/agent/$(basename /path/to/local/repo)
+./.venv/bin/agent-sandbox-cli bootstrap-frontend-in-vm vm-14084 --host-checkout /path/to/local/repo --install-root /path/to/local/repo/Src/Clients
+```
 
-That launches `vm-14084`, bootstraps provider runtime tooling plus any requested optional toolchains, and
-configures the issue-numbered Git mirror and guest SSH path. It also clones the mirrored repo into
-the guest user's home directory using the source repo basename. The cloned repo gets a
-`git push-agent` alias, the guest home gets a short `AGENTS.md` note describing the expected
-push pattern, the issue YAML is copied into the repo root as `AGENT_TASK.yaml`, and a background
-agent run starts in the guest by default. The guest-side agent PID, state, and log live under
-`/home/agent/.agent-sandbox/`. Use `--no-start-agent` with `agent-sandbox-cli create-issue-vm`
-or `--dry-run` with `setup_issue_vm.sh` if you want the VM prepared without starting the agent
-process. The helper still accepts a raw issue number as the first argument for the older
-workflow, but YAML is the preferred input when you want the task definition to stay available on
-disk during long agent runs.
-Optional toolchain flags for `setup_issue_vm.sh`:
+`create-issue-vm` still resolves issue-scoped Git settings from the `root` issue setup config,
+including `AGENT_SANDBOX_GIT_ROOT` and `AGENT_SANDBOX_GIT_SSH_ALIAS`, so later repo clone steps
+can use the issue-numbered host mirror.
 
-- `--python`: run `bootstrap_python_vm.sh` and create a repo-local `.venv` from a host-built wheelhouse
-- `--dotnet`: run `bootstrap_dotnet_vm.sh`
-- `--nuget`: run `bootstrap_nuget_vm.sh` and prewarm the shared NuGet cache on the host (requires `project-or-solution`)
-- `--mssql`: run `bootstrap_mssql_vm.sh` and require `MSSQL_SA_PASSWORD` in the environment
-- `--mssql-init-root PATH`: copy a host init bundle into `/var/opt/mssql/init` and execute `init.sql`
-- `--playwright`: run `bootstrap_playwright_vm.sh`, which also provides `node`, `npm`, and `npx`
-- `--frontend-deps`: run `bootstrap_frontend_deps_vm.sh`
-- `--frontend-install-root PATH`: select one frontend install root and repeat as needed
-- `--frontend-host-checkout PATH`: override the host checkout used for frontend snapshots when `repo-source` is remote
+Toolchain bootstraps are now split by concern:
 
-When `--frontend-deps` is enabled, each install root must be inside the selected host checkout and
-already contain `package.json` plus `node_modules`. For local repo sources, `setup_issue_vm.sh`
-uses the resolved local checkout automatically. For remote repo sources, pass
-`--frontend-host-checkout` so the helper can snapshot dependencies from a host checkout and
-restore them into the matching relative paths inside the guest clone.
+- `create-issue-vm --dotnet` runs `bootstrap_dotnet_vm.sh`
+- `create-issue-vm --nuget PATH` runs `bootstrap_nuget_vm.sh` and prewarms the shared NuGet cache
+- `create-issue-vm --mssql` runs `bootstrap_mssql_vm.sh` and requires `MSSQL_SA_PASSWORD`
+- `create-issue-vm --playwright` runs `bootstrap_playwright_vm.sh`
+- `bootstrap-python-in-vm` runs `bootstrap_python_vm.sh` against a cloned repo
+- `bootstrap-frontend-in-vm` runs `bootstrap_frontend_deps_vm.sh` against a cloned repo
+
+When frontend bootstrapping is enabled, each install root must be inside the selected host
+checkout and already contain `package.json` plus `node_modules`.
 
 When `--python` is enabled, the guest clone also gets a repo-local `.venv`. Activate it with
 `. .venv/bin/activate`, then run `python -m pytest -q` and `python -m ruff check` from inside
@@ -1138,12 +1146,15 @@ After that initial setup, a guest-side `git fetch` or `git pull` against the iss
 restricted host Git wrapper to refresh the mirror from its configured source before serving the read.
 That keeps the guest on the latest mirrored refs without granting the guest direct access to the
 canonical remote.
-Mirror freshness flags are accepted and forwarded through both setup helpers:
+The cloned repo also gets `AGENT_TASK.yaml` in the repo root, a repo-local `git push-agent`
+alias, and the guest-home `AGENTS.md` guidance file during the repo-clone step.
+Mirror freshness flags are accepted and forwarded through the git-setup helper and the repo-clone
+step:
 
 ```bash
 ./scripts/setup_issue_git_vm.sh --remote-name origin vm-real 14084 /path/to/local/repo
-./scripts/setup_issue_vm.sh /path/to/issue.yaml /path/to/project.slnx /path/to/local/repo
-./scripts/setup_issue_vm.sh --no-sync-remote /path/to/issue.yaml /path/to/project.slnx /path/to/local/repo
+./.venv/bin/agent-sandbox-cli clone-repo-into-vm vm-real --repo-source /path/to/local/repo
+./.venv/bin/agent-sandbox-cli clone-repo-into-vm vm-real --repo-source https://example.com/org/repo.git
 ```
 
 Issue mirrors now carry a `post-receive` hook. When the bare repo has a trusted clone mapping,

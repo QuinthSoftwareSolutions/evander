@@ -17,6 +17,7 @@ dependencies = [
   "uvicorn>=0.42.0",
   "websockets>=15.0.1",
   "PyYAML>=6.0.2",
+  "PyJWT[crypto]>=2.10.1",
 ]
 
 [project.optional-dependencies]
@@ -39,8 +40,10 @@ agent-sandbox-http-target-relay = "agent_sandbox.http_target_relay:main"
 agent-sandbox-nuget-relay = "agent_sandbox.nuget_relay:main"
 agent-sandbox-ado-worker = "agent_sandbox.ado_issue_worker:main"
 agent-sandbox-discord-ingest = "agent_sandbox.discord_ingest_worker:main"
+agent-sandbox-discord-wake = "agent_sandbox.discord_wake_worker:main"
 agent-sandbox-issue-orchestrator = "agent_sandbox.issue_orchestrator:main"
 agent-sandbox-effect-orchestrator = "agent_sandbox.effect_orchestrator:main"
+agent-sandbox-scheduled-wake = "agent_sandbox.scheduled_wake_worker:main"
 agent-sandbox-cli = "agent_sandbox.cli:app"
 agent-sandbox-admin = "agent_sandbox.admin_app:main"
 agent-sandbox-admin-web = "agent_sandbox.admin_web:main"

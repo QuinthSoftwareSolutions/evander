@@ -418,6 +418,84 @@ def test_handle_git_push_trigger_resolves_relative_queue_paths_from_project_root
             pass
 
 
+def test_handle_git_push_trigger_resolves_git_push_triggers_from_workflow_packs(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    script = root / "scripts" / "handle_git_push_trigger.sh"
+
+    repo_path = (tmp_path / "git-remotes" / "sample.git").resolve()
+    repo_path.mkdir(parents=True)
+
+    config_dir = root / "config" / "trigger-orchestrator"
+    packs_dir = root / "config" / "workflow-packs"
+    unique = uuid.uuid4().hex
+    config_path = config_dir / f"test-trigger-config-{unique}.json"
+    pack_path = packs_dir / f"test-git-push-pack-{unique}.v1.json"
+    relative_queue = Path(".tmp-trigger-tests") / f"{unique}-events.json"
+    queue_path = root / relative_queue
+
+    pack_path.write_text(
+        json.dumps(
+            {
+                "pack_id": f"test-git-push-pack-{unique}",
+                "pack_version": "v1",
+                "ir": {
+                    "version": "v1",
+                    "nodes": [
+                        {
+                            "id": "git-pack-trigger",
+                            "display_name": "Git push",
+                            "type": "trigger:git:push",
+                            "config": {
+                                "path_to_repo": str(repo_path),
+                            },
+                        }
+                    ],
+                    "edges": [],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    config_path.write_text(
+        json.dumps(
+            {
+                "runtime_dir": "runtime",
+                "event_queue_store_path": str(relative_queue),
+                "workflow_packs": [pack_path.name],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    try:
+        queue_path.unlink(missing_ok=True)
+
+        result = subprocess.run(
+            [str(script), str(repo_path)],
+            input=f"{'0' * 40} {'1' * 40} refs/heads/main\n",
+            text=True,
+            capture_output=True,
+            env={
+                **os.environ,
+                "AGENT_SANDBOX_TRIGGER_ORCHESTRATOR_CONFIG": str(config_path),
+            },
+            cwd=root,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr
+        queue_payload = json.loads(queue_path.read_text(encoding="utf-8"))
+        assert list(queue_payload.keys()) == [f"git-pack-trigger:main:{'1' * 40}"]
+    finally:
+        config_path.unlink(missing_ok=True)
+        pack_path.unlink(missing_ok=True)
+        queue_path.unlink(missing_ok=True)
+        try:
+            queue_path.parent.rmdir()
+        except OSError:
+            pass
+
+
 def test_handle_git_push_trigger_serializes_concurrent_queue_updates(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[1]
     script = root / "scripts" / "handle_git_push_trigger.sh"

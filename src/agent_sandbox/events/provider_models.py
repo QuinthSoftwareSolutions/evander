@@ -8,8 +8,11 @@ from agent_sandbox.effects.providers.schemas import (
     IssueUpdateStateEffectDefinition,
     PrCreateEffectDefinition,
     SessionUpdateMetadataEffectDefinition,
+    VmBootstrapFrontendEffectDefinition,
+    VmBootstrapPythonEffectDefinition,
     VmCopyFilesEffectDefinition,
     VmCopyFilesItemDefinition,
+    VmCloneRepoEffectDefinition,
     VmCreateEffectDefinition,
     VmDeleteFilesEffectDefinition,
     VmExecEffectDefinition,
@@ -46,4 +49,3 @@ from agent_sandbox.triggers.providers.schemas import (
     TicketChangedTriggerDefinition,
     TicketCreatedTriggerDefinition,
 )
-
