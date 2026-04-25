@@ -2280,12 +2280,7 @@ class AzureDevOpsPrPublishProvider:
                 published_feedback_ids.extend(summary_result["published_feedback_ids"])
 
             for comment in normalized_comments:
-                thread_context = {
-                    "filePath": comment["path"],
-                    "rightFileStart": {"line": comment["line"]} if comment.get("line") is not None else {},
-                }
-                if not thread_context["rightFileStart"]:
-                    thread_context.pop("rightFileStart", None)
+                thread_context = _azure_devops_thread_context_for_review_comment(comment)
                 comment_result = self._post_thread_comment(
                     client=client,
                     repo=repo,
@@ -2315,6 +2310,20 @@ class AzureDevOpsPrPublishProvider:
             "comment_urls": comment_urls,
             "published_feedback_ids": published_feedback_ids,
         }
+
+
+def _azure_devops_thread_context_for_review_comment(comment: dict[str, Any]) -> dict[str, Any]:
+    thread_context: dict[str, Any] = {"filePath": comment["path"]}
+    line = comment.get("line")
+    if line is None:
+        return thread_context
+
+    side = str(comment.get("side") or "RIGHT").strip().upper()
+    position_prefix = "leftFile" if side == "LEFT" else "rightFile"
+    start_line = comment.get("start_line") or line
+    thread_context[f"{position_prefix}Start"] = {"line": start_line}
+    thread_context[f"{position_prefix}End"] = {"line": line}
+    return thread_context
 
 
 class PrPublishService:
@@ -2375,6 +2384,39 @@ class PrPublishService:
             idempotency_key=idempotency_key,
         )
 
+    def post_inline_comment(
+        self,
+        *,
+        provider: str,
+        repo: str,
+        pr_id: str,
+        path: str,
+        line: int,
+        body_text: str,
+        start_line: int | None = None,
+        side: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        comment: dict[str, Any] = {
+            "path": path,
+            "line": line,
+            "body_text": body_text,
+        }
+        if start_line is not None:
+            comment["start_line"] = start_line
+        if side is not None:
+            comment["side"] = side
+        return self._publish(
+            operation="post_inline_comment",
+            provider=provider,
+            repo=repo,
+            pr_id=pr_id,
+            body_text="",
+            comments=[comment],
+            event=None,
+            idempotency_key=idempotency_key,
+        )
+
     def _publish(
         self,
         *,
@@ -2407,7 +2449,7 @@ class PrPublishService:
         provider = self.providers[provider_name]
         if operation == "post_comment":
             response = provider.post_comment(repo=repo, pr_id=pr_id, body_text=body_text.strip())
-        elif operation == "submit_review":
+        elif operation in {"submit_review", "post_inline_comment"}:
             response = provider.submit_review(
                 repo=repo,
                 pr_id=pr_id,
@@ -2489,10 +2531,16 @@ def _normalize_pr_review_comments(comments: Any) -> list[dict[str, Any]]:
             normalized_comment["start_line"] = start_line
         side = _normalize_optional_text(raw_comment.get("side"))
         if side is not None:
-            normalized_comment["side"] = side.upper()
+            normalized_side = side.upper()
+            if normalized_side not in {"LEFT", "RIGHT"}:
+                raise ValueError(f"PR review comment at index {index} side must be LEFT or RIGHT")
+            normalized_comment["side"] = normalized_side
         start_side = _normalize_optional_text(raw_comment.get("start_side"))
         if start_side is not None:
-            normalized_comment["start_side"] = start_side.upper()
+            normalized_start_side = start_side.upper()
+            if normalized_start_side not in {"LEFT", "RIGHT"}:
+                raise ValueError(f"PR review comment at index {index} start_side must be LEFT or RIGHT")
+            normalized_comment["start_side"] = normalized_start_side
         commit_id = _normalize_optional_text(raw_comment.get("commit_id"))
         if commit_id is not None:
             normalized_comment["commit_id"] = commit_id

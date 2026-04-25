@@ -935,6 +935,7 @@ orchestrator drive the disposable review VM workflow.
 - New MCP tools:
   - `request_pr_review`
   - `post_pr_comment`
+  - `post_pr_inline_comment`
   - `submit_pr_review`
 - New trigger:
   - `trigger:review:new-request`
@@ -944,6 +945,10 @@ orchestrator drive the disposable review VM workflow.
 `request_pr_review` normalizes the PR target, resolves provider metadata (title, URL, base/head
 refs and commits), and writes a durable request record into the host review-request inbox. The
 trigger provider polls that inbox and emits a `review_request` payload for workflow consumption.
+Use `post_pr_inline_comment` for a single file/line finding, or `submit_pr_review` with
+`comments=[{"path": "...", "line": 123, "body": "..."}]` for batched inline findings. Do not
+write the file path and line number into the comment body; the tool attaches the provider-native
+line context.
 
 ### Typical workflow shape
 
@@ -954,7 +959,7 @@ trigger provider polls that inbox and emits a `review_request` payload for workf
    run `scripts/guest/setup_review_repo.sh` inside the guest with explicit `--base-ref` and `--head-ref`
 5. `effect:agent:prompt`
 6. `gate:await-agent`
-7. `post_pr_comment` or `submit_pr_review`
+7. `post_pr_comment`, `post_pr_inline_comment`, or `submit_pr_review`
 8. `effect:vm:stop`
 
 ### Review repo prep helper

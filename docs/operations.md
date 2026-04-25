@@ -740,7 +740,9 @@ work and let the trigger orchestrator start a temporary review VM.
 - Consume queued review requests with `trigger:review:new-request`.
 - Publish review output with:
   - `post_pr_comment(...)` for top-level PR conversation comments
-  - `submit_pr_review(...)` for a summary plus optional inline findings
+  - `post_pr_inline_comment(...)` for one file/line finding; prefer this over writing
+    `path line N` at the start of a top-level comment
+  - `submit_pr_review(...)` for a summary plus optional batched inline findings
 
 The review-request inbox is persisted in `runtime/review-request-store.json`. Records transition
 through `pending`, `leased`, `dispatched`, `completed`, `failed`, or `cancelled`.
@@ -753,7 +755,7 @@ through `pending`, `leased`, `dispatched`, `completed`, `failed`, or `cancelled`
 4. `effect:vm:exec`
 5. `effect:agent:prompt`
 6. `gate:await-agent`
-7. `post_pr_comment` or `submit_pr_review`
+7. `post_pr_comment`, `post_pr_inline_comment`, or `submit_pr_review`
 8. `effect:vm:stop`
 
 ### Guest repo preparation
@@ -785,8 +787,12 @@ The helper:
   - retry leased-but-undispatched requests after lease expiry
   - do not overload the trigger cursor with timestamp-only semantics
 - Publish retries:
-  - reuse the same `idempotency_key` when retrying `post_pr_comment` or `submit_pr_review`
+  - reuse the same `idempotency_key` when retrying `post_pr_comment`, `post_pr_inline_comment`, or `submit_pr_review`
   - validate host-side provider credentials before replaying
+- Inline PR comments:
+  - use `post_pr_inline_comment(provider, repo, pr_id, path, line, body_text, ...)` for a single finding
+  - pass `comments=[{"path": "...", "line": 123, "body": "..."}]` to `submit_pr_review` for batches
+  - do not encode the file path and line number in `body_text`; the tool attaches the provider-native line context
 
 ### Microsoft Graph OAuth/token setup
 

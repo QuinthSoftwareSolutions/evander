@@ -55,6 +55,7 @@ from .models import (
     PendingAgentPrompt,
     PostPrCommentRequest,
     PostPrFeedbackReplyRequest,
+    PostPrInlineCommentRequest,
     PromptAgentRequest,
     PromptAgentResponse,
     RunScriptRequest,
@@ -2402,6 +2403,88 @@ def create_server(context: RuntimeContext) -> FastMCP:
             audit_failure(
                 request.session_id,
                 ToolName.POST_PR_COMMENT,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
+    def post_pr_inline_comment(
+        session_id: str,
+        provider: str,
+        repo: str,
+        pr_id: str,
+        path: str,
+        line: int,
+        body_text: str,
+        start_line: int | None = None,
+        side: str | None = "RIGHT",
+        idempotency_key: str | None = None,
+        request_id: str | None = None,
+    ) -> dict[str, Any]:
+        request = PostPrInlineCommentRequest(
+            session_id=session_id.strip(),
+            provider=normalize_pr_feedback_provider(provider),
+            repo=repo.strip(),
+            pr_id=pr_id.strip(),
+            path=path.strip(),
+            line=line,
+            body_text=body_text.strip(),
+            start_line=start_line,
+            side=side.strip().upper() if isinstance(side, str) else None,
+            idempotency_key=idempotency_key.strip() if isinstance(idempotency_key, str) else None,
+            request_id=request_id.strip() if isinstance(request_id, str) else None,
+        )
+        args = request.model_dump(mode="json")
+        try:
+            session = context.policy.require_tool(request.session_id, ToolName.POST_PR_INLINE_COMMENT)
+            if context.policy.effective_policy_for_session(session).pr_reply_require_approval:
+                if not request.request_id:
+                    raise PolicyError("request_id is required when pr_reply_require_approval is enabled")
+                context.policy.require_approved(request.request_id, payload=args)
+            result = context.pr_publish_service_for_session(request.session_id).post_inline_comment(
+                provider=request.provider,
+                repo=request.repo,
+                pr_id=request.pr_id,
+                path=request.path,
+                line=request.line,
+                body_text=request.body_text,
+                start_line=request.start_line,
+                side=request.side,
+                idempotency_key=request.idempotency_key,
+            )
+            audit_success(
+                request.session_id,
+                ToolName.POST_PR_INLINE_COMMENT,
+                args,
+                {
+                    "status": result.get("status"),
+                    "provider": result.get("provider"),
+                    "review_id": result.get("review_id"),
+                    "review_url": result.get("review_url"),
+                    "comment_count": len(result.get("comment_ids") or []),
+                },
+            )
+            return result
+        except PolicyError as exc:
+            audit_failure(request.session_id, ToolName.POST_PR_INLINE_COMMENT, args, str(exc))
+            raise
+        except (httpx.HTTPError, ValueError) as exc:
+            audit_failure(
+                request.session_id,
+                ToolName.POST_PR_INLINE_COMMENT,
+                args,
+                str(exc),
+                decision="error",
+                error_class="adapter_http_error",
+            )
+            raise
+        except Exception as exc:
+            audit_failure(
+                request.session_id,
+                ToolName.POST_PR_INLINE_COMMENT,
                 args,
                 str(exc),
                 decision="error",

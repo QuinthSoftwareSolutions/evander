@@ -59,6 +59,7 @@ class ToolName(str, Enum):
     GET_PULL_REQUEST = "get_pull_request"
     REQUEST_PR_REVIEW = "request_pr_review"
     POST_PR_COMMENT = "post_pr_comment"
+    POST_PR_INLINE_COMMENT = "post_pr_inline_comment"
     SUBMIT_PR_REVIEW = "submit_pr_review"
     HAS_PENDING_DISCORD_MESSAGES = "has_pending_discord_messages"
     LIST_UNREAD_DISCORD_MESSAGES = "list_unread_discord_messages"
@@ -1217,11 +1218,78 @@ class PostPrCommentResponse(BaseModel):
 
 
 class SubmitPrReviewComment(BaseModel):
-    path: str = Field(min_length=1)
-    body: str = Field(min_length=1)
-    line: int | None = Field(default=None, ge=1)
-    start_line: int | None = Field(default=None, ge=1)
-    side: str | None = None
+    path: str = Field(
+        min_length=1,
+        description="Repository-relative file path for an inline PR comment.",
+    )
+    body: str = Field(
+        min_length=1,
+        description="Inline review comment body. Do not prefix this with the file path or line number.",
+    )
+    line: int | None = Field(
+        default=None,
+        ge=1,
+        description="1-based line number to attach the inline comment to on the new/right side of the diff.",
+    )
+    start_line: int | None = Field(
+        default=None,
+        ge=1,
+        description="Optional 1-based first line for a multi-line inline comment range.",
+    )
+    side: str | None = Field(
+        default=None,
+        description="Diff side for the inline comment. Use RIGHT for added/changed lines, LEFT for removed lines.",
+    )
+
+    @field_validator("side")
+    @classmethod
+    def validate_side(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip().upper()
+        if normalized not in {"LEFT", "RIGHT"}:
+            raise ValueError("side must be LEFT or RIGHT")
+        return normalized
+
+
+class PostPrInlineCommentRequest(BaseModel):
+    session_id: str = Field(min_length=1)
+    provider: str = Field(min_length=1)
+    repo: str = Field(min_length=1)
+    pr_id: str = Field(min_length=1)
+    path: str = Field(
+        min_length=1,
+        description="Repository-relative file path to attach the PR comment to.",
+    )
+    line: int = Field(
+        ge=1,
+        description="1-based PR diff line number to attach the comment to.",
+    )
+    body_text: str = Field(
+        min_length=1,
+        description="Inline comment body. Do not prefix with file path or line number; the tool attaches it.",
+    )
+    start_line: int | None = Field(
+        default=None,
+        ge=1,
+        description="Optional 1-based first line for a multi-line inline comment range.",
+    )
+    side: str | None = Field(
+        default="RIGHT",
+        description="Diff side for the inline comment. Use RIGHT for added/changed lines, LEFT for removed lines.",
+    )
+    idempotency_key: str | None = None
+    request_id: str | None = None
+
+    @field_validator("side")
+    @classmethod
+    def validate_side(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip().upper()
+        if normalized not in {"LEFT", "RIGHT"}:
+            raise ValueError("side must be LEFT or RIGHT")
+        return normalized
 
 
 class SubmitPrReviewRequest(BaseModel):

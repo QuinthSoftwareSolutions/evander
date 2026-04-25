@@ -115,6 +115,56 @@ def test_pr_publish_service_records_ignored_feedback_ids_for_github_review(tmp_p
     ]
 
 
+def test_pr_publish_service_posts_inline_comment_via_review_provider(tmp_path: Path) -> None:
+    class StubProvider:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def post_comment(self, **_: object) -> dict[str, object]:
+            raise AssertionError("post_comment was not expected in this test")
+
+        def submit_review(self, **kwargs: object) -> dict[str, object]:
+            self.calls.append(dict(kwargs))
+            return {
+                "status": "posted",
+                "provider": "azure_devops",
+                "repo": "repo-1",
+                "pr_id": "17",
+                "review_id": None,
+                "review_url": "https://example.test/threads/45",
+                "comment_ids": ["11"],
+                "comment_urls": ["https://example.test/threads/45"],
+                "published_feedback_ids": ["azure_devops:thread_comment:45:11"],
+            }
+
+    provider = StubProvider()
+    service = PrPublishService(
+        providers={"azure_devops": provider},
+        idempotency_store_path=tmp_path / "idempotency.json",
+    )
+
+    result = service.post_inline_comment(
+        provider="azure_devops",
+        repo="repo-1",
+        pr_id="17",
+        path="src/app.py",
+        line=17,
+        body_text="Fix this line",
+        idempotency_key="inline-1",
+    )
+
+    assert result["comment_ids"] == ["11"]
+    assert provider.calls == [
+        {
+            "repo": "repo-1",
+            "pr_id": "17",
+            "body_text": "",
+            "comments": [{"path": "src/app.py", "line": 17, "body_text": "Fix this line"}],
+            "event": None,
+        }
+    ]
+
+
 def test_pr_publish_service_records_ignored_feedback_ids_for_azure_comment(tmp_path: Path) -> None:
     class StubProvider:
         def post_comment(self, **_: object) -> dict[str, object]:
@@ -299,7 +349,11 @@ def test_azure_publish_provider_submits_review_and_inline_comments(
             assert payload == {
                 "comments": [{"parentCommentId": 0, "content": "Fix this line", "commentType": "text"}],
                 "status": "active",
-                "threadContext": {"filePath": "src/app.py", "rightFileStart": {"line": 17}},
+                "threadContext": {
+                    "filePath": "src/app.py",
+                    "rightFileStart": {"line": 17},
+                    "rightFileEnd": {"line": 17},
+                },
             }
             return httpx.Response(
                 201,
@@ -331,3 +385,51 @@ def test_azure_publish_provider_submits_review_and_inline_comments(
         "azure_devops:thread_comment:45:11",
     ]
     assert len(requests) == 2
+
+
+def test_azure_publish_provider_maps_left_side_inline_comment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content.decode("utf-8"))
+        assert payload == {
+            "comments": [{"parentCommentId": 0, "content": "Removed path is wrong", "commentType": "text"}],
+            "status": "active",
+            "threadContext": {
+                "filePath": "src/app.py",
+                "leftFileStart": {"line": 14},
+                "leftFileEnd": {"line": 17},
+            },
+        }
+        return httpx.Response(
+            201,
+            json={
+                "id": 45,
+                "comments": [{"id": 11}],
+                "_links": {"web": {"href": "https://ado.test/threads/45"}},
+            },
+        )
+
+    patch_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    provider = AzureDevOpsPrPublishProvider(
+        organization_url="https://dev.azure.com/example",
+        project="proj",
+        pat="secret",
+    )
+
+    result = provider.submit_review(
+        repo="repo1",
+        pr_id="17",
+        body_text="",
+        comments=[
+            {
+                "path": "src/app.py",
+                "start_line": 14,
+                "line": 17,
+                "side": "LEFT",
+                "body": "Removed path is wrong",
+            }
+        ],
+    )
+
+    assert result["comment_ids"] == ["11"]

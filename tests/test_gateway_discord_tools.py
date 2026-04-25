@@ -2346,6 +2346,80 @@ def test_post_pr_feedback_reply_calls_provider_and_audits_reply_identifiers(tmp_
     }
 
 
+def test_post_pr_inline_comment_calls_publish_service_and_audits_inline_target(tmp_path: Path) -> None:
+    context = make_context(tmp_path)
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[ToolName.POST_PR_INLINE_COMMENT],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+
+    class FakePrPublishService:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def post_inline_comment(self, **kwargs: object) -> dict[str, object]:
+            self.calls.append(dict(kwargs))
+            return {
+                "status": "posted",
+                "provider": "azure_devops",
+                "repo": kwargs["repo"],
+                "pr_id": kwargs["pr_id"],
+                "review_id": None,
+                "review_url": "https://ado.test/threads/45",
+                "comment_ids": ["11"],
+                "comment_urls": ["https://ado.test/threads/45"],
+                "published_feedback_ids": ["azure_devops:thread_comment:45:11"],
+            }
+
+    fake_service = FakePrPublishService()
+    context.pr_publish_service = fake_service
+    server = create_server(context)
+
+    result = call_tool(
+        server,
+        "post_pr_inline_comment",
+        {
+            "session_id": "session-1",
+            "provider": "azure-devops",
+            "repo": "repo-1",
+            "pr_id": "17",
+            "path": "src/app.py",
+            "line": 17,
+            "body_text": "Fix this line.",
+            "idempotency_key": "inline-1",
+        },
+    )
+
+    assert result["comment_ids"] == ["11"]
+    assert fake_service.calls == [
+        {
+            "provider": "azure_devops",
+            "repo": "repo-1",
+            "pr_id": "17",
+            "path": "src/app.py",
+            "line": 17,
+            "body_text": "Fix this line.",
+            "start_line": None,
+            "side": "RIGHT",
+            "idempotency_key": "inline-1",
+        }
+    ]
+    event = read_audit_events(context.config.audit_log_path)[-1]
+    assert event["tool_name"] == ToolName.POST_PR_INLINE_COMMENT.value
+    assert event["args"]["path"] == "src/app.py"
+    assert event["args"]["line"] == 17
+    assert event["result"] == {
+        "status": "posted",
+        "provider": "azure_devops",
+        "review_id": None,
+        "review_url": "https://ado.test/threads/45",
+        "comment_count": 1,
+    }
+
+
 def test_post_pr_feedback_reply_normalizes_azure_devops_provider_alias(tmp_path: Path) -> None:
     context = make_context(tmp_path)
     context.session_repository.upsert_session(

@@ -1052,6 +1052,7 @@
         "config": {
           "allowed_tools": [
             "post_pr_comment",
+            "post_pr_inline_comment",
             "post_pr_feedback_reply",
             "list_unread_feedback",
             "list_all_feedback",
@@ -1158,7 +1159,7 @@
         "config": {
           "model": "gpt-5.4",
           "output_mode": "on_completion",
-          "prompt": "You have been assigned the review task described in ${{effect-vm-clone-repo-2.target_dir}}/REVIEW_TASK.yaml. Read /home/agent/AGENTS.md and ${{effect-vm-clone-repo-2.target_dir}}/REVIEW_TASK.yaml before you begin. The repository is located at ${{effect-vm-clone-repo-2.target_dir}}. When restore is needed, use 'dotnet restore --configfile ~/.nuget/NuGet/NuGet.Config'. For build and test, prefer '--no-restore'. Post comments to the PR using the post_pr_comment tool.",
+          "prompt": "You have been assigned the review task described in ${{effect-vm-clone-repo-2.target_dir}}/REVIEW_TASK.yaml. Read /home/agent/AGENTS.md and ${{effect-vm-clone-repo-2.target_dir}}/REVIEW_TASK.yaml before you begin. The repository is located at ${{effect-vm-clone-repo-2.target_dir}}. When restore is needed, use 'dotnet restore --configfile ~/.nuget/NuGet/NuGet.Config'. For build and test, prefer '--no-restore'. Post single file/line findings with post_pr_inline_comment so the PR UI anchors them to the diff. Use submit_pr_review for a summary with batched inline comments, and post_pr_comment only for top-level PR conversation comments.",
           "target": "${{effect-vm-clone-repo-2.session_id}}",
           "vm_user": "agent"
         },
