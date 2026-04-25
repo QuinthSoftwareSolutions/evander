@@ -11,6 +11,13 @@ from .models import (
     WorkerSessionPaths,
 )
 from .runtime import ContainerRuntime
+from .sandbox_profile import (
+    WorkerSandboxProfile,
+    default_worker_sandbox_profile,
+    strict_worker_sandbox_profile,
+    validate_worker_sandbox_profile,
+    worker_sandbox_profile,
+)
 from .service import WorkerDaemon
 from .store import WorkerJobStore
 
@@ -25,6 +32,11 @@ __all__ = [
     "WorkerJobRequest",
     "WorkerJobStore",
     "WorkerResourceLimits",
+    "WorkerSandboxProfile",
     "WorkerSessionPaths",
     "create_app",
+    "default_worker_sandbox_profile",
+    "strict_worker_sandbox_profile",
+    "validate_worker_sandbox_profile",
+    "worker_sandbox_profile",
 ]

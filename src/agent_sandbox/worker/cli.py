@@ -8,6 +8,7 @@ import uvicorn
 
 from .api import create_app
 from .models import DEFAULT_WORKER_ROOT
+from .sandbox_profile import worker_sandbox_profile
 
 
 def main() -> None:
@@ -17,16 +18,34 @@ def main() -> None:
     parser.add_argument("--runtime-dir", type=Path, default=Path("runtime"))
     parser.add_argument("--worker-root", type=Path, default=DEFAULT_WORKER_ROOT)
     parser.add_argument(
+        "--sandbox-profile",
+        default=os.environ.get("AGENT_SANDBOX_WORKER_SANDBOX_PROFILE", "default"),
+        choices=("default", "strict"),
+    )
+    parser.add_argument(
         "--docker-network",
-        default=os.environ.get("AGENT_SANDBOX_WORKER_DOCKER_NETWORK", "none"),
+        default=os.environ.get("AGENT_SANDBOX_WORKER_DOCKER_NETWORK"),
+    )
+    parser.add_argument("--read-only-rootfs", action="store_true")
+    parser.add_argument("--tmpfs", action="append", default=None)
+    parser.add_argument(
+        "--container-user",
+        default=os.environ.get("AGENT_SANDBOX_WORKER_CONTAINER_USER"),
     )
     args = parser.parse_args()
+    sandbox_profile = worker_sandbox_profile(args.sandbox_profile).with_overrides(
+        network_mode=args.docker_network,
+        read_only_rootfs=True if args.read_only_rootfs else None,
+        tmpfs=args.tmpfs,
+        user=args.container_user,
+    )
 
     uvicorn.run(
         create_app(
             runtime_dir=args.runtime_dir,
             worker_root=args.worker_root,
-            docker_network=args.docker_network,
+            sandbox_profile=sandbox_profile,
+            docker_network=None,
         ),
         host=args.host,
         port=args.port,

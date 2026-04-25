@@ -11,8 +11,13 @@ from .worker import (
     WorkerJobRequest,
     WorkerJobStore,
     WorkerResourceLimits,
+    WorkerSandboxProfile,
     WorkerSessionPaths,
     create_app,
+    default_worker_sandbox_profile,
+    strict_worker_sandbox_profile,
+    validate_worker_sandbox_profile,
+    worker_sandbox_profile,
 )
 from .worker.cli import main
 from .worker.docker_runtime import docker_state_to_status
@@ -34,14 +39,19 @@ __all__ = [
     "WorkerJobRequest",
     "WorkerJobStore",
     "WorkerResourceLimits",
+    "WorkerSandboxProfile",
     "WorkerSessionPaths",
     "create_app",
+    "default_worker_sandbox_profile",
     "docker_state_to_status",
     "list_relative_files",
     "main",
     "safe_subprocess_error",
     "sanitize_metadata",
     "sanitize_text",
+    "strict_worker_sandbox_profile",
+    "validate_worker_sandbox_profile",
+    "worker_sandbox_profile",
 ]
 
 

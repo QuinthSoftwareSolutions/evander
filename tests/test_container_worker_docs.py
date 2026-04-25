@@ -18,6 +18,11 @@ def test_container_worker_docs_describe_codex_home_preservation() -> None:
     assert "/var/lib/agent-worker/sessions/<session_id>/agent_home" in docs
     assert ".codex" in docs
     assert "Authorization: Bearer <AGENT_SANDBOX_WORKER_TOKEN>" in docs
+    assert "--security-opt no-new-privileges" in docs
+    assert "--sandbox-profile strict" in docs
+    assert "--tmpfs /tmp:rw,noexec,nosuid,size=512m" in docs
+    assert "does not turn containers into a VM-equivalent trust boundary" in docs
+    assert "Non-`none` networking requires Phase 5" in docs
 
 
 def test_execution_backend_docs_distinguish_daemon_from_gateway_integration() -> None:
@@ -26,3 +31,5 @@ def test_execution_backend_docs_distinguish_daemon_from_gateway_integration() ->
     assert "agent-sandbox-worker-daemon" in docs
     assert "early single-worker control-plane use" in docs
     assert "libvirt_vm` remains the default" in docs
+    assert "Phase 4 formalizes the worker container sandbox profile" in docs
+    assert "does not implement Phase 5 networking" in docs

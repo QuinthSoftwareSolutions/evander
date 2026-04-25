@@ -21,6 +21,12 @@ For directory-scoped runtime config, put these values on the root `providers` do
 AGENT_SANDBOX_WORKER_TOKEN=... agent-sandbox-worker-daemon --host 0.0.0.0 --port 11888 --runtime-dir runtime --worker-root /var/lib/agent-worker
 ```
 
+The daemon defaults to the `default` sandbox profile. To select the stricter profile:
+
+```bash
+AGENT_SANDBOX_WORKER_TOKEN=... agent-sandbox-worker-daemon --host 0.0.0.0 --port 11888 --runtime-dir runtime --worker-root /var/lib/agent-worker --sandbox-profile strict
+```
+
 The host reads the token from `container_worker_token_env` when it calls the worker. Token values and request headers are not written to the execution mapping store.
 
 The host-side `ExecutionSpec` uses first-class fields for container behavior: `command`, `image`, `repo_source`, `clone_branch`, `resource_limits`, `persistence_mode`, and `workspace_mode`. The backend does not read those values from `metadata`; metadata is only sanitized caller context.
@@ -120,10 +126,11 @@ Routes:
 
 ## Docker Constraints
 
-Docker is used as a local container runtime on the worker VM. The daemon starts containers with:
+Docker is used as a local container runtime on the worker VM. The default sandbox profile starts containers with:
 
 - `--rm=false`
 - `--cap-drop ALL`
+- `--security-opt no-new-privileges`
 - default `--network none`
 - no privileged mode
 - no Docker socket mount
@@ -132,6 +139,16 @@ Docker is used as a local container runtime on the worker VM. The daemon starts 
 - working directory `/workspace`
 
 The Docker network can be overridden with worker config or `--docker-network`, but `host` is refused.
+
+The `strict` sandbox profile keeps the default profile behavior and also adds:
+
+- `--read-only`
+- `--tmpfs /tmp:rw,noexec,nosuid,size=512m`
+- `--pids-limit 512` when the job did not provide its own pids limit
+
+Operators can tune worker daemon container flags with `--read-only-rootfs`, repeated `--tmpfs`, and `--container-user`. `--docker-network` and `AGENT_SANDBOX_WORKER_DOCKER_NETWORK` override the selected profile network, but `host` remains rejected.
+
+Non-`none` networking requires Phase 5 worker VM firewall and network controls before it can protect cloud metadata or adjacent infrastructure endpoints. Do not treat a Docker network override as a metadata-protection boundary.
 
 ## Job Store
 
@@ -145,6 +162,8 @@ The worker is treated as an untrusted execution surface. The host sends only exp
 
 Secret-like metadata keys are redacted before the host sends the request and before the host mapping is stored. Raw `env`, `environment`, and `environment_variables` fields remain rejected by the worker request model.
 
+The container sandbox profile reduces accidental and straightforward container privilege exposure. It does not turn containers into a VM-equivalent trust boundary.
+
 ## Current Limitations
 
-This phase adds the worker-side daemon, durable session model, and host control-plane backend for a single configured worker URL. It does not replace the existing libvirt backend, implement scheduling, implement AKS/Kubernetes, autoscale workers, publish PRs, or migrate the full issue/prompt orchestration stack.
+This phase adds the worker-side daemon, durable session model, explicit worker container sandbox profile, and host control-plane backend for a single configured worker URL. It does not replace the existing libvirt backend, implement scheduling, implement AKS/Kubernetes, autoscale workers, publish PRs, add secret transport, or migrate the full issue/prompt orchestration stack.

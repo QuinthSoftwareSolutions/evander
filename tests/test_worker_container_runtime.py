@@ -8,7 +8,10 @@ from agent_sandbox.worker_daemon import (
     DockerContainerRuntime,
     WorkerJobRecord,
     WorkerJobRequest,
+    WorkerResourceLimits,
+    WorkerSandboxProfile,
     WorkerSessionPaths,
+    strict_worker_sandbox_profile,
 )
 
 
@@ -51,11 +54,14 @@ def test_docker_run_args_use_restricted_container_shape_and_persistent_mounts(tm
 
     assert args[:3] == ["docker", "run", "-d"]
     assert "--privileged" not in args
+    assert "--read-only" not in args
     assert "/var/run/docker.sock" not in " ".join(args)
     assert "--network" in args
     assert args[args.index("--network") + 1] == "none"
     assert "--cap-drop" in args
     assert args[args.index("--cap-drop") + 1] == "ALL"
+    assert "--security-opt" in args
+    assert args[args.index("--security-opt") + 1] == "no-new-privileges"
     assert f"{paths.workspace}:/workspace" in args
     assert f"{paths.agent_home}:/home/agent" in args
     assert f"{paths.artifacts}:/artifacts" in args
@@ -73,3 +79,53 @@ def test_docker_runtime_allows_non_host_network_override(tmp_path: Path) -> None
     args = runtime._build_run_args(request=_request(), record=_record(paths), paths=paths)  # noqa: SLF001
 
     assert args[args.index("--network") + 1] == "agent-worker-net"
+
+
+def test_strict_profile_adds_read_only_tmpfs_and_default_pids_limit(tmp_path: Path) -> None:
+    paths = WorkerSessionPaths.resolve(tmp_path / "worker-root", "session-1")
+    request = _request()
+    request.resource_limits = WorkerResourceLimits(memory="512m", cpus=1.5)
+    runtime = DockerContainerRuntime(sandbox_profile=strict_worker_sandbox_profile(), docker_network=None)
+
+    args = runtime._build_run_args(request=request, record=_record(paths), paths=paths)  # noqa: SLF001
+
+    assert "--read-only" in args
+    assert args[args.index("--tmpfs") + 1] == "/tmp:rw,noexec,nosuid,size=512m"
+    assert args[args.index("--security-opt") + 1] == "no-new-privileges"
+    assert args[args.index("--pids-limit") + 1] == "512"
+
+
+def test_job_pids_limit_overrides_strict_profile_default(tmp_path: Path) -> None:
+    paths = WorkerSessionPaths.resolve(tmp_path / "worker-root", "session-1")
+    runtime = DockerContainerRuntime(sandbox_profile=strict_worker_sandbox_profile(), docker_network=None)
+
+    args = runtime._build_run_args(request=_request(), record=_record(paths), paths=paths)  # noqa: SLF001
+
+    assert args[args.index("--pids-limit") + 1] == "256"
+
+
+def test_profile_refuses_host_network() -> None:
+    with pytest.raises(ValueError, match="host"):
+        WorkerSandboxProfile(name="bad", network_mode="host").with_overrides()
+
+
+def test_profile_refuses_privileged_mode() -> None:
+    with pytest.raises(ValueError, match="privileged"):
+        DockerContainerRuntime(sandbox_profile=WorkerSandboxProfile(name="bad", privileged=True), docker_network=None)
+
+
+def test_docker_runtime_rejects_docker_socket_mount(tmp_path: Path) -> None:
+    paths = WorkerSessionPaths.resolve(tmp_path / "worker-root", "session-1")
+    unsafe_paths = WorkerSessionPaths(
+        session_id=paths.session_id,
+        root=paths.root,
+        workspace=Path("/var/run/docker.sock"),
+        agent_home=paths.agent_home,
+        artifacts=paths.artifacts,
+        logs=paths.logs,
+        metadata_path=paths.metadata_path,
+    )
+    runtime = DockerContainerRuntime()
+
+    with pytest.raises(ValueError, match="Docker socket"):
+        runtime._build_run_args(request=_request(), record=_record(paths), paths=unsafe_paths)  # noqa: SLF001

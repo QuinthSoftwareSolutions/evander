@@ -5,13 +5,27 @@ import subprocess
 from typing import Any
 
 from .models import WorkerJobRecord, WorkerJobRequest, WorkerSessionPaths
+from .sandbox_profile import (
+    WorkerSandboxProfile,
+    default_worker_sandbox_profile,
+    reject_unsafe_mount,
+    validate_worker_sandbox_profile,
+)
 
 
 class DockerContainerRuntime:
-    def __init__(self, *, docker_network: str = "none", docker_binary: str = "docker") -> None:
-        if docker_network == "host":
-            raise ValueError("docker_network='host' is not allowed")
-        self.docker_network = docker_network or "none"
+    def __init__(
+        self,
+        *,
+        docker_network: str | None = "none",
+        docker_binary: str = "docker",
+        sandbox_profile: WorkerSandboxProfile | None = None,
+    ) -> None:
+        profile = sandbox_profile or default_worker_sandbox_profile()
+        if docker_network is not None:
+            profile = profile.with_overrides(network_mode=docker_network)
+        self.sandbox_profile = validate_worker_sandbox_profile(profile)
+        self.docker_network = self.sandbox_profile.network_mode
         self.docker_binary = docker_binary
 
     def start_job(
@@ -77,6 +91,13 @@ class DockerContainerRuntime:
         record: WorkerJobRecord,
         paths: WorkerSessionPaths,
     ) -> list[str]:
+        for host_path, container_path in (
+            (paths.workspace, "/workspace"),
+            (paths.agent_home, "/home/agent"),
+            (paths.artifacts, "/artifacts"),
+        ):
+            reject_unsafe_mount(host_path, container_path)
+
         args = [
             self.docker_binary,
             "run",
@@ -84,10 +105,8 @@ class DockerContainerRuntime:
             "--name",
             record.container_name,
             "--rm=false",
-            "--cap-drop",
-            "ALL",
             "--network",
-            self.docker_network,
+            self.sandbox_profile.network_mode,
             "-v",
             f"{paths.workspace}:/workspace",
             "-v",
@@ -95,14 +114,27 @@ class DockerContainerRuntime:
             "-v",
             f"{paths.artifacts}:/artifacts",
             "-w",
-            "/workspace",
+            self.sandbox_profile.workdir,
         ]
+        for cap in self.sandbox_profile.cap_drop:
+            args.extend(["--cap-drop", cap])
+        for security_opt in self.sandbox_profile.security_opt:
+            args.extend(["--security-opt", security_opt])
+        if self.sandbox_profile.read_only_rootfs:
+            args.append("--read-only")
+        for tmpfs in self.sandbox_profile.tmpfs:
+            args.extend(["--tmpfs", tmpfs])
+        if self.sandbox_profile.user:
+            args.extend(["--user", self.sandbox_profile.user])
         if request.resource_limits.memory:
             args.extend(["--memory", request.resource_limits.memory])
         if request.resource_limits.cpus is not None:
             args.extend(["--cpus", str(request.resource_limits.cpus)])
-        if request.resource_limits.pids_limit is not None:
-            args.extend(["--pids-limit", str(request.resource_limits.pids_limit)])
+        pids_limit = request.resource_limits.pids_limit
+        if pids_limit is None:
+            pids_limit = self.sandbox_profile.default_pids_limit
+        if pids_limit is not None:
+            args.extend(["--pids-limit", str(pids_limit)])
         args.append(request.image)
         args.extend(request.command)
         return args

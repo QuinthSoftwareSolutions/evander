@@ -6,7 +6,7 @@ The execution backend abstraction separates host control-plane workflows from th
 
 `libvirt_vm` is the default backend. It wraps the current libvirt VM behavior and delegates to the existing admin VM service for status, start, shutdown, destroy, and guest log snapshots.
 
-`container_worker_vm` has a worker-side HTTP daemon, `agent-sandbox-worker-daemon`, that can run jobs in disposable Docker containers while preserving durable per-session state on the worker VM. In Phase 4 it remains early single-worker control-plane use and is exposed as an explicit manual/operator backend through `agent-sandbox-cli execution ...`. It is additive; `libvirt_vm` remains the default and is unchanged.
+`container_worker_vm` has a worker-side HTTP daemon, `agent-sandbox-worker-daemon`, that can run jobs in disposable Docker containers while preserving durable per-session state on the worker VM. In Phase 4 it remains early single-worker control-plane use and is exposed as an explicit manual/operator backend through `agent-sandbox-cli execution ...`. Phase 4 formalizes the worker container sandbox profile; it does not implement Phase 5 networking, AKS/Kubernetes, worker lifecycle rebuilds, ADO/wake automation, or secret transport. It is additive; `libvirt_vm` remains the default and is unchanged.
 
 ## Phase 4 Scope
 

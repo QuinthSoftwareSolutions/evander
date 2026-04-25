@@ -1,0 +1,88 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, replace
+from typing import Literal
+
+
+WorkerSandboxProfileName = Literal["default", "strict"]
+
+
+@dataclass(frozen=True)
+class WorkerSandboxProfile:
+    name: str
+    network_mode: str = "none"
+    cap_drop: tuple[str, ...] = ("ALL",)
+    security_opt: tuple[str, ...] = ("no-new-privileges",)
+    privileged: bool = False
+    read_only_rootfs: bool = False
+    tmpfs: tuple[str, ...] = ()
+    user: str | None = None
+    workdir: str = "/workspace"
+    default_pids_limit: int | None = None
+
+    def with_overrides(
+        self,
+        *,
+        network_mode: str | None = None,
+        read_only_rootfs: bool | None = None,
+        tmpfs: tuple[str, ...] | list[str] | None = None,
+        user: str | None = None,
+    ) -> "WorkerSandboxProfile":
+        updated = replace(
+            self,
+            network_mode=self.network_mode if network_mode is None else network_mode,
+            read_only_rootfs=self.read_only_rootfs if read_only_rootfs is None else read_only_rootfs,
+            tmpfs=self.tmpfs if tmpfs is None else tuple(tmpfs),
+            user=self.user if user is None else user,
+        )
+        return validate_worker_sandbox_profile(updated)
+
+
+def default_worker_sandbox_profile() -> WorkerSandboxProfile:
+    return WorkerSandboxProfile(name="default")
+
+
+def strict_worker_sandbox_profile() -> WorkerSandboxProfile:
+    return WorkerSandboxProfile(
+        name="strict",
+        read_only_rootfs=True,
+        tmpfs=("/tmp:rw,noexec,nosuid,size=512m",),
+        default_pids_limit=512,
+    )
+
+
+def worker_sandbox_profile(name: str) -> WorkerSandboxProfile:
+    normalized = str(name or "").strip().lower()
+    if normalized == "default":
+        return default_worker_sandbox_profile()
+    if normalized == "strict":
+        return strict_worker_sandbox_profile()
+    raise ValueError("sandbox profile must be one of: default, strict")
+
+
+def validate_worker_sandbox_profile(profile: WorkerSandboxProfile) -> WorkerSandboxProfile:
+    network_mode = str(profile.network_mode or "none").strip()
+    if network_mode == "host":
+        raise ValueError("container sandbox profile cannot use host networking")
+    if profile.privileged:
+        raise ValueError("privileged worker containers are not allowed")
+    if not profile.workdir.startswith("/"):
+        raise ValueError("container sandbox workdir must be an absolute container path")
+    if profile.default_pids_limit is not None and profile.default_pids_limit <= 0:
+        raise ValueError("container sandbox default pids limit must be positive")
+    if any(not str(item).strip() for item in profile.cap_drop):
+        raise ValueError("container sandbox cap_drop entries must be non-empty")
+    if any(not str(item).strip() for item in profile.security_opt):
+        raise ValueError("container sandbox security_opt entries must be non-empty")
+    if any(not str(item).strip() for item in profile.tmpfs):
+        raise ValueError("container sandbox tmpfs entries must be non-empty")
+    user = profile.user
+    if user is not None:
+        user = str(user).strip() or None
+    return replace(profile, network_mode=network_mode or "none", user=user)
+
+
+def reject_unsafe_mount(host_path: object, container_path: object) -> None:
+    paths = {str(host_path), str(container_path)}
+    if "/var/run/docker.sock" in paths:
+        raise ValueError("Docker socket mounts are not allowed in worker containers")

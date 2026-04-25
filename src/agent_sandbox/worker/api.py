@@ -11,6 +11,7 @@ from starlette.routing import Route
 
 from .models import DEFAULT_WORKER_ROOT, WorkerJobRequest
 from .runtime import ContainerRuntime
+from .sandbox_profile import WorkerSandboxProfile
 from .security import list_relative_files, safe_subprocess_error
 from .service import WorkerDaemon
 
@@ -107,7 +108,8 @@ def create_app(
     runtime_dir: Path,
     worker_root: Path = DEFAULT_WORKER_ROOT,
     container_runtime: ContainerRuntime | None = None,
-    docker_network: str = "none",
+    docker_network: str | None = "none",
+    sandbox_profile: WorkerSandboxProfile | None = None,
     token: str | None = None,
 ) -> Starlette:
     return WorkerDaemon(
@@ -115,5 +117,6 @@ def create_app(
         worker_root=worker_root,
         container_runtime=container_runtime,
         docker_network=docker_network,
+        sandbox_profile=sandbox_profile,
         token=token,
     ).create_app()

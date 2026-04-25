@@ -11,6 +11,7 @@ from starlette.applications import Starlette
 from .docker_runtime import DockerContainerRuntime
 from .models import DEFAULT_WORKER_ROOT, WorkerJobRecord, WorkerJobRequest, WorkerSessionPaths, now_utc
 from .runtime import ContainerRuntime
+from .sandbox_profile import WorkerSandboxProfile
 from .security import safe_subprocess_error, sanitize_metadata, sanitize_text
 from .store import WorkerJobStore
 
@@ -24,14 +25,16 @@ class WorkerDaemon:
         runtime_dir: Path,
         worker_root: Path = DEFAULT_WORKER_ROOT,
         container_runtime: ContainerRuntime | None = None,
-        docker_network: str = "none",
+        docker_network: str | None = "none",
+        sandbox_profile: WorkerSandboxProfile | None = None,
         token: str | None = None,
     ) -> None:
         self.runtime_dir = runtime_dir
         self.worker_root = worker_root
         self.store = WorkerJobStore(runtime_dir / "worker-jobs.json")
         self.container_runtime = container_runtime or DockerContainerRuntime(
-            docker_network=docker_network
+            docker_network=docker_network,
+            sandbox_profile=sandbox_profile,
         )
         self.token = token if token is not None else os.environ.get("AGENT_SANDBOX_WORKER_TOKEN")
 
