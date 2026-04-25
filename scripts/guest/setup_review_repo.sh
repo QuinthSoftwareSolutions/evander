@@ -6,8 +6,9 @@ show_help() {
 Usage:
   setup_review_repo.sh --base-ref REF --head-ref REF [options]
 
-Prepare a Git working tree for review by resolving explicit base and head refs,
-checking out the head commit, and writing a durable review-context file.
+Prepare a Git working tree for review by resolving explicit target and head refs,
+checking out the head commit, computing the merge-base diff base, and writing a
+durable review-context file.
 
 Options:
   --repo-path PATH      Path to the Git working tree. Default: current directory.
@@ -104,13 +105,17 @@ write_context_file() {
   local base_commit="$3"
   local head_ref="$4"
   local head_commit="$5"
+  local diff_base_commit="$6"
 
   mkdir -p "$(dirname "${context_path}")"
   {
     printf 'REVIEW_BASE_REF=%q\n' "${base_ref}"
     printf 'REVIEW_BASE_COMMIT=%q\n' "${base_commit}"
+    printf 'REVIEW_TARGET_REF=%q\n' "${base_ref}"
+    printf 'REVIEW_TARGET_COMMIT=%q\n' "${base_commit}"
     printf 'REVIEW_HEAD_REF=%q\n' "${head_ref}"
     printf 'REVIEW_HEAD_COMMIT=%q\n' "${head_commit}"
+    printf 'REVIEW_DIFF_BASE_COMMIT=%q\n' "${diff_base_commit}"
     printf 'REVIEW_PREPARED_AT=%q\n' "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
     printf 'REVIEW_REPO_PATH=%q\n' "${REPO_PATH}"
   } >"${context_path}"
@@ -181,15 +186,19 @@ FETCH_REMOTE="$(resolve_fetch_remote)"
 
 BASE_COMMIT="$(resolve_commit "${BASE_REF}" "${BASE_COMMIT}" "${BASE_LOCAL_REF}" "${FETCH_REMOTE}")"
 HEAD_COMMIT="$(resolve_commit "${HEAD_REF}" "${HEAD_COMMIT}" "${HEAD_LOCAL_REF}" "${FETCH_REMOTE}")"
+DIFF_BASE_COMMIT="$(git -C "${REPO_PATH}" merge-base "${BASE_COMMIT}" "${HEAD_COMMIT}")"
 
 git -C "${REPO_PATH}" checkout --detach "${HEAD_COMMIT}" >/dev/null
 git -C "${REPO_PATH}" reset --hard "${HEAD_COMMIT}" >/dev/null
 git -C "${REPO_PATH}" clean -fd >/dev/null
 
-write_context_file "${CONTEXT_FILE}" "${BASE_REF}" "${BASE_COMMIT}" "${HEAD_REF}" "${HEAD_COMMIT}"
+write_context_file "${CONTEXT_FILE}" "${BASE_REF}" "${BASE_COMMIT}" "${HEAD_REF}" "${HEAD_COMMIT}" "${DIFF_BASE_COMMIT}"
 
 printf 'REVIEW_BASE_REF=%s\n' "${BASE_REF}"
 printf 'REVIEW_BASE_COMMIT=%s\n' "${BASE_COMMIT}"
+printf 'REVIEW_TARGET_REF=%s\n' "${BASE_REF}"
+printf 'REVIEW_TARGET_COMMIT=%s\n' "${BASE_COMMIT}"
 printf 'REVIEW_HEAD_REF=%s\n' "${HEAD_REF}"
 printf 'REVIEW_HEAD_COMMIT=%s\n' "${HEAD_COMMIT}"
+printf 'REVIEW_DIFF_BASE_COMMIT=%s\n' "${DIFF_BASE_COMMIT}"
 printf 'REVIEW_CONTEXT_FILE=%s\n' "${CONTEXT_FILE}"

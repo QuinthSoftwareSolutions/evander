@@ -772,7 +772,9 @@ reviewing whatever the default branch clone happens to contain:
 
 The helper:
 
-- resolves explicit base/head refs to local refs under `refs/agent-sandbox/review/*`
+- resolves explicit target/head refs to local refs under `refs/agent-sandbox/review/*`
+- computes `REVIEW_DIFF_BASE_COMMIT` with `git merge-base` so normal review findings use
+  `REVIEW_DIFF_BASE_COMMIT..REVIEW_HEAD_COMMIT` rather than target/head drift
 - detaches the worktree onto the head commit
 - hard-resets and cleans the worktree
 - writes `.agent-sandbox/review-context.env` for downstream prompt or shell steps

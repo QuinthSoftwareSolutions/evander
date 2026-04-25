@@ -24,4 +24,5 @@ def test_execution_backend_docs_distinguish_daemon_from_gateway_integration() ->
     docs = (ROOT / "docs" / "execution-backends.md").read_text(encoding="utf-8")
 
     assert "agent-sandbox-worker-daemon" in docs
-    assert "gateway-side orchestration has not been wired" in docs
+    assert "early single-worker control-plane use" in docs
+    assert "libvirt_vm` remains the default" in docs

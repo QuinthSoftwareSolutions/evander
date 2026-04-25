@@ -33,9 +33,9 @@ from .discord_wake_worker import build_discord_wake_worker
 from .directories import DirectoryService
 from .issue_orchestrator import build_issue_orchestrator_worker
 from .effect_orchestrator import build_effect_orchestrator_worker
+from .execution import ExecutionSpec, build_execution_backend
 from .scheduled_wake_worker import build_scheduled_wake_worker
 from .trigger_orchestrator import build_trigger_orchestrator_worker
-from .host_config import DEFAULT_RUNTIME_DIR
 from .migrations import (
     migrate_ado_worker_env_to_root,
     migrate_directory_ownership_defaults,
@@ -45,9 +45,8 @@ from .migrations import (
 )
 from .email.providers import JsonEmailProvider, MultiMailboxEmailProvider
 from .models import ApprovalStatus, DiscordCommandEnvelope, EmailMessage, SessionManifest, ToolName
-from .policy_config import EffectivePolicyConfig, PolicyConfigResolver
+from .policy_config import EffectivePolicyConfig
 from .pr_feedback_worker import PrFeedbackStore
-from .provider_config import ProviderConfigResolver
 from .runtime import build_runtime
 from .session_manifest_repository import JsonSessionManifestRepository
 from .teams_auth import TeamsAuthError
@@ -78,9 +77,11 @@ app = typer.Typer(help="Utilities for the agent sandbox host control plane.", cl
 directories_app = typer.Typer(help="Directory management and directory-scoped config inspection.")
 wake_schedules_app = typer.Typer(help="Manage scheduled wake requests.")
 teams_auth_app = typer.Typer(help="Manage delegated Teams auth.")
+execution_app = typer.Typer(help="Manual execution backend controls.")
 app.add_typer(directories_app, name="directories")
 app.add_typer(wake_schedules_app, name="wake-schedules")
 app.add_typer(teams_auth_app, name="teams-auth", rich_help_panel="Sessions and Feedback")
+app.add_typer(execution_app, name="execution", rich_help_panel="VM Operations")
 
 CLI_DEFAULT_RUNTIME_DIR = Path("runtime")
 DirectoryOption = Annotated[
@@ -128,6 +129,22 @@ def _load_runtime_config_from_option(config: Path) -> GatewayConfig:
 def _load_host_config_from_option(config: Path):
     runtime_dir, legacy_config_path = _bootstrap_inputs(config)
     return load_host_bootstrap_config(runtime_dir=runtime_dir, legacy_config_path=legacy_config_path)
+
+
+def _build_execution_backend_from_option(config: Path):
+    cfg = _load_runtime_config_from_option(config)
+    return build_execution_backend(
+        cfg,
+        admin_service=None,
+        project_dir=_project_dir_for_config_option(config),
+    )
+
+
+def _echo_model_json(model: object) -> None:
+    if hasattr(model, "model_dump"):
+        typer.echo(json.dumps(model.model_dump(mode="json"), indent=2, sort_keys=True))
+        return
+    typer.echo(json.dumps(model, indent=2, sort_keys=True))
 
 
 def _build_teams_ingest_worker(cfg: GatewayConfig, *, project_dir: Path):
@@ -448,6 +465,71 @@ def _teams_auth_print_payload(title: str, payload: object) -> None:
         return
 
     typer.echo(json.dumps(_teams_auth_redact(normalized), indent=2, sort_keys=True))
+
+
+@execution_app.command("start-container-job")
+def execution_start_container_job(
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
+    session_id: Annotated[str | None, typer.Option("--session-id", help="Session id for worker persistence.")] = None,
+    command: Annotated[str, typer.Option("--command", help="Command to run inside the worker container.")] = "",
+    target_name: Annotated[str | None, typer.Option("--target-name", help="Optional stable execution id/target name.")] = None,
+    directory_path: Annotated[str, typer.Option("--directory-path", help="Directory path owning the execution.")] = "root",
+    image: Annotated[str | None, typer.Option("--image", help="Container image override.")] = None,
+    repo_source: Annotated[str | None, typer.Option("--repo-source", help="Explicit repository source to clone.")] = None,
+    clone_branch: Annotated[str | None, typer.Option("--clone-branch", help="Explicit repository branch to clone.")] = None,
+) -> None:
+    if not command.strip():
+        raise typer.BadParameter("--command is required")
+    backend = _build_execution_backend_from_option(config)
+    metadata: dict[str, object] = {"command": command}
+    if image:
+        metadata["image"] = image
+    if repo_source:
+        metadata["repo_source"] = repo_source
+    if clone_branch:
+        metadata["clone_branch"] = clone_branch
+    prepared = backend.prepare(
+        ExecutionSpec(
+            backend=backend.kind,
+            target_name=target_name,
+            session_id=session_id,
+            directory_path=directory_path,
+            metadata=metadata,
+        )
+    )
+    _echo_model_json(backend.start(prepared))
+
+
+@execution_app.command("status")
+def execution_status(config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR, target: str = typer.Argument(...)) -> None:
+    backend = _build_execution_backend_from_option(config)
+    _echo_model_json(backend.inspect(target))
+
+
+@execution_app.command("logs")
+def execution_logs(
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
+    target: str = typer.Argument(...),
+    lines: Annotated[int, typer.Option("--lines", min=1, help="Number of trailing lines to print.")] = 50,
+) -> None:
+    backend = _build_execution_backend_from_option(config)
+    typer.echo(backend.get_log_snapshot(target, lines=lines), nl=False)
+
+
+@execution_app.command("stop")
+def execution_stop(
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
+    target: str = typer.Argument(...),
+    timeout_seconds: Annotated[int, typer.Option("--timeout-seconds", min=1)] = 60,
+) -> None:
+    backend = _build_execution_backend_from_option(config)
+    _echo_model_json(backend.stop(target, timeout_seconds=timeout_seconds))
+
+
+@execution_app.command("destroy")
+def execution_destroy(config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR, target: str = typer.Argument(...)) -> None:
+    backend = _build_execution_backend_from_option(config)
+    _echo_model_json(backend.destroy(target))
 
 
 def _teams_auth_service(config: ConfigOption) -> AdminService:
@@ -1670,7 +1752,6 @@ def prune_sessions(
 ) -> None:
     cfg = _load_runtime_config_from_option(config)
     runtime = build_runtime(cfg)
-    policy = runtime.policy_config.resolve_for_directory("root")
     session_repository = _runtime_session_repository(runtime)
     sessions = {session.session_id: session for session in session_repository.list_sessions()}
     now = datetime.now(UTC)

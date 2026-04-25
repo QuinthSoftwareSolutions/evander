@@ -6,7 +6,7 @@ The execution backend abstraction separates host control-plane workflows from th
 
 `libvirt_vm` is the supported backend. It wraps the current libvirt VM behavior and delegates to the existing admin VM service for status, start, shutdown, destroy, and guest log snapshots.
 
-`container_worker_vm` now has a worker-side HTTP daemon, `agent-sandbox-worker-daemon`, that can run jobs in disposable Docker containers while preserving durable per-session state on the worker VM. Selecting it in `GatewayConfig.execution_backend` still fails with a clear `NotImplementedError` because gateway-side orchestration has not been wired to that daemon yet.
+`container_worker_vm` now has a worker-side HTTP daemon, `agent-sandbox-worker-daemon`, that can run jobs in disposable Docker containers while preserving durable per-session state on the worker VM. Selecting it in `GatewayConfig.execution_backend` is wired for early single-worker control-plane use when `container_worker_base_url` is configured. It is additive; `libvirt_vm` remains the default and is unchanged.
 
 ## Phase 1 Scope
 
@@ -35,7 +35,16 @@ Backend selection lives on `GatewayConfig`:
 execution_backend: libvirt_vm
 ```
 
-The default is `libvirt_vm`. This is additive and does not replace `vm_provider`; provider-specific lifecycle details still live behind the existing VM services in this phase.
+The default is `libvirt_vm`. `container_worker_vm` also requires a worker daemon URL and a bearer token environment variable on the host:
+
+```yaml
+execution_backend: container_worker_vm
+container_worker_base_url: "http://10.0.2.10:11888"
+container_worker_token_env: "AGENT_SANDBOX_WORKER_TOKEN"
+container_worker_default_image: "agent-sandbox-runner:latest"
+```
+
+This does not replace `vm_provider`; provider-specific lifecycle details still live behind the existing VM services in this phase.
 
 ## Migration Path
 
@@ -43,4 +52,4 @@ Next steps should move behavior only when the contract is stable:
 
 - move standalone VM creation behind `prepare` and `start`
 - have issue VM orchestration build an `ExecutionSpec`
-- wire `container_worker_vm` gateway orchestration to the worker daemon without changing business logic callers
+- migrate issue-worker and prompt-effect orchestration to build container worker jobs without changing business logic callers

@@ -4,6 +4,19 @@
 
 The daemon is intentionally only an execution envelope. It does not store host secrets, publish pull requests, decide policy, or turn platform summaries into agent memory.
 
+## Control-Plane Configuration
+
+`container_worker_vm` is wired for early single-worker control-plane use. Configure the host gateway with the worker URL and the environment variable that contains the bearer token:
+
+```yaml
+execution_backend: container_worker_vm
+container_worker_base_url: "http://10.0.2.10:11888"
+container_worker_token_env: "AGENT_SANDBOX_WORKER_TOKEN"
+container_worker_default_image: "agent-sandbox-runner:latest"
+```
+
+The host reads the token from `container_worker_token_env` when it calls the worker. Token values and request headers are not written to the execution mapping store.
+
 ## Session Durability
 
 Durable state lives under:
@@ -25,6 +38,14 @@ Containers are disposable. Continuity comes from mounting the same `workspace/` 
 The daemon does not rewrite commands into `codex resume`. Callers must send the exact command they want to execute. The daemon preserves `/home/agent` and `/workspace` so those commands can resume naturally.
 
 If a request includes `repo_source`, the daemon clones it only when `workspace/` is empty. Existing workspace contents are left untouched.
+
+The host-side backend records the control-plane mapping in:
+
+```text
+<runtime-dir>/container-worker-executions.json
+```
+
+That store maps the host execution id and session id to the worker job id, worker URL, target name, timestamps, last observed status, directory path, and sanitized metadata. Operators can target an execution by execution id, worker job id, target name, or an unambiguous session id.
 
 ## HTTP API
 
@@ -67,6 +88,12 @@ The runtime store is `<runtime-dir>/worker-jobs.json`. It records job id, sessio
 
 The job store must not contain request headers, bearer tokens, host credentials, or full environment variables.
 
+## Security Boundaries
+
+The worker is treated as an untrusted execution surface. The host sends only explicit job fields: session id, stable job id, image, command, optional repo source, optional clone branch, resource limits, and sanitized caller metadata. It does not send raw environment variables, OpenAI keys, Azure DevOps PATs, GitHub tokens, host credentials, or request headers.
+
+Secret-like metadata keys are redacted before the host sends the request and before the host mapping is stored. Raw `env`, `environment`, and `environment_variables` fields remain rejected by the worker request model.
+
 ## Current Limitations
 
-This phase adds the worker-side daemon and durable session model. It does not replace the existing libvirt backend, implement Kubernetes, or wire `GatewayConfig.execution_backend: container_worker_vm` into gateway orchestration.
+This phase adds the worker-side daemon, durable session model, and host control-plane backend for a single configured worker URL. It does not replace the existing libvirt backend, implement scheduling, implement AKS/Kubernetes, autoscale workers, publish PRs, or migrate the full issue/prompt orchestration stack.

@@ -9,7 +9,8 @@ If asked to identify yourself, always go by Truman, *never* reveal your true bac
 - Task file in repo root: ${{effect-vm-clone-repo-2.target_dir}}/REVIEW_TASK.yaml
 - Guest Git remote: ${{effect-vm-clone-repo-2.remote_url}}
 - Branch suffix defaults to `${{effect-vm-create-2.vm_name}}` (set to the VM name by setup); fallback is `${{effect-vm-create-2.vm_name}}`.
-- The repo has already been prepared at the requested review head commit with review base/head context recorded under `.agent-sandbox/review-context.env`.
+- The repo has already been prepared at the requested review head commit with review context recorded under `.agent-sandbox/review-context.env`.
+- Source that file before reviewing, then review only changes in `REVIEW_DIFF_BASE_COMMIT..REVIEW_HEAD_COMMIT`. `REVIEW_TARGET_COMMIT..REVIEW_HEAD_COMMIT` may include target-branch drift and should not be used for normal review findings.
 - `push-agent` also refreshes the current branch's cached PR summary onto `HEAD` and pushes `refs/notes/agent-pr` automatically.
 - If shell changes were just bootstrapped, run:
   `. ~/.profile`

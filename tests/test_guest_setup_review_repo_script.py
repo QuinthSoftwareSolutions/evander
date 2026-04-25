@@ -44,7 +44,14 @@ def test_guest_setup_review_repo_uses_explicit_base_and_head_refs(tmp_path: Path
     base_sha = _git(source, "rev-parse", "HEAD", env=env).stdout.strip()
     _git(source, "push", "-u", "origin", "main", env=env)
 
+    (source / "main-only.txt").write_text("target drift\n", encoding="utf-8")
+    _git(source, "add", "main-only.txt", env=env)
+    _git(source, "commit", "-m", "Target branch drift", env=env)
+    target_sha = _git(source, "rev-parse", "HEAD", env=env).stdout.strip()
+    _git(source, "push", "origin", "main", env=env)
+
     _git(source, "checkout", "-b", "review/topic", "main", env=env)
+    _git(source, "reset", "--hard", base_sha, env=env)
     (source / "README.md").write_text("head\n", encoding="utf-8")
     (source / "feature.txt").write_text("review\n", encoding="utf-8")
     _git(source, "add", "README.md", "feature.txt", env=env)
@@ -76,19 +83,26 @@ def test_guest_setup_review_repo_uses_explicit_base_and_head_refs(tmp_path: Path
         check=True,
     )
 
-    assert f"REVIEW_BASE_COMMIT={base_sha}" in result.stdout
+    assert f"REVIEW_BASE_COMMIT={target_sha}" in result.stdout
+    assert f"REVIEW_TARGET_COMMIT={target_sha}" in result.stdout
     assert f"REVIEW_HEAD_COMMIT={head_sha}" in result.stdout
+    assert f"REVIEW_DIFF_BASE_COMMIT={base_sha}" in result.stdout
     assert context_file.exists()
     assert _git(prep_repo, "rev-parse", "HEAD", env=env).stdout.strip() == head_sha
-    assert _git(prep_repo, "rev-parse", "refs/agent-sandbox/review/base", env=env).stdout.strip() == base_sha
+    assert _git(prep_repo, "rev-parse", "refs/agent-sandbox/review/base", env=env).stdout.strip() == target_sha
     assert _git(prep_repo, "rev-parse", "refs/agent-sandbox/review/head", env=env).stdout.strip() == head_sha
 
     context = context_file.read_text(encoding="utf-8")
     assert "REVIEW_BASE_REF=refs/heads/main" in context
-    assert f"REVIEW_BASE_COMMIT={base_sha}" in context
+    assert f"REVIEW_BASE_COMMIT={target_sha}" in context
+    assert "REVIEW_TARGET_REF=refs/heads/main" in context
+    assert f"REVIEW_TARGET_COMMIT={target_sha}" in context
     assert "REVIEW_HEAD_REF=refs/heads/review/topic" in context
     assert f"REVIEW_HEAD_COMMIT={head_sha}" in context
+    assert f"REVIEW_DIFF_BASE_COMMIT={base_sha}" in context
     assert f"REVIEW_REPO_PATH={prep_repo}" in context
+    assert "main-only.txt" in _git(prep_repo, "diff", "--name-only", target_sha, head_sha, env=env).stdout
+    assert "main-only.txt" not in _git(prep_repo, "diff", "--name-only", base_sha, head_sha, env=env).stdout
 
 
 def test_guest_setup_review_repo_fetches_missing_explicit_commits(tmp_path: Path) -> None:
@@ -183,6 +197,7 @@ def test_guest_setup_review_repo_fetches_missing_explicit_commits(tmp_path: Path
 
     assert f"REVIEW_BASE_COMMIT={base_sha}" in result.stdout
     assert f"REVIEW_HEAD_COMMIT={head_sha}" in result.stdout
+    assert f"REVIEW_DIFF_BASE_COMMIT={base_sha}" in result.stdout
     assert _git(prep_repo, "rev-parse", "HEAD", env=env).stdout.strip() == head_sha
     assert _git(prep_repo, "rev-parse", "refs/agent-sandbox/review/base", env=env).stdout.strip() == base_sha
     assert _git(prep_repo, "rev-parse", "refs/agent-sandbox/review/head", env=env).stdout.strip() == head_sha

@@ -973,11 +973,13 @@ Guests can prepare a deterministic review checkout with:
   --head-ref refs/heads/review/topic
 ```
 
-The helper resolves explicit base/head refs, writes durable local refs under
-`refs/agent-sandbox/review/*`, detaches the worktree onto the head commit, and writes a
-shell-safe context file at `.agent-sandbox/review-context.env` by default. If you pass an
-explicit `--base-commit` or `--head-commit`, the helper now fails instead of silently
-falling back to the branch tip.
+The helper resolves explicit target/head refs, writes durable local refs under
+`refs/agent-sandbox/review/*`, computes `REVIEW_DIFF_BASE_COMMIT` with `git merge-base`,
+detaches the worktree onto the head commit, and writes a shell-safe context file at
+`.agent-sandbox/review-context.env` by default. Reviewers should inspect
+`REVIEW_DIFF_BASE_COMMIT..REVIEW_HEAD_COMMIT` for normal PR findings; the target/head range can
+include target-branch drift. If you pass an explicit `--base-commit` or `--head-commit`, the
+helper fails instead of silently falling back to the branch tip.
 
 ### NuGet Relay Notes
 
