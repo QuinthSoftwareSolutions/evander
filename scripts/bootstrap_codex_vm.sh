@@ -19,6 +19,7 @@ Environment:
   HOST_CODEX_ROOT Host Codex package root.
   HOST_CODEX_SKILLS_DIR Host Codex skills root. Default: ~/.codex/skills for the caller.
   HOST_REPO_CODEX_SKILLS_DIR Repo-local Codex skills root. Default: <repo>/skills.
+  HOST_CODEX_MODELS_CACHE_PATH Host Codex model cache. Default: ~/.codex/models_cache.json for the caller.
   LLM_BASE_URL    Guest OpenAI-compatible base URL. Overrides ~/.agent/config.env when set.
   AGENT_MODEL     Model persisted for guest heartbeat resume runs when enabled.
   ENABLE_GUEST_HEARTBEAT Install and enable the guest heartbeat timer (0/1, default: 0).
@@ -83,6 +84,7 @@ fi
 HOST_CODEX_ROOT="${HOST_CODEX_ROOT:-${CALLER_HOME}/.nvm/versions/node/v24.14.0/lib/node_modules/@openai/codex}"
 HOST_CODEX_SKILLS_DIR="${HOST_CODEX_SKILLS_DIR:-${CALLER_HOME}/.codex/skills}"
 HOST_REPO_CODEX_SKILLS_DIR="${HOST_REPO_CODEX_SKILLS_DIR:-${ROOT_DIR}/skills}"
+HOST_CODEX_MODELS_CACHE_PATH="${HOST_CODEX_MODELS_CACHE_PATH:-${CALLER_HOME}/.codex/models_cache.json}"
 VENDOR_DIR="${HOST_CODEX_ROOT}/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl"
 LLM_BASE_URL="${LLM_BASE_URL:-}"
 AGENT_MODEL="${AGENT_MODEL:-}"
@@ -256,6 +258,21 @@ codex --version
 
 echo "Host heartbeat worker is now responsible for feedback wakeups by default."
 EOF
+
+if [[ -f "${HOST_CODEX_MODELS_CACHE_PATH}" ]]; then
+  scp "${SSH_OPTS[@]}" "${HOST_CODEX_MODELS_CACHE_PATH}" "${VM_USER}@${VM_IP}:~/codex-models-cache.json"
+  ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" <<'EOF'
+set -euo pipefail
+export CODEX_HOME="${CODEX_HOME:-$HOME/.config/agent-sandbox/codex}"
+mkdir -p "${CODEX_HOME}" "${HOME}/.codex"
+cp ~/codex-models-cache.json "${CODEX_HOME}/models_cache.json"
+cp ~/codex-models-cache.json "${HOME}/.codex/models_cache.json"
+rm -f ~/codex-models-cache.json
+EOF
+  echo "Copied host Codex model cache into guest."
+else
+  echo "Host Codex model cache not found at ${HOST_CODEX_MODELS_CACHE_PATH}; skipping model cache copy." >&2
+fi
 
 GUEST_HEARTBEAT_PROMPT_B64="$(printf '%s' "${GUEST_HEARTBEAT_PROMPT}" | base64 -w0)"
 

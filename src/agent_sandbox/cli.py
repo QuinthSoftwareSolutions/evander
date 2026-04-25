@@ -481,20 +481,16 @@ def execution_start_container_job(
     if not command.strip():
         raise typer.BadParameter("--command is required")
     backend = _build_execution_backend_from_option(config)
-    metadata: dict[str, object] = {"command": command}
-    if image:
-        metadata["image"] = image
-    if repo_source:
-        metadata["repo_source"] = repo_source
-    if clone_branch:
-        metadata["clone_branch"] = clone_branch
     prepared = backend.prepare(
         ExecutionSpec(
             backend=backend.kind,
             target_name=target_name,
             session_id=session_id,
             directory_path=directory_path,
-            metadata=metadata,
+            command=command,
+            image=image,
+            repo_source=repo_source,
+            clone_branch=clone_branch,
         )
     )
     _echo_model_json(backend.start(prepared))

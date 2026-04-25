@@ -90,12 +90,25 @@ def test_prepare_builds_metadata_without_http_call(tmp_path: Path) -> None:
             target_name="exec-1",
             session_id="session-1",
             directory_path="root/team",
-            metadata={"command": ["true"], "purpose": "test"},
+            command=["true"],
+            image="custom-runner:latest",
+            repo_source="git@example.test/repo.git",
+            clone_branch="feature/test",
+            resource_limits={"cpus": 1.5},
+            persistence_mode="session",
+            workspace_mode="session",
+            metadata={"purpose": "test"},
         )
     )
 
     assert prepared.execution_id == "exec-1"
     assert prepared.session_id == "session-1"
+    assert prepared.command == ["true"]
+    assert prepared.image == "custom-runner:latest"
+    assert prepared.repo_source == "git@example.test/repo.git"
+    assert prepared.clone_branch == "feature/test"
+    assert prepared.resource_limits == {"cpus": 1.5}
+    assert prepared.persistence_mode == "session"
     assert prepared.metadata["directory_path"] == "root/team"
     assert prepared.metadata["workspace_mode"] == "session"
     assert client.created == []
@@ -109,11 +122,12 @@ def test_start_sends_worker_job_request_and_records_mapping(tmp_path: Path) -> N
             backend="container_worker_vm",
             target_name="exec-1",
             session_id="session-1",
-            metadata={
-                "command": "echo hello",
-                "repo_source": "git@example.test/repo.git",
-                "clone_branch": "feature/test",
-            },
+            command="echo hello",
+            image="custom-runner:latest",
+            repo_source="git@example.test/repo.git",
+            clone_branch="feature/test",
+            resource_limits={"memory": "512m"},
+            metadata={"purpose": "test"},
         )
     )
 
@@ -122,14 +136,33 @@ def test_start_sends_worker_job_request_and_records_mapping(tmp_path: Path) -> N
     request = client.created[0]
     assert request.session_id == "session-1"
     assert request.job_id == "exec-1"
-    assert request.image == "runner:latest"
+    assert request.image == "custom-runner:latest"
     assert request.command == ["bash", "-lc", "echo hello"]
     assert request.repo_source == "git@example.test/repo.git"
     assert request.clone_branch == "feature/test"
+    assert request.resource_limits.memory == "512m"
+    assert request.metadata["purpose"] == "test"
     assert handle.execution_id == "exec-1"
+    assert handle.image == "custom-runner:latest"
+    assert handle.repo_source == "git@example.test/repo.git"
     store = json.loads((tmp_path / "container-worker-executions.json").read_text(encoding="utf-8"))
     assert store["exec-1"]["worker_job_id"] == "exec-1"
     assert store["exec-1"]["session_id"] == "session-1"
+
+
+def test_start_requires_first_class_command(tmp_path: Path) -> None:
+    backend = _backend(tmp_path)
+    prepared = backend.prepare(
+        ExecutionSpec(
+            backend="container_worker_vm",
+            target_name="exec-1",
+            session_id="session-1",
+            metadata={"command": ["ignored"]},
+        )
+    )
+
+    with pytest.raises(ValueError, match="ExecutionSpec.command is required"):
+        backend.start(prepared)
 
 
 def test_inspect_maps_worker_status(tmp_path: Path) -> None:
@@ -141,7 +174,7 @@ def test_inspect_maps_worker_status(tmp_path: Path) -> None:
                 backend="container_worker_vm",
                 target_name="exec-1",
                 session_id="session-1",
-                metadata={"command": ["true"]},
+                command=["true"],
             )
         )
     )
@@ -162,7 +195,7 @@ def test_stop_destroy_and_logs_call_expected_endpoints(tmp_path: Path) -> None:
                 backend="container_worker_vm",
                 target_name="exec-1",
                 session_id="session-1",
-                metadata={"command": ["true"]},
+                command=["true"],
             )
         )
     )
@@ -184,7 +217,7 @@ def test_ambiguous_session_id_resolution_raises_clear_error(tmp_path: Path) -> N
                     backend="container_worker_vm",
                     target_name=target_name,
                     session_id="session-1",
-                    metadata={"command": ["true"]},
+                    command=["true"],
                 )
             )
         )
@@ -203,8 +236,8 @@ def test_secret_metadata_is_redacted_before_request_and_store(tmp_path: Path) ->
                 backend="container_worker_vm",
                 target_name="exec-1",
                 session_id="session-1",
+                command=["true"],
                 metadata={
-                    "command": ["true"],
                     "purpose": "test",
                     "authorization": "Bearer should-not-leak",
                     "nested": {"api_key": "hidden"},

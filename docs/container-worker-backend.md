@@ -17,6 +17,8 @@ container_worker_default_image: "agent-sandbox-runner:latest"
 
 The host reads the token from `container_worker_token_env` when it calls the worker. Token values and request headers are not written to the execution mapping store.
 
+The host-side `ExecutionSpec` uses first-class fields for container behavior: `command`, `image`, `repo_source`, `clone_branch`, `resource_limits`, `persistence_mode`, and `workspace_mode`. The backend does not read those values from `metadata`; metadata is only sanitized caller context.
+
 ## Session Durability
 
 Durable state lives under:

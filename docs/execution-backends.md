@@ -46,6 +46,8 @@ container_worker_default_image: "agent-sandbox-runner:latest"
 
 This does not replace `vm_provider`; provider-specific lifecycle details still live behind the existing VM services in this phase.
 
+For `container_worker_vm`, execution-defining inputs are first-class `ExecutionSpec` fields: `command`, `image`, `repo_source`, `clone_branch`, `resource_limits`, `persistence_mode`, and `workspace_mode`. `metadata` is reserved for sanitized caller context and is not used to smuggle the container command or clone settings.
+
 ## Migration Path
 
 Next steps should move behavior only when the contract is stable:

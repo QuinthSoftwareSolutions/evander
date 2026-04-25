@@ -10,6 +10,7 @@ def test_bootstrap_script_enforces_codex_config_and_placeholder_key() -> None:
     assert "Usage: bootstrap_codex_vm.sh [--skill NAME ...] <vm-name> [vm-user]" in script
     assert 'HOST_CODEX_SKILLS_DIR="${HOST_CODEX_SKILLS_DIR:-${CALLER_HOME}/.codex/skills}"' in script
     assert 'HOST_REPO_CODEX_SKILLS_DIR="${HOST_REPO_CODEX_SKILLS_DIR:-${ROOT_DIR}/skills}"' in script
+    assert 'HOST_CODEX_MODELS_CACHE_PATH="${HOST_CODEX_MODELS_CACHE_PATH:-${CALLER_HOME}/.codex/models_cache.json}"' in script
     assert 'CODEX_SKILLS=()' in script
     assert '--skill' in script
     assert 'resolve_skill_path() {' in script
@@ -25,6 +26,9 @@ def test_bootstrap_script_enforces_codex_config_and_placeholder_key() -> None:
     assert "pkexec virsh domifaddr" in guest_ssh_lib
     assert 'export CODEX_HOME="${CODEX_HOME:-$HOME/.config/agent-sandbox/codex}"' in script
     assert 'for CODEX_CONFIG_PATH in "${CODEX_HOME}/config.toml" "${HOME}/.codex/config.toml"; do' in script
+    assert 'scp "${SSH_OPTS[@]}" "${HOST_CODEX_MODELS_CACHE_PATH}"' in script
+    assert 'cp ~/codex-models-cache.json "${CODEX_HOME}/models_cache.json"' in script
+    assert 'cp ~/codex-models-cache.json "${HOME}/.codex/models_cache.json"' in script
     assert 'cat > "${CODEX_CONFIG_PATH}" <<CONFIG' in script
     assert 'model = "gpt-5.4"' in script
     assert 'model_reasoning_effort = "high"' in script

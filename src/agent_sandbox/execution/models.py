@@ -28,9 +28,26 @@ class ExecutionSpec(BaseModel):
     session_id: str | None = None
     directory_path: str = "root"
     vm_provider: str | None = None
+    command: str | list[str] | None = None
+    image: str | None = None
+    repo_source: str | None = None
+    clone_branch: str | None = None
+    resource_limits: dict[str, Any] | None = None
+    persistence_mode: str | None = None
+    workspace_mode: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
-    @field_validator("target_name", "session_id", "vm_provider", mode="before")
+    @field_validator(
+        "target_name",
+        "session_id",
+        "vm_provider",
+        "image",
+        "repo_source",
+        "clone_branch",
+        "persistence_mode",
+        "workspace_mode",
+        mode="before",
+    )
     @classmethod
     def normalize_optional_strings(cls, value: object) -> object:
         if value is None:
@@ -51,6 +68,13 @@ class PreparedExecution(BaseModel):
     target_name: str
     session_id: str | None = None
     directory_path: str = "root"
+    command: str | list[str] | None = None
+    image: str | None = None
+    repo_source: str | None = None
+    clone_branch: str | None = None
+    resource_limits: dict[str, Any] | None = None
+    persistence_mode: str | None = None
+    workspace_mode: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -60,6 +84,13 @@ class ExecutionHandle(BaseModel):
     target_name: str
     session_id: str | None = None
     directory_path: str = "root"
+    command: str | list[str] | None = None
+    image: str | None = None
+    repo_source: str | None = None
+    clone_branch: str | None = None
+    resource_limits: dict[str, Any] | None = None
+    persistence_mode: str | None = None
+    workspace_mode: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 

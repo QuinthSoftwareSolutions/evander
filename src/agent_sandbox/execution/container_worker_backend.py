@@ -56,13 +56,15 @@ class ContainerWorkerVmExecutionBackend:
         execution_id = self._safe_execution_id(spec.target_name)
         session_id = spec.session_id or execution_id
         target_name = spec.target_name or execution_id
+        persistence_mode = spec.persistence_mode or self.config.container_worker_workspace_persistence
+        workspace_mode = spec.workspace_mode or persistence_mode
         metadata = sanitize_metadata(
             {
                 **spec.metadata,
                 "session_id": session_id,
                 "directory_path": spec.directory_path,
-                "persistence_mode": self.config.container_worker_workspace_persistence,
-                "workspace_mode": self.config.container_worker_workspace_persistence,
+                "persistence_mode": persistence_mode,
+                "workspace_mode": workspace_mode,
                 "network_mode": self.config.container_worker_default_network_mode,
                 "gateway_url": self.config.gateway_url,
                 "openai_relay_port": self.config.openai_relay_port,
@@ -77,6 +79,13 @@ class ContainerWorkerVmExecutionBackend:
             target_name=target_name,
             session_id=session_id,
             directory_path=spec.directory_path,
+            command=spec.command,
+            image=spec.image or self.config.container_worker_default_image,
+            repo_source=spec.repo_source,
+            clone_branch=spec.clone_branch,
+            resource_limits=spec.resource_limits,
+            persistence_mode=persistence_mode,
+            workspace_mode=workspace_mode,
             metadata=metadata,
         )
 
@@ -107,6 +116,13 @@ class ContainerWorkerVmExecutionBackend:
             target_name=prepared.target_name,
             session_id=request.session_id,
             directory_path=prepared.directory_path,
+            command=prepared.command,
+            image=request.image,
+            repo_source=prepared.repo_source,
+            clone_branch=prepared.clone_branch,
+            resource_limits=prepared.resource_limits,
+            persistence_mode=prepared.persistence_mode,
+            workspace_mode=prepared.workspace_mode,
             metadata=mapping.metadata,
         )
 
@@ -155,38 +171,34 @@ class ContainerWorkerVmExecutionBackend:
         return "\n".join(text.splitlines()[-lines:]) + ("\n" if text.endswith("\n") and text.splitlines() else "")
 
     def _job_request(self, prepared: PreparedExecution) -> WorkerJobRequest:
-        metadata = dict(prepared.metadata)
-        command = self._command_from_metadata(metadata.get("command"))
-        image = str(metadata.get("image") or self.config.container_worker_default_image).strip()
+        command = self._command_from_spec(prepared.command)
+        image = str(prepared.image or self.config.container_worker_default_image).strip()
         payload: dict[str, Any] = {
             "session_id": prepared.session_id or prepared.execution_id,
             "job_id": prepared.execution_id,
             "image": image,
             "command": command,
-            "metadata": sanitize_metadata(
-                {
-                    key: value
-                    for key, value in metadata.items()
-                    if key not in {"command", "image", "repo_source", "clone_branch", "resource_limits"}
-                }
-            ),
+            "metadata": sanitize_metadata(prepared.metadata),
         }
-        for key in ("repo_source", "clone_branch"):
-            if metadata.get(key):
-                payload[key] = metadata[key]
-        if isinstance(metadata.get("resource_limits"), dict):
-            payload["resource_limits"] = WorkerResourceLimits.model_validate(metadata["resource_limits"])
+        if prepared.repo_source:
+            payload["repo_source"] = prepared.repo_source
+        if prepared.clone_branch:
+            payload["clone_branch"] = prepared.clone_branch
+        if prepared.resource_limits:
+            payload["resource_limits"] = WorkerResourceLimits.model_validate(prepared.resource_limits)
         return WorkerJobRequest.model_validate(payload)
 
-    def _command_from_metadata(self, command: Any) -> list[str]:
+    def _command_from_spec(self, command: Any) -> list[str]:
+        if command is None:
+            raise ValueError("ExecutionSpec.command is required for container_worker_vm.")
         if isinstance(command, str):
             text = command.strip()
             if not text:
-                raise ValueError("ExecutionSpec.metadata['command'] is required for container_worker_vm.")
+                raise ValueError("ExecutionSpec.command is required for container_worker_vm.")
             return ["bash", "-lc", text]
         if isinstance(command, list) and command and all(isinstance(item, str) and item for item in command):
             return command
-        raise ValueError("ExecutionSpec.metadata['command'] must be a non-empty string or list of strings.")
+        raise ValueError("ExecutionSpec.command must be a non-empty string or list of strings.")
 
     def _mapping_for_target(self, target: ExecutionTarget) -> ContainerWorkerExecutionRecord:
         if isinstance(target, PreparedExecution | ExecutionHandle):
@@ -200,6 +212,13 @@ class ContainerWorkerVmExecutionBackend:
                 target_name=target.target_name,
                 session_id=target.session_id,
                 directory_path=target.directory_path,
+                command=target.command,
+                image=target.image,
+                repo_source=target.repo_source,
+                clone_branch=target.clone_branch,
+                resource_limits=target.resource_limits,
+                persistence_mode=target.persistence_mode,
+                workspace_mode=target.workspace_mode,
                 metadata=target.metadata,
             )
         raw_target = str(target or "").strip()
