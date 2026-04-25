@@ -95,7 +95,7 @@ def test_teams_ingest_worker_persists_inbound_messages_and_ignores_status_store_
         }
     )
     worker = build_teams_ingest_worker(config, project_dir=tmp_path)
-    worker.sessions.upsert_session(
+    worker.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             directory_path="root/team-a",
@@ -158,7 +158,7 @@ def test_teams_ingest_worker_uses_delegated_token_provider(
         }
     )
     worker = build_teams_ingest_worker(config, project_dir=tmp_path)
-    worker.sessions.upsert_session(
+    worker.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             directory_path="root/team-a",
@@ -207,7 +207,7 @@ def test_teams_ingest_worker_ignores_graph_echo_of_agent_status_post(
         }
     )
     worker = build_teams_ingest_worker(config, project_dir=tmp_path)
-    worker.sessions.upsert_session(
+    worker.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             directory_path="root/team-a",

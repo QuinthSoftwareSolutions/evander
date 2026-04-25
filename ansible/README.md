@@ -53,6 +53,7 @@ Core defaults:
 
 - `agent_sandbox_runtime_dir`: `{{ agent_sandbox_deploy_path }}/runtime`
 - `agent_sandbox_service_profile`: `full`
+- `agent_sandbox_run_user_supplementary_groups`: `libvirt`, `kvm`
 - `agent_sandbox_allowed_tcp_ports`: `22`, `8000`, `11434`, `11666`, `11777`
 
 Service toggles:
@@ -120,7 +121,22 @@ The playbook is intended to be safe to re-run:
 - `init-state` is re-run against the same runtime directory
 - managed config files are re-rendered from variables
 - `create_libvirt_network.sh` and `create_base_vm.sh` are repo-native and idempotent
+- if the configured run user's supplementary groups change, managed services are restarted so
+  the new process credentials take effect for libvirt-backed actions such as `virsh start`
 - systemd enablement and service state are reconciled to the selected profile
+
+## Libvirt Access For The Run User
+
+The configured `agent_sandbox_run_user` must be able to issue writable libvirt operations for
+resume and VM lifecycle flows. By default, the playbook ensures that user is in the
+supplementary groups listed under `agent_sandbox_run_user_supplementary_groups`, which defaults
+to `libvirt` and `kvm`.
+
+On a fresh deploy that is usually enough because the systemd units are installed and started after
+the user is reconciled. On a re-run against an existing host, Ansible now restarts the managed
+services if that group membership changes so the service processes pick up the new supplementary
+groups. If you also expect interactive shell access with plain `virsh`, start a fresh login
+session after the membership change.
 
 ## Post-Deploy Verification
 

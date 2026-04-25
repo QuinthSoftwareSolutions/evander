@@ -244,3 +244,61 @@ vm_network_resolve_ip "vm-1"
 
     assert result.returncode == 0
     assert result.stdout.strip() == "192.168.122.42"
+
+
+def test_vm_network_helper_prefers_explicit_system_libvirt_uri(tmp_path: Path) -> None:
+    sandbox_root = tmp_path / "sandbox"
+    scripts_dir = sandbox_root / "scripts"
+    lib_dir = scripts_dir / "lib"
+    fake_bin = tmp_path / "bin"
+    scripts_dir.mkdir(parents=True)
+    lib_dir.mkdir()
+    fake_bin.mkdir()
+
+    (lib_dir / "guest_ssh.sh").write_text((ROOT / "scripts" / "lib" / "guest_ssh.sh").read_text(encoding="utf-8"), encoding="utf-8")
+    (lib_dir / "vm_network.sh").write_text((ROOT / "scripts" / "lib" / "vm_network.sh").read_text(encoding="utf-8"), encoding="utf-8")
+    _write_executable(
+        fake_bin / "virsh",
+        f"""#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> "{tmp_path}/virsh.log"
+if [[ "${{1:-}}" == "-c" && "${{2:-}}" == "qemu:///system" && "${{3:-}}" == "dominfo" ]]; then
+  cat <<'EOF'
+Id:             -
+Name:           vm-1
+UUID:           00000000-0000-0000-0000-000000000000
+OS Type:        hvm
+State:          shut off
+EOF
+  exit 0
+fi
+exit 1
+""",
+    )
+
+    driver = scripts_dir / "driver.sh"
+    _write_executable(
+        driver,
+        """#!/usr/bin/env bash
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/lib/vm_network.sh"
+vm_network_domain_state "vm-1"
+""",
+    )
+
+    env = os.environ.copy()
+    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+
+    result = subprocess.run(
+        [str(driver)],
+        text=True,
+        capture_output=True,
+        env=env,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert result.stdout.strip() == "shut off"
+    virsh_calls = (tmp_path / "virsh.log").read_text(encoding="utf-8").splitlines()
+    assert virsh_calls[0] == "-c qemu:///system dominfo vm-1"

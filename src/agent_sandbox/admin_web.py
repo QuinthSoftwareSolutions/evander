@@ -86,6 +86,11 @@ def create_app(service: AdminService) -> Starlette:
     dist_dir = _dist_dir()
     auth = AdminWebAuth(AdminWebConfig.from_env())
 
+    def privileged_operations_unlocked_for_request(request: Request) -> bool:
+        if not auth.privileged_for_request(request):
+            return False
+        return not service.privileged_helper_required() or service.privileged_operations_unlocked()
+
     async def health(_: Request) -> JSONResponse:
         return JSONResponse({"ok": True})
 
@@ -152,9 +157,7 @@ def create_app(service: AdminService) -> Starlette:
 
     async def get_session(request: Request) -> JSONResponse:
         payload = auth.authentication_payload(request)
-        payload["privileged_operations"] = {
-            "unlocked": service.privileged_operations_unlocked() and auth.privileged_for_request(request),
-        }
+        payload["privileged_operations"] = {"unlocked": privileged_operations_unlocked_for_request(request)}
         return JSONResponse(payload)
 
     async def logout(request: Request) -> JSONResponse:
@@ -190,9 +193,7 @@ def create_app(service: AdminService) -> Starlette:
             {
                 "selected_directory_path": "root",
                 "directory_scoped_config_enabled": service.directory_scoped_config_enabled,
-                "privileged_operations": {
-                    "unlocked": service.privileged_operations_unlocked() and auth.privileged_for_request(request),
-                },
+                "privileged_operations": {"unlocked": privileged_operations_unlocked_for_request(request)},
             }
         )
 
@@ -206,7 +207,7 @@ def create_app(service: AdminService) -> Starlette:
         return JSONResponse(
             {
                 "message": message,
-                "privileged_operations": {"unlocked": True},
+                "privileged_operations": {"unlocked": privileged_operations_unlocked_for_request(request)},
             }
         )
 

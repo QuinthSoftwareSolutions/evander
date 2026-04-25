@@ -970,7 +970,9 @@ Guests can prepare a deterministic review checkout with:
 
 The helper resolves explicit base/head refs, writes durable local refs under
 `refs/agent-sandbox/review/*`, detaches the worktree onto the head commit, and writes a
-shell-safe context file at `.agent-sandbox/review-context.env` by default.
+shell-safe context file at `.agent-sandbox/review-context.env` by default. If you pass an
+explicit `--base-commit` or `--head-commit`, the helper now fails instead of silently
+falling back to the branch tip.
 
 ### NuGet Relay Notes
 

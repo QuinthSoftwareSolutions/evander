@@ -1,7 +1,7 @@
 {
     "runtime_dir": "runtime",
     "directories": ["root/agent-sandbox/test"],
-    "poll_interval_seconds": 30.0,
+    "poll_interval_seconds": 5.0,
     "jitter_seconds": 5.0,
     "backoff_seconds": 60.0
 }

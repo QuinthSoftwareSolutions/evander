@@ -16,6 +16,7 @@ class OperationsAdminService:
         *,
         project_dir: Path,
         get_privileged_helper: Callable[[], Any | None],
+        get_use_privileged_helper: Callable[[], bool],
         set_privileged_helper: Callable[[Any | None], None],
         teams_admin: Any,
         session_admin: Any,
@@ -25,12 +26,16 @@ class OperationsAdminService:
     ) -> None:
         self._project_dir = project_dir
         self._get_privileged_helper = get_privileged_helper
+        self._get_use_privileged_helper = get_use_privileged_helper
         self._set_privileged_helper = set_privileged_helper
         self._teams_admin = teams_admin
         self._session_admin = session_admin
         self._worker_admin = worker_admin
         self._directory_admin = directory_admin
         self._privileged_helper_factory = privileged_helper_factory
+
+    def privileged_helper_required(self) -> bool:
+        return bool(self._get_use_privileged_helper())
 
     def _normalize_directory_path(self, directory_path: str | None) -> str:
         if not directory_path:
@@ -81,6 +86,8 @@ class OperationsAdminService:
         )
 
     def unlock_privileged_operations(self):
+        if not self.privileged_helper_required():
+            return "Privileged operations unlocked."
         helper = self._get_privileged_helper()
         if helper is None:
             helper = self._privileged_helper_factory(

@@ -274,7 +274,7 @@ class IssueGitAdminService:
 
     def _session_repository(self):
         runtime = self._deps.runtime
-        return as_session_manifest_repository(getattr(runtime, "session_repository", runtime.sessions))
+        return as_session_manifest_repository(runtime.session_repository)
 
     def _resolve_session_target(self, target: str):
         repository = self._session_repository()

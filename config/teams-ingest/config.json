@@ -5,6 +5,6 @@
   ],
   "jitter_seconds": 1.0,
   "lock_path": "runtime/teams-ingest.lock",
-  "poll_interval_seconds": 5.0,
+  "poll_interval_seconds": 2.0,
   "runtime_dir": "runtime"
 }

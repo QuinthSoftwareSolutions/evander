@@ -189,7 +189,7 @@ def resolve_effective_issue_setup_config(
     provider_config = ProviderConfigResolver(
         config,
         directory_store=runtime.directories,
-        session_store=as_session_manifest_repository(getattr(runtime, "session_repository", runtime.sessions)),
+        session_store=as_session_manifest_repository(runtime.session_repository),
     ).resolve_for_directory(directory_path)
     provider_pat_env = provider_config.azure_devops_pr_pat_env.strip() or "AZURE_DEVOPS_PR_PAT"
     issue_setup_pat_env_raw = effective.get("issue_setup_azure_devops_pr_pat_env")
@@ -2686,6 +2686,7 @@ class AdminService:
         self.operations_admin = OperationsAdminService(
             project_dir=self.project_dir,
             get_privileged_helper=lambda: self._privileged_helper,
+            get_use_privileged_helper=lambda: self.use_privileged_helper,
             set_privileged_helper=lambda helper: setattr(self, "_privileged_helper", helper),
             teams_admin=self.teams_admin,
             session_admin=self.session_admin,
@@ -2698,10 +2699,30 @@ class AdminService:
             write_config=self._write_trigger_document,
         )
         self.trigger_event_repository: TriggerEventRepository = JsonTriggerEventRepository()
+        self._execution_backend_instance = None
 
     @property
     def directory_scoped_config_enabled(self) -> bool:
         return self.config.enable_directory_scoped_config
+
+    def _execution_backend(self):
+        backend = getattr(self, "_execution_backend_instance", None)
+        if backend is None:
+            from .execution import build_execution_backend
+            from .execution.libvirt_backend import LibvirtVmExecutionBackend
+
+            if not hasattr(self, "config"):
+                backend = LibvirtVmExecutionBackend(vm_admin_service=self.vm_agent_admin)
+                self._execution_backend_instance = backend
+                return backend
+
+            backend = build_execution_backend(
+                self.config,
+                admin_service=self,
+                project_dir=getattr(self, "project_dir", None),
+            )
+            self._execution_backend_instance = backend
+        return backend
 
     def _normalize_directory_reference(self, reference: str | None) -> str:
         directory_service = DirectoryService(self.runtime.directories)
@@ -2841,6 +2862,9 @@ class AdminService:
 
     def privileged_operations_unlocked(self) -> bool:
         return self.operations_admin.privileged_operations_unlocked()
+
+    def privileged_helper_required(self) -> bool:
+        return self.operations_admin.privileged_helper_required()
 
     def _session_ids_by_vm(self) -> dict[str, list[str]]:
         mapping: dict[str, list[str]] = {}
@@ -3343,13 +3367,18 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
         repo_name: str | None = None,
         vm_user: str = "agent",
     ) -> str:
-        return self.vm_agent_admin.get_agent_log_snapshot(target, lines=lines, repo_name=repo_name, vm_user=vm_user)
+        return self._execution_backend().get_log_snapshot(
+            target,
+            lines=lines,
+            repo_name=repo_name,
+            vm_user=vm_user,
+        )
 
     def start_vm(self, target: str) -> VmActionResult:
-        return self.vm_agent_admin.start_vm(target)
+        return self._execution_backend().start(target)
 
     def shutdown_vm(self, target: str, *, timeout_seconds: int = 60) -> VmActionResult:
-        return self.vm_agent_admin.shutdown_vm(target, timeout_seconds=timeout_seconds)
+        return self._execution_backend().stop(target, timeout_seconds=timeout_seconds)
 
     def _run_script(self, script_name: str, args: list[str], *, env: dict[str, str] | None = None) -> VmActionResult:
         script_path = Path(__file__).resolve().parents[2] / "scripts" / script_name
@@ -5434,7 +5463,7 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
         )
 
     def destroy_vm(self, target: str) -> VmActionResult:
-        return self.vm_agent_admin.destroy_vm(target)
+        return self._execution_backend().destroy(target)
 
     def destroy_issue_vm(self, target: str) -> VmActionResult:
         return self.vm_agent_admin.destroy_issue_vm(target)

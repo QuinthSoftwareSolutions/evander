@@ -33,6 +33,11 @@
   ansible.builtin.systemd:
     name: "{{ item.unit }}"
     enabled: "{{ agent_sandbox_services[item.key] | bool }}"
-    state: "{{ 'started' if agent_sandbox_services[item.key] | bool else 'stopped' }}"
+    state: >-
+      {{
+        'restarted'
+        if (agent_sandbox_services[item.key] | bool) and (agent_sandbox_run_user_membership_changed | default(false))
+        else ('started' if agent_sandbox_services[item.key] | bool else 'stopped')
+      }}
     daemon_reload: true
   loop: "{{ agent_sandbox_systemd_units }}"

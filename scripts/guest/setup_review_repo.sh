@@ -77,12 +77,7 @@ resolve_commit() {
     if ! git -C "${REPO_PATH}" rev-parse --verify "${explicit_commit}^{commit}" >/dev/null 2>&1; then
       fetch_ref_into_local_ref "${ref}" "${local_ref}" "${remote_name}"
       if ! git -C "${REPO_PATH}" rev-parse --verify "${explicit_commit}^{commit}" >/dev/null 2>&1; then
-        local resolved
-        resolved="$(git -C "${REPO_PATH}" rev-parse --verify "${local_ref}^{commit}")"
-        printf 'warning: explicit commit %s for %s was not present after fetching %s; using %s instead\n' \
-          "${explicit_commit}" "${ref}" "${remote_name}" "${resolved}" >&2
-        printf '%s\n' "${resolved}"
-        return
+        die "Explicit commit ${explicit_commit} for ${ref} was not present after fetching ${remote_name}"
       fi
     fi
     git -C "${REPO_PATH}" rev-parse --verify "${explicit_commit}^{commit}" >/dev/null

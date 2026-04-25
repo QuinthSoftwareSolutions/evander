@@ -31,7 +31,7 @@ class _AdminServiceStub:
     calls: list[dict[str, object]]
 
     def __post_init__(self) -> None:
-        self.runtime = SimpleNamespace(sessions=_SessionStore(self.sessions))
+        self.runtime = SimpleNamespace(session_repository=_SessionStore(self.sessions))
 
     def vm_exec(self, **kwargs):
         self.calls.append(kwargs)

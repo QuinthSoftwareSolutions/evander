@@ -46,6 +46,7 @@ def test_git_ssh_wrapper_refreshes_issue_mirror_before_upload_pack(tmp_path: Pat
         "scripts/create_git_remote.sh",
         "scripts/resolve_repo_source.sh",
         "scripts/lib/runtime_config.sh",
+        "scripts/lib/git_provider_auth.sh",
     ):
         _copy_script(repo_root, sandbox_root, relative_path)
 
@@ -147,6 +148,7 @@ def test_git_ssh_wrapper_refreshes_shared_mirror_before_upload_pack(tmp_path: Pa
         "scripts/create_git_remote.sh",
         "scripts/resolve_repo_source.sh",
         "scripts/lib/runtime_config.sh",
+        "scripts/lib/git_provider_auth.sh",
     ):
         _copy_script(repo_root, sandbox_root, relative_path)
 
@@ -245,6 +247,7 @@ def test_git_ssh_wrapper_refreshes_remote_source_tracking_branches_before_upload
         "scripts/create_git_remote.sh",
         "scripts/resolve_repo_source.sh",
         "scripts/lib/runtime_config.sh",
+        "scripts/lib/git_provider_auth.sh",
     ):
         _copy_script(repo_root, sandbox_root, relative_path)
 
@@ -343,6 +346,7 @@ def test_git_ssh_wrapper_preserves_existing_refs_when_shared_mirror_refresh_fail
         "scripts/create_git_remote.sh",
         "scripts/resolve_repo_source.sh",
         "scripts/lib/runtime_config.sh",
+        "scripts/lib/git_provider_auth.sh",
     ):
         _copy_script(repo_root, sandbox_root, relative_path)
 
@@ -435,6 +439,7 @@ def test_git_ssh_wrapper_preserves_pr_notes_during_shared_mirror_refresh(tmp_pat
         "scripts/create_git_remote.sh",
         "scripts/resolve_repo_source.sh",
         "scripts/lib/runtime_config.sh",
+        "scripts/lib/git_provider_auth.sh",
     ):
         _copy_script(repo_root, sandbox_root, relative_path)
 
@@ -528,6 +533,7 @@ def test_git_ssh_wrapper_accepts_same_name_branch_refspec_for_shared_mirror_refr
         "scripts/create_git_remote.sh",
         "scripts/resolve_repo_source.sh",
         "scripts/lib/runtime_config.sh",
+        "scripts/lib/git_provider_auth.sh",
     ):
         _copy_script(repo_root, sandbox_root, relative_path)
 
@@ -623,6 +629,7 @@ def test_git_ssh_wrapper_refreshes_shared_mirror_with_non_origin_remote(tmp_path
         "scripts/create_git_remote.sh",
         "scripts/resolve_repo_source.sh",
         "scripts/lib/runtime_config.sh",
+        "scripts/lib/git_provider_auth.sh",
     ):
         _copy_script(repo_root, sandbox_root, relative_path)
 

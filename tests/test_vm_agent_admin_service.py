@@ -85,6 +85,27 @@ class FakeVmAgentService:
         return self._record("destroy_issue_vm", target)
 
 
+class FakeExecutionBackend:
+    def __init__(self) -> None:
+        self.calls: list[CallRecord] = []
+
+    def get_log_snapshot(self, *args: Any, **kwargs: Any) -> str:
+        self.calls.append(CallRecord("get_log_snapshot", args, dict(kwargs)))
+        return "log-result"
+
+    def start(self, *args: Any, **kwargs: Any) -> str:
+        self.calls.append(CallRecord("start", args, dict(kwargs)))
+        return "start-result"
+
+    def stop(self, *args: Any, **kwargs: Any) -> str:
+        self.calls.append(CallRecord("stop", args, dict(kwargs)))
+        return "stop-result"
+
+    def destroy(self, *args: Any, **kwargs: Any) -> str:
+        self.calls.append(CallRecord("destroy", args, dict(kwargs)))
+        return "destroy-result"
+
+
 class FakeWorkerAdmin:
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
@@ -128,6 +149,36 @@ class FakeSessionsStore:
     def get(self, key: str) -> FakeManifest | None:
         return self._data.get(key)
 
+    def get_session(self, key: str) -> FakeManifest | None:
+        return self._data.get(key)
+
+    def resolve_session_target(self, target: str) -> FakeManifest | None:
+        return self._data.get(target)
+
+    def resolve_vm_name_from_target(self, target: str) -> str | None:
+        session = self._data.get(target)
+        vm_id = str(getattr(session, "vm_id", "") or "").strip() if session is not None else ""
+        return vm_id or target
+
+    def list_sessions(self) -> list[FakeManifest]:
+        return list(self._data.values())
+
+    def list_sessions_for_vm(self, vm_name: str) -> list[FakeManifest]:
+        return [
+            session
+            for session in self._data.values()
+            if str(getattr(session, "vm_id", "") or "").strip() == vm_name
+        ]
+
+    def upsert_session(self, value: FakeManifest) -> None:
+        session_id = str(getattr(value, "session_id", "") or "").strip()
+        if not session_id:
+            session_id = next(
+                (key for key, existing in self._data.items() if existing is value),
+                f"session-{len(self._data) + 1}",
+            )
+        self._data[session_id] = value
+
     def put(self, key: str, value: FakeManifest) -> None:
         self.put_records.append((key, value))
         self._data[key] = value
@@ -143,9 +194,11 @@ class FakeSessionsStore:
 
 class FakeAdmin:
     def __init__(self, *, sessions: FakeSessionsStore | None = None) -> None:
+        session_repository = sessions or FakeSessionsStore()
         self.worker_admin = FakeWorkerAdmin()
         self.runtime = SimpleNamespace(
-            sessions=sessions or FakeSessionsStore(),
+            sessions=session_repository,
+            session_repository=session_repository,
             policy_config=SimpleNamespace(resolve_for_directory=lambda directory_path: SimpleNamespace(directory_path=directory_path)),
         )
         self.config = SimpleNamespace(
@@ -455,6 +508,24 @@ def test_admin_service_delegates_vm_methods_to_vm_agent_service() -> None:
         ),
         CallRecord("destroy_vm", ("vm-12",), {}),
         CallRecord("destroy_issue_vm", ("vm-13",), {}),
+    ]
+
+
+def test_admin_service_routes_phase_1_vm_operations_through_execution_backend() -> None:
+    admin = object.__new__(AdminService)
+    backend = FakeExecutionBackend()
+    admin._execution_backend_instance = backend
+
+    assert admin.get_agent_log_snapshot("vm-1", lines=12, repo_name="repo-a", vm_user="agent") == "log-result"
+    assert admin.start_vm("vm-2") == "start-result"
+    assert admin.shutdown_vm("vm-3", timeout_seconds=10) == "stop-result"
+    assert admin.destroy_vm("vm-4") == "destroy-result"
+
+    assert backend.calls == [
+        CallRecord("get_log_snapshot", ("vm-1",), {"lines": 12, "repo_name": "repo-a", "vm_user": "agent"}),
+        CallRecord("start", ("vm-2",), {}),
+        CallRecord("stop", ("vm-3",), {"timeout_seconds": 10}),
+        CallRecord("destroy", ("vm-4",), {}),
     ]
 
 

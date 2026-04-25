@@ -42,6 +42,9 @@ def test_mirror_issue_repo_excludes_stale_agent_and_review_refs(tmp_path: Path) 
     runtime_config_source = repo_root / "scripts" / "lib" / "runtime_config.sh"
     (lib_dir / "runtime_config.sh").write_text(runtime_config_source.read_text(encoding="utf-8"), encoding="utf-8")
     os.chmod(lib_dir / "runtime_config.sh", 0o755)
+    auth_helper_source = repo_root / "scripts" / "lib" / "git_provider_auth.sh"
+    (lib_dir / "git_provider_auth.sh").write_text(auth_helper_source.read_text(encoding="utf-8"), encoding="utf-8")
+    os.chmod(lib_dir / "git_provider_auth.sh", 0o755)
     script = scripts_dir / "mirror_issue_repo.sh"
 
     source_repo = tmp_path / "source"
@@ -128,6 +131,9 @@ def test_mirror_issue_repo_persists_refresh_metadata(tmp_path: Path) -> None:
     runtime_config_source = repo_root / "scripts" / "lib" / "runtime_config.sh"
     (lib_dir / "runtime_config.sh").write_text(runtime_config_source.read_text(encoding="utf-8"), encoding="utf-8")
     os.chmod(lib_dir / "runtime_config.sh", 0o755)
+    auth_helper_source = repo_root / "scripts" / "lib" / "git_provider_auth.sh"
+    (lib_dir / "git_provider_auth.sh").write_text(auth_helper_source.read_text(encoding="utf-8"), encoding="utf-8")
+    os.chmod(lib_dir / "git_provider_auth.sh", 0o755)
     script = scripts_dir / "mirror_issue_repo.sh"
 
     source_repo = tmp_path / "source"
@@ -196,6 +202,9 @@ def test_mirror_issue_repo_records_upstream_origin_for_repo_cache_worktree(tmp_p
     runtime_config_source = repo_root / "scripts" / "lib" / "runtime_config.sh"
     (lib_dir / "runtime_config.sh").write_text(runtime_config_source.read_text(encoding="utf-8"), encoding="utf-8")
     os.chmod(lib_dir / "runtime_config.sh", 0o755)
+    auth_helper_source = repo_root / "scripts" / "lib" / "git_provider_auth.sh"
+    (lib_dir / "git_provider_auth.sh").write_text(auth_helper_source.read_text(encoding="utf-8"), encoding="utf-8")
+    os.chmod(lib_dir / "git_provider_auth.sh", 0o755)
     script = scripts_dir / "mirror_issue_repo.sh"
 
     source_repo = tmp_path / "source"
@@ -257,6 +266,9 @@ def test_mirror_issue_repo_allows_no_sync_remote_opt_out_for_local_source(tmp_pa
     runtime_config_source = repo_root / "scripts" / "lib" / "runtime_config.sh"
     (lib_dir / "runtime_config.sh").write_text(runtime_config_source.read_text(encoding="utf-8"), encoding="utf-8")
     os.chmod(lib_dir / "runtime_config.sh", 0o755)
+    auth_helper_source = repo_root / "scripts" / "lib" / "git_provider_auth.sh"
+    (lib_dir / "git_provider_auth.sh").write_text(auth_helper_source.read_text(encoding="utf-8"), encoding="utf-8")
+    os.chmod(lib_dir / "git_provider_auth.sh", 0o755)
     script = scripts_dir / "mirror_issue_repo.sh"
 
     source_repo = tmp_path / "source"
@@ -314,6 +326,9 @@ def test_mirror_issue_repo_uses_remote_tracking_branches_when_repo_cache_has_no_
     runtime_config_source = repo_root / "scripts" / "lib" / "runtime_config.sh"
     (lib_dir / "runtime_config.sh").write_text(runtime_config_source.read_text(encoding="utf-8"), encoding="utf-8")
     os.chmod(lib_dir / "runtime_config.sh", 0o755)
+    auth_helper_source = repo_root / "scripts" / "lib" / "git_provider_auth.sh"
+    (lib_dir / "git_provider_auth.sh").write_text(auth_helper_source.read_text(encoding="utf-8"), encoding="utf-8")
+    os.chmod(lib_dir / "git_provider_auth.sh", 0o755)
     script = scripts_dir / "mirror_issue_repo.sh"
 
     source_repo = tmp_path / "source"

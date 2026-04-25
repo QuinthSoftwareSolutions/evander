@@ -228,10 +228,6 @@ def _session_lookup_from_admin_service(admin_service: Any) -> SessionLookup | No
     read_all = getattr(session_repository, "read_all", None)
     if callable(read_all):
         return _SessionLookupAdapter(session_repository)
-    sessions = getattr(getattr(admin_service, "runtime", None), "sessions", None)
-    read_all = getattr(sessions, "read_all", None)
-    if callable(read_all):
-        return _SessionLookupAdapter(sessions)
     return None
 
 

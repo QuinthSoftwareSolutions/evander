@@ -41,7 +41,7 @@ def session_vm_provider_id(session: SessionManifest | Any | None, *, fallback_vm
 
 
 def _runtime_session_repository(runtime: Any) -> SessionManifestRepository:
-    return as_session_manifest_repository(getattr(runtime, "session_repository", runtime.sessions))
+    return as_session_manifest_repository(getattr(runtime, "session_repository"))
 
 
 class AzureVmControlClientProtocol(Protocol):

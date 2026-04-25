@@ -1751,6 +1751,70 @@ def test_agent_enqueue_prompt_dispatches_queued_prompt_when_target_agent_becomes
     assert queued_payload == {}
 
 
+def test_agent_enqueue_prompt_queues_and_fails_when_immediate_resume_fails(tmp_path: Path, monkeypatch) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {"id": "trigger-1", "display_name": "Tick", "type": "trigger:cron", "expression": "* * * * *"}
+            ],
+            "effects": [
+                {
+                    "id": "effect-1",
+                    "display_name": "Enqueue",
+                    "type": "effect:agent:enqueue-prompt",
+                    "vm_name": "vm-1",
+                    "prompt": "hello",
+                }
+            ],
+            "edges": [_edge("trigger-1", "effect-1")],
+        }
+    )
+    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    monkeypatch.setattr(
+        worker.provider_factory.admin_service,
+        "list_vms",
+        lambda include_inactive=True, vm_user="agent": [
+            VmSummary(
+                vm_name="vm-1",
+                libvirt_state="shut off",
+                agent_state="stopped",
+                session_ids=[],
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        worker.provider_factory.admin_service,
+        "resume_agent",
+        lambda **kwargs: type("Result", (), {"success": False, "thread_id": "thread-old", "message": "vm-start-failed"})(),
+    )
+
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="event-enqueue-fail-1",
+            trigger_id="trigger-1",
+            trigger_type="trigger:cron",
+            occurred_at=datetime(2026, 4, 4, 12, 5, tzinfo=timezone.utc),
+            payload={},
+            trace_id="trace-enqueue-fail-1",
+        )
+    )
+
+    for _ in range(3):
+        worker.run_once()
+
+    effect_payload = json.loads((runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8"))
+    only = next(iter(effect_payload.values()))
+    assert only["status"] == "failed"
+    assert "queued prompt for retry" in only["error"]
+    queued_payload = json.loads((runtime_dir / "queued-agent-prompts.json").read_text(encoding="utf-8"))
+    assert queued_payload["vm-1"]["prompt"] == "hello"
+
+
 def test_agent_enqueue_prompt_queue_dispatch_hook_is_neutral_when_provider_absent(tmp_path: Path, monkeypatch) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
@@ -1802,6 +1866,56 @@ def test_agent_enqueue_prompt_queue_dispatch_hook_is_neutral_when_provider_absen
     assert resume_calls == []
     queued_payload = json.loads((runtime_dir / "queued-agent-prompts.json").read_text(encoding="utf-8"))
     assert "vm-1" in queued_payload
+
+
+def test_agent_prompt_fails_when_resume_agent_reports_unsuccessful_result(tmp_path: Path, monkeypatch) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {"id": "trigger-1", "display_name": "Tick", "type": "trigger:cron", "expression": "* * * * *"}
+            ],
+            "effects": [
+                {
+                    "id": "effect-1",
+                    "display_name": "Prompt",
+                    "type": "effect:agent:prompt",
+                    "vm_name": "vm-1",
+                    "prompt": "hello",
+                }
+            ],
+            "edges": [_edge("trigger-1", "effect-1")],
+        }
+    )
+    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    monkeypatch.setattr(
+        worker.provider_factory.admin_service,
+        "resume_agent",
+        lambda **kwargs: type("Result", (), {"success": False, "thread_id": "thread-old", "message": "vm-start-failed"})(),
+    )
+
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="event-prompt-fail-1",
+            trigger_id="trigger-1",
+            trigger_type="trigger:cron",
+            occurred_at=datetime(2026, 4, 4, 12, 10, tzinfo=timezone.utc),
+            payload={},
+            trace_id="trace-prompt-fail-1",
+        )
+    )
+
+    for _ in range(3):
+        worker.run_once()
+
+    effect_payload = json.loads((runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8"))
+    only = next(iter(effect_payload.values()))
+    assert only["status"] == "failed"
+    assert "resume_agent failed" in only["error"]
 
 
 def test_filter_gate_when_drops_payload_when_predicate_is_false(tmp_path: Path) -> None:

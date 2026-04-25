@@ -14,12 +14,15 @@
     name: "{{ agent_sandbox_run_user }}"
     shell: /bin/bash
     create_home: true
-    groups:
-      - libvirt
-      - kvm
+    groups: "{{ agent_sandbox_run_user_supplementary_groups }}"
     append: true
     state: present
+  register: agent_sandbox_run_user_account
   when: agent_sandbox_manage_run_user | bool
+
+- name: Record whether run-user group membership changed
+  ansible.builtin.set_fact:
+    agent_sandbox_run_user_membership_changed: "{{ agent_sandbox_run_user_account.changed | default(false) }}"
 
 - name: Ensure the deploy root parent exists
   ansible.builtin.file:

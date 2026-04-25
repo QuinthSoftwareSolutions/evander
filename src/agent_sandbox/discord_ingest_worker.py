@@ -38,7 +38,7 @@ class DiscordIngestWorker:
         self.config = config
         self.worker_config = worker_config
         self.runtime = runtime
-        self.sessions = runtime.sessions
+        self.session_repository = runtime.session_repository
 
     def run_forever(self) -> None:
         with _single_instance_lock(self.worker_config.lock_path):

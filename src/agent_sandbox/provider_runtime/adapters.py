@@ -59,10 +59,6 @@ class AdminServiceProviderAdapter:
                 session.session_id: session
                 for session in session_repository.list_sessions()
             }
-        sessions = getattr(runtime, "sessions", None)
-        read_all = getattr(sessions, "read_all", None)
-        if callable(read_all):
-            return read_all()
         return {}
 
     def update_issue(self, issue_id: str, **kwargs: Any) -> Any:

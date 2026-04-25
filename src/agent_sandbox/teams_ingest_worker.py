@@ -45,7 +45,7 @@ class TeamsIngestWorker:
         self.config = config
         self.worker_config = worker_config
         self.runtime = runtime
-        self.sessions = runtime.sessions
+        self.session_repository = runtime.session_repository
         self.store = store or JsonTeamsInboxCursorRepository(config.runtime_dir / "teams-inbox-store.json")
 
     def run_forever(self) -> None:

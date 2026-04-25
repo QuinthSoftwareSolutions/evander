@@ -238,16 +238,7 @@ class HostWakeDispatcher:
         return dispatch_record
 
     def _resolve_agent_model_for_binding(self, binding: SessionWakeBinding) -> str | None:
-        session_store = getattr(self.runtime, "sessions", None)
-        session = None
-        if session_store is not None:
-            get_session = getattr(session_store, "get", None)
-            if callable(get_session):
-                session = get_session(binding.session_id)
-            else:
-                read_all = getattr(session_store, "read_all", None)
-                if callable(read_all):
-                    session = read_all().get(binding.session_id)
+        session = self.runtime.session_repository.get_session(binding.session_id)
         if session is None:
             return os.environ.get("AGENT_MODEL") or None
         if not hasattr(self.runtime, "directories"):

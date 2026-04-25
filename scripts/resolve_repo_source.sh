@@ -50,6 +50,12 @@ REPO_SOURCE="$1"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 CACHE_DIR="${ROOT_DIR}/runtime/repo-cache"
+# shellcheck source=lib/runtime_config.sh
+source "${SCRIPT_DIR}/lib/runtime_config.sh"
+# shellcheck source=lib/git_provider_auth.sh
+source "${SCRIPT_DIR}/lib/git_provider_auth.sh"
+load_root_secrets_env
+load_provider_config
 
 is_remote_source() {
   local source="$1"
@@ -133,17 +139,20 @@ resolve_remote_path() {
   local hash
   local mirror_path
   local worktree_path
+  local remote_url_for_git
 
   mkdir -p "${CACHE_DIR}"
   hash="$(printf '%s' "${source}" | sha256sum | awk '{print $1}')"
   mirror_path="${CACHE_DIR}/${hash}.git"
   worktree_path="${CACHE_DIR}/${hash}-worktree"
+  git_provider_prepare_remote "${source}"
+  remote_url_for_git="${GIT_PROVIDER_REMOTE_URL}"
 
   if [[ -d "${mirror_path}" ]]; then
-    git --git-dir="${mirror_path}" remote set-url origin "${source}"
-    git --git-dir="${mirror_path}" fetch --prune origin '+refs/*:refs/*'
+    git --git-dir="${mirror_path}" remote set-url origin "${remote_url_for_git}"
+    git_run_with_remote_auth "${source}" --git-dir="${mirror_path}" fetch --prune origin '+refs/*:refs/*'
   else
-    git clone --mirror "${source}" "${mirror_path}" >/dev/null
+    git_run_with_remote_auth "${source}" clone --mirror "${remote_url_for_git}" "${mirror_path}" >/dev/null
   fi
 
   if [[ -d "${worktree_path}/.git" ]]; then

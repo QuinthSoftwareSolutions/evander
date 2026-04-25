@@ -188,7 +188,7 @@ def test_guest_setup_review_repo_fetches_missing_explicit_commits(tmp_path: Path
     assert _git(prep_repo, "rev-parse", "refs/agent-sandbox/review/head", env=env).stdout.strip() == head_sha
 
 
-def test_guest_setup_review_repo_falls_back_when_explicit_commit_is_stale(tmp_path: Path) -> None:
+def test_guest_setup_review_repo_fails_when_explicit_commit_is_stale(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[1]
     script_path = root / "scripts" / "guest" / "setup_review_repo.sh"
 
@@ -253,16 +253,24 @@ def test_guest_setup_review_repo_falls_back_when_explicit_commit_is_stale(tmp_pa
         text=True,
         capture_output=True,
         env=env,
-        check=True,
     )
 
-    assert "warning: explicit commit 0000000000000000000000000000000000000001 for refs/heads/main was not present" in result.stderr
-    assert f"REVIEW_BASE_COMMIT={base_tip_sha}" in result.stdout
-    assert f"REVIEW_HEAD_COMMIT={head_sha}" in result.stdout
+    assert result.returncode != 0
+    assert (
+        "Explicit commit 0000000000000000000000000000000000000001 for refs/heads/main "
+        "was not present after fetching agent"
+    ) in result.stderr
     assert _git(prep_repo, "rev-parse", "refs/agent-sandbox/review/base", env=env).stdout.strip() == base_tip_sha
-    assert _git(prep_repo, "rev-parse", "refs/agent-sandbox/review/head", env=env).stdout.strip() == head_sha
-    assert _git(prep_repo, "rev-parse", "HEAD", env=env).stdout.strip() == head_sha
+    head_ref = subprocess.run(
+        ["git", "-C", str(prep_repo), "show-ref", "--verify", "refs/agent-sandbox/review/head"],
+        text=True,
+        capture_output=True,
+        env=env,
+    )
+    assert head_ref.returncode != 0
+    assert _git(prep_repo, "rev-parse", "HEAD", env=env).stdout.strip() == base_tip_sha
     assert stale_base_sha != base_tip_sha
+    assert base_tip_sha != head_sha
 
 
 def test_guest_setup_review_repo_help_mentions_explicit_refs(tmp_path: Path) -> None:

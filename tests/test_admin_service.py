@@ -3702,6 +3702,7 @@ def test_wait_for_vm_ip_uses_pkexec_when_requested(monkeypatch) -> None:
 
 def test_unlock_privileged_operations_starts_helper(monkeypatch, tmp_path: Path) -> None:
     service = AdminService(write_config(tmp_path))
+    service.use_privileged_helper = True
     started: list[str] = []
 
     class FakeHelper:

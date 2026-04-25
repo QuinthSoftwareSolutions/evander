@@ -10,6 +10,17 @@ from urllib.parse import quote
 import httpx
 
 from .provider_config import ProviderConfigResolver
+from .text_formatting import looks_like_html, render_markdownish_text_to_html
+
+
+def _format_ado_html_field(value: str | None) -> str | None:
+    if value is None:
+        return None
+    if not value:
+        return value
+    if looks_like_html(value):
+        return value
+    return render_markdownish_text_to_html(value)
 
 
 class IssueProviderAdapter(Protocol):
@@ -546,7 +557,13 @@ class AzureDevOpsIssueAdapter:
 
         operations: list[dict[str, Any]] = [{"op": "add", "path": "/fields/System.Title", "value": title}]
         if description is not None:
-            operations.append({"op": "add", "path": "/fields/System.Description", "value": description})
+            operations.append(
+                {
+                    "op": "add",
+                    "path": "/fields/System.Description",
+                    "value": _format_ado_html_field(description),
+                }
+            )
         if iteration_path is not None:
             operations.append({"op": "add", "path": "/fields/System.IterationPath", "value": iteration_path})
         if acceptance_criteria is not None:
@@ -554,7 +571,7 @@ class AzureDevOpsIssueAdapter:
                 {
                     "op": "add",
                     "path": "/fields/Microsoft.VSTS.Common.AcceptanceCriteria",
-                    "value": acceptance_criteria,
+                    "value": _format_ado_html_field(acceptance_criteria),
                 }
             )
         normalized_tags = self._normalize_tags(tags)

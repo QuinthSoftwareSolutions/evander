@@ -3,21 +3,34 @@
 # shellcheck source=lib/guest_ssh.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/guest_ssh.sh"
 
+vm_network_run_virsh() {
+  local -a args=("$@")
+
+  if virsh -c qemu:///system "${args[@]}" 2>/dev/null; then
+    return 0
+  fi
+
+  if sudo -n virsh -c qemu:///system "${args[@]}" 2>/dev/null; then
+    return 0
+  fi
+
+  if virsh "${args[@]}" 2>/dev/null; then
+    return 0
+  fi
+
+  if sudo -n virsh "${args[@]}" 2>/dev/null; then
+    return 0
+  fi
+
+  return 1
+}
+
 vm_network_domain_state() {
   local vm_name="$1"
   local state
 
   state="$(
-    sudo -n virsh dominfo "${vm_name}" 2>/dev/null \
-      | awk -F': *' '/^State:/ {print $2; exit}' || true
-  )"
-  if [[ -n "${state}" ]]; then
-    printf '%s\n' "${state}"
-    return 0
-  fi
-
-  state="$(
-    virsh dominfo "${vm_name}" 2>/dev/null \
+    vm_network_run_virsh dominfo "${vm_name}" \
       | awk -F': *' '/^State:/ {print $2; exit}' || true
   )"
   if [[ -n "${state}" ]]; then
@@ -40,11 +53,7 @@ vm_network_vm_exists() {
 vm_network_start() {
   local vm_name="$1"
 
-  if sudo -n virsh start "${vm_name}" >/dev/null 2>&1; then
-    return 0
-  fi
-
-  if virsh start "${vm_name}" >/dev/null 2>&1; then
+  if vm_network_run_virsh start "${vm_name}" >/dev/null; then
     return 0
   fi
 
@@ -56,16 +65,7 @@ vm_network_resolve_ip() {
   local ip
 
   ip="$(
-    sudo -n virsh domifaddr "${vm_name}" 2>/dev/null \
-      | awk '/ipv4/ {split($4, a, "/"); print a[1]; exit}' || true
-  )"
-  if [[ -n "${ip}" ]]; then
-    printf '%s\n' "${ip}"
-    return 0
-  fi
-
-  ip="$(
-    virsh domifaddr "${vm_name}" 2>/dev/null \
+    vm_network_run_virsh domifaddr "${vm_name}" \
       | awk '/ipv4/ {split($4, a, "/"); print a[1]; exit}' || true
   )"
   if [[ -n "${ip}" ]]; then

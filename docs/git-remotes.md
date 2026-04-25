@@ -259,8 +259,10 @@ AZURE_DEVOPS_PR_PAT=...
 ```
 
 `open_agent_pr.sh` detects Azure DevOps automatically from the trusted clone's `origin` URL and
-creates the PR there. Pass `--provider azure_devops` if you need to override provider detection
-explicitly. The same helper still supports GitHub remotes through `gh`.
+creates the PR there. The same PAT also lets mirror refreshes reach Azure DevOps over HTTPS when a
+guest-facing mirror is configured with an Azure canonical source. Pass `--provider azure_devops`
+if you need to override provider detection explicitly. The same helper still supports GitHub
+remotes through `gh`.
 
 ## Notes
 

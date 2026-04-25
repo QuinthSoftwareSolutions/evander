@@ -21,6 +21,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # shellcheck source=lib/runtime_config.sh
 source "${SCRIPT_DIR}/lib/runtime_config.sh"
+# shellcheck source=lib/git_provider_auth.sh
+source "${SCRIPT_DIR}/lib/git_provider_auth.sh"
+load_root_secrets_env
+load_provider_config
 load_issue_setup_config
 
 GIT_ROOT="${AGENT_SANDBOX_GIT_ROOT:-${ROOT_DIR}/git-remotes}"
@@ -344,7 +348,7 @@ auto_refresh_mirror() {
       exit 1
     fi
 
-    if ! git -C "${resolved_repo_path}" fetch --prune "${mirror_remote_name}" >/dev/null 2>&1; then
+    if ! git_fetch_remote_with_auth "${resolved_repo_path}" "${mirror_remote_name}" --prune >/dev/null 2>&1; then
       sync_failed=1
     fi
 

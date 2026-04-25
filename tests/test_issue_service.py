@@ -204,7 +204,7 @@ def test_create_issue_composes_json_patch_for_backlog_fields(monkeypatch: pytest
         {
             "op": "add",
             "path": "/fields/Microsoft.VSTS.Common.AcceptanceCriteria",
-            "value": "Tests pass",
+            "value": "<p>Tests pass</p>",
         },
         {"op": "add", "path": "/fields/System.Tags", "value": "api; backend"},
         {"op": "add", "path": "/fields/System.AssignedTo", "value": "ada@example.com"},
@@ -212,6 +212,54 @@ def test_create_issue_composes_json_patch_for_backlog_fields(monkeypatch: pytest
     assert result["fields"]["Microsoft.VSTS.Common.AcceptanceCriteria"] == "Tests pass"
     assert result["fields"]["System.Tags"] == "api; backend"
     assert result["fields"]["System.AssignedTo"] == "ada@example.com"
+
+
+def test_create_issue_formats_plain_text_ado_html_fields(monkeypatch: pytest.MonkeyPatch) -> None:
+    adapter = AzureDevOpsIssueAdapter(config_resolver=object())
+    monkeypatch.setattr(
+        adapter,
+        "_resolve_connection",
+        lambda directory_path: ("https://dev.azure.com/example", "project-x", "pat"),
+    )
+    calls: list[dict[str, object]] = []
+    payload = {
+        "id": 90,
+        "url": "https://dev.azure.com/example/project-x/_apis/wit/workitems/90",
+        "fields": {
+            "System.WorkItemType": "Task",
+            "System.TeamProject": "project-x",
+            "System.Title": "Implement API",
+            "System.Description": "<p>Line one</p><ul><li>Line two</li></ul>",
+            "System.IterationPath": "project-x\\Sprint 1",
+            "Microsoft.VSTS.Common.AcceptanceCriteria": "<ol><li>Tests pass</li></ol>",
+        },
+        "_links": {"web": {"href": "https://dev.azure.com/example/project-x/_workitems/edit/90"}},
+    }
+    monkeypatch.setattr(
+        "agent_sandbox.issue_service.httpx.Client",
+        lambda timeout: _DummyClient(httpx.Response(200, json=payload), calls),
+    )
+
+    adapter.create_issue(
+        directory_path="root",
+        issue_type="task",
+        title="Implement API",
+        description="Line one\n- Line two",
+        iteration_path="project-x\\Sprint 1",
+        acceptance_criteria="1. Tests pass",
+    )
+
+    operations = calls[0]["json"]
+    assert operations[1] == {
+        "op": "add",
+        "path": "/fields/System.Description",
+        "value": "<p>Line one</p><ul><li>Line two</li></ul>",
+    }
+    assert operations[3] == {
+        "op": "add",
+        "path": "/fields/Microsoft.VSTS.Common.AcceptanceCriteria",
+        "value": "<ol><li>Tests pass</li></ol>",
+    }
 
 
 def test_create_issue_normalizes_assigned_to_identity_object(monkeypatch: pytest.MonkeyPatch) -> None:

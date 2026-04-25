@@ -1,6 +1,6 @@
 {
   "runtime_dir": "runtime",
-  "poll_interval_seconds": 30,
+  "poll_interval_seconds": 5,
   "jitter_seconds": 5,
   "lock_path": null,
   "event_queue_store_path": null,

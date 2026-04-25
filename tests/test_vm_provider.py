@@ -65,7 +65,7 @@ def test_azure_provider_lists_provider_neutral_vm_summaries(tmp_path: Path) -> N
         )
     )
     dependencies = SimpleNamespace(
-        runtime=SimpleNamespace(session_repository=session_repository, sessions=session_repository),
+        runtime=SimpleNamespace(session_repository=session_repository),
         normalize_directory_path=lambda directory_path: directory_path or "root",
         resolve_vm_defaults=lambda directory_path: SimpleNamespace(
             azure=SimpleNamespace(resource_group="rg-agents"),

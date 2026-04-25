@@ -70,12 +70,10 @@ class FakeIssueGitFacade:
 def _build_issue_admin(tmp_path: Path) -> tuple[SimpleNamespace, FakeStore]:
     store = FakeStore()
     runtime = SimpleNamespace(
-        sessions=FakeStore(),
-        session_repository=None,
+        session_repository=FakeStore(),
         approvals=FakeStore(),
         audit=SimpleNamespace(log_decision=lambda **kwargs: None),
     )
-    runtime.session_repository = runtime.sessions
 
     def resolve_local_issue(issue_identifier: str) -> LocalIssueRecord:
         issue = store.get(issue_identifier)

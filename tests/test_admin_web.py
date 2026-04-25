@@ -1329,6 +1329,35 @@ def test_admin_web_can_toggle_privileged_operations_state(tmp_path: Path, monkey
     assert relocked_response.json()["privileged_operations"]["unlocked"] is False
 
 
+def test_admin_web_unlocks_without_starting_helper_when_helper_is_not_required(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    service = AdminService(write_config(tmp_path))
+
+    def fail_unlock(self):
+        raise AssertionError("web unlock should not require the privileged helper when disabled")
+
+    monkeypatch.setattr(service, "privileged_operations_unlocked", MethodType(fail_unlock, service))
+
+    client = TestClient(create_app(service))
+
+    initial_state = client.get("/api/admin/state")
+    unlocked_response = client.post("/api/admin/privileged/unlock")
+    unlocked_state = client.get("/api/admin/state")
+    relocked_response = client.post("/api/admin/privileged/lock")
+    relocked_state = client.get("/api/admin/state")
+
+    assert initial_state.status_code == 200
+    assert initial_state.json()["privileged_operations"]["unlocked"] is False
+    assert unlocked_response.status_code == 200
+    assert unlocked_response.json()["privileged_operations"]["unlocked"] is True
+    assert unlocked_state.json()["privileged_operations"]["unlocked"] is True
+    assert relocked_response.status_code == 200
+    assert relocked_response.json()["privileged_operations"]["unlocked"] is False
+    assert relocked_state.json()["privileged_operations"]["unlocked"] is False
+
+
 def test_admin_web_rejects_start_when_vm_session_model_is_missing(tmp_path: Path, monkeypatch) -> None:
     service = AdminService(write_config(tmp_path))
 

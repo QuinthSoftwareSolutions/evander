@@ -219,9 +219,8 @@ class AdminWebAuth:
 
     def privileged_for_request(self, request: Request) -> bool:
         session = self.read_session(request)
-        if session is None:
-            return not self.config.auth_required
-        return str(session.get("sid") or "").strip() == self._privileged_session_id
+        session_id = str(session.get("sid") or "").strip() if session else ""
+        return bool(session_id) and session_id == self._privileged_session_id
 
     def require(self, request: Request) -> dict[str, Any]:
         session = self.read_session(request)

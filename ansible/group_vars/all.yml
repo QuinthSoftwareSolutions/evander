@@ -6,6 +6,9 @@ agent_sandbox_deploy_path: "/opt/agent-sandbox"
 agent_sandbox_runtime_dir: "{{ agent_sandbox_deploy_path }}/runtime"
 agent_sandbox_run_user: "agent-sandbox"
 agent_sandbox_manage_run_user: true
+agent_sandbox_run_user_supplementary_groups:
+  - libvirt
+  - kvm
 agent_sandbox_service_profile: "full"
 agent_sandbox_allowed_tcp_ports:
   - 22
@@ -73,7 +76,7 @@ agent_sandbox_ado_worker_env:
 # Worker/global JSON config files.
 agent_sandbox_ado_worker_config:
   runtime_dir: "runtime"
-  poll_interval_seconds: 30
+  poll_interval_seconds: 5
   directories: []
   yaml_output_dir: null
   setup_log_dir: null
@@ -92,7 +95,7 @@ agent_sandbox_ado_worker_config:
 agent_sandbox_discord_ingest_config:
   runtime_dir: "runtime"
   directories: []
-  poll_interval_seconds: 30
+  poll_interval_seconds: 5
   jitter_seconds: 5
   backoff_seconds: 60
   lock_path: null
@@ -129,7 +132,7 @@ agent_sandbox_scheduled_wake_config:
 agent_sandbox_teams_ingest_config:
   runtime_dir: "runtime"
   directories: []
-  poll_interval_seconds: 30
+  poll_interval_seconds: 2
   jitter_seconds: 5
   backoff_seconds: 60
   lock_path: null
@@ -156,7 +159,7 @@ agent_sandbox_host_heartbeat_config:
 
 agent_sandbox_trigger_orchestrator_config:
   runtime_dir: "runtime"
-  poll_interval_seconds: 30
+  poll_interval_seconds: 5
   jitter_seconds: 5
   lock_path: null
   event_queue_store_path: null

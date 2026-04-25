@@ -66,6 +66,7 @@ class GatewayConfig(BaseModel):
     teams_message_store_path: Path = Path("/var/lib/agent-sandbox/teams_messages.json")
     directories_store_path: Path = Path("/var/lib/agent-sandbox/directories.json")
     enable_directory_scoped_config: bool = False
+    execution_backend: Literal["libvirt_vm", "container_worker_vm"] = "libvirt_vm"
     discord_backend: Literal["stub", "bot_api"] = "stub"
     discord_bot_token_env: str = Field(default="DISCORD_BOT_TOKEN", min_length=1)
     discord_api_base_url: str = "https://discord.com/api/v10"
@@ -365,7 +366,7 @@ class GatewayConfig(BaseModel):
 
 class AdoWorkerGlobalConfig(BaseModel):
     runtime_dir: Path = Path("runtime")
-    poll_interval_seconds: float = Field(default=30.0, gt=0)
+    poll_interval_seconds: float = Field(default=5.0, gt=0)
     directories: list[str] = Field(default_factory=list)
     yaml_output_dir: Path | None = None
     setup_log_dir: Path | None = None
@@ -505,7 +506,7 @@ class IssueOrchestratorWorkerGlobalConfig(BaseModel):
 class DiscordIngestWorkerGlobalConfig(BaseModel):
     runtime_dir: Path = Path("runtime")
     directories: list[str] = Field(default_factory=list)
-    poll_interval_seconds: float = Field(default=30.0, gt=0)
+    poll_interval_seconds: float = Field(default=5.0, gt=0)
     jitter_seconds: float = Field(default=5.0, ge=0)
     backoff_seconds: float = Field(default=60.0, ge=0)
     lock_path: Path | None = None
@@ -624,7 +625,7 @@ class ScheduledWakeWorkerGlobalConfig(BaseModel):
 class TeamsIngestWorkerGlobalConfig(BaseModel):
     runtime_dir: Path = Path("runtime")
     directories: list[str] = Field(default_factory=list)
-    poll_interval_seconds: float = Field(default=30.0, gt=0)
+    poll_interval_seconds: float = Field(default=2.0, gt=0)
     jitter_seconds: float = Field(default=5.0, ge=0)
     backoff_seconds: float = Field(default=60.0, ge=0)
     lock_path: Path | None = None
@@ -655,7 +656,7 @@ class TeamsIngestWorkerGlobalConfig(BaseModel):
 
 class OrchestrationCoreConfig(BaseModel):
     runtime_dir: Path = Path("runtime")
-    poll_interval_seconds: float = Field(default=30.0, gt=0)
+    poll_interval_seconds: float = Field(default=5.0, gt=0)
     jitter_seconds: float = Field(default=5.0, ge=0)
     lock_path: Path | None = None
     event_queue_store_path: Path | None = None

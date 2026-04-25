@@ -774,6 +774,7 @@ The helper:
 - detaches the worktree onto the head commit
 - hard-resets and cleans the worktree
 - writes `.agent-sandbox/review-context.env` for downstream prompt or shell steps
+- fails fast when an explicit `--base-commit` or `--head-commit` cannot be materialized
 
 ### Failure handling
 
@@ -1288,8 +1289,8 @@ After review and tests pass, push the reviewed branch to `origin` and optionally
 
 This is the preferred flow: VM -> quarantine bare repo -> trusted host clone -> `origin`/PR.
 
-For Azure DevOps origins, set `AZURE_DEVOPS_PR_PAT` in the environment so the PR helper can
-create upstream PRs automatically against the Azure-hosted canonical repository. When
+For Azure DevOps origins, set `AZURE_DEVOPS_PR_PAT` in the environment so the PR helper and
+mirror-refresh path can authenticate automatically against the Azure-hosted canonical repository. When
 `open_agent_pr.sh` has an Azure work item id, or a session id like `issue-14084-...`, it also
 associates the PR with that work item in Azure DevOps.
 

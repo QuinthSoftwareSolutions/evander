@@ -21,7 +21,7 @@ class _SessionStoreStub:
 
 class _RuntimeStub:
     def __init__(self, sessions: dict[str, object]) -> None:
-        self.sessions = _SessionStoreStub(sessions)
+        self.session_repository = _SessionStoreStub(sessions)
 
 
 class _AdminServiceStub:

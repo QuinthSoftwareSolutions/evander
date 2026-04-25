@@ -1,6 +1,6 @@
 {
   "runtime_dir": "runtime",
-  "poll_interval_seconds": 30,
+  "poll_interval_seconds": 5,
   "directories": [],
   "yaml_output_dir": null,
   "setup_log_dir": null,

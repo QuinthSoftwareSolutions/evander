@@ -44,19 +44,15 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
 
         summary = self._find_vm_summary(vm_name=vm_name, vm_user=vm_user)
         if summary is not None and str(getattr(summary, "agent_state", "") or "").strip() == "running":
-            queue_store = AgentPromptQueueStore(context.resolved_config.runtime_dir / "queued-agent-prompts.json")
-            record = queue_store.put(
-                QueuedAgentPromptRecord(
-                    queue_key=vm_name,
-                    target=target,
-                    vm_name=vm_name,
-                    session_id=session_id,
-                    prompt=prompt,
-                    model=model,
-                    vm_user=vm_user,
-                    resume_thread_id=resume_thread_id,
-                    effect_id=effect.id,
-                )
+            record = self._queue_prompt(
+                target=target,
+                vm_name=vm_name,
+                session_id=session_id,
+                prompt=prompt,
+                model=model,
+                vm_user=vm_user,
+                resume_thread_id=resume_thread_id,
+                effect_id=effect.id,
             )
             return {
                 "success": True,
@@ -76,6 +72,23 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             dispatch_id=dispatch_id,
             resume_thread_id=resume_thread_id,
         )
+        if not bool(getattr(result, "success", False)):
+            record = self._queue_prompt(
+                target=target,
+                vm_name=vm_name,
+                session_id=session_id,
+                prompt=prompt,
+                model=model,
+                vm_user=vm_user,
+                resume_thread_id=resume_thread_id,
+                effect_id=effect.id,
+            )
+            message = self._normalize_optional_string(getattr(result, "message", None)) or "<empty>"
+            raise RuntimeError(
+                "effect:agent:enqueue-prompt resume_agent failed; queued prompt for retry "
+                f"(vm_name={vm_name}, session_id={session_id or '<none>'}, queue_key={record.queue_key}, "
+                f"coalesced_count={record.coalesced_count}, message={message})"
+            )
         thread_id = self._normalize_optional_string(getattr(result, "thread_id", None))
         if not thread_id:
             raise RuntimeError("effect:agent:enqueue-prompt did not receive a thread_id from resume_agent")
@@ -141,6 +154,34 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
         if self.runtime_context is None:
             raise RuntimeError("AgentEnqueuePromptEffectProvider has no runtime context")
         return self.runtime_context
+
+    def _queue_prompt(
+        self,
+        *,
+        target: str,
+        vm_name: str,
+        session_id: str | None,
+        prompt: str,
+        model: str | None,
+        vm_user: str,
+        resume_thread_id: str | None,
+        effect_id: str,
+    ) -> QueuedAgentPromptRecord:
+        context = self._context()
+        queue_store = AgentPromptQueueStore(context.resolved_config.runtime_dir / "queued-agent-prompts.json")
+        return queue_store.put(
+            QueuedAgentPromptRecord(
+                queue_key=vm_name,
+                target=target,
+                vm_name=vm_name,
+                session_id=session_id,
+                prompt=prompt,
+                model=model,
+                vm_user=vm_user,
+                resume_thread_id=resume_thread_id,
+                effect_id=effect_id,
+            )
+        )
 
     @staticmethod
     def _normalize_optional_string(value: Any) -> str | None:
