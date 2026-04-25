@@ -1,0 +1,22 @@
+from __future__ import annotations
+
+from typing import Any, Protocol
+
+from .models import WorkerJobRecord, WorkerJobRequest, WorkerSessionPaths
+
+
+class ContainerRuntime(Protocol):
+    def start_job(
+        self,
+        request: WorkerJobRequest,
+        record: WorkerJobRecord,
+        paths: WorkerSessionPaths,
+    ) -> str: ...
+
+    def inspect_job(self, record: WorkerJobRecord) -> dict[str, Any]: ...
+
+    def stop_job(self, record: WorkerJobRecord) -> None: ...
+
+    def remove_job(self, record: WorkerJobRecord) -> None: ...
+
+    def get_logs(self, record: WorkerJobRecord) -> str: ...
