@@ -20,8 +20,8 @@ def test_execution_backend_factory_defaults_to_libvirt_vm(tmp_path) -> None:
     assert backend.kind == ExecutionBackendKind.LIBVIRT_VM
 
 
-def test_execution_backend_factory_rejects_reserved_container_backend(tmp_path) -> None:
+def test_execution_backend_factory_reports_container_gateway_integration_is_unwired(tmp_path) -> None:
     config = GatewayConfig(runtime_dir=tmp_path, execution_backend="container_worker_vm")
 
-    with pytest.raises(NotImplementedError, match="container_worker_vm"):
+    with pytest.raises(NotImplementedError, match="worker daemon"):
         build_execution_backend(config, admin_service=FakeAdminService(), project_dir=tmp_path)

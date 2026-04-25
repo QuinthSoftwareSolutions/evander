@@ -22,5 +22,8 @@ def build_execution_backend(
     if backend == ExecutionBackendKind.LIBVIRT_VM:
         return LibvirtVmExecutionBackend(admin_service=admin_service)
     if backend == ExecutionBackendKind.CONTAINER_WORKER_VM:
-        raise NotImplementedError("Execution backend 'container_worker_vm' is reserved but not implemented.")
+        raise NotImplementedError(
+            "Execution backend 'container_worker_vm' has a worker daemon, "
+            "but gateway-side orchestration is not wired yet."
+        )
     raise ValueError(f"Unsupported execution backend: {backend.value}")

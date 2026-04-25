@@ -6,7 +6,7 @@ The execution backend abstraction separates host control-plane workflows from th
 
 `libvirt_vm` is the supported backend. It wraps the current libvirt VM behavior and delegates to the existing admin VM service for status, start, shutdown, destroy, and guest log snapshots.
 
-`container_worker_vm` is reserved for a future implementation. Selecting it in `GatewayConfig.execution_backend` currently fails with a clear `NotImplementedError`.
+`container_worker_vm` now has a worker-side HTTP daemon, `agent-sandbox-worker-daemon`, that can run jobs in disposable Docker containers while preserving durable per-session state on the worker VM. Selecting it in `GatewayConfig.execution_backend` still fails with a clear `NotImplementedError` because gateway-side orchestration has not been wired to that daemon yet.
 
 ## Phase 1 Scope
 
@@ -43,4 +43,4 @@ Next steps should move behavior only when the contract is stable:
 
 - move standalone VM creation behind `prepare` and `start`
 - have issue VM orchestration build an `ExecutionSpec`
-- add `container_worker_vm` without changing orchestration and business logic callers
+- wire `container_worker_vm` gateway orchestration to the worker daemon without changing business logic callers

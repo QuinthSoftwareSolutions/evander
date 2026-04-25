@@ -87,6 +87,7 @@ def test_operations_admin_service_delegates_representative_methods() -> None:
     service = OperationsAdminService(
         project_dir=admin.project_dir,
         get_privileged_helper=lambda: admin._privileged_helper,
+        get_use_privileged_helper=lambda: False,
         set_privileged_helper=lambda helper: setattr(admin, "_privileged_helper", helper),
         teams_admin=facade,
         session_admin=facade,

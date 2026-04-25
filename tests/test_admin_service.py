@@ -15,6 +15,12 @@ import httpx
 import pytest
 from agent_sandbox.admin_facades import WorkerAdminDependencies, WorkerAdminFacade
 from agent_sandbox.admin_service import AdminService
+from agent_sandbox.config import (
+    DiscordIngestWorkerGlobalConfig,
+    DiscordWakeWorkerGlobalConfig,
+    ScheduledWakeWorkerGlobalConfig,
+    TeamsIngestWorkerGlobalConfig,
+)
 from agent_sandbox.models import ApprovalRequest, ApprovalStatus, SessionManifest, ToolName
 
 UTC = timezone.utc
@@ -972,7 +978,7 @@ def test_admin_service_reads_and_writes_discord_wake_worker_global_config(tmp_pa
     read_result = service.read_worker_global_config("discord-wake")
     assert read_result.exists is False
     assert read_result.path == str(tmp_path / "config" / "discord-wake" / "config.json")
-    assert read_result.config["poll_interval_seconds"] == 30.0
+    assert read_result.config["poll_interval_seconds"] == DiscordWakeWorkerGlobalConfig().poll_interval_seconds
     assert read_result.config["directories"] == []
 
     write_result = service.write_worker_global_config(
@@ -1012,7 +1018,7 @@ def test_admin_service_reads_and_writes_scheduled_wake_worker_global_config(tmp_
     read_result = service.read_worker_global_config("scheduled-wake")
     assert read_result.exists is False
     assert read_result.path == str(tmp_path / "config" / "scheduled-wake" / "config.json")
-    assert read_result.config["poll_interval_seconds"] == 30.0
+    assert read_result.config["poll_interval_seconds"] == ScheduledWakeWorkerGlobalConfig().poll_interval_seconds
     assert read_result.config["directories"] == []
 
     write_result = service.write_worker_global_config(
@@ -1051,7 +1057,7 @@ def test_admin_service_reads_and_writes_discord_ingest_worker_global_config(tmp_
     read_result = service.read_worker_global_config("discord-ingest")
     assert read_result.exists is False
     assert read_result.path == str(tmp_path / "config" / "discord-ingest" / "config.json")
-    assert read_result.config["poll_interval_seconds"] == 30.0
+    assert read_result.config["poll_interval_seconds"] == DiscordIngestWorkerGlobalConfig().poll_interval_seconds
     assert read_result.config["directories"] == []
     assert read_result.config["backoff_seconds"] == 60.0
 
@@ -1086,7 +1092,7 @@ def test_admin_service_reads_and_writes_teams_ingest_worker_global_config(tmp_pa
     read_result = service.read_worker_global_config("teams-ingest")
     assert read_result.exists is False
     assert read_result.path == str(tmp_path / "config" / "teams-ingest" / "config.json")
-    assert read_result.config["poll_interval_seconds"] == 30.0
+    assert read_result.config["poll_interval_seconds"] == TeamsIngestWorkerGlobalConfig().poll_interval_seconds
     assert read_result.config["directories"] == []
     assert read_result.config["backoff_seconds"] == 60.0
 
@@ -2842,7 +2848,7 @@ def test_proxy_identifier_rejects_ambiguous_ado_work_item_ids_across_projects(tm
 
 def test_create_issue_vm_accepts_unified_proxy_identifier(tmp_path: Path, monkeypatch: Any) -> None:
     service = AdminService(write_config(tmp_path))
-    issue = service.create_local_issue(
+    service.create_local_issue(
         yaml_path=str(
             _write_proxy_issue_yaml(
                 tmp_path,

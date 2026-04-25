@@ -39,16 +39,18 @@ class _AdminServiceStub:
     resume_calls: list[dict[str, object]]
 
     def __post_init__(self) -> None:
+        sessions = [
+            SessionManifest(
+                session_id="session-42",
+                vm_id="vm-42",
+                allowed_tools=[ToolName.GET_AGENT_STATUS],
+                expires_at=datetime.now(UTC) + timedelta(hours=1),
+            )
+        ]
         self.runtime = SimpleNamespace(
-            sessions=SimpleNamespace(
-                read_all=lambda: {
-                    "session-42": SessionManifest(
-                        session_id="session-42",
-                        vm_id="vm-42",
-                        allowed_tools=[ToolName.GET_AGENT_STATUS],
-                        expires_at=datetime.now(UTC) + timedelta(hours=1),
-                    )
-                }
+            session_repository=SimpleNamespace(
+                list_sessions=lambda: sessions,
+                read_all=lambda: {session.session_id: session for session in sessions},
             )
         )
 

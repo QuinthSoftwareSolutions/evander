@@ -1,0 +1,75 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from agent_sandbox.worker_daemon import (
+    DockerContainerRuntime,
+    WorkerJobRecord,
+    WorkerJobRequest,
+    WorkerSessionPaths,
+)
+
+
+def _request() -> WorkerJobRequest:
+    return WorkerJobRequest.model_validate(
+        {
+            "session_id": "session-1",
+            "job_id": "job-1",
+            "image": "codex:latest",
+            "command": ["codex", "exec", "hello"],
+            "resource_limits": {"memory": "512m", "cpus": 1.5, "pids_limit": 256},
+        }
+    )
+
+
+def _record(paths: WorkerSessionPaths) -> WorkerJobRecord:
+    return WorkerJobRecord(
+        job_id="job-1",
+        session_id="session-1",
+        image="codex:latest",
+        command=["codex", "exec", "hello"],
+        container_name="agent-worker-job-1",
+        workspace_path=str(paths.workspace),
+        agent_home_path=str(paths.agent_home),
+        artifacts_path=str(paths.artifacts),
+        logs_path=str(paths.logs),
+    )
+
+
+def test_docker_runtime_refuses_host_network() -> None:
+    with pytest.raises(ValueError, match="host"):
+        DockerContainerRuntime(docker_network="host")
+
+
+def test_docker_run_args_use_restricted_container_shape_and_persistent_mounts(tmp_path: Path) -> None:
+    paths = WorkerSessionPaths.resolve(tmp_path / "worker-root", "session-1")
+    runtime = DockerContainerRuntime(docker_network="none")
+
+    args = runtime._build_run_args(request=_request(), record=_record(paths), paths=paths)  # noqa: SLF001
+
+    assert args[:3] == ["docker", "run", "-d"]
+    assert "--privileged" not in args
+    assert "/var/run/docker.sock" not in " ".join(args)
+    assert "--network" in args
+    assert args[args.index("--network") + 1] == "none"
+    assert "--cap-drop" in args
+    assert args[args.index("--cap-drop") + 1] == "ALL"
+    assert f"{paths.workspace}:/workspace" in args
+    assert f"{paths.agent_home}:/home/agent" in args
+    assert f"{paths.artifacts}:/artifacts" in args
+    assert args[args.index("-w") + 1] == "/workspace"
+    assert args[args.index("--memory") + 1] == "512m"
+    assert args[args.index("--cpus") + 1] == "1.5"
+    assert args[args.index("--pids-limit") + 1] == "256"
+    assert args[-4:] == ["codex:latest", "codex", "exec", "hello"]
+
+
+def test_docker_runtime_allows_non_host_network_override(tmp_path: Path) -> None:
+    paths = WorkerSessionPaths.resolve(tmp_path / "worker-root", "session-1")
+    runtime = DockerContainerRuntime(docker_network="agent-worker-net")
+
+    args = runtime._build_run_args(request=_request(), record=_record(paths), paths=paths)  # noqa: SLF001
+
+    assert args[args.index("--network") + 1] == "agent-worker-net"
