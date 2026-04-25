@@ -4,11 +4,11 @@ The execution backend abstraction separates host control-plane workflows from th
 
 ## Backends
 
-`libvirt_vm` is the supported backend. It wraps the current libvirt VM behavior and delegates to the existing admin VM service for status, start, shutdown, destroy, and guest log snapshots.
+`libvirt_vm` is the default backend. It wraps the current libvirt VM behavior and delegates to the existing admin VM service for status, start, shutdown, destroy, and guest log snapshots.
 
-`container_worker_vm` now has a worker-side HTTP daemon, `agent-sandbox-worker-daemon`, that can run jobs in disposable Docker containers while preserving durable per-session state on the worker VM. Selecting it in `GatewayConfig.execution_backend` is wired for early single-worker control-plane use when `container_worker_base_url` is configured. It is additive; `libvirt_vm` remains the default and is unchanged.
+`container_worker_vm` has a worker-side HTTP daemon, `agent-sandbox-worker-daemon`, that can run jobs in disposable Docker containers while preserving durable per-session state on the worker VM. In Phase 4 it remains early single-worker control-plane use and is exposed as an explicit manual/operator backend through `agent-sandbox-cli execution ...`. It is additive; `libvirt_vm` remains the default and is unchanged.
 
-## Phase 1 Scope
+## Phase 4 Scope
 
 The backend owns:
 
@@ -17,6 +17,7 @@ The backend owns:
 - VM shutdown
 - VM destroy
 - guest agent log snapshots
+- manual container job start/list/smoke operations through the execution CLI
 
 The backend does not yet own:
 
@@ -26,6 +27,8 @@ The backend does not yet own:
 - Python/frontend/toolchain bootstrap
 - agent resume and wake orchestration
 - issue-worker and prompt-effect orchestration
+- ADO issue processing
+- PR publishing
 
 ## Configuration
 
@@ -47,6 +50,8 @@ container_worker_default_image: "agent-sandbox-runner:latest"
 This does not replace `vm_provider`; provider-specific lifecycle details still live behind the existing VM services in this phase.
 
 For `container_worker_vm`, execution-defining inputs are first-class `ExecutionSpec` fields: `command`, `image`, `repo_source`, `clone_branch`, `resource_limits`, `persistence_mode`, and `workspace_mode`. `metadata` is reserved for sanitized caller context and is not used to smuggle the container command or clone settings.
+
+The execution CLI never mutates the configured backend. `start-container-job` and `smoke-container-worker` explicitly construct the container backend from the loaded config. `status`, `logs`, `stop`, and `destroy` auto-use the container backend only when the target resolves in `container-worker-executions.json`, or when the operator passes `--backend container_worker_vm`.
 
 ## Migration Path
 

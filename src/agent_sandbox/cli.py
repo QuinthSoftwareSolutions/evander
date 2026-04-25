@@ -8,6 +8,8 @@ import os
 import re
 import shutil
 import subprocess
+import time
+import uuid
 from dataclasses import asdict, dataclass, is_dataclass
 from datetime import datetime, timedelta, timezone
 from itertools import count
@@ -33,7 +35,14 @@ from .discord_wake_worker import build_discord_wake_worker
 from .directories import DirectoryService
 from .issue_orchestrator import build_issue_orchestrator_worker
 from .effect_orchestrator import build_effect_orchestrator_worker
-from .execution import ExecutionSpec, build_execution_backend
+from .execution import (
+    ContainerWorkerExecutionRepository,
+    ContainerWorkerVmExecutionBackend,
+    ExecutionBackendKind,
+    ExecutionSpec,
+    ExecutionStatusKind,
+    build_execution_backend,
+)
 from .scheduled_wake_worker import build_scheduled_wake_worker
 from .trigger_orchestrator import build_trigger_orchestrator_worker
 from .migrations import (
@@ -135,8 +144,63 @@ def _build_execution_backend_from_option(config: Path):
     cfg = _load_runtime_config_from_option(config)
     return build_execution_backend(
         cfg,
-        admin_service=None,
+        admin_service=AdminService(config) if str(cfg.execution_backend) == "libvirt_vm" else None,
         project_dir=_project_dir_for_config_option(config),
+    )
+
+
+def _container_worker_repository(config: GatewayConfig) -> ContainerWorkerExecutionRepository:
+    return ContainerWorkerExecutionRepository(config.runtime_dir / "container-worker-executions.json")
+
+
+def _container_worker_target_exists(config: GatewayConfig, target: str) -> bool:
+    try:
+        _container_worker_repository(config).resolve(target)
+    except ValueError as exc:
+        return str(exc).startswith("Ambiguous container worker session target")
+    return True
+
+
+def _preflight_container_worker_config(config: GatewayConfig) -> None:
+    if not config.container_worker_base_url:
+        raise typer.BadParameter("container_worker_base_url is required for container_worker_vm.")
+    if not os.environ.get(config.container_worker_token_env, ""):
+        raise typer.BadParameter(
+            f"container worker bearer token env var {config.container_worker_token_env} is not set."
+        )
+
+
+def _build_execution_backend_for_kind(
+    config_path: Path,
+    *,
+    backend: ExecutionBackendKind | None = None,
+    target: str | None = None,
+    default_container: bool = False,
+    require_container_token: bool = True,
+):
+    cfg = _load_runtime_config_from_option(config_path)
+    if backend is not None:
+        selected = backend
+    elif default_container:
+        selected = ExecutionBackendKind.CONTAINER_WORKER_VM
+    elif target and _container_worker_target_exists(cfg, target):
+        selected = ExecutionBackendKind.CONTAINER_WORKER_VM
+    else:
+        selected = ExecutionBackendKind(str(cfg.execution_backend))
+
+    if selected == ExecutionBackendKind.CONTAINER_WORKER_VM:
+        if require_container_token:
+            _preflight_container_worker_config(cfg)
+        elif not cfg.container_worker_base_url:
+            raise typer.BadParameter("container_worker_base_url is required for container_worker_vm.")
+        container_cfg = cfg.model_copy(update={"execution_backend": ExecutionBackendKind.CONTAINER_WORKER_VM.value})
+        return ContainerWorkerVmExecutionBackend(config=container_cfg)
+
+    libvirt_cfg = cfg.model_copy(update={"execution_backend": ExecutionBackendKind.LIBVIRT_VM.value})
+    return build_execution_backend(
+        libvirt_cfg,
+        admin_service=AdminService(config_path),
+        project_dir=_project_dir_for_config_option(config_path),
     )
 
 
@@ -467,23 +531,83 @@ def _teams_auth_print_payload(title: str, payload: object) -> None:
     typer.echo(json.dumps(_teams_auth_redact(normalized), indent=2, sort_keys=True))
 
 
+BackendOption = Annotated[
+    ExecutionBackendKind | None,
+    typer.Option("--backend", help="Force an execution backend instead of auto-detecting container mappings."),
+]
+
+
+def _parse_metadata_pairs(pairs: list[str] | None) -> dict[str, str]:
+    metadata: dict[str, str] = {}
+    forbidden = {"env", "environment", "environment_variables"}
+    for raw in pairs or []:
+        if "=" not in raw:
+            raise typer.BadParameter("--metadata values must use key=value format.")
+        key, value = raw.split("=", 1)
+        normalized_key = key.strip()
+        if not normalized_key:
+            raise typer.BadParameter("--metadata keys must not be empty.")
+        if normalized_key.casefold() in forbidden:
+            raise typer.BadParameter(f"--metadata key {normalized_key} is not allowed.")
+        metadata[normalized_key] = value
+    return metadata
+
+
+def _resource_limits(memory: str | None, cpus: float | None, pids_limit: int | None) -> dict[str, object] | None:
+    limits: dict[str, object] = {}
+    if memory:
+        limits["memory"] = memory
+    if cpus is not None:
+        limits["cpus"] = cpus
+    if pids_limit is not None:
+        limits["pids_limit"] = pids_limit
+    return limits or None
+
+
+def _container_mapping_payload(record) -> dict[str, object]:
+    return {
+        "execution_id": record.execution_id,
+        "session_id": record.session_id,
+        "worker_job_id": record.worker_job_id,
+        "target_name": record.target_name,
+        "worker_url": record.worker_url,
+        "last_status": record.last_status,
+        "created_at": record.created_at.isoformat(),
+        "updated_at": record.updated_at.isoformat(),
+        "started_at": record.started_at.isoformat() if record.started_at else None,
+        "finished_at": record.finished_at.isoformat() if record.finished_at else None,
+    }
+
+
 @execution_app.command("start-container-job")
 def execution_start_container_job(
     config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
     session_id: Annotated[str | None, typer.Option("--session-id", help="Session id for worker persistence.")] = None,
     command: Annotated[str, typer.Option("--command", help="Command to run inside the worker container.")] = "",
     target_name: Annotated[str | None, typer.Option("--target-name", help="Optional stable execution id/target name.")] = None,
-    directory_path: Annotated[str, typer.Option("--directory-path", help="Directory path owning the execution.")] = "root",
+    directory_path: Annotated[
+        str,
+        typer.Option("--directory-path", "--directory", help="Directory path owning the execution."),
+    ] = "root",
     image: Annotated[str | None, typer.Option("--image", help="Container image override.")] = None,
     repo_source: Annotated[str | None, typer.Option("--repo-source", help="Explicit repository source to clone.")] = None,
     clone_branch: Annotated[str | None, typer.Option("--clone-branch", help="Explicit repository branch to clone.")] = None,
+    metadata: Annotated[
+        list[str] | None,
+        typer.Option("--metadata", help="Sanitized metadata as key=value. May be repeated."),
+    ] = None,
+    memory: Annotated[str | None, typer.Option("--memory", help="Container memory limit, e.g. 512m.")] = None,
+    cpus: Annotated[float | None, typer.Option("--cpus", min=0.01, help="Container CPU limit.")] = None,
+    pids_limit: Annotated[int | None, typer.Option("--pids-limit", min=1, help="Container PID limit.")] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Emit JSON output.")] = False,
 ) -> None:
+    del json_output
     if not command.strip():
         raise typer.BadParameter("--command is required")
-    backend = _build_execution_backend_from_option(config)
+    backend = _build_execution_backend_for_kind(config, default_container=True)
     prepared = backend.prepare(
         ExecutionSpec(
-            backend=backend.kind,
+            backend=ExecutionBackendKind.CONTAINER_WORKER_VM,
             target_name=target_name,
             session_id=session_id,
             directory_path=directory_path,
@@ -491,14 +615,20 @@ def execution_start_container_job(
             image=image,
             repo_source=repo_source,
             clone_branch=clone_branch,
+            resource_limits=_resource_limits(memory, cpus, pids_limit),
+            metadata=_parse_metadata_pairs(metadata),
         )
     )
     _echo_model_json(backend.start(prepared))
 
 
 @execution_app.command("status")
-def execution_status(config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR, target: str = typer.Argument(...)) -> None:
-    backend = _build_execution_backend_from_option(config)
+def execution_status(
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
+    target: str = typer.Argument(...),
+    backend: BackendOption = None,
+) -> None:
+    backend = _build_execution_backend_for_kind(config, backend=backend, target=target)
     _echo_model_json(backend.inspect(target))
 
 
@@ -507,8 +637,9 @@ def execution_logs(
     config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
     target: str = typer.Argument(...),
     lines: Annotated[int, typer.Option("--lines", min=1, help="Number of trailing lines to print.")] = 50,
+    backend: BackendOption = None,
 ) -> None:
-    backend = _build_execution_backend_from_option(config)
+    backend = _build_execution_backend_for_kind(config, backend=backend, target=target)
     typer.echo(backend.get_log_snapshot(target, lines=lines), nl=False)
 
 
@@ -517,15 +648,171 @@ def execution_stop(
     config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
     target: str = typer.Argument(...),
     timeout_seconds: Annotated[int, typer.Option("--timeout-seconds", min=1)] = 60,
+    backend: BackendOption = None,
 ) -> None:
-    backend = _build_execution_backend_from_option(config)
+    backend = _build_execution_backend_for_kind(config, backend=backend, target=target)
     _echo_model_json(backend.stop(target, timeout_seconds=timeout_seconds))
 
 
 @execution_app.command("destroy")
-def execution_destroy(config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR, target: str = typer.Argument(...)) -> None:
-    backend = _build_execution_backend_from_option(config)
+def execution_destroy(
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
+    target: str = typer.Argument(...),
+    backend: BackendOption = None,
+) -> None:
+    backend = _build_execution_backend_for_kind(config, backend=backend, target=target)
     _echo_model_json(backend.destroy(target))
+
+
+@execution_app.command("list-container-worker-executions")
+def execution_list_container_worker_executions(
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
+    session_id: Annotated[str | None, typer.Option("--session-id", help="Filter by session id.")] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Emit JSON output.")] = False,
+) -> None:
+    cfg = _load_runtime_config_from_option(config)
+    records = sorted(
+        _container_worker_repository(cfg).read_all().values(),
+        key=lambda record: (record.created_at, record.execution_id),
+    )
+    if session_id:
+        records = [record for record in records if record.session_id == session_id]
+    payload = [_container_mapping_payload(record) for record in records]
+    if json_output:
+        typer.echo(json.dumps(payload, indent=2, sort_keys=True))
+        return
+    if not payload:
+        typer.echo("No container worker executions found.")
+        return
+    rows = [
+        (
+            item["execution_id"],
+            item["session_id"],
+            item["worker_job_id"],
+            item["target_name"],
+            item["last_status"],
+            item["worker_url"],
+        )
+        for item in payload
+    ]
+    header = ("EXECUTION", "SESSION", "WORKER_JOB", "TARGET", "STATUS", "WORKER_URL")
+    widths = [max(len(str(row[index])) for row in [header, *rows]) for index in range(6)]
+    typer.echo(
+        "  ".join(
+            value.ljust(widths[index])
+            for index, value in enumerate(header)
+        )
+    )
+    for row in rows:
+        typer.echo("  ".join(str(value).ljust(widths[index]) for index, value in enumerate(row)))
+
+
+def _poll_container_execution(backend, execution_id: str, *, timeout_seconds: float, poll_interval_seconds: float):
+    deadline = time.monotonic() + timeout_seconds
+    status = backend.inspect(execution_id)
+    terminal = {
+        ExecutionStatusKind.STOPPED,
+        ExecutionStatusKind.FAILED,
+        ExecutionStatusKind.DESTROYED,
+    }
+    while status.status not in terminal and time.monotonic() < deadline:
+        time.sleep(poll_interval_seconds)
+        status = backend.inspect(execution_id)
+    return status
+
+
+@execution_app.command("smoke-container-worker")
+def execution_smoke_container_worker(
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
+    session_id: Annotated[str, typer.Option("--session-id", help="Session id to reuse across both smoke jobs.")] = "smoke-session",
+    image: Annotated[str, typer.Option("--image", help="Container image to run.")] = "agent-sandbox-runner:latest",
+    json_output: Annotated[bool, typer.Option("--json", help="Emit JSON output.")] = False,
+    timeout_seconds: Annotated[int, typer.Option("--timeout-seconds", min=1, help="Per-job timeout.")] = 120,
+    poll_interval_seconds: Annotated[
+        float,
+        typer.Option("--poll-interval-seconds", min=0.1, help="Polling interval while waiting for smoke jobs."),
+    ] = 2.0,
+) -> None:
+    backend = _build_execution_backend_for_kind(config, default_container=True)
+    run_id = uuid.uuid4().hex[:12]
+    agent_marker = f"agent-home-{run_id}"
+    workspace_marker = f"workspace-{run_id}"
+    run1_target = f"phase4-smoke-{run_id}-1"
+    run2_target = f"phase4-smoke-{run_id}-2"
+    run1_command = (
+        "set -euo pipefail; "
+        f"printf '%s\\n' {agent_marker!r} > /home/agent/phase4-agent-home-marker.txt; "
+        f"printf '%s\\n' {workspace_marker!r} > /workspace/phase4-workspace-marker.txt; "
+        "cat /home/agent/phase4-agent-home-marker.txt; "
+        "cat /workspace/phase4-workspace-marker.txt"
+    )
+    run2_command = (
+        "set -euo pipefail; "
+        "agent_marker=$(cat /home/agent/phase4-agent-home-marker.txt); "
+        "workspace_marker=$(cat /workspace/phase4-workspace-marker.txt); "
+        f"test \"$agent_marker\" = {agent_marker!r}; "
+        f"test \"$workspace_marker\" = {workspace_marker!r}; "
+        "printf 'agent_marker=%s\\nworkspace_marker=%s\\n' \"$agent_marker\" \"$workspace_marker\""
+    )
+
+    run1 = backend.start(
+        backend.prepare(
+            ExecutionSpec(
+                backend=ExecutionBackendKind.CONTAINER_WORKER_VM,
+                target_name=run1_target,
+                session_id=session_id,
+                command=run1_command,
+                image=image,
+                metadata={"smoke": "phase4", "run": "1"},
+            )
+        )
+    )
+    run1_status = _poll_container_execution(
+        backend,
+        run1.execution_id,
+        timeout_seconds=timeout_seconds,
+        poll_interval_seconds=poll_interval_seconds,
+    )
+    _run1_logs = backend.get_log_snapshot(run1.execution_id, lines=200)
+    if run1_status.status != ExecutionStatusKind.STOPPED:
+        raise typer.BadParameter(f"smoke run 1 did not complete successfully: {run1_status.status.value}")
+
+    run2 = backend.start(
+        backend.prepare(
+            ExecutionSpec(
+                backend=ExecutionBackendKind.CONTAINER_WORKER_VM,
+                target_name=run2_target,
+                session_id=session_id,
+                command=run2_command,
+                image=image,
+                metadata={"smoke": "phase4", "run": "2"},
+            )
+        )
+    )
+    run2_status = _poll_container_execution(
+        backend,
+        run2.execution_id,
+        timeout_seconds=timeout_seconds,
+        poll_interval_seconds=poll_interval_seconds,
+    )
+    run2_logs = backend.get_log_snapshot(run2.execution_id, lines=200)
+    if run2_status.status != ExecutionStatusKind.STOPPED:
+        raise typer.BadParameter(f"smoke run 2 did not complete successfully: {run2_status.status.value}")
+    if agent_marker not in run2_logs or workspace_marker not in run2_logs:
+        raise typer.BadParameter("smoke run 2 logs did not prove both marker reads.")
+
+    payload = {
+        "success": True,
+        "session_id": session_id,
+        "run1": run1_status.model_dump(mode="json"),
+        "run2": run2_status.model_dump(mode="json"),
+        "run2_logs": run2_logs,
+    }
+    if json_output:
+        typer.echo(json.dumps(payload, indent=2, sort_keys=True))
+        return
+    typer.echo(f"Container worker smoke succeeded for session {session_id}.")
+    typer.echo(run2_logs, nl=False)
 
 
 def _teams_auth_service(config: ConfigOption) -> AdminService:

@@ -1,4 +1,5 @@
 import json
+import re
 import subprocess
 from types import SimpleNamespace
 from datetime import datetime, timedelta, timezone
@@ -7,7 +8,20 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 from agent_sandbox.cli import EndpointStatus, UnitStatus, app
+from agent_sandbox.directory_config import DirectoryConfigStore
 from agent_sandbox.directories import DirectoryStore
+from agent_sandbox.execution import (
+    ExecutionBackendKind,
+    ExecutionHandle,
+    ExecutionSpec,
+    ExecutionStatus,
+    ExecutionStatusKind,
+    PreparedExecution,
+)
+from agent_sandbox.execution.container_worker_repository import (
+    ContainerWorkerExecutionRecord,
+    ContainerWorkerExecutionRepository,
+)
 from agent_sandbox.models import ApprovalRequest, Directory, LocalIssueRecord, VmActionResult, VmSummary
 from agent_sandbox.teams_auth import InvalidClientConfigurationError
 
@@ -33,6 +47,122 @@ def write_config(tmp_path: Path, *, enable_directory_scoped_config: bool = False
         encoding="utf-8",
     )
     return config_path
+
+
+def write_container_config(tmp_path: Path, *, base_url: str | None = "http://worker.test:11888") -> Path:
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    runtime_dir = tmp_path / "runtime"
+    lines = [
+        f'runtime_dir: "{runtime_dir}"',
+        f'audit_log_path: "{runtime_dir / "audit.jsonl"}"',
+        f'session_store_path: "{runtime_dir / "sessions.json"}"',
+        f'approval_store_path: "{runtime_dir / "approvals.json"}"',
+        f'draft_store_path: "{runtime_dir / "drafts.json"}"',
+        f'email_store_path: "{runtime_dir / "emails.json"}"',
+        f'discord_command_store_path: "{runtime_dir / "discord_commands.json"}"',
+        'execution_backend: "libvirt_vm"',
+        'container_worker_token_env: "TEST_WORKER_TOKEN"',
+        'container_worker_default_image: "runner:latest"',
+    ]
+    if base_url is not None:
+        lines.append(f'container_worker_base_url: "{base_url}"')
+    config_path = tmp_path / "gateway.yaml"
+    config_path.write_text("\n".join(lines), encoding="utf-8")
+    directory_store = DirectoryStore(runtime_dir / "directories.json")
+    directory_store.ensure_root()
+    provider_payload = {
+        "container_worker_token_env": "TEST_WORKER_TOKEN",
+        "container_worker_default_image": "runner:latest",
+    }
+    if base_url is not None:
+        provider_payload["container_worker_base_url"] = base_url
+    DirectoryConfigStore(directory_store, runtime_dir=runtime_dir).write(
+        "root",
+        domain="providers",
+        payload=provider_payload,
+    )
+    return config_path
+
+
+class FakeExecutionBackend:
+    instances: list["FakeExecutionBackend"] = []
+
+    def __init__(self, *, config=None) -> None:
+        self.config = config
+        self.prepared_specs: list[ExecutionSpec] = []
+        self.started: list[PreparedExecution] = []
+        self.inspected: list[str] = []
+        self.logged: list[tuple[str, int]] = []
+        self.stopped: list[tuple[str, int]] = []
+        self.destroyed: list[str] = []
+        self.logs_by_target: dict[str, str] = {}
+        FakeExecutionBackend.instances.append(self)
+
+    @property
+    def kind(self) -> ExecutionBackendKind:
+        return ExecutionBackendKind.CONTAINER_WORKER_VM
+
+    def prepare(self, spec: ExecutionSpec) -> PreparedExecution:
+        self.prepared_specs.append(spec)
+        target_name = spec.target_name or f"exec-{len(self.prepared_specs)}"
+        return PreparedExecution(
+            backend=self.kind,
+            execution_id=target_name,
+            target_name=target_name,
+            session_id=spec.session_id or target_name,
+            directory_path=spec.directory_path,
+            command=spec.command,
+            image=spec.image,
+            repo_source=spec.repo_source,
+            clone_branch=spec.clone_branch,
+            resource_limits=spec.resource_limits,
+            metadata=spec.metadata,
+        )
+
+    def start(self, target: PreparedExecution) -> ExecutionHandle:
+        self.started.append(target)
+        return ExecutionHandle(
+            backend=self.kind,
+            execution_id=target.execution_id,
+            target_name=target.target_name,
+            session_id=target.session_id,
+            directory_path=target.directory_path,
+            command=target.command,
+            image=target.image,
+            repo_source=target.repo_source,
+            clone_branch=target.clone_branch,
+            resource_limits=target.resource_limits,
+            metadata={"worker_job_id": target.execution_id, "worker_url": "http://worker.test:11888"},
+        )
+
+    def inspect(self, target: str) -> ExecutionStatus:
+        self.inspected.append(target)
+        return ExecutionStatus(
+            backend=self.kind,
+            execution_id=target,
+            target_name=target,
+            status=ExecutionStatusKind.STOPPED,
+            session_id="session-1",
+        )
+
+    def get_log_snapshot(self, target: str, *, lines: int = 50, repo_name=None, vm_user: str = "agent") -> str:
+        self.logged.append((target, lines))
+        for started in self.started:
+            if started.execution_id == target:
+                command = str(started.command)
+                agent_match = re.search(r"agent-home-[0-9a-f]+", command)
+                workspace_match = re.search(r"workspace-[0-9a-f]+", command)
+                if agent_match and workspace_match:
+                    return f"agent_marker={agent_match.group(0)}\nworkspace_marker={workspace_match.group(0)}\n"
+        return self.logs_by_target.get(target, "agent_marker=agent-home\nworkspace_marker=workspace\n")
+
+    def stop(self, target: str, *, timeout_seconds: int = 60) -> ExecutionStatus:
+        self.stopped.append((target, timeout_seconds))
+        return self.inspect(target)
+
+    def destroy(self, target: str) -> ExecutionStatus:
+        self.destroyed.append(target)
+        return self.inspect(target)
 
 
 def test_seed_email_accepts_recipient_option_after_positionals(tmp_path: Path) -> None:
@@ -130,6 +260,251 @@ def test_teams_auth_help_exposes_subcommands() -> None:
     assert "logout" in output
     assert "list" in output
     assert "channels" in output
+
+
+def test_execution_start_container_job_builds_spec_with_metadata_and_limits(
+    tmp_path: Path, monkeypatch
+) -> None:
+    config_path = write_container_config(tmp_path)
+    monkeypatch.setenv("TEST_WORKER_TOKEN", "token")
+    FakeExecutionBackend.instances = []
+    monkeypatch.setattr("agent_sandbox.cli.ContainerWorkerVmExecutionBackend", FakeExecutionBackend)
+    runner = CliRunner()
+
+    result = runner.invoke(
+        app,
+        [
+            "execution",
+            "start-container-job",
+            "--config",
+            str(config_path),
+            "--session-id",
+            "session-1",
+            "--target-name",
+            "target-1",
+            "--directory",
+            "root/team",
+            "--command",
+            "echo hello",
+            "--image",
+            "custom:latest",
+            "--repo-source",
+            "git@example.test/repo.git",
+            "--clone-branch",
+            "feature/test",
+            "--metadata",
+            "purpose=smoke",
+            "--memory",
+            "512m",
+            "--cpus",
+            "1.5",
+            "--pids-limit",
+            "128",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0
+    backend = FakeExecutionBackend.instances[0]
+    spec = backend.prepared_specs[0]
+    assert spec.backend == ExecutionBackendKind.CONTAINER_WORKER_VM
+    assert spec.target_name == "target-1"
+    assert spec.session_id == "session-1"
+    assert spec.directory_path == "root/team"
+    assert spec.command == "echo hello"
+    assert spec.image == "custom:latest"
+    assert spec.repo_source == "git@example.test/repo.git"
+    assert spec.clone_branch == "feature/test"
+    assert spec.metadata == {"purpose": "smoke"}
+    assert spec.resource_limits == {"memory": "512m", "cpus": 1.5, "pids_limit": 128}
+    payload = json.loads(result.output)
+    assert payload["execution_id"] == "target-1"
+
+
+def test_execution_start_container_job_rejects_raw_env_metadata(tmp_path: Path, monkeypatch) -> None:
+    config_path = write_container_config(tmp_path)
+    monkeypatch.setenv("TEST_WORKER_TOKEN", "token")
+    runner = CliRunner()
+
+    result = runner.invoke(
+        app,
+        [
+            "execution",
+            "start-container-job",
+            "--config",
+            str(config_path),
+            "--command",
+            "true",
+            "--metadata",
+            "env=NOPE",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "--metadata key env is not allowed" in result.output
+
+
+def test_execution_start_container_job_preflights_missing_container_config(
+    tmp_path: Path, monkeypatch
+) -> None:
+    missing_url_config = write_container_config(tmp_path / "missing-url", base_url=None)
+    runner = CliRunner()
+
+    missing_url = runner.invoke(
+        app,
+        [
+            "execution",
+            "start-container-job",
+            "--config",
+            str(missing_url_config),
+            "--command",
+            "true",
+        ],
+    )
+
+    assert missing_url.exit_code != 0
+    assert "container_worker_base_url is required" in missing_url.output
+
+    missing_token_config = write_container_config(tmp_path / "missing-token")
+    monkeypatch.delenv("TEST_WORKER_TOKEN", raising=False)
+    missing_token = runner.invoke(
+        app,
+        [
+            "execution",
+            "start-container-job",
+            "--config",
+            str(missing_token_config),
+            "--command",
+            "true",
+        ],
+    )
+
+    assert missing_token.exit_code != 0
+    assert "TEST_WORKER_TOKEN" in missing_token.output
+    assert "not set" in missing_token.output
+
+
+def test_execution_target_commands_auto_route_container_mappings_through_backend(
+    tmp_path: Path, monkeypatch
+) -> None:
+    config_path = write_container_config(tmp_path)
+    cfg_runtime = tmp_path / "runtime"
+    repo = ContainerWorkerExecutionRepository(cfg_runtime / "container-worker-executions.json")
+    repo.put(
+        ContainerWorkerExecutionRecord(
+            execution_id="exec-1",
+            session_id="session-1",
+            worker_job_id="worker-1",
+            worker_url="http://worker.test:11888",
+            target_name="target-1",
+            last_status="running",
+        )
+    )
+    monkeypatch.setenv("TEST_WORKER_TOKEN", "token")
+    FakeExecutionBackend.instances = []
+    monkeypatch.setattr("agent_sandbox.cli.ContainerWorkerVmExecutionBackend", FakeExecutionBackend)
+    runner = CliRunner()
+
+    status = runner.invoke(app, ["execution", "status", "--config", str(config_path), "exec-1"])
+    logs = runner.invoke(app, ["execution", "logs", "--config", str(config_path), "exec-1", "--lines", "7"])
+    stop = runner.invoke(
+        app,
+        ["execution", "stop", "--config", str(config_path), "exec-1", "--timeout-seconds", "9"],
+    )
+    destroy = runner.invoke(app, ["execution", "destroy", "--config", str(config_path), "exec-1"])
+
+    assert status.exit_code == 0
+    assert logs.exit_code == 0
+    assert stop.exit_code == 0
+    assert destroy.exit_code == 0
+    assert FakeExecutionBackend.instances[0].inspected == ["exec-1"]
+    assert FakeExecutionBackend.instances[1].logged == [("exec-1", 7)]
+    assert FakeExecutionBackend.instances[2].stopped == [("exec-1", 9)]
+    assert FakeExecutionBackend.instances[3].destroyed == ["exec-1"]
+
+
+def test_execution_list_container_worker_executions_json_exposes_no_metadata_secrets(tmp_path: Path) -> None:
+    config_path = write_container_config(tmp_path)
+    repo = ContainerWorkerExecutionRepository(tmp_path / "runtime" / "container-worker-executions.json")
+    repo.put(
+        ContainerWorkerExecutionRecord(
+            execution_id="exec-1",
+            session_id="session-1",
+            worker_job_id="worker-1",
+            worker_url="http://worker.test:11888",
+            target_name="target-1",
+            last_status="running",
+            metadata={"authorization": "should-not-leak"},
+        )
+    )
+    runner = CliRunner()
+
+    result = runner.invoke(
+        app,
+        [
+            "execution",
+            "list-container-worker-executions",
+            "--config",
+            str(config_path),
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload == [
+        {
+            "created_at": payload[0]["created_at"],
+            "execution_id": "exec-1",
+            "finished_at": None,
+            "last_status": "running",
+            "session_id": "session-1",
+            "started_at": None,
+            "target_name": "target-1",
+            "updated_at": payload[0]["updated_at"],
+            "worker_job_id": "worker-1",
+            "worker_url": "http://worker.test:11888",
+        }
+    ]
+    assert "should-not-leak" not in result.output
+
+
+def test_execution_smoke_container_worker_runs_two_jobs_with_same_session(
+    tmp_path: Path, monkeypatch
+) -> None:
+    config_path = write_container_config(tmp_path)
+    monkeypatch.setenv("TEST_WORKER_TOKEN", "token")
+    FakeExecutionBackend.instances = []
+    monkeypatch.setattr("agent_sandbox.cli.ContainerWorkerVmExecutionBackend", FakeExecutionBackend)
+    runner = CliRunner()
+
+    result = runner.invoke(
+        app,
+        [
+            "execution",
+            "smoke-container-worker",
+            "--config",
+            str(config_path),
+            "--session-id",
+            "smoke-session",
+            "--image",
+            "runner:latest",
+            "--json",
+            "--poll-interval-seconds",
+            "0.1",
+        ],
+    )
+
+    assert result.exit_code == 0
+    backend = FakeExecutionBackend.instances[0]
+    assert len(backend.started) == 2
+    assert {started.session_id for started in backend.started} == {"smoke-session"}
+    assert backend.started[0].target_name != backend.started[1].target_name
+    assert "phase4-agent-home-marker.txt" in str(backend.started[0].command)
+    assert "phase4-workspace-marker.txt" in str(backend.started[1].command)
+    payload = json.loads(result.output)
+    assert payload["success"] is True
+    assert payload["session_id"] == "smoke-session"
 
 
 def test_teams_auth_commands_use_admin_service_and_redact_tokens(tmp_path: Path, monkeypatch) -> None:

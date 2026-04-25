@@ -284,12 +284,15 @@ def test_directory_config_tab_sections_match_expected_groupings() -> None:
     assert set(provider_sections) == {
         "Agent prompt",
         "Azure DevOps",
+        "Container worker",
         "GitHub",
         "HTTP target relay",
         "NuGet",
         "OpenAI",
         "State",
     }
+    assert ("providers", "execution_backend") in provider_sections["Container worker"]
+    assert ("providers", "container_worker_base_url") in provider_sections["Container worker"]
     assert ("providers", "nuget_azure_pat_env") in provider_sections["NuGet"]
     assert ("providers", "openai_api_key_env") in provider_sections["OpenAI"]
 

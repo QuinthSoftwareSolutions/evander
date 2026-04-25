@@ -167,6 +167,20 @@ _DIRECTORY_CONFIG_TAB_SECTIONS: dict[str, tuple[_ConfigTabSectionSpec, ...]] = {
             ("azure_devops_",),
         ),
         _ConfigTabSectionSpec(
+            "Container worker",
+            (
+                ("providers", "execution_backend"),
+                ("providers", "container_worker_base_url"),
+                ("providers", "container_worker_token_env"),
+                ("providers", "container_worker_default_image"),
+                ("providers", "container_worker_request_timeout_seconds"),
+                ("providers", "container_worker_job_timeout_seconds"),
+                ("providers", "container_worker_default_network_mode"),
+                ("providers", "container_worker_workspace_persistence"),
+            ),
+            ("container_worker_",),
+        ),
+        _ConfigTabSectionSpec(
             "GitHub",
             (("providers", "github_token_env"),),
             ("github_",),

@@ -15,6 +15,12 @@ container_worker_token_env: "AGENT_SANDBOX_WORKER_TOKEN"
 container_worker_default_image: "agent-sandbox-runner:latest"
 ```
 
+For directory-scoped runtime config, put these values on the root `providers` domain. Start the worker daemon on the worker VM with a matching token:
+
+```bash
+AGENT_SANDBOX_WORKER_TOKEN=... agent-sandbox-worker-daemon --host 0.0.0.0 --port 11888 --runtime-dir runtime --worker-root /var/lib/agent-worker
+```
+
 The host reads the token from `container_worker_token_env` when it calls the worker. Token values and request headers are not written to the execution mapping store.
 
 The host-side `ExecutionSpec` uses first-class fields for container behavior: `command`, `image`, `repo_source`, `clone_branch`, `resource_limits`, `persistence_mode`, and `workspace_mode`. The backend does not read those values from `metadata`; metadata is only sanitized caller context.
@@ -48,6 +54,49 @@ The host-side backend records the control-plane mapping in:
 ```
 
 That store maps the host execution id and session id to the worker job id, worker URL, target name, timestamps, last observed status, directory path, and sanitized metadata. Operators can target an execution by execution id, worker job id, target name, or an unambiguous session id.
+
+## Operator CLI
+
+Container worker execution is exposed as an explicit operator-only path:
+
+```bash
+agent-sandbox-cli execution start-container-job \
+  --session-id demo-session \
+  --directory root \
+  --target-name demo-container-1 \
+  --image agent-sandbox-runner:latest \
+  --repo-source git@example.test/repo.git \
+  --clone-branch main \
+  --memory 512m \
+  --cpus 1 \
+  --pids-limit 256 \
+  --metadata purpose=manual-smoke \
+  --command 'echo hello from /workspace' \
+  --json
+```
+
+Follow-up operations can target the execution id, worker job id, target name, or an unambiguous session id. They auto-route to the container backend when the target exists in `<runtime-dir>/container-worker-executions.json`; use `--backend container_worker_vm` or `--backend libvirt_vm` to force a backend:
+
+```bash
+agent-sandbox-cli execution status demo-container-1
+agent-sandbox-cli execution logs demo-container-1 --lines 100
+agent-sandbox-cli execution stop demo-container-1 --timeout-seconds 30
+agent-sandbox-cli execution destroy demo-container-1
+agent-sandbox-cli execution list-container-worker-executions --json
+```
+
+`destroy` deletes the worker job/container record. It does not delete durable session state under `/var/lib/agent-worker/sessions/<session_id>/`.
+
+The smoke command runs two unique jobs with the same session id. The first writes markers under `/home/agent` and `/workspace`; the second reads them back and fails if continuity or logs are missing:
+
+```bash
+agent-sandbox-cli execution smoke-container-worker \
+  --session-id smoke-session \
+  --image agent-sandbox-runner:latest \
+  --json
+```
+
+The CLI does not expose raw environment injection. Container behavior is sent through first-class `ExecutionSpec` fields, and metadata keys `env`, `environment`, and `environment_variables` are rejected.
 
 ## HTTP API
 
