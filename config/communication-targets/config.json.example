@@ -1,0 +1,24 @@
+{
+  "targets": [
+    {
+      "id": "teams-primary",
+      "provider": "teams",
+      "kind": "teams",
+      "address": "team-id/channel-id",
+      "policy": {
+        "capabilities": ["read", "write", "reply", "notify"],
+        "auth_profile_ref": "teams.delegated.default"
+      }
+    },
+    {
+      "id": "discord-ops",
+      "provider": "discord",
+      "kind": "discord",
+      "address": "123456789012345678/234567890123456789",
+      "policy": {
+        "capabilities": ["read", "write", "reply"],
+        "auth_profile_ref": "discord.bot.default"
+      }
+    }
+  ]
+}
