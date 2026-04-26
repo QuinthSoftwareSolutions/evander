@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.workflow_runtime_config import (
     TriggerOrchestratorWorkerGlobalConfigReloader,
@@ -255,3 +257,39 @@ def test_load_config_composes_workflow_pack_ir(tmp_path: Path) -> None:
     assert [trigger.id for trigger in config.triggers] == ["trigger-cron-synthetic"]
     assert [effect.id for effect in config.effects] == ["effect-log-synthetic"]
     assert len(config.edges) == 1
+
+
+def test_load_config_rejects_unknown_communication_target_ref(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    project_dir = tmp_path
+    path = _config_path(project_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "triggers": [
+                    {
+                        "id": "cron-1",
+                        "display_name": "Every minute",
+                        "type": "trigger:cron",
+                        "expression": "* * * * *",
+                    }
+                ],
+                "effects": [
+                    {
+                        "id": "effect-1",
+                        "display_name": "Prompt",
+                        "type": "effect:agent:prompt",
+                        "session_id": "session-1",
+                        "prompt": "Continue",
+                        "communication_target_id": "missing-target",
+                    }
+                ],
+                "edges": [{"source_id": "cron-1", "target_id": "effect-1"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match=r"unknown communication target reference\(s\): missing-target"):
+        load_trigger_orchestrator_worker_global_config(project_dir, base_config=GatewayConfig(runtime_dir=runtime_dir))
