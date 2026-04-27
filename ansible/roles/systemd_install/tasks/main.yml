@@ -7,6 +7,7 @@
   changed_when: false
   environment:
     SUDO_USER: "{{ agent_sandbox_run_user }}"
+    AGENT_SANDBOX_SERVICE_PROFILE: "{{ agent_sandbox_service_profile }}"
 
 - name: Install repo-native systemd units
   ansible.builtin.command:
@@ -15,3 +16,4 @@
     chdir: "{{ agent_sandbox_deploy_path }}"
   environment:
     SUDO_USER: "{{ agent_sandbox_run_user }}"
+    AGENT_SANDBOX_SERVICE_PROFILE: "{{ agent_sandbox_service_profile }}"

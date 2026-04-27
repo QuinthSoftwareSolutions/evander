@@ -6,12 +6,13 @@ existing scripts and CLI entrypoints.
 It does not replace the repo's operational model. Ansible installs host prerequisites, checks out
 the repo, creates `.venv`, initializes `runtime/`, renders managed config files, installs systemd
 units, applies the firewall when enabled, and starts the enabled services. In the default `full`
-profile it also creates the libvirt network and downloads the base Ubuntu cloud image.
+profile it also applies the repo-native guest firewall, creates the libvirt network, and downloads
+the base Ubuntu cloud image.
 
 ## Supported Target
 
 - Ubuntu 24.04
-- `systemd` and `nftables`
+- `systemd`
 - For the default `full` profile: `libvirt` and KVM-capable virtualization support
 - If you deploy on Azure and only need the host control plane, use `agent_sandbox_service_profile:
   control_plane_only`
@@ -36,7 +37,7 @@ The playbook follows the repo-native bootstrap order:
 5. Render managed config under `config/` and optional `secrets.env`
 6. Run `scripts/install_systemd_units.sh`
 7. Run `scripts/create_libvirt_network.sh` in the `full` profile
-8. Run `scripts/apply_firewall.sh` when the firewall service is enabled
+8. Run `scripts/apply_firewall.sh` when the `full` profile firewall service is enabled
 9. Run `scripts/create_base_vm.sh` in the `full` profile
 10. Enable and start only the selected services
 11. Verify unit state, enabled firewall, full-profile VM host state, and repo-aware status
@@ -65,9 +66,12 @@ Service profiles:
 
 - `full`: installs local VM host packages, adds the run user to `libvirt`/`kvm`, creates the
   libvirt network, downloads the base cloud image, and verifies local VM host state.
-- `control_plane_only`: skips local VM host packages, libvirt/kvm run-user groups, libvirt network
-  creation, base-image download, and local VM host verification. Use this for an Azure VM that only
-  runs the control-plane services.
+- `control_plane_only`: skips local VM host packages, libvirt/kvm run-user groups, the repo-native
+  guest firewall, libvirt network creation, base-image download, and local VM host verification. Use
+  this for an Azure VM that only runs the control-plane services.
+
+The playbook validates `agent_sandbox_service_profile` as either `full` or `control_plane_only`.
+Other values fail during preflight instead of silently behaving like a non-full profile.
 
 Service toggles:
 
@@ -163,7 +167,7 @@ The verification role checks:
 - disabled units remain installed but not enabled/started
 - Admin Web responds on the configured host port
 - for `full`: libvirt network `agent-sandbox` exists
-- when firewall is enabled: nftables table `inet agent_sandbox` exists
+- for `full` when firewall is enabled: nftables table `inet agent_sandbox` exists
 - for `full`: the Ubuntu 24.04 base cloud image is present under libvirt-accessible storage
 - `.venv/bin/agent-sandbox-cli status --runtime-dir runtime` succeeds
 - local relay endpoints respond where applicable

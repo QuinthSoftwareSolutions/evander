@@ -47,6 +47,15 @@ def test_install_systemd_units_preflight_checks_for_mssql_worker_password_when_e
     assert 'agent-sandbox-admin-web.service' in text
 
 
+def test_install_systemd_units_preflight_is_service_profile_aware() -> None:
+    text = _script_text()
+
+    assert 'SERVICE_PROFILE="${AGENT_SANDBOX_SERVICE_PROFILE:-full}"' in text
+    assert 'if [[ "${SERVICE_PROFILE}" == "full" ]]; then' in text
+    assert "Skipping virsh check for service profile" in text
+    assert '"warning"' in text
+
+
 def test_install_systemd_units_no_longer_requires_removed_per_service_env_files() -> None:
     text = _script_text()
 

@@ -17,6 +17,7 @@ EOH
 }
 
 MODE="install"
+SERVICE_PROFILE="${AGENT_SANDBOX_SERVICE_PROFILE:-full}"
 
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   show_help
@@ -252,12 +253,17 @@ PY
 
 run_preflight_checks() {
   echo "Running install_systemd_units preflight checks..."
+  echo "Service profile: ${SERVICE_PROFILE}"
 
   source_optional_env_file "${SECRETS_FILE}"
 
   check_command "systemctl" "Install systemd (systemctl) before installing units."
   check_command "python3" "Install Python 3 so the gateway/relay and env checks can run."
-  check_command "virsh" "Install libvirt-clients so VM lifecycle commands are available." "warning"
+  if [[ "${SERVICE_PROFILE}" == "full" ]]; then
+    check_command "virsh" "Install libvirt-clients so VM lifecycle commands are available." "warning"
+  else
+    report_pass "Skipping virsh check for service profile ${SERVICE_PROFILE}."
+  fi
 
   check_file "${ROOT_DIR}/config/firewall.env" "Copy config/firewall.env.example to config/firewall.env."
   check_file \
@@ -265,7 +271,8 @@ run_preflight_checks() {
     "Save the ADO worker global settings in the Admin GUI or copy config/ado-worker/config.json.example to config/ado-worker/config.json."
   check_file \
     "${ROOT_DIR}/runtime/directory-config/root/ado-worker.json" \
-    "Run agent-sandbox-cli migrate-ado-worker-env-to-root or migrate-global-config-to-root first."
+    "Run agent-sandbox-cli migrate-ado-worker-env-to-root, migrate-global-config-to-root, or configure the directory after deployment." \
+    "warning"
   check_file \
     "${ROOT_DIR}/config/trigger-orchestrator/config.json" \
     "Copy config/trigger-orchestrator/config.json.example to config/trigger-orchestrator/config.json."

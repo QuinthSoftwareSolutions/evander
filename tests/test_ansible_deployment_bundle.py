@@ -28,6 +28,8 @@ def test_ansible_site_uses_repo_native_bootstrap_order() -> None:
     repo = Path(__file__).resolve().parents[1]
     site = (repo / "ansible" / "site.yml").read_text(encoding="utf-8")
 
+    assert "agent_sandbox_service_profile in ['full', 'control_plane_only']" in site
+    assert "agent_sandbox_services.firewall must be false for control_plane_only deployments" in site
     assert "agent_sandbox_runtime_dir == agent_sandbox_expected_runtime_dir" in site
     assert "- role: host_prereqs" in site
     assert "- role: repo_checkout" in site
@@ -46,14 +48,61 @@ def test_ansible_group_vars_document_required_contract_and_service_toggles() -> 
 
     assert "agent_sandbox_repo_url" in text
     assert "agent_sandbox_repo_version" in text
+    assert "agent_sandbox_repo_accept_newhostkey" in text
+    assert "agent_sandbox_repo_ssh_private_key" in text
+    assert "agent_sandbox_repo_ssh_private_key_path" in text
+    assert "agent_sandbox_repo_managed_tracked_config_paths" in text
+    assert "agent_sandbox_repo_managed_untracked_config_paths" in text
     assert "agent_sandbox_deploy_path" in text
     assert 'agent_sandbox_runtime_dir: "{{ agent_sandbox_deploy_path }}/runtime"' in text
     assert "agent_sandbox_run_user" in text
     assert "agent_sandbox_allowed_tcp_ports" in text
     assert "11777" in text
+    assert "agent_sandbox_service_profile == 'full'" in text
+    assert "firewall: \"{{ agent_sandbox_service_profile == 'full' }}\"" in text
+    common_packages = text.split("agent_sandbox_local_vm_host_packages:", 1)[0]
+    assert "  - nftables" not in common_packages
+    assert "agent_sandbox_local_vm_host_packages:\n  - nftables" in text
     assert "agent_sandbox_services:" in text
     assert "agent_sandbox_admin_web_env:" in text
     assert "admin_web: true" in text
     assert "http_target_relay: true" in text
     assert "trigger_orchestrator: true" in text
     assert "effect_orchestrator: true" in text
+
+
+def test_ansible_repo_checkout_supports_private_deploy_key() -> None:
+    repo = Path(__file__).resolve().parents[1]
+    text = (repo / "ansible" / "roles" / "repo_checkout" / "tasks" / "main.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "Install repo deploy key" in text
+    assert "no_log: true" in text
+    assert "Verify repo deploy key is usable non-interactively" in text
+    assert "passphrase-free deploy key" in text
+    assert "Reset tracked Ansible-managed config before repo update" in text
+    assert "Remove untracked Ansible-managed config before repo update" in text
+    assert "key_file:" in text
+    assert "agent_sandbox_repo_ssh_private_key_path" in text
+    assert "accept_newhostkey:" in text
+
+
+def test_ansible_env_template_shell_quotes_values() -> None:
+    repo = Path(__file__).resolve().parents[1]
+    text = (repo / "ansible" / "roles" / "service_config" / "templates" / "env_file.j2").read_text(
+        encoding="utf-8"
+    )
+
+    assert "{{ key }}={{ value | string | quote }}" in text
+    assert "to_json" not in text
+
+
+def test_ansible_systemd_install_passes_service_profile() -> None:
+    repo = Path(__file__).resolve().parents[1]
+    text = (repo / "ansible" / "roles" / "systemd_install" / "tasks" / "main.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "AGENT_SANDBOX_SERVICE_PROFILE" in text
+    assert "{{ agent_sandbox_service_profile }}" in text

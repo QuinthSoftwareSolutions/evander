@@ -6,6 +6,27 @@
     agent_sandbox_repo_parent: "{{ agent_sandbox_deploy_path | dirname }}"
     agent_sandbox_expected_runtime_dir: "{{ agent_sandbox_deploy_path }}/runtime"
   pre_tasks:
+    - name: Assert the service profile is supported
+      ansible.builtin.assert:
+        that:
+          - agent_sandbox_service_profile in ['full', 'control_plane_only']
+        fail_msg: >-
+          agent_sandbox_service_profile must be either 'full' or 'control_plane_only'.
+          The profile controls whether the deployment prepares local libvirt guests and
+          the repo-native guest firewall.
+        success_msg: Service profile is supported.
+
+    - name: Assert control-plane-only hosts do not enable the guest firewall
+      ansible.builtin.assert:
+        that:
+          - not (agent_sandbox_services.firewall | bool)
+        fail_msg: >-
+          agent_sandbox_services.firewall must be false for control_plane_only deployments.
+          The repo-native firewall manages the isolated libvirt guest network and should
+          only run with the full profile.
+        success_msg: Guest firewall is disabled for control-plane-only profile.
+      when: agent_sandbox_service_profile == 'control_plane_only'
+
     - name: Assert the runtime directory matches the repo-native service layout
       ansible.builtin.assert:
         that:

@@ -1,9 +1,81 @@
 ---
+- name: Ensure repo deploy-key SSH directory exists
+  ansible.builtin.file:
+    path: "{{ agent_sandbox_repo_ssh_private_key_path | dirname }}"
+    state: directory
+    owner: "{{ agent_sandbox_run_user }}"
+    group: "{{ agent_sandbox_run_user }}"
+    mode: "0700"
+  when: (agent_sandbox_repo_ssh_private_key | default('') | length) > 0
+
+- name: Install repo deploy key
+  ansible.builtin.copy:
+    content: "{{ agent_sandbox_repo_ssh_private_key }}"
+    dest: "{{ agent_sandbox_repo_ssh_private_key_path }}"
+    owner: "{{ agent_sandbox_run_user }}"
+    group: "{{ agent_sandbox_run_user }}"
+    mode: "0600"
+  no_log: true
+  when: (agent_sandbox_repo_ssh_private_key | default('') | length) > 0
+
+- name: Verify repo deploy key is usable non-interactively
+  ansible.builtin.command:
+    cmd: "ssh-keygen -y -P '' -f {{ agent_sandbox_repo_ssh_private_key_path }}"
+  become_user: "{{ agent_sandbox_run_user }}"
+  changed_when: false
+  failed_when: false
+  no_log: true
+  register: agent_sandbox_repo_deploy_key_check
+  when: (agent_sandbox_repo_ssh_private_key | default('') | length) > 0
+
+- name: Assert repo deploy key is not passphrase protected
+  ansible.builtin.assert:
+    that:
+      - agent_sandbox_repo_deploy_key_check.rc == 0
+    fail_msg: >-
+      agent_sandbox_repo_ssh_private_key must be a passphrase-free deploy key.
+      The repo checkout runs non-interactively as {{ agent_sandbox_run_user }},
+      so passphrase-protected keys cannot be unlocked during deployment.
+    success_msg: Repo deploy key is usable non-interactively.
+  when: (agent_sandbox_repo_ssh_private_key | default('') | length) > 0
+
+- name: Check whether the destination checkout already exists
+  ansible.builtin.stat:
+    path: "{{ agent_sandbox_deploy_path }}/.git"
+  register: agent_sandbox_repo_checkout_git_dir
+
+- name: Reset tracked Ansible-managed config before repo update
+  ansible.builtin.command:
+    argv: >-
+      {{
+        ['git', '-C', agent_sandbox_deploy_path, 'checkout', '--']
+        + agent_sandbox_repo_managed_tracked_config_paths
+      }}
+  become_user: "{{ agent_sandbox_run_user }}"
+  changed_when: false
+  when:
+    - agent_sandbox_repo_checkout_git_dir.stat.exists
+    - (agent_sandbox_repo_managed_tracked_config_paths | length) > 0
+
+- name: Remove untracked Ansible-managed config before repo update
+  ansible.builtin.file:
+    path: "{{ agent_sandbox_deploy_path }}/{{ item }}"
+    state: absent
+  loop: "{{ agent_sandbox_repo_managed_untracked_config_paths }}"
+  when: agent_sandbox_repo_checkout_git_dir.stat.exists
+
 - name: Check out the requested repo revision
   ansible.builtin.git:
     repo: "{{ agent_sandbox_repo_url }}"
     dest: "{{ agent_sandbox_deploy_path }}"
     version: "{{ agent_sandbox_repo_version }}"
+    accept_newhostkey: "{{ agent_sandbox_repo_accept_newhostkey | bool }}"
+    key_file: >-
+      {{
+        agent_sandbox_repo_ssh_private_key_path
+        if (agent_sandbox_repo_ssh_private_key | default('') | length) > 0
+        else omit
+      }}
     update: true
     force: false
   become_user: "{{ agent_sandbox_run_user }}"

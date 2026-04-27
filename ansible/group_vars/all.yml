@@ -2,6 +2,22 @@
 # Core deploy contract.
 agent_sandbox_repo_url: "git@example.com:your-org/agent-sandbox.git"
 agent_sandbox_repo_version: "main"
+agent_sandbox_repo_accept_newhostkey: true
+agent_sandbox_repo_ssh_private_key: ""
+agent_sandbox_repo_ssh_private_key_path: "/home/{{ agent_sandbox_run_user }}/.ssh/agent-sandbox-repo-deploy-key"
+agent_sandbox_repo_managed_tracked_config_paths:
+  - config/discord-ingest/config.json
+  - config/firewall.env
+  - config/teams-ingest/config.json
+  - config/trigger-orchestrator/config.json
+agent_sandbox_repo_managed_untracked_config_paths:
+  - config/admin-web.env
+  - config/ado-worker.env
+  - config/discord-wake/config.json
+  - config/gateway.env
+  - config/http-target-relay.env
+  - config/openai-relay.env
+  - config/scheduled-wake/config.json
 agent_sandbox_deploy_path: "/opt/agent-sandbox"
 agent_sandbox_runtime_dir: "{{ agent_sandbox_deploy_path }}/runtime"
 agent_sandbox_run_user: "agent-sandbox"
@@ -14,14 +30,15 @@ agent_sandbox_run_user_supplementary_groups: >-
     else []
   }}
 agent_sandbox_common_host_packages:
+  - acl
   - openssh-server
   - git
   - curl
-  - nftables
   - python3
   - python3-pip
   - python3-venv
 agent_sandbox_local_vm_host_packages:
+  - nftables
   - qemu-system-x86
   - qemu-utils
   - libvirt-daemon-system
@@ -190,7 +207,7 @@ agent_sandbox_trigger_orchestrator_config:
 agent_sandbox_services:
   admin_web: true
   gateway: true
-  firewall: true
+  firewall: "{{ agent_sandbox_service_profile == 'full' }}"
   openai_relay: true
   nuget_relay: true
   http_target_relay: true

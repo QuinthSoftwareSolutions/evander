@@ -20,7 +20,7 @@
         if (agent_sandbox_run_user_supplementary_groups | length) > 0
         else omit
       }}
-    append: true
+    append: "{{ (agent_sandbox_run_user_supplementary_groups | length) > 0 }}"
     state: present
   register: agent_sandbox_run_user_account
   when: agent_sandbox_manage_run_user | bool
