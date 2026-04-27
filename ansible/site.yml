@@ -44,6 +44,7 @@
     - role: runtime_bootstrap
     - role: service_config
     - role: systemd_install
+    - role: frontend_build
     - role: network_vm_bootstrap
     - role: service_runtime
     - role: verification

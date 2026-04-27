@@ -1,0 +1,8 @@
+all:
+  children:
+    agent_sandbox_hosts:
+      hosts:
+        truman-control-plane:
+          ansible_host: 52.158.33.185
+          ansible_user: azureuser
+          ansible_ssh_private_key_file: ~/.ssh/truman-control-center_key.pem

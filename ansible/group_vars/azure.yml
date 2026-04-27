@@ -1,0 +1,30 @@
+---
+# Azure control-plane deployment overrides. Shared defaults live in all.yml.
+agent_sandbox_repo_url: "git@github.com:QuinthSoftwareSolutions/agent-orchestrator.git"
+agent_sandbox_repo_ssh_private_key: "{{ vault_agent_sandbox_repo_ssh_private_key }}"
+agent_sandbox_deploy_path: "/opt/truman"
+agent_sandbox_run_user: "truman"
+agent_sandbox_service_profile: "control_plane_only"
+agent_sandbox_manage_workflow_config: false
+
+agent_sandbox_admin_web_env:
+  ADMIN_WEB_HOST: "127.0.0.1"
+  ADMIN_WEB_PORT: "8100"
+  AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE: "local_password"
+  AGENT_SANDBOX_ADMIN_WEB_USERNAME: "admin"
+  AGENT_SANDBOX_ADMIN_WEB_PASSWORD: "{{ vault_admin_web_password }}"
+  AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET: "{{ vault_admin_web_session_secret }}"
+  AGENT_SANDBOX_ADMIN_WEB_SESSION_TTL_SECONDS: "43200"
+  AGENT_SANDBOX_ADMIN_WEB_COOKIE_SECURE: "true"
+  AGENT_SANDBOX_ADMIN_WEB_PUBLIC_BASE_URL: "https://truman-admin.northeurope.cloudapp.azure.com"
+
+agent_sandbox_render_shared_secrets_env: true
+agent_sandbox_shared_secrets_env:
+  OPENAI_API_KEY: "{{ vault_openai_api_key }}"
+  AZURE_ARTIFACTS_PAT: "{{ vault_azure_artifacts_pat }}"
+  ADO_WORK_ITEMS_AZURE_DEVOPS_PAT: "{{ vault_ado_work_items_pat }}"
+  AZURE_DEVOPS_PAT: "{{ vault_azure_devops_pat }}"
+  AZURE_DEVOPS_PR_PAT: "{{ vault_azure_devops_pr_pat }}"
+  DISCORD_BOT_TOKEN: "{{ vault_discord_bot_token }}"
+  MSSQL_SA_PASSWORD: "{{ vault_mssql_sa_password }}"
+  AGENT_PROMPT_TOKEN_SECRET: "{{ vault_agent_prompt_token_secret }}"

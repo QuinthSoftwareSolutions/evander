@@ -79,3 +79,24 @@
     - path: "config/trigger-orchestrator/config.json"
       payload: "{{ agent_sandbox_trigger_orchestrator_config }}"
       mode: "0640"
+      enabled: "{{ agent_sandbox_manage_workflow_config }}"
+  when: item.enabled | default(true) | bool
+
+- name: Check whether a controller-side workflow editor layout exists
+  ansible.builtin.stat:
+    path: "{{ agent_sandbox_workflow_layout_source_path }}"
+  delegate_to: localhost
+  become: false
+  register: agent_sandbox_workflow_layout_source
+  when: agent_sandbox_manage_workflow_config | bool
+
+- name: Copy managed workflow editor layout
+  ansible.builtin.copy:
+    src: "{{ agent_sandbox_workflow_layout_source_path }}"
+    dest: "{{ agent_sandbox_deploy_path }}/{{ agent_sandbox_workflow_layout_path }}"
+    owner: "{{ agent_sandbox_run_user }}"
+    group: "{{ agent_sandbox_run_user }}"
+    mode: "0640"
+  when:
+    - agent_sandbox_manage_workflow_config | bool
+    - agent_sandbox_workflow_layout_source.stat.exists | default(false)

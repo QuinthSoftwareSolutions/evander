@@ -30,17 +30,18 @@ the base Ubuntu cloud image.
 
 The playbook follows the repo-native bootstrap order:
 
-1. Install Ubuntu packages and `uv`
+1. Install Ubuntu packages, Node/npm, and `uv`
 2. Clone or update the repo
 3. Create `.venv` and install the package
 4. Run `agent-sandbox-cli init-state --runtime-dir runtime`
 5. Render managed config under `config/` and optional `secrets.env`
 6. Run `scripts/install_systemd_units.sh`
-7. Run `scripts/create_libvirt_network.sh` in the `full` profile
-8. Run `scripts/apply_firewall.sh` when the `full` profile firewall service is enabled
-9. Run `scripts/create_base_vm.sh` in the `full` profile
-10. Enable and start only the selected services
-11. Verify unit state, enabled firewall, full-profile VM host state, and repo-aware status
+7. Build the Admin Web frontend bundle with `npm ci && npm run build`
+8. Run `scripts/create_libvirt_network.sh` in the `full` profile
+9. Run `scripts/apply_firewall.sh` when the `full` profile firewall service is enabled
+10. Run `scripts/create_base_vm.sh` in the `full` profile
+11. Enable and start only the selected services
+12. Verify unit state, enabled firewall, full-profile VM host state, and repo-aware status
 
 VM/session launch is intentionally not part of initial deployment. After the host is prepared, use
 the existing operator flow to create a session manifest and launch a VM.
@@ -89,6 +90,15 @@ Service toggles:
 - `agent_sandbox_services.effect_orchestrator`
 - `agent_sandbox_services.trigger_orchestrator`
 
+Workflow config ownership:
+
+- `agent_sandbox_manage_workflow_config: true` renders
+  `config/trigger-orchestrator/config.json` from Ansible variables and resets that tracked file
+  before repo updates. When `config/trigger-orchestrator/layout.json` exists beside the playbook's
+  source checkout, it is copied too so workflow editor node positions deploy with the workflow.
+- Set `agent_sandbox_manage_workflow_config: false` for hosts where operators edit workflows through
+  Admin Web and deployment must not overwrite those edits.
+
 Secret-bearing variables should come from encrypted inventory or Ansible Vault. The playbook
 renders these host-local managed artifacts with restricted permissions:
 
@@ -135,6 +145,7 @@ The playbook is intended to be safe to re-run:
 - apt packages converge in place
 - the Git checkout updates to the requested revision
 - `uv venv` and `uv pip install` reconcile the Python environment
+- `npm ci` and `npm run build` refresh the Admin Web frontend bundle
 - `init-state` is re-run against the same runtime directory
 - managed config files are re-rendered from variables
 - `create_libvirt_network.sh` and `create_base_vm.sh` are repo-native and idempotent in the `full`
