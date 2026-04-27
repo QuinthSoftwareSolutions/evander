@@ -28,6 +28,8 @@ def test_install_systemd_units_preflight_reports_failures_with_hints() -> None:
     assert "[FAIL]" in text
     assert "hint:" in text
     assert "Result: FAIL (critical checks failed)." in text
+    assert 'local severity="${3:-critical}"' in text
+    assert 'report_fail "Missing config file ${file_path}." "${hint}" "${severity}"' in text
 
 
 def test_install_systemd_units_preflight_checks_for_mssql_worker_password_when_enabled() -> None:

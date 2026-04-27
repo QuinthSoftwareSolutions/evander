@@ -87,11 +87,12 @@ check_command() {
 check_file() {
   local file_path="$1"
   local hint="$2"
+  local severity="${3:-critical}"
 
   if [[ -f "${file_path}" ]]; then
     report_pass "Found config file ${file_path}."
   else
-    report_fail "Missing config file ${file_path}." "${hint}" "critical"
+    report_fail "Missing config file ${file_path}." "${hint}" "${severity}"
   fi
 }
 
