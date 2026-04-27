@@ -7,6 +7,11 @@ from pathlib import Path
 from typing import Any
 
 from .config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
+from .communication_targets import (
+    communication_targets_config_path,
+    load_communication_targets_config,
+    validate_communication_target_refs,
+)
 from .workflow_compiler import compile_trigger_orchestrator_config, compile_trigger_orchestrator_config_with_diagnostics
 from .workflow_transforms import resolve_workflow_transforms
 from .workflow_packs import _pack_path, compose_workflow_ir
@@ -39,6 +44,7 @@ def load_trigger_orchestrator_worker_global_config(
     if not isinstance(raw, dict):
         raise ValueError(f"worker config file {path} must contain a JSON object")
     raw = _compose_configured_workflow_ir(project_dir=project_dir, payload=raw)
+    _validate_communication_targets(project_dir=project_dir, payload=raw)
     return _compile_worker_global_config(
         TriggerOrchestratorWorkerGlobalConfig.model_validate({**base_payload, **raw})
     )
@@ -91,6 +97,13 @@ class TriggerOrchestratorWorkerGlobalConfigReloader:
             return None
 
         fingerprints = [base_fingerprint]
+        communication_targets_path = communication_targets_config_path(self._project_dir)
+        communication_targets_fingerprint = _file_fingerprint(communication_targets_path)
+        if communication_targets_fingerprint is None:
+            fingerprints.append((0, 0, 0, f"missing:{communication_targets_path}"))
+        else:
+            fingerprints.append(communication_targets_fingerprint)
+
         for pack_path in self._workflow_pack_paths():
             pack_fingerprint = _file_fingerprint(pack_path)
             if pack_fingerprint is None:
@@ -107,7 +120,9 @@ class TriggerOrchestratorWorkerGlobalConfigReloader:
         raw = json.loads(self._path.read_text(encoding="utf-8"))
         if not isinstance(raw, dict):
             raise ValueError(f"worker config file {self._path} must contain a JSON object")
-        raw = _compose_configured_workflow_ir(project_dir=self._path.parents[2], payload=raw)
+        project_dir = self._path.parents[2]
+        raw = _compose_configured_workflow_ir(project_dir=project_dir, payload=raw)
+        _validate_communication_targets(project_dir=project_dir, payload=raw)
         return _compile_worker_global_config(
             TriggerOrchestratorWorkerGlobalConfig.model_validate({**self._base_payload, **raw})
         )
@@ -167,6 +182,11 @@ def _compose_configured_workflow_ir(*, project_dir: Path, payload: dict[str, Any
     merged["queries"] = composition.queries
     merged["edges"] = composition.edges
     return merged
+
+
+def _validate_communication_targets(*, project_dir: Path, payload: dict[str, Any]) -> None:
+    communication_targets = load_communication_targets_config(project_dir)
+    validate_communication_target_refs(payload=payload, known_target_ids=set(communication_targets.by_id()))
 
 
 class FixedTriggerOrchestratorWorkerGlobalConfigReloader:
