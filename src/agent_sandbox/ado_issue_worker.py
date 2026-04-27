@@ -281,17 +281,90 @@ class WorkerConfig:
             legacy_config_path=legacy_config_path,
         )
         bootstrap_directory_path = worker_runtime_config.directories[0] if worker_runtime_config.directories else "root"
-        return _resolve_worker_config_for_directory(
-            worker_runtime_config=worker_runtime_config,
-            runtime_gateway_config=runtime_gateway_config,
-            directory_path=bootstrap_directory_path,
-            legacy_config_path=legacy_config_path,
-            repo_path=_optional_env("ADO_REPO_PATH"),
-            session_id=_optional_env("ADO_SESSION_ID"),
-            vm_user=_optional_env("ADO_VM_USER"),
-            session_ttl_hours=_int_env("ADO_SESSION_TTL_HOURS", 8, minimum=1),
-            require_runtime_secrets=require_runtime_secrets,
-        )
+        repo_path = _optional_env("ADO_REPO_PATH")
+        session_id = _optional_env("ADO_SESSION_ID")
+        vm_user = _optional_env("ADO_VM_USER")
+        session_ttl_hours = _int_env("ADO_SESSION_TTL_HOURS", 8, minimum=1)
+        try:
+            return _resolve_worker_config_for_directory(
+                worker_runtime_config=worker_runtime_config,
+                runtime_gateway_config=runtime_gateway_config,
+                directory_path=bootstrap_directory_path,
+                legacy_config_path=legacy_config_path,
+                repo_path=repo_path,
+                session_id=session_id,
+                vm_user=vm_user,
+                session_ttl_hours=session_ttl_hours,
+                require_runtime_secrets=require_runtime_secrets,
+            )
+        except ValueError as exc:
+            if worker_runtime_config.directories or "ado_project_or_solution must be set" not in str(exc):
+                raise
+            return _idle_worker_config(
+                worker_runtime_config=worker_runtime_config,
+                runtime_gateway_config=runtime_gateway_config,
+                legacy_config_path=legacy_config_path,
+                repo_path=repo_path,
+                session_id=session_id,
+                vm_user=vm_user,
+                session_ttl_hours=session_ttl_hours,
+            )
+
+
+def _idle_worker_config(
+    *,
+    worker_runtime_config: AdoWorkerRuntimeConfig,
+    runtime_gateway_config: GatewayConfig,
+    legacy_config_path: Path | None,
+    repo_path: str | None,
+    session_id: str | None,
+    vm_user: str | None,
+    session_ttl_hours: int,
+) -> WorkerConfig:
+    pat_env_var_name = (
+        worker_runtime_config.ado_work_items_azure_devops_pat_env.strip()
+        or "ADO_WORK_ITEMS_AZURE_DEVOPS_PAT"
+    )
+    return WorkerConfig(
+        organization_url=runtime_gateway_config.azure_devops_organization_url.rstrip("/"),
+        project=runtime_gateway_config.azure_devops_project,
+        pat_env_var_name=pat_env_var_name,
+        poll_interval_seconds=worker_runtime_config.poll_interval_seconds,
+        area_filters=(),
+        team_filters=(),
+        runtime_dir=worker_runtime_config.runtime_dir,
+        yaml_output_dir=worker_runtime_config.yaml_output_dir,
+        setup_log_dir=worker_runtime_config.setup_log_dir,
+        processed_store_path=worker_runtime_config.processed_store_path,
+        setup_script_path=worker_runtime_config.setup_script_path,
+        prewarm_target="",
+        repo_path=repo_path,
+        setup_vms=False,
+        session_id=session_id,
+        vm_user=vm_user,
+        setup_timeout_seconds=worker_runtime_config.setup_timeout_seconds,
+        setup_concurrency_limit=worker_runtime_config.setup_concurrency_limit,
+        setup_lock_path=worker_runtime_config.setup_lock_path,
+        fetch_retry_count=worker_runtime_config.fetch_retry_count,
+        fetch_retry_backoff_seconds=worker_runtime_config.fetch_retry_backoff_seconds,
+        bootstrap_dotnet=False,
+        bootstrap_nuget=False,
+        bootstrap_mssql=False,
+        mssql_sa_password=None,
+        mssql_init_root=None,
+        bootstrap_playwright=False,
+        bootstrap_frontend_deps=False,
+        frontend_host_checkout=None,
+        frontend_install_roots=(),
+        include_comments=worker_runtime_config.include_comments,
+        comments_max_count=worker_runtime_config.comments_max_count,
+        comment_text_max_chars=worker_runtime_config.comment_text_max_chars,
+        directories=(),
+        directory_path="root",
+        gateway_config_path=legacy_config_path,
+        legacy_config_path=legacy_config_path,
+        session_ttl_hours=session_ttl_hours,
+    )
 
 
 def _resolve_worker_config_for_directory(
@@ -2133,6 +2206,11 @@ def _read_ignored_feedback_ids(path: Path) -> set[str]:
 
 
 def run_worker(config: WorkerConfig) -> None:
+    if not config.directories:
+        while True:
+            logging.info("cycle skipped=no_directories")
+            time.sleep(config.poll_interval_seconds)
+
     pat = _require_env(config.pat_env_var_name)
     auth_header = _build_auth_header(pat)
     store = _processed_store_for_config(config)
@@ -2143,8 +2221,6 @@ def run_worker(config: WorkerConfig) -> None:
         while True:
             cycle_start = time.monotonic()
             try:
-                if not config.directories:
-                    logging.info("cycle skipped=no_directories")
                 for directory_path in config.directories:
                     try:
                         _publish_directory_pr_feedback_events(

@@ -23,6 +23,7 @@ from agent_sandbox.ado_issue_worker import (
     list_unprocessed_work_items,
     poll_once,
     process_work_item,
+    run_worker,
     run_worker_command,
     update_work_item_state,
 )
@@ -1145,6 +1146,66 @@ def test_worker_config_load_from_env_reads_ado_worker_global_config(
     assert config.include_comments is False
     assert config.comments_max_count == 11
     assert config.comment_text_max_chars == 777
+
+
+def test_worker_config_load_from_env_idles_without_configured_directories(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    gateway_config_path = tmp_path / "gateway.yaml"
+    gateway_config_path.write_text(
+        yaml.safe_dump(
+            {
+                "runtime_dir": str(tmp_path / "runtime"),
+                "azure_devops_organization_url": "https://dev.azure.com/example",
+                "azure_devops_project": "example",
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    worker_config_path = tmp_path / "config" / "ado-worker" / "config.json"
+    worker_config_path.parent.mkdir(parents=True, exist_ok=True)
+    worker_config_path.write_text(
+        json.dumps(
+            {
+                "runtime_dir": str(tmp_path / "runtime"),
+                "poll_interval_seconds": 5,
+                "directories": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ADO_GATEWAY_CONFIG", str(gateway_config_path))
+    monkeypatch.delenv("ADO_PROJECT_OR_SOLUTION", raising=False)
+    monkeypatch.delenv("ADO_WORK_ITEMS_AZURE_DEVOPS_PAT", raising=False)
+
+    config = WorkerConfig.load_from_env()
+
+    assert config.directories == ()
+    assert config.directory_path == "root"
+    assert config.prewarm_target == ""
+    assert config.setup_vms is False
+    assert config.bootstrap_dotnet is False
+    assert config.bootstrap_nuget is False
+    assert config.bootstrap_mssql is False
+
+
+def test_run_worker_idles_without_directories_or_pat(
+    monkeypatch: pytest.MonkeyPatch,
+    worker_config: WorkerConfig,
+) -> None:
+    idle_config = WorkerConfig(**{**worker_config.__dict__, "directories": ()})
+    monkeypatch.delenv(idle_config.pat_env_var_name, raising=False)
+
+    def stop_after_first_sleep(seconds: float) -> None:
+        assert seconds == idle_config.poll_interval_seconds
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("agent_sandbox.ado_issue_worker.time.sleep", stop_after_first_sleep)
+
+    with pytest.raises(KeyboardInterrupt):
+        run_worker(idle_config)
 
 
 def test_process_work_item_skips_vm_setup_when_disabled(
