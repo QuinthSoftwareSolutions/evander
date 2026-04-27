@@ -71,8 +71,6 @@ class GatewayConfig(BaseModel):
     container_worker_token_env: str = Field(default="AGENT_SANDBOX_WORKER_TOKEN", min_length=1)
     container_worker_default_image: str = Field(default="agent-sandbox-runner:latest", min_length=1)
     container_worker_request_timeout_seconds: float = Field(default=30.0, gt=0)
-    container_worker_job_timeout_seconds: int = Field(default=3600, gt=0)
-    container_worker_default_network_mode: str = Field(default="none", min_length=1)
     container_worker_workspace_persistence: str = Field(default="session", min_length=1)
     discord_backend: Literal["stub", "bot_api"] = "stub"
     discord_bot_token_env: str = Field(default="DISCORD_BOT_TOKEN", min_length=1)

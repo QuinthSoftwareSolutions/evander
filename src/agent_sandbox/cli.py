@@ -601,7 +601,6 @@ def execution_start_container_job(
     pids_limit: Annotated[int | None, typer.Option("--pids-limit", min=1, help="Container PID limit.")] = None,
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON output.")] = False,
 ) -> None:
-    del json_output
     if not command.strip():
         raise typer.BadParameter("--command is required")
     backend = _build_execution_backend_for_kind(config, default_container=True)
@@ -619,7 +618,14 @@ def execution_start_container_job(
             metadata=_parse_metadata_pairs(metadata),
         )
     )
-    _echo_model_json(backend.start(prepared))
+    handle = backend.start(prepared)
+    if json_output:
+        _echo_model_json(handle)
+        return
+    typer.echo(
+        f"Started container worker execution {handle.execution_id} "
+        f"for session {handle.session_id or '<none>'}."
+    )
 
 
 @execution_app.command("status")

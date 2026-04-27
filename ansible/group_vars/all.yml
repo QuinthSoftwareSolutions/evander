@@ -6,10 +6,29 @@ agent_sandbox_deploy_path: "/opt/agent-sandbox"
 agent_sandbox_runtime_dir: "{{ agent_sandbox_deploy_path }}/runtime"
 agent_sandbox_run_user: "agent-sandbox"
 agent_sandbox_manage_run_user: true
-agent_sandbox_run_user_supplementary_groups:
-  - libvirt
-  - kvm
 agent_sandbox_service_profile: "full"
+agent_sandbox_run_user_supplementary_groups: >-
+  {{
+    ['libvirt', 'kvm']
+    if agent_sandbox_service_profile == 'full'
+    else []
+  }}
+agent_sandbox_common_host_packages:
+  - openssh-server
+  - git
+  - curl
+  - nftables
+  - python3
+  - python3-pip
+  - python3-venv
+agent_sandbox_local_vm_host_packages:
+  - qemu-system-x86
+  - qemu-utils
+  - libvirt-daemon-system
+  - libvirt-clients
+  - virtinst
+  - cloud-image-utils
+  - ovmf
 agent_sandbox_allowed_tcp_ports:
   - 22
   - 8000
@@ -18,21 +37,15 @@ agent_sandbox_allowed_tcp_ports:
   - 11777
 
 # Host prerequisites.
-agent_sandbox_host_packages:
-  - openssh-server
-  - git
-  - curl
-  - qemu-system-x86
-  - qemu-utils
-  - libvirt-daemon-system
-  - libvirt-clients
-  - virtinst
-  - cloud-image-utils
-  - ovmf
-  - nftables
-  - python3
-  - python3-pip
-  - python3-venv
+agent_sandbox_host_packages: >-
+  {{
+    agent_sandbox_common_host_packages
+    + (
+      agent_sandbox_local_vm_host_packages
+      if agent_sandbox_service_profile == 'full'
+      else []
+    )
+  }}
 
 # Install profile for the Python package.
 agent_sandbox_python_install_extras: "[dev]"

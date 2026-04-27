@@ -57,17 +57,20 @@
     cmd: "virsh net-info agent-sandbox"
   changed_when: false
   register: agent_sandbox_libvirt_network
+  when: agent_sandbox_service_profile == "full"
 
 - name: Verify the nftables table exists
   ansible.builtin.command:
     cmd: "nft list table inet agent_sandbox"
   changed_when: false
   register: agent_sandbox_firewall_table
+  when: agent_sandbox_services.firewall | bool
 
 - name: Verify the base image exists
   ansible.builtin.stat:
     path: "{{ agent_sandbox_base_image_path }}"
   register: agent_sandbox_base_image
+  when: agent_sandbox_service_profile == "full"
 
 - name: Assert the base image is present
   ansible.builtin.assert:
@@ -75,6 +78,7 @@
       - agent_sandbox_base_image.stat.exists
     fail_msg: "Expected base image at {{ agent_sandbox_base_image_path }}."
     success_msg: "Base image present at {{ agent_sandbox_base_image_path }}."
+  when: agent_sandbox_service_profile == "full"
 
 - name: Run repo-aware status verification
   ansible.builtin.command:
@@ -123,7 +127,8 @@
 - name: Emit deployment verification summary
   ansible.builtin.debug:
     msg:
-      - "libvirt network: {{ agent_sandbox_libvirt_network.stdout_lines | default([]) }}"
-      - "firewall table verified: {{ agent_sandbox_firewall_table.rc == 0 }}"
-      - "base image: {{ agent_sandbox_base_image_path }}"
+      - "service profile: {{ agent_sandbox_service_profile }}"
+      - "libvirt network: {{ agent_sandbox_libvirt_network.stdout_lines | default(['skipped']) }}"
+      - "firewall table verified: {{ (agent_sandbox_firewall_table.rc == 0) if (agent_sandbox_services.firewall | bool) else 'skipped' }}"
+      - "base image: {{ agent_sandbox_base_image_path if agent_sandbox_service_profile == 'full' else 'skipped' }}"
       - "status command: {{ agent_sandbox_status.stdout_lines | default([]) }}"

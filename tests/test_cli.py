@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from agent_sandbox.cli import EndpointStatus, UnitStatus, app
@@ -319,6 +320,35 @@ def test_execution_start_container_job_builds_spec_with_metadata_and_limits(
     assert spec.resource_limits == {"memory": "512m", "cpus": 1.5, "pids_limit": 128}
     payload = json.loads(result.output)
     assert payload["execution_id"] == "target-1"
+
+
+def test_execution_start_container_job_uses_human_output_by_default(tmp_path: Path, monkeypatch) -> None:
+    config_path = write_container_config(tmp_path)
+    monkeypatch.setenv("TEST_WORKER_TOKEN", "token")
+    FakeExecutionBackend.instances = []
+    monkeypatch.setattr("agent_sandbox.cli.ContainerWorkerVmExecutionBackend", FakeExecutionBackend)
+    runner = CliRunner()
+
+    result = runner.invoke(
+        app,
+        [
+            "execution",
+            "start-container-job",
+            "--config",
+            str(config_path),
+            "--target-name",
+            "target-1",
+            "--session-id",
+            "session-1",
+            "--command",
+            "echo hello",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert result.output == "Started container worker execution target-1 for session session-1.\n"
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(result.output)
 
 
 def test_execution_start_container_job_rejects_raw_env_metadata(tmp_path: Path, monkeypatch) -> None:

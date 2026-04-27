@@ -65,12 +65,10 @@ class ContainerWorkerVmExecutionBackend:
                 "directory_path": spec.directory_path,
                 "persistence_mode": persistence_mode,
                 "workspace_mode": workspace_mode,
-                "network_mode": self.config.container_worker_default_network_mode,
                 "gateway_url": self.config.gateway_url,
                 "openai_relay_port": self.config.openai_relay_port,
                 "http_target_relay_port": self.config.http_target_relay_port,
                 "nuget_relay_port": self.config.nuget_relay_port,
-                "job_timeout_seconds": self.config.container_worker_job_timeout_seconds,
             }
         )
         return PreparedExecution(

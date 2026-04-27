@@ -14,7 +14,12 @@
     name: "{{ agent_sandbox_run_user }}"
     shell: /bin/bash
     create_home: true
-    groups: "{{ agent_sandbox_run_user_supplementary_groups }}"
+    groups: >-
+      {{
+        agent_sandbox_run_user_supplementary_groups
+        if (agent_sandbox_run_user_supplementary_groups | length) > 0
+        else omit
+      }}
     append: true
     state: present
   register: agent_sandbox_run_user_account

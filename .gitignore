@@ -5,6 +5,7 @@ runtime/
 *.pyc
 *.egg-info/
 .codex
+/.agent-sandbox/review-context.env
 git-remotes/
 config/nuget-relay.env
 config/host-heartbeat.env

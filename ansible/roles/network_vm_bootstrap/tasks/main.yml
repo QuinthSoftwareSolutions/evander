@@ -5,6 +5,7 @@
   args:
     chdir: "{{ agent_sandbox_deploy_path }}"
   changed_when: false
+  when: agent_sandbox_service_profile == "full"
 
 - name: Apply the repo-native firewall policy
   ansible.builtin.command:
@@ -14,6 +15,7 @@
   environment:
     ALLOWED_TCP_PORTS: "{{ agent_sandbox_allowed_tcp_ports | join(' ') }}"
   changed_when: false
+  when: agent_sandbox_services.firewall | bool
 
 - name: Download the base Ubuntu cloud image
   ansible.builtin.command:
@@ -23,3 +25,4 @@
   environment:
     VM_STORAGE_DIR: "{{ agent_sandbox_vm_storage_dir }}"
   changed_when: false
+  when: agent_sandbox_service_profile == "full"
