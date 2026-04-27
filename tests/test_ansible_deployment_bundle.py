@@ -125,6 +125,22 @@ def test_ansible_workflow_config_render_can_be_disabled() -> None:
     assert "agent_sandbox_workflow_layout_source_path" in service_config
 
 
+def test_ansible_restarts_services_after_managed_config_changes() -> None:
+    repo = Path(__file__).resolve().parents[1]
+    service_config = (repo / "ansible" / "roles" / "service_config" / "tasks" / "main.yml").read_text(
+        encoding="utf-8"
+    )
+    service_runtime = (
+        repo / "ansible" / "roles" / "service_runtime" / "tasks" / "main.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "agent_sandbox_managed_service_config_changed" in service_config
+    assert "agent_sandbox_env_file_render.changed" in service_config
+    assert "agent_sandbox_json_config_render.changed" in service_config
+    assert "agent_sandbox_managed_service_config_changed | default(false)" in service_runtime
+    assert "'restarted'" in service_runtime
+
+
 def test_ansible_systemd_install_passes_service_profile() -> None:
     repo = Path(__file__).resolve().parents[1]
     text = (repo / "ansible" / "roles" / "systemd_install" / "tasks" / "main.yml").read_text(

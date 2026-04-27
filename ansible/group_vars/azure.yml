@@ -10,13 +10,18 @@ agent_sandbox_manage_workflow_config: false
 agent_sandbox_admin_web_env:
   ADMIN_WEB_HOST: "127.0.0.1"
   ADMIN_WEB_PORT: "8100"
-  AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE: "local_password"
+  AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE: "azure_sso"
   AGENT_SANDBOX_ADMIN_WEB_USERNAME: "admin"
   AGENT_SANDBOX_ADMIN_WEB_PASSWORD: "{{ vault_admin_web_password }}"
   AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET: "{{ vault_admin_web_session_secret }}"
   AGENT_SANDBOX_ADMIN_WEB_SESSION_TTL_SECONDS: "43200"
   AGENT_SANDBOX_ADMIN_WEB_COOKIE_SECURE: "true"
   AGENT_SANDBOX_ADMIN_WEB_PUBLIC_BASE_URL: "https://truman-admin.northeurope.cloudapp.azure.com"
+  AGENT_SANDBOX_ADMIN_WEB_AZURE_TENANT_ID: "{{ vault_admin_web_azure_tenant_id }}"
+  AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_ID: "{{ vault_admin_web_azure_client_id }}"
+  AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_SECRET: "{{ vault_admin_web_azure_client_secret }}"
+  AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS: "operator@example.invalid"
+  AGENT_SANDBOX_ADMIN_WEB_AZURE_REDIRECT_URI: "https://truman-admin.northeurope.cloudapp.azure.com/api/auth/azure-sso/callback"
 
 agent_sandbox_render_shared_secrets_env: true
 agent_sandbox_shared_secrets_env:

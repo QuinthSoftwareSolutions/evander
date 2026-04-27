@@ -36,7 +36,11 @@
     state: >-
       {{
         'restarted'
-        if (agent_sandbox_services[item.key] | bool) and (agent_sandbox_run_user_membership_changed | default(false))
+        if (agent_sandbox_services[item.key] | bool)
+          and (
+            (agent_sandbox_run_user_membership_changed | default(false))
+            or (agent_sandbox_managed_service_config_changed | default(false))
+          )
         else ('started' if agent_sandbox_services[item.key] | bool else 'stopped')
       }}
     daemon_reload: true

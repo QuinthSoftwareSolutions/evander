@@ -30,6 +30,7 @@
     - path: "config/ado-worker.env"
       env: "{{ agent_sandbox_ado_worker_env }}"
       mode: "0600"
+  register: agent_sandbox_env_file_render
 
 - name: Render optional shared secrets.env
   ansible.builtin.template:
@@ -41,12 +42,14 @@
   vars:
     env_map: "{{ agent_sandbox_shared_secrets_env }}"
   when: agent_sandbox_render_shared_secrets_env | bool
+  register: agent_sandbox_shared_secrets_render
 
 - name: Remove secrets.env when disabled
   ansible.builtin.file:
     path: "{{ agent_sandbox_deploy_path }}/secrets.env"
     state: absent
   when: not (agent_sandbox_render_shared_secrets_env | bool)
+  register: agent_sandbox_shared_secrets_remove
 
 - name: Render managed worker/global JSON config
   ansible.builtin.template:
@@ -81,6 +84,7 @@
       mode: "0640"
       enabled: "{{ agent_sandbox_manage_workflow_config }}"
   when: item.enabled | default(true) | bool
+  register: agent_sandbox_json_config_render
 
 - name: Check whether a controller-side workflow editor layout exists
   ansible.builtin.stat:
@@ -100,3 +104,15 @@
   when:
     - agent_sandbox_manage_workflow_config | bool
     - agent_sandbox_workflow_layout_source.stat.exists | default(false)
+  register: agent_sandbox_workflow_layout_copy
+
+- name: Track whether managed service config changed
+  ansible.builtin.set_fact:
+    agent_sandbox_managed_service_config_changed: >-
+      {{
+        (agent_sandbox_env_file_render.changed | default(false))
+        or (agent_sandbox_shared_secrets_render.changed | default(false))
+        or (agent_sandbox_shared_secrets_remove.changed | default(false))
+        or (agent_sandbox_json_config_render.changed | default(false))
+        or (agent_sandbox_workflow_layout_copy.changed | default(false))
+      }}
