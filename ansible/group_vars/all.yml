@@ -12,9 +12,14 @@ agent_sandbox_repo_managed_base_tracked_config_paths:
   - config/teams-ingest/config.json
 agent_sandbox_repo_managed_workflow_config_paths:
   - config/trigger-orchestrator/config.json
+  - config/trigger-orchestrator/layout.json
+  - config/workflow-packs/agent-default.v1.json
+agent_sandbox_repo_managed_generated_tracked_paths:
+  - frontend/workflow-editor/dist/index.html
 agent_sandbox_repo_managed_tracked_config_paths: >-
   {{
     agent_sandbox_repo_managed_base_tracked_config_paths
+    + agent_sandbox_repo_managed_generated_tracked_paths
     + (
       agent_sandbox_repo_managed_workflow_config_paths
       if agent_sandbox_manage_workflow_config

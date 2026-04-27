@@ -56,6 +56,10 @@ def test_ansible_group_vars_document_required_contract_and_service_toggles() -> 
     assert "agent_sandbox_repo_managed_tracked_config_paths" in text
     assert "agent_sandbox_manage_workflow_config: true" in text
     assert "agent_sandbox_repo_managed_workflow_config_paths" in text
+    assert "agent_sandbox_repo_managed_generated_tracked_paths" in text
+    assert "frontend/workflow-editor/dist/index.html" in text
+    assert "config/trigger-orchestrator/layout.json" in text
+    assert "config/workflow-packs/agent-default.v1.json" in text
     assert "agent_sandbox_repo_managed_untracked_config_paths" in text
     assert "agent_sandbox_deploy_path" in text
     assert 'agent_sandbox_runtime_dir: "{{ agent_sandbox_deploy_path }}/runtime"' in text

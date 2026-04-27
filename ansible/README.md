@@ -98,6 +98,9 @@ Workflow config ownership:
   source checkout, it is copied too so workflow editor node positions deploy with the workflow.
 - Set `agent_sandbox_manage_workflow_config: false` for hosts where operators edit workflows through
   Admin Web and deployment must not overwrite those edits.
+- The repo checkout role also resets tracked deploy-generated frontend files such as
+  `frontend/workflow-editor/dist/index.html` before updates, because the frontend build can rewrite
+  those files on the target host.
 
 Secret-bearing variables should come from encrypted inventory or Ansible Vault. The playbook
 renders these host-local managed artifacts with restricted permissions:
