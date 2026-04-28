@@ -255,8 +255,111 @@ def test_teams_get_messages_supports_limit_and_includes_session_authored_message
         "team-a/channel-1/msg-3",
     ]
     assert result["next_cursor"] == "team-a/channel-1/msg-3"
-    assert context.teams_service.last_limit == 2
+    assert context.teams_service.last_limit is None
     assert context.teams_service.reaction_calls == []
+
+
+def test_teams_get_messages_defaults_cursorless_reads_to_configured_poll_limit(
+    tmp_path: Path,
+) -> None:
+    context = make_context(tmp_path, teams_poll_limit=2)
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[ToolName.TEAMS_GET_MESSAGES],
+            teams_channel_allowlist=["team-a/channel-1"],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    context.teams_service = FakeTeamsService(
+        [
+            TeamsMessageEnvelope(
+                cursor="team-a/channel-1/msg-1",
+                message_id="msg-1",
+                author_id="user-1",
+                team_id="team-a",
+                channel_id="channel-1",
+                thread_id="msg-1",
+                content="oldest",
+                metadata={"source": "teams_graph_api", "team_id": "team-a", "channel_id": "channel-1"},
+            ),
+            TeamsMessageEnvelope(
+                cursor="team-a/channel-1/msg-2",
+                message_id="msg-2",
+                author_id="user-2",
+                team_id="team-a",
+                channel_id="channel-1",
+                thread_id="msg-1",
+                content="middle",
+                metadata={"source": "teams_graph_api", "team_id": "team-a", "channel_id": "channel-1"},
+            ),
+            TeamsMessageEnvelope(
+                cursor="team-a/channel-1/msg-3",
+                message_id="msg-3",
+                author_id="user-3",
+                team_id="team-a",
+                channel_id="channel-1",
+                thread_id="msg-1",
+                content="newest",
+                metadata={"source": "teams_graph_api", "team_id": "team-a", "channel_id": "channel-1"},
+            ),
+        ]
+    )
+    server = create_server(context)
+
+    result = call_tool(server, "teams_get_messages", {"session_id": "session-1"})
+
+    assert context.teams_service.last_limit is None
+    assert [entry["cursor"] for entry in result["messages"]] == [
+        "team-a/channel-1/msg-2",
+        "team-a/channel-1/msg-3",
+    ]
+    assert result["next_cursor"] == "team-a/channel-1/msg-3"
+
+
+def test_teams_get_messages_applies_default_limit_after_session_filtering(
+    tmp_path: Path,
+) -> None:
+    context = make_context(tmp_path, teams_poll_limit=1)
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[ToolName.TEAMS_GET_MESSAGES],
+            teams_channel_allowlist=["team-a/channel-1"],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    context.teams_service = FakeTeamsService(
+        [
+            TeamsMessageEnvelope(
+                cursor="team-a/channel-1/msg-1",
+                message_id="msg-1",
+                author_id="user-1",
+                team_id="team-a",
+                channel_id="channel-1",
+                thread_id="msg-1",
+                content="allowed",
+                metadata={"source": "teams_graph_api", "team_id": "team-a", "channel_id": "channel-1"},
+            ),
+            TeamsMessageEnvelope(
+                cursor="team-b/channel-9/msg-2",
+                message_id="msg-2",
+                author_id="user-2",
+                team_id="team-b",
+                channel_id="channel-9",
+                thread_id="msg-2",
+                content="blocked",
+                metadata={"source": "teams_graph_api", "team_id": "team-b", "channel_id": "channel-9"},
+            ),
+        ]
+    )
+    server = create_server(context)
+
+    result = call_tool(server, "teams_get_messages", {"session_id": "session-1"})
+
+    assert context.teams_service.last_limit is None
+    assert [entry["cursor"] for entry in result["messages"]] == ["team-a/channel-1/msg-1"]
+    assert result["next_cursor"] == "team-a/channel-1/msg-1"
 
 
 def test_teams_get_messages_supports_before_cursor_for_older_history(tmp_path: Path) -> None:
@@ -313,7 +416,7 @@ def test_teams_get_messages_supports_before_cursor_for_older_history(tmp_path: P
 
     assert context.teams_service.last_since_cursor is None
     assert context.teams_service.last_before_cursor == "team-a/channel-1/msg-3"
-    assert context.teams_service.last_limit == 2
+    assert context.teams_service.last_limit is None
     assert [entry["cursor"] for entry in result["messages"]] == [
         "team-a/channel-1/msg-1",
         "team-a/channel-1/msg-2",

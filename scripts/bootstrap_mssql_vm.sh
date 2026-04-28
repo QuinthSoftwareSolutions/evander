@@ -72,6 +72,7 @@ fi
 
 VM_NAME="$1"
 VM_USER="${2:-agent}"
+SSH_USER="${VM_SSH_USER:-agent-admin}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/guest_ssh.sh
 source "${SCRIPT_DIR}/lib/guest_ssh.sh"
@@ -121,15 +122,15 @@ MSSQL_SA_PASSWORD="${MSSQL_SA_PASSWORD}" MSSQL_PID="${MSSQL_PID}" \
   "${SCRIPT_DIR}/bootstrap_mssql_server_vm.sh" "${VM_NAME}" "${VM_USER}"
 
 if [[ -n "${INIT_ROOT}" ]]; then
-  echo "Applying MSSQL init bundle from ${INIT_ROOT} into ${VM_USER}@${VM_IP}"
-  ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "sudo bash -s" <<'EOF_VM'
+  echo "Applying MSSQL init bundle from ${INIT_ROOT} into ${SSH_USER}@${VM_IP}"
+  ssh "${SSH_OPTS[@]}" "${SSH_USER}@${VM_IP}" "sudo -n bash -s" <<'EOF_VM'
 set -euo pipefail
 install -d -o mssql -g mssql -m 0770 /var/opt/mssql/init
 rm -rf /var/opt/mssql/init/*
 EOF_VM
   tar -C "${INIT_ROOT}" -cf - . \
-    | ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "sudo tar -C /var/opt/mssql/init -xf -"
-  ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "sudo bash -s" <<'EOF_VM'
+    | ssh "${SSH_OPTS[@]}" "${SSH_USER}@${VM_IP}" "sudo -n tar -C /var/opt/mssql/init -xf -"
+  ssh "${SSH_OPTS[@]}" "${SSH_USER}@${VM_IP}" "sudo -n bash -s" <<'EOF_VM'
 set -euo pipefail
 chown -R mssql:mssql /var/opt/mssql/init
 chmod -R u+rwX,go+rX /var/opt/mssql/init

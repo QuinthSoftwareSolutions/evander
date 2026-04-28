@@ -1,0 +1,34 @@
+---
+- name: Ensure Docker service is enabled and running
+  ansible.builtin.systemd:
+    name: docker.service
+    enabled: true
+    state: started
+
+- name: Ensure worker runtime directories exist
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner | default(agent_sandbox_run_user) }}"
+    group: "{{ item.group | default(agent_sandbox_run_user) }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - path: "{{ agent_sandbox_deploy_path }}/config"
+      mode: "0750"
+    - path: "{{ agent_sandbox_worker_root }}"
+      mode: "0750"
+    - path: "{{ agent_sandbox_worker_root }}/sessions"
+      mode: "0750"
+    - path: "{{ agent_sandbox_worker_runtime_dir }}"
+      mode: "0750"
+
+- name: Preload configured worker images
+  ansible.builtin.command:
+    argv:
+      - docker
+      - pull
+      - "{{ item }}"
+  loop: "{{ agent_sandbox_worker_preload_images }}"
+  register: agent_sandbox_worker_image_pull
+  changed_when: "'Image is up to date' not in agent_sandbox_worker_image_pull.stdout"
+  when: (agent_sandbox_worker_preload_images | length) > 0

@@ -47,6 +47,13 @@ def read_audit_events(path: Path) -> list[dict[str, object]]:
     return [json.loads(line) for line in lines]
 
 
+class TeamsHistoryMustStayIdle:
+    read_reaction_emoji = "👀"
+
+    def get_messages(self, **_: object) -> list[object]:
+        raise AssertionError("list_pending_agent_prompts must not read Teams history")
+
+
 def write_provider_overlay(context, directory_path: str, payload: dict[str, object]) -> None:
     directory_store = DirectoryStore(context.config.directories_store_path)
     directory_store.ensure_root()
@@ -305,6 +312,41 @@ def test_list_pending_agent_prompts_reuses_issued_token_between_polls(tmp_path: 
         },
     )
     assert respond_result["status"] == "responded"
+
+
+def test_list_pending_agent_prompts_does_not_touch_teams_history(tmp_path: Path) -> None:
+    context = make_context(tmp_path)
+    context.teams_service = TeamsHistoryMustStayIdle()
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="sender",
+            allowed_tools=[ToolName.PROMPT_AGENT],
+            directory_path="root/alpha",
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        ),
+    )
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="target",
+            allowed_tools=[ToolName.RESPOND_TO_AGENT],
+            directory_path="root/alpha",
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        ),
+    )
+    server = create_server(context)
+    prompt_result = call_tool(
+        server,
+        "prompt_agent",
+        {
+            "session_id": "sender",
+            "target_session_id": "target",
+            "prompt": "Fetch from the lightweight prompt inbox.",
+        },
+    )
+
+    inbox = call_tool(server, "list_pending_agent_prompts", {"session_id": "target"})
+
+    assert [prompt["message_id"] for prompt in inbox["prompts"]] == [prompt_result["message_id"]]
 
 
 def test_prompt_agent_honors_idempotency_key_for_retries(tmp_path: Path) -> None:

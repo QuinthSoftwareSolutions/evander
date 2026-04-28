@@ -94,13 +94,8 @@ echo "Bootstrapping GitHub Copilot CLI into ${VM_USER}@${VM_IP}"
 
 ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "
   set -euo pipefail
-  sudo mkdir -p /home/${VM_USER}
-  sudo chown -R ${VM_USER}:${VM_USER} /home/${VM_USER}
-  if [ -f /etc/agent-sandbox/session.env ]; then
-    sudo chmod 755 /etc/agent-sandbox || true
-    sudo chmod 644 /etc/agent-sandbox/session.env
-  fi
-  mkdir -p ~/bin ~/.copilot ~/.config/systemd/user ~/.config/agent-sandbox
+  mkdir -p ~/bin ~/.copilot ~/.config/systemd/user ~/.config/agent-sandbox ~/.agent-sandbox
+  chmod 700 ~/.agent-sandbox
 "
 scp "${SSH_OPTS[@]}" "${HOST_COPILOT_BIN}" "${VM_USER}@${VM_IP}:~/bin/copilot"
 
@@ -216,7 +211,7 @@ copilot version
 
 echo "Host-mediated Copilot auth is available through the guest gh shim and the host gateway."
 echo "COPILOT_GITHUB_TOKEN, GH_TOKEN, GITHUB_TOKEN, or 'copilot login' still override the gh fallback if you set them intentionally."
-echo "Host heartbeat worker is now responsible for feedback wakeups by default."
+echo "Host-side wake workers are now responsible for feedback wakeups by default."
 EOF
 
 GUEST_HEARTBEAT_PROMPT_B64="$(printf '%s' "${GUEST_HEARTBEAT_PROMPT}" | base64 -w0)"

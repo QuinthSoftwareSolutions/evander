@@ -47,7 +47,7 @@ def test_issue_vm_helpers_auto_detect_repo_name_when_omitted() -> None:
         assert 'Repo basename used by guest agent logs. Default: auto-detect' in text
         assert 'sort -u' in text
         assert 'agent-*.pid' in text
-        assert 'agent-*.log' in text
+        assert 'agent-*.state' in text
         assert 'codex-heartbeat-run.log' in text
         assert 'codex-heartbeat.pid' in text
 

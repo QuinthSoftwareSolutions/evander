@@ -166,7 +166,7 @@ class RuntimeContext:
         if session is None:
             raise ValueError(f"unknown session: {session_id}")
         resolved_config = self.resolve_provider_config_for_session(session_id)
-        if resolved_config == self.config:
+        if resolved_config == self.config and not isinstance(self.teams_service, GraphTeamsService):
             return self.teams_service
         return _build_teams_service(
             resolved_config,
@@ -395,6 +395,8 @@ def _build_teams_service(
             token=token,
             api_base_url=config.teams_graph_api_base_url,
             poll_limit=config.teams_poll_limit,
+            history_page_cap=config.teams_history_page_cap,
+            history_deadline_seconds=config.teams_history_deadline_seconds,
             timeout_seconds=config.teams_timeout_seconds,
             retry_count=config.teams_retry_count,
             retry_base_backoff_seconds=config.teams_retry_base_backoff_seconds,
@@ -410,6 +412,8 @@ def _build_teams_service(
             token_provider=token_provider.get_bearer_token,
             api_base_url=config.teams_graph_api_base_url,
             poll_limit=config.teams_poll_limit,
+            history_page_cap=config.teams_history_page_cap,
+            history_deadline_seconds=config.teams_history_deadline_seconds,
             timeout_seconds=config.teams_timeout_seconds,
             retry_count=config.teams_retry_count,
             retry_base_backoff_seconds=config.teams_retry_base_backoff_seconds,

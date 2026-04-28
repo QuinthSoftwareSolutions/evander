@@ -31,6 +31,10 @@ Options:
   --dispatch-id ID            Correlation identifier written into the guest agent state file.
   --resume-thread-id ID       Resume a specific agent thread/session id instead of starting a new one.
   --vm-user USER              Guest user to connect as. Default: agent
+  --ssh-user USER             Privileged guest SSH user for host control/log access.
+                              Default: agent-admin, falling back to --vm-user when reachable.
+  --agent-log-dir PATH        Root-owned guest log directory. Default:
+                              /var/log/agent-sandbox/agent-runs
   --resume-mode MODE          Resume mode: same_context or new_context. Default: same_context
   --worker-mode               Disable TTY allocation and run non-interactive worker mode.
   --dispatch-only             In worker mode, dispatch the guest resume in the background and
@@ -195,6 +199,8 @@ parse_args() {
   DISPATCH_ID=""
   RESUME_THREAD_ID=""
   VM_USER="agent"
+  SSH_USER="${VM_SSH_USER:-agent-admin}"
+  AGENT_RUN_LOG_DIR="${AGENT_RUN_LOG_DIR:-/var/log/agent-sandbox/agent-runs}"
   RESUME_MODE="same_context"
   WORKER_MODE=0
   DISPATCH_ONLY=0
@@ -269,6 +275,14 @@ parse_args() {
           VM_USER="${2:-}"
           shift 2
           ;;
+        --ssh-user)
+          SSH_USER="${2:-}"
+          shift 2
+          ;;
+        --agent-log-dir)
+          AGENT_RUN_LOG_DIR="${2:-}"
+          shift 2
+          ;;
         --resume-mode)
           RESUME_MODE="${2:-}"
           shift 2
@@ -313,6 +327,9 @@ parse_args() {
   fi
 
   if [[ -z "${PROMPT}" || -z "${VM_NAME}" ]]; then
+    return 1
+  fi
+  if [[ -z "${VM_USER}" || -z "${SSH_USER}" || -z "${AGENT_RUN_LOG_DIR}" ]]; then
     return 1
   fi
   if [[ "${RESUME_MODE}" != "same_context" && "${RESUME_MODE}" != "new_context" ]]; then
@@ -409,9 +426,14 @@ if ! VM_IP="$(vm_network_wait_for_ip "${VM_NAME}" "${VM_WAIT_IP_TIMEOUT_SECONDS}
   exit "${EXIT_VM_WAIT_IP_TIMEOUT}"
 fi
 
-if ! vm_network_wait_for_ssh "${VM_NAME}" "${VM_IP}" "${VM_USER}" "${SSH_PRIVATE_KEY_PATH}" "${VM_WAIT_SSH_TIMEOUT_SECONDS}" >/dev/null; then
-  write_host_state_attempt "${HOST_STATE_FILE}" "${SESSION_ID}" "error" "wait-ssh-timeout"
-  exit "${EXIT_VM_WAIT_SSH_TIMEOUT}"
+if ! vm_network_wait_for_ssh "${VM_NAME}" "${VM_IP}" "${SSH_USER}" "${SSH_PRIVATE_KEY_PATH}" "${VM_WAIT_SSH_TIMEOUT_SECONDS}" >/dev/null; then
+  if [[ "${SSH_USER}" != "${VM_USER}" ]] \
+    && vm_network_wait_for_ssh "${VM_NAME}" "${VM_IP}" "${VM_USER}" "${SSH_PRIVATE_KEY_PATH}" "${VM_WAIT_SSH_TIMEOUT_SECONDS}" >/dev/null; then
+    SSH_USER="${VM_USER}"
+  else
+    write_host_state_attempt "${HOST_STATE_FILE}" "${SESSION_ID}" "error" "wait-ssh-timeout"
+    exit "${EXIT_VM_WAIT_SSH_TIMEOUT}"
+  fi
 fi
 
 PROMPT_B64="$(printf '%s' "${PROMPT}" | base64 -w0)"
@@ -422,12 +444,22 @@ if (( WORKER_MODE )); then
   if (( DISPATCH_ONLY )); then
     set +e
     ssh "${SSH_FLAGS[@]}" \
-      "${VM_USER}@${VM_IP}" \
-      "PROMPT_B64='${PROMPT_B64}' SESSION_ID='${SESSION_ID}' DISPATCH_ID='${DISPATCH_ID}' RESUME_THREAD_ID='${RESUME_THREAD_ID}' AGENT_BRANCH_SUFFIX='${VM_NAME}' AGENT_PROVIDER='${AGENT_PROVIDER}' AGENT_MODEL='${AGENT_MODEL}' RESUME_MODE='${RESUME_MODE}' HOST_CONTROL_STATUS='${HOST_CONTROL_STATUS}' AGENT_RUNNER_LIB_B64='${AGENT_RUNNER_LIB_B64}' AGENT_RUNNER_PROVIDER_LIB_NAME='${AGENT_RUNNER_PROVIDER_LIB_NAME}' AGENT_RUNNER_PROVIDER_LIB_B64='${AGENT_RUNNER_PROVIDER_LIB_B64}' AGENT_STATE_LIB_B64='${AGENT_STATE_LIB_B64}' bash -s" <<'REMOTE'
+      "${SSH_USER}@${VM_IP}" \
+      sudo -n env "AGENT_USER=${VM_USER}" "AGENT_RUN_LOG_DIR=${AGENT_RUN_LOG_DIR}" "PROMPT_B64=${PROMPT_B64}" "SESSION_ID=${SESSION_ID}" "DISPATCH_ID=${DISPATCH_ID}" "RESUME_THREAD_ID=${RESUME_THREAD_ID}" "AGENT_BRANCH_SUFFIX=${VM_NAME}" "AGENT_PROVIDER=${AGENT_PROVIDER}" "AGENT_MODEL=${AGENT_MODEL}" "RESUME_MODE=${RESUME_MODE}" "HOST_CONTROL_STATUS=${HOST_CONTROL_STATUS}" "AGENT_RUNNER_LIB_B64=${AGENT_RUNNER_LIB_B64}" "AGENT_RUNNER_PROVIDER_LIB_NAME=${AGENT_RUNNER_PROVIDER_LIB_NAME}" "AGENT_RUNNER_PROVIDER_LIB_B64=${AGENT_RUNNER_PROVIDER_LIB_B64}" "AGENT_STATE_LIB_B64=${AGENT_STATE_LIB_B64}" bash -s <<'REMOTE'
 set -euo pipefail
 
-cd "${HOME}"
-. "${HOME}/.profile" >/dev/null 2>&1 || true
+AGENT_USER="${AGENT_USER:-agent}"
+AGENT_HOME="$(getent passwd "${AGENT_USER}" | cut -d: -f6)"
+if [[ -z "${AGENT_HOME}" ]]; then
+  echo "Unknown agent user: ${AGENT_USER}" >&2
+  exit 1
+fi
+export HOME="${AGENT_HOME}" USER="${AGENT_USER}" LOGNAME="${AGENT_USER}"
+cd "${AGENT_HOME}"
+RUN_LOG_DIR="${AGENT_RUN_LOG_DIR:-/var/log/agent-sandbox/agent-runs}"
+install -d -m 0700 -o "${AGENT_USER}" -g "${AGENT_USER}" "${AGENT_HOME}/.agent-sandbox"
+install -d -m 0700 -o root -g root "${RUN_LOG_DIR}"
+RUN_AS_AGENT=(runuser -u "${AGENT_USER}" -- env HOME="${AGENT_HOME}" USER="${AGENT_USER}" LOGNAME="${AGENT_USER}")
 
 resolve_primary_agent_paths() {
   local log_dir="$1"
@@ -442,11 +474,10 @@ resolve_primary_agent_paths() {
   fi
 
   shopt -s nullglob
-  for path in "${log_dir}"/agent-*.pid "${log_dir}"/agent-*.log "${log_dir}"/agent-*.state; do
+  for path in "${log_dir}"/agent-*.pid "${log_dir}"/agent-*.state; do
     name="$(basename "${path}")"
     name="${name#agent-}"
     name="${name%.pid}"
-    name="${name%.log}"
     name="${name%.state}"
     if [[ -n "${name}" ]]; then
       candidate_names+=("${name}")
@@ -478,25 +509,32 @@ source "${AGENT_RUNNER_TMP_DIR}/agent_state.sh"
 LOG_DIR="${HOME}/.agent-sandbox"
 RESOLVED_REPO_NAME="$(resolve_primary_agent_paths "${LOG_DIR}" || true)"
 if [[ -n "${RESOLVED_REPO_NAME}" ]]; then
-  RUN_LOG_FILE="${LOG_DIR}/agent-${RESOLVED_REPO_NAME}.log"
+  RUN_LOG_FILE="${RUN_LOG_DIR}/agent-${RESOLVED_REPO_NAME}.log"
   PID_FILE="${LOG_DIR}/agent-${RESOLVED_REPO_NAME}.pid"
   STATE_PATH="${LOG_DIR}/agent-${RESOLVED_REPO_NAME}.state"
   AGENT_STATE_REPO_NAME="${RESOLVED_REPO_NAME}"
 else
-  RUN_LOG_FILE="${LOG_DIR}/codex-heartbeat-run.log"
+  RUN_LOG_FILE="${RUN_LOG_DIR}/codex-heartbeat-run.log"
   PID_FILE="${LOG_DIR}/codex-heartbeat.pid"
   STATE_PATH="${LOG_DIR}/codex-resume-last.state"
   AGENT_STATE_REPO_NAME="resume-last"
 fi
 PROMPT="$(python3 -c 'import base64, os; print(base64.b64decode(os.environ["PROMPT_B64"]).decode("utf-8"))')"
 
-mkdir -p "${LOG_DIR}/lib"
+install -d -m 0700 -o "${AGENT_USER}" -g "${AGENT_USER}" "${LOG_DIR}/lib"
 printf '%s' "${AGENT_RUNNER_LIB_B64}" | base64 -d > "${LOG_DIR}/lib/agent_runner.sh"
 printf '%s' "${AGENT_RUNNER_PROVIDER_LIB_B64}" | base64 -d > "${LOG_DIR}/lib/${AGENT_RUNNER_PROVIDER_LIB_NAME}"
 printf '%s' "${AGENT_STATE_LIB_B64}" | base64 -d > "${LOG_DIR}/lib/agent_state.sh"
+chown "${AGENT_USER}:${AGENT_USER}" "${LOG_DIR}/lib/agent_runner.sh" "${LOG_DIR}/lib/${AGENT_RUNNER_PROVIDER_LIB_NAME}" "${LOG_DIR}/lib/agent_state.sh"
+chmod 0644 "${LOG_DIR}/lib/agent_runner.sh" "${LOG_DIR}/lib/${AGENT_RUNNER_PROVIDER_LIB_NAME}" "${LOG_DIR}/lib/agent_state.sh"
+touch "${RUN_LOG_FILE}"
+chown root:root "${RUN_LOG_FILE}"
+chmod 0600 "${RUN_LOG_FILE}"
 
 if [[ -n "${HOST_CONTROL_STATUS}" ]]; then
   write_agent_control_state "${HOST_CONTROL_STATUS}" "host-sync"
+  chown "${AGENT_USER}:${AGENT_USER}" "${LOG_DIR}/agent-control.state"
+  chmod 0600 "${LOG_DIR}/agent-control.state"
 fi
 
 ensure_agent_enabled
@@ -530,7 +568,7 @@ if [[ -f "${PID_FILE}" ]]; then
   fi
 fi
 
-nohup env \
+nohup "${RUN_AS_AGENT[@]}" \
   SESSION_ID="${SESSION_ID}" \
   AGENT_DISPATCH_ID="${DISPATCH_ID}" \
   AGENT_BRANCH_SUFFIX="${AGENT_BRANCH_SUFFIX}" \
@@ -542,8 +580,9 @@ nohup env \
   RUN_LOG_FILE="${RUN_LOG_FILE}" \
   STATE_PATH="${STATE_PATH}" \
   AGENT_STATE_REPO_NAME="${AGENT_STATE_REPO_NAME}" \
-  bash -lc '
+bash -lc '
 set -euo pipefail
+. "$HOME/.profile" >/dev/null 2>&1 || true
 . "$HOME/.agent-sandbox/lib/agent_runner.sh"
 . "$HOME/.agent-sandbox/lib/agent_state.sh"
 
@@ -579,6 +618,10 @@ else
     "${PROMPT}"
 fi
 ' >>"${RUN_LOG_FILE}" 2>&1 < /dev/null &
+AGENT_PID=$!
+printf '%s\n' "${AGENT_PID}" >"${PID_FILE}"
+chown "${AGENT_USER}:${AGENT_USER}" "${PID_FILE}"
+chmod 0600 "${PID_FILE}"
 REMOTE
     resume_exit_code="$?"
     set -e
@@ -594,12 +637,22 @@ REMOTE
   set +e
   timeout --foreground "${RESUME_COMMAND_TIMEOUT_SECONDS}s" \
     ssh "${SSH_FLAGS[@]}" \
-    "${VM_USER}@${VM_IP}" \
-    "PROMPT_B64='${PROMPT_B64}' SESSION_ID='${SESSION_ID}' DISPATCH_ID='${DISPATCH_ID}' RESUME_THREAD_ID='${RESUME_THREAD_ID}' AGENT_BRANCH_SUFFIX='${VM_NAME}' AGENT_PROVIDER='${AGENT_PROVIDER}' AGENT_MODEL='${AGENT_MODEL}' RESUME_MODE='${RESUME_MODE}' HOST_CONTROL_STATUS='${HOST_CONTROL_STATUS}' AGENT_RUNNER_LIB_B64='${AGENT_RUNNER_LIB_B64}' AGENT_RUNNER_PROVIDER_LIB_NAME='${AGENT_RUNNER_PROVIDER_LIB_NAME}' AGENT_RUNNER_PROVIDER_LIB_B64='${AGENT_RUNNER_PROVIDER_LIB_B64}' AGENT_STATE_LIB_B64='${AGENT_STATE_LIB_B64}' bash -s" <<'REMOTE'
+    "${SSH_USER}@${VM_IP}" \
+    sudo -n env "AGENT_USER=${VM_USER}" "AGENT_RUN_LOG_DIR=${AGENT_RUN_LOG_DIR}" "PROMPT_B64=${PROMPT_B64}" "SESSION_ID=${SESSION_ID}" "DISPATCH_ID=${DISPATCH_ID}" "RESUME_THREAD_ID=${RESUME_THREAD_ID}" "AGENT_BRANCH_SUFFIX=${VM_NAME}" "AGENT_PROVIDER=${AGENT_PROVIDER}" "AGENT_MODEL=${AGENT_MODEL}" "RESUME_MODE=${RESUME_MODE}" "HOST_CONTROL_STATUS=${HOST_CONTROL_STATUS}" "AGENT_RUNNER_LIB_B64=${AGENT_RUNNER_LIB_B64}" "AGENT_RUNNER_PROVIDER_LIB_NAME=${AGENT_RUNNER_PROVIDER_LIB_NAME}" "AGENT_RUNNER_PROVIDER_LIB_B64=${AGENT_RUNNER_PROVIDER_LIB_B64}" "AGENT_STATE_LIB_B64=${AGENT_STATE_LIB_B64}" bash -s <<'REMOTE'
 set -euo pipefail
 
-cd "${HOME}"
-. "${HOME}/.profile" >/dev/null 2>&1 || true
+AGENT_USER="${AGENT_USER:-agent}"
+AGENT_HOME="$(getent passwd "${AGENT_USER}" | cut -d: -f6)"
+if [[ -z "${AGENT_HOME}" ]]; then
+  echo "Unknown agent user: ${AGENT_USER}" >&2
+  exit 1
+fi
+export HOME="${AGENT_HOME}" USER="${AGENT_USER}" LOGNAME="${AGENT_USER}"
+cd "${AGENT_HOME}"
+RUN_LOG_DIR="${AGENT_RUN_LOG_DIR:-/var/log/agent-sandbox/agent-runs}"
+install -d -m 0700 -o "${AGENT_USER}" -g "${AGENT_USER}" "${AGENT_HOME}/.agent-sandbox"
+install -d -m 0700 -o root -g root "${RUN_LOG_DIR}"
+RUN_AS_AGENT=(runuser -u "${AGENT_USER}" -- env HOME="${AGENT_HOME}" USER="${AGENT_USER}" LOGNAME="${AGENT_USER}")
 
 resolve_primary_agent_paths() {
   local log_dir="$1"
@@ -614,11 +667,10 @@ resolve_primary_agent_paths() {
   fi
 
   shopt -s nullglob
-  for path in "${log_dir}"/agent-*.pid "${log_dir}"/agent-*.log "${log_dir}"/agent-*.state; do
+  for path in "${log_dir}"/agent-*.pid "${log_dir}"/agent-*.state; do
     name="$(basename "${path}")"
     name="${name#agent-}"
     name="${name%.pid}"
-    name="${name%.log}"
     name="${name%.state}"
     if [[ -n "${name}" ]]; then
       candidate_names+=("${name}")
@@ -650,21 +702,50 @@ source "${AGENT_RUNNER_TMP_DIR}/agent_state.sh"
 LOG_DIR="${HOME}/.agent-sandbox"
 RESOLVED_REPO_NAME="$(resolve_primary_agent_paths "${LOG_DIR}" || true)"
 if [[ -n "${RESOLVED_REPO_NAME}" ]]; then
-  RUN_LOG_FILE="${LOG_DIR}/agent-${RESOLVED_REPO_NAME}.log"
+  RUN_LOG_FILE="${RUN_LOG_DIR}/agent-${RESOLVED_REPO_NAME}.log"
   STATE_PATH="${LOG_DIR}/agent-${RESOLVED_REPO_NAME}.state"
   AGENT_STATE_REPO_NAME="${RESOLVED_REPO_NAME}"
 else
-  RUN_LOG_FILE="${LOG_DIR}/codex-heartbeat-run.log"
+  RUN_LOG_FILE="${RUN_LOG_DIR}/codex-heartbeat-run.log"
   STATE_PATH="${LOG_DIR}/codex-resume-last.state"
   AGENT_STATE_REPO_NAME="resume-last"
 fi
 AGENT_DISPATCH_ID="${DISPATCH_ID:-}"
 PROMPT="$(python3 -c 'import base64, os; print(base64.b64decode(os.environ["PROMPT_B64"]).decode("utf-8"))')"
-mkdir -p "${LOG_DIR}"
+install -d -m 0700 -o "${AGENT_USER}" -g "${AGENT_USER}" "${LOG_DIR}/lib"
+printf '%s' "${AGENT_RUNNER_LIB_B64}" | base64 -d > "${LOG_DIR}/lib/agent_runner.sh"
+printf '%s' "${AGENT_RUNNER_PROVIDER_LIB_B64}" | base64 -d > "${LOG_DIR}/lib/${AGENT_RUNNER_PROVIDER_LIB_NAME}"
+printf '%s' "${AGENT_STATE_LIB_B64}" | base64 -d > "${LOG_DIR}/lib/agent_state.sh"
+chown "${AGENT_USER}:${AGENT_USER}" "${LOG_DIR}/lib/agent_runner.sh" "${LOG_DIR}/lib/${AGENT_RUNNER_PROVIDER_LIB_NAME}" "${LOG_DIR}/lib/agent_state.sh"
+chmod 0644 "${LOG_DIR}/lib/agent_runner.sh" "${LOG_DIR}/lib/${AGENT_RUNNER_PROVIDER_LIB_NAME}" "${LOG_DIR}/lib/agent_state.sh"
+touch "${RUN_LOG_FILE}"
+chown root:root "${RUN_LOG_FILE}"
+chmod 0600 "${RUN_LOG_FILE}"
 
 if [[ -n "${HOST_CONTROL_STATUS}" ]]; then
   write_agent_control_state "${HOST_CONTROL_STATUS}" "host-sync"
+  chown "${AGENT_USER}:${AGENT_USER}" "${LOG_DIR}/agent-control.state"
+  chmod 0600 "${LOG_DIR}/agent-control.state"
 fi
+
+ensure_agent_enabled
+
+"${RUN_AS_AGENT[@]}" \
+  SESSION_ID="${SESSION_ID}" \
+  AGENT_DISPATCH_ID="${DISPATCH_ID}" \
+  RESUME_THREAD_ID="${RESUME_THREAD_ID}" \
+  AGENT_BRANCH_SUFFIX="${AGENT_BRANCH_SUFFIX}" \
+  AGENT_PROVIDER="${AGENT_PROVIDER}" \
+  AGENT_MODEL="${AGENT_MODEL}" \
+  RESUME_MODE="${RESUME_MODE}" \
+  PROMPT="${PROMPT}" \
+  STATE_PATH="${STATE_PATH}" \
+  AGENT_STATE_REPO_NAME="${AGENT_STATE_REPO_NAME}" \
+bash -lc '
+set -euo pipefail
+. "$HOME/.profile" >/dev/null 2>&1 || true
+. "$HOME/.agent-sandbox/lib/agent_runner.sh"
+. "$HOME/.agent-sandbox/lib/agent_state.sh"
 
 ensure_agent_enabled
 
@@ -677,8 +758,7 @@ if [[ -n "${RESUME_THREAD_ID:-}" ]]; then
     --dangerously-bypass-approvals-and-sandbox \
     --skip-git-repo-check \
     --model "${AGENT_MODEL}" \
-    "${PROMPT}" \
-    2>&1 | tee -a "${RUN_LOG_FILE}"
+    "${PROMPT}"
 elif [[ "${RESUME_MODE}" == "new_context" ]]; then
   TARGET_DIR="${HOME}"
   if [[ -n "${AGENT_STATE_REPO_NAME}" && "${AGENT_STATE_REPO_NAME}" != "resume-last" && -d "${HOME}/${AGENT_STATE_REPO_NAME}" ]]; then
@@ -690,16 +770,15 @@ elif [[ "${RESUME_MODE}" == "new_context" ]]; then
     --skip-git-repo-check \
     --model "${AGENT_MODEL}" \
     -C "${TARGET_DIR}" \
-    "${PROMPT}" \
-    2>&1 | tee -a "${RUN_LOG_FILE}"
+    "${PROMPT}"
 else
   agent_runner_resume_last \
     --dangerously-bypass-approvals-and-sandbox \
     --skip-git-repo-check \
     --model "${AGENT_MODEL}" \
-    "${PROMPT}" \
-    2>&1 | tee -a "${RUN_LOG_FILE}"
+    "${PROMPT}"
 fi
+' 2>&1 | tee -a "${RUN_LOG_FILE}"
 REMOTE
   resume_exit_code="$?"
   set -e
@@ -720,12 +799,22 @@ fi
 
 resume_output="$(
   ssh "${SSH_FLAGS[@]}" \
-    "${VM_USER}@${VM_IP}" \
-    "PROMPT_B64='${PROMPT_B64}' SESSION_ID='${SESSION_ID}' DISPATCH_ID='${DISPATCH_ID}' RESUME_THREAD_ID='${RESUME_THREAD_ID}' AGENT_BRANCH_SUFFIX='${VM_NAME}' AGENT_PROVIDER='${AGENT_PROVIDER}' AGENT_MODEL='${AGENT_MODEL}' RESUME_MODE='${RESUME_MODE}' HOST_CONTROL_STATUS='${HOST_CONTROL_STATUS}' AGENT_RUNNER_LIB_B64='${AGENT_RUNNER_LIB_B64}' AGENT_RUNNER_PROVIDER_LIB_NAME='${AGENT_RUNNER_PROVIDER_LIB_NAME}' AGENT_RUNNER_PROVIDER_LIB_B64='${AGENT_RUNNER_PROVIDER_LIB_B64}' AGENT_STATE_LIB_B64='${AGENT_STATE_LIB_B64}' bash -s" <<'REMOTE'
+    "${SSH_USER}@${VM_IP}" \
+    sudo -n env "AGENT_USER=${VM_USER}" "AGENT_RUN_LOG_DIR=${AGENT_RUN_LOG_DIR}" "PROMPT_B64=${PROMPT_B64}" "SESSION_ID=${SESSION_ID}" "DISPATCH_ID=${DISPATCH_ID}" "RESUME_THREAD_ID=${RESUME_THREAD_ID}" "AGENT_BRANCH_SUFFIX=${VM_NAME}" "AGENT_PROVIDER=${AGENT_PROVIDER}" "AGENT_MODEL=${AGENT_MODEL}" "RESUME_MODE=${RESUME_MODE}" "HOST_CONTROL_STATUS=${HOST_CONTROL_STATUS}" "AGENT_RUNNER_LIB_B64=${AGENT_RUNNER_LIB_B64}" "AGENT_RUNNER_PROVIDER_LIB_NAME=${AGENT_RUNNER_PROVIDER_LIB_NAME}" "AGENT_RUNNER_PROVIDER_LIB_B64=${AGENT_RUNNER_PROVIDER_LIB_B64}" "AGENT_STATE_LIB_B64=${AGENT_STATE_LIB_B64}" bash -s <<'REMOTE'
 set -euo pipefail
 
-cd "${HOME}"
-. "${HOME}/.profile" >/dev/null 2>&1 || true
+AGENT_USER="${AGENT_USER:-agent}"
+AGENT_HOME="$(getent passwd "${AGENT_USER}" | cut -d: -f6)"
+if [[ -z "${AGENT_HOME}" ]]; then
+  echo "Unknown agent user: ${AGENT_USER}" >&2
+  exit 1
+fi
+export HOME="${AGENT_HOME}" USER="${AGENT_USER}" LOGNAME="${AGENT_USER}"
+cd "${AGENT_HOME}"
+RUN_LOG_DIR="${AGENT_RUN_LOG_DIR:-/var/log/agent-sandbox/agent-runs}"
+install -d -m 0700 -o "${AGENT_USER}" -g "${AGENT_USER}" "${AGENT_HOME}/.agent-sandbox"
+install -d -m 0700 -o root -g root "${RUN_LOG_DIR}"
+RUN_AS_AGENT=(runuser -u "${AGENT_USER}" -- env HOME="${AGENT_HOME}" USER="${AGENT_USER}" LOGNAME="${AGENT_USER}")
 
 resolve_primary_agent_paths() {
   local log_dir="$1"
@@ -740,11 +829,10 @@ resolve_primary_agent_paths() {
   fi
 
   shopt -s nullglob
-  for path in "${log_dir}"/agent-*.pid "${log_dir}"/agent-*.log "${log_dir}"/agent-*.state; do
+  for path in "${log_dir}"/agent-*.pid "${log_dir}"/agent-*.state; do
     name="$(basename "${path}")"
     name="${name#agent-}"
     name="${name%.pid}"
-    name="${name%.log}"
     name="${name%.state}"
     if [[ -n "${name}" ]]; then
       candidate_names+=("${name}")
@@ -776,12 +864,12 @@ source "${AGENT_RUNNER_TMP_DIR}/agent_state.sh"
 LOG_DIR="${HOME}/.agent-sandbox"
 RESOLVED_REPO_NAME="$(resolve_primary_agent_paths "${LOG_DIR}" || true)"
 if [[ -n "${RESOLVED_REPO_NAME}" ]]; then
-  RUN_LOG_FILE="${LOG_DIR}/agent-${RESOLVED_REPO_NAME}.log"
+  RUN_LOG_FILE="${RUN_LOG_DIR}/agent-${RESOLVED_REPO_NAME}.log"
   PID_FILE="${LOG_DIR}/agent-${RESOLVED_REPO_NAME}.pid"
   STATE_PATH="${LOG_DIR}/agent-${RESOLVED_REPO_NAME}.state"
   AGENT_STATE_REPO_NAME="${RESOLVED_REPO_NAME}"
 else
-  RUN_LOG_FILE="${LOG_DIR}/codex-heartbeat-run.log"
+  RUN_LOG_FILE="${RUN_LOG_DIR}/codex-heartbeat-run.log"
   PID_FILE="${LOG_DIR}/codex-heartbeat.pid"
   STATE_PATH="${LOG_DIR}/codex-resume-last.state"
   AGENT_STATE_REPO_NAME="resume-last"
@@ -790,13 +878,20 @@ AGENT_DISPATCH_ID="${DISPATCH_ID:-}"
 RESUME_HINT_FILE="${LOG_DIR}/resume-args.txt"
 PROMPT="$(python3 -c 'import base64, os; print(base64.b64decode(os.environ["PROMPT_B64"]).decode("utf-8"))')"
 
-mkdir -p "${LOG_DIR}/lib"
+install -d -m 0700 -o "${AGENT_USER}" -g "${AGENT_USER}" "${LOG_DIR}/lib"
 printf '%s' "${AGENT_RUNNER_LIB_B64}" | base64 -d > "${LOG_DIR}/lib/agent_runner.sh"
 printf '%s' "${AGENT_RUNNER_PROVIDER_LIB_B64}" | base64 -d > "${LOG_DIR}/lib/${AGENT_RUNNER_PROVIDER_LIB_NAME}"
 printf '%s' "${AGENT_STATE_LIB_B64}" | base64 -d > "${LOG_DIR}/lib/agent_state.sh"
+chown "${AGENT_USER}:${AGENT_USER}" "${LOG_DIR}/lib/agent_runner.sh" "${LOG_DIR}/lib/${AGENT_RUNNER_PROVIDER_LIB_NAME}" "${LOG_DIR}/lib/agent_state.sh"
+chmod 0644 "${LOG_DIR}/lib/agent_runner.sh" "${LOG_DIR}/lib/${AGENT_RUNNER_PROVIDER_LIB_NAME}" "${LOG_DIR}/lib/agent_state.sh"
+touch "${RUN_LOG_FILE}"
+chown root:root "${RUN_LOG_FILE}"
+chmod 0600 "${RUN_LOG_FILE}"
 
 if [[ -n "${HOST_CONTROL_STATUS}" ]]; then
   write_agent_control_state "${HOST_CONTROL_STATUS}" "host-sync"
+  chown "${AGENT_USER}:${AGENT_USER}" "${LOG_DIR}/agent-control.state"
+  chmod 0600 "${LOG_DIR}/agent-control.state"
 fi
 
 ensure_agent_enabled
@@ -838,7 +933,7 @@ if [[ -f "${RUN_LOG_FILE}" ]]; then
   RUN_LOG_START_SIZE="$(wc -c < "${RUN_LOG_FILE}" | tr -d '[:space:]')"
 fi
 
-nohup env \
+nohup "${RUN_AS_AGENT[@]}" \
   SESSION_ID="${SESSION_ID}" \
   AGENT_DISPATCH_ID="${DISPATCH_ID}" \
   RESUME_THREAD_ID="${RESUME_THREAD_ID}" \
@@ -850,8 +945,9 @@ nohup env \
   RUN_LOG_FILE="${RUN_LOG_FILE}" \
   STATE_PATH="${STATE_PATH}" \
   AGENT_STATE_REPO_NAME="${AGENT_STATE_REPO_NAME}" \
-  bash -lc '
+bash -lc '
 set -euo pipefail
+. "$HOME/.profile" >/dev/null 2>&1 || true
 . "$HOME/.agent-sandbox/lib/agent_runner.sh"
 . "$HOME/.agent-sandbox/lib/agent_state.sh"
 
@@ -890,6 +986,8 @@ fi
 
 AGENT_PID=$!
 printf '%s\n' "${AGENT_PID}" >"${PID_FILE}"
+chown "${AGENT_USER}:${AGENT_USER}" "${PID_FILE}"
+chmod 0600 "${PID_FILE}"
 THREAD_ID_RESULT="${RESUME_THREAD_ID:-}"
 if [[ -z "${THREAD_ID_RESULT}" && "${AGENT_PROVIDER}" == "codex" && "${RESUME_MODE}" == "new_context" ]]; then
   for _ in $(seq 1 150); do
@@ -934,9 +1032,18 @@ fi
 
 if (( OBSERVE )); then
   exec ssh "${SSH_FLAGS[@]}" \
-    "${VM_USER}@${VM_IP}" \
-    "LINES='${OBSERVE_LINES}' bash -s" <<'REMOTE'
+    "${SSH_USER}@${VM_IP}" \
+    sudo -n env "AGENT_USER=${VM_USER}" "AGENT_RUN_LOG_DIR=${AGENT_RUN_LOG_DIR}" "LINES=${OBSERVE_LINES}" bash -s <<'REMOTE'
 set -euo pipefail
+
+AGENT_USER="${AGENT_USER:-agent}"
+AGENT_HOME="$(getent passwd "${AGENT_USER}" | cut -d: -f6)"
+if [[ -z "${AGENT_HOME}" ]]; then
+  echo "Unknown agent user: ${AGENT_USER}" >&2
+  exit 1
+fi
+LOG_DIR="${AGENT_HOME}/.agent-sandbox"
+RUN_LOG_DIR="${AGENT_RUN_LOG_DIR:-/var/log/agent-sandbox/agent-runs}"
 
 resolve_primary_agent_paths() {
   local log_dir="$1"
@@ -945,11 +1052,10 @@ resolve_primary_agent_paths() {
   local name
 
   shopt -s nullglob
-  for path in "${log_dir}"/agent-*.pid "${log_dir}"/agent-*.log "${log_dir}"/agent-*.state; do
+  for path in "${log_dir}"/agent-*.pid "${log_dir}"/agent-*.state; do
     name="$(basename "${path}")"
     name="${name#agent-}"
     name="${name%.pid}"
-    name="${name%.log}"
     name="${name%.state}"
     if [[ -n "${name}" ]]; then
       candidate_names+=("${name}")
@@ -969,12 +1075,11 @@ resolve_primary_agent_paths() {
   printf '%s\n' "${candidate_names[0]}"
 }
 
-LOG_DIR="${HOME}/.agent-sandbox"
 RESOLVED_REPO_NAME="$(resolve_primary_agent_paths "${LOG_DIR}" || true)"
 if [[ -n "${RESOLVED_REPO_NAME}" ]]; then
-  LOG_PATH="${LOG_DIR}/agent-${RESOLVED_REPO_NAME}.log"
+  LOG_PATH="${RUN_LOG_DIR}/agent-${RESOLVED_REPO_NAME}.log"
 else
-  LOG_PATH="${LOG_DIR}/codex-heartbeat-run.log"
+  LOG_PATH="${RUN_LOG_DIR}/codex-heartbeat-run.log"
 fi
 
 if [[ ! -f "${LOG_PATH}" ]]; then

@@ -27,7 +27,7 @@ if [[ -z "${AGENT_MODEL:-}" && -f "${HEARTBEAT_ENV_FILE}" ]]; then
 fi
 
 LOG_DIR="${HOME}/.agent-sandbox"
-RUN_LOG_FILE="${LOG_DIR}/codex-heartbeat-run.log"
+RUN_LOG_FILE="${AGENT_RUN_LOG_FILE:-/dev/null}"
 PID_FILE="${LOG_DIR}/codex-heartbeat.pid"
 RESUME_HINT_FILE="${LOG_DIR}/resume-args.txt"
 

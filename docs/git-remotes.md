@@ -302,7 +302,8 @@ When combining Git push automation with PR feedback handling:
 
 ### Troubleshooting
 
-- **Host heartbeat lock contention:** inspect host service status and lock path if `host-heartbeat` exits immediately.
+- **Wake lock contention:** inspect the ADO, Discord wake, and scheduled wake service status plus
+  the configured wake lock/cooldown paths if sessions are not being resumed.
 - **Provider reply API errors (GitHub/Azure DevOps):** keep the same `idempotency_key` on retry so successful-but-unconfirmed replies are deduped.
 - **Push worked but no host promotion/PR update:** inspect bare-repo hook output and `runtime/agent-events.log`.
 - **`AGENT_PR_NOTES fetch failed (non-fatal)` in `runtime/agent-events.log`:**

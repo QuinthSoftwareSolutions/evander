@@ -5,3 +5,8 @@ all:
         ubuntu2404-host:
           ansible_host: 192.0.2.10
           ansible_user: ubuntu
+    agent_sandbox_worker_hosts:
+      hosts:
+        ubuntu2404-worker:
+          ansible_host: 192.0.2.20
+          ansible_user: ubuntu

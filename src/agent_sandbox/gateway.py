@@ -2666,10 +2666,13 @@ def create_server(context: RuntimeContext) -> FastMCP:
             if since_cursor is not None and before_cursor is not None:
                 raise ToolError("since_cursor and before_cursor are mutually exclusive")
             session = context.policy.require_tool(session_id, ToolName.TEAMS_GET_MESSAGES)
+            effective_limit = limit
+            if since_cursor is None and before_cursor is None and effective_limit is None:
+                effective_limit = context.config.teams_poll_limit
             raw_messages = context.teams_service_for_session(session_id).get_messages(
                 since_cursor=since_cursor,
                 before_cursor=before_cursor,
-                limit=limit,
+                limit=None,
             )
             messages, denied_count, next_cursor = _filter_teams_messages_for_session(
                 context,
@@ -2679,8 +2682,8 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 args,
                 audit_failure,
             )
-            if limit is not None:
-                messages = messages[-limit:]
+            if effective_limit is not None:
+                messages = messages[-effective_limit:]
                 fallback_cursor = before_cursor if before_cursor is not None else since_cursor
                 next_cursor = messages[-1]["cursor"] if messages else fallback_cursor
             result = {"messages": messages, "next_cursor": next_cursor}

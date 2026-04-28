@@ -32,6 +32,7 @@ fi
 
 VM_NAME="$1"
 VM_USER="${2:-agent}"
+SSH_USER="${VM_SSH_USER:-agent-admin}"
 # shellcheck source=lib/guest_ssh.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/guest_ssh.sh"
 CALLER_USER="${SUDO_USER:-$USER}"
@@ -70,22 +71,19 @@ mapfile -t SSH_OPTS < <(guest_ssh_options "${VM_NAME}" "${VM_IP}" "${SSH_KEY_PAT
 
 echo "Bootstrapping NuGet config into ${VM_USER}@${VM_IP}"
 
-ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "bash -s" <<EOF_VM
+ssh "${SSH_OPTS[@]}" "${SSH_USER}@${VM_IP}" "sudo -n env NUGET_FALLBACK_PACKAGES='${NUGET_FALLBACK_PACKAGES}' bash -s" <<'EOF_VM'
 set -euo pipefail
 
-mkdir -p ~/.nuget/NuGet
-mkdir -p "${NUGET_PACKAGES_DIR}"
-mkdir -p "${NUGET_HTTP_CACHE_DIR}"
-sudo mkdir -p "${NUGET_FALLBACK_PACKAGES}"
+mkdir -p "${NUGET_FALLBACK_PACKAGES}"
 
 if ! mountpoint -q "${NUGET_FALLBACK_PACKAGES}"; then
-  sudo mount "${NUGET_FALLBACK_PACKAGES}" >/dev/null 2>&1 || true
+  mount "${NUGET_FALLBACK_PACKAGES}" >/dev/null 2>&1 || true
 fi
 
 if ! mountpoint -q "${NUGET_FALLBACK_PACKAGES}"; then
   for _ in {1..10}; do
     sleep 1
-    sudo mount "${NUGET_FALLBACK_PACKAGES}" >/dev/null 2>&1 || true
+    mount "${NUGET_FALLBACK_PACKAGES}" >/dev/null 2>&1 || true
     if mountpoint -q "${NUGET_FALLBACK_PACKAGES}"; then
       break
     fi
@@ -95,6 +93,14 @@ fi
 if ! mountpoint -q "${NUGET_FALLBACK_PACKAGES}"; then
   echo "Warning: shared NuGet fallback folder is not mounted at ${NUGET_FALLBACK_PACKAGES}; restores will use relay sources only." >&2
 fi
+EOF_VM
+
+ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "bash -s" <<EOF_VM
+set -euo pipefail
+
+mkdir -p ~/.nuget/NuGet
+mkdir -p "${NUGET_PACKAGES_DIR}"
+mkdir -p "${NUGET_HTTP_CACHE_DIR}"
 
 cat > ~/.nuget/NuGet/NuGet.Config <<CONFIG
 <?xml version="1.0" encoding="utf-8"?>

@@ -13,6 +13,8 @@ Arguments:
   vm-user       Guest user to inspect. Default: agent
 
 Environment:
+  VM_SSH_USER                   Privileged SSH user used to read root-owned logs.
+                                Default: agent-admin
   VM_WAIT_IP_TIMEOUT_SECONDS   How long to wait for the guest to receive an IPv4 address.
                                Default: 180
   VM_WAIT_SSH_TIMEOUT_SECONDS  How long to wait for guest SSH to accept connections.
@@ -33,6 +35,7 @@ fi
 ISSUE_NUMBER="$1"
 REPO_NAME="${2:-}"
 VM_USER="${3:-agent}"
+SSH_USER="${VM_SSH_USER:-agent-admin}"
 VM_NAME="vm-${ISSUE_NUMBER}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/vm_network.sh
@@ -81,38 +84,53 @@ if [[ -z "${VM_IP}" ]]; then
   exit 0
 fi
 
-if ! vm_network_wait_for_ssh "${VM_NAME}" "${VM_IP}" "${VM_USER}" "${SSH_PRIVATE_KEY_PATH}" "${VM_WAIT_SSH_TIMEOUT_SECONDS}" >/dev/null 2>&1; then
-  echo "agent: unavailable (guest SSH not ready)"
-  exit 0
+if ! vm_network_wait_for_ssh "${VM_NAME}" "${VM_IP}" "${SSH_USER}" "${SSH_PRIVATE_KEY_PATH}" "${VM_WAIT_SSH_TIMEOUT_SECONDS}" >/dev/null 2>&1; then
+  if [[ "${SSH_USER}" != "${VM_USER}" ]] \
+    && vm_network_wait_for_ssh "${VM_NAME}" "${VM_IP}" "${VM_USER}" "${SSH_PRIVATE_KEY_PATH}" "${VM_WAIT_SSH_TIMEOUT_SECONDS}" >/dev/null 2>&1; then
+    SSH_USER="${VM_USER}"
+  else
+    echo "agent: unavailable (guest SSH not ready)"
+    exit 0
+  fi
 fi
 
 mapfile -t SSH_OPTS < <(guest_ssh_options "${VM_NAME}" "${VM_IP}" "${SSH_PRIVATE_KEY_PATH}" "${CALLER_HOME}")
 SSH_OPTS+=(-o ConnectTimeout=5)
 
+check_remote() {
+  local ssh_user="$1"
+
 ssh \
   "${SSH_OPTS[@]}" \
-  "${VM_USER}@${VM_IP}" \
-  "REPO_NAME='${REPO_NAME}' bash -s" <<'EOF'
+  "${ssh_user}@${VM_IP}" \
+  "sudo -n env AGENT_USER='${VM_USER}' REPO_NAME='${REPO_NAME}' AGENT_RUN_LOG_DIR=/var/log/agent-sandbox/agent-runs bash -s" <<'EOF'
 set -euo pipefail
 
-LOG_DIR="$HOME/.agent-sandbox"
+AGENT_USER="${AGENT_USER:-agent}"
+AGENT_HOME="$(getent passwd "${AGENT_USER}" | cut -d: -f6)"
+if [[ -z "${AGENT_HOME}" ]]; then
+  echo "agent: unavailable (unknown agent user ${AGENT_USER})"
+  exit 0
+fi
+LOG_DIR="${AGENT_HOME}/.agent-sandbox"
+RUN_LOG_DIR="${AGENT_RUN_LOG_DIR:-/var/log/agent-sandbox/agent-runs}"
 RESOLVED_REPO_NAME="${REPO_NAME:-}"
 
 if [[ -z "${RESOLVED_REPO_NAME}" ]]; then
   shopt -s nullglob
   candidates=()
 
-  for path in "${LOG_DIR}"/agent-*.pid "${LOG_DIR}"/agent-*.log; do
+  for path in "${LOG_DIR}"/agent-*.pid "${LOG_DIR}"/agent-*.state; do
     name="$(basename "${path}")"
     name="${name#agent-}"
     name="${name%.pid}"
-    name="${name%.log}"
+    name="${name%.state}"
     if [[ -n "${name}" ]]; then
       candidates+=("${name}")
     fi
   done
 
-  if [[ -f "${LOG_DIR}/codex-heartbeat-run.log" || -f "${LOG_DIR}/codex-heartbeat.pid" ]]; then
+  if [[ -f "${LOG_DIR}/codex-resume-last.state" || -f "${LOG_DIR}/codex-heartbeat.pid" ]]; then
     candidates+=("codex-heartbeat")
   fi
 
@@ -120,7 +138,7 @@ if [[ -z "${RESOLVED_REPO_NAME}" ]]; then
 
   if [[ ${#candidates[@]} -eq 0 ]]; then
     echo "agent: not started"
-    echo "repo:  unknown (no guest agent logs or pid files found)"
+    echo "repo:  unknown (no guest agent state or pid files found)"
     exit 0
   fi
 
@@ -137,10 +155,10 @@ if [[ -z "${RESOLVED_REPO_NAME}" ]]; then
 fi
 
 if [[ "${RESOLVED_REPO_NAME}" == "codex-heartbeat" ]]; then
-  LOG_PATH="${LOG_DIR}/codex-heartbeat-run.log"
+  LOG_PATH="${RUN_LOG_DIR}/codex-heartbeat-run.log"
   PID_PATH="${LOG_DIR}/codex-heartbeat.pid"
 else
-  LOG_PATH="${LOG_DIR}/agent-${RESOLVED_REPO_NAME}.log"
+  LOG_PATH="${RUN_LOG_DIR}/agent-${RESOLVED_REPO_NAME}.log"
   PID_PATH="${LOG_DIR}/agent-${RESOLVED_REPO_NAME}.pid"
 fi
 echo "repo:  ${RESOLVED_REPO_NAME}"
@@ -169,3 +187,12 @@ else
   echo "last-log-lines: missing (${LOG_PATH})"
 fi
 EOF
+}
+
+if ! check_remote "${SSH_USER}"; then
+  if [[ "${SSH_USER}" != "${VM_USER}" ]]; then
+    check_remote "${VM_USER}"
+  else
+    exit 1
+  fi
+fi

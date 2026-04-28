@@ -1,0 +1,50 @@
+---
+- name: Gather service facts
+  ansible.builtin.service_facts:
+
+- name: Verify Docker service is active
+  ansible.builtin.assert:
+    that:
+      - "ansible_facts.services['docker.service'].status == 'enabled'"
+      - "ansible_facts.services['docker.service'].state == 'running'"
+    fail_msg: "docker.service should be enabled and running on the worker VM."
+    success_msg: "docker.service is enabled and running."
+
+- name: Verify worker daemon service is active
+  ansible.builtin.assert:
+    that:
+      - "ansible_facts.services['agent-sandbox-worker-daemon.service'].status == 'enabled'"
+      - "ansible_facts.services['agent-sandbox-worker-daemon.service'].state == 'running'"
+    fail_msg: "agent-sandbox-worker-daemon.service should be enabled and running."
+    success_msg: "agent-sandbox-worker-daemon.service is enabled and running."
+
+- name: Verify Docker is usable by the worker user
+  ansible.builtin.command:
+    argv:
+      - docker
+      - ps
+      - --format
+      - "{{ '{{' }}.ID{{ '}}' }}"
+  become_user: "{{ agent_sandbox_run_user }}"
+  changed_when: false
+
+- name: Wait for worker daemon listener
+  ansible.builtin.wait_for:
+    host: "127.0.0.1"
+    port: "{{ agent_sandbox_worker_port }}"
+    timeout: 30
+
+- name: Verify worker daemon health endpoint
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ agent_sandbox_worker_port }}/healthz"
+    method: GET
+    return_content: true
+    status_code: 200
+
+- name: Emit worker deployment verification summary
+  ansible.builtin.debug:
+    msg:
+      - "worker root: {{ agent_sandbox_worker_root }}"
+      - "worker runtime dir: {{ agent_sandbox_worker_runtime_dir }}"
+      - "worker daemon: http://{{ ansible_default_ipv4.address | default(agent_sandbox_worker_host) }}:{{ agent_sandbox_worker_port }}"
+      - "sandbox profile: {{ agent_sandbox_worker_sandbox_profile }}"

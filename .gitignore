@@ -18,6 +18,12 @@ node_modules
 secrets.env
 secrets (Copy).env
 tasks/
+!ansible/roles/container_worker_runtime/tasks/
+!ansible/roles/container_worker_runtime/tasks/main.yml
+!ansible/roles/container_worker_service/tasks/
+!ansible/roles/container_worker_service/tasks/main.yml
+!ansible/roles/container_worker_verification/tasks/
+!ansible/roles/container_worker_verification/tasks/main.yml
 frontend/workflow-editor/node_modules/
 frontend/workflow-editor/tsconfig.tsbuildinfo
 **/dist/*

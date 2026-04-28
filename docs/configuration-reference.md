@@ -41,14 +41,6 @@ manager environment or optional repo-root `secrets.env`.
 |---|---|---|
 | `ALLOWED_TCP_PORTS` | `config/firewall.env.example` | `scripts/apply_firewall.sh` (nftables allow-list for guest->host TCP ports; current defaults include `22`, `8000`, `11434`, `11666`, and `11777` for the HTTP target relay port). |
 
-## `config/host-heartbeat.env.example`
-
-| Parameter | Found in | Consumed by |
-|---|---|---|
-| `HOST_HEARTBEAT_LOG_LEVEL` | `config/host-heartbeat.env.example` | `scripts/run_host_heartbeat.sh` (`--log-level` passed to worker). |
-| `GITHUB_TOKEN` | `config/host-heartbeat.env.example` | `src/agent_sandbox/runtime.py` + `src/agent_sandbox/host_heartbeat_worker.py` using `github_token_env` from YAML config. |
-| `AZURE_DEVOPS_PR_PAT` | `config/host-heartbeat.env.example` | `src/agent_sandbox/runtime.py` + `src/agent_sandbox/host_heartbeat_worker.py` using `azure_devops_pr_pat_env` from YAML config. |
-
 ## `config/ado-worker.env.example`
 
 | Parameter | Found in | Consumed by |
@@ -105,32 +97,6 @@ scaffold.
 | `wake_state_path` | `config/issue-orchestrator/config.json` | Future issue orchestrator wake state file. |
 | `vm_user` | `config/issue-orchestrator/config.json` | Future issue orchestrator guest user name. |
 | `resume_timeout_seconds` | `config/issue-orchestrator/config.json` | Future issue orchestrator resume timeout. |
-
-## `config/host-heartbeat/config.json.example`
-
-This JSON file stores the host heartbeat worker's global operational settings. The admin GUI's
-Workers tab edits `config/host-heartbeat/config.json` for the `host-heartbeat` worker.
-
-| Parameter | Found in | Consumed by |
-|---|---|---|
-| `runtime_dir` | `config/host-heartbeat/config.json.example` | `src/agent_sandbox/host_heartbeat_worker.py` and runtime path defaults. |
-| `host_heartbeat_directory_paths` | `config/host-heartbeat/config.json.example` | `src/agent_sandbox/host_heartbeat_worker.py` (one pass per configured directory; empty list means no polling). |
-| `host_heartbeat_poll_interval_seconds` | `config/host-heartbeat/config.json.example` | `src/agent_sandbox/host_heartbeat_worker.py`. |
-| `host_heartbeat_jitter_seconds` | `config/host-heartbeat/config.json.example` | `src/agent_sandbox/host_heartbeat_worker.py`. |
-| `host_heartbeat_cooldown_seconds` | `config/host-heartbeat/config.json.example` | `src/agent_sandbox/host_heartbeat_worker.py`. |
-| `host_heartbeat_http_timeout_seconds` | `config/host-heartbeat/config.json.example` | `src/agent_sandbox/host_heartbeat_worker.py`. |
-| `host_heartbeat_lock_path` | `config/host-heartbeat/config.json.example` | `src/agent_sandbox/host_heartbeat_worker.py`. |
-| `host_heartbeat_session_cooldown_path` | `config/host-heartbeat/config.json.example` | `src/agent_sandbox/host_heartbeat_worker.py`. |
-| `host_busy_check_script_path` | `config/host-heartbeat/config.json.example` | `src/agent_sandbox/host_heartbeat_worker.py`. |
-| `host_resume_script_path` | `config/host-heartbeat/config.json.example` | `src/agent_sandbox/host_heartbeat_worker.py`. |
-| `host_heartbeat_wake_state_path` | `config/host-heartbeat/config.json.example` | `src/agent_sandbox/host_heartbeat_worker.py`. |
-| `host_heartbeat_vm_user` | `config/host-heartbeat/config.json.example` | `src/agent_sandbox/host_heartbeat_worker.py`. |
-| `host_heartbeat_resume_timeout_seconds` | `config/host-heartbeat/config.json.example` | `src/agent_sandbox/host_heartbeat_worker.py`. |
-| `host_heartbeat_stream_conflict_policy` | `config/host-heartbeat/config.json.example` | `src/agent_sandbox/host_heartbeat_worker.py`. |
-| `host_heartbeat_scheduled_wake_prefix_text` | `config/host-heartbeat/config.json.example` | `src/agent_sandbox/host_heartbeat_worker.py` (applied as `prefix + scheduled_prompt` for MCP-scheduled wakes). |
-| `host_heartbeat_schedule_max_active_per_session` | `config/host-heartbeat/config.json.example` | `src/agent_sandbox/config.py` / admin config surfaces (optional scheduling guardrail). |
-| `host_heartbeat_schedule_max_active_total` | `config/host-heartbeat/config.json.example` | `src/agent_sandbox/config.py` / admin config surfaces (optional scheduling guardrail). |
-| `host_heartbeat_schedule_min_interval_seconds` | `config/host-heartbeat/config.json.example` | `src/agent_sandbox/config.py` / admin config surfaces (optional scheduling guardrail). |
 
 ## `config/trigger-orchestrator/config.json`
 
@@ -527,11 +493,11 @@ In the root-only model, this file is an import source for seeding `runtime/direc
 |---|---|---|
 | `host`, `port` | legacy gateway YAML | `src/agent_sandbox/gateway.py` server bind settings. |
 | `log_level` | legacy gateway YAML | `src/agent_sandbox/gateway.py` logging setup for gateway process. |
-| `runtime_dir` | legacy gateway YAML | `src/agent_sandbox/runtime.py` (store locations), `src/agent_sandbox/host_heartbeat_worker.py` (feedback worker store root). |
+| `runtime_dir` | legacy gateway YAML | `src/agent_sandbox/runtime.py` store locations. |
 | `audit_log_path` | legacy gateway YAML | `src/agent_sandbox/runtime.py` audit logger destination. |
 | `session_store_path`, `approval_store_path`, `draft_store_path`, `email_store_path`, `email_cursor_store_path`, `discord_command_store_path` | legacy gateway YAML | `src/agent_sandbox/runtime.py` persistent JSON stores. |
 | `directories_store_path` | legacy gateway YAML | `src/agent_sandbox/runtime.py`, `src/agent_sandbox/directories.py`, directory admin/config services. |
-| `enable_directory_scoped_config` | legacy gateway YAML | `src/agent_sandbox/directory_admin.py`, `src/agent_sandbox/admin_app.py`, `src/agent_sandbox/ado_issue_worker.py`, `src/agent_sandbox/host_heartbeat_worker.py`, `src/agent_sandbox/pr_feedback_worker.py` (transition flag for directory edit surfaces and worker shadow resolution). |
+| `enable_directory_scoped_config` | legacy gateway YAML | `src/agent_sandbox/directory_admin.py`, `src/agent_sandbox/admin_app.py`, `src/agent_sandbox/ado_issue_worker.py`, and `src/agent_sandbox/pr_feedback_worker.py` (transition flag for directory edit surfaces and worker shadow resolution). |
 | `approval_ttl_seconds` | legacy gateway YAML | `src/agent_sandbox/policy.py` approval expiry computation. |
 | `default_session_ttl_seconds` | legacy gateway YAML | `src/agent_sandbox/cli.py` session creation defaults. |
 | `bind_network_cidr` | legacy gateway YAML | `src/agent_sandbox/config.py` validation/normalization (policy-bound network constraints). |
@@ -605,18 +571,18 @@ environment.
 | `email_send_enabled` | legacy gateway YAML | `src/agent_sandbox/cli.py`, `src/agent_sandbox/gateway.py`, `src/agent_sandbox/policy.py`. |
 | `email_provider_timeout_seconds` | legacy gateway YAML | `src/agent_sandbox/runtime.py` email + PR provider HTTP client timeouts. |
 
-### PR/feedback + host-heartbeat keys
+### PR/feedback keys
 
 | Key | Found in | Consumed by |
 |---|---|---|
 | `pr_reply_require_approval` | legacy gateway YAML | `src/agent_sandbox/gateway.py` PR-reply approval gate. |
-| `github_token_env` | legacy gateway YAML | `src/agent_sandbox/runtime.py` and `src/agent_sandbox/host_heartbeat_worker.py`. |
-| `azure_devops_pr_pat_env` | legacy gateway YAML | `src/agent_sandbox/runtime.py` and `src/agent_sandbox/host_heartbeat_worker.py`. |
-| `azure_devops_organization_url` | legacy gateway YAML | `src/agent_sandbox/runtime.py` and `src/agent_sandbox/host_heartbeat_worker.py`. |
-| `azure_devops_project` | legacy gateway YAML | `src/agent_sandbox/runtime.py` and `src/agent_sandbox/host_heartbeat_worker.py`. |
-| `host_heartbeat_pr_resume_prompt` | legacy gateway YAML | `src/agent_sandbox/host_heartbeat_worker.py`. |
+| `github_token_env` | legacy gateway YAML | `src/agent_sandbox/runtime.py`, `src/agent_sandbox/review_request_service.py`, and PR feedback trigger providers. |
+| `azure_devops_pr_pat_env` | legacy gateway YAML | `src/agent_sandbox/runtime.py`, `src/agent_sandbox/ado_issue_worker.py`, `src/agent_sandbox/review_request_service.py`, and PR feedback trigger providers. |
+| `azure_devops_organization_url` | legacy gateway YAML | `src/agent_sandbox/runtime.py`, `src/agent_sandbox/ado_issue_worker.py`, `src/agent_sandbox/issue_service.py`, and PR feedback trigger providers. |
+| `azure_devops_project` | legacy gateway YAML | `src/agent_sandbox/runtime.py`, `src/agent_sandbox/ado_issue_worker.py`, `src/agent_sandbox/issue_service.py`, and PR feedback trigger providers. |
+| `host_heartbeat_pr_resume_prompt` | legacy gateway YAML | Legacy prompt key retained for directory-config compatibility; the `agent-sandbox-host-heartbeat.service` consumer is retired. |
 | `discord_resume_prompt` | legacy gateway YAML | `src/agent_sandbox/discord_wake_worker.py`. |
-| `pr_map_path` | legacy gateway YAML | `src/agent_sandbox/host_heartbeat_worker.py` PR map loading. |
+| `pr_map_path` | legacy gateway YAML | `src/agent_sandbox/ado_issue_worker.py`, PR feedback trigger providers, ownership cleanup, and admin/session pruning. |
 
 ## 4) Cloud-init template placeholders (`config/cloud-init-user-data.yaml`)
 
@@ -691,6 +657,8 @@ Key delegated Teams provider settings now include:
   `ChannelMessage.Read.All`, `ChannelMessage.Send`, and `Chat.ReadWrite`)
 - optional `teams_delegated_authority_base_url`
 - optional `teams_delegated_credential_store_path`
+- optional `teams_history_page_cap` (default `1`) and `teams_history_deadline_seconds` (default
+  `5.0`) bound Microsoft Graph history pagination for `teams_get_messages` and Teams ingest scans
 - optional `teams_read_reaction_emoji` (legacy compatibility field; read-side automatic reactions are disabled)
 - The app registration referenced by `teams_delegated_client_id` must support public client /
   device-code auth. If Microsoft returns `AADSTS7000218`, the registration currently requires a

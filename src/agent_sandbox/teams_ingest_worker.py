@@ -156,7 +156,12 @@ class TeamsIngestWorker:
         )
         with httpx.Client(timeout=provider_config.teams_timeout_seconds) as client:
             for channel_target in channel_targets:
-                self._poll_channel(client, service=service, channel_target=channel_target)
+                self._poll_channel(
+                    client,
+                    service=service,
+                    channel_target=channel_target,
+                    budget=service.new_pagination_budget(),
+                )
 
     def _build_graph_service(
         self,
@@ -192,6 +197,8 @@ class TeamsIngestWorker:
             token_provider=resolved_token_provider,
             api_base_url=provider_config.teams_graph_api_base_url,
             poll_limit=provider_config.teams_poll_limit,
+            history_page_cap=provider_config.teams_history_page_cap,
+            history_deadline_seconds=provider_config.teams_history_deadline_seconds,
             timeout_seconds=provider_config.teams_timeout_seconds,
             retry_count=provider_config.teams_retry_count,
             retry_base_backoff_seconds=provider_config.teams_retry_base_backoff_seconds,
@@ -205,6 +212,7 @@ class TeamsIngestWorker:
         *,
         service: GraphTeamsService,
         channel_target: str,
+        budget: Any | None = None,
     ) -> None:
         target = parse_teams_target(channel_target)
         cursor_state = self.store.get_cursor_state(channel_target)
@@ -212,12 +220,17 @@ class TeamsIngestWorker:
         latest_seen_message: TeamsInboxMessage | None = None
         candidates: list[TeamsInboxMessage] = []
         if target.kind == "chat":
-            iterator = service._iter_chat_messages(client, chat_id=target.chat_id or "")
+            iterator = service._iter_chat_messages(
+                client,
+                chat_id=target.chat_id or "",
+                budget=budget,
+            )
         else:
             iterator = service._iter_channel_messages(
                 client,
                 team_id=target.team_id or "",
                 channel_id=target.channel_id or "",
+                budget=budget,
             )
         for message_payload in iterator:
             candidates.append(

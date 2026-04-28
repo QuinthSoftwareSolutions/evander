@@ -13,6 +13,12 @@ disable_root: true
 users:
   - name: agent
     gecos: Agent User
+    shell: /bin/bash
+    lock_passwd: true
+    ssh_authorized_keys:
+      - __SSH_PUBLIC_KEY__
+  - name: agent-admin
+    gecos: Agent Admin User
     groups: [sudo]
     sudo: "ALL=(ALL) NOPASSWD:ALL"
     shell: /bin/bash
@@ -28,6 +34,8 @@ runcmd:
   - mkdir -p /opt/agent-sandbox/nuget-cache-ro
   - mkdir -p /home/agent/.nuget/packages-local
   - mkdir -p /home/agent/.nuget/http-cache
+  - install -d -m 0700 -o agent -g agent /home/agent/.agent-sandbox
+  - install -d -m 0700 -o root -g root /var/log/agent-sandbox/agent-runs
   - mount -t __NUGET_CACHE_FS_TYPE__ -o __NUGET_CACHE_MOUNT_OPTIONS__ __NUGET_CACHE_TAG__ /opt/agent-sandbox/nuget-cache-ro || true
   - grep -q '^__NUGET_CACHE_TAG__ /opt/agent-sandbox/nuget-cache-ro __NUGET_CACHE_FS_TYPE__ __NUGET_CACHE_MOUNT_OPTIONS__ 0 0$' /etc/fstab || printf '%s\n' '__NUGET_CACHE_TAG__ /opt/agent-sandbox/nuget-cache-ro __NUGET_CACHE_FS_TYPE__ __NUGET_CACHE_MOUNT_OPTIONS__ 0 0' >> /etc/fstab
   - chown -R agent:agent /home/agent

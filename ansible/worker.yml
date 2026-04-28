@@ -1,0 +1,46 @@
+---
+- name: Deploy agent-sandbox container worker VMs
+  hosts: agent_sandbox_worker_hosts
+  become: true
+  vars:
+    agent_sandbox_repo_parent: "{{ agent_sandbox_deploy_path | dirname }}"
+  pre_tasks:
+    - name: Assert the worker token is configured
+      ansible.builtin.assert:
+        that:
+          - (agent_sandbox_worker_token | default('') | string | length) > 0
+        fail_msg: >-
+          agent_sandbox_worker_token must be set from Vault or inventory. It is rendered
+          only to the worker daemon env file and must match the control-plane
+          container_worker_token_env value.
+        success_msg: Worker token is configured.
+
+    - name: Assert the worker sandbox profile is supported
+      ansible.builtin.assert:
+        that:
+          - agent_sandbox_worker_sandbox_profile in ['default', 'strict']
+        fail_msg: "agent_sandbox_worker_sandbox_profile must be either 'default' or 'strict'."
+        success_msg: Worker sandbox profile is supported.
+
+    - name: Assert the worker Docker network is not host
+      ansible.builtin.assert:
+        that:
+          - (agent_sandbox_worker_docker_network | default('') | string | trim | lower) != 'host'
+        fail_msg: "The container worker daemon refuses Docker host networking."
+        success_msg: Worker Docker network is acceptable.
+
+    - name: Assert worker state paths are absolute
+      ansible.builtin.assert:
+        that:
+          - agent_sandbox_worker_root is match('^/')
+          - agent_sandbox_worker_runtime_dir is match('^/')
+        fail_msg: "agent_sandbox_worker_root and agent_sandbox_worker_runtime_dir must be absolute paths."
+        success_msg: Worker state paths are absolute.
+
+  roles:
+    - role: host_prereqs
+    - role: repo_checkout
+    - role: python_env
+    - role: container_worker_runtime
+    - role: container_worker_service
+    - role: container_worker_verification

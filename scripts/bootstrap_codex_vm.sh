@@ -160,13 +160,8 @@ echo "Bootstrapping Codex into ${VM_USER}@${VM_IP}"
 
 ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "
   set -euo pipefail
-  sudo mkdir -p /home/${VM_USER}
-  sudo chown -R ${VM_USER}:${VM_USER} /home/${VM_USER}
-  if [ -f /etc/agent-sandbox/session.env ]; then
-    sudo chmod 755 /etc/agent-sandbox || true
-    sudo chmod 644 /etc/agent-sandbox/session.env
-  fi
-  mkdir -p ~/bin ~/codex-vendor ~/.config/systemd/user ~/.config/agent-sandbox
+  mkdir -p ~/bin ~/codex-vendor ~/.config/systemd/user ~/.config/agent-sandbox ~/.agent-sandbox
+  chmod 700 ~/.agent-sandbox
 "
 scp "${SSH_OPTS[@]}" -r "${VENDOR_DIR}/." "${VM_USER}@${VM_IP}:~/codex-vendor/"
 
@@ -256,7 +251,7 @@ export CODEX_HOME
 export OPENAI_API_KEY="${OPENAI_API_KEY:-relay-placeholder}"
 codex --version
 
-echo "Host heartbeat worker is now responsible for feedback wakeups by default."
+echo "Host-side wake workers are now responsible for feedback wakeups by default."
 EOF
 
 if [[ -f "${HOST_CODEX_MODELS_CACHE_PATH}" ]]; then

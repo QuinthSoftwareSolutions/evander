@@ -81,9 +81,8 @@ echo "Bootstrapping .NET into ${VM_USER}@${VM_IP}"
 
 ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "
   set -euo pipefail
-  sudo mkdir -p /home/${VM_USER}
-  sudo chown -R ${VM_USER}:${VM_USER} /home/${VM_USER}
-  mkdir -p ~/toolchains/dotnet ~/.dotnet-cli ~/.dotnet ~/.nuget/packages
+  mkdir -p ~/toolchains/dotnet ~/.dotnet-cli ~/.dotnet ~/.nuget/packages ~/.agent-sandbox
+  chmod 700 ~/.agent-sandbox
   rm -rf ~/toolchains/dotnet/*
 "
 

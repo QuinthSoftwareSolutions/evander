@@ -107,9 +107,8 @@ echo "Bootstrapping SQL Server client tooling into ${VM_USER}@${VM_IP}"
 
 ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "
   set -euo pipefail
-  sudo mkdir -p /home/${VM_USER}
-  sudo chown -R ${VM_USER}:${VM_USER} /home/${VM_USER}
-  mkdir -p ~/toolchains/mssql-tools
+  mkdir -p ~/toolchains/mssql-tools ~/.agent-sandbox
+  chmod 700 ~/.agent-sandbox
   mkdir -p ~/toolchains/msodbcsql18
   rm -rf ~/toolchains/mssql-tools/*
   rm -rf ~/toolchains/msodbcsql18/*

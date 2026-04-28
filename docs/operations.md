@@ -13,8 +13,9 @@ Install these packages on the Ubuntu host before using the scripts:
 - `ovmf`
 - `nftables`
 
-For a reproducible fresh-host Ubuntu 24.04 deployment path that wraps the same repo-native
-bootstrap sequence with Ansible, see `ansible/README.md`.
+For reproducible fresh-host Ubuntu 24.04 deployment paths that wrap the same repo-native bootstrap
+sequence with Ansible, including the dedicated container-worker VM playbook, see
+`ansible/README.md`.
 
 If Admin Web is part of the deployed surface, treat `agent-sandbox-admin-web` as a managed host
 service and configure `config/admin-web.env` before exposing it beyond localhost.
@@ -254,8 +255,9 @@ Storage layout for directory config:
 
 - Cloud-init writes provider-neutral baseline config files: `/etc/agent-sandbox/session.env` and `/home/agent/.agent/config.env`.
 - Cloud-init also appends a shell profile hook that loads `/etc/agent-sandbox/session.env` and exports `OPENAI_API_KEY=relay-placeholder` if no key is already set.
-- Generic orchestration status is provider-neutral and read from `/home/agent/.agent-sandbox/agent-*.state`, with companion `agent-*.pid` and `agent-*.log` files.
-- New VMs pick this up automatically; existing VMs need to be recreated if they predate baseline config changes.
+- Cloud-init creates `agent` as the unprivileged runtime user and `agent-admin` as the host-control SSH user with passwordless sudo. Host resume/log tooling uses `agent-admin` to append root-owned logs while running the actual agent process as `agent`.
+- Generic orchestration status is provider-neutral and read from `/home/agent/.agent-sandbox/agent-*.state`, with companion `agent-*.pid` files. Transcript logs are written through the privileged host-control path to root-owned files under `/var/log/agent-sandbox/agent-runs/`.
+- New VMs pick this up automatically; existing VMs need to be recreated or migrated if they predate baseline config changes. For one-off maintenance against an old sudo-enabled runtime user, set `VM_SSH_USER=agent` explicitly.
 
 ### Codex provider bootstrap
 
@@ -304,13 +306,17 @@ Storage layout for directory config:
   chats you intend to read and write.
 - Teams message arrival for `trigger:teams:new-message` comes from host-side ingest polling on the
   host, using the same delegated Teams identity/configuration. That polling path is separate from
-  host-heartbeat, which remains the PR/Discord feedback wakeup loop.
+  PR and chat wakeups, which are handled by the ADO worker, Discord wake worker, and scheduled wake
+  worker. The old `agent-sandbox-host-heartbeat.service` is retired.
 - Teams targets can be channel threads or group chats:
   - channel targets use `team-id/channel-id`
   - chat targets use `chat:<chat-id>`
 - The host-side Teams adapter reads channel threads from
   `GET /teams/{team-id}/channels/{channel-id}/messages` and group chats from
   `GET /chats/{chat-id}/messages`.
+- Cursorless `teams_get_messages` calls stay on a bounded recent path. The gateway applies
+  `teams_poll_limit` as the default message limit, and the Graph adapter caps each history scan
+  with `teams_history_page_cap` plus `teams_history_deadline_seconds`.
 
 ## VM Python Bootstrap
 
@@ -1044,7 +1050,12 @@ This creates:
 - `agent-sandbox-nuget-relay.service`
 - `agent-sandbox-http-target-relay.service`
 - `agent-sandbox-ado-worker.service`
-- `agent-sandbox-host-heartbeat.service`
+- `agent-sandbox-discord-ingest.service`
+- `agent-sandbox-discord-wake.service`
+- `agent-sandbox-scheduled-wake.service`
+- `agent-sandbox-teams-ingest.service`
+- `agent-sandbox-effect-orchestrator.service`
+- `agent-sandbox-trigger-orchestrator.service`
 
 Before running install mode, ensure preflight is clean (or only warning-only), then:
 
@@ -1071,14 +1082,24 @@ sudo systemctl start agent-sandbox-openai-relay.service
 sudo systemctl start agent-sandbox-nuget-relay.service
 sudo systemctl start agent-sandbox-http-target-relay.service
 sudo systemctl start agent-sandbox-ado-worker.service
-sudo systemctl start agent-sandbox-host-heartbeat.service
+sudo systemctl start agent-sandbox-discord-ingest.service
+sudo systemctl start agent-sandbox-discord-wake.service
+sudo systemctl start agent-sandbox-scheduled-wake.service
+sudo systemctl start agent-sandbox-teams-ingest.service
+sudo systemctl start agent-sandbox-effect-orchestrator.service
+sudo systemctl start agent-sandbox-trigger-orchestrator.service
 sudo systemctl status agent-sandbox-firewall.service
 sudo systemctl status agent-sandbox-gateway.service
 sudo systemctl status agent-sandbox-openai-relay.service
 sudo systemctl status agent-sandbox-nuget-relay.service
 sudo systemctl status agent-sandbox-http-target-relay.service
 sudo systemctl status agent-sandbox-ado-worker.service
-sudo systemctl status agent-sandbox-host-heartbeat.service
+sudo systemctl status agent-sandbox-discord-ingest.service
+sudo systemctl status agent-sandbox-discord-wake.service
+sudo systemctl status agent-sandbox-scheduled-wake.service
+sudo systemctl status agent-sandbox-teams-ingest.service
+sudo systemctl status agent-sandbox-effect-orchestrator.service
+sudo systemctl status agent-sandbox-trigger-orchestrator.service
 ```
 
 ## Local Git Remote Flow

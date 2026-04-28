@@ -969,6 +969,12 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
     "discord_read_reaction_emoji": (
         "Reaction emoji that the gateway applies when unread Discord messages are fetched."
     ),
+    "teams_history_page_cap": (
+        "Maximum number of Microsoft Graph Teams message pages read across one bounded history scan."
+    ),
+    "teams_history_deadline_seconds": (
+        "Wall-clock deadline in seconds for one bounded Microsoft Graph Teams history scan."
+    ),
     "teams_read_reaction_emoji": (
         "Reaction emoji that the gateway applies when unread Teams messages are fetched."
     ),
@@ -1035,23 +1041,23 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
         "Prompt used by guest heartbeat wake-ups when enable_guest_heartbeat is true."
     ),
     "host_busy_check_script_path": (
-        "Host script used by the heartbeat worker to detect whether a session VM is currently busy "
+        "Host script used by wake workers to detect whether a session VM is currently busy "
         "before attempting to resume it."
     ),
     "host_heartbeat_cooldown_seconds": (
-        "Minimum cooldown in seconds before the heartbeat worker will try to resume the same session again."
+        "Minimum cooldown in seconds before wake workers will try to resume the same session again."
     ),
     "host_heartbeat_http_timeout_seconds": (
-        "HTTP client timeout in seconds for each host heartbeat feedback polling cycle."
+        "HTTP client timeout in seconds for each host-side wake polling cycle."
     ),
     "host_heartbeat_jitter_seconds": (
-        "Random delay added to each heartbeat sleep interval to avoid perfectly synchronized polling."
+        "Random delay added to each wake polling sleep interval to avoid perfectly synchronized polling."
     ),
     "host_heartbeat_lock_path": (
-        "Single-instance lock file path for the host heartbeat worker."
+        "Single-instance lock file path shared by host-side wake workers."
     ),
     "host_heartbeat_poll_interval_seconds": (
-        "Base polling interval in seconds for the host heartbeat worker."
+        "Base polling interval in seconds for host-side wake workers."
     ),
     "host_heartbeat_pr_resume_prompt": (
         "Prompt text passed to the resume script when waking an agent session for unread PR comments."

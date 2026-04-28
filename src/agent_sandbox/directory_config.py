@@ -104,6 +104,8 @@ DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
             "teams_delegated_tenant_id",
             "teams_graph_access_token_env",
             "teams_graph_api_base_url",
+            "teams_history_deadline_seconds",
+            "teams_history_page_cap",
             "teams_poll_limit",
             "teams_retry_base_backoff_seconds",
             "teams_retry_count",

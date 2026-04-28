@@ -57,6 +57,23 @@ _GRAPH_TEAMS_REACTION_TYPE_BY_VALUE = {
 }
 
 
+@dataclass
+class _TeamsGraphPaginationBudget:
+    page_cap: int
+    deadline_seconds: float
+    started_at: float
+    pages_read: int = 0
+
+    def remaining_seconds(self) -> float:
+        return max(0.0, self.deadline_seconds - (time.monotonic() - self.started_at))
+
+    def can_request_page(self) -> bool:
+        return self.pages_read < self.page_cap and self.remaining_seconds() > 0
+
+    def record_page(self) -> None:
+        self.pages_read += 1
+
+
 def _parse_snowflake(value: str, *, field_name: str) -> int:
     try:
         return int(value)
@@ -756,6 +773,8 @@ class GraphTeamsService:
         api_base_url: str,
         poll_limit: int,
         timeout_seconds: float,
+        history_page_cap: int = 1,
+        history_deadline_seconds: float = 5.0,
         retry_count: int = 3,
         retry_base_backoff_seconds: float = 0.5,
         retry_max_backoff_seconds: float = 5.0,
@@ -767,6 +786,8 @@ class GraphTeamsService:
         self.token_provider = token_provider or (lambda: self.token)
         self.api_base_url = api_base_url.rstrip("/")
         self.poll_limit = poll_limit
+        self.history_page_cap = max(1, int(history_page_cap))
+        self.history_deadline_seconds = max(0.001, float(history_deadline_seconds))
         self.timeout_seconds = timeout_seconds
         self.retry_count = retry_count
         self.retry_base_backoff_seconds = retry_base_backoff_seconds
@@ -813,6 +834,7 @@ class GraphTeamsService:
         *,
         params: dict[str, Any] | None = None,
         json: dict[str, Any] | None = None,
+        timeout_seconds: float | None = None,
     ) -> httpx.Response:
         start_time = time.monotonic()
         attempt = 0
@@ -825,7 +847,7 @@ class GraphTeamsService:
                     headers=self._headers(),
                     params=params,
                     json=json,
-                    timeout=self.timeout_seconds,
+                    timeout=timeout_seconds if timeout_seconds is not None else self.timeout_seconds,
                 )
                 response.raise_for_status()
                 return response
@@ -855,6 +877,13 @@ class GraphTeamsService:
             sleep_for = min(jittered_backoff, remaining_budget)
             time.sleep(sleep_for)
             attempt += 1
+
+    def new_pagination_budget(self) -> _TeamsGraphPaginationBudget:
+        return _TeamsGraphPaginationBudget(
+            page_cap=self.history_page_cap,
+            deadline_seconds=self.history_deadline_seconds,
+            started_at=time.monotonic(),
+        )
 
     @staticmethod
     def _author_id(payload: dict[str, Any]) -> str:
@@ -916,7 +945,10 @@ class GraphTeamsService:
         *,
         team_id: str,
         channel_id: str,
+        budget: _TeamsGraphPaginationBudget | None = None,
     ) -> Iterator[dict[str, Any]]:
+        if budget is None:
+            budget = self.new_pagination_budget()
         next_url = (
             f"{self.api_base_url}/teams/{quote(team_id, safe='')}/channels/"
             f"{quote(channel_id, safe='')}/messages"
@@ -924,10 +956,22 @@ class GraphTeamsService:
         params: dict[str, Any] | None = {"$top": self.poll_limit, "$expand": "replies"}
         seen_urls: set[str] = set()
         while next_url:
+            if not budget.can_request_page():
+                break
+            remaining_seconds = budget.remaining_seconds()
+            if remaining_seconds <= 0:
+                break
             if next_url in seen_urls:
                 raise RuntimeError(f"Teams Graph pagination loop detected for channel {team_id}/{channel_id}")
             seen_urls.add(next_url)
-            response = self._request_with_retries(client, "GET", next_url, params=params)
+            response = self._request_with_retries(
+                client,
+                "GET",
+                next_url,
+                params=params,
+                timeout_seconds=min(self.timeout_seconds, remaining_seconds),
+            )
+            budget.record_page()
             payload = response.json()
             for message_payload in payload.get("value", []):
                 yield message_payload
@@ -940,15 +984,30 @@ class GraphTeamsService:
         client: httpx.Client,
         *,
         chat_id: str,
+        budget: _TeamsGraphPaginationBudget | None = None,
     ) -> Iterator[dict[str, Any]]:
+        if budget is None:
+            budget = self.new_pagination_budget()
         next_url = f"{self.api_base_url}/chats/{quote(chat_id, safe='')}/messages"
         params: dict[str, Any] | None = {"$top": self.poll_limit}
         seen_urls: set[str] = set()
         while next_url:
+            if not budget.can_request_page():
+                break
+            remaining_seconds = budget.remaining_seconds()
+            if remaining_seconds <= 0:
+                break
             if next_url in seen_urls:
                 raise RuntimeError(f"Teams Graph pagination loop detected for chat {chat_id}")
             seen_urls.add(next_url)
-            response = self._request_with_retries(client, "GET", next_url, params=params)
+            response = self._request_with_retries(
+                client,
+                "GET",
+                next_url,
+                params=params,
+                timeout_seconds=min(self.timeout_seconds, remaining_seconds),
+            )
+            budget.record_page()
             payload = response.json()
             for message_payload in payload.get("value", []):
                 yield message_payload
@@ -964,11 +1023,17 @@ class GraphTeamsService:
     ) -> list[TeamsMessageEnvelope]:
         if since_cursor and before_cursor:
             raise ValueError("since_cursor and before_cursor are mutually exclusive")
+        effective_limit = limit
+        if since_cursor is None and before_cursor is None and effective_limit is None:
+            effective_limit = self.poll_limit
         messages: dict[str, TeamsMessageEnvelope] = dict(self.message_store.read_all())
         since_cursor_parts = _parse_teams_cursor(since_cursor)
         before_cursor_parts = _parse_teams_cursor(before_cursor)
+        budget = self.new_pagination_budget()
         with httpx.Client(timeout=self.timeout_seconds) as client:
             for target in self._allowed_channel_targets():
+                if not budget.can_request_page():
+                    break
                 parsed_target = parse_teams_target(target)
                 target_cursor = None
                 target_mode = "all"
@@ -979,12 +1044,17 @@ class GraphTeamsService:
                     target_cursor = before_cursor_parts[1]
                     target_mode = "before"
                 if parsed_target.kind == "chat":
-                    iterator = self._iter_chat_messages(client, chat_id=parsed_target.chat_id or "")
+                    iterator = self._iter_chat_messages(
+                        client,
+                        chat_id=parsed_target.chat_id or "",
+                        budget=budget,
+                    )
                 else:
                     iterator = self._iter_channel_messages(
                         client,
                         team_id=parsed_target.team_id or "",
                         channel_id=parsed_target.channel_id or "",
+                        budget=budget,
                     )
                 target_count = 0
                 before_seen = target_mode != "before"
@@ -1005,7 +1075,7 @@ class GraphTeamsService:
                                 stop_target = True
                                 break
                             target_count += 1
-                            if limit is not None and target_count >= limit:
+                            if effective_limit is not None and target_count >= effective_limit:
                                 stop_target = True
                                 break
                             continue
@@ -1016,13 +1086,13 @@ class GraphTeamsService:
                                     before_seen = True
                                 continue
                             target_count += 1
-                            if limit is not None and target_count >= limit:
+                            if effective_limit is not None and target_count >= effective_limit:
                                 stop_target = True
                                 break
                             continue
 
                         target_count += 1
-                        if limit is not None and target_count >= limit:
+                        if effective_limit is not None and target_count >= effective_limit:
                             stop_target = True
                             break
 
@@ -1032,11 +1102,11 @@ class GraphTeamsService:
         ordered = _sorted_teams_messages(messages)
         if before_cursor is not None:
             ordered = [message for message in ordered if message.cursor < before_cursor]
-            if limit is not None:
-                ordered = ordered[-limit:]
+            if effective_limit is not None:
+                ordered = ordered[-effective_limit:]
             return ordered
-        if limit is not None and since_cursor is None:
-            ordered = ordered[-limit:]
+        if effective_limit is not None and since_cursor is None:
+            ordered = ordered[-effective_limit:]
         return _filter_teams_messages_since_cursor(ordered, since_cursor)
 
     @staticmethod

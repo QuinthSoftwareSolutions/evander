@@ -5,6 +5,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from agent_sandbox.models import SessionManifest
 from agent_sandbox.session_manifest_repository import JsonSessionManifestRepository
 from agent_sandbox.vm_power_state import normalize_power_state
@@ -93,3 +95,29 @@ def test_azure_provider_lists_provider_neutral_vm_summaries(tmp_path: Path) -> N
     assert summaries[0].power_state == "running"
     assert summaries[0].provider_state == "PowerState/running"
     assert summaries[0].ip_address == "10.0.0.5"
+
+
+def test_azure_cloud_init_adds_default_host_key_to_agent_admin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    private_key = tmp_path / "id_ed25519"
+    public_key = tmp_path / "id_ed25519.pub"
+    private_key.write_text("private-key", encoding="utf-8")
+    public_key.write_text("ssh-ed25519 AAAATEST jonathan@example", encoding="utf-8")
+    monkeypatch.setattr(
+        "agent_sandbox.admin_service._resolve_private_key_path",
+        lambda: private_key,
+    )
+    vm_defaults = SimpleNamespace(
+        azure=SimpleNamespace(ssh_public_key_path=None),
+        guest_environment=lambda: {},
+    )
+
+    cloud_init = AzureVmProvider._render_cloud_init(
+        vm_name="vm-azure-1",
+        vm_user="agent",
+        vm_defaults=vm_defaults,
+    )
+
+    assert "  - name: agent-admin" in cloud_init
+    assert cloud_init.count("ssh-ed25519 AAAATEST jonathan@example") == 2

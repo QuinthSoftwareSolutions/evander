@@ -1,0 +1,35 @@
+---
+- name: Render worker daemon environment
+  ansible.builtin.template:
+    src: worker-daemon.env.j2
+    dest: "{{ agent_sandbox_deploy_path }}/config/worker-daemon.env"
+    owner: "{{ agent_sandbox_run_user }}"
+    group: "{{ agent_sandbox_run_user }}"
+    mode: "0600"
+  no_log: true
+  register: agent_sandbox_worker_env_render
+
+- name: Install worker daemon systemd unit
+  ansible.builtin.template:
+    src: agent-sandbox-worker-daemon.service.j2
+    dest: /etc/systemd/system/agent-sandbox-worker-daemon.service
+    owner: root
+    group: root
+    mode: "0644"
+  register: agent_sandbox_worker_unit_render
+
+- name: Reconcile worker daemon service
+  ansible.builtin.systemd:
+    name: agent-sandbox-worker-daemon.service
+    enabled: true
+    state: >-
+      {{
+        'restarted'
+        if (
+          agent_sandbox_worker_env_render.changed
+          or agent_sandbox_worker_unit_render.changed
+          or (agent_sandbox_run_user_membership_changed | default(false))
+        )
+        else 'started'
+      }}
+    daemon_reload: true

@@ -12,6 +12,8 @@ Arguments:
   lines         Number of log lines to print before following. Default: 10
   repo-name     Repo basename used by guest agent logs. Default: auto-detect
   vm-user       Guest user to inspect. Default: agent
+Environment:
+  VM_SSH_USER   Privileged SSH user used to read root-owned logs. Default: agent-admin
 EOF
 }
 
@@ -30,6 +32,7 @@ TAIL_LINES="${2:-10}"
 REPO_NAME="${3:-}"
 VM_USER="${4:-agent}"
 VM_NAME="vm-${ISSUE_NUMBER}"
+SSH_USER="${VM_SSH_USER:-agent-admin}"
 CALLER_USER="${SUDO_USER:-$USER}"
 CALLER_HOME="$(getent passwd "${CALLER_USER}" | cut -d: -f6)"
 # shellcheck source=lib/guest_ssh.sh
@@ -84,37 +87,47 @@ fi
 
 mapfile -t SSH_OPTS < <(guest_ssh_options "${VM_NAME}" "${VM_IP}" "${SSH_PRIVATE_KEY_PATH}" "${CALLER_HOME}")
 
+tail_remote() {
+  local ssh_user="$1"
+
 ssh \
   "${SSH_OPTS[@]}" \
-  "${VM_USER}@${VM_IP}" \
-  "REPO_NAME=${REPO_NAME_SSH} TAIL_LINES=${TAIL_LINES_SSH} bash -s" <<'EOF'
+  "${ssh_user}@${VM_IP}" \
+  "sudo -n env AGENT_USER=${VM_USER} REPO_NAME=${REPO_NAME_SSH} TAIL_LINES=${TAIL_LINES_SSH} AGENT_RUN_LOG_DIR=/var/log/agent-sandbox/agent-runs bash -s" <<'EOF'
 set -euo pipefail
 
-LOG_DIR="$HOME/.agent-sandbox"
+AGENT_USER="${AGENT_USER:-agent}"
+AGENT_HOME="$(getent passwd "${AGENT_USER}" | cut -d: -f6)"
+if [[ -z "${AGENT_HOME}" ]]; then
+  echo "Unknown agent user: ${AGENT_USER}" >&2
+  exit 1
+fi
+LOG_DIR="${AGENT_HOME}/.agent-sandbox"
+RUN_LOG_DIR="${AGENT_RUN_LOG_DIR:-/var/log/agent-sandbox/agent-runs}"
 RESOLVED_REPO_NAME="${REPO_NAME:-}"
 
 if [[ -z "${RESOLVED_REPO_NAME}" ]]; then
   shopt -s nullglob
   candidates=()
 
-  for path in "${LOG_DIR}"/agent-*.pid "${LOG_DIR}"/agent-*.log; do
+  for path in "${LOG_DIR}"/agent-*.pid "${LOG_DIR}"/agent-*.state; do
     name="$(basename "${path}")"
     name="${name#agent-}"
     name="${name%.pid}"
-    name="${name%.log}"
+    name="${name%.state}"
     if [[ -n "${name}" ]]; then
       candidates+=("${name}")
     fi
   done
 
-  if [[ -f "${LOG_DIR}/codex-heartbeat-run.log" || -f "${LOG_DIR}/codex-heartbeat.pid" ]]; then
+  if [[ -f "${LOG_DIR}/codex-resume-last.state" || -f "${LOG_DIR}/codex-heartbeat.pid" ]]; then
     candidates+=("codex-heartbeat")
   fi
 
   shopt -u nullglob
 
   if [[ ${#candidates[@]} -eq 0 ]]; then
-    echo "No guest agent logs or pid files found under ${LOG_DIR}" >&2
+    echo "No guest agent state or pid files found under ${LOG_DIR}" >&2
     exit 0
   fi
 
@@ -129,9 +142,9 @@ if [[ -z "${RESOLVED_REPO_NAME}" ]]; then
 fi
 
 if [[ "${RESOLVED_REPO_NAME}" == "codex-heartbeat" ]]; then
-  LOG_PATH="${LOG_DIR}/codex-heartbeat-run.log"
+  LOG_PATH="${RUN_LOG_DIR}/codex-heartbeat-run.log"
 else
-  LOG_PATH="${LOG_DIR}/agent-${RESOLVED_REPO_NAME}.log"
+  LOG_PATH="${RUN_LOG_DIR}/agent-${RESOLVED_REPO_NAME}.log"
 fi
 if [[ ! -f "${LOG_PATH}" ]]; then
   echo "No guest agent log found at ${LOG_PATH}" >&2
@@ -140,3 +153,12 @@ fi
 
 tail -n "${TAIL_LINES}" -f "${LOG_PATH}"
 EOF
+}
+
+if ! tail_remote "${SSH_USER}"; then
+  if [[ "${SSH_USER}" != "${VM_USER}" ]]; then
+    tail_remote "${VM_USER}"
+  else
+    exit 1
+  fi
+fi

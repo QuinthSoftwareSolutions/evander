@@ -134,6 +134,77 @@ def test_teams_ingest_worker_persists_inbound_messages_and_ignores_status_store_
     assert result.channel_targets_polled == 1
 
 
+def test_teams_ingest_worker_uses_history_page_budget_per_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path.endswith("/teams/team-a/channels/channel-1/messages"):
+            return httpx.Response(
+                200,
+                json={
+                    "value": [
+                        {
+                            "id": "msg-1",
+                            "createdDateTime": "2026-03-30T11:00:00Z",
+                            "body": {"content": "first", "contentType": "text"},
+                            "from": {"user": {"id": "user-1"}},
+                        }
+                    ]
+                },
+                request=request,
+            )
+        if request.url.path.endswith("/teams/team-a/channels/channel-2/messages"):
+            return httpx.Response(
+                200,
+                json={
+                    "value": [
+                        {
+                            "id": "msg-2",
+                            "createdDateTime": "2026-03-30T11:01:00Z",
+                            "body": {"content": "second", "contentType": "text"},
+                            "from": {"user": {"id": "user-2"}},
+                        }
+                    ]
+                },
+                request=request,
+            )
+        raise AssertionError(f"Unexpected path: {request.url.path}")
+
+    patch_worker_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    monkeypatch.setenv("GRAPH_TEAMS_ACCESS_TOKEN", "graph-token")
+    config = GatewayConfig.model_validate(
+        {
+            "runtime_dir": str(tmp_path / "runtime"),
+            "teams_backend": "graph_api",
+            "teams_history_page_cap": 1,
+        }
+    )
+    worker = build_teams_ingest_worker(config, project_dir=tmp_path)
+    worker.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            directory_path="root/team-a",
+            allowed_tools=[ToolName.TEAMS_GET_MESSAGES],
+            teams_channel_allowlist=["team-a/channel-1", "team-a/channel-2"],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+
+    result = worker.run_once()
+
+    assert [request.url.path for request in requests] == [
+        "/v1.0/teams/team-a/channels/channel-1/messages",
+        "/v1.0/teams/team-a/channels/channel-2/messages",
+    ]
+    assert worker.store.get_cursor("team-a/channel-1") == "team-a/channel-1/msg-1"
+    assert worker.store.get_cursor("team-a/channel-2") == "team-a/channel-2/msg-2"
+    assert result.channel_targets_polled == 2
+
+
 def test_teams_ingest_worker_uses_delegated_token_provider(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

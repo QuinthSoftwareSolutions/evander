@@ -22,8 +22,10 @@ the base Ubuntu cloud image.
 ## Layout
 
 - `site.yml`: main deployment playbook
+- `worker.yml`: dedicated container-worker VM deployment playbook
 - `inventory/hosts.example.yml`: example inventory
 - `group_vars/all.yml`: documented variable contract and defaults
+- `group_vars/agent_sandbox_worker_hosts.yml`: container-worker VM defaults
 - `roles/`: deployment steps grouped by responsibility
 
 ## Managed Flow
@@ -200,3 +202,58 @@ sudo virsh net-info agent-sandbox
 
 If you expose Admin Web beyond localhost, set `config/admin-web.env` from Vault-backed variables,
 enable authentication, and prefer TLS plus ingress policy in front of the service.
+
+## Container Worker VMs
+
+Use `worker.yml` for Azure VMs that only run the container execution worker. This is intentionally
+separate from `site.yml`: the worker VM gets Docker, a checkout of this repo, the Python package, a
+durable worker root, and one systemd unit for `agent-sandbox-worker-daemon`. It does not install the
+control-plane services, libvirt, the repo-native guest firewall, Admin Web, relays, or ADO workers.
+
+The worker inventory group is `agent_sandbox_worker_hosts`. Worker defaults live in
+`group_vars/agent_sandbox_worker_hosts.yml`; override at least these values from inventory or Vault:
+
+- `agent_sandbox_repo_url`
+- `agent_sandbox_repo_version`
+- `agent_sandbox_repo_ssh_private_key` when the repo is private
+- `agent_sandbox_worker_token`
+
+Run the worker deployment with:
+
+```bash
+ansible-playbook \
+  -i ansible/inventory/prod.yml \
+  --ask-vault-pass \
+  ansible/worker.yml
+```
+
+The worker daemon listens on `agent_sandbox_worker_port` (`11888` by default) and stores durable
+session state under `agent_sandbox_worker_root` (`/var/lib/agent-worker` by default). Restrict Azure
+NSG or subnet rules so only the control-plane VM can reach that port. The daemon token is rendered
+only to `config/worker-daemon.env`; set the same value on the control plane through the environment
+variable named by `container_worker_token_env`.
+
+Configure the control plane to point at the worker's private address:
+
+```yaml
+execution_backend: container_worker_vm
+container_worker_base_url: "http://<worker-private-ip>:11888"
+container_worker_token_env: "AGENT_SANDBOX_WORKER_TOKEN"
+container_worker_default_image: "agent-sandbox-runner:latest"
+```
+
+After the worker playbook and control-plane config are both deployed, verify the full path from the
+control plane:
+
+```bash
+cd /opt/agent-sandbox
+export AGENT_SANDBOX_WORKER_TOKEN='<same token>'
+./.venv/bin/agent-sandbox-cli execution smoke-container-worker \
+  --session-id smoke-worker \
+  --image agent-sandbox-runner:latest \
+  --json
+```
+
+The worker playbook verifies Docker, the daemon systemd unit, and `/healthz`. It does not run the
+control-plane smoke command because that check belongs on the control-plane side and depends on the
+selected runner image and private network path.

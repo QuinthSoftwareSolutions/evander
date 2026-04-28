@@ -435,6 +435,7 @@ def test_resume_agent_accepts_vm_name_without_vm_prefix(tmp_path: Path, monkeypa
     def fake_run_subprocess(cmd: list[str], **kwargs: object):
         captured["cmd"] = cmd
         captured["env"] = kwargs.get("env")
+        captured["timeout"] = kwargs.get("timeout")
         return subprocess.CompletedProcess(cmd, 0, stdout="thread_id=thread-abc-123\nok\n", stderr="")
 
     class _PopenStub:
@@ -463,6 +464,7 @@ def test_resume_agent_accepts_vm_name_without_vm_prefix(tmp_path: Path, monkeypa
         "new_context",
     ]
     assert captured["env"]["AGENT_MODEL"] == "gpt-5.4"
+    assert captured["timeout"] == 120.0
     assert watcher == {}
 
 
@@ -640,6 +642,31 @@ def test_resume_agent_uses_explicit_model_override(tmp_path: Path, monkeypatch) 
     assert captured["env"]["AGENT_MODEL"] == "gpt-5.4"
 
 
+def test_resume_agent_times_out_cleanly(tmp_path: Path, monkeypatch) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="receptionist-session",
+            vm_id="agent-sandbox-receptionist-vm",
+            expires_at=datetime(2026, 4, 7, 12, 0, tzinfo=UTC),
+            allowed_tools=[],
+            model="gpt-5.4",
+        ),
+    )
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_RESUME_TIMEOUT_SECONDS", "7")
+
+    def fake_run_subprocess(cmd: list[str], **kwargs: object):
+        raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
+
+    monkeypatch.setattr("agent_sandbox.admin_service._run_subprocess", fake_run_subprocess)
+
+    result = service.resume_agent("agent-sandbox-receptionist-vm", "Resume now")
+
+    assert result.success is False
+    assert result.action == "resume_issue_agent"
+    assert result.message == "resume_issue_agent.sh timed out after 7s"
+
+
 def test_probe_agent_state_accepts_codex_resume_state(tmp_path: Path, monkeypatch) -> None:
     write_config(tmp_path)
     monkeypatch.setattr("agent_sandbox.admin_service._resolve_private_key_path", lambda: Path("/tmp/test-key"))
@@ -684,7 +711,7 @@ def test_get_agent_log_snapshot_accepts_codex_heartbeat_log(tmp_path: Path, monk
         return subprocess.CompletedProcess(
             args=cmd,
             returncode=0,
-            stdout="Repo: codex-heartbeat\nLog: /home/agent/.agent-sandbox/codex-heartbeat-run.log\n",
+            stdout="Repo: codex-heartbeat\nLog: /var/log/agent-sandbox/agent-runs/codex-heartbeat-run.log\n",
             stderr="",
         )
 
@@ -696,7 +723,42 @@ def test_get_agent_log_snapshot_accepts_codex_heartbeat_log(tmp_path: Path, monk
     assert "codex-heartbeat-run.log" in output
     remote_script = str(captured["input"])
     assert 'candidates+=("codex-heartbeat")' in remote_script
-    assert 'LOG_PATH="${LOG_DIR}/codex-heartbeat-run.log"' in remote_script
+    assert 'LOG_PATH="${RUN_LOG_DIR}/codex-heartbeat-run.log"' in remote_script
+    assert 'LEGACY_LOG_PATH="${LOG_DIR}/codex-heartbeat-run.log"' in remote_script
+    assert "agent-admin@192.168.122.11" in " ".join(str(part) for part in captured["cmd"])
+
+
+def test_get_agent_log_snapshot_falls_back_to_legacy_agent_user(tmp_path: Path, monkeypatch) -> None:
+    service = AdminService(write_config(tmp_path))
+    monkeypatch.setattr("agent_sandbox.admin_service._dominfo_field", lambda vm_name, field_name: "running")
+    monkeypatch.setattr("agent_sandbox.admin_service._resolve_vm_ip", lambda vm_name: "192.168.122.11")
+    monkeypatch.setattr("agent_sandbox.admin_service._resolve_private_key_path", lambda: Path("/tmp/test-key"))
+
+    calls: list[list[str]] = []
+
+    def _fake_run_subprocess(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(cmd)
+        if "agent-admin@192.168.122.11" in cmd:
+            return subprocess.CompletedProcess(
+                args=cmd,
+                returncode=255,
+                stdout="",
+                stderr="agent-admin@192.168.122.11: Permission denied (publickey).",
+            )
+        return subprocess.CompletedProcess(
+            args=cmd,
+            returncode=0,
+            stdout="Repo: ExampleIndustryAPP\nLog: /home/agent/.agent-sandbox/agent-ExampleIndustryAPP.log\nlegacy line\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr("agent_sandbox.admin_service._run_subprocess", _fake_run_subprocess)
+
+    output = service.get_agent_log_snapshot("bug-finder-vm", repo_name="ExampleIndustryAPP")
+
+    assert "legacy line" in output
+    assert any("agent-admin@192.168.122.11" in cmd for cmd in calls)
+    assert any("agent@192.168.122.11" in cmd for cmd in calls)
 
 
 def test_list_sessions_filters_active_and_expired(tmp_path: Path) -> None:
@@ -3048,8 +3110,11 @@ def test_kill_agent_terminates_selected_guest_pid(tmp_path: Path, monkeypatch) -
     assert captured["cmd"] == [
         "ssh",
         *admin_service._ssh_options("vm-123", "192.168.122.10", Path("/tmp/test-key")),
-        "agent@192.168.122.10",
+        "agent-admin@192.168.122.10",
+        "sudo",
+        "-n",
         "env",
+        "AGENT_USER=agent",
         "TARGET_PID=4321",
         "bash",
         "-s",
@@ -3057,6 +3122,31 @@ def test_kill_agent_terminates_selected_guest_pid(tmp_path: Path, monkeypatch) -
     remote_script = str(captured["input"])
     assert 'write_idle_state "${state_path}" "${repo_name}" "${dispatch_id}"' in remote_script
     assert 'for pid_file in "${LOG_DIR}"/agent-*.pid "${LOG_DIR}/codex-heartbeat.pid"; do' in remote_script
+
+
+def test_kill_agent_falls_back_to_legacy_agent_user(tmp_path: Path, monkeypatch) -> None:
+    service = AdminService(write_config(tmp_path))
+    monkeypatch.setattr("agent_sandbox.admin_service._dominfo_field", lambda vm_name, field_name: "running")
+
+    def _fake_resolve_vm_ssh_access(vm_name: str, vm_user: str):
+        if vm_user == "agent-admin":
+            raise RuntimeError("Timed out waiting for SSH on 'agent-admin@192.168.122.10'")
+        return "192.168.122.10", Path("/tmp/test-key")
+
+    monkeypatch.setattr("agent_sandbox.admin_service._resolve_vm_ssh_access", _fake_resolve_vm_ssh_access)
+
+    captured: dict[str, object] = {}
+
+    def _fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        captured["cmd"] = cmd
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="terminated pid=4321 state_files=1\n", stderr="")
+
+    monkeypatch.setattr("agent_sandbox.admin_service._run_subprocess", _fake_run)
+
+    result = service.kill_agent("vm-123", 4321)
+
+    assert result.success is True
+    assert "agent@192.168.122.10" in captured["cmd"]
 
 
 def test_clone_repo_into_vm_clones_repo(tmp_path: Path, monkeypatch: Any) -> None:

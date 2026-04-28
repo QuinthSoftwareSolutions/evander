@@ -36,6 +36,7 @@ fi
 
 VM_NAME="$1"
 VM_USER="${2:-agent}"
+SSH_USER="${VM_SSH_USER:-agent-admin}"
 # shellcheck source=lib/guest_ssh.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/guest_ssh.sh"
 MSSQL_SA_PASSWORD="${MSSQL_SA_PASSWORD:-}"
@@ -110,9 +111,9 @@ get_vm_ip() {
 VM_IP="$(get_vm_ip)"
 mapfile -t SSH_OPTS < <(guest_ssh_options "${VM_NAME}" "${VM_IP}" "${SSH_KEY_PATH}" "${CALLER_HOME}")
 
-echo "Bootstrapping SQL Server engine into ${VM_USER}@${VM_IP}"
+echo "Bootstrapping SQL Server engine into ${SSH_USER}@${VM_IP}"
 
-ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "sudo bash -s" <<'EOF_VM'
+ssh "${SSH_OPTS[@]}" "${SSH_USER}@${VM_IP}" "sudo -n bash -s" <<'EOF_VM'
 set -euo pipefail
 
 if ! getent group mssql >/dev/null; then
@@ -134,18 +135,18 @@ install -d -o mssql -g mssql -m 0770 /var/opt/mssql/secrets
 EOF_VM
 
 tar -C "${HOST_MSSQL_SERVER_ROOT}" -cf - . \
-  | ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "sudo tar -C /opt/mssql -xf -"
+  | ssh "${SSH_OPTS[@]}" "${SSH_USER}@${VM_IP}" "sudo -n tar -C /opt/mssql -xf -"
 
 cat "${HOST_MSSQL_SERVICE_FILE}" \
-  | ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "sudo tee /etc/systemd/system/mssql-server.service >/dev/null"
+  | ssh "${SSH_OPTS[@]}" "${SSH_USER}@${VM_IP}" "sudo -n tee /etc/systemd/system/mssql-server.service >/dev/null"
 
 for runtime_lib in "${HOST_RUNTIME_LIBS[@]}"; do
   runtime_name="$(basename "${runtime_lib}")"
   cat "${runtime_lib}" \
-    | ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "sudo tee /opt/mssql-host-libs/${runtime_name} >/dev/null"
+    | ssh "${SSH_OPTS[@]}" "${SSH_USER}@${VM_IP}" "sudo -n tee /opt/mssql-host-libs/${runtime_name} >/dev/null"
 done
 
-ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "sudo bash -s" <<'EOF_VM'
+ssh "${SSH_OPTS[@]}" "${SSH_USER}@${VM_IP}" "sudo -n bash -s" <<'EOF_VM'
 set -euo pipefail
 
 install -d -m 0755 /etc/systemd/system/mssql-server.service.d
@@ -159,7 +160,7 @@ systemctl stop mssql-server >/dev/null 2>&1 || true
 EOF_VM
 
 SA_PASSWORD_B64="$(printf '%s' "${MSSQL_SA_PASSWORD}" | base64 -w0)"
-ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "sudo env SA_PASSWORD_B64='${SA_PASSWORD_B64}' MSSQL_PID_VALUE='${MSSQL_PID}' bash -s" <<'EOF_VM'
+ssh "${SSH_OPTS[@]}" "${SSH_USER}@${VM_IP}" "sudo -n env SA_PASSWORD_B64='${SA_PASSWORD_B64}' MSSQL_PID_VALUE='${MSSQL_PID}' bash -s" <<'EOF_VM'
 set -euo pipefail
 sa_password="$(
   python3 - <<'PY'

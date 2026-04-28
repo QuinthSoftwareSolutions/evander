@@ -199,11 +199,12 @@ def test_graph_teams_service_follows_pagination_for_channel_messages(
         token="graph-token",
         api_base_url="https://graph.microsoft.com/v1.0",
         poll_limit=1,
+        history_page_cap=2,
         timeout_seconds=5.0,
         allowed_channel_targets_provider=lambda: ["team-a/channel-1"],
     )
 
-    messages = service.get_messages()
+    messages = service.get_messages(limit=2)
 
     assert [message.cursor for message in messages] == [
         "team-a/channel-1/msg-1",
@@ -213,6 +214,122 @@ def test_graph_teams_service_follows_pagination_for_channel_messages(
     assert requests[0].url.params.get("$top") == "1"
     assert requests[1].url.params.get("$skiptoken") == "page-2"
     assert requests[1].url.params.get("$top") is None
+
+
+def test_graph_teams_service_caps_cursorless_history_pages_across_targets(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path.endswith("/teams/team-a/channels/channel-1/messages"):
+            return httpx.Response(
+                200,
+                json={
+                    "value": [
+                        {
+                            "id": "msg-1",
+                            "createdDateTime": "2026-03-30T11:00:00Z",
+                            "body": {"content": "first", "contentType": "text"},
+                            "from": {"user": {"id": "user-1"}},
+                        }
+                    ]
+                },
+                request=request,
+            )
+        raise AssertionError(f"Unexpected request URL: {request.url}")
+
+    transport = httpx.MockTransport(handler)
+    patch_httpx_client(monkeypatch, transport)
+    store = JsonStore(tmp_path / "teams.json", TeamsMessageEnvelope)
+    service = GraphTeamsService(
+        store,
+        token="graph-token",
+        api_base_url="https://graph.microsoft.com/v1.0",
+        poll_limit=25,
+        history_page_cap=1,
+        timeout_seconds=5.0,
+        allowed_channel_targets_provider=lambda: ["team-a/channel-1", "team-a/channel-2"],
+    )
+
+    messages = service.get_messages()
+
+    assert [message.cursor for message in messages] == ["team-a/channel-1/msg-1"]
+    assert len(requests) == 1
+
+
+def test_graph_teams_service_stops_pagination_when_history_deadline_expires(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if (
+            request.url.path.endswith("/teams/team-a/channels/channel-1/messages")
+            and request.url.params.get("$skiptoken") is None
+        ):
+            return httpx.Response(
+                200,
+                json={
+                    "value": [
+                        {
+                            "id": "msg-1",
+                            "createdDateTime": "2026-03-30T11:00:00Z",
+                            "body": {"content": "first", "contentType": "text"},
+                            "from": {"user": {"id": "user-1"}},
+                        }
+                    ],
+                    "@odata.nextLink": "https://graph.microsoft.com/v1.0/teams/team-a/channels/channel-1/messages?$skiptoken=page-2",
+                },
+                request=request,
+            )
+        if request.url.params.get("$skiptoken") == "page-2":
+            return httpx.Response(
+                200,
+                json={
+                    "value": [
+                        {
+                            "id": "msg-2",
+                            "createdDateTime": "2026-03-30T11:01:00Z",
+                            "body": {"content": "second", "contentType": "text"},
+                            "from": {"user": {"id": "user-2"}},
+                        }
+                    ]
+                },
+                request=request,
+            )
+        raise AssertionError(f"Unexpected request URL: {request.url}")
+
+    calls = 0
+
+    def fake_monotonic() -> float:
+        nonlocal calls
+        calls += 1
+        return 2.0 if calls >= 5 else 0.0
+
+    transport = httpx.MockTransport(handler)
+    patch_httpx_client(monkeypatch, transport)
+    monkeypatch.setattr("agent_sandbox.services.time.monotonic", fake_monotonic)
+    store = JsonStore(tmp_path / "teams.json", TeamsMessageEnvelope)
+    service = GraphTeamsService(
+        store,
+        token="graph-token",
+        api_base_url="https://graph.microsoft.com/v1.0",
+        poll_limit=1,
+        history_page_cap=10,
+        history_deadline_seconds=1.0,
+        timeout_seconds=5.0,
+        allowed_channel_targets_provider=lambda: ["team-a/channel-1"],
+    )
+
+    messages = service.get_messages(limit=10)
+
+    assert [message.cursor for message in messages] == ["team-a/channel-1/msg-1"]
+    assert len(requests) == 1
 
 
 def test_graph_teams_service_fails_clearly_when_token_provider_cannot_resolve_token(
@@ -366,6 +483,7 @@ def test_graph_teams_service_before_cursor_limits_history_fetch(tmp_path: Path, 
         token="graph-token",
         api_base_url="https://graph.microsoft.com/v1.0",
         poll_limit=2,
+        history_page_cap=2,
         timeout_seconds=5.0,
         allowed_channel_targets_provider=lambda: ["chat:chat-1"],
     )

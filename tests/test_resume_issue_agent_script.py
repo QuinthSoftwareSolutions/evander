@@ -122,7 +122,7 @@ if [[ "${{@: -1}}" == "true" ]]; then
   exit 0
 fi
 cat > /dev/null
-printf 'resumed pid=321 log=/home/agent/.agent-sandbox/agent-ExampleIndustryAPP.log\\n'
+printf 'resumed pid=321 log=/var/log/agent-sandbox/agent-runs/agent-ExampleIndustryAPP.log\\n'
 exit 0
 """,
     )
@@ -143,13 +143,13 @@ exit 0
 
     assert result.stdout == (
         "Agent resumed for vm-14084 "
-        "(resumed pid=321 log=/home/agent/.agent-sandbox/agent-ExampleIndustryAPP.log).\n"
+        "(resumed pid=321 log=/var/log/agent-sandbox/agent-runs/agent-ExampleIndustryAPP.log).\n"
     )
     ssh_calls = ssh_log.read_text(encoding="utf-8").splitlines()
-    assert any("agent@192.168.122.11 true" in call for call in ssh_calls)
+    assert any("agent-admin@192.168.122.11 true" in call for call in ssh_calls)
     run_call = next(call for call in ssh_calls if "PROMPT_B64=" in call)
-    assert "agent@192.168.122.11" in run_call
-    assert "AGENT_MODEL='gpt-5.3-codex'" in run_call
+    assert "agent-admin@192.168.122.11" in run_call
+    assert "AGENT_MODEL=gpt-5.3-codex" in run_call
     assert "bash -s" in run_call
 
 
@@ -199,7 +199,7 @@ if [[ "${{@: -1}}" == "true" ]]; then
 fi
 if [[ "$*" == *"PROMPT_B64="* ]]; then
   cat > /dev/null
-  printf 'resumed pid=321 log=/home/agent/.agent-sandbox/agent-ExampleIndustryAPP.log\\n'
+  printf 'resumed pid=321 log=/var/log/agent-sandbox/agent-runs/agent-ExampleIndustryAPP.log\\n'
   exit 0
 fi
 cat > /dev/null
@@ -223,9 +223,9 @@ cat > /dev/null
     assert result.stdout == ""
     tail_calls = tail_log.read_text(encoding="utf-8").splitlines()
     assert any("PROMPT_B64=" in call for call in tail_calls)
-    assert any("LINES='25' bash -s" in call for call in tail_calls)
+    assert any("LINES=25 bash -s" in call for call in tail_calls)
     ssh_calls = ssh_log.read_text(encoding="utf-8").splitlines()
-    assert any("agent@192.168.122.11 true" in call for call in ssh_calls)
+    assert any("agent-admin@192.168.122.11 true" in call for call in ssh_calls)
 
 
 def test_resume_issue_agent_requires_explicit_agent_model(tmp_path: Path) -> None:
@@ -352,7 +352,7 @@ if [[ "${{@: -1}}" == "true" ]]; then
   exit 0
 fi
 cat > /dev/null
-printf 'resumed pid=456 log=/home/agent/.agent-sandbox/agent-ExampleIndustryAPP.log\\n'
+printf 'resumed pid=456 log=/var/log/agent-sandbox/agent-runs/agent-ExampleIndustryAPP.log\\n'
 exit 0
 """,
     )
@@ -373,12 +373,12 @@ exit 0
 
     assert result.stdout == (
         "Agent resumed for vm-14084 "
-        "(resumed pid=456 log=/home/agent/.agent-sandbox/agent-ExampleIndustryAPP.log).\n"
+        "(resumed pid=456 log=/var/log/agent-sandbox/agent-runs/agent-ExampleIndustryAPP.log).\n"
     )
     run_call = next(
         call for call in ssh_log.read_text(encoding="utf-8").splitlines() if "PROMPT_B64=" in call
     )
-    assert "AGENT_PROVIDER='copilot'" in run_call
+    assert "AGENT_PROVIDER=copilot" in run_call
 
 
 def test_resume_issue_agent_tracks_explicit_state_lifecycle() -> None:
@@ -387,7 +387,7 @@ def test_resume_issue_agent_tracks_explicit_state_lifecycle() -> None:
     )
 
     assert 'resolve_primary_agent_paths() {' in script_text
-    assert 'RUN_LOG_FILE="${LOG_DIR}/agent-${RESOLVED_REPO_NAME}.log"' in script_text
+    assert 'RUN_LOG_FILE="${RUN_LOG_DIR}/agent-${RESOLVED_REPO_NAME}.log"' in script_text
     assert 'PID_FILE="${LOG_DIR}/agent-${RESOLVED_REPO_NAME}.pid"' in script_text
     assert 'STATE_PATH="${LOG_DIR}/agent-${RESOLVED_REPO_NAME}.state"' in script_text
     assert 'AGENT_RUNNER_PROVIDER_LIB_NAME="$(agent_provider_runner_lib_name "${AGENT_PROVIDER}")"' in script_text
@@ -401,16 +401,20 @@ def test_resume_issue_agent_tracks_explicit_state_lifecycle() -> None:
     assert 'AGENT_STATE_REPO_NAME="${AGENT_STATE_REPO_NAME}" \\' in script_text
     assert 'AGENT_STATE_LIB_B64' in script_text
     assert 'printf \'%s\' "${AGENT_RUNNER_LIB_B64}" | base64 -d > "${LOG_DIR}/lib/agent_runner.sh"' in script_text
-    assert 'nohup env \\' in script_text
+    assert 'nohup "${RUN_AS_AGENT[@]}" \\' in script_text
+    assert 'RUN_LOG_PIPE=' not in script_text
+    assert "' >>\"${RUN_LOG_FILE}\" 2>&1 < /dev/null &" in script_text
+    assert '. "${AGENT_HOME}/.profile"' not in script_text
+    assert '. "$HOME/.profile" >/dev/null 2>&1 || true' in script_text
     assert '. "$HOME/.agent-sandbox/lib/agent_runner.sh"' in script_text
     assert 'STATE_PATH="${LOG_DIR}/codex-resume-last.state"' in script_text
-    assert 'RUN_LOG_FILE="${LOG_DIR}/codex-heartbeat-run.log"' in script_text
+    assert 'RUN_LOG_FILE="${RUN_LOG_DIR}/codex-heartbeat-run.log"' in script_text
     assert 'write_state "running" "resume"' in script_text
     assert 'last_attempt_at' in script_text
     assert '--worker-mode' in script_text
     assert 'write_agent_control_state "${HOST_CONTROL_STATUS}" "host-sync"' in script_text
-    assert 'LOG_PATH="${LOG_DIR}/agent-${RESOLVED_REPO_NAME}.log"' in script_text
-    assert 'LOG_PATH="${LOG_DIR}/codex-heartbeat-run.log"' in script_text
+    assert 'LOG_PATH="${RUN_LOG_DIR}/agent-${RESOLVED_REPO_NAME}.log"' in script_text
+    assert 'LOG_PATH="${RUN_LOG_DIR}/codex-heartbeat-run.log"' in script_text
     assert 'RUN_LOG_START_SIZE=0' in script_text
     assert 'RUN_LOG_START_SIZE="$(wc -c < "${RUN_LOG_FILE}" | tr -d ' in script_text
     assert 'tail -c "+$((RUN_LOG_START_SIZE + 1))" "${RUN_LOG_FILE}" 2>/dev/null' in script_text
@@ -503,10 +507,10 @@ exit 0
     ssh_calls = ssh_log.read_text(encoding="utf-8").splitlines()
     run_call = next(call for call in ssh_calls if "PROMPT_B64=" in call)
     assert " -t " not in f" {run_call} "
-    assert "agent@192.168.122.44" in run_call
+    assert "agent-admin@192.168.122.44" in run_call
     assert f"UserKnownHostsFile={caller_home}/.ssh/agent-sandbox-known_hosts" in run_call
-    assert "SESSION_ID='session-14084'" in run_call
-    assert "AGENT_BRANCH_SUFFIX='vm-14084'" in run_call
+    assert "SESSION_ID=session-14084" in run_call
+    assert "AGENT_BRANCH_SUFFIX=vm-14084" in run_call
 
     virsh_calls = virsh_log.read_text(encoding="utf-8")
     assert "start vm-14084" in virsh_calls

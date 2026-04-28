@@ -64,6 +64,42 @@ class AzureVmControlClientProtocol(Protocol):
     def resolve_private_ip(self, *, config: Any, provider_id: str) -> str | None: ...
 
 
+def _read_ssh_public_key(path: Path) -> str:
+    try:
+        return path.expanduser().read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def _derive_ssh_public_key(private_key_path: Path) -> str:
+    try:
+        completed = subprocess.run(
+            ["ssh-keygen", "-y", "-f", str(private_key_path)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return ""
+    if completed.returncode != 0:
+        return ""
+    return (completed.stdout or "").strip()
+
+
+def _resolve_azure_agent_admin_ssh_public_key(azure_config: Any) -> str:
+    ssh_key_path = str(getattr(azure_config, "ssh_public_key_path", "") or "").strip()
+    if ssh_key_path:
+        return _read_ssh_public_key(Path(ssh_key_path))
+
+    private_key_path = admin_service_module._resolve_private_key_path()
+    if private_key_path is None:
+        return ""
+    public_key = _read_ssh_public_key(Path(f"{private_key_path}.pub"))
+    if public_key:
+        return public_key
+    return _derive_ssh_public_key(private_key_path)
+
+
 class AzureVmControlClient:
     def list_vms(self, *, config: Any, include_inactive: bool = True) -> list[dict[str, Any]]:
         del include_inactive
@@ -557,10 +593,15 @@ class AzureVmProvider(VmProvider):
     @staticmethod
     def _render_cloud_init(*, vm_name: str, vm_user: str, vm_defaults: Any) -> str:
         guest_environment = getattr(vm_defaults, "guest_environment")()
+        azure_config = getattr(vm_defaults, "azure", None)
+        ssh_public_key = _resolve_azure_agent_admin_ssh_public_key(azure_config)
         lines = [
             "#cloud-config",
             "users:",
             f"  - name: {vm_user}",
+            "    shell: /bin/bash",
+            "  - name: agent-admin",
+            "    groups: [sudo]",
             "    sudo: ALL=(ALL) NOPASSWD:ALL",
             "    shell: /bin/bash",
             "packages:",
@@ -570,12 +611,24 @@ class AzureVmProvider(VmProvider):
             "    permissions: '0644'",
             "    content: |",
         ]
+        if ssh_public_key:
+            lines[lines.index("    shell: /bin/bash") + 1:lines.index("  - name: agent-admin")] = [
+                "    ssh_authorized_keys:",
+                f"      - {ssh_public_key}",
+            ]
+            admin_shell_index = lines.index("    shell: /bin/bash", lines.index("  - name: agent-admin"))
+            lines[admin_shell_index + 1:admin_shell_index + 1] = [
+                "    ssh_authorized_keys:",
+                f"      - {ssh_public_key}",
+            ]
         for key, value in sorted(guest_environment.items()):
             lines.append(f"      {key}={value}")
         lines.extend(
             [
                 "runcmd:",
                 f"  - mkdir -p /home/{vm_user}/.agent",
+                f"  - install -d -m 0700 -o {vm_user} -g {vm_user} /home/{vm_user}/.agent-sandbox",
+                "  - install -d -m 0700 -o root -g root /var/log/agent-sandbox/agent-runs",
                 f"  - chown -R {vm_user}:{vm_user} /home/{vm_user}",
                 f"  - [ bash, -lc, 'echo Azure VM bootstrap prepared for {vm_name}' ]",
             ]

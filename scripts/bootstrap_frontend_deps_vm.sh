@@ -143,9 +143,8 @@ echo "Bootstrapping frontend dependencies into ${VM_USER}@${VM_IP}"
 
 ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "
   set -euo pipefail
-  sudo mkdir -p /home/${VM_USER}
-  sudo chown -R ${VM_USER}:${VM_USER} /home/${VM_USER}
-  mkdir -p ~/toolchains ~/frontend-deps-runtime/install-roots ~/.cache
+  mkdir -p ~/toolchains ~/frontend-deps-runtime/install-roots ~/.cache ~/.agent-sandbox
+  chmod 700 ~/.agent-sandbox
   rm -rf ~/frontend-deps-runtime/install-roots/*
   rm -rf ~/toolchains/node-v24.14.0
   mkdir -p ~/toolchains/node-v24.14.0

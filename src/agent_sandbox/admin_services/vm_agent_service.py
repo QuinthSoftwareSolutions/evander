@@ -432,6 +432,25 @@ class VmAgentAdminService:
             return
         repository.upsert_session(manifest)
 
+    @staticmethod
+    def _control_ssh_users(vm_user: str) -> list[str]:
+        configured = os.environ.get("AGENT_SANDBOX_VM_ADMIN_USER", "agent-admin").strip() or "agent-admin"
+        users = [configured]
+        if vm_user and vm_user not in users:
+            users.append(vm_user)
+        return users
+
+    def _resolve_control_ssh_access(self, vm_name: str, *, vm_user: str) -> tuple[str, str, Path]:
+        errors: list[str] = []
+        for ssh_user in self._control_ssh_users(vm_user):
+            try:
+                vm_ip, ssh_private_key_path = _admin_service._resolve_vm_ssh_access(vm_name, ssh_user)
+                return ssh_user, vm_ip, ssh_private_key_path
+            except RuntimeError as exc:
+                errors.append(str(exc))
+        detail = errors[-1] if errors else f"Unable to resolve SSH access for {vm_name}"
+        raise RuntimeError(detail)
+
     def _provider_registry(self) -> VmProviderRegistry:
         dependency_view = SimpleNamespace(
             runtime=self._deps.runtime,
@@ -521,29 +540,36 @@ class VmAgentAdminService:
         remote_script = r"""
 set -euo pipefail
 
-LOG_DIR="$HOME/.agent-sandbox"
+AGENT_USER="${AGENT_USER:-agent}"
+AGENT_HOME="$(getent passwd "${AGENT_USER}" | cut -d: -f6)"
+if [[ -z "${AGENT_HOME}" ]]; then
+  echo "Unknown agent user: ${AGENT_USER}" >&2
+  exit 1
+fi
+LOG_DIR="${AGENT_HOME}/.agent-sandbox"
+RUN_LOG_DIR="${AGENT_RUN_LOG_DIR:-/var/log/agent-sandbox/agent-runs}"
 RESOLVED_REPO_NAME="${REPO_NAME:-}"
 TAIL_LINES="${TAIL_LINES:-50}"
 
 if [[ -z "${RESOLVED_REPO_NAME}" ]]; then
   shopt -s nullglob
   candidates=()
-  for path in "${LOG_DIR}"/agent-*.pid "${LOG_DIR}"/agent-*.log; do
+  for path in "${LOG_DIR}"/agent-*.pid "${LOG_DIR}"/agent-*.state; do
     name="$(basename "${path}")"
     name="${name#agent-}"
     name="${name%.pid}"
-    name="${name%.log}"
+    name="${name%.state}"
     if [[ -n "${name}" ]]; then
       candidates+=("${name}")
     fi
   done
-  if [[ -f "${LOG_DIR}/codex-heartbeat-run.log" || -f "${LOG_DIR}/codex-heartbeat.pid" ]]; then
+  if [[ -f "${LOG_DIR}/codex-resume-last.state" || -f "${LOG_DIR}/codex-heartbeat.pid" ]]; then
     candidates+=("codex-heartbeat")
   fi
   shopt -u nullglob
 
   if [[ ${#candidates[@]} -eq 0 ]]; then
-    echo "No guest agent logs or pid files found under ${LOG_DIR}"
+    echo "No guest agent state or pid files found under ${LOG_DIR}"
     exit 0
   fi
 
@@ -559,13 +585,19 @@ if [[ -z "${RESOLVED_REPO_NAME}" ]]; then
 fi
 
 if [[ "${RESOLVED_REPO_NAME}" == "codex-heartbeat" ]]; then
-  LOG_PATH="${LOG_DIR}/codex-heartbeat-run.log"
+  LOG_PATH="${RUN_LOG_DIR}/codex-heartbeat-run.log"
+  LEGACY_LOG_PATH="${LOG_DIR}/codex-heartbeat-run.log"
 else
-  LOG_PATH="${LOG_DIR}/agent-${RESOLVED_REPO_NAME}.log"
+  LOG_PATH="${RUN_LOG_DIR}/agent-${RESOLVED_REPO_NAME}.log"
+  LEGACY_LOG_PATH="${LOG_DIR}/agent-${RESOLVED_REPO_NAME}.log"
 fi
 if [[ ! -f "${LOG_PATH}" ]]; then
-  echo "No guest agent log found at ${LOG_PATH}"
-  exit 0
+  if [[ -f "${LEGACY_LOG_PATH}" ]]; then
+    LOG_PATH="${LEGACY_LOG_PATH}"
+  else
+    echo "No guest agent log found at ${LOG_PATH} or ${LEGACY_LOG_PATH}"
+    exit 0
+  fi
 fi
 
 echo "Repo: ${RESOLVED_REPO_NAME}"
@@ -573,26 +605,39 @@ echo "Log: ${LOG_PATH}"
 echo
 tail -n "${TAIL_LINES}" "${LOG_PATH}"
 """
-        result = _admin_service._run_subprocess(
-            [
-                "ssh",
-                *_admin_service._ssh_options(vm_name, vm_ip, ssh_private_key_path),
-                f"{vm_user}@{vm_ip}",
-                "env",
-                f"REPO_NAME={repo_name or ''}",
-                f"TAIL_LINES={lines}",
-                "bash",
-                "-s",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=20.0,
-            input=remote_script,
-        )
+        result: subprocess.CompletedProcess[str] | None = None
+        attempted_errors: list[str] = []
+        for ssh_user in self._control_ssh_users(vm_user):
+            result = _admin_service._run_subprocess(
+                [
+                    "ssh",
+                    *_admin_service._ssh_options(vm_name, vm_ip, ssh_private_key_path),
+                    f"{ssh_user}@{vm_ip}",
+                    "sudo",
+                    "-n",
+                    "env",
+                    f"AGENT_USER={vm_user}",
+                    "AGENT_RUN_LOG_DIR=/var/log/agent-sandbox/agent-runs",
+                    f"REPO_NAME={repo_name or ''}",
+                    f"TAIL_LINES={lines}",
+                    "bash",
+                    "-s",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=20.0,
+                input=remote_script,
+            )
+            if result.returncode == 0:
+                break
+            attempted_errors.append((result.stderr or result.stdout or "").strip())
+        if result is None:
+            return "Agent log unavailable: no SSH users were configured."
         output = (result.stdout or "").strip()
         error = (result.stderr or "").strip()
-        if result.returncode != 0 and error:
-            return f"Agent log unavailable: {error}"
+        if result.returncode != 0:
+            detail = error or next((candidate for candidate in reversed(attempted_errors) if candidate), "")
+            return f"Agent log unavailable: {detail or f'ssh exited with code {result.returncode}'}"
         return output or error or "Agent log is empty."
 
     def start_vm(self, target: str) -> VmActionResult:
@@ -664,7 +709,7 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
                 message=f"VM is not running: {vm_name}",
             )
         try:
-            vm_ip, ssh_private_key_path = _admin_service._resolve_vm_ssh_access(vm_name, vm_user)
+            ssh_user, vm_ip, ssh_private_key_path = self._resolve_control_ssh_access(vm_name, vm_user=vm_user)
         except RuntimeError as exc:
             return VmActionResult(success=False, vm_name=vm_name, action="kill_agent", message=str(exc))
 
@@ -672,7 +717,13 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
 set -euo pipefail
 
 TARGET_PID="${TARGET_PID:-}"
-LOG_DIR="${HOME}/.agent-sandbox"
+AGENT_USER="${AGENT_USER:-agent}"
+AGENT_HOME="$(getent passwd "${AGENT_USER}" | cut -d: -f6)"
+if [[ -z "${AGENT_HOME}" ]]; then
+  echo "Unknown agent user: ${AGENT_USER}" >&2
+  exit 1
+fi
+LOG_DIR="${AGENT_HOME}/.agent-sandbox"
 
 is_valid_agent_pid() {
   local pid="$1"
@@ -714,6 +765,8 @@ write_idle_state() {
     printf "exit_code=143\n"
   } > "${tmp_path}"
   mv "${tmp_path}" "${state_path}"
+  chown "${AGENT_USER}:${AGENT_USER}" "${state_path}"
+  chmod 0600 "${state_path}"
 }
 
 remove_matching_pid_file() {
@@ -760,7 +813,18 @@ shopt -u nullglob
 printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@]}"
 """
         completed = _admin_service._run_subprocess(
-            ["ssh", *_admin_service._ssh_options(vm_name, vm_ip, ssh_private_key_path), f"{vm_user}@{vm_ip}", "env", f"TARGET_PID={pid}", "bash", "-s"],
+            [
+                "ssh",
+                *_admin_service._ssh_options(vm_name, vm_ip, ssh_private_key_path),
+                f"{ssh_user}@{vm_ip}",
+                "sudo",
+                "-n",
+                "env",
+                f"AGENT_USER={vm_user}",
+                f"TARGET_PID={pid}",
+                "bash",
+                "-s",
+            ],
             capture_output=True,
             text=True,
             timeout=20.0,
@@ -826,7 +890,25 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
             *(["--dispatch-id", dispatch_id] if dispatch_id else []),
             *(["--resume-thread-id", effective_resume_thread_id] if effective_resume_thread_id else ["--resume-mode", normalized_resume_mode]),
         ]
-        completed = _admin_service._run_subprocess(args, capture_output=True, text=True, env=os.environ | {"AGENT_MODEL": resolved_model})
+        try:
+            resume_timeout_seconds = max(1.0, float(os.environ.get("AGENT_SANDBOX_ADMIN_RESUME_TIMEOUT_SECONDS", "120") or "120"))
+        except ValueError:
+            resume_timeout_seconds = 120.0
+        try:
+            completed = _admin_service._run_subprocess(
+                args,
+                capture_output=True,
+                text=True,
+                env=os.environ | {"AGENT_MODEL": resolved_model},
+                timeout=resume_timeout_seconds,
+            )
+        except subprocess.TimeoutExpired:
+            return VmActionResult(
+                success=False,
+                vm_name=vm_name,
+                action="resume_issue_agent",
+                message=f"resume_issue_agent.sh timed out after {resume_timeout_seconds:g}s",
+            )
         stdout = completed.stdout or ""
         stderr = completed.stderr or ""
         thread_id: str | None = None

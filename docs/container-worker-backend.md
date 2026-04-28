@@ -21,6 +21,16 @@ For directory-scoped runtime config, put these values on the root `providers` do
 AGENT_SANDBOX_WORKER_TOKEN=... agent-sandbox-worker-daemon --host 0.0.0.0 --port 11888 --runtime-dir runtime --worker-root /var/lib/agent-worker
 ```
 
+For a reproducible worker VM deployment, use the dedicated Ansible playbook:
+
+```bash
+ansible-playbook -i ansible/inventory/prod.yml ansible/worker.yml
+```
+
+That playbook installs Docker, deploys the repo package, renders `config/worker-daemon.env`,
+installs `agent-sandbox-worker-daemon.service`, creates `/var/lib/agent-worker`, and verifies the
+local `/healthz` endpoint. It intentionally does not install the control-plane services.
+
 The daemon defaults to the `default` sandbox profile. To select the stricter profile:
 
 ```bash
