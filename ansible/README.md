@@ -24,7 +24,7 @@ the base Ubuntu cloud image.
 - `site.yml`: main deployment playbook
 - `worker.yml`: dedicated container-worker VM deployment playbook
 - `inventory/hosts.example.yml`: example inventory
-- `group_vars/all.yml`: documented variable contract and defaults
+- `group_vars/all/defaults.yml`: documented variable contract and defaults
 - `group_vars/agent_sandbox_worker_hosts.yml`: container-worker VM defaults
 - `roles/`: deployment steps grouped by responsibility
 

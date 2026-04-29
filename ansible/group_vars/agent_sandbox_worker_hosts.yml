@@ -31,8 +31,9 @@ agent_sandbox_worker_sandbox_profile: "default"
 agent_sandbox_worker_docker_network: ""
 agent_sandbox_worker_read_only_rootfs: false
 agent_sandbox_worker_tmpfs: []
+# Empty means the playbook runs containers as the worker service account uid:gid so
+# capability-dropped containers can still write durable session mounts.
 agent_sandbox_worker_container_user: ""
-agent_sandbox_worker_token: ""
 agent_sandbox_worker_env:
   AGENT_SANDBOX_WORKER_TOKEN: "{{ agent_sandbox_worker_token }}"
 

@@ -22,6 +22,37 @@
     - path: "{{ agent_sandbox_worker_runtime_dir }}"
       mode: "0750"
 
+- name: Resolve worker service user uid
+  ansible.builtin.command:
+    argv:
+      - id
+      - -u
+      - "{{ agent_sandbox_run_user }}"
+  register: agent_sandbox_worker_user_uid_result
+  changed_when: false
+
+- name: Resolve worker service user gid
+  ansible.builtin.command:
+    argv:
+      - id
+      - -g
+      - "{{ agent_sandbox_run_user }}"
+  register: agent_sandbox_worker_user_gid_result
+  changed_when: false
+
+- name: Resolve effective worker container user
+  ansible.builtin.set_fact:
+    agent_sandbox_effective_worker_container_user: >-
+      {{
+        agent_sandbox_worker_container_user
+        if (agent_sandbox_worker_container_user | default('') | string | trim | length) > 0
+        else (
+          agent_sandbox_worker_user_uid_result.stdout
+          ~ ':'
+          ~ agent_sandbox_worker_user_gid_result.stdout
+        )
+      }}
+
 - name: Preload configured worker images
   ansible.builtin.command:
     argv:

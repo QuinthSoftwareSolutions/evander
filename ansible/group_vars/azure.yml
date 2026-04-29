@@ -6,6 +6,7 @@ agent_sandbox_deploy_path: "/opt/truman"
 agent_sandbox_run_user: "truman"
 agent_sandbox_service_profile: "control_plane_only"
 agent_sandbox_manage_workflow_config: false
+agent_sandbox_worker_token: "{{ vault_agent_sandbox_worker_token }}"
 
 agent_sandbox_admin_web_env:
   ADMIN_WEB_HOST: "127.0.0.1"
@@ -33,3 +34,4 @@ agent_sandbox_shared_secrets_env:
   DISCORD_BOT_TOKEN: "{{ vault_discord_bot_token }}"
   MSSQL_SA_PASSWORD: "{{ vault_mssql_sa_password }}"
   AGENT_PROMPT_TOKEN_SECRET: "{{ vault_agent_prompt_token_secret }}"
+  AGENT_SANDBOX_WORKER_TOKEN: "{{ vault_agent_sandbox_worker_token }}"

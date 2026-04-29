@@ -87,7 +87,8 @@ def test_worker_service_role_renders_env_and_daemon_unit() -> None:
     assert "--sandbox-profile {{ agent_sandbox_worker_sandbox_profile }}" in unit
     assert "--docker-network {{ agent_sandbox_worker_docker_network }}" in unit
     assert "--read-only-rootfs" in unit
-    assert "--container-user {{ agent_sandbox_worker_container_user }}" in unit
+    assert "--container-user {{ agent_sandbox_effective_worker_container_user }}" in unit
+    assert "{% endif %}{{ \"\" }}\nRestart=on-failure" in unit
 
 
 def test_worker_runtime_and_verification_roles_cover_docker_health_and_no_control_plane_units() -> (
@@ -103,11 +104,14 @@ def test_worker_runtime_and_verification_roles_cover_docker_health_and_no_contro
     assert "docker.service" in runtime
     assert "agent_sandbox_worker_root" in runtime
     assert "agent_sandbox_worker_runtime_dir" in runtime
+    assert "Resolve worker service user uid" in runtime
+    assert "agent_sandbox_effective_worker_container_user" in runtime
     assert "agent_sandbox_worker_preload_images" in runtime
     assert "agent-sandbox-worker-daemon.service" in verification
     assert "docker ps" not in verification
     assert "Verify Docker is usable by the worker user" in verification
     assert "/healthz" in verification
+    assert "container user: {{ agent_sandbox_effective_worker_container_user }}" in verification
     assert "agent-sandbox-gateway.service" not in verification
     assert "agent-sandbox-admin-web.service" not in verification
 

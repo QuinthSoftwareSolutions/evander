@@ -15,7 +15,11 @@
     that:
       - "ansible_facts.services['agent-sandbox-worker-daemon.service'].status == 'enabled'"
       - "ansible_facts.services['agent-sandbox-worker-daemon.service'].state == 'running'"
-    fail_msg: "agent-sandbox-worker-daemon.service should be enabled and running."
+    fail_msg: >-
+      agent-sandbox-worker-daemon.service should be enabled and running.
+      actual={{
+        ansible_facts.services.get('agent-sandbox-worker-daemon.service', {})
+      }}
     success_msg: "agent-sandbox-worker-daemon.service is enabled and running."
 
 - name: Verify Docker is usable by the worker user
@@ -48,3 +52,4 @@
       - "worker runtime dir: {{ agent_sandbox_worker_runtime_dir }}"
       - "worker daemon: http://{{ ansible_default_ipv4.address | default(agent_sandbox_worker_host) }}:{{ agent_sandbox_worker_port }}"
       - "sandbox profile: {{ agent_sandbox_worker_sandbox_profile }}"
+      - "container user: {{ agent_sandbox_effective_worker_container_user }}"
