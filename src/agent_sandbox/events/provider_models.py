@@ -44,6 +44,7 @@ from agent_sandbox.triggers.providers.schemas import (
     TeamsContentFilterDefinition,
     TeamsMentionFilterDefinition,
     TeamsMessageFilterDefinition,
+    TeamsMeetingNewTranscriptTriggerDefinition,
     TeamsNewMessageTriggerDefinition,
     TeamsTargetDefinition,
     TicketChangedTriggerDefinition,

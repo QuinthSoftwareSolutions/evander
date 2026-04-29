@@ -16,6 +16,7 @@ from agent_sandbox.triggers.providers.schemas import (
     ReviewNewRequestTriggerDefinition,
     ScriptRunRequestTriggerDefinition,
     TeamsNewMessageTriggerDefinition,
+    TeamsMeetingNewTranscriptTriggerDefinition,
     TicketChangedTriggerDefinition,
     TicketCreatedTriggerDefinition,
 )
@@ -29,6 +30,7 @@ _TRIGGER_MODEL_BY_TYPE = {
     "trigger:script-run-request": ScriptRunRequestTriggerDefinition,
     "trigger:discord:new-message": DiscordNewMessageTriggerDefinition,
     "trigger:teams:new-message": TeamsNewMessageTriggerDefinition,
+    "trigger:teams-meeting:new-transcript": TeamsMeetingNewTranscriptTriggerDefinition,
     "trigger:email:new-message": EmailNewMessageTriggerDefinition,
     "trigger:pull-request:new-feedback": PullRequestNewFeedbackTriggerDefinition,
     "trigger:review:new-request": ReviewNewRequestTriggerDefinition,

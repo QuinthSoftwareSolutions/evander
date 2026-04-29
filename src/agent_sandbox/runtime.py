@@ -74,6 +74,11 @@ from agent_sandbox.messaging.teams_auth import (
     TeamsDeviceCodeTokenProvider,
 )
 from agent_sandbox.messaging.wake_store import WakeRequestRepository, WakeRequestStore
+from agent_sandbox.teams_meeting import (
+    TeamsMeetingBridgeClient,
+    TeamsMeetingStore,
+    build_teams_meeting_bridge_client,
+)
 
 
 @dataclass(slots=True)
@@ -103,6 +108,8 @@ class RuntimeContext:
     wake_store: WakeRequestRepository
     agent_prompt_store: AgentPromptStore
     script_run_request_store: ScriptRunRequestRepository
+    teams_meeting_store: TeamsMeetingStore
+    teams_meeting_bridge_client: TeamsMeetingBridgeClient
 
     def resolve_provider_config_for_session(self, session_id: str) -> GatewayConfig:
         return self.provider_config.resolve_for_session_id(session_id)
@@ -217,6 +224,8 @@ def _build_runtime_context(config: GatewayConfig) -> RuntimeContext:
     script_run_request_store = ScriptRunRequestStore(
         config.runtime_dir / "script-run-requests-store.json"
     )
+    teams_meeting_store = TeamsMeetingStore(config.teams_meeting_store_path)
+    teams_meeting_bridge_client = build_teams_meeting_bridge_client(config)
     root_provider_config = provider_config.resolve_for_directory("root")
     discord_service = _build_discord_service(
         root_provider_config, discord_commands, session_repository, policy_config
@@ -261,6 +270,8 @@ def _build_runtime_context(config: GatewayConfig) -> RuntimeContext:
         wake_store=wake_store,
         agent_prompt_store=agent_prompt_store,
         script_run_request_store=script_run_request_store,
+        teams_meeting_store=teams_meeting_store,
+        teams_meeting_bridge_client=teams_meeting_bridge_client,
     )
 
 

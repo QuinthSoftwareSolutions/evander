@@ -807,6 +807,37 @@ def test_get_agent_log_snapshot_falls_back_to_legacy_agent_user(
     assert any("agent@192.168.122.11" in cmd for cmd in calls)
 
 
+def test_get_agent_log_snapshot_returns_unavailable_when_ssh_times_out(
+    tmp_path: Path, monkeypatch
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    monkeypatch.setattr(
+        "agent_sandbox.admin.service._dominfo_field", lambda vm_name, field_name: "running"
+    )
+    monkeypatch.setattr(
+        "agent_sandbox.admin.service._resolve_vm_ip", lambda vm_name: "192.168.122.11"
+    )
+    monkeypatch.setattr(
+        "agent_sandbox.admin.service._resolve_private_key_path", lambda: Path("/tmp/test-key")
+    )
+
+    calls: list[list[str]] = []
+
+    def _fake_run_subprocess(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(cmd)
+        raise subprocess.TimeoutExpired(cmd, timeout=20.0)
+
+    monkeypatch.setattr("agent_sandbox.admin.service._run_subprocess", _fake_run_subprocess)
+
+    output = service.get_agent_log_snapshot("bug-finder-vm", repo_name="codex-heartbeat")
+
+    assert output == (
+        "Agent log unavailable: agent@192.168.122.11: log read timed out after 20 seconds"
+    )
+    assert any("agent-admin@192.168.122.11" in cmd for cmd in calls)
+    assert any("agent@192.168.122.11" in cmd for cmd in calls)
+
+
 def test_list_sessions_filters_active_and_expired(tmp_path: Path) -> None:
     service = AdminService(write_config(tmp_path))
     service.runtime.session_repository.upsert_session(
@@ -2450,6 +2481,17 @@ def test_list_background_workers_reads_systemd_state(tmp_path: Path, monkeypatch
             "ExecMainCode": "1",
             "ExecMainStatus": "0",
         },
+        "agent-sandbox-teams-meeting-ingest.service": {
+            "ActiveState": "inactive",
+            "SubState": "dead",
+            "Result": "success",
+            "UnitFileState": "disabled",
+            "Description": "Teams meeting ingest worker",
+            "MainPID": "0",
+            "LoadState": "loaded",
+            "ExecMainCode": "1",
+            "ExecMainStatus": "0",
+        },
         "agent-sandbox-effect-orchestrator.service": {
             "ActiveState": "active",
             "SubState": "running",
@@ -2483,6 +2525,7 @@ def test_list_background_workers_reads_systemd_state(tmp_path: Path, monkeypatch
         "discord-wake",
         "scheduled-wake",
         "teams-ingest",
+        "teams-meeting-ingest",
         "effect-orchestrator",
         "trigger-orchestrator",
     ]
@@ -2502,12 +2545,15 @@ def test_list_background_workers_reads_systemd_state(tmp_path: Path, monkeypatch
     assert summaries[4].running is False
     assert summaries[4].failed is False
     assert summaries[4].unit_file_state == "disabled"
-    assert summaries[5].running is True
+    assert summaries[5].running is False
     assert summaries[5].failed is False
-    assert summaries[5].main_pid == 777
+    assert summaries[5].unit_file_state == "disabled"
     assert summaries[6].running is True
     assert summaries[6].failed is False
-    assert summaries[6].main_pid == 789
+    assert summaries[6].main_pid == 777
+    assert summaries[7].running is True
+    assert summaries[7].failed is False
+    assert summaries[7].main_pid == 789
 
 
 def test_list_background_workers_marks_unavailable_when_systemctl_fails(
@@ -4278,12 +4324,15 @@ def test_destroy_vm_prunes_generic_sessions_and_feedback_state(
             expires_at=datetime.now(UTC) + timedelta(hours=1),
         ),
     )
-    monkeypatch.setattr(
-        "agent_sandbox.admin.service.subprocess.run",
-        lambda cmd, **kwargs: subprocess.CompletedProcess(
+    calls: list[list[str]] = []
+
+    def _fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(cmd)
+        return subprocess.CompletedProcess(
             args=cmd, returncode=0, stdout="destroyed", stderr=""
-        ),
-    )
+        )
+
+    monkeypatch.setattr("agent_sandbox.admin.service.subprocess.run", _fake_run)
     monkeypatch.setattr(
         "agent_sandbox.admin.service._prune_approvals_for_sessions",
         lambda runtime, session_ids: len(session_ids),
@@ -4300,10 +4349,64 @@ def test_destroy_vm_prunes_generic_sessions_and_feedback_state(
     result = service.destroy_vm("lab-vm")
 
     assert result.success is True
+    assert calls[0][:2] == ["sudo", "-n"]
+    assert calls[0][-2:] == [
+        str(Path(__file__).resolve().parents[1] / "scripts" / "destroy_agent_vm.sh"),
+        "lab-vm",
+    ]
     assert service.runtime.session_repository.get_session("lab-session") is None
     assert service.runtime.session_repository.get_session("other-session") is not None
     assert "removed_sessions=1" in result.message
     assert "removed_pr_map_entries=1" in result.message
+
+
+def test_destroy_vm_does_not_try_pkexec_when_no_prompt_is_available(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    monkeypatch.setattr("agent_sandbox.admin.service._can_prompt_for_privileges", lambda: False)
+    calls: list[list[str]] = []
+
+    def _fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(cmd)
+        return subprocess.CompletedProcess(
+            args=cmd, returncode=1, stdout="", stderr="sudo: a password is required"
+        )
+
+    monkeypatch.setattr("agent_sandbox.admin.service.subprocess.run", _fake_run)
+
+    result = service.destroy_vm("lab-vm")
+
+    assert result.success is False
+    assert result.message == "sudo: a password is required"
+    assert len(calls) == 1
+    assert calls[0][:2] == ["sudo", "-n"]
+
+
+def test_destroy_vm_falls_back_to_pkexec_when_prompt_is_available(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    monkeypatch.setattr("agent_sandbox.admin.service._can_prompt_for_privileges", lambda: True)
+    calls: list[list[str]] = []
+
+    def _fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(cmd)
+        if cmd[:2] == ["sudo", "-n"]:
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=1, stdout="", stderr="sudo: a password is required"
+            )
+        return subprocess.CompletedProcess(
+            args=cmd, returncode=0, stdout="destroyed", stderr=""
+        )
+
+    monkeypatch.setattr("agent_sandbox.admin.service.subprocess.run", _fake_run)
+
+    result = service.destroy_vm("lab-vm")
+
+    assert result.success is True
+    assert calls[0][:2] == ["sudo", "-n"]
+    assert calls[1][:2] == ["pkexec", "env"]
 
 
 def test_create_and_list_wake_schedules_include_last_dispatch(tmp_path: Path) -> None:

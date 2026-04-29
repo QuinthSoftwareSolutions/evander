@@ -6,6 +6,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_cloud_init_contains_provider_neutral_session_and_profile_exports() -> None:
     template = (ROOT / "config" / "cloud-init-user-data.yaml").read_text(encoding="utf-8")
 
+    assert "manage_etc_hosts: true" in template
     assert "/etc/agent-sandbox/session.env" in template
     assert "/home/agent/.agent/config.env" in template
     assert "AGENT_SANDBOX_PROVIDER_CONFIG_VERSION=1" in template

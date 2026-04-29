@@ -183,6 +183,9 @@ def _builtin_node_schema_resolvers() -> dict[str, Any]:
         "trigger:script-run-request": provider_models.ScriptRunRequestTriggerDefinition,
         "trigger:discord:new-message": provider_models.DiscordNewMessageTriggerDefinition,
         "trigger:teams:new-message": provider_models.TeamsNewMessageTriggerDefinition,
+        "trigger:teams-meeting:new-transcript": (
+            provider_models.TeamsMeetingNewTranscriptTriggerDefinition
+        ),
         "trigger:email:new-message": provider_models.EmailNewMessageTriggerDefinition,
         "trigger:pull-request:new-feedback": provider_models.PullRequestNewFeedbackTriggerDefinition,
         "trigger:review:new-request": provider_models.ReviewNewRequestTriggerDefinition,

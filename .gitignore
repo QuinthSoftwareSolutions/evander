@@ -27,3 +27,5 @@ tasks/
 frontend/workflow-editor/node_modules/
 frontend/workflow-editor/tsconfig.tsbuildinfo
 **/dist/*
+/integrations/teams-meeting-media-bridge/**/bin/
+/integrations/teams-meeting-media-bridge/**/obj/

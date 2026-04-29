@@ -21,6 +21,10 @@ Environment:
   HOST_REPO_CODEX_SKILLS_DIR Repo-local Codex skills root. Default: <repo>/skills.
   HOST_CODEX_MODELS_CACHE_PATH Host Codex model cache. Default: ~/.codex/models_cache.json for the caller.
   LLM_BASE_URL    Guest OpenAI-compatible base URL. Overrides ~/.agent/config.env when set.
+  VM_SSH_USER     Privileged guest SSH user used to wait for cloud-init and
+                  repair guest home ownership. Default: agent-admin
+  GUEST_BOOTSTRAP_WAIT_SECONDS
+                  How long to wait for guest bootstrap readiness. Default: 180
   AGENT_MODEL     Model persisted for guest heartbeat resume runs when enabled.
   ENABLE_GUEST_HEARTBEAT Install and enable the guest heartbeat timer (0/1, default: 0).
   GUEST_HEARTBEAT_PROMPT Prompt passed to `codex exec resume --last` from the guest timer.
@@ -87,6 +91,8 @@ HOST_REPO_CODEX_SKILLS_DIR="${HOST_REPO_CODEX_SKILLS_DIR:-${ROOT_DIR}/skills}"
 HOST_CODEX_MODELS_CACHE_PATH="${HOST_CODEX_MODELS_CACHE_PATH:-${CALLER_HOME}/.codex/models_cache.json}"
 VENDOR_DIR="${HOST_CODEX_ROOT}/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl"
 LLM_BASE_URL="${LLM_BASE_URL:-}"
+SSH_USER="${VM_SSH_USER:-agent-admin}"
+GUEST_BOOTSTRAP_WAIT_SECONDS="${GUEST_BOOTSTRAP_WAIT_SECONDS:-180}"
 AGENT_MODEL="${AGENT_MODEL:-}"
 ENABLE_GUEST_HEARTBEAT="${ENABLE_GUEST_HEARTBEAT:-0}"
 GUEST_HEARTBEAT_PROMPT="${GUEST_HEARTBEAT_PROMPT:-Resume work for this session. Check for pending feedback first, then continue the most recent task.}"
@@ -103,6 +109,10 @@ fi
 if [[ ! -f "${SSH_KEY_PATH}" ]]; then
   echo "Missing SSH private key: ${SSH_KEY_PATH}" >&2
   echo "Set SSH_KEY_PATH to the private key that matches the VM's authorized key." >&2
+  exit 1
+fi
+if ! [[ "${GUEST_BOOTSTRAP_WAIT_SECONDS}" =~ ^[1-9][0-9]*$ ]]; then
+  echo "GUEST_BOOTSTRAP_WAIT_SECONDS must be a positive integer: ${GUEST_BOOTSTRAP_WAIT_SECONDS}" >&2
   exit 1
 fi
 
@@ -153,10 +163,90 @@ get_vm_ip() {
   return 1
 }
 
+guest_user_home_writable() {
+  ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" 'test -d "$HOME" && test -w "$HOME"' \
+    >/dev/null 2>&1
+}
+
+repair_guest_home_with_user() {
+  local ssh_user="$1"
+
+  ssh "${SSH_OPTS[@]}" "${ssh_user}@${VM_IP}" \
+    sudo -n env "VM_USER=${VM_USER}" "GUEST_BOOTSTRAP_WAIT_SECONDS=${GUEST_BOOTSTRAP_WAIT_SECONDS}" bash -s <<'EOF'
+set -euo pipefail
+
+if command -v cloud-init >/dev/null 2>&1; then
+  if command -v timeout >/dev/null 2>&1; then
+    cloud_init_status=0
+    timeout "${GUEST_BOOTSTRAP_WAIT_SECONDS}" cloud-init status --wait >/dev/null 2>&1 || cloud_init_status=$?
+    if [[ "${cloud_init_status}" == "124" ]]; then
+      echo "Timed out waiting for guest cloud-init after ${GUEST_BOOTSTRAP_WAIT_SECONDS}s." >&2
+      exit 1
+    fi
+    if [[ "${cloud_init_status}" != "0" ]]; then
+      echo "cloud-init completed with a non-zero status; continuing with home ownership repair." >&2
+    fi
+  else
+    cloud-init status --wait >/dev/null 2>&1 \
+      || echo "cloud-init completed with a non-zero status; continuing with home ownership repair." >&2
+  fi
+fi
+
+agent_home="$(getent passwd "${VM_USER}" | cut -d: -f6)"
+if [[ -z "${agent_home}" ]]; then
+  echo "Unknown guest user: ${VM_USER}" >&2
+  exit 1
+fi
+agent_group="$(id -gn "${VM_USER}")"
+install -d -m 0755 -o "${VM_USER}" -g "${agent_group}" "${agent_home}"
+chown -R "${VM_USER}:${agent_group}" "${agent_home}"
+EOF
+}
+
+try_repair_guest_home() {
+  local ssh_user="$1"
+
+  [[ -n "${ssh_user}" ]] || return 1
+  repair_guest_home_with_user "${ssh_user}" >/dev/null 2>&1
+}
+
+prepare_guest_home() {
+  local deadline
+  deadline=$((SECONDS + GUEST_BOOTSTRAP_WAIT_SECONDS))
+
+  while (( SECONDS < deadline )); do
+    if try_repair_guest_home "${SSH_USER}"; then
+      return 0
+    fi
+    if [[ "${SSH_USER}" != "${VM_USER}" ]] && try_repair_guest_home "${VM_USER}"; then
+      return 0
+    fi
+    if guest_user_home_writable; then
+      return 0
+    fi
+    sleep 2
+  done
+
+  if repair_guest_home_with_user "${SSH_USER}"; then
+    return 0
+  fi
+  if [[ "${SSH_USER}" != "${VM_USER}" ]] && repair_guest_home_with_user "${VM_USER}"; then
+    return 0
+  fi
+  if guest_user_home_writable; then
+    return 0
+  fi
+
+  echo "Timed out waiting for guest home to become writable for ${VM_USER}@${VM_IP}." >&2
+  echo "Check cloud-init and guest user ownership, or set VM_SSH_USER to a sudo-capable guest user." >&2
+  return 1
+}
+
 VM_IP="$(get_vm_ip)"
 mapfile -t SSH_OPTS < <(guest_ssh_options "${VM_NAME}" "${VM_IP}" "${SSH_KEY_PATH}" "${CALLER_HOME}")
 
 echo "Bootstrapping Codex into ${VM_USER}@${VM_IP}"
+prepare_guest_home
 
 ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_IP}" "
   set -euo pipefail

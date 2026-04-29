@@ -96,9 +96,12 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
   has_pending_discord_messages: "Check whether the session has Discord messages waiting to be reviewed.",
   list_unread_discord_messages: "List unread Discord messages available to the session.",
   list_all_discord_messages: "List all Discord messages visible to the session within its policy scope.",
-  add_message_reaction: "Add a reaction to an approved Discord message from the host side.",
+  add_message_reaction: "Add a reaction to an approved Discord or Teams message from the host side.",
   teams_get_messages: "Read Microsoft Teams messages made available to the session by the host ingest worker.",
   teams_post_status: "Post a Microsoft Teams status update from the host on behalf of the session.",
+  teams_meeting_get_events: "Read Teams meeting transcript and status events captured for this session.",
+  teams_meeting_speak: "Speak into the active Teams meeting through the host-managed meeting bridge.",
+  teams_meeting_stop: "Leave the active Teams meeting and close the host-side meeting binding.",
   email_list_unread: "List unread email messages available to the session through the host email provider.",
   email_get_message: "Open a specific email message that the session is allowed to inspect.",
   email_create_draft: "Create an email draft on the host without sending it yet.",
@@ -113,6 +116,7 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
   get_pull_request: "Fetch the latest details for a specific pull request.",
   request_pr_review: "Request reviewers on a pull request from the host side.",
   post_pr_comment: "Post a pull request comment using the host integration.",
+  post_pr_inline_comment: "Post an inline pull request comment at a specific diff position through the host integration.",
   submit_pr_review: "Submit a pull request review decision and review body from the host side.",
 };
 
@@ -144,6 +148,7 @@ const TOOL_GROUP_ORDER = [
   "Pull requests",
   "Approvals",
   "Agent control",
+  "Messaging",
   "Discord",
   "Teams",
   "Email",
@@ -179,6 +184,7 @@ function groupToolOption(tool: ToolOption): string {
     "get_pull_request",
     "request_pr_review",
     "post_pr_comment",
+    "post_pr_inline_comment",
     "submit_pr_review",
     "post_pr_feedback_reply",
   ].includes(value)) {
@@ -205,11 +211,19 @@ function groupToolOption(tool: ToolOption): string {
     "has_pending_discord_messages",
     "list_unread_discord_messages",
     "list_all_discord_messages",
-    "add_message_reaction",
   ].includes(value)) {
     return "Discord";
   }
-  if (["teams_get_messages", "teams_post_status"].includes(value)) {
+  if (["add_message_reaction"].includes(value)) {
+    return "Messaging";
+  }
+  if ([
+    "teams_get_messages",
+    "teams_post_status",
+    "teams_meeting_get_events",
+    "teams_meeting_speak",
+    "teams_meeting_stop",
+  ].includes(value)) {
     return "Teams";
   }
   if (["email_list_unread", "email_get_message", "email_create_draft", "email_send_approved"].includes(value)) {

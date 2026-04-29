@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import BaseRoute, Route
@@ -282,7 +283,8 @@ def vm_issue_routes(service: AdminService, _auth: AdminWebAuth) -> list[BaseRout
         directory_path = _string_query(request, "directory_path")
         direct_only = _bool_query(request, "direct_only", default=True)
         include_inactive = _bool_query(request, "include_inactive", default=True)
-        summaries = service.list_vms(
+        summaries = await run_in_threadpool(
+            service.list_vms,
             include_inactive=include_inactive,
             directory_path=directory_path,
             direct_only=direct_only,
@@ -298,7 +300,8 @@ def vm_issue_routes(service: AdminService, _auth: AdminWebAuth) -> list[BaseRout
     async def get_vm(request: Request) -> JSONResponse:
         vm_name = request.path_params["vm_name"]
         try:
-            summary = _find_vm_summary(
+            summary = await run_in_threadpool(
+                _find_vm_summary,
                 service,
                 vm_name,
                 directory_path=_string_query(request, "directory_path"),
@@ -313,7 +316,8 @@ def vm_issue_routes(service: AdminService, _auth: AdminWebAuth) -> list[BaseRout
         lines_text = _string_query(request, "lines", default="200") or "200"
         try:
             lines = max(1, int(lines_text))
-            text = service.get_agent_log_snapshot(
+            text = await run_in_threadpool(
+                service.get_agent_log_snapshot,
                 vm_name,
                 lines=lines,
                 repo_name=_string_query(request, "repo_name"),
@@ -327,62 +331,69 @@ def vm_issue_routes(service: AdminService, _auth: AdminWebAuth) -> list[BaseRout
     async def mutate_vm(request: Request) -> JSONResponse:
         vm_name = request.path_params["vm_name"]
         action = request.path_params["action"]
+        directory_path = _string_query(request, "directory_path")
+        direct_only = _bool_query(request, "direct_only", default=False)
         try:
             payload = await _json_body(request)
-            summary = _find_vm_summary(
-                service,
-                vm_name,
-                directory_path=_string_query(request, "directory_path"),
-                direct_only=_bool_query(request, "direct_only", default=False),
-            )
-            if action == "start":
-                validation_error = _validate_vm_model_configuration(
+
+            def _mutate_vm() -> VmActionResult:
+                summary = _find_vm_summary(
                     service,
-                    summary,
-                    directory_path=_string_query(request, "directory_path"),
-                    direct_only=_bool_query(request, "direct_only", default=False),
-                )
-                if validation_error:
-                    raise ValueError(validation_error)
-                result = service.start_vm(vm_name)
-            elif action == "shutdown":
-                result = service.shutdown_vm(vm_name)
-            elif action == "enable-agent":
-                result = service.enable_agent(vm_name)
-            elif action == "disable-agent":
-                result = service.disable_agent(vm_name)
-            elif action == "kill-agent":
-                pid = payload.get("pid")
-                if pid in {None, ""}:
-                    pid = summary.agent_pid
-                if pid in {None, ""}:
-                    raise ValueError("kill-agent requires a running agent pid")
-                result = service.kill_agent(vm_name, int(pid))
-            elif action == "resume-agent":
-                prompt = str(payload.get("prompt") or "").strip()
-                if not prompt:
-                    raise ValueError("resume-agent requires a non-empty prompt")
-                validation_error = _validate_vm_model_configuration(
-                    service,
-                    summary,
-                    directory_path=_string_query(request, "directory_path"),
-                    direct_only=_bool_query(request, "direct_only", default=False),
-                )
-                if validation_error:
-                    raise ValueError(validation_error)
-                result = service.resume_agent(
                     vm_name,
-                    prompt,
-                    model=str(payload.get("model") or "").strip() or None,
-                    resume_mode=str(payload.get("resume_mode") or "same_context").strip()
-                    or "same_context",
+                    directory_path=directory_path,
+                    direct_only=direct_only,
                 )
-            elif action == "destroy":
-                result = service.destroy_vm(vm_name)
-            else:
-                return json_error(f"Unknown VM action: {action}", status_code=404)
+                if action == "start":
+                    validation_error = _validate_vm_model_configuration(
+                        service,
+                        summary,
+                        directory_path=directory_path,
+                        direct_only=direct_only,
+                    )
+                    if validation_error:
+                        raise ValueError(validation_error)
+                    return service.start_vm(vm_name)
+                if action == "shutdown":
+                    return service.shutdown_vm(vm_name)
+                if action == "enable-agent":
+                    return service.enable_agent(vm_name)
+                if action == "disable-agent":
+                    return service.disable_agent(vm_name)
+                if action == "kill-agent":
+                    pid = payload.get("pid")
+                    if pid in {None, ""}:
+                        pid = summary.agent_pid
+                    if pid in {None, ""}:
+                        raise ValueError("kill-agent requires a running agent pid")
+                    return service.kill_agent(vm_name, int(pid))
+                if action == "resume-agent":
+                    prompt = str(payload.get("prompt") or "").strip()
+                    if not prompt:
+                        raise ValueError("resume-agent requires a non-empty prompt")
+                    validation_error = _validate_vm_model_configuration(
+                        service,
+                        summary,
+                        directory_path=directory_path,
+                        direct_only=direct_only,
+                    )
+                    if validation_error:
+                        raise ValueError(validation_error)
+                    return service.resume_agent(
+                        vm_name,
+                        prompt,
+                        model=str(payload.get("model") or "").strip() or None,
+                        resume_mode=str(payload.get("resume_mode") or "same_context").strip()
+                        or "same_context",
+                    )
+                if action == "destroy":
+                    return service.destroy_vm(vm_name)
+                raise LookupError(f"Unknown VM action: {action}")
+
+            result = await run_in_threadpool(_mutate_vm)
         except ValueError as exc:
             return json_error(str(exc), status_code=400)
+        except LookupError as exc:
+            return json_error(str(exc), status_code=404)
         status_code = 200 if result.success else 409
         return JSONResponse(_action_payload(result), status_code=status_code)
 
@@ -392,7 +403,8 @@ def vm_issue_routes(service: AdminService, _auth: AdminWebAuth) -> list[BaseRout
             vm_name = str(payload.get("vm_name") or "").strip()
             if not vm_name:
                 raise ValueError("VM name is required.")
-            result = service.create_vm(
+            result = await run_in_threadpool(
+                service.create_vm,
                 vm_name=vm_name,
                 session_id=str(payload.get("session_id") or "").strip() or None,
                 model=str(payload.get("model") or "").strip() or None,
@@ -415,7 +427,8 @@ def vm_issue_routes(service: AdminService, _auth: AdminWebAuth) -> list[BaseRout
             states, exclude_states = _selected_issue_state_filters(
                 _string_query(request, "state_filter", default="active")
             )
-            issues = service.list_local_issues(
+            issues = await run_in_threadpool(
+                service.list_local_issues,
                 directory_path=directory_path,
                 direct_only=direct_only,
                 states=states,

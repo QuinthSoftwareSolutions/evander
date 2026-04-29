@@ -48,6 +48,7 @@ from agent_sandbox.execution import (
     build_execution_backend,
 )
 from agent_sandbox.messaging.scheduled_wake import build_scheduled_wake_worker
+from agent_sandbox.teams_meeting import TeamsMeetingService
 from agent_sandbox.daemons.trigger_orchestrator import build_trigger_orchestrator_worker
 from agent_sandbox.migrations import (
     migrate_ado_worker_env_to_root,
@@ -98,10 +99,12 @@ app = typer.Typer(
 directories_app = typer.Typer(help="Directory management and directory-scoped config inspection.")
 wake_schedules_app = typer.Typer(help="Manage scheduled wake requests.")
 teams_auth_app = typer.Typer(help="Manage delegated Teams auth.")
+teams_meeting_app = typer.Typer(help="Manage live Teams meeting agent sessions.")
 execution_app = typer.Typer(help="Manual execution backend controls.")
 app.add_typer(directories_app, name="directories")
 app.add_typer(wake_schedules_app, name="wake-schedules")
 app.add_typer(teams_auth_app, name="teams-auth", rich_help_panel="Sessions and Feedback")
+app.add_typer(teams_meeting_app, name="teams-meeting", rich_help_panel="Sessions and Feedback")
 app.add_typer(execution_app, name="execution", rich_help_panel="VM Operations")
 
 CLI_DEFAULT_RUNTIME_DIR = Path("runtime")
@@ -248,6 +251,23 @@ def _build_teams_ingest_worker(cfg: GatewayConfig, *, project_dir: Path):
     if builder is None:
         raise RuntimeError(
             "Teams ingest worker module does not export build_teams_ingest_worker(config, *, project_dir=...)."
+        )
+    return builder(cfg, project_dir=project_dir)
+
+
+def _build_teams_meeting_ingest_worker(cfg: GatewayConfig, *, project_dir: Path):
+    try:
+        module = importlib.import_module("agent_sandbox.messaging.teams_meeting_ingest")
+    except ModuleNotFoundError as exc:
+        if exc.name == "agent_sandbox.messaging.teams_meeting_ingest":
+            raise RuntimeError(
+                "Teams meeting ingest worker module agent_sandbox.messaging.teams_meeting_ingest is not available."
+            ) from exc
+        raise
+    builder = getattr(module, "build_teams_meeting_ingest_worker", None)
+    if builder is None:
+        raise RuntimeError(
+            "Teams meeting ingest worker module does not export build_teams_meeting_ingest_worker(config, *, project_dir=...)."
         )
     return builder(cfg, project_dir=project_dir)
 
@@ -2085,6 +2105,73 @@ def teams_auth_channels(
         typer.echo(f"Teams channel lookup failed: {exc}", err=True)
         raise typer.Exit(code=1) from exc
     _teams_auth_emit_result("Teams channels", result)
+
+
+@teams_meeting_app.command("start", short_help="Start a live Teams meeting agent session.")
+def teams_meeting_start(
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
+    directory: Annotated[
+        str,
+        typer.Option("--directory", help="Directory path for the dedicated meeting session."),
+    ] = "root",
+    join_url: Annotated[
+        str,
+        typer.Option("--join-url", help="Manual Teams meeting join URL for the media bot."),
+    ] = "",
+    model: Annotated[
+        str | None,
+        typer.Option("--model", help="Agent model override for the dedicated session."),
+    ] = None,
+    session_id: Annotated[
+        str | None,
+        typer.Option("--session-id", help="Optional explicit session id to create."),
+    ] = None,
+    ttl_hours: Annotated[
+        int | None,
+        typer.Option("--ttl-hours", help="Session time to live in hours."),
+    ] = None,
+) -> None:
+    cfg = _load_runtime_config_from_option(config)
+    runtime = build_runtime(cfg)
+    service = TeamsMeetingService(
+        config=cfg,
+        runtime=runtime,
+        store=runtime.teams_meeting_store,
+        bridge_client=runtime.teams_meeting_bridge_client,
+    )
+    try:
+        result = service.start_meeting(
+            directory_path=directory,
+            join_url=join_url,
+            model=model,
+            session_id=session_id,
+            ttl_hours=ttl_hours,
+        )
+    except (ValueError, RuntimeError, httpx.HTTPError) as exc:
+        typer.echo(f"Teams meeting start failed: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    _echo_model_json(result)
+
+
+@teams_meeting_app.command("stop", short_help="Stop a live Teams meeting agent session.")
+def teams_meeting_stop(
+    session_id: Annotated[str, typer.Argument(help="Teams meeting session id.")],
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
+) -> None:
+    cfg = _load_runtime_config_from_option(config)
+    runtime = build_runtime(cfg)
+    service = TeamsMeetingService(
+        config=cfg,
+        runtime=runtime,
+        store=runtime.teams_meeting_store,
+        bridge_client=runtime.teams_meeting_bridge_client,
+    )
+    try:
+        result = service.stop_meeting(session_id=session_id)
+    except (ValueError, RuntimeError, httpx.HTTPError) as exc:
+        typer.echo(f"Teams meeting stop failed: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    _echo_model_json(result)
 
 
 @app.command(
@@ -3943,6 +4030,43 @@ def teams_ingest(
         typer.echo(
             f"Teams ingest worker cycle complete directories={result.directories_polled} "
             f"sessions={result.sessions_seen} sleep_seconds={result.next_sleep_seconds:.3f}"
+        )
+        return
+
+    worker.run_forever()
+
+
+@app.command(
+    "teams-meeting-ingest",
+    rich_help_panel="Background Workers",
+    short_help="Run the Teams meeting media ingest worker.",
+)
+def teams_meeting_ingest(
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
+    run_once: Annotated[
+        bool,
+        typer.Option("--once", help="Run a single Teams meeting ingest cycle and exit."),
+    ] = False,
+    log_level: Annotated[str, typer.Option("--log-level", help="Python logging level.")] = "INFO",
+) -> None:
+    logging_level = getattr(logging, log_level.upper(), None)
+    if not isinstance(logging_level, int):
+        raise typer.BadParameter(f"Invalid --log-level value: {log_level}")
+    logging.basicConfig(
+        level=logging_level,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+
+    cfg = _load_runtime_config_from_option(config)
+    worker = _build_teams_meeting_ingest_worker(
+        cfg, project_dir=_project_dir_for_config_option(config)
+    )
+    if run_once:
+        result = worker.run_once_with_lock()
+        typer.echo(
+            f"Teams meeting ingest worker cycle complete meetings={result.meetings_polled} "
+            f"events={result.events_ingested} errors={result.errors_recorded} "
+            f"sleep_seconds={result.next_sleep_seconds:.3f}"
         )
         return
 

@@ -117,6 +117,16 @@ class TeamsNewMessageTriggerDefinition(TriggerDefinition):
         return normalize_string_list(value)
 
 
+class TeamsMeetingNewTranscriptTriggerDefinition(TriggerDefinition):
+    type: Literal["trigger:teams-meeting:new-transcript"]
+    session_ids: list[str] = Field(default_factory=list)
+
+    @field_validator("session_ids", mode="before")
+    @classmethod
+    def normalize_session_ids(cls, value: object) -> object:
+        return normalize_string_list(value)
+
+
 class EmailNewMessageTriggerDefinition(TriggerDefinition):
     type: Literal["trigger:email:new-message"]
     provider: EmailProvider

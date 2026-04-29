@@ -191,6 +191,14 @@ def test_admin_web_exposes_sessions_catalog_list_detail_and_mutations(tmp_path: 
     assert any(
         item["value"] == "approval_check" for item in catalog_response.json()["tool_options"]
     )
+    catalog_tool_values = {item["value"] for item in catalog_response.json()["tool_options"]}
+    assert {
+        "add_message_reaction",
+        "post_pr_inline_comment",
+        "teams_meeting_get_events",
+        "teams_meeting_speak",
+        "teams_meeting_stop",
+    }.issubset(catalog_tool_values)
     assert list_response.status_code == 200
     assert list_response.json()["items"][0]["session_id"] == "issue-14085-session"
     assert list_response.json()["active_items"][0]["session_id"] == "issue-14085-session"

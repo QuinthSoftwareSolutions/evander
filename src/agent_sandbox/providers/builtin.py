@@ -45,6 +45,9 @@ from agent_sandbox.triggers.providers.pull_request_new_feedback import (
 from agent_sandbox.triggers.providers.review_new_request import ReviewNewRequestTriggerProvider
 from agent_sandbox.triggers.providers.script_run_request import ScriptRunRequestTriggerProvider
 from agent_sandbox.triggers.providers.teams_new_message import TeamsNewMessageTriggerProvider
+from agent_sandbox.triggers.providers.teams_meeting_new_transcript import (
+    TeamsMeetingNewTranscriptTriggerProvider,
+)
 from agent_sandbox.triggers.providers.ticket_changed import TicketChangedTriggerProvider
 from agent_sandbox.triggers.providers.ticket_created import TicketCreatedTriggerProvider
 
@@ -58,6 +61,7 @@ def register_providers() -> dict[str, dict[str, type]]:
             "trigger:script-run-request": ScriptRunRequestTriggerProvider,
             "trigger:discord:new-message": DiscordNewMessageTriggerProvider,
             "trigger:teams:new-message": TeamsNewMessageTriggerProvider,
+            "trigger:teams-meeting:new-transcript": TeamsMeetingNewTranscriptTriggerProvider,
             "trigger:email:new-message": EmailNewMessageTriggerProvider,
             "trigger:pull-request:new-feedback": PullRequestNewFeedbackTriggerProvider,
             "trigger:review:new-request": ReviewNewRequestTriggerProvider,

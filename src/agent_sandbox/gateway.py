@@ -3071,6 +3071,274 @@ def create_server(context: RuntimeContext) -> FastMCP:
             raise
 
     @server.tool()
+    def teams_meeting_get_events(
+        session_id: str,
+        since_sequence: int | None = None,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        args = {
+            "session_id": session_id,
+            "since_sequence": since_sequence,
+            "limit": limit,
+        }
+        try:
+            context.policy.require_tool(session_id, ToolName.TEAMS_MEETING_GET_EVENTS)
+            if since_sequence is not None and since_sequence < 0:
+                raise ToolError("since_sequence must be >= 0 when provided")
+            if limit < 1 or limit > 200:
+                raise ToolError("limit must be between 1 and 200")
+            events = context.teams_meeting_store.list_events_for_session(
+                session_id,
+                since_sequence=since_sequence,
+                limit=limit,
+            )
+            next_sequence = events[-1].sequence if events else since_sequence
+            result = {
+                "events": [event.model_dump(mode="json") for event in events],
+                "next_sequence": next_sequence,
+            }
+            audit_success(
+                session_id,
+                ToolName.TEAMS_MEETING_GET_EVENTS,
+                args,
+                {"count": len(events), "next_sequence": next_sequence},
+            )
+            return result
+        except PolicyError as exc:
+            audit_failure(session_id, ToolName.TEAMS_MEETING_GET_EVENTS, args, str(exc))
+            raise
+        except (ToolError, ValueError) as exc:
+            audit_failure(
+                session_id,
+                ToolName.TEAMS_MEETING_GET_EVENTS,
+                args,
+                str(exc),
+                decision="error",
+                error_class="validation_error",
+            )
+            raise ToolError(str(exc)) from exc
+        except Exception as exc:
+            audit_failure(
+                session_id,
+                ToolName.TEAMS_MEETING_GET_EVENTS,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
+    def teams_meeting_speak(
+        session_id: str,
+        text: str,
+        voice: str | None = None,
+        interrupt: bool = False,
+    ) -> dict[str, Any]:
+        args = {
+            "session_id": session_id,
+            "text": text,
+            "voice": voice,
+            "interrupt": interrupt,
+        }
+        meeting_id_for_error: str | None = None
+        try:
+            context.policy.require_tool(session_id, ToolName.TEAMS_MEETING_SPEAK)
+            normalized_text = str(text or "").strip()
+            if not normalized_text:
+                raise ToolError("text is required")
+            binding = context.teams_meeting_store.get_binding_for_session(session_id)
+            if binding is None:
+                raise ToolError(f"Unknown Teams meeting session: {session_id}")
+            meeting_id_for_error = binding.meeting_id
+            if binding.status != "active":
+                raise ToolError(f"Teams meeting {binding.meeting_id} is not active")
+            resolved_voice = (
+                str(voice or "").strip()
+                or binding.default_voice
+                or context.config.teams_meeting_default_voice
+            )
+            bridge_result = context.teams_meeting_bridge_client.speak(
+                meeting_id=binding.meeting_id,
+                text=normalized_text,
+                voice=resolved_voice,
+                interrupt=bool(interrupt),
+            )
+            operation_id = str(
+                bridge_result.get("operation_id")
+                or bridge_result.get("speech_operation_id")
+                or ""
+            ).strip() or None
+            speech_status = str(bridge_result.get("status") or "queued").strip() or "queued"
+            event = context.teams_meeting_store.append_local_event(
+                meeting_id=binding.meeting_id,
+                event_type="speech_status",
+                text=normalized_text,
+                speech_operation_id=operation_id,
+                speech_status=speech_status,
+                metadata={"bridge": bridge_result, "voice": resolved_voice},
+            )
+            result = {
+                "status": speech_status,
+                "meeting_id": binding.meeting_id,
+                "speech_operation_id": operation_id,
+                "event": event.model_dump(mode="json"),
+                "bridge": bridge_result,
+            }
+            audit_success(
+                session_id,
+                ToolName.TEAMS_MEETING_SPEAK,
+                args,
+                {
+                    "status": speech_status,
+                    "meeting_id": binding.meeting_id,
+                    "speech_operation_id": operation_id,
+                    "event_sequence": event.sequence,
+                },
+            )
+            return result
+        except PolicyError as exc:
+            audit_failure(session_id, ToolName.TEAMS_MEETING_SPEAK, args, str(exc))
+            raise
+        except httpx.HTTPError as exc:
+            if meeting_id_for_error is not None:
+                context.teams_meeting_store.append_local_event(
+                    meeting_id=meeting_id_for_error,
+                    event_type="error",
+                    text=str(exc),
+                    metadata={"source": "teams_meeting_speak"},
+                )
+            audit_failure(
+                session_id,
+                ToolName.TEAMS_MEETING_SPEAK,
+                args,
+                str(exc),
+                decision="error",
+                error_class="adapter_http_error",
+            )
+            raise
+        except (ToolError, RuntimeError, ValueError) as exc:
+            if meeting_id_for_error is not None and not isinstance(exc, ToolError):
+                context.teams_meeting_store.append_local_event(
+                    meeting_id=meeting_id_for_error,
+                    event_type="error",
+                    text=str(exc),
+                    metadata={"source": "teams_meeting_speak"},
+                )
+            audit_failure(
+                session_id,
+                ToolName.TEAMS_MEETING_SPEAK,
+                args,
+                str(exc),
+                decision="error",
+                error_class="validation_error",
+            )
+            raise ToolError(str(exc)) from exc
+        except Exception as exc:
+            audit_failure(
+                session_id,
+                ToolName.TEAMS_MEETING_SPEAK,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
+    def teams_meeting_stop(session_id: str) -> dict[str, Any]:
+        args = {"session_id": session_id}
+        meeting_id_for_error: str | None = None
+        try:
+            context.policy.require_tool(session_id, ToolName.TEAMS_MEETING_STOP)
+            binding = context.teams_meeting_store.get_binding_for_session(session_id)
+            if binding is None:
+                raise ToolError(f"Unknown Teams meeting session: {session_id}")
+            meeting_id_for_error = binding.meeting_id
+            bridge_result = context.teams_meeting_bridge_client.leave(
+                meeting_id=binding.meeting_id
+            )
+            context.teams_meeting_store.close_binding(binding.meeting_id, status="stopped")
+            event = context.teams_meeting_store.append_local_event(
+                meeting_id=binding.meeting_id,
+                event_type="meeting_status",
+                speech_status="stopped",
+                metadata={"bridge": bridge_result},
+            )
+            manifest = context.session_repository.get_session(session_id)
+            if manifest is not None:
+                metadata = dict(manifest.metadata or {})
+                teams_metadata = dict(metadata.get("teams_meeting") or {})
+                teams_metadata["status"] = "stopped"
+                teams_metadata["stopped_at"] = (
+                    datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+                )
+                metadata["teams_meeting"] = teams_metadata
+                context.session_repository.upsert_session(
+                    manifest.model_copy(update={"metadata": metadata})
+                )
+            result = {
+                "status": "stopped",
+                "meeting_id": binding.meeting_id,
+                "event": event.model_dump(mode="json"),
+                "bridge": bridge_result,
+            }
+            audit_success(
+                session_id,
+                ToolName.TEAMS_MEETING_STOP,
+                args,
+                {"status": "stopped", "meeting_id": binding.meeting_id},
+            )
+            return result
+        except PolicyError as exc:
+            audit_failure(session_id, ToolName.TEAMS_MEETING_STOP, args, str(exc))
+            raise
+        except httpx.HTTPError as exc:
+            if meeting_id_for_error is not None:
+                context.teams_meeting_store.append_local_event(
+                    meeting_id=meeting_id_for_error,
+                    event_type="error",
+                    text=str(exc),
+                    metadata={"source": "teams_meeting_stop"},
+                )
+            audit_failure(
+                session_id,
+                ToolName.TEAMS_MEETING_STOP,
+                args,
+                str(exc),
+                decision="error",
+                error_class="adapter_http_error",
+            )
+            raise
+        except (ToolError, RuntimeError, ValueError) as exc:
+            if meeting_id_for_error is not None and not isinstance(exc, ToolError):
+                context.teams_meeting_store.append_local_event(
+                    meeting_id=meeting_id_for_error,
+                    event_type="error",
+                    text=str(exc),
+                    metadata={"source": "teams_meeting_stop"},
+                )
+            audit_failure(
+                session_id,
+                ToolName.TEAMS_MEETING_STOP,
+                args,
+                str(exc),
+                decision="error",
+                error_class="validation_error",
+            )
+            raise ToolError(str(exc)) from exc
+        except Exception as exc:
+            audit_failure(
+                session_id,
+                ToolName.TEAMS_MEETING_STOP,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
     def email_list_unread(
         session_id: str, mailbox_id: str, folder: str, limit: int = 10
     ) -> list[dict[str, Any]]:

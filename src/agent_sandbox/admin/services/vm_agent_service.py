@@ -700,31 +700,39 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
         result: subprocess.CompletedProcess[str] | None = None
         attempted_errors: list[str] = []
         for ssh_user in self._control_ssh_users(vm_user):
-            result = _admin_service._run_subprocess(
-                [
-                    "ssh",
-                    *_admin_service._ssh_options(vm_name, vm_ip, ssh_private_key_path),
-                    f"{ssh_user}@{vm_ip}",
-                    "sudo",
-                    "-n",
-                    "env",
-                    f"AGENT_USER={vm_user}",
-                    "AGENT_RUN_LOG_DIR=/var/log/agent-sandbox/agent-runs",
-                    f"REPO_NAME={repo_name or ''}",
-                    f"TAIL_LINES={lines}",
-                    "bash",
-                    "-s",
-                ],
-                capture_output=True,
-                text=True,
-                timeout=20.0,
-                input=remote_script,
-            )
+            try:
+                result = _admin_service._run_subprocess(
+                    [
+                        "ssh",
+                        *_admin_service._ssh_options(vm_name, vm_ip, ssh_private_key_path),
+                        f"{ssh_user}@{vm_ip}",
+                        "sudo",
+                        "-n",
+                        "env",
+                        f"AGENT_USER={vm_user}",
+                        "AGENT_RUN_LOG_DIR=/var/log/agent-sandbox/agent-runs",
+                        f"REPO_NAME={repo_name or ''}",
+                        f"TAIL_LINES={lines}",
+                        "bash",
+                        "-s",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=20.0,
+                    input=remote_script,
+                )
+            except subprocess.TimeoutExpired as exc:
+                attempted_errors.append(
+                    f"{ssh_user}@{vm_ip}: log read timed out after {exc.timeout:g} seconds"
+                )
+                result = None
+                continue
             if result.returncode == 0:
                 break
             attempted_errors.append((result.stderr or result.stdout or "").strip())
         if result is None:
-            return "Agent log unavailable: no SSH users were configured."
+            detail = next((candidate for candidate in reversed(attempted_errors) if candidate), "")
+            return f"Agent log unavailable: {detail or 'no SSH users were configured.'}"
         output = (result.stdout or "").strip()
         error = (result.stderr or "").strip()
         if result.returncode != 0:
@@ -774,6 +782,35 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
             action=script_name.removesuffix(".sh"),
             message=message or f"{script_name} exited with code {completed.returncode}",
         )
+
+    def _run_privileged_host_script(
+        self,
+        script_path: Path,
+        args: list[str],
+        *,
+        env: dict[str, str] | None = None,
+        allowed_env_keys: tuple[str, ...] = (),
+    ) -> tuple[subprocess.CompletedProcess[str], str]:
+        run_env = env or os.environ.copy()
+        base_cmd = [str(script_path), *args]
+        completed = _admin_service._run_subprocess(
+            _admin_service._sudo_env_command(base_cmd, run_env, allowed_env_keys),
+            capture_output=True,
+            text=True,
+            env=run_env,
+        )
+        message = _admin_service._combined_process_message(completed.stdout, completed.stderr)
+        if completed.returncode != 0 and _admin_service._can_prompt_for_privileges():
+            completed = _admin_service._run_subprocess(
+                _admin_service._pkexec_env_command(base_cmd, run_env, allowed_env_keys),
+                capture_output=True,
+                text=True,
+                env=run_env,
+            )
+            message = _admin_service._combined_process_message(
+                completed.stdout, completed.stderr
+            )
+        return completed, message
 
     def enable_agent(self, target: str, *, vm_user: str = "agent") -> VmActionResult:
         vm_name = self._resolve_vm_name_from_target(target)
@@ -1834,12 +1871,9 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
             response = helper.call("destroy_vm", script_path=str(destroy_script), vm_name=vm_name)
             message = str(response.get("stdout") or response.get("stderr") or "").strip()
         else:
-            completed = _admin_service._run_subprocess(
-                ["pkexec", str(destroy_script), vm_name],
-                capture_output=True,
-                text=True,
+            completed, message = self._run_privileged_host_script(
+                destroy_script, [vm_name]
             )
-            message = (completed.stdout or completed.stderr or "").strip()
             if completed.returncode != 0:
                 return VmActionResult(
                     success=False,
@@ -1882,12 +1916,7 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
         root_dir = Path(__file__).resolve().parents[4]
         destroy_script = root_dir / "scripts" / "destroy_agent_vm.sh"
 
-        completed = _admin_service._run_subprocess(
-            ["pkexec", str(destroy_script), vm_name],
-            capture_output=True,
-            text=True,
-        )
-        message = (completed.stdout or completed.stderr or "").strip()
+        completed, message = self._run_privileged_host_script(destroy_script, [vm_name])
         if completed.returncode != 0:
             return VmActionResult(
                 success=False,

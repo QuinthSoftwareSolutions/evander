@@ -97,6 +97,15 @@ class GatewayConfig(BaseModel):
     teams_retry_base_backoff_seconds: float = Field(default=0.5, gt=0)
     teams_retry_max_backoff_seconds: float = Field(default=5.0, gt=0)
     teams_read_reaction_emoji: str = "👀"
+    teams_meeting_media_bridge_url: str | None = None
+    teams_meeting_media_bridge_token_env: str = Field(
+        default="TEAMS_MEETING_MEDIA_BRIDGE_TOKEN", min_length=1
+    )
+    teams_meeting_default_voice: str = Field(default="en-US-JennyNeural", min_length=1)
+    teams_meeting_poll_interval_seconds: float = Field(default=5.0, gt=0)
+    teams_meeting_request_timeout_seconds: float = Field(default=15.0, gt=0)
+    teams_meeting_max_active_meetings: int = Field(default=1, ge=1)
+    teams_meeting_store_path: Path = Path("/var/lib/agent-sandbox/teams-meetings.json")
     teams_delegated_identity_id: str | None = None
     teams_delegated_client_id: str | None = None
     teams_delegated_tenant_id: str = "organizations"
@@ -222,6 +231,7 @@ class GatewayConfig(BaseModel):
         "gateway_url",
         "discord_api_base_url",
         "teams_graph_api_base_url",
+        "teams_meeting_media_bridge_url",
         "teams_delegated_authority_base_url",
         "openai_api_base_url",
         "nuget_public_feed_base_url",
@@ -247,7 +257,9 @@ class GatewayConfig(BaseModel):
         "nuget_azure_feed_base_url",
     )
     @classmethod
-    def validate_http_url_fields(cls, value: str, info) -> str:
+    def validate_http_url_fields(cls, value: str | None, info) -> str | None:
+        if value is None:
+            return None
         try:
             _HTTP_URL_ADAPTER.validate_python(value)
         except ValidationError as exc:
@@ -340,6 +352,7 @@ class GatewayConfig(BaseModel):
             "email_cursor_store_path": default_runtime_dir / "email_cursors.json",
             "discord_command_store_path": default_runtime_dir / "discord_commands.json",
             "teams_message_store_path": default_runtime_dir / "teams_messages.json",
+            "teams_meeting_store_path": default_runtime_dir / "teams-meetings.json",
             "teams_delegated_credential_store_path": default_runtime_dir
             / "teams-delegated-credentials.json",
             "directories_store_path": default_runtime_dir / "directories.json",
@@ -672,6 +685,38 @@ class TeamsIngestWorkerGlobalConfig(BaseModel):
     def apply_runtime_path_defaults(self) -> TeamsIngestWorkerGlobalConfig:
         if self.lock_path is None:
             self.lock_path = self.runtime_dir / "teams-ingest.lock"
+        return self
+
+
+class TeamsMeetingIngestWorkerGlobalConfig(BaseModel):
+    runtime_dir: Path = Path("runtime")
+    directories: list[str] = Field(default_factory=list)
+    poll_interval_seconds: float = Field(default=5.0, gt=0)
+    jitter_seconds: float = Field(default=5.0, ge=0)
+    backoff_seconds: float = Field(default=60.0, ge=0)
+    lock_path: Path | None = None
+
+    @field_validator("directories", mode="before")
+    @classmethod
+    def normalize_directories(cls, value: object) -> object:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            value = [value]
+        if not isinstance(value, (list, tuple)):
+            return value
+        normalized: list[str] = []
+        for item in value:
+            text = str(item).strip()
+            if not text:
+                continue
+            normalized.append(DirectoryPath(segments=text).as_posix())
+        return normalized
+
+    @model_validator(mode="after")
+    def apply_runtime_path_defaults(self) -> TeamsMeetingIngestWorkerGlobalConfig:
+        if self.lock_path is None:
+            self.lock_path = self.runtime_dir / "teams-meeting-ingest.lock"
         return self
 
 

@@ -141,11 +141,25 @@ class JsonSessionManifestRepository:
         self.upsert_session(resolved_manifest)
 
     def delete_session(self, session_id: str) -> bool:
+        normalized_session_id = str(session_id or "").strip()
+        if not normalized_session_id:
+            return False
         with self._lock:
             payload = self._read_raw()
-            if session_id not in payload:
+            removed = False
+            for key, value in list(payload.items()):
+                if str(key) == normalized_session_id:
+                    payload.pop(key, None)
+                    removed = True
+                    continue
+                if not isinstance(value, dict):
+                    continue
+                value_session_id = str(value.get("session_id") or "").strip()
+                if value_session_id == normalized_session_id:
+                    payload.pop(key, None)
+                    removed = True
+            if not removed:
                 return False
-            payload.pop(session_id, None)
             self._atomic_write(payload)
             return True
 
@@ -184,7 +198,8 @@ class JsonSessionManifestRepository:
                 if ignore_invalid:
                     continue
                 raise
-            manifests[str(session_id)] = manifest
+            manifest_session_id = str(getattr(manifest, "session_id", "") or "").strip()
+            manifests[manifest_session_id or str(session_id)] = manifest
         return manifests
 
 

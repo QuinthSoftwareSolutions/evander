@@ -48,6 +48,32 @@ def test_read_all_safe_ignores_invalid_entries(tmp_path) -> None:
     assert set(sessions) == {"session-1"}
 
 
+def test_repository_canonicalizes_mismatched_session_keys(tmp_path) -> None:
+    path = tmp_path / "sessions.json"
+    path.write_text(
+        json.dumps({"stale-key": _session_payload(session_id="canonical-session")}),
+        encoding="utf-8",
+    )
+    repository = JsonSessionManifestRepository(path)
+
+    sessions = repository.read_all_safe()
+
+    assert set(sessions) == {"canonical-session"}
+    assert repository.get_session("canonical-session") is not None
+
+
+def test_delete_session_removes_mismatched_raw_key(tmp_path) -> None:
+    path = tmp_path / "sessions.json"
+    path.write_text(
+        json.dumps({"stale-key": _session_payload(session_id="canonical-session")}),
+        encoding="utf-8",
+    )
+    repository = JsonSessionManifestRepository(path)
+
+    assert repository.delete_session("canonical-session") is True
+    assert json.loads(path.read_text(encoding="utf-8")) == {}
+
+
 def test_session_repository_supports_lifecycle_queries_and_mutations(tmp_path) -> None:
     path = tmp_path / "sessions.json"
     repository = JsonSessionManifestRepository(path)

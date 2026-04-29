@@ -18,6 +18,7 @@ from agent_sandbox.config import (
     GatewayConfig,
     ScheduledWakeWorkerGlobalConfig,
     TeamsIngestWorkerGlobalConfig,
+    TeamsMeetingIngestWorkerGlobalConfig,
     TriggerOrchestratorWorkerGlobalConfig,
 )
 from agent_sandbox.directory_config import (
@@ -1149,6 +1150,7 @@ WORKER_GLOBAL_CONFIG_MODELS: dict[str, type[BaseModel]] = {
     "discord-wake": DiscordWakeWorkerGlobalConfig,
     "scheduled-wake": ScheduledWakeWorkerGlobalConfig,
     "teams-ingest": TeamsIngestWorkerGlobalConfig,
+    "teams-meeting-ingest": TeamsMeetingIngestWorkerGlobalConfig,
     "trigger-orchestrator": TriggerOrchestratorWorkerGlobalConfig,
 }
 
@@ -1172,6 +1174,7 @@ def _config_field_kind(field_name: str) -> tuple[str, tuple[Any, ...]]:
         DiscordWakeWorkerGlobalConfig.model_fields,
         ScheduledWakeWorkerGlobalConfig.model_fields,
         TeamsIngestWorkerGlobalConfig.model_fields,
+        TeamsMeetingIngestWorkerGlobalConfig.model_fields,
         TriggerOrchestratorWorkerGlobalConfig.model_fields,
         AdoWorkerDirectoryConfig.model_fields,
         IssueSetupDirectoryConfig.model_fields,

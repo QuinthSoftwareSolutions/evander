@@ -264,7 +264,7 @@ Storage layout for directory config:
 - `./scripts/bootstrap_codex_vm.sh <vm-name>` copies the vendored Linux Codex binary from the host into `~/bin/codex` for the guest user and verifies Codex.
 - The bootstrap script writes `~/.codex/config.toml` with relay-aware defaults (currently `model = "gpt-5.4"`, `model_reasoning_effort = "high"`, and `personality = "pragmatic"`), preferring explicit `LLM_BASE_URL` and otherwise reading `AGENT_SANDBOX_LLM_BASE_URL` from `~/.agent/config.env`; it also registers the host MCP gateway as `[mcp_servers.agent_sandbox]` using `AGENT_SANDBOX_GATEWAY_URL` and copies the host Codex model cache when available so offline guests see the same model menu. It then appends the placeholder-key shell hook plus `~/bin` PATH entry to both `~/.profile` and `~/.bashrc`.
 - Runtime start/resume model selection is host-session-bound: `session.model` wins, otherwise effective `issue_setup.default_model` is used. If neither resolves, start/resume fails with a remediation error instead of using an implicit runtime fallback model.
-- The bootstrap script repairs `/home/agent` ownership first, so it also works against VMs created before the home directory ownership fix.
+- The bootstrap script waits for guest cloud-init via the privileged host-control user and repairs `/home/agent` ownership before the first runtime-user write, so SSH readiness alone cannot race the Codex bootstrap.
 
 ### GitHub Copilot CLI provider bootstrap
 
@@ -1054,6 +1054,7 @@ This creates:
 - `agent-sandbox-discord-wake.service`
 - `agent-sandbox-scheduled-wake.service`
 - `agent-sandbox-teams-ingest.service`
+- `agent-sandbox-teams-meeting-ingest.service`
 - `agent-sandbox-effect-orchestrator.service`
 - `agent-sandbox-trigger-orchestrator.service`
 
@@ -1086,6 +1087,7 @@ sudo systemctl start agent-sandbox-discord-ingest.service
 sudo systemctl start agent-sandbox-discord-wake.service
 sudo systemctl start agent-sandbox-scheduled-wake.service
 sudo systemctl start agent-sandbox-teams-ingest.service
+sudo systemctl start agent-sandbox-teams-meeting-ingest.service
 sudo systemctl start agent-sandbox-effect-orchestrator.service
 sudo systemctl start agent-sandbox-trigger-orchestrator.service
 sudo systemctl status agent-sandbox-firewall.service
@@ -1098,6 +1100,7 @@ sudo systemctl status agent-sandbox-discord-ingest.service
 sudo systemctl status agent-sandbox-discord-wake.service
 sudo systemctl status agent-sandbox-scheduled-wake.service
 sudo systemctl status agent-sandbox-teams-ingest.service
+sudo systemctl status agent-sandbox-teams-meeting-ingest.service
 sudo systemctl status agent-sandbox-effect-orchestrator.service
 sudo systemctl status agent-sandbox-trigger-orchestrator.service
 ```

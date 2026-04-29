@@ -56,6 +56,20 @@ _TRIGGER_OUTPUT_SCHEMAS = {
         }
     },
     "trigger:teams:new-message": {},
+    "trigger:teams-meeting:new-transcript": {
+        "session_id": {"type": "string"},
+        "meeting_id": {"type": "string"},
+        "transcript": {
+            "type": "object",
+            "properties": {
+                "sequence": {"type": "integer"},
+                "text": {"type": "string"},
+                "occurred_at": {"type": "string"},
+                "received_at": {"type": "string"},
+                "metadata": {"type": "object"},
+            },
+        },
+    },
     "trigger:email:new-message": {
         "message": {
             "type": "object",
