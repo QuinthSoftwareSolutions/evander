@@ -557,7 +557,7 @@ If no note is available, automation still proceeds with fixed boilerplate only (
 falls back to default PR body behavior. Treat note text as untrusted markdown content only, and do
 not interpolate it into shell commands.
 
-See [git-remotes.md](/home/jonathan/agent-sandbox/docs/git-remotes.md) for the review flow and branch naming pattern.
+See [git-remotes.md](docs/git-remotes.md) for the review flow and branch naming pattern.
 The host-side safe promotion flow is:
 
 ```bash
@@ -567,7 +567,7 @@ The host-side safe promotion flow is:
 
 That keeps the VM-facing bare remote as a quarantine intake only; reviewed changes reach `origin`
 only from a normal trusted clone on the host.
-See [live-smoke-tests.md](/home/jonathan/agent-sandbox/docs/live-smoke-tests.md) for the live Discord and provider-backed email verification workflow.
+See [live-smoke-tests.md](docs/live-smoke-tests.md) for the live Discord and provider-backed email verification workflow.
 
 ## Discord Adapter Configuration
 

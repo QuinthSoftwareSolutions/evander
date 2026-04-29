@@ -1,6 +1,6 @@
 # Agent Sandbox Repo Notes
 
-This file is for future Codex instances working in `/home/jonathan/agent-sandbox`.
+This file is for future Codex instances working in the `agent-sandbox` repo.
 
 ## Purpose
 
@@ -47,7 +47,7 @@ The security model is:
   - `scripts/destroy_agent_vm.sh`
   - `scripts/setup_vm.sh`
   - Default VM disk size is `20G`
-  - VM disks live under `/var/lib/libvirt/images/agent-sandbox`, not under `/home/jonathan`
+  - VM disks live under `/var/lib/libvirt/images/agent-sandbox`, not under a normal user's home directory
   - issue flows now create the VM first, then clone/bootstrap the repo as separate steps
   - repo clone still writes `/home/agent/AGENTS.md` and configures `git push-agent` in the cloned repo
 
@@ -161,7 +161,7 @@ Inside VM:
 
 ## Common Pitfalls Already Hit
 
-- Putting VM disks under `/home/jonathan` fails with `libvirt-qemu` permission errors.
+- Putting VM disks under a normal user's home directory fails with `libvirt-qemu` permission errors.
 - Guest VM root disk was initially too small; launch script now resizes overlays to `20G`.
 - Guest `/home/agent` ownership was wrong; cloud-init and Codex bootstrap now repair it.
 - Codex wrapper copied into guest without its vendored binary was not enough; current bootstrap copies the working vendored binary.
@@ -196,7 +196,7 @@ Inside VM:
 Run:
 
 ```bash
-cd /home/jonathan/agent-sandbox
+cd /path/to/agent-sandbox
 ./.venv/bin/pytest -q
 ```
 

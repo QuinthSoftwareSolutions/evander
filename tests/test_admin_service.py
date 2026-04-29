@@ -3145,8 +3145,8 @@ def test_create_vm_launches_generic_vm_and_bootstraps_selected_toolchains(
     )
     assert write_result.ok is True
 
-    monkeypatch.setenv("SSH_PUBLIC_KEY_FILE", "/home/jonathan/.ssh/gh_id_ed25519.pub")
-    monkeypatch.setenv("SSH_PRIVATE_KEY_PATH", "/home/jonathan/.ssh/gh_id_ed25519")
+    monkeypatch.setenv("SSH_PUBLIC_KEY_FILE", "/home/test-user/.ssh/gh_id_ed25519.pub")
+    monkeypatch.setenv("SSH_PRIVATE_KEY_PATH", "/home/test-user/.ssh/gh_id_ed25519")
     monkeypatch.setattr(
         "agent_sandbox.admin.service._dominfo_field", lambda vm_name, field_name: None
     )
@@ -3212,7 +3212,7 @@ def test_create_vm_falls_back_to_pkexec_when_sudo_requires_prompt(
 ) -> None:
     service = AdminService(write_config(tmp_path))
 
-    monkeypatch.setenv("SSH_PUBLIC_KEY_FILE", "/home/jonathan/.ssh/id_ed25519.pub")
+    monkeypatch.setenv("SSH_PUBLIC_KEY_FILE", "/home/test-user/.ssh/id_ed25519.pub")
     monkeypatch.setattr(
         "agent_sandbox.admin.service._dominfo_field", lambda vm_name, field_name: None
     )
@@ -4116,7 +4116,7 @@ def test_sync_repo_into_bare_remote_unwraps_repo_cache_origin_url(
     service = AdminService(write_config(tmp_path))
     issue_setup = service._resolve_issue_setup("root", root_dir=Path(__file__).resolve().parents[1])
     captured_cmds: list[list[str]] = []
-    cached_origin = "/home/jonathan/agent-sandbox/runtime/repo-cache/example.git"
+    cached_origin = "/tmp/agent-sandbox/runtime/repo-cache/example.git"
 
     def _fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         captured_cmds.append(cmd)
@@ -4471,7 +4471,7 @@ def test_pr_create_writes_inline_body_to_temporary_file_and_cleans_it_up(
     monkeypatch.setattr(admin_service, "_run_subprocess", fake_run_subprocess)
 
     result = service.pr_create(
-        host_repo_path="/home/jonathan/Documents/Repos/ExampleIndustryAPP",
+        host_repo_path="/tmp/repos/ExampleIndustryAPP",
         local_branch="review/issue-14724",
         canonical_origin_url="git@ssh.dev.azure.com:v3/example/project/repo",
         project="Example Industry APP",

@@ -14,11 +14,11 @@ Environment:
   SHARED_NUGET_CACHE_DIR  Host shared global-packages cache directory.
                           Default: /var/lib/libvirt/images/agent-sandbox/nuget-cache/global-packages
   NUGET_CONFIG_FILE       NuGet.Config path used for host prewarm restores.
-                          Default: /home/jonathan/agent-sandbox/runtime/host-prewarm/NuGet.Config
+                          Default: <repo>/runtime/host-prewarm/NuGet.Config
   NUGET_HTTP_CACHE_DIR    Host HTTP cache directory.
-                          Default: /home/jonathan/agent-sandbox/runtime/host-prewarm/http-cache
+                          Default: <repo>/runtime/host-prewarm/http-cache
   NUGET_TEMP_DIR          Host temp directory.
-                          Default: /home/jonathan/agent-sandbox/runtime/host-prewarm/tmp
+                          Default: <repo>/runtime/host-prewarm/tmp
 EOF
 }
 

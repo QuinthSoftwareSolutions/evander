@@ -84,7 +84,7 @@ email_mailboxes:
 Create a dedicated smoke-test session:
 
 ```bash
-cd /home/jonathan/agent-sandbox
+cd /path/to/agent-sandbox
 ./.venv/bin/agent-sandbox-cli create-session \
   smoke-live \
   --runtime-dir runtime \
@@ -127,7 +127,7 @@ Run at least one negative policy check:
 Inspect the audit log:
 
 ```bash
-tail -n 40 /home/jonathan/agent-sandbox/runtime/audit.jsonl
+tail -n 40 runtime/audit.jsonl
 ```
 
 Expected audit behavior:
@@ -141,7 +141,7 @@ Expected audit behavior:
 Launch a fresh VM for the same session:
 
 ```bash
-cd /home/jonathan/agent-sandbox
+cd /path/to/agent-sandbox
 sudo ./scripts/destroy_agent_vm.sh vm-smoke-live
 sudo ./scripts/launch_agent_vm.sh vm-smoke-live smoke-live
 ./scripts/bootstrap_codex_vm.sh vm-smoke-live

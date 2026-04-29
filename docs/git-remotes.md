@@ -16,8 +16,8 @@ Move code changes out of an agent VM without routing source code through MCP pay
 Create a local bare remote on the host:
 
 ```bash
-cd /home/jonathan/agent-sandbox
-agent-sandbox-cli directories config-set --domain issue_setup root '{"git_root": "/home/jonathan/agent-sandbox/git-remotes", "git_host": "192.168.250.1", "git_user": "jonathan", "git_ssh_alias": "agent-sandbox-git-host"}'
+cd /path/to/agent-sandbox
+agent-sandbox-cli directories config-set --domain issue_setup root "{\"git_root\": \"$PWD/git-remotes\", \"git_host\": \"192.168.250.1\", \"git_user\": \"$(whoami)\", \"git_ssh_alias\": \"agent-sandbox-git-host\"}"
 ./scripts/create_git_remote.sh sample-repo
 ```
 
@@ -99,7 +99,7 @@ the same post-receive update stream into `handle_git_push_trigger.sh`:
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
-cat | /home/jonathan/agent-sandbox/scripts/handle_git_push_trigger.sh /path/to/repo.git
+cat | /path/to/agent-sandbox/scripts/handle_git_push_trigger.sh /path/to/repo.git
 ```
 
 Optional environment override:
@@ -130,10 +130,10 @@ refs.
 For an existing bare repo, configure the refresh metadata once on the host:
 
 ```bash
-git --git-dir=/home/jonathan/agent-sandbox/git-remotes/ExampleIndustryAPP.git config agent-sandbox.mirrorSource /home/jonathan/Documents/Repos/ExampleIndustryAPP
-git --git-dir=/home/jonathan/agent-sandbox/git-remotes/ExampleIndustryAPP.git config agent-sandbox.mirrorRemoteName origin
-git --git-dir=/home/jonathan/agent-sandbox/git-remotes/ExampleIndustryAPP.git config agent-sandbox.mirrorSyncRemote 1
-git --git-dir=/home/jonathan/agent-sandbox/git-remotes/ExampleIndustryAPP.git config agent-sandbox.mirrorForceLocal 0
+git --git-dir=/path/to/agent-sandbox/git-remotes/ExampleIndustryAPP.git config agent-sandbox.mirrorSource /path/to/ExampleIndustryAPP
+git --git-dir=/path/to/agent-sandbox/git-remotes/ExampleIndustryAPP.git config agent-sandbox.mirrorRemoteName origin
+git --git-dir=/path/to/agent-sandbox/git-remotes/ExampleIndustryAPP.git config agent-sandbox.mirrorSyncRemote 1
+git --git-dir=/path/to/agent-sandbox/git-remotes/ExampleIndustryAPP.git config agent-sandbox.mirrorForceLocal 0
 ```
 
 After that, the next guest-side `git fetch` or `git pull` refreshes the host bare repo automatically.
@@ -143,9 +143,9 @@ After that, the next guest-side `git fetch` or `git pull` refreshes the host bar
 Inside the VM:
 
 ```bash
-git clone ssh://agent-sandbox-git-host/home/jonathan/agent-sandbox/git-remotes/sample-repo.git
+git clone ssh://agent-sandbox-git-host/path/to/agent-sandbox/git-remotes/sample-repo.git
 cd sample-repo
-git remote add agent ssh://agent-sandbox-git-host/home/jonathan/agent-sandbox/git-remotes/sample-repo.git
+git remote add agent ssh://agent-sandbox-git-host/path/to/agent-sandbox/git-remotes/sample-repo.git
 git checkout -b work
 # agent edits, commits, tests
 git push agent HEAD:refs/heads/agents/<session-id>/work-<agent-suffix>
@@ -154,7 +154,7 @@ git push agent HEAD:refs/heads/agents/<session-id>/work-<agent-suffix>
 For an issue-specific mirrored repo, the guest clone typically looks like:
 
 ```bash
-git clone ssh://agent-sandbox-git-host/home/jonathan/agent-sandbox/git-remotes/14084_repo.git
+git clone ssh://agent-sandbox-git-host/path/to/agent-sandbox/git-remotes/14084_repo.git
 ```
 
 Recommended branch namespace:

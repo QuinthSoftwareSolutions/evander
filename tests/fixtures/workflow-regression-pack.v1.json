@@ -1,0 +1,147 @@
+{
+  "ir": {
+    "edges": [
+      {
+        "source_id": "trigger-script-run-request-1",
+        "target_id": "gate-filter-5"
+      },
+      {
+        "source_id": "gate-filter-5",
+        "target_id": "effect-bash-script-1"
+      },
+      {
+        "source_id": "effect-bash-script-1",
+        "target_id": "effect-session-update-metadata-6"
+      },
+      {
+        "source_id": "effect-session-update-metadata-6",
+        "target_id": "query-session-context-4"
+      },
+      {
+        "source_id": "query-session-context-4",
+        "target_id": "effect-agent-prompt-9"
+      },
+      {
+        "source_id": "effect-vm-clone-repo-2",
+        "target_id": "effect-vm-copy-files-5"
+      },
+      {
+        "source_id": "effect-vm-copy-files-5",
+        "target_id": "effect-vm-exec-1"
+      },
+      {
+        "source_id": "effect-vm-exec-1",
+        "target_id": "effect-vm-bootstrap-frontend-2"
+      }
+    ],
+    "nodes": [
+      {
+        "id": "trigger-script-run-request-1",
+        "outputs": {
+          "parameters": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "script_name": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          }
+        },
+        "type": "trigger:script-run-request"
+      },
+      {
+        "config": {
+          "when": {
+            "all": [
+              {
+                "equals": "provision_exampleindustry_app_demo_environment.sh"
+              }
+            ]
+          }
+        },
+        "id": "gate-filter-5",
+        "type": "gate:filter"
+      },
+      {
+        "config": {
+          "args": [
+            "--resource-base-name",
+            "${{gate-filter-5.parameters.0}}"
+          ],
+          "script_path": "/opt/agent-sandbox/scripts/provision_exampleindustry_app_demo_environment.sh"
+        },
+        "id": "effect-bash-script-1",
+        "outputs": {
+          "app_api_alias": {
+            "type": "string"
+          },
+          "app_base_url": {
+            "type": "string"
+          },
+          "app_public_url": {
+            "type": "string"
+          },
+          "app_ui_alias": {
+            "type": "string"
+          },
+          "session_metadata_patch": {
+            "type": "object"
+          }
+        },
+        "type": "effect:bash:script"
+      },
+      {
+        "config": {
+          "metadata": "${{effect-bash-script-1.session_metadata_patch}}"
+        },
+        "id": "effect-session-update-metadata-6",
+        "type": "effect:session:update-metadata"
+      },
+      {
+        "config": {
+          "target": "${{gate-filter-5.session_id}}"
+        },
+        "id": "query-session-context-4",
+        "type": "query:session:context"
+      },
+      {
+        "config": {
+          "prompt": "APP API alias: ${{effect-bash-script-1.app_api_alias}}\nAPP UI alias: ${{effect-bash-script-1.app_ui_alias}}\nAPP API base URL: ${{effect-bash-script-1.app_base_url}}\nPublic UI URL: ${{effect-bash-script-1.app_public_url}}",
+          "resume_thread_id": "${{query-session-context-4.metadata.agent_thread_id ?? null}}"
+        },
+        "id": "effect-agent-prompt-9",
+        "type": "effect:agent:prompt"
+      },
+      {
+        "config": {
+          "files": [
+            {
+              "destination_path": "${{effect-vm-clone-repo-2.target_dir}}/.agent-sandbox/bin/setup_review_repo.sh",
+              "mode": "0755",
+              "source_path": "/opt/agent-sandbox/scripts/guest/setup_review_repo.sh"
+            }
+          ],
+          "target": "${{effect-vm-clone-repo-2.vm_name}}"
+        },
+        "id": "effect-vm-copy-files-5",
+        "type": "effect:vm:copy-files"
+      },
+      {
+        "config": {
+          "command": "bash .agent-sandbox/bin/setup_review_repo.sh --base-ref refs/heads/${{trigger-review-new-request-1.review_request.base_branch}} --head-ref refs/heads/${{trigger-review-new-request-1.review_request.head_branch}} --base-commit \"${{trigger-review-new-request-1.review_request.base_commit ?? \"\"}}\" --head-commit \"${{trigger-review-new-request-1.review_request.head_commit ?? \"\"}}\"",
+          "target": "${{effect-vm-clone-repo-2.session_id}}",
+          "working_directory": "${{effect-vm-clone-repo-2.target_dir}}"
+        },
+        "id": "effect-vm-exec-1",
+        "type": "effect:vm:exec"
+      }
+    ]
+  }
+}

@@ -41,7 +41,7 @@ service and configure `config/admin-web.env` before exposing it beyond localhost
 16. Optionally provision a guest-local Microsoft SQL Server instance into the guest with `MSSQL_SA_PASSWORD=... ./scripts/bootstrap_mssql_vm.sh <vm-name>`.
 17. Optionally install Playwright into the guest with `./scripts/bootstrap_playwright_vm.sh <vm-name>` for rendered-DOM debugging.
 18. Optionally create a local bare Git remote with `./scripts/create_git_remote.sh <repo-name>` or mirror the default host repo with `./scripts/mirror_issue_repo.sh <issue-number>` if the VM should push code back to the host.
-19. Use [live-smoke-tests.md](/home/jonathan/agent-sandbox/docs/live-smoke-tests.md) when you want to verify live Discord and provider-backed email behavior against real credentials.
+19. Use [live-smoke-tests.md](live-smoke-tests.md) when you want to verify live Discord and provider-backed email behavior against real credentials.
 
 - The launch script resizes each overlay disk to `20G` by default.
 - The launch script also exposes a read-only shared NuGet cache via `virtiofs` at `/opt/agent-sandbox/nuget-cache-ro` inside the guest.
@@ -985,8 +985,8 @@ sudo journalctl -u agent-sandbox-trigger-orchestrator.service -f
 
 - `trigger:script-run-request` is wired to accept exactly one host-approved provisioning wrapper:
   `provision_exampleindustry_app_demo_environment.sh`.
-- That wrapper lives in this repo under `scripts/` and delegates to the existing host script at
-  `/home/jonathan/Documents/Repos/ExampleIndustryAPP/Scripts/Azure/Environment/deploy-demo-environment.sh`.
+- That wrapper lives in this repo under `scripts/` and delegates to the host script named by
+  `EXAMPLE_APP_DEPLOY_DEMO_SCRIPT_PATH`.
 - The wrapper reserves stdout for a final JSON payload and sends deploy progress logs to stderr, so
   the orchestrator can capture the result blob without parsing human-oriented progress output.
 - The wrapper emits a `session_metadata_patch` object that appends two relay targets under
@@ -1164,7 +1164,7 @@ The script and CLI wrappers share the same timeout environment variables (defaul
 Create a host-local bare repository:
 
 ```bash
-agent-sandbox-cli directories config-set --domain issue_setup root '{"git_root": "/home/jonathan/agent-sandbox/git-remotes", "git_host": "192.168.250.1", "git_user": "jonathan", "git_ssh_alias": "agent-sandbox-git-host"}'
+agent-sandbox-cli directories config-set --domain issue_setup root "{\"git_root\": \"$PWD/git-remotes\", \"git_host\": \"192.168.250.1\", \"git_user\": \"$(whoami)\", \"git_ssh_alias\": \"agent-sandbox-git-host\"}"
 ./scripts/setup_issue_git_vm.sh vm-real 14084
 ```
 
@@ -1325,7 +1325,7 @@ associates the PR with that work item in Azure DevOps.
 
 ## Live Smoke Tests
 
-Use [live-smoke-tests.md](/home/jonathan/agent-sandbox/docs/live-smoke-tests.md) for the
+Use [live-smoke-tests.md](live-smoke-tests.md) for the
 decision-complete runbook covering:
 
 - host gateway only verification

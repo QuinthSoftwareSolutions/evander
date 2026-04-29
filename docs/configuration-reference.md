@@ -280,9 +280,8 @@ Effect schema envelope example:
 }
 ```
 
-The checked-in APP provisioning workflow uses `effect:bash:script` with
-`/home/jonathan/agent-sandbox/scripts/provision_exampleindustry_app_demo_environment.sh`,
-projects `stdout` plus parsed JSON fields such as `app_base_url`, `app_public_url`,
+The checked-in APP provisioning workflow uses `effect:bash:script` with this repo's
+`scripts/provision_exampleindustry_app_demo_environment.sh`, projects `stdout` plus parsed JSON fields such as `app_base_url`, `app_public_url`,
 `app_api_alias`, `app_ui_alias`, and `public_domain` as declared outputs, stores those values in
 session metadata, and then resumes the originating agent session.
 
