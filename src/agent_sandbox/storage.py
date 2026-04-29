@@ -27,7 +27,9 @@ class JsonStore(Generic[T]):
                 return {}
             raw = json.loads(text)
             if not isinstance(raw, dict):
-                raise ValueError(f"JSON store at {self.path} must contain an object at the top level")
+                raise ValueError(
+                    f"JSON store at {self.path} must contain an object at the top level"
+                )
             return {key: self.model.model_validate(value) for key, value in raw.items()}
 
     def write_all(self, items: dict[str, T]) -> None:

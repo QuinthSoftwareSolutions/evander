@@ -20,20 +20,20 @@ from starlette.responses import JSONResponse, PlainTextResponse
 from starlette.routing import Mount, Route
 import uvicorn
 
-from .bootstrap import load_runtime_gateway_config, resolve_runtime_dir
-from .admin_service import AdminService
-from .agent_prompt_store import AgentPromptRecord
-from .agent_prompt_tokens import (
+from agent_sandbox.bootstrap import load_runtime_gateway_config, resolve_runtime_dir
+from agent_sandbox.admin.service import AdminService
+from agent_sandbox.messaging.agent_prompt_store import AgentPromptRecord
+from agent_sandbox.messaging.agent_prompt_tokens import (
     AgentPromptTokenError,
     encode_agent_prompt_response_token_from_claims,
     hash_agent_prompt_response_token,
     issue_agent_prompt_response_token,
     verify_agent_prompt_response_token,
 )
-from .config import GatewayConfig
-from .email.http_utils import ProviderRequestError
-from .issue_service import IssueService
-from .models import (
+from agent_sandbox.config import GatewayConfig
+from agent_sandbox.email.http_utils import ProviderRequestError
+from agent_sandbox.issues.service import IssueService
+from agent_sandbox.models import (
     AdoBacklogCreateRequest,
     AdoBacklogCreateResponse,
     AdoCurrentIterationBacklogRequest,
@@ -70,11 +70,12 @@ from .models import (
     TeamsMessageEnvelope,
     ToolName,
 )
-from .policy import PolicyError
-from .runtime import RuntimeContext, build_runtime
-from .services import normalize_pr_feedback_provider
+from agent_sandbox.policy import PolicyError
+from agent_sandbox.runtime import RuntimeContext, build_runtime
+from agent_sandbox.services import normalize_pr_feedback_provider
 
 logger = logging.getLogger(__name__)
+
 
 def _normalize_issue_status_filters(statuses: list[str] | None) -> set[str]:
     if not statuses:
@@ -111,7 +112,9 @@ def _load_agent_prompt_token_secret(config: GatewayConfig) -> str:
         raise ToolError("agent_prompt_token_secret_env must be configured")
     secret = os.environ.get(env_var_name, "").strip()
     if not secret:
-        raise ToolError(f"Agent prompt token secret is missing in environment variable {env_var_name!r}")
+        raise ToolError(
+            f"Agent prompt token secret is missing in environment variable {env_var_name!r}"
+        )
     return secret
 
 
@@ -158,7 +161,9 @@ def _get_or_refresh_agent_prompt_response_token(
         except (ValueError, KeyError, TypeError):
             pass
     if not allow_refresh:
-        raise ToolError(f"No active response token is available for message_id: {message.message_id}")
+        raise ToolError(
+            f"No active response token is available for message_id: {message.message_id}"
+        )
 
     issued_response_token, issued_claims = _issue_agent_prompt_response_token_for_session(
         context,
@@ -425,11 +430,20 @@ def create_server(context: RuntimeContext) -> FastMCP:
     def redacted_keys_for_session_id(session_id: str | None) -> set[str]:
         token_redacted_keys = {"response_token", "issued_token", "token_hash"}
         if not session_id:
-            return set(context.policy.policy_config.resolve_for_directory("root").redacted_keys) | token_redacted_keys
+            return (
+                set(context.policy.policy_config.resolve_for_directory("root").redacted_keys)
+                | token_redacted_keys
+            )
         session = context.session_repository.get_session(session_id)
         if session is None:
-            return set(context.policy.policy_config.resolve_for_directory("root").redacted_keys) | token_redacted_keys
-        return set(context.policy.effective_policy_for_session(session).redacted_keys) | token_redacted_keys
+            return (
+                set(context.policy.policy_config.resolve_for_directory("root").redacted_keys)
+                | token_redacted_keys
+            )
+        return (
+            set(context.policy.effective_policy_for_session(session).redacted_keys)
+            | token_redacted_keys
+        )
 
     def audit_success(
         session_id: str,
@@ -505,7 +519,9 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 target_session_id=target_session_id,
                 prompt=prompt,
                 metadata=metadata or {},
-                idempotency_key=idempotency_key.strip() if isinstance(idempotency_key, str) else None,
+                idempotency_key=idempotency_key.strip()
+                if isinstance(idempotency_key, str)
+                else None,
             )
             args = request.model_dump(mode="json")
             args["vm_user"] = vm_user
@@ -555,10 +571,12 @@ def create_server(context: RuntimeContext) -> FastMCP:
                         raise ToolError("idempotency_key is already bound to a different prompt")
                     if dict(existing_payload.get("metadata") or {}) != request.metadata:
                         raise ToolError("idempotency_key is already bound to different metadata")
-                    existing, issued_response_token, _issued_claims = _get_or_refresh_agent_prompt_response_token(
-                        context,
-                        message=existing,
-                        refresh_expired=True,
+                    existing, issued_response_token, _issued_claims = (
+                        _get_or_refresh_agent_prompt_response_token(
+                            context,
+                            message=existing,
+                            refresh_expired=True,
+                        )
                     )
                     response = PromptAgentResponse(
                         message_id=existing.message_id,
@@ -688,10 +706,12 @@ def create_server(context: RuntimeContext) -> FastMCP:
 
             prompts: list[PendingAgentPrompt] = []
             for message in messages:
-                message, issued_response_token, issued_claims = _get_or_refresh_agent_prompt_response_token(
-                    context,
-                    message=message,
-                    refresh_expired=False,
+                message, issued_response_token, issued_claims = (
+                    _get_or_refresh_agent_prompt_response_token(
+                        context,
+                        message=message,
+                        refresh_expired=False,
+                    )
                 )
                 prompt_payload = dict(message.prompt_payload or {})
                 prompts.append(
@@ -792,7 +812,9 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 expected_target_session_id=request.session_id,
             )
             if claims["sender_session_id"] != message.sender_session_id:
-                raise PolicyError("response_token sender_session_id claim does not match original message")
+                raise PolicyError(
+                    "response_token sender_session_id claim does not match original message"
+                )
 
             token_hash = hash_agent_prompt_response_token(request.response_token)
             consumed = context.agent_prompt_store.validate_and_consume_token(
@@ -800,7 +822,9 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 expected_message_id=request.message_id,
             )
             if consumed is None:
-                raise PolicyError("response_token is invalid, already consumed, or does not match message_id")
+                raise PolicyError(
+                    "response_token is invalid, already consumed, or does not match message_id"
+                )
             if consumed.target_session_id != request.session_id:
                 raise PolicyError("response token is not valid for this session")
 
@@ -870,7 +894,9 @@ def create_server(context: RuntimeContext) -> FastMCP:
         status: list[str] | None = None,
         ctx: Context | None = None,
     ) -> dict[str, Any]:
-        session_id = _resolve_session_id_from_context(session_id, ctx, transport_session_map=transport_session_map)
+        session_id = _resolve_session_id_from_context(
+            session_id, ctx, transport_session_map=transport_session_map
+        )
         args = {
             "session_id": session_id,
             "status": status,
@@ -884,11 +910,15 @@ def create_server(context: RuntimeContext) -> FastMCP:
             )
             if status:
                 filtered = [
-                    issue for issue in issues if str(issue.state or "").strip().lower() in status_filter
+                    issue
+                    for issue in issues
+                    if str(issue.state or "").strip().lower() in status_filter
                 ]
             else:
                 filtered = [
-                    issue for issue in issues if str(issue.state or "").strip().lower() not in status_filter
+                    issue
+                    for issue in issues
+                    if str(issue.state or "").strip().lower() not in status_filter
                 ]
             result = {
                 "issues": [issue.model_dump(mode="json") for issue in filtered],
@@ -926,7 +956,9 @@ def create_server(context: RuntimeContext) -> FastMCP:
         session_id: str | None = None,
         ctx: Context | None = None,
     ) -> dict[str, Any]:
-        session_id = _resolve_session_id_from_context(session_id, ctx, transport_session_map=transport_session_map)
+        session_id = _resolve_session_id_from_context(
+            session_id, ctx, transport_session_map=transport_session_map
+        )
         args = {
             "session_id": session_id,
             "issue_id": issue_id,
@@ -981,7 +1013,9 @@ def create_server(context: RuntimeContext) -> FastMCP:
         session_id: str | None = None,
         ctx: Context | None = None,
     ) -> dict[str, Any]:
-        session_id = _resolve_session_id_from_context(session_id, ctx, transport_session_map=transport_session_map)
+        session_id = _resolve_session_id_from_context(
+            session_id, ctx, transport_session_map=transport_session_map
+        )
         args = {
             "session_id": session_id,
             "type": type,
@@ -1025,13 +1059,23 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 assigned_to=request_model.assigned_user,
                 parent_backlog_item_id=request_model.parent_backlog_item_id,
             )
-            remote_fields = remote_payload.get("fields") if isinstance(remote_payload.get("fields"), dict) else {}
+            remote_fields = (
+                remote_payload.get("fields")
+                if isinstance(remote_payload.get("fields"), dict)
+                else {}
+            )
             assigned_to_value = remote_fields.get("System.AssignedTo")
             if isinstance(assigned_to_value, dict):
                 normalized_assigned_to = next(
                     (
                         candidate
-                        for key in ("displayName", "uniqueName", "mailAddress", "signInAddress", "name")
+                        for key in (
+                            "displayName",
+                            "uniqueName",
+                            "mailAddress",
+                            "signInAddress",
+                            "name",
+                        )
                         if (candidate := str(assigned_to_value.get(key) or "").strip())
                     ),
                     None,
@@ -1041,17 +1085,18 @@ def create_server(context: RuntimeContext) -> FastMCP:
             else:
                 normalized_assigned_to = str(assigned_to_value).strip() or None
             response_model = AdoBacklogCreateResponse(
-                created_item_id=str(remote_payload.get("remote_issue_id") or remote_payload.get("id") or "").strip(),
+                created_item_id=str(
+                    remote_payload.get("remote_issue_id") or remote_payload.get("id") or ""
+                ).strip(),
                 url=str(remote_payload.get("url") or "").strip(),
-                provider=str(remote_payload.get("provider") or "azure_devops").strip() or "azure_devops",
+                provider=str(remote_payload.get("provider") or "azure_devops").strip()
+                or "azure_devops",
                 project=str(remote_payload.get("project") or request_model.project).strip(),
                 type=request_model.type,
                 iteration=request_model.iteration,
                 title=str((remote_fields.get("System.Title") or request_model.title)).strip(),
                 description=remote_fields.get("System.Description") or request_model.description,
-                acceptance_criteria=remote_fields.get(
-                    "Microsoft.VSTS.Common.AcceptanceCriteria"
-                )
+                acceptance_criteria=remote_fields.get("Microsoft.VSTS.Common.AcceptanceCriteria")
                 or request_model.acceptance_criteria,
                 tags=request_model.tags,
                 assigned_user=normalized_assigned_to or request_model.assigned_user,
@@ -1099,7 +1144,9 @@ def create_server(context: RuntimeContext) -> FastMCP:
         session_id: str | None = None,
         ctx: Context | None = None,
     ) -> dict[str, Any]:
-        session_id = _resolve_session_id_from_context(session_id, ctx, transport_session_map=transport_session_map)
+        session_id = _resolve_session_id_from_context(
+            session_id, ctx, transport_session_map=transport_session_map
+        )
         args = {
             "session_id": session_id,
             "project": project,
@@ -1193,7 +1240,9 @@ def create_server(context: RuntimeContext) -> FastMCP:
         session_id: str | None = None,
         ctx: Context | None = None,
     ) -> dict[str, Any]:
-        session_id = _resolve_session_id_from_context(session_id, ctx, transport_session_map=transport_session_map)
+        session_id = _resolve_session_id_from_context(
+            session_id, ctx, transport_session_map=transport_session_map
+        )
         args = {
             "session_id": session_id,
             "id": id,
@@ -1267,7 +1316,9 @@ def create_server(context: RuntimeContext) -> FastMCP:
         session_id: str | None = None,
         ctx: Context | None = None,
     ) -> dict[str, Any]:
-        session_id = _resolve_session_id_from_context(session_id, ctx, transport_session_map=transport_session_map)
+        session_id = _resolve_session_id_from_context(
+            session_id, ctx, transport_session_map=transport_session_map
+        )
         args = {
             "session_id": session_id,
             "project": project,
@@ -1281,7 +1332,9 @@ def create_server(context: RuntimeContext) -> FastMCP:
             "skip": skip,
         }
         try:
-            session = context.policy.require_tool(session_id, ToolName.LIST_ADO_CURRENT_ITERATION_BACKLOG_ITEMS)
+            session = context.policy.require_tool(
+                session_id, ToolName.LIST_ADO_CURRENT_ITERATION_BACKLOG_ITEMS
+            )
             request_model = AdoCurrentIterationBacklogRequest(
                 project=project,
                 team=team,
@@ -1330,7 +1383,9 @@ def create_server(context: RuntimeContext) -> FastMCP:
             )
             return payload
         except PolicyError as exc:
-            audit_failure(session_id, ToolName.LIST_ADO_CURRENT_ITERATION_BACKLOG_ITEMS, args, str(exc))
+            audit_failure(
+                session_id, ToolName.LIST_ADO_CURRENT_ITERATION_BACKLOG_ITEMS, args, str(exc)
+            )
             raise
         except Exception as exc:
             audit_failure(
@@ -1352,7 +1407,9 @@ def create_server(context: RuntimeContext) -> FastMCP:
         session_id: str | None = None,
         ctx: Context | None = None,
     ) -> dict[str, Any]:
-        session_id = _resolve_session_id_from_context(session_id, ctx, transport_session_map=transport_session_map)
+        session_id = _resolve_session_id_from_context(
+            session_id, ctx, transport_session_map=transport_session_map
+        )
         args = {
             "session_id": session_id,
             "title": title,
@@ -1369,7 +1426,9 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 "repo_source": repo_source,
                 "directory_path": session.directory_path,
             }
-            if metadata and _method_accepts_keyword_argument(admin_service.create_local_issue, "metadata"):
+            if metadata and _method_accepts_keyword_argument(
+                admin_service.create_local_issue, "metadata"
+            ):
                 issue_kwargs["metadata"] = metadata
             issue = admin_service.create_local_issue(**issue_kwargs)
             result = _payload_from_result(issue) or {}
@@ -1407,7 +1466,9 @@ def create_server(context: RuntimeContext) -> FastMCP:
         session_id: str | None = None,
         ctx: Context | None = None,
     ) -> dict[str, Any]:
-        session_id = _resolve_session_id_from_context(session_id, ctx, transport_session_map=transport_session_map)
+        session_id = _resolve_session_id_from_context(
+            session_id, ctx, transport_session_map=transport_session_map
+        )
         args = {
             "session_id": session_id,
             "issue_id": issue_id,
@@ -1416,7 +1477,9 @@ def create_server(context: RuntimeContext) -> FastMCP:
         }
         try:
             session = context.policy.require_tool(session_id, ToolName.SET_ISSUE_PLAN)
-            result = AdminService(context.config.runtime_dir).set_issue_plan(issue_id, steps, summary=summary)
+            result = AdminService(context.config.runtime_dir).set_issue_plan(
+                issue_id, steps, summary=summary
+            )
             audit_success(
                 session_id,
                 ToolName.SET_ISSUE_PLAN,
@@ -1453,7 +1516,9 @@ def create_server(context: RuntimeContext) -> FastMCP:
         session_id: str | None = None,
         ctx: Context | None = None,
     ) -> dict[str, Any]:
-        session_id = _resolve_session_id_from_context(session_id, ctx, transport_session_map=transport_session_map)
+        session_id = _resolve_session_id_from_context(
+            session_id, ctx, transport_session_map=transport_session_map
+        )
         args = {
             "session_id": session_id,
             "issue_id": issue_id,
@@ -1500,12 +1565,18 @@ def create_server(context: RuntimeContext) -> FastMCP:
             raise
 
     @server.tool()
-    def claim_next_issue(session_id: str | None = None, *, ctx: Context | None = None) -> dict[str, Any]:
-        session_id = _resolve_session_id_from_context(session_id, ctx, transport_session_map=transport_session_map)
+    def claim_next_issue(
+        session_id: str | None = None, *, ctx: Context | None = None
+    ) -> dict[str, Any]:
+        session_id = _resolve_session_id_from_context(
+            session_id, ctx, transport_session_map=transport_session_map
+        )
         args = {"session_id": session_id}
         try:
             session = context.policy.require_tool(session_id, ToolName.CLAIM_NEXT_ISSUE)
-            result = AdminService(context.config.runtime_dir).claim_next_issue(session_id=session_id)
+            result = AdminService(context.config.runtime_dir).claim_next_issue(
+                session_id=session_id
+            )
             payload = _payload_from_result(result)
             audit_success(
                 session_id,
@@ -1541,7 +1612,9 @@ def create_server(context: RuntimeContext) -> FastMCP:
         session_id: str | None = None,
         ctx: Context | None = None,
     ) -> dict[str, Any]:
-        session_id = _resolve_session_id_from_context(session_id, ctx, transport_session_map=transport_session_map)
+        session_id = _resolve_session_id_from_context(
+            session_id, ctx, transport_session_map=transport_session_map
+        )
 
         args = {"session_id": session_id, "issue_id": issue_id, "summary": summary}
         try:
@@ -1585,7 +1658,9 @@ def create_server(context: RuntimeContext) -> FastMCP:
         session_id: str | None = None,
         ctx: Context | None = None,
     ) -> dict[str, Any]:
-        session_id = _resolve_session_id_from_context(session_id, ctx, transport_session_map=transport_session_map)
+        session_id = _resolve_session_id_from_context(
+            session_id, ctx, transport_session_map=transport_session_map
+        )
 
         args = {
             "session_id": session_id,
@@ -1704,7 +1779,9 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 "ip_address": summary.ip_address,
                 "agent_repo_names": summary.agent_repo_names,
                 "last_state_update_at": (
-                    summary.last_state_update_at.isoformat() if summary.last_state_update_at else None
+                    summary.last_state_update_at.isoformat()
+                    if summary.last_state_update_at
+                    else None
                 ),
             }
             audit_success(
@@ -1956,7 +2033,9 @@ def create_server(context: RuntimeContext) -> FastMCP:
     def list_unread_feedback(
         session_id: str, cursor: str | None = None, limit: int | None = None
     ) -> dict[str, Any]:
-        args = ListUnreadFeedbackRequest(session_id=session_id, cursor=cursor, limit=limit).model_dump(mode="json")
+        args = ListUnreadFeedbackRequest(
+            session_id=session_id, cursor=cursor, limit=limit
+        ).model_dump(mode="json")
         try:
             session = context.policy.require_tool(session_id, ToolName.LIST_UNREAD_FEEDBACK)
             streams = context.policy.require_pr_feedback_streams(session)
@@ -2127,7 +2206,9 @@ def create_server(context: RuntimeContext) -> FastMCP:
             )
             args = request.model_dump(mode="json")
             session = context.policy.require_tool(resolved_session_id, ToolName.RUN_SCRIPT)
-            normalized_script_name = context.policy.require_script_name(session, request.script_name)
+            normalized_script_name = context.policy.require_script_name(
+                session, request.script_name
+            )
             queued = context.script_run_request_store.enqueue(
                 session_id=resolved_session_id,
                 directory_path=session.directory_path,
@@ -2211,17 +2292,23 @@ def create_server(context: RuntimeContext) -> FastMCP:
             session = context.policy.require_tool(session_id, ToolName.POST_PR_FEEDBACK_REPLY)
             if context.policy.effective_policy_for_session(session).pr_reply_require_approval:
                 if not request.request_id:
-                    raise PolicyError("request_id is required when pr_reply_require_approval is enabled")
+                    raise PolicyError(
+                        "request_id is required when pr_reply_require_approval is enabled"
+                    )
                 context.policy.require_approved(request.request_id, payload=args)
-            result = context.pr_reply_service_for_session(session_id).post_reply(
-                provider=request.provider,
-                repo=request.repo,
-                pr_id=request.pr_id,
-                thread_id=request.thread_id,
-                comment_id=request.comment_id,
-                body_text=request.body_text,
-                idempotency_key=request.idempotency_key,
-            ).model_dump(mode="json")
+            result = (
+                context.pr_reply_service_for_session(session_id)
+                .post_reply(
+                    provider=request.provider,
+                    repo=request.repo,
+                    pr_id=request.pr_id,
+                    thread_id=request.thread_id,
+                    comment_id=request.comment_id,
+                    body_text=request.body_text,
+                    idempotency_key=request.idempotency_key,
+                )
+                .model_dump(mode="json")
+            )
             audit_success(
                 session_id,
                 ToolName.POST_PR_FEEDBACK_REPLY,
@@ -2290,20 +2377,24 @@ def create_server(context: RuntimeContext) -> FastMCP:
         args = request.model_dump(mode="json")
         try:
             context.policy.require_tool(request.session_id, ToolName.REQUEST_PR_REVIEW)
-            result = context.review_request_service_for_session(request.session_id).enqueue_request(
-                session_id=request.session_id,
-                provider=request.provider,
-                repo=request.repo,
-                pr_id=request.pr_id,
-                requested_by=request.requested_by,
-                request_channel=request.request_channel,
-                review_type=request.review_type,
-                instructions=request.instructions,
-                directory_path=request.directory_path,
-                model=request.model,
-                labels=request.labels,
-                metadata=request.metadata,
-            ).model_dump(mode="json")
+            result = (
+                context.review_request_service_for_session(request.session_id)
+                .enqueue_request(
+                    session_id=request.session_id,
+                    provider=request.provider,
+                    repo=request.repo,
+                    pr_id=request.pr_id,
+                    requested_by=request.requested_by,
+                    request_channel=request.request_channel,
+                    review_type=request.review_type,
+                    instructions=request.instructions,
+                    directory_path=request.directory_path,
+                    model=request.model,
+                    labels=request.labels,
+                    metadata=request.metadata,
+                )
+                .model_dump(mode="json")
+            )
             audit_success(
                 request.session_id,
                 ToolName.REQUEST_PR_REVIEW,
@@ -2365,7 +2456,9 @@ def create_server(context: RuntimeContext) -> FastMCP:
             session = context.policy.require_tool(request.session_id, ToolName.POST_PR_COMMENT)
             if context.policy.effective_policy_for_session(session).pr_reply_require_approval:
                 if not request.request_id:
-                    raise PolicyError("request_id is required when pr_reply_require_approval is enabled")
+                    raise PolicyError(
+                        "request_id is required when pr_reply_require_approval is enabled"
+                    )
                 context.policy.require_approved(request.request_id, payload=args)
             result = context.pr_publish_service_for_session(request.session_id).post_comment(
                 provider=request.provider,
@@ -2439,10 +2532,14 @@ def create_server(context: RuntimeContext) -> FastMCP:
         )
         args = request.model_dump(mode="json")
         try:
-            session = context.policy.require_tool(request.session_id, ToolName.POST_PR_INLINE_COMMENT)
+            session = context.policy.require_tool(
+                request.session_id, ToolName.POST_PR_INLINE_COMMENT
+            )
             if context.policy.effective_policy_for_session(session).pr_reply_require_approval:
                 if not request.request_id:
-                    raise PolicyError("request_id is required when pr_reply_require_approval is enabled")
+                    raise PolicyError(
+                        "request_id is required when pr_reply_require_approval is enabled"
+                    )
                 context.policy.require_approved(request.request_id, payload=args)
             result = context.pr_publish_service_for_session(request.session_id).post_inline_comment(
                 provider=request.provider,
@@ -2520,7 +2617,9 @@ def create_server(context: RuntimeContext) -> FastMCP:
             session = context.policy.require_tool(request.session_id, ToolName.SUBMIT_PR_REVIEW)
             if context.policy.effective_policy_for_session(session).pr_reply_require_approval:
                 if not request.request_id:
-                    raise PolicyError("request_id is required when pr_reply_require_approval is enabled")
+                    raise PolicyError(
+                        "request_id is required when pr_reply_require_approval is enabled"
+                    )
                 context.policy.require_approved(request.request_id, payload=args)
             result = context.pr_publish_service_for_session(request.session_id).submit_review(
                 provider=request.provider,
@@ -2573,7 +2672,9 @@ def create_server(context: RuntimeContext) -> FastMCP:
         args = {"session_id": session_id, "since_cursor": since_cursor}
         try:
             session = context.policy.require_tool(session_id, ToolName.DISCORD_GET_COMMANDS)
-            raw_commands = context.discord_service_for_session(session_id).get_commands(since_cursor)
+            raw_commands = context.discord_service_for_session(session_id).get_commands(
+                since_cursor
+            )
             commands, denied_count, next_cursor = _filter_discord_commands_for_session(
                 context,
                 session_id,
@@ -2620,7 +2721,9 @@ def create_server(context: RuntimeContext) -> FastMCP:
         try:
             session = context.policy.require_tool(session_id, ToolName.DISCORD_POST_STATUS)
             context.policy.require_discord_channel(session, channel_id)
-            result = context.discord_service_for_session(session_id).post_status(message, channel_id, session_id)
+            result = context.discord_service_for_session(session_id).post_status(
+                message, channel_id, session_id
+            )
             audit_success(session_id, ToolName.DISCORD_POST_STATUS, args, result)
             return result
         except PolicyError as exc:
@@ -2713,11 +2816,20 @@ def create_server(context: RuntimeContext) -> FastMCP:
         args = HasPendingDiscordMessagesRequest(session_id=session_id).model_dump(mode="json")
         try:
             context.policy.require_tool(session_id, ToolName.HAS_PENDING_DISCORD_MESSAGES)
-            streams = [{"channel_id": channel_id} for channel_id in context.policy_config.discord_inbox_channel_ids_for_session_id(session_id)]
-            result = context.discord_inbox_service_for_session(session_id).has_pending_discord_messages(
-                streams=streams,
-                session_id=session_id,
-            ).model_dump(mode="json")
+            streams = [
+                {"channel_id": channel_id}
+                for channel_id in context.policy_config.discord_inbox_channel_ids_for_session_id(
+                    session_id
+                )
+            ]
+            result = (
+                context.discord_inbox_service_for_session(session_id)
+                .has_pending_discord_messages(
+                    streams=streams,
+                    session_id=session_id,
+                )
+                .model_dump(mode="json")
+            )
             audit_success(
                 session_id,
                 ToolName.HAS_PENDING_DISCORD_MESSAGES,
@@ -2743,13 +2855,20 @@ def create_server(context: RuntimeContext) -> FastMCP:
     def list_unread_discord_messages(
         session_id: str, cursor: str | None = None, limit: int | None = None
     ) -> dict[str, Any]:
-        args = ListUnreadDiscordMessagesRequest(session_id=session_id, cursor=cursor, limit=limit).model_dump(
-            mode="json"
-        )
+        args = ListUnreadDiscordMessagesRequest(
+            session_id=session_id, cursor=cursor, limit=limit
+        ).model_dump(mode="json")
         try:
             context.policy.require_tool(session_id, ToolName.LIST_UNREAD_DISCORD_MESSAGES)
-            streams = [{"channel_id": channel_id} for channel_id in context.policy_config.discord_inbox_channel_ids_for_session_id(session_id)]
-            response = context.discord_inbox_service_for_session(session_id).list_unread_discord_messages(
+            streams = [
+                {"channel_id": channel_id}
+                for channel_id in context.policy_config.discord_inbox_channel_ids_for_session_id(
+                    session_id
+                )
+            ]
+            response = context.discord_inbox_service_for_session(
+                session_id
+            ).list_unread_discord_messages(
                 streams=streams,
                 session_id=session_id,
                 cursor=cursor,
@@ -2782,8 +2901,15 @@ def create_server(context: RuntimeContext) -> FastMCP:
         args = {"session_id": session_id, "limit": limit}
         try:
             context.policy.require_tool(session_id, ToolName.LIST_ALL_DISCORD_MESSAGES)
-            streams = [{"channel_id": channel_id} for channel_id in context.policy_config.discord_inbox_channel_ids_for_session_id(session_id)]
-            response = context.discord_inbox_service_for_session(session_id).list_all_discord_messages(
+            streams = [
+                {"channel_id": channel_id}
+                for channel_id in context.policy_config.discord_inbox_channel_ids_for_session_id(
+                    session_id
+                )
+            ]
+            response = context.discord_inbox_service_for_session(
+                session_id
+            ).list_all_discord_messages(
                 streams=streams,
                 limit=limit,
             )
@@ -2948,7 +3074,12 @@ def create_server(context: RuntimeContext) -> FastMCP:
     def email_list_unread(
         session_id: str, mailbox_id: str, folder: str, limit: int = 10
     ) -> list[dict[str, Any]]:
-        args = {"session_id": session_id, "mailbox_id": mailbox_id, "folder": folder, "limit": limit}
+        args = {
+            "session_id": session_id,
+            "mailbox_id": mailbox_id,
+            "folder": folder,
+            "limit": limit,
+        }
         try:
             session = context.policy.require_tool(session_id, ToolName.EMAIL_LIST_UNREAD)
             context.policy.require_email_mailbox(session, mailbox_id)
@@ -2956,7 +3087,9 @@ def create_server(context: RuntimeContext) -> FastMCP:
             email_service = context.email_service_for_session(session_id)
             messages = [
                 message.model_dump(mode="json")
-                for message in email_service.list_unread(mailbox_id=mailbox_id, folder=folder, limit=limit)
+                for message in email_service.list_unread(
+                    mailbox_id=mailbox_id, folder=folder, limit=limit
+                )
             ]
             audit_success(session_id, ToolName.EMAIL_LIST_UNREAD, args, {"count": len(messages)})
             return messages
@@ -3049,7 +3182,9 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 mailbox_id, thread_or_message_id, subject, body, normalized_recipients
             )
             result = draft.model_dump(mode="json")
-            audit_success(session_id, ToolName.EMAIL_CREATE_DRAFT, args, {"draft_id": draft.draft_id})
+            audit_success(
+                session_id, ToolName.EMAIL_CREATE_DRAFT, args, {"draft_id": draft.draft_id}
+            )
             return result
         except PolicyError as exc:
             audit_failure(session_id, ToolName.EMAIL_CREATE_DRAFT, args, str(exc))
@@ -3090,9 +3225,13 @@ def create_server(context: RuntimeContext) -> FastMCP:
         }
         try:
             context.policy.require_tool(session_id, ToolName.APPROVAL_SUBMIT)
-            approval = context.policy.create_approval(session_id, action_type, payload, human_summary)
+            approval = context.policy.create_approval(
+                session_id, action_type, payload, human_summary
+            )
             result = approval.model_dump(mode="json")
-            audit_success(session_id, ToolName.APPROVAL_SUBMIT, args, {"request_id": approval.request_id})
+            audit_success(
+                session_id, ToolName.APPROVAL_SUBMIT, args, {"request_id": approval.request_id}
+            )
             return result
         except PolicyError as exc:
             audit_failure(session_id, ToolName.APPROVAL_SUBMIT, args, str(exc))
@@ -3105,16 +3244,22 @@ def create_server(context: RuntimeContext) -> FastMCP:
             context.policy.require_tool(session_id, ToolName.APPROVAL_CHECK)
             approval = context.policy.get_approval(request_id)
             if approval.session_id != session_id:
-                raise PolicyError(f"Approval request {request_id} does not belong to session {session_id}")
+                raise PolicyError(
+                    f"Approval request {request_id} does not belong to session {session_id}"
+                )
             result = approval.model_dump(mode="json")
-            audit_success(session_id, ToolName.APPROVAL_CHECK, args, {"status": approval.status.value})
+            audit_success(
+                session_id, ToolName.APPROVAL_CHECK, args, {"status": approval.status.value}
+            )
             return result
         except PolicyError as exc:
             audit_failure(session_id, ToolName.APPROVAL_CHECK, args, str(exc))
             raise
 
     @server.tool()
-    def email_send_approved(session_id: str, request_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def email_send_approved(
+        session_id: str, request_id: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
         args = {"session_id": session_id, "request_id": request_id, "payload": payload}
         try:
             session = context.policy.require_tool(session_id, ToolName.EMAIL_SEND_APPROVED)
@@ -3124,7 +3269,9 @@ def create_server(context: RuntimeContext) -> FastMCP:
             context.policy.require_draft_recipients(session, recipients)
             approval = context.policy.require_approved(request_id, payload)
             if approval.session_id != session_id:
-                raise PolicyError(f"Approval request {request_id} does not belong to session {session_id}")
+                raise PolicyError(
+                    f"Approval request {request_id} does not belong to session {session_id}"
+                )
             result = context.email_service.send_from_draft(request_id=request_id, payload=payload)
             audit_success(session_id, ToolName.EMAIL_SEND_APPROVED, args, result)
             return result
@@ -3171,7 +3318,9 @@ def _project_root() -> Path:
 
 def _bootstrap_runtime_config(*, legacy_config_path: Path | None = None) -> GatewayConfig:
     return load_runtime_gateway_config(
-        runtime_dir=resolve_runtime_dir(runtime_dir=_project_root() / "runtime", legacy_config_path=legacy_config_path),
+        runtime_dir=resolve_runtime_dir(
+            runtime_dir=_project_root() / "runtime", legacy_config_path=legacy_config_path
+        ),
         legacy_config_path=legacy_config_path,
     )
 

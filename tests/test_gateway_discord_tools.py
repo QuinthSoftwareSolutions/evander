@@ -48,7 +48,9 @@ class FakeDiscordService:
             "session_id": session_id,
         }
 
-    def add_reaction(self, channel_id: str, message_id: str, emoji: str, session_id: str) -> dict[str, str]:
+    def add_reaction(
+        self, channel_id: str, message_id: str, emoji: str, session_id: str
+    ) -> dict[str, str]:
         self.reaction_calls.append((channel_id, message_id, emoji, session_id))
         if message_id in self.reaction_error_by_message_id:
             raise self.reaction_error_by_message_id[message_id]
@@ -268,7 +270,9 @@ def test_add_message_reaction_audits_discord_adapter_failure(tmp_path: Path) -> 
         ),
     )
     fake_discord = FakeDiscordService(commands=[])
-    request = httpx.Request("PUT", "https://discord.test/channels/chan-a/messages/discord:2/reactions")
+    request = httpx.Request(
+        "PUT", "https://discord.test/channels/chan-a/messages/discord:2/reactions"
+    )
     response = httpx.Response(500, request=request, text='{"error":"failure"}')
     fake_discord.reaction_error_by_message_id["discord:2"] = httpx.HTTPStatusError(
         "boom",
@@ -336,7 +340,9 @@ def test_list_unread_discord_messages_repeated_reads_do_not_retry_reactions(
         encoding="utf-8",
     )
     fake_discord = FakeDiscordService(commands=[])
-    request = httpx.Request("PUT", "https://discord.test/channels/chan-a/messages/discord:2/reactions")
+    request = httpx.Request(
+        "PUT", "https://discord.test/channels/chan-a/messages/discord:2/reactions"
+    )
     response = httpx.Response(500, request=request, text='{"error":"failure"}')
     fake_discord.reaction_error_by_message_id["discord:2"] = httpx.HTTPStatusError(
         "boom",
@@ -361,7 +367,9 @@ def test_list_unread_discord_messages_repeated_reads_do_not_retry_reactions(
     assert reaction_failure_events == []
 
 
-def test_create_local_issue_uses_session_directory_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_create_local_issue_uses_session_directory_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     context = make_context(tmp_path)
     context.session_repository.upsert_session(
         SessionManifest(
@@ -799,7 +807,9 @@ def test_get_issue_requires_tool_permission(tmp_path: Path) -> None:
         )
 
 
-def test_approve_issue_sets_approved_state_and_reason(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_approve_issue_sets_approved_state_and_reason(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     context = make_context(tmp_path)
     context.session_repository.upsert_session(
         SessionManifest(
@@ -853,7 +863,9 @@ def test_approve_issue_sets_approved_state_and_reason(tmp_path: Path, monkeypatc
     assert result["issue_number"] == "42"
 
 
-def test_reject_issue_sets_closed_state_and_reason(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_reject_issue_sets_closed_state_and_reason(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     context = make_context(tmp_path)
     context.session_repository.upsert_session(
         SessionManifest(
@@ -902,7 +914,9 @@ def test_reject_issue_sets_closed_state_and_reason(tmp_path: Path, monkeypatch: 
     assert result["issue_number"] == "42"
 
 
-def test_commit_issue_sets_committed_state_and_reason(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_commit_issue_sets_committed_state_and_reason(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     context = make_context(tmp_path)
     context.session_repository.upsert_session(
         SessionManifest(
@@ -974,7 +988,9 @@ def test_commit_issue_requires_tool_permission(tmp_path: Path) -> None:
         )
 
 
-def test_claim_next_issue_passes_through_backend_payload(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_claim_next_issue_passes_through_backend_payload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     context = make_context(tmp_path)
     context.session_repository.upsert_session(
         SessionManifest(
@@ -1014,7 +1030,9 @@ def test_claim_next_issue_passes_through_backend_payload(tmp_path: Path, monkeyp
     assert result["title"] == "Claimed issue"
 
 
-def test_complete_issue_passes_through_backend_payload(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_complete_issue_passes_through_backend_payload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     context = make_context(tmp_path)
     context.session_repository.upsert_session(
         SessionManifest(
@@ -1030,7 +1048,9 @@ def test_complete_issue_passes_through_backend_payload(tmp_path: Path, monkeypat
         def __init__(self, runtime_dir: Path) -> None:
             captured["runtime_dir"] = runtime_dir
 
-        def complete_issue(self, *, session_id: str, issue_id: str, summary: str) -> dict[str, object]:
+        def complete_issue(
+            self, *, session_id: str, issue_id: str, summary: str
+        ) -> dict[str, object]:
             captured["payload"] = {
                 "session_id": session_id,
                 "issue_id": issue_id,
@@ -1155,7 +1175,9 @@ def test_complete_issue_requires_tool_permission(tmp_path: Path) -> None:
         )
 
 
-def test_get_agent_status_maps_backend_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_get_agent_status_maps_backend_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     context = make_context(tmp_path)
     context.session_repository.upsert_session(
         SessionManifest(
@@ -1214,7 +1236,9 @@ def test_get_agent_status_maps_backend_state(tmp_path: Path, monkeypatch: pytest
     assert result["last_state_update_at"] == "2026-03-29T12:00:00+00:00"
 
 
-def test_get_agent_status_allows_same_directory_peer_vm(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_get_agent_status_allows_same_directory_peer_vm(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     context = make_context(tmp_path)
     context.session_repository.upsert_session(
         SessionManifest(
@@ -1264,13 +1288,17 @@ def test_get_agent_status_allows_same_directory_peer_vm(tmp_path: Path, monkeypa
     monkeypatch.setattr("agent_sandbox.gateway.AdminService", StubAdminService)
     server = create_server(context)
 
-    result = call_tool(server, "get_agent_status", {"session_id": "session-1", "vm_name": "vm-peer"})
+    result = call_tool(
+        server, "get_agent_status", {"session_id": "session-1", "vm_name": "vm-peer"}
+    )
 
     assert result["vm_name"] == "vm-peer"
     assert result["status"] == "idle"
 
 
-def test_get_agent_status_rejects_cross_directory_vm(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_get_agent_status_rejects_cross_directory_vm(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     context = make_context(tmp_path)
     context.session_repository.upsert_session(
         SessionManifest(
@@ -1313,10 +1341,14 @@ def test_get_agent_status_rejects_cross_directory_vm(tmp_path: Path, monkeypatch
     server = create_server(context)
 
     with pytest.raises(ToolError, match="outside the session directory scope 'root/team-a'"):
-        asyncio.run(server.call_tool("get_agent_status", {"session_id": "session-1", "vm_name": "vm-other"}))
+        asyncio.run(
+            server.call_tool("get_agent_status", {"session_id": "session-1", "vm_name": "vm-other"})
+        )
 
 
-def test_get_agent_logs_returns_tail_from_service(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_get_agent_logs_returns_tail_from_service(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     context = make_context(tmp_path)
     context.session_repository.upsert_session(
         SessionManifest(
@@ -1436,27 +1468,30 @@ def test_discord_tool_contract_signatures_and_shapes_stable(tmp_path: Path) -> N
     context = make_context(tmp_path)
     context.session_repository.upsert_session(
         SessionManifest(
-          session_id="session-1",
-          allowed_tools=[ToolName.DISCORD_GET_COMMANDS, ToolName.DISCORD_POST_STATUS],
-          discord_channel_allowlist=["chan-allowlisted"],
-          expires_at=datetime.now(UTC) + timedelta(hours=1),
+            session_id="session-1",
+            allowed_tools=[ToolName.DISCORD_GET_COMMANDS, ToolName.DISCORD_POST_STATUS],
+            discord_channel_allowlist=["chan-allowlisted"],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
         ),
     )
-    set_discord_service(context, FakeDiscordService(
-        commands=[
-            DiscordCommandEnvelope(
-                command_id="cmd-1",
-                author_id="user-1",
-                channel_id="chan-allowlisted",
-                content="!status",
-                metadata={
-                  "source": "discord_bot_api",
-                  "channel_id": "chan-allowlisted",
-                  "author_id": "user-1",
-                },
-            )
-        ]
-    ))
+    set_discord_service(
+        context,
+        FakeDiscordService(
+            commands=[
+                DiscordCommandEnvelope(
+                    command_id="cmd-1",
+                    author_id="user-1",
+                    channel_id="chan-allowlisted",
+                    content="!status",
+                    metadata={
+                        "source": "discord_bot_api",
+                        "channel_id": "chan-allowlisted",
+                        "author_id": "user-1",
+                    },
+                )
+            ]
+        ),
+    )
     server = create_server(context)
     assert list(signature(FakeDiscordService.get_commands).parameters) == [
         "self",
@@ -1470,7 +1505,9 @@ def test_discord_tool_contract_signatures_and_shapes_stable(tmp_path: Path) -> N
         "session_id",
     ]
 
-    get_result = call_tool(server, "discord_get_commands", {"session_id": "session-1", "since_cursor": None})
+    get_result = call_tool(
+        server, "discord_get_commands", {"session_id": "session-1", "since_cursor": None}
+    )
     post_result = call_tool(
         server,
         "discord_post_status",
@@ -1483,15 +1520,20 @@ def test_discord_tool_contract_signatures_and_shapes_stable(tmp_path: Path) -> N
 
     assert isinstance(get_result, dict)
     assert get_result["commands"]
-    assert {"command_id", "author_id", "channel_id", "content", "metadata"}.issubset(get_result["commands"][0])
+    assert {"command_id", "author_id", "channel_id", "content", "metadata"}.issubset(
+        get_result["commands"][0]
+    )
 
     assert set(post_result) == {"status", "message_id", "channel_id", "session_id"}
     assert post_result["status"] == "posted"
+
+
 def test_discord_get_commands_audits_adapter_http_error(tmp_path: Path) -> None:
     context = make_context(tmp_path)
     context.session_repository.upsert_session(
         SessionManifest(
-            session_id="session-1",allowed_tools=[ToolName.DISCORD_GET_COMMANDS],
+            session_id="session-1",
+            allowed_tools=[ToolName.DISCORD_GET_COMMANDS],
             discord_channel_allowlist=["chan-allowlisted"],
             expires_at=datetime.now(UTC) + timedelta(hours=1),
         ),
@@ -1518,6 +1560,7 @@ def test_discord_get_commands_audits_adapter_http_error(tmp_path: Path) -> None:
         "error": "discord timeout",
         "error_class": "adapter_http_error",
     }
+
 
 def test_discord_post_status_audits_unexpected_adapter_error(tmp_path: Path) -> None:
     context = make_context(tmp_path)
@@ -1567,21 +1610,24 @@ def test_discord_get_commands_emits_denied_and_allowed_audit_events(tmp_path: Pa
             expires_at=datetime.now(UTC) + timedelta(hours=1),
         ),
     )
-    set_discord_service(context, FakeDiscordService(
-        commands=[
-            DiscordCommandEnvelope(
-                command_id="cmd-1",
-                author_id="user-1",
-                channel_id="chan-blocked",
-                content="!status",
-                metadata={
-                  "source": "discord_bot_api",
-                  "channel_id": "chan-blocked",
-                  "author_id": "user-1",
-                },
-            )
-        ]
-    ))
+    set_discord_service(
+        context,
+        FakeDiscordService(
+            commands=[
+                DiscordCommandEnvelope(
+                    command_id="cmd-1",
+                    author_id="user-1",
+                    channel_id="chan-blocked",
+                    content="!status",
+                    metadata={
+                        "source": "discord_bot_api",
+                        "channel_id": "chan-blocked",
+                        "author_id": "user-1",
+                    },
+                )
+            ]
+        ),
+    )
     server = create_server(context)
     result = call_tool(server, "discord_get_commands", {"session_id": "session-1"})
 
@@ -1589,7 +1635,8 @@ def test_discord_get_commands_emits_denied_and_allowed_audit_events(tmp_path: Pa
     events = read_audit_events(context.config.audit_log_path)
     decisions = [event["decision"] for event in events]
     assert decisions == ["denied", "allowed"]
-  
+
+
 def test_email_tools_require_and_return_mailbox_id(tmp_path: Path) -> None:
     context = make_context(tmp_path)
     context.session_repository.upsert_session(
@@ -1665,7 +1712,12 @@ def test_email_tools_enforce_mailbox_and_folder_allowlists(tmp_path: Path) -> No
         asyncio.run(
             server.call_tool(
                 "email_list_unread",
-                {"session_id": "session-1", "mailbox_id": "secondary", "folder": "inbox", "limit": 10},
+                {
+                    "session_id": "session-1",
+                    "mailbox_id": "secondary",
+                    "folder": "inbox",
+                    "limit": 10,
+                },
             )
         )
 
@@ -1763,7 +1815,11 @@ def test_email_get_message_prevents_cross_mailbox_access(tmp_path: Path) -> None
         asyncio.run(
             server.call_tool(
                 "email_get_message",
-                {"session_id": "session-1", "mailbox_id": "secondary", "message_id": "msg-primary-1"},
+                {
+                    "session_id": "session-1",
+                    "mailbox_id": "secondary",
+                    "message_id": "msg-primary-1",
+                },
             )
         )
 
@@ -1797,7 +1853,11 @@ class _FakePrFeedbackService:
         self.last_session_id: str | None = None
 
     def has_pending_feedback(
-        self, *, streams: list[dict[str, str]], session_id: str | None = None, cursor: str | None = None
+        self,
+        *,
+        streams: list[dict[str, str]],
+        session_id: str | None = None,
+        cursor: str | None = None,
     ) -> SimpleNamespace:
         self.last_streams = streams
         self.last_session_id = session_id
@@ -1929,16 +1989,24 @@ def test_email_provider_auth_failures_are_audited(tmp_path: Path) -> None:
             expires_at=datetime.now(UTC) + timedelta(hours=1),
         ),
     )
-    set_email_service(context, _RaisingEmailService(
-        ProviderRequestError("provider auth failed", status_code=401, attempt=1, max_attempts=1)
-    ))
+    set_email_service(
+        context,
+        _RaisingEmailService(
+            ProviderRequestError("provider auth failed", status_code=401, attempt=1, max_attempts=1)
+        ),
+    )
     server = create_server(context)
 
     with pytest.raises(ToolError, match="provider auth failed"):
         asyncio.run(
             server.call_tool(
                 "email_list_unread",
-                {"session_id": "session-1", "mailbox_id": "primary", "folder": "inbox", "limit": 10},
+                {
+                    "session_id": "session-1",
+                    "mailbox_id": "primary",
+                    "folder": "inbox",
+                    "limit": 10,
+                },
             )
         )
 
@@ -1969,7 +2037,12 @@ def test_email_provider_timeouts_are_audited(tmp_path: Path) -> None:
         asyncio.run(
             server.call_tool(
                 "email_list_unread",
-                {"session_id": "session-1", "mailbox_id": "primary", "folder": "inbox", "limit": 10},
+                {
+                    "session_id": "session-1",
+                    "mailbox_id": "primary",
+                    "folder": "inbox",
+                    "limit": 10,
+                },
             )
         )
 
@@ -2116,7 +2189,9 @@ def test_has_pending_feedback_returns_minimal_heartbeat_payload(tmp_path: Path) 
             session_id="session-1",
             allowed_tools=[ToolName.HAS_PENDING_FEEDBACK],
             expires_at=datetime.now(UTC) + timedelta(hours=1),
-            metadata={"pr_feedback_streams": [{"provider": "github", "repo": "org/repo", "pr_id": "17"}]},
+            metadata={
+                "pr_feedback_streams": [{"provider": "github", "repo": "org/repo", "pr_id": "17"}]
+            },
         ),
     )
     context.pr_feedback_service = _FakePrFeedbackService()
@@ -2137,7 +2212,9 @@ def test_list_unread_feedback_returns_items_and_audits_result_count(tmp_path: Pa
             session_id="session-1",
             allowed_tools=[ToolName.LIST_UNREAD_FEEDBACK],
             expires_at=datetime.now(UTC) + timedelta(hours=1),
-            metadata={"pr_feedback_streams": [{"provider": "github", "repo": "org/repo", "pr_id": "17"}]},
+            metadata={
+                "pr_feedback_streams": [{"provider": "github", "repo": "org/repo", "pr_id": "17"}]
+            },
         ),
     )
     context.pr_feedback_service = _FakePrFeedbackService()
@@ -2282,7 +2359,9 @@ def test_list_all_feedback_returns_history_including_already_read_items(tmp_path
             session_id="session-1",
             allowed_tools=[ToolName.LIST_ALL_FEEDBACK],
             expires_at=datetime.now(UTC) + timedelta(hours=1),
-            metadata={"pr_feedback_streams": [{"provider": "github", "repo": "org/repo", "pr_id": "17"}]},
+            metadata={
+                "pr_feedback_streams": [{"provider": "github", "repo": "org/repo", "pr_id": "17"}]
+            },
         ),
     )
     context.pr_feedback_service = _FakePrFeedbackService()
@@ -2312,7 +2391,9 @@ def test_post_pr_feedback_reply_calls_provider_and_audits_reply_identifiers(tmp_
             session_id="session-1",
             allowed_tools=[ToolName.POST_PR_FEEDBACK_REPLY],
             expires_at=datetime.now(UTC) + timedelta(hours=1),
-            metadata={"pr_feedback_streams": [{"provider": "github", "repo": "org/repo", "pr_id": "17"}]},
+            metadata={
+                "pr_feedback_streams": [{"provider": "github", "repo": "org/repo", "pr_id": "17"}]
+            },
         ),
     )
     fake_service = _FakePrReplyService()
@@ -2346,7 +2427,9 @@ def test_post_pr_feedback_reply_calls_provider_and_audits_reply_identifiers(tmp_
     }
 
 
-def test_post_pr_inline_comment_calls_publish_service_and_audits_inline_target(tmp_path: Path) -> None:
+def test_post_pr_inline_comment_calls_publish_service_and_audits_inline_target(
+    tmp_path: Path,
+) -> None:
     context = make_context(tmp_path)
     context.session_repository.upsert_session(
         SessionManifest(
@@ -2470,7 +2553,9 @@ def test_post_pr_feedback_reply_rejects_missing_target_identifiers(tmp_path: Pat
             session_id="session-1",
             allowed_tools=[ToolName.POST_PR_FEEDBACK_REPLY],
             expires_at=datetime.now(UTC) + timedelta(hours=1),
-            metadata={"pr_feedback_streams": [{"provider": "github", "repo": "org/repo", "pr_id": "17"}]},
+            metadata={
+                "pr_feedback_streams": [{"provider": "github", "repo": "org/repo", "pr_id": "17"}]
+            },
         ),
     )
     set_pr_reply_service(context, _FakePrReplyService())
@@ -2490,7 +2575,9 @@ def test_post_pr_feedback_reply_rejects_missing_target_identifiers(tmp_path: Pat
         )
 
 
-def test_post_pr_feedback_reply_uses_directory_policy_for_approval_requirement(tmp_path: Path) -> None:
+def test_post_pr_feedback_reply_uses_directory_policy_for_approval_requirement(
+    tmp_path: Path,
+) -> None:
     context = make_context(tmp_path)
     write_root_policy_overlay(context, {"pr_reply_require_approval": True})
     context.session_repository.upsert_session(
@@ -2498,7 +2585,9 @@ def test_post_pr_feedback_reply_uses_directory_policy_for_approval_requirement(t
             session_id="session-1",
             allowed_tools=[ToolName.POST_PR_FEEDBACK_REPLY],
             expires_at=datetime.now(UTC) + timedelta(hours=1),
-            metadata={"pr_feedback_streams": [{"provider": "github", "repo": "org/repo", "pr_id": "17"}]},
+            metadata={
+                "pr_feedback_streams": [{"provider": "github", "repo": "org/repo", "pr_id": "17"}]
+            },
         ),
     )
     set_pr_reply_service(context, _FakePrReplyService())

@@ -7,7 +7,11 @@ from pathlib import Path
 import httpx
 
 from agent_sandbox.models import PrFeedbackItem
-from agent_sandbox.pr_feedback_worker import AzureDevOpsFeedbackAdapter, GitHubFeedbackAdapter, _stream_key
+from agent_sandbox.daemons.pr_feedback_worker import (
+    AzureDevOpsFeedbackAdapter,
+    GitHubFeedbackAdapter,
+    _stream_key,
+)
 from agent_sandbox.events.models import TriggerEvent
 from agent_sandbox.events.provider_models import PullRequestNewFeedbackTriggerDefinition
 from agent_sandbox.triggers.providers._cursor_state import TriggerCursorStore
@@ -71,7 +75,9 @@ class PullRequestNewFeedbackTriggerProvider(TriggerProviderBase):
                             )
                         )
                     if result.next_cursor:
-                        state_cursors[stream_key] = _latest_cursor(state_cursors.get(stream_key), result.next_cursor)
+                        state_cursors[stream_key] = _latest_cursor(
+                            state_cursors.get(stream_key), result.next_cursor
+                        )
 
         discovered.sort(key=lambda item: item[1].created_at)
 
@@ -96,7 +102,11 @@ class PullRequestNewFeedbackTriggerProvider(TriggerProviderBase):
                         "feedback": feedback.model_dump(mode="json"),
                     }
                     | (
-                        {"session_id": pr_sessions.get((provider_name, stream["repo"], stream["pr_id"]))}
+                        {
+                            "session_id": pr_sessions.get(
+                                (provider_name, stream["repo"], stream["pr_id"])
+                            )
+                        }
                         if pr_sessions.get((provider_name, stream["repo"], stream["pr_id"]))
                         else {}
                     ),
@@ -120,20 +130,26 @@ class PullRequestNewFeedbackTriggerProvider(TriggerProviderBase):
 
     def _trigger(self) -> PullRequestNewFeedbackTriggerDefinition:
         if not isinstance(self.trigger_definition, PullRequestNewFeedbackTriggerDefinition):
-            raise RuntimeError("PullRequestNewFeedbackTriggerProvider initialized with wrong definition")
+            raise RuntimeError(
+                "PullRequestNewFeedbackTriggerProvider initialized with wrong definition"
+            )
         return self.trigger_definition
 
     def _build_adapter(self, provider: str):
         trigger = self._trigger()
         if provider == "github":
-            token = self.runtime_context.env.get(self.runtime_context.resolved_config.github_token_env, "").strip()
+            token = self.runtime_context.env.get(
+                self.runtime_context.resolved_config.github_token_env, ""
+            ).strip()
             return GitHubFeedbackAdapter(token=token)
         if provider == "ado":
             pat_env_name = self.runtime_context.resolved_config.azure_devops_pr_pat_env
             pat = self.runtime_context.env.get(pat_env_name, "").strip()
             return AzureDevOpsFeedbackAdapter(
-                organization_url=trigger.organization_url or self.runtime_context.resolved_config.azure_devops_organization_url,
-                project=trigger.project or self.runtime_context.resolved_config.azure_devops_project,
+                organization_url=trigger.organization_url
+                or self.runtime_context.resolved_config.azure_devops_organization_url,
+                project=trigger.project
+                or self.runtime_context.resolved_config.azure_devops_project,
                 pat=pat,
                 pat_env_name=pat_env_name,
             )
@@ -161,7 +177,10 @@ class PullRequestNewFeedbackTriggerProvider(TriggerProviderBase):
                 continue
             if not repo or not pr_id:
                 continue
-            if directory_scope and not (directory_path == directory_scope or directory_path.startswith(f"{directory_scope}/")):
+            if directory_scope and not (
+                directory_path == directory_scope
+                or directory_path.startswith(f"{directory_scope}/")
+            ):
                 continue
             key = f"{row_provider}:{repo}:{pr_id}"
             streams[key] = {"provider": row_provider, "repo": repo, "pr_id": pr_id}
@@ -191,7 +210,10 @@ class PullRequestNewFeedbackTriggerProvider(TriggerProviderBase):
             directory_path = str(raw.get("directory_path", "root")).strip() or "root"
             if not provider or not repo or not pr_id or not session_id:
                 continue
-            if directory_scope and not (directory_path == directory_scope or directory_path.startswith(f"{directory_scope}/")):
+            if directory_scope and not (
+                directory_path == directory_scope
+                or directory_path.startswith(f"{directory_scope}/")
+            ):
                 continue
             sessions[(provider, repo, pr_id)] = session_id
         return sessions

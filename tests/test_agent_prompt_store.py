@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_sandbox.agent_prompt_store import AgentPromptRecord, AgentPromptStore
+from agent_sandbox.messaging.agent_prompt_store import AgentPromptRecord, AgentPromptStore
 
 
 def _prompt(
@@ -30,7 +30,9 @@ def _prompt(
     )
 
 
-def test_agent_prompt_store_creates_and_lists_unread_with_deterministic_sort(tmp_path: Path) -> None:
+def test_agent_prompt_store_creates_and_lists_unread_with_deterministic_sort(
+    tmp_path: Path,
+) -> None:
     store = AgentPromptStore(tmp_path / "agent-prompt-store.json")
     late = datetime(2026, 4, 10, 0, 0, 2, tzinfo=timezone.utc)
     early = datetime(2026, 4, 10, 0, 0, 1, tzinfo=timezone.utc)
@@ -63,7 +65,9 @@ def test_agent_prompt_store_rejects_token_replay(tmp_path: Path) -> None:
     store.create_prompt_message(_prompt("m-1", created_at=created, token_hash="token-1"))
 
     consumed_at = datetime(2026, 4, 10, 0, 1, 0, tzinfo=timezone.utc)
-    first = store.validate_and_consume_token("token-1", expected_message_id="m-1", consumed_at=consumed_at)
+    first = store.validate_and_consume_token(
+        "token-1", expected_message_id="m-1", consumed_at=consumed_at
+    )
     second = store.validate_and_consume_token("token-1", expected_message_id="m-1")
 
     assert first is not None

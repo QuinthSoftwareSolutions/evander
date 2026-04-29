@@ -9,7 +9,13 @@ from pathlib import Path
 from starlette.applications import Starlette
 
 from .docker_runtime import DockerContainerRuntime
-from .models import DEFAULT_WORKER_ROOT, WorkerJobRecord, WorkerJobRequest, WorkerSessionPaths, now_utc
+from .models import (
+    DEFAULT_WORKER_ROOT,
+    WorkerJobRecord,
+    WorkerJobRequest,
+    WorkerSessionPaths,
+    now_utc,
+)
 from .runtime import ContainerRuntime
 from .sandbox_profile import WorkerSandboxProfile
 from .security import safe_subprocess_error, sanitize_metadata, sanitize_text
@@ -39,6 +45,7 @@ class WorkerDaemon:
         self.token = token if token is not None else os.environ.get("AGENT_SANDBOX_WORKER_TOKEN")
 
     def create_app(self) -> Starlette:
+
         from .api import build_worker_app
 
         return build_worker_app(self)
@@ -71,7 +78,9 @@ class WorkerDaemon:
             record.finished_at = now_utc()
             record.error = sanitize_text(str(exc))
             self.store.put(record)
-            logger.exception("worker_job_start_failed job_id=%s session_id=%s", job_id, request.session_id)
+            logger.exception(
+                "worker_job_start_failed job_id=%s session_id=%s", job_id, request.session_id
+            )
             raise
         record.container_id = container_id
         record.status = "running"

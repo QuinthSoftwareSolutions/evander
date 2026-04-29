@@ -26,8 +26,12 @@ def _prepare_script(tmp_path: Path) -> tuple[Path, Path]:
     script_path = scripts_dir / "set_issue_agent_state.sh"
     script_path.write_text(source_script.read_text(encoding="utf-8"), encoding="utf-8")
     os.chmod(script_path, 0o755)
-    (lib_dir / "vm_network.sh").write_text(source_vm_lib.read_text(encoding="utf-8"), encoding="utf-8")
-    (lib_dir / "guest_ssh.sh").write_text(source_guest_ssh_lib.read_text(encoding="utf-8"), encoding="utf-8")
+    (lib_dir / "vm_network.sh").write_text(
+        source_vm_lib.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    (lib_dir / "guest_ssh.sh").write_text(
+        source_guest_ssh_lib.read_text(encoding="utf-8"), encoding="utf-8"
+    )
 
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
@@ -117,11 +121,17 @@ printf 'state=disabled path=/home/agent/.agent-sandbox/agent-control.state\\n'
         check=True,
     )
 
-    assert result.stdout.strip() == "state=disabled path=/home/agent/.agent-sandbox/agent-control.state"
+    assert (
+        result.stdout.strip()
+        == "state=disabled path=/home/agent/.agent-sandbox/agent-control.state"
+    )
     assert "CALLER_HOME: unbound variable" not in result.stderr
     ssh_calls = ssh_log.read_text(encoding="utf-8").splitlines()
     assert any("agent@192.168.122.11 true" in call for call in ssh_calls)
-    assert any("REMOTE_STATUS='disabled' REMOTE_PHASE='operator-disable' bash -s" in call for call in ssh_calls)
+    assert any(
+        "REMOTE_STATUS='disabled' REMOTE_PHASE='operator-disable' bash -s" in call
+        for call in ssh_calls
+    )
     assert any("UserKnownHostsFile=" in call for call in ssh_calls)
 
     remote_script = ssh_stdin.read_text(encoding="utf-8")
@@ -133,11 +143,11 @@ printf 'state=disabled path=/home/agent/.agent-sandbox/agent-control.state\\n'
 
 
 def test_set_issue_agent_state_tracks_control_file_state_machine() -> None:
-    script_text = (Path(__file__).resolve().parents[1] / "scripts" / "set_issue_agent_state.sh").read_text(
-        encoding="utf-8"
-    )
+    script_text = (
+        Path(__file__).resolve().parents[1] / "scripts" / "set_issue_agent_state.sh"
+    ).read_text(encoding="utf-8")
 
-    assert 'set_issue_agent_state.sh <enable|disable> <issue-number> [vm-user]' in script_text
+    assert "set_issue_agent_state.sh <enable|disable> <issue-number> [vm-user]" in script_text
     assert 'REMOTE_STATUS="disabled"' in script_text
     assert 'REMOTE_STATUS="idle"' in script_text
     assert 'CONTROL_STATE_PATH="${LOG_DIR}/agent-control.state"' in script_text
@@ -313,6 +323,8 @@ printf 'state=disabled path=/home/root/.agent-sandbox/agent-control.state\\n'
         check=True,
     )
 
-    assert result.stdout.strip() == "state=disabled path=/home/root/.agent-sandbox/agent-control.state"
+    assert (
+        result.stdout.strip() == "state=disabled path=/home/root/.agent-sandbox/agent-control.state"
+    )
     ssh_calls = ssh_log.read_text(encoding="utf-8").splitlines()
     assert any("root@192.168.122.11 true" in call for call in ssh_calls)

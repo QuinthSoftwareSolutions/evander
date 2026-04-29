@@ -4,7 +4,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from agent_sandbox.pr_feedback_worker import FeedbackEnvelope, PrFeedbackStore
+from agent_sandbox.daemons.pr_feedback_worker import FeedbackEnvelope, PrFeedbackStore
 from agent_sandbox.services import PrFeedbackService
 
 
@@ -27,7 +27,9 @@ class _InMemoryFeedbackRepo:
         del session_id, stream_key
         return None
 
-    def advance_session_cursor(self, session_id: str, stream_key: str, cursor: str | None) -> str | None:
+    def advance_session_cursor(
+        self, session_id: str, stream_key: str, cursor: str | None
+    ) -> str | None:
         self.advanced.append((session_id, stream_key, cursor))
         return cursor
 
@@ -40,8 +42,7 @@ class _InMemoryFeedbackRepo:
         limit: int | None = None,
     ) -> list[FeedbackEnvelope]:
         allowed_streams = {
-            (stream["provider"], stream["repo"], stream["pr_id"])
-            for stream in streams
+            (stream["provider"], stream["repo"], stream["pr_id"]) for stream in streams
         }
         ignored = exclude_feedback_ids or set()
         items: list[FeedbackEnvelope] = []
@@ -53,7 +54,9 @@ class _InMemoryFeedbackRepo:
             if key not in allowed_streams or candidate.feedback_id in ignored:
                 continue
             cursor = after.get(key)
-            if cursor and candidate.created_at <= datetime.fromisoformat(cursor.replace("Z", "+00:00")):
+            if cursor and candidate.created_at <= datetime.fromisoformat(
+                cursor.replace("Z", "+00:00")
+            ):
                 continue
             items.append(candidate)
         items.sort(key=lambda item: item.created_at)
@@ -70,8 +73,7 @@ class _InMemoryFeedbackRepo:
             stream_key = f"{stream['provider']}:{stream['repo']}:{stream['pr_id']}"
             self.advanced.append((session_id, stream_key, cursor))
         return {
-            f"{stream['provider']}:{stream['repo']}:{stream['pr_id']}": cursor
-            for stream in streams
+            f"{stream['provider']}:{stream['repo']}:{stream['pr_id']}": cursor for stream in streams
         }
 
     def has_unread_feedback(self, *, session_id: str, streams: list[dict[str, str]]) -> bool:
@@ -239,7 +241,10 @@ def test_cursor_advancement_prevents_reprocessing_old_comments(tmp_path: Path) -
     stream = [{"provider": "github", "repo": "org/repo", "pr_id": "17"}]
 
     first_batch = service.list_unread_feedback(streams=stream, cursor="2025-12-31T00:00:00Z")
-    assert [item.feedback_id for item in first_batch.feedback] == ["github:review:1", "github:review:2"]
+    assert [item.feedback_id for item in first_batch.feedback] == [
+        "github:review:1",
+        "github:review:2",
+    ]
     assert first_batch.next_cursor == "2026-01-02T00:00:00Z"
 
     second_batch = service.list_unread_feedback(streams=stream, cursor=first_batch.next_cursor)
@@ -320,11 +325,16 @@ def test_list_all_feedback_includes_items_regardless_of_read_cursor(tmp_path: Pa
         limit=10,
     )
 
-    assert [item.feedback_id for item in response.feedback] == ["github:review:1", "github:review:2"]
+    assert [item.feedback_id for item in response.feedback] == [
+        "github:review:1",
+        "github:review:2",
+    ]
     assert response.next_cursor == "2026-01-02T00:00:00Z"
 
 
-def test_list_unread_feedback_can_use_repository_contract_without_file_reads(tmp_path: Path) -> None:
+def test_list_unread_feedback_can_use_repository_contract_without_file_reads(
+    tmp_path: Path,
+) -> None:
     store_path = tmp_path / "missing-pr-feedback-store.json"
     repository = _InMemoryFeedbackRepo(
         {

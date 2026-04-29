@@ -9,10 +9,10 @@ from typing import Any, Callable
 
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
-from .config import GatewayConfig
-from .directories import DirectoryService, DirectoryStore
-from .host_config import HostConfig, build_runtime_gateway_config
-from .models import Directory, DirectoryInfo, DirectoryPath
+from agent_sandbox.config import GatewayConfig
+from agent_sandbox.directories import DirectoryService, DirectoryStore
+from agent_sandbox.host_config import HostConfig, build_runtime_gateway_config
+from agent_sandbox.models import Directory, DirectoryInfo, DirectoryPath
 
 DIRECTORY_CONFIG_OVERLAYS_KEY = "config_overlays"
 DIRECTORY_CONFIG_METADATA_KEY = "directory_config"
@@ -270,6 +270,7 @@ class EffectiveAutomationDirectoryConfig(BaseModel):
     prioritizer_roles: list[str] = Field(default_factory=list)
     worker_roles: list[str] = Field(default_factory=list)
 
+
 LEGACY_DOMAIN_FIELD_SUBSETS: dict[str, dict[str, frozenset[str]]] = {
     "providers": {
         "providers": DIRECTORY_CONFIG_DOMAIN_FIELDS["providers"],
@@ -301,17 +302,23 @@ def get_domain_base_config(config: GatewayConfig, domain: str) -> dict[str, Any]
         return {
             "git_root": os.environ.get("AGENT_SANDBOX_GIT_ROOT", "").strip() or "git-remotes",
             "git_host": os.environ.get("AGENT_SANDBOX_GIT_HOST", "").strip() or "192.168.250.1",
-            "git_user": os.environ.get("AGENT_SANDBOX_GIT_USER", "").strip() or os.environ.get("USER", "agent"),
-            "git_ssh_alias": os.environ.get("AGENT_SANDBOX_GIT_SSH_ALIAS", "").strip() or "agent-sandbox-git-host",
+            "git_user": os.environ.get("AGENT_SANDBOX_GIT_USER", "").strip()
+            or os.environ.get("USER", "agent"),
+            "git_ssh_alias": os.environ.get("AGENT_SANDBOX_GIT_SSH_ALIAS", "").strip()
+            or "agent-sandbox-git-host",
             "default_model": os.environ.get("AGENT_DEFAULT_MODEL", "").strip() or None,
             "enable_guest_heartbeat": (
-                os.environ.get("ENABLE_GUEST_HEARTBEAT", "").strip().lower() in {"1", "true", "yes", "on"}
+                os.environ.get("ENABLE_GUEST_HEARTBEAT", "").strip().lower()
+                in {"1", "true", "yes", "on"}
             ),
             "guest_heartbeat_prompt": (
                 os.environ.get("GUEST_HEARTBEAT_PROMPT", "").strip()
                 or "Resume work for this session. Check for pending feedback first, then continue the most recent task."
             ),
-            "post_exec_verification_prompt": os.environ.get("AGENT_POST_EXEC_VERIFICATION_PROMPT", "").strip() or None,
+            "post_exec_verification_prompt": os.environ.get(
+                "AGENT_POST_EXEC_VERIFICATION_PROMPT", ""
+            ).strip()
+            or None,
             "issue_setup_azure_devops_pr_pat_env": (
                 os.environ.get("AGENT_SANDBOX_AZURE_DEVOPS_PR_PAT_ENV", "").strip()
                 or "AZURE_DEVOPS_PR_PAT"
@@ -344,7 +351,7 @@ def validate_effective_domain_payload(domain: str, payload: dict[str, Any]) -> d
         validated = EffectiveIssueSetupDirectoryConfig.model_validate(payload)
         return validated.model_dump(mode="json")
     if domain == "vm":
-        from .vm_defaults_config import EffectiveVmDefaultsConfig
+        from agent_sandbox.vm.defaults_config import EffectiveVmDefaultsConfig
 
         validated = EffectiveVmDefaultsConfig.model_validate(payload)
         return validated.model_dump(mode="json")
@@ -405,20 +412,28 @@ class DirectoryConfigStore:
         legacy_payload = self._legacy_domain_payload(directory.path, domain=domain)
         if legacy_payload is not None:
             return self.validate_domain_payload(domain, legacy_payload)
-        raise ValueError(f"directory config file is missing for {directory.path!r} domain {domain!r}")
+        raise ValueError(
+            f"directory config file is missing for {directory.path!r} domain {domain!r}"
+        )
 
     def write(self, reference: str, *, domain: str, payload: dict[str, Any]) -> dict[str, Any]:
         original_domain = domain
         domain = self._normalize_domain_name(domain)
         if original_domain == "providers" and isinstance(payload, dict):
             provider_payload = {
-                key: value for key, value in payload.items() if key in DIRECTORY_CONFIG_DOMAIN_FIELDS["providers"]
+                key: value
+                for key, value in payload.items()
+                if key in DIRECTORY_CONFIG_DOMAIN_FIELDS["providers"]
             }
             email_payload = {
-                key: value for key, value in payload.items() if key in DIRECTORY_CONFIG_DOMAIN_FIELDS["email"]
+                key: value
+                for key, value in payload.items()
+                if key in DIRECTORY_CONFIG_DOMAIN_FIELDS["email"]
             }
             unknown_fields = sorted(
-                set(payload) - DIRECTORY_CONFIG_DOMAIN_FIELDS["providers"] - DIRECTORY_CONFIG_DOMAIN_FIELDS["email"]
+                set(payload)
+                - DIRECTORY_CONFIG_DOMAIN_FIELDS["providers"]
+                - DIRECTORY_CONFIG_DOMAIN_FIELDS["email"]
             )
             if unknown_fields:
                 raise ValueError(
@@ -453,7 +468,9 @@ class DirectoryConfigStore:
     def validate_domain_payload(cls, domain: str, payload: dict[str, Any]) -> dict[str, Any]:
         domain = cls._normalize_domain_name(domain)
         if not isinstance(payload, dict):
-            raise ValueError(f"directory config payload for domain {domain!r} must be a JSON object")
+            raise ValueError(
+                f"directory config payload for domain {domain!r} must be a JSON object"
+            )
         allowed_fields = DIRECTORY_CONFIG_DOMAIN_FIELDS[domain]
         if domain == "heartbeat":
             legacy_fields = {
@@ -492,7 +509,7 @@ class DirectoryConfigStore:
             validated = AdoWorkerDirectoryConfig.model_validate(payload)
             return validated.model_dump(mode="json", include=set(payload))
         if domain == "vm":
-            from .vm_defaults_config import EffectiveVmDefaultsConfig
+            from agent_sandbox.vm.defaults_config import EffectiveVmDefaultsConfig
 
             validated = EffectiveVmDefaultsConfig.model_validate(payload)
             return validated.model_dump(mode="json", include=set(payload))
@@ -540,7 +557,9 @@ class DirectoryConfigStore:
         if legacy_domain is None:
             return None
         segments = DirectoryPath(segments=canonical_path).segments
-        return self._root_path.joinpath(*segments, LEGACY_DIRECTORY_CONFIG_DOMAIN_FILENAMES[legacy_domain])
+        return self._root_path.joinpath(
+            *segments, LEGACY_DIRECTORY_CONFIG_DOMAIN_FILENAMES[legacy_domain]
+        )
 
     def _legacy_domain_payload(self, canonical_path: str, *, domain: str) -> dict[str, Any] | None:
         legacy_path = self._legacy_domain_file_path(canonical_path, domain=domain)
@@ -618,7 +637,11 @@ class DirectoryConfigStore:
     @staticmethod
     def _domains_for_directory_info(directory: DirectoryInfo, *, root_path: Path) -> list[str]:
         config_metadata = directory.metadata.get(DIRECTORY_CONFIG_METADATA_KEY)
-        raw_domains = config_metadata.get(DIRECTORY_CONFIG_METADATA_DOMAINS_KEY, []) if isinstance(config_metadata, dict) else []
+        raw_domains = (
+            config_metadata.get(DIRECTORY_CONFIG_METADATA_DOMAINS_KEY, [])
+            if isinstance(config_metadata, dict)
+            else []
+        )
         normalized_domains: set[str] = set()
         if isinstance(raw_domains, list):
             for raw_domain in raw_domains:
@@ -632,7 +655,9 @@ class DirectoryConfigStore:
                     continue
                 if value == "providers":
                     normalized_domains.add("providers")
-                    legacy_path = root_path.joinpath(*DirectoryPath(segments=directory.path).segments, "providers.json")
+                    legacy_path = root_path.joinpath(
+                        *DirectoryPath(segments=directory.path).segments, "providers.json"
+                    )
                     if legacy_path.exists():
                         try:
                             payload = json.loads(legacy_path.read_text(encoding="utf-8"))
@@ -642,7 +667,9 @@ class DirectoryConfigStore:
                             field in payload for field in DIRECTORY_CONFIG_DOMAIN_FIELDS["email"]
                         ):
                             normalized_domains.add("email")
-        automation_path = root_path.joinpath(*DirectoryPath(segments=directory.path).segments, "automation.json")
+        automation_path = root_path.joinpath(
+            *DirectoryPath(segments=directory.path).segments, "automation.json"
+        )
         if automation_path.exists():
             normalized_domains.add("automation")
         return sorted(normalized_domains)
@@ -681,7 +708,9 @@ class DirectoryConfigResolver:
                 "root",
                 domain=domain,
                 base_config=get_domain_base_config(root_bootstrap, domain),
-                validator=lambda candidate, domain=domain: validate_effective_domain_payload(domain, candidate),
+                validator=lambda candidate, domain=domain: validate_effective_domain_payload(
+                    domain, candidate
+                ),
             )
             payload.update(resolution.effective_config)
         return GatewayConfig.model_validate(payload)
@@ -748,8 +777,12 @@ class DirectoryConfigResolver:
             validation_errors=validation_errors,
         )
 
-    def _overlay_for_directory(self, directory: DirectoryInfo, *, domain: str) -> dict[str, Any] | None:
-        if self._config_store is not None and domain in self._config_store.list_domains(directory.path):
+    def _overlay_for_directory(
+        self, directory: DirectoryInfo, *, domain: str
+    ) -> dict[str, Any] | None:
+        if self._config_store is not None and domain in self._config_store.list_domains(
+            directory.path
+        ):
             return self._config_store.read(directory.path, domain=domain)
         overlays = directory.metadata.get(DIRECTORY_CONFIG_OVERLAYS_KEY)
         if not isinstance(overlays, dict):
@@ -778,7 +811,9 @@ class DirectoryConfigResolver:
         if isinstance(current, dict) and isinstance(overlay, dict):
             merged = deepcopy(current)
             for key in sorted(overlay):
-                merged[key] = self._merge_values(merged.get(key), overlay[key], (*path, key), provenance, source)
+                merged[key] = self._merge_values(
+                    merged.get(key), overlay[key], (*path, key), provenance, source
+                )
             return merged
 
         replacement = deepcopy(overlay)
@@ -814,4 +849,6 @@ def load_root_gateway_config(
         service,
         config_store=DirectoryConfigStore(directory_store, runtime_dir=runtime_dir),
     )
-    return resolver.resolve_root_gateway_config(host_config, base_gateway_config=base_gateway_config)
+    return resolver.resolve_root_gateway_config(
+        host_config, base_gateway_config=base_gateway_config
+    )

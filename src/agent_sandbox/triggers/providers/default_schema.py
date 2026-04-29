@@ -37,6 +37,7 @@ _TRIGGER_MODEL_BY_TYPE = {
     "trigger:agent:prompt:new": AgentPromptNewTriggerDefinition,
 }
 
+
 def _materialize_with_model(model_class: type[BaseModel], node: WorkflowNodeEnvelope) -> BaseModel:
     payload = {
         "id": node.id,

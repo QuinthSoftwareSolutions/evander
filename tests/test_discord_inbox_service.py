@@ -4,7 +4,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from agent_sandbox.discord_inbox_store import DiscordInboxStore
+from agent_sandbox.messaging.discord_inbox_store import DiscordInboxStore
 from agent_sandbox.models import DiscordMessageEnvelope
 from agent_sandbox.services import DiscordInboxService
 

@@ -14,8 +14,8 @@ def test_python_bootstrap_docs_and_script_are_present() -> None:
     assert 'GUEST_PYTHON_BIN="${GUEST_PYTHON_BIN:-python3}"' in script
     assert '"${HOST_PYTHON_BIN}" -m ensurepip --upgrade' in script
     assert '"${HOST_PYTHON_BIN}" -m pip wheel' in script
-    assert 'virtualenv' in script
-    assert 'from virtualenv import cli_run' in script
-    assert 'cli_run([venv_path])' in script
-    assert '--no-build-isolation \\' in script
+    assert "virtualenv" in script
+    assert "from virtualenv import cli_run" in script
+    assert "cli_run([venv_path])" in script
+    assert "--no-build-isolation \\" in script
     assert '-e "${GUEST_REPO_ROOT}[${PYTHON_EXTRAS}]"' in script

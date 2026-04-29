@@ -4,7 +4,7 @@ import importlib
 import sys
 from pathlib import Path
 
-from agent_sandbox.workflow_plugins import load_provider_plugins
+from agent_sandbox.workflow.plugins import load_provider_plugins
 
 
 def test_load_provider_plugins_supports_explicit_module_list(tmp_path: Path, monkeypatch) -> None:
@@ -47,7 +47,9 @@ def test_load_provider_plugins_supports_entry_points(monkeypatch) -> None:
 
             return {"query_providers": {"query:custom:test": CustomQueryProvider}}
 
-    monkeypatch.setattr("agent_sandbox.workflow_plugins._iter_provider_entry_points", lambda: (_EntryPointStub(),))
+    monkeypatch.setattr(
+        "agent_sandbox.workflow.plugins._iter_provider_entry_points", lambda: (_EntryPointStub(),)
+    )
 
     catalog = load_provider_plugins(module_names=[], include_entry_points=True)
 
@@ -56,7 +58,9 @@ def test_load_provider_plugins_supports_entry_points(monkeypatch) -> None:
 
 
 def test_load_provider_plugins_can_include_builtin_explicitly() -> None:
-    catalog = load_provider_plugins(module_names=[], include_entry_points=False, include_builtin=True)
+    catalog = load_provider_plugins(
+        module_names=[], include_entry_points=False, include_builtin=True
+    )
 
     assert "trigger:cron" in catalog.trigger_providers
     assert "agent_sandbox.providers.builtin" in catalog.loaded_plugins

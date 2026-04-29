@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from agent_sandbox.config import GatewayConfig
-from agent_sandbox.workflow_runtime_config import (
+from agent_sandbox.workflow.runtime_config import (
     TriggerOrchestratorWorkerGlobalConfigReloader,
     load_trigger_orchestrator_worker_global_config,
 )
@@ -16,14 +16,18 @@ def _config_path(project_dir: Path) -> Path:
     return project_dir / "config" / "trigger-orchestrator" / "config.json"
 
 
-def test_reload_uses_last_known_good_config_when_new_payload_is_invalid(tmp_path: Path, caplog) -> None:
+def test_reload_uses_last_known_good_config_when_new_payload_is_invalid(
+    tmp_path: Path, caplog
+) -> None:
     runtime_dir = tmp_path / "runtime"
     project_dir = tmp_path
     path = _config_path(project_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({"poll_interval_seconds": 5}), encoding="utf-8")
     base_config = GatewayConfig(runtime_dir=runtime_dir)
-    initial_config = load_trigger_orchestrator_worker_global_config(project_dir, base_config=base_config)
+    initial_config = load_trigger_orchestrator_worker_global_config(
+        project_dir, base_config=base_config
+    )
     reloader = TriggerOrchestratorWorkerGlobalConfigReloader(
         project_dir=project_dir,
         initial_config=initial_config,
@@ -46,7 +50,9 @@ def test_reload_now_applies_new_valid_payload(tmp_path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({"poll_interval_seconds": 2}), encoding="utf-8")
     base_config = GatewayConfig(runtime_dir=runtime_dir)
-    initial_config = load_trigger_orchestrator_worker_global_config(project_dir, base_config=base_config)
+    initial_config = load_trigger_orchestrator_worker_global_config(
+        project_dir, base_config=base_config
+    )
     reloader = TriggerOrchestratorWorkerGlobalConfigReloader(
         project_dir=project_dir,
         initial_config=initial_config,
@@ -68,7 +74,9 @@ def test_get_latest_detects_config_file_replacement(tmp_path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({"poll_interval_seconds": 2}), encoding="utf-8")
     base_config = GatewayConfig(runtime_dir=runtime_dir)
-    initial_config = load_trigger_orchestrator_worker_global_config(project_dir, base_config=base_config)
+    initial_config = load_trigger_orchestrator_worker_global_config(
+        project_dir, base_config=base_config
+    )
     reloader = TriggerOrchestratorWorkerGlobalConfigReloader(
         project_dir=project_dir,
         initial_config=initial_config,
@@ -122,7 +130,9 @@ def test_get_latest_detects_referenced_workflow_pack_change(tmp_path: Path) -> N
     )
     path.write_text(json.dumps({"workflow_packs": ["synthetic.v1.json"]}), encoding="utf-8")
     base_config = GatewayConfig(runtime_dir=runtime_dir)
-    initial_config = load_trigger_orchestrator_worker_global_config(project_dir, base_config=base_config)
+    initial_config = load_trigger_orchestrator_worker_global_config(
+        project_dir, base_config=base_config
+    )
     reloader = TriggerOrchestratorWorkerGlobalConfigReloader(
         project_dir=project_dir,
         initial_config=initial_config,
@@ -208,7 +218,9 @@ def test_load_config_compiles_await_agent_templates_to_explicit_triggers(tmp_pat
         encoding="utf-8",
     )
 
-    config = load_trigger_orchestrator_worker_global_config(project_dir, base_config=GatewayConfig(runtime_dir=runtime_dir))
+    config = load_trigger_orchestrator_worker_global_config(
+        project_dir, base_config=GatewayConfig(runtime_dir=runtime_dir)
+    )
 
     assert any(trigger.type == "trigger:agent:run:completed" for trigger in config.triggers)
     await_gate = next(gate for gate in config.gates if gate.type == "gate:await-agent")
@@ -244,7 +256,9 @@ def test_load_config_composes_workflow_pack_ir(tmp_path: Path) -> None:
                             "args": ["synthetic-workflow"],
                         },
                     ],
-                    "edges": [{"source_id": "trigger-cron-synthetic", "target_id": "effect-log-synthetic"}],
+                    "edges": [
+                        {"source_id": "trigger-cron-synthetic", "target_id": "effect-log-synthetic"}
+                    ],
                 },
             }
         ),
@@ -252,7 +266,9 @@ def test_load_config_composes_workflow_pack_ir(tmp_path: Path) -> None:
     )
     path.write_text(json.dumps({"workflow_packs": ["synthetic-trivial.v1.json"]}), encoding="utf-8")
 
-    config = load_trigger_orchestrator_worker_global_config(project_dir, base_config=GatewayConfig(runtime_dir=runtime_dir))
+    config = load_trigger_orchestrator_worker_global_config(
+        project_dir, base_config=GatewayConfig(runtime_dir=runtime_dir)
+    )
 
     assert [trigger.id for trigger in config.triggers] == ["trigger-cron-synthetic"]
     assert [effect.id for effect in config.effects] == ["effect-log-synthetic"]
@@ -291,5 +307,9 @@ def test_load_config_rejects_unknown_communication_target_ref(tmp_path: Path) ->
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match=r"unknown communication target reference\(s\): missing-target"):
-        load_trigger_orchestrator_worker_global_config(project_dir, base_config=GatewayConfig(runtime_dir=runtime_dir))
+    with pytest.raises(
+        ValueError, match=r"unknown communication target reference\(s\): missing-target"
+    ):
+        load_trigger_orchestrator_worker_global_config(
+            project_dir, base_config=GatewayConfig(runtime_dir=runtime_dir)
+        )

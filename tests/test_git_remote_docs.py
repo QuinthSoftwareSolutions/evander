@@ -11,10 +11,8 @@ def test_git_remote_docs_and_script_are_present() -> None:
     promote_script = (ROOT / "scripts" / "promote_agent_branch.sh").read_text(encoding="utf-8")
     pr_script = (ROOT / "scripts" / "open_agent_pr.sh").read_text(encoding="utf-8")
 
-    assert (
-        "create_git_remote.sh" in readme or "setup_issue_git_vm.sh" in readme
-    )
-    assert ("create_git_remote.sh" in ops or "setup_issue_git_vm.sh" in ops)
+    assert "create_git_remote.sh" in readme or "setup_issue_git_vm.sh" in readme
+    assert "create_git_remote.sh" in ops or "setup_issue_git_vm.sh" in ops
     assert "bootstrap_git_vm.sh" in readme
     assert "bootstrap_git_vm.sh" in ops
     assert "agent-sandbox-cli list-vms" in readme

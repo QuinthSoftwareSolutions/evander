@@ -1,11 +1,13 @@
 from pathlib import Path
 
 from agent_sandbox.config import GatewayConfig
-from agent_sandbox.directory_admin import DirectoryAdminService
+from agent_sandbox.admin.directory import DirectoryAdminService
 from agent_sandbox.directories import DirectoryService, DirectoryStore
 
 
-def test_directory_admin_service_supports_tree_list_get_create_update_and_delete(tmp_path: Path) -> None:
+def test_directory_admin_service_supports_tree_list_get_create_update_and_delete(
+    tmp_path: Path,
+) -> None:
     config = GatewayConfig.model_validate(
         {"runtime_dir": str(tmp_path / "runtime"), "enable_directory_scoped_config": True}
     )
@@ -42,7 +44,9 @@ def test_directory_admin_service_supports_tree_list_get_create_update_and_delete
     assert deleted.data.deleted_count == 1
 
 
-def test_directory_admin_service_returns_structured_errors_for_invalid_operations(tmp_path: Path) -> None:
+def test_directory_admin_service_returns_structured_errors_for_invalid_operations(
+    tmp_path: Path,
+) -> None:
     config = GatewayConfig.model_validate(
         {"runtime_dir": str(tmp_path / "runtime"), "enable_directory_scoped_config": True}
     )
@@ -104,7 +108,9 @@ def test_directory_admin_root_effective_config_has_no_implicit_global_base(tmp_p
     store = DirectoryStore(config.directories_store_path)
     admin = DirectoryAdminService.from_store(directory_store=store, gateway_config=config)
 
-    written = admin.write_domain_config("root", domain="policy", payload={"default_session_ttl_seconds": 120})
+    written = admin.write_domain_config(
+        "root", domain="policy", payload={"default_session_ttl_seconds": 120}
+    )
     assert written.ok is True
 
     resolved = admin.compute_effective_config("root", domain="policy")
@@ -122,7 +128,12 @@ def test_directory_admin_empty_write_removes_domain_file_and_existence(tmp_path:
     admin = DirectoryAdminService.from_store(directory_store=store, gateway_config=config)
 
     team = admin.create_child(parent="root", name="team").data.details.directory
-    assert admin.write_domain_config(team.path, domain="policy", payload={"default_session_ttl_seconds": 120}).ok is True
+    assert (
+        admin.write_domain_config(
+            team.path, domain="policy", payload={"default_session_ttl_seconds": 120}
+        ).ok
+        is True
+    )
 
     cleared = admin.write_domain_config(team.path, domain="policy", payload={})
     assert cleared.ok is True
@@ -140,7 +151,9 @@ def test_directory_admin_delete_removes_directory_config_tree(tmp_path: Path) ->
     admin = DirectoryAdminService.from_store(directory_store=store, gateway_config=config)
 
     team = admin.create_child(parent="root", name="team").data.details.directory
-    write = admin.write_domain_config(team.path, domain="policy", payload={"default_session_ttl_seconds": 120})
+    write = admin.write_domain_config(
+        team.path, domain="policy", payload={"default_session_ttl_seconds": 120}
+    )
     assert write.ok is True
 
     config_path = config.runtime_dir / "directory-config" / "root" / "team" / "policy.json"
@@ -152,7 +165,9 @@ def test_directory_admin_delete_removes_directory_config_tree(tmp_path: Path) ->
     assert not config_path.parent.exists()
 
 
-def test_directory_admin_service_surfaces_validation_diagnostics_and_config_write_failures(tmp_path: Path) -> None:
+def test_directory_admin_service_surfaces_validation_diagnostics_and_config_write_failures(
+    tmp_path: Path,
+) -> None:
     config = GatewayConfig.model_validate(
         {"runtime_dir": str(tmp_path / "runtime"), "enable_directory_scoped_config": True}
     )
@@ -161,9 +176,13 @@ def test_directory_admin_service_surfaces_validation_diagnostics_and_config_writ
 
     team = admin.create_child(parent="root", name="team").data.details.directory
 
-    invalid_write = admin.write_domain_config(team.id, domain="heartbeat", payload={"unexpected": True})
+    invalid_write = admin.write_domain_config(
+        team.id, domain="heartbeat", payload={"unexpected": True}
+    )
     assert invalid_write.ok is False
-    assert invalid_write.errors[0].message.startswith("directory config domain 'heartbeat' does not allow fields")
+    assert invalid_write.errors[0].message.startswith(
+        "directory config domain 'heartbeat' does not allow fields"
+    )
 
     directory = store.get(team.id)
     assert directory is not None
@@ -186,7 +205,9 @@ def test_directory_admin_service_surfaces_validation_diagnostics_and_config_writ
     assert resolved.validation_diagnostics
 
 
-def test_directory_admin_service_rejects_edit_surfaces_when_feature_flag_disabled(tmp_path: Path) -> None:
+def test_directory_admin_service_rejects_edit_surfaces_when_feature_flag_disabled(
+    tmp_path: Path,
+) -> None:
     config = GatewayConfig.model_validate({"runtime_dir": str(tmp_path / "runtime")})
     store = DirectoryStore(config.directories_store_path)
     admin = DirectoryAdminService.from_store(directory_store=store, gateway_config=config)
@@ -195,6 +216,8 @@ def test_directory_admin_service_rejects_edit_surfaces_when_feature_flag_disable
     assert created.ok is False
     assert created.errors[0].code == "feature_disabled"
 
-    write = admin.write_domain_config("root", domain="policy", payload={"default_session_ttl_seconds": 120})
+    write = admin.write_domain_config(
+        "root", domain="policy", payload={"default_session_ttl_seconds": 120}
+    )
     assert write.ok is False
     assert write.errors[0].code == "feature_disabled"

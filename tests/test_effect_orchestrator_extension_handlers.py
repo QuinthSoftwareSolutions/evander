@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from agent_sandbox.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
-from agent_sandbox.effect_orchestrator import EffectOrchestratorWorker
+from agent_sandbox.daemons.effect_orchestrator import EffectOrchestratorWorker
 from agent_sandbox.events.models import TriggerEvent
 from agent_sandbox.orchestration.wiring import build_effect_worker_wiring
 
@@ -48,18 +48,24 @@ def test_effect_worker_runs_without_domain_handlers_in_pure_mode(tmp_path: Path)
         runtime=None,  # type: ignore[arg-type]
         include_default_domain_handlers=False,
     )
-    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None, wiring=wiring)  # type: ignore[arg-type]
+    worker = EffectOrchestratorWorker(
+        config=config, worker_config=worker_config, runtime=None, wiring=wiring
+    )  # type: ignore[arg-type]
     _publish_agent_completion_event(worker)
 
     worker.run_once()
 
-    execution_payload = json.loads((runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8"))
+    execution_payload = json.loads(
+        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
+    )
     only = next(iter(execution_payload.values()))
     assert only["status"] == "skipped"
     assert only["error"] == "source_node_removed_from_graph:__await-agent-completion__"
 
 
-def test_effect_worker_agent_default_handler_pack_consumes_agent_completion_event(tmp_path: Path) -> None:
+def test_effect_worker_agent_default_handler_pack_consumes_agent_completion_event(
+    tmp_path: Path,
+) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
     worker_config = _worker_config(runtime_dir)
@@ -69,10 +75,14 @@ def test_effect_worker_agent_default_handler_pack_consumes_agent_completion_even
         runtime=None,  # type: ignore[arg-type]
         include_default_domain_handlers=True,
     )
-    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None, wiring=wiring)  # type: ignore[arg-type]
+    worker = EffectOrchestratorWorker(
+        config=config, worker_config=worker_config, runtime=None, wiring=wiring
+    )  # type: ignore[arg-type]
     _publish_agent_completion_event(worker)
 
     worker.run_once()
 
-    execution_payload = json.loads((runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8"))
+    execution_payload = json.loads(
+        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
+    )
     assert execution_payload == {}

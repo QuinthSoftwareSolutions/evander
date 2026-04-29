@@ -117,11 +117,30 @@ def test_handle_git_push_trigger_emits_repo_metadata_and_session_id(tmp_path: Pa
     script = root / "scripts" / "handle_git_push_trigger.sh"
 
     repo_path = (tmp_path / "git-remotes" / "sample.git").resolve()
-    subprocess.run(["git", "init", "--bare", str(repo_path)], check=True, capture_output=True, text=True)
-    subprocess.run(["git", f"--git-dir={repo_path}", "config", "agent-sandbox.trustedRepoPath", "/trusted/repo"], check=True)
-    subprocess.run(["git", f"--git-dir={repo_path}", "config", "agent-sandbox.baseBranch", "main"], check=True)
     subprocess.run(
-        ["git", f"--git-dir={repo_path}", "config", "agent-sandbox.canonicalOriginUrl", "https://example.com/org/repo.git"],
+        ["git", "init", "--bare", str(repo_path)], check=True, capture_output=True, text=True
+    )
+    subprocess.run(
+        [
+            "git",
+            f"--git-dir={repo_path}",
+            "config",
+            "agent-sandbox.trustedRepoPath",
+            "/trusted/repo",
+        ],
+        check=True,
+    )
+    subprocess.run(
+        ["git", f"--git-dir={repo_path}", "config", "agent-sandbox.baseBranch", "main"], check=True
+    )
+    subprocess.run(
+        [
+            "git",
+            f"--git-dir={repo_path}",
+            "config",
+            "agent-sandbox.canonicalOriginUrl",
+            "https://example.com/org/repo.git",
+        ],
         check=True,
     )
     queue_path = tmp_path / "runtime" / "trigger-events.json"
@@ -167,23 +186,47 @@ def test_handle_git_push_trigger_emits_repo_metadata_and_session_id(tmp_path: Pa
     assert record["payload"]["canonical_origin_url"] == "https://example.com/org/repo.git"
 
 
-def test_handle_git_push_trigger_enqueues_notes_only_update_for_matching_agent_branch_tip(tmp_path: Path) -> None:
+def test_handle_git_push_trigger_enqueues_notes_only_update_for_matching_agent_branch_tip(
+    tmp_path: Path,
+) -> None:
     root = Path(__file__).resolve().parents[1]
     script = root / "scripts" / "handle_git_push_trigger.sh"
 
     repo_path = (tmp_path / "git-remotes" / "sample.git").resolve()
     worktree = (tmp_path / "worktree").resolve()
-    subprocess.run(["git", "init", "--bare", str(repo_path)], check=True, capture_output=True, text=True)
+    subprocess.run(
+        ["git", "init", "--bare", str(repo_path)], check=True, capture_output=True, text=True
+    )
     subprocess.run(["git", "init", str(worktree)], check=True, capture_output=True, text=True)
     subprocess.run(["git", "-C", str(worktree), "config", "user.name", "Test User"], check=True)
-    subprocess.run(["git", "-C", str(worktree), "config", "user.email", "test@example.com"], check=True)
-    subprocess.run(["git", "-C", str(worktree), "remote", "add", "origin", str(repo_path)], check=True)
-    subprocess.run(["git", f"--git-dir={repo_path}", "config", "agent-sandbox.trustedRepoPath", "/trusted/repo"], check=True)
-    subprocess.run(["git", f"--git-dir={repo_path}", "config", "agent-sandbox.baseBranch", "main"], check=True)
+    subprocess.run(
+        ["git", "-C", str(worktree), "config", "user.email", "test@example.com"], check=True
+    )
+    subprocess.run(
+        ["git", "-C", str(worktree), "remote", "add", "origin", str(repo_path)], check=True
+    )
+    subprocess.run(
+        [
+            "git",
+            f"--git-dir={repo_path}",
+            "config",
+            "agent-sandbox.trustedRepoPath",
+            "/trusted/repo",
+        ],
+        check=True,
+    )
+    subprocess.run(
+        ["git", f"--git-dir={repo_path}", "config", "agent-sandbox.baseBranch", "main"], check=True
+    )
 
     (worktree / "hello.txt").write_text("Hello World", encoding="utf-8")
     subprocess.run(["git", "-C", str(worktree), "add", "hello.txt"], check=True)
-    subprocess.run(["git", "-C", str(worktree), "commit", "-m", "Initial"], check=True, capture_output=True, text=True)
+    subprocess.run(
+        ["git", "-C", str(worktree), "commit", "-m", "Initial"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
     tip_sha = subprocess.run(
         ["git", "-C", str(worktree), "rev-parse", "HEAD"],
         check=True,
@@ -196,9 +239,17 @@ def test_handle_git_push_trigger_enqueues_notes_only_update_for_matching_agent_b
         capture_output=True,
         text=True,
     )
-    subprocess.run(["git", "-C", str(worktree), "notes", "--ref=agent-pr", "add", "-m", "Summary", "HEAD"], check=True)
+    subprocess.run(
+        ["git", "-C", str(worktree), "notes", "--ref=agent-pr", "add", "-m", "Summary", "HEAD"],
+        check=True,
+    )
     old_notes_rev = "0" * 40
-    subprocess.run(["git", "-C", str(worktree), "push", "origin", "refs/notes/agent-pr"], check=True, capture_output=True, text=True)
+    subprocess.run(
+        ["git", "-C", str(worktree), "push", "origin", "refs/notes/agent-pr"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
     new_notes_rev = subprocess.run(
         ["git", f"--git-dir={repo_path}", "rev-parse", "refs/notes/agent-pr"],
         check=True,
@@ -308,7 +359,9 @@ def test_handle_git_push_trigger_is_idempotent_for_repeated_updates(tmp_path: Pa
     assert list(queue_payload.keys()) == [f"git-main:main:{'1' * 40}"]
 
 
-def test_handle_git_push_trigger_resolves_relative_queue_paths_from_config_dir(tmp_path: Path) -> None:
+def test_handle_git_push_trigger_resolves_relative_queue_paths_from_config_dir(
+    tmp_path: Path,
+) -> None:
     root = Path(__file__).resolve().parents[1]
     script = root / "scripts" / "handle_git_push_trigger.sh"
 
@@ -356,7 +409,9 @@ def test_handle_git_push_trigger_resolves_relative_queue_paths_from_config_dir(t
     assert not (bare_repo_cwd / "runtime" / "trigger-orchestrator-events.json").exists()
 
 
-def test_handle_git_push_trigger_resolves_relative_queue_paths_from_project_root_for_repo_config(tmp_path: Path) -> None:
+def test_handle_git_push_trigger_resolves_relative_queue_paths_from_project_root_for_repo_config(
+    tmp_path: Path,
+) -> None:
     root = Path(__file__).resolve().parents[1]
     script = root / "scripts" / "handle_git_push_trigger.sh"
 
@@ -418,7 +473,9 @@ def test_handle_git_push_trigger_resolves_relative_queue_paths_from_project_root
             pass
 
 
-def test_handle_git_push_trigger_resolves_git_push_triggers_from_workflow_packs(tmp_path: Path) -> None:
+def test_handle_git_push_trigger_resolves_git_push_triggers_from_workflow_packs(
+    tmp_path: Path,
+) -> None:
     root = Path(__file__).resolve().parents[1]
     script = root / "scripts" / "handle_git_push_trigger.sh"
 

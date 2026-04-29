@@ -26,7 +26,9 @@ class VmBootstrapFrontendEffectProvider(VmTargetingMixin, EffectProviderBase):
         context = self._context()
         bootstrapper = getattr(context.vm_frontend_bootstrapper, "bootstrap_frontend_in_vm", None)
         if not callable(bootstrapper):
-            raise RuntimeError("effect:vm:bootstrap-frontend vm_frontend_bootstrapper is not available")
+            raise RuntimeError(
+                "effect:vm:bootstrap-frontend vm_frontend_bootstrapper is not available"
+            )
 
         vm_name, session_id = self._resolve_target(payload, effect_type=self._effect_type())
         result = bootstrapper(

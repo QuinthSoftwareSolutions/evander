@@ -25,7 +25,9 @@ class _RuntimeStub:
 
 
 class _AdminServiceStub:
-    def __init__(self, sessions: dict[str, object], vm_delete_files_result: dict[str, object] | None = None) -> None:
+    def __init__(
+        self, sessions: dict[str, object], vm_delete_files_result: dict[str, object] | None = None
+    ) -> None:
         self.runtime = _RuntimeStub(sessions)
         self.vm_delete_files_result = vm_delete_files_result
         self.calls: list[dict[str, object]] = []
@@ -60,7 +62,9 @@ def test_vm_delete_files_provider_deletes_paths_by_target(tmp_path: Path) -> Non
     )
     context = _build_context(tmp_path, admin_service)
     provider = VmDeleteFilesEffectProvider()
-    provider.initialize(effect_definition=SimpleNamespace(id="delete-files"), runtime_context=context)
+    provider.initialize(
+        effect_definition=SimpleNamespace(id="delete-files"), runtime_context=context
+    )
 
     result = provider.execute(
         resolved_config={
@@ -100,7 +104,9 @@ def test_vm_delete_files_provider_resolves_vm_by_session_id(tmp_path: Path) -> N
     )
     context = _build_context(tmp_path, admin_service)
     provider = VmDeleteFilesEffectProvider()
-    provider.initialize(effect_definition=SimpleNamespace(id="delete-files"), runtime_context=context)
+    provider.initialize(
+        effect_definition=SimpleNamespace(id="delete-files"), runtime_context=context
+    )
 
     result = provider.execute(
         resolved_config={

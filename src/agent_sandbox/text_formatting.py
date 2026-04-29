@@ -22,7 +22,7 @@ def render_markdownish_text_to_html(text: str) -> str:
     last_index = 0
     for match in _FENCED_CODE_BLOCK_RE.finditer(normalized):
         if match.start() > last_index:
-            parts.append(_text_fragment_to_html(normalized[last_index:match.start()]))
+            parts.append(_text_fragment_to_html(normalized[last_index : match.start()]))
         code_content = match.group(1)
         code_content = code_content.lstrip("\n").rstrip("\n")
         parts.append(f"<pre><code>{html.escape(code_content)}</code></pre>")

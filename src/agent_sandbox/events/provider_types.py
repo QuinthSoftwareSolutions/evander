@@ -11,7 +11,9 @@ def validate_email_provider(value: object) -> str:
     allowed = {"json_store", "gmail", "graph"}
     if normalized not in allowed:
         ordered = ", ".join(sorted(allowed))
-        raise ValueError(f"Unsupported email provider: {normalized!r}. Allowed providers: {ordered}")
+        raise ValueError(
+            f"Unsupported email provider: {normalized!r}. Allowed providers: {ordered}"
+        )
     return normalized
 
 

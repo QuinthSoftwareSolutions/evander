@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from agent_sandbox.admin_service import AdminService
+from agent_sandbox.admin.service import AdminService
 from agent_sandbox.models import SessionManifest
 
 
@@ -21,7 +21,9 @@ def test_admin_service_session_update_metadata_merges_into_manifest(tmp_path: Pa
         ),
     )
 
-    result = service.session_update_metadata(target="session-1", metadata={"issue_title": "Fix APP"})
+    result = service.session_update_metadata(
+        target="session-1", metadata={"issue_title": "Fix APP"}
+    )
 
     assert result["success"] is True
     assert result["metadata"] == {"issue_number": "14084", "issue_title": "Fix APP"}

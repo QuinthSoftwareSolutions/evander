@@ -2,7 +2,9 @@ from pathlib import Path
 
 
 def _script_text() -> str:
-    return (Path(__file__).resolve().parents[1] / "scripts" / "install_systemd_units.sh").read_text(encoding="utf-8")
+    return (Path(__file__).resolve().parents[1] / "scripts" / "install_systemd_units.sh").read_text(
+        encoding="utf-8"
+    )
 
 
 def test_install_systemd_units_supports_preflight_help_output() -> None:
@@ -35,18 +37,18 @@ def test_install_systemd_units_preflight_reports_failures_with_hints() -> None:
 def test_install_systemd_units_preflight_checks_for_mssql_worker_password_when_enabled() -> None:
     text = _script_text()
 
-    assert 'config/ado-worker/config.json' in text
-    assert 'runtime/directory-config/root/ado-worker.json' in text
-    assert 'config/teams-ingest/config.json' in text
-    assert 'config/trigger-orchestrator/config.json' in text
-    assert 'secrets.env' in text
-    assert 'config/ado-worker.env' not in text
-    assert 'config/issue-orchestrator/config.json' not in text
-    assert 'agent-sandbox-issue-orchestrator.service' not in text
-    assert 'agent-sandbox-teams-ingest.service' in text
-    assert 'agent-sandbox-trigger-orchestrator.service' in text
-    assert 'agent-sandbox-http-target-relay.service' in text
-    assert 'agent-sandbox-admin-web.service' in text
+    assert "config/ado-worker/config.json" in text
+    assert "runtime/directory-config/root/ado-worker.json" in text
+    assert "config/teams-ingest/config.json" in text
+    assert "config/trigger-orchestrator/config.json" in text
+    assert "secrets.env" in text
+    assert "config/ado-worker.env" not in text
+    assert "config/issue-orchestrator/config.json" not in text
+    assert "agent-sandbox-issue-orchestrator.service" not in text
+    assert "agent-sandbox-teams-ingest.service" in text
+    assert "agent-sandbox-trigger-orchestrator.service" in text
+    assert "agent-sandbox-http-target-relay.service" in text
+    assert "agent-sandbox-admin-web.service" in text
 
 
 def test_install_systemd_units_preflight_is_service_profile_aware() -> None:
@@ -61,16 +63,18 @@ def test_install_systemd_units_preflight_is_service_profile_aware() -> None:
 def test_install_systemd_units_no_longer_requires_removed_per_service_env_files() -> None:
     text = _script_text()
 
-    assert 'config/gateway.env' not in text
-    assert 'config/openai-relay.env' not in text
-    assert 'config/nuget-relay.env' not in text
-    assert 'config/host-heartbeat.env' not in text
+    assert "config/gateway.env" not in text
+    assert "config/openai-relay.env" not in text
+    assert "config/nuget-relay.env" not in text
+    assert "config/host-heartbeat.env" not in text
 
 
 def test_service_templates_use_optional_shared_secrets_env() -> None:
     repo = Path(__file__).resolve().parents[1]
 
-    gateway = (repo / "systemd" / "agent-sandbox-gateway.service.template").read_text(encoding="utf-8")
+    gateway = (repo / "systemd" / "agent-sandbox-gateway.service.template").read_text(
+        encoding="utf-8"
+    )
     openai = (repo / "systemd" / "agent-sandbox-openai-relay.service.template").read_text(
         encoding="utf-8"
     )
@@ -95,13 +99,18 @@ def test_service_templates_use_optional_shared_secrets_env() -> None:
     trigger_orchestrator = (
         repo / "systemd" / "agent-sandbox-trigger-orchestrator.service.template"
     ).read_text(encoding="utf-8")
-    admin_web = (repo / "systemd" / "agent-sandbox-admin-web.service.template").read_text(encoding="utf-8")
+    admin_web = (repo / "systemd" / "agent-sandbox-admin-web.service.template").read_text(
+        encoding="utf-8"
+    )
 
     assert "EnvironmentFile=-__PROJECT_DIR__/config/gateway.env" in gateway
     assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in gateway
     assert "EnvironmentFile=-__PROJECT_DIR__/config/admin-web.env" in admin_web
     assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in admin_web
-    assert "ExecStart=__PROJECT_DIR__/.venv/bin/agent-sandbox-admin-web --runtime-dir __PROJECT_DIR__/runtime --host ${ADMIN_WEB_HOST} --port ${ADMIN_WEB_PORT}" in admin_web
+    assert (
+        "ExecStart=__PROJECT_DIR__/.venv/bin/agent-sandbox-admin-web --runtime-dir __PROJECT_DIR__/runtime --host ${ADMIN_WEB_HOST} --port ${ADMIN_WEB_PORT}"
+        in admin_web
+    )
     assert "EnvironmentFile=-__PROJECT_DIR__/config/openai-relay.env" in openai
     assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in openai
     assert "EnvironmentFile=-__PROJECT_DIR__/config/nuget-relay.env" in nuget

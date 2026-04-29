@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from agent_sandbox.workflow_graph import (
+from agent_sandbox.workflow.graph import (
     WorkflowGraphCycleError,
     build_downstream_index,
     build_inbound_edge_index,
@@ -46,8 +46,14 @@ def test_compute_downstream_depth_raises_on_cycle() -> None:
 
 def test_declared_output_index_and_schema_intersection_cover_nodes_and_raw_maps() -> None:
     nodes = [
-        {"id": "trigger-1", "outputs": {"ticket_id": {"type": "integer"}, "shared": {"type": "string"}}},
-        {"id": "effect-1", "outputs": {"shared": {"type": "string"}, "session_id": {"type": "string"}}},
+        {
+            "id": "trigger-1",
+            "outputs": {"ticket_id": {"type": "integer"}, "shared": {"type": "string"}},
+        },
+        {
+            "id": "effect-1",
+            "outputs": {"shared": {"type": "string"}, "session_id": {"type": "string"}},
+        },
         {"id": "gate-1", "outputs": {"shared": {"type": "string"}, "route": {"type": "string"}}},
     ]
 
@@ -66,7 +72,11 @@ def test_declared_output_index_and_schema_intersection_cover_nodes_and_raw_maps(
 def test_declared_output_index_includes_intrinsic_and_derived_outputs() -> None:
     nodes = [
         {"id": "trigger-1", "type": "trigger:ticket:created", "directories": ["root"]},
-        {"id": "gate-1", "type": "gate:map", "template": {"vm_name": "vm-${{trigger-1.ticket}}", "count": 1}},
+        {
+            "id": "gate-1",
+            "type": "gate:map",
+            "template": {"vm_name": "vm-${{trigger-1.ticket}}", "count": 1},
+        },
         {"id": "effect-1", "type": "effect:vm:create"},
         {"id": "query-1", "type": "query:vm:run-state"},
     ]

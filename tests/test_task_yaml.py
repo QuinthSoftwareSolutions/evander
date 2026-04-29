@@ -23,7 +23,9 @@ def test_serialize_writes_expected_yaml_with_optional_fields(tmp_path: Path) -> 
     )
 
     assert path == tmp_path / "runtime" / "issue-tasks" / "123.yaml"
-    assert path.read_text(encoding="utf-8") == """issue_number: 123
+    assert (
+        path.read_text(encoding="utf-8")
+        == """issue_number: 123
 name: Implement queue serializer
 description: Write stable yaml output
 source:
@@ -36,6 +38,7 @@ tags:
 state: Committed
 changed_date: '2026-03-21T12:30:45+00:00'
 """
+    )
 
 
 def test_serialize_omits_optional_fields_when_empty(tmp_path: Path) -> None:

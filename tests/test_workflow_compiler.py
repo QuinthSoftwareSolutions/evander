@@ -3,15 +3,17 @@ from __future__ import annotations
 from pathlib import Path
 
 from agent_sandbox.config import TriggerOrchestratorWorkerGlobalConfig
-from agent_sandbox.workflow_compiler import (
+from agent_sandbox.workflow.compiler import (
     collect_domain_validation_diagnostics,
     compile_trigger_orchestrator_config,
     compile_trigger_orchestrator_config_with_diagnostics,
 )
-from agent_sandbox.workflow_transforms.await_agent import augment_await_agent_completion
+from agent_sandbox.workflow.transforms.await_agent import augment_await_agent_completion
 
 
-def test_compile_trigger_orchestrator_config_can_apply_await_agent_completion_transform(tmp_path: Path) -> None:
+def test_compile_trigger_orchestrator_config_can_apply_await_agent_completion_transform(
+    tmp_path: Path,
+) -> None:
     runtime_dir = tmp_path / "runtime"
     worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
         {
@@ -49,7 +51,9 @@ def test_compile_trigger_orchestrator_config_can_apply_await_agent_completion_tr
         }
     )
 
-    compiled = compile_trigger_orchestrator_config(worker_config, transforms=[augment_await_agent_completion])
+    compiled = compile_trigger_orchestrator_config(
+        worker_config, transforms=[augment_await_agent_completion]
+    )
 
     assert len(compiled.triggers) == 2
     assert any(trigger.type == "trigger:agent:run:completed" for trigger in compiled.triggers)
@@ -57,7 +61,9 @@ def test_compile_trigger_orchestrator_config_can_apply_await_agent_completion_tr
     assert await_gate.completion_trigger_id == "__await-agent-completion__"
 
 
-def test_compile_trigger_orchestrator_config_is_valid_without_domain_transforms(tmp_path: Path) -> None:
+def test_compile_trigger_orchestrator_config_is_valid_without_domain_transforms(
+    tmp_path: Path,
+) -> None:
     runtime_dir = tmp_path / "runtime"
     worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
         {
@@ -93,14 +99,38 @@ def test_compile_trigger_orchestrator_config_is_valid_without_domain_transforms(
     assert "completion_trigger_id" not in await_gate.config
 
 
-def test_compile_trigger_orchestrator_config_with_diagnostics_reports_await_agent_domain_issue(tmp_path: Path) -> None:
+def test_compile_trigger_orchestrator_config_with_diagnostics_reports_await_agent_domain_issue(
+    tmp_path: Path,
+) -> None:
     runtime_dir = tmp_path / "runtime"
     worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
         {
             "runtime_dir": runtime_dir,
-            "triggers": [{"id": "cron-1", "display_name": "Every minute", "type": "trigger:cron", "expression": "* * * * *"}],
-            "effects": [{"id": "effect-1", "display_name": "Exec", "type": "effect:vm:exec", "target": "vm-1", "command": "echo hi"}],
-            "gates": [{"id": "await-agent-1", "display_name": "Await", "type": "gate:await-agent", "session_id": "s-1"}],
+            "triggers": [
+                {
+                    "id": "cron-1",
+                    "display_name": "Every minute",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-1",
+                    "display_name": "Exec",
+                    "type": "effect:vm:exec",
+                    "target": "vm-1",
+                    "command": "echo hi",
+                }
+            ],
+            "gates": [
+                {
+                    "id": "await-agent-1",
+                    "display_name": "Await",
+                    "type": "gate:await-agent",
+                    "session_id": "s-1",
+                }
+            ],
             "edges": [
                 {"source_id": "cron-1", "target_id": "effect-1"},
                 {"source_id": "effect-1", "target_id": "await-agent-1"},
@@ -119,9 +149,26 @@ def test_collect_domain_validation_diagnostics_reports_capability_errors(tmp_pat
     worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
         {
             "runtime_dir": runtime_dir,
-            "triggers": [{"id": "cron-1", "display_name": "Every minute", "type": "trigger:cron", "expression": "* * * * *"}],
-            "gates": [{"id": "for-1", "display_name": "Iterate", "type": "gate:for", "items": ["a", "b"]}],
-            "effects": [{"id": "effect-1", "display_name": "Exec", "type": "effect:vm:exec", "target": "vm-1", "command": "echo hi"}],
+            "triggers": [
+                {
+                    "id": "cron-1",
+                    "display_name": "Every minute",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+            "gates": [
+                {"id": "for-1", "display_name": "Iterate", "type": "gate:for", "items": ["a", "b"]}
+            ],
+            "effects": [
+                {
+                    "id": "effect-1",
+                    "display_name": "Exec",
+                    "type": "effect:vm:exec",
+                    "target": "vm-1",
+                    "command": "echo hi",
+                }
+            ],
             "edges": [
                 {"source_id": "cron-1", "target_id": "for-1"},
                 {"source_id": "for-1", "source_port": "body", "target_id": "effect-1"},
@@ -132,4 +179,6 @@ def test_collect_domain_validation_diagnostics_reports_capability_errors(tmp_pat
     diagnostics = collect_domain_validation_diagnostics(worker_config)
 
     assert any(item.code == "node_capability" for item in diagnostics)
-    assert any("must have an outbound edge with source_port=done" in item.message for item in diagnostics)
+    assert any(
+        "must have an outbound edge with source_port=done" in item.message for item in diagnostics
+    )

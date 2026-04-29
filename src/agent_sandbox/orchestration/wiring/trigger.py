@@ -3,14 +3,14 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-from ...config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
-from ...provider_config import ProviderConfigResolver
-from ...provider_profiles import resolve_provider_module_names
-from ...runtime import RuntimeContext
-from ...triggers.queue import TriggerEventQueue
-from ...triggers.registry import TriggerProviderFactory
-from ...workflow_plugins import load_provider_plugins
-from ...orchestration_repositories import JsonGateCursorRepository
+from agent_sandbox.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
+from agent_sandbox.provider_config import ProviderConfigResolver
+from agent_sandbox.provider_profiles import resolve_provider_module_names
+from agent_sandbox.runtime import RuntimeContext
+from agent_sandbox.triggers.queue import TriggerEventQueue
+from agent_sandbox.triggers.registry import TriggerProviderFactory
+from agent_sandbox.workflow.plugins import load_provider_plugins
+from agent_sandbox.repositories.orchestration import JsonGateCursorRepository
 from ..adapters.provider_factories import build_trigger_provider_factory
 
 
@@ -30,7 +30,9 @@ def build_trigger_worker_wiring(
     provider_config_resolver: ProviderConfigResolver | None = None,
 ) -> TriggerWorkerWiring:
     runtime_provider_resolver = getattr(runtime, "provider_config", None)
-    resolver = provider_config_resolver or runtime_provider_resolver or ProviderConfigResolver(config)
+    resolver = (
+        provider_config_resolver or runtime_provider_resolver or ProviderConfigResolver(config)
+    )
     event_queue = TriggerEventQueue(
         worker_config.event_queue_store_path,
         journal_path=worker_config.workflow_event_journal_path,

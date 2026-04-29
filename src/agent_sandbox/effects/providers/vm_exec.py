@@ -46,7 +46,12 @@ class VmExecEffectProvider(EffectProviderBase):
             payload.setdefault("session_id", session_id)
             if check and not bool(payload.get("success")):
                 raise RuntimeError(
-                    str(payload.get("stderr") or payload.get("stdout") or payload.get("message") or "VM command failed")
+                    str(
+                        payload.get("stderr")
+                        or payload.get("stdout")
+                        or payload.get("message")
+                        or "VM command failed"
+                    )
                 )
             return payload
 
@@ -120,7 +125,12 @@ class VmExecEffectProvider(EffectProviderBase):
         stdin: str | None,
         environment: Mapping[str, str],
     ) -> dict[str, Any]:
-        from agent_sandbox.admin_service import _resolve_private_key_path, _resolve_vm_ip, _ssh_options
+
+        from agent_sandbox.admin.service import (
+            _resolve_private_key_path,
+            _resolve_vm_ip,
+            _ssh_options,
+        )
 
         vm_ip = _resolve_vm_ip(vm_name)
         ssh_private_key_path = _resolve_private_key_path()
@@ -154,13 +164,19 @@ class VmExecEffectProvider(EffectProviderBase):
         stderr = completed.stderr or ""
         success = completed.returncode == 0
         if check and not success:
-            raise RuntimeError(stderr.strip() or stdout.strip() or f"VM command failed with exit code {completed.returncode}")
+            raise RuntimeError(
+                stderr.strip()
+                or stdout.strip()
+                or f"VM command failed with exit code {completed.returncode}"
+            )
         return {
             "success": success,
             "vm_name": vm_name,
             "session_id": session_id,
             "action": "vm_exec",
-            "message": stderr.strip() or stdout.strip() or f"VM command exited with code {completed.returncode}",
+            "message": stderr.strip()
+            or stdout.strip()
+            or f"VM command exited with code {completed.returncode}",
             "exit_code": completed.returncode,
             "stdout": stdout,
             "stderr": stderr,

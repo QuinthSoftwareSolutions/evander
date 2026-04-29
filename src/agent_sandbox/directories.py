@@ -4,8 +4,8 @@ from collections import defaultdict
 from pathlib import Path
 from uuid import uuid4
 
-from .directory_repository import DirectoryRepository, JsonDirectoryRepository
-from .models import Directory, DirectoryDetails, DirectoryInfo, DirectoryPath
+from agent_sandbox.repositories.directories import DirectoryRepository, JsonDirectoryRepository
+from agent_sandbox.models import Directory, DirectoryDetails, DirectoryInfo, DirectoryPath
 
 ROOT_DIRECTORY_ID = "root"
 
@@ -18,10 +18,16 @@ class DirectoryStore:
         items = self._repository.read_all()
         root = items.get(ROOT_DIRECTORY_ID)
         if root is None:
-            items[ROOT_DIRECTORY_ID] = Directory(id=ROOT_DIRECTORY_ID, name=ROOT_DIRECTORY_ID, parent_id=None)
+            items[ROOT_DIRECTORY_ID] = Directory(
+                id=ROOT_DIRECTORY_ID, name=ROOT_DIRECTORY_ID, parent_id=None
+            )
             self._repository.write_all(items)
             return
-        if root.id != ROOT_DIRECTORY_ID or root.name != ROOT_DIRECTORY_ID or root.parent_id is not None:
+        if (
+            root.id != ROOT_DIRECTORY_ID
+            or root.name != ROOT_DIRECTORY_ID
+            or root.parent_id is not None
+        ):
             items[ROOT_DIRECTORY_ID] = Directory(
                 id=ROOT_DIRECTORY_ID,
                 name=ROOT_DIRECTORY_ID,
@@ -72,7 +78,9 @@ class DirectoryStore:
                     next_directory = candidate
                     break
             if next_directory is None:
-                raise ValueError(f"directory path segment {segment!r} does not exist under {cursor!r}")
+                raise ValueError(
+                    f"directory path segment {segment!r} does not exist under {cursor!r}"
+                )
             cursor = next_directory.id
         return canonical
 
@@ -91,7 +99,9 @@ class DirectoryStore:
             if not directory.parent_id:
                 raise ValueError(f"directory {directory.id!r} must specify parent_id")
             if directory.parent_id not in items:
-                raise ValueError(f"directory {directory.id!r} has unknown parent {directory.parent_id!r}")
+                raise ValueError(
+                    f"directory {directory.id!r} has unknown parent {directory.parent_id!r}"
+                )
             sibling_key = (directory.parent_id, directory.name)
             if sibling_key in sibling_names:
                 raise ValueError(
@@ -201,7 +211,9 @@ class DirectoryService:
                         next_directory = candidate
                         break
                 if next_directory is None:
-                    raise ValueError(f"directory path segment {segment!r} does not exist under {cursor.id!r}")
+                    raise ValueError(
+                        f"directory path segment {segment!r} does not exist under {cursor.id!r}"
+                    )
                 cursor = next_directory
             return cursor
         directory = items.get(normalized)

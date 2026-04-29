@@ -26,7 +26,9 @@ def _job_payload(status: str = "running") -> dict[str, object]:
     }
 
 
-def test_container_worker_client_uses_auth_header_and_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_container_worker_client_uses_auth_header_and_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     requests: list[httpx.Request] = []
     monkeypatch.setenv("WORKER_TOKEN", "secret-token")
 
@@ -43,7 +45,9 @@ def test_container_worker_client_uses_auth_header_and_timeout(monkeypatch: pytes
     )
 
     record = worker.create(
-        WorkerJobRequest(session_id="session-1", job_id="job-1", image="runner:latest", command=["true"])
+        WorkerJobRequest(
+            session_id="session-1", job_id="job-1", image="runner:latest", command=["true"]
+        )
     )
 
     assert record.job_id == "job-1"
@@ -51,7 +55,9 @@ def test_container_worker_client_uses_auth_header_and_timeout(monkeypatch: pytes
     assert client.timeout == httpx.Timeout(12.5)
 
 
-def test_container_worker_client_health_create_get_stop_delete_and_logs(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_container_worker_client_health_create_get_stop_delete_and_logs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setenv("WORKER_TOKEN", "secret-token")
     seen: list[tuple[str, str]] = []
 
@@ -65,7 +71,11 @@ def test_container_worker_client_health_create_get_stop_delete_and_logs(monkeypa
             return httpx.Response(200, text="hello\n", request=request)
         if request.method == "DELETE":
             return httpx.Response(200, json={"deleted": True, "job_id": "job-1"}, request=request)
-        return httpx.Response(200 if request.method != "POST" or request.url.path.endswith("/stop") else 201, json=_job_payload(), request=request)
+        return httpx.Response(
+            200 if request.method != "POST" or request.url.path.endswith("/stop") else 201,
+            json=_job_payload(),
+            request=request,
+        )
 
     worker = ContainerWorkerClient(
         base_url="http://worker.test/",
@@ -74,7 +84,14 @@ def test_container_worker_client_health_create_get_stop_delete_and_logs(monkeypa
     )
 
     assert worker.health() == {"status": "ok"}
-    assert worker.create(WorkerJobRequest(session_id="session-1", job_id="job-1", image="runner:latest", command=["true"])).job_id == "job-1"
+    assert (
+        worker.create(
+            WorkerJobRequest(
+                session_id="session-1", job_id="job-1", image="runner:latest", command=["true"]
+            )
+        ).job_id
+        == "job-1"
+    )
     assert worker.get("job-1").status == "running"
     assert worker.stop("job-1").status == "running"
     assert worker.delete("job-1") == {"deleted": True, "job_id": "job-1"}
@@ -89,7 +106,9 @@ def test_container_worker_client_health_create_get_stop_delete_and_logs(monkeypa
     ]
 
 
-def test_container_worker_client_requires_token_without_leaking_secret(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_container_worker_client_requires_token_without_leaking_secret(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.delenv("WORKER_TOKEN", raising=False)
     worker = ContainerWorkerClient(base_url="http://worker.test", token_env="WORKER_TOKEN")
 
@@ -99,7 +118,9 @@ def test_container_worker_client_requires_token_without_leaking_secret(monkeypat
     assert "secret" not in str(exc.value).lower()
 
 
-def test_container_worker_client_redacts_secret_error_payload(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_container_worker_client_redacts_secret_error_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setenv("WORKER_TOKEN", "secret-token")
 
     def handler(request: httpx.Request) -> httpx.Response:

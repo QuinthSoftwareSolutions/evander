@@ -3,7 +3,12 @@ from __future__ import annotations
 from importlib import import_module
 from typing import Any
 
-__all__ = ["IssueGetQueryProvider", "QueryProviderBase", "QueryRuntimeContext", "VmRunStateQueryProvider"]
+__all__ = [
+    "IssueGetQueryProvider",
+    "QueryProviderBase",
+    "QueryRuntimeContext",
+    "VmRunStateQueryProvider",
+]
 
 _EXPORT_MODULES = {
     "IssueGetQueryProvider": ".issue_get",

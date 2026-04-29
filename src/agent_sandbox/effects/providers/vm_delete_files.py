@@ -99,7 +99,12 @@ class VmDeleteFilesEffectProvider(EffectProviderBase):
         recursive: bool,
         missing_ok: bool,
     ) -> dict[str, Any]:
-        from agent_sandbox.admin_service import _resolve_private_key_path, _resolve_vm_ip, _ssh_options
+
+        from agent_sandbox.admin.service import (
+            _resolve_private_key_path,
+            _resolve_vm_ip,
+            _ssh_options,
+        )
 
         vm_ip = _resolve_vm_ip(vm_name)
         ssh_private_key_path = _resolve_private_key_path()
@@ -131,7 +136,9 @@ class VmDeleteFilesEffectProvider(EffectProviderBase):
             check=False,
         )
         if completed.returncode != 0:
-            raise RuntimeError(completed.stderr.strip() or completed.stdout.strip() or "VM delete failed")
+            raise RuntimeError(
+                completed.stderr.strip() or completed.stdout.strip() or "VM delete failed"
+            )
         return {
             "success": True,
             "vm_name": vm_name,

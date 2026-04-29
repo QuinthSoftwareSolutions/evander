@@ -55,10 +55,7 @@ class AdminServiceProviderAdapter:
         runtime = getattr(self._admin_service, "runtime", None)
         session_repository = getattr(runtime, "session_repository", None)
         if session_repository is not None:
-            return {
-                session.session_id: session
-                for session in session_repository.list_sessions()
-            }
+            return {session.session_id: session for session in session_repository.list_sessions()}
         return {}
 
     def update_issue(self, issue_id: str, **kwargs: Any) -> Any:

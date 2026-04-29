@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from mcp.server.fastmcp.exceptions import ToolError
 
-from agent_sandbox.admin_service import AdminService
+from agent_sandbox.admin.service import AdminService
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.gateway import create_server
 from agent_sandbox.models import SessionManifest, ToolName
@@ -117,7 +117,10 @@ def test_set_issue_plan_updates_issue_metadata(tmp_path: Path) -> None:
 
     assert result["updated"] is True
     assert result["step_count"] == 2
-    assert result["summary"] == "Inspect the repo, make the patch, then continue with follow-up workflow steps."
+    assert (
+        result["summary"]
+        == "Inspect the repo, make the patch, then continue with follow-up workflow steps."
+    )
     assert reread["metadata"]["steps"] == ["Inspect code", "Write patch"]
     assert reread["metadata"]["plan_summary"] == (
         "Inspect the repo, make the patch, then continue with follow-up workflow steps."
@@ -145,7 +148,9 @@ def test_set_issue_plan_requires_permission(tmp_path: Path) -> None:
         )
 
 
-def test_create_ado_backlog_item_success_with_allowed_tool(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_create_ado_backlog_item_success_with_allowed_tool(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     context = make_context(tmp_path)
     context.session_repository.upsert_session(
         SessionManifest(
@@ -498,7 +503,11 @@ def test_list_ado_current_iteration_backlog_items_requires_permission(tmp_path: 
     server = create_server(context)
 
     with pytest.raises(ToolError, match="not allowed"):
-        asyncio.run(server.call_tool("list_ado_current_iteration_backlog_items", {"session_id": "session-1"}))
+        asyncio.run(
+            server.call_tool(
+                "list_ado_current_iteration_backlog_items", {"session_id": "session-1"}
+            )
+        )
 
 
 def test_list_ado_current_iteration_backlog_items_maps_request_and_shape(
@@ -519,7 +528,9 @@ def test_list_ado_current_iteration_backlog_items_maps_request_and_shape(
         def __init__(self, provider_config: object) -> None:
             captured["provider_config"] = provider_config
 
-        def list_remote_current_iteration_backlog_items(self, **kwargs: object) -> dict[str, object]:
+        def list_remote_current_iteration_backlog_items(
+            self, **kwargs: object
+        ) -> dict[str, object]:
             captured["request"] = kwargs
             return {
                 "provider": "azure_devops",
@@ -611,8 +622,12 @@ def test_list_ado_current_iteration_backlog_items_errors_when_no_iteration_confi
         def __init__(self, provider_config: object) -> None:
             pass
 
-        def list_remote_current_iteration_backlog_items(self, **kwargs: object) -> dict[str, object]:
-            raise RuntimeError("Azure DevOps team 'Platform Team' has no current iteration configured.")
+        def list_remote_current_iteration_backlog_items(
+            self, **kwargs: object
+        ) -> dict[str, object]:
+            raise RuntimeError(
+                "Azure DevOps team 'Platform Team' has no current iteration configured."
+            )
 
     monkeypatch.setattr("agent_sandbox.gateway.IssueService", StubIssueService)
     server = create_server(context)
@@ -643,7 +658,9 @@ def test_get_ado_backlog_item_requires_permission(tmp_path: Path) -> None:
     server = create_server(context)
 
     with pytest.raises(ToolError, match="not allowed"):
-        asyncio.run(server.call_tool("get_ado_backlog_item", {"session_id": "session-1", "id": 101}))
+        asyncio.run(
+            server.call_tool("get_ado_backlog_item", {"session_id": "session-1", "id": 101})
+        )
 
 
 def test_get_ado_backlog_item_maps_request_into_issue_service(
@@ -680,7 +697,9 @@ def test_get_ado_backlog_item_maps_request_into_issue_service(
                 "changed_at": "2026-04-11T10:00:00Z",
                 "closed_at": None,
                 "fields": {"System.Title": "Backlog item"},
-                "relations": [{"rel": "System.LinkTypes.Hierarchy-Forward", "url": "https://example/rel"}],
+                "relations": [
+                    {"rel": "System.LinkTypes.Hierarchy-Forward", "url": "https://example/rel"}
+                ],
                 "comments": [{"id": "1", "text": "Looks good"}],
                 "updates": [{"id": "3", "rev": 7}],
             }

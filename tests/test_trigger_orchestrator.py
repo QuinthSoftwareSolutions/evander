@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from agent_sandbox.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
-from agent_sandbox.trigger_orchestrator import (
+from agent_sandbox.daemons.trigger_orchestrator import (
     TriggerOrchestratorCycleResult,
     TriggerOrchestratorWorker,
     build_trigger_orchestrator_worker,
@@ -103,11 +103,15 @@ def test_trigger_orchestrator_run_once_publishes_and_updates_cursor(tmp_path: Pa
     queue_payload = json.loads(worker_config.event_queue_store_path.read_text(encoding="utf-8"))
     assert list(queue_payload.keys()) == ["event-1"]
     assert queue_payload["event-1"]["trace_id"]
-    cursor_payload = json.loads(worker_config.event_queue_cursor_store_path.read_text(encoding="utf-8"))
+    cursor_payload = json.loads(
+        worker_config.event_queue_cursor_store_path.read_text(encoding="utf-8")
+    )
     assert cursor_payload["triggers"]["cron-1"]["last_event_id"] == "event-1"
 
 
-def test_trigger_orchestrator_main_once_uses_single_cycle(monkeypatch, tmp_path: Path, capsys) -> None:
+def test_trigger_orchestrator_main_once_uses_single_cycle(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
     class _FakeWorker:
         def run_once_with_lock(self):
             return TriggerOrchestratorCycleResult(
@@ -117,8 +121,14 @@ def test_trigger_orchestrator_main_once_uses_single_cycle(monkeypatch, tmp_path:
                 next_sleep_seconds=1.5,
             )
 
-    monkeypatch.setattr("agent_sandbox.bootstrap.load_runtime_gateway_config", lambda runtime_dir: GatewayConfig(runtime_dir=runtime_dir))
-    monkeypatch.setattr("agent_sandbox.trigger_orchestrator.build_trigger_orchestrator_worker", lambda *_args, **_kwargs: _FakeWorker())
+    monkeypatch.setattr(
+        "agent_sandbox.bootstrap.load_runtime_gateway_config",
+        lambda runtime_dir: GatewayConfig(runtime_dir=runtime_dir),
+    )
+    monkeypatch.setattr(
+        "agent_sandbox.daemons.trigger_orchestrator.build_trigger_orchestrator_worker",
+        lambda *_args, **_kwargs: _FakeWorker(),
+    )
     monkeypatch.setattr(
         "sys.argv",
         [
@@ -338,7 +348,9 @@ def test_trigger_orchestrator_poll_interval_change_applies_next_cycle(tmp_path: 
     assert second.next_sleep_seconds == 7.0
 
 
-def test_trigger_orchestrator_logs_revision_and_tolerates_trigger_set_changes(tmp_path: Path, caplog) -> None:
+def test_trigger_orchestrator_logs_revision_and_tolerates_trigger_set_changes(
+    tmp_path: Path, caplog
+) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
     initial_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
@@ -385,5 +397,7 @@ def test_trigger_orchestrator_logs_revision_and_tolerates_trigger_set_changes(tm
     assert result.configured_triggers == 1
     assert "Trigger orchestrator config revision changed revision=" in caplog.text
     assert "trigger_count=1" in caplog.text
-    cursor_payload = json.loads(updated_config.event_queue_cursor_store_path.read_text(encoding="utf-8"))
+    cursor_payload = json.loads(
+        updated_config.event_queue_cursor_store_path.read_text(encoding="utf-8")
+    )
     assert cursor_payload["triggers"]["cron-new"]["last_discovered_count"] == 0

@@ -7,10 +7,14 @@ from agent_sandbox.triggers.providers.default_schema import trigger_node_schema_
 from agent_sandbox.effects.providers.agent_enqueue_prompt import AgentEnqueuePromptEffectProvider
 from agent_sandbox.effects.providers.agent_prompt import AgentPromptEffectProvider
 from agent_sandbox.effects.providers.bash_script import BashScriptEffectProvider
-from agent_sandbox.effects.providers.git_promote_agent_branch import GitPromoteAgentBranchEffectProvider
+from agent_sandbox.effects.providers.git_promote_agent_branch import (
+    GitPromoteAgentBranchEffectProvider,
+)
 from agent_sandbox.effects.providers.issue_update_state import IssueUpdateStateEffectProvider
 from agent_sandbox.effects.providers.pr_create import PrCreateEffectProvider
-from agent_sandbox.effects.providers.session_update_metadata import SessionUpdateMetadataEffectProvider
+from agent_sandbox.effects.providers.session_update_metadata import (
+    SessionUpdateMetadataEffectProvider,
+)
 from agent_sandbox.effects.providers.vm_bootstrap_frontend import VmBootstrapFrontendEffectProvider
 from agent_sandbox.effects.providers.vm_bootstrap_python import VmBootstrapPythonEffectProvider
 from agent_sandbox.effects.providers.vm_copy_files import VmCopyFilesEffectProvider
@@ -35,7 +39,9 @@ from agent_sandbox.triggers.providers.cron import CronTriggerProvider
 from agent_sandbox.triggers.providers.discord_new_message import DiscordNewMessageTriggerProvider
 from agent_sandbox.triggers.providers.email_new_message import EmailNewMessageTriggerProvider
 from agent_sandbox.triggers.providers.git_push import GitPushTriggerProvider
-from agent_sandbox.triggers.providers.pull_request_new_feedback import PullRequestNewFeedbackTriggerProvider
+from agent_sandbox.triggers.providers.pull_request_new_feedback import (
+    PullRequestNewFeedbackTriggerProvider,
+)
 from agent_sandbox.triggers.providers.review_new_request import ReviewNewRequestTriggerProvider
 from agent_sandbox.triggers.providers.script_run_request import ScriptRunRequestTriggerProvider
 from agent_sandbox.triggers.providers.teams_new_message import TeamsNewMessageTriggerProvider

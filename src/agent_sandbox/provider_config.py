@@ -4,21 +4,21 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
-from .config import GatewayConfig, load_config
-from .directory_config import (
+from agent_sandbox.config import GatewayConfig, load_config
+from agent_sandbox.directory_config import (
     DirectoryConfigResolver,
     DirectoryConfigStore,
     get_domain_base_config,
     validate_effective_domain_payload,
 )
-from .directories import DirectoryService, DirectoryStore
-from .models import SessionManifest
-from .session_manifest_repository import (
+from agent_sandbox.directories import DirectoryService, DirectoryStore
+from agent_sandbox.models import SessionManifest
+from agent_sandbox.repositories.session_manifests import (
     JsonSessionManifestRepository,
     SessionManifestRepository,
     as_session_manifest_repository,
 )
-from .storage import JsonStore
+from agent_sandbox.storage import JsonStore
 
 
 class TriggerProviderConfig(BaseModel):
@@ -64,10 +64,16 @@ class ProviderConfigResolver:
         self.directory_store = directory_store or DirectoryStore(config.directories_store_path)
         self.directory_store.ensure_root()
         self.directory_service = DirectoryService(self.directory_store)
-        self.config_store = DirectoryConfigStore(self.directory_store, runtime_dir=config.runtime_dir)
-        raw_session_store = session_store or JsonSessionManifestRepository(config.session_store_path)
+        self.config_store = DirectoryConfigStore(
+            self.directory_store, runtime_dir=config.runtime_dir
+        )
+        raw_session_store = session_store or JsonSessionManifestRepository(
+            config.session_store_path
+        )
         self.session_store = as_session_manifest_repository(raw_session_store)
-        self.provider_session_store = provider_session_store or JsonStore(config.session_store_path, ProviderSessionManifest)
+        self.provider_session_store = provider_session_store or JsonStore(
+            config.session_store_path, ProviderSessionManifest
+        )
         self.resolver = DirectoryConfigResolver(
             self.directory_service,
             base_gateway_config=config,
@@ -86,7 +92,9 @@ class ProviderConfigResolver:
                 normalized_path,
                 domain=domain,
                 base_config=get_domain_base_config(self.config, domain),
-                validator=lambda candidate, domain=domain: validate_effective_domain_payload(domain, candidate),
+                validator=lambda candidate, domain=domain: validate_effective_domain_payload(
+                    domain, candidate
+                ),
             )
             payload.update(resolution.effective_config)
         return GatewayConfig.model_validate(payload)
@@ -105,7 +113,9 @@ class ProviderConfigResolver:
             raise ValueError(f"unknown session: {session_id}")
         return session
 
-    def resolve_for_session_manifest(self, session: SessionManifest | ProviderSessionManifest) -> GatewayConfig:
+    def resolve_for_session_manifest(
+        self, session: SessionManifest | ProviderSessionManifest
+    ) -> GatewayConfig:
         return self.resolve_for_directory(session.directory_path)
 
     def resolve_trigger_provider_config(self, directory_path: str | None) -> TriggerProviderConfig:

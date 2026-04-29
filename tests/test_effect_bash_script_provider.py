@@ -28,8 +28,8 @@ def test_bash_script_provider_executes_script_with_args_and_context(tmp_path: Pa
         "\n".join(
             [
                 "printf 'cwd=%s\\n' \"$PWD\"",
-                "printf 'args=%s|%s\\n' \"$1\" \"$2\"",
-                "printf 'env=%s|%s\\n' \"${CUSTOM_ENV:-}\" \"${BASE_ENV:-}\"",
+                'printf \'args=%s|%s\\n\' "$1" "$2"',
+                'printf \'env=%s|%s\\n\' "${CUSTOM_ENV:-}" "${BASE_ENV:-}"',
                 "cat",
             ]
         )
@@ -58,10 +58,7 @@ def test_bash_script_provider_executes_script_with_args_and_context(tmp_path: Pa
     assert result["script_path"] == str(script_path)
     assert result["exit_code"] == 0
     assert result["stdout"] == (
-        f"cwd={working_directory}\n"
-        "args=--flag|value with spaces\n"
-        "env=hello|from-context\n"
-        "payload"
+        f"cwd={working_directory}\nargs=--flag|value with spaces\nenv=hello|from-context\npayload"
     )
 
 
@@ -107,7 +104,7 @@ def test_bash_script_provider_exposes_final_json_object_from_stdout(tmp_path: Pa
         "\n".join(
             [
                 "echo 'starting deploy'",
-                "echo '{\"environment_alias\":\"demo-a\",\"app_base_url\":\"https://demo-a.example/api\",\"provisioning_status\":\"ready\"}'",
+                'echo \'{"environment_alias":"demo-a","app_base_url":"https://demo-a.example/api","provisioning_status":"ready"}\'',
             ]
         )
         + "\n",

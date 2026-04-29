@@ -106,7 +106,7 @@ The trigger/effect runtime is designed as two layers with explicit ownership bou
 
 - **Orchestration core (production-safe baseline)**
   - Owns queueing, graph traversal, lock/cursor/execution stores, and worker polling.
-  - Lives primarily in `src/agent_sandbox/workflow_engine/`, `src/agent_sandbox/orchestration/`, and `src/agent_sandbox/workflow_runtime_config.py`.
+  - Lives primarily in `src/agent_sandbox/workflow/engine/`, `src/agent_sandbox/orchestration/`, and `src/agent_sandbox/workflow/runtime_config.py`.
   - Uses `profiles/core-minimal` to avoid loading domain provider packages by default.
 - **Domain packs (opt-in convenience layer)**
   - Own provider implementations and domain-specific default handlers used by built-in workflows.

@@ -88,7 +88,9 @@ class WorkerJobRequest(BaseModel):
             forbidden = {"env", "environment", "environment_variables"}
             present = sorted(forbidden.intersection(data))
             if present:
-                raise ValueError(f"raw environment injection is not supported: {', '.join(present)}")
+                raise ValueError(
+                    f"raw environment injection is not supported: {', '.join(present)}"
+                )
         return data
 
 
@@ -104,7 +106,9 @@ class WorkerSessionPaths(BaseModel):
     @classmethod
     def resolve(cls, worker_root: Path, session_id: str) -> "WorkerSessionPaths":
         if not SAFE_ID_PATTERN.fullmatch(session_id):
-            raise ValueError("session_id must contain only letters, numbers, dots, underscores, or dashes")
+            raise ValueError(
+                "session_id must contain only letters, numbers, dots, underscores, or dashes"
+            )
         root = worker_root / "sessions" / session_id
         paths = cls(
             session_id=session_id,

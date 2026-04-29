@@ -5,32 +5,32 @@ from datetime import UTC, datetime
 from dataclasses import dataclass
 from typing import Callable
 
-from .agent_prompt_store import AgentPromptStore
-from .audit import AuditLogger
-from .directories import DirectoryStore
-from .models import (
+from agent_sandbox.messaging.agent_prompt_store import AgentPromptStore
+from agent_sandbox.audit import AuditLogger
+from agent_sandbox.directories import DirectoryStore
+from agent_sandbox.models import (
     ApprovalRequest,
     DraftMessage,
     SessionManifest,
     ToolName,
 )
-from .migrations import migrate_local_issues_to_unified_schema
-from .config import GatewayConfig, MailboxConfig
-from .directory_config import load_root_gateway_config
-from .cursor_repositories import EmailCursorRepository, JsonEmailCursorRepository
-from .email.gmail_provider import GmailEmailProvider
-from .email.graph_provider import GraphEmailProvider
-from .email.providers import JsonEmailProvider, MultiMailboxEmailProvider
-from .policy import PolicyEngine
-from .policy_config import PolicyConfigResolver
-from .provider_config import ProviderConfigResolver
-from .host_config import HostConfig
-from .review_request_service import (
+from agent_sandbox.migrations import migrate_local_issues_to_unified_schema
+from agent_sandbox.config import GatewayConfig, MailboxConfig
+from agent_sandbox.directory_config import load_root_gateway_config
+from agent_sandbox.repositories.cursors import EmailCursorRepository, JsonEmailCursorRepository
+from agent_sandbox.email.gmail_provider import GmailEmailProvider
+from agent_sandbox.email.graph_provider import GraphEmailProvider
+from agent_sandbox.email.providers import JsonEmailProvider, MultiMailboxEmailProvider
+from agent_sandbox.policy import PolicyEngine
+from agent_sandbox.policy_config import PolicyConfigResolver
+from agent_sandbox.provider_config import ProviderConfigResolver
+from agent_sandbox.host_config import HostConfig
+from agent_sandbox.reviews.request_service import (
     ReviewRequestService,
     _build_review_request_service,
 )
-from .review_request_store import ReviewRequestStore
-from .records_repository import (
+from agent_sandbox.reviews.request_store import ReviewRequestStore
+from agent_sandbox.repositories.records import (
     DiscordRecordsRepository,
     EmailRecordsRepository,
     JsonDiscordRecordsRepository,
@@ -38,13 +38,16 @@ from .records_repository import (
     JsonTeamsRecordsRepository,
     TeamsRecordsRepository,
 )
-from .session_manifest_repository import (
+from agent_sandbox.repositories.session_manifests import (
     JsonSessionManifestRepository,
     SessionManifestRepository,
     as_session_manifest_repository,
 )
-from .script_run_request_store import ScriptRunRequestRepository, ScriptRunRequestStore
-from .services import (
+from agent_sandbox.repositories.script_run_requests import (
+    ScriptRunRequestRepository,
+    ScriptRunRequestStore,
+)
+from agent_sandbox.services import (
     AzureDevOpsPrReplyProvider,
     AzureDevOpsPrQueryProvider,
     AzureDevOpsPrPublishProvider,
@@ -64,13 +67,13 @@ from .services import (
     TeamsService,
     normalize_teams_target,
 )
-from .storage import JsonStore
-from .teams_auth import (
+from agent_sandbox.storage import JsonStore
+from agent_sandbox.messaging.teams_auth import (
     JsonTeamsIdentityCredentialStore,
     MicrosoftDeviceCodeAuthConfig,
     TeamsDeviceCodeTokenProvider,
 )
-from .wake_store import WakeRequestRepository, WakeRequestStore
+from agent_sandbox.messaging.wake_store import WakeRequestRepository, WakeRequestStore
 
 
 @dataclass(slots=True)
@@ -110,7 +113,9 @@ class RuntimeContext:
         resolved_config = self.resolve_provider_config_for_session(session_id)
         if resolved_config == self.config:
             return self.email_service
-        return EmailService(_build_email_provider(resolved_config, self.emails, self.drafts, self.email_cursors))
+        return EmailService(
+            _build_email_provider(resolved_config, self.emails, self.drafts, self.email_cursors)
+        )
 
     def discord_service_for_session(self, session_id: str) -> DiscordService:
         if not isinstance(self.discord_service, (StubDiscordService, DiscordBotApiService)):
@@ -173,9 +178,11 @@ class RuntimeContext:
             self.teams_messages,
             self.session_repository,
             directory_path=session.directory_path,
-            allowed_channel_targets_provider=lambda: _resolve_allowed_teams_channel_targets_for_session(
-                self.session_repository,
-                session_id,
+            allowed_channel_targets_provider=lambda: (
+                _resolve_allowed_teams_channel_targets_for_session(
+                    self.session_repository,
+                    session_id,
+                )
             ),
         )
 
@@ -196,16 +203,24 @@ def _build_runtime_context(config: GatewayConfig) -> RuntimeContext:
     drafts = JsonStore(config.draft_store_path, DraftMessage)
     emails = JsonEmailRecordsRepository(config.email_store_path)
     email_cursors = JsonEmailCursorRepository(config.email_cursor_store_path)
-    policy_config = PolicyConfigResolver(config, directory_store=directories, session_store=session_repository)
-    provider_config = ProviderConfigResolver(config, directory_store=directories, session_store=session_repository)
+    policy_config = PolicyConfigResolver(
+        config, directory_store=directories, session_store=session_repository
+    )
+    provider_config = ProviderConfigResolver(
+        config, directory_store=directories, session_store=session_repository
+    )
     discord_commands = JsonDiscordRecordsRepository(config.discord_command_store_path)
     teams_messages = JsonTeamsRecordsRepository(config.teams_message_store_path)
     discord_inbox_service = DiscordInboxService(config.runtime_dir / "discord-inbox-store.json")
     wake_store = WakeRequestStore(config.runtime_dir / "wake-requests-store.json")
     agent_prompt_store = AgentPromptStore(config.runtime_dir / "agent-prompt-store.json")
-    script_run_request_store = ScriptRunRequestStore(config.runtime_dir / "script-run-requests-store.json")
+    script_run_request_store = ScriptRunRequestStore(
+        config.runtime_dir / "script-run-requests-store.json"
+    )
     root_provider_config = provider_config.resolve_for_directory("root")
-    discord_service = _build_discord_service(root_provider_config, discord_commands, session_repository, policy_config)
+    discord_service = _build_discord_service(
+        root_provider_config, discord_commands, session_repository, policy_config
+    )
     teams_service = _build_teams_service(
         root_provider_config,
         teams_messages,
@@ -219,7 +234,9 @@ def _build_runtime_context(config: GatewayConfig) -> RuntimeContext:
         provider_config=provider_config,
         audit=AuditLogger(config.audit_log_path),
         policy=PolicyEngine(config, session_repository, approvals, policy_config=policy_config),
-        email_service=EmailService(_build_email_provider(root_provider_config, emails, drafts, email_cursors)),
+        email_service=EmailService(
+            _build_email_provider(root_provider_config, emails, drafts, email_cursors)
+        ),
         discord_service=discord_service,
         teams_service=teams_service,
         discord_inbox_service=discord_inbox_service,
@@ -230,7 +247,9 @@ def _build_runtime_context(config: GatewayConfig) -> RuntimeContext:
         pr_reply_service=_build_pr_reply_service(root_provider_config),
         pr_query_service=_build_pr_query_service(root_provider_config),
         pr_publish_service=_build_pr_publish_service(root_provider_config),
-        review_request_service=_build_review_request_service(root_provider_config, session_repository),
+        review_request_service=_build_review_request_service(
+            root_provider_config, session_repository
+        ),
         session_repository=session_repository,
         approvals=approvals,
         directories=directories,
@@ -246,7 +265,8 @@ def _build_runtime_context(config: GatewayConfig) -> RuntimeContext:
 
 
 def build_runtime(config: GatewayConfig) -> RuntimeContext:
-    from .app_bootstrap import build_runtime as build_bootstrapped_runtime
+
+    from agent_sandbox.app_bootstrap import build_runtime as build_bootstrapped_runtime
 
     return build_bootstrapped_runtime(config)
 
@@ -264,7 +284,9 @@ def _build_email_provider(
     if all(mailbox.provider == "json_store" for mailbox in mailbox_configs):
         return JsonEmailProvider(emails, drafts)
 
-    providers_by_mailbox: dict[str, JsonEmailProvider | GmailEmailProvider | GraphEmailProvider] = {}
+    providers_by_mailbox: dict[
+        str, JsonEmailProvider | GmailEmailProvider | GraphEmailProvider
+    ] = {}
     for mailbox in mailbox_configs:
         if mailbox.provider == "json_store":
             providers_by_mailbox[mailbox.mailbox_id] = JsonEmailProvider(emails, drafts)
@@ -383,7 +405,9 @@ def _build_teams_service(
     if config.teams_backend == "graph_api":
         env_var_name = config.teams_graph_access_token_env.strip()
         if not env_var_name:
-            raise RuntimeError("teams backend 'graph_api' requires config.teams_graph_access_token_env to be set")
+            raise RuntimeError(
+                "teams backend 'graph_api' requires config.teams_graph_access_token_env to be set"
+            )
         token = os.environ.get(env_var_name, "").strip()
         if not token:
             raise RuntimeError(
@@ -430,7 +454,9 @@ def _build_teams_service(
 def _build_delegated_teams_token_provider(config: GatewayConfig) -> TeamsDeviceCodeTokenProvider:
     identity_id = str(config.teams_delegated_identity_id or "").strip()
     if not identity_id:
-        raise RuntimeError("teams backend 'delegated_graph_api' requires teams_delegated_identity_id")
+        raise RuntimeError(
+            "teams backend 'delegated_graph_api' requires teams_delegated_identity_id"
+        )
     client_id = str(config.teams_delegated_client_id or "").strip()
     if not client_id:
         raise RuntimeError("teams backend 'delegated_graph_api' requires teams_delegated_client_id")
@@ -567,4 +593,10 @@ def _resolve_allowed_teams_channel_targets_for_session(
         return []
     if ToolName.TEAMS_GET_MESSAGES not in session.allowed_tools:
         return []
-    return sorted({normalize_teams_target(target) for target in session.teams_channel_allowlist if target.strip()})
+    return sorted(
+        {
+            normalize_teams_target(target)
+            for target in session.teams_channel_allowlist
+            if target.strip()
+        }
+    )

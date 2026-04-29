@@ -5,7 +5,9 @@ from pathlib import Path
 
 
 def test_events_models_contract_module_does_not_import_provider_packages() -> None:
-    module_path = Path(__file__).resolve().parents[1] / "src" / "agent_sandbox" / "events" / "models.py"
+    module_path = (
+        Path(__file__).resolve().parents[1] / "src" / "agent_sandbox" / "events" / "models.py"
+    )
     tree = ast.parse(module_path.read_text(encoding="utf-8"), filename=str(module_path))
 
     forbidden_prefixes = (
@@ -22,7 +24,8 @@ def test_events_models_contract_module_does_not_import_provider_packages() -> No
             imported_modules.add(node.module)
 
     offenders = sorted(
-        imported for imported in imported_modules if any(imported.startswith(prefix) for prefix in forbidden_prefixes)
+        imported
+        for imported in imported_modules
+        if any(imported.startswith(prefix) for prefix in forbidden_prefixes)
     )
     assert offenders == []
-

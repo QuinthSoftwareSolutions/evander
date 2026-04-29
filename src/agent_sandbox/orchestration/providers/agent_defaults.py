@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from ...effects.providers.lifecycle_hooks import build_effect_lifecycle_hooks
+from agent_sandbox.effects.providers.lifecycle_hooks import build_effect_lifecycle_hooks
 from ..effect_extensions import (
     CompletionDispatchHook,
     LifecycleReconciliationHook,
@@ -43,9 +43,14 @@ class AgentCompletionSpecialEventHandler:
         phase: Literal["pre", "post"],
         source_node_exists: bool,
     ) -> SpecialEventResult | None:
-        if str(getattr(queue_record, "trigger_type", "") or "") != _AGENT_RUN_COMPLETED_TRIGGER_TYPE:
+        if (
+            str(getattr(queue_record, "trigger_type", "") or "")
+            != _AGENT_RUN_COMPLETED_TRIGGER_TYPE
+        ):
             return None
-        should_run = (phase == "pre" and not source_node_exists) or (phase == "post" and source_node_exists)
+        should_run = (phase == "pre" and not source_node_exists) or (
+            phase == "post" and source_node_exists
+        )
         if not should_run:
             return SpecialEventResult(consume_event=not source_node_exists)
         for hook in self._lifecycle_hooks:

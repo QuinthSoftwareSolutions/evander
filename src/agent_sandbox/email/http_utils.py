@@ -136,7 +136,9 @@ def request_with_retries(
                 max_attempts=max_attempts,
             ) from exc
 
-    error_detail = f"{type(last_error).__name__}: {last_error}" if last_error else "unknown network error"
+    error_detail = (
+        f"{type(last_error).__name__}: {last_error}" if last_error else "unknown network error"
+    )
     raise ProviderRequestError(
         f"{provider}.{operation} exhausted retries on transient network error: "
         f"{method_normalized} {url} status={last_status_code} attempts={max_attempts}/{max_attempts} "
@@ -147,7 +149,9 @@ def request_with_retries(
     ) from last_error
 
 
-def _sleep_with_jitter(attempt: int, base_backoff_seconds: float, max_backoff_seconds: float) -> None:
+def _sleep_with_jitter(
+    attempt: int, base_backoff_seconds: float, max_backoff_seconds: float
+) -> None:
     exponential = base_backoff_seconds * (2 ** (attempt - 1))
     jittered = exponential * (0.5 + random.random())
     time.sleep(min(jittered, max_backoff_seconds))

@@ -44,12 +44,16 @@ class TicketCreatedTriggerProvider(TriggerProviderBase):
                 max_created_at = occurred_at
 
         if max_created_at is not None:
-            cursor_store.put(trigger.id, {"last_created_at": max_created_at.isoformat().replace("+00:00", "Z")})
+            cursor_store.put(
+                trigger.id, {"last_created_at": max_created_at.isoformat().replace("+00:00", "Z")}
+            )
         return events
 
     def _trigger(self) -> TicketCreatedTriggerDefinition:
         if not isinstance(self.trigger_definition, TicketCreatedTriggerDefinition):
-            raise RuntimeError("TicketCreatedTriggerProvider initialized with a non-ticket-created trigger definition")
+            raise RuntimeError(
+                "TicketCreatedTriggerProvider initialized with a non-ticket-created trigger definition"
+            )
         return self.trigger_definition
 
     def _runtime_dir(self):

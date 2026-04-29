@@ -90,20 +90,20 @@ exec "$@"
     host_control_state_path.parent.mkdir(parents=True)
     host_control_state_path.write_text(
         (
-            '{\n'
+            "{\n"
             '  "vm-1234": {\n'
             '    "phase": "operator-disable",\n'
             '    "status": "disabled",\n'
             '    "updated_at": "2026-03-25T01:17:00Z",\n'
             '    "vm_name": "vm-1234"\n'
-            '  },\n'
+            "  },\n"
             '  "vm-9999": {\n'
             '    "phase": "operator-disable",\n'
             '    "status": "disabled",\n'
             '    "updated_at": "2026-03-25T01:17:01Z",\n'
             '    "vm_name": "vm-9999"\n'
-            '  }\n'
-            '}\n'
+            "  }\n"
+            "}\n"
         ),
         encoding="utf-8",
     )
@@ -130,7 +130,10 @@ exec /bin/rm "$@"
     )
 
     assert result.stdout.strip() == "Destroyed VM vm-1234"
-    assert any("destroy vm-1234" in line or "undefine vm-1234" in line for line in virsh_log.read_text(encoding="utf-8").splitlines())
+    assert any(
+        "destroy vm-1234" in line or "undefine vm-1234" in line
+        for line in virsh_log.read_text(encoding="utf-8").splitlines()
+    )
     sudo_calls = sudo_log.read_text(encoding="utf-8").splitlines()
     assert any(str(vm_dir) in call and "rm -rf" in call for call in sudo_calls)
     state_text = host_control_state_path.read_text(encoding="utf-8")

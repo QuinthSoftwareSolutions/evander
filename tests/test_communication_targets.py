@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from agent_sandbox.communication_targets import (
+from agent_sandbox.messaging.targets import (
     CommunicationTargetsConfig,
     load_communication_targets_config,
 )
@@ -15,8 +15,18 @@ def test_communication_targets_reject_duplicate_ids() -> None:
         CommunicationTargetsConfig.model_validate(
             {
                 "targets": [
-                    {"id": "alpha", "provider": "teams", "kind": "teams", "address": "team/channel"},
-                    {"id": "alpha", "provider": "discord", "kind": "discord", "address": "123456789012345678"},
+                    {
+                        "id": "alpha",
+                        "provider": "teams",
+                        "kind": "teams",
+                        "address": "team/channel",
+                    },
+                    {
+                        "id": "alpha",
+                        "provider": "discord",
+                        "kind": "discord",
+                        "address": "123456789012345678",
+                    },
                 ]
             }
         )
@@ -47,7 +57,12 @@ def test_communication_targets_apply_provider_address_validation() -> None:
         CommunicationTargetsConfig.model_validate(
             {
                 "targets": [
-                    {"id": "bad-discord", "provider": "discord", "kind": "discord", "address": "channel-name"},
+                    {
+                        "id": "bad-discord",
+                        "provider": "discord",
+                        "kind": "discord",
+                        "address": "channel-name",
+                    },
                 ]
             }
         )

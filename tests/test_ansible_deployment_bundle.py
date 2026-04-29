@@ -30,7 +30,9 @@ def test_ansible_site_uses_repo_native_bootstrap_order() -> None:
     site = (repo / "ansible" / "site.yml").read_text(encoding="utf-8")
 
     assert "agent_sandbox_service_profile in ['full', 'control_plane_only']" in site
-    assert "agent_sandbox_services.firewall must be false for control_plane_only deployments" in site
+    assert (
+        "agent_sandbox_services.firewall must be false for control_plane_only deployments" in site
+    )
     assert "agent_sandbox_runtime_dir == agent_sandbox_expected_runtime_dir" in site
     assert "- role: host_prereqs" in site
     assert "- role: repo_checkout" in site
@@ -113,9 +115,9 @@ def test_ansible_env_template_shell_quotes_values() -> None:
 
 def test_ansible_workflow_config_render_can_be_disabled() -> None:
     repo = Path(__file__).resolve().parents[1]
-    service_config = (repo / "ansible" / "roles" / "service_config" / "tasks" / "main.yml").read_text(
-        encoding="utf-8"
-    )
+    service_config = (
+        repo / "ansible" / "roles" / "service_config" / "tasks" / "main.yml"
+    ).read_text(encoding="utf-8")
 
     assert 'path: "config/trigger-orchestrator/config.json"' in service_config
     assert 'enabled: "{{ agent_sandbox_manage_workflow_config }}"' in service_config
@@ -127,9 +129,9 @@ def test_ansible_workflow_config_render_can_be_disabled() -> None:
 
 def test_ansible_restarts_services_after_managed_config_changes() -> None:
     repo = Path(__file__).resolve().parents[1]
-    service_config = (repo / "ansible" / "roles" / "service_config" / "tasks" / "main.yml").read_text(
-        encoding="utf-8"
-    )
+    service_config = (
+        repo / "ansible" / "roles" / "service_config" / "tasks" / "main.yml"
+    ).read_text(encoding="utf-8")
     service_runtime = (
         repo / "ansible" / "roles" / "service_runtime" / "tasks" / "main.yml"
     ).read_text(encoding="utf-8")

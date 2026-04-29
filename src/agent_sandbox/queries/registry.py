@@ -4,10 +4,17 @@ import os
 from collections.abc import Callable, Mapping
 from typing import Any
 
-from agent_sandbox.events.models import QueryDefinitionDiscriminated, QueryType, WorkflowNodeEnvelope
+from agent_sandbox.events.models import (
+    QueryDefinitionDiscriminated,
+    QueryType,
+    WorkflowNodeEnvelope,
+)
 from agent_sandbox.provider_config import ProviderConfigResolver, QueryProviderConfig
-from agent_sandbox.provider_runtime.adapters import build_provider_runtime_ports, query_provider_config_blob
-from agent_sandbox.workflow_plugins import QUERY_PLUGIN_CLASSES
+from agent_sandbox.provider_runtime.adapters import (
+    build_provider_runtime_ports,
+    query_provider_config_blob,
+)
+from agent_sandbox.workflow.plugins import QUERY_PLUGIN_CLASSES
 
 from .providers.base import QueryProviderBase, QueryRuntimeContext
 
@@ -19,7 +26,9 @@ DEFAULT_QUERY_PROVIDER_REGISTRY: dict[QueryType, QueryProviderClass] = dict(QUER
 
 class QueryProviderRegistry:
     def __init__(self, initial: Mapping[QueryType, QueryProviderClass] | None = None) -> None:
-        self._providers: dict[QueryType, QueryProviderClass] = dict(initial or DEFAULT_QUERY_PROVIDER_REGISTRY)
+        self._providers: dict[QueryType, QueryProviderClass] = dict(
+            initial or DEFAULT_QUERY_PROVIDER_REGISTRY
+        )
 
     def register(self, query_type: QueryType, provider_class: QueryProviderClass) -> None:
         self._providers[query_type] = provider_class
@@ -56,7 +65,12 @@ class QueryProviderFactory:
             admin_adapter=admin_adapter,
             gate_adapter=gate_adapter,
         )
-        self.admin_service = self._provider_runtime_ports.admin_service or admin_service or admin_adapter or provider_runtime
+        self.admin_service = (
+            self._provider_runtime_ports.admin_service
+            or admin_service
+            or admin_adapter
+            or provider_runtime
+        )
         self._admin_adapter = self.admin_service
         self.registry = registry or QueryProviderRegistry()
         self.env = env or dict(os.environ)
@@ -69,10 +83,13 @@ class QueryProviderFactory:
         directory_path: str | None = None,
     ) -> QueryProviderBase:
         provider_class = self.registry.resolve(query_definition.type)
-        resolved_config = _resolve_query_provider_config(self.provider_config_resolver, directory_path)
+        resolved_config = _resolve_query_provider_config(
+            self.provider_config_resolver, directory_path
+        )
         runtime_context = QueryRuntimeContext(
             provider_config=query_provider_config_blob(resolved_config),
-            vm_inventory=self._provider_runtime_ports.vm_inventory or self._provider_runtime_ports.gate_vm_inventory,
+            vm_inventory=self._provider_runtime_ports.vm_inventory
+            or self._provider_runtime_ports.gate_vm_inventory,
             git_pr_note_reader=self._provider_runtime_ports.git_pr_note_reader,
             issue_reader=self._provider_runtime_ports.issue_reader,
             session_context_reader=self._provider_runtime_ports.session_context_reader,
@@ -99,12 +116,16 @@ def _resolve_query_provider_config(
     provider_config_resolver: ProviderConfigResolver,
     directory_path: str | None,
 ) -> QueryProviderConfig:
-    resolve_provider_config = getattr(provider_config_resolver, "resolve_query_provider_config", None)
+    resolve_provider_config = getattr(
+        provider_config_resolver, "resolve_query_provider_config", None
+    )
     if callable(resolve_provider_config):
         return resolve_provider_config(directory_path)
     resolve_for_directory = getattr(provider_config_resolver, "resolve_for_directory", None)
     if callable(resolve_for_directory):
-        return QueryProviderConfig.model_validate(_model_dump(resolve_for_directory(directory_path)))
+        return QueryProviderConfig.model_validate(
+            _model_dump(resolve_for_directory(directory_path))
+        )
     raise AttributeError("provider_config_resolver must resolve query provider config")
 
 

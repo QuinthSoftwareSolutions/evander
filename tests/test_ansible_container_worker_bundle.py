@@ -55,7 +55,7 @@ def test_worker_group_vars_define_docker_and_durable_state_contract() -> None:
     assert "  - docker" in text
     assert "  - docker.io" in text
     assert 'agent_sandbox_python_install_extras: ""' in text
-    assert 'agent_sandbox_worker_port: 11888' in text
+    assert "agent_sandbox_worker_port: 11888" in text
     assert 'agent_sandbox_worker_root: "/var/lib/agent-worker"' in text
     assert 'agent_sandbox_worker_runtime_dir: "{{ agent_sandbox_worker_root }}/runtime"' in text
     assert 'agent_sandbox_worker_sandbox_profile: "default"' in text
@@ -77,7 +77,9 @@ def test_worker_service_role_renders_env_and_daemon_unit() -> None:
     assert "agent_sandbox_worker_env_render.changed" in tasks
     assert "{{ key }}={{ value | string | quote }}" in env
     assert "Requires=docker.service" in unit
-    assert "SupplementaryGroups={{ agent_sandbox_run_user_supplementary_groups | join(' ') }}" in unit
+    assert (
+        "SupplementaryGroups={{ agent_sandbox_run_user_supplementary_groups | join(' ') }}" in unit
+    )
     assert "EnvironmentFile={{ agent_sandbox_deploy_path }}/config/worker-daemon.env" in unit
     assert ".venv/bin/agent-sandbox-worker-daemon" in unit
     assert "--worker-root {{ agent_sandbox_worker_root }}" in unit
@@ -88,7 +90,9 @@ def test_worker_service_role_renders_env_and_daemon_unit() -> None:
     assert "--container-user {{ agent_sandbox_worker_container_user }}" in unit
 
 
-def test_worker_runtime_and_verification_roles_cover_docker_health_and_no_control_plane_units() -> None:
+def test_worker_runtime_and_verification_roles_cover_docker_health_and_no_control_plane_units() -> (
+    None
+):
     runtime = (
         ROOT / "ansible" / "roles" / "container_worker_runtime" / "tasks" / "main.yml"
     ).read_text(encoding="utf-8")
@@ -109,9 +113,7 @@ def test_worker_runtime_and_verification_roles_cover_docker_health_and_no_contro
 
 
 def test_worker_docs_and_inventory_reference_playbook() -> None:
-    inventory = (ROOT / "ansible" / "inventory" / "hosts.example.yml").read_text(
-        encoding="utf-8"
-    )
+    inventory = (ROOT / "ansible" / "inventory" / "hosts.example.yml").read_text(encoding="utf-8")
     ansible_docs = (ROOT / "ansible" / "README.md").read_text(encoding="utf-8")
     worker_docs = (ROOT / "docs" / "container-worker-backend.md").read_text(encoding="utf-8")
     readme = (ROOT / "README.md").read_text(encoding="utf-8")

@@ -2,11 +2,14 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from agent_sandbox.cursor_repositories import JsonTeamsInboxCursorRepository
+from agent_sandbox.repositories.cursors import JsonTeamsInboxCursorRepository
 from agent_sandbox.events.models import TriggerEvent
-from agent_sandbox.events.provider_models import TeamsMessageFilterDefinition, TeamsNewMessageTriggerDefinition
+from agent_sandbox.events.provider_models import (
+    TeamsMessageFilterDefinition,
+    TeamsNewMessageTriggerDefinition,
+)
 from agent_sandbox.services import normalize_teams_target, teams_target_from_message
-from agent_sandbox.teams_inbox_store import TeamsInboxMessage
+from agent_sandbox.messaging.teams_inbox_store import TeamsInboxMessage
 from agent_sandbox.triggers.providers._cursor_state import TriggerCursorStore
 from agent_sandbox.triggers.providers.base import TriggerProviderBase
 
@@ -89,7 +92,9 @@ class TeamsNewMessageTriggerProvider(TriggerProviderBase):
 
     def _trigger(self) -> TeamsNewMessageTriggerDefinition:
         if not isinstance(self.trigger_definition, TeamsNewMessageTriggerDefinition):
-            raise RuntimeError("TeamsNewMessageTriggerProvider initialized with a non-Teams trigger definition")
+            raise RuntimeError(
+                "TeamsNewMessageTriggerProvider initialized with a non-Teams trigger definition"
+            )
         return self.trigger_definition
 
     def _resolved_config(self):
@@ -98,7 +103,9 @@ class TeamsNewMessageTriggerProvider(TriggerProviderBase):
         return self.runtime_context.resolved_config
 
     def _cursor_store(self) -> TriggerCursorStore:
-        return TriggerCursorStore(self._resolved_config().runtime_dir / "trigger-cursors-teams.json")
+        return TriggerCursorStore(
+            self._resolved_config().runtime_dir / "trigger-cursors-teams.json"
+        )
 
 
 def _message_channel_target(message: TeamsInboxMessage) -> str:

@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from agent_sandbox.models import WakeDispatchRecord, WakeResumePromptPayload, WakeScheduleDefinition
-from agent_sandbox.wake_store import WakeRequestStore
+from agent_sandbox.messaging.wake_store import WakeRequestStore
 import pytest
 
 
@@ -27,7 +27,9 @@ def test_schedule_resume_request_persists_expected_shape(tmp_path: Path) -> None
     payload = json.loads((tmp_path / "wake-store.json").read_text(encoding="utf-8"))
     assert payload["requests"]["wake-1"]["session_id"] == "session-1"
     assert payload["requests"]["wake-1"]["schedule"]["resume_at"] == "2026-04-01T10:30:00Z"
-    assert payload["requests"]["wake-1"]["resume_prompt"]["prompt"] == "Resume from pending feedback."
+    assert (
+        payload["requests"]["wake-1"]["resume_prompt"]["prompt"] == "Resume from pending feedback."
+    )
 
 
 def test_record_dispatch_updates_request_and_appends_message(tmp_path: Path) -> None:

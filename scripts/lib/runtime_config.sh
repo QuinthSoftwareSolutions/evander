@@ -22,7 +22,7 @@ resolve_vm_defaults_exports() {
     "${python_bin}" - "${runtime_dir}" "${session_id}" <<'PY'
 import sys
 
-from agent_sandbox.vm_defaults_config import render_vm_defaults_exports
+from agent_sandbox.vm.defaults_config import render_vm_defaults_exports
 
 runtime_dir = sys.argv[1]
 session_id = sys.argv[2] or None

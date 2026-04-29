@@ -7,7 +7,7 @@ from starlette.testclient import TestClient
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.directory_config import DirectoryConfigStore
 from agent_sandbox.directories import DirectoryStore
-from agent_sandbox.nuget_relay import create_app
+from agent_sandbox.relays.nuget import create_app
 
 
 def make_config(tmp_path: Path) -> GatewayConfig:
@@ -122,4 +122,7 @@ def test_nuget_relay_uses_root_directory_provider_overlay(tmp_path: Path) -> Non
 
     assert response.status_code == 200
     assert captured["authorization"].startswith("Basic ")
-    assert captured["url"] == "https://pkgs.dev.azure.com/root/root/_packaging/root/nuget/v3/index.json"
+    assert (
+        captured["url"]
+        == "https://pkgs.dev.azure.com/root/root/_packaging/root/nuget/v3/index.json"
+    )

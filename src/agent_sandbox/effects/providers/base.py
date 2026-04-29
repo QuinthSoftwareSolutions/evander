@@ -4,7 +4,11 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-from agent_sandbox.events.models import EffectDefinitionDiscriminated, WorkflowNodeEnvelope, materialize_node_definition
+from agent_sandbox.events.models import (
+    EffectDefinitionDiscriminated,
+    WorkflowNodeEnvelope,
+    materialize_node_definition,
+)
 from agent_sandbox.provider_runtime.contracts import (
     AgentResumer,
     GitBranchPromoter,
@@ -23,7 +27,7 @@ from agent_sandbox.provider_runtime.contracts import (
     VmInventory,
     VmPowerController,
 )
-from agent_sandbox.workflow_validation import NodeCapability, WorkflowValidationDiagnostic
+from agent_sandbox.workflow.validation import NodeCapability, WorkflowValidationDiagnostic
 
 
 @dataclass(frozen=True)
@@ -77,35 +81,30 @@ class EffectRuntimeContext(ProviderRuntimeBase):
 
 class EffectProvider(Protocol):
     @classmethod
-    def validate_definition(cls, effect_definition: EffectDefinitionDiscriminated) -> EffectDefinitionDiscriminated:
-        ...
+    def validate_definition(
+        cls, effect_definition: EffectDefinitionDiscriminated
+    ) -> EffectDefinitionDiscriminated: ...
 
     def initialize(
         self,
         effect_definition: EffectDefinitionDiscriminated,
         runtime_context: EffectRuntimeContext,
-    ) -> None:
-        ...
+    ) -> None: ...
 
-    def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
-        ...
+    def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]: ...
 
     def normalize_resolved_config(
         self,
         *,
         resolved_config: Mapping[str, Any] | None = None,
         **kwargs: Any,
-    ) -> dict[str, Any]:
-        ...
+    ) -> dict[str, Any]: ...
 
-    def load_state(self, **kwargs: Any) -> Any:
-        ...
+    def load_state(self, **kwargs: Any) -> Any: ...
 
-    def save_state(self, **kwargs: Any) -> None:
-        ...
+    def save_state(self, **kwargs: Any) -> None: ...
 
-    def cleanup(self, **kwargs: Any) -> None:
-        ...
+    def cleanup(self, **kwargs: Any) -> None: ...
 
 
 class EffectProviderBase:
@@ -175,7 +174,9 @@ class EffectProviderBase:
         return ()
 
     @classmethod
-    def validate_definition(cls, effect_definition: EffectDefinitionDiscriminated) -> EffectDefinitionDiscriminated:
+    def validate_definition(
+        cls, effect_definition: EffectDefinitionDiscriminated
+    ) -> EffectDefinitionDiscriminated:
         if type(effect_definition) is not WorkflowNodeEnvelope:
             return effect_definition
         return materialize_node_definition(effect_definition)
@@ -193,18 +194,16 @@ class EffectProviderBase:
     ) -> list[WorkflowValidationDiagnostic]:
         del node
         return []
+
     capability = NodeCapability(min_inbound=1, max_inbound=1)
 
 
 class EffectLifecycleHook(Protocol):
-    def on_post_completion_dispatch(self, *, worker: Any) -> int:
-        ...
+    def on_post_completion_dispatch(self, *, worker: Any) -> int: ...
 
-    def on_waiting_reconciliation(self, *, worker: Any) -> int:
-        ...
+    def on_waiting_reconciliation(self, *, worker: Any) -> int: ...
 
-    def on_completion_fan_out(self, *, worker: Any, queue_record: Any, graph: Any) -> int:
-        ...
+    def on_completion_fan_out(self, *, worker: Any, queue_record: Any, graph: Any) -> int: ...
 
 
 class EffectLifecycleHookBase:
@@ -224,7 +223,9 @@ class EffectLifecycleHookBase:
 def _session_lookup_from_admin_service(admin_service: Any) -> SessionLookup | None:
     if hasattr(admin_service, "read_all_sessions"):
         return admin_service
-    session_repository = getattr(getattr(admin_service, "runtime", None), "session_repository", None)
+    session_repository = getattr(
+        getattr(admin_service, "runtime", None), "session_repository", None
+    )
     read_all = getattr(session_repository, "read_all", None)
     if callable(read_all):
         return _SessionLookupAdapter(session_repository)

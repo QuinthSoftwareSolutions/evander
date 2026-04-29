@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .worker import (
+from agent_sandbox.worker import (
     DEFAULT_WORKER_ROOT,
     SAFE_ID_PATTERN,
     ContainerRuntime,
@@ -19,9 +19,9 @@ from .worker import (
     validate_worker_sandbox_profile,
     worker_sandbox_profile,
 )
-from .worker.cli import main
-from .worker.docker_runtime import docker_state_to_status
-from .worker.security import (
+from agent_sandbox.worker.cli import main
+from agent_sandbox.worker.docker_runtime import docker_state_to_status
+from agent_sandbox.worker.security import (
     list_relative_files,
     safe_subprocess_error,
     sanitize_metadata,

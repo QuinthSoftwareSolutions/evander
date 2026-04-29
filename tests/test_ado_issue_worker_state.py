@@ -9,7 +9,7 @@ import httpx
 import pytest
 import yaml
 
-from agent_sandbox.ado_issue_worker import (
+from agent_sandbox.daemons.ado_issue_worker import (
     ProcessedWorkItemStore,
     WorkerConfig,
     _build_setup_command,
@@ -29,7 +29,7 @@ from agent_sandbox.ado_issue_worker import (
 )
 from agent_sandbox.events.provider_models import PullRequestNewFeedbackTriggerDefinition
 from agent_sandbox.models import LocalIssueRecord
-from agent_sandbox.pr_feedback_worker import FeedbackEnvelope
+from agent_sandbox.daemons.pr_feedback_worker import FeedbackEnvelope
 from agent_sandbox.services import PrFeedbackService
 from agent_sandbox.storage import JsonStore
 from agent_sandbox.triggers.queue import TriggerEventQueue
@@ -116,9 +116,7 @@ def test_processed_store_mark_and_forget(worker_config: WorkerConfig) -> None:
     )
 
     payload = json.loads(worker_config.processed_store_path.read_text(encoding="utf-8"))
-    expected_key = (
-        "root::azure_devops::https://dev.azure.com/example::example::123"
-    )
+    expected_key = "root::azure_devops::https://dev.azure.com/example::example::123"
     assert payload[expected_key]["script_exit_code"] == 0
     assert payload[expected_key]["script_output_snippet"] == "ok"
 
@@ -134,8 +132,9 @@ def test_processed_store_mark_and_forget(worker_config: WorkerConfig) -> None:
     assert store.is_processed(123) is False
 
 
-
-def test_processed_store_tracks_directory_scoped_entries_separately(worker_config: WorkerConfig) -> None:
+def test_processed_store_tracks_directory_scoped_entries_separately(
+    worker_config: WorkerConfig,
+) -> None:
     store = ProcessedWorkItemStore(worker_config.processed_store_path)
 
     store.mark_processed(
@@ -207,7 +206,7 @@ def test_process_work_item_skips_when_already_processed(
         called["run"] = True
         return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
 
-    monkeypatch.setattr("agent_sandbox.ado_issue_worker.subprocess.run", fake_run)
+    monkeypatch.setattr("agent_sandbox.daemons.ado_issue_worker.subprocess.run", fake_run)
 
     processed = process_work_item(
         {
@@ -268,7 +267,7 @@ def test_process_work_item_uses_root_vm_defaults_overlay_for_setup_env(
         captured_env.update(kwargs.get("env", {}))
         return subprocess.CompletedProcess(args=args, returncode=0, stdout="ok", stderr="")
 
-    monkeypatch.setattr("agent_sandbox.ado_issue_worker.subprocess.run", successful_run)
+    monkeypatch.setattr("agent_sandbox.daemons.ado_issue_worker.subprocess.run", successful_run)
 
     processed = process_work_item(
         {
@@ -299,7 +298,7 @@ def test_process_work_item_marks_state_only_after_success(
     def failing_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess(args=args, returncode=12, stdout="nope", stderr="bad")
 
-    monkeypatch.setattr("agent_sandbox.ado_issue_worker.subprocess.run", failing_run)
+    monkeypatch.setattr("agent_sandbox.daemons.ado_issue_worker.subprocess.run", failing_run)
 
     item = {
         "id": 789,
@@ -323,7 +322,7 @@ def test_process_work_item_marks_state_only_after_success(
     def successful_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess(args=args, returncode=0, stdout="ok", stderr="")
 
-    monkeypatch.setattr("agent_sandbox.ado_issue_worker.subprocess.run", successful_run)
+    monkeypatch.setattr("agent_sandbox.daemons.ado_issue_worker.subprocess.run", successful_run)
 
     succeeded = process_work_item(item, config=worker_config, store=store)
     assert succeeded is True
@@ -350,7 +349,7 @@ def test_process_work_item_upserts_unified_issue_and_refreshes_yaml(
     def successful_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess(args=args, returncode=0, stdout="ok", stderr="")
 
-    monkeypatch.setattr("agent_sandbox.ado_issue_worker.subprocess.run", successful_run)
+    monkeypatch.setattr("agent_sandbox.daemons.ado_issue_worker.subprocess.run", successful_run)
 
     first = {
         "id": 990,
@@ -375,14 +374,18 @@ def test_process_work_item_upserts_unified_issue_and_refreshes_yaml(
     }
     assert process_work_item(second, config=worker_config, store=store) is False
 
-    local_issues_store = JsonStore(worker_config.runtime_dir / "local-issues.json", LocalIssueRecord)
+    local_issues_store = JsonStore(
+        worker_config.runtime_dir / "local-issues.json", LocalIssueRecord
+    )
     records = list(local_issues_store.read_all().values())
     assert len(records) == 1
     assert records[0].title == "Updated title"
     assert records[0].description == "Second description"
     assert records[0].state == "In Progress"
     assert records[0].tags == ["truman", "backend"]
-    assert records[0].comments == [{"text": "Second", "author": "Bob", "created_date": "", "modified_date": ""}]
+    assert records[0].comments == [
+        {"text": "Second", "author": "Bob", "created_date": "", "modified_date": ""}
+    ]
     assert records[0].remote_reference is not None
     assert records[0].remote_reference.work_item_id == "990"
 
@@ -404,7 +407,7 @@ def test_process_work_item_refresh_preserves_local_issue_plan_metadata(
     def successful_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess(args=args, returncode=0, stdout="ok", stderr="")
 
-    monkeypatch.setattr("agent_sandbox.ado_issue_worker.subprocess.run", successful_run)
+    monkeypatch.setattr("agent_sandbox.daemons.ado_issue_worker.subprocess.run", successful_run)
 
     item = {
         "id": 14758,
@@ -418,7 +421,9 @@ def test_process_work_item_refresh_preserves_local_issue_plan_metadata(
     }
     assert process_work_item(item, config=worker_config, store=store) is True
 
-    local_issues_store = JsonStore(worker_config.runtime_dir / "local-issues.json", LocalIssueRecord)
+    local_issues_store = JsonStore(
+        worker_config.runtime_dir / "local-issues.json", LocalIssueRecord
+    )
     record = next(iter(local_issues_store.read_all().values()))
     record.metadata = {
         **record.metadata,
@@ -462,13 +467,15 @@ def test_process_work_item_creates_session_manifest_before_setup(
         session_id = next(
             part for part in cmd if isinstance(part, str) and part.startswith("issue-14084-")
         )
-        payload = json.loads((worker_config.runtime_dir / "sessions.json").read_text(encoding="utf-8"))
+        payload = json.loads(
+            (worker_config.runtime_dir / "sessions.json").read_text(encoding="utf-8")
+        )
         manifest = payload[session_id]
         captured["session_id"] = session_id
         captured["manifest"] = manifest
         return subprocess.CompletedProcess(args=args, returncode=0, stdout="ok", stderr="")
 
-    monkeypatch.setattr("agent_sandbox.ado_issue_worker.subprocess.run", successful_run)
+    monkeypatch.setattr("agent_sandbox.daemons.ado_issue_worker.subprocess.run", successful_run)
 
     item = {
         "id": 14084,
@@ -514,15 +521,19 @@ def test_process_work_item_uses_configured_directory_for_session_manifest(
         cmd = args[0]
         assert isinstance(cmd, list)
         session_id = next(
-            part for part in cmd if isinstance(part, str) and part.startswith("issue-14086-root-team-a-")
+            part
+            for part in cmd
+            if isinstance(part, str) and part.startswith("issue-14086-root-team-a-")
         )
-        payload = json.loads((directory_config.runtime_dir / "sessions.json").read_text(encoding="utf-8"))
+        payload = json.loads(
+            (directory_config.runtime_dir / "sessions.json").read_text(encoding="utf-8")
+        )
         manifest = payload[session_id]
         captured["session_id"] = session_id
         captured["manifest"] = manifest
         return subprocess.CompletedProcess(args=args, returncode=0, stdout="ok", stderr="")
 
-    monkeypatch.setattr("agent_sandbox.ado_issue_worker.subprocess.run", successful_run)
+    monkeypatch.setattr("agent_sandbox.daemons.ado_issue_worker.subprocess.run", successful_run)
 
     item = {
         "id": 14086,
@@ -557,7 +568,9 @@ def test_process_work_item_attaches_directory_shadow_context(
     store = ProcessedWorkItemStore(worker_config.processed_store_path)
 
     class StubResolver:
-        def resolve_for_session(self, session_id: str | None, *, fallback_directory_path: str | None = None, source: str):
+        def resolve_for_session(
+            self, session_id: str | None, *, fallback_directory_path: str | None = None, source: str
+        ):
             return WorkerDirectoryContext(
                 directory_path="root/team-a",
                 source=source,
@@ -568,10 +581,15 @@ def test_process_work_item_attaches_directory_shadow_context(
     gateway_payload = json.loads(worker_config.gateway_config_path.read_text(encoding="utf-8"))
     gateway_payload["enable_directory_scoped_config"] = True
     worker_config.gateway_config_path.write_text(json.dumps(gateway_payload), encoding="utf-8")
-    monkeypatch.setattr("agent_sandbox.ado_issue_worker.WorkerDirectoryContextResolver", lambda cfg: StubResolver())
     monkeypatch.setattr(
-        "agent_sandbox.ado_issue_worker.subprocess.run",
-        lambda *args, **kwargs: subprocess.CompletedProcess(args=args, returncode=0, stdout="ok", stderr=""),
+        "agent_sandbox.daemons.ado_issue_worker.WorkerDirectoryContextResolver",
+        lambda cfg: StubResolver(),
+    )
+    monkeypatch.setattr(
+        "agent_sandbox.daemons.ado_issue_worker.subprocess.run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args=args, returncode=0, stdout="ok", stderr=""
+        ),
     )
 
     item = {
@@ -601,8 +619,10 @@ def test_process_work_item_keeps_global_behavior_when_directory_scoped_config_di
 ) -> None:
     store = ProcessedWorkItemStore(worker_config.processed_store_path)
     monkeypatch.setattr(
-        "agent_sandbox.ado_issue_worker.subprocess.run",
-        lambda *args, **kwargs: subprocess.CompletedProcess(args=args, returncode=0, stdout="ok", stderr=""),
+        "agent_sandbox.daemons.ado_issue_worker.subprocess.run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args=args, returncode=0, stdout="ok", stderr=""
+        ),
     )
 
     item = {
@@ -621,7 +641,9 @@ def test_process_work_item_keeps_global_behavior_when_directory_scoped_config_di
     assert "directory_context" not in item
 
 
-def test_update_work_item_state_uses_json_patch(worker_config: WorkerConfig, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_update_work_item_state_uses_json_patch(
+    worker_config: WorkerConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
     captured: dict[str, object] = {}
 
     class FakeResponse:
@@ -680,8 +702,10 @@ def test_process_work_item_updates_state_after_success(
     ) -> None:
         state_updates.append((work_item_id, state))
 
-    monkeypatch.setattr("agent_sandbox.ado_issue_worker.subprocess.run", successful_run)
-    monkeypatch.setattr("agent_sandbox.ado_issue_worker.update_work_item_state", fake_update_work_item_state)
+    monkeypatch.setattr("agent_sandbox.daemons.ado_issue_worker.subprocess.run", successful_run)
+    monkeypatch.setattr(
+        "agent_sandbox.daemons.ado_issue_worker.update_work_item_state", fake_update_work_item_state
+    )
 
     item = {
         "id": 790,
@@ -734,8 +758,10 @@ def test_process_work_item_refreshes_local_proxy_state_after_success(
     ) -> None:
         return None
 
-    monkeypatch.setattr("agent_sandbox.ado_issue_worker.subprocess.run", successful_run)
-    monkeypatch.setattr("agent_sandbox.ado_issue_worker.update_work_item_state", fake_update_work_item_state)
+    monkeypatch.setattr("agent_sandbox.daemons.ado_issue_worker.subprocess.run", successful_run)
+    monkeypatch.setattr(
+        "agent_sandbox.daemons.ado_issue_worker.update_work_item_state", fake_update_work_item_state
+    )
 
     item = {
         "id": 14382,
@@ -758,7 +784,9 @@ def test_process_work_item_refreshes_local_proxy_state_after_success(
 
     assert succeeded is True
 
-    local_issues_store = JsonStore(worker_config.runtime_dir / "local-issues.json", LocalIssueRecord)
+    local_issues_store = JsonStore(
+        worker_config.runtime_dir / "local-issues.json", LocalIssueRecord
+    )
     records = list(local_issues_store.read_all().values())
     assert len(records) == 1
     assert records[0].issue_number == "14382"
@@ -766,7 +794,9 @@ def test_process_work_item_refreshes_local_proxy_state_after_success(
     assert records[0].remote_reference is not None
     assert records[0].remote_reference.last_known_remote_state == "In Progress"
 
-    yaml_payload = yaml.safe_load((worker_config.yaml_output_dir / "work-item-14382.yaml").read_text(encoding="utf-8"))
+    yaml_payload = yaml.safe_load(
+        (worker_config.yaml_output_dir / "work-item-14382.yaml").read_text(encoding="utf-8")
+    )
     assert yaml_payload["state"] == "In Progress"
 
 
@@ -790,8 +820,10 @@ def test_process_work_item_does_not_update_state_when_setup_fails(
     ) -> None:
         state_updates.append((work_item_id, state))
 
-    monkeypatch.setattr("agent_sandbox.ado_issue_worker.subprocess.run", failing_run)
-    monkeypatch.setattr("agent_sandbox.ado_issue_worker.update_work_item_state", fake_update_work_item_state)
+    monkeypatch.setattr("agent_sandbox.daemons.ado_issue_worker.subprocess.run", failing_run)
+    monkeypatch.setattr(
+        "agent_sandbox.daemons.ado_issue_worker.update_work_item_state", fake_update_work_item_state
+    )
 
     item = {
         "id": 791,
@@ -827,9 +859,11 @@ def test_process_work_item_writes_full_setup_log_on_failure(
     store = ProcessedWorkItemStore(worker_config.processed_store_path)
 
     def failing_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
-        return subprocess.CompletedProcess(args=args, returncode=7, stdout="hello", stderr="goodbye")
+        return subprocess.CompletedProcess(
+            args=args, returncode=7, stdout="hello", stderr="goodbye"
+        )
 
-    monkeypatch.setattr("agent_sandbox.ado_issue_worker.subprocess.run", failing_run)
+    monkeypatch.setattr("agent_sandbox.daemons.ado_issue_worker.subprocess.run", failing_run)
 
     item = {
         "id": 792,
@@ -877,8 +911,10 @@ def test_process_work_item_treats_existing_vm_as_success(
     ) -> None:
         state_updates.append((work_item_id, state))
 
-    monkeypatch.setattr("agent_sandbox.ado_issue_worker.subprocess.run", already_exists_run)
-    monkeypatch.setattr("agent_sandbox.ado_issue_worker.update_work_item_state", fake_update_work_item_state)
+    monkeypatch.setattr("agent_sandbox.daemons.ado_issue_worker.subprocess.run", already_exists_run)
+    monkeypatch.setattr(
+        "agent_sandbox.daemons.ado_issue_worker.update_work_item_state", fake_update_work_item_state
+    )
 
     item = {
         "id": 793,
@@ -951,7 +987,9 @@ def test_build_setup_command_includes_optional_arguments(tmp_path: Path) -> None
         gateway_config_path=gateway_config_path,
         session_ttl_hours=8,
     )
-    cmd = _build_setup_command(config, tmp_path / "work-item-10.yaml", session_id="sess-1", work_item_id=10)
+    cmd = _build_setup_command(
+        config, tmp_path / "work-item-10.yaml", session_id="sess-1", work_item_id=10
+    )
     assert cmd == [
         "scripts/setup_vm.sh",
         "--dotnet",
@@ -967,7 +1005,9 @@ def test_build_setup_command_includes_optional_arguments(tmp_path: Path) -> None
     ]
 
 
-def test_build_setup_command_omits_disabled_bootstraps_and_nuget_prewarm_target(tmp_path: Path) -> None:
+def test_build_setup_command_omits_disabled_bootstraps_and_nuget_prewarm_target(
+    tmp_path: Path,
+) -> None:
     gateway_config_path = tmp_path / "gateway.yaml"
     config = WorkerConfig(
         organization_url="https://dev.azure.com/example",
@@ -1007,7 +1047,9 @@ def test_build_setup_command_omits_disabled_bootstraps_and_nuget_prewarm_target(
         session_ttl_hours=8,
     )
 
-    cmd = _build_setup_command(config, tmp_path / "work-item-10.yaml", session_id="sess-1", work_item_id=10)
+    cmd = _build_setup_command(
+        config, tmp_path / "work-item-10.yaml", session_id="sess-1", work_item_id=10
+    )
     assert cmd == [
         "scripts/setup_vm.sh",
         "--mssql",
@@ -1029,7 +1071,7 @@ def test_process_work_item_passes_timeout(
         captured["env"] = kwargs.get("env")
         return subprocess.CompletedProcess(args=args, returncode=0, stdout="ok", stderr="")
 
-    monkeypatch.setattr("agent_sandbox.ado_issue_worker.subprocess.run", successful_run)
+    monkeypatch.setattr("agent_sandbox.daemons.ado_issue_worker.subprocess.run", successful_run)
 
     succeeded = process_work_item(
         {
@@ -1047,7 +1089,10 @@ def test_process_work_item_passes_timeout(
 
     assert succeeded is True
     assert isinstance(captured["env"], dict)
-    assert captured["env"]["AGENT_SANDBOX_AZURE_DEVOPS_PR_PAT_ENV"] == "ADO_WORK_ITEMS_AZURE_DEVOPS_PAT"
+    assert (
+        captured["env"]["AGENT_SANDBOX_AZURE_DEVOPS_PR_PAT_ENV"]
+        == "ADO_WORK_ITEMS_AZURE_DEVOPS_PAT"
+    )
     assert captured["env"]["MSSQL_SA_PASSWORD"] == "SecretPassw0rd!"
     assert captured["timeout"] == worker_config.setup_timeout_seconds
 
@@ -1202,7 +1247,7 @@ def test_run_worker_idles_without_directories_or_pat(
         assert seconds == idle_config.poll_interval_seconds
         raise KeyboardInterrupt
 
-    monkeypatch.setattr("agent_sandbox.ado_issue_worker.time.sleep", stop_after_first_sleep)
+    monkeypatch.setattr("agent_sandbox.daemons.ado_issue_worker.time.sleep", stop_after_first_sleep)
 
     with pytest.raises(KeyboardInterrupt):
         run_worker(idle_config)
@@ -1229,7 +1274,7 @@ def test_process_work_item_skips_vm_setup_when_disabled(
         called = True
         raise AssertionError("subprocess.run should not be called when ado_setup_vms is false")
 
-    monkeypatch.setattr("agent_sandbox.ado_issue_worker.subprocess.run", should_not_run)
+    monkeypatch.setattr("agent_sandbox.daemons.ado_issue_worker.subprocess.run", should_not_run)
 
     assert process_work_item(item, config=disabled_config, store=store) is True
     assert called is False
@@ -1825,7 +1870,7 @@ def test_process_work_item_skips_previously_processed_id_on_subsequent_attempt(
         call_count["run"] += 1
         return subprocess.CompletedProcess(args=args, returncode=0, stdout="ok", stderr="")
 
-    monkeypatch.setattr("agent_sandbox.ado_issue_worker.subprocess.run", successful_run)
+    monkeypatch.setattr("agent_sandbox.daemons.ado_issue_worker.subprocess.run", successful_run)
 
     item = {
         "id": 301,
@@ -1854,7 +1899,7 @@ def test_process_work_item_writes_yaml_with_required_issue_number_and_metadata(
     def successful_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess(args=args, returncode=0, stdout="ok", stderr="")
 
-    monkeypatch.setattr("agent_sandbox.ado_issue_worker.subprocess.run", successful_run)
+    monkeypatch.setattr("agent_sandbox.daemons.ado_issue_worker.subprocess.run", successful_run)
 
     item = {
         "id": 401,
@@ -1889,7 +1934,7 @@ def test_process_work_item_writes_yaml_with_bug_sections_appended_to_description
     def successful_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess(args=args, returncode=0, stdout="ok", stderr="")
 
-    monkeypatch.setattr("agent_sandbox.ado_issue_worker.subprocess.run", successful_run)
+    monkeypatch.setattr("agent_sandbox.daemons.ado_issue_worker.subprocess.run", successful_run)
 
     item = {
         "id": 402,
@@ -1925,11 +1970,13 @@ def test_setup_issue_vm_invocation_once_per_newly_eligible_item(
     store = ProcessedWorkItemStore(worker_config.processed_store_path)
     calls: list[list[str]] = []
 
-    def successful_run(cmd: list[str], *args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+    def successful_run(
+        cmd: list[str], *args: object, **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
         calls.append(cmd)
         return subprocess.CompletedProcess(args=[cmd], returncode=0, stdout="ok", stderr="")
 
-    monkeypatch.setattr("agent_sandbox.ado_issue_worker.subprocess.run", successful_run)
+    monkeypatch.setattr("agent_sandbox.daemons.ado_issue_worker.subprocess.run", successful_run)
 
     eligible_items = [
         {
@@ -2061,11 +2108,11 @@ def test_poll_once_attaches_comments(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        "agent_sandbox.ado_issue_worker.fetch_candidate_ids",
+        "agent_sandbox.daemons.ado_issue_worker.fetch_candidate_ids",
         lambda **kwargs: [10],
     )
     monkeypatch.setattr(
-        "agent_sandbox.ado_issue_worker.fetch_work_item_batch",
+        "agent_sandbox.daemons.ado_issue_worker.fetch_work_item_batch",
         lambda **kwargs: [
             {
                 "id": 10,
@@ -2083,15 +2130,19 @@ def test_poll_once_attaches_comments(
         ],
     )
     monkeypatch.setattr(
-        "agent_sandbox.ado_issue_worker.fetch_work_item_comments",
-        lambda **kwargs: [{"text": "Needs x", "author": "Ann", "created_date": "", "modified_date": ""}],
+        "agent_sandbox.daemons.ado_issue_worker.fetch_work_item_comments",
+        lambda **kwargs: [
+            {"text": "Needs x", "author": "Ann", "created_date": "", "modified_date": ""}
+        ],
     )
 
     with httpx.Client() as client:
         items = poll_once(client=client, config=worker_config, auth_header="Basic token")
 
     assert len(items) == 1
-    assert items[0]["comments"] == [{"text": "Needs x", "author": "Ann", "created_date": "", "modified_date": ""}]
+    assert items[0]["comments"] == [
+        {"text": "Needs x", "author": "Ann", "created_date": "", "modified_date": ""}
+    ]
 
 
 def test_fetch_work_item_by_id_attaches_comments(
@@ -2099,7 +2150,7 @@ def test_fetch_work_item_by_id_attaches_comments(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        "agent_sandbox.ado_issue_worker.fetch_work_item_batch",
+        "agent_sandbox.daemons.ado_issue_worker.fetch_work_item_batch",
         lambda *args, **kwargs: [
             {
                 "id": 10,
@@ -2117,11 +2168,13 @@ def test_fetch_work_item_by_id_attaches_comments(
         ],
     )
     monkeypatch.setattr(
-        "agent_sandbox.ado_issue_worker.fetch_work_item_comments",
-        lambda **kwargs: [{"text": "Needs x", "author": "Ann", "created_date": "", "modified_date": ""}],
+        "agent_sandbox.daemons.ado_issue_worker.fetch_work_item_comments",
+        lambda **kwargs: [
+            {"text": "Needs x", "author": "Ann", "created_date": "", "modified_date": ""}
+        ],
     )
 
-    from agent_sandbox.ado_issue_worker import fetch_work_item_by_id
+    from agent_sandbox.daemons.ado_issue_worker import fetch_work_item_by_id
 
     with httpx.Client() as client:
         item = fetch_work_item_by_id(
@@ -2132,7 +2185,9 @@ def test_fetch_work_item_by_id_attaches_comments(
         )
 
     assert item is not None
-    assert item["comments"] == [{"text": "Needs x", "author": "Ann", "created_date": "", "modified_date": ""}]
+    assert item["comments"] == [
+        {"text": "Needs x", "author": "Ann", "created_date": "", "modified_date": ""}
+    ]
 
 
 def test_filter_unprocessed_work_items_excludes_processed(worker_config: WorkerConfig) -> None:
@@ -2171,10 +2226,20 @@ def test_list_unprocessed_work_items_filters_processed(
         project=worker_config.project,
     )
     monkeypatch.setattr(
-        "agent_sandbox.ado_issue_worker.poll_once",
+        "agent_sandbox.daemons.ado_issue_worker.poll_once",
         lambda **kwargs: [
-            {"id": 10, "title": "Picked up", "state": "Committed", "updated_date": "2026-03-21T00:00:00Z"},
-            {"id": 11, "title": "Still pending", "state": "Committed", "updated_date": "2026-03-21T00:01:00Z"},
+            {
+                "id": 10,
+                "title": "Picked up",
+                "state": "Committed",
+                "updated_date": "2026-03-21T00:00:00Z",
+            },
+            {
+                "id": 11,
+                "title": "Still pending",
+                "state": "Committed",
+                "updated_date": "2026-03-21T00:01:00Z",
+            },
         ],
     )
 
@@ -2187,7 +2252,12 @@ def test_list_unprocessed_work_items_filters_processed(
         )
 
     assert items == [
-        {"id": 11, "title": "Still pending", "state": "Committed", "updated_date": "2026-03-21T00:01:00Z"}
+        {
+            "id": 11,
+            "title": "Still pending",
+            "state": "Committed",
+            "updated_date": "2026-03-21T00:01:00Z",
+        }
     ]
 
 
@@ -2195,7 +2265,7 @@ def test_unprocessed_items_for_worker_iterates_configured_directories(
     worker_config: WorkerConfig,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from agent_sandbox import ado_issue_worker as ado_worker
+    from agent_sandbox.daemons import ado_issue_worker as ado_worker
 
     runtime_gateway_config = yaml.safe_load(
         json.dumps(
@@ -2205,7 +2275,9 @@ def test_unprocessed_items_for_worker_iterates_configured_directories(
                 "approval_store_path": str(worker_config.runtime_dir / "approvals.json"),
                 "draft_store_path": str(worker_config.runtime_dir / "drafts.json"),
                 "email_store_path": str(worker_config.runtime_dir / "emails.json"),
-                "discord_command_store_path": str(worker_config.runtime_dir / "discord_commands.json"),
+                "discord_command_store_path": str(
+                    worker_config.runtime_dir / "discord_commands.json"
+                ),
                 "audit_log_path": str(worker_config.runtime_dir / "audit.jsonl"),
                 "directories_store_path": str(worker_config.runtime_dir / "directories.json"),
             }
@@ -2220,7 +2292,9 @@ def test_unprocessed_items_for_worker_iterates_configured_directories(
     )
     seen: list[str] = []
 
-    def fake_resolve(config: WorkerConfig, runtime_gateway_config: object, directory_path: str) -> WorkerConfig:
+    def fake_resolve(
+        config: WorkerConfig, runtime_gateway_config: object, directory_path: str
+    ) -> WorkerConfig:
         return WorkerConfig(
             **{
                 **config.__dict__,
@@ -2252,7 +2326,7 @@ def test_poll_and_process_directory_uses_directory_specific_config(
     worker_config: WorkerConfig,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from agent_sandbox import ado_issue_worker as ado_worker
+    from agent_sandbox.daemons import ado_issue_worker as ado_worker
 
     runtime_gateway_config = ado_worker.GatewayConfig.model_validate(
         {
@@ -2274,7 +2348,9 @@ def test_poll_and_process_directory_uses_directory_specific_config(
     )
     calls: list[tuple[str, str, int | None]] = []
 
-    def fake_resolve(config: WorkerConfig, runtime_gateway_config: object, directory_path: str) -> WorkerConfig:
+    def fake_resolve(
+        config: WorkerConfig, runtime_gateway_config: object, directory_path: str
+    ) -> WorkerConfig:
         return WorkerConfig(
             **{
                 **config.__dict__,
@@ -2311,7 +2387,7 @@ def test_publish_directory_pr_feedback_events_enqueues_azure_feedback(
     worker_config: WorkerConfig,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from agent_sandbox import ado_issue_worker as ado_worker
+    from agent_sandbox.daemons import ado_issue_worker as ado_worker
 
     (worker_config.runtime_dir / "sessions.json").write_text(
         json.dumps(
@@ -2410,7 +2486,9 @@ def test_publish_directory_pr_feedback_events_enqueues_azure_feedback(
         "repo": "org/repo",
         "pr_id": "6070",
     }
-    feedback_store_payload = json.loads((worker_config.runtime_dir / "pr-feedback-store.json").read_text(encoding="utf-8"))
+    feedback_store_payload = json.loads(
+        (worker_config.runtime_dir / "pr-feedback-store.json").read_text(encoding="utf-8")
+    )
     assert "azure_devops:thread_comment:30830:1" in feedback_store_payload["feedback"]
     service = PrFeedbackService(worker_config.runtime_dir / "pr-feedback-store.json")
     unread = service.list_unread_feedback(
@@ -2418,7 +2496,9 @@ def test_publish_directory_pr_feedback_events_enqueues_azure_feedback(
         session_id="session-6070",
     )
     assert [item.feedback_id for item in unread.feedback] == ["azure_devops:thread_comment:30830:1"]
-    cursor_payload = json.loads((worker_config.runtime_dir / "trigger-cursors-pr-feedback.json").read_text(encoding="utf-8"))
+    cursor_payload = json.loads(
+        (worker_config.runtime_dir / "trigger-cursors-pr-feedback.json").read_text(encoding="utf-8")
+    )
     assert (
         cursor_payload["trigger-pr-feedback"]["stream_cursors"]["azure_devops:org/repo:6070"]
         == "2026-04-08T05:33:41.433000Z"
@@ -2429,7 +2509,7 @@ def test_publish_directory_pr_feedback_events_uses_session_ado_project(
     worker_config: WorkerConfig,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from agent_sandbox import ado_issue_worker as ado_worker
+    from agent_sandbox.daemons import ado_issue_worker as ado_worker
 
     (worker_config.runtime_dir / "sessions.json").write_text(
         json.dumps(
@@ -2513,7 +2593,7 @@ def test_publish_directory_pr_feedback_events_skips_ignored_feedback_ids(
     worker_config: WorkerConfig,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from agent_sandbox import ado_issue_worker as ado_worker
+    from agent_sandbox.daemons import ado_issue_worker as ado_worker
 
     (worker_config.runtime_dir / "sessions.json").write_text(
         json.dumps(
@@ -2629,11 +2709,12 @@ def test_publish_directory_pr_feedback_events_skips_ignored_feedback_ids(
     )
     assert unread.feedback == []
 
+
 def test_publish_directory_pr_feedback_events_uses_configured_trigger_queue_path(
     worker_config: WorkerConfig,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from agent_sandbox import ado_issue_worker as ado_worker
+    from agent_sandbox.daemons import ado_issue_worker as ado_worker
 
     queue_path = worker_config.runtime_dir / "custom-trigger-events.json"
     trigger_worker_config = ado_worker.TriggerOrchestratorWorkerGlobalConfig.model_validate(
@@ -2695,7 +2776,11 @@ def test_publish_directory_pr_feedback_events_uses_configured_trigger_queue_path
         }
     )
     monkeypatch.setenv("AZURE_DEVOPS_PR_PAT", "secret-pat")
-    monkeypatch.setattr(ado_worker, "_load_trigger_orchestrator_worker_config", lambda _config: trigger_worker_config)
+    monkeypatch.setattr(
+        ado_worker,
+        "_load_trigger_orchestrator_worker_config",
+        lambda _config: trigger_worker_config,
+    )
 
     def fake_poll(self, *, client, repo, pr_id, cursor):
         return SimpleNamespace(
@@ -2732,7 +2817,7 @@ def test_publish_directory_pr_feedback_events_uses_configured_trigger_queue_path
 
 
 def test_load_ado_pr_feedback_triggers_resolves_workflow_packs(worker_config: WorkerConfig) -> None:
-    from agent_sandbox import ado_issue_worker as ado_worker
+    from agent_sandbox.daemons import ado_issue_worker as ado_worker
 
     project_dir = worker_config.gateway_config_path.parent
     (project_dir / "config" / "trigger-orchestrator").mkdir(parents=True)
@@ -2779,7 +2864,7 @@ def test_load_ado_pr_feedback_triggers_resolves_workflow_packs(worker_config: Wo
 def test_resolve_directory_worker_config_uses_each_directorys_own_project_or_solution(
     worker_config: WorkerConfig,
 ) -> None:
-    from agent_sandbox import ado_issue_worker as ado_worker
+    from agent_sandbox.daemons import ado_issue_worker as ado_worker
 
     directories_path = worker_config.runtime_dir / "directories.json"
     directories_path.write_text(
@@ -2908,10 +2993,12 @@ def test_run_worker_command_lists_unprocessed_items(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    monkeypatch.setattr("agent_sandbox.ado_issue_worker.WorkerConfig.load_from_env", lambda: worker_config)
-    monkeypatch.setattr("agent_sandbox.ado_issue_worker._require_env", lambda _name: "pat")
     monkeypatch.setattr(
-        "agent_sandbox.ado_issue_worker._unprocessed_items_for_worker",
+        "agent_sandbox.daemons.ado_issue_worker.WorkerConfig.load_from_env", lambda: worker_config
+    )
+    monkeypatch.setattr("agent_sandbox.daemons.ado_issue_worker._require_env", lambda _name: "pat")
+    monkeypatch.setattr(
+        "agent_sandbox.daemons.ado_issue_worker._unprocessed_items_for_worker",
         lambda **kwargs: [
             {
                 "id": 42,

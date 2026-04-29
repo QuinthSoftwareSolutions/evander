@@ -44,12 +44,16 @@ class TicketChangedTriggerProvider(TriggerProviderBase):
                 max_updated_at = occurred_at
 
         if max_updated_at is not None:
-            cursor_store.put(trigger.id, {"last_updated_at": max_updated_at.isoformat().replace("+00:00", "Z")})
+            cursor_store.put(
+                trigger.id, {"last_updated_at": max_updated_at.isoformat().replace("+00:00", "Z")}
+            )
         return events
 
     def _trigger(self) -> TicketChangedTriggerDefinition:
         if not isinstance(self.trigger_definition, TicketChangedTriggerDefinition):
-            raise RuntimeError("TicketChangedTriggerProvider initialized with a non-ticket-changed trigger definition")
+            raise RuntimeError(
+                "TicketChangedTriggerProvider initialized with a non-ticket-changed trigger definition"
+            )
         return self.trigger_definition
 
     def _runtime_dir(self):

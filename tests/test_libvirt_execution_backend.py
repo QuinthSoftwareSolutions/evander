@@ -52,7 +52,9 @@ class FakeVmAdminService:
 
     def destroy_vm(self, target: str) -> VmActionResult:
         self._record("destroy_vm", target)
-        return VmActionResult(success=True, vm_name=target, action="destroy_vm", message="destroyed")
+        return VmActionResult(
+            success=True, vm_name=target, action="destroy_vm", message="destroyed"
+        )
 
     def get_agent_log_snapshot(
         self,
@@ -62,7 +64,9 @@ class FakeVmAdminService:
         repo_name: str | None = None,
         vm_user: str = "agent",
     ) -> str:
-        self._record("get_agent_log_snapshot", target, lines=lines, repo_name=repo_name, vm_user=vm_user)
+        self._record(
+            "get_agent_log_snapshot", target, lines=lines, repo_name=repo_name, vm_user=vm_user
+        )
         return "log text"
 
 
@@ -117,7 +121,10 @@ def test_libvirt_backend_delegates_lifecycle_and_logs() -> None:
     assert backend.start("session-1").message == "started"
     assert backend.stop("vm-test", timeout_seconds=12).message == "stopped"
     assert backend.destroy("vm-test").message == "destroyed"
-    assert backend.get_log_snapshot("vm-test", lines=20, repo_name="repo", vm_user="service") == "log text"
+    assert (
+        backend.get_log_snapshot("vm-test", lines=20, repo_name="repo", vm_user="service")
+        == "log text"
+    )
 
     assert vm_admin.calls == [
         CallRecord("start_vm", ("vm-test",), {}),

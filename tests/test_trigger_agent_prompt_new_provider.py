@@ -3,11 +3,11 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from agent_sandbox.agent_prompt_store import AgentPromptRecord, AgentPromptStore
+from agent_sandbox.messaging.agent_prompt_store import AgentPromptRecord, AgentPromptStore
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.events.provider_models import AgentPromptNewTriggerDefinition
 from agent_sandbox.models import SessionManifest
-from agent_sandbox.session_manifest_repository import JsonSessionManifestRepository
+from agent_sandbox.repositories.session_manifests import JsonSessionManifestRepository
 from agent_sandbox.triggers.providers.agent_prompt_new import AgentPromptNewTriggerProvider
 from agent_sandbox.triggers.providers.base import TriggerRuntimeContext
 

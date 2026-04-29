@@ -7,8 +7,8 @@ from pathlib import Path
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.events.provider_models import ScriptRunRequestTriggerDefinition
 from agent_sandbox.models import ScriptRunRequestRecord, SessionManifest
-from agent_sandbox.script_run_request_store import ScriptRunRequestStore
-from agent_sandbox.session_manifest_repository import JsonSessionManifestRepository
+from agent_sandbox.repositories.script_run_requests import ScriptRunRequestStore
+from agent_sandbox.repositories.session_manifests import JsonSessionManifestRepository
 from agent_sandbox.triggers.providers.base import TriggerRuntimeContext
 from agent_sandbox.triggers.providers.script_run_request import ScriptRunRequestTriggerProvider
 
@@ -80,7 +80,9 @@ def test_script_run_request_trigger_emits_once_per_visible_request(tmp_path: Pat
         parameters=["session-1"],
         created_at=created_at,
     ).model_dump(mode="json")
-    (runtime_dir / "script-run-requests-store.json").write_text(json.dumps(raw_payload), encoding="utf-8")
+    (runtime_dir / "script-run-requests-store.json").write_text(
+        json.dumps(raw_payload), encoding="utf-8"
+    )
 
     next_events = provider.poll()
     assert [event.event_id for event in next_events] == ["script-run-trigger:req-3"]

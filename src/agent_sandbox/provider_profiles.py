@@ -56,7 +56,9 @@ def is_pure_orchestration_core_profile(profile_name: str) -> bool:
     return not profile.include_builtin and not profile.provider_modules
 
 
-def resolve_provider_module_names(*, profile_name: str, extra_modules: tuple[str, ...] | list[str]) -> tuple[str, ...]:
+def resolve_provider_module_names(
+    *, profile_name: str, extra_modules: tuple[str, ...] | list[str]
+) -> tuple[str, ...]:
     profile = resolve_provider_profile(profile_name)
     merged: list[str] = []
     for module_name in (*profile.provider_modules, *tuple(extra_modules)):

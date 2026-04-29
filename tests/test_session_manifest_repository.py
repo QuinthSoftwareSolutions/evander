@@ -4,7 +4,7 @@ import json
 from datetime import datetime, timedelta, timezone
 
 from agent_sandbox.models import SessionManifest
-from agent_sandbox.session_manifest_repository import JsonSessionManifestRepository
+from agent_sandbox.repositories.session_manifests import JsonSessionManifestRepository
 
 
 def _session_payload(*, session_id: str = "session-1") -> dict[str, object]:
@@ -65,7 +65,9 @@ def test_session_repository_supports_lifecycle_queries_and_mutations(tmp_path) -
     repository.upsert_session(expired_manifest)
 
     assert repository.get_session("active-session") == active_manifest
-    assert [session.session_id for session in repository.list_active_sessions(now=now)] == ["active-session"]
+    assert [session.session_id for session in repository.list_active_sessions(now=now)] == [
+        "active-session"
+    ]
     assert repository.delete_session("expired-session") is True
     assert repository.delete_session("missing-session") is False
 

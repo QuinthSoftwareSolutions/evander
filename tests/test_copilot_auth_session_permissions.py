@@ -1,7 +1,11 @@
 from __future__ import annotations
 
-from agent_sandbox.ado_issue_worker import _build_issue_session_manifest as build_ado_issue_session_manifest
-from agent_sandbox.admin_service import _build_issue_session_manifest as build_admin_issue_session_manifest
+from agent_sandbox.daemons.ado_issue_worker import (
+    _build_issue_session_manifest as build_ado_issue_session_manifest,
+)
+from agent_sandbox.admin.service import (
+    _build_issue_session_manifest as build_admin_issue_session_manifest,
+)
 from agent_sandbox.cli import _build_issue_session_manifest as build_cli_issue_session_manifest
 from agent_sandbox.models import ToolName
 from agent_sandbox.policy_config import EffectivePolicyConfig

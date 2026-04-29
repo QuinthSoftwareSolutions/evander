@@ -3,16 +3,21 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from pathlib import Path
 
-from agent_sandbox.effect_orchestrator import (
+from agent_sandbox.daemons.effect_orchestrator import (
     EffectExecutionRecord,
     GateExecutionRecord,
     JsonExecutionStore,
     JsonGateExecutionStore,
 )
-from agent_sandbox.orchestration_repositories import JsonEffectCursorRepository, JsonGateCursorRepository
+from agent_sandbox.repositories.orchestration import (
+    JsonEffectCursorRepository,
+    JsonGateCursorRepository,
+)
 
 
-def _effect_record(*, execution_id: str, idempotency_key: str, event_id: str = "evt-1") -> EffectExecutionRecord:
+def _effect_record(
+    *, execution_id: str, idempotency_key: str, event_id: str = "evt-1"
+) -> EffectExecutionRecord:
     now = datetime(2026, 4, 23, 12, 0, tzinfo=UTC)
     return EffectExecutionRecord(
         execution_id=execution_id,
@@ -98,7 +103,9 @@ def test_effect_cursor_repository_records_last_processed_event(tmp_path: Path) -
     }
 
 
-def test_execution_repository_supports_semantic_idempotency_and_gate_queries(tmp_path: Path) -> None:
+def test_execution_repository_supports_semantic_idempotency_and_gate_queries(
+    tmp_path: Path,
+) -> None:
     execution_store = JsonExecutionStore(tmp_path / "effect-executions.json")
     gate_store = JsonGateExecutionStore(tmp_path / "gate-executions.json")
 

@@ -5,7 +5,9 @@ import subprocess
 from pathlib import Path
 
 
-def _git(repo: Path, *args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+def _git(
+    repo: Path, *args: str, env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["git", "-C", str(repo), *args],
         check=True,
@@ -62,7 +64,9 @@ def test_git_ssh_wrapper_refreshes_issue_mirror_before_upload_pack(tmp_path: Pat
     )
 
     canonical_bare = tmp_path / "canonical.git"
-    subprocess.run(["git", "init", "--bare", str(canonical_bare)], check=True, text=True, capture_output=True)
+    subprocess.run(
+        ["git", "init", "--bare", str(canonical_bare)], check=True, text=True, capture_output=True
+    )
 
     canonical_worktree = tmp_path / "canonical-worktree"
     subprocess.run(
@@ -107,9 +111,7 @@ def test_git_ssh_wrapper_refreshes_issue_mirror_before_upload_pack(tmp_path: Pat
     git_shell_log = tmp_path / "git-shell.log"
     fake_git_shell = fake_bin / "git-shell"
     fake_git_shell.write_text(
-        "#!/usr/bin/env bash\n"
-        "set -euo pipefail\n"
-        f"printf '%s\\n' \"$2\" > {git_shell_log}\n",
+        f"#!/usr/bin/env bash\nset -euo pipefail\nprintf '%s\\n' \"$2\" > {git_shell_log}\n",
         encoding="utf-8",
     )
     os.chmod(fake_git_shell, 0o755)
@@ -164,9 +166,16 @@ def test_git_ssh_wrapper_refreshes_shared_mirror_before_upload_pack(tmp_path: Pa
     )
 
     origin_bare = tmp_path / "origin.git"
-    subprocess.run(["git", "init", "--bare", str(origin_bare)], check=True, text=True, capture_output=True)
+    subprocess.run(
+        ["git", "init", "--bare", str(origin_bare)], check=True, text=True, capture_output=True
+    )
     source_repo = tmp_path / "source"
-    subprocess.run(["git", "clone", str(origin_bare), str(source_repo)], check=True, text=True, capture_output=True)
+    subprocess.run(
+        ["git", "clone", str(origin_bare), str(source_repo)],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
     _git(source_repo, "checkout", "-b", "main")
     (source_repo / "README.md").write_text("v1\n", encoding="utf-8")
     _git(source_repo, "add", "README.md", env=env)
@@ -180,7 +189,13 @@ def test_git_ssh_wrapper_refreshes_shared_mirror_before_upload_pack(tmp_path: Pa
     )
 
     create_remote_script = scripts_dir / "create_git_remote.sh"
-    subprocess.run([str(create_remote_script), "shared-repo"], check=True, text=True, capture_output=True, env=env)
+    subprocess.run(
+        [str(create_remote_script), "shared-repo"],
+        check=True,
+        text=True,
+        capture_output=True,
+        env=env,
+    )
 
     bare_repo = git_root / "shared-repo.git"
     _git_dir(
@@ -212,9 +227,7 @@ def test_git_ssh_wrapper_refreshes_shared_mirror_before_upload_pack(tmp_path: Pa
     git_shell_log = tmp_path / "git-shell.log"
     fake_git_shell = fake_bin / "git-shell"
     fake_git_shell.write_text(
-        "#!/usr/bin/env bash\n"
-        "set -euo pipefail\n"
-        f"printf '%s\\n' \"$2\" > {git_shell_log}\n",
+        f"#!/usr/bin/env bash\nset -euo pipefail\nprintf '%s\\n' \"$2\" > {git_shell_log}\n",
         encoding="utf-8",
     )
     os.chmod(fake_git_shell, 0o755)
@@ -227,13 +240,17 @@ def test_git_ssh_wrapper_refreshes_shared_mirror_before_upload_pack(tmp_path: Pa
             "SSH_ORIGINAL_COMMAND": f"git-upload-pack '{bare_repo}'",
         }
     )
-    subprocess.run([str(wrapper_script)], check=True, text=True, capture_output=True, env=wrapper_env)
+    subprocess.run(
+        [str(wrapper_script)], check=True, text=True, capture_output=True, env=wrapper_env
+    )
 
     assert _git_dir(bare_repo, "rev-parse", "refs/heads/main").stdout.strip() == updated_sha
     assert git_shell_log.read_text(encoding="utf-8").strip() == f"git-upload-pack '{bare_repo}'"
 
 
-def test_git_ssh_wrapper_refreshes_remote_source_tracking_branches_before_upload_pack(tmp_path: Path) -> None:
+def test_git_ssh_wrapper_refreshes_remote_source_tracking_branches_before_upload_pack(
+    tmp_path: Path,
+) -> None:
     sandbox_root = tmp_path / "sandbox"
     git_root = sandbox_root / "git-remotes"
     scripts_dir = sandbox_root / "scripts"
@@ -263,10 +280,17 @@ def test_git_ssh_wrapper_refreshes_remote_source_tracking_branches_before_upload
     )
 
     canonical_bare = tmp_path / "canonical.git"
-    subprocess.run(["git", "init", "--bare", str(canonical_bare)], check=True, text=True, capture_output=True)
+    subprocess.run(
+        ["git", "init", "--bare", str(canonical_bare)], check=True, text=True, capture_output=True
+    )
 
     canonical_worktree = tmp_path / "canonical-worktree"
-    subprocess.run(["git", "clone", str(canonical_bare), str(canonical_worktree)], check=True, text=True, capture_output=True)
+    subprocess.run(
+        ["git", "clone", str(canonical_bare), str(canonical_worktree)],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
     _git(canonical_worktree, "checkout", "-b", "main")
     (canonical_worktree / "README.md").write_text("base\n", encoding="utf-8")
     _git(canonical_worktree, "add", "README.md", env=env)
@@ -286,7 +310,13 @@ def test_git_ssh_wrapper_refreshes_remote_source_tracking_branches_before_upload
     )
 
     create_remote_script = scripts_dir / "create_git_remote.sh"
-    subprocess.run([str(create_remote_script), "shared-repo"], check=True, text=True, capture_output=True, env=env)
+    subprocess.run(
+        [str(create_remote_script), "shared-repo"],
+        check=True,
+        text=True,
+        capture_output=True,
+        env=env,
+    )
 
     bare_repo = git_root / "shared-repo.git"
     _git_dir(
@@ -303,7 +333,9 @@ def test_git_ssh_wrapper_refreshes_remote_source_tracking_branches_before_upload
     _git_dir(bare_repo, "config", "agent-sandbox.baseBranch", "main")
     _git_dir(bare_repo, "symbolic-ref", "HEAD", "refs/heads/main")
 
-    refs_before = _git_dir(bare_repo, "for-each-ref", "--format=%(refname)", "refs/heads").stdout.splitlines()
+    refs_before = _git_dir(
+        bare_repo, "for-each-ref", "--format=%(refname)", "refs/heads"
+    ).stdout.splitlines()
     assert "refs/heads/feature/review" not in refs_before
 
     fake_bin = tmp_path / "fake-bin"
@@ -311,9 +343,7 @@ def test_git_ssh_wrapper_refreshes_remote_source_tracking_branches_before_upload
     git_shell_log = tmp_path / "git-shell.log"
     fake_git_shell = fake_bin / "git-shell"
     fake_git_shell.write_text(
-        "#!/usr/bin/env bash\n"
-        "set -euo pipefail\n"
-        f"printf '%s\\n' \"$2\" > {git_shell_log}\n",
+        f"#!/usr/bin/env bash\nset -euo pipefail\nprintf '%s\\n' \"$2\" > {git_shell_log}\n",
         encoding="utf-8",
     )
     os.chmod(fake_git_shell, 0o755)
@@ -326,13 +356,19 @@ def test_git_ssh_wrapper_refreshes_remote_source_tracking_branches_before_upload
             "SSH_ORIGINAL_COMMAND": f"git-upload-pack '{bare_repo}'",
         }
     )
-    subprocess.run([str(wrapper_script)], check=True, text=True, capture_output=True, env=wrapper_env)
+    subprocess.run(
+        [str(wrapper_script)], check=True, text=True, capture_output=True, env=wrapper_env
+    )
 
-    assert _git_dir(bare_repo, "rev-parse", "refs/heads/feature/review").stdout.strip() == feature_sha
+    assert (
+        _git_dir(bare_repo, "rev-parse", "refs/heads/feature/review").stdout.strip() == feature_sha
+    )
     assert git_shell_log.read_text(encoding="utf-8").strip() == f"git-upload-pack '{bare_repo}'"
 
 
-def test_git_ssh_wrapper_preserves_existing_refs_when_shared_mirror_refresh_fails(tmp_path: Path) -> None:
+def test_git_ssh_wrapper_preserves_existing_refs_when_shared_mirror_refresh_fails(
+    tmp_path: Path,
+) -> None:
     sandbox_root = tmp_path / "sandbox"
     git_root = sandbox_root / "git-remotes"
     scripts_dir = sandbox_root / "scripts"
@@ -362,9 +398,16 @@ def test_git_ssh_wrapper_preserves_existing_refs_when_shared_mirror_refresh_fail
     )
 
     origin_bare = tmp_path / "origin.git"
-    subprocess.run(["git", "init", "--bare", str(origin_bare)], check=True, text=True, capture_output=True)
+    subprocess.run(
+        ["git", "init", "--bare", str(origin_bare)], check=True, text=True, capture_output=True
+    )
     source_repo = tmp_path / "source"
-    subprocess.run(["git", "clone", str(origin_bare), str(source_repo)], check=True, text=True, capture_output=True)
+    subprocess.run(
+        ["git", "clone", str(origin_bare), str(source_repo)],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
     _git(source_repo, "checkout", "-b", "main")
     (source_repo / "README.md").write_text("v1\n", encoding="utf-8")
     _git(source_repo, "add", "README.md", env=env)
@@ -378,7 +421,13 @@ def test_git_ssh_wrapper_preserves_existing_refs_when_shared_mirror_refresh_fail
     )
 
     create_remote_script = scripts_dir / "create_git_remote.sh"
-    subprocess.run([str(create_remote_script), "shared-repo"], check=True, text=True, capture_output=True, env=env)
+    subprocess.run(
+        [str(create_remote_script), "shared-repo"],
+        check=True,
+        text=True,
+        capture_output=True,
+        env=env,
+    )
 
     bare_repo = git_root / "shared-repo.git"
     _git_dir(
@@ -455,9 +504,16 @@ def test_git_ssh_wrapper_preserves_pr_notes_during_shared_mirror_refresh(tmp_pat
     )
 
     origin_bare = tmp_path / "origin.git"
-    subprocess.run(["git", "init", "--bare", str(origin_bare)], check=True, text=True, capture_output=True)
+    subprocess.run(
+        ["git", "init", "--bare", str(origin_bare)], check=True, text=True, capture_output=True
+    )
     source_repo = tmp_path / "source"
-    subprocess.run(["git", "clone", str(origin_bare), str(source_repo)], check=True, text=True, capture_output=True)
+    subprocess.run(
+        ["git", "clone", str(origin_bare), str(source_repo)],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
     _git(source_repo, "checkout", "-b", "main")
     (source_repo / "README.md").write_text("v1\n", encoding="utf-8")
     _git(source_repo, "add", "README.md", env=env)
@@ -471,7 +527,13 @@ def test_git_ssh_wrapper_preserves_pr_notes_during_shared_mirror_refresh(tmp_pat
     )
 
     create_remote_script = scripts_dir / "create_git_remote.sh"
-    subprocess.run([str(create_remote_script), "shared-repo"], check=True, text=True, capture_output=True, env=env)
+    subprocess.run(
+        [str(create_remote_script), "shared-repo"],
+        check=True,
+        text=True,
+        capture_output=True,
+        env=env,
+    )
 
     bare_repo = git_root / "shared-repo.git"
     _git_dir(
@@ -490,7 +552,12 @@ def test_git_ssh_wrapper_preserves_pr_notes_during_shared_mirror_refresh(tmp_pat
     _git_dir(bare_repo, "symbolic-ref", "HEAD", "refs/heads/main")
 
     notes_clone = tmp_path / "notes-clone"
-    subprocess.run(["git", "clone", str(bare_repo), str(notes_clone)], check=True, text=True, capture_output=True)
+    subprocess.run(
+        ["git", "clone", str(bare_repo), str(notes_clone)],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
     _git(notes_clone, "notes", "--ref=agent-pr", "add", "-m", "PR summary", "HEAD", env=env)
     _git(notes_clone, "push", "origin", "refs/notes/agent-pr", env=env)
     expected_notes_sha = _git_dir(bare_repo, "rev-parse", "refs/notes/agent-pr").stdout.strip()
@@ -514,12 +581,18 @@ def test_git_ssh_wrapper_preserves_pr_notes_during_shared_mirror_refresh(tmp_pat
             "SSH_ORIGINAL_COMMAND": f"git-upload-pack '{bare_repo}'",
         }
     )
-    subprocess.run([str(wrapper_script)], check=True, text=True, capture_output=True, env=wrapper_env)
+    subprocess.run(
+        [str(wrapper_script)], check=True, text=True, capture_output=True, env=wrapper_env
+    )
 
-    assert _git_dir(bare_repo, "rev-parse", "refs/notes/agent-pr").stdout.strip() == expected_notes_sha
+    assert (
+        _git_dir(bare_repo, "rev-parse", "refs/notes/agent-pr").stdout.strip() == expected_notes_sha
+    )
 
 
-def test_git_ssh_wrapper_accepts_same_name_branch_refspec_for_shared_mirror_refresh(tmp_path: Path) -> None:
+def test_git_ssh_wrapper_accepts_same_name_branch_refspec_for_shared_mirror_refresh(
+    tmp_path: Path,
+) -> None:
     sandbox_root = tmp_path / "sandbox"
     git_root = sandbox_root / "git-remotes"
     scripts_dir = sandbox_root / "scripts"
@@ -549,9 +622,16 @@ def test_git_ssh_wrapper_accepts_same_name_branch_refspec_for_shared_mirror_refr
     )
 
     origin_bare = tmp_path / "origin.git"
-    subprocess.run(["git", "init", "--bare", str(origin_bare)], check=True, text=True, capture_output=True)
+    subprocess.run(
+        ["git", "init", "--bare", str(origin_bare)], check=True, text=True, capture_output=True
+    )
     source_repo = tmp_path / "source"
-    subprocess.run(["git", "clone", str(origin_bare), str(source_repo)], check=True, text=True, capture_output=True)
+    subprocess.run(
+        ["git", "clone", str(origin_bare), str(source_repo)],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
     _git(source_repo, "checkout", "-b", "main")
     (source_repo / "README.md").write_text("v1\n", encoding="utf-8")
     _git(source_repo, "add", "README.md", env=env)
@@ -565,7 +645,13 @@ def test_git_ssh_wrapper_accepts_same_name_branch_refspec_for_shared_mirror_refr
     )
 
     create_remote_script = scripts_dir / "create_git_remote.sh"
-    subprocess.run([str(create_remote_script), "shared-repo"], check=True, text=True, capture_output=True, env=env)
+    subprocess.run(
+        [str(create_remote_script), "shared-repo"],
+        check=True,
+        text=True,
+        capture_output=True,
+        env=env,
+    )
 
     bare_repo = git_root / "shared-repo.git"
     _git_dir(
@@ -610,7 +696,9 @@ def test_git_ssh_wrapper_accepts_same_name_branch_refspec_for_shared_mirror_refr
             "SSH_ORIGINAL_COMMAND": f"git-upload-pack '{bare_repo}'",
         }
     )
-    subprocess.run([str(wrapper_script)], check=True, text=True, capture_output=True, env=wrapper_env)
+    subprocess.run(
+        [str(wrapper_script)], check=True, text=True, capture_output=True, env=wrapper_env
+    )
 
     assert _git_dir(bare_repo, "rev-parse", "refs/heads/main").stdout.strip() == updated_sha
 
@@ -645,9 +733,13 @@ def test_git_ssh_wrapper_refreshes_shared_mirror_with_non_origin_remote(tmp_path
     )
 
     upstream_bare = tmp_path / "upstream.git"
-    subprocess.run(["git", "init", "--bare", str(upstream_bare)], check=True, text=True, capture_output=True)
+    subprocess.run(
+        ["git", "init", "--bare", str(upstream_bare)], check=True, text=True, capture_output=True
+    )
     source_repo = tmp_path / "source"
-    subprocess.run(["git", "init", "-b", "main", str(source_repo)], check=True, text=True, capture_output=True)
+    subprocess.run(
+        ["git", "init", "-b", "main", str(source_repo)], check=True, text=True, capture_output=True
+    )
     _git(source_repo, "remote", "add", "upstream", str(upstream_bare))
     (source_repo / "README.md").write_text("v1\n", encoding="utf-8")
     _git(source_repo, "add", "README.md", env=env)
@@ -661,7 +753,13 @@ def test_git_ssh_wrapper_refreshes_shared_mirror_with_non_origin_remote(tmp_path
     )
 
     create_remote_script = scripts_dir / "create_git_remote.sh"
-    subprocess.run([str(create_remote_script), "shared-repo"], check=True, text=True, capture_output=True, env=env)
+    subprocess.run(
+        [str(create_remote_script), "shared-repo"],
+        check=True,
+        text=True,
+        capture_output=True,
+        env=env,
+    )
 
     bare_repo = git_root / "shared-repo.git"
     _git_dir(
@@ -699,6 +797,8 @@ def test_git_ssh_wrapper_refreshes_shared_mirror_with_non_origin_remote(tmp_path
             "SSH_ORIGINAL_COMMAND": f"git-upload-pack '{bare_repo}'",
         }
     )
-    subprocess.run([str(wrapper_script)], check=True, text=True, capture_output=True, env=wrapper_env)
+    subprocess.run(
+        [str(wrapper_script)], check=True, text=True, capture_output=True, env=wrapper_env
+    )
 
     assert _git_dir(bare_repo, "rev-parse", "refs/heads/main").stdout.strip() == updated_sha

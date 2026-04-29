@@ -29,23 +29,21 @@ class TriggerRuntimeContext(ProviderRuntimeBase):
 
 class TriggerProvider(Protocol):
     @classmethod
-    def validate_definition(cls, trigger_definition: TriggerDefinitionDiscriminated) -> TriggerDefinitionDiscriminated:
-        ...
+    def validate_definition(
+        cls, trigger_definition: TriggerDefinitionDiscriminated
+    ) -> TriggerDefinitionDiscriminated: ...
 
     def initialize(
         self,
         trigger_definition: TriggerDefinitionDiscriminated,
         runtime_context: TriggerRuntimeContext,
-    ) -> None:
-        ...
+    ) -> None: ...
 
-    def poll(self) -> list[TriggerEvent]:
-        ...
+    def poll(self) -> list[TriggerEvent]: ...
 
 
 class PushTriggerProvider(TriggerProvider, Protocol):
-    def register_hook(self, handler: TriggerHookHandler) -> None:
-        ...
+    def register_hook(self, handler: TriggerHookHandler) -> None: ...
 
 
 class TriggerProviderBase:
@@ -67,8 +65,11 @@ class TriggerProviderBase:
 
     def poll(self) -> list[TriggerEvent]:
         return []
+
     @classmethod
-    def validate_definition(cls, trigger_definition: TriggerDefinitionDiscriminated) -> TriggerDefinitionDiscriminated:
+    def validate_definition(
+        cls, trigger_definition: TriggerDefinitionDiscriminated
+    ) -> TriggerDefinitionDiscriminated:
         if type(trigger_definition) is not WorkflowNodeEnvelope:
             return trigger_definition
         return materialize_node_definition(trigger_definition)

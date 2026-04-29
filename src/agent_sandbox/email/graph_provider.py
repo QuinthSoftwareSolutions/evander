@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any
 import httpx
 
 if TYPE_CHECKING:
-    from agent_sandbox.cursor_repositories import EmailCursorRepository
+    from agent_sandbox.repositories.cursors import EmailCursorRepository
 
 from .cursor_store import EmailSyncCursor
 from .http_utils import ProviderRequestError, request_with_retries
@@ -47,7 +47,9 @@ class GraphEmailProvider:
                 cursor=cursor,
             )
 
-        summaries = [self._to_summary(mailbox_id=mailbox_id, folder=folder, payload=item) for item in items]
+        summaries = [
+            self._to_summary(mailbox_id=mailbox_id, folder=folder, payload=item) for item in items
+        ]
         summaries = self._dedupe_with_cursor(mailbox_id, folder, summaries, next_delta_link)
         summaries.sort(key=lambda entry: entry.received_at, reverse=True)
         return summaries[:limit]
@@ -61,7 +63,9 @@ class GraphEmailProvider:
                 method="GET",
                 url=self._url(f"messages/{message_id}"),
                 headers=self._headers(),
-                params={"$select": "id,subject,body,from,toRecipients,isRead,receivedDateTime,conversationId,parentFolderId"},
+                params={
+                    "$select": "id,subject,body,from,toRecipients,isRead,receivedDateTime,conversationId,parentFolderId"
+                },
             )
             payload = response.json()
 
@@ -78,10 +82,7 @@ class GraphEmailProvider:
         json_payload = {
             "subject": subject or "",
             "body": {"contentType": "text", "content": body},
-            "toRecipients": [
-                {"emailAddress": {"address": address}}
-                for address in recipients
-            ],
+            "toRecipients": [{"emailAddress": {"address": address}} for address in recipients],
         }
         if thread_or_message_id:
             json_payload["conversationId"] = thread_or_message_id
@@ -130,11 +131,17 @@ class GraphEmailProvider:
             "Content-Type": "application/json",
         }
 
-    def _to_summary(self, *, mailbox_id: str, folder: str, payload: dict[str, Any]) -> EmailMessageSummary:
+    def _to_summary(
+        self, *, mailbox_id: str, folder: str, payload: dict[str, Any]
+    ) -> EmailMessageSummary:
         received_at = datetime.fromisoformat(
-            str(payload.get("receivedDateTime", datetime.now(UTC).isoformat())).replace("Z", "+00:00")
+            str(payload.get("receivedDateTime", datetime.now(UTC).isoformat())).replace(
+                "Z", "+00:00"
+            )
         )
-        sender = ((payload.get("from") or {}).get("emailAddress") or {}).get("address", self.account_identifier)
+        sender = ((payload.get("from") or {}).get("emailAddress") or {}).get(
+            "address", self.account_identifier
+        )
         recipients = [
             ((recipient.get("emailAddress") or {}).get("address", "")).strip()
             for recipient in payload.get("toRecipients", [])
@@ -219,7 +226,11 @@ class GraphEmailProvider:
     def _list_bounded_polling(
         self, client: httpx.Client, graph_folder_id: str, limit: int
     ) -> tuple[list[dict[str, Any]], str | None]:
-        since = (datetime.now(UTC) - timedelta(days=self._fallback_lookback_days)).isoformat().replace("+00:00", "Z")
+        since = (
+            (datetime.now(UTC) - timedelta(days=self._fallback_lookback_days))
+            .isoformat()
+            .replace("+00:00", "Z")
+        )
         response = request_with_retries(
             client=client,
             provider=self.provider_name,

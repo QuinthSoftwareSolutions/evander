@@ -13,9 +13,9 @@ from agent_sandbox.gates.providers.base import GateProviderBase
 from agent_sandbox.orchestration.effect_extensions import list_vm_summaries_for_agent_reconciliation
 from agent_sandbox.storage import JsonStore
 from agent_sandbox.triggers.queue import TriggerQueueRecord
-from agent_sandbox.workflow_binding import resolve_workflow_bindings
-from agent_sandbox.workflow_validation import NodeCapability, WorkflowValidationDiagnostic
-from agent_sandbox.workflow_transforms.await_agent import validate_await_agent_gate
+from agent_sandbox.workflow.binding import resolve_workflow_bindings
+from agent_sandbox.workflow.validation import NodeCapability, WorkflowValidationDiagnostic
+from agent_sandbox.workflow.transforms.await_agent import validate_await_agent_gate
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +54,9 @@ class _AwaitAgentStateStoreAdapter:
 
 
 class AwaitAgentGateProvider(GateProviderBase):
-    capability = NodeCapability(min_inbound=1, max_inbound=1, completion_semantics="external_completion")
+    capability = NodeCapability(
+        min_inbound=1, max_inbound=1, completion_semantics="external_completion"
+    )
 
     def __init__(self) -> None:
         super().__init__()
@@ -64,9 +66,13 @@ class AwaitAgentGateProvider(GateProviderBase):
         del kwargs
         if self._adapter is not None:
             return self._adapter
-        runtime_config = self.runtime_context.resolved_config if self.runtime_context is not None else None
+        runtime_config = (
+            self.runtime_context.resolved_config if self.runtime_context is not None else None
+        )
         runtime_dir = Path(getattr(runtime_config, "runtime_dir", Path("runtime")))
-        provider_state = getattr(runtime_config, "provider_state", {}) if runtime_config is not None else {}
+        provider_state = (
+            getattr(runtime_config, "provider_state", {}) if runtime_config is not None else {}
+        )
         store_path = _provider_state_path(
             provider_state,
             namespace=("gates", "await_agent", "pending_store_path"),
@@ -107,7 +113,9 @@ class AwaitAgentGateProvider(GateProviderBase):
             ),
             strict_validation=True,
         )
-        resolved_config = worker._require_object_payload(resolved.resolved_config, gate_type="gate:await-agent")
+        resolved_config = worker._require_object_payload(
+            resolved.resolved_config, gate_type="gate:await-agent"
+        )
         self._register_prompt(
             worker=worker,
             queue_record=queue_record,
@@ -143,13 +151,19 @@ class AwaitAgentGateProvider(GateProviderBase):
         if not dispatch_id:
             raise ValueError("dispatch_id is required")
         key, pending = next(
-            ((record_key, record) for record_key, record in self._store().read_all().items() if record.dispatch_id == dispatch_id),
+            (
+                (record_key, record)
+                for record_key, record in self._store().read_all().items()
+                if record.dispatch_id == dispatch_id
+            ),
             (None, None),
         )
         if pending is None:
             return False
         gate = graph.gates_by_id.get(pending.gate_id)
-        completed = self._complete_pending_record(worker=worker, pending=pending, gate=gate, log_skips=True, key=key)
+        completed = self._complete_pending_record(
+            worker=worker, pending=pending, gate=gate, log_skips=True, key=key
+        )
         if completed:
             worker.run_once_with_lock()
         return completed
@@ -173,7 +187,16 @@ class AwaitAgentGateProvider(GateProviderBase):
             inbound_edges=inbound_edges or {},
         )
 
-    def _register_prompt(self, *, worker: Any, queue_record: TriggerQueueRecord, gate: Any, resolved_config: dict[str, Any], config_revision: str, started_at: datetime) -> None:
+    def _register_prompt(
+        self,
+        *,
+        worker: Any,
+        queue_record: TriggerQueueRecord,
+        gate: Any,
+        resolved_config: dict[str, Any],
+        config_revision: str,
+        started_at: datetime,
+    ) -> None:
         dispatch_id = str(queue_record.payload.get("dispatch_id") or "").strip()
         session_id = str(resolved_config.get("session_id") or "").strip() or None
         vm_name = str(resolved_config.get("vm_name") or "").strip() or None
@@ -227,7 +250,11 @@ class AwaitAgentGateProvider(GateProviderBase):
             gate=gate,
             status="waiting",
             started_at=started_at,
-            resolved_config={**resolved_config, "dispatch_id": dispatch_id, "completion_trigger_id": getattr(gate, "completion_trigger_id", None)},
+            resolved_config={
+                **resolved_config,
+                "dispatch_id": dispatch_id,
+                "completion_trigger_id": getattr(gate, "completion_trigger_id", None),
+            },
             outputs={},
             inputs_by_source={queue_record.trigger_id: dict(queue_record.payload)},
             input_event_ids_by_source={queue_record.trigger_id: queue_record.event_id},
@@ -235,7 +262,9 @@ class AwaitAgentGateProvider(GateProviderBase):
             config_revision=config_revision,
         )
 
-    def _execute_completion(self, *, worker: Any, queue_record: TriggerQueueRecord, gate: Any) -> bool:
+    def _execute_completion(
+        self, *, worker: Any, queue_record: TriggerQueueRecord, gate: Any
+    ) -> bool:
         started_at = datetime.now(UTC)
         dispatch_id = str(queue_record.payload.get("dispatch_id") or "").strip()
         if not dispatch_id:
@@ -244,7 +273,16 @@ class AwaitAgentGateProvider(GateProviderBase):
         pending = self._store().get(key)
         if pending is None:
             return False
-        outputs = {k: v for k, v in queue_record.payload.items() if k not in {NODE_OUTPUTS_CONTEXT_KEY, _BRANCH_PORT_PAYLOAD_KEY, _FOR_EXECUTION_IDS_PAYLOAD_KEY}}
+        outputs = {
+            k: v
+            for k, v in queue_record.payload.items()
+            if k
+            not in {
+                NODE_OUTPUTS_CONTEXT_KEY,
+                _BRANCH_PORT_PAYLOAD_KEY,
+                _FOR_EXECUTION_IDS_PAYLOAD_KEY,
+            }
+        }
         merged_payload = _payload_with_node_output_context(
             source_payload=pending.payload,
             source_node_id=pending.prompt_source_node_id,
@@ -267,11 +305,23 @@ class AwaitAgentGateProvider(GateProviderBase):
             gate=gate,
             status="succeeded",
             started_at=started_at,
-            resolved_config={"dispatch_id": dispatch_id, "completion_trigger_id": getattr(gate, "completion_trigger_id", None)},
+            resolved_config={
+                "dispatch_id": dispatch_id,
+                "completion_trigger_id": getattr(gate, "completion_trigger_id", None),
+            },
             outputs=outputs,
-            inputs_by_source={pending.prompt_source_node_id: dict(pending.payload), queue_record.trigger_id: dict(queue_record.payload)},
-            input_event_ids_by_source={pending.prompt_source_node_id: pending.prompt_event_id, queue_record.trigger_id: queue_record.event_id},
-            input_occurred_at_by_source={pending.prompt_source_node_id: pending.occurred_at, queue_record.trigger_id: queue_record.occurred_at},
+            inputs_by_source={
+                pending.prompt_source_node_id: dict(pending.payload),
+                queue_record.trigger_id: dict(queue_record.payload),
+            },
+            input_event_ids_by_source={
+                pending.prompt_source_node_id: pending.prompt_event_id,
+                queue_record.trigger_id: queue_record.event_id,
+            },
+            input_occurred_at_by_source={
+                pending.prompt_source_node_id: pending.occurred_at,
+                queue_record.trigger_id: queue_record.occurred_at,
+            },
             publish_completion_event=True,
         )
         self._store().delete(key)
@@ -318,7 +368,8 @@ class AwaitAgentGateProvider(GateProviderBase):
             replaced_or_unavailable = any(
                 (
                     str(getattr(summary, "dispatch_id", "") or "").strip()
-                    and str(getattr(summary, "dispatch_id", "") or "").strip() != pending.dispatch_id
+                    and str(getattr(summary, "dispatch_id", "") or "").strip()
+                    != pending.dispatch_id
                 )
                 or str(getattr(summary, "libvirt_state", "") or "").strip() != "running"
                 for summary in candidates
@@ -331,14 +382,26 @@ class AwaitAgentGateProvider(GateProviderBase):
         completed = 0
         for key, pending in pending_by_key.items():
             gate = graph.gates_by_id.get(pending.gate_id)
-            if self._complete_pending_record(worker=worker, pending=pending, gate=gate, log_skips=True, key=key):
+            if self._complete_pending_record(
+                worker=worker, pending=pending, gate=gate, log_skips=True, key=key
+            ):
                 completed += 1
         return completed
 
-    def _complete_pending_record(self, *, worker: Any, pending: AwaitAgentPendingRecord, gate: Any, log_skips: bool, key: str | None) -> bool:
+    def _complete_pending_record(
+        self,
+        *,
+        worker: Any,
+        pending: AwaitAgentPendingRecord,
+        gate: Any,
+        log_skips: bool,
+        key: str | None,
+    ) -> bool:
         if gate is None or getattr(gate, "type", "") != "gate:await-agent":
             return False
-        event = self._build_completion_event(worker=worker, pending=pending, log_skips=log_skips, key=key)
+        event = self._build_completion_event(
+            worker=worker, pending=pending, log_skips=log_skips, key=key
+        )
         if event is None:
             return False
         queue_record = TriggerQueueRecord(
@@ -355,17 +418,22 @@ class AwaitAgentGateProvider(GateProviderBase):
         self._execute_completion(worker=worker, queue_record=queue_record, gate=gate)
         return self._store().get(f"{pending.gate_id}:{pending.dispatch_id}") is None
 
-    def _build_completion_event(self, *, worker: Any, pending: AwaitAgentPendingRecord, log_skips: bool, key: str | None):
+    def _build_completion_event(
+        self, *, worker: Any, pending: AwaitAgentPendingRecord, log_skips: bool, key: str | None
+    ):
         summaries = list_vm_summaries_for_agent_reconciliation(worker)
         session_id, vm_name = _await_agent_pending_target(pending, summaries=summaries)
         if not vm_name:
             return None
-        matching_summary = _match_completion_summary(summaries=summaries, pending=pending, vm_name=vm_name, session_id=session_id)
+        matching_summary = _match_completion_summary(
+            summaries=summaries, pending=pending, vm_name=vm_name, session_id=session_id
+        )
         if matching_summary is None:
             return None
         if str(getattr(matching_summary, "agent_state", "") or "").strip() == "running":
             return None
-        from agent_sandbox.agent_completion_watcher import build_agent_run_completed_event
+
+        from agent_sandbox.daemons.agent_completion_watcher import build_agent_run_completed_event
 
         event = build_agent_run_completed_event(
             trigger_id="__await-agent-completion__",
@@ -376,30 +444,81 @@ class AwaitAgentGateProvider(GateProviderBase):
             directory_path=(getattr(matching_summary, "directory_paths", None) or [None])[0],
         )
         if log_skips:
-            logger.info("Await-agent completion event prepared key=%s dispatch_id=%s vm_name=%s event_id=%s", key, pending.dispatch_id, vm_name, event.event_id)
+            logger.info(
+                "Await-agent completion event prepared key=%s dispatch_id=%s vm_name=%s event_id=%s",
+                key,
+                pending.dispatch_id,
+                vm_name,
+                event.event_id,
+            )
         return event
-def _await_agent_pending_target(pending: AwaitAgentPendingRecord, *, summaries: list[Any] | None = None) -> tuple[str | None, str | None]:
+
+
+def _await_agent_pending_target(
+    pending: AwaitAgentPendingRecord, *, summaries: list[Any] | None = None
+) -> tuple[str | None, str | None]:
     session_id = str(pending.session_id or "").strip() or None
     vm_name = str(pending.vm_name or "").strip() or None
     if not summaries:
         return session_id, vm_name
     if session_id is None and vm_name is not None:
-        session_id = next((str(session or "").strip() for summary in summaries if str(getattr(summary, "vm_name", "") or "").strip() == vm_name for session in (getattr(summary, "session_ids", []) or []) if str(session or "").strip()), None)
+        session_id = next(
+            (
+                str(session or "").strip()
+                for summary in summaries
+                if str(getattr(summary, "vm_name", "") or "").strip() == vm_name
+                for session in (getattr(summary, "session_ids", []) or [])
+                if str(session or "").strip()
+            ),
+            None,
+        )
     if vm_name is None and session_id is not None:
-        vm_name = next((str(getattr(summary, "vm_name", "") or "").strip() for summary in summaries if session_id in {str(item or "").strip() for item in (getattr(summary, "session_ids", []) or [])} and str(getattr(summary, "vm_name", "") or "").strip()), None)
+        vm_name = next(
+            (
+                str(getattr(summary, "vm_name", "") or "").strip()
+                for summary in summaries
+                if session_id
+                in {str(item or "").strip() for item in (getattr(summary, "session_ids", []) or [])}
+                and str(getattr(summary, "vm_name", "") or "").strip()
+            ),
+            None,
+        )
     return session_id, vm_name
 
 
-def _match_completion_summary(*, summaries: list[Any], pending: AwaitAgentPendingRecord, vm_name: str, session_id: str | None) -> Any | None:
-    exact_match = next((summary for summary in summaries if str(getattr(summary, "vm_name", "") or "").strip() == vm_name and str(getattr(summary, "dispatch_id", "") or "").strip() == pending.dispatch_id), None)
+def _match_completion_summary(
+    *, summaries: list[Any], pending: AwaitAgentPendingRecord, vm_name: str, session_id: str | None
+) -> Any | None:
+    exact_match = next(
+        (
+            summary
+            for summary in summaries
+            if str(getattr(summary, "vm_name", "") or "").strip() == vm_name
+            and str(getattr(summary, "dispatch_id", "") or "").strip() == pending.dispatch_id
+        ),
+        None,
+    )
     if exact_match is not None:
         return exact_match
     if not session_id:
         return None
-    return next((summary for summary in summaries if str(getattr(summary, "vm_name", "") or "").strip() == vm_name and session_id in {str(item or "").strip() for item in (getattr(summary, "session_ids", []) or [])} and not str(getattr(summary, "dispatch_id", "") or "").strip() and str(getattr(summary, "agent_state", "") or "").strip() != "running"), None)
+    return next(
+        (
+            summary
+            for summary in summaries
+            if str(getattr(summary, "vm_name", "") or "").strip() == vm_name
+            and session_id
+            in {str(item or "").strip() for item in (getattr(summary, "session_ids", []) or [])}
+            and not str(getattr(summary, "dispatch_id", "") or "").strip()
+            and str(getattr(summary, "agent_state", "") or "").strip() != "running"
+        ),
+        None,
+    )
 
 
-def _node_output_context_from_payload(payload: dict[str, Any], *, source_node_id: str) -> dict[str, dict[str, Any]]:
+def _node_output_context_from_payload(
+    payload: dict[str, Any], *, source_node_id: str
+) -> dict[str, dict[str, Any]]:
     raw_context = payload.get(NODE_OUTPUTS_CONTEXT_KEY)
     if isinstance(raw_context, dict):
         context: dict[str, dict[str, Any]] = {}
@@ -409,14 +528,29 @@ def _node_output_context_from_payload(payload: dict[str, Any], *, source_node_id
             context[node_id] = dict(node_payload)
         if context:
             return context
-    flat_payload = {key: value for key, value in payload.items() if key not in {NODE_OUTPUTS_CONTEXT_KEY, _BRANCH_PORT_PAYLOAD_KEY, _FOR_EXECUTION_IDS_PAYLOAD_KEY}}
+    flat_payload = {
+        key: value
+        for key, value in payload.items()
+        if key
+        not in {NODE_OUTPUTS_CONTEXT_KEY, _BRANCH_PORT_PAYLOAD_KEY, _FOR_EXECUTION_IDS_PAYLOAD_KEY}
+    }
     return {source_node_id: flat_payload}
 
 
-def _payload_with_node_output_context(*, source_payload: dict[str, Any], source_node_id: str, completed_node_id: str, outputs: dict[str, Any]) -> dict[str, Any]:
+def _payload_with_node_output_context(
+    *,
+    source_payload: dict[str, Any],
+    source_node_id: str,
+    completed_node_id: str,
+    outputs: dict[str, Any],
+) -> dict[str, Any]:
     payload = dict(outputs)
-    inherited_context = _node_output_context_from_payload(source_payload, source_node_id=source_node_id)
-    merged_context = {node_id: dict(node_payload) for node_id, node_payload in inherited_context.items()}
+    inherited_context = _node_output_context_from_payload(
+        source_payload, source_node_id=source_node_id
+    )
+    merged_context = {
+        node_id: dict(node_payload) for node_id, node_payload in inherited_context.items()
+    }
     merged_context[completed_node_id] = dict(outputs)
     payload[NODE_OUTPUTS_CONTEXT_KEY] = merged_context
     return payload

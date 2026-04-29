@@ -14,9 +14,13 @@ from .bash_script_schema import BashScriptEffectConfigSchema
 
 class BashScriptEffectProvider(EffectProviderBase):
     @classmethod
-    def validate_definition(cls, effect_definition: EffectDefinitionDiscriminated) -> EffectDefinitionDiscriminated:
+    def validate_definition(
+        cls, effect_definition: EffectDefinitionDiscriminated
+    ) -> EffectDefinitionDiscriminated:
         if isinstance(effect_definition, WorkflowNodeEnvelope):
-            config = BashScriptEffectConfigSchema.model_validate(effect_definition.config).model_dump()
+            config = BashScriptEffectConfigSchema.model_validate(
+                effect_definition.config
+            ).model_dump()
             return BashScriptEffectDefinition.model_validate(
                 {
                     "id": effect_definition.id,
@@ -30,7 +34,9 @@ class BashScriptEffectProvider(EffectProviderBase):
 
     def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
         payload = dict(resolved_config or {})
-        script_path = self._normalize_required_string(payload.get("script_path"), field_name="script_path")
+        script_path = self._normalize_required_string(
+            payload.get("script_path"), field_name="script_path"
+        )
         args = self._normalize_args(payload.get("args"))
         working_directory = self._normalize_optional_string(payload.get("working_directory"))
         stdin = self._normalize_optional_string(payload.get("stdin"))
@@ -57,7 +63,9 @@ class BashScriptEffectProvider(EffectProviderBase):
         stdout = completed.stdout or ""
         stderr = completed.stderr or ""
         success = completed.returncode == 0
-        message = stderr.strip() or stdout.strip() or f"Script exited with code {completed.returncode}"
+        message = (
+            stderr.strip() or stdout.strip() or f"Script exited with code {completed.returncode}"
+        )
         result = {
             "success": success,
             "action": "bash_script",

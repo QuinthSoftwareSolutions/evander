@@ -6,7 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from agent_sandbox.config import GatewayConfig
-from agent_sandbox.discord_wake_worker import build_discord_wake_worker
+from agent_sandbox.messaging.discord_wake import build_discord_wake_worker
 from agent_sandbox.models import SessionManifest, ToolName
 
 
@@ -24,13 +24,17 @@ class _DiscordInboxServiceStub:
 
     def has_pending_discord_messages(self, *, session_id: str, streams: list[dict[str, str]]):  # noqa: ANN003
         pending = any(
-            self.pending_by_session_and_channel.get((session_id, str(stream.get("channel_id", ""))), False)
+            self.pending_by_session_and_channel.get(
+                (session_id, str(stream.get("channel_id", ""))), False
+            )
             for stream in streams
         )
         return SimpleNamespace(pending=pending)
 
 
-def test_build_discord_wake_worker_uses_worker_config_and_normalizes_directories(tmp_path: Path) -> None:
+def test_build_discord_wake_worker_uses_worker_config_and_normalizes_directories(
+    tmp_path: Path,
+) -> None:
     project_dir = tmp_path / "project"
     worker_config_path = project_dir / "config" / "discord-wake" / "config.json"
     worker_config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -53,11 +57,15 @@ def test_build_discord_wake_worker_uses_worker_config_and_normalizes_directories
     assert str(worker.worker_config.lock_path) == str(tmp_path / "runtime" / "discord-wake.lock")
 
 
-def test_discord_wake_worker_dispatches_resume_for_pending_channel(tmp_path: Path, monkeypatch) -> None:
+def test_discord_wake_worker_dispatches_resume_for_pending_channel(
+    tmp_path: Path, monkeypatch
+) -> None:
     project_dir = tmp_path / "project"
     worker_config_path = project_dir / "config" / "discord-wake" / "config.json"
     worker_config_path.parent.mkdir(parents=True, exist_ok=True)
-    worker_config_path.write_text(json.dumps({"directories": ["root/team-a"], "jitter_seconds": 0.0}), encoding="utf-8")
+    worker_config_path.write_text(
+        json.dumps({"directories": ["root/team-a"], "jitter_seconds": 0.0}), encoding="utf-8"
+    )
 
     config = GatewayConfig.model_validate({"runtime_dir": str(tmp_path / "runtime")})
     worker = build_discord_wake_worker(config, project_dir=project_dir)
@@ -71,14 +79,20 @@ def test_discord_wake_worker_dispatches_resume_for_pending_channel(tmp_path: Pat
         ),
     )
     worker.runtime.policy_config = _PolicyConfigStub({"session-a": ["channel-1"]})
-    worker.runtime.discord_inbox_service = _DiscordInboxServiceStub({("session-a", "channel-1"): True})
+    worker.runtime.discord_inbox_service = _DiscordInboxServiceStub(
+        {("session-a", "channel-1"): True}
+    )
 
     dispatched: list[str] = []
-    monkeypatch.setattr("agent_sandbox.discord_wake_worker.probe_agent_dispatch_state", lambda **kwargs: "idle")
+    monkeypatch.setattr(
+        "agent_sandbox.messaging.discord_wake.probe_agent_dispatch_state", lambda **kwargs: "idle"
+    )
     monkeypatch.setattr(
         worker.dispatcher,
         "resume_binding",
-        lambda binding, **kwargs: dispatched.append(binding.session_id) or SimpleNamespace(status="dispatched"),
+        lambda binding, **kwargs: (
+            dispatched.append(binding.session_id) or SimpleNamespace(status="dispatched")
+        ),
     )
 
     result = worker.run_once()

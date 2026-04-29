@@ -5,11 +5,12 @@ from pathlib import Path
 
 from agent_sandbox.bootstrap import load_host_bootstrap_config, load_runtime_gateway_config
 from agent_sandbox.host_config import build_runtime_gateway_config
-from agent_sandbox.issue_service import IssueService
+from agent_sandbox.issues.service import IssueService
 from agent_sandbox.migrations import (
     LOCAL_ISSUE_MIGRATION_MARKER_RELATIVE_PATH,
     migrate_local_issues_to_unified_schema,
 )
+
 
 def write_config(tmp_path: Path) -> Path:
     runtime_dir = tmp_path / "runtime"
@@ -32,7 +33,9 @@ def write_config(tmp_path: Path) -> Path:
     return config_path
 
 
-def test_local_issue_migration_normalizes_records_imports_ado_and_preserves_counter(tmp_path: Path) -> None:
+def test_local_issue_migration_normalizes_records_imports_ado_and_preserves_counter(
+    tmp_path: Path,
+) -> None:
     config_path = write_config(tmp_path)
     runtime_dir = tmp_path / "runtime"
     runtime_dir.mkdir(parents=True, exist_ok=True)

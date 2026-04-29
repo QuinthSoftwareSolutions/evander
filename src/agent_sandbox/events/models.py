@@ -3,7 +3,14 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Annotated, Any, Literal, TypeAlias
 
-from pydantic import AfterValidator, BaseModel, Field, StringConstraints, field_validator, model_validator
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    Field,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
 from typing_extensions import TypeAliasType
 
 from agent_sandbox.workflow.contracts import (
@@ -126,10 +133,18 @@ def validate_provider_node_definition(node: WorkflowNodeEnvelope) -> WorkflowNod
     return node
 
 
-TriggerDefinitionDiscriminated = Annotated[WorkflowNodeEnvelope, AfterValidator(validate_provider_node_definition)]
-EffectDefinitionDiscriminated = Annotated[WorkflowNodeEnvelope, AfterValidator(validate_provider_node_definition)]
-QueryDefinitionDiscriminated = Annotated[WorkflowNodeEnvelope, AfterValidator(validate_provider_node_definition)]
-GateDefinitionDiscriminated = Annotated[WorkflowNodeEnvelope, AfterValidator(validate_provider_node_definition)]
+TriggerDefinitionDiscriminated = Annotated[
+    WorkflowNodeEnvelope, AfterValidator(validate_provider_node_definition)
+]
+EffectDefinitionDiscriminated = Annotated[
+    WorkflowNodeEnvelope, AfterValidator(validate_provider_node_definition)
+]
+QueryDefinitionDiscriminated = Annotated[
+    WorkflowNodeEnvelope, AfterValidator(validate_provider_node_definition)
+]
+GateDefinitionDiscriminated = Annotated[
+    WorkflowNodeEnvelope, AfterValidator(validate_provider_node_definition)
+]
 
 WorkflowNodeType = TriggerType | GateType | EffectType | QueryType
 
@@ -158,6 +173,7 @@ def _materialize_with_model(model_class: type[BaseModel], node: WorkflowNodeEnve
 
 
 def _builtin_node_schema_resolvers() -> dict[str, Any]:
+
     from agent_sandbox.events import provider_models
 
     models_by_type: dict[str, type[BaseModel]] = {

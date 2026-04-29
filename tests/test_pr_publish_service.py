@@ -267,7 +267,9 @@ def test_github_publish_provider_submits_review_and_inline_comments(
                 "body": "Summary",
                 "event": "COMMENT",
             }
-            return httpx.Response(201, json={"id": 301, "html_url": "https://github.test/reviews/301"})
+            return httpx.Response(
+                201, json={"id": 301, "html_url": "https://github.test/reviews/301"}
+            )
         if request.url.path == "/repos/org/repo/pulls/17/comments":
             payload = json.loads(request.content.decode("utf-8"))
             assert payload == {
@@ -275,7 +277,9 @@ def test_github_publish_provider_submits_review_and_inline_comments(
                 "path": "src/app.py",
                 "line": 17,
             }
-            return httpx.Response(201, json={"id": 401, "html_url": "https://github.test/comments/401"})
+            return httpx.Response(
+                201, json={"id": 401, "html_url": "https://github.test/comments/401"}
+            )
         raise AssertionError(f"unexpected path: {request.url.path}")
 
     patch_httpx_client(monkeypatch, httpx.MockTransport(handler))
@@ -332,7 +336,10 @@ def test_azure_publish_provider_submits_review_and_inline_comments(
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
         payload = json.loads(request.content.decode("utf-8"))
-        if request.url.path.endswith("/pullRequests/17/threads") and payload["comments"][0]["content"] == "Summary":
+        if (
+            request.url.path.endswith("/pullRequests/17/threads")
+            and payload["comments"][0]["content"] == "Summary"
+        ):
             assert payload == {
                 "comments": [{"parentCommentId": 0, "content": "Summary", "commentType": "text"}],
                 "status": "active",
@@ -347,7 +354,9 @@ def test_azure_publish_provider_submits_review_and_inline_comments(
             )
         if request.url.path.endswith("/pullRequests/17/threads"):
             assert payload == {
-                "comments": [{"parentCommentId": 0, "content": "Fix this line", "commentType": "text"}],
+                "comments": [
+                    {"parentCommentId": 0, "content": "Fix this line", "commentType": "text"}
+                ],
                 "status": "active",
                 "threadContext": {
                     "filePath": "src/app.py",
@@ -393,7 +402,9 @@ def test_azure_publish_provider_maps_left_side_inline_comment(
     def handler(request: httpx.Request) -> httpx.Response:
         payload = json.loads(request.content.decode("utf-8"))
         assert payload == {
-            "comments": [{"parentCommentId": 0, "content": "Removed path is wrong", "commentType": "text"}],
+            "comments": [
+                {"parentCommentId": 0, "content": "Removed path is wrong", "commentType": "text"}
+            ],
             "status": "active",
             "threadContext": {
                 "filePath": "src/app.py",

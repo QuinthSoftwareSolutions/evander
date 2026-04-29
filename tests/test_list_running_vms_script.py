@@ -32,7 +32,9 @@ def _prepare_script(tmp_path: Path) -> tuple[Path, Path]:
     agent_lib_path = lib_dir / "agent_status.sh"
     agent_lib_path.write_text(source_agent_lib.read_text(encoding="utf-8"), encoding="utf-8")
     guest_ssh_lib_path = lib_dir / "guest_ssh.sh"
-    guest_ssh_lib_path.write_text(source_guest_ssh_lib.read_text(encoding="utf-8"), encoding="utf-8")
+    guest_ssh_lib_path.write_text(
+        source_guest_ssh_lib.read_text(encoding="utf-8"), encoding="utf-8"
+    )
 
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()

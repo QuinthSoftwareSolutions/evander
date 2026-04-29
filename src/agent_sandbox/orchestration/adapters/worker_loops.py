@@ -84,7 +84,9 @@ class EffectEventFetcherAdapter:
 
 
 class EffectDependencyResolverAdapter:
-    def __init__(self, *, dependency_factory: Callable[[TriggerQueueRecord], EffectLoopDependency]) -> None:
+    def __init__(
+        self, *, dependency_factory: Callable[[TriggerQueueRecord], EffectLoopDependency]
+    ) -> None:
         self._dependency_factory = dependency_factory
 
     def resolve(self, event: TriggerQueueRecord) -> list[EffectLoopDependency]:

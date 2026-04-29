@@ -10,7 +10,9 @@ from agent_sandbox.directory_config import (
 from agent_sandbox.directories import DirectoryService, DirectoryStore
 
 
-def test_directory_config_resolver_merges_ancestor_overlays_and_tracks_provenance(tmp_path: Path) -> None:
+def test_directory_config_resolver_merges_ancestor_overlays_and_tracks_provenance(
+    tmp_path: Path,
+) -> None:
     store = DirectoryStore(tmp_path / "directories.json")
     service = DirectoryService(store)
     resolver = DirectoryConfigResolver(service)
@@ -91,12 +93,16 @@ def test_directory_config_resolver_merges_ancestor_overlays_and_tracks_provenanc
     assert resolution.provenance["optional"].directory_path == "root/team"
 
 
-def test_directory_config_resolver_validates_gateway_domain_without_changing_consumers(tmp_path: Path) -> None:
+def test_directory_config_resolver_validates_gateway_domain_without_changing_consumers(
+    tmp_path: Path,
+) -> None:
     store = DirectoryStore(tmp_path / "directories.json")
     service = DirectoryService(store)
     resolver = DirectoryConfigResolver(
         service,
-        base_gateway_config=GatewayConfig.model_validate({"runtime_dir": str(tmp_path / "runtime")}),
+        base_gateway_config=GatewayConfig.model_validate(
+            {"runtime_dir": str(tmp_path / "runtime")}
+        ),
     )
 
     team = service.create(parent="root", name="team")
@@ -124,12 +130,16 @@ def test_directory_config_resolver_validates_gateway_domain_without_changing_con
     assert resolution.validation_errors == []
 
 
-def test_directory_config_resolver_reports_validation_errors_for_invalid_gateway_override(tmp_path: Path) -> None:
+def test_directory_config_resolver_reports_validation_errors_for_invalid_gateway_override(
+    tmp_path: Path,
+) -> None:
     store = DirectoryStore(tmp_path / "directories.json")
     service = DirectoryService(store)
     resolver = DirectoryConfigResolver(
         service,
-        base_gateway_config=GatewayConfig.model_validate({"runtime_dir": str(tmp_path / "runtime")}),
+        base_gateway_config=GatewayConfig.model_validate(
+            {"runtime_dir": str(tmp_path / "runtime")}
+        ),
     )
 
     team = service.create(parent="root", name="team")
@@ -171,7 +181,8 @@ def test_directory_config_store_validates_delegated_teams_provider_fields(tmp_pa
             "teams_backend": "delegated_graph_api",
             "teams_delegated_client_id": "client-123",
             "teams_delegated_identity_id": "team-a",
-            "teams_delegated_credential_store_path": runtime_dir / "teams-delegated-credentials.json",
+            "teams_delegated_credential_store_path": runtime_dir
+            / "teams-delegated-credentials.json",
         },
     )
 
@@ -194,14 +205,15 @@ def test_directory_config_store_validates_delegated_teams_provider_fields(tmp_pa
     assert resolution.effective_config["teams_backend"] == "delegated_graph_api"
     assert resolution.effective_config["teams_delegated_client_id"] == "client-123"
     assert resolution.effective_config["teams_delegated_identity_id"] == "team-a"
-    assert (
-        resolution.effective_config["teams_delegated_credential_store_path"]
-        == str(runtime_dir / "teams-delegated-credentials.json")
+    assert resolution.effective_config["teams_delegated_credential_store_path"] == str(
+        runtime_dir / "teams-delegated-credentials.json"
     )
     assert resolution.validation_errors == []
 
 
-def test_directory_config_store_writes_validated_domain_files_and_updates_directory_metadata(tmp_path: Path) -> None:
+def test_directory_config_store_writes_validated_domain_files_and_updates_directory_metadata(
+    tmp_path: Path,
+) -> None:
     runtime_dir = tmp_path / "runtime"
     store = DirectoryStore(runtime_dir / "directories.json")
     service = DirectoryService(store)
@@ -232,7 +244,9 @@ def test_directory_config_store_writes_validated_domain_files_and_updates_direct
     assert stored_directory.metadata["directory_config"]["domains"] == ["policy"]
 
 
-def test_directory_config_store_deletes_empty_domain_payload_and_clears_metadata(tmp_path: Path) -> None:
+def test_directory_config_store_deletes_empty_domain_payload_and_clears_metadata(
+    tmp_path: Path,
+) -> None:
     runtime_dir = tmp_path / "runtime"
     store = DirectoryStore(runtime_dir / "directories.json")
     service = DirectoryService(store)
@@ -302,10 +316,15 @@ def test_directory_config_resolver_prefers_file_backed_domain_overlays(tmp_path:
         "default_session_ttl_seconds": 90,
         "email_send_enabled": True,
     }
-    assert [layer.directory_path for layer in resolution.applied_layers] == ["root/team", "root/team/child"]
+    assert [layer.directory_path for layer in resolution.applied_layers] == [
+        "root/team",
+        "root/team/child",
+    ]
 
 
-def test_directory_config_resolver_applies_root_overlay_as_first_directory_layer(tmp_path: Path) -> None:
+def test_directory_config_resolver_applies_root_overlay_as_first_directory_layer(
+    tmp_path: Path,
+) -> None:
     runtime_dir = tmp_path / "runtime"
     store = DirectoryStore(runtime_dir / "directories.json")
     service = DirectoryService(store)
@@ -327,7 +346,9 @@ def test_directory_config_resolver_applies_root_overlay_as_first_directory_layer
     assert resolution.provenance["default_session_ttl_seconds"].directory_path == "root"
 
 
-def test_directory_config_resolver_treats_root_as_top_of_chain_without_implicit_base(tmp_path: Path) -> None:
+def test_directory_config_resolver_treats_root_as_top_of_chain_without_implicit_base(
+    tmp_path: Path,
+) -> None:
     runtime_dir = tmp_path / "runtime"
     store = DirectoryStore(runtime_dir / "directories.json")
     service = DirectoryService(store)
@@ -343,7 +364,9 @@ def test_directory_config_resolver_treats_root_as_top_of_chain_without_implicit_
     assert resolution.provenance["default_session_ttl_seconds"].directory_path == "root"
 
 
-def test_directory_config_resolver_uses_explicit_merge_rules_for_maps_lists_scalars_and_nulls(tmp_path: Path) -> None:
+def test_directory_config_resolver_uses_explicit_merge_rules_for_maps_lists_scalars_and_nulls(
+    tmp_path: Path,
+) -> None:
     store = DirectoryStore(tmp_path / "directories.json")
     service = DirectoryService(store)
     resolver = DirectoryConfigResolver(service)
@@ -430,7 +453,9 @@ def test_directory_config_resolver_uses_explicit_merge_rules_for_maps_lists_scal
     assert resolution.provenance["nullable"].directory_path == "root/team/child"
 
 
-def test_directory_config_store_validates_ado_worker_and_issue_setup_domains(tmp_path: Path) -> None:
+def test_directory_config_store_validates_ado_worker_and_issue_setup_domains(
+    tmp_path: Path,
+) -> None:
     runtime_dir = tmp_path / "runtime"
     store = DirectoryStore(runtime_dir / "directories.json")
     service = DirectoryService(store)
@@ -474,7 +499,9 @@ def test_directory_config_store_validates_ado_worker_and_issue_setup_domains(tmp
     }
 
 
-def test_directory_config_store_validates_automation_domain_and_updates_metadata(tmp_path: Path) -> None:
+def test_directory_config_store_validates_automation_domain_and_updates_metadata(
+    tmp_path: Path,
+) -> None:
     runtime_dir = tmp_path / "runtime"
     store = DirectoryStore(runtime_dir / "directories.json")
     service = DirectoryService(store)
@@ -507,7 +534,9 @@ def test_directory_config_store_validates_automation_domain_and_updates_metadata
     assert stored_directory.metadata["directory_config"]["domains"] == ["automation"]
 
 
-def test_directory_config_resolver_reads_file_backed_automation_domain_without_metadata(tmp_path: Path) -> None:
+def test_directory_config_resolver_reads_file_backed_automation_domain_without_metadata(
+    tmp_path: Path,
+) -> None:
     runtime_dir = tmp_path / "runtime"
     store = DirectoryStore(runtime_dir / "directories.json")
     service = DirectoryService(store)
@@ -582,18 +611,30 @@ def test_directory_config_store_validates_pr_template_domain(tmp_path: Path) -> 
     team = service.create(parent="root", name="team")
     child = service.create(parent=team.id, name="child")
 
-    config_store.write(team.path, domain="pr_template", payload={"pr_template_markdown": "Team template"})
-    config_store.write(child.path, domain="pr_template", payload={"pr_template_markdown": "Child template"})
+    config_store.write(
+        team.path, domain="pr_template", payload={"pr_template_markdown": "Team template"}
+    )
+    config_store.write(
+        child.path, domain="pr_template", payload={"pr_template_markdown": "Child template"}
+    )
 
-    assert config_store.read(team.path, domain="pr_template") == {"pr_template_markdown": "Team template"}
-    assert config_store.read(child.path, domain="pr_template") == {"pr_template_markdown": "Child template"}
+    assert config_store.read(team.path, domain="pr_template") == {
+        "pr_template_markdown": "Team template"
+    }
+    assert config_store.read(child.path, domain="pr_template") == {
+        "pr_template_markdown": "Child template"
+    }
 
     resolver = DirectoryConfigResolver(service, config_store=config_store)
-    resolution = resolver.resolve_domain(child.path, domain="pr_template", base_config={"pr_template_markdown": ""})
+    resolution = resolver.resolve_domain(
+        child.path, domain="pr_template", base_config={"pr_template_markdown": ""}
+    )
     assert resolution.effective_config == {"pr_template_markdown": "Child template"}
 
 
-def test_directory_config_resolver_inherits_ado_worker_and_issue_setup_overlays(tmp_path: Path) -> None:
+def test_directory_config_resolver_inherits_ado_worker_and_issue_setup_overlays(
+    tmp_path: Path,
+) -> None:
     runtime_dir = tmp_path / "runtime"
     store = DirectoryStore(runtime_dir / "directories.json")
     service = DirectoryService(store)
@@ -611,7 +652,12 @@ def test_directory_config_resolver_inherits_ado_worker_and_issue_setup_overlays(
     config_store.write(
         team.path,
         domain="issue_setup",
-        payload={"git_root": "/tmp/team-git", "git_host": "10.1.2.3", "git_user": "team-bot", "git_ssh_alias": "team"},
+        payload={
+            "git_root": "/tmp/team-git",
+            "git_host": "10.1.2.3",
+            "git_user": "team-bot",
+            "git_ssh_alias": "team",
+        },
     )
     config_store.write(child.path, domain="issue_setup", payload={"enable_guest_heartbeat": True})
 
@@ -636,7 +682,9 @@ def test_directory_config_resolver_inherits_ado_worker_and_issue_setup_overlays(
     assert issue_resolution.effective_config["enable_guest_heartbeat"] is True
 
 
-def test_directory_config_resolver_keeps_heartbeat_prompts_directory_scoped_only(tmp_path: Path) -> None:
+def test_directory_config_resolver_keeps_heartbeat_prompts_directory_scoped_only(
+    tmp_path: Path,
+) -> None:
     runtime_dir = tmp_path / "runtime"
     store = DirectoryStore(runtime_dir / "directories.json")
     service = DirectoryService(store)

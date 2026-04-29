@@ -18,26 +18,21 @@ class SpecialEventHandler(Protocol):
         graph: Any,
         phase: Literal["pre", "post"],
         source_node_exists: bool,
-    ) -> SpecialEventResult | None:
-        ...
+    ) -> SpecialEventResult | None: ...
 
-    def force_complete(self, *, worker: Any, dispatch_id: str) -> bool:
-        ...
+    def force_complete(self, *, worker: Any, dispatch_id: str) -> bool: ...
 
 
 class LifecycleReconciliationHook(Protocol):
-    def reconcile(self, *, worker: Any, graph: Any) -> int:
-        ...
+    def reconcile(self, *, worker: Any, graph: Any) -> int: ...
 
 
 class CompletionDispatchHook(Protocol):
-    def dispatch(self, *, worker: Any) -> int:
-        ...
+    def dispatch(self, *, worker: Any) -> int: ...
 
 
 class AgentRunStatusPort(Protocol):
-    def list_vm_summaries(self) -> list[Any]:
-        ...
+    def list_vm_summaries(self) -> list[Any]: ...
 
 
 class AgentPromptDispatchPort(Protocol):
@@ -50,8 +45,7 @@ class AgentPromptDispatchPort(Protocol):
         vm_user: str = "agent",
         dispatch_id: str | None = None,
         resume_thread_id: str | None = None,
-    ) -> Any:
-        ...
+    ) -> Any: ...
 
 
 class NoOpSpecialEventHandler:

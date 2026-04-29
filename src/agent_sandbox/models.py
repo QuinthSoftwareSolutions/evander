@@ -275,7 +275,9 @@ class DirectoryPath(BaseModel):
     @classmethod
     def normalize_segments(cls, value: object) -> tuple[str, ...]:
         if isinstance(value, str):
-            pieces = tuple(part for part in PurePosixPath(value.strip()).parts if part not in {"", "."})
+            pieces = tuple(
+                part for part in PurePosixPath(value.strip()).parts if part not in {"", "."}
+            )
             return pieces
         if isinstance(value, (list, tuple)):
             return tuple(str(part).strip() for part in value)
@@ -647,7 +649,9 @@ class PromptAgentRequest(BaseModel):
         has_target_vm = bool((self.target_vm_name or "").strip())
         has_target_session = bool((self.target_session_id or "").strip())
         if has_target_vm == has_target_session:
-            raise ValueError("exactly one target must be provided: target_vm_name or target_session_id")
+            raise ValueError(
+                "exactly one target must be provided: target_vm_name or target_session_id"
+            )
 
 
 class PromptAgentResponse(BaseModel):
@@ -1010,7 +1014,11 @@ class AdoBacklogQueryRequest(BaseModel):
         normalized: list[AdoBacklogItemType] = []
         seen: set[AdoBacklogItemType] = set()
         for item in value:
-            resolved = item if isinstance(item, AdoBacklogItemType) else AdoBacklogItemType.from_raw(str(item))
+            resolved = (
+                item
+                if isinstance(item, AdoBacklogItemType)
+                else AdoBacklogItemType.from_raw(str(item))
+            )
             if resolved in seen:
                 continue
             seen.add(resolved)
@@ -1094,7 +1102,11 @@ class AdoCurrentIterationBacklogRequest(BaseModel):
         normalized: list[AdoBacklogItemType] = []
         seen: set[AdoBacklogItemType] = set()
         for item in value:
-            resolved = item if isinstance(item, AdoBacklogItemType) else AdoBacklogItemType.from_raw(str(item))
+            resolved = (
+                item
+                if isinstance(item, AdoBacklogItemType)
+                else AdoBacklogItemType.from_raw(str(item))
+            )
             if resolved in seen:
                 continue
             seen.add(resolved)

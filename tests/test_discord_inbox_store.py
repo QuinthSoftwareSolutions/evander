@@ -4,7 +4,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from agent_sandbox.discord_inbox_store import DiscordInboxStore
+from agent_sandbox.messaging.discord_inbox_store import DiscordInboxStore
 from agent_sandbox.models import DiscordMessageEnvelope
 
 
@@ -49,7 +49,9 @@ def test_discord_inbox_store_dedupes_messages(tmp_path: Path) -> None:
     assert store.add_message_if_new(envelope) is True
     assert store.add_message_if_new(envelope) is False
 
-    payload = json.loads((tmp_path / "runtime" / "discord-inbox-store.json").read_text(encoding="utf-8"))
+    payload = json.loads(
+        (tmp_path / "runtime" / "discord-inbox-store.json").read_text(encoding="utf-8")
+    )
     assert list(payload["messages"].keys()) == ["msg-1"]
 
 
@@ -87,7 +89,9 @@ def test_discord_inbox_store_reports_unread_messages_per_session(tmp_path: Path)
     assert store.has_unread_messages(session_id="session-1", channel_ids=["chan-1"]) is False
 
 
-def test_discord_inbox_store_lists_unread_messages_and_advances_session_cursors(tmp_path: Path) -> None:
+def test_discord_inbox_store_lists_unread_messages_and_advances_session_cursors(
+    tmp_path: Path,
+) -> None:
     store = DiscordInboxStore(tmp_path / "runtime" / "discord-inbox-store.json")
     assert store.add_message_if_new(
         _message("msg-1", created_at=datetime(2026, 3, 21, 0, 0, 1, tzinfo=timezone.utc))
@@ -103,7 +107,9 @@ def test_discord_inbox_store_lists_unread_messages_and_advances_session_cursors(
     assert store.get_session_cursor("session-1", "chan-1") == "2026-03-21T00:00:01Z"
 
 
-def test_discord_inbox_store_compacts_old_messages_once_channel_cursor_has_advanced(tmp_path: Path) -> None:
+def test_discord_inbox_store_compacts_old_messages_once_channel_cursor_has_advanced(
+    tmp_path: Path,
+) -> None:
     path = tmp_path / "runtime" / "discord-inbox-store.json"
     store = DiscordInboxStore(path)
     old_message = _message(
@@ -118,7 +124,9 @@ def test_discord_inbox_store_compacts_old_messages_once_channel_cursor_has_advan
     assert payload["messages"] == {}
 
 
-def test_discord_inbox_store_keeps_recent_messages_even_when_channel_cursor_has_advanced(tmp_path: Path) -> None:
+def test_discord_inbox_store_keeps_recent_messages_even_when_channel_cursor_has_advanced(
+    tmp_path: Path,
+) -> None:
     path = tmp_path / "runtime" / "discord-inbox-store.json"
     store = DiscordInboxStore(path)
     recent_message = _message(

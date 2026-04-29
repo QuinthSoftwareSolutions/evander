@@ -4,7 +4,11 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from agent_sandbox.events.models import QueryDefinitionDiscriminated, WorkflowNodeEnvelope, materialize_node_definition
+from agent_sandbox.events.models import (
+    QueryDefinitionDiscriminated,
+    WorkflowNodeEnvelope,
+    materialize_node_definition,
+)
 from agent_sandbox.provider_runtime.contracts import (
     GitPrNoteReader,
     IssueReader,
@@ -12,7 +16,7 @@ from agent_sandbox.provider_runtime.contracts import (
     SessionContextReader,
     VmInventory,
 )
-from agent_sandbox.workflow_validation import NodeCapability, WorkflowValidationDiagnostic
+from agent_sandbox.workflow.validation import NodeCapability, WorkflowValidationDiagnostic
 
 
 @dataclass(frozen=True)
@@ -27,18 +31,17 @@ class QueryRuntimeContext(ProviderRuntimeBase):
 
 class QueryProvider(Protocol):
     @classmethod
-    def validate_definition(cls, query_definition: QueryDefinitionDiscriminated) -> QueryDefinitionDiscriminated:
-        ...
+    def validate_definition(
+        cls, query_definition: QueryDefinitionDiscriminated
+    ) -> QueryDefinitionDiscriminated: ...
 
     def initialize(
         self,
         query_definition: QueryDefinitionDiscriminated,
         runtime_context: QueryRuntimeContext,
-    ) -> None:
-        ...
+    ) -> None: ...
 
-    def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
-        ...
+    def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]: ...
 
 
 class QueryProviderBase:
@@ -61,8 +64,11 @@ class QueryProviderBase:
     def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
         del resolved_config
         return {}
+
     @classmethod
-    def validate_definition(cls, query_definition: QueryDefinitionDiscriminated) -> QueryDefinitionDiscriminated:
+    def validate_definition(
+        cls, query_definition: QueryDefinitionDiscriminated
+    ) -> QueryDefinitionDiscriminated:
         if type(query_definition) is not WorkflowNodeEnvelope:
             return query_definition
         return materialize_node_definition(query_definition)
@@ -80,4 +86,5 @@ class QueryProviderBase:
     ) -> list[WorkflowValidationDiagnostic]:
         del node
         return []
+
     capability = NodeCapability(min_inbound=1, max_inbound=1)

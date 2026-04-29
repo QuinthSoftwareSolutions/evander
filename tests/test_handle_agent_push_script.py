@@ -151,7 +151,9 @@ def _run_handle_push(
     handle_script.write_text(source_script.read_text(encoding="utf-8"), encoding="utf-8")
     os.chmod(handle_script, 0o755)
     runtime_config_source = root / "scripts" / "lib" / "runtime_config.sh"
-    (lib_dir / "runtime_config.sh").write_text(runtime_config_source.read_text(encoding="utf-8"), encoding="utf-8")
+    (lib_dir / "runtime_config.sh").write_text(
+        runtime_config_source.read_text(encoding="utf-8"), encoding="utf-8"
+    )
     os.chmod(lib_dir / "runtime_config.sh", 0o755)
 
     args_log = tmp_path / "open-agent-pr-args.log"
@@ -167,7 +169,11 @@ def _run_handle_push(
     bare_repo.mkdir()
 
     runtime_dir = sandbox_root / "runtime"
-    if directory_template is not None or session_directory_path is not None or ado_worker_config is not None:
+    if (
+        directory_template is not None
+        or session_directory_path is not None
+        or ado_worker_config is not None
+    ):
         runtime_dir.mkdir(parents=True, exist_ok=True)
         if session_directory_path is not None:
             (runtime_dir / "sessions.json").write_text(
@@ -255,7 +261,9 @@ def _extract_body_file_path(args_log: Path) -> str | None:
 
 
 def _latest_invocation(args_log: Path) -> list[str]:
-    entries = [line.strip() for line in args_log.read_text(encoding="utf-8").splitlines() if line.strip()]
+    entries = [
+        line.strip() for line in args_log.read_text(encoding="utf-8").splitlines() if line.strip()
+    ]
     arg_lines = [line for line in entries if not line.startswith("AZURE_DEVOPS_PR_PAT=")]
     assert arg_lines, "open_agent_pr.sh was not invoked"
     return arg_lines[-1].split()
@@ -361,7 +369,9 @@ def test_handle_agent_push_loads_repo_secrets_env(tmp_path: Path) -> None:
     handle_script.write_text(source_script.read_text(encoding="utf-8"), encoding="utf-8")
     os.chmod(handle_script, 0o755)
     runtime_config_source = root / "scripts" / "lib" / "runtime_config.sh"
-    (lib_dir / "runtime_config.sh").write_text(runtime_config_source.read_text(encoding="utf-8"), encoding="utf-8")
+    (lib_dir / "runtime_config.sh").write_text(
+        runtime_config_source.read_text(encoding="utf-8"), encoding="utf-8"
+    )
     os.chmod(lib_dir / "runtime_config.sh", 0o755)
 
     args_log = tmp_path / "open-agent-pr-args.log"
@@ -442,7 +452,9 @@ def test_handle_agent_push_session_metadata_overrides_directory_settings(tmp_pat
         fixed_body=None,
         session_directory_path="root/team",
         ado_worker_config={"create_prs_automatically": False, "create_prs_as_draft": False},
-        session_metadata={"pr_automation": {"create_prs_automatically": True, "create_prs_as_draft": True}},
+        session_metadata={
+            "pr_automation": {"create_prs_automatically": True, "create_prs_as_draft": True}
+        },
     )
 
     invocation = _latest_invocation(args_log)
@@ -450,7 +462,9 @@ def test_handle_agent_push_session_metadata_overrides_directory_settings(tmp_pat
     assert "--draft" in invocation
 
 
-def test_handle_agent_push_unset_global_override_does_not_disable_directory_settings(tmp_path: Path) -> None:
+def test_handle_agent_push_unset_global_override_does_not_disable_directory_settings(
+    tmp_path: Path,
+) -> None:
     _, args_log, _ = _run_handle_push(
         tmp_path,
         note_content="Agent note body",

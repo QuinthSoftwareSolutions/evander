@@ -156,9 +156,7 @@ def test_http_url_fields_are_trimmed_and_trailing_slash_is_removed(
         ("nuget_azure_feed_base_url", ""),
     ],
 )
-def test_http_url_fields_reject_invalid_values_with_field_name(
-    field_name: str, value: str
-) -> None:
+def test_http_url_fields_reject_invalid_values_with_field_name(field_name: str, value: str) -> None:
     with pytest.raises(ValueError, match=field_name):
         GatewayConfig.model_validate({field_name: value})
 
@@ -188,12 +186,18 @@ def test_host_heartbeat_lock_path_follows_runtime_dir_default() -> None:
 
 def test_host_heartbeat_wake_state_path_follows_runtime_dir_default() -> None:
     config = GatewayConfig.model_validate({"runtime_dir": "/tmp/agent-sandbox-runtime"})
-    assert str(config.host_heartbeat_wake_state_path) == "/tmp/agent-sandbox-runtime/host-heartbeat-wake-state.json"
+    assert (
+        str(config.host_heartbeat_wake_state_path)
+        == "/tmp/agent-sandbox-runtime/host-heartbeat-wake-state.json"
+    )
 
 
 def test_host_agent_control_state_path_follows_runtime_dir_default() -> None:
     config = GatewayConfig.model_validate({"runtime_dir": "/tmp/agent-sandbox-runtime"})
-    assert str(config.host_agent_control_state_path) == "/tmp/agent-sandbox-runtime/host-agent-control-state.json"
+    assert (
+        str(config.host_agent_control_state_path)
+        == "/tmp/agent-sandbox-runtime/host-agent-control-state.json"
+    )
 
 
 def test_host_heartbeat_poll_interval_must_be_positive() -> None:
@@ -202,9 +206,14 @@ def test_host_heartbeat_poll_interval_must_be_positive() -> None:
 
 
 def test_discord_wake_worker_global_config_defaults_follow_runtime_dir() -> None:
-    config = DiscordWakeWorkerGlobalConfig.model_validate({"runtime_dir": "/tmp/agent-sandbox-runtime"})
+    config = DiscordWakeWorkerGlobalConfig.model_validate(
+        {"runtime_dir": "/tmp/agent-sandbox-runtime"}
+    )
     assert str(config.lock_path) == "/tmp/agent-sandbox-runtime/discord-wake.lock"
-    assert str(config.session_cooldown_path) == "/tmp/agent-sandbox-runtime/discord-wake-session-cooldown.json"
+    assert (
+        str(config.session_cooldown_path)
+        == "/tmp/agent-sandbox-runtime/discord-wake-session-cooldown.json"
+    )
     assert str(config.wake_state_path) == "/tmp/agent-sandbox-runtime/discord-wake-state.json"
     assert config.directories == []
 
@@ -220,9 +229,14 @@ def test_discord_wake_worker_global_config_directory_paths_are_normalized() -> N
 
 
 def test_scheduled_wake_worker_global_config_defaults_follow_runtime_dir() -> None:
-    config = ScheduledWakeWorkerGlobalConfig.model_validate({"runtime_dir": "/tmp/agent-sandbox-runtime"})
+    config = ScheduledWakeWorkerGlobalConfig.model_validate(
+        {"runtime_dir": "/tmp/agent-sandbox-runtime"}
+    )
     assert str(config.lock_path) == "/tmp/agent-sandbox-runtime/scheduled-wake.lock"
-    assert str(config.session_cooldown_path) == "/tmp/agent-sandbox-runtime/scheduled-wake-session-cooldown.json"
+    assert (
+        str(config.session_cooldown_path)
+        == "/tmp/agent-sandbox-runtime/scheduled-wake-session-cooldown.json"
+    )
     assert str(config.wake_state_path) == "/tmp/agent-sandbox-runtime/scheduled-wake-state.json"
     assert config.directories == []
 
@@ -238,7 +252,9 @@ def test_scheduled_wake_worker_global_config_directory_paths_are_normalized() ->
 
 
 def test_discord_ingest_worker_global_config_defaults_follow_runtime_dir() -> None:
-    config = DiscordIngestWorkerGlobalConfig.model_validate({"runtime_dir": "/tmp/agent-sandbox-runtime"})
+    config = DiscordIngestWorkerGlobalConfig.model_validate(
+        {"runtime_dir": "/tmp/agent-sandbox-runtime"}
+    )
     assert str(config.lock_path) == "/tmp/agent-sandbox-runtime/discord-ingest.lock"
     assert config.directories == []
 
@@ -254,7 +270,9 @@ def test_discord_ingest_worker_global_config_directory_paths_are_normalized() ->
 
 
 def test_teams_ingest_worker_global_config_defaults_follow_runtime_dir() -> None:
-    config = TeamsIngestWorkerGlobalConfig.model_validate({"runtime_dir": "/tmp/agent-sandbox-runtime"})
+    config = TeamsIngestWorkerGlobalConfig.model_validate(
+        {"runtime_dir": "/tmp/agent-sandbox-runtime"}
+    )
     assert str(config.lock_path) == "/tmp/agent-sandbox-runtime/teams-ingest.lock"
     assert config.directories == []
 
@@ -314,7 +332,10 @@ def test_trigger_orchestrator_worker_global_config_defaults_follow_runtime_dir()
         str(config.event_queue_cursor_store_path)
         == "/tmp/agent-sandbox-runtime/trigger-orchestrator-cursors.json"
     )
-    assert str(config.workflow_event_journal_path) == "/tmp/agent-sandbox-runtime/workflow-events.jsonl"
+    assert (
+        str(config.workflow_event_journal_path)
+        == "/tmp/agent-sandbox-runtime/workflow-events.jsonl"
+    )
     assert (
         str(config.gate_execution_store_path)
         == "/tmp/agent-sandbox-runtime/gate-orchestrator-executions.json"
@@ -529,7 +550,9 @@ def test_trigger_orchestrator_await_agent_gate_accepts_completion_trigger_refere
     assert config.gates[0].type == "gate:await-agent"
 
 
-def test_trigger_orchestrator_await_agent_gate_accepts_linear_flow_without_completion_trigger() -> None:
+def test_trigger_orchestrator_await_agent_gate_accepts_linear_flow_without_completion_trigger() -> (
+    None
+):
     config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
         {
             "runtime_dir": "/tmp/agent-sandbox-runtime",
@@ -710,8 +733,6 @@ def test_trigger_orchestrator_worker_global_config_accepts_discriminated_trigger
     assert config.triggers[0].type == "trigger:cron"
 
 
-
-
 def test_trigger_orchestrator_worker_global_config_accepts_effects() -> None:
     config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
         {
@@ -765,7 +786,9 @@ def test_trigger_orchestrator_worker_global_config_accepts_queries() -> None:
     assert config.queries[0].type == "query:vm:run-state"
 
 
-def test_trigger_orchestrator_worker_global_config_accepts_multiple_effect_edges_from_one_source() -> None:
+def test_trigger_orchestrator_worker_global_config_accepts_multiple_effect_edges_from_one_source() -> (
+    None
+):
     config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
         {
             "triggers": [
@@ -805,7 +828,10 @@ def test_trigger_orchestrator_worker_global_config_accepts_multiple_effect_edges
 
 
 def test_trigger_orchestrator_worker_global_config_rejects_duplicate_ids_across_graph() -> None:
-    with pytest.raises(ValueError, match="Node IDs must be globally unique across triggers, gates, effects, and queries: node-1"):
+    with pytest.raises(
+        ValueError,
+        match="Node IDs must be globally unique across triggers, gates, effects, and queries: node-1",
+    ):
         TriggerOrchestratorWorkerGlobalConfig.model_validate(
             {
                 "triggers": [
@@ -836,7 +862,10 @@ def test_trigger_orchestrator_worker_global_config_rejects_duplicate_ids_across_
 
 
 def test_trigger_orchestrator_worker_global_config_rejects_duplicate_trigger_ids() -> None:
-    with pytest.raises(ValueError, match="Node IDs must be globally unique across triggers, gates, effects, and queries: cron-15m"):
+    with pytest.raises(
+        ValueError,
+        match="Node IDs must be globally unique across triggers, gates, effects, and queries: cron-15m",
+    ):
         TriggerOrchestratorWorkerGlobalConfig.model_validate(
             {
                 "triggers": [
@@ -858,7 +887,10 @@ def test_trigger_orchestrator_worker_global_config_rejects_duplicate_trigger_ids
 
 
 def test_trigger_orchestrator_worker_global_config_rejects_duplicate_effect_ids() -> None:
-    with pytest.raises(ValueError, match="Node IDs must be globally unique across triggers, gates, effects, and queries: effect-dup"):
+    with pytest.raises(
+        ValueError,
+        match="Node IDs must be globally unique across triggers, gates, effects, and queries: effect-dup",
+    ):
         TriggerOrchestratorWorkerGlobalConfig.model_validate(
             {
                 "triggers": [
@@ -888,7 +920,9 @@ def test_trigger_orchestrator_worker_global_config_rejects_duplicate_effect_ids(
         )
 
 
-def test_trigger_orchestrator_worker_global_config_defaults_provider_profile_to_agent_default() -> None:
+def test_trigger_orchestrator_worker_global_config_defaults_provider_profile_to_agent_default() -> (
+    None
+):
     config = TriggerOrchestratorWorkerGlobalConfig.model_validate({})
 
     assert config.provider_profile == "profiles/agent-default"
@@ -912,7 +946,9 @@ def test_trigger_orchestrator_worker_global_config_rejects_unknown_provider_prof
 
 
 def test_trigger_orchestrator_worker_global_config_rejects_unknown_effect_edge_source() -> None:
-    with pytest.raises(ValueError, match="Edge endpoints must reference existing node IDs: missing-id"):
+    with pytest.raises(
+        ValueError, match="Edge endpoints must reference existing node IDs: missing-id"
+    ):
         TriggerOrchestratorWorkerGlobalConfig.model_validate(
             {
                 "triggers": [

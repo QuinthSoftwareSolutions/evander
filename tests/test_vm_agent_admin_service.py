@@ -7,9 +7,9 @@ from typing import Any
 
 import pytest
 
-from agent_sandbox.admin_service import AdminService
-from agent_sandbox import admin_service as admin_service_module
-from agent_sandbox.admin_services import VmAgentAdminDependencies, VmAgentAdminService
+from agent_sandbox.admin.service import AdminService
+from agent_sandbox.admin import service as admin_service_module
+from agent_sandbox.admin.services import VmAgentAdminDependencies, VmAgentAdminService
 
 
 @dataclass
@@ -199,7 +199,11 @@ class FakeAdmin:
         self.runtime = SimpleNamespace(
             sessions=session_repository,
             session_repository=session_repository,
-            policy_config=SimpleNamespace(resolve_for_directory=lambda directory_path: SimpleNamespace(directory_path=directory_path)),
+            policy_config=SimpleNamespace(
+                resolve_for_directory=lambda directory_path: SimpleNamespace(
+                    directory_path=directory_path
+                )
+            ),
         )
         self.config = SimpleNamespace(
             host_agent_control_state_path=Path("/tmp/host-agent-state"),
@@ -261,15 +265,25 @@ def _vm_agent_dependencies(admin: FakeAdmin) -> VmAgentAdminDependencies:
         worker_admin=admin.worker_admin,
         get_privileged_helper=lambda: admin._privileged_helper,
         get_use_privileged_helper=lambda: admin.use_privileged_helper,
-        normalize_directory_path=lambda directory_path: admin._normalize_directory_path(directory_path),
+        normalize_directory_path=lambda directory_path: admin._normalize_directory_path(
+            directory_path
+        ),
         read_worker_global_config=lambda worker_id: admin._read_worker_global_config(worker_id),
-        resolve_agent_model_for_session=lambda session_or_id: admin._resolve_agent_model_for_session(session_or_id),
+        resolve_agent_model_for_session=lambda session_or_id: (
+            admin._resolve_agent_model_for_session(session_or_id)
+        ),
         resolve_vm_defaults=lambda directory_path: admin._resolve_vm_defaults(directory_path),
-        resolve_issue_setup=lambda directory_path, **kwargs: admin._resolve_issue_setup(directory_path, **kwargs),
-        resolve_local_issue_record=lambda issue_identifier: admin._resolve_local_issue_record(issue_identifier),
+        resolve_issue_setup=lambda directory_path, **kwargs: admin._resolve_issue_setup(
+            directory_path, **kwargs
+        ),
+        resolve_local_issue_record=lambda issue_identifier: admin._resolve_local_issue_record(
+            issue_identifier
+        ),
         resolve_local_issue_key=lambda identifier: admin._resolve_local_issue_key(identifier),
         resolve_repo_source=lambda repo_source: admin._resolve_repo_source(repo_source),
-        sync_repo_into_bare_remote=lambda *args, **kwargs: admin._sync_repo_into_bare_remote(*args, **kwargs),
+        sync_repo_into_bare_remote=lambda *args, **kwargs: admin._sync_repo_into_bare_remote(
+            *args, **kwargs
+        ),
         clone_repo_into_vm=lambda **kwargs: admin._clone_repo_into_vm(**kwargs),
     )
 
@@ -278,110 +292,170 @@ def test_admin_service_delegates_vm_methods_to_vm_agent_service() -> None:
     admin = object.__new__(AdminService)
     admin.vm_agent_admin = FakeVmAgentService()
 
-    assert admin.list_vms(include_inactive=False, omit_state=True, vm_user="root", directory_path="root/team", direct_only=True) == "list_vms-result"
-    assert admin.get_agent_log_snapshot("vm-1", lines=12, repo_name="repo-a", vm_user="agent") == "get_agent_log_snapshot-result"
+    assert (
+        admin.list_vms(
+            include_inactive=False,
+            omit_state=True,
+            vm_user="root",
+            directory_path="root/team",
+            direct_only=True,
+        )
+        == "list_vms-result"
+    )
+    assert (
+        admin.get_agent_log_snapshot("vm-1", lines=12, repo_name="repo-a", vm_user="agent")
+        == "get_agent_log_snapshot-result"
+    )
     assert admin.start_vm("vm-2") == "start_vm-result"
     assert admin.shutdown_vm("vm-3", timeout_seconds=10) == "shutdown_vm-result"
     assert admin.enable_agent("vm-4", vm_user="service") == "enable_agent-result"
     assert admin.disable_agent("vm-5", vm_user="service") == "disable_agent-result"
     assert admin.kill_agent("vm-6", 1234, vm_user="service") == "kill_agent-result"
-    assert admin.resume_agent(
-        "vm-7",
-        "prompt text",
-        model="gpt-5",
-        vm_user="service",
-        dispatch_id="dispatch-1",
-        resume_thread_id="thread-1",
-        resume_mode="same_context",
-    ) == "resume_agent-result"
-    assert admin.vm_exec(
-        "vm-8",
-        command=["bash", "-lc", "echo hi"],
-        vm_user="service",
-        working_directory="/work",
-        environment={"X": "1"},
-        stdin="input",
-        timeout_seconds=4.5,
-        check=False,
-    ) == "vm_exec-result"
-    assert admin.vm_copy_files("vm-9", files=[{"destination_path": "/tmp/a", "content": "x"}], vm_user="service") == "vm_copy_files-result"
-    assert admin.vm_delete_files("vm-10", paths=["/tmp/a"], vm_user="service", recursive=True, missing_ok=False) == "vm_delete_files-result"
-    assert admin.create_issue_vm(
-        issue="1",
-        session_id="session-1",
-        model="gpt-5",
-        vm_user="service",
-        ttl_hours=24,
-        discord_channels=["chan"],
-        email_mailboxes=["mailbox"],
-        email_folders=["folder"],
-        dotnet=True,
-        nuget="cache",
-        mssql=True,
-        mssql_init_root="/mssql",
-        playwright=True,
-        codex_skills=["skill"],
-        directory_path="root/team",
-    ) == "create_issue_vm-result"
-    assert admin.create_issue_vm_from_local_issue(
-        "local-1",
-        model="gpt-5",
-        vm_user="service",
-        dotnet=True,
-        nuget="cache",
-        mssql=True,
-        mssql_init_root="/mssql",
-        playwright=True,
-        codex_skills=["skill"],
-    ) == "create_issue_vm_from_local_issue-result"
-    assert admin.create_vm(
-        vm_name="vm-11",
-        session_id="session-2",
-        labels={"team": "infra"},
-        model="gpt-5",
-        vm_user="service",
-        ttl_hours=48,
-        allowed_tools=["tool-a"],
-        allowed_script_names=["script-a"],
-        discord_channels=["chan"],
-        email_mailboxes=["mailbox"],
-        email_folders=["folder"],
-        dotnet=True,
-        nuget=True,
-        mssql=True,
-        mssql_init_root="/mssql",
-        playwright=True,
-        codex_skills=["skill"],
-        directory_path="root/team",
-    ) == "create_vm-result"
-    assert admin.clone_repo_into_vm(
-        vm_name="vm-11",
-        session_id="session-2",
-        repo_source="/repo",
-        clone_branch="release/1.2",
-        vm_user="service",
-        directory_path="root/team",
-    ) == "clone_repo_into_vm-result"
-    assert admin.bootstrap_python_in_vm(
-        vm_name="vm-11",
-        session_id="session-2",
-        host_checkout="/repo",
-        target_dir="/home/agent/repo",
-        vm_user="service",
-    ) == "bootstrap_python_in_vm-result"
-    assert admin.bootstrap_frontend_in_vm(
-        vm_name="vm-11",
-        session_id="session-2",
-        host_checkout="/checkout",
-        install_roots=["/checkout/app"],
-        vm_user="service",
-    ) == "bootstrap_frontend_in_vm-result"
+    assert (
+        admin.resume_agent(
+            "vm-7",
+            "prompt text",
+            model="gpt-5",
+            vm_user="service",
+            dispatch_id="dispatch-1",
+            resume_thread_id="thread-1",
+            resume_mode="same_context",
+        )
+        == "resume_agent-result"
+    )
+    assert (
+        admin.vm_exec(
+            "vm-8",
+            command=["bash", "-lc", "echo hi"],
+            vm_user="service",
+            working_directory="/work",
+            environment={"X": "1"},
+            stdin="input",
+            timeout_seconds=4.5,
+            check=False,
+        )
+        == "vm_exec-result"
+    )
+    assert (
+        admin.vm_copy_files(
+            "vm-9", files=[{"destination_path": "/tmp/a", "content": "x"}], vm_user="service"
+        )
+        == "vm_copy_files-result"
+    )
+    assert (
+        admin.vm_delete_files(
+            "vm-10", paths=["/tmp/a"], vm_user="service", recursive=True, missing_ok=False
+        )
+        == "vm_delete_files-result"
+    )
+    assert (
+        admin.create_issue_vm(
+            issue="1",
+            session_id="session-1",
+            model="gpt-5",
+            vm_user="service",
+            ttl_hours=24,
+            discord_channels=["chan"],
+            email_mailboxes=["mailbox"],
+            email_folders=["folder"],
+            dotnet=True,
+            nuget="cache",
+            mssql=True,
+            mssql_init_root="/mssql",
+            playwright=True,
+            codex_skills=["skill"],
+            directory_path="root/team",
+        )
+        == "create_issue_vm-result"
+    )
+    assert (
+        admin.create_issue_vm_from_local_issue(
+            "local-1",
+            model="gpt-5",
+            vm_user="service",
+            dotnet=True,
+            nuget="cache",
+            mssql=True,
+            mssql_init_root="/mssql",
+            playwright=True,
+            codex_skills=["skill"],
+        )
+        == "create_issue_vm_from_local_issue-result"
+    )
+    assert (
+        admin.create_vm(
+            vm_name="vm-11",
+            session_id="session-2",
+            labels={"team": "infra"},
+            model="gpt-5",
+            vm_user="service",
+            ttl_hours=48,
+            allowed_tools=["tool-a"],
+            allowed_script_names=["script-a"],
+            discord_channels=["chan"],
+            email_mailboxes=["mailbox"],
+            email_folders=["folder"],
+            dotnet=True,
+            nuget=True,
+            mssql=True,
+            mssql_init_root="/mssql",
+            playwright=True,
+            codex_skills=["skill"],
+            directory_path="root/team",
+        )
+        == "create_vm-result"
+    )
+    assert (
+        admin.clone_repo_into_vm(
+            vm_name="vm-11",
+            session_id="session-2",
+            repo_source="/repo",
+            clone_branch="release/1.2",
+            vm_user="service",
+            directory_path="root/team",
+        )
+        == "clone_repo_into_vm-result"
+    )
+    assert (
+        admin.bootstrap_python_in_vm(
+            vm_name="vm-11",
+            session_id="session-2",
+            host_checkout="/repo",
+            target_dir="/home/agent/repo",
+            vm_user="service",
+        )
+        == "bootstrap_python_in_vm-result"
+    )
+    assert (
+        admin.bootstrap_frontend_in_vm(
+            vm_name="vm-11",
+            session_id="session-2",
+            host_checkout="/checkout",
+            install_roots=["/checkout/app"],
+            vm_user="service",
+        )
+        == "bootstrap_frontend_in_vm-result"
+    )
     assert admin.destroy_vm("vm-12") == "destroy_vm-result"
     assert admin.destroy_issue_vm("vm-13") == "destroy_issue_vm-result"
 
     assert admin.vm_agent_admin.calls == [
-        CallRecord("list_vms", (), {"include_inactive": False, "omit_state": True, "vm_user": "root", "directory_path": "root/team", "direct_only": True}),
-        CallRecord("get_agent_log_snapshot", ("vm-1",), {"lines": 12, "repo_name": "repo-a", "vm_user": "agent"}),
+        CallRecord(
+            "list_vms",
+            (),
+            {
+                "include_inactive": False,
+                "omit_state": True,
+                "vm_user": "root",
+                "directory_path": "root/team",
+                "direct_only": True,
+            },
+        ),
+        CallRecord(
+            "get_agent_log_snapshot",
+            ("vm-1",),
+            {"lines": 12, "repo_name": "repo-a", "vm_user": "agent"},
+        ),
         CallRecord("start_vm", ("vm-2",), {}),
         CallRecord("shutdown_vm", ("vm-3",), {"timeout_seconds": 10}),
         CallRecord("enable_agent", ("vm-4",), {"vm_user": "service"}),
@@ -411,8 +485,16 @@ def test_admin_service_delegates_vm_methods_to_vm_agent_service() -> None:
                 "check": False,
             },
         ),
-        CallRecord("vm_copy_files", ("vm-9",), {"files": [{"destination_path": "/tmp/a", "content": "x"}], "vm_user": "service"}),
-        CallRecord("vm_delete_files", ("vm-10",), {"paths": ["/tmp/a"], "vm_user": "service", "recursive": True, "missing_ok": False}),
+        CallRecord(
+            "vm_copy_files",
+            ("vm-9",),
+            {"files": [{"destination_path": "/tmp/a", "content": "x"}], "vm_user": "service"},
+        ),
+        CallRecord(
+            "vm_delete_files",
+            ("vm-10",),
+            {"paths": ["/tmp/a"], "vm_user": "service", "recursive": True, "missing_ok": False},
+        ),
         CallRecord(
             "create_issue_vm",
             (),
@@ -516,13 +598,18 @@ def test_admin_service_routes_phase_1_vm_operations_through_execution_backend() 
     backend = FakeExecutionBackend()
     admin._execution_backend_instance = backend
 
-    assert admin.get_agent_log_snapshot("vm-1", lines=12, repo_name="repo-a", vm_user="agent") == "log-result"
+    assert (
+        admin.get_agent_log_snapshot("vm-1", lines=12, repo_name="repo-a", vm_user="agent")
+        == "log-result"
+    )
     assert admin.start_vm("vm-2") == "start-result"
     assert admin.shutdown_vm("vm-3", timeout_seconds=10) == "stop-result"
     assert admin.destroy_vm("vm-4") == "destroy-result"
 
     assert backend.calls == [
-        CallRecord("get_log_snapshot", ("vm-1",), {"lines": 12, "repo_name": "repo-a", "vm_user": "agent"}),
+        CallRecord(
+            "get_log_snapshot", ("vm-1",), {"lines": 12, "repo_name": "repo-a", "vm_user": "agent"}
+        ),
         CallRecord("start", ("vm-2",), {}),
         CallRecord("stop", ("vm-3",), {"timeout_seconds": 10}),
         CallRecord("destroy", ("vm-4",), {}),
@@ -533,7 +620,13 @@ def test_vm_agent_admin_service_list_vms_uses_worker_admin() -> None:
     admin = FakeAdmin()
     service = VmAgentAdminService(_vm_agent_dependencies(admin))
 
-    summaries = service.list_vms(include_inactive=False, omit_state=True, vm_user="root", directory_path="root/team", direct_only=True)
+    summaries = service.list_vms(
+        include_inactive=False,
+        omit_state=True,
+        vm_user="root",
+        directory_path="root/team",
+        direct_only=True,
+    )
 
     assert summaries == ["vm-summary"]
     assert admin.worker_admin.calls == [
@@ -547,19 +640,27 @@ def test_vm_agent_admin_service_list_vms_uses_worker_admin() -> None:
     ]
 
 
-def test_vm_agent_admin_service_start_vm_uses_libvirt_helpers(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_vm_agent_admin_service_start_vm_uses_libvirt_helpers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     admin = FakeAdmin()
     service = VmAgentAdminService(_vm_agent_dependencies(admin))
     virsh_calls: list[list[str]] = []
 
     monkeypatch.setattr(admin_service_module, "_resolve_vm_name", lambda target: "vm-1")
-    monkeypatch.setattr(admin_service_module, "_dominfo_field", lambda vm_name, field_name: "shut off")
+    monkeypatch.setattr(
+        admin_service_module, "_dominfo_field", lambda vm_name, field_name: "shut off"
+    )
 
     class Completed:
         returncode = 0
         stderr = ""
 
-    monkeypatch.setattr(admin_service_module, "_run_virsh", lambda args: virsh_calls.append(list(args)) or Completed())
+    monkeypatch.setattr(
+        admin_service_module,
+        "_run_virsh",
+        lambda args: virsh_calls.append(list(args)) or Completed(),
+    )
 
     result = service.start_vm("vm-1")
 
@@ -570,8 +671,12 @@ def test_vm_agent_admin_service_start_vm_uses_libvirt_helpers(monkeypatch: pytes
     assert virsh_calls == [["start", "vm-1"]]
 
 
-def test_vm_agent_admin_service_resume_agent_updates_session_and_spawns_watcher(monkeypatch: pytest.MonkeyPatch) -> None:
-    manifest = FakeManifest(directory_path="root/team", metadata={"agent_thread_id": "previous-thread"})
+def test_vm_agent_admin_service_resume_agent_updates_session_and_spawns_watcher(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest = FakeManifest(
+        directory_path="root/team", metadata={"agent_thread_id": "previous-thread"}
+    )
     sessions = FakeSessionsStore({"session-1": manifest})
     admin = FakeAdmin(sessions=sessions)
     service = VmAgentAdminService(_vm_agent_dependencies(admin))
@@ -584,9 +689,17 @@ def test_vm_agent_admin_service_resume_agent_updates_session_and_spawns_watcher(
         stdout = "thread_id=thread-123\nresume ok\n"
         stderr = ""
 
-    monkeypatch.setattr(admin_service_module, "_resolve_vm_name_from_target", lambda target, sessions: "vm-1")
-    monkeypatch.setattr(admin_service_module, "_resolve_session_target", lambda target, sessions: ("session-1", manifest))
-    monkeypatch.setattr(admin_service_module, "_run_subprocess", lambda *args, **kwargs: Completed())
+    monkeypatch.setattr(
+        admin_service_module, "_resolve_vm_name_from_target", lambda target, sessions: "vm-1"
+    )
+    monkeypatch.setattr(
+        admin_service_module,
+        "_resolve_session_target",
+        lambda target, sessions: ("session-1", manifest),
+    )
+    monkeypatch.setattr(
+        admin_service_module, "_run_subprocess", lambda *args, **kwargs: Completed()
+    )
 
     result = service.resume_agent("target", "Resume now", dispatch_id="dispatch-1")
 
@@ -608,7 +721,9 @@ def test_vm_agent_admin_service_resume_agent_updates_session_and_spawns_watcher(
     ]
 
 
-def test_vm_agent_admin_service_create_issue_vm_uses_admin_helpers(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_vm_agent_admin_service_create_issue_vm_uses_admin_helpers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     sessions = FakeSessionsStore()
     admin = FakeAdmin(sessions=sessions)
     service = VmAgentAdminService(_vm_agent_dependencies(admin))
@@ -624,7 +739,9 @@ def test_vm_agent_admin_service_create_issue_vm_uses_admin_helpers(monkeypatch: 
         stdout = "setup ok"
         stderr = ""
 
-    monkeypatch.setattr(admin_service_module, "_run_subprocess", lambda *args, **kwargs: Completed())
+    monkeypatch.setattr(
+        admin_service_module, "_run_subprocess", lambda *args, **kwargs: Completed()
+    )
     monkeypatch.setattr(admin_service_module, "_dominfo_field", lambda vm_name, field_name: None)
 
     result = service.create_issue_vm(issue="7", session_id="session-1")

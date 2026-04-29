@@ -4,7 +4,10 @@ from collections.abc import Mapping
 from typing import Any
 from uuid import uuid4
 
-from agent_sandbox.agent_prompt_queue import AgentPromptQueueStore, QueuedAgentPromptRecord
+from agent_sandbox.messaging.agent_prompt_queue import (
+    AgentPromptQueueStore,
+    QueuedAgentPromptRecord,
+)
 from agent_sandbox.events.provider_models import AgentEnqueuePromptEffectDefinition
 
 from .base import EffectProviderBase
@@ -19,7 +22,11 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
     def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
         effect = self._effect()
         context = self._context()
-        if context.agent_resumer is None or context.vm_inventory is None or context.session_lookup is None:
+        if (
+            context.agent_resumer is None
+            or context.vm_inventory is None
+            or context.session_lookup is None
+        ):
             raise RuntimeError("effect:agent:enqueue-prompt runtime services are not available")
 
         payload = {
@@ -43,7 +50,10 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
         session_id = self._resolve_session_id(target)
 
         summary = self._find_vm_summary(vm_name=vm_name, vm_user=vm_user)
-        if summary is not None and str(getattr(summary, "agent_state", "") or "").strip() == "running":
+        if (
+            summary is not None
+            and str(getattr(summary, "agent_state", "") or "").strip() == "running"
+        ):
             record = self._queue_prompt(
                 target=target,
                 vm_name=vm_name,
@@ -91,7 +101,9 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             )
         thread_id = self._normalize_optional_string(getattr(result, "thread_id", None))
         if not thread_id:
-            raise RuntimeError("effect:agent:enqueue-prompt did not receive a thread_id from resume_agent")
+            raise RuntimeError(
+                "effect:agent:enqueue-prompt did not receive a thread_id from resume_agent"
+            )
         return {
             "dispatch_id": dispatch_id,
             "thread_id": thread_id,
@@ -120,13 +132,16 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
         vm_name = self._normalize_optional_string(payload.get("vm_name"))
         if vm_name:
             return vm_name
-        raise ValueError("effect:agent:enqueue-prompt requires one of target, session_id, or vm_name")
+        raise ValueError(
+            "effect:agent:enqueue-prompt requires one of target, session_id, or vm_name"
+        )
 
     def _resolve_vm_name(self, target: str) -> str:
         context = self._context()
         if context.session_lookup is None:
             raise RuntimeError("effect:agent:enqueue-prompt session_lookup is not available")
-        from agent_sandbox.admin_service import _resolve_vm_name_from_target
+
+        from agent_sandbox.admin.service import _resolve_vm_name_from_target
 
         vm_name = _resolve_vm_name_from_target(target, context.session_lookup.read_all_sessions())
         if not vm_name:
@@ -138,16 +153,21 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
         try:
             if context.session_lookup is None:
                 return None
-            from agent_sandbox.admin_service import _resolve_session_target
 
-            session_id, _manifest = _resolve_session_target(target, context.session_lookup.read_all_sessions())
+            from agent_sandbox.admin.service import _resolve_session_target
+
+            session_id, _manifest = _resolve_session_target(
+                target, context.session_lookup.read_all_sessions()
+            )
         except ValueError:
             return None
         return session_id
 
     def _effect(self) -> AgentEnqueuePromptEffectDefinition:
         if not isinstance(self.effect_definition, AgentEnqueuePromptEffectDefinition):
-            raise RuntimeError("AgentEnqueuePromptEffectProvider initialized with a non-agent-enqueue-prompt effect definition")
+            raise RuntimeError(
+                "AgentEnqueuePromptEffectProvider initialized with a non-agent-enqueue-prompt effect definition"
+            )
         return self.effect_definition
 
     def _context(self):
@@ -168,7 +188,9 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
         effect_id: str,
     ) -> QueuedAgentPromptRecord:
         context = self._context()
-        queue_store = AgentPromptQueueStore(context.resolved_config.runtime_dir / "queued-agent-prompts.json")
+        queue_store = AgentPromptQueueStore(
+            context.resolved_config.runtime_dir / "queued-agent-prompts.json"
+        )
         return queue_store.put(
             QueuedAgentPromptRecord(
                 queue_key=vm_name,

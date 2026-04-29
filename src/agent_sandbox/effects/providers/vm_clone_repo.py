@@ -33,12 +33,13 @@ class VmCloneRepoEffectProvider(VmTargetingMixin, EffectProviderBase):
         result = repo_cloner(
             vm_name=vm_name,
             session_id=session_id,
-            repo_source=self._required_string(payload.get("repo_source"), "effect:vm:clone-repo requires repo_source"),
+            repo_source=self._required_string(
+                payload.get("repo_source"), "effect:vm:clone-repo requires repo_source"
+            ),
             clone_branch=self._normalize_optional_string(payload.get("clone_branch")),
             vm_user=self._normalize_optional_string(payload.get("vm_user")) or "agent",
-            directory_path=self._normalize_optional_string(payload.get("directory_path")) or str(
-                context.metadata.get("directory_path") or "root"
-            ),
+            directory_path=self._normalize_optional_string(payload.get("directory_path"))
+            or str(context.metadata.get("directory_path") or "root"),
         )
         return {
             "success": bool(result.success),
@@ -46,13 +47,17 @@ class VmCloneRepoEffectProvider(VmTargetingMixin, EffectProviderBase):
             "session_id": session_id,
             "vm_name": result.vm_name or vm_name,
             "target_dir": self._normalize_optional_string(getattr(result, "target_dir", None)),
-            "guest_repo_name": self._normalize_optional_string(getattr(result, "guest_repo_name", None)),
+            "guest_repo_name": self._normalize_optional_string(
+                getattr(result, "guest_repo_name", None)
+            ),
             "remote_url": self._normalize_optional_string(getattr(result, "remote_url", None)),
         }
 
     def _effect(self) -> VmCloneRepoEffectDefinition:
         if not isinstance(self.effect_definition, VmCloneRepoEffectDefinition):
-            raise RuntimeError("VmCloneRepoEffectProvider initialized with a non-vm-clone-repo effect definition")
+            raise RuntimeError(
+                "VmCloneRepoEffectProvider initialized with a non-vm-clone-repo effect definition"
+            )
         return self.effect_definition
 
     def _context(self):

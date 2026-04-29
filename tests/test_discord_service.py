@@ -585,10 +585,10 @@ def test_post_status_fails_fast_on_401_without_retry(
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
         return httpx.Response(401, json={"message": "401: Unauthorized"}, request=request)
-      
+
     transport = httpx.MockTransport(handler)
     patch_httpx_client(monkeypatch, transport)
-    
+
     monkeypatch.setattr("agent_sandbox.services.time.sleep", lambda _: None)
 
     service = make_service(tmp_path, transport)
@@ -597,6 +597,7 @@ def test_post_status_fails_fast_on_401_without_retry(
         service.post_status("status", "chan-a", "session-1")
 
     assert len(requests) == 1
+
 
 def test_get_commands_sorts_by_snowflake_not_lexicographic_or_created_at(tmp_path: Path) -> None:
     command_store = JsonStore(tmp_path / "discord.json", DiscordCommandEnvelope)
@@ -698,10 +699,10 @@ def test_get_commands_returns_deterministic_cross_channel_order_by_snowflake(
                 request=request,
             )
         raise AssertionError(f"Unexpected path: {request.url.path}")
-    
+
     transport = httpx.MockTransport(handler)
     patch_httpx_client(monkeypatch, transport)
-    
+
     service = DiscordBotApiService(
         command_store,
         token="test-token",

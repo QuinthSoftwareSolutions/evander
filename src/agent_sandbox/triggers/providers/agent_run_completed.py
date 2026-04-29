@@ -40,9 +40,14 @@ class AgentRunCompletedTriggerProvider(TriggerProviderBase):
         normalized_summaries = [
             summary
             for summary in (self._normalize_summary(raw) for raw in summaries)
-            if summary is not None and self._summary_matches_target(summary, target_vm_name=target_vm_name, target_session_id=target_session_id)
+            if summary is not None
+            and self._summary_matches_target(
+                summary, target_vm_name=target_vm_name, target_session_id=target_session_id
+            )
         ]
-        normalized_summaries.sort(key=lambda summary: self._normalize_optional_string(summary.vm_name) or "")
+        normalized_summaries.sort(
+            key=lambda summary: self._normalize_optional_string(summary.vm_name) or ""
+        )
 
         events: list[TriggerEvent] = []
         updated_seen_by_vm: dict[str, dict[str, Any]] = {}
@@ -55,7 +60,9 @@ class AgentRunCompletedTriggerProvider(TriggerProviderBase):
             current_state = self._normalize_optional_string(summary.agent_state) or "unknown"
             current_updated_at = self._normalize_dt(summary.last_state_update_at)
             previous = seen_by_vm.get(vm_name, {})
-            previous_state = self._normalize_optional_string(previous.get("last_agent_state")) or "unknown"
+            previous_state = (
+                self._normalize_optional_string(previous.get("last_agent_state")) or "unknown"
+            )
             previous_updated_at = self._normalize_dt(previous.get("last_state_update_at"))
             previous_emitted_at = self._normalize_dt(previous.get("last_emitted_state_update_at"))
 
@@ -109,9 +116,13 @@ class AgentRunCompletedTriggerProvider(TriggerProviderBase):
     def _trigger(self) -> Any:
         if self.trigger_definition is None:
             raise RuntimeError("AgentRunCompletedTriggerProvider has no trigger definition")
-        trigger_type = self._normalize_optional_string(getattr(self.trigger_definition, "type", None))
+        trigger_type = self._normalize_optional_string(
+            getattr(self.trigger_definition, "type", None)
+        )
         if trigger_type and trigger_type != "trigger:agent:run:completed":
-            raise RuntimeError(f"AgentRunCompletedTriggerProvider initialized with wrong definition: {trigger_type!r}")
+            raise RuntimeError(
+                f"AgentRunCompletedTriggerProvider initialized with wrong definition: {trigger_type!r}"
+            )
         return self.trigger_definition
 
     def _context(self):
@@ -147,14 +158,18 @@ class AgentRunCompletedTriggerProvider(TriggerProviderBase):
         if callable(list_vms):
             return list_vms
 
-        raise RuntimeError("AgentRunCompletedTriggerProvider requires an admin_service with list_vms() in runtime context or metadata")
+        raise RuntimeError(
+            "AgentRunCompletedTriggerProvider requires an admin_service with list_vms() in runtime context or metadata"
+        )
 
     def _scope_directory_path(self, trigger: Any) -> str | None:
         explicit = self._normalize_optional_string(getattr(trigger, "directory_path", None))
         if explicit and explicit != "root":
             return explicit
 
-        metadata_directory = self._normalize_optional_string(self._runtime_metadata().get("directory_path"))
+        metadata_directory = self._normalize_optional_string(
+            self._runtime_metadata().get("directory_path")
+        )
         if metadata_directory and metadata_directory != "root":
             return metadata_directory
 

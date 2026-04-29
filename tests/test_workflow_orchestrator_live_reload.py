@@ -4,11 +4,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 import json
 
-from agent_sandbox.admin_service import AdminService
+from agent_sandbox.admin.service import AdminService
 from agent_sandbox.config import GatewayConfig
-from agent_sandbox.effect_orchestrator import build_effect_orchestrator_worker
+from agent_sandbox.daemons.effect_orchestrator import build_effect_orchestrator_worker
 from agent_sandbox.events.models import TriggerEvent
-from agent_sandbox.trigger_orchestrator import build_trigger_orchestrator_worker
+from agent_sandbox.daemons.trigger_orchestrator import build_trigger_orchestrator_worker
 
 
 class _QueuedTriggerProvider:
@@ -79,8 +79,12 @@ def test_workers_reload_saved_workflow_without_restarting_objects(tmp_path: Path
 
     trigger_events: dict[str, list[TriggerEvent]] = {}
     executed_effect_ids: list[str] = []
-    trigger_worker.provider_factory.build = lambda trigger: _QueuedTriggerProvider(trigger.id, trigger_events)  # type: ignore[assignment]
-    effect_worker.provider_factory.build = lambda effect: _RecordingEffectProvider(effect.id, executed_effect_ids)  # type: ignore[assignment]
+    trigger_worker.provider_factory.build = lambda trigger: _QueuedTriggerProvider(
+        trigger.id, trigger_events
+    )  # type: ignore[assignment]
+    effect_worker.provider_factory.build = lambda effect: _RecordingEffectProvider(
+        effect.id, executed_effect_ids
+    )  # type: ignore[assignment]
 
     trigger_worker_id = id(trigger_worker)
     effect_worker_id = id(effect_worker)
@@ -89,7 +93,9 @@ def test_workers_reload_saved_workflow_without_restarting_objects(tmp_path: Path
 
     service = AdminService(runtime_dir)
 
-    _save_workflow(service, runtime_dir=runtime_dir, trigger_id="trigger-old", effect_id="effect-old")
+    _save_workflow(
+        service, runtime_dir=runtime_dir, trigger_id="trigger-old", effect_id="effect-old"
+    )
     trigger_events["trigger-old"] = [
         TriggerEvent(
             event_id="event-old-1",
@@ -107,7 +113,9 @@ def test_workers_reload_saved_workflow_without_restarting_objects(tmp_path: Path
     assert first_effect_cycle.effect_executions == 1
     assert executed_effect_ids == ["effect-old"]
 
-    _save_workflow(service, runtime_dir=runtime_dir, trigger_id="trigger-new", effect_id="effect-new")
+    _save_workflow(
+        service, runtime_dir=runtime_dir, trigger_id="trigger-new", effect_id="effect-new"
+    )
     trigger_events["trigger-old"] = [
         TriggerEvent(
             event_id="event-old-2",
@@ -142,7 +150,9 @@ def test_workers_reload_saved_workflow_without_restarting_objects(tmp_path: Path
     assert id(effect_worker.runtime) == effect_runtime_id
 
 
-def test_workers_keep_last_known_good_config_when_reload_payload_is_invalid(tmp_path: Path, caplog) -> None:
+def test_workers_keep_last_known_good_config_when_reload_payload_is_invalid(
+    tmp_path: Path, caplog
+) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
 
@@ -151,11 +161,17 @@ def test_workers_keep_last_known_good_config_when_reload_payload_is_invalid(tmp_
 
     trigger_events: dict[str, list[TriggerEvent]] = {}
     executed_effect_ids: list[str] = []
-    trigger_worker.provider_factory.build = lambda trigger: _QueuedTriggerProvider(trigger.id, trigger_events)  # type: ignore[assignment]
-    effect_worker.provider_factory.build = lambda effect: _RecordingEffectProvider(effect.id, executed_effect_ids)  # type: ignore[assignment]
+    trigger_worker.provider_factory.build = lambda trigger: _QueuedTriggerProvider(
+        trigger.id, trigger_events
+    )  # type: ignore[assignment]
+    effect_worker.provider_factory.build = lambda effect: _RecordingEffectProvider(
+        effect.id, executed_effect_ids
+    )  # type: ignore[assignment]
 
     service = AdminService(runtime_dir)
-    _save_workflow(service, runtime_dir=runtime_dir, trigger_id="trigger-stable", effect_id="effect-stable")
+    _save_workflow(
+        service, runtime_dir=runtime_dir, trigger_id="trigger-stable", effect_id="effect-stable"
+    )
 
     trigger_events["trigger-stable"] = [
         TriggerEvent(
@@ -244,8 +260,12 @@ def test_workers_reload_when_referenced_workflow_pack_changes(tmp_path: Path) ->
 
     trigger_events: dict[str, list[TriggerEvent]] = {}
     executed_effect_ids: list[str] = []
-    trigger_worker.provider_factory.build = lambda trigger: _QueuedTriggerProvider(trigger.id, trigger_events)  # type: ignore[assignment]
-    effect_worker.provider_factory.build = lambda effect: _RecordingEffectProvider(effect.id, executed_effect_ids)  # type: ignore[assignment]
+    trigger_worker.provider_factory.build = lambda trigger: _QueuedTriggerProvider(
+        trigger.id, trigger_events
+    )  # type: ignore[assignment]
+    effect_worker.provider_factory.build = lambda effect: _RecordingEffectProvider(
+        effect.id, executed_effect_ids
+    )  # type: ignore[assignment]
 
     trigger_events["trigger-pack-old"] = [
         TriggerEvent(

@@ -8,9 +8,12 @@ import subprocess
 
 import yaml
 
-import agent_sandbox.admin_services.issue_git_service as issue_git_module
-from agent_sandbox.admin_service import AdminService
-from agent_sandbox.admin_services.issue_git_service import IssueGitAdminDependencies, IssueGitAdminService
+import agent_sandbox.admin.services.issue_git_service as issue_git_module
+from agent_sandbox.admin.service import AdminService
+from agent_sandbox.admin.services.issue_git_service import (
+    IssueGitAdminDependencies,
+    IssueGitAdminService,
+)
 from agent_sandbox.models import LocalIssueRecord, SessionManifest, ToolName
 
 
@@ -103,7 +106,9 @@ def _build_issue_admin(tmp_path: Path) -> tuple[SimpleNamespace, FakeStore]:
         _local_issue_creation_lock=lambda: nullcontext(),
         _normalize_directory_path=lambda directory_path: directory_path or "root",
         _next_local_issue_number=lambda: "1",
-        _canonical_local_issue_id=lambda issue_number, directory_path: f"{directory_path}::local::{issue_number}",
+        _canonical_local_issue_id=lambda issue_number, directory_path: (
+            f"{directory_path}::local::{issue_number}"
+        ),
         _resolve_local_issue_record=resolve_local_issue,
         _resolve_local_issue_key=lambda identifier: identifier,
         _proxy_target_for_issue=lambda issue: None,
@@ -130,16 +135,30 @@ def _issue_git_dependencies(admin: SimpleNamespace) -> IssueGitAdminDependencies
         local_issue_store=admin.local_issue_store,
         local_issue_yaml_dir=admin.local_issue_yaml_dir,
         issue_service=admin.issue_service,
-        normalize_directory_path=lambda directory_path: admin._normalize_directory_path(directory_path),
+        normalize_directory_path=lambda directory_path: admin._normalize_directory_path(
+            directory_path
+        ),
         local_issue_creation_lock=lambda: admin._local_issue_creation_lock(),
         next_local_issue_number=lambda: admin._next_local_issue_number(),
-        canonical_local_issue_id=lambda issue_number, directory_path: admin._canonical_local_issue_id(issue_number, directory_path),
-        resolve_local_issue_record=lambda issue_identifier: admin._resolve_local_issue_record(issue_identifier),
-        resolve_local_issue_key=lambda issue_identifier: admin._resolve_local_issue_key(issue_identifier),
+        canonical_local_issue_id=lambda issue_number, directory_path: (
+            admin._canonical_local_issue_id(issue_number, directory_path)
+        ),
+        resolve_local_issue_record=lambda issue_identifier: admin._resolve_local_issue_record(
+            issue_identifier
+        ),
+        resolve_local_issue_key=lambda issue_identifier: admin._resolve_local_issue_key(
+            issue_identifier
+        ),
         proxy_target_for_issue=lambda issue: admin._proxy_target_for_issue(issue),
-        refresh_proxy_cache_from_remote=lambda issue, remote_payload: admin._refresh_proxy_cache_from_remote(issue, remote_payload),
-        write_local_issue_yaml=lambda issue, **kwargs: admin._write_local_issue_yaml(issue, **kwargs),
-        direct_owned_entity_ids=lambda directory_path, **kwargs: admin._direct_owned_entity_ids(directory_path, **kwargs),
+        refresh_proxy_cache_from_remote=lambda issue, remote_payload: (
+            admin._refresh_proxy_cache_from_remote(issue, remote_payload)
+        ),
+        write_local_issue_yaml=lambda issue, **kwargs: admin._write_local_issue_yaml(
+            issue, **kwargs
+        ),
+        direct_owned_entity_ids=lambda directory_path, **kwargs: admin._direct_owned_entity_ids(
+            directory_path, **kwargs
+        ),
     )
 
 
@@ -161,17 +180,21 @@ def test_issue_git_admin_service_pr_create_invokes_script_and_parses_result(
 
     monkeypatch.setattr(issue_git_module._admin_service, "_run_subprocess", fake_run)
 
-    result = service.pr_create(host_repo_path="/repo", local_branch="feature", title="Add PR", draft=True)
+    result = service.pr_create(
+        host_repo_path="/repo", local_branch="feature", title="Add PR", draft=True
+    )
 
-    assert captured == [[
-        str(tmp_path / "scripts" / "open_agent_pr.sh"),
-        "--create-pr",
-        "--draft",
-        "--title",
-        "Add PR",
-        "/repo",
-        "feature",
-    ]]
+    assert captured == [
+        [
+            str(tmp_path / "scripts" / "open_agent_pr.sh"),
+            "--create-pr",
+            "--draft",
+            "--title",
+            "Add PR",
+            "/repo",
+            "feature",
+        ]
+    ]
     assert result["success"] is True
     assert result["pr_number"] == 42
 
@@ -190,7 +213,9 @@ def test_issue_git_admin_service_session_update_metadata_updates_store(tmp_path:
     )
     admin.runtime.session_repository.upsert_session(manifest)
 
-    result = service.session_update_metadata(target="session-1", metadata={"nested": {"two": 2}, "new": 3})
+    result = service.session_update_metadata(
+        target="session-1", metadata={"nested": {"two": 2}, "new": 3}
+    )
 
     updated = admin.runtime.session_repository.get_session("session-1")
     assert isinstance(updated, SessionManifest)
@@ -209,7 +234,9 @@ def test_issue_git_admin_service_create_update_and_delete_local_issue(
 ) -> None:
     admin, store = _build_issue_admin(tmp_path)
     service = IssueGitAdminService(_issue_git_dependencies(admin))
-    monkeypatch.setattr(issue_git_module._admin_service, "_dominfo_field", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        issue_git_module._admin_service, "_dominfo_field", lambda *args, **kwargs: None
+    )
 
     created = service.create_issue(title="Fix dashboard", body="Build it")
     created_path = Path(created.yaml_path)
@@ -234,7 +261,9 @@ def test_issue_git_admin_service_create_update_and_delete_local_issue(
     assert not created_path.exists()
 
 
-def test_issue_git_admin_service_list_actionable_local_issues_filters_proxy_records(tmp_path: Path) -> None:
+def test_issue_git_admin_service_list_actionable_local_issues_filters_proxy_records(
+    tmp_path: Path,
+) -> None:
     admin, store = _build_issue_admin(tmp_path)
     service = IssueGitAdminService(_issue_git_dependencies(admin))
 
@@ -249,7 +278,9 @@ def test_issue_git_admin_service_list_actionable_local_issues_filters_proxy_reco
         }
     )
     store.put(proxy_issue.issue_id, proxy_issue)
-    admin._proxy_target_for_issue = lambda issue: ("azure_devops", "42") if issue.issue_id == proxy_issue.issue_id else None
+    admin._proxy_target_for_issue = lambda issue: (
+        ("azure_devops", "42") if issue.issue_id == proxy_issue.issue_id else None
+    )
 
     actionable = service.list_actionable_local_issues(directory_path="root")
 
@@ -261,18 +292,72 @@ def test_admin_service_delegates_issue_git_methods() -> None:
     fake = FakeIssueGitFacade()
     service.issue_git_admin = fake
 
-    assert service.pr_create(host_repo_path="/repo", local_branch="feature", title="Add PR")["name"] == "pr_create"
-    assert service.git_pr_note_query(host_repo_path="/repo", local_branch="review/session-1/topic")["name"] == "git_pr_note_query"
-    assert service.session_update_metadata(target="session-1", metadata={"foo": "bar"})["name"] == "session_update_metadata"
+    assert (
+        service.pr_create(host_repo_path="/repo", local_branch="feature", title="Add PR")["name"]
+        == "pr_create"
+    )
+    assert (
+        service.git_pr_note_query(host_repo_path="/repo", local_branch="review/session-1/topic")[
+            "name"
+        ]
+        == "git_pr_note_query"
+    )
+    assert (
+        service.session_update_metadata(target="session-1", metadata={"foo": "bar"})["name"]
+        == "session_update_metadata"
+    )
     assert service.create_issue(title="New issue")["name"] == "create_issue"
     assert service.update_issue("issue-1", state="In Progress")["name"] == "update_issue"
     assert service.delete_local_issue("issue-7")["name"] == "delete_local_issue"
 
     assert fake.calls == [
-        ("pr_create", (), {"host_repo_path": "/repo", "local_branch": "feature", "origin_branch": None, "canonical_origin_url": None, "provider": None, "project": None, "base_branch": None, "session_id": None, "work_item_id": None, "title": "Add PR", "body": None, "body_file": None, "draft": None, "fill": True}),
-        ("git_pr_note_query", (), {"host_repo_path": "/repo", "local_branch": "review/session-1/topic", "remote_name": None, "notes_ref": None}),
+        (
+            "pr_create",
+            (),
+            {
+                "host_repo_path": "/repo",
+                "local_branch": "feature",
+                "origin_branch": None,
+                "canonical_origin_url": None,
+                "provider": None,
+                "project": None,
+                "base_branch": None,
+                "session_id": None,
+                "work_item_id": None,
+                "title": "Add PR",
+                "body": None,
+                "body_file": None,
+                "draft": None,
+                "fill": True,
+            },
+        ),
+        (
+            "git_pr_note_query",
+            (),
+            {
+                "host_repo_path": "/repo",
+                "local_branch": "review/session-1/topic",
+                "remote_name": None,
+                "notes_ref": None,
+            },
+        ),
         ("session_update_metadata", (), {"target": "session-1", "metadata": {"foo": "bar"}}),
-        ("create_issue", (), {"title": "New issue", "body": "", "repo_source": None, "yaml_path": None, "directory_path": "root", "metadata": None}),
-        ("update_issue", ("issue-1",), {"state": "In Progress", "fields": None, "sync_proxy_cache": True}),
+        (
+            "create_issue",
+            (),
+            {
+                "title": "New issue",
+                "body": "",
+                "repo_source": None,
+                "yaml_path": None,
+                "directory_path": "root",
+                "metadata": None,
+            },
+        ),
+        (
+            "update_issue",
+            ("issue-1",),
+            {"state": "In Progress", "fields": None, "sync_proxy_cache": True},
+        ),
         ("delete_local_issue", ("issue-7",), {}),
     ]

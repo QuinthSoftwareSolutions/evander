@@ -31,7 +31,9 @@ class WorkerSandboxProfile:
         updated = replace(
             self,
             network_mode=self.network_mode if network_mode is None else network_mode,
-            read_only_rootfs=self.read_only_rootfs if read_only_rootfs is None else read_only_rootfs,
+            read_only_rootfs=self.read_only_rootfs
+            if read_only_rootfs is None
+            else read_only_rootfs,
             tmpfs=self.tmpfs if tmpfs is None else tuple(tmpfs),
             user=self.user if user is None else user,
         )

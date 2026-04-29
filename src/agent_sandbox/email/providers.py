@@ -6,7 +6,7 @@ from typing import Any, Protocol
 from pydantic import BaseModel, Field
 
 from agent_sandbox.models import DraftMessage, EmailMessage
-from agent_sandbox.records_repository import EmailRecordsRepository
+from agent_sandbox.repositories.records import EmailRecordsRepository
 from agent_sandbox.storage import JsonStore
 
 
@@ -42,11 +42,11 @@ class EmailDraft(BaseModel):
 
 
 class EmailProvider(Protocol):
-    def list_unread(self, mailbox_id: str, folder: str, limit: int) -> list[EmailMessageSummary]:
-        ...
+    def list_unread(
+        self, mailbox_id: str, folder: str, limit: int
+    ) -> list[EmailMessageSummary]: ...
 
-    def get_message(self, mailbox_id: str, message_id: str) -> EmailMessageDetail:
-        ...
+    def get_message(self, mailbox_id: str, message_id: str) -> EmailMessageDetail: ...
 
     def create_draft(
         self,
@@ -55,8 +55,7 @@ class EmailProvider(Protocol):
         subject: str | None,
         body: str,
         recipients: list[str],
-    ) -> EmailDraft:
-        ...
+    ) -> EmailDraft: ...
 
 
 class MultiMailboxEmailProvider:

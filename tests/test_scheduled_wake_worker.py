@@ -7,10 +7,12 @@ from types import SimpleNamespace
 
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.models import SessionManifest, ToolName, WakeScheduleDefinition
-from agent_sandbox.scheduled_wake_worker import build_scheduled_wake_worker
+from agent_sandbox.messaging.scheduled_wake import build_scheduled_wake_worker
 
 
-def test_build_scheduled_wake_worker_uses_worker_config_and_normalizes_directories(tmp_path: Path) -> None:
+def test_build_scheduled_wake_worker_uses_worker_config_and_normalizes_directories(
+    tmp_path: Path,
+) -> None:
     project_dir = tmp_path / "project"
     worker_config_path = project_dir / "config" / "scheduled-wake" / "config.json"
     worker_config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -37,7 +39,9 @@ def test_scheduled_wake_worker_dispatches_due_request(tmp_path: Path, monkeypatc
     project_dir = tmp_path / "project"
     worker_config_path = project_dir / "config" / "scheduled-wake" / "config.json"
     worker_config_path.parent.mkdir(parents=True, exist_ok=True)
-    worker_config_path.write_text(json.dumps({"directories": ["root/team-a"], "jitter_seconds": 0.0}), encoding="utf-8")
+    worker_config_path.write_text(
+        json.dumps({"directories": ["root/team-a"], "jitter_seconds": 0.0}), encoding="utf-8"
+    )
 
     config = GatewayConfig.model_validate({"runtime_dir": str(tmp_path / "runtime")})
     worker = build_scheduled_wake_worker(config, project_dir=project_dir)
@@ -62,11 +66,15 @@ def test_scheduled_wake_worker_dispatches_due_request(tmp_path: Path, monkeypatc
     )
 
     dispatched: list[str] = []
-    monkeypatch.setattr("agent_sandbox.scheduled_wake_worker.probe_agent_dispatch_state", lambda **kwargs: "idle")
+    monkeypatch.setattr(
+        "agent_sandbox.messaging.scheduled_wake.probe_agent_dispatch_state", lambda **kwargs: "idle"
+    )
     monkeypatch.setattr(
         worker.dispatcher,
         "resume_binding",
-        lambda binding, **kwargs: dispatched.append(binding.session_id) or SimpleNamespace(status="dispatched"),
+        lambda binding, **kwargs: (
+            dispatched.append(binding.session_id) or SimpleNamespace(status="dispatched")
+        ),
     )
 
     result = worker.run_once()

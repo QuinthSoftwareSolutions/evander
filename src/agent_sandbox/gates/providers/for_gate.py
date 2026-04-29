@@ -9,8 +9,8 @@ from pydantic import BaseModel, Field
 from agent_sandbox.gate_runtime import GateRuntimeError
 from agent_sandbox.gates.providers.base import GateProviderBase
 from agent_sandbox.storage import JsonStore
-from agent_sandbox.workflow_binding import resolve_workflow_bindings
-from agent_sandbox.workflow_validation import NodeCapability
+from agent_sandbox.workflow.binding import resolve_workflow_bindings
+from agent_sandbox.workflow.validation import NodeCapability
 
 
 class ForGateStateRecord(BaseModel):
@@ -53,9 +53,13 @@ class ForGateProvider(GateProviderBase):
     def load_state(self, **kwargs: Any) -> _ForGateStateStoreAdapter:
         if self._adapter is not None:
             return self._adapter
-        runtime_config = self.runtime_context.resolved_config if self.runtime_context is not None else None
+        runtime_config = (
+            self.runtime_context.resolved_config if self.runtime_context is not None else None
+        )
         runtime_dir = Path(getattr(runtime_config, "runtime_dir", Path("runtime")))
-        provider_state = getattr(runtime_config, "provider_state", {}) if runtime_config is not None else {}
+        provider_state = (
+            getattr(runtime_config, "provider_state", {}) if runtime_config is not None else {}
+        )
         state_path = _provider_state_path(
             provider_state,
             namespace=("gates", "for", "state_store_path"),
@@ -94,13 +98,19 @@ class ForGateProvider(GateProviderBase):
             ),
             strict_validation=True,
         )
-        resolved_config = worker._require_object_payload(resolved.resolved_config, gate_type="gate:for")
+        resolved_config = worker._require_object_payload(
+            resolved.resolved_config, gate_type="gate:for"
+        )
         items = resolved_config.get("items")
         if not isinstance(items, list):
             raise GateRuntimeError("gate:for items must resolve to an array")
 
-        for_execution_id = _resolve_for_gate_execution_id(queue_record=queue_record, gate=gate, graph=graph)
-        state_key = _for_gate_state_key(gate_id=gate.id, trace_id=queue_record.trace_id, for_execution_id=for_execution_id)
+        for_execution_id = _resolve_for_gate_execution_id(
+            queue_record=queue_record, gate=gate, graph=graph
+        )
+        state_key = _for_gate_state_key(
+            gate_id=gate.id, trace_id=queue_record.trace_id, for_execution_id=for_execution_id
+        )
         adapter = self.load_state()
         state = adapter.get(state_key)
         if state is None:
@@ -155,7 +165,9 @@ class ForGateProvider(GateProviderBase):
 
 
 def _resolve_for_gate_execution_id(*, queue_record: Any, gate: Any, graph: Any) -> str:
-    inbound_edge = _matching_inbound_edge(queue_record=queue_record, target_node_id=gate.id, graph=graph)
+    inbound_edge = _matching_inbound_edge(
+        queue_record=queue_record, target_node_id=gate.id, graph=graph
+    )
     if inbound_edge is not None and bool(getattr(inbound_edge, "allow_cycle", False)):
         from_payload = _for_execution_ids_from_payload(queue_record.payload).get(gate.id)
         if from_payload is not None:

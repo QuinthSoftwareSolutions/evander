@@ -4,9 +4,9 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from agent_sandbox.models import SessionManifest
-from agent_sandbox.review_request_service import ReviewRequestMetadata, ReviewRequestService
-from agent_sandbox.review_request_store import ReviewRequestStore
-from agent_sandbox.session_manifest_repository import JsonSessionManifestRepository
+from agent_sandbox.reviews.request_service import ReviewRequestMetadata, ReviewRequestService
+from agent_sandbox.reviews.request_store import ReviewRequestStore
+from agent_sandbox.repositories.session_manifests import JsonSessionManifestRepository
 
 
 class _StubReviewRequestProvider:
@@ -22,7 +22,9 @@ class _StubReviewRequestProvider:
         )
 
 
-def test_enqueue_request_uses_session_repository_directory_when_directory_not_provided(tmp_path: Path) -> None:
+def test_enqueue_request_uses_session_repository_directory_when_directory_not_provided(
+    tmp_path: Path,
+) -> None:
     sessions = JsonSessionManifestRepository(tmp_path / "sessions.json")
     sessions.upsert_session(
         SessionManifest(
@@ -47,7 +49,12 @@ def test_enqueue_request_uses_session_repository_directory_when_directory_not_pr
     )
 
     assert response.directory_path == "root/team-a"
-    assert response.canonical_url == "https://example.test/QuinthSoftwareSolutions/agent-orchestrator/pull/42"
-    stored = ReviewRequestStore(Path(tmp_path / "review-request-store.json")).get_request(response.request_id)
+    assert (
+        response.canonical_url
+        == "https://example.test/QuinthSoftwareSolutions/agent-orchestrator/pull/42"
+    )
+    stored = ReviewRequestStore(Path(tmp_path / "review-request-store.json")).get_request(
+        response.request_id
+    )
     assert stored is not None
     assert stored.directory_path == "root/team-a"

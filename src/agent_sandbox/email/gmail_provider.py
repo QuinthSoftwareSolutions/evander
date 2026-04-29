@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any
 import httpx
 
 if TYPE_CHECKING:
-    from agent_sandbox.cursor_repositories import EmailCursorRepository
+    from agent_sandbox.repositories.cursors import EmailCursorRepository
 
 from .cursor_store import EmailSyncCursor
 from .http_utils import ProviderRequestError, request_with_retries
@@ -49,7 +49,8 @@ class GmailEmailProvider:
                 limit=limit,
             )
             summaries = [
-                self._to_summary(mailbox_id=mailbox_id, folder=folder, payload=payload) for payload in items
+                self._to_summary(mailbox_id=mailbox_id, folder=folder, payload=payload)
+                for payload in items
             ]
         summaries = self._dedupe_with_cursor(mailbox_id, folder, summaries, cursor_primitive)
         summaries.sort(key=lambda entry: entry.received_at, reverse=True)
@@ -92,7 +93,9 @@ class GmailEmailProvider:
             data = response.json()
 
         now = datetime.now(UTC)
-        draft_id = str(data.get("id") or data.get("draft", {}).get("id") or f"draft_{int(now.timestamp())}")
+        draft_id = str(
+            data.get("id") or data.get("draft", {}).get("id") or f"draft_{int(now.timestamp())}"
+        )
         message_payload = data.get("message", {})
         thread_id = str(message_payload.get("threadId") or thread_or_message_id or "") or None
         metadata = {
@@ -130,7 +133,9 @@ class GmailEmailProvider:
             "Content-Type": "application/json",
         }
 
-    def _fetch_message(self, client: httpx.Client, *, message_id: str, format_name: str) -> dict[str, Any]:
+    def _fetch_message(
+        self, client: httpx.Client, *, message_id: str, format_name: str
+    ) -> dict[str, Any]:
         response = request_with_retries(
             client=client,
             provider=self.provider_name,
@@ -247,7 +252,9 @@ class GmailEmailProvider:
             candidate_raw = str(message.get("historyId", "")).strip()
             if candidate_raw.isdigit():
                 candidate = int(candidate_raw)
-                highest_history_id = candidate if highest_history_id is None else max(highest_history_id, candidate)
+                highest_history_id = (
+                    candidate if highest_history_id is None else max(highest_history_id, candidate)
+                )
         return messages, str(highest_history_id) if highest_history_id is not None else None
 
     def _dedupe_with_cursor(
@@ -298,10 +305,14 @@ class GmailEmailProvider:
             return str(max(int(previous), int(candidate)))
         return candidate
 
-    def _to_summary(self, *, mailbox_id: str, folder: str, payload: dict[str, Any]) -> EmailMessageSummary:
+    def _to_summary(
+        self, *, mailbox_id: str, folder: str, payload: dict[str, Any]
+    ) -> EmailMessageSummary:
         headers = self._header_map(payload)
         internal_ms = int(payload.get("internalDate", "0") or "0")
-        received_at = datetime.fromtimestamp(internal_ms / 1000, tz=UTC) if internal_ms else datetime.now(UTC)
+        received_at = (
+            datetime.fromtimestamp(internal_ms / 1000, tz=UTC) if internal_ms else datetime.now(UTC)
+        )
         thread_id = payload.get("threadId")
         metadata = {
             "gmail_thread_id": thread_id,
@@ -322,7 +333,9 @@ class GmailEmailProvider:
         )
 
     def _to_detail(self, *, mailbox_id: str, payload: dict[str, Any]) -> EmailMessageDetail:
-        summary = self._to_summary(mailbox_id=mailbox_id, folder=self._primary_folder(payload), payload=payload)
+        summary = self._to_summary(
+            mailbox_id=mailbox_id, folder=self._primary_folder(payload), payload=payload
+        )
         headers = self._header_map(payload)
         return EmailMessageDetail(
             **summary.model_dump(),

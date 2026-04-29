@@ -472,7 +472,9 @@ def test_agent_prompt_tools_redact_response_token_in_audit_logs(tmp_path: Path) 
             "prompt": "Token redaction check.",
         },
     )
-    fetched_prompt = call_tool(server, "list_pending_agent_prompts", {"session_id": "target"})["prompts"][0]
+    fetched_prompt = call_tool(server, "list_pending_agent_prompts", {"session_id": "target"})[
+        "prompts"
+    ][0]
     call_tool(
         server,
         "respond_to_agent",
@@ -485,9 +487,17 @@ def test_agent_prompt_tools_redact_response_token_in_audit_logs(tmp_path: Path) 
     )
 
     events = read_audit_events(tmp_path / "audit.jsonl")
-    prompt_event = next(event for event in events if event.get("tool_name") == ToolName.PROMPT_AGENT.value)
-    inbox_event = next(event for event in events if event.get("tool_name") == ToolName.LIST_PENDING_AGENT_PROMPTS.value)
-    respond_event = next(event for event in events if event.get("tool_name") == ToolName.RESPOND_TO_AGENT.value)
+    prompt_event = next(
+        event for event in events if event.get("tool_name") == ToolName.PROMPT_AGENT.value
+    )
+    inbox_event = next(
+        event
+        for event in events
+        if event.get("tool_name") == ToolName.LIST_PENDING_AGENT_PROMPTS.value
+    )
+    respond_event = next(
+        event for event in events if event.get("tool_name") == ToolName.RESPOND_TO_AGENT.value
+    )
     assert prompt_event["result"]["response_token"] == "<redacted>"
     assert inbox_event["result"]["count"] == 1
     assert respond_event["args"]["response_token"] == "<redacted>"
@@ -568,7 +578,9 @@ def test_respond_to_agent_rejects_expired_token(tmp_path: Path) -> None:
         "prompt_agent",
         {"session_id": "sender", "target_session_id": "target", "prompt": "hello"},
     )
-    fetched_prompt = call_tool(server, "list_pending_agent_prompts", {"session_id": "target"})["prompts"][0]
+    fetched_prompt = call_tool(server, "list_pending_agent_prompts", {"session_id": "target"})[
+        "prompts"
+    ][0]
     time.sleep(1.2)
     with pytest.raises(Exception, match="expired"):
         call_tool(
@@ -615,7 +627,9 @@ def test_respond_to_agent_rejects_wrong_session_binding(tmp_path: Path) -> None:
         "prompt_agent",
         {"session_id": "sender", "target_session_id": "target", "prompt": "hello"},
     )
-    fetched_prompt = call_tool(server, "list_pending_agent_prompts", {"session_id": "target"})["prompts"][0]
+    fetched_prompt = call_tool(server, "list_pending_agent_prompts", {"session_id": "target"})[
+        "prompts"
+    ][0]
     with pytest.raises(Exception, match="target_session_id claim does not match request session"):
         call_tool(
             server,
@@ -682,7 +696,9 @@ def test_list_pending_agent_prompts_uses_directory_scoped_token_policy(tmp_path:
         {"session_id": "sender", "target_session_id": "target", "prompt": "hello again"},
     )
 
-    fetched_prompt = call_tool(server, "list_pending_agent_prompts", {"session_id": "target"})["prompts"][0]
+    fetched_prompt = call_tool(server, "list_pending_agent_prompts", {"session_id": "target"})[
+        "prompts"
+    ][0]
     claims = fetched_prompt["response_token_claims"]
     ttl_seconds = claims["expires_at"] - claims["issued_at"]
     assert ttl_seconds == 600

@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from agent_sandbox.provider_runtime.contracts import GateVmInventory, ProviderRuntimeBase
-from agent_sandbox.workflow_validation import NodeCapability, WorkflowValidationDiagnostic
+from agent_sandbox.workflow.validation import NodeCapability, WorkflowValidationDiagnostic
 
 
 @dataclass(frozen=True)

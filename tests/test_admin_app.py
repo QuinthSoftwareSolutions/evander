@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent_sandbox import admin_app
+from agent_sandbox.admin import app as admin_app
 
 
 class _FakeApp:
@@ -42,7 +42,7 @@ def test_main_uses_repo_local_runtime_dir_by_default(monkeypatch) -> None:
         admin_app.main()
 
     assert exc.value.code == 0
-    assert captured["runtime_dir"] == Path(admin_app.__file__).resolve().parents[2] / "runtime"
+    assert captured["runtime_dir"] == Path(admin_app.__file__).resolve().parents[3] / "runtime"
 
 
 def test_main_accepts_runtime_dir_override(monkeypatch, tmp_path: Path) -> None:
@@ -113,16 +113,23 @@ def test_directory_config_domains_include_ado_worker_and_issue_setup_tabs() -> N
 
 
 def test_selected_issue_state_filters_support_active_all_and_specific_states() -> None:
-    active_window = SimpleNamespace(issue_state_filter=SimpleNamespace(currentText=lambda: "Active"))
+    active_window = SimpleNamespace(
+        issue_state_filter=SimpleNamespace(currentText=lambda: "Active")
+    )
     all_window = SimpleNamespace(issue_state_filter=SimpleNamespace(currentText=lambda: "All"))
-    specific_window = SimpleNamespace(issue_state_filter=SimpleNamespace(currentText=lambda: "Completed"))
+    specific_window = SimpleNamespace(
+        issue_state_filter=SimpleNamespace(currentText=lambda: "Completed")
+    )
 
     assert admin_app.MainWindow._selected_issue_state_filters(active_window) == (
         None,
         {"Completed", "Closed"},
     )
     assert admin_app.MainWindow._selected_issue_state_filters(all_window) == (None, None)
-    assert admin_app.MainWindow._selected_issue_state_filters(specific_window) == ({"Completed"}, None)
+    assert admin_app.MainWindow._selected_issue_state_filters(specific_window) == (
+        {"Completed"},
+        None,
+    )
 
 
 def test_refresh_issues_passes_selected_state_filters() -> None:
@@ -174,11 +181,16 @@ def test_list_wake_schedules_for_selected_directory_aggregates_and_sorts() -> No
     window = SimpleNamespace(
         _selected_directory_path="root/team-a",
         service=SimpleNamespace(
-            list_sessions=lambda **kwargs: [SimpleNamespace(session_id="s1"), SimpleNamespace(session_id="s2")],
+            list_sessions=lambda **kwargs: [
+                SimpleNamespace(session_id="s1"),
+                SimpleNamespace(session_id="s2"),
+            ],
             list_wake_schedules=lambda session_id: [
                 {
                     "request_id": f"wake-{session_id}",
-                    "updated_at": "2026-04-01T10:00:00Z" if session_id == "s1" else "2026-04-01T11:00:00Z",
+                    "updated_at": "2026-04-01T10:00:00Z"
+                    if session_id == "s1"
+                    else "2026-04-01T11:00:00Z",
                 }
             ],
         ),
@@ -193,7 +205,9 @@ def test_create_wake_schedule_uses_admin_ui_source() -> None:
     captured: dict[str, object] = {}
     window = SimpleNamespace(
         service=SimpleNamespace(create_wake_schedule=object()),
-        run_action=lambda label, fn, **kwargs: captured.update({"label": label, "fn": fn, "kwargs": kwargs}),
+        run_action=lambda label, fn, **kwargs: captured.update(
+            {"label": label, "fn": fn, "kwargs": kwargs}
+        ),
     )
 
     admin_app.MainWindow.create_wake_schedule(
@@ -223,7 +237,9 @@ def test_directory_config_domain_help_text_legacy_tab_names_return_none() -> Non
     assert admin_app._directory_config_domain_help_text("teams") is None
 
 
-def test_directory_config_tab_field_sources_omit_discord_fields_from_access_policy_and_providers_tabs() -> None:
+def test_directory_config_tab_field_sources_omit_discord_fields_from_access_policy_and_providers_tabs() -> (
+    None
+):
     policy_fields = {
         field_name
         for _domain, field_name in admin_app._directory_config_tab_field_sources("access_policy")
@@ -297,7 +313,9 @@ def test_directory_config_tab_sections_match_expected_groupings() -> None:
     assert ("providers", "openai_api_key_env") in provider_sections["OpenAI"]
 
     assert ("issue_setup", "git_root") in issue_setup_sections["Git transport"]
-    assert ("issue_setup", "issue_setup_azure_devops_pr_pat_env") in issue_setup_sections["Azure DevOps"]
+    assert ("issue_setup", "issue_setup_azure_devops_pr_pat_env") in issue_setup_sections[
+        "Azure DevOps"
+    ]
 
     assert ("ado_worker", "ado_bootstrap_nuget") in ado_worker_sections["Bootstrap"]
     assert ("ado_worker", "ado_mssql_sa_password_env") in ado_worker_sections["MSSQL"]
@@ -305,15 +323,21 @@ def test_directory_config_tab_sections_match_expected_groupings() -> None:
 
 def test_directory_config_field_label_shortens_communications_prefixes() -> None:
     assert (
-        admin_app._directory_config_field_label("communications", "providers", "discord_bot_token_env")
+        admin_app._directory_config_field_label(
+            "communications", "providers", "discord_bot_token_env"
+        )
         == "bot token env"
     )
     assert (
-        admin_app._directory_config_field_label("communications", "heartbeat", "discord_resume_prompt")
+        admin_app._directory_config_field_label(
+            "communications", "heartbeat", "discord_resume_prompt"
+        )
         == "resume prompt"
     )
     assert (
-        admin_app._directory_config_field_label("communications", "providers", "teams_read_reaction_emoji")
+        admin_app._directory_config_field_label(
+            "communications", "providers", "teams_read_reaction_emoji"
+        )
         == "read reaction emoji"
     )
     assert (
@@ -328,12 +352,13 @@ def test_directory_config_field_label_shortens_other_tab_prefixes() -> None:
         == "pr pat env"
     )
     assert (
-        admin_app._directory_config_field_label("providers", "providers", "nuget_relay_timeout_seconds")
+        admin_app._directory_config_field_label(
+            "providers", "providers", "nuget_relay_timeout_seconds"
+        )
         == "relay timeout seconds"
     )
     assert (
-        admin_app._directory_config_field_label("vm_runtime", "vm", "openai_relay_port")
-        == "port"
+        admin_app._directory_config_field_label("vm_runtime", "vm", "openai_relay_port") == "port"
     )
     assert (
         admin_app._directory_config_field_label("issue_setup", "issue_setup", "git_ssh_alias")
@@ -346,7 +371,9 @@ def test_directory_config_field_label_shortens_other_tab_prefixes() -> None:
         == "pr pat env"
     )
     assert (
-        admin_app._directory_config_field_label("ado_worker", "ado_worker", "ado_bootstrap_frontend_deps")
+        admin_app._directory_config_field_label(
+            "ado_worker", "ado_worker", "ado_bootstrap_frontend_deps"
+        )
         == "frontend deps"
     )
     assert (
@@ -355,7 +382,9 @@ def test_directory_config_field_label_shortens_other_tab_prefixes() -> None:
     )
 
 
-def test_directory_config_tab_field_sources_include_teams_directory_scope_in_communications_tab() -> None:
+def test_directory_config_tab_field_sources_include_teams_directory_scope_in_communications_tab() -> (
+    None
+):
     field_sources = admin_app._directory_config_tab_field_sources("communications")
     field_domains = {field_name: domain for domain, field_name in field_sources}
 
@@ -416,10 +445,14 @@ def test_collect_config_form_payloads_by_source_splits_discord_tab_fields() -> N
         _read_config_field_control_value=lambda spec: (
             "bot_api" if spec["kind"] == "literal" else ["123456789012345678"]
         ),
-        _collect_config_form_payload=lambda domain: admin_app.MainWindow._collect_config_form_payload(window, domain),
+        _collect_config_form_payload=lambda domain: (
+            admin_app.MainWindow._collect_config_form_payload(window, domain)
+        ),
     )
 
-    payloads = admin_app.MainWindow._collect_config_form_payloads_by_source(window, "communications")
+    payloads = admin_app.MainWindow._collect_config_form_payloads_by_source(
+        window, "communications"
+    )
 
     assert payloads == {
         "providers": {"discord_backend": "bot_api"},
@@ -467,7 +500,9 @@ def test_save_config_domain_routes_directory_scope_writes() -> None:
         config_status_label=DummyLabel(),
         refresh_configuration=lambda: writes.append(("refresh", "", {})),
         _collect_config_form_payloads_by_source=lambda domain, source_filter=None: (
-            admin_app.MainWindow._collect_config_form_payloads_by_source(window, domain, source_filter=source_filter)
+            admin_app.MainWindow._collect_config_form_payloads_by_source(
+                window, domain, source_filter=source_filter
+            )
         ),
         _collect_config_form_payload=lambda _domain: {
             "teams_backend": "graph_api",
@@ -491,7 +526,10 @@ def test_preferred_agent_log_repo_name_uses_single_detected_repo() -> None:
 
 
 def test_preferred_agent_log_repo_name_skips_ambiguous_or_empty_repo_lists() -> None:
-    assert admin_app.MainWindow._preferred_agent_log_repo_name(SimpleNamespace(agent_repo_names=[])) is None
+    assert (
+        admin_app.MainWindow._preferred_agent_log_repo_name(SimpleNamespace(agent_repo_names=[]))
+        is None
+    )
     assert (
         admin_app.MainWindow._preferred_agent_log_repo_name(
             SimpleNamespace(agent_repo_names=["repo-one", "repo-two"])
@@ -609,7 +647,9 @@ def test_update_issue_action_bar_shows_yaml_button_for_selected_issue() -> None:
         edit_issue_button=DummyButton(),
         view_issue_yaml_button=DummyButton(),
         delete_issue_button=DummyButton(),
-        selected_issue_record=lambda: SimpleNamespace(issue_number="14382", source_type="local_manual"),
+        selected_issue_record=lambda: SimpleNamespace(
+            issue_number="14382", source_type="local_manual"
+        ),
     )
 
     admin_app.MainWindow.update_issue_action_bar(window)
@@ -785,7 +825,9 @@ def test_handle_kill_selected_vm_agent_uses_selected_pid() -> None:
     window = SimpleNamespace(
         selected_vm_summary=lambda: SimpleNamespace(vm_name="vm-42", agent_pid=4321),
         service=SimpleNamespace(kill_agent=object()),
-        run_action=lambda label, fn, *args: captured.update({"label": label, "fn": fn, "args": args}),
+        run_action=lambda label, fn, *args: captured.update(
+            {"label": label, "fn": fn, "args": args}
+        ),
     )
 
     admin_app.MainWindow.handle_kill_selected_vm_agent(window)
@@ -842,11 +884,11 @@ def test_update_session_action_bar_populates_session_model_controls() -> None:
         _session_tools_dirty=False,
         _session_tools_bound_session_id=None,
         _session_tools_server_values=set(),
-        _sync_session_model_editor=lambda session_id, model_value: admin_app.MainWindow._sync_session_model_editor(
-            window, session_id, model_value
+        _sync_session_model_editor=lambda session_id, model_value: (
+            admin_app.MainWindow._sync_session_model_editor(window, session_id, model_value)
         ),
-        _sync_session_tools_editor=lambda session_id, allowed_tools: admin_app.MainWindow._sync_session_tools_editor(
-            window, session_id, allowed_tools
+        _sync_session_tools_editor=lambda session_id, allowed_tools: (
+            admin_app.MainWindow._sync_session_tools_editor(window, session_id, allowed_tools)
         ),
         session_selection_hint=DummyLabel(),
         renew_session_button=DummyButton(),
@@ -913,11 +955,11 @@ def test_update_session_action_bar_preserves_dirty_model_input_for_same_session(
         _session_tools_dirty=False,
         _session_tools_bound_session_id="session-1",
         _session_tools_server_values=set(),
-        _sync_session_model_editor=lambda session_id, model_value: admin_app.MainWindow._sync_session_model_editor(
-            window, session_id, model_value
+        _sync_session_model_editor=lambda session_id, model_value: (
+            admin_app.MainWindow._sync_session_model_editor(window, session_id, model_value)
         ),
-        _sync_session_tools_editor=lambda session_id, allowed_tools: admin_app.MainWindow._sync_session_tools_editor(
-            window, session_id, allowed_tools
+        _sync_session_tools_editor=lambda session_id, allowed_tools: (
+            admin_app.MainWindow._sync_session_tools_editor(window, session_id, allowed_tools)
         ),
         session_selection_hint=DummyLabel(),
         renew_session_button=DummyButton(),
@@ -982,11 +1024,11 @@ def test_update_session_action_bar_replaces_model_input_when_session_changes() -
         _session_tools_dirty=False,
         _session_tools_bound_session_id="session-1",
         _session_tools_server_values=set(),
-        _sync_session_model_editor=lambda session_id, model_value: admin_app.MainWindow._sync_session_model_editor(
-            window, session_id, model_value
+        _sync_session_model_editor=lambda session_id, model_value: (
+            admin_app.MainWindow._sync_session_model_editor(window, session_id, model_value)
         ),
-        _sync_session_tools_editor=lambda session_id, allowed_tools: admin_app.MainWindow._sync_session_tools_editor(
-            window, session_id, allowed_tools
+        _sync_session_tools_editor=lambda session_id, allowed_tools: (
+            admin_app.MainWindow._sync_session_tools_editor(window, session_id, allowed_tools)
         ),
         session_selection_hint=DummyLabel(),
         renew_session_button=DummyButton(),
@@ -1066,11 +1108,11 @@ def test_update_session_action_bar_preserves_dirty_tool_checkboxes_for_same_sess
         _session_tools_dirty=True,
         _session_tools_bound_session_id="session-1",
         _session_tools_server_values=set(),
-        _sync_session_model_editor=lambda session_id, model_value: admin_app.MainWindow._sync_session_model_editor(
-            window, session_id, model_value
+        _sync_session_model_editor=lambda session_id, model_value: (
+            admin_app.MainWindow._sync_session_model_editor(window, session_id, model_value)
         ),
-        _sync_session_tools_editor=lambda session_id, allowed_tools: admin_app.MainWindow._sync_session_tools_editor(
-            window, session_id, allowed_tools
+        _sync_session_tools_editor=lambda session_id, allowed_tools: (
+            admin_app.MainWindow._sync_session_tools_editor(window, session_id, allowed_tools)
         ),
         session_selection_hint=DummyLabel(),
         renew_session_button=DummyButton(),
@@ -1151,11 +1193,11 @@ def test_update_session_action_bar_replaces_tool_checkboxes_when_session_changes
         _session_tools_dirty=True,
         _session_tools_bound_session_id="session-1",
         _session_tools_server_values=set(),
-        _sync_session_model_editor=lambda session_id, model_value: admin_app.MainWindow._sync_session_model_editor(
-            window, session_id, model_value
+        _sync_session_model_editor=lambda session_id, model_value: (
+            admin_app.MainWindow._sync_session_model_editor(window, session_id, model_value)
         ),
-        _sync_session_tools_editor=lambda session_id, allowed_tools: admin_app.MainWindow._sync_session_tools_editor(
-            window, session_id, allowed_tools
+        _sync_session_tools_editor=lambda session_id, allowed_tools: (
+            admin_app.MainWindow._sync_session_tools_editor(window, session_id, allowed_tools)
         ),
         session_selection_hint=DummyLabel(),
         renew_session_button=DummyButton(),
@@ -1262,7 +1304,9 @@ def test_handle_save_selected_session_model_success_callback_accepts_action_resu
         session_model_status_label=DummyLabel(),
         service=SimpleNamespace(set_session_model=object()),
         run_action=run_action,
-        _handle_session_model_save_success=lambda session_id, model: saved.append((session_id, model)),
+        _handle_session_model_save_success=lambda session_id, model: saved.append(
+            (session_id, model)
+        ),
     )
 
     admin_app.MainWindow.handle_save_selected_session_model(window)
@@ -1276,7 +1320,9 @@ def test_handle_save_selected_session_model_success_callback_accepts_action_resu
 
 def test_show_new_vm_dialog_calls_generic_create_vm(monkeypatch) -> None:
     captured: dict[str, object] = {}
-    monkeypatch.setattr(admin_app, "QDialog", SimpleNamespace(DialogCode=SimpleNamespace(Accepted=1)))
+    monkeypatch.setattr(
+        admin_app, "QDialog", SimpleNamespace(DialogCode=SimpleNamespace(Accepted=1))
+    )
 
     class FakeDialog:
         def __init__(self, parent=None) -> None:
@@ -1301,7 +1347,9 @@ def test_show_new_vm_dialog_calls_generic_create_vm(monkeypatch) -> None:
     window = SimpleNamespace(
         _selected_directory_path="root/team",
         service=SimpleNamespace(create_vm="create-vm-fn"),
-        run_action=lambda label, fn, **kwargs: captured.update({"label": label, "fn": fn, "kwargs": kwargs}),
+        run_action=lambda label, fn, **kwargs: captured.update(
+            {"label": label, "fn": fn, "kwargs": kwargs}
+        ),
     )
 
     admin_app.MainWindow.show_new_vm_dialog(window)
@@ -1326,8 +1374,12 @@ def test_handle_view_selected_issue_yaml_opens_readonly_dialog(tmp_path: Path) -
     captured: dict[str, str] = {}
 
     window = SimpleNamespace(
-        selected_issue_record=lambda: SimpleNamespace(issue_number="14382", yaml_path=str(yaml_path)),
-        _show_read_only_text_dialog=lambda *, title, text: captured.update({"title": title, "text": text}),
+        selected_issue_record=lambda: SimpleNamespace(
+            issue_number="14382", yaml_path=str(yaml_path)
+        ),
+        _show_read_only_text_dialog=lambda *, title, text: captured.update(
+            {"title": title, "text": text}
+        ),
     )
 
     admin_app.MainWindow.handle_view_selected_issue_yaml(window)
@@ -1339,9 +1391,20 @@ def test_handle_view_selected_issue_yaml_opens_readonly_dialog(tmp_path: Path) -
 
 
 def test_pr_template_root_field_starts_editable_without_existing_root_file() -> None:
-    assert admin_app._root_config_field_starts_editable("pr_template", "pr_template_markdown", {}) is True
-    assert admin_app._root_config_field_starts_editable("pr_template", "pr_template_markdown", {"pr_template_markdown": "x"}) is False
-    assert admin_app._root_config_field_starts_editable("policy", "default_session_ttl_seconds", {}) is False
+    assert (
+        admin_app._root_config_field_starts_editable("pr_template", "pr_template_markdown", {})
+        is True
+    )
+    assert (
+        admin_app._root_config_field_starts_editable(
+            "pr_template", "pr_template_markdown", {"pr_template_markdown": "x"}
+        )
+        is False
+    )
+    assert (
+        admin_app._root_config_field_starts_editable("policy", "default_session_ttl_seconds", {})
+        is False
+    )
 
 
 def test_main_window_initializes_worker_splitter(monkeypatch) -> None:
@@ -1372,7 +1435,9 @@ def test_main_window_initializes_worker_splitter(monkeypatch) -> None:
 
     monkeypatch.setattr(admin_app.MainWindow, "_restore_selected_directory", lambda self: None)
     monkeypatch.setattr(admin_app.MainWindow, "_apply_directory_feature_state", lambda self: None)
-    monkeypatch.setattr(admin_app.MainWindow, "_refresh_visible_data", lambda self, manual=False: None)
+    monkeypatch.setattr(
+        admin_app.MainWindow, "_refresh_visible_data", lambda self, manual=False: None
+    )
     monkeypatch.setattr(admin_app.MainWindow, "refresh_issues", lambda self: None)
     monkeypatch.setattr(admin_app.MainWindow, "refresh_approvals", lambda self: None)
     monkeypatch.setattr(admin_app.MainWindow, "refresh_sessions", lambda self: None)
@@ -1432,18 +1497,33 @@ def test_handle_action_success_treats_unsuccessful_result_as_failure(monkeypatch
         refresh_issues=lambda: refresh_calls.append("issues"),
         refresh_approvals=lambda: refresh_calls.append("approvals"),
         refresh_workers=lambda: refresh_calls.append("workers"),
-        _show_action_error_dialog=lambda message: dialog_messages.append(("Action Failed", message)),
+        _show_action_error_dialog=lambda message: dialog_messages.append(
+            ("Action Failed", message)
+        ),
     )
 
-    result = SimpleNamespace(success=False, message="Failed to create VM idea-generator-vm: codex failed")
+    result = SimpleNamespace(
+        success=False, message="Failed to create VM idea-generator-vm: codex failed"
+    )
 
-    admin_app.MainWindow._handle_action_success(window, "Create VM idea-generator-vm", result, None, object())
+    admin_app.MainWindow._handle_action_success(
+        window, "Create VM idea-generator-vm", result, None, object()
+    )
 
     assert log_messages == [
         "Create VM idea-generator-vm failed: Failed to create VM idea-generator-vm: codex failed"
     ]
-    assert dialog_messages == [("Action Failed", "Failed to create VM idea-generator-vm: codex failed")]
-    assert refresh_calls == ["discarded", "status", "visible:True", "issues", "approvals", "workers"]
+    assert dialog_messages == [
+        ("Action Failed", "Failed to create VM idea-generator-vm: codex failed")
+    ]
+    assert refresh_calls == [
+        "discarded",
+        "status",
+        "visible:True",
+        "issues",
+        "approvals",
+        "workers",
+    ]
 
 
 def test_handle_action_failure_uses_scrollable_error_dialog() -> None:
@@ -1457,7 +1537,9 @@ def test_handle_action_failure_uses_scrollable_error_dialog() -> None:
         _show_action_error_dialog=lambda message: dialog_messages.append(message),
     )
 
-    admin_app.MainWindow._handle_action_failure(window, "Create VM idea-generator-vm", "very long error", object())
+    admin_app.MainWindow._handle_action_failure(
+        window, "Create VM idea-generator-vm", "very long error", object()
+    )
 
     assert log_messages == ["Create VM idea-generator-vm failed: very long error"]
     assert dialog_messages == ["very long error"]
@@ -1482,7 +1564,9 @@ def test_refresh_selected_approval_detail_uses_background_worker(monkeypatch) ->
             self.signals = SimpleNamespace(finished=DummySignal(), failed=DummySignal())
 
     monkeypatch.setattr(admin_app, "_ActionWorker", DummyWorker)
-    monkeypatch.setattr(admin_app, "_set_text_preserving_scroll", lambda _view, text: updates.append(text))
+    monkeypatch.setattr(
+        admin_app, "_set_text_preserving_scroll", lambda _view, text: updates.append(text)
+    )
 
     request = SimpleNamespace(request_id="approval-1")
     window = SimpleNamespace(
@@ -1509,7 +1593,9 @@ def test_refresh_selected_approval_detail_uses_background_worker(monkeypatch) ->
 
 def test_handle_approval_detail_success_ignores_stale_result(monkeypatch) -> None:
     updates: list[str] = []
-    monkeypatch.setattr(admin_app, "_set_text_preserving_scroll", lambda _view, text: updates.append(text))
+    monkeypatch.setattr(
+        admin_app, "_set_text_preserving_scroll", lambda _view, text: updates.append(text)
+    )
 
     request = SimpleNamespace(request_id="approval-2")
     discarded: list[object] = []
@@ -1534,7 +1620,9 @@ def test_handle_approval_detail_success_ignores_stale_result(monkeypatch) -> Non
 
 def test_handle_approval_detail_failure_updates_selected_request(monkeypatch) -> None:
     updates: list[str] = []
-    monkeypatch.setattr(admin_app, "_set_text_preserving_scroll", lambda _view, text: updates.append(text))
+    monkeypatch.setattr(
+        admin_app, "_set_text_preserving_scroll", lambda _view, text: updates.append(text)
+    )
 
     request = SimpleNamespace(request_id="approval-1")
     discarded: list[object] = []

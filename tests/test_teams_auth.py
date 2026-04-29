@@ -7,7 +7,7 @@ from urllib.parse import parse_qs
 import httpx
 import pytest
 
-from agent_sandbox.teams_auth import (
+from agent_sandbox.messaging.teams_auth import (
     AuthorizationPendingError,
     ConsentDeniedError,
     DeviceCodeExpiredError,
@@ -157,7 +157,10 @@ def test_complete_device_code_login_retries_pending_and_slow_down_then_persists_
         if token_calls == 1:
             return httpx.Response(
                 400,
-                json={"error": "authorization_pending", "error_description": "authorization_pending"},
+                json={
+                    "error": "authorization_pending",
+                    "error_description": "authorization_pending",
+                },
                 request=request,
             )
         if token_calls == 2:
@@ -216,7 +219,9 @@ def test_begin_device_code_login_maps_invalid_client_configuration(tmp_path: Pat
         provider.begin_device_code_login()
 
 
-def test_poll_device_code_login_once_explains_confidential_client_misconfiguration(tmp_path: Path) -> None:
+def test_poll_device_code_login_once_explains_confidential_client_misconfiguration(
+    tmp_path: Path,
+) -> None:
     session = DeviceCodeLoginSession(
         client_id="client-123",
         tenant_id="tenant-abc",

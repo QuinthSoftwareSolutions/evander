@@ -4,7 +4,7 @@ from copy import deepcopy
 from typing import Any
 
 from agent_sandbox.gates.providers.base import GateProviderBase
-from agent_sandbox.workflow_validation import NodeCapability
+from agent_sandbox.workflow.validation import NodeCapability
 
 
 class MergeGateProvider(GateProviderBase):
@@ -20,8 +20,12 @@ class MergeGateProvider(GateProviderBase):
 
         previous = worker.gate_execution_store.find_latest_execution_for_gate(gate.id)
         inputs_by_source = deepcopy(previous.inputs_by_source) if previous is not None else {}
-        input_event_ids_by_source = dict(previous.input_event_ids_by_source) if previous is not None else {}
-        input_occurred_at_by_source = dict(previous.input_occurred_at_by_source) if previous is not None else {}
+        input_event_ids_by_source = (
+            dict(previous.input_event_ids_by_source) if previous is not None else {}
+        )
+        input_occurred_at_by_source = (
+            dict(previous.input_occurred_at_by_source) if previous is not None else {}
+        )
 
         inputs_by_source[queue_record.trigger_id] = dict(queue_record.payload)
         input_event_ids_by_source[queue_record.trigger_id] = queue_record.event_id
@@ -38,7 +42,11 @@ class MergeGateProvider(GateProviderBase):
             if source_key_sets:
                 shared_output_keys = tuple(sorted(set.intersection(*source_key_sets)))
         resolved_config = {"shared_output_keys": list(shared_output_keys)}
-        outputs = {key: queue_record.payload[key] for key in shared_output_keys if key in queue_record.payload}
+        outputs = {
+            key: queue_record.payload[key]
+            for key in shared_output_keys
+            if key in queue_record.payload
+        }
         worker._write_gate_record(
             queue_record=queue_record,
             gate=gate,

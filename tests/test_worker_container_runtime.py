@@ -46,7 +46,9 @@ def test_docker_runtime_refuses_host_network() -> None:
         DockerContainerRuntime(docker_network="host")
 
 
-def test_docker_run_args_use_restricted_container_shape_and_persistent_mounts(tmp_path: Path) -> None:
+def test_docker_run_args_use_restricted_container_shape_and_persistent_mounts(
+    tmp_path: Path,
+) -> None:
     paths = WorkerSessionPaths.resolve(tmp_path / "worker-root", "session-1")
     runtime = DockerContainerRuntime(docker_network="none")
 
@@ -85,7 +87,9 @@ def test_strict_profile_adds_read_only_tmpfs_and_default_pids_limit(tmp_path: Pa
     paths = WorkerSessionPaths.resolve(tmp_path / "worker-root", "session-1")
     request = _request()
     request.resource_limits = WorkerResourceLimits(memory="512m", cpus=1.5)
-    runtime = DockerContainerRuntime(sandbox_profile=strict_worker_sandbox_profile(), docker_network=None)
+    runtime = DockerContainerRuntime(
+        sandbox_profile=strict_worker_sandbox_profile(), docker_network=None
+    )
 
     args = runtime._build_run_args(request=request, record=_record(paths), paths=paths)  # noqa: SLF001
 
@@ -97,7 +101,9 @@ def test_strict_profile_adds_read_only_tmpfs_and_default_pids_limit(tmp_path: Pa
 
 def test_job_pids_limit_overrides_strict_profile_default(tmp_path: Path) -> None:
     paths = WorkerSessionPaths.resolve(tmp_path / "worker-root", "session-1")
-    runtime = DockerContainerRuntime(sandbox_profile=strict_worker_sandbox_profile(), docker_network=None)
+    runtime = DockerContainerRuntime(
+        sandbox_profile=strict_worker_sandbox_profile(), docker_network=None
+    )
 
     args = runtime._build_run_args(request=_request(), record=_record(paths), paths=paths)  # noqa: SLF001
 
@@ -111,7 +117,9 @@ def test_profile_refuses_host_network() -> None:
 
 def test_profile_refuses_privileged_mode() -> None:
     with pytest.raises(ValueError, match="privileged"):
-        DockerContainerRuntime(sandbox_profile=WorkerSandboxProfile(name="bad", privileged=True), docker_network=None)
+        DockerContainerRuntime(
+            sandbox_profile=WorkerSandboxProfile(name="bad", privileged=True), docker_network=None
+        )
 
 
 def test_docker_runtime_rejects_docker_socket_mount(tmp_path: Path) -> None:

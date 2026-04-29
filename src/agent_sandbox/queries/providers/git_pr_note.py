@@ -11,8 +11,12 @@ class GitPrNoteQueryProvider(QueryProviderBase):
         payload = self._query_payload()
         if resolved_config:
             payload.update(dict(resolved_config))
-        host_repo_path = self._normalize_required_string(payload.get("host_repo_path"), field_name="host_repo_path")
-        local_branch = self._normalize_required_string(payload.get("local_branch"), field_name="local_branch")
+        host_repo_path = self._normalize_required_string(
+            payload.get("host_repo_path"), field_name="host_repo_path"
+        )
+        local_branch = self._normalize_required_string(
+            payload.get("local_branch"), field_name="local_branch"
+        )
         remote_name = self._normalize_optional_string(payload.get("remote_name"))
         notes_ref = self._normalize_optional_string(payload.get("notes_ref"))
 

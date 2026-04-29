@@ -73,7 +73,9 @@ class VmCreateEffectProvider(EffectProviderBase):
 
         resolved_session_id = session_id or f"session-{vm_name}"
         return {
-            "provider": self._normalize_optional_string(getattr(result, "provider", None)) or self._normalize_optional_string(payload.get("provider")) or "libvirt",
+            "provider": self._normalize_optional_string(getattr(result, "provider", None))
+            or self._normalize_optional_string(payload.get("provider"))
+            or "libvirt",
             "session_id": resolved_session_id,
             "vm_name": result.vm_name or vm_name,
             "labels": self._as_string_mapping(payload.get("labels")) or {},
@@ -83,7 +85,9 @@ class VmCreateEffectProvider(EffectProviderBase):
 
     def _effect(self) -> VmCreateEffectDefinition:
         if not isinstance(self.effect_definition, VmCreateEffectDefinition):
-            raise RuntimeError("VmCreateEffectProvider initialized with a non-vm-create effect definition")
+            raise RuntimeError(
+                "VmCreateEffectProvider initialized with a non-vm-create effect definition"
+            )
         return self.effect_definition
 
     def _context(self):

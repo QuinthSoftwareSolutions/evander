@@ -10,7 +10,9 @@ from agent_sandbox.models import VmSummary
 
 
 class _AdminServiceStub:
-    def __init__(self, summaries: list[VmSummary], vm_copy_files_result: dict[str, object] | None = None) -> None:
+    def __init__(
+        self, summaries: list[VmSummary], vm_copy_files_result: dict[str, object] | None = None
+    ) -> None:
         self.summaries = summaries
         self.vm_copy_files_result = vm_copy_files_result
         self.calls: list[dict[str, object]] = []

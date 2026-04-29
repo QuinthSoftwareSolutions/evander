@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from agent_sandbox.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
-from agent_sandbox.effect_orchestrator import EffectOrchestratorWorker
+from agent_sandbox.daemons.effect_orchestrator import EffectOrchestratorWorker
 from agent_sandbox.events.models import TriggerEvent
 from agent_sandbox.gates.registry import DEFAULT_GATE_PROVIDER_REGISTRY, GateProviderRegistry
 
@@ -23,7 +23,12 @@ def test_effect_orchestrator_runs_without_await_agent_provider(tmp_path: Path) -
             "poll_interval_seconds": 1,
             "jitter_seconds": 0,
             "triggers": [
-                {"id": "trigger-1", "display_name": "Tick", "type": "trigger:cron", "expression": "* * * * *"}
+                {
+                    "id": "trigger-1",
+                    "display_name": "Tick",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
             ],
             "gates": [
                 {
@@ -54,7 +59,9 @@ def test_effect_orchestrator_runs_without_await_agent_provider(tmp_path: Path) -
     result = worker.run_once()
 
     assert result.events_processed == 1
-    gate_payload = json.loads((runtime_dir / "gate-orchestrator-executions.json").read_text(encoding="utf-8"))
+    gate_payload = json.loads(
+        (runtime_dir / "gate-orchestrator-executions.json").read_text(encoding="utf-8")
+    )
     only = next(iter(gate_payload.values()))
     assert only["status"] == "failed"
     assert only["error"] == "no_gate_provider_registered:gate:await-agent"

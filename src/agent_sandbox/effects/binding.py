@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from agent_sandbox.workflow_binding import (
+from agent_sandbox.workflow.binding import (
     BindingResolutionError,
     BindingResolutionResult,
     BindingResolutionTrace,

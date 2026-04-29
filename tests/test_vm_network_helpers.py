@@ -7,53 +7,53 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_issue_vm_scripts_source_shared_network_helper() -> None:
-    setup = (ROOT / 'scripts' / 'setup_vm.sh').read_text(encoding='utf-8')
-    check = (ROOT / 'scripts' / 'check_issue_vm.sh').read_text(encoding='utf-8')
+    setup = (ROOT / "scripts" / "setup_vm.sh").read_text(encoding="utf-8")
+    check = (ROOT / "scripts" / "check_issue_vm.sh").read_text(encoding="utf-8")
 
     assert 'source "${SCRIPT_DIR}/lib/vm_network.sh"' in setup
     assert 'source "${SCRIPT_DIR}/lib/vm_network.sh"' in check
-    assert 'vm_network_wait_for_ip' in setup
-    assert 'vm_network_wait_for_ssh' in setup
-    assert 'vm_network_wait_for_ip' in check
-    assert 'vm_network_wait_for_ssh' in check
+    assert "vm_network_wait_for_ip" in setup
+    assert "vm_network_wait_for_ssh" in setup
+    assert "vm_network_wait_for_ip" in check
+    assert "vm_network_wait_for_ssh" in check
 
 
 def test_issue_vm_timeout_env_names_are_standardized() -> None:
-    setup = (ROOT / 'scripts' / 'setup_vm.sh').read_text(encoding='utf-8')
-    check = (ROOT / 'scripts' / 'check_issue_vm.sh').read_text(encoding='utf-8')
+    setup = (ROOT / "scripts" / "setup_vm.sh").read_text(encoding="utf-8")
+    check = (ROOT / "scripts" / "check_issue_vm.sh").read_text(encoding="utf-8")
 
     for text in (setup, check):
-        assert 'VM_WAIT_IP_TIMEOUT_SECONDS' in text
-        assert 'VM_WAIT_SSH_TIMEOUT_SECONDS' in text
-        assert 'VM_IP_WAIT_TIMEOUT_SECONDS' not in text
-        assert 'VM_SSH_WAIT_TIMEOUT_SECONDS' not in text
+        assert "VM_WAIT_IP_TIMEOUT_SECONDS" in text
+        assert "VM_WAIT_SSH_TIMEOUT_SECONDS" in text
+        assert "VM_IP_WAIT_TIMEOUT_SECONDS" not in text
+        assert "VM_SSH_WAIT_TIMEOUT_SECONDS" not in text
 
 
 def test_timeout_env_names_are_documented_consistently() -> None:
-    readme = (ROOT / 'README.md').read_text(encoding='utf-8')
-    operations = (ROOT / 'docs' / 'operations.md').read_text(encoding='utf-8')
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    operations = (ROOT / "docs" / "operations.md").read_text(encoding="utf-8")
 
     for text in (readme, operations):
-        assert 'VM_WAIT_IP_TIMEOUT_SECONDS' in text
-        assert 'VM_WAIT_SSH_TIMEOUT_SECONDS' in text
-        assert 'default `180`' in text
+        assert "VM_WAIT_IP_TIMEOUT_SECONDS" in text
+        assert "VM_WAIT_SSH_TIMEOUT_SECONDS" in text
+        assert "default `180`" in text
 
 
 def test_issue_vm_helpers_auto_detect_repo_name_when_omitted() -> None:
-    tail_script = (ROOT / 'scripts' / 'tail_issue_vm_log.sh').read_text(encoding='utf-8')
-    check_script = (ROOT / 'scripts' / 'check_issue_vm.sh').read_text(encoding='utf-8')
+    tail_script = (ROOT / "scripts" / "tail_issue_vm_log.sh").read_text(encoding="utf-8")
+    check_script = (ROOT / "scripts" / "check_issue_vm.sh").read_text(encoding="utf-8")
 
     for text in (tail_script, check_script):
-        assert 'Repo basename used by guest agent logs. Default: auto-detect' in text
-        assert 'sort -u' in text
-        assert 'agent-*.pid' in text
-        assert 'agent-*.state' in text
-        assert 'codex-heartbeat-run.log' in text
-        assert 'codex-heartbeat.pid' in text
+        assert "Repo basename used by guest agent logs. Default: auto-detect" in text
+        assert "sort -u" in text
+        assert "agent-*.pid" in text
+        assert "agent-*.state" in text
+        assert "codex-heartbeat-run.log" in text
+        assert "codex-heartbeat.pid" in text
 
-    assert 'Number of log lines to print before following. Default: 10' in tail_script
-    assert 'Multiple guest agent logs found under' in tail_script
-    assert 'pass an explicit repo-name' in check_script
+    assert "Number of log lines to print before following. Default: 10" in tail_script
+    assert "Multiple guest agent logs found under" in tail_script
+    assert "pass an explicit repo-name" in check_script
 
 
 def _write_executable(path: Path, content: str) -> None:
@@ -70,7 +70,9 @@ def test_vm_network_wait_for_ssh_refreshes_options_each_retry(tmp_path: Path) ->
     lib_dir.mkdir(parents=True)
     fake_bin.mkdir()
 
-    (lib_dir / "vm_network.sh").write_text((ROOT / "scripts" / "lib" / "vm_network.sh").read_text(encoding="utf-8"), encoding="utf-8")
+    (lib_dir / "vm_network.sh").write_text(
+        (ROOT / "scripts" / "lib" / "vm_network.sh").read_text(encoding="utf-8"), encoding="utf-8"
+    )
     _write_executable(
         lib_dir / "guest_ssh.sh",
         f"""#!/usr/bin/env bash
@@ -140,7 +142,9 @@ def test_guest_ssh_resolve_vm_ip_falls_back_after_sudo_failure(tmp_path: Path) -
     lib_dir.mkdir()
     fake_bin.mkdir()
 
-    (lib_dir / "guest_ssh.sh").write_text((ROOT / "scripts" / "lib" / "guest_ssh.sh").read_text(encoding="utf-8"), encoding="utf-8")
+    (lib_dir / "guest_ssh.sh").write_text(
+        (ROOT / "scripts" / "lib" / "guest_ssh.sh").read_text(encoding="utf-8"), encoding="utf-8"
+    )
     _write_executable(
         fake_bin / "sudo",
         """#!/usr/bin/env bash
@@ -195,8 +199,12 @@ def test_vm_network_resolve_ip_falls_back_after_sudo_failure(tmp_path: Path) -> 
     lib_dir.mkdir()
     fake_bin.mkdir()
 
-    (lib_dir / "guest_ssh.sh").write_text((ROOT / "scripts" / "lib" / "guest_ssh.sh").read_text(encoding="utf-8"), encoding="utf-8")
-    (lib_dir / "vm_network.sh").write_text((ROOT / "scripts" / "lib" / "vm_network.sh").read_text(encoding="utf-8"), encoding="utf-8")
+    (lib_dir / "guest_ssh.sh").write_text(
+        (ROOT / "scripts" / "lib" / "guest_ssh.sh").read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    (lib_dir / "vm_network.sh").write_text(
+        (ROOT / "scripts" / "lib" / "vm_network.sh").read_text(encoding="utf-8"), encoding="utf-8"
+    )
     _write_executable(
         fake_bin / "sudo",
         """#!/usr/bin/env bash
@@ -255,8 +263,12 @@ def test_vm_network_helper_prefers_explicit_system_libvirt_uri(tmp_path: Path) -
     lib_dir.mkdir()
     fake_bin.mkdir()
 
-    (lib_dir / "guest_ssh.sh").write_text((ROOT / "scripts" / "lib" / "guest_ssh.sh").read_text(encoding="utf-8"), encoding="utf-8")
-    (lib_dir / "vm_network.sh").write_text((ROOT / "scripts" / "lib" / "vm_network.sh").read_text(encoding="utf-8"), encoding="utf-8")
+    (lib_dir / "guest_ssh.sh").write_text(
+        (ROOT / "scripts" / "lib" / "guest_ssh.sh").read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    (lib_dir / "vm_network.sh").write_text(
+        (ROOT / "scripts" / "lib" / "vm_network.sh").read_text(encoding="utf-8"), encoding="utf-8"
+    )
     _write_executable(
         fake_bin / "virsh",
         f"""#!/usr/bin/env bash

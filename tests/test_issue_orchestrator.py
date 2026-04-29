@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
-from agent_sandbox.issue_orchestrator import IssueOrchestratorWorker
+from agent_sandbox.daemons.issue_orchestrator import IssueOrchestratorWorker
 from agent_sandbox.models import SessionManifest, ToolName
 
 
@@ -31,7 +31,7 @@ def test_issue_orchestrator_uses_dispatch_only_for_resume(tmp_path: Path, monkey
         captured.append((cmd, env))
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
-    monkeypatch.setattr("agent_sandbox.issue_orchestrator.subprocess.run", _fake_run)
+    monkeypatch.setattr("agent_sandbox.daemons.issue_orchestrator.subprocess.run", _fake_run)
 
     worker = object.__new__(IssueOrchestratorWorker)
     worker.config = SimpleNamespace(host_agent_control_state_path=tmp_path / "host-control.json")
@@ -76,9 +76,9 @@ def test_issue_orchestrator_sets_agent_model_for_resume(tmp_path: Path, monkeypa
         captured["env"] = env
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
-    monkeypatch.setattr("agent_sandbox.issue_orchestrator.subprocess.run", _fake_run)
+    monkeypatch.setattr("agent_sandbox.daemons.issue_orchestrator.subprocess.run", _fake_run)
     monkeypatch.setattr(
-        "agent_sandbox.issue_orchestrator.resolve_effective_issue_setup_config",
+        "agent_sandbox.daemons.issue_orchestrator.resolve_effective_issue_setup_config",
         lambda **_: SimpleNamespace(default_model="gpt-5.4"),
     )
 

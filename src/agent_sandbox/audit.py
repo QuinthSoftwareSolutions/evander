@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from .models import AuditEvent
+from agent_sandbox.models import AuditEvent
 
 
 class AuditEventType:

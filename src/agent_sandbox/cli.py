@@ -21,21 +21,25 @@ import typer
 from pydantic import ValidationError
 from typer.core import TyperGroup
 
-from .admin_service import AdminService, resolve_agent_model_for_manifest, resolve_effective_issue_setup_config
-from .audit import AuditEventType
-from .ado_issue_worker import run_worker_command
-from .bootstrap import (
+from agent_sandbox.admin.service import (
+    AdminService,
+    resolve_agent_model_for_manifest,
+    resolve_effective_issue_setup_config,
+)
+from agent_sandbox.audit import AuditEventType
+from agent_sandbox.daemons.ado_issue_worker import run_worker_command
+from agent_sandbox.bootstrap import (
     load_host_bootstrap_config,
     load_runtime_gateway_config,
     resolve_project_dir,
     resolve_runtime_dir,
 )
-from .config import GatewayConfig, load_config
-from .discord_wake_worker import build_discord_wake_worker
-from .directories import DirectoryService
-from .issue_orchestrator import build_issue_orchestrator_worker
-from .effect_orchestrator import build_effect_orchestrator_worker
-from .execution import (
+from agent_sandbox.config import GatewayConfig, load_config
+from agent_sandbox.messaging.discord_wake import build_discord_wake_worker
+from agent_sandbox.directories import DirectoryService
+from agent_sandbox.daemons.issue_orchestrator import build_issue_orchestrator_worker
+from agent_sandbox.daemons.effect_orchestrator import build_effect_orchestrator_worker
+from agent_sandbox.execution import (
     ContainerWorkerExecutionRepository,
     ContainerWorkerVmExecutionBackend,
     ExecutionBackendKind,
@@ -43,23 +47,29 @@ from .execution import (
     ExecutionStatusKind,
     build_execution_backend,
 )
-from .scheduled_wake_worker import build_scheduled_wake_worker
-from .trigger_orchestrator import build_trigger_orchestrator_worker
-from .migrations import (
+from agent_sandbox.messaging.scheduled_wake import build_scheduled_wake_worker
+from agent_sandbox.daemons.trigger_orchestrator import build_trigger_orchestrator_worker
+from agent_sandbox.migrations import (
     migrate_ado_worker_env_to_root,
     migrate_directory_ownership_defaults,
     migrate_global_config_to_root,
     migrate_issue_setup_env_to_root,
     migrate_pr_template_to_root,
 )
-from .email.providers import JsonEmailProvider, MultiMailboxEmailProvider
-from .models import ApprovalStatus, DiscordCommandEnvelope, EmailMessage, SessionManifest, ToolName
-from .policy_config import EffectivePolicyConfig
-from .pr_feedback_worker import PrFeedbackStore
-from .runtime import build_runtime
-from .session_manifest_repository import JsonSessionManifestRepository
-from .teams_auth import TeamsAuthError
-from .vm_defaults_config import EffectiveVmDefaultsConfig, VmDefaultsConfigResolver
+from agent_sandbox.email.providers import JsonEmailProvider, MultiMailboxEmailProvider
+from agent_sandbox.models import (
+    ApprovalStatus,
+    DiscordCommandEnvelope,
+    EmailMessage,
+    SessionManifest,
+    ToolName,
+)
+from agent_sandbox.policy_config import EffectivePolicyConfig
+from agent_sandbox.daemons.pr_feedback_worker import PrFeedbackStore
+from agent_sandbox.runtime import build_runtime
+from agent_sandbox.repositories.session_manifests import JsonSessionManifestRepository
+from agent_sandbox.messaging.teams_auth import TeamsAuthError
+from agent_sandbox.vm.defaults_config import EffectiveVmDefaultsConfig, VmDefaultsConfigResolver
 
 _COMMAND_PANELS = {
     "Health and State": 0,
@@ -82,7 +92,9 @@ class GroupedHelpTyperGroup(TyperGroup):
         return sorted(self.commands, key=command_sort_key)
 
 
-app = typer.Typer(help="Utilities for the agent sandbox host control plane.", cls=GroupedHelpTyperGroup)
+app = typer.Typer(
+    help="Utilities for the agent sandbox host control plane.", cls=GroupedHelpTyperGroup
+)
 directories_app = typer.Typer(help="Directory management and directory-scoped config inspection.")
 wake_schedules_app = typer.Typer(help="Manage scheduled wake requests.")
 teams_auth_app = typer.Typer(help="Manage delegated Teams auth.")
@@ -132,12 +144,16 @@ def _project_dir_for_config_option(config: Path) -> Path:
 
 def _load_runtime_config_from_option(config: Path) -> GatewayConfig:
     runtime_dir, legacy_config_path = _bootstrap_inputs(config)
-    return load_runtime_gateway_config(runtime_dir=runtime_dir, legacy_config_path=legacy_config_path)
+    return load_runtime_gateway_config(
+        runtime_dir=runtime_dir, legacy_config_path=legacy_config_path
+    )
 
 
 def _load_host_config_from_option(config: Path):
     runtime_dir, legacy_config_path = _bootstrap_inputs(config)
-    return load_host_bootstrap_config(runtime_dir=runtime_dir, legacy_config_path=legacy_config_path)
+    return load_host_bootstrap_config(
+        runtime_dir=runtime_dir, legacy_config_path=legacy_config_path
+    )
 
 
 def _build_execution_backend_from_option(config: Path):
@@ -150,7 +166,9 @@ def _build_execution_backend_from_option(config: Path):
 
 
 def _container_worker_repository(config: GatewayConfig) -> ContainerWorkerExecutionRepository:
-    return ContainerWorkerExecutionRepository(config.runtime_dir / "container-worker-executions.json")
+    return ContainerWorkerExecutionRepository(
+        config.runtime_dir / "container-worker-executions.json"
+    )
 
 
 def _container_worker_target_exists(config: GatewayConfig, target: str) -> bool:
@@ -192,11 +210,17 @@ def _build_execution_backend_for_kind(
         if require_container_token:
             _preflight_container_worker_config(cfg)
         elif not cfg.container_worker_base_url:
-            raise typer.BadParameter("container_worker_base_url is required for container_worker_vm.")
-        container_cfg = cfg.model_copy(update={"execution_backend": ExecutionBackendKind.CONTAINER_WORKER_VM.value})
+            raise typer.BadParameter(
+                "container_worker_base_url is required for container_worker_vm."
+            )
+        container_cfg = cfg.model_copy(
+            update={"execution_backend": ExecutionBackendKind.CONTAINER_WORKER_VM.value}
+        )
         return ContainerWorkerVmExecutionBackend(config=container_cfg)
 
-    libvirt_cfg = cfg.model_copy(update={"execution_backend": ExecutionBackendKind.LIBVIRT_VM.value})
+    libvirt_cfg = cfg.model_copy(
+        update={"execution_backend": ExecutionBackendKind.LIBVIRT_VM.value}
+    )
     return build_execution_backend(
         libvirt_cfg,
         admin_service=AdminService(config_path),
@@ -213,11 +237,11 @@ def _echo_model_json(model: object) -> None:
 
 def _build_teams_ingest_worker(cfg: GatewayConfig, *, project_dir: Path):
     try:
-        module = importlib.import_module("agent_sandbox.teams_ingest_worker")
+        module = importlib.import_module("agent_sandbox.messaging.teams_ingest")
     except ModuleNotFoundError as exc:
-        if exc.name == "agent_sandbox.teams_ingest_worker":
+        if exc.name == "agent_sandbox.messaging.teams_ingest":
             raise RuntimeError(
-                "Teams ingest worker module agent_sandbox.teams_ingest_worker is not available."
+                "Teams ingest worker module agent_sandbox.messaging.teams_ingest is not available."
             ) from exc
         raise
     builder = getattr(module, "build_teams_ingest_worker", None)
@@ -239,7 +263,9 @@ def _parse_utc_datetime(value: str) -> datetime:
             "Invalid timestamp. Use ISO-8601 with timezone, e.g. 2026-04-01T10:30:00Z"
         ) from exc
     if parsed.tzinfo is None:
-        raise typer.BadParameter("timestamp must include timezone information (for example, trailing 'Z').")
+        raise typer.BadParameter(
+            "timestamp must include timezone information (for example, trailing 'Z')."
+        )
     return parsed.astimezone(UTC)
 
 
@@ -311,11 +337,15 @@ def _get_systemd_unit_state(unit: str) -> UnitStatus:
             text=True,
         )
     except FileNotFoundError:
-        return UnitStatus(unit=unit, state="unavailable", available=False, detail="systemctl not found")
+        return UnitStatus(
+            unit=unit, state="unavailable", available=False, detail="systemctl not found"
+        )
 
     detail = result.stderr.strip() or None
     if result.returncode == 0:
-        return UnitStatus(unit=unit, state=result.stdout.strip() or "active", available=True, detail=detail)
+        return UnitStatus(
+            unit=unit, state=result.stdout.strip() or "active", available=True, detail=detail
+        )
 
     state = result.stdout.strip() or "unknown"
     return UnitStatus(unit=unit, state=state, available=True, detail=detail)
@@ -380,7 +410,10 @@ _TEAMS_AUTH_SUMMARY_FIELDS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Status", ("status", "state")),
     ("Backend", ("backend", "auth_backend", "provider")),
     ("Signed in", ("signed_in", "authenticated", "is_authenticated")),
-    ("Account", ("account", "account_identifier", "user", "user_principal_name", "username", "email")),
+    (
+        "Account",
+        ("account", "account_identifier", "user", "user_principal_name", "username", "email"),
+    ),
     ("Tenant", ("tenant", "tenant_id", "tenant_name")),
     ("Authority", ("authority", "issuer", "environment")),
     ("Team ID", ("team_id",)),
@@ -447,7 +480,9 @@ def _teams_auth_redact(value: object) -> object:
     normalized = _teams_auth_normalize_value(value)
     if isinstance(normalized, dict):
         return {
-            key: "<redacted>" if _teams_auth_is_sensitive_key(str(key)) else _teams_auth_redact(item)
+            key: "<redacted>"
+            if _teams_auth_is_sensitive_key(str(key))
+            else _teams_auth_redact(item)
             for key, item in normalized.items()
         }
     if isinstance(normalized, list):
@@ -505,7 +540,9 @@ def _teams_auth_print_payload(title: str, payload: object) -> None:
         typer.echo(f"Entries: {len(normalized)}")
         for index, item in enumerate(normalized, start=1):
             item_payload = _teams_auth_normalize_value(item)
-            rows = _teams_auth_extract_fields(item_payload) if isinstance(item_payload, dict) else []
+            rows = (
+                _teams_auth_extract_fields(item_payload) if isinstance(item_payload, dict) else []
+            )
             if rows:
                 typer.echo(f"- Entry {index}")
                 for label, value in rows:
@@ -521,7 +558,9 @@ def _teams_auth_print_payload(title: str, payload: object) -> None:
             typer.echo(f"{label:<24} {value}")
         remaining: dict[str, object] = {}
         if isinstance(normalized, dict):
-            known_keys = {key for _, keys in _TEAMS_AUTH_SUMMARY_FIELDS for key in keys if key in normalized}
+            known_keys = {
+                key for _, keys in _TEAMS_AUTH_SUMMARY_FIELDS for key in keys if key in normalized
+            }
             remaining = {key: value for key, value in normalized.items() if key not in known_keys}
         if remaining:
             typer.echo("Details")
@@ -533,7 +572,9 @@ def _teams_auth_print_payload(title: str, payload: object) -> None:
 
 BackendOption = Annotated[
     ExecutionBackendKind | None,
-    typer.Option("--backend", help="Force an execution backend instead of auto-detecting container mappings."),
+    typer.Option(
+        "--backend", help="Force an execution backend instead of auto-detecting container mappings."
+    ),
 ]
 
 
@@ -553,7 +594,9 @@ def _parse_metadata_pairs(pairs: list[str] | None) -> dict[str, str]:
     return metadata
 
 
-def _resource_limits(memory: str | None, cpus: float | None, pids_limit: int | None) -> dict[str, object] | None:
+def _resource_limits(
+    memory: str | None, cpus: float | None, pids_limit: int | None
+) -> dict[str, object] | None:
     limits: dict[str, object] = {}
     if memory:
         limits["memory"] = memory
@@ -582,23 +625,41 @@ def _container_mapping_payload(record) -> dict[str, object]:
 @execution_app.command("start-container-job")
 def execution_start_container_job(
     config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
-    session_id: Annotated[str | None, typer.Option("--session-id", help="Session id for worker persistence.")] = None,
-    command: Annotated[str, typer.Option("--command", help="Command to run inside the worker container.")] = "",
-    target_name: Annotated[str | None, typer.Option("--target-name", help="Optional stable execution id/target name.")] = None,
+    session_id: Annotated[
+        str | None, typer.Option("--session-id", help="Session id for worker persistence.")
+    ] = None,
+    command: Annotated[
+        str, typer.Option("--command", help="Command to run inside the worker container.")
+    ] = "",
+    target_name: Annotated[
+        str | None, typer.Option("--target-name", help="Optional stable execution id/target name.")
+    ] = None,
     directory_path: Annotated[
         str,
-        typer.Option("--directory-path", "--directory", help="Directory path owning the execution."),
+        typer.Option(
+            "--directory-path", "--directory", help="Directory path owning the execution."
+        ),
     ] = "root",
     image: Annotated[str | None, typer.Option("--image", help="Container image override.")] = None,
-    repo_source: Annotated[str | None, typer.Option("--repo-source", help="Explicit repository source to clone.")] = None,
-    clone_branch: Annotated[str | None, typer.Option("--clone-branch", help="Explicit repository branch to clone.")] = None,
+    repo_source: Annotated[
+        str | None, typer.Option("--repo-source", help="Explicit repository source to clone.")
+    ] = None,
+    clone_branch: Annotated[
+        str | None, typer.Option("--clone-branch", help="Explicit repository branch to clone.")
+    ] = None,
     metadata: Annotated[
         list[str] | None,
         typer.Option("--metadata", help="Sanitized metadata as key=value. May be repeated."),
     ] = None,
-    memory: Annotated[str | None, typer.Option("--memory", help="Container memory limit, e.g. 512m.")] = None,
-    cpus: Annotated[float | None, typer.Option("--cpus", min=0.01, help="Container CPU limit.")] = None,
-    pids_limit: Annotated[int | None, typer.Option("--pids-limit", min=1, help="Container PID limit.")] = None,
+    memory: Annotated[
+        str | None, typer.Option("--memory", help="Container memory limit, e.g. 512m.")
+    ] = None,
+    cpus: Annotated[
+        float | None, typer.Option("--cpus", min=0.01, help="Container CPU limit.")
+    ] = None,
+    pids_limit: Annotated[
+        int | None, typer.Option("--pids-limit", min=1, help="Container PID limit.")
+    ] = None,
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON output.")] = False,
 ) -> None:
     if not command.strip():
@@ -642,7 +703,9 @@ def execution_status(
 def execution_logs(
     config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
     target: str = typer.Argument(...),
-    lines: Annotated[int, typer.Option("--lines", min=1, help="Number of trailing lines to print.")] = 50,
+    lines: Annotated[
+        int, typer.Option("--lines", min=1, help="Number of trailing lines to print.")
+    ] = 50,
     backend: BackendOption = None,
 ) -> None:
     backend = _build_execution_backend_for_kind(config, backend=backend, target=target)
@@ -673,7 +736,9 @@ def execution_destroy(
 @execution_app.command("list-container-worker-executions")
 def execution_list_container_worker_executions(
     config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
-    session_id: Annotated[str | None, typer.Option("--session-id", help="Filter by session id.")] = None,
+    session_id: Annotated[
+        str | None, typer.Option("--session-id", help="Filter by session id.")
+    ] = None,
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON output.")] = False,
 ) -> None:
     cfg = _load_runtime_config_from_option(config)
@@ -703,17 +768,14 @@ def execution_list_container_worker_executions(
     ]
     header = ("EXECUTION", "SESSION", "WORKER_JOB", "TARGET", "STATUS", "WORKER_URL")
     widths = [max(len(str(row[index])) for row in [header, *rows]) for index in range(6)]
-    typer.echo(
-        "  ".join(
-            value.ljust(widths[index])
-            for index, value in enumerate(header)
-        )
-    )
+    typer.echo("  ".join(value.ljust(widths[index]) for index, value in enumerate(header)))
     for row in rows:
         typer.echo("  ".join(str(value).ljust(widths[index]) for index, value in enumerate(row)))
 
 
-def _poll_container_execution(backend, execution_id: str, *, timeout_seconds: float, poll_interval_seconds: float):
+def _poll_container_execution(
+    backend, execution_id: str, *, timeout_seconds: float, poll_interval_seconds: float
+):
     deadline = time.monotonic() + timeout_seconds
     status = backend.inspect(execution_id)
     terminal = {
@@ -730,13 +792,23 @@ def _poll_container_execution(backend, execution_id: str, *, timeout_seconds: fl
 @execution_app.command("smoke-container-worker")
 def execution_smoke_container_worker(
     config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
-    session_id: Annotated[str, typer.Option("--session-id", help="Session id to reuse across both smoke jobs.")] = "smoke-session",
-    image: Annotated[str, typer.Option("--image", help="Container image to run.")] = "agent-sandbox-runner:latest",
+    session_id: Annotated[
+        str, typer.Option("--session-id", help="Session id to reuse across both smoke jobs.")
+    ] = "smoke-session",
+    image: Annotated[
+        str, typer.Option("--image", help="Container image to run.")
+    ] = "agent-sandbox-runner:latest",
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON output.")] = False,
-    timeout_seconds: Annotated[int, typer.Option("--timeout-seconds", min=1, help="Per-job timeout.")] = 120,
+    timeout_seconds: Annotated[
+        int, typer.Option("--timeout-seconds", min=1, help="Per-job timeout.")
+    ] = 120,
     poll_interval_seconds: Annotated[
         float,
-        typer.Option("--poll-interval-seconds", min=0.1, help="Polling interval while waiting for smoke jobs."),
+        typer.Option(
+            "--poll-interval-seconds",
+            min=0.1,
+            help="Polling interval while waiting for smoke jobs.",
+        ),
     ] = 2.0,
 ) -> None:
     backend = _build_execution_backend_for_kind(config, default_container=True)
@@ -756,9 +828,9 @@ def execution_smoke_container_worker(
         "set -euo pipefail; "
         "agent_marker=$(cat /home/agent/phase4-agent-home-marker.txt); "
         "workspace_marker=$(cat /workspace/phase4-workspace-marker.txt); "
-        f"test \"$agent_marker\" = {agent_marker!r}; "
-        f"test \"$workspace_marker\" = {workspace_marker!r}; "
-        "printf 'agent_marker=%s\\nworkspace_marker=%s\\n' \"$agent_marker\" \"$workspace_marker\""
+        f'test "$agent_marker" = {agent_marker!r}; '
+        f'test "$workspace_marker" = {workspace_marker!r}; '
+        'printf \'agent_marker=%s\\nworkspace_marker=%s\\n\' "$agent_marker" "$workspace_marker"'
     )
 
     run1 = backend.start(
@@ -781,7 +853,9 @@ def execution_smoke_container_worker(
     )
     _run1_logs = backend.get_log_snapshot(run1.execution_id, lines=200)
     if run1_status.status != ExecutionStatusKind.STOPPED:
-        raise typer.BadParameter(f"smoke run 1 did not complete successfully: {run1_status.status.value}")
+        raise typer.BadParameter(
+            f"smoke run 1 did not complete successfully: {run1_status.status.value}"
+        )
 
     run2 = backend.start(
         backend.prepare(
@@ -803,7 +877,9 @@ def execution_smoke_container_worker(
     )
     run2_logs = backend.get_log_snapshot(run2.execution_id, lines=200)
     if run2_status.status != ExecutionStatusKind.STOPPED:
-        raise typer.BadParameter(f"smoke run 2 did not complete successfully: {run2_status.status.value}")
+        raise typer.BadParameter(
+            f"smoke run 2 did not complete successfully: {run2_status.status.value}"
+        )
     if agent_marker not in run2_logs or workspace_marker not in run2_logs:
         raise typer.BadParameter("smoke run 2 logs did not prove both marker reads.")
 
@@ -879,38 +955,56 @@ def _load_heartbeat_summary(audit_log_path: Path, *, max_events: int = 400) -> H
         reason = event.get("reason")
         decision = event.get("decision")
         result = event.get("result")
-        if event_type == AuditEventType.HOST_HEARTBEAT_CYCLE_COMPLETED and summary.last_cycle_at is None:
+        if (
+            event_type == AuditEventType.HOST_HEARTBEAT_CYCLE_COMPLETED
+            and summary.last_cycle_at is None
+        ):
             summary.last_cycle_at = str(created_at) if created_at else None
             if isinstance(result, dict):
                 streams_polled = result.get("streams_polled")
                 discovered_feedback = result.get("discovered_feedback")
                 next_sleep_seconds = result.get("next_sleep_seconds")
-                summary.last_cycle_streams_polled = int(streams_polled) if isinstance(streams_polled, int) else None
+                summary.last_cycle_streams_polled = (
+                    int(streams_polled) if isinstance(streams_polled, int) else None
+                )
                 summary.last_cycle_discovered_feedback = (
                     int(discovered_feedback) if isinstance(discovered_feedback, int) else None
                 )
                 summary.last_cycle_next_sleep_seconds = (
-                    float(next_sleep_seconds) if isinstance(next_sleep_seconds, (int, float)) else None
+                    float(next_sleep_seconds)
+                    if isinstance(next_sleep_seconds, (int, float))
+                    else None
                 )
             summary.reason = str(reason or decision or "cycle-seen")
             summary.healthy = True
         elif event_type == AuditEventType.BUSY_SKIP and summary.last_busy_skip_at is None:
             summary.last_busy_skip_at = str(created_at) if created_at else None
             summary.last_busy_skip_reason = str(reason) if reason else None
-        elif event_type == AuditEventType.FEEDBACK_DETECTED and summary.last_feedback_detected_at is None:
+        elif (
+            event_type == AuditEventType.FEEDBACK_DETECTED
+            and summary.last_feedback_detected_at is None
+        ):
             summary.last_feedback_detected_at = str(created_at) if created_at else None
-        elif event_type in {
-            AuditEventType.RESUME_ATTEMPTED,
-            AuditEventType.RESUME_SUCCEEDED,
-            AuditEventType.RESUME_FAILED,
-        } and summary.last_resume_outcome is None:
+        elif (
+            event_type
+            in {
+                AuditEventType.RESUME_ATTEMPTED,
+                AuditEventType.RESUME_SUCCEEDED,
+                AuditEventType.RESUME_FAILED,
+            }
+            and summary.last_resume_outcome is None
+        ):
             summary.last_resume_outcome = event_type
             summary.last_resume_reason = str(reason) if reason else None
-        elif event_type in {
-            AuditEventType.VM_START_ATTEMPTED,
-            AuditEventType.VM_START_SUCCEEDED,
-            AuditEventType.VM_START_FAILED,
-        } and summary.last_vm_start_outcome is None:
+        elif (
+            event_type
+            in {
+                AuditEventType.VM_START_ATTEMPTED,
+                AuditEventType.VM_START_SUCCEEDED,
+                AuditEventType.VM_START_FAILED,
+            }
+            and summary.last_vm_start_outcome is None
+        ):
             summary.last_vm_start_outcome = event_type
             summary.last_vm_start_reason = str(reason) if reason else None
 
@@ -1005,7 +1099,9 @@ def _resolve_git_root(root_dir: Path) -> Path:
     return root_dir / "git-remotes"
 
 
-def _matching_issue_session_ids(issue_number: str, sessions: dict[str, SessionManifest]) -> set[str]:
+def _matching_issue_session_ids(
+    issue_number: str, sessions: dict[str, SessionManifest]
+) -> set[str]:
     vm_name = f"vm-{issue_number}"
     prefix = _issue_session_id_prefix(issue_number)
     matches: set[str] = set()
@@ -1023,7 +1119,9 @@ def _parse_session_extension(value: str | None) -> timedelta:
     raw_value = (value or "1d").strip().lower()
     match = re.fullmatch(r"(\d+)([hd])", raw_value)
     if match is None:
-        raise typer.BadParameter("Extension must use the format <number><h|d>, for example 8h or 2d.")
+        raise typer.BadParameter(
+            "Extension must use the format <number><h|d>, for example 8h or 2d."
+        )
 
     amount = int(match.group(1))
     unit = match.group(2)
@@ -1042,7 +1140,9 @@ def _resolve_session_ttl(policy: EffectivePolicyConfig, ttl_hours: int | None) -
     return _default_session_ttl(policy)
 
 
-def _resolve_session_target(target: str, sessions: dict[str, SessionManifest]) -> tuple[str, SessionManifest]:
+def _resolve_session_target(
+    target: str, sessions: dict[str, SessionManifest]
+) -> tuple[str, SessionManifest]:
     normalized = target.strip()
     if not normalized:
         raise typer.BadParameter("Target must be a non-empty issue number, vm name, or session id.")
@@ -1211,7 +1311,9 @@ def _prune_approvals_for_sessions(runtime: object, *, session_ids: set[str]) -> 
     return removed_count
 
 
-def _remove_issue_bare_repo(issue_number: str, *, root_dir: Path, runtime_dir: Path) -> tuple[bool, str | None]:
+def _remove_issue_bare_repo(
+    issue_number: str, *, root_dir: Path, runtime_dir: Path
+) -> tuple[bool, str | None]:
     git_root = _resolve_git_root(root_dir)
     bare_repo_path = git_root / f"{issue_number}_repo.git"
     hook_log_paths = [
@@ -1222,7 +1324,13 @@ def _remove_issue_bare_repo(issue_number: str, *, root_dir: Path, runtime_dir: P
     if bare_repo_path.exists():
         try:
             config_result = subprocess.run(
-                ["git", f"--git-dir={bare_repo_path}", "config", "--get", "agent-sandbox.trustedRepoPath"],
+                [
+                    "git",
+                    f"--git-dir={bare_repo_path}",
+                    "config",
+                    "--get",
+                    "agent-sandbox.trustedRepoPath",
+                ],
                 check=False,
                 capture_output=True,
                 text=True,
@@ -1246,7 +1354,9 @@ def _remove_issue_bare_repo(issue_number: str, *, root_dir: Path, runtime_dir: P
             )
         except OSError:
             pass
-    return bare_repo_path.exists() is False, str(bare_repo_path) if bare_repo_path.exists() else str(bare_repo_path)
+    return bare_repo_path.exists() is False, str(
+        bare_repo_path
+    ) if bare_repo_path.exists() else str(bare_repo_path)
 
 
 def _list_existing_issue_vm_names() -> set[str]:
@@ -1338,7 +1448,9 @@ def _build_issue_session_manifest(
         )
 
     email_requested = bool(email_mailboxes or email_folders)
-    resolved_email_mailboxes = email_mailboxes or (policy.email_mailbox_allowlist if email_requested else [])
+    resolved_email_mailboxes = email_mailboxes or (
+        policy.email_mailbox_allowlist if email_requested else []
+    )
     resolved_email_folders = email_folders or (
         sorted(
             {
@@ -1452,7 +1564,9 @@ def directories_rename(
 def directories_move(
     reference: str,
     config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
-    new_parent: Annotated[str, typer.Option("--new-parent", help="New parent directory path or id.")] = "root",
+    new_parent: Annotated[
+        str, typer.Option("--new-parent", help="New parent directory path or id.")
+    ] = "root",
 ) -> None:
     service = AdminService(config)
     result = service.directory_admin.update(reference, new_parent=new_parent)
@@ -1465,7 +1579,9 @@ def directories_move(
 def directories_delete(
     reference: str,
     config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
-    recursive: Annotated[bool, typer.Option("--recursive", help="Delete non-empty directories recursively.")] = False,
+    recursive: Annotated[
+        bool, typer.Option("--recursive", help="Delete non-empty directories recursively.")
+    ] = False,
 ) -> None:
     service = AdminService(config)
     result = service.directory_admin.delete(reference, recursive=recursive)
@@ -1474,7 +1590,9 @@ def directories_delete(
     typer.echo(json.dumps(result.data.model_dump(mode="json"), indent=2, sort_keys=True))
 
 
-@directories_app.command("config-show", short_help="Show raw and effective config for one directory domain.")
+@directories_app.command(
+    "config-show", short_help="Show raw and effective config for one directory domain."
+)
 def directories_config_show(
     reference: str,
     domain: Annotated[str, typer.Option("--domain", help="Directory config domain name.")],
@@ -1588,7 +1706,10 @@ def migrate_ado_worker_env_root(
     ] = None,
     overwrite: Annotated[
         bool,
-        typer.Option("--overwrite/--no-overwrite", help="Replace existing root ado_worker config when it differs."),
+        typer.Option(
+            "--overwrite/--no-overwrite",
+            help="Replace existing root ado_worker config when it differs.",
+        ),
     ] = True,
 ) -> None:
     runtime_dir, legacy_config_path = _bootstrap_inputs(config)
@@ -1596,9 +1717,15 @@ def migrate_ado_worker_env_root(
         cfg = load_config(legacy_config_path)
     else:
         cfg = _load_runtime_config_from_option(runtime_dir)
-    resolved_env_file = env_file.expanduser() if env_file is not None else _workspace_root_for_config_option(config) / "config" / "ado-worker.env"
+    resolved_env_file = (
+        env_file.expanduser()
+        if env_file is not None
+        else _workspace_root_for_config_option(config) / "config" / "ado-worker.env"
+    )
     result = migrate_ado_worker_env_to_root(cfg, env_file=resolved_env_file, overwrite=overwrite)
-    typer.echo(f"ADO worker env migration complete: {result.status} {result.domain} -> {result.path}")
+    typer.echo(
+        f"ADO worker env migration complete: {result.status} {result.domain} -> {result.path}"
+    )
 
 
 @app.command(
@@ -1617,7 +1744,10 @@ def migrate_issue_setup_env_root(
     ] = None,
     overwrite: Annotated[
         bool,
-        typer.Option("--overwrite/--no-overwrite", help="Replace existing root issue_setup config when it differs."),
+        typer.Option(
+            "--overwrite/--no-overwrite",
+            help="Replace existing root issue_setup config when it differs.",
+        ),
     ] = True,
 ) -> None:
     runtime_dir, legacy_config_path = _bootstrap_inputs(config)
@@ -1627,7 +1757,9 @@ def migrate_issue_setup_env_root(
         cfg = _load_runtime_config_from_option(runtime_dir)
     resolved_env_file = env_file.expanduser() if env_file is not None else None
     result = migrate_issue_setup_env_to_root(cfg, env_file=resolved_env_file, overwrite=overwrite)
-    typer.echo(f"Issue setup env migration complete: {result.status} {result.domain} -> {result.path}")
+    typer.echo(
+        f"Issue setup env migration complete: {result.status} {result.domain} -> {result.path}"
+    )
 
 
 @app.command(
@@ -1646,7 +1778,10 @@ def migrate_pr_template_root(
     ] = None,
     overwrite: Annotated[
         bool,
-        typer.Option("--overwrite/--no-overwrite", help="Replace existing root pr_template config when it differs."),
+        typer.Option(
+            "--overwrite/--no-overwrite",
+            help="Replace existing root pr_template config when it differs.",
+        ),
     ] = True,
 ) -> None:
     runtime_dir, legacy_config_path = _bootstrap_inputs(config)
@@ -1659,7 +1794,9 @@ def migrate_pr_template_root(
         if template_file is not None
         else _workspace_root_for_config_option(config) / "config" / "pr-template.md"
     )
-    result = migrate_pr_template_to_root(cfg, template_file=resolved_template_file, overwrite=overwrite)
+    result = migrate_pr_template_to_root(
+        cfg, template_file=resolved_template_file, overwrite=overwrite
+    )
     typer.echo(f"PR template migration complete: {result.status} {result.domain} -> {result.path}")
 
 
@@ -1668,7 +1805,10 @@ def migrate_pr_template_root(
     rich_help_panel="Health and State",
     short_help="Show host and runtime health.",
 )
-def status(config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR, as_json: Annotated[bool, typer.Option("--json")] = False) -> None:
+def status(
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
+    as_json: Annotated[bool, typer.Option("--json")] = False,
+) -> None:
     report: dict[str, object] = {
         "generated_at": datetime.now(UTC).isoformat(),
         "overall": "ok",
@@ -1728,12 +1868,8 @@ def status(config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR, as_json: Annotated[bo
 
         vm_defaults = _resolve_root_vm_defaults(cfg)
         gateway_health_url = vm_defaults.gateway_url
-        relay_health_url = (
-            f"http://{_normalize_host_for_local_check(cfg.openai_relay_host)}:{cfg.openai_relay_port}/healthz"
-        )
-        http_target_relay_health_url = (
-            f"http://{_normalize_host_for_local_check(cfg.http_target_relay_host)}:{cfg.http_target_relay_port}/healthz"
-        )
+        relay_health_url = f"http://{_normalize_host_for_local_check(cfg.openai_relay_host)}:{cfg.openai_relay_port}/healthz"
+        http_target_relay_health_url = f"http://{_normalize_host_for_local_check(cfg.http_target_relay_host)}:{cfg.http_target_relay_port}/healthz"
         health_results = [
             _check_health_endpoint("gateway", gateway_health_url),
             _check_health_endpoint("openai_relay", relay_health_url),
@@ -1800,7 +1936,11 @@ def status(config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR, as_json: Annotated[bo
     if report["runtime_paths"]:
         typer.echo("\nRuntime paths")
         for path_status in report["runtime_paths"]:
-            status = "ok" if path_status["exists"] and path_status["readable"] and path_status["writable"] else "degraded"
+            status = (
+                "ok"
+                if path_status["exists"] and path_status["readable"] and path_status["writable"]
+                else "degraded"
+            )
             typer.echo(
                 f"- {path_status['path']}: {status} "
                 f"(exists={path_status['exists']} read={path_status['readable']} write={path_status['writable']})"
@@ -1817,7 +1957,9 @@ def status(config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR, as_json: Annotated[bo
         for endpoint in report["health"]:
             status = "ok" if endpoint["reachable"] else "degraded"
             status_code = endpoint["status_code"] if endpoint["status_code"] is not None else "n/a"
-            typer.echo(f"- {endpoint['name']}: {status} (url={endpoint['url']} status_code={status_code})")
+            typer.echo(
+                f"- {endpoint['name']}: {status} (url={endpoint['url']} status_code={status_code})"
+            )
             if endpoint["error"]:
                 typer.echo(f"  error: {endpoint['error']}")
 
@@ -1831,11 +1973,20 @@ def status(config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR, as_json: Annotated[bo
                     ("Reason", str(heartbeat["reason"])),
                     ("Last cycle", str(heartbeat["last_cycle_at"] or "n/a")),
                     ("Streams polled", str(heartbeat["last_cycle_streams_polled"] or "n/a")),
-                    ("Feedback discovered", str(heartbeat["last_cycle_discovered_feedback"] or "n/a")),
-                    ("Next sleep seconds", str(heartbeat["last_cycle_next_sleep_seconds"] or "n/a")),
+                    (
+                        "Feedback discovered",
+                        str(heartbeat["last_cycle_discovered_feedback"] or "n/a"),
+                    ),
+                    (
+                        "Next sleep seconds",
+                        str(heartbeat["last_cycle_next_sleep_seconds"] or "n/a"),
+                    ),
                     ("Last busy skip", str(heartbeat["last_busy_skip_at"] or "n/a")),
                     ("Busy skip reason", str(heartbeat["last_busy_skip_reason"] or "n/a")),
-                    ("Last feedback detected", str(heartbeat["last_feedback_detected_at"] or "n/a")),
+                    (
+                        "Last feedback detected",
+                        str(heartbeat["last_feedback_detected_at"] or "n/a"),
+                    ),
                     ("Last resume outcome", str(heartbeat["last_resume_outcome"] or "n/a")),
                     ("Last resume reason", str(heartbeat["last_resume_reason"] or "n/a")),
                     ("Last vm start outcome", str(heartbeat["last_vm_start_outcome"] or "n/a")),
@@ -1868,7 +2019,9 @@ def teams_auth_login(
     login_session = _teams_auth_call(service, "login", directory=directory)
     _teams_auth_emit_result("Teams auth login", login_session)
     try:
-        result = _teams_auth_call(service, "complete_login", directory=directory, login_session=login_session)
+        result = _teams_auth_call(
+            service, "complete_login", directory=directory, login_session=login_session
+        )
     except TeamsAuthError as exc:
         typer.echo("", err=True)
         typer.echo(f"Teams auth login failed: {exc}", err=True)
@@ -1906,7 +2059,7 @@ def teams_auth_list(config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR) -> None:
 
 @teams_auth_app.command("channels", short_help="Resolve Teams channel IDs within a team.")
 def teams_auth_channels(
-    team_id: Annotated[str, typer.Option("--team-id", help="Microsoft Teams team ID to query.")] ,
+    team_id: Annotated[str, typer.Option("--team-id", help="Microsoft Teams team ID to query.")],
     channel_name: Annotated[
         str | None,
         typer.Option("--name", help="Exact Teams channel display name to match."),
@@ -1942,10 +2095,14 @@ def teams_auth_channels(
 def create_session(
     session_id: str,
     config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
-    vm_id: Annotated[str | None, typer.Option("--vm-id", help="VM identifier to bind to the session.")] = None,
+    vm_id: Annotated[
+        str | None, typer.Option("--vm-id", help="VM identifier to bind to the session.")
+    ] = None,
     directory: Annotated[
         str | None,
-        typer.Option("--directory", help="Directory path whose effective config should apply to the session."),
+        typer.Option(
+            "--directory", help="Directory path whose effective config should apply to the session."
+        ),
     ] = None,
     discord_channel: Annotated[
         list[str] | None,
@@ -1955,7 +2112,9 @@ def create_session(
         list[str] | None,
         typer.Option("--email-folder", help="Allowlisted email folder."),
     ] = None,
-    ttl_hours: Annotated[int | None, typer.Option("--ttl-hours", help="Session time to live in hours.")] = None,
+    ttl_hours: Annotated[
+        int | None, typer.Option("--ttl-hours", help="Session time to live in hours.")
+    ] = None,
     model: Annotated[
         str | None,
         typer.Option("--model", help="Agent model override for this session."),
@@ -2047,9 +2206,7 @@ def prune_sessions(
 
     if expired_only:
         keys_to_delete = [
-            session_id
-            for session_id, session in sessions.items()
-            if session.expires_at <= now
+            session_id for session_id, session in sessions.items() if session.expires_at <= now
         ]
     else:
         keys_to_delete = list(sessions.keys())
@@ -2197,9 +2354,7 @@ def delete_expired_sessions(
     sessions = {session.session_id: session for session in session_repository.list_sessions()}
     now = datetime.now(UTC)
     expired_session_ids = [
-        session_id
-        for session_id, session in sessions.items()
-        if session.expires_at <= now
+        session_id for session_id, session in sessions.items() if session.expires_at <= now
     ]
     for session_id in expired_session_ids:
         session_repository.delete_session(session_id)
@@ -2242,7 +2397,9 @@ def destroy_issue_vm(
             session_repository.delete_session(session_id)
     removed_approvals = _prune_approvals_for_sessions(runtime, session_ids=session_ids)
 
-    removed_pr_map_entries, removed_streams = _prune_pr_map(cfg.pr_map_path, session_ids=session_ids)
+    removed_pr_map_entries, removed_streams = _prune_pr_map(
+        cfg.pr_map_path, session_ids=session_ids
+    )
     removed_cursors, removed_feedback = _prune_pr_feedback_store(
         cfg.runtime_dir / "pr-feedback-store.json",
         streams=removed_streams,
@@ -2256,7 +2413,9 @@ def destroy_issue_vm(
     )
 
     destroy_script = root_dir / "scripts" / "destroy_agent_vm.sh"
-    _run_subprocess_compat([str(destroy_script), vm_name], check=True, capture_output=False, text=False)
+    _run_subprocess_compat(
+        [str(destroy_script), vm_name], check=True, capture_output=False, text=False
+    )
 
     typer.echo(
         f"Destroyed issue VM {vm_name}; "
@@ -2294,7 +2453,12 @@ def prune_orphaned_issue_state(
         session_id
         for session_id, session in sessions.items()
         if (
-            (issue_number := (_extract_issue_number(session.vm_id) or _extract_issue_number(session_id))) is not None
+            (
+                issue_number := (
+                    _extract_issue_number(session.vm_id) or _extract_issue_number(session_id)
+                )
+            )
+            is not None
             and f"vm-{issue_number}" not in live_vm_names
         )
     }
@@ -2366,7 +2530,9 @@ def prune_orphaned_issue_state(
     short_help="List known VMs.",
 )
 def list_vms(
-    vm_user: Annotated[str, typer.Option("--vm-user", help="Guest user to inspect over SSH.")] = "agent",
+    vm_user: Annotated[
+        str, typer.Option("--vm-user", help="Guest user to inspect over SSH.")
+    ] = "agent",
     all_vms: Annotated[
         bool,
         typer.Option("--all", help="Include inactive libvirt VMs in the output."),
@@ -2388,7 +2554,9 @@ def list_vms(
         service = AdminService(config)
         payload = [
             summary.model_dump(mode="json")
-            for summary in service.list_vms(include_inactive=all_vms, omit_state=omit_state, vm_user=vm_user)
+            for summary in service.list_vms(
+                include_inactive=all_vms, omit_state=omit_state, vm_user=vm_user
+            )
         ]
         typer.echo(json.dumps(payload, indent=2, sort_keys=True))
         return
@@ -2456,11 +2624,16 @@ def create_issue(
     ] = "",
     repo_source: Annotated[
         str | None,
-        typer.Option("--repo-source", help="Default repo source used when starting a VM for this issue."),
+        typer.Option(
+            "--repo-source", help="Default repo source used when starting a VM for this issue."
+        ),
     ] = None,
     yaml_path: Annotated[
         Path | None,
-        typer.Option("--yaml-path", help="Import an existing issue YAML file instead of creating one from title/body."),
+        typer.Option(
+            "--yaml-path",
+            help="Import an existing issue YAML file instead of creating one from title/body.",
+        ),
     ] = None,
 ) -> None:
     service = AdminService(config)
@@ -2490,11 +2663,17 @@ def create_local_issue(
     ] = "",
     repo_source: Annotated[
         str | None,
-        typer.Option("--repo-source", help="Default repo source used when starting a VM for this local issue."),
+        typer.Option(
+            "--repo-source",
+            help="Default repo source used when starting a VM for this local issue.",
+        ),
     ] = None,
     yaml_path: Annotated[
         Path | None,
-        typer.Option("--yaml-path", help="Import an existing issue YAML file instead of creating one from title/body."),
+        typer.Option(
+            "--yaml-path",
+            help="Import an existing issue YAML file instead of creating one from title/body.",
+        ),
     ] = None,
 ) -> None:
     service = AdminService(config)
@@ -2522,7 +2701,11 @@ def list_issues(
     service = AdminService(config)
     issues = service.list_issues()
     if as_json:
-        typer.echo(json.dumps([issue.model_dump(mode="json") for issue in issues], indent=2, sort_keys=True))
+        typer.echo(
+            json.dumps(
+                [issue.model_dump(mode="json") for issue in issues], indent=2, sort_keys=True
+            )
+        )
         return
     if not issues:
         return
@@ -2618,7 +2801,9 @@ def add_issue_comment(
     if as_json:
         typer.echo(json.dumps(payload, indent=2, sort_keys=True))
         return
-    typer.echo(f"Comment added to issue {payload.get('issue_number', issue_id)} ({payload.get('source_type', '')})")
+    typer.echo(
+        f"Comment added to issue {payload.get('issue_number', issue_id)} ({payload.get('source_type', '')})"
+    )
 
 
 @app.command(
@@ -2650,7 +2835,9 @@ def set_issue_state(
     if as_json:
         typer.echo(json.dumps(payload, indent=2, sort_keys=True))
         return
-    typer.echo(f"State updated for issue {payload.get('issue_number', issue_id)} ({payload.get('source_type', '')})")
+    typer.echo(
+        f"State updated for issue {payload.get('issue_number', issue_id)} ({payload.get('source_type', '')})"
+    )
 
 
 @app.command(
@@ -2664,7 +2851,9 @@ def ssh(
 ) -> None:
     vm_name = _resolve_vm_name(target)
     script_path = Path(__file__).resolve().parents[2] / "scripts" / "ssh.sh"
-    _run_subprocess_compat([str(script_path), vm_name, vm_user], check=True, capture_output=False, text=False)
+    _run_subprocess_compat(
+        [str(script_path), vm_name, vm_user], check=True, capture_output=False, text=False
+    )
 
 
 @app.command(
@@ -2684,12 +2873,18 @@ def logs(
     ] = None,
     lines: Annotated[
         int,
-        typer.Option("--lines", min=1, help="Number of log lines to print from the guest agent log."),
+        typer.Option(
+            "--lines", min=1, help="Number of log lines to print from the guest agent log."
+        ),
     ] = 10,
-    vm_user: Annotated[str, typer.Option("--vm-user", help="Guest user to inspect over SSH.")] = "agent",
+    vm_user: Annotated[
+        str, typer.Option("--vm-user", help="Guest user to inspect over SSH.")
+    ] = "agent",
 ) -> None:
     normalized = target.strip()
-    is_legacy_issue_target = normalized.isdigit() or (normalized.startswith("vm-") and normalized[3:].isdigit())
+    is_legacy_issue_target = normalized.isdigit() or (
+        normalized.startswith("vm-") and normalized[3:].isdigit()
+    )
     if is_legacy_issue_target:
         issue_number = _resolve_issue_number_or_raise(target)
         script_path = Path(__file__).resolve().parents[2] / "scripts" / "tail_issue_vm_log.sh"
@@ -2703,7 +2898,9 @@ def logs(
         return
 
     service = AdminService(config)
-    output = service.get_agent_log_snapshot(target, lines=lines, repo_name=repo_name, vm_user=vm_user)
+    output = service.get_agent_log_snapshot(
+        target, lines=lines, repo_name=repo_name, vm_user=vm_user
+    )
     typer.echo(output)
 
 
@@ -2796,7 +2993,9 @@ def resume_agent(
     ] = False,
     lines: Annotated[
         int,
-        typer.Option("--lines", min=1, help="Number of log lines to print before following when observing."),
+        typer.Option(
+            "--lines", min=1, help="Number of log lines to print before following when observing."
+        ),
     ] = 10,
     vm_user: Annotated[str, typer.Option("--vm-user", help="Guest user to connect as.")] = "agent",
 ) -> None:
@@ -2923,23 +3122,33 @@ def create_vm(
     ] = "root",
     session_id: Annotated[
         str | None,
-        typer.Option("--session-id", help="Session identifier to create and pass into the VM launch flow."),
+        typer.Option(
+            "--session-id", help="Session identifier to create and pass into the VM launch flow."
+        ),
     ] = None,
     vm_user: Annotated[str, typer.Option("--vm-user", help="Guest user to configure.")] = "agent",
-    ttl_hours: Annotated[int | None, typer.Option("--ttl-hours", help="Session time to live in hours.")] = None,
+    ttl_hours: Annotated[
+        int | None, typer.Option("--ttl-hours", help="Session time to live in hours.")
+    ] = None,
     discord_channel: Annotated[
         list[str],
         typer.Option("--discord-channel", help="Allowlisted Discord control channel."),
     ] = [],
     email_mailbox: Annotated[
         list[str],
-        typer.Option("--email-mailbox", help="Allowlisted mailbox id. Repeat for multiple mailboxes."),
+        typer.Option(
+            "--email-mailbox", help="Allowlisted mailbox id. Repeat for multiple mailboxes."
+        ),
     ] = [],
     email_folder: Annotated[
         list[str],
-        typer.Option("--email-folder", help="Allowlisted email folder. Repeat for multiple folders."),
+        typer.Option(
+            "--email-folder", help="Allowlisted email folder. Repeat for multiple folders."
+        ),
     ] = [],
-    dotnet: Annotated[bool, typer.Option("--dotnet", help="Bootstrap the host .NET SDK into the guest.")] = False,
+    dotnet: Annotated[
+        bool, typer.Option("--dotnet", help="Bootstrap the host .NET SDK into the guest.")
+    ] = False,
     nuget: Annotated[
         bool,
         typer.Option("--nuget", help="Bootstrap NuGet relay configuration into the guest."),
@@ -2955,7 +3164,10 @@ def create_vm(
         ),
     ] = None,
     playwright: Annotated[
-        bool, typer.Option("--playwright", help="Bootstrap the host-seeded Playwright runtime into the guest.")
+        bool,
+        typer.Option(
+            "--playwright", help="Bootstrap the host-seeded Playwright runtime into the guest."
+        ),
     ] = False,
     codex_skill: Annotated[
         list[str],
@@ -3005,7 +3217,10 @@ def clone_repo_into_vm(
     ],
     clone_branch: Annotated[
         str | None,
-        typer.Option("--clone-branch", help="Branch to clone and record as the agent's main branch in the guest."),
+        typer.Option(
+            "--clone-branch",
+            help="Branch to clone and record as the agent's main branch in the guest.",
+        ),
     ] = None,
     config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
     directory_path: Annotated[
@@ -3039,7 +3254,10 @@ def bootstrap_python_in_vm(
     vm_name: str,
     host_checkout: Annotated[
         str,
-        typer.Option("--host-checkout", help="Host checkout root used to build the guest-local Python environment."),
+        typer.Option(
+            "--host-checkout",
+            help="Host checkout root used to build the guest-local Python environment.",
+        ),
     ],
     target_dir: Annotated[
         str,
@@ -3072,12 +3290,17 @@ def bootstrap_frontend_in_vm(
     vm_name: str,
     host_checkout: Annotated[
         str,
-        typer.Option("--host-checkout", help="Host checkout root used to seed frontend dependencies."),
+        typer.Option(
+            "--host-checkout", help="Host checkout root used to seed frontend dependencies."
+        ),
     ],
     config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
     install_root: Annotated[
         list[str],
-        typer.Option("--install-root", help="Install root inside the host checkout. Repeat for multiple roots."),
+        typer.Option(
+            "--install-root",
+            help="Install root inside the host checkout. Repeat for multiple roots.",
+        ),
     ] = [],
     session_id: Annotated[
         str | None,
@@ -3106,23 +3329,33 @@ def create_issue_vm(
     config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
     session_id: Annotated[
         str | None,
-        typer.Option("--session-id", help="Session identifier to create and pass into the VM setup flow."),
+        typer.Option(
+            "--session-id", help="Session identifier to create and pass into the VM setup flow."
+        ),
     ] = None,
     vm_user: Annotated[str, typer.Option("--vm-user", help="Guest user to configure.")] = "agent",
-    ttl_hours: Annotated[int | None, typer.Option("--ttl-hours", help="Session time to live in hours.")] = None,
+    ttl_hours: Annotated[
+        int | None, typer.Option("--ttl-hours", help="Session time to live in hours.")
+    ] = None,
     discord_channel: Annotated[
         list[str],
         typer.Option("--discord-channel", help="Allowlisted Discord control channel."),
     ] = [],
     email_mailbox: Annotated[
         list[str],
-        typer.Option("--email-mailbox", help="Allowlisted mailbox id. Repeat for multiple mailboxes."),
+        typer.Option(
+            "--email-mailbox", help="Allowlisted mailbox id. Repeat for multiple mailboxes."
+        ),
     ] = [],
     email_folder: Annotated[
         list[str],
-        typer.Option("--email-folder", help="Allowlisted email folder. Repeat for multiple folders."),
+        typer.Option(
+            "--email-folder", help="Allowlisted email folder. Repeat for multiple folders."
+        ),
     ] = [],
-    dotnet: Annotated[bool, typer.Option("--dotnet", help="Bootstrap the host .NET SDK into the guest.")] = False,
+    dotnet: Annotated[
+        bool, typer.Option("--dotnet", help="Bootstrap the host .NET SDK into the guest.")
+    ] = False,
     nuget: Annotated[
         str | None,
         typer.Option(
@@ -3141,7 +3374,10 @@ def create_issue_vm(
         ),
     ] = None,
     playwright: Annotated[
-        bool, typer.Option("--playwright", help="Bootstrap the host-seeded Playwright runtime into the guest.")
+        bool,
+        typer.Option(
+            "--playwright", help="Bootstrap the host-seeded Playwright runtime into the guest."
+        ),
     ] = False,
     codex_skill: Annotated[
         list[str],
@@ -3186,11 +3422,15 @@ def set_session_model(
     target: str,
     model: Annotated[
         str,
-        typer.Option("--model", help="Model to persist. Use an empty value with --clear to remove."),
+        typer.Option(
+            "--model", help="Model to persist. Use an empty value with --clear to remove."
+        ),
     ] = "",
     clear: Annotated[
         bool,
-        typer.Option("--clear", help="Clear the session model so directory defaults apply at invocation."),
+        typer.Option(
+            "--clear", help="Clear the session model so directory defaults apply at invocation."
+        ),
     ] = False,
     config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
 ) -> None:
@@ -3266,9 +3506,9 @@ def revoke_tool_permission(
 )
 def attach_pr_feedback(
     session_id: str,
-    provider: Annotated[str, typer.Option("--provider", help="Feedback provider name.")] ,
-    repo: Annotated[str, typer.Option("--repo", help="Provider repository identifier.")] ,
-    pr_id: Annotated[str, typer.Option("--pr-id", help="Pull request identifier.")] ,
+    provider: Annotated[str, typer.Option("--provider", help="Feedback provider name.")],
+    repo: Annotated[str, typer.Option("--repo", help="Provider repository identifier.")],
+    pr_id: Annotated[str, typer.Option("--pr-id", help="Pull request identifier.")],
     config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
 ) -> None:
     cfg = _load_runtime_config_from_option(config)
@@ -3321,8 +3561,12 @@ def approve(
     request_id: str,
     approver: str,
     config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
-    approve: Annotated[bool, typer.Option("--approve/--deny", help="Approve or deny the request.")] = True,
-    reason: Annotated[str, typer.Option("--reason", help="Operator-entered reason for the decision.")] = "",
+    approve: Annotated[
+        bool, typer.Option("--approve/--deny", help="Approve or deny the request.")
+    ] = True,
+    reason: Annotated[
+        str, typer.Option("--reason", help="Operator-entered reason for the decision.")
+    ] = "",
 ) -> None:
     service = AdminService(config)
     normalized_reason = reason.strip() or ("approved-via-cli" if approve else "denied-via-cli")
@@ -3349,13 +3593,23 @@ def list_approvals(
         list[ApprovalStatus],
         typer.Option("--status", help="Filter by approval status. Repeat for multiple values."),
     ] = [],
-    directory_path: Annotated[str | None, typer.Option("--directory-path", help="Filter by canonical directory path.")] = None,
-    direct_only: Annotated[bool, typer.Option("--direct-only", help="Match only the selected directory path exactly.")] = False,
-    session_id: Annotated[str | None, typer.Option("--session-id", help="Filter by session id.")] = None,
+    directory_path: Annotated[
+        str | None, typer.Option("--directory-path", help="Filter by canonical directory path.")
+    ] = None,
+    direct_only: Annotated[
+        bool, typer.Option("--direct-only", help="Match only the selected directory path exactly.")
+    ] = False,
+    session_id: Annotated[
+        str | None, typer.Option("--session-id", help="Filter by session id.")
+    ] = None,
     vm_id: Annotated[str | None, typer.Option("--vm-id", help="Filter by VM id.")] = None,
     tool: Annotated[str | None, typer.Option("--tool", help="Filter by tool/action type.")] = None,
-    older_than_seconds: Annotated[int | None, typer.Option("--older-than-seconds", help="Minimum age in seconds.")] = None,
-    show_payload: Annotated[bool, typer.Option("--show-payload", help="Show redacted payloads inline.")] = False,
+    older_than_seconds: Annotated[
+        int | None, typer.Option("--older-than-seconds", help="Minimum age in seconds.")
+    ] = None,
+    show_payload: Annotated[
+        bool, typer.Option("--show-payload", help="Show redacted payloads inline.")
+    ] = False,
 ) -> None:
     service = AdminService(config)
     statuses = set(status) or None
@@ -3434,7 +3688,9 @@ def seed_email(
     sender: str,
     subject: str,
     body_text: str,
-    mailbox_id: Annotated[str, typer.Option("--mailbox-id", help="Mailbox identifier.")] = "default",
+    mailbox_id: Annotated[
+        str, typer.Option("--mailbox-id", help="Mailbox identifier.")
+    ] = "default",
     recipient: Annotated[
         list[str],
         typer.Option("--recipient", help="Repeat for each recipient address."),
@@ -3509,10 +3765,18 @@ def seed_discord_channel(
 def wake_schedule_create(
     session_id: Annotated[str, typer.Option("--session-id", help="Target session id.")],
     prompt: Annotated[str, typer.Option("--prompt", help="Resume prompt.")],
-    resume_at: Annotated[str | None, typer.Option("--resume-at", help="One-time UTC timestamp (ISO-8601).")] = None,
-    cron: Annotated[str | None, typer.Option("--cron", help="Recurring cron expression (5 fields).")] = None,
-    mode: Annotated[str, typer.Option("--mode", help="Resume mode: same_context or new_context.")] = "same_context",
-    source: Annotated[str, typer.Option("--source", help="Schedule source tag for auditing.")] = "admin_cli",
+    resume_at: Annotated[
+        str | None, typer.Option("--resume-at", help="One-time UTC timestamp (ISO-8601).")
+    ] = None,
+    cron: Annotated[
+        str | None, typer.Option("--cron", help="Recurring cron expression (5 fields).")
+    ] = None,
+    mode: Annotated[
+        str, typer.Option("--mode", help="Resume mode: same_context or new_context.")
+    ] = "same_context",
+    source: Annotated[
+        str, typer.Option("--source", help="Schedule source tag for auditing.")
+    ] = "admin_cli",
     config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
 ) -> None:
     if bool(resume_at) == bool(cron):
@@ -3535,7 +3799,9 @@ def wake_schedule_create(
             {
                 "request_id": created.request_id,
                 "session_id": created.session_id,
-                "resume_at": created.schedule.resume_at.isoformat() if created.schedule.resume_at else None,
+                "resume_at": created.schedule.resume_at.isoformat()
+                if created.schedule.resume_at
+                else None,
                 "cron": created.schedule.cron,
                 "resume_mode": created.resume_mode,
                 "enabled": created.enabled,
@@ -3548,12 +3814,16 @@ def wake_schedule_create(
 
 @wake_schedules_app.command("list")
 def wake_schedule_list(
-    session_id: Annotated[str | None, typer.Option("--session-id", help="Filter to a specific session id.")] = None,
+    session_id: Annotated[
+        str | None, typer.Option("--session-id", help="Filter to a specific session id.")
+    ] = None,
     include_disabled: Annotated[bool, typer.Option("--include-disabled/--enabled-only")] = True,
     config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
 ) -> None:
     service = AdminService(config)
-    schedules = service.list_wake_schedules(session_id=session_id, include_disabled=include_disabled)
+    schedules = service.list_wake_schedules(
+        session_id=session_id, include_disabled=include_disabled
+    )
     typer.echo(json.dumps(schedules, indent=2, default=str))
 
 
@@ -3561,10 +3831,18 @@ def wake_schedule_list(
 def wake_schedule_edit(
     request_id: Annotated[str, typer.Argument(help="Wake schedule request id.")],
     prompt: Annotated[str | None, typer.Option("--prompt", help="Updated prompt text.")] = None,
-    resume_at: Annotated[str | None, typer.Option("--resume-at", help="Updated one-time UTC timestamp (ISO-8601).")] = None,
-    cron: Annotated[str | None, typer.Option("--cron", help="Updated recurring cron expression (5 fields).")] = None,
-    mode: Annotated[str | None, typer.Option("--mode", help="Updated mode: same_context or new_context.")] = None,
-    enabled: Annotated[bool | None, typer.Option("--enabled/--disabled", help="Override enabled state.")] = None,
+    resume_at: Annotated[
+        str | None, typer.Option("--resume-at", help="Updated one-time UTC timestamp (ISO-8601).")
+    ] = None,
+    cron: Annotated[
+        str | None, typer.Option("--cron", help="Updated recurring cron expression (5 fields).")
+    ] = None,
+    mode: Annotated[
+        str | None, typer.Option("--mode", help="Updated mode: same_context or new_context.")
+    ] = None,
+    enabled: Annotated[
+        bool | None, typer.Option("--enabled/--disabled", help="Override enabled state.")
+    ] = None,
     config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
 ) -> None:
     service = AdminService(config)
@@ -3585,7 +3863,9 @@ def wake_schedule_edit(
             {
                 "request_id": updated.request_id,
                 "session_id": updated.session_id,
-                "resume_at": updated.schedule.resume_at.isoformat() if updated.schedule.resume_at else None,
+                "resume_at": updated.schedule.resume_at.isoformat()
+                if updated.schedule.resume_at
+                else None,
                 "cron": updated.schedule.cron,
                 "resume_mode": updated.resume_mode,
                 "enabled": updated.enabled,
@@ -3608,8 +3888,6 @@ def wake_schedule_delete(
     typer.echo(f"Deleted wake schedule {request_id}")
 
 
-
-
 @app.command(
     "force-complete-await-agent",
     rich_help_panel="Background Workers",
@@ -3629,7 +3907,9 @@ def force_complete_await_agent(
     )
 
     cfg = _load_runtime_config_from_option(config)
-    worker = build_effect_orchestrator_worker(cfg, project_dir=_project_dir_for_config_option(config))
+    worker = build_effect_orchestrator_worker(
+        cfg, project_dir=_project_dir_for_config_option(config)
+    )
     if not worker.force_complete_await_agent(dispatch_id):
         raise typer.BadParameter(f"Unable to force-complete await-agent dispatch: {dispatch_id}")
     typer.echo(f"Force-completed await-agent dispatch {dispatch_id}")
@@ -3759,7 +4039,9 @@ def trigger_orchestrator(
     )
 
     cfg = _load_runtime_config_from_option(config)
-    worker = build_trigger_orchestrator_worker(cfg, project_dir=_project_dir_for_config_option(config))
+    worker = build_trigger_orchestrator_worker(
+        cfg, project_dir=_project_dir_for_config_option(config)
+    )
     if run_once:
         result = worker.run_once_with_lock()
         typer.echo(
@@ -3794,7 +4076,9 @@ def issue_orchestrator(
     )
 
     cfg = _load_runtime_config_from_option(config)
-    worker = build_issue_orchestrator_worker(cfg, project_dir=_project_dir_for_config_option(config))
+    worker = build_issue_orchestrator_worker(
+        cfg, project_dir=_project_dir_for_config_option(config)
+    )
     if run_once:
         result = worker.run_once_with_lock()
         typer.echo(
@@ -3822,7 +4106,9 @@ def poll_ado_backlog(
     ] = None,
     forget: Annotated[
         int | None,
-        typer.Option("--forget", help="Forget a specific work item ID in the processed store, then exit."),
+        typer.Option(
+            "--forget", help="Forget a specific work item ID in the processed store, then exit."
+        ),
     ] = None,
     list_unprocessed: Annotated[
         bool,

@@ -6,8 +6,11 @@ from typing import Any
 
 from agent_sandbox.events.models import GateType
 from agent_sandbox.provider_config import GateProviderConfig, ProviderConfigResolver
-from agent_sandbox.provider_runtime.adapters import build_provider_runtime_ports, gate_provider_config_blob
-from agent_sandbox.workflow_plugins import GATE_PLUGIN_CLASSES
+from agent_sandbox.provider_runtime.adapters import (
+    build_provider_runtime_ports,
+    gate_provider_config_blob,
+)
+from agent_sandbox.workflow.plugins import GATE_PLUGIN_CLASSES
 
 from .providers.base import GateProviderBase, GateRuntimeContext
 
@@ -18,7 +21,9 @@ DEFAULT_GATE_PROVIDER_REGISTRY: dict[GateType, GateProviderClass] = dict(GATE_PL
 
 class GateProviderRegistry:
     def __init__(self, initial: Mapping[GateType, GateProviderClass] | None = None) -> None:
-        self._providers: dict[GateType, GateProviderClass] = dict(DEFAULT_GATE_PROVIDER_REGISTRY if initial is None else initial)
+        self._providers: dict[GateType, GateProviderClass] = dict(
+            DEFAULT_GATE_PROVIDER_REGISTRY if initial is None else initial
+        )
 
     def register(self, gate_type: GateType, provider_class: GateProviderClass) -> None:
         self._providers[gate_type] = provider_class
@@ -53,15 +58,25 @@ class GateProviderFactory:
             admin_adapter=admin_adapter,
             gate_adapter=gate_adapter,
         )
-        self._gate_adapter = self._provider_runtime_ports.gate_vm_inventory or self._provider_runtime_ports.vm_inventory
-        self.admin_service = self._provider_runtime_ports.admin_service or admin_service or admin_adapter or provider_runtime
+        self._gate_adapter = (
+            self._provider_runtime_ports.gate_vm_inventory
+            or self._provider_runtime_ports.vm_inventory
+        )
+        self.admin_service = (
+            self._provider_runtime_ports.admin_service
+            or admin_service
+            or admin_adapter
+            or provider_runtime
+        )
         self.registry = registry or GateProviderRegistry()
         self.env = env or dict(os.environ)
         self.secret_resolver = secret_resolver
 
     def build(self, gate_type: GateType, *, directory_path: str | None = None) -> GateProviderBase:
         provider_class = self.registry.resolve(gate_type)
-        resolved_config = _resolve_gate_provider_config(self.provider_config_resolver, directory_path)
+        resolved_config = _resolve_gate_provider_config(
+            self.provider_config_resolver, directory_path
+        )
         runtime_context = GateRuntimeContext(
             provider_config=gate_provider_config_blob(resolved_config),
             vm_inventory=self._gate_adapter,
@@ -78,7 +93,9 @@ def _resolve_gate_provider_config(
     provider_config_resolver: ProviderConfigResolver,
     directory_path: str | None,
 ) -> GateProviderConfig:
-    resolve_provider_config = getattr(provider_config_resolver, "resolve_gate_provider_config", None)
+    resolve_provider_config = getattr(
+        provider_config_resolver, "resolve_gate_provider_config", None
+    )
     if callable(resolve_provider_config):
         return resolve_provider_config(directory_path)
     resolve_for_directory = getattr(provider_config_resolver, "resolve_for_directory", None)

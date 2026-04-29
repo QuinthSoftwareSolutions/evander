@@ -149,7 +149,7 @@ def test_map_template_bindings_fail_strictly_when_output_is_missing() -> None:
 
 def test_effect_binding_supports_literal_fallback_inside_interpolated_string() -> None:
     result = resolve_effect_config_bindings(
-        {"prompt": "Thread: ${{query_1.metadata.agent_thread_id ?? \"new\"}}"},
+        {"prompt": 'Thread: ${{query_1.metadata.agent_thread_id ?? "new"}}'},
         upstream_payload={"query_1": {"metadata": {}}},
         declared_upstream_output_names={"query_1": {"metadata"}},
         strict_validation=True,

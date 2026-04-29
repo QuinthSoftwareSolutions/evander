@@ -3,8 +3,8 @@ from pathlib import Path
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.directories import DirectoryService, DirectoryStore
 from agent_sandbox.models import SessionManifest
-from agent_sandbox.session_manifest_repository import JsonSessionManifestRepository
-from agent_sandbox.vm_defaults_config import VmDefaultsConfigResolver, render_vm_defaults_exports
+from agent_sandbox.repositories.session_manifests import JsonSessionManifestRepository
+from agent_sandbox.vm.defaults_config import VmDefaultsConfigResolver, render_vm_defaults_exports
 
 
 def test_vm_defaults_resolver_applies_root_and_child_overlays(tmp_path: Path) -> None:
@@ -12,7 +12,9 @@ def test_vm_defaults_resolver_applies_root_and_child_overlays(tmp_path: Path) ->
     store = DirectoryStore(runtime_dir / "directories.json")
     store.ensure_root()
     service = DirectoryService(store)
-    config = GatewayConfig.model_validate({"runtime_dir": str(runtime_dir), "http_target_relay_port": 14000})
+    config = GatewayConfig.model_validate(
+        {"runtime_dir": str(runtime_dir), "http_target_relay_port": 14000}
+    )
     resolver = VmDefaultsConfigResolver(config, directory_store=store)
 
     team = service.create(parent="root", name="team")
@@ -56,7 +58,9 @@ def test_vm_defaults_resolver_uses_session_directory_path(tmp_path: Path) -> Non
     service = DirectoryService(directory_store)
     team = service.create(parent="root", name="team")
     resolver = VmDefaultsConfigResolver(config, directory_store=directory_store)
-    resolver.config_store.write(team.path, domain="vm-defaults", payload={"gateway_url": "http://team-gw:8000/mcp"})
+    resolver.config_store.write(
+        team.path, domain="vm-defaults", payload={"gateway_url": "http://team-gw:8000/mcp"}
+    )
 
     sessions = JsonSessionManifestRepository(config.session_store_path)
     sessions.upsert_session(
@@ -94,7 +98,11 @@ def test_render_vm_defaults_exports_uses_session_scope_and_shell_exports(tmp_pat
     resolver.config_store.write(
         team.path,
         domain="vm-defaults",
-        payload={"gateway_url": "http://10.0.0.8:9000/mcp", "openai_relay_port": 12000, "nuget_relay_port": 13000},
+        payload={
+            "gateway_url": "http://10.0.0.8:9000/mcp",
+            "openai_relay_port": 12000,
+            "nuget_relay_port": 13000,
+        },
     )
 
     sessions = JsonSessionManifestRepository(config.session_store_path)
@@ -109,10 +117,10 @@ def test_render_vm_defaults_exports_uses_session_scope_and_shell_exports(tmp_pat
 
     exports = render_vm_defaults_exports(runtime_dir=runtime_dir, session_id="session-1")
 
-    assert 'export GATEWAY_URL=http://10.0.0.8:9000/mcp' in exports
-    assert 'export HTTP_TARGET_RELAY_BASE_URL=http://10.0.0.8:11777' in exports
-    assert 'export LLM_BASE_URL=http://10.0.0.8:12000/v1' in exports
-    assert 'export NUGET_RELAY_BASE_URL=http://10.0.0.8:13000' in exports
+    assert "export GATEWAY_URL=http://10.0.0.8:9000/mcp" in exports
+    assert "export HTTP_TARGET_RELAY_BASE_URL=http://10.0.0.8:11777" in exports
+    assert "export LLM_BASE_URL=http://10.0.0.8:12000/v1" in exports
+    assert "export NUGET_RELAY_BASE_URL=http://10.0.0.8:13000" in exports
 
 
 def test_vm_defaults_resolver_supports_provider_and_azure_overlay(tmp_path: Path) -> None:

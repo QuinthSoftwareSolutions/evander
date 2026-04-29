@@ -51,7 +51,9 @@ def test_issue_update_state_provider_calls_admin_service(tmp_path: Path) -> None
 
     output = provider.execute()
 
-    assert admin_service.calls == [{"issue_id": "14084", "state": "In Progress", "sync_proxy_cache": True}]
+    assert admin_service.calls == [
+        {"issue_id": "14084", "state": "In Progress", "sync_proxy_cache": True}
+    ]
     assert output["success"] is True
     assert output["issue_number"] == "14084"
     assert output["state"] == "In Progress"
@@ -60,7 +62,9 @@ def test_issue_update_state_provider_calls_admin_service(tmp_path: Path) -> None
 def test_issue_update_state_provider_requires_admin_service_method(tmp_path: Path) -> None:
     provider = IssueUpdateStateEffectProvider()
     provider.initialize(
-        effect_definition=SimpleNamespace(id="effect-issue-state", type="effect:issue:update-state"),
+        effect_definition=SimpleNamespace(
+            id="effect-issue-state", type="effect:issue:update-state"
+        ),
         runtime_context=EffectRuntimeContext(
             resolved_config=GatewayConfig(runtime_dir=tmp_path / "runtime"),
             admin_service=SimpleNamespace(),

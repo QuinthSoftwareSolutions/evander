@@ -27,7 +27,9 @@ class PrCreateEffectProvider(EffectProviderBase):
             host_repo_path=host_repo_path,
             local_branch=self._normalize_optional_string(payload.get("local_branch")),
             origin_branch=self._normalize_optional_string(payload.get("origin_branch")),
-            canonical_origin_url=self._normalize_optional_string(payload.get("canonical_origin_url")),
+            canonical_origin_url=self._normalize_optional_string(
+                payload.get("canonical_origin_url")
+            ),
             provider=self._normalize_optional_string(payload.get("provider")) or "auto",
             project=self._normalize_optional_string(payload.get("project")),
             base_branch=self._normalize_optional_string(payload.get("base_branch")),

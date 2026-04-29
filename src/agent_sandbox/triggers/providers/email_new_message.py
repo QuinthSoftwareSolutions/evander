@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from agent_sandbox.cursor_repositories import JsonEmailCursorRepository
+from agent_sandbox.repositories.cursors import JsonEmailCursorRepository
 from agent_sandbox.email.gmail_provider import GmailEmailProvider
 from agent_sandbox.email.graph_provider import GraphEmailProvider
 from agent_sandbox.email.providers import EmailMessageSummary, JsonEmailProvider
 from agent_sandbox.models import DraftMessage
-from agent_sandbox.records_repository import JsonEmailRecordsRepository
+from agent_sandbox.repositories.records import JsonEmailRecordsRepository
 from agent_sandbox.storage import JsonStore
 from agent_sandbox.events.models import TriggerEvent
 from agent_sandbox.events.provider_models import EmailNewMessageTriggerDefinition
@@ -30,7 +30,9 @@ class EmailNewMessageTriggerProvider(TriggerProviderBase):
         provider = self._build_provider(trigger)
         candidates: list[EmailMessageSummary] = []
         for mailbox_id in trigger.mailbox_ids:
-            candidates.extend(provider.list_unread(mailbox_id=mailbox_id, folder="inbox", limit=200))
+            candidates.extend(
+                provider.list_unread(mailbox_id=mailbox_id, folder="inbox", limit=200)
+            )
 
         candidates.sort(key=lambda item: (item.received_at, item.message_id))
 
@@ -38,7 +40,11 @@ class EmailNewMessageTriggerProvider(TriggerProviderBase):
         max_received_at = cursor
         new_ids = list(recent_ids)
         for message in candidates:
-            if cursor is not None and message.received_at <= cursor and message.message_id in recent_ids:
+            if (
+                cursor is not None
+                and message.received_at <= cursor
+                and message.message_id in recent_ids
+            ):
                 continue
             occurred_at = message.received_at.astimezone(UTC)
             events.append(
@@ -66,7 +72,9 @@ class EmailNewMessageTriggerProvider(TriggerProviderBase):
 
     def _trigger(self) -> EmailNewMessageTriggerDefinition:
         if not isinstance(self.trigger_definition, EmailNewMessageTriggerDefinition):
-            raise RuntimeError("EmailNewMessageTriggerProvider initialized with a non-email trigger definition")
+            raise RuntimeError(
+                "EmailNewMessageTriggerProvider initialized with a non-email trigger definition"
+            )
         return self.trigger_definition
 
     def _runtime_dir(self):
@@ -90,7 +98,9 @@ class EmailNewMessageTriggerProvider(TriggerProviderBase):
             key: self.runtime_context.resolve_secret(value) or value
             for key, value in trigger.auth_secret_refs.items()
         }
-        provider_cursor_store = JsonEmailCursorRepository(runtime_dir / "trigger-email-provider-cursors.json")
+        provider_cursor_store = JsonEmailCursorRepository(
+            runtime_dir / "trigger-email-provider-cursors.json"
+        )
         if trigger.provider == "gmail":
             return GmailEmailProvider(
                 account_identifier=trigger.account_identifier,

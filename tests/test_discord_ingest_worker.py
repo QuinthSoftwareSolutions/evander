@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from agent_sandbox.config import GatewayConfig
-from agent_sandbox.discord_ingest_worker import build_discord_ingest_worker
+from agent_sandbox.messaging.discord_ingest import build_discord_ingest_worker
 from agent_sandbox.models import SessionManifest, ToolName
 
 

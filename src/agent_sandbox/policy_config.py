@@ -5,16 +5,16 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
-from .config import GatewayConfig, load_config
-from .directory_config import (
+from agent_sandbox.config import GatewayConfig, load_config
+from agent_sandbox.directory_config import (
     DirectoryConfigResolver,
     DirectoryConfigStore,
     get_domain_base_config,
     validate_effective_domain_payload,
 )
-from .directories import DirectoryService, DirectoryStore
-from .models import SessionManifest, ToolName
-from .session_manifest_repository import (
+from agent_sandbox.directories import DirectoryService, DirectoryStore
+from agent_sandbox.models import SessionManifest, ToolName
+from agent_sandbox.repositories.session_manifests import (
     JsonSessionManifestRepository,
     SessionManifestRepository,
     as_session_manifest_repository,
@@ -51,8 +51,12 @@ class PolicyConfigResolver:
         self.directory_store = directory_store or DirectoryStore(config.directories_store_path)
         self.directory_store.ensure_root()
         self.directory_service = DirectoryService(self.directory_store)
-        self.config_store = DirectoryConfigStore(self.directory_store, runtime_dir=config.runtime_dir)
-        raw_session_store = session_store or JsonSessionManifestRepository(config.session_store_path)
+        self.config_store = DirectoryConfigStore(
+            self.directory_store, runtime_dir=config.runtime_dir
+        )
+        raw_session_store = session_store or JsonSessionManifestRepository(
+            config.session_store_path
+        )
         self.session_store = as_session_manifest_repository(raw_session_store)
         self.resolver = DirectoryConfigResolver(
             self.directory_service,
@@ -119,7 +123,9 @@ class PolicyConfigResolver:
 
     def operator_user_ids_for_session_id(self, session_id: str) -> list[str]:
         policy = self.resolve_for_session_id(session_id)
-        return sorted(user_id.strip() for user_id in policy.discord_operator_user_allowlist if user_id.strip())
+        return sorted(
+            user_id.strip() for user_id in policy.discord_operator_user_allowlist if user_id.strip()
+        )
 
     def include_operator_dms_for_active_sessions(self) -> bool:
         return any(policy.discord_poll_operator_dms for policy in self.active_session_policies())
@@ -127,10 +133,14 @@ class PolicyConfigResolver:
     def include_operator_dms_for_session_id(self, session_id: str) -> bool:
         return self.resolve_for_session_id(session_id).discord_poll_operator_dms
 
-    def discord_inbox_routes_for_directory(self, directory_path: str | None) -> dict[str, list[str]]:
+    def discord_inbox_routes_for_directory(
+        self, directory_path: str | None
+    ) -> dict[str, list[str]]:
         policy = self.resolve_for_directory(directory_path)
         return {
-            str(channel_id).strip(): [str(session_id).strip() for session_id in session_ids if str(session_id).strip()]
+            str(channel_id).strip(): [
+                str(session_id).strip() for session_id in session_ids if str(session_id).strip()
+            ]
             for channel_id, session_ids in policy.discord_inbox_routes.items()
             if str(channel_id).strip()
         }
@@ -140,7 +150,8 @@ class PolicyConfigResolver:
         return sorted(
             channel_id.strip()
             for channel_id, target_session_ids in routes.items()
-            if channel_id.strip() and session_id in {str(candidate).strip() for candidate in target_session_ids}
+            if channel_id.strip()
+            and session_id in {str(candidate).strip() for candidate in target_session_ids}
         )
 
     def _normalize_directory_path(self, directory_path: str | None) -> str:

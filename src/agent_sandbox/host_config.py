@@ -5,7 +5,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field, model_validator
 
-from .config import GatewayConfig, load_config
+from agent_sandbox.config import GatewayConfig, load_config
 
 DEFAULT_RUNTIME_DIR = Path("/var/lib/agent-sandbox")
 HOST_CONFIG_FILENAME = "host-config.json"
@@ -31,7 +31,9 @@ class HostConfig(BaseModel):
     discord_command_store_path: Path = Path("/var/lib/agent-sandbox/discord_commands.json")
     directories_store_path: Path = Path("/var/lib/agent-sandbox/directories.json")
     pr_map_path: Path = Path("/var/lib/agent-sandbox/pr-map.json")
-    host_agent_control_state_path: Path = Path("/var/lib/agent-sandbox/host-agent-control-state.json")
+    host_agent_control_state_path: Path = Path(
+        "/var/lib/agent-sandbox/host-agent-control-state.json"
+    )
     enable_directory_scoped_config: bool = True
 
     @model_validator(mode="after")
@@ -97,7 +99,9 @@ def host_config_path(runtime_dir: str | Path) -> Path:
 def save_host_config(config: HostConfig) -> Path:
     path = host_config_path(config.runtime_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(config.model_dump(mode="json"), indent=2, sort_keys=True), encoding="utf-8")
+    path.write_text(
+        json.dumps(config.model_dump(mode="json"), indent=2, sort_keys=True), encoding="utf-8"
+    )
     return path
 
 

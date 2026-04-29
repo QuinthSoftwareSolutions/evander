@@ -5,10 +5,13 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from agent_sandbox.admin_service import AdminService
+from agent_sandbox.admin.service import AdminService
 from agent_sandbox.effects.registry import EffectProviderFactory, EffectProviderRegistry
 from agent_sandbox.gates.registry import GateProviderFactory, GateProviderRegistry
-from agent_sandbox.orchestration.effect_extensions import AgentPromptDispatchPort, AgentRunStatusPort
+from agent_sandbox.orchestration.effect_extensions import (
+    AgentPromptDispatchPort,
+    AgentRunStatusPort,
+)
 from agent_sandbox.provider_config import ProviderConfigResolver
 from agent_sandbox.queries.registry import QueryProviderFactory, QueryProviderRegistry
 from agent_sandbox.triggers.registry import TriggerProviderFactory, TriggerProviderRegistry

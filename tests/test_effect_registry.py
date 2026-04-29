@@ -56,19 +56,33 @@ class _AdminServiceStub:
 
     def create_vm(self, **kwargs):
         self.create_vm_calls.append(kwargs)
-        return VmActionResult(success=True, vm_name=str(kwargs["vm_name"]), action="create_vm", message="ok")
+        return VmActionResult(
+            success=True, vm_name=str(kwargs["vm_name"]), action="create_vm", message="ok"
+        )
 
     def clone_repo_into_vm(self, **kwargs):
         self.clone_repo_into_vm_calls.append(kwargs)
-        return VmActionResult(success=True, vm_name=str(kwargs["vm_name"]), action="clone_repo_into_vm", message="ok")
+        return VmActionResult(
+            success=True, vm_name=str(kwargs["vm_name"]), action="clone_repo_into_vm", message="ok"
+        )
 
     def bootstrap_python_in_vm(self, **kwargs):
         self.bootstrap_python_in_vm_calls.append(kwargs)
-        return VmActionResult(success=True, vm_name=str(kwargs["vm_name"]), action="bootstrap_python_in_vm", message="ok")
+        return VmActionResult(
+            success=True,
+            vm_name=str(kwargs["vm_name"]),
+            action="bootstrap_python_in_vm",
+            message="ok",
+        )
 
     def bootstrap_frontend_in_vm(self, **kwargs):
         self.bootstrap_frontend_in_vm_calls.append(kwargs)
-        return VmActionResult(success=True, vm_name=str(kwargs["vm_name"]), action="bootstrap_frontend_in_vm", message="ok")
+        return VmActionResult(
+            success=True,
+            vm_name=str(kwargs["vm_name"]),
+            action="bootstrap_frontend_in_vm",
+            message="ok",
+        )
 
     def resume_agent(
         self,
@@ -186,7 +200,9 @@ def test_vm_create_provider_returns_required_outputs() -> None:
         bootstrap_frontend_in_vm_calls=[],
         resume_calls=[],
     )
-    factory = EffectProviderFactory(provider_config_resolver=_ResolverStub(), admin_service=admin_service)
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ResolverStub(), admin_service=admin_service
+    )
 
     provider = factory.build(effect, directory_path="root/team-a")
     output = provider.execute()
@@ -200,7 +216,10 @@ def test_vm_create_provider_returns_required_outputs() -> None:
         "message": "ok",
     }
     assert admin_service.create_vm_calls[0]["directory_path"] == "root/team-a"
-    assert admin_service.create_vm_calls[0]["labels"] == {"workflow": "issue-worker", "role": "issue"}
+    assert admin_service.create_vm_calls[0]["labels"] == {
+        "workflow": "issue-worker",
+        "role": "issue",
+    }
     assert admin_service.create_vm_calls[0]["dotnet"] is True
 
 
@@ -219,12 +238,17 @@ def test_vm_create_provider_passes_codex_skills() -> None:
         bootstrap_frontend_in_vm_calls=[],
         resume_calls=[],
     )
-    factory = EffectProviderFactory(provider_config_resolver=_ResolverStub(), admin_service=admin_service)
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ResolverStub(), admin_service=admin_service
+    )
 
     provider = factory.build(effect, directory_path="root/team-a")
     provider.execute()
 
-    assert admin_service.create_vm_calls[0]["codex_skills"] == ["playwright", "exampleindustry-app-demo"]
+    assert admin_service.create_vm_calls[0]["codex_skills"] == [
+        "playwright",
+        "exampleindustry-app-demo",
+    ]
 
 
 def test_vm_clone_repo_provider_passes_through_repo_outputs() -> None:
@@ -256,7 +280,9 @@ def test_vm_clone_repo_provider_passes_through_repo_outputs() -> None:
         )
 
     admin_service.clone_repo_into_vm = fake_clone_repo_into_vm  # type: ignore[method-assign]
-    factory = EffectProviderFactory(provider_config_resolver=_ResolverStub(), admin_service=admin_service)
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ResolverStub(), admin_service=admin_service
+    )
 
     provider = factory.build(effect, directory_path="root/team-a")
     output = provider.execute()
@@ -296,7 +322,9 @@ def test_vm_bootstrap_python_provider_passes_expected_arguments() -> None:
         bootstrap_frontend_in_vm_calls=[],
         resume_calls=[],
     )
-    factory = EffectProviderFactory(provider_config_resolver=_ResolverStub(), admin_service=admin_service)
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ResolverStub(), admin_service=admin_service
+    )
 
     provider = factory.build(effect, directory_path="root/team-a")
     output = provider.execute()
@@ -332,7 +360,9 @@ def test_vm_bootstrap_frontend_provider_passes_expected_arguments() -> None:
         bootstrap_frontend_in_vm_calls=[],
         resume_calls=[],
     )
-    factory = EffectProviderFactory(provider_config_resolver=_ResolverStub(), admin_service=admin_service)
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ResolverStub(), admin_service=admin_service
+    )
 
     provider = factory.build(effect, directory_path="root/team-a")
     output = provider.execute()
@@ -369,7 +399,9 @@ def test_agent_prompt_provider_emits_thread_id() -> None:
         bootstrap_frontend_in_vm_calls=[],
         resume_calls=[],
     )
-    factory = EffectProviderFactory(provider_config_resolver=_ResolverStub(), admin_service=admin_service)
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ResolverStub(), admin_service=admin_service
+    )
 
     provider = factory.build(effect)
     output = provider.execute()
@@ -429,7 +461,9 @@ def test_agent_enqueue_prompt_provider_dispatches_immediately_when_idle() -> Non
         resume_calls=[],
     )
     admin_service.list_vms = lambda include_inactive=True, vm_user="agent": []  # type: ignore[attr-defined]
-    factory = EffectProviderFactory(provider_config_resolver=_ResolverStub(), admin_service=admin_service)
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ResolverStub(), admin_service=admin_service
+    )
 
     provider = factory.build(effect)
     output = provider.execute()
@@ -455,7 +489,9 @@ def test_agent_prompt_provider_passes_model_override() -> None:
         bootstrap_frontend_in_vm_calls=[],
         resume_calls=[],
     )
-    factory = EffectProviderFactory(provider_config_resolver=_ResolverStub(), admin_service=admin_service)
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ResolverStub(), admin_service=admin_service
+    )
 
     provider = factory.build(effect)
     provider.execute()
@@ -478,7 +514,9 @@ def test_agent_prompt_provider_starts_new_thread_when_resume_thread_id_missing()
         bootstrap_frontend_in_vm_calls=[],
         resume_calls=[],
     )
-    factory = EffectProviderFactory(provider_config_resolver=_ResolverStub(), admin_service=admin_service)
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ResolverStub(), admin_service=admin_service
+    )
 
     provider = factory.build(effect)
     output = provider.execute()

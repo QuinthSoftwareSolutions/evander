@@ -76,7 +76,9 @@ def test_gmail_list_unread_monotonic_cursor_and_dedup(tmp_path, monkeypatch) -> 
     monkeypatch.setattr(
         provider,
         "_to_summary",
-        lambda **kwargs: _summary("gmail", kwargs["mailbox_id"], kwargs["folder"], kwargs["payload"]["id"]),
+        lambda **kwargs: _summary(
+            "gmail", kwargs["mailbox_id"], kwargs["folder"], kwargs["payload"]["id"]
+        ),
     )
 
     first = provider.list_unread("mailbox-1", "inbox", 10)
@@ -109,7 +111,9 @@ def test_graph_list_unread_uses_delta_cursor_and_dedup(tmp_path, monkeypatch) ->
     monkeypatch.setattr(
         provider,
         "_to_summary",
-        lambda **kwargs: _summary("graph", kwargs["mailbox_id"], kwargs["folder"], kwargs["payload"]["id"]),
+        lambda **kwargs: _summary(
+            "graph", kwargs["mailbox_id"], kwargs["folder"], kwargs["payload"]["id"]
+        ),
     )
 
     first = provider.list_unread("mailbox-2", "inbox", 10)
@@ -122,7 +126,9 @@ def test_graph_list_unread_uses_delta_cursor_and_dedup(tmp_path, monkeypatch) ->
     assert cursor.primitive_cursor == "https://delta.example/2"
 
 
-def test_gmail_duplicate_suppression_persists_across_provider_restarts(tmp_path, monkeypatch) -> None:
+def test_gmail_duplicate_suppression_persists_across_provider_restarts(
+    tmp_path, monkeypatch
+) -> None:
     store = DurableCursorStore(tmp_path / "gmail-cursors.json")
     provider = GmailEmailProvider(
         account_identifier="me",
@@ -135,7 +141,9 @@ def test_gmail_duplicate_suppression_persists_across_provider_restarts(tmp_path,
     monkeypatch.setattr(
         provider,
         "_to_summary",
-        lambda **kwargs: _summary("gmail", kwargs["mailbox_id"], kwargs["folder"], kwargs["payload"]["id"]),
+        lambda **kwargs: _summary(
+            "gmail", kwargs["mailbox_id"], kwargs["folder"], kwargs["payload"]["id"]
+        ),
     )
 
     first_run = provider.list_unread("mailbox-1", "inbox", 10)
@@ -152,7 +160,9 @@ def test_gmail_duplicate_suppression_persists_across_provider_restarts(tmp_path,
     monkeypatch.setattr(
         restarted_provider,
         "_to_summary",
-        lambda **kwargs: _summary("gmail", kwargs["mailbox_id"], kwargs["folder"], kwargs["payload"]["id"]),
+        lambda **kwargs: _summary(
+            "gmail", kwargs["mailbox_id"], kwargs["folder"], kwargs["payload"]["id"]
+        ),
     )
 
     second_run = restarted_provider.list_unread("mailbox-1", "inbox", 10)
@@ -162,7 +172,9 @@ def test_gmail_duplicate_suppression_persists_across_provider_restarts(tmp_path,
     assert cursor.primitive_cursor == "10"
 
 
-def test_graph_duplicate_suppression_persists_across_provider_restarts(tmp_path, monkeypatch) -> None:
+def test_graph_duplicate_suppression_persists_across_provider_restarts(
+    tmp_path, monkeypatch
+) -> None:
     store = DurableCursorStore(tmp_path / "graph-cursors.json")
     provider = GraphEmailProvider(
         account_identifier="leader@example.com",
@@ -179,7 +191,9 @@ def test_graph_duplicate_suppression_persists_across_provider_restarts(tmp_path,
     monkeypatch.setattr(
         provider,
         "_to_summary",
-        lambda **kwargs: _summary("graph", kwargs["mailbox_id"], kwargs["folder"], kwargs["payload"]["id"]),
+        lambda **kwargs: _summary(
+            "graph", kwargs["mailbox_id"], kwargs["folder"], kwargs["payload"]["id"]
+        ),
     )
 
     first_run = provider.list_unread("mailbox-2", "inbox", 10)
@@ -200,7 +214,9 @@ def test_graph_duplicate_suppression_persists_across_provider_restarts(tmp_path,
     monkeypatch.setattr(
         restarted_provider,
         "_to_summary",
-        lambda **kwargs: _summary("graph", kwargs["mailbox_id"], kwargs["folder"], kwargs["payload"]["id"]),
+        lambda **kwargs: _summary(
+            "graph", kwargs["mailbox_id"], kwargs["folder"], kwargs["payload"]["id"]
+        ),
     )
 
     second_run = restarted_provider.list_unread("mailbox-2", "inbox", 10)
@@ -219,7 +235,9 @@ def test_gmail_history_paginates_before_advancing_cursor(monkeypatch) -> None:
     )
 
     class StubClient:
-        def get(self, _url: str, *, headers: dict[str, str], params: dict[str, object]) -> _StubResponse:
+        def get(
+            self, _url: str, *, headers: dict[str, str], params: dict[str, object]
+        ) -> _StubResponse:
             assert headers["Authorization"] == "Bearer test-token"
             page_token = str(params.get("pageToken", ""))
             if not page_token:

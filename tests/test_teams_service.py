@@ -383,7 +383,10 @@ def test_graph_teams_service_includes_graph_error_body_in_http_status_error(
         allowed_channel_targets_provider=lambda: ["team-a/channel-1"],
     )
 
-    with pytest.raises(httpx.HTTPStatusError, match="Graph error: code=Forbidden, message=Caller does not have access to this channel., request-id=req-123, date=2026-04-10T07:15:00Z"):
+    with pytest.raises(
+        httpx.HTTPStatusError,
+        match="Graph error: code=Forbidden, message=Caller does not have access to this channel., request-id=req-123, date=2026-04-10T07:15:00Z",
+    ):
         service.get_messages()
 
 
@@ -425,12 +428,17 @@ def test_stub_teams_service_filters_by_cursor(tmp_path: Path) -> None:
     assert [message.cursor for message in messages] == ["team-a/channel-1/msg-2"]
 
 
-def test_graph_teams_service_before_cursor_limits_history_fetch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_graph_teams_service_before_cursor_limits_history_fetch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
-        if request.url.path.endswith("/chats/chat-1/messages") and request.url.params.get("$skiptoken") is None:
+        if (
+            request.url.path.endswith("/chats/chat-1/messages")
+            and request.url.params.get("$skiptoken") is None
+        ):
             return httpx.Response(
                 200,
                 json={
@@ -452,7 +460,10 @@ def test_graph_teams_service_before_cursor_limits_history_fetch(tmp_path: Path, 
                 },
                 request=request,
             )
-        if request.url.path.endswith("/chats/chat-1/messages") and request.url.params.get("$skiptoken") == "page-2":
+        if (
+            request.url.path.endswith("/chats/chat-1/messages")
+            and request.url.params.get("$skiptoken") == "page-2"
+        ):
             return httpx.Response(
                 200,
                 json={
@@ -502,7 +513,9 @@ def test_graph_teams_service_posts_status_and_thread_reply(
 
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
-        if request.method == "POST" and request.url.path.endswith("/teams/team-a/channels/channel-1/messages"):
+        if request.method == "POST" and request.url.path.endswith(
+            "/teams/team-a/channels/channel-1/messages"
+        ):
             return httpx.Response(
                 201,
                 json={
@@ -591,7 +604,9 @@ def test_graph_teams_service_get_messages_preserves_status_source_for_known_post
 
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
-        if request.method == "POST" and request.url.path.endswith("/teams/team-a/channels/channel-1/messages"):
+        if request.method == "POST" and request.url.path.endswith(
+            "/teams/team-a/channels/channel-1/messages"
+        ):
             return httpx.Response(
                 201,
                 json={
@@ -603,7 +618,9 @@ def test_graph_teams_service_get_messages_preserves_status_source_for_known_post
                 },
                 request=request,
             )
-        if request.method == "GET" and request.url.path.endswith("/teams/team-a/channels/channel-1/messages"):
+        if request.method == "GET" and request.url.path.endswith(
+            "/teams/team-a/channels/channel-1/messages"
+        ):
             return httpx.Response(
                 200,
                 json={
@@ -676,7 +693,10 @@ def test_graph_teams_service_renders_fenced_code_blocks_as_html(
 
     service.post_status("```csharp\nvar x = 1;\n```", "team-a/channel-1", "session-1")
 
-    assert requests[0].content == b'{"body":{"content":"<pre><code>var x = 1;</code></pre>","contentType":"html"}}'
+    assert (
+        requests[0].content
+        == b'{"body":{"content":"<pre><code>var x = 1;</code></pre>","contentType":"html"}}'
+    )
 
 
 def test_graph_teams_service_renders_common_markdown_formatting_as_html(

@@ -20,7 +20,9 @@ class ProviderCompletionLifecycleHook(EffectLifecycleHookBase):
 
     def on_completion_fan_out(self, *, worker: Any, queue_record: Any, graph: Any) -> int:
         del graph
-        return int(self._provider_class.on_completion_event(worker=worker, queue_record=queue_record) or 0)
+        return int(
+            self._provider_class.on_completion_event(worker=worker, queue_record=queue_record) or 0
+        )
 
 
 class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
@@ -47,10 +49,15 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
                 continue
             vm_name = str(record.vm_name or "").strip()
             summary = summaries.get(vm_name)
-            if summary is not None and str(getattr(summary, "agent_state", "") or "").strip() == "running":
+            if (
+                summary is not None
+                and str(getattr(summary, "agent_state", "") or "").strip() == "running"
+            ):
                 continue
 
-            dispatch_id = f"dispatch-{record.effect_id}-{datetime.now(UTC).strftime('%Y%m%d%H%M%S%f')}"
+            dispatch_id = (
+                f"dispatch-{record.effect_id}-{datetime.now(UTC).strftime('%Y%m%d%H%M%S%f')}"
+            )
             result = dispatch_agent_prompt(
                 worker,
                 target=record.target,

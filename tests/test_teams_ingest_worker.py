@@ -9,7 +9,7 @@ import pytest
 
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.models import SessionManifest, TeamsMessageEnvelope, ToolName
-from agent_sandbox.teams_ingest_worker import build_teams_ingest_worker
+from agent_sandbox.messaging.teams_ingest import build_teams_ingest_worker
 
 
 def patch_worker_httpx_client(
@@ -18,7 +18,7 @@ def patch_worker_httpx_client(
 ) -> None:
     real_client = httpx.Client
     monkeypatch.setattr(
-        "agent_sandbox.teams_ingest_worker.httpx.Client",
+        "agent_sandbox.messaging.teams_ingest.httpx.Client",
         lambda timeout: real_client(timeout=timeout, transport=transport),
     )
 
@@ -217,8 +217,8 @@ def test_teams_ingest_worker_uses_delegated_token_provider(
 
     patch_worker_httpx_client(monkeypatch, httpx.MockTransport(handler))
     monkeypatch.setattr(
-        "agent_sandbox.teams_ingest_worker._build_delegated_teams_token_provider",
-        lambda config: (lambda: "delegated-token"),
+        "agent_sandbox.messaging.teams_ingest._build_delegated_teams_token_provider",
+        lambda config: lambda: "delegated-token",
     )
     config = GatewayConfig.model_validate(
         {
@@ -261,7 +261,9 @@ def test_teams_ingest_worker_ignores_graph_echo_of_agent_status_post(
                             "id": "msg-status",
                             "createdDateTime": "2026-03-30T11:02:00Z",
                             "body": {"content": "status", "contentType": "text"},
-                            "from": {"application": {"id": "bot-app", "displayName": "Agent Sandbox"}},
+                            "from": {
+                                "application": {"id": "bot-app", "displayName": "Agent Sandbox"}
+                            },
                         }
                     ]
                 },

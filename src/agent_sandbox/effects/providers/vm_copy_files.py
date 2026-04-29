@@ -12,7 +12,7 @@ from typing import Any
 
 import yaml
 
-from agent_sandbox.workflow_binding import resolve_workflow_bindings
+from agent_sandbox.workflow.binding import resolve_workflow_bindings
 
 from .base import EffectProviderBase
 
@@ -37,17 +37,25 @@ class VmCopyFilesEffectProvider(EffectProviderBase):
                 continue
             source_format = str(raw_entry.get("source_format") or "").strip().lower()
             if source_format not in {"", "file", "template"}:
-                raise ValueError(f"effect:vm:copy-files files[{index}] source_format must be one of: file, template")
+                raise ValueError(
+                    f"effect:vm:copy-files files[{index}] source_format must be one of: file, template"
+                )
             if source_format != "template":
                 continue
             source_path = str(raw_entry.get("source_path") or "").strip()
             if not source_path:
-                raise ValueError(f"effect:vm:copy-files files[{index}] source_path is required for template sources")
+                raise ValueError(
+                    f"effect:vm:copy-files files[{index}] source_path is required for template sources"
+                )
             template_path = Path(source_path).expanduser().resolve()
             if not template_path.exists():
-                raise ValueError(f"effect:vm:copy-files template source does not exist: {template_path}")
+                raise ValueError(
+                    f"effect:vm:copy-files template source does not exist: {template_path}"
+                )
             if template_path.is_dir():
-                raise ValueError(f"effect:vm:copy-files template source must be a file: {template_path}")
+                raise ValueError(
+                    f"effect:vm:copy-files template source must be a file: {template_path}"
+                )
             template_text = template_path.read_text(encoding="utf-8")
             rendered = resolve_workflow_bindings(
                 template_text,
@@ -57,7 +65,9 @@ class VmCopyFilesEffectProvider(EffectProviderBase):
                 strict_validation=True,
             ).resolved_config
             if not isinstance(rendered, str):
-                raise ValueError(f"effect:vm:copy-files template source must resolve to text: {template_path}")
+                raise ValueError(
+                    f"effect:vm:copy-files template source must resolve to text: {template_path}"
+                )
             raw_entry["content"] = rendered
             raw_entry.pop("source_path", None)
         return next_config
@@ -86,7 +96,9 @@ class VmCopyFilesEffectProvider(EffectProviderBase):
             normalized.setdefault("message", "")
             return normalized
 
-        directory_path = self._normalize_optional_string(context.metadata.get("directory_path")) or "root"
+        directory_path = (
+            self._normalize_optional_string(context.metadata.get("directory_path")) or "root"
+        )
         explicit_vm_ip = self._normalize_optional_string(payload.get("vm_ip"))
         vm_name, vm_ip = self._resolve_vm_target(
             target=target,
@@ -94,7 +106,8 @@ class VmCopyFilesEffectProvider(EffectProviderBase):
             vm_user=vm_user,
             directory_path=directory_path,
         )
-        from agent_sandbox.admin_service import _resolve_private_key_path, _ssh_options
+
+        from agent_sandbox.admin.service import _resolve_private_key_path
 
         ssh_private_key_path = _resolve_private_key_path()
         if ssh_private_key_path is None:
@@ -109,8 +122,12 @@ class VmCopyFilesEffectProvider(EffectProviderBase):
                 staged_source = self._stage_source_file(entry, staging_root, index=index)
                 remote_path = self._normalize_remote_path(entry["destination_path"])
                 if not entry["overwrite"]:
-                    self._ensure_remote_absent(vm_name, vm_ip, vm_user, ssh_private_key_path, remote_path)
-                self._ensure_remote_parent(vm_name, vm_ip, vm_user, ssh_private_key_path, remote_path)
+                    self._ensure_remote_absent(
+                        vm_name, vm_ip, vm_user, ssh_private_key_path, remote_path
+                    )
+                self._ensure_remote_parent(
+                    vm_name, vm_ip, vm_user, ssh_private_key_path, remote_path
+                )
                 self._copy_one_file(
                     vm_name=vm_name,
                     vm_ip=vm_ip,
@@ -124,7 +141,9 @@ class VmCopyFilesEffectProvider(EffectProviderBase):
                     {
                         "source_path": entry.get("source_path"),
                         "destination_path": remote_path,
-                        "source_kind": "content" if entry.get("content") is not None else "source_path",
+                        "source_kind": "content"
+                        if entry.get("content") is not None
+                        else "source_path",
                         "recursive": staged_source.is_dir(),
                         "mode": entry["mode"],
                         "overwrite": entry["overwrite"],
@@ -177,7 +196,9 @@ class VmCopyFilesEffectProvider(EffectProviderBase):
         if not callable(list_vms):
             raise RuntimeError("VmCopyFilesEffectProvider requires vm_inventory.list_vms()")
 
-        summaries = list_vms(include_inactive=True, omit_state=True, vm_user=vm_user, directory_path=directory_path)
+        summaries = list_vms(
+            include_inactive=True, omit_state=True, vm_user=vm_user, directory_path=directory_path
+        )
         matches: list[tuple[str, str]] = []
         for summary in summaries:
             vm_name = self._normalize_optional_string(getattr(summary, "vm_name", None))
@@ -205,6 +226,8 @@ class VmCopyFilesEffectProvider(EffectProviderBase):
         ssh_private_key_path: Path,
         remote_path: str,
     ) -> None:
+        from agent_sandbox.admin.service import _ssh_options
+
         remote_parent = PurePosixPath(remote_path).parent.as_posix() or "."
         if remote_parent == ".":
             return
@@ -235,6 +258,8 @@ class VmCopyFilesEffectProvider(EffectProviderBase):
         ssh_private_key_path: Path,
         remote_path: str,
     ) -> None:
+        from agent_sandbox.admin.service import _ssh_options
+
         command = f"test ! -e {shlex.quote(remote_path)}"
         completed = subprocess.run(
             [
@@ -265,6 +290,8 @@ class VmCopyFilesEffectProvider(EffectProviderBase):
         remote_path: str,
         mode: str | None,
     ) -> None:
+        from agent_sandbox.admin.service import _ssh_options
+
         remote_spec = f"{vm_user}@{vm_ip}:{remote_path}"
         cmd = ["scp"]
         if local_source.is_dir():
@@ -276,9 +303,14 @@ class VmCopyFilesEffectProvider(EffectProviderBase):
                 remote_spec,
             ]
         )
-        completed = subprocess.run(cmd, capture_output=True, text=True, check=False, env=os.environ.copy())
+        completed = subprocess.run(
+            cmd, capture_output=True, text=True, check=False, env=os.environ.copy()
+        )
         if completed.returncode != 0:
-            raise RuntimeError((completed.stderr or completed.stdout or "").strip() or f"Failed to copy {local_source}")
+            raise RuntimeError(
+                (completed.stderr or completed.stdout or "").strip()
+                or f"Failed to copy {local_source}"
+            )
         if mode is None:
             return
         chmod_mode = self._normalize_mode(mode)
@@ -334,10 +366,14 @@ class VmCopyFilesEffectProvider(EffectProviderBase):
             )
             if not destination_path:
                 raise ValueError("effect:vm:copy-files entries require destination_path")
-            source_path = self._normalize_optional_string(raw_entry.get("source_path") or raw_entry.get("source"))
+            source_path = self._normalize_optional_string(
+                raw_entry.get("source_path") or raw_entry.get("source")
+            )
             content = raw_entry.get("content")
             if (source_path is None) == (content is None):
-                raise ValueError("effect:vm:copy-files entries require exactly one of source_path or content")
+                raise ValueError(
+                    "effect:vm:copy-files entries require exactly one of source_path or content"
+                )
             mode = self._normalize_optional_string(raw_entry.get("mode"))
             content_format = self._normalize_content_format(raw_entry.get("content_format"))
             overwrite = raw_entry.get("overwrite")
@@ -349,7 +385,9 @@ class VmCopyFilesEffectProvider(EffectProviderBase):
                 {
                     "source_path": source_path,
                     "destination_path": destination_path,
-                    "content": self._render_inline_content(content, content_format=content_format) if content is not None else None,
+                    "content": self._render_inline_content(content, content_format=content_format)
+                    if content is not None
+                    else None,
                     "content_format": content_format,
                     "mode": mode,
                     "overwrite": overwrite,
@@ -392,7 +430,9 @@ class VmCopyFilesEffectProvider(EffectProviderBase):
         if not text:
             return None
         if text not in {"text", "json", "yaml"}:
-            raise ValueError(f"effect:vm:copy-files content_format must be one of: text, json, yaml")
+            raise ValueError(
+                f"effect:vm:copy-files content_format must be one of: text, json, yaml"
+            )
         return text
 
     @classmethod

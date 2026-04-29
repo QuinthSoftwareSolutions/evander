@@ -270,9 +270,13 @@ def test_azure_reply_provider_posts_reply(monkeypatch: pytest.MonkeyPatch) -> No
     assert result.reply_url == "https://ado.test/reply/301"
 
 
-def test_azure_reply_provider_normalizes_composite_repo_identifier(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_azure_reply_provider_normalizes_composite_repo_identifier(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path.endswith("/repositories/example-repo/pullRequests/17/threads/44/comments")
+        assert request.url.path.endswith(
+            "/repositories/example-repo/pullRequests/17/threads/44/comments"
+        )
         return httpx.Response(
             201,
             json={"id": 302, "_links": {"web": {"href": "https://ado.test/reply/302"}}},

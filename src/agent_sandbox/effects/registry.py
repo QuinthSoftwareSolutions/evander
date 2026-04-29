@@ -4,10 +4,17 @@ import os
 from collections.abc import Callable, Mapping
 from typing import Any
 
-from agent_sandbox.events.models import EffectDefinitionDiscriminated, EffectType, WorkflowNodeEnvelope
+from agent_sandbox.events.models import (
+    EffectDefinitionDiscriminated,
+    EffectType,
+    WorkflowNodeEnvelope,
+)
 from agent_sandbox.provider_config import EffectProviderConfig, ProviderConfigResolver
-from agent_sandbox.provider_runtime.adapters import build_provider_runtime_ports, effect_provider_config_blob
-from agent_sandbox.workflow_plugins import EFFECT_PLUGIN_CLASSES
+from agent_sandbox.provider_runtime.adapters import (
+    build_provider_runtime_ports,
+    effect_provider_config_blob,
+)
+from agent_sandbox.workflow.plugins import EFFECT_PLUGIN_CLASSES
 
 from .providers.base import EffectProviderBase, EffectRuntimeContext
 
@@ -18,12 +25,16 @@ class NoopEffectProvider(EffectProviderBase):
     """Default provider scaffold for effect types awaiting concrete implementations."""
 
 
-DEFAULT_EFFECT_PROVIDER_REGISTRY: dict[EffectType, EffectProviderClass] = dict(EFFECT_PLUGIN_CLASSES)
+DEFAULT_EFFECT_PROVIDER_REGISTRY: dict[EffectType, EffectProviderClass] = dict(
+    EFFECT_PLUGIN_CLASSES
+)
 
 
 class EffectProviderRegistry:
     def __init__(self, initial: Mapping[EffectType, EffectProviderClass] | None = None) -> None:
-        self._providers: dict[EffectType, EffectProviderClass] = dict(initial or DEFAULT_EFFECT_PROVIDER_REGISTRY)
+        self._providers: dict[EffectType, EffectProviderClass] = dict(
+            initial or DEFAULT_EFFECT_PROVIDER_REGISTRY
+        )
 
     def register(self, effect_type: EffectType, provider_class: EffectProviderClass) -> None:
         self._providers[effect_type] = provider_class
@@ -60,7 +71,12 @@ class EffectProviderFactory:
             admin_adapter=admin_adapter,
             gate_adapter=gate_adapter,
         )
-        self.admin_service = self._provider_runtime_ports.admin_service or admin_service or admin_adapter or provider_runtime
+        self.admin_service = (
+            self._provider_runtime_ports.admin_service
+            or admin_service
+            or admin_adapter
+            or provider_runtime
+        )
         self._admin_adapter = self.admin_service
         self.registry = registry or EffectProviderRegistry()
         self.env = env or dict(os.environ)
@@ -73,7 +89,9 @@ class EffectProviderFactory:
         directory_path: str | None = None,
     ) -> EffectProviderBase:
         provider_class = self.registry.resolve(effect_definition.type)
-        resolved_config = _resolve_effect_provider_config(self.provider_config_resolver, directory_path)
+        resolved_config = _resolve_effect_provider_config(
+            self.provider_config_resolver, directory_path
+        )
         runtime_context = EffectRuntimeContext(
             provider_config=effect_provider_config_blob(resolved_config),
             vm_creator=self._provider_runtime_ports.vm_creator,
@@ -82,7 +100,8 @@ class EffectProviderFactory:
             vm_frontend_bootstrapper=self._provider_runtime_ports.vm_frontend_bootstrapper,
             agent_resumer=self._provider_runtime_ports.agent_resumer,
             vm_power_controller=self._provider_runtime_ports.vm_power_controller,
-            vm_inventory=self._provider_runtime_ports.vm_inventory or self._provider_runtime_ports.gate_vm_inventory,
+            vm_inventory=self._provider_runtime_ports.vm_inventory
+            or self._provider_runtime_ports.gate_vm_inventory,
             vm_executor=self._provider_runtime_ports.vm_executor,
             vm_file_copier=self._provider_runtime_ports.vm_file_copier,
             vm_file_deleter=self._provider_runtime_ports.vm_file_deleter,
@@ -115,12 +134,16 @@ def _resolve_effect_provider_config(
     provider_config_resolver: ProviderConfigResolver,
     directory_path: str | None,
 ) -> EffectProviderConfig:
-    resolve_provider_config = getattr(provider_config_resolver, "resolve_effect_provider_config", None)
+    resolve_provider_config = getattr(
+        provider_config_resolver, "resolve_effect_provider_config", None
+    )
     if callable(resolve_provider_config):
         return resolve_provider_config(directory_path)
     resolve_for_directory = getattr(provider_config_resolver, "resolve_for_directory", None)
     if callable(resolve_for_directory):
-        return EffectProviderConfig.model_validate(_model_dump(resolve_for_directory(directory_path)))
+        return EffectProviderConfig.model_validate(
+            _model_dump(resolve_for_directory(directory_path))
+        )
     raise AttributeError("provider_config_resolver must resolve effect provider config")
 
 

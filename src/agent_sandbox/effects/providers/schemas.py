@@ -209,7 +209,9 @@ class SessionUpdateMetadataEffectDefinition(EffectDefinition):
     def validate_target_selector(self) -> "SessionUpdateMetadataEffectDefinition":
         selectors = [self.target, self.session_id, self.vm_name]
         if not any(value is not None for value in selectors):
-            raise ValueError("effect:session:update-metadata requires target, session_id, or vm_name")
+            raise ValueError(
+                "effect:session:update-metadata requires target, session_id, or vm_name"
+            )
         return self
 
 
@@ -225,9 +227,13 @@ class GitPromoteAgentBranchEffectDefinition(EffectDefinition):
     @model_validator(mode="after")
     def validate_bare_repo_selector(self) -> "GitPromoteAgentBranchEffectDefinition":
         if self.bare_repo_path is None and self.bare_repo_name is None:
-            raise ValueError("effect:git:promote-agent-branch requires bare_repo_path or bare_repo_name")
+            raise ValueError(
+                "effect:git:promote-agent-branch requires bare_repo_path or bare_repo_name"
+            )
         if self.bare_repo_path is not None and self.bare_repo_name is not None:
-            raise ValueError("effect:git:promote-agent-branch bare_repo_path and bare_repo_name are mutually exclusive")
+            raise ValueError(
+                "effect:git:promote-agent-branch bare_repo_path and bare_repo_name are mutually exclusive"
+            )
         return self
 
 

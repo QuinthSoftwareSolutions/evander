@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from ...vm_power_state import normalize_power_state
+from agent_sandbox.vm.power_state import normalize_power_state
 from .base import QueryProviderBase
 
 

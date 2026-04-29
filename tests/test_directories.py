@@ -79,7 +79,9 @@ def test_directory_service_supports_create_show_rename_move_and_delete(tmp_path:
     assert deleted == {"deleted_count": 1, "deleted_ids": [moved.id]}
 
 
-def test_directory_service_rejects_move_cycles_and_non_empty_delete_without_force(tmp_path: Path) -> None:
+def test_directory_service_rejects_move_cycles_and_non_empty_delete_without_force(
+    tmp_path: Path,
+) -> None:
     service = DirectoryService(DirectoryStore(tmp_path / "directories.json"))
 
     team = service.create(parent="root", name="team")

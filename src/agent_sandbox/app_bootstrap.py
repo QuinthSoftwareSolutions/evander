@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from .config import GatewayConfig
-from .runtime import RuntimeContext, _build_runtime_context
+from agent_sandbox.config import GatewayConfig
+from agent_sandbox.runtime import RuntimeContext, _build_runtime_context
 
 
 def build_runtime(config: GatewayConfig) -> RuntimeContext:

@@ -5,17 +5,20 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
-from ...agent_prompt_queue import AgentPromptQueueStore
-from ...config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
-from ...effects.registry import EffectProviderFactory
-from ...provider_config import ProviderConfigResolver
-from ...provider_profiles import is_pure_orchestration_core_profile, resolve_provider_module_names
-from ...gates.registry import GateProviderFactory
-from ...queries.registry import QueryProviderFactory
-from ...runtime import RuntimeContext
-from ...triggers.queue import TriggerEventQueue
-from ...workflow_events import WorkflowEventJournal
-from ...workflow_plugins import load_provider_plugins
+from agent_sandbox.messaging.agent_prompt_queue import AgentPromptQueueStore
+from agent_sandbox.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
+from agent_sandbox.effects.registry import EffectProviderFactory
+from agent_sandbox.provider_config import ProviderConfigResolver
+from agent_sandbox.provider_profiles import (
+    is_pure_orchestration_core_profile,
+    resolve_provider_module_names,
+)
+from agent_sandbox.gates.registry import GateProviderFactory
+from agent_sandbox.queries.registry import QueryProviderFactory
+from agent_sandbox.runtime import RuntimeContext
+from agent_sandbox.triggers.queue import TriggerEventQueue
+from agent_sandbox.workflow.events import WorkflowEventJournal
+from agent_sandbox.workflow.plugins import load_provider_plugins
 from ..adapters.provider_factories import (
     build_agent_prompt_dispatch_port,
     build_agent_run_status_port,
@@ -60,7 +63,8 @@ def build_effect_worker_wiring(
     provider_config_resolver: ProviderConfigResolver | None = None,
     include_default_domain_handlers: bool = True,
 ) -> EffectWorkerWiring:
-    from ...effect_orchestrator import (
+
+    from agent_sandbox.daemons.effect_orchestrator import (
         JsonExecutionStore,
         JsonGateExecutionStore,
         _resolve_worker_path,
@@ -68,7 +72,9 @@ def build_effect_worker_wiring(
     )
 
     runtime_provider_resolver = getattr(runtime, "provider_config", None)
-    resolver = provider_config_resolver or runtime_provider_resolver or ProviderConfigResolver(config)
+    resolver = (
+        provider_config_resolver or runtime_provider_resolver or ProviderConfigResolver(config)
+    )
     workflow_event_journal = WorkflowEventJournal(worker_config.workflow_event_journal_path)
     event_queue = TriggerEventQueue(
         worker_config.event_queue_store_path,
@@ -77,12 +83,14 @@ def build_effect_worker_wiring(
     lock_path = _resolve_worker_path(
         worker_config,
         "gate_lock_path",
-        fallback=worker_config.effect_lock_path or (worker_config.runtime_dir / "effect-orchestrator.lock"),
+        fallback=worker_config.effect_lock_path
+        or (worker_config.runtime_dir / "effect-orchestrator.lock"),
     )
     cursor_path = _resolve_worker_path(
         worker_config,
         "gate_cursor_store_path",
-        fallback=worker_config.effect_cursor_store_path or (worker_config.runtime_dir / "effect-orchestrator-cursors.json"),
+        fallback=worker_config.effect_cursor_store_path
+        or (worker_config.runtime_dir / "effect-orchestrator-cursors.json"),
     )
     effect_cursor_repository = build_effect_cursor_repository(cursor_path)
     execution_store = JsonExecutionStore(
@@ -97,7 +105,9 @@ def build_effect_worker_wiring(
         ),
         journal_path=worker_config.workflow_event_journal_path,
     )
-    queued_agent_prompt_store = AgentPromptQueueStore(worker_config.runtime_dir / "queued-agent-prompts.json")
+    queued_agent_prompt_store = AgentPromptQueueStore(
+        worker_config.runtime_dir / "queued-agent-prompts.json"
+    )
     executor = ThreadPoolExecutor(
         max_workers=max(1, min(32, max(1, (os.cpu_count() or 1) * 4))),
         thread_name_prefix="effect-orchestrator",
@@ -133,9 +143,14 @@ def build_effect_worker_wiring(
     special_event_handlers: tuple[SpecialEventHandler, ...] = ()
     lifecycle_reconciliation_hooks: tuple[LifecycleReconciliationHook, ...] = ()
     completion_dispatch_hooks: tuple[CompletionDispatchHook, ...] = ()
-    if include_default_domain_handlers and not is_pure_orchestration_core_profile(worker_config.provider_profile):
+    if include_default_domain_handlers and not is_pure_orchestration_core_profile(
+        worker_config.provider_profile
+    ):
         agent_run_status_port = build_agent_run_status_port(runtime_dir=config.runtime_dir)
-        agent_prompt_dispatch_port = build_agent_prompt_dispatch_port(runtime_dir=config.runtime_dir)
+        agent_prompt_dispatch_port = build_agent_prompt_dispatch_port(
+            runtime_dir=config.runtime_dir
+        )
+
         from ..providers import build_agent_default_effect_handlers
 
         (

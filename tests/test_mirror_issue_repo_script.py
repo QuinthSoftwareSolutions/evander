@@ -5,7 +5,9 @@ import subprocess
 from pathlib import Path
 
 
-def _git(repo: Path, *args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+def _git(
+    repo: Path, *args: str, env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["git", "-C", str(repo), *args],
         check=True,
@@ -40,10 +42,14 @@ def test_mirror_issue_repo_excludes_stale_agent_and_review_refs(tmp_path: Path) 
         target.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
         os.chmod(target, 0o755)
     runtime_config_source = repo_root / "scripts" / "lib" / "runtime_config.sh"
-    (lib_dir / "runtime_config.sh").write_text(runtime_config_source.read_text(encoding="utf-8"), encoding="utf-8")
+    (lib_dir / "runtime_config.sh").write_text(
+        runtime_config_source.read_text(encoding="utf-8"), encoding="utf-8"
+    )
     os.chmod(lib_dir / "runtime_config.sh", 0o755)
     auth_helper_source = repo_root / "scripts" / "lib" / "git_provider_auth.sh"
-    (lib_dir / "git_provider_auth.sh").write_text(auth_helper_source.read_text(encoding="utf-8"), encoding="utf-8")
+    (lib_dir / "git_provider_auth.sh").write_text(
+        auth_helper_source.read_text(encoding="utf-8"), encoding="utf-8"
+    )
     os.chmod(lib_dir / "git_provider_auth.sh", 0o755)
     script = scripts_dir / "mirror_issue_repo.sh"
 
@@ -102,7 +108,9 @@ def test_mirror_issue_repo_excludes_stale_agent_and_review_refs(tmp_path: Path) 
         env=env,
     )
 
-    refs_output = _git_dir(bare_repo, "for-each-ref", "--format=%(refname)", "refs").stdout.splitlines()
+    refs_output = _git_dir(
+        bare_repo, "for-each-ref", "--format=%(refname)", "refs"
+    ).stdout.splitlines()
 
     assert "refs/heads/main" in refs_output
     assert "refs/heads/feature/keep" in refs_output
@@ -129,10 +137,14 @@ def test_mirror_issue_repo_persists_refresh_metadata(tmp_path: Path) -> None:
         target.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
         os.chmod(target, 0o755)
     runtime_config_source = repo_root / "scripts" / "lib" / "runtime_config.sh"
-    (lib_dir / "runtime_config.sh").write_text(runtime_config_source.read_text(encoding="utf-8"), encoding="utf-8")
+    (lib_dir / "runtime_config.sh").write_text(
+        runtime_config_source.read_text(encoding="utf-8"), encoding="utf-8"
+    )
     os.chmod(lib_dir / "runtime_config.sh", 0o755)
     auth_helper_source = repo_root / "scripts" / "lib" / "git_provider_auth.sh"
-    (lib_dir / "git_provider_auth.sh").write_text(auth_helper_source.read_text(encoding="utf-8"), encoding="utf-8")
+    (lib_dir / "git_provider_auth.sh").write_text(
+        auth_helper_source.read_text(encoding="utf-8"), encoding="utf-8"
+    )
     os.chmod(lib_dir / "git_provider_auth.sh", 0o755)
     script = scripts_dir / "mirror_issue_repo.sh"
 
@@ -140,7 +152,9 @@ def test_mirror_issue_repo_persists_refresh_metadata(tmp_path: Path) -> None:
     source_repo.mkdir()
     _git(source_repo, "init", "-b", "main")
     origin_bare = tmp_path / "origin.git"
-    subprocess.run(["git", "init", "--bare", str(origin_bare)], check=True, text=True, capture_output=True)
+    subprocess.run(
+        ["git", "init", "--bare", str(origin_bare)], check=True, text=True, capture_output=True
+    )
     _git(source_repo, "remote", "add", "origin", str(origin_bare))
 
     env = os.environ.copy()
@@ -175,11 +189,25 @@ def test_mirror_issue_repo_persists_refresh_metadata(tmp_path: Path) -> None:
     )
 
     bare_repo = git_root / "14357_repo.git"
-    assert _git_dir(bare_repo, "config", "--get", "agent-sandbox.mirrorSource").stdout.strip() == str(source_repo)
-    assert _git_dir(bare_repo, "config", "--get", "agent-sandbox.mirrorRemoteName").stdout.strip() == "origin"
-    assert _git_dir(bare_repo, "config", "--get", "agent-sandbox.mirrorSyncRemote").stdout.strip() == "1"
-    assert _git_dir(bare_repo, "config", "--get", "agent-sandbox.mirrorForceLocal").stdout.strip() == "0"
-    assert _git_dir(bare_repo, "config", "--get-all", "agent-sandbox.mirrorRefspec").stdout.strip() == "refs/heads/main:refs/heads/main"
+    assert _git_dir(
+        bare_repo, "config", "--get", "agent-sandbox.mirrorSource"
+    ).stdout.strip() == str(source_repo)
+    assert (
+        _git_dir(bare_repo, "config", "--get", "agent-sandbox.mirrorRemoteName").stdout.strip()
+        == "origin"
+    )
+    assert (
+        _git_dir(bare_repo, "config", "--get", "agent-sandbox.mirrorSyncRemote").stdout.strip()
+        == "1"
+    )
+    assert (
+        _git_dir(bare_repo, "config", "--get", "agent-sandbox.mirrorForceLocal").stdout.strip()
+        == "0"
+    )
+    assert (
+        _git_dir(bare_repo, "config", "--get-all", "agent-sandbox.mirrorRefspec").stdout.strip()
+        == "refs/heads/main:refs/heads/main"
+    )
 
 
 def test_mirror_issue_repo_records_upstream_origin_for_repo_cache_worktree(tmp_path: Path) -> None:
@@ -200,10 +228,14 @@ def test_mirror_issue_repo_records_upstream_origin_for_repo_cache_worktree(tmp_p
         target.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
         os.chmod(target, 0o755)
     runtime_config_source = repo_root / "scripts" / "lib" / "runtime_config.sh"
-    (lib_dir / "runtime_config.sh").write_text(runtime_config_source.read_text(encoding="utf-8"), encoding="utf-8")
+    (lib_dir / "runtime_config.sh").write_text(
+        runtime_config_source.read_text(encoding="utf-8"), encoding="utf-8"
+    )
     os.chmod(lib_dir / "runtime_config.sh", 0o755)
     auth_helper_source = repo_root / "scripts" / "lib" / "git_provider_auth.sh"
-    (lib_dir / "git_provider_auth.sh").write_text(auth_helper_source.read_text(encoding="utf-8"), encoding="utf-8")
+    (lib_dir / "git_provider_auth.sh").write_text(
+        auth_helper_source.read_text(encoding="utf-8"), encoding="utf-8"
+    )
     os.chmod(lib_dir / "git_provider_auth.sh", 0o755)
     script = scripts_dir / "mirror_issue_repo.sh"
 
@@ -211,7 +243,9 @@ def test_mirror_issue_repo_records_upstream_origin_for_repo_cache_worktree(tmp_p
     source_repo.mkdir()
     _git(source_repo, "init", "-b", "main")
     canonical_origin = tmp_path / "canonical-origin.git"
-    subprocess.run(["git", "init", "--bare", str(canonical_origin)], check=True, text=True, capture_output=True)
+    subprocess.run(
+        ["git", "init", "--bare", str(canonical_origin)], check=True, text=True, capture_output=True
+    )
     _git(source_repo, "remote", "add", "origin", str(canonical_origin))
 
     env = os.environ.copy()
@@ -233,8 +267,18 @@ def test_mirror_issue_repo_records_upstream_origin_for_repo_cache_worktree(tmp_p
 
     cached_mirror = runtime_repo_cache / "cached.git"
     cached_worktree = runtime_repo_cache / "cached-worktree"
-    subprocess.run(["git", "clone", "--mirror", str(canonical_origin), str(cached_mirror)], check=True, text=True, capture_output=True)
-    subprocess.run(["git", "clone", str(cached_mirror), str(cached_worktree)], check=True, text=True, capture_output=True)
+    subprocess.run(
+        ["git", "clone", "--mirror", str(canonical_origin), str(cached_mirror)],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "clone", str(cached_mirror), str(cached_worktree)],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
 
     subprocess.run(
         [str(script), "14357", str(cached_worktree)],
@@ -245,7 +289,9 @@ def test_mirror_issue_repo_records_upstream_origin_for_repo_cache_worktree(tmp_p
     )
 
     bare_repo = git_root / "14357_repo.git"
-    assert _git_dir(bare_repo, "config", "--get", "agent-sandbox.canonicalOriginUrl").stdout.strip() == str(canonical_origin)
+    assert _git_dir(
+        bare_repo, "config", "--get", "agent-sandbox.canonicalOriginUrl"
+    ).stdout.strip() == str(canonical_origin)
 
 
 def test_mirror_issue_repo_allows_no_sync_remote_opt_out_for_local_source(tmp_path: Path) -> None:
@@ -264,10 +310,14 @@ def test_mirror_issue_repo_allows_no_sync_remote_opt_out_for_local_source(tmp_pa
         target.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
         os.chmod(target, 0o755)
     runtime_config_source = repo_root / "scripts" / "lib" / "runtime_config.sh"
-    (lib_dir / "runtime_config.sh").write_text(runtime_config_source.read_text(encoding="utf-8"), encoding="utf-8")
+    (lib_dir / "runtime_config.sh").write_text(
+        runtime_config_source.read_text(encoding="utf-8"), encoding="utf-8"
+    )
     os.chmod(lib_dir / "runtime_config.sh", 0o755)
     auth_helper_source = repo_root / "scripts" / "lib" / "git_provider_auth.sh"
-    (lib_dir / "git_provider_auth.sh").write_text(auth_helper_source.read_text(encoding="utf-8"), encoding="utf-8")
+    (lib_dir / "git_provider_auth.sh").write_text(
+        auth_helper_source.read_text(encoding="utf-8"), encoding="utf-8"
+    )
     os.chmod(lib_dir / "git_provider_auth.sh", 0o755)
     script = scripts_dir / "mirror_issue_repo.sh"
 
@@ -275,7 +325,9 @@ def test_mirror_issue_repo_allows_no_sync_remote_opt_out_for_local_source(tmp_pa
     source_repo.mkdir()
     _git(source_repo, "init", "-b", "main")
     origin_bare = tmp_path / "origin.git"
-    subprocess.run(["git", "init", "--bare", str(origin_bare)], check=True, text=True, capture_output=True)
+    subprocess.run(
+        ["git", "init", "--bare", str(origin_bare)], check=True, text=True, capture_output=True
+    )
     _git(source_repo, "remote", "add", "origin", str(origin_bare))
 
     env = os.environ.copy()
@@ -303,10 +355,15 @@ def test_mirror_issue_repo_allows_no_sync_remote_opt_out_for_local_source(tmp_pa
     )
 
     bare_repo = git_root / "14357_repo.git"
-    assert _git_dir(bare_repo, "config", "--get", "agent-sandbox.mirrorSyncRemote").stdout.strip() == "0"
+    assert (
+        _git_dir(bare_repo, "config", "--get", "agent-sandbox.mirrorSyncRemote").stdout.strip()
+        == "0"
+    )
 
 
-def test_mirror_issue_repo_uses_remote_tracking_branches_when_repo_cache_has_no_local_heads(tmp_path: Path) -> None:
+def test_mirror_issue_repo_uses_remote_tracking_branches_when_repo_cache_has_no_local_heads(
+    tmp_path: Path,
+) -> None:
     sandbox_root = tmp_path / "sandbox"
     git_root = sandbox_root / "git-remotes"
     scripts_dir = sandbox_root / "scripts"
@@ -324,10 +381,14 @@ def test_mirror_issue_repo_uses_remote_tracking_branches_when_repo_cache_has_no_
         target.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
         os.chmod(target, 0o755)
     runtime_config_source = repo_root / "scripts" / "lib" / "runtime_config.sh"
-    (lib_dir / "runtime_config.sh").write_text(runtime_config_source.read_text(encoding="utf-8"), encoding="utf-8")
+    (lib_dir / "runtime_config.sh").write_text(
+        runtime_config_source.read_text(encoding="utf-8"), encoding="utf-8"
+    )
     os.chmod(lib_dir / "runtime_config.sh", 0o755)
     auth_helper_source = repo_root / "scripts" / "lib" / "git_provider_auth.sh"
-    (lib_dir / "git_provider_auth.sh").write_text(auth_helper_source.read_text(encoding="utf-8"), encoding="utf-8")
+    (lib_dir / "git_provider_auth.sh").write_text(
+        auth_helper_source.read_text(encoding="utf-8"), encoding="utf-8"
+    )
     os.chmod(lib_dir / "git_provider_auth.sh", 0o755)
     script = scripts_dir / "mirror_issue_repo.sh"
 
@@ -335,7 +396,9 @@ def test_mirror_issue_repo_uses_remote_tracking_branches_when_repo_cache_has_no_
     source_repo.mkdir()
     _git(source_repo, "init", "-b", "main")
     canonical_origin = tmp_path / "canonical-origin.git"
-    subprocess.run(["git", "init", "--bare", str(canonical_origin)], check=True, text=True, capture_output=True)
+    subprocess.run(
+        ["git", "init", "--bare", str(canonical_origin)], check=True, text=True, capture_output=True
+    )
     _git(source_repo, "remote", "add", "origin", str(canonical_origin))
 
     env = os.environ.copy()
@@ -358,8 +421,18 @@ def test_mirror_issue_repo_uses_remote_tracking_branches_when_repo_cache_has_no_
 
     cached_mirror = runtime_repo_cache / "cached.git"
     cached_worktree = runtime_repo_cache / "cached-worktree"
-    subprocess.run(["git", "clone", "--mirror", str(canonical_origin), str(cached_mirror)], check=True, text=True, capture_output=True)
-    subprocess.run(["git", "clone", str(cached_mirror), str(cached_worktree)], check=True, text=True, capture_output=True)
+    subprocess.run(
+        ["git", "clone", "--mirror", str(canonical_origin), str(cached_mirror)],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "clone", str(cached_mirror), str(cached_worktree)],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
 
     subprocess.run(
         [str(script), "14357", str(cached_worktree)],
@@ -370,8 +443,13 @@ def test_mirror_issue_repo_uses_remote_tracking_branches_when_repo_cache_has_no_
     )
 
     bare_repo = git_root / "14357_repo.git"
-    refs_output = _git_dir(bare_repo, "for-each-ref", "--format=%(refname)", "refs/heads").stdout.splitlines()
+    refs_output = _git_dir(
+        bare_repo, "for-each-ref", "--format=%(refname)", "refs/heads"
+    ).stdout.splitlines()
 
     assert "refs/heads/main" in refs_output
     assert "refs/heads/feature/cache-only" in refs_output
-    assert _git_dir(bare_repo, "symbolic-ref", "HEAD").stdout.strip() == "refs/heads/feature/cache-only"
+    assert (
+        _git_dir(bare_repo, "symbolic-ref", "HEAD").stdout.strip()
+        == "refs/heads/feature/cache-only"
+    )

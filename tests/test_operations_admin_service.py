@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
-from agent_sandbox.admin_services.operations_service import OperationsAdminService
+from agent_sandbox.admin.services.operations_service import OperationsAdminService
 
 
 class RecordingFacade:
@@ -68,7 +68,9 @@ class RecordingFacade:
         return SimpleNamespace(ok=True, data=SimpleNamespace(details=details))
 
     def write_domain_config(self, directory_path: str, *, domain: str, payload: dict[str, object]):
-        self.calls.append(("write_domain_config", (directory_path,), {"domain": domain, "payload": payload}))
+        self.calls.append(
+            ("write_domain_config", (directory_path,), {"domain": domain, "payload": payload})
+        )
         return {"directory_path": directory_path, "domain": domain, "payload": payload}
 
 
@@ -100,7 +102,9 @@ def test_operations_admin_service_delegates_representative_methods() -> None:
         "method": "login",
         "directory": "eng",
     }
-    assert service.list_sessions(include_expired=True, directory_path="root/team", direct_only=True) == {
+    assert service.list_sessions(
+        include_expired=True, directory_path="root/team", direct_only=True
+    ) == {
         "include_expired": True,
         "expired_only": False,
         "directory_path": "root/team",
@@ -126,7 +130,9 @@ def test_operations_admin_service_delegates_representative_methods() -> None:
         "worker_id": "teams-ingest",
         "action": "start",
     }
-    assert service.write_directory_domain_config("root/team", "providers", {"mode": "delegated"}) == {
+    assert service.write_directory_domain_config(
+        "root/team", "providers", {"mode": "delegated"}
+    ) == {
         "directory_path": "root/team",
         "domain": "providers",
         "payload": {"mode": "delegated"},

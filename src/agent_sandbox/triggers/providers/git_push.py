@@ -24,11 +24,15 @@ class GitPushTriggerProvider(TriggerProviderBase):
     def poll(self) -> list[TriggerEvent]:
         return []
 
-    def handle_ref_update(self, *, repo_path: str, old_rev: str, new_rev: str, ref_name: str) -> TriggerEvent | None:
+    def handle_ref_update(
+        self, *, repo_path: str, old_rev: str, new_rev: str, ref_name: str
+    ) -> TriggerEvent | None:
         trigger = self._trigger()
         if not git_push_trigger_matches_repo(trigger, repo_path):
             return None
-        payloads = build_git_push_payloads(repo_path=repo_path, old_rev=old_rev, new_rev=new_rev, ref_name=ref_name)
+        payloads = build_git_push_payloads(
+            repo_path=repo_path, old_rev=old_rev, new_rev=new_rev, ref_name=ref_name
+        )
         if not payloads:
             return None
 
@@ -53,7 +57,9 @@ class GitPushTriggerProvider(TriggerProviderBase):
         return self.trigger_definition
 
 
-def git_push_trigger_matches_repo(trigger: GitPushTriggerDefinition | dict[str, Any], repo_path: str) -> bool:
+def git_push_trigger_matches_repo(
+    trigger: GitPushTriggerDefinition | dict[str, Any], repo_path: str
+) -> bool:
     normalized_repo = str(Path(repo_path).expanduser().resolve())
     if isinstance(trigger, GitPushTriggerDefinition):
         path_to_repo = trigger.path_to_repo
@@ -68,26 +74,44 @@ def git_push_trigger_matches_repo(trigger: GitPushTriggerDefinition | dict[str, 
     return False
 
 
-def build_git_push_payload(*, repo_path: str, old_rev: str, new_rev: str, ref_name: str) -> dict[str, Any] | None:
-    payloads = build_git_push_payloads(repo_path=repo_path, old_rev=old_rev, new_rev=new_rev, ref_name=ref_name)
+def build_git_push_payload(
+    *, repo_path: str, old_rev: str, new_rev: str, ref_name: str
+) -> dict[str, Any] | None:
+    payloads = build_git_push_payloads(
+        repo_path=repo_path, old_rev=old_rev, new_rev=new_rev, ref_name=ref_name
+    )
     if not payloads:
         return None
     return payloads[0]
 
 
-def build_git_push_payloads(*, repo_path: str, old_rev: str, new_rev: str, ref_name: str) -> list[dict[str, Any]]:
+def build_git_push_payloads(
+    *, repo_path: str, old_rev: str, new_rev: str, ref_name: str
+) -> list[dict[str, Any]]:
     normalized_repo = str(Path(repo_path).expanduser().resolve())
     branch_name = _branch_name_from_ref(ref_name)
     if branch_name is not None:
-        return [_build_branch_payload(normalized_repo=normalized_repo, branch_name=branch_name, old_rev=old_rev, new_rev=new_rev, ref_name=ref_name)]
+        return [
+            _build_branch_payload(
+                normalized_repo=normalized_repo,
+                branch_name=branch_name,
+                old_rev=old_rev,
+                new_rev=new_rev,
+                ref_name=ref_name,
+            )
+        ]
 
     if ref_name.strip() == "refs/notes/agent-pr":
-        return _build_note_push_payloads(normalized_repo=normalized_repo, old_rev=old_rev, new_rev=new_rev, ref_name=ref_name)
+        return _build_note_push_payloads(
+            normalized_repo=normalized_repo, old_rev=old_rev, new_rev=new_rev, ref_name=ref_name
+        )
 
     return []
 
 
-def _build_branch_payload(*, normalized_repo: str, branch_name: str, old_rev: str, new_rev: str, ref_name: str) -> dict[str, Any]:
+def _build_branch_payload(
+    *, normalized_repo: str, branch_name: str, old_rev: str, new_rev: str, ref_name: str
+) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "branch_name": branch_name,
         "commit_hash": new_rev,
@@ -132,9 +156,13 @@ def _derive_review_branch(branch_name: str) -> str:
     return f"review/{normalized}"
 
 
-def _build_note_push_payloads(*, normalized_repo: str, old_rev: str, new_rev: str, ref_name: str) -> list[dict[str, Any]]:
+def _build_note_push_payloads(
+    *, normalized_repo: str, old_rev: str, new_rev: str, ref_name: str
+) -> list[dict[str, Any]]:
     repo_path = Path(normalized_repo)
-    changed_targets = _list_changed_note_targets(repo_path=repo_path, old_rev=old_rev, new_rev=new_rev)
+    changed_targets = _list_changed_note_targets(
+        repo_path=repo_path, old_rev=old_rev, new_rev=new_rev
+    )
     if not changed_targets:
         return []
 
@@ -172,7 +200,16 @@ def _list_changed_note_targets(*, repo_path: Path, old_rev: str, new_rev: str) -
         )
     else:
         completed = subprocess.run(
-            ["git", f"--git-dir={repo_path}", "diff-tree", "--no-commit-id", "--name-only", "-r", old_rev, new_rev],
+            [
+                "git",
+                f"--git-dir={repo_path}",
+                "diff-tree",
+                "--no-commit-id",
+                "--name-only",
+                "-r",
+                old_rev,
+                new_rev,
+            ],
             capture_output=True,
             text=True,
             check=False,
@@ -198,7 +235,13 @@ def _note_target_from_path(path_text: str) -> str | None:
 
 def _list_agent_branch_tips(repo_path: Path) -> list[tuple[str, str]]:
     completed = subprocess.run(
-        ["git", f"--git-dir={repo_path}", "for-each-ref", "--format=%(refname:strip=2) %(objectname)", "refs/heads/agents"],
+        [
+            "git",
+            f"--git-dir={repo_path}",
+            "for-each-ref",
+            "--format=%(refname:strip=2) %(objectname)",
+            "refs/heads/agents",
+        ],
         capture_output=True,
         text=True,
         check=False,
@@ -247,7 +290,9 @@ def _normalize_optional_string(value: object) -> str | None:
     return text or None
 
 
-def publish_git_push_event(*, runtime_dir: Path, repo_path: str, old_rev: str, new_rev: str, ref_name: str) -> None:
+def publish_git_push_event(
+    *, runtime_dir: Path, repo_path: str, old_rev: str, new_rev: str, ref_name: str
+) -> None:
     runtime_dir.mkdir(parents=True, exist_ok=True)
     event_payload = {
         "repo_path": str(Path(repo_path).resolve()),

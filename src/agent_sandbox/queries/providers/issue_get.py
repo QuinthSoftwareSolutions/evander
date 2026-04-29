@@ -12,7 +12,9 @@ from .issue_get_schema import IssueGetQueryConfigSchema
 
 class IssueGetQueryProvider(QueryProviderBase):
     @classmethod
-    def validate_definition(cls, query_definition: QueryDefinitionDiscriminated) -> QueryDefinitionDiscriminated:
+    def validate_definition(
+        cls, query_definition: QueryDefinitionDiscriminated
+    ) -> QueryDefinitionDiscriminated:
         if isinstance(query_definition, WorkflowNodeEnvelope):
             config = IssueGetQueryConfigSchema.model_validate(query_definition.config).model_dump()
             return IssueGetQueryDefinition.model_validate(

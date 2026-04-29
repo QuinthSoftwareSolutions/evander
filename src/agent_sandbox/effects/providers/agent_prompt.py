@@ -56,7 +56,9 @@ class AgentPromptEffectProvider(EffectProviderBase):
             resume_thread_id=resume_thread_id,
         )
         if not bool(getattr(result, "success", False)):
-            result_message = self._normalize_optional_string(getattr(result, "message", None)) or "<empty>"
+            result_message = (
+                self._normalize_optional_string(getattr(result, "message", None)) or "<empty>"
+            )
             raise RuntimeError(
                 "effect:agent:prompt resume_agent failed "
                 f"(target={target}, dispatch_id={dispatch_id}, message={result_message})"
@@ -127,7 +129,9 @@ class AgentPromptEffectProvider(EffectProviderBase):
 
         completed = 0
         for record in waiting_records:
-            queue_record = cls._build_completion_queue_record_for_waiting_record(record=record, summaries=summaries)
+            queue_record = cls._build_completion_queue_record_for_waiting_record(
+                record=record, summaries=summaries
+            )
             if queue_record is None:
                 continue
             cls._finalize_waiting_record(worker=worker, record=record, queue_record=queue_record)
@@ -139,17 +143,26 @@ class AgentPromptEffectProvider(EffectProviderBase):
         return "effect:agent:prompt"
 
     @classmethod
-    def _finalize_waiting_record(cls, *, worker: Any, record: Any, queue_record: TriggerQueueRecord) -> None:
+    def _finalize_waiting_record(
+        cls, *, worker: Any, record: Any, queue_record: TriggerQueueRecord
+    ) -> None:
         finished_at = datetime.now(UTC)
         merged_outputs = {
             **record.outputs,
             **{
                 key: value
                 for key, value in queue_record.payload.items()
-                if key not in {NODE_OUTPUTS_CONTEXT_KEY, _BRANCH_PORT_PAYLOAD_KEY, _FOR_EXECUTION_IDS_PAYLOAD_KEY}
+                if key
+                not in {
+                    NODE_OUTPUTS_CONTEXT_KEY,
+                    _BRANCH_PORT_PAYLOAD_KEY,
+                    _FOR_EXECUTION_IDS_PAYLOAD_KEY,
+                }
             },
         }
-        published_event_id = worker._publish_completion_event_from_record(record=record, outputs=merged_outputs)
+        published_event_id = worker._publish_completion_event_from_record(
+            record=record, outputs=merged_outputs
+        )
         record.status = "succeeded"
         record.outputs = merged_outputs
         record.published_event_id = published_event_id
@@ -180,7 +193,8 @@ class AgentPromptEffectProvider(EffectProviderBase):
             return None
         if str(getattr(summary, "agent_state", "") or "").strip() == "running":
             return None
-        from agent_sandbox.agent_completion_watcher import build_agent_run_completed_event
+
+        from agent_sandbox.daemons.agent_completion_watcher import build_agent_run_completed_event
 
         completion_event = build_agent_run_completed_event(
             trigger_id="__await-agent-completion__",
@@ -227,10 +241,16 @@ class AgentPromptEffectProvider(EffectProviderBase):
                 summary
                 for summary in summaries
                 if str(getattr(summary, "dispatch_id", "") or "").strip() == dispatch_id
-                and (vm_name is None or str(getattr(summary, "vm_name", "") or "").strip() == vm_name)
+                and (
+                    vm_name is None or str(getattr(summary, "vm_name", "") or "").strip() == vm_name
+                )
                 and (
                     session_id is None
-                    or session_id in {str(item or "").strip() for item in (getattr(summary, "session_ids", []) or [])}
+                    or session_id
+                    in {
+                        str(item or "").strip()
+                        for item in (getattr(summary, "session_ids", []) or [])
+                    }
                 )
             ),
             None,
@@ -238,7 +258,9 @@ class AgentPromptEffectProvider(EffectProviderBase):
         if exact_match is not None:
             return exact_match
 
-        if (datetime.now(UTC) - record.finished_at).total_seconds() < _AWAIT_AGENT_STALE_GRACE_SECONDS:
+        if (
+            datetime.now(UTC) - record.finished_at
+        ).total_seconds() < _AWAIT_AGENT_STALE_GRACE_SECONDS:
             return None
 
         if vm_name is not None:
@@ -262,7 +284,8 @@ class AgentPromptEffectProvider(EffectProviderBase):
             (
                 summary
                 for summary in summaries
-                if session_id in {str(item or "").strip() for item in (getattr(summary, "session_ids", []) or [])}
+                if session_id
+                in {str(item or "").strip() for item in (getattr(summary, "session_ids", []) or [])}
                 and not str(getattr(summary, "dispatch_id", "") or "").strip()
                 and str(getattr(summary, "agent_state", "") or "").strip() != "running"
             ),
@@ -283,7 +306,9 @@ class AgentPromptEffectProvider(EffectProviderBase):
 
     def _effect(self) -> AgentPromptEffectDefinition:
         if not isinstance(self.effect_definition, AgentPromptEffectDefinition):
-            raise RuntimeError("AgentPromptEffectProvider initialized with a non-agent-prompt effect definition")
+            raise RuntimeError(
+                "AgentPromptEffectProvider initialized with a non-agent-prompt effect definition"
+            )
         return self.effect_definition
 
     def _context(self):

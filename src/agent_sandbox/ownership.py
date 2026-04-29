@@ -6,9 +6,12 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from .directories import DirectoryService
-from .models import DirectoryInfo, SessionManifest
-from .session_manifest_repository import SessionManifestRepository, as_session_manifest_repository
+from agent_sandbox.directories import DirectoryService
+from agent_sandbox.models import DirectoryInfo, SessionManifest
+from agent_sandbox.repositories.session_manifests import (
+    SessionManifestRepository,
+    as_session_manifest_repository,
+)
 
 
 class OwnedEntity(BaseModel):
@@ -138,7 +141,9 @@ class DirectoryOwnershipQueries:
             if not isinstance(raw_entry, dict):
                 continue
             session_id = str(raw_entry.get("session_id", "")).strip()
-            directory_path = self._owned_directory_path(raw_entry, sessions=sessions, session_id=session_id)
+            directory_path = self._owned_directory_path(
+                raw_entry, sessions=sessions, session_id=session_id
+            )
             if directory_path is None or directory_path not in allowed_paths:
                 continue
             entities.append(
@@ -172,7 +177,9 @@ class DirectoryOwnershipQueries:
             if not isinstance(raw_entry, dict):
                 continue
             session_id = str(raw_entry.get("session_id", "")).strip()
-            directory_path = self._owned_directory_path(raw_entry, sessions=sessions, session_id=session_id)
+            directory_path = self._owned_directory_path(
+                raw_entry, sessions=sessions, session_id=session_id
+            )
             if directory_path is None or directory_path not in allowed_paths:
                 continue
             work_item_id = str(raw_entry.get("remote_work_item_id") or "").strip() or entry_key

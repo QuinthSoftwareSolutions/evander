@@ -55,7 +55,9 @@ class DurableCursorStore:
             payload = self._read_raw()
             key = self._key(mailbox_id, folder)
             current = payload.get(key)
-            current_cursor = EmailSyncCursor.model_validate(current) if current is not None else None
+            current_cursor = (
+                EmailSyncCursor.model_validate(current) if current is not None else None
+            )
             updated = updater(current_cursor)
             payload[key] = updated.model_dump(mode="json")
             self._atomic_write(payload)

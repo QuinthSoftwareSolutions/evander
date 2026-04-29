@@ -15,7 +15,7 @@ from agent_sandbox.models import (
     ToolName,
 )
 from agent_sandbox.policy import PolicyEngine, PolicyError
-from agent_sandbox.session_manifest_repository import JsonSessionManifestRepository
+from agent_sandbox.repositories.session_manifests import JsonSessionManifestRepository
 from agent_sandbox.storage import JsonStore
 
 
@@ -432,6 +432,8 @@ def test_require_teams_channel_target_validates_allowlist_and_shape(tmp_path: Pa
         engine.require_teams_channel_target(session, "channel-1")
     with pytest.raises(PolicyError, match="not allowlisted"):
         engine.require_teams_channel_target(session, "team-b/channel-9")
+
+
 def test_require_email_mailbox_and_folder_for_mailbox(tmp_path: Path) -> None:
     engine = make_engine(tmp_path)
     session = SessionManifest(
@@ -471,7 +473,9 @@ def test_require_tool_for_feedback_tools_accepts_valid_stream_metadata(tmp_path:
             session_id="s1",
             allowed_tools=[ToolName.LIST_UNREAD_FEEDBACK],
             expires_at=datetime.now(UTC) + timedelta(hours=1),
-            metadata={"pr_feedback_streams": [{"provider": "github", "repo": "org/repo", "pr_id": "17"}]},
+            metadata={
+                "pr_feedback_streams": [{"provider": "github", "repo": "org/repo", "pr_id": "17"}]
+            },
         ),
     )
 
@@ -500,7 +504,9 @@ def test_require_pr_feedback_stream_enforces_allowlist(tmp_path: Path) -> None:
         session_id="s1",
         allowed_tools=[ToolName.POST_PR_FEEDBACK_REPLY],
         expires_at=datetime.now(UTC) + timedelta(hours=1),
-        metadata={"pr_feedback_streams": [{"provider": "github", "repo": "org/repo", "pr_id": "17"}]},
+        metadata={
+            "pr_feedback_streams": [{"provider": "github", "repo": "org/repo", "pr_id": "17"}]
+        },
     )
 
     engine.require_pr_feedback_stream(session, provider="github", repo="org/repo", pr_id="17")
@@ -514,7 +520,9 @@ def test_require_pr_feedback_repo_enforces_repo_allowlist(tmp_path: Path) -> Non
         session_id="s1",
         allowed_tools=[ToolName.GET_PULL_REQUEST],
         expires_at=datetime.now(UTC) + timedelta(hours=1),
-        metadata={"pr_feedback_streams": [{"provider": "github", "repo": "org/repo", "pr_id": "17"}]},
+        metadata={
+            "pr_feedback_streams": [{"provider": "github", "repo": "org/repo", "pr_id": "17"}]
+        },
     )
 
     engine.require_pr_feedback_repo(session, provider="github", repo="org/repo")

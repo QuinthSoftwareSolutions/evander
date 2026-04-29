@@ -11,7 +11,7 @@ from typing import Any, Callable, Iterator, Literal, Protocol
 from urllib.parse import quote, unquote
 
 import httpx
-from .models import (
+from agent_sandbox.models import (
     DiscordCommandEnvelope,
     DiscordMessageEnvelope,
     DraftMessage,
@@ -29,12 +29,21 @@ from .models import (
     PrFeedbackItem,
     TeamsMessageEnvelope,
 )
-from .discord_inbox_store import DiscordInboxStore
-from .cursor_repositories import DiscordInboxCursorRepository
-from .pr_feedback_worker import PrFeedbackRepository, PrFeedbackStore, _stream_key
-from .email.providers import EmailDraft, EmailMessageDetail, EmailMessageSummary, EmailProvider
-from .records_repository import DiscordRecordsRepository, TeamsRecordsRepository
-from .text_formatting import render_markdownish_text_to_html
+from agent_sandbox.messaging.discord_inbox_store import DiscordInboxStore
+from agent_sandbox.repositories.cursors import DiscordInboxCursorRepository
+from agent_sandbox.daemons.pr_feedback_worker import (
+    PrFeedbackRepository,
+    PrFeedbackStore,
+    _stream_key,
+)
+from agent_sandbox.email.providers import (
+    EmailDraft,
+    EmailMessageDetail,
+    EmailMessageSummary,
+    EmailProvider,
+)
+from agent_sandbox.repositories.records import DiscordRecordsRepository, TeamsRecordsRepository
+from agent_sandbox.text_formatting import render_markdownish_text_to_html
 
 _IGNORED_FEEDBACK_RETENTION = timedelta(days=90)
 _GRAPH_TEAMS_REACTION_TYPE_BY_VALUE = {
@@ -292,7 +301,9 @@ class DiscordBotApiService:
         )
         self.allowed_channel_ids_provider = allowed_channel_ids_provider
         self.operator_user_ids_provider = operator_user_ids_provider or (lambda: [])
-        self.include_operator_dms_provider = include_operator_dms_provider or (lambda: include_operator_dms)
+        self.include_operator_dms_provider = include_operator_dms_provider or (
+            lambda: include_operator_dms
+        )
         self.read_reaction_emoji = read_reaction_emoji
 
     def _headers(self) -> dict[str, str]:
@@ -326,6 +337,7 @@ class DiscordBotApiService:
     def _known_channel_ids(self) -> list[str]:
         channel_ids = {command.channel_id for command in self.command_store.read_all().values()}
         return sorted(channel_ids)
+
     def _allowed_channel_ids(self) -> list[str]:
         return sorted(
             {
@@ -520,6 +532,7 @@ class DiscordBotApiService:
             "reaction": normalized_emoji,
         }
 
+
 def _sorted_teams_messages(messages: dict[str, TeamsMessageEnvelope]) -> list[TeamsMessageEnvelope]:
     return sorted(messages.values(), key=lambda item: (item.created_at, item.cursor))
 
@@ -623,7 +636,9 @@ def normalize_teams_target(target: str) -> str:
 def parse_teams_target(target: str) -> TeamsTarget:
     normalized = normalize_teams_target(target)
     if normalized.startswith("chat:"):
-        return TeamsTarget(kind="chat", normalized=normalized, chat_id=normalized.removeprefix("chat:"))
+        return TeamsTarget(
+            kind="chat", normalized=normalized, chat_id=normalized.removeprefix("chat:")
+        )
     team_id, _, channel_id = normalized.partition("/")
     return TeamsTarget(
         kind="channel",
@@ -807,7 +822,9 @@ class GraphTeamsService:
         except Exception as exc:
             raise TeamsAuthenticationError(str(exc)) from exc
         if not token:
-            raise TeamsAuthenticationError("Teams Graph access token provider returned an empty token.")
+            raise TeamsAuthenticationError(
+                "Teams Graph access token provider returned an empty token."
+            )
         self.token = token
         return token
 
@@ -847,7 +864,9 @@ class GraphTeamsService:
                     headers=self._headers(),
                     params=params,
                     json=json,
-                    timeout=timeout_seconds if timeout_seconds is not None else self.timeout_seconds,
+                    timeout=timeout_seconds
+                    if timeout_seconds is not None
+                    else self.timeout_seconds,
                 )
                 response.raise_for_status()
                 return response
@@ -962,7 +981,9 @@ class GraphTeamsService:
             if remaining_seconds <= 0:
                 break
             if next_url in seen_urls:
-                raise RuntimeError(f"Teams Graph pagination loop detected for channel {team_id}/{channel_id}")
+                raise RuntimeError(
+                    f"Teams Graph pagination loop detected for channel {team_id}/{channel_id}"
+                )
             seen_urls.add(next_url)
             response = self._request_with_retries(
                 client,
@@ -1037,10 +1058,16 @@ class GraphTeamsService:
                 parsed_target = parse_teams_target(target)
                 target_cursor = None
                 target_mode = "all"
-                if since_cursor_parts is not None and since_cursor_parts[0] == parsed_target.normalized:
+                if (
+                    since_cursor_parts is not None
+                    and since_cursor_parts[0] == parsed_target.normalized
+                ):
                     target_cursor = since_cursor_parts[1]
                     target_mode = "since"
-                elif before_cursor_parts is not None and before_cursor_parts[0] == parsed_target.normalized:
+                elif (
+                    before_cursor_parts is not None
+                    and before_cursor_parts[0] == parsed_target.normalized
+                ):
                     target_cursor = before_cursor_parts[1]
                     target_mode = "before"
                 if parsed_target.kind == "chat":
@@ -1144,9 +1171,7 @@ class GraphTeamsService:
             encoded_team_id = quote(target.team_id or "", safe="")
             encoded_channel_id = quote(target.channel_id or "", safe="")
             if normalized_thread_id is None:
-                url = (
-                    f"{self.api_base_url}/teams/{encoded_team_id}/channels/{encoded_channel_id}/messages"
-                )
+                url = f"{self.api_base_url}/teams/{encoded_team_id}/channels/{encoded_channel_id}/messages"
             else:
                 url = (
                     f"{self.api_base_url}/teams/{encoded_team_id}/channels/{encoded_channel_id}/messages/"
@@ -1320,7 +1345,9 @@ class DiscordInboxService:
             candidate = DiscordMessageEnvelope.model_validate(raw_value)
             if candidate.channel_id not in allowed_channels:
                 continue
-            if session_id is not None and self._is_self_authored_message(candidate, session_id=session_id):
+            if session_id is not None and self._is_self_authored_message(
+                candidate, session_id=session_id
+            ):
                 continue
             effective_cursor = channel_cursors.get(candidate.channel_id)
             if effective_cursor and candidate.created_at <= self._parse_cursor(effective_cursor):
@@ -1754,10 +1781,17 @@ class AzureDevOpsPrQueryProvider:
                     pr_id=str(item.get("pullRequestId", "")).strip(),
                     title=(str(item.get("title", "")).strip() or None),
                     status=(str(item.get("status", "")).strip() or None),
-                    created_at=_parse_dt(item["creationDate"]) if item.get("creationDate") else None,
-                    updated_at=_parse_dt(item["creationDate"]) if item.get("creationDate") else None,
+                    created_at=_parse_dt(item["creationDate"])
+                    if item.get("creationDate")
+                    else None,
+                    updated_at=_parse_dt(item["creationDate"])
+                    if item.get("creationDate")
+                    else None,
                     created_by=(
-                        str(created_by.get("displayName") or created_by.get("uniqueName") or "").strip() or None
+                        str(
+                            created_by.get("displayName") or created_by.get("uniqueName") or ""
+                        ).strip()
+                        or None
                     ),
                     url=(
                         str(item.get("_links", {}).get("web", {}).get("href") or "").strip()
@@ -1825,7 +1859,9 @@ class AzureDevOpsPrQueryProvider:
                     display_name=str(item.get("displayName", "")).strip() or None,
                     vote=int(item["vote"]) if isinstance(item.get("vote"), int) else None,
                     status=str(item.get("vote", "")).strip() or None,
-                    is_required=item.get("isRequired") if isinstance(item.get("isRequired"), bool) else None,
+                    is_required=item.get("isRequired")
+                    if isinstance(item.get("isRequired"), bool)
+                    else None,
                 )
                 for item in reviewer_payload
                 if isinstance(item, dict)
@@ -1854,9 +1890,14 @@ class AzureDevOpsPrQueryProvider:
             ),
             source_branch=str(payload.get("sourceRefName", "")).strip() or None,
             target_branch=str(payload.get("targetRefName", "")).strip() or None,
-            source_commit=str(payload.get("lastMergeSourceCommit", {}).get("commitId", "")).strip() or None,
-            target_commit=str(payload.get("lastMergeTargetCommit", {}).get("commitId", "")).strip() or None,
-            created_by=(str(created_by.get("displayName") or created_by.get("uniqueName") or "").strip() or None),
+            source_commit=str(payload.get("lastMergeSourceCommit", {}).get("commitId", "")).strip()
+            or None,
+            target_commit=str(payload.get("lastMergeTargetCommit", {}).get("commitId", "")).strip()
+            or None,
+            created_by=(
+                str(created_by.get("displayName") or created_by.get("uniqueName") or "").strip()
+                or None
+            ),
             reviewers=normalized_reviewers,
             commits=normalized_commits,
             raw=raw_payload,
@@ -1902,7 +1943,9 @@ class PrQueryService:
     ) -> ListPullRequestsResponse:
         provider_name = normalize_pr_feedback_provider(provider)
         if provider_name not in self.providers:
-            raise ValueError(f"PR query provider {provider_name!r} is not configured for this gateway instance")
+            raise ValueError(
+                f"PR query provider {provider_name!r} is not configured for this gateway instance"
+            )
         return self.providers[provider_name].list_pull_requests(
             repo=repo,
             status=status,
@@ -1923,7 +1966,9 @@ class PrQueryService:
     ) -> GetPullRequestResponse:
         provider_name = normalize_pr_feedback_provider(provider)
         if provider_name not in self.providers:
-            raise ValueError(f"PR query provider {provider_name!r} is not configured for this gateway instance")
+            raise ValueError(
+                f"PR query provider {provider_name!r} is not configured for this gateway instance"
+            )
         return self.providers[provider_name].get_pull_request(
             repo=repo,
             pr_id=pr_id,
@@ -1965,9 +2010,7 @@ class PrReplyService:
                 f"PR feedback provider {provider_name!r} is not configured for this gateway instance"
             )
         normalized_key = idempotency_key.strip() if idempotency_key else None
-        cache_key = (
-            f"{provider_name}:{repo}:{pr_id}:{normalized_key}" if normalized_key else None
-        )
+        cache_key = f"{provider_name}:{repo}:{pr_id}:{normalized_key}" if normalized_key else None
         if cache_key:
             with self._lock:
                 existing = self._read_raw().get(cache_key)
@@ -2036,7 +2079,11 @@ def _feedback_id_for_reply_response(response: PostPrFeedbackReplyResponse) -> st
     if response.provider == "azure_devops" and response.thread_id:
         return f"azure_devops:thread_comment:{response.thread_id}:{response.reply_id}"
     return None
-def _normalize_ignored_feedback_payload(payload: dict[str, Any]) -> tuple[dict[str, Any], set[str], bool]:
+
+
+def _normalize_ignored_feedback_payload(
+    payload: dict[str, Any],
+) -> tuple[dict[str, Any], set[str], bool]:
     now = datetime.now(UTC)
     cutoff = now - _IGNORED_FEEDBACK_RETENTION
     raw_entries = payload.get("feedback_ids", [])
@@ -2049,7 +2096,12 @@ def _normalize_ignored_feedback_payload(payload: dict[str, Any]) -> tuple[dict[s
                 feedback_id = raw_entry.strip()
                 if not feedback_id:
                     continue
-                normalized_entries.append({"feedback_id": feedback_id, "ignored_at": now.isoformat().replace("+00:00", "Z")})
+                normalized_entries.append(
+                    {
+                        "feedback_id": feedback_id,
+                        "ignored_at": now.isoformat().replace("+00:00", "Z"),
+                    }
+                )
                 feedback_ids.add(feedback_id)
                 continue
             if not isinstance(raw_entry, dict):
@@ -2255,7 +2307,9 @@ class AzureDevOpsPrPublishProvider:
         thread_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
-            "comments": [{"parentCommentId": 0, "content": body_text.strip(), "commentType": "text"}],
+            "comments": [
+                {"parentCommentId": 0, "content": body_text.strip(), "commentType": "text"}
+            ],
             "status": "active",
         }
         if thread_context is not None:
@@ -2272,7 +2326,11 @@ class AzureDevOpsPrPublishProvider:
         response.raise_for_status()
         response_payload = response.json()
         thread_id = str(response_payload.get("id", "")).strip() or None
-        comments = response_payload.get("comments") if isinstance(response_payload.get("comments"), list) else []
+        comments = (
+            response_payload.get("comments")
+            if isinstance(response_payload.get("comments"), list)
+            else []
+        )
         first_comment = comments[0] if comments and isinstance(comments[0], dict) else {}
         comment_id = str(first_comment.get("id", "")).strip() or None
         comment_url = response_payload.get("_links", {}).get("web", {}).get("href")
@@ -2506,7 +2564,9 @@ class PrPublishService:
             )
         normalized_key = idempotency_key.strip() if idempotency_key else None
         cache_key = (
-            f"{operation}:{provider_name}:{repo}:{pr_id}:{normalized_key}" if normalized_key else None
+            f"{operation}:{provider_name}:{repo}:{pr_id}:{normalized_key}"
+            if normalized_key
+            else None
         )
         if cache_key:
             with self._lock:
@@ -2551,7 +2611,9 @@ class PrPublishService:
                 payload = json.loads(path.read_text(encoding="utf-8"))
             else:
                 payload = {}
-            normalized_payload, current_feedback_ids, _ = _normalize_ignored_feedback_payload(payload)
+            normalized_payload, current_feedback_ids, _ = _normalize_ignored_feedback_payload(
+                payload
+            )
             entries = normalized_payload.get("feedback_ids", [])
             now = datetime.now(UTC).isoformat().replace("+00:00", "Z")
             for feedback_id in feedback_ids:
@@ -2586,7 +2648,9 @@ def _normalize_pr_review_comments(comments: Any) -> list[dict[str, Any]]:
     for index, raw_comment in enumerate(comments):
         if not isinstance(raw_comment, dict):
             raise ValueError(f"PR review comment at index {index} must be an object")
-        body_text = _normalize_optional_text(raw_comment.get("body_text") or raw_comment.get("body"))
+        body_text = _normalize_optional_text(
+            raw_comment.get("body_text") or raw_comment.get("body")
+        )
         path = _normalize_optional_text(raw_comment.get("path"))
         if not body_text:
             raise ValueError(f"PR review comment at index {index} requires body_text")
@@ -2609,7 +2673,9 @@ def _normalize_pr_review_comments(comments: Any) -> list[dict[str, Any]]:
         if start_side is not None:
             normalized_start_side = start_side.upper()
             if normalized_start_side not in {"LEFT", "RIGHT"}:
-                raise ValueError(f"PR review comment at index {index} start_side must be LEFT or RIGHT")
+                raise ValueError(
+                    f"PR review comment at index {index} start_side must be LEFT or RIGHT"
+                )
             normalized_comment["start_side"] = normalized_start_side
         commit_id = _normalize_optional_text(raw_comment.get("commit_id"))
         if commit_id is not None:
@@ -2624,9 +2690,7 @@ def _normalize_pr_review_event(event: Any) -> str:
         return "COMMENT"
     upper = normalized.upper()
     if upper not in {"COMMENT", "APPROVE", "REQUEST_CHANGES"}:
-        raise ValueError(
-            "PR review event must be one of: COMMENT, APPROVE, REQUEST_CHANGES"
-        )
+        raise ValueError("PR review event must be one of: COMMENT, APPROVE, REQUEST_CHANGES")
     return upper
 
 

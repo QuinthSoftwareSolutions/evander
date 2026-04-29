@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from pathlib import Path
 
-from agent_sandbox.review_request_store import ReviewRequestRecord, ReviewRequestStore
+from agent_sandbox.reviews.request_store import ReviewRequestRecord, ReviewRequestStore
 
 
 def _request(

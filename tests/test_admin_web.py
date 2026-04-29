@@ -9,9 +9,9 @@ from types import SimpleNamespace
 import pytest
 from starlette.testclient import TestClient
 
-from agent_sandbox.admin_service import AdminService
-from agent_sandbox.admin_web import _workflow_run_events, create_app
-from agent_sandbox.admin_web_shared import AdminWebConfig
+from agent_sandbox.admin.service import AdminService
+from agent_sandbox.admin.web.app import _workflow_run_events, create_app
+from agent_sandbox.admin.web.shared import AdminWebConfig
 from agent_sandbox.models import LocalIssueRecord, SessionSummary, VmActionResult, VmSummary
 
 
@@ -53,7 +53,9 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
     assert any(node["type"] == "effect:vm:exec" for node in catalog_payload["nodes"])
     vm_exec = next(node for node in catalog_payload["nodes"] if node["type"] == "effect:vm:exec")
     assert any(field["key"] == "command" and field["bindable"] for field in vm_exec["fields"])
-    vm_delete = next(node for node in catalog_payload["nodes"] if node["type"] == "effect:vm:delete-files")
+    vm_delete = next(
+        node for node in catalog_payload["nodes"] if node["type"] == "effect:vm:delete-files"
+    )
     assert [field["key"] for field in vm_delete["fields"]] == [
         "target",
         "session_id",
@@ -63,11 +65,21 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "recursive",
         "missing_ok",
     ]
-    issue_state = next(node for node in catalog_payload["nodes"] if node["type"] == "effect:issue:update-state")
-    assert [field["key"] for field in issue_state["fields"]] == ["issue_id", "state", "sync_proxy_cache"]
-    agent_prompt = next(node for node in catalog_payload["nodes"] if node["type"] == "effect:agent:prompt")
+    issue_state = next(
+        node for node in catalog_payload["nodes"] if node["type"] == "effect:issue:update-state"
+    )
+    assert [field["key"] for field in issue_state["fields"]] == [
+        "issue_id",
+        "state",
+        "sync_proxy_cache",
+    ]
+    agent_prompt = next(
+        node for node in catalog_payload["nodes"] if node["type"] == "effect:agent:prompt"
+    )
     assert any(field["key"] == "model" and field["bindable"] for field in agent_prompt["fields"])
-    agent_enqueue_prompt = next(node for node in catalog_payload["nodes"] if node["type"] == "effect:agent:enqueue-prompt")
+    agent_enqueue_prompt = next(
+        node for node in catalog_payload["nodes"] if node["type"] == "effect:agent:enqueue-prompt"
+    )
     assert [field["key"] for field in agent_enqueue_prompt["fields"]] == [
         "target",
         "session_id",
@@ -77,7 +89,9 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "vm_user",
         "resume_thread_id",
     ]
-    bash_script = next(node for node in catalog_payload["nodes"] if node["type"] == "effect:bash:script")
+    bash_script = next(
+        node for node in catalog_payload["nodes"] if node["type"] == "effect:bash:script"
+    )
     assert [field["key"] for field in bash_script["fields"]] == [
         "script_path",
         "args",
@@ -92,15 +106,25 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         {"value": "immediate", "label": "Immediate"},
         {"value": "on_completion", "label": "On completion"},
     ]
-    ticket_created = next(node for node in catalog_payload["nodes"] if node["type"] == "trigger:ticket:created")
+    ticket_created = next(
+        node for node in catalog_payload["nodes"] if node["type"] == "trigger:ticket:created"
+    )
     assert all(field["key"] != "outputs" for field in ticket_created["fields"])
-    review_request = next(node for node in catalog_payload["nodes"] if node["type"] == "trigger:review:new-request")
+    review_request = next(
+        node for node in catalog_payload["nodes"] if node["type"] == "trigger:review:new-request"
+    )
     assert review_request["fields"] == []
-    script_run_request = next(node for node in catalog_payload["nodes"] if node["type"] == "trigger:script-run-request")
+    script_run_request = next(
+        node for node in catalog_payload["nodes"] if node["type"] == "trigger:script-run-request"
+    )
     assert script_run_request["fields"] == []
-    teams_message = next(node for node in catalog_payload["nodes"] if node["type"] == "trigger:teams:new-message")
+    teams_message = next(
+        node for node in catalog_payload["nodes"] if node["type"] == "trigger:teams:new-message"
+    )
     assert [field["key"] for field in teams_message["fields"]] == ["targets", "user_ids"]
-    await_agent = next(node for node in catalog_payload["nodes"] if node["type"] == "gate:await-agent")
+    await_agent = next(
+        node for node in catalog_payload["nodes"] if node["type"] == "gate:await-agent"
+    )
     assert [field["key"] for field in await_agent["fields"]] == ["session_id", "vm_name", "outputs"]
     assert all(field["bindable"] for field in await_agent["fields"][:2])
     for_gate = next(node for node in catalog_payload["nodes"] if node["type"] == "gate:for")
@@ -110,9 +134,13 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
     ]
     issue_get = next(node for node in catalog_payload["nodes"] if node["type"] == "query:issue:get")
     assert [field["key"] for field in issue_get["fields"]] == ["issue_id"]
-    vm_create = next(node for node in catalog_payload["nodes"] if node["type"] == "effect:vm:create")
+    vm_create = next(
+        node for node in catalog_payload["nodes"] if node["type"] == "effect:vm:create"
+    )
     assert any(field["key"] == "allowed_script_names" for field in vm_create["fields"])
-    vm_clone_repo = next(node for node in catalog_payload["nodes"] if node["type"] == "effect:vm:clone-repo")
+    vm_clone_repo = next(
+        node for node in catalog_payload["nodes"] if node["type"] == "effect:vm:clone-repo"
+    )
     assert [field["key"] for field in vm_clone_repo["fields"]] == [
         "target",
         "session_id",
@@ -122,7 +150,9 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "vm_user",
         "directory_path",
     ]
-    vm_bootstrap_python = next(node for node in catalog_payload["nodes"] if node["type"] == "effect:vm:bootstrap-python")
+    vm_bootstrap_python = next(
+        node for node in catalog_payload["nodes"] if node["type"] == "effect:vm:bootstrap-python"
+    )
     assert [field["key"] for field in vm_bootstrap_python["fields"]] == [
         "target",
         "session_id",
@@ -131,7 +161,9 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "target_dir",
         "vm_user",
     ]
-    vm_bootstrap_frontend = next(node for node in catalog_payload["nodes"] if node["type"] == "effect:vm:bootstrap-frontend")
+    vm_bootstrap_frontend = next(
+        node for node in catalog_payload["nodes"] if node["type"] == "effect:vm:bootstrap-frontend"
+    )
     assert [field["key"] for field in vm_bootstrap_frontend["fields"]] == [
         "target",
         "session_id",
@@ -462,7 +494,9 @@ def test_admin_web_can_clear_specific_workflow_run(tmp_path: Path) -> None:
     assert [run["event_id"] for run in after_response.json()["runs"]] == ["evt-keep"]
 
     updated_queue = (runtime_dir / "trigger-orchestrator-events.json").read_text(encoding="utf-8")
-    updated_effects = (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
+    updated_effects = (runtime_dir / "effect-orchestrator-executions.json").read_text(
+        encoding="utf-8"
+    )
     updated_await = (runtime_dir / "await-agent-pending.json").read_text(encoding="utf-8")
     assert '"delivery_state": "delivered"' in updated_queue
     assert '"status": "failed"' in updated_effects
@@ -538,8 +572,12 @@ def test_admin_web_includes_errored_workflow_runs_and_can_resume_them(tmp_path: 
     assert resume_response.json()["event_id"] == "evt-failed"
     assert resume_response.json()["target_node_id"] == "effect-prompt"
 
-    queue_payload = json.loads((runtime_dir / "trigger-orchestrator-events.json").read_text(encoding="utf-8"))
-    resume_event_id = next(event_id for event_id in queue_payload if event_id.startswith("evt-failed:resume:"))
+    queue_payload = json.loads(
+        (runtime_dir / "trigger-orchestrator-events.json").read_text(encoding="utf-8")
+    )
+    resume_event_id = next(
+        event_id for event_id in queue_payload if event_id.startswith("evt-failed:resume:")
+    )
     assert queue_payload[resume_event_id]["trigger_id"] == "trigger-ticket"
     assert queue_payload[resume_event_id]["delivery_state"] == "pending"
     assert queue_payload[resume_event_id]["payload"]["__resume_target_node_id"] == "effect-prompt"
@@ -589,12 +627,16 @@ def test_admin_web_can_dismiss_errored_workflow_run(tmp_path: Path) -> None:
     assert after_response.status_code == 200
     assert after_response.json()["runs"] == []
 
-    updated_effects = (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
+    updated_effects = (runtime_dir / "effect-orchestrator-executions.json").read_text(
+        encoding="utf-8"
+    )
     assert '"dismissed_at"' in updated_effects
     assert '"dismiss_reason": "manual_dismiss_errored_workflow_run"' in updated_effects
 
 
-def test_admin_web_workflow_runs_resolve_relative_paths_independent_of_cwd(tmp_path: Path, monkeypatch) -> None:
+def test_admin_web_workflow_runs_resolve_relative_paths_independent_of_cwd(
+    tmp_path: Path, monkeypatch
+) -> None:
     runtime_dir = tmp_path / "runtime"
     runtime_dir.mkdir(parents=True, exist_ok=True)
     (runtime_dir / "trigger-orchestrator-events.json").write_text(
@@ -763,7 +805,9 @@ def test_admin_web_load_normalizes_stale_filter_outputs(tmp_path: Path) -> None:
     assert outputs["vm_name"] == {"type": "string"}
 
 
-def test_admin_web_load_normalizes_await_agent_outputs_without_completion_trigger(tmp_path: Path) -> None:
+def test_admin_web_load_normalizes_await_agent_outputs_without_completion_trigger(
+    tmp_path: Path,
+) -> None:
     config_root = tmp_path / "config" / "trigger-orchestrator"
     config_root.mkdir(parents=True, exist_ok=True)
     (config_root / "config.json").write_text(
@@ -955,7 +999,10 @@ def test_admin_web_session_payload_reports_azure_sso_mode(tmp_path: Path, monkey
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_TENANT_ID", "tenant-123")
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_ID", "client-123")
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_SECRET", "secret-123")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_REDIRECT_URI", "https://admin.example.test/api/auth/azure-sso/callback")
+    monkeypatch.setenv(
+        "AGENT_SANDBOX_ADMIN_WEB_AZURE_REDIRECT_URI",
+        "https://admin.example.test/api/auth/azure-sso/callback",
+    )
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS", "operator@example.com")
 
     client = TestClient(create_app(AdminService(write_config(tmp_path))))
@@ -974,7 +1021,10 @@ def test_admin_web_azure_mode_requires_login(tmp_path: Path, monkeypatch) -> Non
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_TENANT_ID", "tenant-123")
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_ID", "client-123")
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_SECRET", "secret-123")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_REDIRECT_URI", "https://admin.example.test/api/auth/azure-sso/callback")
+    monkeypatch.setenv(
+        "AGENT_SANDBOX_ADMIN_WEB_AZURE_REDIRECT_URI",
+        "https://admin.example.test/api/auth/azure-sso/callback",
+    )
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS", "operator@example.com")
 
     client = TestClient(create_app(AdminService(write_config(tmp_path))))
@@ -990,7 +1040,10 @@ def test_admin_web_azure_start_login_redirects_and_sets_state(tmp_path: Path, mo
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_TENANT_ID", "tenant-123")
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_ID", "client-123")
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_SECRET", "secret-123")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_REDIRECT_URI", "https://admin.example.test/api/auth/azure-sso/callback")
+    monkeypatch.setenv(
+        "AGENT_SANDBOX_ADMIN_WEB_AZURE_REDIRECT_URI",
+        "https://admin.example.test/api/auth/azure-sso/callback",
+    )
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS", "operator@example.com")
 
     client = TestClient(create_app(AdminService(write_config(tmp_path))))
@@ -998,7 +1051,9 @@ def test_admin_web_azure_start_login_redirects_and_sets_state(tmp_path: Path, mo
     response = client.get("/api/auth/azure-sso/start?next=%2Fworkflow", follow_redirects=False)
 
     assert response.status_code == 307
-    assert response.headers["location"].startswith("https://login.microsoftonline.com/tenant-123/oauth2/v2.0/authorize?")
+    assert response.headers["location"].startswith(
+        "https://login.microsoftonline.com/tenant-123/oauth2/v2.0/authorize?"
+    )
     assert "agent_sandbox_admin_oidc=" in response.headers.get("set-cookie", "")
 
 
@@ -1008,14 +1063,19 @@ def test_admin_web_azure_callback_rejects_bad_state(tmp_path: Path, monkeypatch)
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_TENANT_ID", "tenant-123")
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_ID", "client-123")
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_SECRET", "secret-123")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_REDIRECT_URI", "https://admin.example.test/api/auth/azure-sso/callback")
+    monkeypatch.setenv(
+        "AGENT_SANDBOX_ADMIN_WEB_AZURE_REDIRECT_URI",
+        "https://admin.example.test/api/auth/azure-sso/callback",
+    )
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS", "operator@example.com")
     client = TestClient(create_app(AdminService(write_config(tmp_path))))
 
     start = client.get("/api/auth/azure-sso/start", follow_redirects=False)
     assert start.status_code == 307
 
-    response = client.get("/api/auth/azure-sso/callback?code=test-code&state=wrong-state", follow_redirects=False)
+    response = client.get(
+        "/api/auth/azure-sso/callback?code=test-code&state=wrong-state", follow_redirects=False
+    )
 
     assert response.status_code == 401
     assert response.json()["error"] == "Invalid Azure sign-in state"
@@ -1027,7 +1087,10 @@ def test_admin_web_azure_callback_rejects_wrong_tenant(tmp_path: Path, monkeypat
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_TENANT_ID", "tenant-123")
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_ID", "client-123")
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_SECRET", "secret-123")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_REDIRECT_URI", "https://admin.example.test/api/auth/azure-sso/callback")
+    monkeypatch.setenv(
+        "AGENT_SANDBOX_ADMIN_WEB_AZURE_REDIRECT_URI",
+        "https://admin.example.test/api/auth/azure-sso/callback",
+    )
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS", "operator@example.com")
     app = create_app(AdminService(write_config(tmp_path)))
     client = TestClient(app)
@@ -1049,7 +1112,9 @@ def test_admin_web_azure_callback_rejects_wrong_tenant(tmp_path: Path, monkeypat
     start = client.get("/api/auth/azure-sso/start", follow_redirects=False)
     state = start.headers["location"].split("state=")[1].split("&", 1)[0]
 
-    response = client.get(f"/api/auth/azure-sso/callback?code=test-code&state={state}", follow_redirects=False)
+    response = client.get(
+        f"/api/auth/azure-sso/callback?code=test-code&state={state}", follow_redirects=False
+    )
 
     assert response.status_code == 401
     assert response.json()["error"] == "Azure sign-in tenant is not allowed"
@@ -1061,7 +1126,10 @@ def test_admin_web_azure_callback_rejects_non_allowlisted_user(tmp_path: Path, m
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_TENANT_ID", "tenant-123")
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_ID", "client-123")
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_SECRET", "secret-123")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_REDIRECT_URI", "https://admin.example.test/api/auth/azure-sso/callback")
+    monkeypatch.setenv(
+        "AGENT_SANDBOX_ADMIN_WEB_AZURE_REDIRECT_URI",
+        "https://admin.example.test/api/auth/azure-sso/callback",
+    )
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS", "operator@example.com")
     app = create_app(AdminService(write_config(tmp_path)))
     client = TestClient(app)
@@ -1083,19 +1151,26 @@ def test_admin_web_azure_callback_rejects_non_allowlisted_user(tmp_path: Path, m
     start = client.get("/api/auth/azure-sso/start", follow_redirects=False)
     state = start.headers["location"].split("state=")[1].split("&", 1)[0]
 
-    response = client.get(f"/api/auth/azure-sso/callback?code=test-code&state={state}", follow_redirects=False)
+    response = client.get(
+        f"/api/auth/azure-sso/callback?code=test-code&state={state}", follow_redirects=False
+    )
 
     assert response.status_code == 401
     assert response.json()["error"] == "Azure sign-in user is not allowed"
 
 
-def test_admin_web_azure_callback_accepts_allowlisted_user_and_sets_local_session(tmp_path: Path, monkeypatch) -> None:
+def test_admin_web_azure_callback_accepts_allowlisted_user_and_sets_local_session(
+    tmp_path: Path, monkeypatch
+) -> None:
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE", "azure_sso")
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET", "test-secret")
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_TENANT_ID", "tenant-123")
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_ID", "client-123")
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_SECRET", "secret-123")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_REDIRECT_URI", "https://admin.example.test/api/auth/azure-sso/callback")
+    monkeypatch.setenv(
+        "AGENT_SANDBOX_ADMIN_WEB_AZURE_REDIRECT_URI",
+        "https://admin.example.test/api/auth/azure-sso/callback",
+    )
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS", "operator@example.com")
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_POST_LOGIN_REDIRECT", "/#workflow")
     app = create_app(AdminService(write_config(tmp_path)))
@@ -1119,7 +1194,9 @@ def test_admin_web_azure_callback_accepts_allowlisted_user_and_sets_local_sessio
 
     start = client.get("/api/auth/azure-sso/start", follow_redirects=False)
     state = start.headers["location"].split("state=")[1].split("&", 1)[0]
-    callback = client.get(f"/api/auth/azure-sso/callback?code=test-code&state={state}", follow_redirects=False)
+    callback = client.get(
+        f"/api/auth/azure-sso/callback?code=test-code&state={state}", follow_redirects=False
+    )
     session = client.get("/api/auth/session")
 
     assert callback.status_code == 303
@@ -1138,7 +1215,10 @@ def test_admin_web_logout_clears_azure_local_session_cookie(tmp_path: Path, monk
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_TENANT_ID", "tenant-123")
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_ID", "client-123")
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_SECRET", "secret-123")
-    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_REDIRECT_URI", "https://admin.example.test/api/auth/azure-sso/callback")
+    monkeypatch.setenv(
+        "AGENT_SANDBOX_ADMIN_WEB_AZURE_REDIRECT_URI",
+        "https://admin.example.test/api/auth/azure-sso/callback",
+    )
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS", "operator@example.com")
     app = create_app(AdminService(write_config(tmp_path)))
     client = TestClient(app)
@@ -1211,7 +1291,9 @@ def test_admin_web_workers_expose_config_schema(tmp_path: Path) -> None:
 
 
 def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> None:
-    client = TestClient(create_app(AdminService(write_config(tmp_path, enable_directory_scoped_config=True))))
+    client = TestClient(
+        create_app(AdminService(write_config(tmp_path, enable_directory_scoped_config=True)))
+    )
 
     response = client.get("/api/configuration/state")
 
@@ -1225,7 +1307,9 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
 
 
 def test_admin_web_configuration_tab_save_splits_underlying_domains(tmp_path: Path) -> None:
-    client = TestClient(create_app(AdminService(write_config(tmp_path, enable_directory_scoped_config=True))))
+    client = TestClient(
+        create_app(AdminService(write_config(tmp_path, enable_directory_scoped_config=True)))
+    )
 
     create_response = client.post(
         "/api/configuration/directories",
@@ -1253,7 +1337,9 @@ def test_admin_web_configuration_tab_save_splits_underlying_domains(tmp_path: Pa
     assert snapshot["raw"]["config"]["discord_resume_prompt"] == "Resume this session."
 
 
-def test_admin_web_grouped_tab_save_preserves_unrelated_shared_domain_fields(tmp_path: Path) -> None:
+def test_admin_web_grouped_tab_save_preserves_unrelated_shared_domain_fields(
+    tmp_path: Path,
+) -> None:
     service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
     client = TestClient(create_app(service))
 
@@ -1358,7 +1444,9 @@ def test_admin_web_unlocks_without_starting_helper_when_helper_is_not_required(
     assert relocked_state.json()["privileged_operations"]["unlocked"] is False
 
 
-def test_admin_web_rejects_start_when_vm_session_model_is_missing(tmp_path: Path, monkeypatch) -> None:
+def test_admin_web_rejects_start_when_vm_session_model_is_missing(
+    tmp_path: Path, monkeypatch
+) -> None:
     service = AdminService(write_config(tmp_path))
 
     def list_vms(self, **_kwargs):
@@ -1398,12 +1486,16 @@ def test_admin_web_rejects_start_when_vm_session_model_is_missing(tmp_path: Path
 
     monkeypatch.setattr(service, "list_vms", MethodType(list_vms, service))
     monkeypatch.setattr(service, "list_sessions", MethodType(list_sessions, service))
-    monkeypatch.setattr(service, "compute_directory_effective_config", MethodType(compute_effective, service))
+    monkeypatch.setattr(
+        service, "compute_directory_effective_config", MethodType(compute_effective, service)
+    )
     monkeypatch.setattr(service, "start_vm", MethodType(start_vm, service))
 
     client = TestClient(create_app(service))
 
-    response = client.post("/api/admin/vms/vm-1/actions/start?directory_path=root/team-a&direct_only=true", json={})
+    response = client.post(
+        "/api/admin/vms/vm-1/actions/start?directory_path=root/team-a&direct_only=true", json={}
+    )
 
     assert response.status_code == 400
     assert "Cannot start/resume agent" in response.json()["error"]
@@ -1493,10 +1585,14 @@ def test_admin_web_reads_issue_yaml_for_scoped_issue_id_with_slash(tmp_path: Pat
     assert "title:" in payload["yaml_text"]
 
 
-def test_admin_web_issue_detail_uses_cached_proxy_data_without_remote_credentials(tmp_path: Path) -> None:
+def test_admin_web_issue_detail_uses_cached_proxy_data_without_remote_credentials(
+    tmp_path: Path,
+) -> None:
     service = AdminService(write_config(tmp_path))
     yaml_path = tmp_path / "proxy-issue.yaml"
-    yaml_path.write_text("issue_number: 14378\ntitle: Proxy issue\nbody: Local body\n", encoding="utf-8")
+    yaml_path.write_text(
+        "issue_number: 14378\ntitle: Proxy issue\nbody: Local body\n", encoding="utf-8"
+    )
     issue = LocalIssueRecord(
         issue_id="root::azure_devops::14378",
         issue_number="14378",
@@ -1609,7 +1705,9 @@ def test_admin_web_create_issue_can_start_vm_immediately(tmp_path: Path, monkeyp
         )
 
     monkeypatch.setattr(service, "create_local_issue", MethodType(create_local_issue, service))
-    monkeypatch.setattr(service, "create_issue_vm_from_local_issue", MethodType(create_issue_vm, service))
+    monkeypatch.setattr(
+        service, "create_issue_vm_from_local_issue", MethodType(create_issue_vm, service)
+    )
 
     client = TestClient(create_app(service))
 

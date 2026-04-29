@@ -2,11 +2,19 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .config import GatewayConfig, load_config
-from .directory_config import DirectoryConfigStore, load_root_gateway_config
-from .directories import DirectoryStore
-from .host_config import DEFAULT_RUNTIME_DIR, HostConfig, build_runtime_gateway_config, ensure_host_config
-from .migrations import migrate_global_config_to_root, migrate_local_issues_to_unified_schema
+from agent_sandbox.config import GatewayConfig, load_config
+from agent_sandbox.directory_config import DirectoryConfigStore, load_root_gateway_config
+from agent_sandbox.directories import DirectoryStore
+from agent_sandbox.host_config import (
+    DEFAULT_RUNTIME_DIR,
+    HostConfig,
+    build_runtime_gateway_config,
+    ensure_host_config,
+)
+from agent_sandbox.migrations import (
+    migrate_global_config_to_root,
+    migrate_local_issues_to_unified_schema,
+)
 
 
 def resolve_project_dir(*, legacy_config_path: str | Path | None = None) -> Path:
@@ -37,7 +45,9 @@ def load_runtime_gateway_config(
     runtime_dir: str | Path | None = None,
     legacy_config_path: str | Path | None = None,
 ) -> GatewayConfig:
-    resolved_runtime_dir = resolve_runtime_dir(runtime_dir=runtime_dir, legacy_config_path=legacy_config_path)
+    resolved_runtime_dir = resolve_runtime_dir(
+        runtime_dir=runtime_dir, legacy_config_path=legacy_config_path
+    )
     host_config = ensure_host_config(resolved_runtime_dir, legacy_config_path=legacy_config_path)
     directory_store = DirectoryStore(host_config.directories_store_path)
     directory_store.ensure_root()
@@ -61,5 +71,7 @@ def load_host_bootstrap_config(
     runtime_dir: str | Path | None = None,
     legacy_config_path: str | Path | None = None,
 ) -> HostConfig:
-    resolved_runtime_dir = resolve_runtime_dir(runtime_dir=runtime_dir, legacy_config_path=legacy_config_path)
+    resolved_runtime_dir = resolve_runtime_dir(
+        runtime_dir=runtime_dir, legacy_config_path=legacy_config_path
+    )
     return ensure_host_config(resolved_runtime_dir, legacy_config_path=legacy_config_path)

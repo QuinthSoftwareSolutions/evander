@@ -3,8 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable, Protocol
 
-from .config import GatewayConfig
-from .runtime import RuntimeContext
+from agent_sandbox.config import GatewayConfig
+from agent_sandbox.runtime import RuntimeContext
 
 
 class RuntimeAssemblyInterface(Protocol):

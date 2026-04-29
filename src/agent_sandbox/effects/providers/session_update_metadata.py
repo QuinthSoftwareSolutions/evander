@@ -14,11 +14,15 @@ class SessionUpdateMetadataEffectProvider(EffectProviderBase):
 
         metadata = payload.get("metadata")
         if not isinstance(metadata, Mapping):
-            raise ValueError("effect:session:update-metadata requires metadata to resolve to an object")
+            raise ValueError(
+                "effect:session:update-metadata requires metadata to resolve to an object"
+            )
 
         target = self._resolve_target(payload)
         if not target:
-            raise ValueError("effect:session:update-metadata requires target, session_id, or vm_name")
+            raise ValueError(
+                "effect:session:update-metadata requires target, session_id, or vm_name"
+            )
 
         context = self._context()
         update_fn = getattr(context.session_metadata_updater, "session_update_metadata", None)

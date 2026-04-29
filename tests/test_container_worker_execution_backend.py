@@ -30,14 +30,18 @@ class FakeContainerWorkerClient:
     def get(self, job_id: str) -> WorkerJobRecord:
         self.got.append(job_id)
         return _record(
-            WorkerJobRequest(session_id="session-1", job_id=job_id, image="runner:latest", command=["true"]),
+            WorkerJobRequest(
+                session_id="session-1", job_id=job_id, image="runner:latest", command=["true"]
+            ),
             self.status_by_job.get(job_id, "running"),
         )
 
     def stop(self, job_id: str) -> WorkerJobRecord:
         self.stopped.append(job_id)
         return _record(
-            WorkerJobRequest(session_id="session-1", job_id=job_id, image="runner:latest", command=["true"]),
+            WorkerJobRequest(
+                session_id="session-1", job_id=job_id, image="runner:latest", command=["true"]
+            ),
             "stopped",
         )
 
@@ -66,7 +70,9 @@ def _record(request: WorkerJobRequest, status: str) -> WorkerJobRecord:
     )
 
 
-def _backend(tmp_path: Path, client: FakeContainerWorkerClient | None = None) -> ContainerWorkerVmExecutionBackend:
+def _backend(
+    tmp_path: Path, client: FakeContainerWorkerClient | None = None
+) -> ContainerWorkerVmExecutionBackend:
     config = GatewayConfig(
         runtime_dir=tmp_path,
         execution_backend="container_worker_vm",
@@ -76,7 +82,9 @@ def _backend(tmp_path: Path, client: FakeContainerWorkerClient | None = None) ->
     return ContainerWorkerVmExecutionBackend(
         config=config,
         client=client or FakeContainerWorkerClient(),
-        repository=ContainerWorkerExecutionRepository(tmp_path / "container-worker-executions.json"),
+        repository=ContainerWorkerExecutionRepository(
+            tmp_path / "container-worker-executions.json"
+        ),
     )
 
 

@@ -43,7 +43,9 @@ class VmTargetingMixin:
         if len(matches) == 1:
             return matches[0]
         if len(matches) > 1:
-            raise RuntimeError(f"VM {vm_name!r} is associated with multiple sessions: {', '.join(sorted(matches))}")
+            raise RuntimeError(
+                f"VM {vm_name!r} is associated with multiple sessions: {', '.join(sorted(matches))}"
+            )
         return f"session-{vm_name}"
 
     def _lookup_session(self, session_id: str) -> Any | None:

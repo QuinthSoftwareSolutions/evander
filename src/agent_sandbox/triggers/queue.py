@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 
 from agent_sandbox.storage import JsonStore
 from agent_sandbox.events.models import TriggerEvent
-from agent_sandbox.workflow_events import WorkflowEventJournal, workflow_event_journal_path
+from agent_sandbox.workflow.events import WorkflowEventJournal, workflow_event_journal_path
 
 DeliveryState = Literal["pending", "inflight", "delivered"]
 
@@ -39,10 +39,14 @@ class TriggerEventQueue:
     ) -> None:
         self.path = Path(path)
         self._store = JsonStore(path=self.path, model=TriggerQueueRecord)
-        self._journal = WorkflowEventJournal(journal_path or workflow_event_journal_path(self.path.parent))
+        self._journal = WorkflowEventJournal(
+            journal_path or workflow_event_journal_path(self.path.parent)
+        )
         self._lock = RLock()
 
-    def publish(self, event: TriggerEvent, *, idempotency_key: str | None = None) -> TriggerQueueRecord:
+    def publish(
+        self, event: TriggerEvent, *, idempotency_key: str | None = None
+    ) -> TriggerQueueRecord:
         normalized_key = self._normalize_idempotency_key(idempotency_key)
         trace_id = self._normalize_trace_id(event.trace_id)
         with self._lock:

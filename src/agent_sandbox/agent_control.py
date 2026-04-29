@@ -9,7 +9,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from .models import utc_now
+from agent_sandbox.models import utc_now
 
 
 class AgentControlRecord(BaseModel):

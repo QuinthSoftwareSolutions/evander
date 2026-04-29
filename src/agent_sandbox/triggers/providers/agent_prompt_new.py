@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from datetime import UTC
 
-from agent_sandbox.agent_prompt_store import AgentPromptStore
+from agent_sandbox.messaging.agent_prompt_store import AgentPromptStore
 from agent_sandbox.events.models import TriggerEvent
 from agent_sandbox.events.provider_models import AgentPromptNewTriggerDefinition
-from agent_sandbox.session_manifest_repository import JsonSessionManifestRepository
+from agent_sandbox.repositories.session_manifests import JsonSessionManifestRepository
 
 from ._cursor_state import TriggerCursorStore
 from .base import TriggerProviderBase
@@ -48,7 +48,9 @@ class AgentPromptNewTriggerProvider(TriggerProviderBase):
                             "prompt": str(prompt_payload.get("prompt") or "").strip(),
                             "metadata": dict(prompt_payload.get("metadata") or {}),
                             "status": message.status,
-                            "created_at": message.created_at.astimezone(UTC).isoformat().replace("+00:00", "Z"),
+                            "created_at": message.created_at.astimezone(UTC)
+                            .isoformat()
+                            .replace("+00:00", "Z"),
                         },
                     },
                 )
@@ -58,21 +60,30 @@ class AgentPromptNewTriggerProvider(TriggerProviderBase):
         return events
 
     def _list_current_unread(self):
-        prompt_store = AgentPromptStore(self.runtime_context.resolved_config.runtime_dir / "agent-prompt-store.json")
-        sessions = JsonSessionManifestRepository(self.runtime_context.resolved_config.session_store_path)
-        directory_scope = str(self.runtime_context.metadata.get("directory_path") or "root").strip() or "root"
+        prompt_store = AgentPromptStore(
+            self.runtime_context.resolved_config.runtime_dir / "agent-prompt-store.json"
+        )
+        sessions = JsonSessionManifestRepository(
+            self.runtime_context.resolved_config.session_store_path
+        )
+        directory_scope = (
+            str(self.runtime_context.metadata.get("directory_path") or "root").strip() or "root"
+        )
 
         unread = []
         for session in sessions.list_sessions():
             if directory_scope != "root" and not (
-                session.directory_path == directory_scope or session.directory_path.startswith(f"{directory_scope}/")
+                session.directory_path == directory_scope
+                or session.directory_path.startswith(f"{directory_scope}/")
             ):
                 continue
             unread.extend(prompt_store.list_unread_prompts(target_session_id=session.session_id))
         return unread
 
     def _cursor_store(self) -> TriggerCursorStore:
-        return TriggerCursorStore(self.runtime_context.resolved_config.runtime_dir / self._CURSOR_FILENAME)
+        return TriggerCursorStore(
+            self.runtime_context.resolved_config.runtime_dir / self._CURSOR_FILENAME
+        )
 
     def _trigger(self) -> AgentPromptNewTriggerDefinition:
         if not isinstance(self.trigger_definition, AgentPromptNewTriggerDefinition):

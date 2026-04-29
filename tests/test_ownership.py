@@ -4,7 +4,7 @@ from pathlib import Path
 from agent_sandbox.directories import DirectoryService, DirectoryStore
 from agent_sandbox.models import SessionManifest, ToolName
 from agent_sandbox.ownership import DirectoryOwnershipQueries
-from agent_sandbox.session_manifest_repository import JsonSessionManifestRepository
+from agent_sandbox.repositories.session_manifests import JsonSessionManifestRepository
 
 
 def test_directory_ownership_queries_list_direct_entities_only_by_default(tmp_path: Path) -> None:
@@ -111,7 +111,9 @@ def test_directory_ownership_queries_list_direct_entities_only_by_default(tmp_pa
     assert ado_entity.payload["remote_work_item_id"] == "101"
 
 
-def test_directory_ownership_queries_can_include_descendants_and_fallback_to_session_path(tmp_path: Path) -> None:
+def test_directory_ownership_queries_can_include_descendants_and_fallback_to_session_path(
+    tmp_path: Path,
+) -> None:
     runtime_dir = tmp_path / "runtime"
     directory_store = DirectoryStore(runtime_dir / "directories.json")
     directory_service = DirectoryService(directory_store)
@@ -155,7 +157,9 @@ def test_directory_ownership_queries_can_include_descendants_and_fallback_to_ses
 
     snapshot = queries.list_entities(team.path, include_descendants=True)
 
-    assert ("session", "session-child") in {(entity.kind, entity.entity_id) for entity in snapshot.entities}
+    assert ("session", "session-child") in {
+        (entity.kind, entity.entity_id) for entity in snapshot.entities
+    }
     assert ("pr_mapping", "github:org/repo:2") in {
         (entity.kind, entity.entity_id) for entity in snapshot.entities
     }

@@ -53,7 +53,7 @@ esac
         encoding="utf-8",
     )
     (fake_bin / "gh").write_text(
-        "#!/usr/bin/env bash\nset -euo pipefail\necho \"https://github.com/example/repo/pull/42\"\n",
+        '#!/usr/bin/env bash\nset -euo pipefail\necho "https://github.com/example/repo/pull/42"\n',
         encoding="utf-8",
     )
     (fake_bin / "agent-sandbox-cli").write_text(
@@ -157,7 +157,7 @@ esac
         encoding="utf-8",
     )
     (fake_bin / "gh").write_text(
-        "#!/usr/bin/env bash\nset -euo pipefail\necho \"https://github.com/example/repo/pull/42\"\n",
+        '#!/usr/bin/env bash\nset -euo pipefail\necho "https://github.com/example/repo/pull/42"\n',
         encoding="utf-8",
     )
     (fake_bin / "agent-sandbox-cli").write_text(
@@ -247,7 +247,7 @@ esac
         encoding="utf-8",
     )
     (fake_bin / "gh").write_text(
-        "#!/usr/bin/env bash\nset -euo pipefail\necho \"https://github.com/example/repo/pull/42\"\n",
+        '#!/usr/bin/env bash\nset -euo pipefail\necho "https://github.com/example/repo/pull/42"\n',
         encoding="utf-8",
     )
     (fake_bin / "agent-sandbox-cli").write_text(
@@ -283,7 +283,9 @@ printf '%s\\n' "$*" >> "{attach_log}"
         in command
     )
     push_index = next(
-        i for i, command in enumerate(commands) if "push --force-with-lease agent-sandbox-pr-origin" in command
+        i
+        for i, command in enumerate(commands)
+        if "push --force-with-lease agent-sandbox-pr-origin" in command
     )
     assert fetch_index < push_index
 
@@ -373,13 +375,14 @@ echo "https://github.com/example/repo/pull/42"
         for command in commands
     )
     assert any(
-        "credential.https://github.com.helper=!/usr/bin/gh auth git-credential push"
-        in command
+        "credential.https://github.com.helper=!/usr/bin/gh auth git-credential push" in command
         for command in commands
     )
 
 
-def test_open_agent_pr_fetches_base_branch_before_github_fill_on_canonical_remote(tmp_path: Path) -> None:
+def test_open_agent_pr_fetches_base_branch_before_github_fill_on_canonical_remote(
+    tmp_path: Path,
+) -> None:
     script = Path(__file__).resolve().parents[1] / "scripts/open_agent_pr.sh"
     host_repo = tmp_path / "repo"
     host_repo.mkdir()
@@ -465,7 +468,8 @@ echo "https://github.com/example/repo/pull/42"
     base_fetch_index = next(
         i
         for i, command in enumerate(commands)
-        if "fetch agent-sandbox-pr-origin refs/heads/main:refs/remotes/agent-sandbox-pr-origin/main" in command
+        if "fetch agent-sandbox-pr-origin refs/heads/main:refs/remotes/agent-sandbox-pr-origin/main"
+        in command
     )
     review_fetch_index = next(
         i
@@ -477,7 +481,9 @@ echo "https://github.com/example/repo/pull/42"
 
     gh_commands = gh_log.read_text(encoding="utf-8").splitlines()
     assert any(
-        command.startswith("pr create --repo git@github.com:example/repo.git --base main --head review/session-123/work --title Automated PR title --fill")
+        command.startswith(
+            "pr create --repo git@github.com:example/repo.git --base main --head review/session-123/work --title Automated PR title --fill"
+        )
         for command in gh_commands
     )
 
@@ -594,7 +600,14 @@ printf '%s\\n' "$*" >> "{attach_log}"
     env["AZURE_DEVOPS_PR_PAT"] = "test-pat"
 
     result = subprocess.run(
-        [str(script), "--create-pr", "--provider", "azure_devops", str(host_repo), "review/session-123/work"],
+        [
+            str(script),
+            "--create-pr",
+            "--provider",
+            "azure_devops",
+            str(host_repo),
+            "review/session-123/work",
+        ],
         check=True,
         capture_output=True,
         text=True,
@@ -617,7 +630,9 @@ printf '%s\\n' "$*" >> "{attach_log}"
     assert "session-123" in attach_args
 
 
-def test_open_agent_pr_associates_azure_pr_with_work_item_derived_from_session_id(tmp_path: Path) -> None:
+def test_open_agent_pr_associates_azure_pr_with_work_item_derived_from_session_id(
+    tmp_path: Path,
+) -> None:
     script = Path(__file__).resolve().parents[1] / "scripts/open_agent_pr.sh"
     host_repo = tmp_path / "repo"
     host_repo.mkdir()
@@ -729,7 +744,14 @@ printf '%s\\n' "$*" >> "{attach_log}"
     env["AZURE_DEVOPS_PR_PAT"] = "test-pat"
 
     result = subprocess.run(
-        [str(script), "--create-pr", "--provider", "azure_devops", str(host_repo), "review/issue-14084-abc/work"],
+        [
+            str(script),
+            "--create-pr",
+            "--provider",
+            "azure_devops",
+            str(host_repo),
+            "review/issue-14084-abc/work",
+        ],
         check=True,
         capture_output=True,
         text=True,
@@ -865,16 +887,28 @@ printf '%s\\n' "$*" >> "{attach_log}"
     env["AZURE_DEVOPS_PR_PAT"] = "test-pat"
 
     result = subprocess.run(
-        [str(script), "--create-pr", "--provider", "azure_devops", str(host_repo), "review/issue-123/work"],
+        [
+            str(script),
+            "--create-pr",
+            "--provider",
+            "azure_devops",
+            str(host_repo),
+            "review/issue-123/work",
+        ],
         check=True,
         capture_output=True,
         text=True,
         env=env,
     )
 
-    assert "Pushed review/issue-123/work to agent-sandbox-pr-origin/feature/issue-123" in result.stdout
+    assert (
+        "Pushed review/issue-123/work to agent-sandbox-pr-origin/feature/issue-123" in result.stdout
+    )
     git_commands = git_log.read_text(encoding="utf-8")
-    assert "push agent-sandbox-pr-origin review/issue-123/work:refs/heads/feature/issue-123" in git_commands
+    assert (
+        "push agent-sandbox-pr-origin review/issue-123/work:refs/heads/feature/issue-123"
+        in git_commands
+    )
 
 
 def test_open_agent_pr_creates_azure_draft_pr_from_directory_config(tmp_path: Path) -> None:
@@ -1001,7 +1035,14 @@ exit 1
     env["AZURE_DEVOPS_PR_PAT"] = "test-pat"
 
     subprocess.run(
-        [str(script), "--create-pr", "--provider", "azure_devops", str(host_repo), "review/session-123/work"],
+        [
+            str(script),
+            "--create-pr",
+            "--provider",
+            "azure_devops",
+            str(host_repo),
+            "review/session-123/work",
+        ],
         check=True,
         capture_output=True,
         text=True,

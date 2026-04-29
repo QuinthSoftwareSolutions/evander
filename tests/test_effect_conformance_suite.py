@@ -10,7 +10,7 @@ import pytest
 from pydantic import TypeAdapter
 
 from agent_sandbox.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
-from agent_sandbox.effect_orchestrator import EffectOrchestratorWorker
+from agent_sandbox.daemons.effect_orchestrator import EffectOrchestratorWorker
 from agent_sandbox.effects.providers.base import EffectProviderBase
 from agent_sandbox.effects.registry import EffectProviderFactory, EffectProviderRegistry
 from agent_sandbox.events.models import EffectDefinitionDiscriminated, TriggerEvent
@@ -199,7 +199,9 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
     )
 
 
-def test_effect_schema_validation_rejects_missing_required_fields(report_collector: dict[str, Any]) -> None:
+def test_effect_schema_validation_rejects_missing_required_fields(
+    report_collector: dict[str, Any],
+) -> None:
     adapter = _effect_adapter()
     with pytest.raises(ValueError, match="prompt"):
         adapter.validate_python(
@@ -219,7 +221,9 @@ def test_effect_schema_validation_rejects_missing_required_fields(report_collect
     )
 
 
-def test_effect_provider_registration_and_factory_build(tmp_path: Path, report_collector: dict[str, Any]) -> None:
+def test_effect_provider_registration_and_factory_build(
+    tmp_path: Path, report_collector: dict[str, Any]
+) -> None:
     class _RecordingProvider(EffectProviderBase):
         pass
 
@@ -254,7 +258,9 @@ def test_effect_provider_registration_and_factory_build(tmp_path: Path, report_c
     )
 
 
-def test_effect_binding_resolution_and_chained_output_propagation(tmp_path: Path, report_collector: dict[str, Any]) -> None:
+def test_effect_binding_resolution_and_chained_output_propagation(
+    tmp_path: Path, report_collector: dict[str, Any]
+) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
     worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
@@ -314,7 +320,9 @@ def test_effect_binding_resolution_and_chained_output_propagation(tmp_path: Path
     for _ in range(6):
         worker.run_once()
 
-    payload = json.loads((runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8"))
+    payload = json.loads(
+        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
+    )
     by_effect = {entry["effect_id"]: entry for entry in payload.values()}
     assert by_effect["effect-1"]["status"] == "succeeded"
     assert by_effect["effect-2"]["status"] == "succeeded"
@@ -331,7 +339,9 @@ def test_effect_binding_resolution_and_chained_output_propagation(tmp_path: Path
     )
 
 
-def test_effect_queue_and_execution_idempotency(tmp_path: Path, report_collector: dict[str, Any]) -> None:
+def test_effect_queue_and_execution_idempotency(
+    tmp_path: Path, report_collector: dict[str, Any]
+) -> None:
     runtime_dir = tmp_path / "runtime"
     queue = TriggerEventQueue(runtime_dir / "queue.json")
     event = TriggerEvent(
@@ -355,10 +365,20 @@ def test_effect_queue_and_execution_idempotency(tmp_path: Path, report_collector
             "poll_interval_seconds": 1,
             "jitter_seconds": 0,
             "triggers": [
-                {"id": "trigger-1", "display_name": "Tick", "type": "trigger:cron", "expression": "* * * * *"}
+                {
+                    "id": "trigger-1",
+                    "display_name": "Tick",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
             ],
             "effects": [
-                {"id": "effect-1", "display_name": "Once", "type": "effect:agent:prompt", "prompt": "go"}
+                {
+                    "id": "effect-1",
+                    "display_name": "Once",
+                    "type": "effect:agent:prompt",
+                    "prompt": "go",
+                }
             ],
             "edges": [_edge("trigger-1", "effect-1")],
         }
@@ -373,7 +393,9 @@ def test_effect_queue_and_execution_idempotency(tmp_path: Path, report_collector
     for _ in range(4):
         worker.run_once()
 
-    executions = json.loads((runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8"))
+    executions = json.loads(
+        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
+    )
     assert len(executions) == 1
 
     _record_result(
@@ -432,7 +454,9 @@ def test_effect_regression_missing_upstream_output_reference_records_failed_exec
 
     worker.run_once()
 
-    payload = json.loads((runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8"))
+    payload = json.loads(
+        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
+    )
     record = next(iter(payload.values()))
     assert record["status"] == "failed"
     assert "not declared by upstream node" in record["error"]
@@ -459,17 +483,29 @@ def test_effect_regression_provider_execution_failure_records_failed_status(
                 "poll_interval_seconds": 1,
                 "jitter_seconds": 0,
                 "triggers": [
-                    {"id": "trigger-1", "display_name": "Tick", "type": "trigger:cron", "expression": "* * * * *"}
+                    {
+                        "id": "trigger-1",
+                        "display_name": "Tick",
+                        "type": "trigger:cron",
+                        "expression": "* * * * *",
+                    }
                 ],
                 "effects": [
-                    {"id": "effect-1", "display_name": "Fail", "type": "effect:agent:prompt", "prompt": "boom"}
+                    {
+                        "id": "effect-1",
+                        "display_name": "Fail",
+                        "type": "effect:agent:prompt",
+                        "prompt": "boom",
+                    }
                 ],
                 "edges": [_edge("trigger-1", "effect-1")],
             }
         ),
         runtime=None,  # type: ignore[arg-type]
     )
-    worker.provider_factory = type("_FailFactory", (), {"build": staticmethod(lambda _effect: _FailingProvider())})()
+    worker.provider_factory = type(
+        "_FailFactory", (), {"build": staticmethod(lambda _effect: _FailingProvider())}
+    )()
     worker.event_queue.publish(
         TriggerEvent(
             event_id="event-fail",
@@ -483,7 +519,9 @@ def test_effect_regression_provider_execution_failure_records_failed_status(
     worker.run_once()
     worker.run_once()
 
-    payload = json.loads((runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8"))
+    payload = json.loads(
+        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
+    )
     record = next(iter(payload.values()))
     assert record["status"] == "failed"
     assert "provider boom" in record["error"]
@@ -497,7 +535,9 @@ def test_effect_regression_provider_execution_failure_records_failed_status(
     )
 
 
-def test_effect_regression_cycle_detection_skips_execution(tmp_path: Path, report_collector: dict[str, Any]) -> None:
+def test_effect_regression_cycle_detection_skips_execution(
+    tmp_path: Path, report_collector: dict[str, Any]
+) -> None:
     runtime_dir = tmp_path / "runtime"
     with pytest.raises(ValueError, match="Non-cyclic edges cannot form a cycle"):
         TriggerOrchestratorWorkerGlobalConfig.model_validate(
@@ -506,8 +546,18 @@ def test_effect_regression_cycle_detection_skips_execution(tmp_path: Path, repor
                 "poll_interval_seconds": 1,
                 "jitter_seconds": 0,
                 "effects": [
-                    {"id": "effect-a", "display_name": "A", "type": "effect:agent:prompt", "prompt": "A"},
-                    {"id": "effect-b", "display_name": "B", "type": "effect:agent:prompt", "prompt": "B"},
+                    {
+                        "id": "effect-a",
+                        "display_name": "A",
+                        "type": "effect:agent:prompt",
+                        "prompt": "A",
+                    },
+                    {
+                        "id": "effect-b",
+                        "display_name": "B",
+                        "type": "effect:agent:prompt",
+                        "prompt": "B",
+                    },
                 ],
                 "edges": [_edge("effect-b", "effect-a"), _edge("effect-a", "effect-b")],
             }
@@ -522,7 +572,9 @@ def test_effect_regression_cycle_detection_skips_execution(tmp_path: Path, repor
     )
 
 
-def test_effect_conformance_traceability_matrix_and_report(report_collector: dict[str, Any], tmp_path: Path) -> None:
+def test_effect_conformance_traceability_matrix_and_report(
+    report_collector: dict[str, Any], tmp_path: Path
+) -> None:
     matrix = {
         "task_schema_validation": ["schema:supported-effect-types", "schema:required-fields"],
         "task_provider_registration": ["provider:registration-and-factory"],
@@ -538,14 +590,18 @@ def test_effect_conformance_traceability_matrix_and_report(report_collector: dic
     seen = {entry["requirement_id"] for entry in report_collector["requirements"]}
     missing: dict[str, list[str]] = {}
     for task_name, required_requirements in matrix.items():
-        uncovered = [requirement_id for requirement_id in required_requirements if requirement_id not in seen]
+        uncovered = [
+            requirement_id for requirement_id in required_requirements if requirement_id not in seen
+        ]
         if uncovered:
             missing[task_name] = uncovered
 
     summary = {
         "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "status": "pass" if not missing else "fail",
-        "requirements": sorted(report_collector["requirements"], key=lambda item: item["requirement_id"]),
+        "requirements": sorted(
+            report_collector["requirements"], key=lambda item: item["requirement_id"]
+        ),
         "traceability_matrix": matrix,
         "missing_coverage": missing,
     }

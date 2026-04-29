@@ -3,7 +3,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from agent_sandbox.issue_service import AzureDevOpsIssueAdapter
+from agent_sandbox.issues.service import AzureDevOpsIssueAdapter
 
 
 class _DummyClient:
@@ -53,11 +53,15 @@ def test_create_issue_appends_parent_relation_operation(monkeypatch: pytest.Monk
     payload = {
         "id": 77,
         "url": "https://dev.azure.com/example/project-x/_apis/wit/workitems/77",
-        "fields": {"System.WorkItemType": "Task", "System.TeamProject": "project-x", "System.Title": "T"},
+        "fields": {
+            "System.WorkItemType": "Task",
+            "System.TeamProject": "project-x",
+            "System.Title": "T",
+        },
         "_links": {"web": {"href": "https://dev.azure.com/example/project-x/_workitems/edit/77"}},
     }
     monkeypatch.setattr(
-        "agent_sandbox.issue_service.httpx.Client",
+        "agent_sandbox.issues.service.httpx.Client",
         lambda timeout: _DummyClient(httpx.Response(200, json=payload), calls),
     )
 
@@ -91,11 +95,17 @@ def test_create_issue_uses_explicit_project_override(monkeypatch: pytest.MonkeyP
     calls: list[dict[str, object]] = []
     payload = {
         "id": 101,
-        "fields": {"System.WorkItemType": "Task", "System.TeamProject": "other-project", "System.Title": "T"},
-        "_links": {"web": {"href": "https://dev.azure.com/example/other-project/_workitems/edit/101"}},
+        "fields": {
+            "System.WorkItemType": "Task",
+            "System.TeamProject": "other-project",
+            "System.Title": "T",
+        },
+        "_links": {
+            "web": {"href": "https://dev.azure.com/example/other-project/_workitems/edit/101"}
+        },
     }
     monkeypatch.setattr(
-        "agent_sandbox.issue_service.httpx.Client",
+        "agent_sandbox.issues.service.httpx.Client",
         lambda timeout: _DummyClient(httpx.Response(200, json=payload), calls),
     )
 
@@ -107,10 +117,15 @@ def test_create_issue_uses_explicit_project_override(monkeypatch: pytest.MonkeyP
         parent_backlog_item_id="1234",
     )
 
-    assert calls[0]["url"] == "https://dev.azure.com/example/other-project/_apis/wit/workitems/$Task"
+    assert (
+        calls[0]["url"] == "https://dev.azure.com/example/other-project/_apis/wit/workitems/$Task"
+    )
     operations = calls[0]["json"]
     assert isinstance(operations, list)
-    assert operations[-1]["value"]["url"] == "https://dev.azure.com/example/other-project/_apis/wit/workItems/1234"
+    assert (
+        operations[-1]["value"]["url"]
+        == "https://dev.azure.com/example/other-project/_apis/wit/workItems/1234"
+    )
     assert result["project"] == "other-project"
 
 
@@ -133,7 +148,9 @@ def test_create_issue_rejects_invalid_parent_relation_id_before_network(
         )
 
 
-def test_create_issue_surfaces_parent_linkage_failure_action(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_create_issue_surfaces_parent_linkage_failure_action(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     adapter = AzureDevOpsIssueAdapter(config_resolver=object())
     monkeypatch.setattr(
         adapter,
@@ -141,9 +158,11 @@ def test_create_issue_surfaces_parent_linkage_failure_action(monkeypatch: pytest
         lambda directory_path: ("https://dev.azure.com/example", "project-x", "pat"),
     )
     calls: list[dict[str, object]] = []
-    error_response = httpx.Response(400, json={"message": "The parent does not exist in this project."})
+    error_response = httpx.Response(
+        400, json={"message": "The parent does not exist in this project."}
+    )
     monkeypatch.setattr(
-        "agent_sandbox.issue_service.httpx.Client",
+        "agent_sandbox.issues.service.httpx.Client",
         lambda timeout: _DummyClient(error_response, calls),
     )
 
@@ -156,7 +175,9 @@ def test_create_issue_surfaces_parent_linkage_failure_action(monkeypatch: pytest
         )
 
 
-def test_create_issue_composes_json_patch_for_backlog_fields(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_create_issue_composes_json_patch_for_backlog_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     adapter = AzureDevOpsIssueAdapter(config_resolver=object())
     monkeypatch.setattr(
         adapter,
@@ -180,7 +201,7 @@ def test_create_issue_composes_json_patch_for_backlog_fields(monkeypatch: pytest
         "_links": {"web": {"href": "https://dev.azure.com/example/project-x/_workitems/edit/88"}},
     }
     monkeypatch.setattr(
-        "agent_sandbox.issue_service.httpx.Client",
+        "agent_sandbox.issues.service.httpx.Client",
         lambda timeout: _DummyClient(httpx.Response(200, json=payload), calls),
     )
 
@@ -236,7 +257,7 @@ def test_create_issue_formats_plain_text_ado_html_fields(monkeypatch: pytest.Mon
         "_links": {"web": {"href": "https://dev.azure.com/example/project-x/_workitems/edit/90"}},
     }
     monkeypatch.setattr(
-        "agent_sandbox.issue_service.httpx.Client",
+        "agent_sandbox.issues.service.httpx.Client",
         lambda timeout: _DummyClient(httpx.Response(200, json=payload), calls),
     )
 
@@ -262,7 +283,9 @@ def test_create_issue_formats_plain_text_ado_html_fields(monkeypatch: pytest.Mon
     }
 
 
-def test_create_issue_normalizes_assigned_to_identity_object(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_create_issue_normalizes_assigned_to_identity_object(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     adapter = AzureDevOpsIssueAdapter(config_resolver=object())
     monkeypatch.setattr(
         adapter,
@@ -284,7 +307,7 @@ def test_create_issue_normalizes_assigned_to_identity_object(monkeypatch: pytest
         "_links": {"web": {"href": "https://dev.azure.com/example/project-x/_workitems/edit/89"}},
     }
     monkeypatch.setattr(
-        "agent_sandbox.issue_service.httpx.Client",
+        "agent_sandbox.issues.service.httpx.Client",
         lambda timeout: _DummyClient(httpx.Response(200, json=payload), calls),
     )
 
@@ -307,15 +330,19 @@ def test_create_issue_propagates_ado_error_message(monkeypatch: pytest.MonkeyPat
     calls: list[dict[str, object]] = []
     error_response = httpx.Response(
         403,
-        json={"message": "TF401403: You do not have permission to create work items in this project."},
+        json={
+            "message": "TF401403: You do not have permission to create work items in this project."
+        },
         headers={"Content-Type": "application/json"},
     )
     monkeypatch.setattr(
-        "agent_sandbox.issue_service.httpx.Client",
+        "agent_sandbox.issues.service.httpx.Client",
         lambda timeout: _DummyClient(error_response, calls),
     )
 
-    with pytest.raises(RuntimeError, match="Azure DevOps create work item failed \\(status 403\\): TF401403"):
+    with pytest.raises(
+        RuntimeError, match="Azure DevOps create work item failed \\(status 403\\): TF401403"
+    ):
         adapter.create_issue(
             directory_path="root",
             issue_type="task",
@@ -355,15 +382,21 @@ def test_get_backlog_item_by_id_url_encodes_project_name(monkeypatch: pytest.Mon
             json={
                 "id": 101,
                 "fields": {"System.TeamProject": "My Project", "System.Title": "Backlog item"},
-                "_links": {"web": {"href": "https://dev.azure.com/example/My%20Project/_workitems/edit/101"}},
+                "_links": {
+                    "web": {
+                        "href": "https://dev.azure.com/example/My%20Project/_workitems/edit/101"
+                    }
+                },
             },
         )
     ]
     monkeypatch.setattr(
-        "agent_sandbox.issue_service.httpx.Client",
+        "agent_sandbox.issues.service.httpx.Client",
         lambda timeout: _RecordingClient(calls, responses.copy()),
     )
 
-    adapter.get_backlog_item_by_id(directory_path="root", backlog_item_id="101", include_comments=False)
+    adapter.get_backlog_item_by_id(
+        directory_path="root", backlog_item_id="101", include_comments=False
+    )
 
     assert calls[0]["url"] == "https://dev.azure.com/example/My%20Project/_apis/wit/workitems/101"

@@ -14,7 +14,9 @@ def patch_httpx_client(monkeypatch: pytest.MonkeyPatch, transport: httpx.BaseTra
     )
 
 
-def test_azure_query_provider_constructs_request_with_filters(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_azure_query_provider_constructs_request_with_filters(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path.endswith("/_apis/git/repositories/repo-1/pullrequests")
         assert request.url.params["api-version"] == "7.1"
@@ -63,7 +65,9 @@ def test_azure_query_provider_constructs_request_with_filters(monkeypatch: pytes
     assert response.pull_requests[0].status == "active"
 
 
-def test_azure_query_provider_prefers_web_url_in_list_results(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_azure_query_provider_prefers_web_url_in_list_results(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
@@ -74,7 +78,11 @@ def test_azure_query_provider_prefers_web_url_in_list_results(monkeypatch: pytes
                         "title": "Fix race",
                         "status": "active",
                         "url": "https://dev.azure.com/org/proj/_apis/git/repositories/repo-1/pullRequests/17",
-                        "_links": {"web": {"href": "https://dev.azure.com/org/proj/_git/repo-1/pullrequest/17"}},
+                        "_links": {
+                            "web": {
+                                "href": "https://dev.azure.com/org/proj/_git/repo-1/pullrequest/17"
+                            }
+                        },
                     }
                 ]
             },
@@ -89,10 +97,14 @@ def test_azure_query_provider_prefers_web_url_in_list_results(monkeypatch: pytes
 
     response = provider.list_pull_requests(repo="repo-1")
 
-    assert response.pull_requests[0].url == "https://dev.azure.com/org/proj/_git/repo-1/pullrequest/17"
+    assert (
+        response.pull_requests[0].url == "https://dev.azure.com/org/proj/_git/repo-1/pullrequest/17"
+    )
 
 
-def test_pr_query_service_normalizes_provider_and_returns_payload(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_pr_query_service_normalizes_provider_and_returns_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.params["searchCriteria.status"] == "completed"
         return httpx.Response(200, json={"value": []})
@@ -139,8 +151,12 @@ def test_azure_query_provider_get_pull_request_maps_fields_and_uses_pat_auth(
                 "lastMergeSourceCommit": {"commitId": "abc123"},
                 "lastMergeTargetCommit": {"commitId": "def456"},
                 "createdBy": {"displayName": "Agent"},
-                "reviewers": [{"id": "u1", "displayName": "Reviewer One", "vote": 10, "isRequired": True}],
-                "_links": {"web": {"href": "https://dev.azure.com/org/proj/_git/repo-1/pullrequest/17"}},
+                "reviewers": [
+                    {"id": "u1", "displayName": "Reviewer One", "vote": 10, "isRequired": True}
+                ],
+                "_links": {
+                    "web": {"href": "https://dev.azure.com/org/proj/_git/repo-1/pullrequest/17"}
+                },
                 "customField": {"still": "in_raw"},
             },
         )
@@ -168,12 +184,22 @@ def test_azure_query_provider_get_pull_request_maps_fields_and_uses_pat_auth(
     assert result.raw["customField"]["still"] == "in_raw"
 
 
-def test_azure_query_provider_get_pull_request_keeps_raw_commits(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_azure_query_provider_get_pull_request_keeps_raw_commits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/commits"):
             return httpx.Response(
                 200,
-                json={"value": [{"commitId": "abc123", "comment": "message", "url": "https://example/commit/abc123"}]},
+                json={
+                    "value": [
+                        {
+                            "commitId": "abc123",
+                            "comment": "message",
+                            "url": "https://example/commit/abc123",
+                        }
+                    ]
+                },
             )
         return httpx.Response(
             200,

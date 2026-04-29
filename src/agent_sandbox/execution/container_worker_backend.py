@@ -4,7 +4,12 @@ import uuid
 from typing import Any
 
 from agent_sandbox.config import GatewayConfig
-from agent_sandbox.worker.models import SAFE_ID_PATTERN, WorkerJobRequest, WorkerResourceLimits, now_utc
+from agent_sandbox.worker.models import (
+    SAFE_ID_PATTERN,
+    WorkerJobRequest,
+    WorkerResourceLimits,
+    now_utc,
+)
 from agent_sandbox.worker.security import sanitize_metadata
 
 from .backend import ExecutionTarget
@@ -56,7 +61,9 @@ class ContainerWorkerVmExecutionBackend:
         execution_id = self._safe_execution_id(spec.target_name)
         session_id = spec.session_id or execution_id
         target_name = spec.target_name or execution_id
-        persistence_mode = spec.persistence_mode or self.config.container_worker_workspace_persistence
+        persistence_mode = (
+            spec.persistence_mode or self.config.container_worker_workspace_persistence
+        )
         workspace_mode = spec.workspace_mode or persistence_mode
         metadata = sanitize_metadata(
             {
@@ -88,7 +95,11 @@ class ContainerWorkerVmExecutionBackend:
         )
 
     def start(self, target: ExecutionTarget) -> ExecutionHandle:
-        prepared = target if isinstance(target, PreparedExecution) else self.prepare(self._spec_from_target(target))
+        prepared = (
+            target
+            if isinstance(target, PreparedExecution)
+            else self.prepare(self._spec_from_target(target))
+        )
         request = self._job_request(prepared)
         record = self.client.create(request)
         mapping = ContainerWorkerExecutionRecord(
@@ -166,7 +177,9 @@ class ContainerWorkerVmExecutionBackend:
         text = self.client.logs(mapping.worker_job_id)
         if lines <= 0:
             return text
-        return "\n".join(text.splitlines()[-lines:]) + ("\n" if text.endswith("\n") and text.splitlines() else "")
+        return "\n".join(text.splitlines()[-lines:]) + (
+            "\n" if text.endswith("\n") and text.splitlines() else ""
+        )
 
     def _job_request(self, prepared: PreparedExecution) -> WorkerJobRequest:
         command = self._command_from_spec(prepared.command)
@@ -183,7 +196,9 @@ class ContainerWorkerVmExecutionBackend:
         if prepared.clone_branch:
             payload["clone_branch"] = prepared.clone_branch
         if prepared.resource_limits:
-            payload["resource_limits"] = WorkerResourceLimits.model_validate(prepared.resource_limits)
+            payload["resource_limits"] = WorkerResourceLimits.model_validate(
+                prepared.resource_limits
+            )
         return WorkerJobRequest.model_validate(payload)
 
     def _command_from_spec(self, command: Any) -> list[str]:
@@ -194,7 +209,11 @@ class ContainerWorkerVmExecutionBackend:
             if not text:
                 raise ValueError("ExecutionSpec.command is required for container_worker_vm.")
             return ["bash", "-lc", text]
-        if isinstance(command, list) and command and all(isinstance(item, str) and item for item in command):
+        if (
+            isinstance(command, list)
+            and command
+            and all(isinstance(item, str) and item for item in command)
+        ):
             return command
         raise ValueError("ExecutionSpec.command must be a non-empty string or list of strings.")
 

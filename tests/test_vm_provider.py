@@ -8,9 +8,9 @@ from typing import Any
 import pytest
 
 from agent_sandbox.models import SessionManifest
-from agent_sandbox.session_manifest_repository import JsonSessionManifestRepository
-from agent_sandbox.vm_power_state import normalize_power_state
-from agent_sandbox.vm_provider import AzureVmProvider, VmProviderContext, session_vm_provider
+from agent_sandbox.repositories.session_manifests import JsonSessionManifestRepository
+from agent_sandbox.vm.power_state import normalize_power_state
+from agent_sandbox.vm.provider import AzureVmProvider, VmProviderContext, session_vm_provider
 
 
 def test_normalize_power_state_supports_libvirt_and_azure_values() -> None:
@@ -105,7 +105,7 @@ def test_azure_cloud_init_adds_default_host_key_to_agent_admin(
     private_key.write_text("private-key", encoding="utf-8")
     public_key.write_text("ssh-ed25519 AAAATEST jonathan@example", encoding="utf-8")
     monkeypatch.setattr(
-        "agent_sandbox.admin_service._resolve_private_key_path",
+        "agent_sandbox.admin.service._resolve_private_key_path",
         lambda: private_key,
     )
     vm_defaults = SimpleNamespace(

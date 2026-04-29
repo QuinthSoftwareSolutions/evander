@@ -42,7 +42,9 @@ def test_polling_kernel_runs_cycle_with_lock() -> None:
         return 5
 
     kernel = PollingOrchestratorKernel(
-        config=PollingKernelConfig(poll_interval_seconds=1, jitter_seconds=0, lock_path="worker.lock"),
+        config=PollingKernelConfig(
+            poll_interval_seconds=1, jitter_seconds=0, lock_path="worker.lock"
+        ),
         lock_manager=lock_manager,
         sleeper=sleeper,
         run_cycle=_run_cycle,
@@ -70,8 +72,10 @@ def test_kernel_module_has_no_platform_specific_imports() -> None:
         if isinstance(node, ast.ImportFrom) and node.module:
             imported.add(node.module)
     forbidden_prefixes = (
-        "agent_sandbox.admin_service",
+        "agent_sandbox.admin.service",
         "agent_sandbox.platform_integrations",
         "agent_sandbox.provider_config",
     )
-    assert all(not any(name.startswith(prefix) for prefix in forbidden_prefixes) for name in imported)
+    assert all(
+        not any(name.startswith(prefix) for prefix in forbidden_prefixes) for name in imported
+    )

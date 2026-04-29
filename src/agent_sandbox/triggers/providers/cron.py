@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from agent_sandbox.events.models import TriggerDefinitionDiscriminated, TriggerEvent, WorkflowNodeEnvelope
+from agent_sandbox.events.models import (
+    TriggerDefinitionDiscriminated,
+    TriggerEvent,
+    WorkflowNodeEnvelope,
+)
 from agent_sandbox.events.provider_models import CronTriggerDefinition
 from agent_sandbox.triggers.providers._cursor_state import TriggerCursorStore
 from agent_sandbox.triggers.providers.base import TriggerProviderBase
@@ -11,7 +15,9 @@ from agent_sandbox.triggers.providers.cron_schema import CronTriggerConfigSchema
 
 class CronTriggerProvider(TriggerProviderBase):
     @classmethod
-    def validate_definition(cls, trigger_definition: TriggerDefinitionDiscriminated) -> TriggerDefinitionDiscriminated:
+    def validate_definition(
+        cls, trigger_definition: TriggerDefinitionDiscriminated
+    ) -> TriggerDefinitionDiscriminated:
         if isinstance(trigger_definition, WorkflowNodeEnvelope):
             config = CronTriggerConfigSchema.model_validate(trigger_definition.config).model_dump()
             return CronTriggerDefinition.model_validate(
@@ -66,7 +72,9 @@ class CronTriggerProvider(TriggerProviderBase):
     def _cursor_store(self) -> TriggerCursorStore:
         if self.runtime_context is None:
             raise RuntimeError("CronTriggerProvider has no runtime context")
-        return TriggerCursorStore(self.runtime_context.resolved_config.runtime_dir / "trigger-cursors-cron.json")
+        return TriggerCursorStore(
+            self.runtime_context.resolved_config.runtime_dir / "trigger-cursors-cron.json"
+        )
 
 
 def _parse_dt(value: object) -> datetime | None:
@@ -90,7 +98,10 @@ def _next_cron_time(expression: str, base: datetime) -> datetime | None:
     day_values = _parse_cron_field(fields[2], 1, 31)
     month_values = _parse_cron_field(fields[3], 1, 12)
     weekday_values = _parse_cron_field(fields[4], 0, 6)
-    if any(value is None for value in (minute_values, hour_values, day_values, month_values, weekday_values)):
+    if any(
+        value is None
+        for value in (minute_values, hour_values, day_values, month_values, weekday_values)
+    ):
         return None
 
     assert minute_values is not None

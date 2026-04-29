@@ -10,7 +10,7 @@ import pytest
 
 from agent_sandbox.audit import AuditLogger
 from agent_sandbox.config import GatewayConfig
-from agent_sandbox.pr_feedback_worker import (
+from agent_sandbox.daemons.pr_feedback_worker import (
     AzureDevOpsFeedbackAdapter,
     FeedbackEnvelope,
     FeedbackProviderAuthError,
@@ -40,7 +40,9 @@ def test_pr_feedback_store_dedupes_feedback(tmp_path: Path) -> None:
     assert store.add_feedback_if_new(envelope) is True
     assert store.add_feedback_if_new(envelope) is False
 
-    payload = json.loads((tmp_path / "runtime" / "pr-feedback-store.json").read_text(encoding="utf-8"))
+    payload = json.loads(
+        (tmp_path / "runtime" / "pr-feedback-store.json").read_text(encoding="utf-8")
+    )
     assert list(payload["feedback"].keys()) == ["github:issue_comment:1"]
 
 
@@ -143,7 +145,9 @@ def test_pr_feedback_store_reports_unread_feedback_per_session(tmp_path: Path) -
     )
 
 
-def test_pr_feedback_store_compacts_old_feedback_once_stream_cursor_has_advanced(tmp_path: Path) -> None:
+def test_pr_feedback_store_compacts_old_feedback_once_stream_cursor_has_advanced(
+    tmp_path: Path,
+) -> None:
     path = tmp_path / "runtime" / "pr-feedback-store.json"
     store = PrFeedbackStore(path)
     old_envelope = FeedbackEnvelope(
@@ -165,7 +169,9 @@ def test_pr_feedback_store_compacts_old_feedback_once_stream_cursor_has_advanced
     assert payload["feedback"] == {}
 
 
-def test_pr_feedback_store_keeps_recent_feedback_even_when_stream_cursor_has_advanced(tmp_path: Path) -> None:
+def test_pr_feedback_store_keeps_recent_feedback_even_when_stream_cursor_has_advanced(
+    tmp_path: Path,
+) -> None:
     path = tmp_path / "runtime" / "pr-feedback-store.json"
     store = PrFeedbackStore(path)
     recent_envelope = FeedbackEnvelope(
@@ -187,7 +193,9 @@ def test_pr_feedback_store_keeps_recent_feedback_even_when_stream_cursor_has_adv
     assert list(payload["feedback"]) == ["github:issue_comment:1"]
 
 
-def test_pr_feedback_store_prune_streams_removes_matching_feedback_and_cursor(tmp_path: Path) -> None:
+def test_pr_feedback_store_prune_streams_removes_matching_feedback_and_cursor(
+    tmp_path: Path,
+) -> None:
     path = tmp_path / "runtime" / "pr-feedback-store.json"
     store = PrFeedbackStore(path)
     assert store.add_feedback_if_new(
@@ -241,7 +249,9 @@ def test_github_mapping_review_comment_edge_cases() -> None:
             "in_reply_to_id": 54,
         }
     ]
-    mapped = GitHubFeedbackAdapter._map_review_comments(repo="org/repo", pr_id="9", comments=comments)
+    mapped = GitHubFeedbackAdapter._map_review_comments(
+        repo="org/repo", pr_id="9", comments=comments
+    )
 
     assert len(mapped) == 1
     envelope = mapped[0]
@@ -472,12 +482,22 @@ def test_github_adapter_sends_auth_headers_when_token_configured() -> None:
     assert result.feedback == []
     assert captured_headers
     assert all(headers is not None for headers in captured_headers)
-    assert all(headers["Authorization"] == "Bearer gh-test-token" for headers in captured_headers if headers)
-    assert all(headers["Accept"] == "application/vnd.github+json" for headers in captured_headers if headers)
+    assert all(
+        headers["Authorization"] == "Bearer gh-test-token"
+        for headers in captured_headers
+        if headers
+    )
+    assert all(
+        headers["Accept"] == "application/vnd.github+json"
+        for headers in captured_headers
+        if headers
+    )
 
 
 def test_ado_adapter_sends_basic_auth_header_when_pat_configured() -> None:
-    adapter = AzureDevOpsFeedbackAdapter("https://dev.azure.com/example", "proj", pat="ado-test-pat")
+    adapter = AzureDevOpsFeedbackAdapter(
+        "https://dev.azure.com/example", "proj", pat="ado-test-pat"
+    )
     captured_headers: list[dict[str, str] | None] = []
 
     class FakeResponse:
@@ -528,7 +548,10 @@ def test_ado_adapter_raises_auth_error_on_401() -> None:
         status_code = 401
 
         def raise_for_status(self) -> None:
-            request = httpx.Request("GET", "https://dev.azure.com/example/proj/_apis/git/repositories/repo-1/pullRequests/101/threads")
+            request = httpx.Request(
+                "GET",
+                "https://dev.azure.com/example/proj/_apis/git/repositories/repo-1/pullRequests/101/threads",
+            )
             response = httpx.Response(401, request=request)
             raise httpx.HTTPStatusError("401 Unauthorized", request=request, response=response)
 
@@ -541,7 +564,9 @@ def test_ado_adapter_raises_auth_error_on_401() -> None:
 
 
 def test_ado_adapter_normalizes_composite_repo_identifier() -> None:
-    adapter = AzureDevOpsFeedbackAdapter("https://dev.azure.com/example", "proj", pat="ado-test-pat")
+    adapter = AzureDevOpsFeedbackAdapter(
+        "https://dev.azure.com/example", "proj", pat="ado-test-pat"
+    )
     captured_urls: list[str] = []
 
     class FakeResponse:
@@ -576,22 +601,26 @@ def test_worker_logs_audit_for_new_feedback(tmp_path: Path) -> None:
         provider_name = "github"
 
         def poll(self, **kwargs: object):
-            return type("Result", (), {
-                "feedback": [
-                    FeedbackEnvelope(
-                        feedback_id="github:issue_comment:17",
-                        provider="github",
-                        repo="org/repo",
-                        pr_id="77",
-                        thread_id="issue_comment:17",
-                        comment_id="17",
-                        author="octocat",
-                        body="looks good",
-                        created_at=datetime(2026, 3, 21, 0, 0, 0, tzinfo=timezone.utc),
-                    )
-                ],
-                "next_cursor": "2026-03-21T00:00:00Z",
-            })()
+            return type(
+                "Result",
+                (),
+                {
+                    "feedback": [
+                        FeedbackEnvelope(
+                            feedback_id="github:issue_comment:17",
+                            provider="github",
+                            repo="org/repo",
+                            pr_id="77",
+                            thread_id="issue_comment:17",
+                            comment_id="17",
+                            author="octocat",
+                            body="looks good",
+                            created_at=datetime(2026, 3, 21, 0, 0, 0, tzinfo=timezone.utc),
+                        )
+                    ],
+                    "next_cursor": "2026-03-21T00:00:00Z",
+                },
+            )()
 
     worker = PullRequestFeedbackWorker(
         store=store,
@@ -604,7 +633,9 @@ def test_worker_logs_audit_for_new_feedback(tmp_path: Path) -> None:
         provider="github",
         repo="org/repo",
         pr_id="77",
-        stream_bindings=[{"session_id": "session-123", "vm_id": "vm-9", "source": "session_manifest"}],
+        stream_bindings=[
+            {"session_id": "session-123", "vm_id": "vm-9", "source": "session_manifest"}
+        ],
     )
     second = worker.poll_once(client=object(), provider="github", repo="org/repo", pr_id="77")
 
@@ -653,7 +684,9 @@ def test_worker_enriches_stream_bindings_with_directory_context(tmp_path: Path) 
             )()
 
     class StubResolver:
-        def resolve_for_session(self, session_id: str | None, *, fallback_directory_path: str | None = None, source: str):
+        def resolve_for_session(
+            self, session_id: str | None, *, fallback_directory_path: str | None = None, source: str
+        ):
             return WorkerDirectoryContext(
                 directory_path=fallback_directory_path or "root/team-a",
                 source=source,
@@ -694,13 +727,17 @@ def test_worker_enriches_stream_bindings_with_directory_context(tmp_path: Path) 
                 "directory_path": "root/team-a",
                 "source": "session_manifest",
                 "session_id": "session-123",
-                "domains": [{"domain": "workers", "diff_paths": ["pool.max"], "validation_errors": []}],
+                "domains": [
+                    {"domain": "workers", "diff_paths": ["pool.max"], "validation_errors": []}
+                ],
             },
         }
     ]
 
 
-def test_build_pr_feedback_worker_keeps_global_behavior_when_directory_scoped_config_disabled(tmp_path: Path) -> None:
+def test_build_pr_feedback_worker_keeps_global_behavior_when_directory_scoped_config_disabled(
+    tmp_path: Path,
+) -> None:
     worker = build_pr_feedback_worker(
         tmp_path / "runtime",
         adapters={},

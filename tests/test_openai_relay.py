@@ -15,8 +15,8 @@ from agent_sandbox.config import GatewayConfig
 from agent_sandbox.directory_config import DirectoryConfigStore
 from agent_sandbox.directories import DirectoryService, DirectoryStore
 from agent_sandbox.models import SessionManifest
-from agent_sandbox.openai_relay import OpenAIRelay, create_app
-from agent_sandbox.session_manifest_repository import JsonSessionManifestRepository
+from agent_sandbox.relays.openai import OpenAIRelay, create_app
+from agent_sandbox.repositories.session_manifests import JsonSessionManifestRepository
 
 
 def make_config(tmp_path: Path) -> GatewayConfig:
@@ -67,7 +67,9 @@ def test_relay_returns_503_without_api_key(tmp_path: Path) -> None:
     client = TestClient(app)
     os.environ.pop("OPENAI_API_KEY", None)
 
-    response = client.post("/v1/session/session-1/responses", json={"model": "gpt-5.2-codex", "input": "hello"})
+    response = client.post(
+        "/v1/session/session-1/responses", json={"model": "gpt-5.2-codex", "input": "hello"}
+    )
 
     assert response.status_code == 503
     assert "OPENAI_API_KEY" in response.text
@@ -100,7 +102,9 @@ def test_relay_injects_authorization_header(tmp_path: Path) -> None:
     client = TestClient(app)
     os.environ["OPENAI_API_KEY"] = "test-key"
 
-    response = client.post("/v1/session/session-1/responses", json={"model": "gpt-5.2-codex", "input": "hello"})
+    response = client.post(
+        "/v1/session/session-1/responses", json={"model": "gpt-5.2-codex", "input": "hello"}
+    )
 
     assert response.status_code == 200
     assert captured["authorization"] == "Bearer test-key"
@@ -130,7 +134,9 @@ def test_relay_uses_root_directory_provider_overlay(tmp_path: Path) -> None:
     client = TestClient(app)
     os.environ["ROOT_OPENAI_TOKEN"] = "root-key"
 
-    response = client.post("/v1/session/session-1/responses", json={"model": "gpt-5.2-codex", "input": "hello"})
+    response = client.post(
+        "/v1/session/session-1/responses", json={"model": "gpt-5.2-codex", "input": "hello"}
+    )
 
     assert response.status_code == 200
     assert captured["authorization"] == "Bearer root-key"
@@ -165,7 +171,9 @@ def test_relay_uses_session_directory_provider_overlay(tmp_path: Path) -> None:
     os.environ["TEAM_A_OPENAI_TOKEN"] = "team-a-key"
     os.environ.pop("OPENAI_API_KEY", None)
 
-    response = client.post("/v1/session/session-team-a/responses", json={"model": "gpt-5.2-codex", "input": "hello"})
+    response = client.post(
+        "/v1/session/session-team-a/responses", json={"model": "gpt-5.2-codex", "input": "hello"}
+    )
 
     assert response.status_code == 200
     assert captured["authorization"] == "Bearer team-a-key"
@@ -212,7 +220,9 @@ def test_relay_ignores_unknown_allowed_tools_when_resolving_session(tmp_path: Pa
     os.environ["TEAM_A_OPENAI_TOKEN"] = "team-a-key"
     os.environ.pop("OPENAI_API_KEY", None)
 
-    response = client.post("/v1/session/session-team-a/responses", json={"model": "gpt-5.2-codex", "input": "hello"})
+    response = client.post(
+        "/v1/session/session-team-a/responses", json={"model": "gpt-5.2-codex", "input": "hello"}
+    )
 
     assert response.status_code == 200
     assert captured["authorization"] == "Bearer team-a-key"
@@ -242,9 +252,11 @@ def test_relay_logs_resolved_api_key_env_name(tmp_path: Path, caplog) -> None:
     client = TestClient(app)
     os.environ["TEAM_A_OPENAI_TOKEN"] = "team-a-key"
     os.environ.pop("OPENAI_API_KEY", None)
-    caplog.set_level("INFO", logger="agent_sandbox.openai_relay")
+    caplog.set_level("INFO", logger="agent_sandbox.relays.openai")
 
-    response = client.post("/v1/session/session-team-a/responses", json={"model": "gpt-5.2-codex", "input": "hello"})
+    response = client.post(
+        "/v1/session/session-team-a/responses", json={"model": "gpt-5.2-codex", "input": "hello"}
+    )
 
     assert response.status_code == 200
     assert captured["authorization"] == "Bearer team-a-key"
@@ -272,7 +284,9 @@ def test_relay_strips_content_encoding_from_response(tmp_path: Path) -> None:
     client = TestClient(app)
     os.environ["OPENAI_API_KEY"] = "test-key"
 
-    response = client.post("/v1/session/session-1/responses", json={"model": "gpt-5.2-codex", "input": "hello"})
+    response = client.post(
+        "/v1/session/session-1/responses", json={"model": "gpt-5.2-codex", "input": "hello"}
+    )
 
     assert response.status_code == 200
     assert "content-encoding" not in response.headers
@@ -321,9 +335,7 @@ class _FakeUpstreamWebSocket:
         await self._recv_queue.put(None)
 
 
-def test_relay_stream_transport_errors_are_suppressed_with_warning(
-    tmp_path: Path, caplog
-) -> None:
+def test_relay_stream_transport_errors_are_suppressed_with_warning(tmp_path: Path, caplog) -> None:
     def handler(_: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
@@ -339,7 +351,7 @@ def test_relay_stream_transport_errors_are_suppressed_with_warning(
     client = TestClient(app)
     os.environ["OPENAI_API_KEY"] = "test-key"
 
-    caplog.set_level("INFO", logger="agent_sandbox.openai_relay")
+    caplog.set_level("INFO", logger="agent_sandbox.relays.openai")
 
     with client.stream(
         "POST",
@@ -374,7 +386,7 @@ def test_relay_stream_clean_end_logs_completion(tmp_path: Path, caplog) -> None:
     client = TestClient(app)
     os.environ["OPENAI_API_KEY"] = "test-key"
 
-    caplog.set_level("INFO", logger="agent_sandbox.openai_relay")
+    caplog.set_level("INFO", logger="agent_sandbox.relays.openai")
 
     with client.stream(
         "POST",
@@ -470,7 +482,9 @@ def test_relay_still_accepts_query_session_id_for_http(tmp_path: Path) -> None:
     client = TestClient(app)
     os.environ["OPENAI_API_KEY"] = "test-key"
 
-    response = client.post("/v1/responses?session_id=session-1", json={"model": "gpt-5.2-codex", "input": "hello"})
+    response = client.post(
+        "/v1/responses?session_id=session-1", json={"model": "gpt-5.2-codex", "input": "hello"}
+    )
 
     assert response.status_code == 200
     assert captured["url"] == "https://api.openai.com/v1/responses"

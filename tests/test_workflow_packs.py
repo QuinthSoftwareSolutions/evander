@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from agent_sandbox.workflow_packs import compose_workflow_ir
+from agent_sandbox.workflow.packs import compose_workflow_ir
 
 
 def test_compose_workflow_ir_merges_selected_packs(tmp_path: Path) -> None:
@@ -57,7 +57,14 @@ def test_compose_workflow_ir_merges_selected_packs(tmp_path: Path) -> None:
 
     assert [trigger["id"] for trigger in composed.triggers] == ["trigger-a"]
     assert [effect["id"] for effect in composed.effects] == ["effect-b"]
-    assert composed.edges == [{"source_id": "trigger-a", "target_id": "effect-b", "source_port": None, "allow_cycle": False}]
+    assert composed.edges == [
+        {
+            "source_id": "trigger-a",
+            "target_id": "effect-b",
+            "source_port": None,
+            "allow_cycle": False,
+        }
+    ]
 
 
 def test_compose_workflow_ir_accepts_inline_overlay_with_ir_metadata(tmp_path: Path) -> None:

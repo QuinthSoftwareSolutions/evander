@@ -27,7 +27,6 @@ from agent_sandbox.events.provider_models import (
 )
 
 
-
 def test_ticket_created_trigger_normalizes_directories() -> None:
     adapter = TypeAdapter(TriggerDefinitionDiscriminated)
 
@@ -104,7 +103,9 @@ def test_teams_trigger_accepts_per_target_message_filter() -> None:
 
     assert trigger.targets[0].message_filter is not None
     assert trigger.targets[0].message_filter.mentions is not None
-    assert trigger.targets[0].message_filter.mentions.user_ids == ["143e5b02-868f-4f0c-a262-cf509b6c09e5"]
+    assert trigger.targets[0].message_filter.mentions.user_ids == [
+        "143e5b02-868f-4f0c-a262-cf509b6c09e5"
+    ]
 
 
 def test_teams_trigger_message_filter_requires_content_or_mentions() -> None:
@@ -201,8 +202,6 @@ def test_email_trigger_requires_account_and_mailboxes() -> None:
                 "auth_secret_refs": {"access_token": "EMAIL_ACCESS_TOKEN"},
             }
         )
-
-
 
 
 def test_pr_feedback_trigger_accepts_local_provider() -> None:

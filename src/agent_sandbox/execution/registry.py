@@ -23,6 +23,8 @@ def build_execution_backend(
         return LibvirtVmExecutionBackend(admin_service=admin_service)
     if backend == ExecutionBackendKind.CONTAINER_WORKER_VM:
         if not config.container_worker_base_url:
-            raise ValueError("execution_backend 'container_worker_vm' requires container_worker_base_url.")
+            raise ValueError(
+                "execution_backend 'container_worker_vm' requires container_worker_base_url."
+            )
         return ContainerWorkerVmExecutionBackend(config=config)
     raise ValueError(f"Unsupported execution backend: {backend.value}")

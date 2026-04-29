@@ -45,7 +45,9 @@ def test_worker_cli_uses_default_sandbox_profile(monkeypatch, tmp_path: Path) ->
     assert captured["create_app"]["docker_network"] is None
 
 
-def test_worker_cli_accepts_strict_profile_network_and_container_tuning(monkeypatch, tmp_path: Path) -> None:
+def test_worker_cli_accepts_strict_profile_network_and_container_tuning(
+    monkeypatch, tmp_path: Path
+) -> None:
     captured = _run_cli(
         monkeypatch,
         [

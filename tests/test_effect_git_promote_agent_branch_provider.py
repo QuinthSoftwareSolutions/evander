@@ -7,7 +7,9 @@ import pytest
 
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.effects.providers.base import EffectRuntimeContext
-from agent_sandbox.effects.providers.git_promote_agent_branch import GitPromoteAgentBranchEffectProvider
+from agent_sandbox.effects.providers.git_promote_agent_branch import (
+    GitPromoteAgentBranchEffectProvider,
+)
 
 
 class _AdminServiceStub:
@@ -30,7 +32,9 @@ def _build_context(tmp_path: Path, admin_service: _AdminServiceStub) -> EffectRu
     )
 
 
-def test_git_promote_agent_branch_provider_calls_admin_service_with_normalized_arguments(tmp_path: Path) -> None:
+def test_git_promote_agent_branch_provider_calls_admin_service_with_normalized_arguments(
+    tmp_path: Path,
+) -> None:
     admin_service = _AdminServiceStub(
         result={
             "success": True,
@@ -77,7 +81,9 @@ def test_git_promote_agent_branch_provider_calls_admin_service_with_normalized_a
 def test_git_promote_agent_branch_provider_requires_admin_service_method(tmp_path: Path) -> None:
     provider = GitPromoteAgentBranchEffectProvider()
     provider.initialize(
-        effect_definition=SimpleNamespace(id="effect-promote", type="effect:git:promote-agent-branch"),
+        effect_definition=SimpleNamespace(
+            id="effect-promote", type="effect:git:promote-agent-branch"
+        ),
         runtime_context=EffectRuntimeContext(
             resolved_config=GatewayConfig(runtime_dir=tmp_path / "runtime"),
             admin_service=SimpleNamespace(),

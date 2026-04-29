@@ -5,7 +5,7 @@ from pathlib import Path
 
 from agent_sandbox.events.models import TriggerEvent
 from agent_sandbox.events.provider_models import ReviewNewRequestTriggerDefinition
-from agent_sandbox.review_request_store import ReviewRequestRepository, ReviewRequestStore
+from agent_sandbox.reviews.request_store import ReviewRequestRepository, ReviewRequestStore
 from agent_sandbox.triggers.providers.base import TriggerProviderBase
 
 

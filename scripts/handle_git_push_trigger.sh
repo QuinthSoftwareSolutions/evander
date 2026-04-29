@@ -60,7 +60,7 @@ from pathlib import Path
 import fcntl
 
 from agent_sandbox.triggers.providers.git_push import build_git_push_payloads, git_push_trigger_matches_repo
-from agent_sandbox.workflow_packs import compose_workflow_ir
+from agent_sandbox.workflow.packs import compose_workflow_ir
 
 def _resolve_repo(path_text: str) -> Path:
     return Path(path_text).expanduser().resolve()

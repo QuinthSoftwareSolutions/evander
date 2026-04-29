@@ -15,9 +15,13 @@ from .models import (
 
 
 class LibvirtVmExecutionBackend:
-    def __init__(self, *, admin_service: Any | None = None, vm_admin_service: Any | None = None) -> None:
+    def __init__(
+        self, *, admin_service: Any | None = None, vm_admin_service: Any | None = None
+    ) -> None:
         if admin_service is None and vm_admin_service is None:
-            raise ValueError("LibvirtVmExecutionBackend requires an admin_service or vm_admin_service.")
+            raise ValueError(
+                "LibvirtVmExecutionBackend requires an admin_service or vm_admin_service."
+            )
         self._admin_service = admin_service
         self._vm_admin_service = vm_admin_service
 
@@ -54,7 +58,9 @@ class LibvirtVmExecutionBackend:
         return self._delegate.start_vm(self._target_name(target))
 
     def stop(self, target: ExecutionTarget, *, timeout_seconds: int = 60):
-        return self._delegate.shutdown_vm(self._target_name(target), timeout_seconds=timeout_seconds)
+        return self._delegate.shutdown_vm(
+            self._target_name(target), timeout_seconds=timeout_seconds
+        )
 
     def inspect(self, target: ExecutionTarget) -> ExecutionStatus:
         target_name = self._target_name(target)
@@ -62,7 +68,9 @@ class LibvirtVmExecutionBackend:
             if self._summary_matches(summary, target_name):
                 vm_name = str(getattr(summary, "vm_name", "") or target_name)
                 session_ids = list(getattr(summary, "session_ids", []) or [])
-                status = self._status_from_power_state(str(getattr(summary, "power_state", "") or ""))
+                status = self._status_from_power_state(
+                    str(getattr(summary, "power_state", "") or "")
+                )
                 message = f"{vm_name} is {status.value}"
                 metadata = {
                     "vm_name": vm_name,
@@ -133,7 +141,9 @@ class LibvirtVmExecutionBackend:
         if not session_id:
             return None
         runtime = getattr(self._admin_service, "runtime", None)
-        session_repository = getattr(runtime, "session_repository", None) or getattr(runtime, "sessions", None)
+        session_repository = getattr(runtime, "session_repository", None) or getattr(
+            runtime, "sessions", None
+        )
         if session_repository is None:
             return None
         get_session = getattr(session_repository, "get_session", None)

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from agent_sandbox.issue_orchestrator import IssueOrchestratorWorker
+from agent_sandbox.daemons.issue_orchestrator import IssueOrchestratorWorker
 
 
 def test_originator_prompt_requires_mcp_issue_tools_and_forbids_cli_fallback() -> None:

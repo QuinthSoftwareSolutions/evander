@@ -53,7 +53,9 @@ def test_filter_discord_commands_returns_raw_stream_cursor_with_denials() -> Non
     )
 
     class AllowOnlyTrustedPolicy:
-        def require_discord_command_source(self, _session: SessionManifest, command: DiscordCommandEnvelope) -> None:
+        def require_discord_command_source(
+            self, _session: SessionManifest, command: DiscordCommandEnvelope
+        ) -> None:
             if command.metadata.get("source") != "discord_bot_api":
                 raise PolicyError(f"Discord command {command.command_id} has untrusted source")
 
@@ -104,7 +106,9 @@ def test_resolve_session_id_from_context_reads_query_param_then_header() -> None
     )
     header_ctx = SimpleNamespace(
         request_context=SimpleNamespace(
-            request=SimpleNamespace(query_params={}, headers={"x-agent-sandbox-session-id": "header-session"})
+            request=SimpleNamespace(
+                query_params={}, headers={"x-agent-sandbox-session-id": "header-session"}
+            )
         )
     )
     mapped_ctx = SimpleNamespace(
@@ -114,17 +118,21 @@ def test_resolve_session_id_from_context_reads_query_param_then_header() -> None
     )
 
     assert (
-        _resolve_session_id_from_context(None, query_ctx, transport_session_map=transport_map) == "query-session"
+        _resolve_session_id_from_context(None, query_ctx, transport_session_map=transport_map)
+        == "query-session"
     )
     assert transport_map == {"transport-1": "query-session"}
     assert _resolve_session_id_from_context(None, header_ctx) == "header-session"
     assert (
-        _resolve_session_id_from_context(None, mapped_ctx, transport_session_map=transport_map) == "query-session"
+        _resolve_session_id_from_context(None, mapped_ctx, transport_session_map=transport_map)
+        == "query-session"
     )
 
 
 def test_resolve_session_id_from_context_requires_value() -> None:
-    ctx = SimpleNamespace(request_context=SimpleNamespace(request=SimpleNamespace(query_params={}, headers={})))
+    ctx = SimpleNamespace(
+        request_context=SimpleNamespace(request=SimpleNamespace(query_params={}, headers={}))
+    )
 
     with pytest.raises(ToolError, match="session_id is required"):
         _resolve_session_id_from_context(None, ctx)
@@ -164,7 +172,9 @@ def test_request_pr_review_schema_advertises_allowed_provider_values(tmp_path: P
     )
     server = create_server(context)
 
-    request_pr_review_tool = next(tool for tool in server._tool_manager.list_tools() if tool.name == "request_pr_review")
+    request_pr_review_tool = next(
+        tool for tool in server._tool_manager.list_tools() if tool.name == "request_pr_review"
+    )
     provider_schema = request_pr_review_tool.parameters["properties"]["provider"]
 
     assert provider_schema["type"] == "string"
@@ -197,7 +207,11 @@ def test_run_script_enforces_tool_policy_and_script_allowlist(tmp_path: Path) ->
         asyncio.run(
             server.call_tool(
                 "run_script",
-                {"session_id": "session-1", "script_name": "deploy-review", "parameters": ["--pr", "42"]},
+                {
+                    "session_id": "session-1",
+                    "script_name": "deploy-review",
+                    "parameters": ["--pr", "42"],
+                },
             )
         )
 
@@ -238,7 +252,11 @@ def test_list_pull_requests_enforces_tool_policy_and_validation(
             session_id="session-1",
             allowed_tools=[],
             expires_at=datetime.now(UTC) + timedelta(hours=1),
-            metadata={"pr_feedback_streams": [{"provider": "azure_devops", "repo": "repo-1", "pr_id": "17"}]},
+            metadata={
+                "pr_feedback_streams": [
+                    {"provider": "azure_devops", "repo": "repo-1", "pr_id": "17"}
+                ]
+            },
         ),
     )
     server = create_server(context)
@@ -256,7 +274,11 @@ def test_list_pull_requests_enforces_tool_policy_and_validation(
             session_id="session-1",
             allowed_tools=[ToolName.LIST_PULL_REQUESTS],
             expires_at=datetime.now(UTC) + timedelta(hours=1),
-            metadata={"pr_feedback_streams": [{"provider": "azure_devops", "repo": "repo-1", "pr_id": "17"}]},
+            metadata={
+                "pr_feedback_streams": [
+                    {"provider": "azure_devops", "repo": "repo-1", "pr_id": "17"}
+                ]
+            },
         ),
     )
     with pytest.raises(ToolError, match="greater than or equal to 1"):
@@ -268,7 +290,9 @@ def test_list_pull_requests_enforces_tool_policy_and_validation(
         )
 
 
-def test_get_pull_request_enforces_tool_policy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_get_pull_request_enforces_tool_policy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setenv("AZURE_DEVOPS_PR_PAT", "ado-token")
     context = build_runtime(
         GatewayConfig(
@@ -286,7 +310,11 @@ def test_get_pull_request_enforces_tool_policy(tmp_path: Path, monkeypatch: pyte
             session_id="session-1",
             allowed_tools=[],
             expires_at=datetime.now(UTC) + timedelta(hours=1),
-            metadata={"pr_feedback_streams": [{"provider": "azure_devops", "repo": "repo-1", "pr_id": "17"}]},
+            metadata={
+                "pr_feedback_streams": [
+                    {"provider": "azure_devops", "repo": "repo-1", "pr_id": "17"}
+                ]
+            },
         ),
     )
     server = create_server(context)
@@ -295,12 +323,19 @@ def test_get_pull_request_enforces_tool_policy(tmp_path: Path, monkeypatch: pyte
         asyncio.run(
             server.call_tool(
                 "get_pull_request",
-                {"session_id": "session-1", "provider": "azure_devops", "repo": "repo-1", "pr_id": "17"},
+                {
+                    "session_id": "session-1",
+                    "provider": "azure_devops",
+                    "repo": "repo-1",
+                    "pr_id": "17",
+                },
             )
         )
 
 
-def test_get_pull_request_allows_repo_scoped_pr_lookup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_get_pull_request_allows_repo_scoped_pr_lookup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setenv("AZURE_DEVOPS_PR_PAT", "ado-token")
     context = build_runtime(
         GatewayConfig(
@@ -318,7 +353,11 @@ def test_get_pull_request_allows_repo_scoped_pr_lookup(tmp_path: Path, monkeypat
             session_id="session-1",
             allowed_tools=[ToolName.GET_PULL_REQUEST],
             expires_at=datetime.now(UTC) + timedelta(hours=1),
-            metadata={"pr_feedback_streams": [{"provider": "azure_devops", "repo": "repo-1", "pr_id": "17"}]},
+            metadata={
+                "pr_feedback_streams": [
+                    {"provider": "azure_devops", "repo": "repo-1", "pr_id": "17"}
+                ]
+            },
         ),
     )
     server = create_server(context)
@@ -331,7 +370,9 @@ def test_get_pull_request_allows_repo_scoped_pr_lookup(tmp_path: Path, monkeypat
                 "pullRequestId": 99,
                 "title": "Follow-up",
                 "status": "active",
-                "_links": {"web": {"href": "https://dev.azure.com/org/proj/_git/repo-1/pullrequest/99"}},
+                "_links": {
+                    "web": {"href": "https://dev.azure.com/org/proj/_git/repo-1/pullrequest/99"}
+                },
             },
         )
 
@@ -404,7 +445,9 @@ def test_schedule_resume_enforces_tool_policy_and_validates_args(tmp_path) -> No
         )
 
 
-def test_gateway_app_exposes_host_mediated_copilot_auth(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_gateway_app_exposes_host_mediated_copilot_auth(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setenv("GITHUB_TOKEN", "github_pat_test")
     context = build_runtime(
         GatewayConfig(
@@ -426,7 +469,9 @@ def test_gateway_app_exposes_host_mediated_copilot_auth(tmp_path, monkeypatch: p
     )
 
     client = TestClient(create_app(context))
-    response = client.get("/copilot-auth/token", headers={"x-agent-sandbox-session-id": "session-1"})
+    response = client.get(
+        "/copilot-auth/token", headers={"x-agent-sandbox-session-id": "session-1"}
+    )
 
     assert response.status_code == 200
     assert response.text == "github_pat_test"
@@ -478,7 +523,10 @@ def test_gateway_app_rejects_missing_unauthorized_or_expired_copilot_auth_sessio
     assert missing_response.status_code == 403
     assert missing_response.json()["error"] == "session_id is required"
     assert unauthorized_response.status_code == 403
-    assert unauthorized_response.json()["error"] == "Tool copilot_host_auth is not allowed for session active-session"
+    assert (
+        unauthorized_response.json()["error"]
+        == "Tool copilot_host_auth is not allowed for session active-session"
+    )
     assert expired_response.status_code == 403
     assert expired_response.json()["error"] == "Expired session: expired-session"
     audit_events = [
@@ -495,7 +543,9 @@ def test_gateway_app_rejects_missing_unauthorized_or_expired_copilot_auth_sessio
     )
 
 
-def test_gateway_app_reports_missing_host_token_for_copilot_auth(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_gateway_app_reports_missing_host_token_for_copilot_auth(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
     context = build_runtime(
         GatewayConfig(
@@ -517,7 +567,9 @@ def test_gateway_app_reports_missing_host_token_for_copilot_auth(tmp_path, monke
     )
 
     client = TestClient(create_app(context))
-    response = client.get("/copilot-auth/token", headers={"x-agent-sandbox-session-id": "session-1"})
+    response = client.get(
+        "/copilot-auth/token", headers={"x-agent-sandbox-session-id": "session-1"}
+    )
 
     assert response.status_code == 503
     assert response.json()["error"] == "Host environment variable GITHUB_TOKEN is not set."

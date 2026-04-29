@@ -25,8 +25,7 @@ def test_guest_heartbeat_cycle_uses_persisted_model_from_env_file(tmp_path: Path
 
     (lib_dir / "agent_runner.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
     env_file.write_text(
-        "AGENT_MODEL='gpt-5.4'\n"
-        "AGENT_SANDBOX_GUEST_HEARTBEAT_PROMPT='Resume from env file'\n",
+        "AGENT_MODEL='gpt-5.4'\nAGENT_SANDBOX_GUEST_HEARTBEAT_PROMPT='Resume from env file'\n",
         encoding="utf-8",
     )
     _write_executable(

@@ -6,7 +6,12 @@ from typing import Any
 
 from starlette.testclient import TestClient
 
-from agent_sandbox.worker_daemon import WorkerJobRecord, WorkerJobRequest, WorkerSessionPaths, create_app
+from agent_sandbox.worker_daemon import (
+    WorkerJobRecord,
+    WorkerJobRequest,
+    WorkerSessionPaths,
+    create_app,
+)
 
 
 class FakeContainerRuntime:
@@ -52,17 +57,27 @@ def _auth() -> dict[str, str]:
     return {"Authorization": "Bearer test-token"}
 
 
-def test_auth_rejects_missing_or_wrong_bearer_token_and_accepts_configured_token(tmp_path: Path) -> None:
+def test_auth_rejects_missing_or_wrong_bearer_token_and_accepts_configured_token(
+    tmp_path: Path,
+) -> None:
     client = _client(tmp_path)
 
     assert client.get("/healthz").status_code == 200
     assert client.post("/v1/jobs", json={}).status_code == 401
-    assert client.post("/v1/jobs", headers={"Authorization": "Bearer wrong"}, json={}).status_code == 401
+    assert (
+        client.post("/v1/jobs", headers={"Authorization": "Bearer wrong"}, json={}).status_code
+        == 401
+    )
 
     response = client.post(
         "/v1/jobs",
         headers=_auth(),
-        json={"session_id": "session-1", "job_id": "job-1", "image": "codex:latest", "command": ["true"]},
+        json={
+            "session_id": "session-1",
+            "job_id": "job-1",
+            "image": "codex:latest",
+            "command": ["true"],
+        },
     )
 
     assert response.status_code == 201
@@ -75,7 +90,12 @@ def test_session_directories_are_created_and_reused_without_replacing_codex(tmp_
     first = client.post(
         "/v1/jobs",
         headers=_auth(),
-        json={"session_id": "session-1", "job_id": "job-1", "image": "codex:latest", "command": ["true"]},
+        json={
+            "session_id": "session-1",
+            "job_id": "job-1",
+            "image": "codex:latest",
+            "command": ["true"],
+        },
     )
     assert first.status_code == 201
     paths = runtime.started[0][2]
@@ -86,7 +106,12 @@ def test_session_directories_are_created_and_reused_without_replacing_codex(tmp_
     second = client.post(
         "/v1/jobs",
         headers=_auth(),
-        json={"session_id": "session-1", "job_id": "job-2", "image": "codex:latest", "command": ["true"]},
+        json={
+            "session_id": "session-1",
+            "job_id": "job-2",
+            "image": "codex:latest",
+            "command": ["true"],
+        },
     )
 
     assert second.status_code == 201
@@ -106,7 +131,12 @@ def test_container_mount_paths_are_persisted_for_workspace_and_agent_home(tmp_pa
     response = client.post(
         "/v1/jobs",
         headers=_auth(),
-        json={"session_id": "session-1", "job_id": "job-1", "image": "codex:latest", "command": ["true"]},
+        json={
+            "session_id": "session-1",
+            "job_id": "job-1",
+            "image": "codex:latest",
+            "command": ["true"],
+        },
     )
 
     payload = response.json()
@@ -124,7 +154,12 @@ def test_job_lifecycle_create_inspect_stop_delete(tmp_path: Path) -> None:
     created = client.post(
         "/v1/jobs",
         headers=_auth(),
-        json={"session_id": "session-1", "job_id": "job-1", "image": "codex:latest", "command": ["sleep", "1"]},
+        json={
+            "session_id": "session-1",
+            "job_id": "job-1",
+            "image": "codex:latest",
+            "command": ["sleep", "1"],
+        },
     )
     assert created.status_code == 201
     assert created.json()["status"] == "running"
@@ -152,7 +187,12 @@ def test_logs_are_written_and_read_from_session_logs(tmp_path: Path) -> None:
     client.post(
         "/v1/jobs",
         headers=_auth(),
-        json={"session_id": "session-1", "job_id": "job-1", "image": "codex:latest", "command": ["true"]},
+        json={
+            "session_id": "session-1",
+            "job_id": "job-1",
+            "image": "codex:latest",
+            "command": ["true"],
+        },
     )
     response = client.get("/v1/jobs/job-1/logs", headers=_auth())
 

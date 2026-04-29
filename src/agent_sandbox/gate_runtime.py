@@ -64,7 +64,9 @@ def filter_when_matches(predicate: Any) -> bool:
     if "in" in predicate:
         return left in _require_membership_container(predicate["in"], operator_name="in")
     if "not_in" in predicate:
-        return left not in _require_membership_container(predicate["not_in"], operator_name="not_in")
+        return left not in _require_membership_container(
+            predicate["not_in"], operator_name="not_in"
+        )
     if "starts_with" in predicate:
         return _require_string_operand(left, operator_name="starts_with").startswith(
             _require_string_operand(predicate["starts_with"], operator_name="starts_with")
@@ -74,9 +76,9 @@ def filter_when_matches(predicate: Any) -> bool:
             _require_string_operand(predicate["ends_with"], operator_name="ends_with")
         )
     if "contains" in predicate:
-        return _require_string_operand(predicate["contains"], operator_name="contains") in _require_string_operand(
-            left, operator_name="contains"
-        )
+        return _require_string_operand(
+            predicate["contains"], operator_name="contains"
+        ) in _require_string_operand(left, operator_name="contains")
     raise GateRuntimeError("gate:filter when predicate must define a supported comparison operator")
 
 
@@ -86,7 +88,9 @@ def require_object_payload(value: Any, *, gate_type: str) -> dict[str, Any]:
     return dict(value)
 
 
-def _require_membership_container(value: Any, *, operator_name: str) -> list[Any] | tuple[Any, ...] | set[Any]:
+def _require_membership_container(
+    value: Any, *, operator_name: str
+) -> list[Any] | tuple[Any, ...] | set[Any]:
     if isinstance(value, (list, tuple, set)):
         return value
     raise GateRuntimeError(f"gate:filter when.{operator_name} must resolve to an array")
@@ -126,7 +130,9 @@ def merged_payload_from_sources(
                     f"merge input from source {source_id!r} is missing shared output {output_key!r}"
                 )
             updated_at = source_updated_at.get(source_id) if source_updated_at is not None else None
-            candidates.append((_updated_at_sort_key(updated_at), order_by_source[source_id], payload[output_key]))
+            candidates.append(
+                (_updated_at_sort_key(updated_at), order_by_source[source_id], payload[output_key])
+            )
         _, _, value = max(candidates, key=lambda item: (item[0], item[1]))
         merged[output_key] = value
     return merged

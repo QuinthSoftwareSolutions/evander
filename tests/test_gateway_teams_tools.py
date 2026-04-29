@@ -11,7 +11,7 @@ from agent_sandbox.config import GatewayConfig
 from agent_sandbox.gateway import create_server
 from agent_sandbox.models import SessionManifest, TeamsMessageEnvelope, ToolName
 from agent_sandbox.runtime import build_runtime
-from agent_sandbox.teams_auth import JsonTeamsIdentityCredentialStore
+from agent_sandbox.messaging.teams_auth import JsonTeamsIdentityCredentialStore
 
 
 class FakeTeamsService:
@@ -104,6 +104,7 @@ def make_context(tmp_path: Path, **kwargs: object):
         **kwargs,
     )
     return build_runtime(config)
+
 
 def call_tool(server, name: str, arguments: dict[str, object]):
     result = asyncio.run(server.call_tool(name, arguments))
@@ -281,7 +282,11 @@ def test_teams_get_messages_defaults_cursorless_reads_to_configured_poll_limit(
                 channel_id="channel-1",
                 thread_id="msg-1",
                 content="oldest",
-                metadata={"source": "teams_graph_api", "team_id": "team-a", "channel_id": "channel-1"},
+                metadata={
+                    "source": "teams_graph_api",
+                    "team_id": "team-a",
+                    "channel_id": "channel-1",
+                },
             ),
             TeamsMessageEnvelope(
                 cursor="team-a/channel-1/msg-2",
@@ -291,7 +296,11 @@ def test_teams_get_messages_defaults_cursorless_reads_to_configured_poll_limit(
                 channel_id="channel-1",
                 thread_id="msg-1",
                 content="middle",
-                metadata={"source": "teams_graph_api", "team_id": "team-a", "channel_id": "channel-1"},
+                metadata={
+                    "source": "teams_graph_api",
+                    "team_id": "team-a",
+                    "channel_id": "channel-1",
+                },
             ),
             TeamsMessageEnvelope(
                 cursor="team-a/channel-1/msg-3",
@@ -301,7 +310,11 @@ def test_teams_get_messages_defaults_cursorless_reads_to_configured_poll_limit(
                 channel_id="channel-1",
                 thread_id="msg-1",
                 content="newest",
-                metadata={"source": "teams_graph_api", "team_id": "team-a", "channel_id": "channel-1"},
+                metadata={
+                    "source": "teams_graph_api",
+                    "team_id": "team-a",
+                    "channel_id": "channel-1",
+                },
             ),
         ]
     )
@@ -339,7 +352,11 @@ def test_teams_get_messages_applies_default_limit_after_session_filtering(
                 channel_id="channel-1",
                 thread_id="msg-1",
                 content="allowed",
-                metadata={"source": "teams_graph_api", "team_id": "team-a", "channel_id": "channel-1"},
+                metadata={
+                    "source": "teams_graph_api",
+                    "team_id": "team-a",
+                    "channel_id": "channel-1",
+                },
             ),
             TeamsMessageEnvelope(
                 cursor="team-b/channel-9/msg-2",
@@ -349,7 +366,11 @@ def test_teams_get_messages_applies_default_limit_after_session_filtering(
                 channel_id="channel-9",
                 thread_id="msg-2",
                 content="blocked",
-                metadata={"source": "teams_graph_api", "team_id": "team-b", "channel_id": "channel-9"},
+                metadata={
+                    "source": "teams_graph_api",
+                    "team_id": "team-b",
+                    "channel_id": "channel-9",
+                },
             ),
         ]
     )
@@ -382,7 +403,11 @@ def test_teams_get_messages_supports_before_cursor_for_older_history(tmp_path: P
                 channel_id="channel-1",
                 thread_id="msg-1",
                 content="one",
-                metadata={"source": "teams_graph_api", "team_id": "team-a", "channel_id": "channel-1"},
+                metadata={
+                    "source": "teams_graph_api",
+                    "team_id": "team-a",
+                    "channel_id": "channel-1",
+                },
             ),
             TeamsMessageEnvelope(
                 cursor="team-a/channel-1/msg-2",
@@ -392,7 +417,11 @@ def test_teams_get_messages_supports_before_cursor_for_older_history(tmp_path: P
                 channel_id="channel-1",
                 thread_id="msg-1",
                 content="two",
-                metadata={"source": "teams_graph_api", "team_id": "team-a", "channel_id": "channel-1"},
+                metadata={
+                    "source": "teams_graph_api",
+                    "team_id": "team-a",
+                    "channel_id": "channel-1",
+                },
             ),
             TeamsMessageEnvelope(
                 cursor="team-a/channel-1/msg-3",
@@ -402,7 +431,11 @@ def test_teams_get_messages_supports_before_cursor_for_older_history(tmp_path: P
                 channel_id="channel-1",
                 thread_id="msg-1",
                 content="three",
-                metadata={"source": "teams_graph_api", "team_id": "team-a", "channel_id": "channel-1"},
+                metadata={
+                    "source": "teams_graph_api",
+                    "team_id": "team-a",
+                    "channel_id": "channel-1",
+                },
             ),
         ]
     )
@@ -468,11 +501,15 @@ def test_add_message_reaction_adds_teams_reaction_to_allowlisted_target(tmp_path
         },
     )
 
-    assert context.teams_service.reaction_calls == [("team-a/channel-1", "msg-3", "heart", "session-1")]
+    assert context.teams_service.reaction_calls == [
+        ("team-a/channel-1", "msg-3", "heart", "session-1")
+    ]
     assert result["status"] == "reacted"
 
 
-def test_teams_get_messages_includes_status_messages_from_other_sessions_in_same_channel(tmp_path: Path) -> None:
+def test_teams_get_messages_includes_status_messages_from_other_sessions_in_same_channel(
+    tmp_path: Path,
+) -> None:
     context = make_context(tmp_path)
     context.session_repository.upsert_session(
         SessionManifest(
@@ -704,7 +741,9 @@ def test_teams_post_status_audits_adapter_http_error(tmp_path: Path) -> None:
         ),
     )
     fake_teams = FakeTeamsService(messages=[])
-    fake_teams.post_status = lambda *args, **kwargs: (_ for _ in ()).throw(httpx.ReadTimeout("teams timeout"))
+    fake_teams.post_status = lambda *args, **kwargs: (_ for _ in ()).throw(
+        httpx.ReadTimeout("teams timeout")
+    )
     context.teams_service = fake_teams
     server = create_server(context)
 

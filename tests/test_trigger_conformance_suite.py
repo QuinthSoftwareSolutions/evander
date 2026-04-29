@@ -11,22 +11,30 @@ import pytest
 from pydantic import TypeAdapter
 
 from agent_sandbox.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
-from agent_sandbox.models import DiscordMessageEnvelope, EmailMessage, LocalIssueRecord, PrFeedbackItem, TeamsMessageEnvelope
-from agent_sandbox.trigger_orchestrator import TriggerOrchestratorWorker
+from agent_sandbox.models import (
+    DiscordMessageEnvelope,
+    EmailMessage,
+    LocalIssueRecord,
+    PrFeedbackItem,
+    TeamsMessageEnvelope,
+)
+from agent_sandbox.daemons.trigger_orchestrator import TriggerOrchestratorWorker
 from agent_sandbox.events.models import TriggerDefinitionDiscriminated, materialize_node_definition
-from agent_sandbox.teams_inbox_store import TeamsInboxMessage, TeamsInboxStore
+from agent_sandbox.messaging.teams_inbox_store import TeamsInboxMessage, TeamsInboxStore
 from agent_sandbox.triggers.providers.base import TriggerRuntimeContext
 from agent_sandbox.triggers.providers.cron import CronTriggerProvider
 from agent_sandbox.triggers.providers.discord_new_message import DiscordNewMessageTriggerProvider
 from agent_sandbox.triggers.providers.email_new_message import EmailNewMessageTriggerProvider
 from agent_sandbox.triggers.providers.git_push import GitPushTriggerProvider
 from agent_sandbox.triggers.providers.agent_prompt_new import AgentPromptNewTriggerProvider
-from agent_sandbox.triggers.providers.pull_request_new_feedback import PullRequestNewFeedbackTriggerProvider
+from agent_sandbox.triggers.providers.pull_request_new_feedback import (
+    PullRequestNewFeedbackTriggerProvider,
+)
 from agent_sandbox.triggers.providers.teams_new_message import TeamsNewMessageTriggerProvider
 from agent_sandbox.triggers.providers.ticket_changed import TicketChangedTriggerProvider
 from agent_sandbox.triggers.providers.ticket_created import TicketCreatedTriggerProvider
 from agent_sandbox.triggers.queue import TriggerEventQueue
-from agent_sandbox.pr_feedback_worker import AzureDevOpsFeedbackAdapter
+from agent_sandbox.daemons.pr_feedback_worker import AzureDevOpsFeedbackAdapter
 
 
 REPORT_ENV_VAR = "AGENT_SANDBOX_TRIGGER_CONFORMANCE_REPORT"
@@ -59,8 +67,12 @@ def _record_result(
     )
 
 
-def _build_runtime_context(runtime_dir: Path, *, env: dict[str, str] | None = None) -> TriggerRuntimeContext:
-    return TriggerRuntimeContext(resolved_config=GatewayConfig(runtime_dir=runtime_dir), env=env or {})
+def _build_runtime_context(
+    runtime_dir: Path, *, env: dict[str, str] | None = None
+) -> TriggerRuntimeContext:
+    return TriggerRuntimeContext(
+        resolved_config=GatewayConfig(runtime_dir=runtime_dir), env=env or {}
+    )
 
 
 class _MaterializingTriggerAdapter:
@@ -79,7 +91,12 @@ def _trigger_adapter() -> _MaterializingTriggerAdapter:
     ("payload", "expected_type", "required_field"),
     [
         (
-            {"id": "cron-1", "display_name": "Cron", "type": "trigger:cron", "expression": "*/5 * * * *"},
+            {
+                "id": "cron-1",
+                "display_name": "Cron",
+                "type": "trigger:cron",
+                "expression": "*/5 * * * *",
+            },
             "trigger:cron",
             "expression",
         ),
@@ -288,7 +305,10 @@ def test_conformance_schema_rejects_invalid_configs_with_explicit_errors(
 
 
 def test_conformance_schema_rejects_duplicate_trigger_ids(report_collector: dict[str, Any]) -> None:
-    with pytest.raises(ValueError, match="Node IDs must be globally unique across triggers, gates, effects, and queries"):
+    with pytest.raises(
+        ValueError,
+        match="Node IDs must be globally unique across triggers, gates, effects, and queries",
+    ):
         TriggerOrchestratorWorkerGlobalConfig.model_validate(
             {
                 "runtime_dir": "runtime",
@@ -484,14 +504,14 @@ def test_conformance_provider_payload_contracts_and_secret_redaction(
     teams = TeamsNewMessageTriggerProvider()
     teams.initialize(
         _trigger_adapter().validate_python(
-                {
-                    "id": "teams",
-                    "display_name": "Teams",
-                    "type": "trigger:teams:new-message",
-                    "targets": [{"target": "team-a/channel-1"}],
-                    "user_ids": ["user-a"],
-                }
-            ),
+            {
+                "id": "teams",
+                "display_name": "Teams",
+                "type": "trigger:teams:new-message",
+                "targets": [{"target": "team-a/channel-1"}],
+                "user_ids": ["user-a"],
+            }
+        ),
         TriggerRuntimeContext(resolved_config=config, env={}),
     )
     pr = PullRequestNewFeedbackTriggerProvider()
@@ -535,7 +555,9 @@ def test_conformance_provider_payload_contracts_and_secret_redaction(
     )
 
 
-def test_conformance_cron_due_and_cursor_persistence(tmp_path: Path, report_collector: dict[str, Any]) -> None:
+def test_conformance_cron_due_and_cursor_persistence(
+    tmp_path: Path, report_collector: dict[str, Any]
+) -> None:
     runtime_dir = tmp_path / "runtime"
     provider = CronTriggerProvider()
     provider.initialize(
@@ -552,7 +574,9 @@ def test_conformance_cron_due_and_cursor_persistence(tmp_path: Path, report_coll
 
     first_events = provider.poll()
     second_events = provider.poll()
-    cursor_payload = json.loads((runtime_dir / "trigger-cursors-cron.json").read_text(encoding="utf-8"))
+    cursor_payload = json.loads(
+        (runtime_dir / "trigger-cursors-cron.json").read_text(encoding="utf-8")
+    )
 
     assert first_events
     assert second_events == []
@@ -567,7 +591,9 @@ def test_conformance_cron_due_and_cursor_persistence(tmp_path: Path, report_coll
     )
 
 
-def test_conformance_directory_and_filter_scoping(tmp_path: Path, report_collector: dict[str, Any]) -> None:
+def test_conformance_directory_and_filter_scoping(
+    tmp_path: Path, report_collector: dict[str, Any]
+) -> None:
     runtime_dir = tmp_path / "runtime"
     runtime_dir.mkdir(parents=True)
     now = datetime(2026, 4, 3, 12, 0, tzinfo=timezone.utc)
@@ -684,14 +710,14 @@ def test_conformance_directory_and_filter_scoping(tmp_path: Path, report_collect
     teams_provider = TeamsNewMessageTriggerProvider()
     teams_provider.initialize(
         _trigger_adapter().validate_python(
-                {
-                    "id": "teams-filtered",
-                    "display_name": "Teams",
-                    "type": "trigger:teams:new-message",
-                    "targets": [{"target": "team-a/channel-1"}],
-                    "user_ids": ["user-a"],
-                }
-            ),
+            {
+                "id": "teams-filtered",
+                "display_name": "Teams",
+                "type": "trigger:teams:new-message",
+                "targets": [{"target": "team-a/channel-1"}],
+                "user_ids": ["user-a"],
+            }
+        ),
         _build_runtime_context(runtime_dir),
     )
 
@@ -888,7 +914,9 @@ def test_pr_feedback_trigger_ado_adapter_uses_trigger_org_and_project(tmp_path: 
     assert adapter.pat == "secret-pat"
 
 
-def test_pr_feedback_trigger_github_emits_new_feedback_before_advancing_cursor(tmp_path: Path) -> None:
+def test_pr_feedback_trigger_github_emits_new_feedback_before_advancing_cursor(
+    tmp_path: Path,
+) -> None:
     runtime_dir = tmp_path / "runtime"
     provider = PullRequestNewFeedbackTriggerProvider()
     provider.initialize(
@@ -992,8 +1020,10 @@ def test_conformance_orchestrator_integration_locking_jitter_and_idempotency(
         sleep_calls.append(value)
         raise RuntimeError("stop-loop")
 
-    monkeypatch.setattr("agent_sandbox.trigger_orchestrator.time.sleep", _fake_sleep)
-    monkeypatch.setattr("agent_sandbox.trigger_orchestrator.random.uniform", lambda _a, _b: 1.25)
+    monkeypatch.setattr("agent_sandbox.daemons.trigger_orchestrator.time.sleep", _fake_sleep)
+    monkeypatch.setattr(
+        "agent_sandbox.daemons.trigger_orchestrator.random.uniform", lambda _a, _b: 1.25
+    )
 
     with pytest.raises(RuntimeError, match="stop-loop"):
         worker.run_forever()
@@ -1046,14 +1076,18 @@ def test_conformance_traceability_matrix_and_report(
     seen = {entry["requirement_id"] for entry in report_collector["requirements"]}
     missing: dict[str, list[str]] = {}
     for task_name, required_requirements in matrix.items():
-        uncovered = [requirement_id for requirement_id in required_requirements if requirement_id not in seen]
+        uncovered = [
+            requirement_id for requirement_id in required_requirements if requirement_id not in seen
+        ]
         if uncovered:
             missing[task_name] = uncovered
 
     summary = {
         "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "status": "pass" if not missing else "fail",
-        "requirements": sorted(report_collector["requirements"], key=lambda item: item["requirement_id"]),
+        "requirements": sorted(
+            report_collector["requirements"], key=lambda item: item["requirement_id"]
+        ),
         "traceability_matrix": matrix,
         "missing_coverage": missing,
     }

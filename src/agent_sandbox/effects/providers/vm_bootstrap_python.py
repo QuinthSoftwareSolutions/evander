@@ -51,7 +51,9 @@ class VmBootstrapPythonEffectProvider(VmTargetingMixin, EffectProviderBase):
 
     def _effect(self) -> VmBootstrapPythonEffectDefinition:
         if not isinstance(self.effect_definition, VmBootstrapPythonEffectDefinition):
-            raise RuntimeError("VmBootstrapPythonEffectProvider initialized with a non-vm-bootstrap-python effect definition")
+            raise RuntimeError(
+                "VmBootstrapPythonEffectProvider initialized with a non-vm-bootstrap-python effect definition"
+            )
         return self.effect_definition
 
     def _context(self):

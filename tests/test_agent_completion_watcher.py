@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from pathlib import Path
 
-import agent_sandbox.agent_completion_watcher as watcher
+import agent_sandbox.daemons.agent_completion_watcher as watcher
 from agent_sandbox.events.models import TriggerEvent
 from agent_sandbox.models import VmSummary
 
@@ -44,7 +44,9 @@ def test_build_agent_run_completed_event_uses_dispatch_scope() -> None:
     }
 
 
-def test_await_agent_completion_publishes_when_dispatch_settles(monkeypatch, tmp_path: Path) -> None:
+def test_await_agent_completion_publishes_when_dispatch_settles(
+    monkeypatch, tmp_path: Path
+) -> None:
     responses = [
         [
             VmSummary(
@@ -116,7 +118,9 @@ def test_await_agent_completion_publishes_when_dispatch_settles(monkeypatch, tmp
     assert event.payload["dispatch_id"] == "dispatch-123"
 
 
-def test_await_agent_completion_uses_configured_event_queue_path(monkeypatch, tmp_path: Path) -> None:
+def test_await_agent_completion_uses_configured_event_queue_path(
+    monkeypatch, tmp_path: Path
+) -> None:
     published: dict[str, object] = {}
     queue_path = tmp_path / "runtime" / "custom-events.json"
 

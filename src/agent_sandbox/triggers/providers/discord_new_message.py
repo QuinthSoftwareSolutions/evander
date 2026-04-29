@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from agent_sandbox.cursor_repositories import JsonDiscordInboxCursorRepository
+from agent_sandbox.repositories.cursors import JsonDiscordInboxCursorRepository
 from agent_sandbox.models import DiscordMessageEnvelope
 from agent_sandbox.events.models import TriggerEvent
 from agent_sandbox.events.provider_models import DiscordNewMessageTriggerDefinition
@@ -17,7 +17,9 @@ class DiscordNewMessageTriggerProvider(TriggerProviderBase):
         state = cursor_store.get(trigger.id)
         cursor = _parse_dt(state.get("last_created_at"))
 
-        inbox_store = JsonDiscordInboxCursorRepository(self._runtime_dir() / "discord-inbox-store.json")
+        inbox_store = JsonDiscordInboxCursorRepository(
+            self._runtime_dir() / "discord-inbox-store.json"
+        )
         raw_messages = inbox_store.read_raw().get("messages", {})
 
         channel_filter = {value.strip() for value in trigger.channel_ids if value.strip()}
@@ -55,12 +57,16 @@ class DiscordNewMessageTriggerProvider(TriggerProviderBase):
                 max_created_at = occurred_at
 
         if max_created_at is not None:
-            cursor_store.put(trigger.id, {"last_created_at": max_created_at.isoformat().replace("+00:00", "Z")})
+            cursor_store.put(
+                trigger.id, {"last_created_at": max_created_at.isoformat().replace("+00:00", "Z")}
+            )
         return events
 
     def _trigger(self) -> DiscordNewMessageTriggerDefinition:
         if not isinstance(self.trigger_definition, DiscordNewMessageTriggerDefinition):
-            raise RuntimeError("DiscordNewMessageTriggerProvider initialized with a non-discord trigger definition")
+            raise RuntimeError(
+                "DiscordNewMessageTriggerProvider initialized with a non-discord trigger definition"
+            )
         return self.trigger_definition
 
     def _runtime_dir(self):

@@ -35,7 +35,9 @@ def _prepare_script(tmp_path: Path) -> tuple[Path, Path]:
     lib_path = lib_dir / "vm_network.sh"
     lib_path.write_text(source_lib.read_text(encoding="utf-8"), encoding="utf-8")
     guest_ssh_lib_path = lib_dir / "guest_ssh.sh"
-    guest_ssh_lib_path.write_text(source_guest_ssh_lib.read_text(encoding="utf-8"), encoding="utf-8")
+    guest_ssh_lib_path.write_text(
+        source_guest_ssh_lib.read_text(encoding="utf-8"), encoding="utf-8"
+    )
     runner_lib_path = lib_dir / "agent_runner.sh"
     runner_lib_path.write_text(source_runner_lib.read_text(encoding="utf-8"), encoding="utf-8")
     provider_assets_lib_path = lib_dir / "agent_provider_assets.sh"
@@ -44,7 +46,9 @@ def _prepare_script(tmp_path: Path) -> tuple[Path, Path]:
         encoding="utf-8",
     )
     runner_codex_lib_path = lib_dir / "agent_runner_codex.sh"
-    runner_codex_lib_path.write_text(source_runner_codex_lib.read_text(encoding="utf-8"), encoding="utf-8")
+    runner_codex_lib_path.write_text(
+        source_runner_codex_lib.read_text(encoding="utf-8"), encoding="utf-8"
+    )
     runner_copilot_lib_path = lib_dir / "agent_runner_copilot.sh"
     runner_copilot_lib_path.write_text(
         source_runner_copilot_lib.read_text(encoding="utf-8"),
@@ -382,40 +386,49 @@ exit 0
 
 
 def test_resume_issue_agent_tracks_explicit_state_lifecycle() -> None:
-    script_text = (Path(__file__).resolve().parents[1] / "scripts" / "resume_issue_agent.sh").read_text(
-        encoding="utf-8"
-    )
+    script_text = (
+        Path(__file__).resolve().parents[1] / "scripts" / "resume_issue_agent.sh"
+    ).read_text(encoding="utf-8")
 
-    assert 'resolve_primary_agent_paths() {' in script_text
+    assert "resolve_primary_agent_paths() {" in script_text
     assert 'RUN_LOG_FILE="${RUN_LOG_DIR}/agent-${RESOLVED_REPO_NAME}.log"' in script_text
     assert 'PID_FILE="${LOG_DIR}/agent-${RESOLVED_REPO_NAME}.pid"' in script_text
     assert 'STATE_PATH="${LOG_DIR}/agent-${RESOLVED_REPO_NAME}.state"' in script_text
-    assert 'AGENT_RUNNER_PROVIDER_LIB_NAME="$(agent_provider_runner_lib_name "${AGENT_PROVIDER}")"' in script_text
-    assert 'AGENT_RUNNER_PROVIDER_LIB_B64' in script_text
-    assert 'printf \'%s\' "${AGENT_RUNNER_PROVIDER_LIB_B64}" | base64 -d > "${LOG_DIR}/lib/${AGENT_RUNNER_PROVIDER_LIB_NAME}"' in script_text
+    assert (
+        'AGENT_RUNNER_PROVIDER_LIB_NAME="$(agent_provider_runner_lib_name "${AGENT_PROVIDER}")"'
+        in script_text
+    )
+    assert "AGENT_RUNNER_PROVIDER_LIB_B64" in script_text
+    assert (
+        'printf \'%s\' "${AGENT_RUNNER_PROVIDER_LIB_B64}" | base64 -d > "${LOG_DIR}/lib/${AGENT_RUNNER_PROVIDER_LIB_NAME}"'
+        in script_text
+    )
     assert "AGENT_RUNNER_CODEX_LIB_B64" not in script_text
-    assert 'ensure_agent_enabled' in script_text
+    assert "ensure_agent_enabled" in script_text
     assert 'write_state "running" "resume"' in script_text
-    assert 'trap on_exit_write_idle EXIT' in script_text
+    assert "trap on_exit_write_idle EXIT" in script_text
     assert 'STATE_PATH="${STATE_PATH}" \\' in script_text
     assert 'AGENT_STATE_REPO_NAME="${AGENT_STATE_REPO_NAME}" \\' in script_text
-    assert 'AGENT_STATE_LIB_B64' in script_text
-    assert 'printf \'%s\' "${AGENT_RUNNER_LIB_B64}" | base64 -d > "${LOG_DIR}/lib/agent_runner.sh"' in script_text
+    assert "AGENT_STATE_LIB_B64" in script_text
+    assert (
+        'printf \'%s\' "${AGENT_RUNNER_LIB_B64}" | base64 -d > "${LOG_DIR}/lib/agent_runner.sh"'
+        in script_text
+    )
     assert 'nohup "${RUN_AS_AGENT[@]}" \\' in script_text
-    assert 'RUN_LOG_PIPE=' not in script_text
-    assert "' >>\"${RUN_LOG_FILE}\" 2>&1 < /dev/null &" in script_text
+    assert "RUN_LOG_PIPE=" not in script_text
+    assert '\' >>"${RUN_LOG_FILE}" 2>&1 < /dev/null &' in script_text
     assert '. "${AGENT_HOME}/.profile"' not in script_text
     assert '. "$HOME/.profile" >/dev/null 2>&1 || true' in script_text
     assert '. "$HOME/.agent-sandbox/lib/agent_runner.sh"' in script_text
     assert 'STATE_PATH="${LOG_DIR}/codex-resume-last.state"' in script_text
     assert 'RUN_LOG_FILE="${RUN_LOG_DIR}/codex-heartbeat-run.log"' in script_text
     assert 'write_state "running" "resume"' in script_text
-    assert 'last_attempt_at' in script_text
-    assert '--worker-mode' in script_text
+    assert "last_attempt_at" in script_text
+    assert "--worker-mode" in script_text
     assert 'write_agent_control_state "${HOST_CONTROL_STATUS}" "host-sync"' in script_text
     assert 'LOG_PATH="${RUN_LOG_DIR}/agent-${RESOLVED_REPO_NAME}.log"' in script_text
     assert 'LOG_PATH="${RUN_LOG_DIR}/codex-heartbeat-run.log"' in script_text
-    assert 'RUN_LOG_START_SIZE=0' in script_text
+    assert "RUN_LOG_START_SIZE=0" in script_text
     assert 'RUN_LOG_START_SIZE="$(wc -c < "${RUN_LOG_FILE}" | tr -d ' in script_text
     assert 'tail -c "+$((RUN_LOG_START_SIZE + 1))" "${RUN_LOG_FILE}" 2>/dev/null' in script_text
     assert """awk -F': ' '/^session id: / {thread_id=$2} END {print thread_id}'""" in script_text

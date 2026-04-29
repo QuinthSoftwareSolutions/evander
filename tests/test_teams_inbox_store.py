@@ -4,7 +4,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from agent_sandbox.teams_inbox_store import TeamsInboxMessage, TeamsInboxStore
+from agent_sandbox.messaging.teams_inbox_store import TeamsInboxMessage, TeamsInboxStore
 
 
 def _message(
@@ -43,7 +43,9 @@ def test_teams_inbox_store_dedupes_messages(tmp_path: Path) -> None:
     assert store.add_message_if_new(envelope) is True
     assert store.add_message_if_new(envelope) is False
 
-    payload = json.loads((tmp_path / "runtime" / "teams-inbox-store.json").read_text(encoding="utf-8"))
+    payload = json.loads(
+        (tmp_path / "runtime" / "teams-inbox-store.json").read_text(encoding="utf-8")
+    )
     assert list(payload["messages"].keys()) == ["team-a/channel-1/msg-1"]
 
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from agent_sandbox.effects.binding import BindingResolutionError, resolve_effect_config_bindings
-from agent_sandbox.workflow_binding import resolve_gate_map_bindings, resolve_workflow_bindings
+from agent_sandbox.workflow.binding import resolve_gate_map_bindings, resolve_workflow_bindings
 
 
 def test_workflow_binding_resolution_matches_effect_compatibility_path() -> None:
@@ -168,7 +168,9 @@ def test_workflow_binding_resolution_supports_chained_output_reference_fallbacks
     )
 
     assert result.resolved_config == {"agent_thread_id": "thread-from-session"}
-    assert result.trace.consumed_output_keys == ("query-session-context-3.metadata.agent_thread_id",)
+    assert result.trace.consumed_output_keys == (
+        "query-session-context-3.metadata.agent_thread_id",
+    )
 
 
 def test_workflow_binding_resolution_supports_chained_literal_fallback() -> None:

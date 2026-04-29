@@ -161,7 +161,9 @@ def _config_to_mapping(config: Any) -> Mapping[str, Any]:
 
 
 def _config_to_namespace(config: Mapping[str, Any]) -> SimpleNamespace:
-    return SimpleNamespace(**{key: _normalize_config_value(key, value) for key, value in config.items()})
+    return SimpleNamespace(
+        **{key: _normalize_config_value(key, value) for key, value in config.items()}
+    )
 
 
 def _normalize_config_value(key: str, value: Any) -> Any:

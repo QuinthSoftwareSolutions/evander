@@ -58,7 +58,9 @@ class ContainerWorkerClient:
         response = self._request("GET", f"/v1/jobs/{job_id}/logs")
         return response.text
 
-    def _request(self, method: str, path: str, *, auth: bool = True, **kwargs: Any) -> httpx.Response:
+    def _request(
+        self, method: str, path: str, *, auth: bool = True, **kwargs: Any
+    ) -> httpx.Response:
         headers = dict(kwargs.pop("headers", {}) or {})
         if auth:
             token = os.environ.get(self.token_env, "")
@@ -91,9 +93,13 @@ class ContainerWorkerClient:
         try:
             payload = response.json()
         except ValueError as exc:
-            raise ContainerWorkerClientError(f"container worker {operation} returned non-JSON response") from exc
+            raise ContainerWorkerClientError(
+                f"container worker {operation} returned non-JSON response"
+            ) from exc
         if not isinstance(payload, dict):
-            raise ContainerWorkerClientError(f"container worker {operation} returned a non-object JSON payload")
+            raise ContainerWorkerClientError(
+                f"container worker {operation} returned a non-object JSON payload"
+            )
         return payload
 
     def _safe_response_text(self, response: httpx.Response) -> str:

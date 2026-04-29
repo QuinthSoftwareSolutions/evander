@@ -27,9 +27,15 @@ def _prepare_script(tmp_path: Path) -> tuple[Path, Path]:
     script_path.write_text(source_script.read_text(encoding="utf-8"), encoding="utf-8")
     os.chmod(script_path, 0o755)
 
-    (lib_dir / "vm_network.sh").write_text(source_vm_lib.read_text(encoding="utf-8"), encoding="utf-8")
-    (lib_dir / "agent_status.sh").write_text(source_agent_lib.read_text(encoding="utf-8"), encoding="utf-8")
-    (lib_dir / "guest_ssh.sh").write_text(source_guest_ssh_lib.read_text(encoding="utf-8"), encoding="utf-8")
+    (lib_dir / "vm_network.sh").write_text(
+        source_vm_lib.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    (lib_dir / "agent_status.sh").write_text(
+        source_agent_lib.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    (lib_dir / "guest_ssh.sh").write_text(
+        source_guest_ssh_lib.read_text(encoding="utf-8"), encoding="utf-8"
+    )
 
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()

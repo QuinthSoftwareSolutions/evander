@@ -20,6 +20,7 @@ _QUERY_MODEL_BY_TYPE = {
     "query:issue:get": IssueGetQueryDefinition,
 }
 
+
 def _materialize_with_model(model_class: type[BaseModel], node: WorkflowNodeEnvelope) -> BaseModel:
     payload = {
         "id": node.id,

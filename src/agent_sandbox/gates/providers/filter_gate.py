@@ -5,8 +5,8 @@ from typing import Any
 from agent_sandbox.events.models import NODE_OUTPUTS_CONTEXT_KEY
 from agent_sandbox.gate_runtime import filter_payload_matches, filter_when_matches
 from agent_sandbox.gates.providers.base import GateProviderBase
-from agent_sandbox.workflow_validation import NodeCapability
-from agent_sandbox.workflow_binding import resolve_workflow_bindings
+from agent_sandbox.workflow.validation import NodeCapability
+from agent_sandbox.workflow.binding import resolve_workflow_bindings
 
 _BRANCH_PORT_PAYLOAD_KEY = "__branch_port"
 _FOR_EXECUTION_IDS_PAYLOAD_KEY = "__for_execution_ids"
@@ -40,7 +40,9 @@ class FilterGateProvider(GateProviderBase):
             strict_validation=True,
         )
         resolved_filter = resolved.resolved_config
-        resolved_config = {"when": resolved_filter} if gate.when is not None else {"match": resolved_filter}
+        resolved_config = (
+            {"when": resolved_filter} if gate.when is not None else {"match": resolved_filter}
+        )
         matches = (
             filter_when_matches(resolved_filter)
             if gate.when is not None
@@ -50,7 +52,12 @@ class FilterGateProvider(GateProviderBase):
             outputs = {
                 key: value
                 for key, value in queue_record.payload.items()
-                if key not in {NODE_OUTPUTS_CONTEXT_KEY, _BRANCH_PORT_PAYLOAD_KEY, _FOR_EXECUTION_IDS_PAYLOAD_KEY}
+                if key
+                not in {
+                    NODE_OUTPUTS_CONTEXT_KEY,
+                    _BRANCH_PORT_PAYLOAD_KEY,
+                    _FOR_EXECUTION_IDS_PAYLOAD_KEY,
+                }
             }
             worker._write_gate_record(
                 queue_record=queue_record,

@@ -206,7 +206,9 @@ def test_graph_auth_error_fails_fast_without_retry(monkeypatch: pytest.MonkeyPat
     assert attempts["count"] == 1
 
 
-def test_gmail_create_draft_post_does_not_retry_transient_503(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_gmail_create_draft_post_does_not_retry_transient_503(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     attempts = {"count": 0}
 
     def handler(request: httpx.Request) -> httpx.Response:

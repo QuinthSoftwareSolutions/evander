@@ -5,8 +5,8 @@ from pathlib import Path
 
 from starlette.testclient import TestClient
 
-from agent_sandbox.admin_service import AdminService
-from agent_sandbox.admin_web import create_app
+from agent_sandbox.admin.service import AdminService
+from agent_sandbox.admin.web.app import create_app
 from agent_sandbox.models import ApprovalRequest, ApprovalStatus, SessionManifest, ToolName
 
 
@@ -188,7 +188,9 @@ def test_admin_web_exposes_sessions_catalog_list_detail_and_mutations(tmp_path: 
     revoke_response = client.post("/api/admin/sessions/issue-14085-session/revoke")
 
     assert catalog_response.status_code == 200
-    assert any(item["value"] == "approval_check" for item in catalog_response.json()["tool_options"])
+    assert any(
+        item["value"] == "approval_check" for item in catalog_response.json()["tool_options"]
+    )
     assert list_response.status_code == 200
     assert list_response.json()["items"][0]["session_id"] == "issue-14085-session"
     assert list_response.json()["active_items"][0]["session_id"] == "issue-14085-session"
@@ -201,7 +203,10 @@ def test_admin_web_exposes_sessions_catalog_list_detail_and_mutations(tmp_path: 
     assert model_response.json()["session"]["model"] == "gpt-5.5"
     assert tools_response.status_code == 200
     assert tools_response.json()["action"] == "set_session_allowed_tools"
-    assert tools_response.json()["session"]["allowed_tools"] == ["approval_check", "approval_submit"]
+    assert tools_response.json()["session"]["allowed_tools"] == [
+        "approval_check",
+        "approval_submit",
+    ]
     assert renew_response.status_code == 200
     assert renew_response.json()["action"] == "renew_session"
     assert revoke_response.status_code == 200

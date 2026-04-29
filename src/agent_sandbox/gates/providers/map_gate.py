@@ -3,8 +3,8 @@ from __future__ import annotations
 from typing import Any
 
 from agent_sandbox.gates.providers.base import GateProviderBase
-from agent_sandbox.workflow_validation import NodeCapability
-from agent_sandbox.workflow_binding import resolve_gate_map_bindings
+from agent_sandbox.workflow.validation import NodeCapability
+from agent_sandbox.workflow.binding import resolve_gate_map_bindings
 
 
 class MapGateProvider(GateProviderBase):

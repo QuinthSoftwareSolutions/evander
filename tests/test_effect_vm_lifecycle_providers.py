@@ -17,11 +17,15 @@ class _AdminServiceStub:
 
     def start_vm(self, target: str) -> VmActionResult:
         self.start_calls.append(target)
-        return VmActionResult(success=True, vm_name="vm-1", action="start", message="Started VM vm-1")
+        return VmActionResult(
+            success=True, vm_name="vm-1", action="start", message="Started VM vm-1"
+        )
 
     def shutdown_vm(self, target: str, *, timeout_seconds: int = 60) -> VmActionResult:
         self.stop_calls.append((target, timeout_seconds))
-        return VmActionResult(success=True, vm_name="vm-1", action="shutdown", message="Shut down VM vm-1")
+        return VmActionResult(
+            success=True, vm_name="vm-1", action="shutdown", message="Shut down VM vm-1"
+        )
 
 
 def _context(admin_service: _AdminServiceStub, tmp_path: Path) -> EffectRuntimeContext:
@@ -36,7 +40,9 @@ def test_vm_start_provider_uses_session_id_target(tmp_path: Path) -> None:
     admin_service = _AdminServiceStub()
     provider = VmStartEffectProvider()
     provider.initialize(
-        effect_definition=SimpleNamespace(id="effect-start", display_name="Start", type="effect:vm:start"),
+        effect_definition=SimpleNamespace(
+            id="effect-start", display_name="Start", type="effect:vm:start"
+        ),
         runtime_context=_context(admin_service, tmp_path),
     )
 
@@ -52,7 +58,9 @@ def test_vm_stop_provider_uses_default_timeout(tmp_path: Path) -> None:
     admin_service = _AdminServiceStub()
     provider = VmStopEffectProvider()
     provider.initialize(
-        effect_definition=SimpleNamespace(id="effect-stop", display_name="Stop", type="effect:vm:stop"),
+        effect_definition=SimpleNamespace(
+            id="effect-stop", display_name="Stop", type="effect:vm:stop"
+        ),
         runtime_context=_context(admin_service, tmp_path),
     )
 
@@ -68,7 +76,9 @@ def test_vm_stop_provider_accepts_timeout_override(tmp_path: Path) -> None:
     admin_service = _AdminServiceStub()
     provider = VmStopEffectProvider()
     provider.initialize(
-        effect_definition=SimpleNamespace(id="effect-stop", display_name="Stop", type="effect:vm:stop"),
+        effect_definition=SimpleNamespace(
+            id="effect-stop", display_name="Stop", type="effect:vm:stop"
+        ),
         runtime_context=_context(admin_service, tmp_path),
     )
 

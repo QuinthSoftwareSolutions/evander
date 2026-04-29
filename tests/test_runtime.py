@@ -22,7 +22,10 @@ from agent_sandbox.services import (
     StubDiscordService,
     StubTeamsService,
 )
-from agent_sandbox.teams_auth import JsonTeamsIdentityCredentialStore, TeamsAuthCredentials
+from agent_sandbox.messaging.teams_auth import (
+    JsonTeamsIdentityCredentialStore,
+    TeamsAuthCredentials,
+)
 
 
 def make_config(tmp_path: Path, **kwargs: object) -> GatewayConfig:
@@ -38,7 +41,9 @@ def make_config(tmp_path: Path, **kwargs: object) -> GatewayConfig:
     )
 
 
-def write_provider_overlay(config: GatewayConfig, reference: str, payload: dict[str, object]) -> None:
+def write_provider_overlay(
+    config: GatewayConfig, reference: str, payload: dict[str, object]
+) -> None:
     directory_store = DirectoryStore(config.directories_store_path)
     directory_store.ensure_root()
     config_store = DirectoryConfigStore(directory_store, runtime_dir=config.runtime_dir)
@@ -639,8 +644,12 @@ def test_resolve_allowed_discord_channel_ids_uses_effective_directory_policy(
     directories = DirectoryService(directory_store)
     config_store = DirectoryConfigStore(directory_store, runtime_dir=config.runtime_dir)
     team = directories.create(parent="root", name="team")
-    config_store.write("root", domain="policy", payload={"discord_operator_channel_allowlist": ["chan-root"]})
-    config_store.write(team.path, domain="policy", payload={"discord_operator_channel_allowlist": ["chan-team"]})
+    config_store.write(
+        "root", domain="policy", payload={"discord_operator_channel_allowlist": ["chan-root"]}
+    )
+    config_store.write(
+        team.path, domain="policy", payload={"discord_operator_channel_allowlist": ["chan-team"]}
+    )
     runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="session-active",
@@ -658,6 +667,8 @@ def test_resolve_allowed_discord_channel_ids_uses_effective_directory_policy(
     )
 
     assert channel_ids == ["chan-root", "chan-session", "chan-team"]
+
+
 @pytest.mark.parametrize("provider", ["gmail", "graph"])
 def test_build_runtime_requires_access_token_secret_ref_for_non_json_mailboxes(
     tmp_path: Path, provider: str

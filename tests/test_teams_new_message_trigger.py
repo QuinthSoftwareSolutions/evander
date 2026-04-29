@@ -6,7 +6,7 @@ from pathlib import Path
 
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.events.provider_models import TeamsNewMessageTriggerDefinition
-from agent_sandbox.teams_inbox_store import TeamsInboxMessage, TeamsInboxStore
+from agent_sandbox.messaging.teams_inbox_store import TeamsInboxMessage, TeamsInboxStore
 from agent_sandbox.triggers.providers.base import TriggerRuntimeContext
 from agent_sandbox.triggers.providers.teams_new_message import TeamsNewMessageTriggerProvider
 
@@ -105,7 +105,9 @@ def test_teams_trigger_emits_once_per_poll_when_any_matching_messages_arrive_and
     assert third[0].payload == {}
 
     cursor_payload = json.loads(
-        (context.resolved_config.runtime_dir / "trigger-cursors-teams.json").read_text(encoding="utf-8")
+        (context.resolved_config.runtime_dir / "trigger-cursors-teams.json").read_text(
+            encoding="utf-8"
+        )
     )
     assert cursor_payload["teams-trigger"]["last_created_at"] == "2026-04-09T09:30:00Z"
     assert cursor_payload["teams-trigger"]["recent_cursors"] == [
@@ -234,7 +236,7 @@ def test_teams_trigger_message_filter_matches_mentions_by_user_id(tmp_path: Path
             author_id="user-a",
             author_name="User A",
             chat_id="19:abc@thread.v2",
-            content="<p><at id=\"0\">Truman</at>&nbsp;<at id=\"1\">Bot</at>&nbsp;Welcome</p>",
+            content='<p><at id="0">Truman</at>&nbsp;<at id="1">Bot</at>&nbsp;Welcome</p>',
             created_at=datetime(2026, 4, 9, 10, 0, tzinfo=UTC),
             metadata={
                 "source": "teams_graph_api",
@@ -271,7 +273,11 @@ def test_teams_trigger_message_filter_matches_mentions_by_user_id(tmp_path: Path
             chat_id="19:abc@thread.v2",
             content="hello someone else",
             created_at=datetime(2026, 4, 9, 10, 1, tzinfo=UTC),
-            metadata={"source": "teams_graph_api", "chat_id": "19:abc@thread.v2", "message": {"mentions": []}},
+            metadata={
+                "source": "teams_graph_api",
+                "chat_id": "19:abc@thread.v2",
+                "message": {"mentions": []},
+            },
         ),
     ):
         store.add_message_if_new(message)
@@ -385,7 +391,9 @@ def test_teams_trigger_targets_can_apply_different_filters_per_target(tmp_path: 
                     {"target": "team-a/channel-1"},
                     {
                         "target": "chat:19:abc@thread.v2",
-                        "message_filter": {"mentions": {"user_ids": ["143e5b02-868f-4f0c-a262-cf509b6c09e5"]}},
+                        "message_filter": {
+                            "mentions": {"user_ids": ["143e5b02-868f-4f0c-a262-cf509b6c09e5"]}
+                        },
                     },
                 ],
             }

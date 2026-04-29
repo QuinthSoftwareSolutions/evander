@@ -44,6 +44,7 @@ _EFFECT_MODEL_BY_TYPE = {
     "effect:pr:create": PrCreateEffectDefinition,
 }
 
+
 def _materialize_with_model(model_class: type[BaseModel], node: WorkflowNodeEnvelope) -> BaseModel:
     payload = {
         "id": node.id,

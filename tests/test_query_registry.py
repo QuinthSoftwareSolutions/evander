@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.events.provider_models import (
@@ -105,7 +106,9 @@ def test_vm_run_state_query_provider_returns_expected_state_code() -> None:
         ]
     )
 
-    factory = QueryProviderFactory(provider_config_resolver=_ResolverStub(), admin_service=admin_service)
+    factory = QueryProviderFactory(
+        provider_config_resolver=_ResolverStub(), admin_service=admin_service
+    )
     provider = factory.build(query)
     output = provider.execute(resolved_config={"session_id": "session-1"})
 
@@ -136,7 +139,9 @@ def test_git_pr_note_query_provider_returns_note_body(tmp_path: Path) -> None:
         pr_note_calls=[],
     )
 
-    factory = QueryProviderFactory(provider_config_resolver=_ResolverStub(), admin_service=admin_service)
+    factory = QueryProviderFactory(
+        provider_config_resolver=_ResolverStub(), admin_service=admin_service
+    )
     provider = factory.build(query)
     output = provider.execute(resolved_config={"remote_name": " agent-dropbox "})
 
@@ -165,17 +170,22 @@ def test_session_context_query_provider_returns_metadata(tmp_path: Path) -> None
         pr_note_calls=[],
     )
     calls: list[dict[str, object]] = []
-    admin_service.session_context_query = lambda **kwargs: calls.append(kwargs) or {  # type: ignore[attr-defined]
-        "session_id": "session-1",
-        "vm_name": "vm-1",
-        "directory_path": "root/team-a",
-        "metadata": {"issue_number": "14084", "issue_title": "Fix APP"},
-        "created_at": "2026-04-07T10:00:00+00:00",
-        "expires_at": "2026-04-09T10:00:00+00:00",
-        "model": "gpt-5.4",
-    }
+    admin_service.session_context_query = lambda **kwargs: (
+        calls.append(kwargs)
+        or {  # type: ignore[attr-defined]
+            "session_id": "session-1",
+            "vm_name": "vm-1",
+            "directory_path": "root/team-a",
+            "metadata": {"issue_number": "14084", "issue_title": "Fix APP"},
+            "created_at": "2026-04-07T10:00:00+00:00",
+            "expires_at": "2026-04-09T10:00:00+00:00",
+            "model": "gpt-5.4",
+        }
+    )
 
-    factory = QueryProviderFactory(provider_config_resolver=_ResolverStub(), admin_service=admin_service)
+    factory = QueryProviderFactory(
+        provider_config_resolver=_ResolverStub(), admin_service=admin_service
+    )
     provider = factory.build(query)
     output = provider.execute()
 
@@ -201,7 +211,9 @@ def test_issue_get_query_provider_returns_current_issue_payload(tmp_path: Path) 
         issue_calls=[],
     )
 
-    factory = QueryProviderFactory(provider_config_resolver=_ResolverStub(), admin_service=admin_service)
+    factory = QueryProviderFactory(
+        provider_config_resolver=_ResolverStub(), admin_service=admin_service
+    )
     provider = factory.build(query)
     output = provider.execute()
 

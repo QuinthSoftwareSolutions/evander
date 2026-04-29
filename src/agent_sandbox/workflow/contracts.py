@@ -92,8 +92,12 @@ _NODE_OUTPUT_SCHEMA_REGISTRY: dict[str, dict[str, dict[str, Any]]] = {}
 _OUTPUT_SCHEMA_BOOTSTRAP_ATTEMPTED = False
 
 
-def register_node_output_schema(*, node_type: str, outputs: Mapping[str, Mapping[str, Any]]) -> None:
-    _NODE_OUTPUT_SCHEMA_REGISTRY[node_type] = {str(key): dict(value) for key, value in outputs.items()}
+def register_node_output_schema(
+    *, node_type: str, outputs: Mapping[str, Mapping[str, Any]]
+) -> None:
+    _NODE_OUTPUT_SCHEMA_REGISTRY[node_type] = {
+        str(key): dict(value) for key, value in outputs.items()
+    }
 
 
 def get_node_output_schema_registry() -> Mapping[str, dict[str, dict[str, Any]]]:
@@ -125,7 +129,13 @@ def effective_node_output_schema(node: Any) -> dict[str, dict[str, Any]]:
         return schema
 
     if isinstance(raw_outputs, Mapping):
-        schema.update({str(key): dict(value) for key, value in raw_outputs.items() if isinstance(value, Mapping)})
+        schema.update(
+            {
+                str(key): dict(value)
+                for key, value in raw_outputs.items()
+                if isinstance(value, Mapping)
+            }
+        )
     return schema
 
 
@@ -148,7 +158,17 @@ def _validate_filter_when_node(value: Any, *, path: str) -> None:
     logical_keys = tuple(key for key in ("all", "any", "not") if key in value)
     operator_keys = tuple(
         key
-        for key in ("equals", "not_equals", "in", "not_in", "is_null", "is_not_null", "starts_with", "ends_with", "contains")
+        for key in (
+            "equals",
+            "not_equals",
+            "in",
+            "not_in",
+            "is_null",
+            "is_not_null",
+            "starts_with",
+            "ends_with",
+            "contains",
+        )
         if key in value
     )
 

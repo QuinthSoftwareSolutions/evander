@@ -18,9 +18,13 @@ class GitPromoteAgentBranchEffectProvider(EffectProviderBase):
         bare_repo_path = self._normalize_optional_string(payload.get("bare_repo_path"))
         bare_repo_name = self._normalize_optional_string(payload.get("bare_repo_name"))
         if not bare_repo_path and not bare_repo_name:
-            raise ValueError("effect:git:promote-agent-branch requires bare_repo_path or bare_repo_name")
+            raise ValueError(
+                "effect:git:promote-agent-branch requires bare_repo_path or bare_repo_name"
+            )
         if bare_repo_path and bare_repo_name:
-            raise ValueError("effect:git:promote-agent-branch bare_repo_path and bare_repo_name are mutually exclusive")
+            raise ValueError(
+                "effect:git:promote-agent-branch bare_repo_path and bare_repo_name are mutually exclusive"
+            )
 
         agent_branch = self._normalize_optional_string(payload.get("agent_branch"))
         if not agent_branch:

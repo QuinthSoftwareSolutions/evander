@@ -23,8 +23,14 @@ from agent_sandbox.execution.container_worker_repository import (
     ContainerWorkerExecutionRecord,
     ContainerWorkerExecutionRepository,
 )
-from agent_sandbox.models import ApprovalRequest, Directory, LocalIssueRecord, VmActionResult, VmSummary
-from agent_sandbox.teams_auth import InvalidClientConfigurationError
+from agent_sandbox.models import (
+    ApprovalRequest,
+    Directory,
+    LocalIssueRecord,
+    VmActionResult,
+    VmSummary,
+)
+from agent_sandbox.messaging.teams_auth import InvalidClientConfigurationError
 
 UTC = timezone.utc
 
@@ -42,7 +48,7 @@ def write_config(tmp_path: Path, *, enable_directory_scoped_config: bool = False
                 f'draft_store_path: "{runtime_dir / "drafts.json"}"',
                 f'email_store_path: "{runtime_dir / "emails.json"}"',
                 f'discord_command_store_path: "{runtime_dir / "discord_commands.json"}"',
-                f'enable_directory_scoped_config: {str(enable_directory_scoped_config).lower()}',
+                f"enable_directory_scoped_config: {str(enable_directory_scoped_config).lower()}",
             ]
         ),
         encoding="utf-8",
@@ -50,7 +56,9 @@ def write_config(tmp_path: Path, *, enable_directory_scoped_config: bool = False
     return config_path
 
 
-def write_container_config(tmp_path: Path, *, base_url: str | None = "http://worker.test:11888") -> Path:
+def write_container_config(
+    tmp_path: Path, *, base_url: str | None = "http://worker.test:11888"
+) -> Path:
     tmp_path.mkdir(parents=True, exist_ok=True)
     runtime_dir = tmp_path / "runtime"
     lines = [
@@ -133,7 +141,10 @@ class FakeExecutionBackend:
             repo_source=target.repo_source,
             clone_branch=target.clone_branch,
             resource_limits=target.resource_limits,
-            metadata={"worker_job_id": target.execution_id, "worker_url": "http://worker.test:11888"},
+            metadata={
+                "worker_job_id": target.execution_id,
+                "worker_url": "http://worker.test:11888",
+            },
         )
 
     def inspect(self, target: str) -> ExecutionStatus:
@@ -146,7 +157,9 @@ class FakeExecutionBackend:
             session_id="session-1",
         )
 
-    def get_log_snapshot(self, target: str, *, lines: int = 50, repo_name=None, vm_user: str = "agent") -> str:
+    def get_log_snapshot(
+        self, target: str, *, lines: int = 50, repo_name=None, vm_user: str = "agent"
+    ) -> str:
         self.logged.append((target, lines))
         for started in self.started:
             if started.execution_id == target:
@@ -155,7 +168,9 @@ class FakeExecutionBackend:
                 workspace_match = re.search(r"workspace-[0-9a-f]+", command)
                 if agent_match and workspace_match:
                     return f"agent_marker={agent_match.group(0)}\nworkspace_marker={workspace_match.group(0)}\n"
-        return self.logs_by_target.get(target, "agent_marker=agent-home\nworkspace_marker=workspace\n")
+        return self.logs_by_target.get(
+            target, "agent_marker=agent-home\nworkspace_marker=workspace\n"
+        )
 
     def stop(self, target: str, *, timeout_seconds: int = 60) -> ExecutionStatus:
         self.stopped.append((target, timeout_seconds))
@@ -229,9 +244,24 @@ def test_help_groups_commands_by_panel_then_alphabetically() -> None:
         < output.index("revoke-tool-permission")
     )
     assert (
-        output.index("create-issue-vm") < output.index("create-local-issue") < output.index("destroy-issue-vm") < output.index("list-local-issues") < output.index("prune-orphaned-issue-state")
+        output.index("create-issue-vm")
+        < output.index("create-local-issue")
+        < output.index("destroy-issue-vm")
+        < output.index("list-local-issues")
+        < output.index("prune-orphaned-issue-state")
     )
-    assert output.index("create-vm") < output.index("destroy-vm") < output.index("disable-agent") < output.index("enable-agent") < output.index("list-vms") < output.index("logs") < output.index("resume-agent") < output.index("shutdown-vm") < output.index("ssh") < output.index("start-vm")
+    assert (
+        output.index("create-vm")
+        < output.index("destroy-vm")
+        < output.index("disable-agent")
+        < output.index("enable-agent")
+        < output.index("list-vms")
+        < output.index("logs")
+        < output.index("resume-agent")
+        < output.index("shutdown-vm")
+        < output.index("ssh")
+        < output.index("start-vm")
+    )
     assert output.index("seed-discord-channel") < output.index("seed-email")
     assert "init-state" in output and "Create runtime state files." in output
     assert "migrate-global-config-to-root" in output
@@ -322,7 +352,9 @@ def test_execution_start_container_job_builds_spec_with_metadata_and_limits(
     assert payload["execution_id"] == "target-1"
 
 
-def test_execution_start_container_job_uses_human_output_by_default(tmp_path: Path, monkeypatch) -> None:
+def test_execution_start_container_job_uses_human_output_by_default(
+    tmp_path: Path, monkeypatch
+) -> None:
     config_path = write_container_config(tmp_path)
     monkeypatch.setenv("TEST_WORKER_TOKEN", "token")
     FakeExecutionBackend.instances = []
@@ -351,7 +383,9 @@ def test_execution_start_container_job_uses_human_output_by_default(tmp_path: Pa
         json.loads(result.output)
 
 
-def test_execution_start_container_job_rejects_raw_env_metadata(tmp_path: Path, monkeypatch) -> None:
+def test_execution_start_container_job_rejects_raw_env_metadata(
+    tmp_path: Path, monkeypatch
+) -> None:
     config_path = write_container_config(tmp_path)
     monkeypatch.setenv("TEST_WORKER_TOKEN", "token")
     runner = CliRunner()
@@ -436,7 +470,9 @@ def test_execution_target_commands_auto_route_container_mappings_through_backend
     runner = CliRunner()
 
     status = runner.invoke(app, ["execution", "status", "--config", str(config_path), "exec-1"])
-    logs = runner.invoke(app, ["execution", "logs", "--config", str(config_path), "exec-1", "--lines", "7"])
+    logs = runner.invoke(
+        app, ["execution", "logs", "--config", str(config_path), "exec-1", "--lines", "7"]
+    )
     stop = runner.invoke(
         app,
         ["execution", "stop", "--config", str(config_path), "exec-1", "--timeout-seconds", "9"],
@@ -453,9 +489,13 @@ def test_execution_target_commands_auto_route_container_mappings_through_backend
     assert FakeExecutionBackend.instances[3].destroyed == ["exec-1"]
 
 
-def test_execution_list_container_worker_executions_json_exposes_no_metadata_secrets(tmp_path: Path) -> None:
+def test_execution_list_container_worker_executions_json_exposes_no_metadata_secrets(
+    tmp_path: Path,
+) -> None:
     config_path = write_container_config(tmp_path)
-    repo = ContainerWorkerExecutionRepository(tmp_path / "runtime" / "container-worker-executions.json")
+    repo = ContainerWorkerExecutionRepository(
+        tmp_path / "runtime" / "container-worker-executions.json"
+    )
     repo.put(
         ContainerWorkerExecutionRecord(
             execution_id="exec-1",
@@ -537,7 +577,9 @@ def test_execution_smoke_container_worker_runs_two_jobs_with_same_session(
     assert payload["session_id"] == "smoke-session"
 
 
-def test_teams_auth_commands_use_admin_service_and_redact_tokens(tmp_path: Path, monkeypatch) -> None:
+def test_teams_auth_commands_use_admin_service_and_redact_tokens(
+    tmp_path: Path, monkeypatch
+) -> None:
     config_path = write_config(tmp_path)
     runner = CliRunner()
     calls: list[str] = []
@@ -667,7 +709,9 @@ def test_teams_auth_commands_use_admin_service_and_redact_tokens(tmp_path: Path,
     assert calls == ["login", "complete_login", "status", "list", "logout", "list_channels"]
 
 
-def test_teams_auth_login_reports_auth_errors_without_traceback(tmp_path: Path, monkeypatch) -> None:
+def test_teams_auth_login_reports_auth_errors_without_traceback(
+    tmp_path: Path, monkeypatch
+) -> None:
     config_path = write_config(tmp_path)
     runner = CliRunner()
 
@@ -699,7 +743,9 @@ def test_teams_auth_login_reports_auth_errors_without_traceback(tmp_path: Path, 
     assert "Traceback" not in result.output
 
 
-def test_teams_auth_login_renders_datetime_details_without_traceback(tmp_path: Path, monkeypatch) -> None:
+def test_teams_auth_login_renders_datetime_details_without_traceback(
+    tmp_path: Path, monkeypatch
+) -> None:
     config_path = write_config(tmp_path)
     runner = CliRunner()
 
@@ -757,7 +803,11 @@ def test_migrate_directory_ownership_backfills_missing_fields_only(tmp_path: Pat
     (runtime_dir / "sessions.json").write_text(
         json.dumps(
             {
-                "session-a": {"session_id": "session-a", "allowed_tools": [], "expires_at": "2099-01-01T00:00:00Z"},
+                "session-a": {
+                    "session_id": "session-a",
+                    "allowed_tools": [],
+                    "expires_at": "2099-01-01T00:00:00Z",
+                },
                 "session-b": {
                     "session_id": "session-b",
                     "allowed_tools": [],
@@ -787,7 +837,12 @@ def test_migrate_directory_ownership_backfills_missing_fields_only(tmp_path: Pat
         json.dumps(
             {
                 "entries": {
-                    "github:org/repo:1": {"provider": "github", "repo": "org/repo", "pr_id": "1", "session_id": "session-a"},
+                    "github:org/repo:1": {
+                        "provider": "github",
+                        "repo": "org/repo",
+                        "pr_id": "1",
+                        "session_id": "session-a",
+                    },
                     "github:org/repo:2": {
                         "provider": "github",
                         "repo": "org/repo",
@@ -828,7 +883,9 @@ def test_migrate_directory_ownership_backfills_missing_fields_only(tmp_path: Pat
     assert pr_map["entries"]["github:org/repo:1"]["directory_path"] == "root"
     assert pr_map["entries"]["github:org/repo:2"]["directory_path"] == "root/team"
 
-    ado_processed = json.loads((runtime_dir / "ado-processed-work-items.json").read_text(encoding="utf-8"))
+    ado_processed = json.loads(
+        (runtime_dir / "ado-processed-work-items.json").read_text(encoding="utf-8")
+    )
     assert ado_processed["10"]["directory_path"] == "root"
     assert ado_processed["11"]["directory_path"] == "root/team"
 
@@ -935,7 +992,9 @@ def test_migrate_global_config_to_root_materializes_all_domain_files(tmp_path: P
     ]
 
 
-def test_migrate_global_config_to_root_skips_existing_divergent_root_domains_without_overwrite(tmp_path: Path) -> None:
+def test_migrate_global_config_to_root_skips_existing_divergent_root_domains_without_overwrite(
+    tmp_path: Path,
+) -> None:
     config_path = write_config(tmp_path, enable_directory_scoped_config=True)
     runner = CliRunner()
 
@@ -961,7 +1020,9 @@ def test_migrate_global_config_to_root_skips_existing_divergent_root_domains_wit
     assert "written=0 skipped=1 unchanged=6" in result.output
     assert "skipped: policy" in result.output
     policy_payload = json.loads(
-        (tmp_path / "runtime" / "directory-config" / "root" / "policy.json").read_text(encoding="utf-8")
+        (tmp_path / "runtime" / "directory-config" / "root" / "policy.json").read_text(
+            encoding="utf-8"
+        )
     )
     assert policy_payload == {"default_session_ttl_seconds": 120}
 
@@ -971,19 +1032,22 @@ def test_migrate_global_config_to_root_overwrites_when_requested(tmp_path: Path)
     runner = CliRunner()
 
     assert runner.invoke(app, ["init-state", "--config", str(config_path)]).exit_code == 0
-    assert runner.invoke(
-        app,
-        [
-            "directories",
-            "config-set",
-            "--config",
-            str(config_path),
-            "--domain",
-            "policy",
-            "root",
-            '{"default_session_ttl_seconds": 120}',
-        ],
-    ).exit_code == 0
+    assert (
+        runner.invoke(
+            app,
+            [
+                "directories",
+                "config-set",
+                "--config",
+                str(config_path),
+                "--domain",
+                "policy",
+                "root",
+                '{"default_session_ttl_seconds": 120}',
+            ],
+        ).exit_code
+        == 0
+    )
 
     result = runner.invoke(
         app,
@@ -993,12 +1057,16 @@ def test_migrate_global_config_to_root_overwrites_when_requested(tmp_path: Path)
     assert result.exit_code == 0
     assert "written=1 skipped=0 unchanged=6" in result.output
     policy_payload = json.loads(
-        (tmp_path / "runtime" / "directory-config" / "root" / "policy.json").read_text(encoding="utf-8")
+        (tmp_path / "runtime" / "directory-config" / "root" / "policy.json").read_text(
+            encoding="utf-8"
+        )
     )
     assert policy_payload["default_session_ttl_seconds"] == 28800
 
 
-def test_migrate_global_config_to_root_recovers_when_metadata_lists_missing_root_file(tmp_path: Path) -> None:
+def test_migrate_global_config_to_root_recovers_when_metadata_lists_missing_root_file(
+    tmp_path: Path,
+) -> None:
     config_path = write_config(tmp_path, enable_directory_scoped_config=True)
     runner = CliRunner()
 
@@ -1056,7 +1124,9 @@ def test_migrate_ado_worker_env_to_root_materializes_root_domain_file(tmp_path: 
     assert result.exit_code == 0
     assert "ADO worker env migration complete: written ado_worker" in result.output
     runtime_dir = tmp_path / "runtime"
-    payload = json.loads((runtime_dir / "directory-config" / "root" / "ado-worker.json").read_text(encoding="utf-8"))
+    payload = json.loads(
+        (runtime_dir / "directory-config" / "root" / "ado-worker.json").read_text(encoding="utf-8")
+    )
     assert payload == {
         "ado_area_filters": [],
         "ado_bootstrap_dotnet": True,
@@ -1115,7 +1185,9 @@ def test_migrate_issue_setup_env_to_root_materializes_root_domain_file(tmp_path:
     assert result.exit_code == 0
     assert "Issue setup env migration complete: written issue_setup" in result.output
     runtime_dir = tmp_path / "runtime"
-    payload = json.loads((runtime_dir / "directory-config" / "root" / "issue-setup.json").read_text(encoding="utf-8"))
+    payload = json.loads(
+        (runtime_dir / "directory-config" / "root" / "issue-setup.json").read_text(encoding="utf-8")
+    )
     assert payload == {
         "default_model": "gpt-5.3-codex",
         "enable_guest_heartbeat": True,
@@ -1152,7 +1224,9 @@ def test_migrate_pr_template_to_root_materializes_root_domain_file(tmp_path: Pat
     assert result.exit_code == 0
     assert "PR template migration complete: written pr_template" in result.output
     runtime_dir = tmp_path / "runtime"
-    payload = json.loads((runtime_dir / "directory-config" / "root" / "pr-template.json").read_text(encoding="utf-8"))
+    payload = json.loads(
+        (runtime_dir / "directory-config" / "root" / "pr-template.json").read_text(encoding="utf-8")
+    )
     assert payload == {"pr_template_markdown": "Team checklist\n- [ ] Review\n"}
     directories = DirectoryStore(runtime_dir / "directories.json").read_all()
     assert "pr_template" in directories["root"].metadata["directory_config"]["domains"]
@@ -1163,13 +1237,13 @@ def test_migrate_ado_worker_env_to_root_imports_env_file(tmp_path: Path) -> None
     env_file = tmp_path / "ado-worker.env"
     env_file.write_text(
         "\n".join(
-                [
-                    'ADO_PROJECT_OR_SOLUTION="/tmp/Example.slnx"',
-                    'ADO_REPO_PATH="/tmp/repo"',
-                    'ADO_AREA_FILTERS="Root\\Area,Root\\Other"',
-                    'ADO_BOOTSTRAP_MSSQL="true"',
-                    'ADO_MSSQL_SA_PASSWORD="TopSecret!"',
-                ]
+            [
+                'ADO_PROJECT_OR_SOLUTION="/tmp/Example.slnx"',
+                'ADO_REPO_PATH="/tmp/repo"',
+                'ADO_AREA_FILTERS="Root\\Area,Root\\Other"',
+                'ADO_BOOTSTRAP_MSSQL="true"',
+                'ADO_MSSQL_SA_PASSWORD="TopSecret!"',
+            ]
         )
         + "\n",
         encoding="utf-8",
@@ -1190,7 +1264,9 @@ def test_migrate_ado_worker_env_to_root_imports_env_file(tmp_path: Path) -> None
 
     assert result.exit_code == 0
     assert "written ado_worker" in result.output
-    payload = json.loads((tmp_path / "runtime" / "directory-config" / "root" / "ado-worker.json").read_text("utf-8"))
+    payload = json.loads(
+        (tmp_path / "runtime" / "directory-config" / "root" / "ado-worker.json").read_text("utf-8")
+    )
     assert payload["ado_project_or_solution"] == "/tmp/Example.slnx"
     assert payload["ado_repo_source"] == "/tmp/repo"
     assert payload["ado_area_filters"] == ["Root\\Area", "Root\\Other"]
@@ -1200,7 +1276,9 @@ def test_migrate_ado_worker_env_to_root_imports_env_file(tmp_path: Path) -> None
     assert "ado_worker" in directories["root"].metadata["directory_config"]["domains"]
 
 
-def test_migrate_issue_setup_env_to_root_imports_env_file_and_env_overrides(tmp_path: Path, monkeypatch) -> None:
+def test_migrate_issue_setup_env_to_root_imports_env_file_and_env_overrides(
+    tmp_path: Path, monkeypatch
+) -> None:
     config_path = write_config(tmp_path, enable_directory_scoped_config=True)
     env_file = tmp_path / "config" / "issue-setup.env"
     env_file.parent.mkdir(parents=True, exist_ok=True)
@@ -1237,7 +1315,9 @@ def test_migrate_issue_setup_env_to_root_imports_env_file_and_env_overrides(tmp_
 
     assert result.exit_code == 0
     assert "written issue_setup" in result.output
-    payload = json.loads((tmp_path / "runtime" / "directory-config" / "root" / "issue-setup.json").read_text("utf-8"))
+    payload = json.loads(
+        (tmp_path / "runtime" / "directory-config" / "root" / "issue-setup.json").read_text("utf-8")
+    )
     assert payload["git_root"] == "/tmp/from-file"
     assert payload["git_host"] == "10.55.0.1"
     assert payload["git_user"] == "env-file-user"
@@ -1249,32 +1329,47 @@ def test_migrate_issue_setup_env_to_root_imports_env_file_and_env_overrides(tmp_
     assert payload["issue_setup_azure_devops_pr_pat_env"] == "AZURE_DEVOPS_PR_PAT"
 
 
-def test_create_session_uses_directory_issue_setup_default_model_when_model_not_provided(tmp_path: Path) -> None:
+def test_create_session_uses_directory_issue_setup_default_model_when_model_not_provided(
+    tmp_path: Path,
+) -> None:
     config_path = write_config(tmp_path, enable_directory_scoped_config=True)
     runner = CliRunner()
 
     assert runner.invoke(app, ["init-state", "--config", str(config_path)]).exit_code == 0
-    assert runner.invoke(
-        app,
-        ["directories", "create", "--config", str(config_path), "--parent", "root", "team"],
-    ).exit_code == 0
-    assert runner.invoke(
-        app,
-        [
-            "directories",
-            "config-set",
-            "--config",
-            str(config_path),
-            "--domain",
-            "issue_setup",
-            "root/team",
-            '{"default_model": "gpt-5.3-codex"}',
-        ],
-    ).exit_code == 0
+    assert (
+        runner.invoke(
+            app,
+            ["directories", "create", "--config", str(config_path), "--parent", "root", "team"],
+        ).exit_code
+        == 0
+    )
+    assert (
+        runner.invoke(
+            app,
+            [
+                "directories",
+                "config-set",
+                "--config",
+                str(config_path),
+                "--domain",
+                "issue_setup",
+                "root/team",
+                '{"default_model": "gpt-5.3-codex"}',
+            ],
+        ).exit_code
+        == 0
+    )
 
     result = runner.invoke(
         app,
-        ["create-session", "--config", str(config_path), "--directory", "root/team", "team-session"],
+        [
+            "create-session",
+            "--config",
+            str(config_path),
+            "--directory",
+            "root/team",
+            "team-session",
+        ],
     )
 
     assert result.exit_code == 0
@@ -1287,7 +1382,20 @@ def test_resume_agent_fails_when_model_unresolved_for_session(tmp_path: Path) ->
     runner = CliRunner()
 
     assert runner.invoke(app, ["init-state", "--config", str(config_path)]).exit_code == 0
-    assert runner.invoke(app, ["create-session", "--config", str(config_path), "--vm-id", "vm-12305", "issue-12305-session"]).exit_code == 0
+    assert (
+        runner.invoke(
+            app,
+            [
+                "create-session",
+                "--config",
+                str(config_path),
+                "--vm-id",
+                "vm-12305",
+                "issue-12305-session",
+            ],
+        ).exit_code
+        == 0
+    )
 
     result = runner.invoke(
         app,
@@ -1325,7 +1433,9 @@ def test_directories_cli_supports_crud_and_show(tmp_path: Path) -> None:
     assert create_lab.exit_code == 0
     assert create_lab.output.strip() == "root/team/lab"
 
-    listed = runner.invoke(app, ["directories", "list", "--config", str(config_path), "--parent", "root"])
+    listed = runner.invoke(
+        app, ["directories", "list", "--config", str(config_path), "--parent", "root"]
+    )
     assert listed.exit_code == 0
     payload = json.loads(listed.output)
     assert [item["path"] for item in payload["children"]] == ["root/team"]
@@ -1339,18 +1449,33 @@ def test_directories_cli_supports_crud_and_show(tmp_path: Path) -> None:
 
     moved = runner.invoke(
         app,
-        ["directories", "move", "--config", str(config_path), "root/team/sandbox", "--new-parent", "root"],
+        [
+            "directories",
+            "move",
+            "--config",
+            str(config_path),
+            "root/team/sandbox",
+            "--new-parent",
+            "root",
+        ],
     )
     assert moved.exit_code == 0
     assert moved.output.strip() == "root/sandbox"
 
-    shown = runner.invoke(app, ["directories", "show", "--config", str(config_path), "root/sandbox"])
+    shown = runner.invoke(
+        app, ["directories", "show", "--config", str(config_path), "root/sandbox"]
+    )
     assert shown.exit_code == 0
     show_payload = json.loads(shown.output)
     assert show_payload["details"]["directory"]["path"] == "root/sandbox"
-    assert [item["path"] for item in show_payload["details"]["ancestry"]] == ["root", "root/sandbox"]
+    assert [item["path"] for item in show_payload["details"]["ancestry"]] == [
+        "root",
+        "root/sandbox",
+    ]
 
-    deleted = runner.invoke(app, ["directories", "delete", "--config", str(config_path), "root/sandbox"])
+    deleted = runner.invoke(
+        app, ["directories", "delete", "--config", str(config_path), "root/sandbox"]
+    )
     assert deleted.exit_code == 0
     delete_payload = json.loads(deleted.output)
     assert delete_payload["deleted_count"] == 1
@@ -1376,10 +1501,13 @@ def test_directories_cli_supports_config_show_and_set(tmp_path: Path) -> None:
     runner = CliRunner()
 
     assert runner.invoke(app, ["init-state", "--config", str(config_path)]).exit_code == 0
-    assert runner.invoke(
-        app,
-        ["directories", "create", "--config", str(config_path), "--parent", "root", "team"],
-    ).exit_code == 0
+    assert (
+        runner.invoke(
+            app,
+            ["directories", "create", "--config", str(config_path), "--parent", "root", "team"],
+        ).exit_code
+        == 0
+    )
 
     set_result = runner.invoke(
         app,
@@ -1400,12 +1528,23 @@ def test_directories_cli_supports_config_show_and_set(tmp_path: Path) -> None:
 
     show_result = runner.invoke(
         app,
-        ["directories", "config-show", "--config", str(config_path), "--domain", "policy", "root/team"],
+        [
+            "directories",
+            "config-show",
+            "--config",
+            str(config_path),
+            "--domain",
+            "policy",
+            "root/team",
+        ],
     )
     assert show_result.exit_code == 0
     show_payload = json.loads(show_result.output)
     assert show_payload["raw"]["config"] == {"default_session_ttl_seconds": 120}
-    assert show_payload["effective"]["resolution"]["effective_config"]["default_session_ttl_seconds"] == 120
+    assert (
+        show_payload["effective"]["resolution"]["effective_config"]["default_session_ttl_seconds"]
+        == 120
+    )
 
 
 def test_directories_cli_root_config_becomes_inherited_parent_layer(tmp_path: Path) -> None:
@@ -1413,10 +1552,13 @@ def test_directories_cli_root_config_becomes_inherited_parent_layer(tmp_path: Pa
     runner = CliRunner()
 
     assert runner.invoke(app, ["init-state", "--config", str(config_path)]).exit_code == 0
-    assert runner.invoke(
-        app,
-        ["directories", "create", "--config", str(config_path), "--parent", "root", "team"],
-    ).exit_code == 0
+    assert (
+        runner.invoke(
+            app,
+            ["directories", "create", "--config", str(config_path), "--parent", "root", "team"],
+        ).exit_code
+        == 0
+    )
 
     root_set = runner.invoke(
         app,
@@ -1435,11 +1577,21 @@ def test_directories_cli_root_config_becomes_inherited_parent_layer(tmp_path: Pa
 
     team_show = runner.invoke(
         app,
-        ["directories", "config-show", "--config", str(config_path), "--domain", "policy", "root/team"],
+        [
+            "directories",
+            "config-show",
+            "--config",
+            str(config_path),
+            "--domain",
+            "policy",
+            "root/team",
+        ],
     )
     assert team_show.exit_code == 0
     payload = json.loads(team_show.output)
-    assert payload["effective"]["resolution"]["effective_config"]["default_session_ttl_seconds"] == 180
+    assert (
+        payload["effective"]["resolution"]["effective_config"]["default_session_ttl_seconds"] == 180
+    )
     assert payload["effective"]["resolution"]["applied_layers"][0]["directory_path"] == "root"
 
 
@@ -1467,7 +1619,7 @@ def test_create_session_disables_email_send_by_default(tmp_path: Path) -> None:
 def test_create_session_uses_configured_default_ttl_when_no_ttl_is_provided(tmp_path: Path) -> None:
     config_path = write_config(tmp_path)
     config_path.write_text(
-        config_path.read_text(encoding="utf-8") + '\ndefault_session_ttl_seconds: 172800\n',
+        config_path.read_text(encoding="utf-8") + "\ndefault_session_ttl_seconds: 172800\n",
         encoding="utf-8",
     )
     runner = CliRunner()
@@ -1571,7 +1723,9 @@ def test_create_session_uses_selected_directory_policy_overlay(tmp_path: Path) -
     assert "email_send_approved" in manifest["allowed_tools"]
 
 
-def test_create_issue_vm_creates_manifest_before_invoking_setup_script(tmp_path: Path, monkeypatch) -> None:
+def test_create_issue_vm_creates_manifest_before_invoking_setup_script(
+    tmp_path: Path, monkeypatch
+) -> None:
     config_path = write_config(tmp_path)
     runner = CliRunner()
     captured_cmd: list[str] = []
@@ -1587,7 +1741,7 @@ def test_create_issue_vm_creates_manifest_before_invoking_setup_script(tmp_path:
         assert sessions["issue-1234-session"]["vm_id"] == "vm-1234"
         return subprocess.CompletedProcess(cmd, 0)
 
-    monkeypatch.setattr("agent_sandbox.admin_service.subprocess.run", fake_run)
+    monkeypatch.setattr("agent_sandbox.admin.service.subprocess.run", fake_run)
 
     result = runner.invoke(
         app,
@@ -1616,7 +1770,7 @@ def test_create_issue_vm_persists_expected_manifest_shape(tmp_path: Path, monkey
     assert init_result.exit_code == 0
 
     monkeypatch.setattr(
-        "agent_sandbox.admin_service.subprocess.run",
+        "agent_sandbox.admin.service.subprocess.run",
         lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, 0),
     )
 
@@ -1677,7 +1831,9 @@ def test_create_issue_vm_uses_admin_service(tmp_path: Path, monkeypatch) -> None
 
         def create_issue_vm(self, **kwargs):
             captured_kwargs["kwargs"] = kwargs
-            return VmActionResult(success=True, vm_name="vm-14084", action="create_issue_vm", message="ok")
+            return VmActionResult(
+                success=True, vm_name="vm-14084", action="create_issue_vm", message="ok"
+            )
 
     monkeypatch.setattr("agent_sandbox.cli.AdminService", FakeAdminService)
 
@@ -1723,7 +1879,9 @@ def test_create_issue_vm_uses_admin_service(tmp_path: Path, monkeypatch) -> None
     }
 
 
-def test_create_issue_vm_uses_root_vm_defaults_overlay_for_guest_env(tmp_path: Path, monkeypatch) -> None:
+def test_create_issue_vm_uses_root_vm_defaults_overlay_for_guest_env(
+    tmp_path: Path, monkeypatch
+) -> None:
     config_path = write_config(tmp_path, enable_directory_scoped_config=True)
     runner = CliRunner()
     captured_env: dict[str, str] = {}
@@ -1753,7 +1911,7 @@ def test_create_issue_vm_uses_root_vm_defaults_overlay_for_guest_env(tmp_path: P
         captured_env.update(kwargs.get("env") or {})
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
-    monkeypatch.setattr("agent_sandbox.admin_service.subprocess.run", fake_run)
+    monkeypatch.setattr("agent_sandbox.admin.service.subprocess.run", fake_run)
 
     result = runner.invoke(
         app,
@@ -1807,7 +1965,7 @@ def test_create_issue_vm_rejects_mssql_init_root_without_mssql(tmp_path: Path, m
     assert init_result.exit_code == 0
 
     monkeypatch.setattr(
-        "agent_sandbox.admin_service.subprocess.run",
+        "agent_sandbox.admin.service.subprocess.run",
         lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, 0),
     )
 
@@ -1827,7 +1985,9 @@ def test_create_issue_vm_rejects_mssql_init_root_without_mssql(tmp_path: Path, m
     assert "--mssql-init-root requires --mssql" in result.output
 
 
-def test_create_issue_vm_rejects_existing_session_id_without_running_setup(tmp_path: Path, monkeypatch) -> None:
+def test_create_issue_vm_rejects_existing_session_id_without_running_setup(
+    tmp_path: Path, monkeypatch
+) -> None:
     config_path = write_config(tmp_path)
     runner = CliRunner()
     run_called = False
@@ -1835,7 +1995,9 @@ def test_create_issue_vm_rejects_existing_session_id_without_running_setup(tmp_p
     init_result = runner.invoke(app, ["init-state", "--config", str(config_path)])
     assert init_result.exit_code == 0
 
-    create_result = runner.invoke(app, ["create-session", "--config", str(config_path), "session-1"])
+    create_result = runner.invoke(
+        app, ["create-session", "--config", str(config_path), "session-1"]
+    )
     assert create_result.exit_code == 0
 
     def fake_run(cmd: list[str], check: bool) -> subprocess.CompletedProcess[str]:
@@ -1862,7 +2024,9 @@ def test_create_issue_vm_rejects_existing_session_id_without_running_setup(tmp_p
     assert run_called is False
 
 
-def test_create_issue_vm_does_not_grant_unrequested_tool_families(tmp_path: Path, monkeypatch) -> None:
+def test_create_issue_vm_does_not_grant_unrequested_tool_families(
+    tmp_path: Path, monkeypatch
+) -> None:
     config_path = write_config(tmp_path)
     runner = CliRunner()
 
@@ -1870,7 +2034,7 @@ def test_create_issue_vm_does_not_grant_unrequested_tool_families(tmp_path: Path
     assert init_result.exit_code == 0
 
     monkeypatch.setattr(
-        "agent_sandbox.admin_service.subprocess.run",
+        "agent_sandbox.admin.service.subprocess.run",
         lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, 0),
     )
 
@@ -1878,15 +2042,15 @@ def test_create_issue_vm_does_not_grant_unrequested_tool_families(tmp_path: Path
         app,
         [
             "create-issue-vm",
-                "--config",
-                str(config_path),
-                "--session-id",
-                "issue-200-minimal",
-                "--model",
-                "gpt-5.2-codex",
-                "200",
-            ],
-        )
+            "--config",
+            str(config_path),
+            "--session-id",
+            "issue-200-minimal",
+            "--model",
+            "gpt-5.2-codex",
+            "200",
+        ],
+    )
 
     assert result.exit_code == 0
     sessions = json.loads((tmp_path / "runtime" / "sessions.json").read_text(encoding="utf-8"))
@@ -1897,7 +2061,9 @@ def test_create_issue_vm_does_not_grant_unrequested_tool_families(tmp_path: Path
     assert manifest["metadata"] == {"issue_number": "200"}
 
 
-def test_create_vm_creates_manifest_before_invoking_launch_flow(tmp_path: Path, monkeypatch) -> None:
+def test_create_vm_creates_manifest_before_invoking_launch_flow(
+    tmp_path: Path, monkeypatch
+) -> None:
     config_path = write_config(tmp_path)
     runner = CliRunner()
     captured_kwargs: dict[str, object] = {}
@@ -1910,7 +2076,9 @@ def test_create_vm_creates_manifest_before_invoking_launch_flow(tmp_path: Path, 
 
         def create_vm(self, **kwargs):
             captured_kwargs["kwargs"] = kwargs
-            return VmActionResult(success=True, vm_name=kwargs["vm_name"], action="create_vm", message="ok")
+            return VmActionResult(
+                success=True, vm_name=kwargs["vm_name"], action="create_vm", message="ok"
+            )
 
     monkeypatch.setattr("agent_sandbox.cli.AdminService", FakeAdminService)
 
@@ -1983,7 +2151,9 @@ def test_clone_repo_into_vm_uses_admin_service(tmp_path: Path, monkeypatch) -> N
 
         def clone_repo_into_vm(self, **kwargs):
             captured_kwargs["kwargs"] = kwargs
-            return VmActionResult(success=True, vm_name=kwargs["vm_name"], action="clone_repo_into_vm", message="ok")
+            return VmActionResult(
+                success=True, vm_name=kwargs["vm_name"], action="clone_repo_into_vm", message="ok"
+            )
 
     monkeypatch.setattr("agent_sandbox.cli.AdminService", FakeAdminService)
 
@@ -2029,7 +2199,12 @@ def test_bootstrap_python_in_vm_uses_admin_service(tmp_path: Path, monkeypatch) 
 
         def bootstrap_python_in_vm(self, **kwargs):
             captured_kwargs["kwargs"] = kwargs
-            return VmActionResult(success=True, vm_name=kwargs["vm_name"], action="bootstrap_python_in_vm", message="ok")
+            return VmActionResult(
+                success=True,
+                vm_name=kwargs["vm_name"],
+                action="bootstrap_python_in_vm",
+                message="ok",
+            )
 
     monkeypatch.setattr("agent_sandbox.cli.AdminService", FakeAdminService)
 
@@ -2072,7 +2247,12 @@ def test_bootstrap_frontend_in_vm_uses_admin_service(tmp_path: Path, monkeypatch
 
         def bootstrap_frontend_in_vm(self, **kwargs):
             captured_kwargs["kwargs"] = kwargs
-            return VmActionResult(success=True, vm_name=kwargs["vm_name"], action="bootstrap_frontend_in_vm", message="ok")
+            return VmActionResult(
+                success=True,
+                vm_name=kwargs["vm_name"],
+                action="bootstrap_frontend_in_vm",
+                message="ok",
+            )
 
     monkeypatch.setattr("agent_sandbox.cli.AdminService", FakeAdminService)
 
@@ -2111,7 +2291,9 @@ def test_attach_pr_feedback_updates_existing_session(tmp_path: Path) -> None:
     init_result = runner.invoke(app, ["init-state", "--config", str(config_path)])
     assert init_result.exit_code == 0
 
-    create_result = runner.invoke(app, ["create-session", "--config", str(config_path), "session-1"])
+    create_result = runner.invoke(
+        app, ["create-session", "--config", str(config_path), "session-1"]
+    )
     assert create_result.exit_code == 0
 
     result = runner.invoke(
@@ -2177,7 +2359,9 @@ def test_add_tool_permission_by_session_id_updates_manifest(tmp_path: Path) -> N
     init_result = runner.invoke(app, ["init-state", "--config", str(config_path)])
     assert init_result.exit_code == 0
 
-    create_result = runner.invoke(app, ["create-session", "--config", str(config_path), "session-1"])
+    create_result = runner.invoke(
+        app, ["create-session", "--config", str(config_path), "session-1"]
+    )
     assert create_result.exit_code == 0
 
     sessions_path = tmp_path / "runtime" / "sessions.json"
@@ -2248,7 +2432,9 @@ def test_add_tool_permission_by_vm_name_uses_matching_session(tmp_path: Path) ->
     assert result.exit_code == 0
     manifest = json.loads(sessions_path.read_text(encoding="utf-8"))["issue-14084-session"]
     assert manifest["allowed_tools"] == ["approval_submit", "email_send_approved"]
-    assert "Added tool permission email_send_approved to session issue-14084-session" in result.stdout
+    assert (
+        "Added tool permission email_send_approved to session issue-14084-session" in result.stdout
+    )
 
 
 def test_add_tool_permission_by_issue_number_uses_latest_matching_session(tmp_path: Path) -> None:
@@ -2315,7 +2501,10 @@ def test_add_tool_permission_by_issue_number_uses_latest_matching_session(tmp_pa
     assert result.exit_code == 0
     sessions = json.loads(sessions_path.read_text(encoding="utf-8"))
     assert sessions["issue-13301-older"]["allowed_tools"] == ["approval_submit"]
-    assert sessions["issue-13301-newer"]["allowed_tools"] == ["approval_submit", "email_send_approved"]
+    assert sessions["issue-13301-newer"]["allowed_tools"] == [
+        "approval_submit",
+        "email_send_approved",
+    ]
     assert "Added tool permission email_send_approved to session issue-13301-newer" in result.stdout
 
 
@@ -2365,7 +2554,9 @@ def test_add_tool_permission_is_idempotent_when_tool_already_present(tmp_path: P
     assert result.exit_code == 0
     manifest = json.loads(sessions_path.read_text(encoding="utf-8"))["session-1"]
     assert manifest["allowed_tools"] == ["approval_submit", "email_send_approved"]
-    assert "Tool permission email_send_approved already present on session session-1" in result.stdout
+    assert (
+        "Tool permission email_send_approved already present on session session-1" in result.stdout
+    )
 
 
 def test_revoke_tool_permission_by_session_id_updates_manifest(tmp_path: Path) -> None:
@@ -2463,10 +2654,15 @@ def test_revoke_tool_permission_by_vm_name_uses_matching_session(tmp_path: Path)
     assert result.exit_code == 0
     manifest = json.loads(sessions_path.read_text(encoding="utf-8"))["issue-14084-session"]
     assert manifest["allowed_tools"] == ["approval_submit"]
-    assert "Revoked tool permission email_send_approved from session issue-14084-session" in result.stdout
+    assert (
+        "Revoked tool permission email_send_approved from session issue-14084-session"
+        in result.stdout
+    )
 
 
-def test_revoke_tool_permission_by_issue_number_uses_latest_matching_session(tmp_path: Path) -> None:
+def test_revoke_tool_permission_by_issue_number_uses_latest_matching_session(
+    tmp_path: Path,
+) -> None:
     config_path = write_config(tmp_path)
     runner = CliRunner()
 
@@ -2529,9 +2725,15 @@ def test_revoke_tool_permission_by_issue_number_uses_latest_matching_session(tmp
 
     assert result.exit_code == 0
     sessions = json.loads(sessions_path.read_text(encoding="utf-8"))
-    assert sessions["issue-13301-older"]["allowed_tools"] == ["approval_submit", "email_send_approved"]
+    assert sessions["issue-13301-older"]["allowed_tools"] == [
+        "approval_submit",
+        "email_send_approved",
+    ]
     assert sessions["issue-13301-newer"]["allowed_tools"] == ["approval_submit"]
-    assert "Revoked tool permission email_send_approved from session issue-13301-newer" in result.stdout
+    assert (
+        "Revoked tool permission email_send_approved from session issue-13301-newer"
+        in result.stdout
+    )
 
 
 def test_revoke_tool_permission_is_idempotent_when_tool_missing(tmp_path: Path) -> None:
@@ -2711,7 +2913,9 @@ def test_renew_session_by_session_id_sets_expiration_from_now(tmp_path: Path) ->
     assert "Renewed session session-1" in result.stdout
 
 
-def test_renew_session_by_issue_number_uses_latest_matching_session_and_defaults_to_one_day(tmp_path: Path) -> None:
+def test_renew_session_by_issue_number_uses_latest_matching_session_and_defaults_to_one_day(
+    tmp_path: Path,
+) -> None:
     config_path = write_config(tmp_path)
     runner = CliRunner()
 
@@ -2926,7 +3130,9 @@ def test_list_sessions_supports_all_and_expired_only(tmp_path: Path) -> None:
     )
 
     all_result = runner.invoke(app, ["list-sessions", "--config", str(config_path), "--all"])
-    expired_result = runner.invoke(app, ["list-sessions", "--config", str(config_path), "--expired-only"])
+    expired_result = runner.invoke(
+        app, ["list-sessions", "--config", str(config_path), "--expired-only"]
+    )
 
     assert all_result.exit_code == 0
     assert "active-session" in all_result.stdout
@@ -2944,7 +3150,9 @@ def test_revoke_session_expires_it_immediately(tmp_path: Path) -> None:
     init_result = runner.invoke(app, ["init-state", "--config", str(config_path)])
     assert init_result.exit_code == 0
 
-    create_result = runner.invoke(app, ["create-session", "--config", str(config_path), "session-1"])
+    create_result = runner.invoke(
+        app, ["create-session", "--config", str(config_path), "session-1"]
+    )
     assert create_result.exit_code == 0
 
     before = datetime.now(UTC)
@@ -3057,7 +3265,9 @@ def test_renew_session_rejects_invalid_duration(tmp_path: Path) -> None:
     init_result = runner.invoke(app, ["init-state", "--config", str(config_path)])
     assert init_result.exit_code == 0
 
-    create_result = runner.invoke(app, ["create-session", "--config", str(config_path), "session-1"])
+    create_result = runner.invoke(
+        app, ["create-session", "--config", str(config_path), "session-1"]
+    )
     assert create_result.exit_code == 0
 
     result = runner.invoke(
@@ -3257,12 +3467,20 @@ def test_destroy_issue_vm_cleans_issue_state_and_bare_repo(tmp_path: Path, monke
     pr_map = json.loads((runtime_dir / "pr-map.json").read_text(encoding="utf-8"))
     assert set(pr_map["entries"]) == {"github:org/repo:2"}
 
-    feedback_store = json.loads((runtime_dir / "pr-feedback-store.json").read_text(encoding="utf-8"))
+    feedback_store = json.loads(
+        (runtime_dir / "pr-feedback-store.json").read_text(encoding="utf-8")
+    )
     assert set(feedback_store["cursors"]) == {"github:org/repo:2"}
     assert set(feedback_store["feedback"]) == {"github:issue_comment:2"}
 
-    assert any(cmd[0].endswith("/scripts/destroy_agent_vm.sh") and cmd[1] == "vm-1234" for cmd in captured_cmds)
-    assert any(cmd[:5] == ["git", "-C", str(trusted_repo), "remote", "remove"] and cmd[5] == "1234-mirror" for cmd in captured_cmds)
+    assert any(
+        cmd[0].endswith("/scripts/destroy_agent_vm.sh") and cmd[1] == "vm-1234"
+        for cmd in captured_cmds
+    )
+    assert any(
+        cmd[:5] == ["git", "-C", str(trusted_repo), "remote", "remove"] and cmd[5] == "1234-mirror"
+        for cmd in captured_cmds
+    )
 
 
 def test_destroy_issue_vm_accepts_vm_name_target(tmp_path: Path, monkeypatch) -> None:
@@ -3303,7 +3521,9 @@ def test_destroy_vm_delegates_to_admin_service(tmp_path: Path, monkeypatch) -> N
 
         def destroy_vm(self, target: str):
             captured["target"] = target
-            return VmActionResult(success=True, vm_name=target, action="destroy_vm", message="destroyed")
+            return VmActionResult(
+                success=True, vm_name=target, action="destroy_vm", message="destroyed"
+            )
 
     monkeypatch.setattr("agent_sandbox.cli.AdminService", FakeAdminService)
 
@@ -3314,7 +3534,9 @@ def test_destroy_vm_delegates_to_admin_service(tmp_path: Path, monkeypatch) -> N
     assert "destroyed" in result.stdout
 
 
-def test_prune_orphaned_issue_state_removes_state_for_missing_issue_vms(tmp_path: Path, monkeypatch) -> None:
+def test_prune_orphaned_issue_state_removes_state_for_missing_issue_vms(
+    tmp_path: Path, monkeypatch
+) -> None:
     config_path = write_config(tmp_path)
     runner = CliRunner()
     runtime_dir = tmp_path / "runtime"
@@ -3515,14 +3737,19 @@ def test_prune_orphaned_issue_state_removes_state_for_missing_issue_vms(tmp_path
     pr_map = json.loads((runtime_dir / "pr-map.json").read_text(encoding="utf-8"))
     assert set(pr_map["entries"]) == {"github:org/live:2", "github:org/manual:3"}
 
-    feedback_store = json.loads((runtime_dir / "pr-feedback-store.json").read_text(encoding="utf-8"))
+    feedback_store = json.loads(
+        (runtime_dir / "pr-feedback-store.json").read_text(encoding="utf-8")
+    )
     assert set(feedback_store["cursors"]) == {"github:org/live:2"}
     assert set(feedback_store["feedback"]) == {"github:issue_comment:2"}
 
     assert not (git_root / "12305_repo.git").exists()
     assert not (git_root / "13301_repo.git").exists()
     assert (git_root / "14084_repo.git").exists()
-    assert any(cmd[:5] == ["git", "-C", str(trusted_repo), "remote", "remove"] and cmd[5] == "12305-mirror" for cmd in captured_cmds)
+    assert any(
+        cmd[:5] == ["git", "-C", str(trusted_repo), "remote", "remove"] and cmd[5] == "12305-mirror"
+        for cmd in captured_cmds
+    )
 
 
 def test_list_vms_invokes_script_with_selected_vm_user(tmp_path: Path, monkeypatch) -> None:
@@ -3579,7 +3806,9 @@ def test_list_vms_all_invokes_script_with_all_flag(tmp_path: Path, monkeypatch) 
     assert captured_cmd[1:] == ["--all", "root"]
 
 
-def test_list_vms_omit_state_invokes_script_with_omit_state_flag(tmp_path: Path, monkeypatch) -> None:
+def test_list_vms_omit_state_invokes_script_with_omit_state_flag(
+    tmp_path: Path, monkeypatch
+) -> None:
     config_path = write_config(tmp_path)
     runner = CliRunner()
     captured_cmd: list[str] = []
@@ -3682,7 +3911,9 @@ def test_create_local_issue_uses_admin_service(tmp_path: Path, monkeypatch) -> N
         def __init__(self, config):
             self.config = config
 
-        def create_local_issue(self, *, title: str, body: str, repo_source: str | None, yaml_path: str | None):
+        def create_local_issue(
+            self, *, title: str, body: str, repo_source: str | None, yaml_path: str | None
+        ):
             assert title == "Build GUI"
             assert body == "Need a desktop console"
             assert repo_source == "/src/repo"
@@ -3868,7 +4099,9 @@ def test_logs_accepts_custom_initial_tail_line_count(tmp_path: Path, monkeypatch
     assert captured_cmd[1:] == ["12305", "25", "", "debugger"]
 
 
-def test_resume_agent_invokes_script_with_message_and_issue_number(tmp_path: Path, monkeypatch) -> None:
+def test_resume_agent_invokes_script_with_message_and_issue_number(
+    tmp_path: Path, monkeypatch
+) -> None:
     config_path = write_config(tmp_path)
     runner = CliRunner()
     captured_cmd: list[str] = []
@@ -3878,7 +4111,16 @@ def test_resume_agent_invokes_script_with_message_and_issue_number(tmp_path: Pat
     assert (
         runner.invoke(
             app,
-            ["create-session", "--config", str(config_path), "--vm-id", "vm-12305", "--model", "gpt-5.2-codex", "issue-12305-session"],
+            [
+                "create-session",
+                "--config",
+                str(config_path),
+                "--vm-id",
+                "vm-12305",
+                "--model",
+                "gpt-5.2-codex",
+                "issue-12305-session",
+            ],
         ).exit_code
         == 0
     )
@@ -3926,12 +4168,23 @@ def test_resume_agent_observe_invokes_script_with_tail_options(tmp_path: Path, m
     assert (
         runner.invoke(
             app,
-            ["create-session", "--config", str(config_path), "--vm-id", "vm-12305", "--model", "gpt-5.2-codex", "issue-12305-session"],
+            [
+                "create-session",
+                "--config",
+                str(config_path),
+                "--vm-id",
+                "vm-12305",
+                "--model",
+                "gpt-5.2-codex",
+                "issue-12305-session",
+            ],
         ).exit_code
         == 0
     )
 
-    def fake_run(cmd: list[str], check: bool, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    def fake_run(
+        cmd: list[str], check: bool, env: dict[str, str]
+    ) -> subprocess.CompletedProcess[str]:
         nonlocal captured_cmd
         captured_cmd = cmd
         assert env["AGENT_MODEL"] == "gpt-5.2-codex"
@@ -4032,11 +4285,21 @@ def test_set_session_model_updates_manifest(tmp_path: Path) -> None:
     runner = CliRunner()
 
     assert runner.invoke(app, ["init-state", "--config", str(config_path)]).exit_code == 0
-    assert runner.invoke(app, ["create-session", "--config", str(config_path), "session-1"]).exit_code == 0
+    assert (
+        runner.invoke(app, ["create-session", "--config", str(config_path), "session-1"]).exit_code
+        == 0
+    )
 
     result = runner.invoke(
         app,
-        ["set-session-model", "--config", str(config_path), "--model", "gpt-5.3-codex", "session-1"],
+        [
+            "set-session-model",
+            "--config",
+            str(config_path),
+            "--model",
+            "gpt-5.3-codex",
+            "session-1",
+        ],
     )
 
     assert result.exit_code == 0
@@ -4050,7 +4313,17 @@ def test_set_session_model_clear_removes_override(tmp_path: Path) -> None:
 
     assert runner.invoke(app, ["init-state", "--config", str(config_path)]).exit_code == 0
     assert (
-        runner.invoke(app, ["create-session", "--config", str(config_path), "--model", "gpt-5.3-codex", "session-1"]).exit_code
+        runner.invoke(
+            app,
+            [
+                "create-session",
+                "--config",
+                str(config_path),
+                "--model",
+                "gpt-5.3-codex",
+                "session-1",
+            ],
+        ).exit_code
         == 0
     )
 
@@ -4085,7 +4358,9 @@ def test_seed_discord_channel_creates_seed_entry_and_reports_cursor(tmp_path: Pa
     assert "123456789012345678" in result.stdout
     assert "since_cursor" in result.stdout
 
-    payload = json.loads((tmp_path / "runtime" / "discord_commands.json").read_text(encoding="utf-8"))
+    payload = json.loads(
+        (tmp_path / "runtime" / "discord_commands.json").read_text(encoding="utf-8")
+    )
     assert len(payload) == 1
     seeded = next(iter(payload.values()))
     assert seeded["channel_id"] == "123456789012345678"
@@ -4099,7 +4374,9 @@ def test_status_json_reports_healthy_state(tmp_path: Path, monkeypatch) -> None:
     init_result = runner.invoke(app, ["init-state", "--config", str(config_path)])
     assert init_result.exit_code == 0
 
-    create_result = runner.invoke(app, ["create-session", "--config", str(config_path), "active-session"])
+    create_result = runner.invoke(
+        app, ["create-session", "--config", str(config_path), "active-session"]
+    )
     assert create_result.exit_code == 0
 
     sessions_path = tmp_path / "runtime" / "sessions.json"
@@ -4173,7 +4450,9 @@ def test_status_human_output_reports_degraded_state(tmp_path: Path, monkeypatch)
     assert "http_target_relay: degraded" in result.stdout
 
 
-def test_status_uses_root_vm_defaults_overlay_for_health_endpoints(tmp_path: Path, monkeypatch) -> None:
+def test_status_uses_root_vm_defaults_overlay_for_health_endpoints(
+    tmp_path: Path, monkeypatch
+) -> None:
     config_path = write_config(tmp_path, enable_directory_scoped_config=True)
     runner = CliRunner()
     checked_urls: list[tuple[str, str]] = []
@@ -4215,8 +4494,6 @@ def test_status_uses_root_vm_defaults_overlay_for_health_endpoints(tmp_path: Pat
     assert ("http_target_relay", "http://127.0.0.3:14000/healthz") in checked_urls
 
 
-
-
 def test_trigger_orchestrator_once_runs_single_cycle(tmp_path: Path, monkeypatch) -> None:
     config_path = write_config(tmp_path)
     runner = CliRunner()
@@ -4238,7 +4515,9 @@ def test_trigger_orchestrator_once_runs_single_cycle(tmp_path: Path, monkeypatch
         def run_forever(self) -> None:
             raise AssertionError("run_forever should not be called in --once mode")
 
-    monkeypatch.setattr("agent_sandbox.cli.build_trigger_orchestrator_worker", lambda cfg, **kwargs: _FakeWorker())
+    monkeypatch.setattr(
+        "agent_sandbox.cli.build_trigger_orchestrator_worker", lambda cfg, **kwargs: _FakeWorker()
+    )
 
     result = runner.invoke(
         app,
@@ -4250,6 +4529,7 @@ def test_trigger_orchestrator_once_runs_single_cycle(tmp_path: Path, monkeypatch
     assert "triggers=2" in result.output
     assert "discovered=5" in result.output
     assert "published=4" in result.output
+
 
 def test_discord_wake_once_runs_single_cycle(tmp_path: Path, monkeypatch) -> None:
     config_path = write_config(tmp_path)
@@ -4267,7 +4547,9 @@ def test_discord_wake_once_runs_single_cycle(tmp_path: Path, monkeypatch) -> Non
         def run_forever(self) -> None:
             raise AssertionError("run_forever should not be called in --once mode")
 
-    monkeypatch.setattr("agent_sandbox.cli.build_discord_wake_worker", lambda cfg, **kwargs: _FakeWorker())
+    monkeypatch.setattr(
+        "agent_sandbox.cli.build_discord_wake_worker", lambda cfg, **kwargs: _FakeWorker()
+    )
 
     result = runner.invoke(
         app,
@@ -4293,7 +4575,9 @@ def test_scheduled_wake_once_runs_single_cycle(tmp_path: Path, monkeypatch) -> N
         def run_forever(self) -> None:
             raise AssertionError("run_forever should not be called in --once mode")
 
-    monkeypatch.setattr("agent_sandbox.cli.build_scheduled_wake_worker", lambda cfg, **kwargs: _FakeWorker())
+    monkeypatch.setattr(
+        "agent_sandbox.cli.build_scheduled_wake_worker", lambda cfg, **kwargs: _FakeWorker()
+    )
 
     result = runner.invoke(
         app,
@@ -4319,7 +4603,9 @@ def test_teams_ingest_once_runs_single_cycle(tmp_path: Path, monkeypatch) -> Non
         def run_forever(self) -> None:
             raise AssertionError("run_forever should not be called in --once mode")
 
-    monkeypatch.setattr("agent_sandbox.cli._build_teams_ingest_worker", lambda cfg, **kwargs: _FakeWorker())
+    monkeypatch.setattr(
+        "agent_sandbox.cli._build_teams_ingest_worker", lambda cfg, **kwargs: _FakeWorker()
+    )
 
     result = runner.invoke(
         app,
@@ -4359,7 +4645,14 @@ def test_wake_schedules_create_and_list(tmp_path: Path) -> None:
 
     list_result = runner.invoke(
         app,
-        ["wake-schedules", "list", "--config", str(config_path), "--session-id", "issue-11-session"],
+        [
+            "wake-schedules",
+            "list",
+            "--config",
+            str(config_path),
+            "--session-id",
+            "issue-11-session",
+        ],
     )
     assert list_result.exit_code == 0
     listed_payload = json.loads(list_result.stdout)

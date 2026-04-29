@@ -6,18 +6,18 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .config import GatewayConfig, load_config
-from .directory_config import (
+from agent_sandbox.config import GatewayConfig, load_config
+from agent_sandbox.directory_config import (
     DIRECTORY_CONFIG_DOMAIN_FIELDS,
     DirectoryConfigResolver,
     DirectoryConfigStore,
     validate_effective_domain_payload,
 )
-from .directories import DirectoryService, DirectoryStore
-from .policy_config import EffectivePolicyConfig
-from .models import SessionManifest
-from .vm_defaults_config import EffectiveVmDefaultsConfig
-from .session_manifest_repository import JsonSessionManifestRepository
+from agent_sandbox.directories import DirectoryService, DirectoryStore
+from agent_sandbox.policy_config import EffectivePolicyConfig
+from agent_sandbox.models import SessionManifest
+from agent_sandbox.vm.defaults_config import EffectiveVmDefaultsConfig
+from agent_sandbox.repositories.session_manifests import JsonSessionManifestRepository
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +71,9 @@ class WorkerDirectoryContextResolver:
     def from_config_path(cls, path: str | Path) -> "WorkerDirectoryContextResolver":
         return cls(load_config(path))
 
-    def resolve_for_session(self, session_id: str | None, *, fallback_directory_path: str | None = None, source: str) -> WorkerDirectoryContext:
+    def resolve_for_session(
+        self, session_id: str | None, *, fallback_directory_path: str | None = None, source: str
+    ) -> WorkerDirectoryContext:
         directory_path = fallback_directory_path or "root"
         if session_id:
             session = self.sessions.get_session(session_id)
@@ -113,7 +115,9 @@ class WorkerDirectoryContextResolver:
                 normalized_path,
                 domain=domain,
                 base_config=base_config,
-                validator=lambda candidate, domain=domain: validate_effective_domain_payload(domain, candidate),
+                validator=lambda candidate, domain=domain: validate_effective_domain_payload(
+                    domain, candidate
+                ),
             )
             diff_paths = tuple(_diff_paths(base_config, resolution.effective_config))
             validation_errors = tuple(resolution.validation_errors)
@@ -147,7 +151,9 @@ class WorkerDirectoryContextResolver:
             normalized_path,
             domain=domain,
             base_config=_domain_default_payload(domain),
-            validator=lambda candidate, domain=domain: validate_effective_domain_payload(domain, candidate),
+            validator=lambda candidate, domain=domain: validate_effective_domain_payload(
+                domain, candidate
+            ),
         )
 
 
@@ -162,16 +168,26 @@ def _domain_default_payload(domain: str) -> dict[str, Any]:
     if domain == "heartbeat":
         return {key: payload[key] for key in sorted(DIRECTORY_CONFIG_DOMAIN_FIELDS["heartbeat"])}
     if domain == "vm":
-        return EffectiveVmDefaultsConfig().model_dump(mode="json", include={"bind_network_cidr", "gateway_url"})
+        return EffectiveVmDefaultsConfig().model_dump(
+            mode="json", include={"bind_network_cidr", "gateway_url"}
+        )
     raise ValueError(f"unsupported domain for worker shadow defaults: {domain!r}")
 
 
-def log_shadow_context(logger_obj: logging.Logger, *, prefix: str, context: WorkerDirectoryContext) -> None:
-    changed = [domain for domain in context.domains if domain.diff_paths or domain.validation_errors]
+def log_shadow_context(
+    logger_obj: logging.Logger, *, prefix: str, context: WorkerDirectoryContext
+) -> None:
+    changed = [
+        domain for domain in context.domains if domain.diff_paths or domain.validation_errors
+    ]
     if not changed:
-        logger_obj.debug("%s directory_context=%s", prefix, json.dumps(context.as_log_dict(), sort_keys=True))
+        logger_obj.debug(
+            "%s directory_context=%s", prefix, json.dumps(context.as_log_dict(), sort_keys=True)
+        )
         return
-    logger_obj.info("%s directory_context=%s", prefix, json.dumps(context.as_log_dict(), sort_keys=True))
+    logger_obj.info(
+        "%s directory_context=%s", prefix, json.dumps(context.as_log_dict(), sort_keys=True)
+    )
 
 
 def _diff_paths(base: Any, candidate: Any, path: tuple[str, ...] = ()) -> list[str]:

@@ -10,8 +10,8 @@ from typing import Any
 
 import yaml
 
-from .config import GatewayConfig
-from .directory_config import (
+from agent_sandbox.config import GatewayConfig
+from agent_sandbox.directory_config import (
     AdoWorkerDirectoryConfig,
     DIRECTORY_CONFIG_DOMAIN_FILENAMES,
     DirectoryConfigStore,
@@ -19,8 +19,8 @@ from .directory_config import (
     PrTemplateDirectoryConfig,
     get_domain_base_config,
 )
-from .directories import DirectoryStore
-from .host_config import HostConfig, save_host_config
+from agent_sandbox.directories import DirectoryStore
+from agent_sandbox.host_config import HostConfig, save_host_config
 
 
 @dataclass(frozen=True)
@@ -117,7 +117,9 @@ def migrate_local_issues_to_unified_schema(
 
     local_issues_path = config.runtime_dir / "local-issues.json"
     if not local_issues_path.exists():
-        _write_local_issue_migration_marker(marker_path, scanned_records=0, updated_records=0, imported_ado_artifacts=0)
+        _write_local_issue_migration_marker(
+            marker_path, scanned_records=0, updated_records=0, imported_ado_artifacts=0
+        )
         return LocalIssueSchemaMigrationSummary(
             version=LOCAL_ISSUE_SCHEMA_VERSION,
             already_applied=False,
@@ -174,7 +176,9 @@ def migrate_local_issues_to_unified_schema(
         updated_records += imported_ado_artifacts
 
     if normalized_records != payload:
-        local_issues_path.write_text(json.dumps(normalized_records, indent=2, sort_keys=True), encoding="utf-8")
+        local_issues_path.write_text(
+            json.dumps(normalized_records, indent=2, sort_keys=True), encoding="utf-8"
+        )
 
     counter_rewritten = _reconcile_local_issue_counter(config, records=normalized_records)
     _write_local_issue_migration_marker(
@@ -194,7 +198,9 @@ def migrate_local_issues_to_unified_schema(
     )
 
 
-def migrate_global_config_to_root(config: GatewayConfig, *, overwrite: bool = False) -> RootConfigMigrationSummary:
+def migrate_global_config_to_root(
+    config: GatewayConfig, *, overwrite: bool = False
+) -> RootConfigMigrationSummary:
     host_config = HostConfig.from_legacy_gateway_config(config)
     host_config_path = save_host_config(host_config)
     written_domains: list[str] = []
@@ -203,7 +209,9 @@ def migrate_global_config_to_root(config: GatewayConfig, *, overwrite: bool = Fa
 
     for domain in GLOBAL_DIRECTORY_CONFIG_DOMAINS:
         desired_payload = get_domain_base_config(config, domain)
-        summary = migrate_root_domain_payload(config, domain=domain, desired_payload=desired_payload, overwrite=overwrite)
+        summary = migrate_root_domain_payload(
+            config, domain=domain, desired_payload=desired_payload, overwrite=overwrite
+        )
         written_domains.extend(summary.written_domains)
         skipped_domains.extend(summary.skipped_domains)
         unchanged_domains.extend(summary.unchanged_domains)
@@ -230,21 +238,35 @@ def migrate_ado_worker_env_to_root(
         ado_area_filters=_csv_values(_merged_env_value("ADO_AREA_FILTERS", env_values)),
         ado_team_filters=_csv_values(_merged_env_value("ADO_TEAM_FILTERS", env_values)),
         ado_project_or_solution=project_or_solution,
-        ado_prewarm_target=_merged_env_value("ADO_PREWARM_TARGET", env_values) or project_or_solution,
+        ado_prewarm_target=_merged_env_value("ADO_PREWARM_TARGET", env_values)
+        or project_or_solution,
         ado_repo_source=_merged_env_value("ADO_REPO_PATH", env_values) or None,
-        ado_bootstrap_dotnet=_bool_value(_merged_env_value("ADO_BOOTSTRAP_DOTNET", env_values), default=True),
-        ado_bootstrap_nuget=_bool_value(_merged_env_value("ADO_BOOTSTRAP_NUGET", env_values), default=True),
-        ado_bootstrap_mssql=_bool_value(_merged_env_value("ADO_BOOTSTRAP_MSSQL", env_values), default=True),
+        ado_bootstrap_dotnet=_bool_value(
+            _merged_env_value("ADO_BOOTSTRAP_DOTNET", env_values), default=True
+        ),
+        ado_bootstrap_nuget=_bool_value(
+            _merged_env_value("ADO_BOOTSTRAP_NUGET", env_values), default=True
+        ),
+        ado_bootstrap_mssql=_bool_value(
+            _merged_env_value("ADO_BOOTSTRAP_MSSQL", env_values), default=True
+        ),
         ado_mssql_init_root=_merged_env_value("ADO_MSSQL_INIT_ROOT", env_values) or None,
-        ado_bootstrap_playwright=_bool_value(_merged_env_value("ADO_BOOTSTRAP_PLAYWRIGHT", env_values), default=False),
+        ado_bootstrap_playwright=_bool_value(
+            _merged_env_value("ADO_BOOTSTRAP_PLAYWRIGHT", env_values), default=False
+        ),
         ado_bootstrap_frontend_deps=_bool_value(
             _merged_env_value("ADO_BOOTSTRAP_FRONTEND_DEPS", env_values),
             default=False,
         ),
-        ado_frontend_host_checkout=_merged_env_value("ADO_FRONTEND_HOST_CHECKOUT", env_values) or None,
-        ado_frontend_install_roots=_csv_values(_merged_env_value("ADO_FRONTEND_INSTALL_ROOTS", env_values)),
+        ado_frontend_host_checkout=_merged_env_value("ADO_FRONTEND_HOST_CHECKOUT", env_values)
+        or None,
+        ado_frontend_install_roots=_csv_values(
+            _merged_env_value("ADO_FRONTEND_INSTALL_ROOTS", env_values)
+        ),
     ).model_dump(mode="json", exclude_none=True)
-    return _migrate_domain_payload_to_root(config, domain="ado_worker", payload=payload, overwrite=overwrite)
+    return _migrate_domain_payload_to_root(
+        config, domain="ado_worker", payload=payload, overwrite=overwrite
+    )
 
 
 def migrate_issue_setup_env_to_root(
@@ -257,11 +279,18 @@ def migrate_issue_setup_env_to_root(
     payload = EffectiveIssueSetupDirectoryConfig(
         git_root=_merged_env_value("AGENT_SANDBOX_GIT_ROOT", env_values) or "git-remotes",
         git_host=_merged_env_value("AGENT_SANDBOX_GIT_HOST", env_values) or "192.168.250.1",
-        git_user=_merged_env_value("AGENT_SANDBOX_GIT_USER", env_values) or os.environ.get("USER", "agent"),
-        git_ssh_alias=_merged_env_value("AGENT_SANDBOX_GIT_SSH_ALIAS", env_values) or "agent-sandbox-git-host",
+        git_user=_merged_env_value("AGENT_SANDBOX_GIT_USER", env_values)
+        or os.environ.get("USER", "agent"),
+        git_ssh_alias=_merged_env_value("AGENT_SANDBOX_GIT_SSH_ALIAS", env_values)
+        or "agent-sandbox-git-host",
         default_model=_merged_env_value("AGENT_DEFAULT_MODEL", env_values) or None,
-        post_exec_verification_prompt=_merged_env_value("AGENT_POST_EXEC_VERIFICATION_PROMPT", env_values) or None,
-        enable_guest_heartbeat=_bool_value(_merged_env_value("ENABLE_GUEST_HEARTBEAT", env_values), default=False),
+        post_exec_verification_prompt=_merged_env_value(
+            "AGENT_POST_EXEC_VERIFICATION_PROMPT", env_values
+        )
+        or None,
+        enable_guest_heartbeat=_bool_value(
+            _merged_env_value("ENABLE_GUEST_HEARTBEAT", env_values), default=False
+        ),
         guest_heartbeat_prompt=(
             _merged_env_value("GUEST_HEARTBEAT_PROMPT", env_values)
             or "Resume work for this session. Check for pending feedback first, then continue the most recent task."
@@ -271,7 +300,9 @@ def migrate_issue_setup_env_to_root(
             or "AZURE_DEVOPS_PR_PAT"
         ),
     ).model_dump(mode="json", exclude_none=True)
-    return _migrate_domain_payload_to_root(config, domain="issue_setup", payload=payload, overwrite=overwrite)
+    return _migrate_domain_payload_to_root(
+        config, domain="issue_setup", payload=payload, overwrite=overwrite
+    )
 
 
 def migrate_pr_template_to_root(
@@ -299,7 +330,9 @@ def migrate_pr_template_to_root(
     payload = PrTemplateDirectoryConfig(
         pr_template_markdown=template_file.read_text(encoding="utf-8")
     ).model_dump(mode="json", exclude_none=True)
-    return _migrate_domain_payload_to_root(config, domain="pr_template", payload=payload, overwrite=overwrite)
+    return _migrate_domain_payload_to_root(
+        config, domain="pr_template", payload=payload, overwrite=overwrite
+    )
 
 
 def migrate_root_domain_payload(
@@ -338,7 +371,9 @@ def migrate_root_domain_payload(
     return RootConfigMigrationSummary(False, [], [domain], [])
 
 
-def _read_root_domain_file_without_metadata(config_store: DirectoryConfigStore, *, domain: str) -> dict[str, Any] | None:
+def _read_root_domain_file_without_metadata(
+    config_store: DirectoryConfigStore, *, domain: str
+) -> dict[str, Any] | None:
     path = config_store.root_path / "root" / DIRECTORY_CONFIG_DOMAIN_FILENAMES[domain]
     if not path.exists():
         return None
@@ -476,10 +511,14 @@ def _infer_remote_reference(
 def _infer_proxy_cache(record: dict[str, Any], yaml_payload: dict[str, Any]) -> dict[str, Any]:
     proxy_cache: dict[str, Any] = {}
     title = str(yaml_payload.get("title") or record.get("title") or "").strip()
-    description = str(yaml_payload.get("description") or yaml_payload.get("body") or record.get("body") or "").strip()
+    description = str(
+        yaml_payload.get("description") or yaml_payload.get("body") or record.get("body") or ""
+    ).strip()
     state = str(yaml_payload.get("state") or "").strip()
     url = str(yaml_payload.get("url") or "").strip()
-    updated_at = str(yaml_payload.get("updated_date") or yaml_payload.get("changed_date") or "").strip()
+    updated_at = str(
+        yaml_payload.get("updated_date") or yaml_payload.get("changed_date") or ""
+    ).strip()
     comments = yaml_payload.get("comments")
 
     if title:
@@ -497,7 +536,9 @@ def _infer_proxy_cache(record: dict[str, Any], yaml_payload: dict[str, Any]) -> 
     return proxy_cache
 
 
-def _import_recent_ado_yaml_into_proxy_records(runtime_dir: Path, *, records: dict[str, Any], limit: int) -> int:
+def _import_recent_ado_yaml_into_proxy_records(
+    runtime_dir: Path, *, records: dict[str, Any], limit: int
+) -> int:
     ado_dir = runtime_dir / "ado-work-items"
     if not ado_dir.exists():
         return 0
@@ -522,7 +563,9 @@ def _import_recent_ado_yaml_into_proxy_records(runtime_dir: Path, *, records: di
         payload = _load_yaml_payload(str(yaml_path))
         if not payload:
             continue
-        issue_id = str(payload.get("issue_number") or "").strip() or _extract_ado_work_item_id(yaml_path.name)
+        issue_id = str(payload.get("issue_number") or "").strip() or _extract_ado_work_item_id(
+            yaml_path.name
+        )
         if not issue_id:
             continue
         target = by_issue_number.get(issue_id) or by_remote_issue_id.get(issue_id)
@@ -530,14 +573,23 @@ def _import_recent_ado_yaml_into_proxy_records(runtime_dir: Path, *, records: di
             continue
         before = json.dumps(target, sort_keys=True, default=str)
         normalized_target = _normalize_local_issue_record(target)
-        metadata = dict(normalized_target.get("metadata") if isinstance(normalized_target.get("metadata"), dict) else {})
+        metadata = dict(
+            normalized_target.get("metadata")
+            if isinstance(normalized_target.get("metadata"), dict)
+            else {}
+        )
         metadata["remote"] = {
             **(metadata.get("remote") if isinstance(metadata.get("remote"), dict) else {}),
-            **(_infer_remote_reference(issue_id, metadata, payload) or {"provider": "azure_devops", "issue_id": issue_id}),
+            **(
+                _infer_remote_reference(issue_id, metadata, payload)
+                or {"provider": "azure_devops", "issue_id": issue_id}
+            ),
         }
         if normalized_target.get("source") in {"", "local_gui", "local"}:
             normalized_target["source"] = "proxy_azure_devops"
-        proxy_cache = dict(metadata.get("proxy_cache") if isinstance(metadata.get("proxy_cache"), dict) else {})
+        proxy_cache = dict(
+            metadata.get("proxy_cache") if isinstance(metadata.get("proxy_cache"), dict) else {}
+        )
         proxy_cache.update(_infer_proxy_cache(normalized_target, payload))
         metadata["proxy_cache"] = proxy_cache
         normalized_target["metadata"] = metadata

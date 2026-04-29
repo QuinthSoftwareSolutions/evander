@@ -27,13 +27,13 @@ manager environment or optional repo-root `secrets.env`.
 
 | Parameter | Found in | Consumed by |
 |---|---|---|
-| `OPENAI_API_KEY` | `config/openai-relay.env.example` | `src/agent_sandbox/openai_relay.py` (looked up using config key `openai_api_key_env`, defaulting to `OPENAI_API_KEY`). |
+| `OPENAI_API_KEY` | `config/openai-relay.env.example` | `src/agent_sandbox/relays/openai.py` (looked up using config key `openai_api_key_env`, defaulting to `OPENAI_API_KEY`). |
 
 ## `config/nuget-relay.env.example`
 
 | Parameter | Found in | Consumed by |
 |---|---|---|
-| `AZURE_ARTIFACTS_PAT` | `config/nuget-relay.env.example` | `src/agent_sandbox/nuget_relay.py` (looked up via config key `nuget_azure_pat_env`, defaulting to `AZURE_ARTIFACTS_PAT`). |
+| `AZURE_ARTIFACTS_PAT` | `config/nuget-relay.env.example` | `src/agent_sandbox/relays/nuget.py` (looked up via config key `nuget_azure_pat_env`, defaulting to `AZURE_ARTIFACTS_PAT`). |
 
 ## `config/firewall.env.example`
 
@@ -45,7 +45,7 @@ manager environment or optional repo-root `secrets.env`.
 
 | Parameter | Found in | Consumed by |
 |---|---|---|
-| `ADO_WORK_ITEMS_AZURE_DEVOPS_PAT` | `config/ado-worker.env.example` | `src/agent_sandbox/ado_issue_worker.py` using `ado_work_items_azure_devops_pat_env` from `config/ado-worker/config.json`. |
+| `ADO_WORK_ITEMS_AZURE_DEVOPS_PAT` | `config/ado-worker.env.example` | `src/agent_sandbox/daemons/ado_issue_worker.py` using `ado_work_items_azure_devops_pat_env` from `config/ado-worker/config.json`. |
 
 ## `config/ado-worker/config.json`
 
@@ -54,22 +54,22 @@ file directly for the `ado` worker.
 
 | Parameter | Found in | Consumed by |
 |---|---|---|
-| `runtime_dir` | `config/ado-worker/config.json` | `src/agent_sandbox/ado_issue_worker.py` and runtime path defaults. |
-| `poll_interval_seconds` | `config/ado-worker/config.json` | `src/agent_sandbox/ado_issue_worker.py`. |
-| `directories` | `config/ado-worker/config.json` | `src/agent_sandbox/ado_issue_worker.py` (canonical directories to poll once per cycle; empty list means process nothing). |
-| `yaml_output_dir` | `config/ado-worker/config.json` | `src/agent_sandbox/ado_issue_worker.py`. |
-| `setup_log_dir` | `config/ado-worker/config.json` | `src/agent_sandbox/ado_issue_worker.py`. |
-| `processed_store_path` | `config/ado-worker/config.json` | `src/agent_sandbox/ado_issue_worker.py`. |
-| `setup_script_path` | `config/ado-worker/config.json` | `src/agent_sandbox/ado_issue_worker.py`. |
-| `ado_work_items_azure_devops_pat_env` | `config/ado-worker/config.json` | `src/agent_sandbox/ado_issue_worker.py` (name of the host env var that holds the ADO work-item PAT). |
-| `setup_timeout_seconds` | `config/ado-worker/config.json` | `src/agent_sandbox/ado_issue_worker.py`. |
-| `setup_concurrency_limit` | `config/ado-worker/config.json` | `src/agent_sandbox/ado_issue_worker.py`. |
-| `setup_lock_path` | `config/ado-worker/config.json` | `src/agent_sandbox/ado_issue_worker.py`. |
-| `fetch_retry_count` | `config/ado-worker/config.json` | `src/agent_sandbox/ado_issue_worker.py`. |
-| `fetch_retry_backoff_seconds` | `config/ado-worker/config.json` | `src/agent_sandbox/ado_issue_worker.py`. |
-| `include_comments` | `config/ado-worker/config.json` | `src/agent_sandbox/ado_issue_worker.py`. |
-| `comments_max_count` | `config/ado-worker/config.json` | `src/agent_sandbox/ado_issue_worker.py`. |
-| `comment_text_max_chars` | `config/ado-worker/config.json` | `src/agent_sandbox/ado_issue_worker.py`. |
+| `runtime_dir` | `config/ado-worker/config.json` | `src/agent_sandbox/daemons/ado_issue_worker.py` and runtime path defaults. |
+| `poll_interval_seconds` | `config/ado-worker/config.json` | `src/agent_sandbox/daemons/ado_issue_worker.py`. |
+| `directories` | `config/ado-worker/config.json` | `src/agent_sandbox/daemons/ado_issue_worker.py` (canonical directories to poll once per cycle; empty list means process nothing). |
+| `yaml_output_dir` | `config/ado-worker/config.json` | `src/agent_sandbox/daemons/ado_issue_worker.py`. |
+| `setup_log_dir` | `config/ado-worker/config.json` | `src/agent_sandbox/daemons/ado_issue_worker.py`. |
+| `processed_store_path` | `config/ado-worker/config.json` | `src/agent_sandbox/daemons/ado_issue_worker.py`. |
+| `setup_script_path` | `config/ado-worker/config.json` | `src/agent_sandbox/daemons/ado_issue_worker.py`. |
+| `ado_work_items_azure_devops_pat_env` | `config/ado-worker/config.json` | `src/agent_sandbox/daemons/ado_issue_worker.py` (name of the host env var that holds the ADO work-item PAT). |
+| `setup_timeout_seconds` | `config/ado-worker/config.json` | `src/agent_sandbox/daemons/ado_issue_worker.py`. |
+| `setup_concurrency_limit` | `config/ado-worker/config.json` | `src/agent_sandbox/daemons/ado_issue_worker.py`. |
+| `setup_lock_path` | `config/ado-worker/config.json` | `src/agent_sandbox/daemons/ado_issue_worker.py`. |
+| `fetch_retry_count` | `config/ado-worker/config.json` | `src/agent_sandbox/daemons/ado_issue_worker.py`. |
+| `fetch_retry_backoff_seconds` | `config/ado-worker/config.json` | `src/agent_sandbox/daemons/ado_issue_worker.py`. |
+| `include_comments` | `config/ado-worker/config.json` | `src/agent_sandbox/daemons/ado_issue_worker.py`. |
+| `comments_max_count` | `config/ado-worker/config.json` | `src/agent_sandbox/daemons/ado_issue_worker.py`. |
+| `comment_text_max_chars` | `config/ado-worker/config.json` | `src/agent_sandbox/daemons/ado_issue_worker.py`. |
 
 `ADO_*` environment variables still work as compatibility fallbacks for one release, but the new
 persisted source of truth is `config/ado-worker/config.json`. Secret values such as
@@ -497,7 +497,7 @@ In the root-only model, this file is an import source for seeding `runtime/direc
 | `audit_log_path` | legacy gateway YAML | `src/agent_sandbox/runtime.py` audit logger destination. |
 | `session_store_path`, `approval_store_path`, `draft_store_path`, `email_store_path`, `email_cursor_store_path`, `discord_command_store_path` | legacy gateway YAML | `src/agent_sandbox/runtime.py` persistent JSON stores. |
 | `directories_store_path` | legacy gateway YAML | `src/agent_sandbox/runtime.py`, `src/agent_sandbox/directories.py`, directory admin/config services. |
-| `enable_directory_scoped_config` | legacy gateway YAML | `src/agent_sandbox/directory_admin.py`, `src/agent_sandbox/admin_app.py`, `src/agent_sandbox/ado_issue_worker.py`, and `src/agent_sandbox/pr_feedback_worker.py` (transition flag for directory edit surfaces and worker shadow resolution). |
+| `enable_directory_scoped_config` | legacy gateway YAML | `src/agent_sandbox/admin/directory.py`, `src/agent_sandbox/admin/app.py`, `src/agent_sandbox/daemons/ado_issue_worker.py`, and `src/agent_sandbox/daemons/pr_feedback_worker.py` (transition flag for directory edit surfaces and worker shadow resolution). |
 | `approval_ttl_seconds` | legacy gateway YAML | `src/agent_sandbox/policy.py` approval expiry computation. |
 | `default_session_ttl_seconds` | legacy gateway YAML | `src/agent_sandbox/cli.py` session creation defaults. |
 | `bind_network_cidr` | legacy gateway YAML | `src/agent_sandbox/config.py` validation/normalization (policy-bound network constraints). |
@@ -508,17 +508,17 @@ In the root-only model, this file is an import source for seeding `runtime/direc
 
 | Key | Found in | Consumed by |
 |---|---|---|
-| `openai_relay_host`, `openai_relay_port` | legacy gateway YAML | `src/agent_sandbox/openai_relay.py` listener bind. |
-| `openai_api_base_url` | legacy gateway YAML | `src/agent_sandbox/openai_relay.py` upstream URL base. |
-| `openai_api_key_env` | legacy gateway YAML | `src/agent_sandbox/openai_relay.py` env-var name lookup for API key. |
-| `openai_relay_timeout_seconds` | legacy gateway YAML | `src/agent_sandbox/openai_relay.py` upstream request timeout. |
+| `openai_relay_host`, `openai_relay_port` | legacy gateway YAML | `src/agent_sandbox/relays/openai.py` listener bind. |
+| `openai_api_base_url` | legacy gateway YAML | `src/agent_sandbox/relays/openai.py` upstream URL base. |
+| `openai_api_key_env` | legacy gateway YAML | `src/agent_sandbox/relays/openai.py` env-var name lookup for API key. |
+| `openai_relay_timeout_seconds` | legacy gateway YAML | `src/agent_sandbox/relays/openai.py` upstream request timeout. |
 
 ### HTTP target relay keys
 
 | Key | Found in | Consumed by |
 |---|---|---|
-| `http_target_relay_host`, `http_target_relay_port` | root `host-config.json`, provider config overlays | `src/agent_sandbox/http_target_relay.py` listener bind and `src/agent_sandbox/cli.py` status checks. |
-| `http_target_relay_timeout_seconds` | provider config overlays | `src/agent_sandbox/http_target_relay.py` upstream request timeout. |
+| `http_target_relay_host`, `http_target_relay_port` | root `host-config.json`, provider config overlays | `src/agent_sandbox/relays/http_target.py` listener bind and `src/agent_sandbox/cli.py` status checks. |
+| `http_target_relay_timeout_seconds` | provider config overlays | `src/agent_sandbox/relays/http_target.py` upstream request timeout. |
 
 The current HTTP target relay is auth-transparent: it allowlists the upstream destination by
 session and per-target alias, but it forwards guest `Authorization` headers and cookies instead of
@@ -530,11 +530,11 @@ environment.
 
 | Key | Found in | Consumed by |
 |---|---|---|
-| `nuget_relay_host`, `nuget_relay_port` | legacy gateway YAML | `src/agent_sandbox/nuget_relay.py` listener bind. |
-| `nuget_public_feed_base_url` | legacy gateway YAML | `src/agent_sandbox/nuget_relay.py` public feed proxy target. |
-| `nuget_azure_feed_base_url` | legacy gateway YAML | `src/agent_sandbox/nuget_relay.py` Azure feed proxy target. |
-| `nuget_azure_pat_env` | legacy gateway YAML | `src/agent_sandbox/nuget_relay.py` env-var name lookup for Azure Artifacts PAT. |
-| `nuget_relay_timeout_seconds` | legacy gateway YAML | `src/agent_sandbox/nuget_relay.py` upstream timeout. |
+| `nuget_relay_host`, `nuget_relay_port` | legacy gateway YAML | `src/agent_sandbox/relays/nuget.py` listener bind. |
+| `nuget_public_feed_base_url` | legacy gateway YAML | `src/agent_sandbox/relays/nuget.py` public feed proxy target. |
+| `nuget_azure_feed_base_url` | legacy gateway YAML | `src/agent_sandbox/relays/nuget.py` Azure feed proxy target. |
+| `nuget_azure_pat_env` | legacy gateway YAML | `src/agent_sandbox/relays/nuget.py` env-var name lookup for Azure Artifacts PAT. |
+| `nuget_relay_timeout_seconds` | legacy gateway YAML | `src/agent_sandbox/relays/nuget.py` upstream timeout. |
 
 ### Discord keys
 
@@ -576,13 +576,13 @@ environment.
 | Key | Found in | Consumed by |
 |---|---|---|
 | `pr_reply_require_approval` | legacy gateway YAML | `src/agent_sandbox/gateway.py` PR-reply approval gate. |
-| `github_token_env` | legacy gateway YAML | `src/agent_sandbox/runtime.py`, `src/agent_sandbox/review_request_service.py`, and PR feedback trigger providers. |
-| `azure_devops_pr_pat_env` | legacy gateway YAML | `src/agent_sandbox/runtime.py`, `src/agent_sandbox/ado_issue_worker.py`, `src/agent_sandbox/review_request_service.py`, and PR feedback trigger providers. |
-| `azure_devops_organization_url` | legacy gateway YAML | `src/agent_sandbox/runtime.py`, `src/agent_sandbox/ado_issue_worker.py`, `src/agent_sandbox/issue_service.py`, and PR feedback trigger providers. |
-| `azure_devops_project` | legacy gateway YAML | `src/agent_sandbox/runtime.py`, `src/agent_sandbox/ado_issue_worker.py`, `src/agent_sandbox/issue_service.py`, and PR feedback trigger providers. |
+| `github_token_env` | legacy gateway YAML | `src/agent_sandbox/runtime.py`, `src/agent_sandbox/reviews/request_service.py`, and PR feedback trigger providers. |
+| `azure_devops_pr_pat_env` | legacy gateway YAML | `src/agent_sandbox/runtime.py`, `src/agent_sandbox/daemons/ado_issue_worker.py`, `src/agent_sandbox/reviews/request_service.py`, and PR feedback trigger providers. |
+| `azure_devops_organization_url` | legacy gateway YAML | `src/agent_sandbox/runtime.py`, `src/agent_sandbox/daemons/ado_issue_worker.py`, `src/agent_sandbox/issues/service.py`, and PR feedback trigger providers. |
+| `azure_devops_project` | legacy gateway YAML | `src/agent_sandbox/runtime.py`, `src/agent_sandbox/daemons/ado_issue_worker.py`, `src/agent_sandbox/issues/service.py`, and PR feedback trigger providers. |
 | `host_heartbeat_pr_resume_prompt` | legacy gateway YAML | Legacy prompt key retained for directory-config compatibility; the `agent-sandbox-host-heartbeat.service` consumer is retired. |
-| `discord_resume_prompt` | legacy gateway YAML | `src/agent_sandbox/discord_wake_worker.py`. |
-| `pr_map_path` | legacy gateway YAML | `src/agent_sandbox/ado_issue_worker.py`, PR feedback trigger providers, ownership cleanup, and admin/session pruning. |
+| `discord_resume_prompt` | legacy gateway YAML | `src/agent_sandbox/messaging/discord_wake.py`. |
+| `pr_map_path` | legacy gateway YAML | `src/agent_sandbox/daemons/ado_issue_worker.py`, PR feedback trigger providers, ownership cleanup, and admin/session pruning. |
 
 ## 4) Cloud-init template placeholders (`config/cloud-init-user-data.yaml`)
 
@@ -610,7 +610,7 @@ Storage paths:
 
 | Path | Source of truth | Used by |
 |---|---|---|
-| `runtime/directories.json` (or `directories_store_path`) | Directory tree metadata, canonical ownership, configured domains | `src/agent_sandbox/directories.py`, `src/agent_sandbox/directory_admin.py`, `src/agent_sandbox/ownership.py` |
+| `runtime/directories.json` (or `directories_store_path`) | Directory tree metadata, canonical ownership, configured domains | `src/agent_sandbox/directories.py`, `src/agent_sandbox/admin/directory.py`, `src/agent_sandbox/ownership.py` |
 | `runtime/directory-config/root/.../<domain>.json` | Raw per-domain overlay payloads for directories listed in `directories.json` metadata | `src/agent_sandbox/directory_config.py` |
 
 Supported directory config domains:
