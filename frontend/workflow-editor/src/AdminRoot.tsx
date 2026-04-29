@@ -1331,9 +1331,9 @@ export default function AdminRoot() {
                   <img
                     className="admin-shell-logo"
                     src={theme === "dark" ? logoDark : logoLight}
-                    alt="Castor Control Plane logo"
+                    alt="Truman Control Plane logo"
                   />
-                  <h1>Castor Control Plane</h1>
+                  <h1>Truman Control Plane</h1>
                 </div>
                 <p>{activeTab.description}</p>
               </div>
