@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -122,6 +123,120 @@ def test_session_directories_are_created_and_reused_without_replacing_codex(tmp_
     assert paths.artifacts.is_dir()
     assert paths.logs.is_dir()
     assert json.loads(paths.metadata_path.read_text(encoding="utf-8"))["session_id"] == "session-1"
+
+
+def test_session_prepare_and_file_write_surface_targets_durable_paths(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+
+    prepared = client.post(
+        "/v1/sessions",
+        headers=_auth(),
+        json={"session_id": "session-1", "metadata": {"purpose": "test"}},
+    )
+    assert prepared.status_code == 201
+    assert prepared.json()["workspace_container_path"] == "/workspace"
+    assert prepared.json()["agent_home_container_path"] == "/home/agent"
+
+    written = client.post(
+        "/v1/sessions/session-1/files",
+        headers=_auth(),
+        json={
+            "files": [
+                {"destination_path": "/workspace/AGENT_TASK.yaml", "content": "task: test\n"},
+                {"destination_path": "/home/agent/AGENTS.md", "content": "# Agent\n"},
+            ]
+        },
+    )
+
+    assert written.status_code == 200
+    assert written.json()["copied_paths"] == [
+        "/workspace/AGENT_TASK.yaml",
+        "/home/agent/AGENTS.md",
+    ]
+    root = tmp_path / "worker-root" / "sessions" / "session-1"
+    assert (root / "workspace" / "AGENT_TASK.yaml").read_text(encoding="utf-8") == "task: test\n"
+    assert (root / "agent_home" / "AGENTS.md").read_text(encoding="utf-8") == "# Agent\n"
+
+
+def test_session_file_write_rejects_paths_outside_worker_session_roots(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+
+    response = client.post(
+        "/v1/sessions/session-1/files",
+        headers=_auth(),
+        json={"files": [{"destination_path": "/tmp/escape.txt", "content": "bad"}]},
+    )
+
+    assert response.status_code == 400
+    assert "/workspace or /home/agent" in response.json()["error"]
+
+
+def test_session_file_write_rejects_symlink_escape_from_worker_roots(
+    tmp_path: Path,
+) -> None:
+    client = _client(tmp_path)
+    prepared = client.post(
+        "/v1/sessions",
+        headers=_auth(),
+        json={"session_id": "session-1"},
+    )
+    assert prepared.status_code == 201
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    workspace = tmp_path / "worker-root" / "sessions" / "session-1" / "workspace"
+    (workspace / "link").symlink_to(outside, target_is_directory=True)
+
+    response = client.post(
+        "/v1/sessions/session-1/files",
+        headers=_auth(),
+        json={
+            "files": [
+                {
+                    "destination_path": "/workspace/link/escape.txt",
+                    "content": "bad",
+                }
+            ]
+        },
+    )
+
+    assert response.status_code == 400
+    assert "must stay below /workspace" in response.json()["error"]
+    assert not (outside / "escape.txt").exists()
+
+
+def test_session_repo_clone_clones_only_when_workspace_is_empty(tmp_path: Path) -> None:
+    source = tmp_path / "source-repo"
+    source.mkdir()
+    subprocess.run(["git", "init"], cwd=source, check=True, capture_output=True, text=True)
+    (source / "README.md").write_text("hello\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=source, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-c", "user.email=test@example.invalid", "-c", "user.name=Test", "commit", "-m", "init"],
+        cwd=source,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    client = _client(tmp_path)
+
+    first = client.post(
+        "/v1/sessions/session-1/repo",
+        headers=_auth(),
+        json={"repo_source": str(source)},
+    )
+    second = client.post(
+        "/v1/sessions/session-1/repo",
+        headers=_auth(),
+        json={"repo_source": str(source)},
+    )
+
+    assert first.status_code == 200
+    assert first.json()["cloned"] is True
+    assert first.json()["target_dir"] == "/workspace"
+    assert second.status_code == 200
+    assert second.json()["cloned"] is False
+    workspace = tmp_path / "worker-root" / "sessions" / "session-1" / "workspace"
+    assert (workspace / "README.md").read_text(encoding="utf-8") == "hello\n"
 
 
 def test_container_mount_paths_are_persisted_for_workspace_and_agent_home(tmp_path: Path) -> None:

@@ -9,7 +9,13 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse, Response
 from starlette.routing import Route
 
-from .models import DEFAULT_WORKER_ROOT, WorkerJobRequest
+from .models import (
+    DEFAULT_WORKER_ROOT,
+    WorkerFileWriteRequest,
+    WorkerJobRequest,
+    WorkerRepoCloneRequest,
+    WorkerSessionPrepareRequest,
+)
 from .runtime import ContainerRuntime
 from .sandbox_profile import WorkerSandboxProfile
 from .security import list_relative_files, safe_subprocess_error
@@ -46,6 +52,35 @@ def build_worker_app(daemon: WorkerDaemon) -> Starlette:
         except subprocess.CalledProcessError as exc:
             return JSONResponse({"error": safe_subprocess_error(exc)}, status_code=502)
         return JSONResponse(record.model_dump(mode="json"), status_code=201)
+
+    async def prepare_session(request: Request) -> JSONResponse:
+        try:
+            payload = await request.json()
+            session_request = WorkerSessionPrepareRequest.model_validate(payload)
+            record = daemon.prepare_session(session_request)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        return JSONResponse(record.model_dump(mode="json"), status_code=201)
+
+    async def clone_session_repo(request: Request) -> JSONResponse:
+        try:
+            payload = await request.json()
+            clone_request = WorkerRepoCloneRequest.model_validate(payload)
+            record = daemon.clone_repo(request.path_params["session_id"], clone_request)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        except subprocess.CalledProcessError as exc:
+            return JSONResponse({"error": safe_subprocess_error(exc)}, status_code=502)
+        return JSONResponse(record.model_dump(mode="json"))
+
+    async def write_session_files(request: Request) -> JSONResponse:
+        try:
+            payload = await request.json()
+            write_request = WorkerFileWriteRequest.model_validate(payload)
+            record = daemon.write_files(request.path_params["session_id"], write_request)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        return JSONResponse(record.model_dump(mode="json"))
 
     async def get_job(request: Request) -> JSONResponse:
         record = daemon.store.get(request.path_params["job_id"])
@@ -91,6 +126,9 @@ def build_worker_app(daemon: WorkerDaemon) -> Starlette:
         debug=False,
         routes=[
             Route("/healthz", health, methods=["GET"]),
+            Route("/v1/sessions", prepare_session, methods=["POST"]),
+            Route("/v1/sessions/{session_id}/repo", clone_session_repo, methods=["POST"]),
+            Route("/v1/sessions/{session_id}/files", write_session_files, methods=["POST"]),
             Route("/v1/jobs", create_job, methods=["POST"]),
             Route("/v1/jobs/{job_id}", get_job, methods=["GET"]),
             Route("/v1/jobs/{job_id}/stop", stop_job, methods=["POST"]),

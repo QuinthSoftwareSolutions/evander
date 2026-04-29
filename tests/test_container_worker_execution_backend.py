@@ -9,7 +9,16 @@ from agent_sandbox.config import GatewayConfig
 from agent_sandbox.execution import ExecutionSpec, ExecutionStatusKind
 from agent_sandbox.execution.container_worker_backend import ContainerWorkerVmExecutionBackend
 from agent_sandbox.execution.container_worker_repository import ContainerWorkerExecutionRepository
-from agent_sandbox.worker.models import WorkerJobRecord, WorkerJobRequest
+from agent_sandbox.worker.models import (
+    WorkerFileWriteRecord,
+    WorkerFileWriteRequest,
+    WorkerJobRecord,
+    WorkerJobRequest,
+    WorkerRepoCloneRecord,
+    WorkerRepoCloneRequest,
+    WorkerSessionPrepareRequest,
+    WorkerSessionRecord,
+)
 
 
 class FakeContainerWorkerClient:
@@ -21,6 +30,9 @@ class FakeContainerWorkerClient:
         self.stopped: list[str] = []
         self.deleted: list[str] = []
         self.logged: list[str] = []
+        self.prepared_sessions: list[WorkerSessionPrepareRequest] = []
+        self.cloned_repos: list[tuple[str, WorkerRepoCloneRequest]] = []
+        self.written_files: list[tuple[str, WorkerFileWriteRequest]] = []
         self.status_by_job: dict[str, str] = {}
 
     def create(self, request: WorkerJobRequest) -> WorkerJobRecord:
@@ -52,6 +64,41 @@ class FakeContainerWorkerClient:
     def logs(self, job_id: str) -> str:
         self.logged.append(job_id)
         return "one\ntwo\nthree\n"
+
+    def prepare_session(self, request: WorkerSessionPrepareRequest) -> WorkerSessionRecord:
+        self.prepared_sessions.append(request)
+        return WorkerSessionRecord(
+            session_id=request.session_id,
+            root_path=f"/worker/{request.session_id}",
+            workspace_path=f"/worker/{request.session_id}/workspace",
+            agent_home_path=f"/worker/{request.session_id}/agent_home",
+            artifacts_path=f"/worker/{request.session_id}/artifacts",
+            logs_path=f"/worker/{request.session_id}/logs",
+            metadata_path=f"/worker/{request.session_id}/metadata.json",
+            metadata=request.metadata,
+        )
+
+    def clone_repo(
+        self, session_id: str, request: WorkerRepoCloneRequest
+    ) -> WorkerRepoCloneRecord:
+        self.cloned_repos.append((session_id, request))
+        return WorkerRepoCloneRecord(
+            session_id=session_id,
+            target_dir="/workspace",
+            guest_repo_name="repo",
+            remote_url=request.repo_source,
+            cloned=True,
+        )
+
+    def write_files(
+        self, session_id: str, request: WorkerFileWriteRequest
+    ) -> WorkerFileWriteRecord:
+        self.written_files.append((session_id, request))
+        return WorkerFileWriteRecord(
+            session_id=session_id,
+            copied_count=len(request.files),
+            copied_paths=[entry.destination_path for entry in request.files],
+        )
 
 
 def _record(request: WorkerJobRequest, status: str) -> WorkerJobRecord:
@@ -214,6 +261,25 @@ def test_stop_destroy_and_logs_call_expected_endpoints(tmp_path: Path) -> None:
     assert client.stopped == ["exec-1"]
     assert client.logged == ["exec-1"]
     assert client.deleted == ["exec-1"]
+
+
+def test_session_preparation_clone_and_write_delegate_to_worker_client(tmp_path: Path) -> None:
+    client = FakeContainerWorkerClient()
+    backend = _backend(tmp_path, client)
+
+    prepared = backend.prepare_session(session_id="session-1", metadata={"purpose": "test"})
+    clone = backend.clone_repo(session_id="session-1", repo_source="/tmp/repo")
+    written = backend.write_files(
+        session_id="session-1",
+        files=[{"destination_path": "/workspace/AGENT_TASK.yaml", "content": "task"}],
+    )
+
+    assert prepared.workspace_container_path == "/workspace"
+    assert client.prepared_sessions[0].metadata == {"purpose": "test"}
+    assert clone.target_dir == "/workspace"
+    assert client.cloned_repos[0][1].repo_source == "/tmp/repo"
+    assert written.copied_paths == ["/workspace/AGENT_TASK.yaml"]
+    assert client.written_files[0][1].files[0].content == "task"
 
 
 def test_ambiguous_session_id_resolution_raises_clear_error(tmp_path: Path) -> None:

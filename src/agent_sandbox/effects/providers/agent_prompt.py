@@ -1,18 +1,35 @@
 from __future__ import annotations
 
+import re
+import shlex
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
+from agent_sandbox.config import GatewayConfig
+from agent_sandbox.execution import (
+    ExecutionBackendKind,
+    ExecutionSpec,
+    ExecutionStatusKind,
+    build_execution_backend,
+)
 from agent_sandbox.events.models import NODE_OUTPUTS_CONTEXT_KEY
 from agent_sandbox.events.provider_models import AgentPromptEffectDefinition
 from agent_sandbox.triggers.queue import TriggerQueueRecord
 from agent_sandbox.orchestration.effect_extensions import list_vm_summaries_for_agent_reconciliation
 
+from .agent_session import (
+    container_backend,
+    effective_config_for_session,
+    require_container_session_id,
+    safe_effect_execution_id,
+    selected_execution_backend_for_target,
+)
 from .base import EffectProviderBase
 
 _AWAIT_AGENT_STALE_GRACE_SECONDS = 120
+_CONTAINER_THREAD_ID_LOG_PATTERN = re.compile(r"^session id:\s*(?P<thread_id>\S+)\s*$", re.M)
 _BRANCH_PORT_PAYLOAD_KEY = "__branch_port"
 _FOR_EXECUTION_IDS_PAYLOAD_KEY = "__for_execution_ids"
 
@@ -21,8 +38,6 @@ class AgentPromptEffectProvider(EffectProviderBase):
     def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
         effect = self._effect()
         context = self._context()
-        if context.agent_resumer is None:
-            raise RuntimeError("effect:agent:prompt agent_resumer is not available")
 
         payload = {
             "target": effect.target,
@@ -47,6 +62,22 @@ class AgentPromptEffectProvider(EffectProviderBase):
 
         dispatch_id = self._make_dispatch_id(effect_id=effect.id)
         resume_thread_id = self._normalize_optional_string(payload.get("resume_thread_id"))
+
+        execution_backend, config = self._resolve_execution_backend(payload, target=target)
+        if execution_backend == ExecutionBackendKind.CONTAINER_WORKER_VM.value:
+            return self._execute_container_prompt(
+                payload=payload,
+                prompt=prompt,
+                model=model,
+                dispatch_id=dispatch_id,
+                resume_thread_id=resume_thread_id,
+                config=config,
+            )
+        if execution_backend != ExecutionBackendKind.LIBVIRT_VM.value:
+            raise ValueError(f"Unsupported execution_backend: {execution_backend}")
+
+        if context.agent_resumer is None:
+            raise RuntimeError("effect:agent:prompt agent_resumer is not available")
         result = context.agent_resumer.resume_agent(
             target=target,
             prompt=prompt,
@@ -74,6 +105,61 @@ class AgentPromptEffectProvider(EffectProviderBase):
             "thread_id": thread_id,
             "success": bool(result.success),
             "output_mode": output_mode,
+        }
+
+    def _execute_container_prompt(
+        self,
+        *,
+        payload: dict[str, Any],
+        prompt: str,
+        model: str | None,
+        dispatch_id: str,
+        resume_thread_id: str | None,
+        config: GatewayConfig,
+    ) -> dict[str, Any]:
+        context = self._context()
+        session_id, session = require_container_session_id(
+            context,
+            payload,
+            effect_type="effect:agent:prompt",
+            config=config,
+        )
+        effective_config = effective_config_for_session(
+            context,
+            session_id,
+            fallback_directory_path=session.directory_path if session is not None else None,
+        )
+        resolved_model = model or getattr(session, "model", None) or "gpt-5.4"
+        backend = container_backend(context, effective_config)
+        execution_id = safe_effect_execution_id("agent", session_id)
+        command = self._container_prompt_command(
+            prompt=prompt,
+            model=resolved_model,
+            resume_thread_id=resume_thread_id,
+        )
+        handle = backend.start(
+            backend.prepare(
+                ExecutionSpec(
+                    backend=ExecutionBackendKind.CONTAINER_WORKER_VM,
+                    target_name=execution_id,
+                    session_id=session_id,
+                    directory_path=session.directory_path if session is not None else "root",
+                    command=command,
+                    metadata={
+                        "effect_type": self.node_type(),
+                        "dispatch_id": dispatch_id,
+                    },
+                )
+            )
+        )
+        return {
+            "dispatch_id": dispatch_id,
+            "thread_id": resume_thread_id or dispatch_id,
+            "success": True,
+            "output_mode": "on_completion",
+            "execution_backend": ExecutionBackendKind.CONTAINER_WORKER_VM.value,
+            "execution_id": handle.execution_id,
+            "session_id": session_id,
         }
 
     @classmethod
@@ -122,13 +208,20 @@ class AgentPromptEffectProvider(EffectProviderBase):
         if not waiting_records:
             return 0
 
+        completed = 0
+        vm_records: list[Any] = []
+        for record in waiting_records:
+            if cls._is_container_waiting_record(record):
+                completed += cls._reconcile_container_waiting_record(worker=worker, record=record)
+                continue
+            vm_records.append(record)
+        if not vm_records:
+            return completed
         try:
             summaries = list_vm_summaries_for_agent_reconciliation(worker)
         except Exception:
-            return 0
-
-        completed = 0
-        for record in waiting_records:
+            return completed
+        for record in vm_records:
             queue_record = cls._build_completion_queue_record_for_waiting_record(
                 record=record, summaries=summaries
             )
@@ -137,6 +230,124 @@ class AgentPromptEffectProvider(EffectProviderBase):
             cls._finalize_waiting_record(worker=worker, record=record, queue_record=queue_record)
             completed += 1
         return completed
+
+    @classmethod
+    def _is_container_waiting_record(cls, record: Any) -> bool:
+        return (
+            str(record.outputs.get("execution_backend") or "").strip()
+            == ExecutionBackendKind.CONTAINER_WORKER_VM.value
+        )
+
+    @classmethod
+    def _reconcile_container_waiting_record(cls, *, worker: Any, record: Any) -> int:
+        execution_id = str(record.outputs.get("execution_id") or "").strip()
+        session_id = str(record.outputs.get("session_id") or "").strip()
+        if not execution_id or not session_id:
+            return 0
+        backend = cls._container_backend_for_worker(worker=worker, session_id=session_id)
+        if backend is None:
+            return 0
+        try:
+            status = backend.inspect(execution_id)
+        except Exception:
+            return 0
+        if status.status not in {
+            ExecutionStatusKind.STOPPED,
+            ExecutionStatusKind.FAILED,
+            ExecutionStatusKind.DESTROYED,
+        }:
+            return 0
+        logs = ""
+        try:
+            logs = backend.get_log_snapshot(execution_id, lines=400)
+        except Exception:
+            logs = ""
+        if status.status != ExecutionStatusKind.DESTROYED:
+            try:
+                backend.destroy(execution_id)
+            except Exception:
+                pass
+        queue_record = cls._build_container_completion_queue_record(
+            record=record,
+            session_id=session_id,
+            execution_id=execution_id,
+            worker_status=status.status.value,
+            success=status.status == ExecutionStatusKind.STOPPED,
+            message=status.message,
+            logs=logs,
+        )
+        cls._finalize_waiting_record(worker=worker, record=record, queue_record=queue_record)
+        return 1
+
+    @classmethod
+    def _container_backend_for_worker(cls, *, worker: Any, session_id: str) -> Any | None:
+        config: GatewayConfig | None = None
+        resolver = getattr(worker, "provider_config_resolver", None)
+        resolve_for_session_id = getattr(resolver, "resolve_for_session_id", None)
+        if callable(resolve_for_session_id):
+            try:
+                config = resolve_for_session_id(session_id)
+            except Exception:
+                config = None
+        if config is None:
+            config = getattr(worker, "config", None)
+        if config is None:
+            return None
+        try:
+            admin_service = getattr(
+                getattr(worker, "provider_factory", None), "admin_service", None
+            )
+            return build_execution_backend(
+                config.model_copy(
+                    update={"execution_backend": ExecutionBackendKind.CONTAINER_WORKER_VM.value}
+                ),
+                admin_service=admin_service,
+            )
+        except Exception:
+            return None
+
+    @classmethod
+    def _build_container_completion_queue_record(
+        cls,
+        *,
+        record: Any,
+        session_id: str,
+        execution_id: str,
+        worker_status: str,
+        success: bool,
+        message: str | None,
+        logs: str,
+    ) -> TriggerQueueRecord:
+        finished_at = datetime.now(UTC)
+        dispatch_id = str(record.outputs.get("dispatch_id") or "").strip()
+        thread_id = cls._thread_id_from_logs(logs) or str(record.outputs.get("thread_id") or "")
+        return TriggerQueueRecord(
+            event_id=f"__await-agent-completion__:{dispatch_id}:{finished_at.isoformat()}",
+            trigger_id="__await-agent-completion__",
+            trigger_type="trigger:agent:run:completed",
+            trace_id=record.trace_id,
+            occurred_at=finished_at,
+            payload={
+                "dispatch_id": dispatch_id,
+                "thread_id": thread_id,
+                "session_id": session_id,
+                "execution_backend": ExecutionBackendKind.CONTAINER_WORKER_VM.value,
+                "worker_execution_id": execution_id,
+                "worker_status": worker_status,
+                "success": success,
+                "message": message or f"container worker job status={worker_status}",
+                "agent_state": "idle" if success else "failed",
+                "scope": {
+                    "directory_path": str(record.resolved_config.get("directory_path") or "root"),
+                    "session_id": session_id,
+                    "vm_name": None,
+                    "vm_user": str(record.resolved_config.get("vm_user") or "agent"),
+                },
+            },
+            delivery_state="delivered",
+            delivered_at=finished_at,
+            idempotency_key=f"__await-agent-completion__:{dispatch_id}",
+        )
 
     @classmethod
     def node_type(cls) -> str:
@@ -304,6 +515,21 @@ class AgentPromptEffectProvider(EffectProviderBase):
             return vm_name
         raise ValueError("effect:agent:prompt requires one of target, session_id, or vm_name")
 
+    def _resolve_execution_backend(
+        self,
+        payload: dict[str, Any],
+        *,
+        target: str,
+    ) -> tuple[str, GatewayConfig]:
+        context = self._context()
+        payload_for_resolution = dict(payload)
+        payload_for_resolution.setdefault("target", target)
+        return selected_execution_backend_for_target(
+            context,
+            payload_for_resolution,
+            directory_path=str(context.metadata.get("directory_path") or "root"),
+        )
+
     def _effect(self) -> AgentPromptEffectDefinition:
         if not isinstance(self.effect_definition, AgentPromptEffectDefinition):
             raise RuntimeError(
@@ -333,3 +559,43 @@ class AgentPromptEffectProvider(EffectProviderBase):
     @staticmethod
     def _make_dispatch_id(*, effect_id: str) -> str:
         return f"dispatch-{effect_id}-{uuid4().hex[:12]}"
+
+    @staticmethod
+    def _container_prompt_command(
+        *,
+        prompt: str,
+        model: str,
+        resume_thread_id: str | None,
+    ) -> str:
+        common_args = [
+            "--dangerously-bypass-approvals-and-sandbox",
+            "--skip-git-repo-check",
+            "--model",
+            model,
+        ]
+        if resume_thread_id:
+            args = ["codex", "exec", "resume", resume_thread_id, *common_args, prompt]
+        else:
+            args = [
+                "codex",
+                "exec",
+                "-s",
+                "danger-full-access",
+                *common_args,
+                "-C",
+                "/workspace",
+                prompt,
+            ]
+        return (
+            "set -euo pipefail; "
+            "export HOME=/home/agent; "
+            "cd /workspace; "
+            + " ".join(shlex.quote(arg) for arg in args)
+        )
+
+    @classmethod
+    def _thread_id_from_logs(cls, logs: str) -> str | None:
+        match = _CONTAINER_THREAD_ID_LOG_PATTERN.search(logs)
+        if match is None:
+            return None
+        return match.group("thread_id").strip() or None

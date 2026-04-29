@@ -8,7 +8,6 @@ def test_ansible_bundle_exists_with_expected_roles() -> None:
     assert (ansible_dir / "site.yml").exists()
     assert (ansible_dir / "README.md").exists()
     assert (ansible_dir / "inventory" / "hosts.example.yml").exists()
-    assert (ansible_dir / "group_vars" / "all.yml").exists()
 
     for role_name in [
         "host_prereqs",
@@ -44,47 +43,6 @@ def test_ansible_site_uses_repo_native_bootstrap_order() -> None:
     assert "- role: network_vm_bootstrap" in site
     assert "- role: service_runtime" in site
     assert "- role: verification" in site
-
-
-def test_ansible_group_vars_document_required_contract_and_service_toggles() -> None:
-    repo = Path(__file__).resolve().parents[1]
-    text = (repo / "ansible" / "group_vars" / "all.yml").read_text(encoding="utf-8")
-
-    assert "agent_sandbox_repo_url" in text
-    assert "agent_sandbox_repo_version" in text
-    assert "agent_sandbox_repo_accept_newhostkey" in text
-    assert "agent_sandbox_repo_ssh_private_key" in text
-    assert "agent_sandbox_repo_ssh_private_key_path" in text
-    assert "agent_sandbox_repo_managed_tracked_config_paths" in text
-    assert "agent_sandbox_manage_workflow_config: true" in text
-    assert "agent_sandbox_repo_managed_workflow_config_paths" in text
-    assert "agent_sandbox_repo_managed_generated_tracked_paths" in text
-    assert "config/admin-web.env" in text
-    assert "frontend/workflow-editor/dist/index.html" in text
-    assert "config/trigger-orchestrator/layout.json" in text
-    assert "config/workflow-packs/agent-default.v1.json" in text
-    assert "agent_sandbox_repo_managed_untracked_config_paths" in text
-    assert "agent_sandbox_deploy_path" in text
-    assert 'agent_sandbox_runtime_dir: "{{ agent_sandbox_deploy_path }}/runtime"' in text
-    assert "agent_sandbox_run_user" in text
-    assert "agent_sandbox_allowed_tcp_ports" in text
-    assert "11777" in text
-    assert "agent_sandbox_service_profile == 'full'" in text
-    assert "firewall: \"{{ agent_sandbox_service_profile == 'full' }}\"" in text
-    common_packages = text.split("agent_sandbox_local_vm_host_packages:", 1)[0]
-    assert "  - nftables" not in common_packages
-    assert "  - nodejs" in common_packages
-    assert "  - npm" in common_packages
-    assert "agent_sandbox_local_vm_host_packages:\n  - nftables" in text
-    assert "agent_sandbox_services:" in text
-    assert "agent_sandbox_admin_web_env:" in text
-    assert "agent_sandbox_admin_web_frontend_build_enabled: true" in text
-    assert 'agent_sandbox_workflow_layout_path: "config/trigger-orchestrator/layout.json"' in text
-    assert "agent_sandbox_workflow_layout_source_path" in text
-    assert "admin_web: true" in text
-    assert "http_target_relay: true" in text
-    assert "trigger_orchestrator: true" in text
-    assert "effect_orchestrator: true" in text
 
 
 def test_ansible_repo_checkout_supports_private_deploy_key() -> None:

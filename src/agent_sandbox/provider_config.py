@@ -36,6 +36,15 @@ class TriggerProviderConfig(BaseModel):
 
 class EffectProviderConfig(BaseModel):
     runtime_dir: Path
+    session_store_path: Path
+    default_session_ttl_seconds: int
+    execution_backend: str = "libvirt_vm"
+    container_worker_base_url: str | None = None
+    container_worker_token_env: str = "AGENT_SANDBOX_WORKER_TOKEN"
+    container_worker_default_image: str = "agent-sandbox-runner:latest"
+    container_worker_job_timeout_seconds: float = 1800.0
+    container_worker_request_timeout_seconds: float = 30.0
+    container_worker_workspace_persistence: str = "session"
 
 
 class QueryProviderConfig(BaseModel):

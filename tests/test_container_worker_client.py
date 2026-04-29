@@ -8,6 +8,11 @@ from agent_sandbox.execution.container_worker_client import (
     ContainerWorkerClientError,
 )
 from agent_sandbox.worker.models import WorkerJobRequest
+from agent_sandbox.worker.models import (
+    WorkerFileWriteRequest,
+    WorkerRepoCloneRequest,
+    WorkerSessionPrepareRequest,
+)
 
 
 def _job_payload(status: str = "running") -> dict[str, object]:
@@ -103,6 +108,84 @@ def test_container_worker_client_health_create_get_stop_delete_and_logs(
         ("POST", "/v1/jobs/job-1/stop"),
         ("DELETE", "/v1/jobs/job-1"),
         ("GET", "/v1/jobs/job-1/logs"),
+    ]
+
+
+def test_container_worker_client_prepares_session_clones_repo_and_writes_files(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("WORKER_TOKEN", "secret-token")
+    seen: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((request.method, request.url.path))
+        assert request.headers["authorization"] == "Bearer secret-token"
+        if request.url.path == "/v1/sessions":
+            return httpx.Response(
+                201,
+                json={
+                    "session_id": "session-1",
+                    "root_path": "/worker/session-1",
+                    "workspace_path": "/worker/session-1/workspace",
+                    "agent_home_path": "/worker/session-1/agent_home",
+                    "artifacts_path": "/worker/session-1/artifacts",
+                    "logs_path": "/worker/session-1/logs",
+                    "metadata_path": "/worker/session-1/metadata.json",
+                },
+                request=request,
+            )
+        if request.url.path.endswith("/repo"):
+            return httpx.Response(
+                200,
+                json={
+                    "session_id": "session-1",
+                    "target_dir": "/workspace",
+                    "guest_repo_name": "repo",
+                    "remote_url": "/tmp/repo",
+                    "cloned": True,
+                },
+                request=request,
+            )
+        return httpx.Response(
+            200,
+            json={
+                "session_id": "session-1",
+                "copied_count": 1,
+                "copied_paths": ["/workspace/AGENT_TASK.yaml"],
+                "roots": {"workspace": "/workspace"},
+            },
+            request=request,
+        )
+
+    worker = ContainerWorkerClient(
+        base_url="http://worker.test",
+        token_env="WORKER_TOKEN",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    assert (
+        worker.prepare_session(
+            WorkerSessionPrepareRequest(session_id="session-1", metadata={"purpose": "test"})
+        ).workspace_container_path
+        == "/workspace"
+    )
+    assert (
+        worker.clone_repo("session-1", WorkerRepoCloneRequest(repo_source="/tmp/repo")).target_dir
+        == "/workspace"
+    )
+    assert (
+        worker.write_files(
+            "session-1",
+            WorkerFileWriteRequest(
+                files=[{"destination_path": "/workspace/AGENT_TASK.yaml", "content": "x"}]
+            ),
+        ).copied_count
+        == 1
+    )
+    assert seen == [
+        ("POST", "/v1/sessions"),
+        ("POST", "/v1/sessions/session-1/repo"),
+        ("POST", "/v1/sessions/session-1/files"),
     ]
 
 

@@ -45,6 +45,7 @@ execution_backend: container_worker_vm
 container_worker_base_url: "http://10.0.2.10:11888"
 container_worker_token_env: "AGENT_SANDBOX_WORKER_TOKEN"
 container_worker_default_image: "agent-sandbox-runner:latest"
+container_worker_job_timeout_seconds: 1800
 ```
 
 This does not replace `vm_provider`; provider-specific lifecycle details still live behind the existing VM services in this phase.
@@ -52,6 +53,12 @@ This does not replace `vm_provider`; provider-specific lifecycle details still l
 For `container_worker_vm`, execution-defining inputs are first-class `ExecutionSpec` fields: `command`, `image`, `repo_source`, `clone_branch`, `resource_limits`, `persistence_mode`, and `workspace_mode`. `metadata` is reserved for sanitized caller context and is not used to smuggle the container command or clone settings.
 
 The execution CLI never mutates the configured backend. `start-container-job` and `smoke-container-worker` explicitly construct the container backend from the loaded config. `status`, `logs`, `stop`, and `destroy` auto-use the container backend only when the target resolves in `container-worker-executions.json`, or when the operator passes `--backend container_worker_vm`.
+
+Portable workflow nodes use `effect:agent:*` for session setup. On `libvirt_vm` they delegate to
+the existing VM services. On `container_worker_vm`, `effect:agent:create` prepares a durable
+session manifest and worker directories, `effect:agent:clone-repo` clones into `/workspace`,
+`effect:agent:copy-files` writes under `/workspace` or `/home/agent`, and `effect:agent:prompt`
+starts a disposable worker job for Codex and removes the job after completion.
 
 ## Migration Path
 

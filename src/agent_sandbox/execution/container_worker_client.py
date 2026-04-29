@@ -5,7 +5,16 @@ from typing import Any
 
 import httpx
 
-from agent_sandbox.worker.models import WorkerJobRecord, WorkerJobRequest
+from agent_sandbox.worker.models import (
+    WorkerFileWriteRequest,
+    WorkerFileWriteRecord,
+    WorkerJobRecord,
+    WorkerJobRequest,
+    WorkerRepoCloneRecord,
+    WorkerRepoCloneRequest,
+    WorkerSessionPrepareRequest,
+    WorkerSessionRecord,
+)
 from agent_sandbox.worker.security import sanitize_metadata, sanitize_text
 
 
@@ -41,6 +50,44 @@ class ContainerWorkerClient:
             json=request.model_dump(mode="json", exclude_none=True),
         )
         return WorkerJobRecord.model_validate(self._json_dict(response, operation="create job"))
+
+    def prepare_session(self, request: WorkerSessionPrepareRequest) -> WorkerSessionRecord:
+        response = self._request(
+            "POST",
+            "/v1/sessions",
+            json=request.model_dump(mode="json", exclude_none=True),
+        )
+        return WorkerSessionRecord.model_validate(
+            self._json_dict(response, operation="prepare session")
+        )
+
+    def clone_repo(
+        self,
+        session_id: str,
+        request: WorkerRepoCloneRequest,
+    ) -> WorkerRepoCloneRecord:
+        response = self._request(
+            "POST",
+            f"/v1/sessions/{session_id}/repo",
+            json=request.model_dump(mode="json", exclude_none=True),
+        )
+        return WorkerRepoCloneRecord.model_validate(
+            self._json_dict(response, operation="clone repo")
+        )
+
+    def write_files(
+        self,
+        session_id: str,
+        request: WorkerFileWriteRequest,
+    ) -> WorkerFileWriteRecord:
+        response = self._request(
+            "POST",
+            f"/v1/sessions/{session_id}/files",
+            json=request.model_dump(mode="json", exclude_none=True),
+        )
+        return WorkerFileWriteRecord.model_validate(
+            self._json_dict(response, operation="write files")
+        )
 
     def get(self, job_id: str) -> WorkerJobRecord:
         response = self._request("GET", f"/v1/jobs/{job_id}")

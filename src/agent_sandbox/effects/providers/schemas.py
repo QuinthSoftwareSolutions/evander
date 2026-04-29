@@ -83,6 +83,67 @@ class VmBootstrapFrontendEffectDefinition(EffectDefinition):
         return self
 
 
+class AgentCreateEffectDefinition(EffectDefinition):
+    type: Literal["effect:agent:create"]
+    provider: ConfigValue | None = None
+    execution_backend: ConfigValue | None = None
+    vm_name: ConfigValue | None = None
+    session_id: ConfigValue | None = None
+    labels: ConfigValue | None = None
+    model: ConfigValue | None = None
+    vm_user: ConfigValue | None = None
+    ttl_hours: ConfigValue | None = None
+    allowed_tools: list[str] | None = None
+    allowed_script_names: list[str] | None = None
+    discord_channels: list[str] | None = None
+    email_mailboxes: list[str] | None = None
+    email_folders: list[str] | None = None
+    dotnet: ConfigValue | None = None
+    nuget: ConfigValue | None = None
+    mssql: ConfigValue | None = None
+    mssql_init_root: ConfigValue | None = None
+    playwright: ConfigValue | None = None
+    codex_skills: ConfigValue | None = None
+    directory_path: ConfigValue | None = None
+
+
+class AgentCloneRepoEffectDefinition(EffectDefinition):
+    type: Literal["effect:agent:clone-repo"]
+    target: ConfigValue | None = None
+    session_id: ConfigValue | None = None
+    vm_name: ConfigValue | None = None
+    repo_source: ConfigValue
+    clone_branch: ConfigValue | None = None
+    vm_user: ConfigValue | None = None
+    directory_path: ConfigValue | None = None
+
+    @model_validator(mode="after")
+    def validate_target_selector(self) -> "AgentCloneRepoEffectDefinition":
+        selectors = [self.target, self.session_id, self.vm_name]
+        if not any(value is not None for value in selectors):
+            raise ValueError("effect:agent:clone-repo requires target, session_id, or vm_name")
+        return self
+
+
+class AgentBootstrapFrontendEffectDefinition(EffectDefinition):
+    type: Literal["effect:agent:bootstrap-frontend"]
+    target: ConfigValue | None = None
+    session_id: ConfigValue | None = None
+    vm_name: ConfigValue | None = None
+    host_checkout: ConfigValue
+    install_roots: ConfigValue
+    vm_user: ConfigValue | None = None
+
+    @model_validator(mode="after")
+    def validate_target_selector(self) -> "AgentBootstrapFrontendEffectDefinition":
+        selectors = [self.target, self.session_id, self.vm_name]
+        if not any(value is not None for value in selectors):
+            raise ValueError(
+                "effect:agent:bootstrap-frontend requires target, session_id, or vm_name"
+            )
+        return self
+
+
 class AgentPromptEffectDefinition(EffectDefinition):
     type: Literal["effect:agent:prompt"]
     target: ConfigValue | None = None
@@ -166,6 +227,15 @@ class VmCopyFilesItemDefinition(BaseModel):
 
 class VmCopyFilesEffectDefinition(EffectDefinition):
     type: Literal["effect:vm:copy-files"]
+    target: ConfigValue | None = None
+    session_id: ConfigValue | None = None
+    vm_name: ConfigValue | None = None
+    vm_user: ConfigValue | None = None
+    files: list[VmCopyFilesItemDefinition]
+
+
+class AgentCopyFilesEffectDefinition(EffectDefinition):
+    type: Literal["effect:agent:copy-files"]
     target: ConfigValue | None = None
     session_id: ConfigValue | None = None
     vm_name: ConfigValue | None = None

@@ -5,6 +5,10 @@ from collections.abc import Callable
 from pydantic import BaseModel
 
 from agent_sandbox.effects.providers.schemas import (
+    AgentBootstrapFrontendEffectDefinition,
+    AgentCloneRepoEffectDefinition,
+    AgentCopyFilesEffectDefinition,
+    AgentCreateEffectDefinition,
     AgentEnqueuePromptEffectDefinition,
     AgentPromptEffectDefinition,
     BashScriptEffectDefinition,
@@ -32,6 +36,10 @@ _EFFECT_MODEL_BY_TYPE = {
     "effect:vm:bootstrap-frontend": VmBootstrapFrontendEffectDefinition,
     "effect:vm:start": VmStartEffectDefinition,
     "effect:vm:stop": VmStopEffectDefinition,
+    "effect:agent:create": AgentCreateEffectDefinition,
+    "effect:agent:clone-repo": AgentCloneRepoEffectDefinition,
+    "effect:agent:bootstrap-frontend": AgentBootstrapFrontendEffectDefinition,
+    "effect:agent:copy-files": AgentCopyFilesEffectDefinition,
     "effect:agent:prompt": AgentPromptEffectDefinition,
     "effect:agent:enqueue-prompt": AgentEnqueuePromptEffectDefinition,
     "effect:bash:script": BashScriptEffectDefinition,

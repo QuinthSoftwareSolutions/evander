@@ -143,6 +143,118 @@ class WorkerSessionPaths(BaseModel):
             )
 
 
+class WorkerSessionPrepareRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("session_id", mode="before")
+    @classmethod
+    def normalize_safe_id(cls, value: object) -> str:
+        text = str(value or "").strip()
+        if not text:
+            raise ValueError("session_id is required")
+        if not SAFE_ID_PATTERN.fullmatch(text):
+            raise ValueError("must contain only letters, numbers, dots, underscores, or dashes")
+        return text
+
+
+class WorkerSessionRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: str
+    root_path: str
+    workspace_path: str
+    agent_home_path: str
+    artifacts_path: str
+    logs_path: str
+    metadata_path: str
+    workspace_container_path: str = "/workspace"
+    agent_home_container_path: str = "/home/agent"
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class WorkerRepoCloneRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    repo_source: str
+    clone_branch: str | None = None
+
+    @field_validator("repo_source", mode="before")
+    @classmethod
+    def normalize_repo_source(cls, value: object) -> str:
+        text = str(value or "").strip()
+        if not text:
+            raise ValueError("repo_source is required")
+        return text
+
+    @field_validator("clone_branch", mode="before")
+    @classmethod
+    def normalize_clone_branch(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+
+class WorkerRepoCloneRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: str
+    target_dir: str = "/workspace"
+    guest_repo_name: str
+    remote_url: str
+    cloned: bool
+
+
+class WorkerFileWrite(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    destination_path: str
+    content: str
+    mode: str | None = None
+    overwrite: bool = True
+
+    @field_validator("destination_path", mode="before")
+    @classmethod
+    def normalize_destination_path(cls, value: object) -> str:
+        text = str(value or "").strip()
+        if not text:
+            raise ValueError("destination_path is required")
+        return text
+
+    @field_validator("mode", mode="before")
+    @classmethod
+    def normalize_mode(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+
+class WorkerFileWriteRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    files: list[WorkerFileWrite]
+
+    @field_validator("files")
+    @classmethod
+    def validate_files(cls, value: list[WorkerFileWrite]) -> list[WorkerFileWrite]:
+        if not value:
+            raise ValueError("files must contain at least one entry")
+        return value
+
+
+class WorkerFileWriteRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: str
+    copied_count: int
+    copied_paths: list[str]
+    roots: dict[str, str] = Field(default_factory=dict)
+
+
 class WorkerJobRecord(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

@@ -183,6 +183,7 @@ _DIRECTORY_CONFIG_TAB_SECTIONS: dict[str, tuple[_ConfigTabSectionSpec, ...]] = {
                 ("providers", "container_worker_base_url"),
                 ("providers", "container_worker_token_env"),
                 ("providers", "container_worker_default_image"),
+                ("providers", "container_worker_job_timeout_seconds"),
                 ("providers", "container_worker_request_timeout_seconds"),
                 ("providers", "container_worker_workspace_persistence"),
             ),

@@ -5,15 +5,22 @@ import os
 import subprocess
 import uuid
 from pathlib import Path
+from urllib.parse import urlparse
 
 from starlette.applications import Starlette
 
 from .docker_runtime import DockerContainerRuntime
 from .models import (
     DEFAULT_WORKER_ROOT,
+    WorkerFileWriteRequest,
+    WorkerFileWriteRecord,
     WorkerJobRecord,
     WorkerJobRequest,
+    WorkerRepoCloneRecord,
+    WorkerRepoCloneRequest,
+    WorkerSessionPrepareRequest,
     WorkerSessionPaths,
+    WorkerSessionRecord,
     now_utc,
 )
 from .runtime import ContainerRuntime
@@ -131,6 +138,71 @@ class WorkerDaemon:
         log_path.write_text(text, encoding="utf-8")
         return text
 
+    def prepare_session(self, request: WorkerSessionPrepareRequest) -> WorkerSessionRecord:
+        paths = WorkerSessionPaths.resolve(self.worker_root, request.session_id)
+        metadata = sanitize_metadata(request.metadata)
+        if metadata:
+            current = self._read_session_metadata(paths)
+            current["metadata"] = {**dict(current.get("metadata") or {}), **metadata}
+            self._write_session_metadata(paths, current)
+        return self._session_record(paths, metadata=metadata)
+
+    def clone_repo(
+        self,
+        session_id: str,
+        request: WorkerRepoCloneRequest,
+    ) -> WorkerRepoCloneRecord:
+        paths = WorkerSessionPaths.resolve(self.worker_root, session_id)
+        cloned = self._clone_repo_into_workspace(
+            paths=paths,
+            repo_source=request.repo_source,
+            clone_branch=request.clone_branch,
+        )
+        return WorkerRepoCloneRecord(
+            session_id=session_id,
+            target_dir="/workspace",
+            guest_repo_name=self._repo_name(request.repo_source),
+            remote_url=request.repo_source,
+            cloned=cloned,
+        )
+
+    def write_files(
+        self,
+        session_id: str,
+        request: WorkerFileWriteRequest,
+    ) -> WorkerFileWriteRecord:
+        paths = WorkerSessionPaths.resolve(self.worker_root, session_id)
+        copied_paths: list[str] = []
+        for entry in request.files:
+            root, relative_path, container_path = self._resolve_container_destination(
+                paths=paths,
+                destination_path=entry.destination_path,
+            )
+            destination = root / relative_path
+            self._ensure_resolved_destination_stays_under_root(
+                root=root,
+                destination=destination,
+                container_path=container_path,
+            )
+            if destination.exists() and not entry.overwrite:
+                raise ValueError(f"destination already exists: {container_path}")
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            self._ensure_resolved_destination_stays_under_root(
+                root=root,
+                destination=destination,
+                container_path=container_path,
+            )
+            destination.write_text(entry.content, encoding="utf-8")
+            if entry.mode is not None:
+                destination.chmod(int(self._normalize_mode(entry.mode), 8))
+            copied_paths.append(container_path)
+        return WorkerFileWriteRecord(
+            session_id=session_id,
+            copied_count=len(copied_paths),
+            copied_paths=copied_paths,
+            roots={"workspace": "/workspace", "agent_home": "/home/agent"},
+        )
+
     def _log_path(self, record: WorkerJobRecord) -> Path:
         return Path(record.logs_path) / f"{record.job_id}.log"
 
@@ -141,10 +213,118 @@ class WorkerDaemon:
     ) -> None:
         if not request.repo_source:
             return
+        self._clone_repo_into_workspace(
+            paths=paths,
+            repo_source=request.repo_source,
+            clone_branch=request.clone_branch,
+        )
+
+    def _clone_repo_into_workspace(
+        self,
+        *,
+        paths: WorkerSessionPaths,
+        repo_source: str,
+        clone_branch: str | None,
+    ) -> bool:
         if any(paths.workspace.iterdir()):
-            return
+            return False
         args = ["git", "clone"]
-        if request.clone_branch:
-            args.extend(["--branch", request.clone_branch])
-        args.extend([request.repo_source, "."])
+        if clone_branch:
+            args.extend(["--branch", clone_branch])
+        args.extend([repo_source, "."])
         subprocess.run(args, cwd=paths.workspace, check=True, capture_output=True, text=True)
+        return True
+
+    def _session_record(
+        self,
+        paths: WorkerSessionPaths,
+        *,
+        metadata: dict[str, object] | None = None,
+    ) -> WorkerSessionRecord:
+        return WorkerSessionRecord(
+            session_id=paths.session_id,
+            root_path=str(paths.root),
+            workspace_path=str(paths.workspace),
+            agent_home_path=str(paths.agent_home),
+            artifacts_path=str(paths.artifacts),
+            logs_path=str(paths.logs),
+            metadata_path=str(paths.metadata_path),
+            metadata=dict(metadata or {}),
+        )
+
+    def _read_session_metadata(self, paths: WorkerSessionPaths) -> dict[str, object]:
+        try:
+            import json
+
+            payload = json.loads(paths.metadata_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
+    def _write_session_metadata(
+        self,
+        paths: WorkerSessionPaths,
+        payload: dict[str, object],
+    ) -> None:
+        import json
+
+        paths.metadata_path.write_text(
+            json.dumps(payload, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+
+    def _resolve_container_destination(
+        self,
+        *,
+        paths: WorkerSessionPaths,
+        destination_path: str,
+    ) -> tuple[Path, Path, str]:
+        normalized = destination_path.strip()
+        for container_root, host_root in (
+            ("/workspace", paths.workspace),
+            ("/home/agent", paths.agent_home),
+        ):
+            if normalized == container_root:
+                raise ValueError(f"destination_path must name a file below {container_root}")
+            prefix = f"{container_root}/"
+            if not normalized.startswith(prefix):
+                continue
+            relative_text = normalized[len(prefix) :]
+            relative = Path(relative_text)
+            if relative.is_absolute() or ".." in relative.parts:
+                raise ValueError(f"destination_path must stay below {container_root}")
+            return host_root, relative, f"{container_root}/{relative.as_posix()}"
+        raise ValueError("destination_path must be under /workspace or /home/agent")
+
+    @staticmethod
+    def _ensure_resolved_destination_stays_under_root(
+        *,
+        root: Path,
+        destination: Path,
+        container_path: str,
+    ) -> None:
+        resolved_root = root.resolve()
+        resolved_destination = destination.resolve(strict=False)
+        try:
+            resolved_destination.relative_to(resolved_root)
+        except ValueError as exc:
+            container_root = (
+                "/home/agent" if container_path.startswith("/home/agent/") else "/workspace"
+            )
+            raise ValueError(f"destination_path must stay below {container_root}") from exc
+
+    @staticmethod
+    def _normalize_mode(mode: str) -> str:
+        normalized = mode.strip()
+        if not normalized or any(char not in "01234567" for char in normalized):
+            raise ValueError(f"mode must be octal digits: {mode!r}")
+        return normalized
+
+    @staticmethod
+    def _repo_name(repo_source: str) -> str:
+        parsed = urlparse(repo_source)
+        raw_path = parsed.path if parsed.scheme else repo_source
+        candidate = raw_path.rstrip("/").rsplit("/", 1)[-1].strip() or "workspace"
+        if candidate.endswith(".git"):
+            candidate = candidate[:-4]
+        return candidate or "workspace"

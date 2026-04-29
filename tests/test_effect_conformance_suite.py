@@ -100,6 +100,42 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
             "timeout_seconds": 90,
         }
     )
+    agent_create = adapter.validate_python(
+        {
+            "id": "effect-agent-create",
+            "display_name": "Create agent",
+            "type": "effect:agent:create",
+            "session_id": "session-1",
+        }
+    )
+    agent_clone = adapter.validate_python(
+        {
+            "id": "effect-agent-clone",
+            "display_name": "Clone agent repo",
+            "type": "effect:agent:clone-repo",
+            "session_id": "session-1",
+            "repo_source": "/tmp/repo",
+        }
+    )
+    agent_frontend = adapter.validate_python(
+        {
+            "id": "effect-agent-frontend",
+            "display_name": "Bootstrap frontend",
+            "type": "effect:agent:bootstrap-frontend",
+            "session_id": "session-1",
+            "host_checkout": "/tmp/repo",
+            "install_roots": ["/tmp/repo/frontend"],
+        }
+    )
+    agent_copy = adapter.validate_python(
+        {
+            "id": "effect-agent-copy",
+            "display_name": "Copy agent files",
+            "type": "effect:agent:copy-files",
+            "session_id": "session-1",
+            "files": [{"destination_path": "/workspace/task.yaml", "content": "task"}],
+        }
+    )
     prompt = adapter.validate_python(
         {
             "id": "effect-prompt",
@@ -180,6 +216,10 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
     assert vm.labels == {"workflow": "issue-worker"}
     assert vm_start.type == "effect:vm:start"
     assert vm_stop.type == "effect:vm:stop"
+    assert agent_create.type == "effect:agent:create"
+    assert agent_clone.type == "effect:agent:clone-repo"
+    assert agent_frontend.type == "effect:agent:bootstrap-frontend"
+    assert agent_copy.type == "effect:agent:copy-files"
     assert prompt.type == "effect:agent:prompt"
     assert enqueue_prompt.type == "effect:agent:enqueue-prompt"
     assert bash_script.type == "effect:bash:script"

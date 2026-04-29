@@ -4,6 +4,10 @@ from importlib import import_module
 from typing import Any
 
 __all__ = [
+    "AgentBootstrapFrontendEffectProvider",
+    "AgentCloneRepoEffectProvider",
+    "AgentCopyFilesEffectProvider",
+    "AgentCreateEffectProvider",
     "AgentPromptEffectProvider",
     "BashScriptEffectProvider",
     "EffectProvider",
@@ -19,6 +23,10 @@ __all__ = [
 ]
 
 _EXPORT_MODULES = {
+    "AgentBootstrapFrontendEffectProvider": ".agent_bootstrap_frontend",
+    "AgentCloneRepoEffectProvider": ".agent_clone_repo",
+    "AgentCopyFilesEffectProvider": ".agent_copy_files",
+    "AgentCreateEffectProvider": ".agent_create",
     "AgentPromptEffectProvider": ".agent_prompt",
     "BashScriptEffectProvider": ".bash_script",
     "EffectProvider": ".base",

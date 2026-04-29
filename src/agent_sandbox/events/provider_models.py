@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 from agent_sandbox.effects.providers.schemas import (
+    AgentBootstrapFrontendEffectDefinition,
+    AgentCloneRepoEffectDefinition,
+    AgentCopyFilesEffectDefinition,
+    AgentCreateEffectDefinition,
     AgentEnqueuePromptEffectDefinition,
     AgentPromptEffectDefinition,
     BashScriptEffectDefinition,

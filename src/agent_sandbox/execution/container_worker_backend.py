@@ -6,8 +6,14 @@ from typing import Any
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.worker.models import (
     SAFE_ID_PATTERN,
+    WorkerFileWriteRequest,
+    WorkerFileWriteRecord,
     WorkerJobRequest,
+    WorkerRepoCloneRecord,
+    WorkerRepoCloneRequest,
     WorkerResourceLimits,
+    WorkerSessionPrepareRequest,
+    WorkerSessionRecord,
     now_utc,
 )
 from agent_sandbox.worker.security import sanitize_metadata
@@ -179,6 +185,42 @@ class ContainerWorkerVmExecutionBackend:
             return text
         return "\n".join(text.splitlines()[-lines:]) + (
             "\n" if text.endswith("\n") and text.splitlines() else ""
+        )
+
+    def prepare_session(
+        self,
+        *,
+        session_id: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> WorkerSessionRecord:
+        return self.client.prepare_session(
+            WorkerSessionPrepareRequest(
+                session_id=session_id,
+                metadata=sanitize_metadata(metadata or {}),
+            )
+        )
+
+    def clone_repo(
+        self,
+        *,
+        session_id: str,
+        repo_source: str,
+        clone_branch: str | None = None,
+    ) -> WorkerRepoCloneRecord:
+        return self.client.clone_repo(
+            session_id,
+            WorkerRepoCloneRequest(repo_source=repo_source, clone_branch=clone_branch),
+        )
+
+    def write_files(
+        self,
+        *,
+        session_id: str,
+        files: list[dict[str, Any]],
+    ) -> WorkerFileWriteRecord:
+        return self.client.write_files(
+            session_id,
+            WorkerFileWriteRequest.model_validate({"files": files}),
         )
 
     def _job_request(self, prepared: PreparedExecution) -> WorkerJobRequest:

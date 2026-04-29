@@ -13,6 +13,7 @@ execution_backend: container_worker_vm
 container_worker_base_url: "http://10.0.2.10:11888"
 container_worker_token_env: "AGENT_SANDBOX_WORKER_TOKEN"
 container_worker_default_image: "agent-sandbox-runner:latest"
+container_worker_job_timeout_seconds: 1800
 ```
 
 For directory-scoped runtime config, put these values on the root `providers` domain. Start the worker daemon on the worker VM with a matching token:
@@ -62,6 +63,17 @@ Containers are disposable. Continuity comes from mounting the same `workspace/` 
 The daemon does not rewrite commands into `codex resume`. Callers must send the exact command they want to execute. The daemon preserves `/home/agent` and `/workspace` so those commands can resume naturally.
 
 If a request includes `repo_source`, the daemon clones it only when `workspace/` is empty. Existing workspace contents are left untouched.
+
+The worker API also exposes a session-preparation surface used by portable
+`effect:agent:*` workflow nodes:
+
+- `POST /v1/sessions` creates or reconciles durable session directories without starting a job.
+- `POST /v1/sessions/{session_id}/repo` clones a repo into an empty `workspace/`.
+- `POST /v1/sessions/{session_id}/files` writes files under `/workspace` or `/home/agent`.
+
+Those endpoints do not accept raw environment variables or secrets. Prompt execution is still a
+typed container job: the host builds an `ExecutionSpec.command`, starts the job, waits through the
+existing completion-event path, then removes the container while preserving the session directory.
 
 The host-side backend records the control-plane mapping in:
 
