@@ -59,6 +59,7 @@ def test_ansible_group_vars_document_required_contract_and_service_toggles() -> 
     assert "agent_sandbox_manage_workflow_config: true" in text
     assert "agent_sandbox_repo_managed_workflow_config_paths" in text
     assert "agent_sandbox_repo_managed_generated_tracked_paths" in text
+    assert "config/admin-web.env" in text
     assert "frontend/workflow-editor/dist/index.html" in text
     assert "config/trigger-orchestrator/layout.json" in text
     assert "config/workflow-packs/agent-default.v1.json" in text
@@ -96,8 +97,11 @@ def test_ansible_repo_checkout_supports_private_deploy_key() -> None:
     assert "no_log: true" in text
     assert "Verify repo deploy key is usable non-interactively" in text
     assert "passphrase-free deploy key" in text
+    assert "List tracked Ansible-managed paths known to the deployed checkout" in text
     assert "Reset tracked Ansible-managed config before repo update" in text
-    assert "Remove untracked Ansible-managed config before repo update" in text
+    assert "'ls-files', '--'" in text
+    assert "Clean untracked Ansible-managed config before repo update" in text
+    assert "'clean', '-f', '--'" in text
     assert "key_file:" in text
     assert "agent_sandbox_repo_ssh_private_key_path" in text
     assert "accept_newhostkey:" in text

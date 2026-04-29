@@ -7,6 +7,7 @@ agent_sandbox_repo_ssh_private_key: ""
 agent_sandbox_repo_ssh_private_key_path: "/home/{{ agent_sandbox_run_user }}/.ssh/agent-sandbox-repo-deploy-key"
 agent_sandbox_manage_workflow_config: true
 agent_sandbox_repo_managed_base_tracked_config_paths:
+  - config/admin-web.env
   - config/discord-ingest/config.json
   - config/firewall.env
   - config/teams-ingest/config.json
@@ -27,7 +28,6 @@ agent_sandbox_repo_managed_tracked_config_paths: >-
     )
   }}
 agent_sandbox_repo_managed_untracked_config_paths:
-  - config/admin-web.env
   - config/ado-worker.env
   - config/discord-wake/config.json
   - config/gateway.env

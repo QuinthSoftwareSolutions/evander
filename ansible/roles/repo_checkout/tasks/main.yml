@@ -44,25 +44,45 @@
     path: "{{ agent_sandbox_deploy_path }}/.git"
   register: agent_sandbox_repo_checkout_git_dir
 
-- name: Reset tracked Ansible-managed config before repo update
+- name: List tracked Ansible-managed paths known to the deployed checkout
   ansible.builtin.command:
     argv: >-
       {{
-        ['git', '-C', agent_sandbox_deploy_path, 'checkout', '--']
+        ['git', '-C', agent_sandbox_deploy_path, 'ls-files', '--']
         + agent_sandbox_repo_managed_tracked_config_paths
       }}
   become_user: "{{ agent_sandbox_run_user }}"
+  register: agent_sandbox_repo_known_tracked_paths
   changed_when: false
   when:
     - agent_sandbox_repo_checkout_git_dir.stat.exists
     - (agent_sandbox_repo_managed_tracked_config_paths | length) > 0
 
-- name: Remove untracked Ansible-managed config before repo update
-  ansible.builtin.file:
-    path: "{{ agent_sandbox_deploy_path }}/{{ item }}"
-    state: absent
-  loop: "{{ agent_sandbox_repo_managed_untracked_config_paths }}"
-  when: agent_sandbox_repo_checkout_git_dir.stat.exists
+- name: Reset tracked Ansible-managed config before repo update
+  ansible.builtin.command:
+    argv: >-
+      {{
+        ['git', '-C', agent_sandbox_deploy_path, 'checkout', '--']
+        + agent_sandbox_repo_known_tracked_paths.stdout_lines
+      }}
+  become_user: "{{ agent_sandbox_run_user }}"
+  changed_when: false
+  when:
+    - agent_sandbox_repo_checkout_git_dir.stat.exists
+    - (agent_sandbox_repo_known_tracked_paths.stdout_lines | default([]) | length) > 0
+
+- name: Clean untracked Ansible-managed config before repo update
+  ansible.builtin.command:
+    argv: >-
+      {{
+        ['git', '-C', agent_sandbox_deploy_path, 'clean', '-f', '--']
+        + agent_sandbox_repo_managed_untracked_config_paths
+      }}
+  become_user: "{{ agent_sandbox_run_user }}"
+  changed_when: false
+  when:
+    - agent_sandbox_repo_checkout_git_dir.stat.exists
+    - (agent_sandbox_repo_managed_untracked_config_paths | length) > 0
 
 - name: Check out the requested repo revision
   ansible.builtin.git:
