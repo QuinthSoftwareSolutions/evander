@@ -3754,12 +3754,15 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
             self.config.runtime_dir / "container-worker-executions.json"
         )
 
-    def _container_worker_backend(self):
+    def _container_worker_backend(self, *, directory_path: str | None = None):
         from agent_sandbox.execution.container_worker_backend import (
             ContainerWorkerVmExecutionBackend,
         )
 
-        config = self.config.model_copy(
+        resolved_config = self.runtime.provider_config.resolve_for_directory(
+            self._normalize_directory_path(directory_path)
+        )
+        config = resolved_config.model_copy(
             update={"execution_backend": "container_worker_vm"}
         )
         return ContainerWorkerVmExecutionBackend(config=config)
@@ -3946,7 +3949,9 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
         message: str | None = None
         if reconcile:
             try:
-                inspected = self._container_worker_backend().inspect(record.execution_id)
+                inspected = self._container_worker_backend(
+                    directory_path=record.directory_path
+                ).inspect(record.execution_id)
             except Exception as exc:
                 message = str(exc)
             else:
@@ -4173,7 +4178,9 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
                 "metadata": metadata,
             }
         )
-        session_record = self._container_worker_backend().prepare_session(
+        session_record = self._container_worker_backend(
+            directory_path=directory_path
+        ).prepare_session(
             session_id=session_id,
             metadata={
                 "execution_backend": "container_worker_vm",
@@ -4389,7 +4396,13 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
             if session is not None
             else str(getattr(record, "target_name", "") or agent_id)
         )
-        worker_backend = self._container_worker_backend()
+        worker_backend = self._container_worker_backend(
+            directory_path=(
+                session.directory_path
+                if session is not None
+                else getattr(record, "directory_path", None)
+            )
+        )
         if record is not None:
             worker_backend.destroy(record.execution_id)
         worker_session_deleted = worker_backend.delete_session(session_id)
@@ -4438,7 +4451,16 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
                 vm_user=vm_user,
             )
         if selected_backend == "container_worker_vm":
-            worker_backend = self._container_worker_backend()
+            session, record = self._resolve_container_agent_session(
+                agent_id, require_session=False
+            )
+            worker_backend = self._container_worker_backend(
+                directory_path=(
+                    session.directory_path
+                    if session is not None
+                    else getattr(record, "directory_path", None)
+                )
+            )
             try:
                 worker_backend.inspect(agent_id)
             except Exception:
@@ -4500,7 +4522,16 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
                 "remote_url": result.remote_url,
             }
         if selected_backend == "container_worker_vm":
-            worker_backend = self._container_worker_backend()
+            session, record = self._resolve_container_agent_session(
+                agent_id, require_session=False
+            )
+            worker_backend = self._container_worker_backend(
+                directory_path=(
+                    session.directory_path
+                    if session is not None
+                    else getattr(record, "directory_path", None)
+                )
+            )
             if action == "stop":
                 status = worker_backend.stop(agent_id)
             elif action == "destroy":

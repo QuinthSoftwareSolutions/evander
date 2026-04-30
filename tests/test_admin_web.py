@@ -1403,6 +1403,13 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
     communications = next(tab for tab in payload["tabs"] if tab["key"] == "communications")
     assert communications["title"] == "Communications"
     assert any(section["title"] == "Discord" for section in communications["sections"])
+    providers = next(tab for tab in payload["tabs"] if tab["key"] == "providers")
+    container_worker = next(
+        section for section in providers["sections"] if section["title"] == "Container worker"
+    )
+    assert "container_worker_base_url" in {
+        field["field_name"] for field in container_worker["fields"]
+    }
     assert "communications" in payload["tab_snapshots"]
     assert payload["selected_directory"]["path"] == "root"
 
@@ -1750,7 +1757,7 @@ def test_admin_web_container_agent_log_and_actions_do_not_require_vm_summary(
     monkeypatch.setattr(
         service,
         "_container_worker_backend",
-        MethodType(lambda self: fake_backend, service),
+        MethodType(lambda self, **_kwargs: fake_backend, service),
     )
 
     client = TestClient(create_app(service))
@@ -1877,7 +1884,7 @@ def test_admin_web_agents_create_container_session_and_list_it(
     monkeypatch.setattr(
         service,
         "_container_worker_backend",
-        MethodType(lambda self: fake_backend, service),
+        MethodType(lambda self, **_kwargs: fake_backend, service),
     )
     monkeypatch.setattr(service, "list_vms", MethodType(lambda self, **kwargs: [], service))
     client = TestClient(create_app(service))
@@ -2070,7 +2077,7 @@ def test_admin_web_agents_delete_container_cleans_mapping_and_session(
     monkeypatch.setattr(
         service,
         "_container_worker_backend",
-        MethodType(lambda self: fake_backend, service),
+        MethodType(lambda self, **_kwargs: fake_backend, service),
     )
     client = TestClient(create_app(service))
 

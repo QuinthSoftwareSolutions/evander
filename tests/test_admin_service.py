@@ -22,7 +22,9 @@ from agent_sandbox.config import (
     ScheduledWakeWorkerGlobalConfig,
     TeamsIngestWorkerGlobalConfig,
 )
+from agent_sandbox.execution.container_worker_client import ContainerWorkerClient
 from agent_sandbox.models import ApprovalRequest, ApprovalStatus, SessionManifest, ToolName
+from agent_sandbox.worker.models import WorkerSessionPrepareRequest, WorkerSessionRecord
 
 UTC = timezone.utc
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -109,6 +111,73 @@ def test_list_agents_includes_session_only_container_worker_targets(
     assert agents[0].backend == "container_worker_vm"
     assert agents[0].status == "prepared"
     assert agents[0].host["labels"] == {"role": "demo"}
+
+
+def test_create_container_agent_uses_directory_scoped_worker_provider_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    created = service.create_directory_child("root", "team")
+    assert created.ok is True and created.data is not None
+    team_path = created.data.details.directory.path
+    write_result = service.write_directory_domain_config(
+        team_path,
+        "providers",
+        {
+            "container_worker_base_url": "http://team-worker.test:11888",
+            "container_worker_token_env": "TEAM_WORKER_TOKEN",
+        },
+    )
+    assert write_result.ok is True
+    captured: list[tuple[str, str, str, dict[str, object]]] = []
+
+    def prepare_session(
+        self: ContainerWorkerClient, request: WorkerSessionPrepareRequest
+    ) -> WorkerSessionRecord:
+        captured.append(
+            (
+                self.base_url,
+                self.token_env,
+                request.session_id,
+                dict(request.metadata),
+            )
+        )
+        return WorkerSessionRecord(
+            session_id=request.session_id,
+            root_path=f"/worker/{request.session_id}",
+            workspace_path=f"/worker/{request.session_id}/workspace",
+            agent_home_path=f"/worker/{request.session_id}/agent_home",
+            artifacts_path=f"/worker/{request.session_id}/artifacts",
+            logs_path=f"/worker/{request.session_id}/logs",
+            metadata_path=f"/worker/{request.session_id}/metadata.json",
+            metadata=dict(request.metadata),
+        )
+
+    monkeypatch.setattr(ContainerWorkerClient, "prepare_session", prepare_session)
+
+    result = service.create_admin_agent(
+        {
+            "backend": "container_worker_vm",
+            "session_id": "container-session",
+            "target_name": "container-target",
+            "directory_path": team_path,
+        }
+    )
+
+    assert result["success"] is True
+    assert captured == [
+        (
+            "http://team-worker.test:11888",
+            "TEAM_WORKER_TOKEN",
+            "container-session",
+            {
+                "execution_backend": "container_worker_vm",
+                "directory_path": team_path,
+                "target_name": "container-target",
+                "labels": {},
+            },
+        )
+    ]
 
 
 def test_teams_auth_list_channels_resolves_exact_channel_matches(

@@ -157,6 +157,19 @@ _DIRECTORY_CONFIG_TAB_SECTIONS: dict[
             ),
             ("azure_devops_",),
         ),
+        (
+            "Container worker",
+            (
+                ("providers", "execution_backend"),
+                ("providers", "container_worker_base_url"),
+                ("providers", "container_worker_token_env"),
+                ("providers", "container_worker_default_image"),
+                ("providers", "container_worker_job_timeout_seconds"),
+                ("providers", "container_worker_request_timeout_seconds"),
+                ("providers", "container_worker_workspace_persistence"),
+            ),
+            ("container_worker_",),
+        ),
         ("GitHub", (("providers", "github_token_env"),), ("github_",)),
         (
             "HTTP target relay",
