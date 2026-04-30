@@ -1567,6 +1567,17 @@ def test_workflow_editor_document_composes_workflow_pack_config(tmp_path: Path) 
         ),
         encoding="utf-8",
     )
+    (packs_dir / "demo.v1.layout.json").write_text(
+        json.dumps(
+            {
+                "nodes": {
+                    "cron-15m": {"x": 120, "y": 80},
+                    "prompt-agent": {"x": 440, "y": 80},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
     config_root = tmp_path / "config" / "trigger-orchestrator"
     config_root.mkdir(parents=True, exist_ok=True)
     (config_root / "config.json").write_text(
@@ -1580,6 +1591,13 @@ def test_workflow_editor_document_composes_workflow_pack_config(tmp_path: Path) 
     assert [trigger["id"] for trigger in document.config["triggers"]] == ["cron-15m"]
     assert [effect["id"] for effect in document.config["effects"]] == ["prompt-agent"]
     assert document.config["edges"] == [{"source_id": "cron-15m", "target_id": "prompt-agent"}]
+    assert document.layout_path == str(packs_dir / "demo.v1.layout.json")
+    assert document.layout == {
+        "nodes": {
+            "cron-15m": {"x": 120.0, "y": 80.0},
+            "prompt-agent": {"x": 440.0, "y": 80.0},
+        }
+    }
 
 
 def test_workflow_editor_save_updates_single_workflow_pack_without_flattening_wrapper(
@@ -1641,6 +1659,7 @@ def test_workflow_editor_save_updates_single_workflow_pack_without_flattening_wr
         layout={"nodes": {"cron-15m": {"x": 100, "y": 50}, "prompt-agent": {"x": 300, "y": 50}}},
     )
 
+    layout_path = packs_dir / "demo.v1.layout.json"
     wrapper_config = json.loads(config_path.read_text(encoding="utf-8"))
     assert wrapper_config["workflow_packs"] == ["demo.v1.json"]
     assert wrapper_config["poll_interval_seconds"] == 12.0
@@ -1654,9 +1673,18 @@ def test_workflow_editor_save_updates_single_workflow_pack_without_flattening_wr
     )
     assert saved_effect["display_name"] == "Prompt agent with context"
     assert save_result.config["effects"][0]["display_name"] == "Prompt agent with context"
+    assert save_result.layout_path == str(layout_path)
+    assert json.loads(layout_path.read_text(encoding="utf-8")) == {
+        "nodes": {
+            "cron-15m": {"x": 100.0, "y": 50.0},
+            "prompt-agent": {"x": 300.0, "y": 50.0},
+        }
+    }
 
     reread = service.read_workflow_editor_document()
     assert reread.config["effects"][0]["display_name"] == "Prompt agent with context"
+    assert reread.layout_path == str(layout_path)
+    assert reread.layout["nodes"]["prompt-agent"] == {"x": 300.0, "y": 50.0}
 
 
 def test_workflow_editor_validation_rejects_unknown_layout_nodes(tmp_path: Path) -> None:

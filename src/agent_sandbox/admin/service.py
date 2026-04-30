@@ -4330,8 +4330,22 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
         except ValidationError as exc:
             raise _safe_validation_error(exc, context=f"Invalid {worker_id} worker config") from exc
 
-    def _workflow_editor_layout_path(self) -> Path:
+    def _workflow_editor_default_layout_path(self) -> Path:
         return self.project_dir / "config" / "trigger-orchestrator" / "layout.json"
+
+    def _workflow_editor_pack_layout_path(self, pack_reference: object) -> Path:
+        return self._workflow_editor_pack_path(pack_reference).with_suffix(".layout.json")
+
+    def _workflow_editor_layout_path(self, raw_config: dict[str, object]) -> Path:
+        workflow_packs = raw_config.get("workflow_packs")
+        inline_ir = raw_config.get("workflow_ir")
+        if (
+            isinstance(workflow_packs, list)
+            and len(workflow_packs) == 1
+            and not isinstance(inline_ir, dict)
+        ):
+            return self._workflow_editor_pack_layout_path(workflow_packs[0])
+        return self._workflow_editor_default_layout_path()
 
     def _workflow_editor_revision(self, config: dict[str, object]) -> str:
         encoded = json.dumps(config, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -4455,7 +4469,7 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
         normalized_config = self._validate_worker_global_config_payload(
             "trigger-orchestrator", normalized_candidate
         )
-        layout_path = self._workflow_editor_layout_path()
+        layout_path = self._workflow_editor_layout_path(raw_config)
         layout_exists = layout_path.exists()
         raw_layout: dict[str, object]
         if layout_exists:
@@ -4533,7 +4547,7 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
             raw_config = loaded_config
 
         validation = self._validate_workflow_editor_document(config=config, layout=layout)
-        layout_path = self._workflow_editor_layout_path()
+        layout_path = self._workflow_editor_layout_path(raw_config)
         config_path.parent.mkdir(parents=True, exist_ok=True)
         layout_path.parent.mkdir(parents=True, exist_ok=True)
         pack_save = self._workflow_editor_pack_backed_save_paths(raw_config)

@@ -96,8 +96,9 @@ Workflow config ownership:
 
 - `agent_sandbox_manage_workflow_config: true` renders
   `config/trigger-orchestrator/config.json` from Ansible variables and resets that tracked file
-  before repo updates. When `config/trigger-orchestrator/layout.json` exists beside the playbook's
-  source checkout, it is copied too so workflow editor node positions deploy with the workflow.
+  before repo updates. When the pack-scoped workflow layout file configured by
+  `agent_sandbox_workflow_layout_path` exists beside the playbook's source checkout, it is copied too
+  so workflow editor node positions deploy with the workflow.
 - Set `agent_sandbox_manage_workflow_config: false` for hosts where operators edit workflows through
   Admin Web and deployment must not overwrite those edits.
 - The repo checkout role also resets tracked deploy-generated frontend files such as

@@ -296,6 +296,10 @@ At load time, the orchestrator composes selected pack IR + optional inline IR in
 runtime arrays (`triggers`, `gates`, `effects`, `queries`, `edges`) and then runs existing graph
 validation/compilation.
 
+The workflow editor stores layout separately from runtime IR. For a config backed by exactly one
+workflow pack, layout lives beside that pack as `config/workflow-packs/<pack>.layout.json`. Multi-pack
+or inline workflows use the composition-level fallback at `config/trigger-orchestrator/layout.json`.
+
 ### Adding a new domain pack (no core code changes)
 
 1. Create a new `config/workflow-packs/<name>.v1.json`.
