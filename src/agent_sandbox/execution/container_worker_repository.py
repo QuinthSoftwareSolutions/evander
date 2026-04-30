@@ -42,6 +42,9 @@ class ContainerWorkerExecutionRepository:
         record.updated_at = now_utc()
         self._store.put(record.execution_id, record)
 
+    def delete(self, execution_id: str) -> None:
+        self._store.delete(execution_id)
+
     def read_all(self) -> dict[str, ContainerWorkerExecutionRecord]:
         return self._store.read_all()
 

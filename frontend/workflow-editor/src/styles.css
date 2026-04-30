@@ -1871,6 +1871,16 @@ select {
   grid-template-columns: minmax(0, 1fr);
 }
 
+.agent-crud-modal {
+  width: min(100%, 58rem);
+}
+
+.agent-checkbox-row {
+  min-height: 2.5rem;
+  align-self: center;
+  margin-bottom: 0.85rem;
+}
+
 .issue-list {
   gap: 0.4rem;
 }

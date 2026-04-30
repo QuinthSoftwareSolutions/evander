@@ -29,6 +29,7 @@ class FakeContainerWorkerClient:
         self.got: list[str] = []
         self.stopped: list[str] = []
         self.deleted: list[str] = []
+        self.deleted_sessions: list[str] = []
         self.logged: list[str] = []
         self.prepared_sessions: list[WorkerSessionPrepareRequest] = []
         self.cloned_repos: list[tuple[str, WorkerRepoCloneRequest]] = []
@@ -60,6 +61,10 @@ class FakeContainerWorkerClient:
     def delete(self, job_id: str) -> dict[str, object]:
         self.deleted.append(job_id)
         return {"deleted": True, "job_id": job_id}
+
+    def delete_session(self, session_id: str) -> dict[str, object]:
+        self.deleted_sessions.append(session_id)
+        return {"deleted": True, "session_id": session_id}
 
     def logs(self, job_id: str) -> str:
         self.logged.append(job_id)
@@ -280,6 +285,16 @@ def test_session_preparation_clone_and_write_delegate_to_worker_client(tmp_path:
     assert client.cloned_repos[0][1].repo_source == "/tmp/repo"
     assert written.copied_paths == ["/workspace/AGENT_TASK.yaml"]
     assert client.written_files[0][1].files[0].content == "task"
+
+
+def test_delete_session_delegates_to_worker_client(tmp_path: Path) -> None:
+    client = FakeContainerWorkerClient()
+    backend = _backend(tmp_path, client)
+
+    result = backend.delete_session("session-1")
+
+    assert result == {"deleted": True, "session_id": "session-1"}
+    assert client.deleted_sessions == ["session-1"]
 
 
 def test_ambiguous_session_id_resolution_raises_clear_error(tmp_path: Path) -> None:

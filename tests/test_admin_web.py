@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import subprocess
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import MethodType
 from types import SimpleNamespace
@@ -17,7 +19,16 @@ from agent_sandbox.execution.container_worker_repository import (
     ContainerWorkerExecutionRepository,
 )
 from agent_sandbox.execution.models import ExecutionBackendKind, ExecutionStatus, ExecutionStatusKind
-from agent_sandbox.models import LocalIssueRecord, SessionSummary, VmActionResult, VmSummary
+from agent_sandbox.models import (
+    ApprovalRequest,
+    LocalIssueRecord,
+    SessionManifest,
+    SessionSummary,
+    ToolName,
+    VmActionResult,
+    VmSummary,
+)
+from agent_sandbox.worker.models import WorkerSessionRecord
 
 
 def write_config(tmp_path: Path, *, enable_directory_scoped_config: bool = False) -> Path:
@@ -1764,6 +1775,343 @@ def test_admin_web_container_agent_log_and_actions_do_not_require_vm_summary(
     assert fake_backend.logged == [("exec-1", 2)]
     assert fake_backend.stopped == ["exec-1"]
     assert fake_backend.destroyed == ["exec-1"]
+
+
+def test_admin_web_agents_create_vm_uses_agent_crud_payload(
+    tmp_path: Path, monkeypatch
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    captured: dict[str, object] = {}
+
+    def create_vm(self, **payload):
+        captured.update(payload)
+        return VmActionResult(
+            success=True,
+            vm_name=payload["vm_name"],
+            action="create_vm",
+            message="created",
+            provider="libvirt",
+        )
+
+    monkeypatch.setattr(service, "create_vm", MethodType(create_vm, service))
+    client = TestClient(create_app(service))
+
+    response = client.post(
+        "/api/admin/agents",
+        json={
+            "backend": "libvirt_vm",
+            "provider": "libvirt",
+            "vm_name": "lab-vm",
+            "session_id": "lab-session",
+            "directory_path": "root/team-a",
+            "model": "gpt-5.2-codex",
+            "ttl_hours": 12,
+            "labels": {"team": "a"},
+            "allowed_tools": ["run_script"],
+            "allowed_script_names": ["demo"],
+            "discord_channels": ["ops"],
+            "email_mailboxes": ["default"],
+            "email_folders": ["inbox"],
+            "vm_user": "agent",
+            "dotnet": True,
+            "nuget": True,
+            "mssql": True,
+            "mssql_init_root": "/tmp/init",
+            "playwright": True,
+            "codex_skills": ["exampleindustry-app-demo"],
+        },
+    )
+
+    assert response.status_code == 201
+    assert captured == {
+        "provider": "libvirt",
+        "vm_name": "lab-vm",
+        "session_id": "lab-session",
+        "labels": {"team": "a"},
+        "model": "gpt-5.2-codex",
+        "vm_user": "agent",
+        "ttl_hours": 12,
+        "allowed_tools": ["run_script"],
+        "allowed_script_names": ["demo"],
+        "discord_channels": ["ops"],
+        "email_mailboxes": ["default"],
+        "email_folders": ["inbox"],
+        "dotnet": True,
+        "nuget": True,
+        "mssql": True,
+        "mssql_init_root": "/tmp/init",
+        "playwright": True,
+        "codex_skills": ["exampleindustry-app-demo"],
+        "directory_path": "root/team-a",
+    }
+
+
+def test_admin_web_agents_create_container_session_and_list_it(
+    tmp_path: Path, monkeypatch
+) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    created = service.create_directory_child("root", "team-a")
+    assert created.ok is True and created.data is not None
+    team_path = created.data.details.directory.path
+
+    class FakeContainerBackend:
+        def __init__(self) -> None:
+            self.prepared: list[tuple[str, dict[str, object]]] = []
+
+        def prepare_session(
+            self, *, session_id: str, metadata: dict[str, object] | None = None
+        ) -> WorkerSessionRecord:
+            self.prepared.append((session_id, dict(metadata or {})))
+            return WorkerSessionRecord(
+                session_id=session_id,
+                root_path=f"/worker/{session_id}",
+                workspace_path=f"/worker/{session_id}/workspace",
+                agent_home_path=f"/worker/{session_id}/agent_home",
+                artifacts_path=f"/worker/{session_id}/artifacts",
+                logs_path=f"/worker/{session_id}/logs",
+                metadata_path=f"/worker/{session_id}/metadata.json",
+                metadata=dict(metadata or {}),
+            )
+
+    fake_backend = FakeContainerBackend()
+    monkeypatch.setattr(
+        service,
+        "_container_worker_backend",
+        MethodType(lambda self: fake_backend, service),
+    )
+    monkeypatch.setattr(service, "list_vms", MethodType(lambda self, **kwargs: [], service))
+    client = TestClient(create_app(service))
+
+    create_response = client.post(
+        "/api/admin/agents",
+        json={
+            "backend": "container_worker_vm",
+            "session_id": "container-session",
+            "target_name": "container-target",
+            "directory_path": team_path,
+            "model": "gpt-5.2-codex",
+            "labels": {"role": "demo"},
+            "allowed_script_names": ["seed-demo"],
+        },
+    )
+    list_response = client.get(
+        f"/api/admin/agents?directory_path={team_path}&direct_only=true&include_inactive=true"
+    )
+
+    assert create_response.status_code == 201
+    assert fake_backend.prepared == [
+        (
+            "container-session",
+            {
+                "execution_backend": "container_worker_vm",
+                "directory_path": team_path,
+                "target_name": "container-target",
+                "labels": {"role": "demo"},
+            },
+        )
+    ]
+    manifest = service.runtime.session_repository.get_session("container-session")
+    assert manifest is not None
+    assert manifest.vm_provider == "container_worker_vm"
+    assert manifest.vm_id is None
+    assert manifest.model == "gpt-5.2-codex"
+    assert manifest.allowed_script_names == ["seed-demo"]
+
+    assert list_response.status_code == 200
+    payload = list_response.json()
+    assert [(item["agent_id"], item["target_name"], item["status"]) for item in payload["items"]] == [
+        ("container-session", "container-target", "prepared")
+    ]
+    assert payload["items"][0]["capabilities"]["logs"] is False
+
+
+def test_admin_web_agents_patch_updates_session_policy_and_rejects_renames(
+    tmp_path: Path,
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="lab-session",
+            vm_id="lab-vm",
+            model="old-model",
+            directory_path="root",
+            allowed_tools=[ToolName.APPROVAL_SUBMIT],
+            allowed_script_names=["old-script"],
+            discord_channel_allowlist=["old-channel"],
+            email_mailbox_allowlist=["old-mailbox"],
+            email_folder_allowlist=["old-folder"],
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+            metadata={"labels": {"old": "label"}, "keep": "value"},
+        )
+    )
+    client = TestClient(create_app(service))
+
+    response = client.patch(
+        "/api/admin/agents/lab-session?backend=libvirt_vm",
+        json={
+            "model": "new-model",
+            "ttl_hours": 4,
+            "allowed_tools": ["run_script"],
+            "allowed_script_names": ["new-script"],
+            "discord_channels": ["new-channel"],
+            "email_mailboxes": ["new-mailbox"],
+            "email_folders": ["new-folder"],
+            "labels": {"new": "label"},
+        },
+    )
+    rename_response = client.patch(
+        "/api/admin/agents/lab-session?backend=libvirt_vm",
+        json={"target_name": "renamed"},
+    )
+
+    assert response.status_code == 200
+    assert rename_response.status_code == 400
+    updated = service.runtime.session_repository.get_session("lab-session")
+    assert updated is not None
+    assert updated.model == "new-model"
+    assert updated.allowed_tools == [ToolName.RUN_SCRIPT]
+    assert updated.allowed_script_names == ["new-script"]
+    assert updated.discord_channel_allowlist == ["new-channel"]
+    assert updated.email_mailbox_allowlist == ["new-mailbox"]
+    assert updated.email_folder_allowlist == ["new-folder"]
+    assert updated.metadata == {"labels": {"new": "label"}, "keep": "value"}
+    assert updated.expires_at > datetime.now(timezone.utc) + timedelta(hours=3)
+
+
+def test_admin_web_agents_delete_vm_removes_unambiguous_session(
+    tmp_path: Path, monkeypatch
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="lab-session",
+            vm_id="lab-vm",
+            allowed_tools=[],
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        )
+    )
+    calls: list[list[str]] = []
+
+    def _fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(cmd)
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="destroyed", stderr="")
+
+    monkeypatch.setattr("agent_sandbox.admin.service.subprocess.run", _fake_run)
+    client = TestClient(create_app(service))
+
+    response = client.delete("/api/admin/agents/lab-vm?backend=libvirt_vm")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "deleted"
+    assert service.runtime.session_repository.get_session("lab-session") is None
+    assert calls[0][-1] == "lab-vm"
+
+
+def test_admin_web_agents_delete_container_cleans_mapping_and_session(
+    tmp_path: Path, monkeypatch
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="container-session",
+            vm_provider="container_worker_vm",
+            allowed_tools=[],
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+            metadata={"target_name": "container-target"},
+        )
+    )
+    repository = ContainerWorkerExecutionRepository(
+        service.config.runtime_dir / "container-worker-executions.json"
+    )
+    repository.put(
+        ContainerWorkerExecutionRecord(
+            execution_id="exec-1",
+            session_id="container-session",
+            worker_job_id="job-1",
+            worker_url="http://worker.test",
+            target_name="container-target",
+            last_status="running",
+        )
+    )
+    service.runtime.approvals.put(
+        "approval-1",
+        ApprovalRequest(
+            request_id="approval-1",
+            session_id="container-session",
+            action_type="run_script",
+            tool_name="run_script",
+            payload_digest="abc",
+            human_summary="run script",
+            payload={"script": "seed-demo"},
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        ),
+    )
+
+    class FakeContainerBackend:
+        def __init__(self) -> None:
+            self.destroyed: list[str] = []
+            self.deleted_sessions: list[str] = []
+
+        def destroy(self, target: str) -> ExecutionStatus:
+            self.destroyed.append(target)
+            return ExecutionStatus(
+                backend=ExecutionBackendKind.CONTAINER_WORKER_VM,
+                execution_id=target,
+                target_name="container-target",
+                status=ExecutionStatusKind.DESTROYED,
+                session_id="container-session",
+            )
+
+        def delete_session(self, session_id: str) -> dict[str, object]:
+            self.deleted_sessions.append(session_id)
+            return {"deleted": True, "session_id": session_id}
+
+    fake_backend = FakeContainerBackend()
+    monkeypatch.setattr(
+        service,
+        "_container_worker_backend",
+        MethodType(lambda self: fake_backend, service),
+    )
+    client = TestClient(create_app(service))
+
+    response = client.delete("/api/admin/agents/exec-1?backend=container_worker_vm")
+
+    assert response.status_code == 200
+    assert fake_backend.destroyed == ["exec-1"]
+    assert fake_backend.deleted_sessions == ["container-session"]
+    assert service.runtime.session_repository.get_session("container-session") is None
+    assert repository.read_all() == {}
+    assert service.runtime.approvals.read_all() == {}
+
+
+def test_admin_web_agents_delete_ambiguous_vm_session_link_fails(
+    tmp_path: Path, monkeypatch
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    for session_id in ("session-a", "session-b"):
+        service.runtime.session_repository.upsert_session(
+            SessionManifest(
+                session_id=session_id,
+                vm_id="lab-vm",
+                allowed_tools=[],
+                expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+            )
+        )
+    destroyed: list[str] = []
+    monkeypatch.setattr(
+        service,
+        "destroy_vm",
+        MethodType(lambda self, target: destroyed.append(target), service),
+    )
+    client = TestClient(create_app(service))
+
+    response = client.delete("/api/admin/agents/lab-vm?backend=libvirt_vm")
+
+    assert response.status_code == 400
+    assert "multiple linked sessions" in response.json()["error"]
+    assert destroyed == []
+    assert service.runtime.session_repository.get_session("session-a") is not None
+    assert service.runtime.session_repository.get_session("session-b") is not None
 
 
 def test_admin_web_vm_agent_action_uses_existing_vm_path(tmp_path: Path, monkeypatch) -> None:

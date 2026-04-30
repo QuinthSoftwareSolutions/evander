@@ -158,6 +158,56 @@ def test_session_prepare_and_file_write_surface_targets_durable_paths(tmp_path: 
     assert (root / "agent_home" / "AGENTS.md").read_text(encoding="utf-8") == "# Agent\n"
 
 
+def test_session_delete_removes_durable_paths_and_worker_jobs(tmp_path: Path) -> None:
+    runtime = FakeContainerRuntime()
+    client = _client(tmp_path, runtime)
+    created = client.post(
+        "/v1/jobs",
+        headers=_auth(),
+        json={
+            "session_id": "session-1",
+            "job_id": "job-1",
+            "image": "codex:latest",
+            "command": ["true"],
+        },
+    )
+    assert created.status_code == 201
+    root = tmp_path / "worker-root" / "sessions" / "session-1"
+    assert root.is_dir()
+
+    deleted = client.delete("/v1/sessions/session-1", headers=_auth())
+
+    assert deleted.status_code == 200
+    assert deleted.json() == {"deleted": True, "session_id": "session-1"}
+    assert runtime.removed == ["job-1"]
+    assert not root.exists()
+    assert client.get("/v1/jobs/job-1", headers=_auth()).status_code == 404
+
+
+def test_session_delete_removes_stopped_worker_jobs(tmp_path: Path) -> None:
+    runtime = FakeContainerRuntime()
+    client = _client(tmp_path, runtime)
+    created = client.post(
+        "/v1/jobs",
+        headers=_auth(),
+        json={
+            "session_id": "session-1",
+            "job_id": "job-1",
+            "image": "codex:latest",
+            "command": ["true"],
+        },
+    )
+    assert created.status_code == 201
+    stopped = client.post("/v1/jobs/job-1/stop", headers=_auth())
+    assert stopped.status_code == 200
+
+    deleted = client.delete("/v1/sessions/session-1", headers=_auth())
+
+    assert deleted.status_code == 200
+    assert runtime.removed == ["job-1"]
+    assert client.get("/v1/jobs/job-1", headers=_auth()).status_code == 404
+
+
 def test_session_file_write_rejects_paths_outside_worker_session_roots(tmp_path: Path) -> None:
     client = _client(tmp_path)
 

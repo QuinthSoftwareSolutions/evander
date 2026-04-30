@@ -223,6 +223,9 @@ class ContainerWorkerVmExecutionBackend:
             WorkerFileWriteRequest.model_validate({"files": files}),
         )
 
+    def delete_session(self, session_id: str) -> dict[str, Any]:
+        return self.client.delete_session(session_id)
+
     def _job_request(self, prepared: PreparedExecution) -> WorkerJobRequest:
         command = self._command_from_spec(prepared.command)
         image = str(prepared.image or self.config.container_worker_default_image).strip()

@@ -146,6 +146,12 @@ def test_container_worker_client_prepares_session_clones_repo_and_writes_files(
                 },
                 request=request,
             )
+        if request.method == "DELETE":
+            return httpx.Response(
+                200,
+                json={"deleted": True, "session_id": "session-1"},
+                request=request,
+            )
         return httpx.Response(
             200,
             json={
@@ -182,10 +188,12 @@ def test_container_worker_client_prepares_session_clones_repo_and_writes_files(
         ).copied_count
         == 1
     )
+    assert worker.delete_session("session-1") == {"deleted": True, "session_id": "session-1"}
     assert seen == [
         ("POST", "/v1/sessions"),
         ("POST", "/v1/sessions/session-1/repo"),
         ("POST", "/v1/sessions/session-1/files"),
+        ("DELETE", "/v1/sessions/session-1"),
     ]
 
 

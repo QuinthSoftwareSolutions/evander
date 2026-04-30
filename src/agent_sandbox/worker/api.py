@@ -82,6 +82,17 @@ def build_worker_app(daemon: WorkerDaemon) -> Starlette:
             return JSONResponse({"error": str(exc)}, status_code=400)
         return JSONResponse(record.model_dump(mode="json"))
 
+    async def delete_session(request: Request) -> JSONResponse:
+        try:
+            deleted = daemon.delete_session(request.path_params["session_id"])
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        except subprocess.CalledProcessError as exc:
+            return JSONResponse({"error": safe_subprocess_error(exc)}, status_code=502)
+        return JSONResponse(
+            {"deleted": deleted, "session_id": request.path_params["session_id"]}
+        )
+
     async def get_job(request: Request) -> JSONResponse:
         record = daemon.store.get(request.path_params["job_id"])
         if record is None:
@@ -129,6 +140,7 @@ def build_worker_app(daemon: WorkerDaemon) -> Starlette:
             Route("/v1/sessions", prepare_session, methods=["POST"]),
             Route("/v1/sessions/{session_id}/repo", clone_session_repo, methods=["POST"]),
             Route("/v1/sessions/{session_id}/files", write_session_files, methods=["POST"]),
+            Route("/v1/sessions/{session_id}", delete_session, methods=["DELETE"]),
             Route("/v1/jobs", create_job, methods=["POST"]),
             Route("/v1/jobs/{job_id}", get_job, methods=["GET"]),
             Route("/v1/jobs/{job_id}/stop", stop_job, methods=["POST"]),

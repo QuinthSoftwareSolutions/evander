@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import subprocess
 import uuid
 from pathlib import Path
@@ -18,6 +19,7 @@ from .models import (
     WorkerJobRequest,
     WorkerRepoCloneRecord,
     WorkerRepoCloneRequest,
+    SAFE_ID_PATTERN,
     WorkerSessionPrepareRequest,
     WorkerSessionPaths,
     WorkerSessionRecord,
@@ -202,6 +204,38 @@ class WorkerDaemon:
             copied_paths=copied_paths,
             roots={"workspace": "/workspace", "agent_home": "/home/agent"},
         )
+
+    def delete_session(self, session_id: str) -> bool:
+        normalized_session_id = str(session_id or "").strip()
+        if not normalized_session_id:
+            raise ValueError("session_id is required")
+        if not SAFE_ID_PATTERN.fullmatch(normalized_session_id):
+            raise ValueError(
+                "session_id must contain only letters, numbers, dots, underscores, or dashes"
+            )
+
+        removed_any = False
+        for record in list(self.store.read_all().values()):
+            if record.session_id != normalized_session_id:
+                continue
+            if record.status != "removed":
+                self.container_runtime.remove_job(record)
+            self.store.delete(record.job_id)
+            removed_any = True
+
+        session_root = self.worker_root / "sessions" / normalized_session_id
+        if session_root.is_symlink() or session_root.is_file():
+            session_root.unlink()
+            removed_any = True
+        elif session_root.exists():
+            shutil.rmtree(session_root)
+            removed_any = True
+        logger.info(
+            "worker_session_deleted session_id=%s removed=%s",
+            normalized_session_id,
+            removed_any,
+        )
+        return removed_any
 
     def _log_path(self, record: WorkerJobRecord) -> Path:
         return Path(record.logs_path) / f"{record.job_id}.log"

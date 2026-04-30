@@ -7,9 +7,12 @@ import { Tooltip } from "../admin/Tooltip";
 import type {
   AgentActionResponse,
   AgentBackend,
+  AgentCreateRequest,
   AgentListResponse,
   AgentLogResponse,
   AgentRecord,
+  AgentPolicyUpdateRequest,
+  AgentSessionPolicy,
 } from "../admin/types";
 
 type ActionLogEntry = {
@@ -21,8 +24,132 @@ type ActionLogEntry = {
 type BackendFilter = "all" | AgentBackend;
 type StatusFilter = "active" | "inactive" | "all";
 
+type AgentCreateFormState = {
+  backend: AgentBackend;
+  vmName: string;
+  targetName: string;
+  sessionId: string;
+  directoryPath: string;
+  model: string;
+  ttlHours: string;
+  labels: string;
+  allowedTools: string;
+  allowedScriptNames: string;
+  discordChannels: string;
+  emailMailboxes: string;
+  emailFolders: string;
+  provider: string;
+  vmUser: string;
+  dotnet: boolean;
+  nuget: boolean;
+  mssql: boolean;
+  mssqlInitRoot: string;
+  playwright: boolean;
+  codexSkills: string;
+};
+
+type AgentPolicyFormState = {
+  model: string;
+  ttlHours: string;
+  labels: string;
+  allowedTools: string;
+  allowedScriptNames: string;
+  discordChannels: string;
+  emailMailboxes: string;
+  emailFolders: string;
+};
+
 const REFRESH_MS = 5000;
 const AGENT_SELECTION_STORAGE_KEY = "admin-web:agents:selected-agent";
+
+function emptyCreateForm(directoryPath: string): AgentCreateFormState {
+  return {
+    backend: "libvirt_vm",
+    vmName: "",
+    targetName: "",
+    sessionId: "",
+    directoryPath,
+    model: "",
+    ttlHours: "",
+    labels: "",
+    allowedTools: "",
+    allowedScriptNames: "",
+    discordChannels: "",
+    emailMailboxes: "",
+    emailFolders: "",
+    provider: "",
+    vmUser: "agent",
+    dotnet: false,
+    nuget: false,
+    mssql: false,
+    mssqlInitRoot: "",
+    playwright: false,
+    codexSkills: "",
+  };
+}
+
+function emptyPolicyForm(): AgentPolicyFormState {
+  return {
+    model: "",
+    ttlHours: "",
+    labels: "",
+    allowedTools: "",
+    allowedScriptNames: "",
+    discordChannels: "",
+    emailMailboxes: "",
+    emailFolders: "",
+  };
+}
+
+function parseList(value: string): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const item of value.split(/[\n,]/)) {
+    const normalized = item.trim();
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    result.push(normalized);
+  }
+  return result;
+}
+
+function formatList(value: unknown): string {
+  if (!Array.isArray(value)) return "";
+  return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0).join("\n");
+}
+
+function parseLabels(value: string): Record<string, string> {
+  const labels: Record<string, string> = {};
+  for (const line of value.split(/\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const separator = trimmed.includes("=") ? "=" : ":";
+    const [rawKey, ...rest] = trimmed.split(separator);
+    const key = rawKey.trim();
+    const labelValue = rest.join(separator).trim();
+    if (key && labelValue) labels[key] = labelValue;
+  }
+  return labels;
+}
+
+function formatLabels(value: Record<string, unknown> | null | undefined): string {
+  if (!value) return "";
+  return Object.entries(value)
+    .filter(([, item]) => item != null && typeof item !== "object")
+    .map(([key, item]) => `${key}=${String(item)}`)
+    .join("\n");
+}
+
+function optionalText(value: string): string | null {
+  return value.trim() || null;
+}
+
+function optionalNumber(value: string): number | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const parsed = Number(trimmed);
+  return Number.isFinite(parsed) ? parsed : null;
+}
 
 async function loadAgentList(
   directoryPath: string,
@@ -108,6 +235,87 @@ function labelsForAgent(agent: AgentRecord | null): Array<[string, string]> {
   return recordEntries(directLabels ?? metadataLabels).sort(([left], [right]) =>
     left.localeCompare(right, undefined, { sensitivity: "base" }),
   );
+}
+
+function sessionPolicyForAgent(agent: AgentRecord | null): AgentSessionPolicy | null {
+  const rawPolicy = hostRecord(agent?.host, "session_policy");
+  if (!rawPolicy) return null;
+  const sessionId = hostString(rawPolicy, "session_id");
+  if (!sessionId) return null;
+  return {
+    session_id: sessionId,
+    model: hostString(rawPolicy, "model"),
+    expires_at: hostString(rawPolicy, "expires_at"),
+    allowed_tools: hostStringList(rawPolicy, "allowed_tools"),
+    allowed_script_names: hostStringList(rawPolicy, "allowed_script_names"),
+    discord_channels: hostStringList(rawPolicy, "discord_channels"),
+    email_mailboxes: hostStringList(rawPolicy, "email_mailboxes"),
+    email_folders: hostStringList(rawPolicy, "email_folders"),
+    labels: Object.fromEntries(recordEntries(hostRecord(rawPolicy, "labels"))),
+  };
+}
+
+function policyFormFromAgent(agent: AgentRecord): AgentPolicyFormState {
+  const policy = sessionPolicyForAgent(agent);
+  const labels = policy?.labels ?? Object.fromEntries(labelsForAgent(agent));
+  return {
+    model: policy?.model ?? "",
+    ttlHours: "",
+    labels: formatLabels(labels),
+    allowedTools: formatList(policy?.allowed_tools),
+    allowedScriptNames: formatList(policy?.allowed_script_names),
+    discordChannels: formatList(policy?.discord_channels),
+    emailMailboxes: formatList(policy?.email_mailboxes),
+    emailFolders: formatList(policy?.email_folders),
+  };
+}
+
+function buildCreatePayload(form: AgentCreateFormState): AgentCreateRequest {
+  const labels = parseLabels(form.labels);
+  const payload: AgentCreateRequest = {
+    backend: form.backend,
+    session_id: optionalText(form.sessionId),
+    directory_path: optionalText(form.directoryPath),
+    model: optionalText(form.model),
+    ttl_hours: optionalNumber(form.ttlHours),
+    labels,
+    allowed_tools: parseList(form.allowedTools),
+    allowed_script_names: parseList(form.allowedScriptNames),
+    discord_channels: parseList(form.discordChannels),
+    email_mailboxes: parseList(form.emailMailboxes),
+    email_folders: parseList(form.emailFolders),
+  };
+  if (form.backend === "libvirt_vm") {
+    const provider = optionalText(form.provider);
+    payload.vm_name = optionalText(form.vmName);
+    if (provider) payload.provider = provider;
+    payload.vm_user = optionalText(form.vmUser) ?? "agent";
+    payload.dotnet = form.dotnet;
+    payload.nuget = form.nuget;
+    payload.mssql = form.mssql;
+    payload.mssql_init_root = form.mssql ? optionalText(form.mssqlInitRoot) : null;
+    payload.playwright = form.playwright;
+    payload.codex_skills = parseList(form.codexSkills);
+  } else {
+    payload.target_name = optionalText(form.targetName);
+  }
+  return payload;
+}
+
+function buildPolicyPayload(form: AgentPolicyFormState): AgentPolicyUpdateRequest {
+  const payload: AgentPolicyUpdateRequest = {
+    model: optionalText(form.model),
+    labels: parseLabels(form.labels),
+    allowed_tools: parseList(form.allowedTools),
+    allowed_script_names: parseList(form.allowedScriptNames),
+    discord_channels: parseList(form.discordChannels),
+    email_mailboxes: parseList(form.emailMailboxes),
+    email_folders: parseList(form.emailFolders),
+  };
+  if (form.ttlHours.trim()) {
+    payload.ttl_hours = optionalNumber(form.ttlHours);
+  }
+  return payload;
 }
 
 function isActiveStatus(status: string): boolean {
@@ -212,6 +420,15 @@ function DestroyIcon() {
   );
 }
 
+function EditIcon() {
+  return (
+    <AgentIcon>
+      <path d="M5 19h4.2L18.4 9.8a2.1 2.1 0 0 0-3-3L6.2 16H5z" />
+      <path d="m13.9 8.3 1.8 1.8" />
+    </AgentIcon>
+  );
+}
+
 export function AgentsPage() {
   const { privilegedUnlocked, selectedDirectoryPath } = useAdminUi();
   const [items, setItems] = useState<AgentRecord[]>([]);
@@ -227,6 +444,13 @@ export function AgentsPage() {
   const [status, setStatus] = useState<string | null>(null);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [actionLog, setActionLog] = useState<ActionLogEntry[]>([]);
+  const [showCreateForm, setShowCreateForm] = useState(false);
+  const [createForm, setCreateForm] = useState<AgentCreateFormState>(() =>
+    emptyCreateForm(selectedDirectoryPath),
+  );
+  const [showEditForm, setShowEditForm] = useState(false);
+  const [editForm, setEditForm] = useState<AgentPolicyFormState>(() => emptyPolicyForm());
+  const [inlineValidation, setInlineValidation] = useState("");
   const [selectionHydrated, setSelectionHydrated] = useState(false);
 
   useEffect(() => {
@@ -245,6 +469,12 @@ export function AgentsPage() {
     }
     window.localStorage.removeItem(AGENT_SELECTION_STORAGE_KEY);
   }, [selectedKey, selectionHydrated]);
+
+  useEffect(() => {
+    if (!showCreateForm) {
+      setCreateForm(emptyCreateForm(selectedDirectoryPath));
+    }
+  }, [selectedDirectoryPath, showCreateForm]);
 
   const filteredItems = useMemo(() => {
     return [...items]
@@ -379,6 +609,123 @@ export function AgentsPage() {
     }
   }
 
+  function ttlIsInvalid(value: string): boolean {
+    const trimmed = value.trim();
+    return Boolean(trimmed) && optionalNumber(trimmed) == null;
+  }
+
+  async function handleCreateAgent() {
+    if (createForm.backend === "libvirt_vm" && !createForm.vmName.trim()) {
+      setInlineValidation("VM name is required.");
+      return;
+    }
+    if (createForm.backend === "container_worker_vm" && !createForm.sessionId.trim()) {
+      setInlineValidation("Session id is required for container workers.");
+      return;
+    }
+    if (ttlIsInvalid(createForm.ttlHours)) {
+      setInlineValidation("TTL hours must be a number.");
+      return;
+    }
+    setBusyAction("create-agent");
+    setInlineValidation("");
+    try {
+      const payload = await fetchJson<AgentActionResponse>("/api/admin/agents", {
+        method: "POST",
+        body: JSON.stringify(buildCreatePayload(createForm)),
+      });
+      const message = `${payload.target_name}: ${payload.message}`;
+      setActionLog((current) => [{ at: new Date().toISOString(), message, tone: "info" as const }, ...current].slice(0, 30));
+      setStatus(payload.message);
+      setError(null);
+      setShowCreateForm(false);
+      setCreateForm(emptyCreateForm(selectedDirectoryPath));
+      await refreshAgents();
+      setSelectedKey(`${payload.backend}:${payload.agent_id}`);
+    } catch (reason: unknown) {
+      const message = reason instanceof Error ? reason.message : String(reason);
+      setError(message);
+      setStatus(null);
+      setInlineValidation(message);
+      setActionLog((current) => [{ at: new Date().toISOString(), message: `Create agent: ${message}`, tone: "error" as const }, ...current].slice(0, 30));
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  function openEditForm() {
+    if (!selectedAgent) return;
+    const policy = sessionPolicyForAgent(selectedAgent);
+    if (!policy) {
+      setError("The selected agent does not have an unambiguous linked session to edit.");
+      return;
+    }
+    setEditForm(policyFormFromAgent(selectedAgent));
+    setShowEditForm(true);
+    setShowResumeForm(false);
+    setInlineValidation("");
+  }
+
+  async function handleEditAgent() {
+    if (!selectedAgent) return;
+    if (ttlIsInvalid(editForm.ttlHours)) {
+      setInlineValidation("TTL hours must be a number.");
+      return;
+    }
+    setBusyAction("edit-agent");
+    setInlineValidation("");
+    try {
+      const query = new URLSearchParams({ backend: selectedAgent.backend });
+      const payload = await fetchJson<AgentActionResponse>(
+        `/api/admin/agents/${encodeURIComponent(selectedAgent.agent_id)}?${query.toString()}`,
+        {
+          method: "PATCH",
+          body: JSON.stringify(buildPolicyPayload(editForm)),
+        },
+      );
+      const message = `${selectedAgent.target_name}: ${payload.message}`;
+      setActionLog((current) => [{ at: new Date().toISOString(), message, tone: "info" as const }, ...current].slice(0, 30));
+      setStatus(payload.message);
+      setError(null);
+      setShowEditForm(false);
+      await refreshAgents();
+      setSelectedKey(agentKey(selectedAgent));
+    } catch (reason: unknown) {
+      const message = reason instanceof Error ? reason.message : String(reason);
+      setError(message);
+      setStatus(null);
+      setInlineValidation(message);
+      setActionLog((current) => [{ at: new Date().toISOString(), message: `${selectedAgent.target_name}: ${message}`, tone: "error" as const }, ...current].slice(0, 30));
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function handleDeleteAgent() {
+    if (!selectedAgent) return;
+    setBusyAction("delete-agent");
+    try {
+      const query = new URLSearchParams({ backend: selectedAgent.backend });
+      const payload = await fetchJson<AgentActionResponse>(
+        `/api/admin/agents/${encodeURIComponent(selectedAgent.agent_id)}?${query.toString()}`,
+        { method: "DELETE" },
+      );
+      const message = `${selectedAgent.target_name}: ${payload.message}`;
+      setActionLog((current) => [{ at: new Date().toISOString(), message, tone: "info" as const }, ...current].slice(0, 30));
+      setStatus(payload.message);
+      setError(null);
+      setShowEditForm(false);
+      await refreshAgents();
+    } catch (reason: unknown) {
+      const message = reason instanceof Error ? reason.message : String(reason);
+      setError(message);
+      setStatus(null);
+      setActionLog((current) => [{ at: new Date().toISOString(), message: `${selectedAgent.target_name}: ${message}`, tone: "error" as const }, ...current].slice(0, 30));
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
   const guestAgent = hostRecord(selectedAgent?.host, "agent");
   const agentState = hostString(guestAgent, "state") ?? "unknown";
   const agentPid = hostNumber(guestAgent, "pid");
@@ -394,6 +741,7 @@ export function AgentsPage() {
   const showResume = selectedAgent?.backend === "libvirt_vm" && selectedAgent.capabilities.resume && agentState !== "disabled";
   const showContainerStop = selectedAgent?.backend === "container_worker_vm" && selectedAgent.capabilities.stop && isActiveStatus(selectedAgent.status);
   const showDestroy = Boolean(selectedAgent?.capabilities.destroy);
+  const canEditPolicy = Boolean(selectedAgent && sessionPolicyForAgent(selectedAgent));
   const logTitle = selectedAgent?.backend === "container_worker_vm"
     ? hostString(selectedAgent.host, "worker_job_id") ?? "Worker job"
     : hostString(guestAgent, "preferred_repo_name") ?? "Agent output";
@@ -410,10 +758,23 @@ export function AgentsPage() {
             <button type="button" onClick={() => void handleManualRefresh()} disabled={loading}>
               Refresh
             </button>
+            <button
+              type="button"
+              className={showCreateForm ? "" : "primary"}
+              onClick={() => {
+                setCreateForm(emptyCreateForm(selectedDirectoryPath));
+                setShowCreateForm(true);
+                setShowEditForm(false);
+                setInlineValidation("");
+              }}
+              disabled={busyAction !== null || !privilegedUnlocked}
+            >
+              Create
+            </button>
           </div>
         </div>
         {!privilegedUnlocked ? (
-          <div className="callout warning-callout">Unlock privileged operations to stop, destroy, or resume targets.</div>
+          <div className="callout warning-callout">Unlock privileged operations to create, edit, stop, destroy, or resume targets.</div>
         ) : null}
         <div className="config-field-grid agents-filter-grid">
           <label className="field-stack">
@@ -448,6 +809,7 @@ export function AgentsPage() {
                     onClick={() => {
                       setSelectedKey(agentKey(item));
                       setShowResumeForm(false);
+                      setShowEditForm(false);
                     }}
                   >
                     <div className="feature-list-title-row vm-list-item-row">
@@ -484,6 +846,17 @@ export function AgentsPage() {
                 <span className={`status-pill state-${statusClass(selectedAgent.status)}`}>
                   {selectedAgent.status}
                 </span>
+              </Tooltip>
+              <Tooltip content="Edit the selected session policy.">
+                <button
+                  type="button"
+                  className={showEditForm ? "primary" : ""}
+                  onClick={openEditForm}
+                  disabled={!canMutate || !canEditPolicy}
+                  aria-label="Edit policy"
+                >
+                  {busyAction === "edit-agent" ? "..." : <EditIcon />}
+                </button>
               </Tooltip>
               {showStart ? (
                 <Tooltip content="Start the selected VM.">
@@ -571,19 +944,19 @@ export function AgentsPage() {
                 </Tooltip>
               ) : null}
               {showDestroy ? (
-                <Tooltip content={selectedAgent.backend === "container_worker_vm" ? "Delete the worker job record from the worker." : "Destroy the VM and remove local VM state."}>
+                <Tooltip content={selectedAgent.backend === "container_worker_vm" ? "Delete the worker target and linked session." : "Destroy the VM and remove the linked session."}>
                   <button
                     type="button"
                     className="danger"
                     onClick={() => {
                       if (window.confirm(`Destroy ${selectedAgent.target_name}?`)) {
-                        void runAgentAction("destroy");
+                        void handleDeleteAgent();
                       }
                     }}
                     disabled={!canMutate}
                     aria-label="Destroy target"
                   >
-                    <DestroyIcon />
+                    {busyAction === "delete-agent" ? "..." : <DestroyIcon />}
                   </button>
                 </Tooltip>
               ) : null}
@@ -593,6 +966,303 @@ export function AgentsPage() {
 
         {status ? <div className="callout success-callout">{status}</div> : null}
         {error ? <div className="callout error-callout">{error}</div> : null}
+
+        {showCreateForm ? (
+          <div className="modal-backdrop" role="presentation">
+            <section className="modal-card agent-crud-modal" role="dialog" aria-modal="true" aria-label="Create agent">
+              <div className="modal-header">
+                <div>
+                  <h2>Create agent</h2>
+                </div>
+                <button type="button" onClick={() => setShowCreateForm(false)} disabled={busyAction === "create-agent"}>
+                  Close
+                </button>
+              </div>
+              <div className="modal-body">
+                {inlineValidation ? <div className="callout error-callout">{inlineValidation}</div> : null}
+                <div className="config-field-grid">
+                  <label className="field-stack">
+                    <span>Backend</span>
+                    <select
+                      value={createForm.backend}
+                      onChange={(event) =>
+                        setCreateForm((current) => ({
+                          ...current,
+                          backend: event.target.value as AgentBackend,
+                        }))
+                      }
+                    >
+                      <option value="libvirt_vm">VM agent</option>
+                      <option value="container_worker_vm">Container worker</option>
+                    </select>
+                  </label>
+                  <label className="field-stack">
+                    <span>Directory</span>
+                    <input
+                      value={createForm.directoryPath}
+                      onChange={(event) => setCreateForm((current) => ({ ...current, directoryPath: event.target.value }))}
+                    />
+                  </label>
+                  <label className="field-stack">
+                    <span>Session</span>
+                    <input
+                      value={createForm.sessionId}
+                      onChange={(event) => setCreateForm((current) => ({ ...current, sessionId: event.target.value }))}
+                      placeholder={createForm.backend === "container_worker_vm" ? "Required" : "Optional"}
+                    />
+                  </label>
+                  <label className="field-stack">
+                    <span>Model</span>
+                    <input
+                      value={createForm.model}
+                      onChange={(event) => setCreateForm((current) => ({ ...current, model: event.target.value }))}
+                      placeholder="Optional"
+                    />
+                  </label>
+                  <label className="field-stack">
+                    <span>TTL hours</span>
+                    <input
+                      inputMode="numeric"
+                      value={createForm.ttlHours}
+                      onChange={(event) => setCreateForm((current) => ({ ...current, ttlHours: event.target.value }))}
+                      placeholder="Default"
+                    />
+                  </label>
+                  {createForm.backend === "libvirt_vm" ? (
+                    <>
+                      <label className="field-stack">
+                        <span>VM name</span>
+                        <input
+                          value={createForm.vmName}
+                          onChange={(event) => setCreateForm((current) => ({ ...current, vmName: event.target.value }))}
+                        />
+                      </label>
+                      <label className="field-stack">
+                        <span>Provider</span>
+                        <input
+                          value={createForm.provider}
+                          onChange={(event) => setCreateForm((current) => ({ ...current, provider: event.target.value }))}
+                          placeholder="Directory default"
+                        />
+                      </label>
+                      <label className="field-stack">
+                        <span>VM user</span>
+                        <input
+                          value={createForm.vmUser}
+                          onChange={(event) => setCreateForm((current) => ({ ...current, vmUser: event.target.value }))}
+                        />
+                      </label>
+                    </>
+                  ) : (
+                    <label className="field-stack">
+                      <span>Target name</span>
+                      <input
+                        value={createForm.targetName}
+                        onChange={(event) => setCreateForm((current) => ({ ...current, targetName: event.target.value }))}
+                        placeholder="Optional"
+                      />
+                    </label>
+                  )}
+                  <label className="field-stack">
+                    <span>Labels</span>
+                    <textarea
+                      rows={4}
+                      value={createForm.labels}
+                      onChange={(event) => setCreateForm((current) => ({ ...current, labels: event.target.value }))}
+                    />
+                  </label>
+                  <label className="field-stack">
+                    <span>Allowed tools</span>
+                    <textarea
+                      rows={4}
+                      value={createForm.allowedTools}
+                      onChange={(event) => setCreateForm((current) => ({ ...current, allowedTools: event.target.value }))}
+                    />
+                  </label>
+                  <label className="field-stack">
+                    <span>Allowed scripts</span>
+                    <textarea
+                      rows={4}
+                      value={createForm.allowedScriptNames}
+                      onChange={(event) => setCreateForm((current) => ({ ...current, allowedScriptNames: event.target.value }))}
+                    />
+                  </label>
+                  <label className="field-stack">
+                    <span>Discord channels</span>
+                    <textarea
+                      rows={4}
+                      value={createForm.discordChannels}
+                      onChange={(event) => setCreateForm((current) => ({ ...current, discordChannels: event.target.value }))}
+                    />
+                  </label>
+                  <label className="field-stack">
+                    <span>Email mailboxes</span>
+                    <textarea
+                      rows={4}
+                      value={createForm.emailMailboxes}
+                      onChange={(event) => setCreateForm((current) => ({ ...current, emailMailboxes: event.target.value }))}
+                    />
+                  </label>
+                  <label className="field-stack">
+                    <span>Email folders</span>
+                    <textarea
+                      rows={4}
+                      value={createForm.emailFolders}
+                      onChange={(event) => setCreateForm((current) => ({ ...current, emailFolders: event.target.value }))}
+                    />
+                  </label>
+                  {createForm.backend === "libvirt_vm" ? (
+                    <>
+                      <label className="checkbox-row agent-checkbox-row">
+                        <input
+                          type="checkbox"
+                          checked={createForm.dotnet}
+                          onChange={(event) => setCreateForm((current) => ({ ...current, dotnet: event.target.checked }))}
+                        />
+                        <span>.NET</span>
+                      </label>
+                      <label className="checkbox-row agent-checkbox-row">
+                        <input
+                          type="checkbox"
+                          checked={createForm.nuget}
+                          onChange={(event) => setCreateForm((current) => ({ ...current, nuget: event.target.checked }))}
+                        />
+                        <span>NuGet</span>
+                      </label>
+                      <label className="checkbox-row agent-checkbox-row">
+                        <input
+                          type="checkbox"
+                          checked={createForm.mssql}
+                          onChange={(event) => setCreateForm((current) => ({ ...current, mssql: event.target.checked }))}
+                        />
+                        <span>MSSQL</span>
+                      </label>
+                      <label className="checkbox-row agent-checkbox-row">
+                        <input
+                          type="checkbox"
+                          checked={createForm.playwright}
+                          onChange={(event) => setCreateForm((current) => ({ ...current, playwright: event.target.checked }))}
+                        />
+                        <span>Playwright</span>
+                      </label>
+                      <label className="field-stack">
+                        <span>MSSQL init root</span>
+                        <input
+                          value={createForm.mssqlInitRoot}
+                          onChange={(event) => setCreateForm((current) => ({ ...current, mssqlInitRoot: event.target.value }))}
+                          disabled={!createForm.mssql}
+                        />
+                      </label>
+                      <label className="field-stack">
+                        <span>Codex skills</span>
+                        <textarea
+                          rows={3}
+                          value={createForm.codexSkills}
+                          onChange={(event) => setCreateForm((current) => ({ ...current, codexSkills: event.target.value }))}
+                        />
+                      </label>
+                    </>
+                  ) : null}
+                </div>
+                <div className="inline-actions compact-actions">
+                  <button className="primary" type="button" disabled={!privilegedUnlocked || busyAction === "create-agent"} onClick={() => void handleCreateAgent()}>
+                    {busyAction === "create-agent" ? "Creating..." : "Create"}
+                  </button>
+                </div>
+              </div>
+            </section>
+          </div>
+        ) : null}
+
+        {showEditForm && selectedAgent ? (
+          <div className="modal-backdrop" role="presentation">
+            <section className="modal-card agent-crud-modal" role="dialog" aria-modal="true" aria-label="Edit agent policy">
+              <div className="modal-header">
+                <div>
+                  <h2>Edit policy</h2>
+                  <p>{selectedAgent.session_id ?? selectedAgent.agent_id}</p>
+                </div>
+                <button type="button" onClick={() => setShowEditForm(false)} disabled={busyAction === "edit-agent"}>
+                  Close
+                </button>
+              </div>
+              <div className="modal-body">
+                {inlineValidation ? <div className="callout error-callout">{inlineValidation}</div> : null}
+                <div className="config-field-grid">
+                  <label className="field-stack">
+                    <span>Model</span>
+                    <input
+                      value={editForm.model}
+                      onChange={(event) => setEditForm((current) => ({ ...current, model: event.target.value }))}
+                    />
+                  </label>
+                  <label className="field-stack">
+                    <span>Renew TTL hours</span>
+                    <input
+                      inputMode="numeric"
+                      value={editForm.ttlHours}
+                      onChange={(event) => setEditForm((current) => ({ ...current, ttlHours: event.target.value }))}
+                      placeholder="Leave blank"
+                    />
+                  </label>
+                  <label className="field-stack">
+                    <span>Labels</span>
+                    <textarea
+                      rows={4}
+                      value={editForm.labels}
+                      onChange={(event) => setEditForm((current) => ({ ...current, labels: event.target.value }))}
+                    />
+                  </label>
+                  <label className="field-stack">
+                    <span>Allowed tools</span>
+                    <textarea
+                      rows={4}
+                      value={editForm.allowedTools}
+                      onChange={(event) => setEditForm((current) => ({ ...current, allowedTools: event.target.value }))}
+                    />
+                  </label>
+                  <label className="field-stack">
+                    <span>Allowed scripts</span>
+                    <textarea
+                      rows={4}
+                      value={editForm.allowedScriptNames}
+                      onChange={(event) => setEditForm((current) => ({ ...current, allowedScriptNames: event.target.value }))}
+                    />
+                  </label>
+                  <label className="field-stack">
+                    <span>Discord channels</span>
+                    <textarea
+                      rows={4}
+                      value={editForm.discordChannels}
+                      onChange={(event) => setEditForm((current) => ({ ...current, discordChannels: event.target.value }))}
+                    />
+                  </label>
+                  <label className="field-stack">
+                    <span>Email mailboxes</span>
+                    <textarea
+                      rows={4}
+                      value={editForm.emailMailboxes}
+                      onChange={(event) => setEditForm((current) => ({ ...current, emailMailboxes: event.target.value }))}
+                    />
+                  </label>
+                  <label className="field-stack">
+                    <span>Email folders</span>
+                    <textarea
+                      rows={4}
+                      value={editForm.emailFolders}
+                      onChange={(event) => setEditForm((current) => ({ ...current, emailFolders: event.target.value }))}
+                    />
+                  </label>
+                </div>
+                <div className="inline-actions compact-actions">
+                  <button className="primary" type="button" disabled={!privilegedUnlocked || busyAction === "edit-agent"} onClick={() => void handleEditAgent()}>
+                    {busyAction === "edit-agent" ? "Saving..." : "Save"}
+                  </button>
+                </div>
+              </div>
+            </section>
+          </div>
+        ) : null}
 
         {selectedAgent ? (
           <>

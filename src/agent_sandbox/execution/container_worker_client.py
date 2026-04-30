@@ -101,6 +101,10 @@ class ContainerWorkerClient:
         response = self._request("DELETE", f"/v1/jobs/{job_id}")
         return self._json_dict(response, operation="delete job")
 
+    def delete_session(self, session_id: str) -> dict[str, Any]:
+        response = self._request("DELETE", f"/v1/sessions/{session_id}")
+        return self._json_dict(response, operation="delete session")
+
     def logs(self, job_id: str) -> str:
         response = self._request("GET", f"/v1/jobs/{job_id}/logs")
         return response.text

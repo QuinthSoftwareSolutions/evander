@@ -96,6 +96,50 @@ def agent_routes(service: AdminService, _auth: AdminWebAuth) -> list[BaseRoute]:
             }
         )
 
+    async def create_agent(request: Request) -> JSONResponse:
+        try:
+            payload = await _json_body(request)
+            result = await run_in_threadpool(service.create_admin_agent, payload)
+        except ValueError as exc:
+            return json_error(str(exc), status_code=400)
+        except Exception as exc:
+            return json_error(str(exc), status_code=400)
+        status_code = 201 if bool(result.get("success")) else 409
+        return JSONResponse(_jsonable(result), status_code=status_code)
+
+    async def patch_agent(request: Request) -> JSONResponse:
+        agent_id = request.path_params["agent_id"]
+        backend = _string_query(request, "backend")
+        try:
+            payload = await _json_body(request)
+            result = await run_in_threadpool(
+                service.update_admin_agent,
+                agent_id,
+                backend=backend,
+                payload=payload,
+            )
+        except ValueError as exc:
+            return json_error(str(exc), status_code=400)
+        except LookupError as exc:
+            return json_error(str(exc), status_code=404)
+        return JSONResponse(_jsonable(result), status_code=200)
+
+    async def delete_agent(request: Request) -> JSONResponse:
+        agent_id = request.path_params["agent_id"]
+        backend = _string_query(request, "backend")
+        try:
+            result = await run_in_threadpool(
+                service.delete_admin_agent,
+                agent_id,
+                backend=backend,
+            )
+        except ValueError as exc:
+            return json_error(str(exc), status_code=400)
+        except LookupError as exc:
+            return json_error(str(exc), status_code=404)
+        status_code = 200 if bool(result.get("success")) else 409
+        return JSONResponse(_jsonable(result), status_code=status_code)
+
     async def mutate_agent(request: Request) -> JSONResponse:
         agent_id = request.path_params["agent_id"]
         action = request.path_params["action"]
@@ -118,6 +162,9 @@ def agent_routes(service: AdminService, _auth: AdminWebAuth) -> list[BaseRoute]:
 
     return [
         Route("/api/admin/agents", list_agents, methods=["GET"]),
+        Route("/api/admin/agents", create_agent, methods=["POST"]),
+        Route("/api/admin/agents/{agent_id:str}", patch_agent, methods=["PATCH"]),
+        Route("/api/admin/agents/{agent_id:str}", delete_agent, methods=["DELETE"]),
         Route("/api/admin/agents/{agent_id:str}/log", get_agent_log, methods=["GET"]),
         Route(
             "/api/admin/agents/{agent_id:str}/actions/{action:str}",

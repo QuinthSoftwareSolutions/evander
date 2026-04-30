@@ -8,6 +8,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import subprocess
+from types import MethodType
 from typing import Any
 
 import agent_sandbox.admin.service as admin_service
@@ -69,6 +70,45 @@ def test_create_local_issue_persists_yaml_and_store(tmp_path: Path) -> None:
     payload = json.loads((tmp_path / "runtime" / "local-issues.json").read_text(encoding="utf-8"))
     assert payload[issue.issue_id]["directory_path"] == "root"
     assert payload[issue.issue_id]["repo_source"] == "/src/repo"
+
+
+def test_list_agents_includes_session_only_container_worker_targets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    created = service.create_directory_child("root", "team")
+    assert created.ok is True and created.data is not None
+    team_path = created.data.details.directory.path
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="container-session",
+            vm_provider="container_worker_vm",
+            vm_provider_id="container-target",
+            directory_path=team_path,
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "container-target",
+                "labels": {"role": "demo"},
+            },
+        )
+    )
+    monkeypatch.setattr(service, "list_vms", MethodType(lambda self, **kwargs: [], service))
+
+    agents = service.list_agents(
+        directory_path=team_path,
+        direct_only=True,
+        include_inactive=True,
+        reconcile_containers=False,
+    )
+
+    assert len(agents) == 1
+    assert agents[0].agent_id == "container-session"
+    assert agents[0].target_name == "container-target"
+    assert agents[0].backend == "container_worker_vm"
+    assert agents[0].status == "prepared"
+    assert agents[0].host["labels"] == {"role": "demo"}
 
 
 def test_teams_auth_list_channels_resolves_exact_channel_matches(

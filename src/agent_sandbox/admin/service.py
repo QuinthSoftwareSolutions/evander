@@ -3806,10 +3806,92 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
             "running",
         }
 
+    @staticmethod
+    def _normalize_agent_backend(backend: str | None) -> str:
+        selected_backend = str(backend or "libvirt_vm").strip()
+        if selected_backend in {"libvirt", "libvirt_vm"}:
+            return "libvirt_vm"
+        if selected_backend == "container_worker_vm":
+            return selected_backend
+        raise ValueError(f"Unknown agent backend: {selected_backend}")
+
+    @staticmethod
+    def _agent_optional_string(payload: Mapping[str, Any], key: str) -> str | None:
+        value = payload.get(key)
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+    @staticmethod
+    def _agent_string_list(payload: Mapping[str, Any], key: str) -> list[str] | None:
+        if key not in payload or payload.get(key) is None:
+            return None
+        value = payload.get(key)
+        if isinstance(value, str):
+            value = [value]
+        if not isinstance(value, (list, tuple)):
+            raise ValueError(f"{key} must be a list of strings")
+        normalized = [str(item).strip() for item in value if str(item).strip()]
+        return normalized
+
+    @staticmethod
+    def _agent_int_or_none(payload: Mapping[str, Any], key: str) -> int | None:
+        if key not in payload:
+            return None
+        value = payload.get(key)
+        if value is None or value == "":
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{key} must be an integer") from exc
+
+    @staticmethod
+    def _container_session_target_name(session: SessionManifest) -> str:
+        metadata = session.metadata if isinstance(session.metadata, dict) else {}
+        return (
+            str(metadata.get("target_name") or session.vm_provider_id or session.session_id).strip()
+            or session.session_id
+        )
+
+    @staticmethod
+    def _is_container_session(session: SessionManifest) -> bool:
+        metadata = session.metadata if isinstance(session.metadata, dict) else {}
+        return (
+            str(session.vm_provider or "").strip() == "container_worker_vm"
+            or str(metadata.get("execution_backend") or "").strip() == "container_worker_vm"
+        )
+
+    @staticmethod
+    def _agent_session_policy_payload(session: SessionManifest | None) -> dict[str, Any] | None:
+        if session is None:
+            return None
+        labels = _normalize_session_labels(session.metadata.get("labels"))
+        return {
+            "session_id": session.session_id,
+            "model": session.model,
+            "expires_at": session.expires_at,
+            "allowed_tools": [
+                tool.value if isinstance(tool, ToolName) else str(tool)
+                for tool in session.allowed_tools
+            ],
+            "allowed_script_names": list(session.allowed_script_names),
+            "discord_channels": list(session.discord_channel_allowlist),
+            "email_mailboxes": list(session.email_mailbox_allowlist),
+            "email_folders": list(session.email_folder_allowlist),
+            "labels": labels,
+        }
+
     def _agent_record_from_vm(self, summary: VmSummary) -> AgentRecord:
         power_state = str(summary.power_state or summary.libvirt_state or "unknown").strip()
         status = "running" if power_state == "running" else "stopped"
         directory_path = summary.directory_paths[0] if len(summary.directory_paths) == 1 else "root"
+        session_policy = None
+        if len(summary.session_ids) == 1:
+            session_policy = self._agent_session_policy_payload(
+                self.runtime.session_repository.get_session(summary.session_ids[0])
+            )
         return AgentRecord(
             agent_id=summary.vm_name,
             backend="libvirt_vm",
@@ -3840,6 +3922,7 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
                     if len(summary.agent_repo_names) == 1
                     else None,
                 },
+                "session_policy": session_policy,
             },
             capabilities={
                 "start": True,
@@ -3877,6 +3960,9 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
             "worker_url": record.worker_url,
             "last_status": record.last_status,
             "metadata": dict(record.metadata),
+            "session_policy": self._agent_session_policy_payload(
+                self.runtime.session_repository.get_session(record.session_id)
+            ),
         }
         if message:
             host["reconcile_error"] = message
@@ -3906,6 +3992,40 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
             },
         )
 
+    def _agent_record_from_container_session(self, session: SessionManifest) -> AgentRecord:
+        metadata = dict(session.metadata) if isinstance(session.metadata, dict) else {}
+        target_name = self._container_session_target_name(session)
+        labels = _normalize_session_labels(metadata.get("labels"))
+        host: dict[str, Any] = {
+            "kind": "container_worker_session",
+            "metadata": metadata,
+            "session_policy": self._agent_session_policy_payload(session),
+        }
+        if labels:
+            host["labels"] = labels
+        return AgentRecord(
+            agent_id=session.session_id,
+            backend="container_worker_vm",
+            target_name=target_name,
+            session_id=session.session_id,
+            directory_path=self._agent_record_directory_path(session.directory_path),
+            status="prepared",
+            started_at=None,
+            finished_at=None,
+            updated_at=session.created_at,
+            host=host,
+            capabilities={
+                "start": False,
+                "shutdown": False,
+                "resume": False,
+                "enable_disable": False,
+                "kill": False,
+                "logs": False,
+                "stop": False,
+                "destroy": True,
+            },
+        )
+
     def list_agents(
         self,
         *,
@@ -3930,6 +4050,11 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
             key=lambda item: (item.updated_at, item.execution_id),
             reverse=True,
         )
+        mapped_container_session_ids = {
+            str(record.session_id or "").strip()
+            for record in container_records
+            if str(record.session_id or "").strip()
+        }
         for container_record in container_records:
             if not self._agent_record_matches_directory(
                 container_record.directory_path,
@@ -3943,7 +4068,357 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
             )
             if include_inactive or self._agent_status_is_active(record.status):
                 records.append(record)
+        for session in sorted(
+            self.runtime.session_repository.list_sessions(),
+            key=lambda item: (item.created_at, item.session_id),
+            reverse=True,
+        ):
+            if not self._is_container_session(session):
+                continue
+            if session.session_id in mapped_container_session_ids:
+                continue
+            if not self._agent_record_matches_directory(
+                session.directory_path,
+                normalized_directory,
+                direct_only=direct_only,
+            ):
+                continue
+            record = self._agent_record_from_container_session(session)
+            if include_inactive or self._agent_status_is_active(record.status):
+                records.append(record)
         return records
+
+    def create_admin_agent(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        selected_backend = self._normalize_agent_backend(
+            self._agent_optional_string(payload, "backend")
+            or self._agent_optional_string(payload, "execution_backend")
+        )
+        if selected_backend == "libvirt_vm":
+            vm_name = self._agent_optional_string(payload, "vm_name")
+            if not vm_name:
+                raise ValueError("vm_name is required for libvirt_vm agents")
+            result = self.create_vm(
+                provider=self._agent_optional_string(payload, "provider"),
+                vm_name=vm_name,
+                session_id=self._agent_optional_string(payload, "session_id"),
+                labels=_normalize_session_labels(payload.get("labels")),
+                model=self._agent_optional_string(payload, "model"),
+                vm_user=self._agent_optional_string(payload, "vm_user") or "agent",
+                ttl_hours=self._agent_int_or_none(payload, "ttl_hours"),
+                allowed_tools=self._agent_string_list(payload, "allowed_tools"),
+                allowed_script_names=self._agent_string_list(payload, "allowed_script_names"),
+                discord_channels=self._agent_string_list(payload, "discord_channels"),
+                email_mailboxes=self._agent_string_list(payload, "email_mailboxes"),
+                email_folders=self._agent_string_list(payload, "email_folders"),
+                dotnet=bool(payload.get("dotnet", False)),
+                nuget=bool(payload.get("nuget", False)),
+                mssql=bool(payload.get("mssql", False)),
+                mssql_init_root=self._agent_optional_string(payload, "mssql_init_root"),
+                playwright=bool(payload.get("playwright", False)),
+                codex_skills=self._agent_string_list(payload, "codex_skills"),
+                directory_path=self._agent_optional_string(payload, "directory_path") or "root",
+            )
+            session_id = self._agent_optional_string(payload, "session_id")
+            return {
+                "success": result.success,
+                "agent_id": result.vm_name or vm_name,
+                "backend": "libvirt_vm",
+                "target_name": result.vm_name or vm_name,
+                "action": result.action,
+                "message": result.message,
+                "status": "created" if result.success else "failed",
+                "session_id": session_id,
+                "provider": result.provider,
+                "provider_operation_id": result.provider_operation_id,
+            }
+
+        session_id = self._agent_optional_string(payload, "session_id")
+        if not session_id:
+            raise ValueError("session_id is required for container_worker_vm agents")
+        target_name = self._agent_optional_string(payload, "target_name") or session_id
+        directory_path = self._normalize_directory_path(
+            self._agent_optional_string(payload, "directory_path")
+        )
+        session_repository = self.runtime.session_repository
+        if session_repository.get_session(session_id) is not None:
+            raise ValueError(f"Session already exists: {session_id}")
+
+        policy = self.runtime.policy_config.resolve_for_directory(directory_path)
+        labels = _normalize_session_labels(payload.get("labels"))
+        metadata: dict[str, Any] = {
+            "execution_backend": "container_worker_vm",
+            "target_name": target_name,
+        }
+        if labels:
+            metadata["labels"] = labels
+        model = self._agent_optional_string(payload, "model")
+        manifest = _build_issue_session_manifest(
+            policy=policy,
+            session_id=session_id,
+            vm_id=target_name,
+            issue_number=None,
+            directory_path=directory_path,
+            ttl_hours=self._agent_int_or_none(payload, "ttl_hours"),
+            extra_allowed_tools=self._agent_string_list(payload, "allowed_tools"),
+            allowed_script_names=self._agent_string_list(payload, "allowed_script_names"),
+            discord_channels=self._agent_string_list(payload, "discord_channels") or [],
+            email_mailboxes=self._agent_string_list(payload, "email_mailboxes") or [],
+            email_folders=self._agent_string_list(payload, "email_folders") or [],
+        ).model_copy(
+            update={
+                "vm_id": None,
+                "vm_provider": "container_worker_vm",
+                "vm_provider_id": target_name,
+                "model": model,
+                "metadata": metadata,
+            }
+        )
+        session_record = self._container_worker_backend().prepare_session(
+            session_id=session_id,
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "directory_path": directory_path,
+                "target_name": target_name,
+                "labels": labels,
+            },
+        )
+        session_repository.upsert_session(manifest)
+        return {
+            "success": True,
+            "agent_id": session_id,
+            "backend": "container_worker_vm",
+            "target_name": target_name,
+            "action": "create",
+            "message": f"Prepared container worker session {session_id}",
+            "status": "prepared",
+            "session_id": session_id,
+            "workspace": session_record.workspace_container_path,
+            "agent_home": session_record.agent_home_container_path,
+        }
+
+    def _resolve_container_agent_session(
+        self,
+        agent_id: str,
+        *,
+        require_session: bool,
+    ) -> tuple[SessionManifest | None, Any | None]:
+        repository = self._container_worker_execution_repository()
+        try:
+            record = repository.resolve(agent_id)
+        except ValueError as exc:
+            if str(exc).startswith("Ambiguous container worker session target"):
+                raise
+            record = None
+        if record is not None:
+            session = self.runtime.session_repository.get_session(record.session_id)
+            if session is None and require_session:
+                raise ValueError(f"Unknown session: {record.session_id}")
+            return session, record
+
+        direct_session = self.runtime.session_repository.get_session(agent_id)
+        if direct_session is not None and self._is_container_session(direct_session):
+            return direct_session, None
+
+        matches = [
+            session
+            for session in self.runtime.session_repository.list_sessions()
+            if self._is_container_session(session)
+            and self._container_session_target_name(session) == agent_id
+        ]
+        if len(matches) == 1:
+            return matches[0], None
+        if len(matches) > 1:
+            session_ids = ", ".join(sorted(session.session_id for session in matches))
+            raise ValueError(
+                f"Container worker target {agent_id!r} is associated with multiple sessions: {session_ids}"
+            )
+        if require_session:
+            raise ValueError(f"Unknown container worker agent target: {agent_id}")
+        return None, None
+
+    def _resolve_vm_agent_session(self, agent_id: str) -> SessionManifest:
+        direct_session = self.runtime.session_repository.get_session(agent_id)
+        if direct_session is not None:
+            return direct_session
+        matches = self.runtime.session_repository.list_sessions_for_vm(agent_id)
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            session_ids = ", ".join(sorted(session.session_id for session in matches))
+            raise ValueError(f"VM {agent_id!r} is associated with multiple sessions: {session_ids}")
+        raise ValueError(f"No session is linked to VM agent target: {agent_id}")
+
+    def update_admin_agent(
+        self,
+        agent_id: str,
+        *,
+        backend: str | None = None,
+        payload: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        selected_backend = self._normalize_agent_backend(backend)
+        body = dict(payload or {})
+        allowed_fields = {
+            "model",
+            "ttl_hours",
+            "allowed_tools",
+            "allowed_script_names",
+            "discord_channels",
+            "email_mailboxes",
+            "email_folders",
+            "labels",
+        }
+        unsupported = sorted(set(body) - allowed_fields)
+        if unsupported:
+            raise ValueError(
+                "Unsupported agent policy fields: " + ", ".join(unsupported)
+            )
+        session: SessionManifest | None
+        if selected_backend == "container_worker_vm":
+            session, record = self._resolve_container_agent_session(
+                agent_id, require_session=True
+            )
+            del record
+            target_name = self._container_session_target_name(session)
+        else:
+            session = self._resolve_vm_agent_session(agent_id)
+            target_name = str(session.vm_id or agent_id)
+
+        update: dict[str, Any] = {}
+        if "model" in body:
+            update["model"] = self._agent_optional_string(body, "model")
+        if "ttl_hours" in body:
+            ttl_hours = self._agent_int_or_none(body, "ttl_hours")
+            if ttl_hours is None:
+                raise ValueError("ttl_hours must be an integer when supplied")
+            update["expires_at"] = _utc_now() + timedelta(hours=ttl_hours)
+        if "allowed_tools" in body:
+            update["allowed_tools"] = _normalize_allowed_tools(
+                self._agent_string_list(body, "allowed_tools") or []
+            )
+        if "allowed_script_names" in body:
+            update["allowed_script_names"] = _normalize_allowed_script_names(
+                self._agent_string_list(body, "allowed_script_names") or []
+            )
+        if "discord_channels" in body:
+            update["discord_channel_allowlist"] = self._agent_string_list(
+                body, "discord_channels"
+            ) or []
+        if "email_mailboxes" in body:
+            update["email_mailbox_allowlist"] = self._agent_string_list(
+                body, "email_mailboxes"
+            ) or []
+        if "email_folders" in body:
+            update["email_folder_allowlist"] = self._agent_string_list(
+                body, "email_folders"
+            ) or []
+        if "labels" in body:
+            metadata = dict(session.metadata)
+            labels = _normalize_session_labels(body.get("labels"))
+            if labels:
+                metadata["labels"] = labels
+            else:
+                metadata.pop("labels", None)
+            update["metadata"] = metadata
+
+        updated = session.model_copy(update=update)
+        self.runtime.session_repository.upsert_session(updated)
+        return {
+            "success": True,
+            "agent_id": agent_id,
+            "backend": selected_backend,
+            "target_name": target_name,
+            "action": "edit",
+            "message": f"Updated policy for session {updated.session_id}",
+            "status": "updated",
+            "session_id": updated.session_id,
+        }
+
+    def delete_admin_agent(
+        self,
+        agent_id: str,
+        *,
+        backend: str | None = None,
+    ) -> dict[str, Any]:
+        selected_backend = self._normalize_agent_backend(backend)
+        if selected_backend == "libvirt_vm":
+            direct_session = self.runtime.session_repository.get_session(agent_id)
+            if direct_session is not None:
+                vm_name = str(direct_session.vm_id or "").strip()
+                if not vm_name:
+                    raise ValueError(f"Session {agent_id!r} is not linked to a VM")
+            else:
+                vm_name = agent_id
+                matches = self.runtime.session_repository.list_sessions_for_vm(vm_name)
+                if len(matches) > 1:
+                    session_ids = ", ".join(sorted(session.session_id for session in matches))
+                    raise ValueError(
+                        f"Refusing to delete VM {vm_name!r}: multiple linked sessions "
+                        f"({session_ids}). Delete is only allowed when the VM-to-session link is unambiguous."
+                    )
+            matches = self.runtime.session_repository.list_sessions_for_vm(vm_name)
+            if len(matches) > 1:
+                session_ids = ", ".join(sorted(session.session_id for session in matches))
+                raise ValueError(
+                    f"Refusing to delete VM {vm_name!r}: multiple linked sessions "
+                    f"({session_ids}). Delete is only allowed when the VM-to-session link is unambiguous."
+                )
+            result = self.destroy_vm(vm_name)
+            return {
+                "success": result.success,
+                "agent_id": vm_name,
+                "backend": "libvirt_vm",
+                "target_name": vm_name,
+                "action": "delete",
+                "message": result.message,
+                "status": "deleted" if result.success else "failed",
+                "session_id": matches[0].session_id if len(matches) == 1 else None,
+            }
+
+        session, record = self._resolve_container_agent_session(
+            agent_id, require_session=False
+        )
+        session_id = (
+            str(getattr(session, "session_id", "") or "").strip()
+            if session is not None
+            else str(getattr(record, "session_id", "") or "").strip()
+        )
+        if not session_id:
+            raise ValueError(f"Unknown container worker agent target: {agent_id}")
+        target_name = (
+            self._container_session_target_name(session)
+            if session is not None
+            else str(getattr(record, "target_name", "") or agent_id)
+        )
+        worker_backend = self._container_worker_backend()
+        if record is not None:
+            worker_backend.destroy(record.execution_id)
+        worker_session_deleted = worker_backend.delete_session(session_id)
+        container_repository = self._container_worker_execution_repository()
+        removed_mappings = 0
+        for execution_id, candidate in list(container_repository.read_all().items()):
+            if candidate.session_id == session_id:
+                container_repository.delete(execution_id)
+                removed_mappings += 1
+        removed_session = self.runtime.session_repository.delete_session(session_id)
+        removed_approvals = _prune_approvals_for_sessions(
+            self.runtime, session_ids={session_id}
+        )
+        return {
+            "success": True,
+            "agent_id": agent_id,
+            "backend": "container_worker_vm",
+            "target_name": target_name,
+            "action": "delete",
+            "message": (
+                f"Deleted container worker session {session_id}; "
+                f"removed_mappings={removed_mappings} "
+                f"removed_session={int(removed_session)} "
+                f"removed_approvals={removed_approvals} "
+                f"worker_session_deleted={int(bool(worker_session_deleted))}"
+            ),
+            "status": "deleted",
+            "session_id": session_id,
+        }
 
     def get_admin_agent_log_snapshot(
         self,
@@ -3979,9 +4454,9 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
         backend: str | None = None,
         payload: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        selected_backend = str(backend or "libvirt_vm").strip()
+        selected_backend = self._normalize_agent_backend(backend)
         body = payload or {}
-        if selected_backend in {"libvirt", "libvirt_vm"}:
+        if selected_backend == "libvirt_vm":
             if action == "start":
                 result = self.start_vm(agent_id)
             elif action == "shutdown":

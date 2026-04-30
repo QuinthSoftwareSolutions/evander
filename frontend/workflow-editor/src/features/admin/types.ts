@@ -27,6 +27,53 @@ export type AgentRecord = {
   capabilities: AgentCapabilities;
 };
 
+export type AgentCreateRequest = {
+  backend: AgentBackend;
+  session_id?: string | null;
+  directory_path?: string | null;
+  model?: string | null;
+  ttl_hours?: number | null;
+  labels?: Record<string, string>;
+  allowed_tools?: string[];
+  allowed_script_names?: string[];
+  discord_channels?: string[];
+  email_mailboxes?: string[];
+  email_folders?: string[];
+  vm_name?: string | null;
+  provider?: string | null;
+  vm_user?: string | null;
+  dotnet?: boolean;
+  nuget?: boolean;
+  mssql?: boolean;
+  mssql_init_root?: string | null;
+  playwright?: boolean;
+  codex_skills?: string[];
+  target_name?: string | null;
+};
+
+export type AgentPolicyUpdateRequest = {
+  model?: string | null;
+  ttl_hours?: number | null;
+  labels?: Record<string, string>;
+  allowed_tools?: string[];
+  allowed_script_names?: string[];
+  discord_channels?: string[];
+  email_mailboxes?: string[];
+  email_folders?: string[];
+};
+
+export type AgentSessionPolicy = {
+  session_id: string;
+  model: string | null;
+  expires_at: string | null;
+  allowed_tools: string[];
+  allowed_script_names: string[];
+  discord_channels: string[];
+  email_mailboxes: string[];
+  email_folders: string[];
+  labels: Record<string, string>;
+};
+
 export type AgentListResponse = {
   items: AgentRecord[];
   directory_path: string;
