@@ -186,6 +186,9 @@ _DIRECTORY_CONFIG_TAB_SECTIONS: dict[str, tuple[_ConfigTabSectionSpec, ...]] = {
                 ("providers", "container_worker_job_timeout_seconds"),
                 ("providers", "container_worker_request_timeout_seconds"),
                 ("providers", "container_worker_workspace_persistence"),
+                ("providers", "container_worker_guest_openai_base_url"),
+                ("providers", "container_worker_guest_gateway_url"),
+                ("providers", "container_worker_guest_nuget_relay_base_url"),
             ),
             ("container_worker_",),
         ),
@@ -1001,6 +1004,15 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
     ),
     "github_token_env": (
         "Name of the host environment variable that holds the GitHub token for PR reply and feedback operations."
+    ),
+    "container_worker_guest_openai_base_url": (
+        "Container-visible OpenAI relay base URL used inside runner sessions."
+    ),
+    "container_worker_guest_gateway_url": (
+        "Container-visible MCP gateway URL used inside runner sessions."
+    ),
+    "container_worker_guest_nuget_relay_base_url": (
+        "Container-visible NuGet relay base URL used inside runner sessions."
     ),
     "nuget_azure_feed_base_url": (
         "Base URL for the Azure Artifacts NuGet feed proxied by the host relay."

@@ -9,6 +9,7 @@ from .agent_session import (
     as_int_or_none,
     as_string_list,
     as_string_mapping,
+    build_container_session_files,
     build_container_session_manifest,
     container_backend,
     effective_config_for_directory,
@@ -109,6 +110,12 @@ class AgentCreateEffectProvider(EffectProviderBase):
         session_id = normalize_optional_string(payload.get("session_id"))
         if not session_id:
             raise ValueError("effect:agent:create with container_worker_vm requires session_id")
+        if bool(payload.get("mssql", False)) or normalize_optional_string(
+            payload.get("mssql_init_root")
+        ):
+            raise ValueError(
+                "effect:agent:create with container_worker_vm does not support MSSQL yet"
+            )
         labels = as_string_mapping(payload.get("labels")) or {}
         model = normalize_optional_string(payload.get("model"))
         metadata = {
@@ -131,7 +138,8 @@ class AgentCreateEffectProvider(EffectProviderBase):
             metadata=metadata,
         )
         runtime_session_repository(context, config).upsert_session(manifest)
-        session_record = container_backend(context, config).prepare_session(
+        backend = container_backend(context, config)
+        session_record = backend.prepare_session(
             session_id=session_id,
             metadata={
                 "execution_backend": "container_worker_vm",
@@ -139,9 +147,20 @@ class AgentCreateEffectProvider(EffectProviderBase):
                 "labels": labels,
             },
         )
+        backend.write_files(
+            session_id=session_id,
+            files=build_container_session_files(
+                config=config,
+                session_id=session_id,
+                model=model,
+                dotnet=bool(payload.get("dotnet", False)),
+                nuget=bool(payload.get("nuget", False)),
+                playwright=bool(payload.get("playwright", False)),
+            ),
+        )
         return {
             "success": True,
-            "message": f"Prepared container worker session {session_id}",
+            "message": f"Prepared container worker session {session_id} with agent bootstrap files",
             "session_id": session_id,
             "execution_backend": "container_worker_vm",
             "vm_name": None,

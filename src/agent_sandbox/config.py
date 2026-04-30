@@ -75,6 +75,9 @@ class GatewayConfig(BaseModel):
     container_worker_job_timeout_seconds: float = Field(default=1800.0, gt=0)
     container_worker_request_timeout_seconds: float = Field(default=30.0, gt=0)
     container_worker_workspace_persistence: str = Field(default="session", min_length=1)
+    container_worker_guest_openai_base_url: str | None = None
+    container_worker_guest_gateway_url: str | None = None
+    container_worker_guest_nuget_relay_base_url: str | None = None
     discord_backend: Literal["stub", "bot_api"] = "stub"
     discord_bot_token_env: str = Field(default="DISCORD_BOT_TOKEN", min_length=1)
     discord_api_base_url: str = "https://discord.com/api/v10"
@@ -234,6 +237,9 @@ class GatewayConfig(BaseModel):
         "teams_graph_api_base_url",
         "teams_meeting_media_bridge_url",
         "teams_delegated_authority_base_url",
+        "container_worker_guest_openai_base_url",
+        "container_worker_guest_gateway_url",
+        "container_worker_guest_nuget_relay_base_url",
         "openai_api_base_url",
         "nuget_public_feed_base_url",
         "nuget_azure_feed_base_url",
@@ -253,6 +259,9 @@ class GatewayConfig(BaseModel):
         "discord_api_base_url",
         "teams_graph_api_base_url",
         "teams_delegated_authority_base_url",
+        "container_worker_guest_openai_base_url",
+        "container_worker_guest_gateway_url",
+        "container_worker_guest_nuget_relay_base_url",
         "openai_api_base_url",
         "nuget_public_feed_base_url",
         "nuget_azure_feed_base_url",

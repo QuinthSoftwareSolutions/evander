@@ -24,7 +24,12 @@ from agent_sandbox.config import (
 )
 from agent_sandbox.execution.container_worker_client import ContainerWorkerClient
 from agent_sandbox.models import ApprovalRequest, ApprovalStatus, SessionManifest, ToolName
-from agent_sandbox.worker.models import WorkerSessionPrepareRequest, WorkerSessionRecord
+from agent_sandbox.worker.models import (
+    WorkerFileWriteRecord,
+    WorkerFileWriteRequest,
+    WorkerSessionPrepareRequest,
+    WorkerSessionRecord,
+)
 
 UTC = timezone.utc
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -184,6 +189,7 @@ def test_create_container_agent_uses_directory_scoped_worker_provider_config(
     )
     assert write_result.ok is True
     captured: list[tuple[str, str, str, dict[str, object]]] = []
+    written_paths: list[str] = []
 
     def prepare_session(
         self: ContainerWorkerClient, request: WorkerSessionPrepareRequest
@@ -209,12 +215,30 @@ def test_create_container_agent_uses_directory_scoped_worker_provider_config(
 
     monkeypatch.setattr(ContainerWorkerClient, "prepare_session", prepare_session)
 
+    def write_files(
+        self: ContainerWorkerClient,
+        session_id: str,
+        request: WorkerFileWriteRequest,
+    ) -> WorkerFileWriteRecord:
+        assert session_id == "container-session"
+        written_paths.extend(file.destination_path for file in request.files)
+        return WorkerFileWriteRecord(
+            session_id=session_id,
+            copied_count=len(request.files),
+            copied_paths=[file.destination_path for file in request.files],
+        )
+
+    monkeypatch.setattr(ContainerWorkerClient, "write_files", write_files)
+
     result = service.create_admin_agent(
         {
             "backend": "container_worker_vm",
             "session_id": "container-session",
             "target_name": "container-target",
             "directory_path": team_path,
+            "dotnet": True,
+            "nuget": True,
+            "playwright": True,
         }
     )
 
@@ -232,6 +256,26 @@ def test_create_container_agent_uses_directory_scoped_worker_provider_config(
             },
         )
     ]
+    assert "/home/agent/.agent-sandbox/session.env" in written_paths
+    assert "/home/agent/.profile" in written_paths
+    assert "/home/agent/.codex/config.toml" in written_paths
+    assert "/home/agent/.nuget/NuGet/NuGet.Config" in written_paths
+
+
+def test_create_container_agent_rejects_mssql(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+
+    with pytest.raises(
+        ValueError,
+        match="create_admin_agent with container_worker_vm does not support MSSQL yet",
+    ):
+        service.create_admin_agent(
+            {
+                "backend": "container_worker_vm",
+                "session_id": "container-session",
+                "mssql": True,
+            }
+        )
 
 
 def test_teams_auth_list_channels_resolves_exact_channel_matches(

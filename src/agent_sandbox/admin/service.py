@@ -4159,6 +4159,12 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
         session_id = self._agent_optional_string(payload, "session_id")
         if not session_id:
             raise ValueError("session_id is required for container_worker_vm agents")
+        if bool(payload.get("mssql", False)) or self._agent_optional_string(
+            payload, "mssql_init_root"
+        ):
+            raise ValueError(
+                "create_admin_agent with container_worker_vm does not support MSSQL yet"
+            )
         target_name = self._agent_optional_string(payload, "target_name") or session_id
         directory_path = self._normalize_directory_path(
             self._agent_optional_string(payload, "directory_path")
@@ -4197,9 +4203,8 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
                 "metadata": metadata,
             }
         )
-        session_record = self._container_worker_backend(
-            directory_path=directory_path
-        ).prepare_session(
+        backend = self._container_worker_backend(directory_path=directory_path)
+        session_record = backend.prepare_session(
             session_id=session_id,
             metadata={
                 "execution_backend": "container_worker_vm",
@@ -4207,6 +4212,21 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
                 "target_name": target_name,
                 "labels": labels,
             },
+        )
+        from agent_sandbox.effects.providers.agent_session import (
+            build_container_session_files,
+        )
+
+        backend.write_files(
+            session_id=session_id,
+            files=build_container_session_files(
+                config=backend.config,
+                session_id=session_id,
+                model=model,
+                dotnet=bool(payload.get("dotnet", False)),
+                nuget=bool(payload.get("nuget", False)),
+                playwright=bool(payload.get("playwright", False)),
+            ),
         )
         session_repository.upsert_session(manifest)
         return {

@@ -207,25 +207,44 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
         resolved_model = model or getattr(session, "model", None) or "gpt-5.4"
         backend = container_backend(context, effective_config)
         execution_id = safe_effect_execution_id("agent", session_id)
-        handle = backend.start(
-            backend.prepare(
-                ExecutionSpec(
-                    backend=ExecutionBackendKind.CONTAINER_WORKER_VM,
-                    target_name=execution_id,
-                    session_id=session_id,
-                    directory_path=getattr(session, "directory_path", None) or "root",
-                    command=container_prompt_command(
-                        prompt=prompt,
-                        model=resolved_model,
-                        resume_thread_id=resume_thread_id,
-                    ),
-                    metadata={
-                        "effect_type": self.node_type(),
-                        "dispatch_id": dispatch_id,
-                    },
+        try:
+            handle = backend.start(
+                backend.prepare(
+                    ExecutionSpec(
+                        backend=ExecutionBackendKind.CONTAINER_WORKER_VM,
+                        target_name=execution_id,
+                        session_id=session_id,
+                        directory_path=getattr(session, "directory_path", None) or "root",
+                        command=container_prompt_command(
+                            prompt=prompt,
+                            model=resolved_model,
+                            resume_thread_id=resume_thread_id,
+                        ),
+                        metadata={
+                            "effect_type": self.node_type(),
+                            "dispatch_id": dispatch_id,
+                        },
+                    )
                 )
             )
-        )
+        except Exception as exc:
+            record = self._queue_prompt(
+                target=target,
+                vm_name=target_name,
+                session_id=session_id,
+                prompt=prompt,
+                model=model,
+                vm_user=vm_user,
+                resume_thread_id=resume_thread_id,
+                effect_id=effect_id,
+                queue_key=session_id,
+            )
+            message = self._normalize_optional_string(exc) or type(exc).__name__
+            raise RuntimeError(
+                "effect:agent:enqueue-prompt container dispatch failed; queued prompt for retry "
+                f"(target={target}, session_id={session_id}, queue_key={record.queue_key}, "
+                f"coalesced_count={record.coalesced_count}, message={message})"
+            ) from exc
         return {
             "dispatch_id": dispatch_id,
             "thread_id": resume_thread_id or dispatch_id,

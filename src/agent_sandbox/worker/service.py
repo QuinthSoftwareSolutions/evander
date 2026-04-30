@@ -5,6 +5,7 @@ import os
 import shutil
 import subprocess
 import uuid
+from collections.abc import Sequence
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -42,6 +43,7 @@ class WorkerDaemon:
         container_runtime: ContainerRuntime | None = None,
         docker_network: str | None = "none",
         sandbox_profile: WorkerSandboxProfile | None = None,
+        read_only_mounts: Sequence[str] | None = None,
         token: str | None = None,
     ) -> None:
         self.runtime_dir = runtime_dir
@@ -50,6 +52,7 @@ class WorkerDaemon:
         self.container_runtime = container_runtime or DockerContainerRuntime(
             docker_network=docker_network,
             sandbox_profile=sandbox_profile,
+            read_only_mounts=read_only_mounts,
         )
         self.token = token if token is not None else os.environ.get("AGENT_SANDBOX_WORKER_TOKEN")
 

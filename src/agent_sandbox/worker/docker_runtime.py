@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import json
 import subprocess
+from collections.abc import Sequence
 from typing import Any
 
 from .models import WorkerJobRecord, WorkerJobRequest, WorkerSessionPaths
 from .sandbox_profile import (
+    WorkerReadOnlyMount,
     WorkerSandboxProfile,
     default_worker_sandbox_profile,
+    parse_worker_read_only_mount,
     reject_unsafe_mount,
+    validate_worker_read_only_mount,
     validate_worker_sandbox_profile,
 )
 
@@ -20,6 +24,7 @@ class DockerContainerRuntime:
         docker_network: str | None = "none",
         docker_binary: str = "docker",
         sandbox_profile: WorkerSandboxProfile | None = None,
+        read_only_mounts: Sequence[str | WorkerReadOnlyMount] | None = None,
     ) -> None:
         profile = sandbox_profile or default_worker_sandbox_profile()
         if docker_network is not None:
@@ -27,6 +32,12 @@ class DockerContainerRuntime:
         self.sandbox_profile = validate_worker_sandbox_profile(profile)
         self.docker_network = self.sandbox_profile.network_mode
         self.docker_binary = docker_binary
+        self.read_only_mounts = tuple(
+            parse_worker_read_only_mount(mount)
+            if isinstance(mount, str)
+            else validate_worker_read_only_mount(mount)
+            for mount in (read_only_mounts or ())
+        )
 
     def start_job(
         self,
@@ -97,6 +108,8 @@ class DockerContainerRuntime:
             (paths.artifacts, "/artifacts"),
         ):
             reject_unsafe_mount(host_path, container_path)
+        for mount in self.read_only_mounts:
+            validate_worker_read_only_mount(mount)
 
         args = [
             self.docker_binary,
@@ -116,6 +129,8 @@ class DockerContainerRuntime:
             "-w",
             self.sandbox_profile.workdir,
         ]
+        for mount in self.read_only_mounts:
+            args.extend(["-v", mount.docker_volume_arg])
         for cap in self.sandbox_profile.cap_drop:
             args.extend(["--cap-drop", cap])
         for security_opt in self.sandbox_profile.security_opt:

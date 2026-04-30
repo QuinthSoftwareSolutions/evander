@@ -9,6 +9,10 @@ import pytest
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.execution import ExecutionStatusKind
 from agent_sandbox.execution.container_worker_repository import ContainerWorkerExecutionRecord
+from agent_sandbox.effects.providers.agent_clone_repo import (
+    AgentCloneRepoEffectProvider,
+    _container_reachable_git_remote_url,
+)
 from agent_sandbox.effects.providers.agent_session import selected_execution_backend_for_target
 from agent_sandbox.effects.providers.base import EffectProviderBase, EffectRuntimeContext
 from agent_sandbox.effects.registry import (
@@ -20,7 +24,6 @@ from pydantic import BaseModel, Field
 
 from agent_sandbox.events.models import WorkflowNodeEnvelope
 from agent_sandbox.events.provider_models import (
-    AgentBootstrapFrontendEffectDefinition,
     AgentCloneRepoEffectDefinition,
     AgentCopyFilesEffectDefinition,
     AgentCreateEffectDefinition,
@@ -70,6 +73,7 @@ class _FakeContainerBackend:
         self.destroyed: list[str] = []
         self.status = SimpleNamespace(status=ExecutionStatusKind.STOPPED, message=None, metadata={})
         self.logs = ""
+        self.start_error: Exception | None = None
 
     def prepare_session(self, **kwargs):
         self.prepared_sessions.append(kwargs)
@@ -99,6 +103,8 @@ class _FakeContainerBackend:
         return spec
 
     def start(self, spec):
+        if self.start_error is not None:
+            raise self.start_error
         self.started_specs.append(spec)
         return SimpleNamespace(execution_id=spec.target_name)
 
@@ -697,6 +703,65 @@ def test_agent_enqueue_prompt_provider_queues_when_container_session_is_busy(
     assert "check teams" in queued_payload
 
 
+def test_agent_enqueue_prompt_provider_queues_when_container_dispatch_fails(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            vm_id=None,
+            allowed_tools=[ToolName.LIST_PENDING_AGENT_PROMPTS],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            vm_provider="container_worker_vm",
+            vm_provider_id="truman",
+            model="gpt-5.4-mini",
+            metadata={"execution_backend": "container_worker_vm", "target_name": "truman"},
+        )
+    )
+    admin_service = SimpleNamespace(
+        runtime=SimpleNamespace(
+            session_repository=session_repository,
+            provider_config=_ContainerResolverStub(config),
+        ),
+        list_vms=lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("container enqueue must not list libvirt VMs")
+        ),
+    )
+    backend = _FakeContainerBackend()
+    backend.start_error = RuntimeError("worker unavailable")
+    monkeypatch.setattr(
+        "agent_sandbox.effects.providers.agent_enqueue_prompt.container_backend",
+        lambda context, config: backend,
+    )
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ContainerResolverStub(config),
+        admin_service=admin_service,
+    )
+
+    with pytest.raises(RuntimeError, match="queued prompt for retry"):
+        factory.build(
+            AgentEnqueuePromptEffectDefinition(
+                id="agent-enqueue",
+                display_name="Enqueue",
+                type="effect:agent:enqueue-prompt",
+                target="session-1",
+                prompt="check teams",
+            )
+        ).execute()
+
+    assert backend.started_specs == []
+    queued_payload = (tmp_path / "queued-agent-prompts.json").read_text(encoding="utf-8")
+    assert "session-1" in queued_payload
+    assert "check teams" in queued_payload
+
+
 def test_agent_prompt_provider_passes_model_override() -> None:
     effect = AgentPromptEffectDefinition(
         id="effect-prompt",
@@ -757,6 +822,9 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
         runtime_dir=tmp_path,
         execution_backend="libvirt_vm",
         container_worker_base_url="http://worker.test",
+        container_worker_guest_openai_base_url="http://relay.test:11434/v1",
+        container_worker_guest_gateway_url="http://gateway.test:8000/mcp",
+        container_worker_guest_nuget_relay_base_url="http://nuget.test:11666",
     )
     session_repository = JsonSessionManifestRepository(config.session_store_path)
     admin_service = SimpleNamespace(
@@ -796,6 +864,9 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
             session_id="session-1",
             model="gpt-5.4",
             allowed_tools=["set_issue_plan"],
+            dotnet=True,
+            nuget=True,
+            playwright=True,
         )
     ).execute()
     clone = factory.build(
@@ -839,9 +910,111 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
     assert prompted["output_mode"] == "on_completion"
     assert backend.prepared_sessions[0]["session_id"] == "session-1"
     assert backend.cloned_repos[0]["repo_source"] == "/tmp/repo"
-    assert backend.written_files[0]["files"][0]["content"] == "task"
-    assert backend.started_specs[0].command is not None
-    assert "continue" in str(backend.started_specs[0].command)
+    bootstrap_files = backend.written_files[0]["files"]
+    bootstrap_by_path = {entry["destination_path"]: entry for entry in bootstrap_files}
+    assert "/home/agent/.agent-sandbox/session.env" in bootstrap_by_path
+    assert (
+        "AGENT_SANDBOX_SESSION_ID=session-1"
+        in bootstrap_by_path["/home/agent/.agent-sandbox/session.env"]["content"]
+    )
+    assert (
+        'openai_base_url = "http://relay.test:11434/v1/session/session-1"'
+        in bootstrap_by_path["/home/agent/.codex/config.toml"]["content"]
+    )
+    assert "DOTNET_ROOT" in bootstrap_by_path["/home/agent/.profile"]["content"]
+    assert "PLAYWRIGHT_BROWSERS_PATH" in bootstrap_by_path["/home/agent/.profile"]["content"]
+    assert "/home/agent/.nuget/NuGet/NuGet.Config" in bootstrap_by_path
+    assert backend.written_files[1]["files"][0]["destination_path"].endswith("agent-pr-note")
+    assert backend.written_files[2]["files"][0]["content"] == "task"
+    clone_config_command = str(backend.started_specs[0].command)
+    assert "config alias.agent-pr-note" in clone_config_command
+    assert "config alias.push-agent" not in clone_config_command
+    assert 'git config agent-sandbox.pushAgentAvailable "false"' in clone_config_command
+    assert backend.started_specs[-1].command is not None
+    assert "continue" in str(backend.started_specs[-1].command)
+
+
+def test_agent_clone_container_skips_push_alias_for_unreachable_remotes() -> None:
+    remote_source = "git@ssh.dev.azure.com:v3/example/project/sample-repo"
+
+    command = AgentCloneRepoEffectProvider._container_git_config_command(
+        session_id="session-1",
+        repo_source=remote_source,
+        remote_url=remote_source,
+        clone_branch=None,
+    )
+
+    assert "PUSH_REMOTE_URL=''" in command
+    assert "config alias.push-agent" not in command
+    assert "git remote remove agent >/dev/null 2>&1 || true" in command
+    assert 'git config agent-sandbox.pushAgentAvailable "false"' in command
+
+
+def test_agent_clone_container_allows_push_alias_for_mounted_remotes() -> None:
+    command = AgentCloneRepoEffectProvider._container_git_config_command(
+        session_id="session-1",
+        repo_source="git@example.test/org/repo.git",
+        remote_url="file:///artifacts/agent-push.git",
+        clone_branch="main",
+    )
+
+    assert "PUSH_REMOTE_URL=/artifacts/agent-push.git" in command
+    assert 'git remote add agent "$PUSH_REMOTE_URL"' in command
+    assert "config alias.push-agent" in command
+    assert 'git config agent-sandbox.pushAgentAvailable "true"' in command
+    assert "git config agent-sandbox.baseBranch main" in command
+
+
+def test_container_reachable_git_remote_url_is_limited_to_mounted_paths() -> None:
+    assert _container_reachable_git_remote_url("/workspace/push.git") == "/workspace/push.git"
+    assert (
+        _container_reachable_git_remote_url("file:///home/agent/remotes/repo.git")
+        == "/home/agent/remotes/repo.git"
+    )
+    assert _container_reachable_git_remote_url("/workspace/../tmp/repo.git") is None
+    assert _container_reachable_git_remote_url("/tmp/repo.git") is None
+    assert _container_reachable_git_remote_url("git@example.test/org/repo.git") is None
+
+
+def test_agent_create_container_rejects_mssql_until_supported(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    admin_service = SimpleNamespace(
+        runtime=SimpleNamespace(
+            session_repository=session_repository,
+            provider_config=_ContainerResolverStub(config),
+        )
+    )
+    backend = _FakeContainerBackend()
+    monkeypatch.setattr(
+        "agent_sandbox.effects.providers.agent_create.container_backend",
+        lambda context, config: backend,
+    )
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ContainerResolverStub(config),
+        admin_service=admin_service,
+    )
+
+    with pytest.raises(ValueError, match="does not support MSSQL"):
+        factory.build(
+            AgentCreateEffectDefinition(
+                id="agent-create",
+                display_name="Create",
+                type="effect:agent:create",
+                execution_backend="container_worker_vm",
+                session_id="session-1",
+                mssql=True,
+            )
+        ).execute()
+
+    assert backend.prepared_sessions == []
 
 
 def test_agent_exec_provider_delegates_libvirt_sessions_to_vm_exec(tmp_path) -> None:

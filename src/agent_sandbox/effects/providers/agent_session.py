@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import html
+import json
 import shlex
 import time
 import uuid
@@ -7,6 +9,7 @@ from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote, urlsplit, urlunsplit
 
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.execution import (
@@ -381,6 +384,159 @@ def wait_for_container_execution(
     return status
 
 
+def container_worker_guest_gateway_url(config: GatewayConfig) -> str:
+    return normalize_optional_string(config.container_worker_guest_gateway_url) or config.gateway_url
+
+
+def container_worker_guest_openai_base_url(config: GatewayConfig) -> str:
+    configured = normalize_optional_string(config.container_worker_guest_openai_base_url)
+    if configured:
+        return configured
+    return _service_url_from_gateway_url(config.gateway_url, port=config.openai_relay_port, path="/v1")
+
+
+def container_worker_guest_nuget_relay_base_url(config: GatewayConfig) -> str:
+    configured = normalize_optional_string(config.container_worker_guest_nuget_relay_base_url)
+    if configured:
+        return configured
+    return _service_url_from_gateway_url(config.gateway_url, port=config.nuget_relay_port, path="")
+
+
+def container_session_openai_base_url(config: GatewayConfig, session_id: str) -> str:
+    return f"{container_worker_guest_openai_base_url(config).rstrip('/')}/session/{session_id}"
+
+
+def container_session_gateway_url(config: GatewayConfig, session_id: str) -> str:
+    base = container_worker_guest_gateway_url(config)
+    separator = "&" if "?" in base else "?"
+    return f"{base}{separator}session_id={quote(session_id, safe='')}"
+
+
+def build_container_session_files(
+    *,
+    config: GatewayConfig,
+    session_id: str,
+    model: str | None,
+    dotnet: bool,
+    nuget: bool,
+    playwright: bool,
+) -> list[dict[str, Any]]:
+    resolved_model = model or "gpt-5.4"
+    openai_base_url = container_worker_guest_openai_base_url(config)
+    gateway_url = container_worker_guest_gateway_url(config)
+    nuget_relay_base_url = container_worker_guest_nuget_relay_base_url(config)
+    session_openai_base_url = container_session_openai_base_url(config, session_id)
+    session_gateway_url = container_session_gateway_url(config, session_id)
+    files: list[dict[str, Any]] = [
+        {
+            "destination_path": "/home/agent/.agent-sandbox/session.env",
+            "mode": "0600",
+            "content": _session_env_content(
+                {
+                    "AGENT_SANDBOX_SESSION_ID": session_id,
+                    "AGENT_SANDBOX_GATEWAY_URL": gateway_url,
+                    "AGENT_SANDBOX_LLM_BASE_URL": openai_base_url,
+                    "OPENAI_BASE_URL": openai_base_url,
+                    "NUGET_RELAY_BASE_URL": nuget_relay_base_url,
+                    "AGENT_SANDBOX_NUGET_FALLBACK_PACKAGES": (
+                        "/opt/agent-sandbox/nuget-cache-ro"
+                    ),
+                    "NUGET_PACKAGES": "/home/agent/.nuget/packages-local",
+                    "NUGET_HTTP_CACHE_PATH": "/home/agent/.nuget/http-cache",
+                }
+            ),
+        },
+        {
+            "destination_path": "/home/agent/.profile",
+            "mode": "0644",
+            "content": _container_profile_content(dotnet=dotnet, playwright=playwright),
+        },
+        {
+            "destination_path": "/home/agent/.bashrc",
+            "mode": "0644",
+            "content": (
+                'if [ -f "$HOME/.profile" ]; then\n'
+                '  . "$HOME/.profile"\n'
+                "fi\n"
+            ),
+        },
+        {
+            "destination_path": "/home/agent/.bash_profile",
+            "mode": "0644",
+            "content": (
+                'if [ -f "$HOME/.profile" ]; then\n'
+                '  . "$HOME/.profile"\n'
+                "fi\n"
+            ),
+        },
+        {
+            "destination_path": "/home/agent/.codex/config.toml",
+            "mode": "0600",
+            "content": _codex_config_content(
+                model=resolved_model,
+                openai_base_url=session_openai_base_url,
+                gateway_url=session_gateway_url,
+            ),
+        },
+        {
+            "destination_path": "/home/agent/.config/agent-sandbox/codex/config.toml",
+            "mode": "0600",
+            "content": _codex_config_content(
+                model=resolved_model,
+                openai_base_url=session_openai_base_url,
+                gateway_url=session_gateway_url,
+            ),
+        },
+    ]
+    if dotnet:
+        files.extend(
+            [
+                {
+                    "destination_path": "/home/agent/.dotnet-cli/.keep",
+                    "content": "",
+                    "mode": "0644",
+                },
+                {
+                    "destination_path": "/home/agent/.dotnet/tools/.keep",
+                    "content": "",
+                    "mode": "0644",
+                },
+            ]
+        )
+    if nuget:
+        files.extend(
+            [
+                {
+                    "destination_path": "/home/agent/.nuget/NuGet/NuGet.Config",
+                    "mode": "0644",
+                    "content": _nuget_config_content(nuget_relay_base_url),
+                },
+                {
+                    "destination_path": "/home/agent/.nuget/packages-local/.keep",
+                    "content": "",
+                    "mode": "0644",
+                },
+                {
+                    "destination_path": "/home/agent/.nuget/http-cache/.keep",
+                    "content": "",
+                    "mode": "0644",
+                },
+            ]
+        )
+    return files
+
+
+def container_shell_preamble() -> str:
+    return (
+        "set -euo pipefail\n"
+        "export HOME=/home/agent\n"
+        "if [ -f /home/agent/.profile ]; then\n"
+        "  . /home/agent/.profile\n"
+        "fi\n"
+        "export OPENAI_API_KEY=\"${OPENAI_API_KEY:-relay-placeholder}\"\n"
+    )
+
+
 def map_install_roots_to_workspace(
     *,
     host_checkout: str,
@@ -447,14 +603,103 @@ def container_prompt_command(
             "/workspace",
             prompt,
         ]
-    return (
-        "set -euo pipefail; "
-        "export HOME=/home/agent; "
-        "cd /workspace; "
-        + " ".join(shlex.quote(arg) for arg in args)
-    )
+    return container_shell_preamble() + "cd /workspace\n" + shlex.join(args) + "\n"
 
 
 def safe_effect_execution_id(prefix: str, session_id: str) -> str:
     safe_session = "".join(char if char.isalnum() or char in "._-" else "-" for char in session_id)
     return f"{prefix}-{safe_session}-{uuid.uuid4().hex[:12]}"
+
+
+def _session_env_content(values: Mapping[str, str]) -> str:
+    return "".join(f"{key}={shlex.quote(value)}\n" for key, value in sorted(values.items()))
+
+
+def _container_profile_content(*, dotnet: bool, playwright: bool) -> str:
+    lines = [
+        'export HOME="${HOME:-/home/agent}"',
+        'export PATH="$HOME/bin:$PATH"',
+        'export CODEX_HOME="${CODEX_HOME:-$HOME/.config/agent-sandbox/codex}"',
+        'if [ -f "$HOME/.agent-sandbox/session.env" ]; then',
+        "  set -a",
+        '  . "$HOME/.agent-sandbox/session.env"',
+        "  set +a",
+        "fi",
+        'export OPENAI_API_KEY="${OPENAI_API_KEY:-relay-placeholder}"',
+    ]
+    if dotnet:
+        lines.extend(
+            [
+                'export DOTNET_ROOT="/opt/agent-sandbox/toolchains/dotnet"',
+                'export DOTNET_CLI_HOME="$HOME/.dotnet-cli"',
+                'export PATH="$DOTNET_ROOT:$HOME/.dotnet/tools:$PATH"',
+            ]
+        )
+    if playwright:
+        lines.extend(
+            [
+                'export AGENT_SANDBOX_NODE_ROOT="/opt/agent-sandbox/toolchains/node-v24.14.0"',
+                'export NODE_PATH="/opt/agent-sandbox/playwright-runtime/node_modules"',
+                'export PLAYWRIGHT_BROWSERS_PATH="/opt/agent-sandbox/ms-playwright"',
+                'export PATH="$AGENT_SANDBOX_NODE_ROOT/bin:$PATH"',
+            ]
+        )
+    return "\n".join(lines) + "\n"
+
+
+def _codex_config_content(*, model: str, openai_base_url: str, gateway_url: str) -> str:
+    return (
+        f"model = {_toml_string(model)}\n"
+        'model_provider = "openai"\n'
+        'model_reasoning_effort = "high"\n'
+        'personality = "pragmatic"\n'
+        f"openai_base_url = {_toml_string(openai_base_url)}\n"
+        "\n"
+        "[mcp_servers.agent_sandbox]\n"
+        f"url = {_toml_string(gateway_url)}\n"
+        "enabled = true\n"
+        "\n"
+        '[projects."/workspace"]\n'
+        'trust_level = "trusted"\n'
+    )
+
+
+def _nuget_config_content(nuget_relay_base_url: str) -> str:
+    escaped_base = html.escape(nuget_relay_base_url.rstrip("/"), quote=True)
+    return (
+        '<?xml version="1.0" encoding="utf-8"?>\n'
+        "<configuration>\n"
+        "  <config>\n"
+        '    <add key="globalPackagesFolder" value="/home/agent/.nuget/packages-local" />\n'
+        '    <add key="httpCacheFolder" value="/home/agent/.nuget/http-cache" />\n'
+        "  </config>\n"
+        "  <packageSources>\n"
+        "    <clear />\n"
+        f'    <add key="sandbox-nuget" value="{escaped_base}/nuget/nuget-org/v3/index.json" allowInsecureConnections="true" />\n'
+        f'    <add key="sandbox-azure" value="{escaped_base}/nuget/azure/v3/index.json" allowInsecureConnections="true" />\n'
+        "  </packageSources>\n"
+        "  <fallbackPackageFolders>\n"
+        '    <add key="shared-readonly" value="/opt/agent-sandbox/nuget-cache-ro" />\n'
+        "  </fallbackPackageFolders>\n"
+        "</configuration>\n"
+    )
+
+
+def _toml_string(value: str) -> str:
+    return json.dumps(value)
+
+
+def _service_url_from_gateway_url(gateway_url: str, *, port: int, path: str) -> str:
+    parts = urlsplit(gateway_url)
+    hostname = parts.hostname or "127.0.0.1"
+    if ":" in hostname and not hostname.startswith("["):
+        hostname = f"[{hostname}]"
+    netloc = hostname
+    if parts.username:
+        credentials = parts.username
+        if parts.password:
+            credentials = f"{credentials}:{parts.password}"
+        netloc = f"{credentials}@{netloc}"
+    netloc = f"{netloc}:{port}"
+    normalized_path = path if path.startswith("/") or not path else f"/{path}"
+    return urlunsplit((parts.scheme or "http", netloc, normalized_path, "", ""))

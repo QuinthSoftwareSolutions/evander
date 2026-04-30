@@ -14,6 +14,9 @@ container_worker_base_url: "http://10.0.2.10:11888"
 container_worker_token_env: "AGENT_SANDBOX_WORKER_TOKEN"
 container_worker_default_image: "agent-sandbox-runner:latest"
 container_worker_job_timeout_seconds: 1800
+container_worker_guest_openai_base_url: "http://<control-plane-private-ip>:11434/v1"
+container_worker_guest_gateway_url: "http://<control-plane-private-ip>:8000/mcp"
+container_worker_guest_nuget_relay_base_url: "http://<control-plane-private-ip>:11666"
 ```
 
 For directory-scoped runtime config, put these values on the root `providers` domain. Start the worker daemon on the worker VM with a matching token:
@@ -25,12 +28,34 @@ AGENT_SANDBOX_WORKER_TOKEN=... agent-sandbox-worker-daemon --host 0.0.0.0 --port
 For a reproducible worker VM deployment, use the dedicated Ansible playbook:
 
 ```bash
+./scripts/build_agent_sandbox_runner_image.sh
 ansible-playbook -i ansible/inventory/prod.yml ansible/worker.yml
 ```
 
-That playbook installs Docker, deploys the repo package, renders `config/worker-daemon.env`,
-installs `agent-sandbox-worker-daemon.service`, creates `/var/lib/agent-worker`, and verifies the
-local `/healthz` endpoint. It intentionally does not install the control-plane services.
+The build script creates `agent-sandbox-runner:latest` locally and saves
+`dist/agent-sandbox-runner.tar`. The worker playbook copies that archive to the worker VM, runs
+`docker load`, verifies the image tag exists, installs Docker, deploys the repo package, renders
+`config/worker-daemon.env`, installs `agent-sandbox-worker-daemon.service`, creates
+`/var/lib/agent-worker`, and verifies the local `/healthz` endpoint. It intentionally does not
+install the control-plane services.
+
+If the host Docker bridge cannot reach Ubuntu apt mirrors during the image build, run the same build
+with `RUNNER_BUILD_NETWORK=host`. That option only affects the host-side artifact build; worker
+runtime containers still use the daemon sandbox profile and must not use Docker `host` networking.
+
+The runner image intentionally contains only stable base tools, the vendored Codex binary, and
+Playwright operating-system libraries. .NET, Node, Playwright packages, browser caches, and NuGet
+fallback packages are worker-level caches mounted read-only into containers:
+
+- `/opt/agent-sandbox/toolchains/dotnet`
+- `/opt/agent-sandbox/toolchains/node-v24.14.0`
+- `/opt/agent-sandbox/playwright-runtime`
+- `/opt/agent-sandbox/ms-playwright`
+- `/opt/agent-sandbox/nuget-cache-ro`
+
+The Ansible role creates the cache directories under `agent_sandbox_worker_toolchain_cache_root`
+and wires them into the daemon with repeated `--readonly-mount` flags. Populate those caches through
+an operator-controlled path; they are not baked into the image and secrets are not mounted.
 
 The daemon defaults to the `default` sandbox profile. To select the stricter profile:
 
@@ -74,6 +99,15 @@ The worker API also exposes a session-preparation surface used by portable
 Those endpoints do not accept raw environment variables or secrets. Prompt and exec effects still
 use typed container jobs: the host builds an `ExecutionSpec.command`, starts the job, waits through
 the relevant completion path, then removes the container while preserving the session directory.
+
+`effect:agent:create` on `container_worker_vm` writes the session bootstrap files under
+`/home/agent`: `.agent-sandbox/session.env`, shell profiles, Codex config in both supported
+locations, and NuGet config when `nuget=true`. The Codex config points at the session-scoped OpenAI
+relay URL and MCP gateway URL. If `dotnet=true` or `playwright=true`, the profile points at the
+read-only worker cache mounts and keeps writable per-session cache paths under `/home/agent`.
+
+MSSQL is intentionally unsupported for container workers in this phase. Requests that set
+`mssql=true` or `mssql_init_root` fail clearly instead of being ignored.
 
 The host-side backend records the control-plane mapping in:
 
@@ -158,9 +192,13 @@ Docker is used as a local container runtime on the worker VM. The default sandbo
 - no Docker socket mount
 - no host network
 - persistent mounts for `/workspace`, `/home/agent`, and `/artifacts`
+- worker-level read-only cache mounts configured with `--readonly-mount`
 - working directory `/workspace`
 
 The Docker network can be overridden with worker config or `--docker-network`, but `host` is refused.
+When Codex or package restores need the control-plane gateway, OpenAI relay, or NuGet relay, choose a
+non-host Docker network and worker VM routing/firewall rules that allow those specific private
+control-plane endpoints.
 
 The `strict` sandbox profile keeps the default profile behavior and also adds:
 

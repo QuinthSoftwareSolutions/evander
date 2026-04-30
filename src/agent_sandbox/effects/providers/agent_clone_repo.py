@@ -1,18 +1,26 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from pathlib import Path
+import posixpath
+import shlex
 from typing import Any
+from urllib.parse import unquote, urlparse
 
+from agent_sandbox.execution import ExecutionBackendKind, ExecutionSpec, ExecutionStatusKind
 from agent_sandbox.events.provider_models import AgentCloneRepoEffectDefinition
 
 from .agent_session import (
+    container_shell_preamble,
     container_backend,
     effective_config_for_session,
     normalize_optional_string,
     require_container_session_id,
     required_string,
     resolve_vm_target,
+    safe_effect_execution_id,
     selected_execution_backend_for_target,
+    wait_for_container_execution,
 )
 from .base import EffectProviderBase
 
@@ -72,6 +80,15 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
             repo_source=repo_source,
             clone_branch=clone_branch,
         )
+        self._configure_container_git(
+            backend=backend,
+            session_id=session_id,
+            directory_path=session.directory_path if session is not None else directory_path,
+            repo_source=repo_source,
+            remote_url=result.remote_url,
+            clone_branch=clone_branch,
+            timeout_seconds=float(config.container_worker_job_timeout_seconds),
+        )
         return {
             "success": True,
             "message": (
@@ -86,6 +103,129 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
             "execution_backend": "container_worker_vm",
             "vm_name": None,
         }
+
+    def _configure_container_git(
+        self,
+        *,
+        backend: Any,
+        session_id: str,
+        directory_path: str,
+        repo_source: str,
+        remote_url: str,
+        clone_branch: str | None,
+        timeout_seconds: float,
+    ) -> None:
+        backend.write_files(
+            session_id=session_id,
+            files=[
+                {
+                    "destination_path": "/workspace/.agent-sandbox/bin/agent-pr-note",
+                    "content": self._agent_pr_note_helper_content(),
+                    "mode": "0755",
+                }
+            ],
+        )
+        execution_id = safe_effect_execution_id("clone-config", session_id)
+        command = self._container_git_config_command(
+            session_id=session_id,
+            repo_source=repo_source,
+            remote_url=remote_url,
+            clone_branch=clone_branch,
+        )
+        handle = backend.start(
+            backend.prepare(
+                ExecutionSpec(
+                    backend=ExecutionBackendKind.CONTAINER_WORKER_VM,
+                    target_name=execution_id,
+                    session_id=session_id,
+                    directory_path=directory_path,
+                    command=command,
+                    metadata={"effect_type": "effect:agent:clone-repo:git-config"},
+                )
+            )
+        )
+        logs = ""
+        status = None
+        try:
+            status = wait_for_container_execution(
+                backend,
+                handle.execution_id,
+                timeout_seconds=timeout_seconds,
+            )
+            try:
+                logs = str(backend.get_log_snapshot(handle.execution_id, lines=200) or "")
+            except Exception:
+                logs = ""
+        finally:
+            try:
+                backend.destroy(handle.execution_id)
+            except Exception:
+                pass
+        if status is None or status.status != ExecutionStatusKind.STOPPED:
+            message = normalize_optional_string(getattr(status, "message", None)) if status else None
+            raise RuntimeError(
+                message
+                or normalize_optional_string(logs)
+                or "Failed to configure git in container worker repo"
+            )
+
+    def _agent_pr_note_helper_content(self) -> str:
+        context = self._context()
+        project_dir = Path(getattr(context.admin_service, "project_dir", Path.cwd()))
+        helper_path = project_dir / "scripts" / "guest" / "agent_pr_note.sh"
+        if not helper_path.exists():
+            raise RuntimeError(f"Missing agent PR note helper: {helper_path}")
+        return helper_path.read_text(encoding="utf-8")
+
+    @staticmethod
+    def _container_git_config_command(
+        *,
+        session_id: str,
+        repo_source: str,
+        remote_url: str,
+        clone_branch: str | None,
+    ) -> str:
+        canonical_remote_url = repo_source.strip() if _is_remote_git_source(repo_source) else ""
+        push_remote_url = _container_reachable_git_remote_url(remote_url)
+        lines = [
+            container_shell_preamble().rstrip(),
+            "cd /workspace",
+            f"REMOTE_URL={shlex.quote(remote_url)}",
+            f"PUSH_REMOTE_URL={shlex.quote(push_remote_url or '')}",
+            f"CANONICAL_REMOTE_URL={shlex.quote(canonical_remote_url)}",
+            f"SESSION_ID={shlex.quote(session_id)}",
+            f"BRANCH_SUFFIX={shlex.quote(session_id)}",
+            'if [ -n "$PUSH_REMOTE_URL" ]; then',
+            '  if git remote get-url agent >/dev/null 2>&1; then git remote set-url agent "$PUSH_REMOTE_URL"; else git remote add agent "$PUSH_REMOTE_URL"; fi',
+            '  if [ -n "$CANONICAL_REMOTE_URL" ] && [ "$CANONICAL_REMOTE_URL" != "$PUSH_REMOTE_URL" ]; then',
+            '    git remote set-url origin "$CANONICAL_REMOTE_URL"',
+            '    git config "url.${PUSH_REMOTE_URL}.insteadOf" "$CANONICAL_REMOTE_URL"',
+            "  fi",
+            '  git config agent-sandbox.pushAgentAvailable "true"',
+            "else",
+            '  git remote remove agent >/dev/null 2>&1 || true',
+            '  git config --unset-all alias.push-agent >/dev/null 2>&1 || true',
+            '  git config agent-sandbox.pushAgentAvailable "false"',
+            "fi",
+            'git config user.name "Truman Bot"',
+            'git config user.email "truman@quinth.se"',
+            'git config agent-sandbox.sessionId "$SESSION_ID"',
+            'git config agent-sandbox.branchSuffix "$BRANCH_SUFFIX"',
+        ]
+        if clone_branch:
+            lines.append(f"git config agent-sandbox.baseBranch {shlex.quote(clone_branch)}")
+        lines.extend(
+            [
+                'git config alias.agent-pr-note \'!f(){ repo_root=$(git rev-parse --show-toplevel); "${repo_root}/.agent-sandbox/bin/agent-pr-note" "$@"; }; f\'',
+            ]
+        )
+        if push_remote_url:
+            lines.extend(
+                [
+                    'git config alias.push-agent \'!f(){ session_id=${SESSION_ID:-$(git config --get agent-sandbox.sessionId || true)}; if [ -z "${session_id}" ]; then echo "SESSION_ID is not set; refusing ambiguous agent push." >&2; return 1; fi; expected_issue_number=$(git config --get agent-sandbox.issueNumber || true); if [ -n "${expected_issue_number}" ]; then case "${session_id}" in issue-${expected_issue_number}|issue-${expected_issue_number}-*) ;; *) echo "SESSION_ID (${session_id}) does not match expected issue ${expected_issue_number}; refusing agent push." >&2; return 1 ;; esac; fi; suffix_source=${AGENT_BRANCH_SUFFIX:-$(git config --get agent-sandbox.branchSuffix || true)}; if [ -z "${suffix_source}" ]; then suffix_source=${HOSTNAME:-}; fi; suffix=$(printf "%s" "${suffix_source}" | tr "[:upper:]" "[:lower:]" | tr -cs "a-z0-9._-" "-" | sed "s/^-*//;s/-*$//"); if [ -z "${suffix}" ]; then echo "AGENT_BRANCH_SUFFIX/HOSTNAME is empty; refusing ambiguous agent push." >&2; return 1; fi; repo_root=$(git rev-parse --show-toplevel); "${repo_root}/.agent-sandbox/bin/agent-pr-note" ensure-head; branch=$(git rev-parse --abbrev-ref HEAD); git push agent HEAD:refs/heads/agents/${session_id}/${branch}-${suffix} refs/notes/agent-pr; }; f\'',
+                ]
+            )
+        return "\n".join(lines) + "\n"
 
     def _execute_libvirt(self, payload: dict[str, Any], *, execution_backend: str) -> dict[str, Any]:
         context = self._context()
@@ -128,3 +268,36 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
         if self.runtime_context is None:
             raise RuntimeError("AgentCloneRepoEffectProvider has no runtime context")
         return self.runtime_context
+
+
+def _is_remote_git_source(value: str) -> bool:
+    normalized = value.strip()
+    return "://" in normalized or normalized.startswith("git@") or normalized.startswith("ssh.")
+
+
+def _container_reachable_git_remote_url(value: str) -> str | None:
+    normalized = value.strip()
+    if not normalized:
+        return None
+    path = _container_mounted_git_path(normalized)
+    if path is None:
+        return None
+    if not _is_container_mounted_path(path):
+        return None
+    return path
+
+
+def _container_mounted_git_path(remote_url: str) -> str | None:
+    if remote_url.startswith("/"):
+        return posixpath.normpath(remote_url)
+    parsed = urlparse(remote_url)
+    if parsed.scheme != "file" or parsed.netloc not in {"", "localhost"}:
+        return None
+    return posixpath.normpath(unquote(parsed.path))
+
+
+def _is_container_mounted_path(path: str) -> bool:
+    for root in ("/workspace", "/home/agent", "/artifacts"):
+        if path == root or path.startswith(f"{root}/"):
+            return True
+    return False

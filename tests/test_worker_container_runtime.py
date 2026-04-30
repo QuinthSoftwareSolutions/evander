@@ -83,6 +83,31 @@ def test_docker_runtime_allows_non_host_network_override(tmp_path: Path) -> None
     assert args[args.index("--network") + 1] == "agent-worker-net"
 
 
+def test_docker_runtime_adds_worker_read_only_mounts(tmp_path: Path) -> None:
+    paths = WorkerSessionPaths.resolve(tmp_path / "worker-root", "session-1")
+    runtime = DockerContainerRuntime(
+        docker_network="none",
+        read_only_mounts=[
+            "/cache/dotnet:/opt/agent-sandbox/toolchains/dotnet",
+            "/cache/node:/opt/agent-sandbox/toolchains/node-v24.14.0:ro",
+        ],
+    )
+
+    args = runtime._build_run_args(request=_request(), record=_record(paths), paths=paths)  # noqa: SLF001
+
+    assert "-v" in args
+    assert "/cache/dotnet:/opt/agent-sandbox/toolchains/dotnet:ro" in args
+    assert "/cache/node:/opt/agent-sandbox/toolchains/node-v24.14.0:ro" in args
+
+
+def test_docker_runtime_rejects_unsafe_worker_read_only_mounts() -> None:
+    with pytest.raises(ValueError, match="Docker socket"):
+        DockerContainerRuntime(read_only_mounts=["/var/run/docker.sock:/opt/docker.sock"])
+
+    with pytest.raises(ValueError, match="/home/agent"):
+        DockerContainerRuntime(read_only_mounts=["/cache/home:/home/agent/tooling"])
+
+
 def test_strict_profile_adds_read_only_tmpfs_and_default_pids_limit(tmp_path: Path) -> None:
     paths = WorkerSessionPaths.resolve(tmp_path / "worker-root", "session-1")
     request = _request()

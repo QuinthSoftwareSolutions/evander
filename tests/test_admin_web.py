@@ -1903,7 +1903,9 @@ def test_admin_web_agents_create_container_session_and_list_it(
 
     class FakeContainerBackend:
         def __init__(self) -> None:
+            self.config = service.runtime.provider_config.resolve_for_directory(team_path)
             self.prepared: list[tuple[str, dict[str, object]]] = []
+            self.written: list[tuple[str, list[str]]] = []
 
         def prepare_session(
             self, *, session_id: str, metadata: dict[str, object] | None = None
@@ -1919,6 +1921,15 @@ def test_admin_web_agents_create_container_session_and_list_it(
                 metadata_path=f"/worker/{session_id}/metadata.json",
                 metadata=dict(metadata or {}),
             )
+
+        def write_files(self, *, session_id: str, files: list[dict[str, object]]) -> object:
+            self.written.append(
+                (
+                    session_id,
+                    [str(file.get("destination_path") or "") for file in files],
+                )
+            )
+            return object()
 
     fake_backend = FakeContainerBackend()
     monkeypatch.setattr(
@@ -1957,6 +1968,9 @@ def test_admin_web_agents_create_container_session_and_list_it(
             },
         )
     ]
+    assert fake_backend.written
+    assert "/home/agent/.agent-sandbox/session.env" in fake_backend.written[0][1]
+    assert "/home/agent/.codex/config.toml" in fake_backend.written[0][1]
     manifest = service.runtime.session_repository.get_session("container-session")
     assert manifest is not None
     assert manifest.vm_provider == "container_worker_vm"

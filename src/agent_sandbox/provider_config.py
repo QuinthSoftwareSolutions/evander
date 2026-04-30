@@ -45,6 +45,9 @@ class EffectProviderConfig(BaseModel):
     container_worker_job_timeout_seconds: float = 1800.0
     container_worker_request_timeout_seconds: float = 30.0
     container_worker_workspace_persistence: str = "session"
+    container_worker_guest_openai_base_url: str | None = None
+    container_worker_guest_gateway_url: str | None = None
+    container_worker_guest_nuget_relay_base_url: str | None = None
 
 
 class QueryProviderConfig(BaseModel):

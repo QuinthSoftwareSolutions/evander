@@ -84,6 +84,50 @@ def validate_worker_sandbox_profile(profile: WorkerSandboxProfile) -> WorkerSand
     return replace(profile, network_mode=network_mode or "none", user=user)
 
 
+@dataclass(frozen=True)
+class WorkerReadOnlyMount:
+    host_path: str
+    container_path: str
+
+    @property
+    def docker_volume_arg(self) -> str:
+        return f"{self.host_path}:{self.container_path}:ro"
+
+
+def parse_worker_read_only_mount(spec: str) -> WorkerReadOnlyMount:
+    parts = str(spec or "").strip().split(":")
+    if len(parts) == 2:
+        host_path, container_path = parts
+    elif len(parts) == 3 and parts[2] == "ro":
+        host_path, container_path = parts[0], parts[1]
+    else:
+        raise ValueError(
+            "read-only mounts must use /host/path:/container/path or "
+            "/host/path:/container/path:ro"
+        )
+    mount = WorkerReadOnlyMount(host_path=host_path, container_path=container_path)
+    validate_worker_read_only_mount(mount)
+    return mount
+
+
+def validate_worker_read_only_mount(mount: WorkerReadOnlyMount) -> WorkerReadOnlyMount:
+    reject_unsafe_mount(mount.host_path, mount.container_path)
+    if not mount.host_path.startswith("/"):
+        raise ValueError("read-only mount host path must be absolute")
+    if not mount.container_path.startswith("/"):
+        raise ValueError("read-only mount container path must be absolute")
+    if mount.container_path == "/":
+        raise ValueError("read-only mount container path must not be /")
+    for writable_root in ("/workspace", "/home/agent", "/artifacts"):
+        if mount.container_path == writable_root or mount.container_path.startswith(
+            f"{writable_root}/"
+        ):
+            raise ValueError(
+                f"read-only mounts must not shadow writable session mount {writable_root}"
+            )
+    return mount
+
+
 def reject_unsafe_mount(host_path: object, container_path: object) -> None:
     paths = {str(host_path), str(container_path)}
     if "/var/run/docker.sock" in paths:

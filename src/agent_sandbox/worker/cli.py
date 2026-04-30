@@ -32,6 +32,15 @@ def main() -> None:
         "--container-user",
         default=os.environ.get("AGENT_SANDBOX_WORKER_CONTAINER_USER"),
     )
+    parser.add_argument(
+        "--readonly-mount",
+        action="append",
+        default=None,
+        help=(
+            "Read-only bind mount in /host/path:/container/path form. "
+            "Repeat for worker-level toolchain caches."
+        ),
+    )
     args = parser.parse_args()
     sandbox_profile = worker_sandbox_profile(args.sandbox_profile).with_overrides(
         network_mode=args.docker_network,
@@ -46,6 +55,7 @@ def main() -> None:
             worker_root=args.worker_root,
             sandbox_profile=sandbox_profile,
             docker_network=None,
+            read_only_mounts=args.readonly_mount,
         ),
         host=args.host,
         port=args.port,

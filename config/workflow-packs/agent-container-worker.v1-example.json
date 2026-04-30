@@ -1064,7 +1064,7 @@
             "vm-type": "review"
           },
           "model": "gpt-5.4",
-          "mssql": true,
+          "mssql": false,
           "nuget": true,
           "playwright": true,
           "session_id": "review-${{trigger-review-new-request-1.review_request.pr_id}}-root-example-industry-app-${{system.now.utc_timestamp_compact}}-${{system.unique.compact}}",

@@ -46,6 +46,9 @@ container_worker_base_url: "http://10.0.2.10:11888"
 container_worker_token_env: "AGENT_SANDBOX_WORKER_TOKEN"
 container_worker_default_image: "agent-sandbox-runner:latest"
 container_worker_job_timeout_seconds: 1800
+container_worker_guest_openai_base_url: "http://<control-plane-private-ip>:11434/v1"
+container_worker_guest_gateway_url: "http://<control-plane-private-ip>:8000/mcp"
+container_worker_guest_nuget_relay_base_url: "http://<control-plane-private-ip>:11666"
 ```
 
 This does not replace `vm_provider`; provider-specific lifecycle details still live behind the existing VM services in this phase.
@@ -60,6 +63,12 @@ session manifest and worker directories, `effect:agent:clone-repo` clones into `
 `effect:agent:copy-files` writes under `/workspace` or `/home/agent`, `effect:agent:exec`
 runs deterministic setup commands in a transient worker job, and `effect:agent:prompt`
 starts a disposable worker job for Codex and removes the job after completion.
+
+Container sessions are bootstrapped through mounted `/home/agent`, not image rebuilds. The host writes
+Codex config, shell profile setup, and optional NuGet/.NET/Playwright environment into the durable
+agent home. Toolchains are expected to come from worker-level read-only cache mounts, while writable
+session cache state remains under `/home/agent`. MSSQL bootstrap is not implemented for
+`container_worker_vm`; `mssql=true` and `mssql_init_root` fail explicitly.
 
 ## Migration Path
 

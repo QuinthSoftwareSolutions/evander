@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import UTC, datetime
 from typing import Any
 
@@ -133,29 +135,147 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
         )
         model = str(record.model or getattr(session, "model", None) or "gpt-5.4").strip()
         execution_id = safe_effect_execution_id("agent", session_id)
-        handle = backend.start(
-            backend.prepare(
-                ExecutionSpec(
-                    backend=ExecutionBackendKind.CONTAINER_WORKER_VM,
-                    target_name=execution_id,
-                    session_id=session_id,
-                    directory_path=getattr(session, "directory_path", None) or "root",
-                    command=container_prompt_command(
-                        prompt=record.prompt,
-                        model=model,
-                        resume_thread_id=record.resume_thread_id,
-                    ),
-                    metadata={
-                        "effect_type": "effect:agent:enqueue-prompt",
-                        "dispatch_id": dispatch_id,
-                        "queued": True,
-                    },
+        try:
+            handle = backend.start(
+                backend.prepare(
+                    ExecutionSpec(
+                        backend=ExecutionBackendKind.CONTAINER_WORKER_VM,
+                        target_name=execution_id,
+                        session_id=session_id,
+                        directory_path=getattr(session, "directory_path", None) or "root",
+                        command=container_prompt_command(
+                            prompt=record.prompt,
+                            model=model,
+                            resume_thread_id=record.resume_thread_id,
+                        ),
+                        metadata={
+                            "effect_type": "effect:agent:enqueue-prompt",
+                            "dispatch_id": dispatch_id,
+                            "queued": True,
+                        },
+                    )
                 )
             )
-        )
-        del handle
+        except Exception:
+            return False
+        if not self._record_container_waiting_execution(
+            worker=worker,
+            record=record,
+            queue_key=queue_key,
+            session=session,
+            session_id=session_id,
+            dispatch_id=dispatch_id,
+            execution_id=handle.execution_id,
+            model=model,
+        ):
+            try:
+                backend.destroy(handle.execution_id)
+            except Exception:
+                pass
+            return False
         queue_store.delete(queue_key)
         return True
+
+    def _record_container_waiting_execution(
+        self,
+        *,
+        worker: Any,
+        record: Any,
+        queue_key: str,
+        session: Any,
+        session_id: str,
+        dispatch_id: str,
+        execution_id: str,
+        model: str,
+    ) -> bool:
+        execution_store = getattr(worker, "execution_store", None)
+        record_execution = getattr(execution_store, "record_execution", None)
+        if not callable(record_execution):
+            return False
+
+        from agent_sandbox.daemons.effect_orchestrator import EffectExecutionRecord
+
+        event_id = f"queued-agent-prompt:{queue_key}:{dispatch_id}"
+        idempotency_key = f"{event_id}::{record.effect_id}"
+        find_by_idempotency_key = getattr(
+            execution_store,
+            "find_execution_by_idempotency_key",
+            None,
+        )
+        if (
+            callable(find_by_idempotency_key)
+            and find_by_idempotency_key(idempotency_key) is not None
+        ):
+            return True
+
+        now = datetime.now(UTC)
+        directory_path = str(getattr(session, "directory_path", None) or "root")
+        vm_user = str(getattr(record, "vm_user", None) or "agent")
+        resolved_config = {
+            "target": record.target,
+            "vm_name": record.vm_name,
+            "session_id": session_id,
+            "prompt": record.prompt,
+            "model": model,
+            "vm_user": vm_user,
+            "resume_thread_id": record.resume_thread_id,
+            "directory_path": directory_path,
+            "execution_backend": ExecutionBackendKind.CONTAINER_WORKER_VM.value,
+            "queue_key": queue_key,
+        }
+        outputs = {
+            "dispatch_id": dispatch_id,
+            "thread_id": record.resume_thread_id or dispatch_id,
+            "success": True,
+            "queued": False,
+            "dispatched_from_queue": True,
+            "output_mode": "on_completion",
+            "vm_name": record.vm_name,
+            "session_id": session_id,
+            "execution_backend": ExecutionBackendKind.CONTAINER_WORKER_VM.value,
+            "execution_id": execution_id,
+            "queue_key": queue_key,
+        }
+        execution_record = EffectExecutionRecord(
+            execution_id=(
+                f"exec-{hashlib.sha1(idempotency_key.encode('utf-8')).hexdigest()[:16]}"
+            ),
+            idempotency_key=idempotency_key,
+            event_id=event_id,
+            trace_id=f"queued-agent-prompt:{queue_key}",
+            source_node_id=record.effect_id,
+            source_trigger_type="effect:agent:enqueue-prompt",
+            effect_id=record.effect_id,
+            effect_type="effect:agent:enqueue-prompt",
+            status="waiting",
+            started_at=now,
+            finished_at=now,
+            resolved_config_hash=self._json_sha256(resolved_config),
+            resolved_config=resolved_config,
+            input_payload={
+                "target": record.target,
+                "vm_name": record.vm_name,
+                "session_id": session_id,
+                "prompt": record.prompt,
+                "model": model,
+                "vm_user": vm_user,
+                "resume_thread_id": record.resume_thread_id,
+                "queue_key": queue_key,
+            },
+            outputs=outputs,
+            config_revision=getattr(worker, "_last_graph_revision", None),
+        )
+        try:
+            record_execution(execution_record)
+        except Exception:
+            return False
+        return True
+
+    @staticmethod
+    def _json_sha256(value: Any) -> str:
+        return hashlib.sha256(
+            json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
 
     def _container_record_context(self, *, worker: Any, record: Any) -> tuple[Any, ...] | None:
         session_id = str(getattr(record, "session_id", "") or "").strip()

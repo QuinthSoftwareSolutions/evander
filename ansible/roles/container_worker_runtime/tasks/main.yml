@@ -21,6 +21,20 @@
       mode: "0750"
     - path: "{{ agent_sandbox_worker_runtime_dir }}"
       mode: "0750"
+    - path: "{{ agent_sandbox_worker_root }}/images"
+      mode: "0750"
+    - path: "{{ agent_sandbox_worker_toolchain_cache_root }}"
+      mode: "0755"
+    - path: "{{ agent_sandbox_worker_dotnet_cache_path }}"
+      mode: "0755"
+    - path: "{{ agent_sandbox_worker_node_cache_path }}"
+      mode: "0755"
+    - path: "{{ agent_sandbox_worker_playwright_runtime_cache_path }}"
+      mode: "0755"
+    - path: "{{ agent_sandbox_worker_playwright_browsers_cache_path }}"
+      mode: "0755"
+    - path: "{{ agent_sandbox_worker_nuget_fallback_cache_path }}"
+      mode: "0755"
 
 - name: Resolve worker service user uid
   ansible.builtin.command:
@@ -52,6 +66,52 @@
           ~ agent_sandbox_worker_user_gid_result.stdout
         )
       }}
+
+- name: Check local runner image archive
+  ansible.builtin.stat:
+    path: "{{ agent_sandbox_runner_image_archive_path }}"
+  delegate_to: localhost
+  become: false
+  register: agent_sandbox_runner_image_archive_stat
+
+- name: Assert local runner image archive exists
+  ansible.builtin.assert:
+    that:
+      - agent_sandbox_runner_image_archive_stat.stat.exists
+      - agent_sandbox_runner_image_archive_stat.stat.isreg
+    fail_msg: >-
+      Build the runner image archive first with
+      scripts/build_agent_sandbox_runner_image.sh. Expected archive:
+      {{ agent_sandbox_runner_image_archive_path }}
+    success_msg: Runner image archive is present on the Ansible control machine.
+
+- name: Copy runner image archive to worker
+  ansible.builtin.copy:
+    src: "{{ agent_sandbox_runner_image_archive_path }}"
+    dest: "{{ agent_sandbox_runner_image_remote_archive_path }}"
+    owner: "{{ agent_sandbox_run_user }}"
+    group: "{{ agent_sandbox_run_user }}"
+    mode: "0640"
+  register: agent_sandbox_runner_image_archive_copy
+
+- name: Load runner image archive into Docker
+  ansible.builtin.command:
+    argv:
+      - docker
+      - load
+      - --input
+      - "{{ agent_sandbox_runner_image_remote_archive_path }}"
+  register: agent_sandbox_runner_image_load
+  changed_when: agent_sandbox_runner_image_archive_copy.changed
+
+- name: Verify runner image exists locally
+  ansible.builtin.command:
+    argv:
+      - docker
+      - image
+      - inspect
+      - "{{ agent_sandbox_runner_image_name }}"
+  changed_when: false
 
 - name: Preload configured worker images
   ansible.builtin.command:

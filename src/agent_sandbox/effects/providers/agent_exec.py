@@ -9,6 +9,7 @@ from agent_sandbox.events.provider_models import AgentExecEffectDefinition
 
 from .agent_session import (
     container_backend,
+    container_shell_preamble,
     effective_config_for_session,
     normalize_optional_string,
     require_container_session_id,
@@ -181,7 +182,7 @@ class AgentExecEffectProvider(VmExecEffectProvider):
         working_directory: str | None,
         stdin: str | None,
     ) -> str:
-        lines = ["set -euo pipefail"]
+        lines = [container_shell_preamble().rstrip()]
         if working_directory:
             lines.append(f"cd {shlex.quote(working_directory)}")
         if stdin is not None:

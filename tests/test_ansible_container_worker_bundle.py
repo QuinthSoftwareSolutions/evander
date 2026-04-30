@@ -60,6 +60,15 @@ def test_worker_group_vars_define_docker_and_durable_state_contract() -> None:
     assert 'agent_sandbox_worker_runtime_dir: "{{ agent_sandbox_worker_root }}/runtime"' in text
     assert 'agent_sandbox_worker_sandbox_profile: "default"' in text
     assert "AGENT_SANDBOX_WORKER_TOKEN" in text
+    assert 'agent_sandbox_runner_image_name: "agent-sandbox-runner:latest"' in text
+    assert "agent_sandbox_runner_image_archive_path" in text
+    assert "agent_sandbox_worker_toolchain_cache_root" in text
+    assert "agent_sandbox_worker_readonly_mounts" in text
+    assert "/opt/agent-sandbox/toolchains/dotnet" in text
+    assert "/opt/agent-sandbox/toolchains/node-v24.14.0" in text
+    assert "/opt/agent-sandbox/playwright-runtime" in text
+    assert "/opt/agent-sandbox/ms-playwright" in text
+    assert "/opt/agent-sandbox/nuget-cache-ro" in text
     assert "agent_sandbox_worker_preload_images" in text
 
 
@@ -88,7 +97,8 @@ def test_worker_service_role_renders_env_and_daemon_unit() -> None:
     assert "--docker-network {{ agent_sandbox_worker_docker_network }}" in unit
     assert "--read-only-rootfs" in unit
     assert "--container-user {{ agent_sandbox_effective_worker_container_user }}" in unit
-    assert "{% endif %}{{ \"\" }}\nRestart=on-failure" in unit
+    assert "--readonly-mount {{ mount }}" in unit
+    assert "{% endfor %}{{ \"\" }}\nRestart=on-failure" in unit
 
 
 def test_worker_runtime_and_verification_roles_cover_docker_health_and_no_control_plane_units() -> (
@@ -106,6 +116,11 @@ def test_worker_runtime_and_verification_roles_cover_docker_health_and_no_contro
     assert "agent_sandbox_worker_runtime_dir" in runtime
     assert "Resolve worker service user uid" in runtime
     assert "agent_sandbox_effective_worker_container_user" in runtime
+    assert "Check local runner image archive" in runtime
+    assert "scripts/build_agent_sandbox_runner_image.sh" in runtime
+    assert "docker\n      - load" in runtime
+    assert "docker\n      - image\n      - inspect" in runtime
+    assert "agent_sandbox_worker_toolchain_cache_root" in runtime
     assert "agent_sandbox_worker_preload_images" in runtime
     assert "agent-sandbox-worker-daemon.service" in verification
     assert "docker ps" not in verification

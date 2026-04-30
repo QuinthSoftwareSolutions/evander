@@ -12,6 +12,8 @@ from types import SimpleNamespace
 import pytest
 
 from agent_sandbox.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
+from agent_sandbox.execution import ExecutionStatusKind
+from agent_sandbox.effects.providers.agent_enqueue_prompt import AgentEnqueuePromptEffectProvider
 from agent_sandbox.effects.providers.lifecycle_hooks import AgentEnqueuePromptQueueDispatchHook
 from agent_sandbox.effects.providers.base import EffectRuntimeContext
 from agent_sandbox.effects.providers.vm_copy_files import VmCopyFilesEffectProvider
@@ -19,6 +21,7 @@ from agent_sandbox.daemons.effect_orchestrator import (
     AwaitAgentPendingRecord,
     EffectOrchestratorWorker,
     ExecutionGraph,
+    JsonExecutionStore,
     _await_agent_pending_target,
     _matching_outbound_edges,
     build_effect_orchestrator_worker,
@@ -124,6 +127,13 @@ class _ContainerDispatchBackendStub:
         self.repository = SimpleNamespace(read_all=lambda: {})
         self.prepared_specs: list[object] = []
         self.started_specs: list[object] = []
+        self.destroyed: list[str] = []
+        self.status = SimpleNamespace(
+            status=ExecutionStatusKind.STOPPED,
+            message=None,
+            metadata={},
+        )
+        self.logs = ""
 
     def prepare(self, spec):
         self.prepared_specs.append(spec)
@@ -132,6 +142,17 @@ class _ContainerDispatchBackendStub:
     def start(self, spec):
         self.started_specs.append(spec)
         return SimpleNamespace(execution_id=spec.target_name)
+
+    def inspect(self, execution_id: str):
+        del execution_id
+        return self.status
+
+    def get_log_snapshot(self, execution_id: str, *, lines: int = 50):
+        del execution_id, lines
+        return self.logs
+
+    def destroy(self, execution_id: str):
+        self.destroyed.append(execution_id)
 
 
 def _edge(source_id: str, target_id: str) -> dict[str, str]:
@@ -1941,7 +1962,7 @@ def test_agent_enqueue_prompt_dispatches_queued_prompt_when_target_agent_becomes
     assert queued_payload == {}
 
 
-def test_agent_enqueue_prompt_dispatch_hook_dispatches_container_queue_without_libvirt(
+def test_agent_enqueue_prompt_dispatch_hook_tracks_container_queue_until_completion(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     config = GatewayConfig(
@@ -1981,8 +2002,15 @@ def test_agent_enqueue_prompt_dispatch_hook_dispatches_container_queue_without_l
         "agent_sandbox.effects.providers.lifecycle_hooks.build_execution_backend",
         lambda config, admin_service: backend,
     )
+    monkeypatch.setattr(
+        "agent_sandbox.effects.providers.agent_prompt.build_execution_backend",
+        lambda config, admin_service: backend,
+    )
+    execution_store = JsonExecutionStore(tmp_path / "effect-orchestrator-executions.json")
+    published_outputs: list[dict[str, object]] = []
     worker = SimpleNamespace(
         config=config,
+        execution_store=execution_store,
         queued_agent_prompt_store=queue_store,
         agent_prompt_dispatch_port=object(),
         provider_config_resolver=SimpleNamespace(resolve_for_session_id=lambda session_id: config),
@@ -1991,6 +2019,10 @@ def test_agent_enqueue_prompt_dispatch_hook_dispatches_container_queue_without_l
                 runtime=SimpleNamespace(session_repository=session_repository)
             )
         ),
+        _publish_completion_event_from_record=lambda record, outputs: (
+            published_outputs.append(outputs) or "effect-completed"
+        ),
+        _update_event_delivery_state=lambda event_id: None,
     )
 
     dispatched = AgentEnqueuePromptQueueDispatchHook().on_post_completion_dispatch(worker=worker)
@@ -1999,6 +2031,20 @@ def test_agent_enqueue_prompt_dispatch_hook_dispatches_container_queue_without_l
     assert queue_store.read_all() == {}
     assert backend.started_specs[0].session_id == "session-1"
     assert "check teams" in str(backend.started_specs[0].command)
+    waiting_records = list(execution_store.read_all().values())
+    assert len(waiting_records) == 1
+    assert waiting_records[0].status == "waiting"
+    assert waiting_records[0].effect_type == "effect:agent:enqueue-prompt"
+    execution_id = str(waiting_records[0].outputs["execution_id"])
+    assert execution_id == backend.started_specs[0].target_name
+
+    reconciled = AgentEnqueuePromptEffectProvider.reconcile_waiting(worker=worker)
+
+    assert reconciled == 1
+    assert backend.destroyed == [execution_id]
+    final_records = list(execution_store.read_all().values())
+    assert final_records[0].status == "succeeded"
+    assert published_outputs[0]["worker_status"] == "stopped"
 
 
 def test_agent_enqueue_prompt_queues_and_fails_when_immediate_resume_fails(

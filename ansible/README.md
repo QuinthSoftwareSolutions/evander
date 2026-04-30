@@ -229,6 +229,7 @@ The worker inventory group is `agent_sandbox_worker_hosts`. Worker defaults live
 Run the worker deployment with:
 
 ```bash
+./scripts/build_agent_sandbox_runner_image.sh
 ansible-playbook \
   -i ansible/inventory/prod.yml \
   --ask-vault-pass \
@@ -248,7 +249,21 @@ execution_backend: container_worker_vm
 container_worker_base_url: "http://<worker-private-ip>:11888"
 container_worker_token_env: "AGENT_SANDBOX_WORKER_TOKEN"
 container_worker_default_image: "agent-sandbox-runner:latest"
+container_worker_guest_openai_base_url: "http://<control-plane-private-ip>:11434/v1"
+container_worker_guest_gateway_url: "http://<control-plane-private-ip>:8000/mcp"
+container_worker_guest_nuget_relay_base_url: "http://<control-plane-private-ip>:11666"
 ```
+
+The runner image is deployed from `dist/agent-sandbox-runner.tar`; the worker playbook copies it to
+the worker and runs `docker load`. The same playbook creates worker-level read-only cache
+directories for .NET, Node/Playwright, Playwright browsers, and NuGet fallback packages under
+`agent_sandbox_worker_toolchain_cache_root`, then wires them into the daemon with repeated
+`--readonly-mount` flags. Populate those caches before relying on `dotnet=true` or
+`playwright=true` sessions. Docker `host` networking remains refused; choose a private Docker
+network/routing setup that can reach only the required control-plane relay and gateway endpoints.
+If the host Docker bridge cannot reach apt mirrors while building the tarball, build it with
+`RUNNER_BUILD_NETWORK=host ./scripts/build_agent_sandbox_runner_image.sh`; this does not change the
+worker daemon's runtime networking policy.
 
 After the worker playbook and control-plane config are both deployed, verify the full path from the
 control plane:

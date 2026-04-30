@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+from collections.abc import Sequence
 from pathlib import Path
 
 from starlette.applications import Starlette
@@ -160,6 +161,7 @@ def create_app(
     container_runtime: ContainerRuntime | None = None,
     docker_network: str | None = "none",
     sandbox_profile: WorkerSandboxProfile | None = None,
+    read_only_mounts: Sequence[str] | None = None,
     token: str | None = None,
 ) -> Starlette:
     return WorkerDaemon(
@@ -168,5 +170,6 @@ def create_app(
         container_runtime=container_runtime,
         docker_network=docker_network,
         sandbox_profile=sandbox_profile,
+        read_only_mounts=read_only_mounts,
         token=token,
     ).create_app()

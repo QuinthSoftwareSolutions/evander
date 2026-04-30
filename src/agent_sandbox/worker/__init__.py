@@ -19,9 +19,12 @@ from .models import (
 )
 from .runtime import ContainerRuntime
 from .sandbox_profile import (
+    WorkerReadOnlyMount,
     WorkerSandboxProfile,
     default_worker_sandbox_profile,
+    parse_worker_read_only_mount,
     strict_worker_sandbox_profile,
+    validate_worker_read_only_mount,
     validate_worker_sandbox_profile,
     worker_sandbox_profile,
 )
@@ -41,6 +44,7 @@ __all__ = [
     "WorkerJobRecord",
     "WorkerJobRequest",
     "WorkerJobStore",
+    "WorkerReadOnlyMount",
     "WorkerRepoCloneRecord",
     "WorkerRepoCloneRequest",
     "WorkerResourceLimits",
@@ -50,7 +54,9 @@ __all__ = [
     "WorkerSessionRecord",
     "create_app",
     "default_worker_sandbox_profile",
+    "parse_worker_read_only_mount",
     "strict_worker_sandbox_profile",
+    "validate_worker_read_only_mount",
     "validate_worker_sandbox_profile",
     "worker_sandbox_profile",
 ]
