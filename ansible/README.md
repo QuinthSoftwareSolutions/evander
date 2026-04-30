@@ -125,6 +125,11 @@ renders these host-local managed artifacts with restricted permissions:
 - `config/trigger-orchestrator/config.json`
 - optional `secrets.env`
 
+Worker/global JSON files are also editable from the Admin GUI. Set
+`agent_sandbox_force_render_worker_config: false` for hosts where operators own those settings
+after first install; the playbook will still create missing worker config files but will not replace
+existing ones.
+
 ## First Install
 
 1. Copy the example inventory and defaults to your operator-managed inventory.
@@ -155,6 +160,7 @@ The playbook is intended to be safe to re-run:
 - `npm ci` and `npm run build` refresh the Admin Web frontend bundle
 - `init-state` is re-run against the same runtime directory
 - managed config files are re-rendered from variables
+- worker/global JSON files are preserved when `agent_sandbox_force_render_worker_config: false`
 - `create_libvirt_network.sh` and `create_base_vm.sh` are repo-native and idempotent in the `full`
   profile
 - if the configured run user's supplementary groups change, managed services are restarted so

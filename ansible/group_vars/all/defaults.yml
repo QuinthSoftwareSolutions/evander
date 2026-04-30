@@ -6,6 +6,9 @@ agent_sandbox_repo_accept_newhostkey: true
 agent_sandbox_repo_ssh_private_key: ""
 agent_sandbox_repo_ssh_private_key_path: "/home/{{ agent_sandbox_run_user }}/.ssh/agent-sandbox-repo-deploy-key"
 agent_sandbox_manage_workflow_config: true
+# Worker/global JSON config is operator-editable in the Admin GUI. Keep this true for
+# fully Ansible-managed hosts; set false to create missing files but preserve live edits.
+agent_sandbox_force_render_worker_config: true
 agent_sandbox_repo_managed_base_tracked_config_paths:
   - config/admin-web.env
   - config/discord-ingest/config.json
