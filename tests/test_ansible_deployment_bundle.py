@@ -1,3 +1,4 @@
+import subprocess
 from pathlib import Path
 
 
@@ -63,6 +64,48 @@ def test_ansible_repo_checkout_supports_private_deploy_key() -> None:
     assert "key_file:" in text
     assert "agent_sandbox_repo_ssh_private_key_path" in text
     assert "accept_newhostkey:" in text
+
+
+def test_worker_global_live_configs_are_operator_local() -> None:
+    repo = Path(__file__).resolve().parents[1]
+    local_config_paths = [
+        "config/ado-worker/config.json",
+        "config/discord-ingest/config.json",
+        "config/discord-wake/config.json",
+        "config/host-heartbeat/config.json",
+        "config/issue-orchestrator/config.json",
+        "config/scheduled-wake/config.json",
+        "config/teams-ingest/config.json",
+        "config/teams-meeting-ingest/config.json",
+    ]
+    example_paths = [
+        "config/ado-worker/config.json.example",
+        "config/discord-ingest/config.json.example",
+        "config/discord-wake/config.json.example",
+        "config/issue-orchestrator/config.json.example",
+        "config/scheduled-wake/config.json.example",
+        "config/teams-ingest/config.json.example",
+        "config/teams-meeting-ingest/config.json.example",
+    ]
+
+    ignored = subprocess.run(
+        ["git", "check-ignore", *local_config_paths],
+        cwd=repo,
+        check=True,
+        text=True,
+        capture_output=True,
+    ).stdout.splitlines()
+    assert set(ignored) == set(local_config_paths)
+
+    tracked = subprocess.run(
+        ["git", "ls-files", "--", *local_config_paths, *example_paths],
+        cwd=repo,
+        check=True,
+        text=True,
+        capture_output=True,
+    ).stdout.splitlines()
+    assert not set(local_config_paths).intersection(tracked)
+    assert set(example_paths).issubset(tracked)
 
 
 def test_ansible_env_template_shell_quotes_values() -> None:
