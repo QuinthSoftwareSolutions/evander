@@ -167,6 +167,20 @@ class AgentEnqueuePromptEffectDefinition(EffectDefinition):
     resume_thread_id: ConfigValue | None = None
 
 
+class AgentExecEffectDefinition(EffectDefinition):
+    type: Literal["effect:agent:exec"]
+    target: ConfigValue | None = None
+    session_id: ConfigValue | None = None
+    vm_name: ConfigValue | None = None
+    vm_user: ConfigValue | None = None
+    command: ConfigValue
+    working_directory: ConfigValue | None = None
+    environment: ConfigValue | None = None
+    stdin: ConfigValue | None = None
+    timeout_seconds: ConfigValue | None = None
+    check: ConfigValue | None = True
+
+
 class BashScriptEffectDefinition(EffectDefinition):
     type: Literal["effect:bash:script"]
     script_path: ConfigValue

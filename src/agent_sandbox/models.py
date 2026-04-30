@@ -395,6 +395,20 @@ class VmActionResult(BaseModel):
     remote_url: str | None = None
 
 
+class AgentRecord(BaseModel):
+    agent_id: str
+    backend: str
+    target_name: str
+    session_id: str | None = None
+    directory_path: str = "root"
+    status: str = "unknown"
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    updated_at: datetime | None = None
+    host: dict[str, Any] = Field(default_factory=dict)
+    capabilities: dict[str, bool] = Field(default_factory=dict)
+
+
 class WorkerSummary(BaseModel):
     worker_id: str
     name: str

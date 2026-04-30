@@ -116,6 +116,7 @@ const NODE_TYPE_DESCRIPTIONS: Record<string, string> = {
   "gate:await-agent": "Pause the workflow until a selected agent session completes.",
   "gate:for": "Iterate over an array and execute the body branch for each item.",
   "effect:agent:prompt": "Send a prompt to an agent session.",
+  "effect:agent:exec": "Run a shell command in an agent session.",
   "effect:vm:create": "Create a VM for the workflow.",
   "effect:vm:clone-repo": "Clone a repository into a target VM.",
   "effect:vm:bootstrap-python": "Bootstrap a Python checkout and environment in a VM.",
@@ -533,6 +534,9 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
   }
   if (kind === "effect" && type === "effect:agent:prompt") {
     return { id, display_name: "New prompt", type, prompt: "Describe the next action." };
+  }
+  if (kind === "effect" && type === "effect:agent:exec") {
+    return { id, display_name: "Agent exec", type, command: "echo hello" };
   }
   if (kind === "effect" && type === "effect:vm:create") {
     return { id, display_name: "New VM effect", type };
@@ -1114,6 +1118,19 @@ function declaredOutputsForNode(node: WorkflowNodeConfig | undefined, config?: W
       success: { type: "boolean" },
       output_mode: { type: "string" },
     },
+    "effect:agent:exec": {
+      success: { type: "boolean" },
+      vm_name: { type: "string" },
+      session_id: { type: "string" },
+      execution_backend: { type: "string" },
+      execution_id: { type: "string" },
+      status: { type: "string" },
+      action: { type: "string" },
+      message: { type: "string" },
+      exit_code: { type: "integer" },
+      stdout: { type: "string" },
+      stderr: { type: "string" },
+    },
     "effect:vm:exec": {
       success: { type: "boolean" },
       vm_name: { type: "string" },
@@ -1663,6 +1680,7 @@ export default function App() {
   const hasCollapsedTargetUi =
     selectedNode?.type === "effect:vm:copy-files" ||
     selectedNode?.type === "effect:agent:prompt" ||
+    selectedNode?.type === "effect:agent:exec" ||
     selectedNode?.type === "effect:session:update-metadata" ||
     selectedNode?.type === "query:session-context";
   const effectTargetKey = activeEffectTargetKey(inspectorKnownValues);

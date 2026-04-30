@@ -209,6 +209,7 @@ def _builtin_node_schema_resolvers() -> dict[str, Any]:
         "effect:agent:copy-files": provider_models.AgentCopyFilesEffectDefinition,
         "effect:agent:prompt": provider_models.AgentPromptEffectDefinition,
         "effect:agent:enqueue-prompt": provider_models.AgentEnqueuePromptEffectDefinition,
+        "effect:agent:exec": provider_models.AgentExecEffectDefinition,
         "effect:bash:script": provider_models.BashScriptEffectDefinition,
         "effect:vm:exec": provider_models.VmExecEffectDefinition,
         "effect:vm:copy-files": provider_models.VmCopyFilesEffectDefinition,

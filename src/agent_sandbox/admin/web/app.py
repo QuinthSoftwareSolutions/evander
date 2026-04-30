@@ -12,6 +12,7 @@ from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
 from agent_sandbox.admin.service import AdminService
+from agent_sandbox.admin.web.agents import agent_routes
 from agent_sandbox.admin.web.sessions_approvals import session_approval_routes
 from agent_sandbox.admin.web.shared import (
     AZURE_SSO_START_PATH,
@@ -262,6 +263,7 @@ def create_app(service: AdminService) -> Starlette:
         Route("/api/admin/privileged/lock", lock_privileged_operations, methods=["POST"]),
     ]
     routes.extend(workflow_routes(service))
+    routes.extend(agent_routes(service, auth))
     routes.extend(vm_issue_routes(service, auth))
     routes.extend(session_approval_routes(service, auth))
     routes.extend(worker_config_routes(service, auth))

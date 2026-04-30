@@ -12,6 +12,11 @@ from starlette.testclient import TestClient
 from agent_sandbox.admin.service import AdminService
 from agent_sandbox.admin.web.app import _workflow_run_events, create_app
 from agent_sandbox.admin.web.shared import AdminWebConfig
+from agent_sandbox.execution.container_worker_repository import (
+    ContainerWorkerExecutionRecord,
+    ContainerWorkerExecutionRepository,
+)
+from agent_sandbox.execution.models import ExecutionBackendKind, ExecutionStatus, ExecutionStatusKind
 from agent_sandbox.models import LocalIssueRecord, SessionSummary, VmActionResult, VmSummary
 
 
@@ -53,6 +58,21 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
     assert any(node["type"] == "effect:vm:exec" for node in catalog_payload["nodes"])
     vm_exec = next(node for node in catalog_payload["nodes"] if node["type"] == "effect:vm:exec")
     assert any(field["key"] == "command" and field["bindable"] for field in vm_exec["fields"])
+    agent_exec = next(
+        node for node in catalog_payload["nodes"] if node["type"] == "effect:agent:exec"
+    )
+    assert [field["key"] for field in agent_exec["fields"]] == [
+        "target",
+        "session_id",
+        "vm_name",
+        "vm_user",
+        "command",
+        "working_directory",
+        "environment",
+        "stdin",
+        "timeout_seconds",
+        "check",
+    ]
     vm_delete = next(
         node for node in catalog_payload["nodes"] if node["type"] == "effect:vm:delete-files"
     )
@@ -138,6 +158,73 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         node for node in catalog_payload["nodes"] if node["type"] == "effect:vm:create"
     )
     assert any(field["key"] == "allowed_script_names" for field in vm_create["fields"])
+    agent_create = next(
+        node for node in catalog_payload["nodes"] if node["type"] == "effect:agent:create"
+    )
+    assert [field["key"] for field in agent_create["fields"]] == [
+        "provider",
+        "execution_backend",
+        "vm_name",
+        "session_id",
+        "labels",
+        "model",
+        "vm_user",
+        "ttl_hours",
+        "allowed_tools",
+        "allowed_script_names",
+        "discord_channels",
+        "email_mailboxes",
+        "email_folders",
+        "dotnet",
+        "nuget",
+        "mssql",
+        "mssql_init_root",
+        "playwright",
+        "codex_skills",
+        "directory_path",
+    ]
+    execution_backend = next(
+        field for field in agent_create["fields"] if field["key"] == "execution_backend"
+    )
+    assert execution_backend["options"] == [
+        {"value": "libvirt_vm", "label": "Libvirt VM"},
+        {"value": "container_worker_vm", "label": "Container worker VM"},
+    ]
+    agent_clone_repo = next(
+        node for node in catalog_payload["nodes"] if node["type"] == "effect:agent:clone-repo"
+    )
+    assert [field["key"] for field in agent_clone_repo["fields"]] == [
+        "target",
+        "session_id",
+        "vm_name",
+        "repo_source",
+        "clone_branch",
+        "vm_user",
+        "directory_path",
+    ]
+    agent_bootstrap_frontend = next(
+        node
+        for node in catalog_payload["nodes"]
+        if node["type"] == "effect:agent:bootstrap-frontend"
+    )
+    assert [field["key"] for field in agent_bootstrap_frontend["fields"]] == [
+        "target",
+        "session_id",
+        "vm_name",
+        "host_checkout",
+        "install_roots",
+        "vm_user",
+    ]
+    agent_copy_files = next(
+        node for node in catalog_payload["nodes"] if node["type"] == "effect:agent:copy-files"
+    )
+    assert [field["key"] for field in agent_copy_files["fields"]] == [
+        "target",
+        "session_id",
+        "vm_name",
+        "vm_user",
+        "files",
+    ]
     vm_clone_repo = next(
         node for node in catalog_payload["nodes"] if node["type"] == "effect:vm:clone-repo"
     )
@@ -1254,6 +1341,7 @@ def test_admin_web_exposes_admin_domain_smoke_endpoints(tmp_path: Path) -> None:
     client = TestClient(create_app(AdminService(write_config(tmp_path))))
 
     responses = {
+        "agents": client.get("/api/admin/agents"),
         "vms": client.get("/api/admin/vms"),
         "issues": client.get("/api/admin/issues"),
         "approvals": client.get("/api/admin/approvals"),
@@ -1262,6 +1350,8 @@ def test_admin_web_exposes_admin_domain_smoke_endpoints(tmp_path: Path) -> None:
         "configuration": client.get("/api/configuration/state"),
     }
 
+    assert responses["agents"].status_code == 200
+    assert isinstance(responses["agents"].json()["items"], list)
     assert responses["vms"].status_code == 200
     assert isinstance(responses["vms"].json()["items"], list)
     assert responses["issues"].status_code == 200
@@ -1499,6 +1589,206 @@ def test_admin_web_rejects_start_when_vm_session_model_is_missing(
 
     assert response.status_code == 400
     assert "Cannot start/resume agent" in response.json()["error"]
+
+
+def test_admin_web_agents_list_includes_vms_and_container_executions(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.create_directory_child("root", "team-a")
+    service.create_directory_child("root", "team-b")
+    repository = ContainerWorkerExecutionRepository(
+        service.config.runtime_dir / "container-worker-executions.json"
+    )
+    repository.put(
+        ContainerWorkerExecutionRecord(
+            execution_id="exec-a",
+            session_id="container-session-a",
+            worker_job_id="job-a",
+            worker_url="http://worker.test",
+            target_name="target-a",
+            last_status="running",
+            directory_path="root/team-a",
+            metadata={"image": "runner:latest"},
+        )
+    )
+    repository.put(
+        ContainerWorkerExecutionRecord(
+            execution_id="exec-b",
+            session_id="container-session-b",
+            worker_job_id="job-b",
+            worker_url="http://worker.test",
+            target_name="target-b",
+            last_status="running",
+            directory_path="root/team-b",
+        )
+    )
+    list_vms_calls: list[dict[str, object]] = []
+
+    def list_vms(self, **kwargs):
+        list_vms_calls.append(kwargs)
+        if kwargs["directory_path"] != "root/team-a":
+            return []
+        return [
+            VmSummary(
+                vm_name="vm-a",
+                issue_number="1",
+                session_ids=["vm-session-a"],
+                directory_paths=["root/team-a"],
+                libvirt_state="running",
+                agent_state="idle",
+            )
+        ]
+
+    monkeypatch.setattr(service, "list_vms", MethodType(list_vms, service))
+
+    client = TestClient(create_app(service))
+    response = client.get(
+        "/api/admin/agents?directory_path=root/team-a&direct_only=true&include_inactive=true"
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert {item["backend"] for item in payload["items"]} == {
+        "libvirt_vm",
+        "container_worker_vm",
+    }
+    assert {item["agent_id"] for item in payload["items"]} == {"vm-a", "exec-a"}
+    assert payload["items"][0]["capabilities"]["logs"] is True
+    assert list_vms_calls[0]["directory_path"] == "root/team-a"
+    assert list_vms_calls[0]["direct_only"] is True
+
+    root_response = client.get(
+        "/api/admin/agents?directory_path=root&direct_only=true&include_inactive=true"
+    )
+
+    assert root_response.status_code == 200
+    assert root_response.json()["items"] == []
+
+
+def test_admin_web_container_agent_log_and_actions_do_not_require_vm_summary(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    repository = ContainerWorkerExecutionRepository(
+        service.config.runtime_dir / "container-worker-executions.json"
+    )
+    repository.put(
+        ContainerWorkerExecutionRecord(
+            execution_id="exec-1",
+            session_id="session-1",
+            worker_job_id="job-1",
+            worker_url="http://worker.test",
+            target_name="target-1",
+            last_status="running",
+            directory_path="root",
+        )
+    )
+
+    class FakeContainerBackend:
+        def __init__(self) -> None:
+            self.inspected: list[str] = []
+            self.logged: list[tuple[str, int]] = []
+            self.stopped: list[str] = []
+            self.destroyed: list[str] = []
+
+        def inspect(self, target: str) -> ExecutionStatus:
+            self.inspected.append(target)
+            return ExecutionStatus(
+                backend=ExecutionBackendKind.CONTAINER_WORKER_VM,
+                execution_id=target,
+                target_name="target-1",
+                status=ExecutionStatusKind.RUNNING,
+                session_id="session-1",
+            )
+
+        def get_log_snapshot(self, target: str, *, lines: int = 50) -> str:
+            self.logged.append((target, lines))
+            return "line 2\n"
+
+        def stop(self, target: str) -> ExecutionStatus:
+            self.stopped.append(target)
+            return ExecutionStatus(
+                backend=ExecutionBackendKind.CONTAINER_WORKER_VM,
+                execution_id=target,
+                target_name="target-1",
+                status=ExecutionStatusKind.STOPPED,
+                session_id="session-1",
+                message="stopped",
+            )
+
+        def destroy(self, target: str) -> ExecutionStatus:
+            self.destroyed.append(target)
+            return ExecutionStatus(
+                backend=ExecutionBackendKind.CONTAINER_WORKER_VM,
+                execution_id=target,
+                target_name="target-1",
+                status=ExecutionStatusKind.DESTROYED,
+                session_id="session-1",
+                message="destroyed",
+            )
+
+    fake_backend = FakeContainerBackend()
+
+    def fail_list_vms(self, **_kwargs):
+        raise AssertionError("container routes should not require VM summaries")
+
+    monkeypatch.setattr(service, "list_vms", MethodType(fail_list_vms, service))
+    monkeypatch.setattr(
+        service,
+        "_container_worker_backend",
+        MethodType(lambda self: fake_backend, service),
+    )
+
+    client = TestClient(create_app(service))
+
+    log_response = client.get(
+        "/api/admin/agents/exec-1/log?backend=container_worker_vm&lines=2"
+    )
+    stop_response = client.post(
+        "/api/admin/agents/exec-1/actions/stop?backend=container_worker_vm", json={}
+    )
+    destroy_response = client.post(
+        "/api/admin/agents/exec-1/actions/destroy?backend=container_worker_vm", json={}
+    )
+
+    assert log_response.status_code == 200
+    assert log_response.json()["text"] == "line 2\n"
+    assert stop_response.status_code == 200
+    assert stop_response.json()["status"] == "stopped"
+    assert destroy_response.status_code == 200
+    assert destroy_response.json()["status"] == "destroyed"
+    assert fake_backend.inspected == ["exec-1"]
+    assert fake_backend.logged == [("exec-1", 2)]
+    assert fake_backend.stopped == ["exec-1"]
+    assert fake_backend.destroyed == ["exec-1"]
+
+
+def test_admin_web_vm_agent_action_uses_existing_vm_path(tmp_path: Path, monkeypatch) -> None:
+    service = AdminService(write_config(tmp_path))
+    called: list[str] = []
+
+    def start_vm(self, target: str) -> VmActionResult:
+        called.append(target)
+        return VmActionResult(
+            success=True,
+            vm_name=target,
+            action="start",
+            message="started",
+        )
+
+    monkeypatch.setattr(service, "start_vm", MethodType(start_vm, service))
+
+    client = TestClient(create_app(service))
+    response = client.post(
+        "/api/admin/agents/vm-1/actions/start?backend=libvirt_vm", json={}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["backend"] == "libvirt_vm"
+    assert called == ["vm-1"]
 
 
 def test_admin_web_issue_detail_preserves_local_editability(tmp_path: Path) -> None:

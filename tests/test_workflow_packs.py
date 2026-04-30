@@ -125,6 +125,78 @@ def test_container_worker_pack_validates_ticket_created_agent_branch() -> None:
         container_effects["effect-agent-enqueue-prompt-2"]["config"]["output_mode"]
         == "on_completion"
     )
+    assert not any(effect["type"].startswith("effect:vm:") for effect in container.effects)
+
+    assert container_effects["effect-agent-create-2"]["type"] == "effect:agent:create"
+    assert (
+        container_effects["effect-agent-create-2"]["config"]["execution_backend"]
+        == "container_worker_vm"
+    )
+    assert (
+        container_effects["effect-agent-clone-repo-2"]["type"] == "effect:agent:clone-repo"
+    )
+    assert (
+        container_effects["effect-agent-clone-repo-2"]["config"]["target"]
+        == "${{effect-agent-create-2.session_id}}"
+    )
+    assert container_effects["effect-agent-copy-files-5"]["type"] == "effect:agent:copy-files"
+    assert (
+        container_effects["effect-agent-copy-files-5"]["config"]["target"]
+        == "${{effect-agent-clone-repo-2.session_id}}"
+    )
+    assert container_effects["effect-agent-exec-1"]["type"] == "effect:agent:exec"
+    assert (
+        container_effects["effect-agent-exec-1"]["config"]["target"]
+        == "${{effect-agent-clone-repo-2.session_id}}"
+    )
+    assert (
+        container_effects["effect-agent-exec-1"]["config"]["working_directory"]
+        == "${{effect-agent-clone-repo-2.target_dir}}"
+    )
+    assert (
+        container_effects["effect-agent-bootstrap-frontend-2"]["type"]
+        == "effect:agent:bootstrap-frontend"
+    )
+    assert (
+        container_effects["effect-agent-bootstrap-frontend-2"]["config"]["target"]
+        == "${{effect-agent-clone-repo-2.session_id}}"
+    )
+    assert container_effects["effect-agent-copy-files-4"]["type"] == "effect:agent:copy-files"
+    assert (
+        container_effects["effect-agent-copy-files-4"]["config"]["target"]
+        == "${{effect-agent-clone-repo-2.session_id}}"
+    )
+    assert (
+        container_effects["effect-agent-prompt-5"]["config"]["target"]
+        == "${{effect-agent-clone-repo-2.session_id}}"
+    )
+    assert (
+        "${{effect-agent-clone-repo-2.target_dir}}/REVIEW_TASK.yaml"
+        in container_effects["effect-agent-prompt-5"]["config"]["prompt"]
+    )
+
+    all_node_ids = {
+        *(trigger["id"] for trigger in container.triggers),
+        *(gate["id"] for gate in container.gates),
+        *(effect["id"] for effect in container.effects),
+        *(query["id"] for query in container.queries),
+    }
+    for edge in container.edges:
+        assert edge["source_id"] in all_node_ids
+        assert edge["target_id"] in all_node_ids
+
+    layout_path = project_dir / "config" / "workflow-packs" / "agent-container-worker.v1.layout-example.json"
+    layout = json.loads(layout_path.read_text(encoding="utf-8"))
+    assert set(layout["nodes"]).issubset(all_node_ids)
+    for stale_node_id in {
+        "effect-vm-create-2",
+        "effect-vm-clone-repo-2",
+        "effect-vm-copy-files-5",
+        "effect-vm-exec-1",
+        "effect-vm-bootstrap-frontend-2",
+        "effect-vm-copy-files-4",
+    }:
+        assert stale_node_id not in layout["nodes"]
 
     OrchestrationCoreConfig.model_validate(
         {

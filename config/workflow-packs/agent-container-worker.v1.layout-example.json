@@ -128,27 +128,27 @@
       "x": 640.9001447392952,
       "y": 553.3578037871363
     },
-    "effect-vm-create-2": {
+    "effect-agent-create-2": {
       "x": 406.23271684515413,
       "y": 665.7755412877802
     },
-    "effect-vm-clone-repo-2": {
+    "effect-agent-clone-repo-2": {
       "x": 636,
       "y": 661.9999999999999
     },
-    "effect-vm-copy-files-5": {
+    "effect-agent-copy-files-5": {
       "x": 918,
       "y": 664
     },
-    "effect-vm-exec-1": {
+    "effect-agent-exec-1": {
       "x": 1210,
       "y": 656
     },
-    "effect-vm-bootstrap-frontend-2": {
+    "effect-agent-bootstrap-frontend-2": {
       "x": 1478,
       "y": 653.9999999999999
     },
-    "effect-vm-copy-files-4": {
+    "effect-agent-copy-files-4": {
       "x": 2031.0769616320217,
       "y": 650.739985082005
     },

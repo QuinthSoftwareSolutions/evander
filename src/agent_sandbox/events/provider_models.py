@@ -6,6 +6,7 @@ from agent_sandbox.effects.providers.schemas import (
     AgentCopyFilesEffectDefinition,
     AgentCreateEffectDefinition,
     AgentEnqueuePromptEffectDefinition,
+    AgentExecEffectDefinition,
     AgentPromptEffectDefinition,
     BashScriptEffectDefinition,
     GitPromoteAgentBranchEffectDefinition,

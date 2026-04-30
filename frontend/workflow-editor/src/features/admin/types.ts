@@ -1,12 +1,66 @@
-export type AdminView = "workflow" | "vms" | "issues";
+export type AdminView = "workflow" | "agents" | "vms" | "issues";
+
+export type AgentBackend = "libvirt_vm" | "container_worker_vm";
+
+export type AgentCapabilities = {
+  start: boolean;
+  shutdown: boolean;
+  resume: boolean;
+  enable_disable: boolean;
+  kill: boolean;
+  logs: boolean;
+  stop: boolean;
+  destroy: boolean;
+};
+
+export type AgentRecord = {
+  agent_id: string;
+  backend: AgentBackend;
+  target_name: string;
+  session_id: string | null;
+  directory_path: string;
+  status: string;
+  started_at: string | null;
+  finished_at: string | null;
+  updated_at: string | null;
+  host: Record<string, unknown>;
+  capabilities: AgentCapabilities;
+};
+
+export type AgentListResponse = {
+  items: AgentRecord[];
+  directory_path: string;
+  direct_only: boolean;
+};
+
+export type AgentLogResponse = {
+  agent_id: string;
+  backend: AgentBackend | null;
+  lines: number;
+  text: string;
+};
+
+export type AgentActionResponse = {
+  success: boolean;
+  agent_id: string;
+  backend: AgentBackend;
+  target_name: string;
+  action: string;
+  message: string;
+  status?: string | null;
+  session_id?: string | null;
+};
 
 export type VmRecord = {
   vm_name: string;
+  provider: string;
   issue_number: string | null;
   session_ids: string[];
   labels: Record<string, string>;
   directory_paths: string[];
+  power_state: string;
   libvirt_state: string;
+  provider_state?: string | null;
   ip_address: string | null;
   agent: {
     state: string;

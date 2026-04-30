@@ -4,7 +4,7 @@ import type { Dispatch, ReactNode, SetStateAction } from "react";
 import { fetchJson, formatTimestamp } from "../admin/api";
 import { useAdminUi } from "../admin/AdminContext";
 import { Tooltip } from "../admin/Tooltip";
-import { type VmActionResponse, type VmListResponse, type VmLogResponse, type VmRecord } from "../admin/types";
+import { type VmActionResponse, type VmListResponse, type VmRecord } from "../admin/types";
 
 type ActionLogEntry = {
   at: string;
@@ -44,16 +44,6 @@ async function loadVmList(directoryPath: string, directOnly: boolean): Promise<V
     include_inactive: "true",
   });
   return fetchJson<VmListResponse>(`/api/admin/vms?${query.toString()}`);
-}
-
-async function loadVmLog(vm: VmRecord | null): Promise<string> {
-  if (!vm) return "No VM selected.";
-  const query = new URLSearchParams({ lines: "200" });
-  if (vm.agent.preferred_repo_name) {
-    query.set("repo_name", vm.agent.preferred_repo_name);
-  }
-  const payload = await fetchJson<VmLogResponse>(`/api/admin/vms/${encodeURIComponent(vm.vm_name)}/agent-log?${query.toString()}`);
-  return payload.text || "No agent log output yet.";
 }
 
 function appendLogEntry(
@@ -105,51 +95,6 @@ function PowerIcon() {
   );
 }
 
-function EnableIcon() {
-  return (
-    <VmIcon>
-      <circle cx="12" cy="12" r="8" />
-      <path d="m8.8 12.2 2.1 2.1 4.5-4.8" />
-    </VmIcon>
-  );
-}
-
-function DisableIcon() {
-  return (
-    <VmIcon>
-      <circle cx="12" cy="12" r="8" />
-      <path d="M8.2 15.8 15.8 8.2" />
-    </VmIcon>
-  );
-}
-
-function KillAgentIcon() {
-  return (
-    <VmIcon>
-      <path d="M9 4.8h6l4.2 4.2v6L15 19.2H9L4.8 15v-6z" />
-      <path d="m9.4 9.4 5.2 5.2" />
-      <path d="m14.6 9.4-5.2 5.2" />
-    </VmIcon>
-  );
-}
-
-function ResumeIcon() {
-  return (
-    <VmIcon>
-      <path d="M7.5 7.5H4.5v-3" />
-      <path d="M4.7 11a7.5 7.5 0 1 1 2.2 6.1" />
-    </VmIcon>
-  );
-}
-
-function ExpandResumeIcon() {
-  return (
-    <VmIcon>
-      <path d="m7 10 5 5 5-5" />
-    </VmIcon>
-  );
-}
-
 function DestroyIcon() {
   return (
     <VmIcon>
@@ -167,9 +112,6 @@ export function VmsPage() {
   const { privilegedUnlocked, selectedDirectoryPath } = useAdminUi();
   const [items, setItems] = useState<VmRecord[]>([]);
   const [selectedVmName, setSelectedVmName] = useState<string | null>(null);
-  const [agentLog, setAgentLog] = useState("Loading...");
-  const [resumePrompt, setResumePrompt] = useState("");
-  const [resumeModel, setResumeModel] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
@@ -177,7 +119,6 @@ export function VmsPage() {
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [actionLog, setActionLog] = useState<ActionLogEntry[]>([]);
   const [showCreateVm, setShowCreateVm] = useState(false);
-  const [showResumeForm, setShowResumeForm] = useState(false);
   const [createVmForm, setCreateVmForm] = useState<VmCreateFormState>(EMPTY_VM_FORM);
   const [selectionHydrated, setSelectionHydrated] = useState(false);
 
@@ -250,42 +191,6 @@ export function VmsPage() {
     };
   }, [refreshVms]);
 
-  useEffect(() => {
-    if (!selectedVm) {
-      setAgentLog("No VM selected.");
-      return;
-    }
-
-    let cancelled = false;
-
-    const refreshLog = async (showLoadingState: boolean) => {
-      if (showLoadingState) {
-        setAgentLog("Loading...");
-      }
-      try {
-        const text = await loadVmLog(selectedVm);
-        if (!cancelled) {
-          setAgentLog((current) => (current === text ? current : text));
-        }
-      } catch (reason: unknown) {
-        if (!cancelled) {
-          const message = reason instanceof Error ? reason.message : String(reason);
-          setAgentLog((current) => (current === message ? current : message));
-        }
-      }
-    };
-
-    void refreshLog(true);
-    const timer = window.setInterval(() => {
-      void refreshLog(false);
-    }, REFRESH_MS);
-
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, [selectedVm?.vm_name, selectedVm?.agent.preferred_repo_name]);
-
   async function handleManualRefresh() {
     setLoading(true);
     try {
@@ -318,21 +223,14 @@ export function VmsPage() {
       appendLogEntry(setActionLog, `${selectedVm.vm_name}: ${payload.message}`, "info");
       setStatus(payload.message);
       setError(null);
-      if (action === "resume-agent") {
-        setResumePrompt("");
-        setResumeModel("");
-        setShowResumeForm(false);
-      }
       await refreshVms();
-      if (action === "destroy") {
-        setShowResumeForm(false);
-      } else {
+      if (action !== "destroy") {
         setSelectedVmName(selectedVm.vm_name);
       }
     } catch (reason: unknown) {
       const message = reason instanceof Error ? reason.message : String(reason);
       setError(message);
-      setInlineValidation(action === "start" || action === "resume-agent" ? message : "");
+      setInlineValidation(action === "start" ? message : "");
       setStatus(null);
       appendLogEntry(setActionLog, `${selectedVm.vm_name}: ${message}`, "error");
     } finally {
@@ -380,26 +278,22 @@ export function VmsPage() {
     }
   }
 
-  const supportsAgentControls = Boolean(selectedVm?.vm_name) && selectedVm?.agent.state !== "unknown";
   const showStart = selectedVm?.libvirt_state !== "running";
   const showShutdown = selectedVm?.libvirt_state === "running";
-  const showEnable = supportsAgentControls && selectedVm?.agent.state === "disabled";
-  const showDisable = supportsAgentControls && selectedVm?.agent.state !== "disabled";
-  const showKill = selectedVm?.agent.state === "running" && selectedVm.agent.pid != null;
-  const showResume = supportsAgentControls && selectedVm?.agent.state !== "disabled";
-  const selectedVmLogName = selectedVm?.agent.preferred_repo_name ?? "Agent output";
   const actionDisabled = busyAction !== null || !privilegedUnlocked;
-  const resumeButtonLabel = showResumeForm ? "Close resume form" : "Resume agent";
 
   return (
     <div className="feature-page vms-page">
       <section className="feature-sidebar">
         <div className="feature-sidebar-header">
           <div>
-            <div className="eyebrow">Lifecycle control</div>
+            <div className="eyebrow">VM host lifecycle</div>
             <h1>VMs</h1>
           </div>
           <div className="inline-actions compact-actions">
+            <button type="button" onClick={() => void handleManualRefresh()} disabled={loading}>
+              Refresh
+            </button>
             <button
               type="button"
               className={showCreateVm ? "" : "primary"}
@@ -450,8 +344,8 @@ export function VmsPage() {
             <h2>{selectedVm?.vm_name ?? "Select a VM"}</h2>
             <p className="muted-text">
               {selectedVm
-                ? "Inspect machine state, manage the agent lifecycle, and review recent operator and agent logs."
-                : "Choose a VM from the left to inspect details and run actions."}
+                ? "Inspect machine state and manage the VM host lifecycle."
+                : "Choose a VM from the left to inspect host details and run VM actions."}
             </p>
           </div>
           {selectedVm ? (
@@ -461,20 +355,10 @@ export function VmsPage() {
                   VM {selectedVm.libvirt_state}
                 </span>
               </Tooltip>
-              <Tooltip content={`Guest agent state for ${selectedVm.vm_name}: ${selectedVm.agent.state}.`}>
-                <span className={`status-pill state-${selectedVm.agent.state === "running" ? "running" : selectedVm.agent.state === "disabled" ? "failed" : "idle"}`}>
-                  Agent {selectedVm.agent.state}
-                </span>
-              </Tooltip>
               {showStart ? (
                 <Tooltip content="Start the selected VM through libvirt on the host.">
-                  <button
-                    type="button"
-                    onClick={() => void runVmAction("start")}
-                    disabled={actionDisabled}
-                    aria-label={busyAction === "start" ? "Starting VM" : "Start VM"}
-                  >
-                    {busyAction === "start" ? "…" : <StartIcon />}
+                  <button type="button" onClick={() => void runVmAction("start")} disabled={actionDisabled} aria-label="Start VM">
+                    {busyAction === "start" ? "..." : <StartIcon />}
                   </button>
                 </Tooltip>
               ) : null}
@@ -488,69 +372,9 @@ export function VmsPage() {
                       }
                     }}
                     disabled={actionDisabled}
-                    aria-label={busyAction === "shutdown" ? "Shutting down VM" : "Shut down VM"}
+                    aria-label="Shut down VM"
                   >
-                    {busyAction === "shutdown" ? "…" : <PowerIcon />}
-                  </button>
-                </Tooltip>
-              ) : null}
-              {showEnable ? (
-                <Tooltip content="Enable the guest agent so prompts and session automation can run again.">
-                  <button
-                    type="button"
-                    onClick={() => void runVmAction("enable-agent")}
-                    disabled={actionDisabled}
-                    aria-label="Enable agent"
-                  >
-                    <EnableIcon />
-                  </button>
-                </Tooltip>
-              ) : null}
-              {showDisable ? (
-                <Tooltip content="Disable the guest agent without shutting down the VM.">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (window.confirm(`Disable the agent for ${selectedVm.vm_name}?`)) {
-                        void runVmAction("disable-agent");
-                      }
-                    }}
-                    disabled={actionDisabled}
-                    aria-label="Disable agent"
-                  >
-                    <DisableIcon />
-                  </button>
-                </Tooltip>
-              ) : null}
-              {showKill ? (
-                <Tooltip content="Force-kill the currently running guest agent process.">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (window.confirm(`Kill the running agent on ${selectedVm.vm_name}?`)) {
-                        void runVmAction("kill-agent", { pid: selectedVm.agent.pid });
-                      }
-                    }}
-                    disabled={actionDisabled}
-                    aria-label="Kill agent"
-                  >
-                    <KillAgentIcon />
-                  </button>
-                </Tooltip>
-              ) : null}
-              {showResume ? (
-                <Tooltip content={showResumeForm ? "Collapse the resume form." : "Open the resume form and send a prompt into the current session."}>
-                  <button
-                    type="button"
-                    className={showResumeForm ? "primary" : ""}
-                    onClick={() => {
-                      setShowResumeForm((current) => !current);
-                      setInlineValidation("");
-                    }}
-                    disabled={actionDisabled}
-                    aria-label={resumeButtonLabel}
-                  >
-                    {showResumeForm ? <ExpandResumeIcon /> : <ResumeIcon />}
+                    {busyAction === "shutdown" ? "..." : <PowerIcon />}
                   </button>
                 </Tooltip>
               ) : null}
@@ -675,54 +499,6 @@ export function VmsPage() {
 
         {selectedVm ? (
           <>
-            {showResumeForm ? (
-              <article className="panel compact-panel">
-                <div className="panel-header">
-                  <h3>Resume agent</h3>
-                  <span className="panel-meta">Send a prompt into the current session.</span>
-                </div>
-                <div className="config-field-grid">
-                  <label className="field-stack">
-                    <span>Prompt</span>
-                    <textarea
-                      rows={5}
-                      value={resumePrompt}
-                      onChange={(event) => setResumePrompt(event.target.value)}
-                      placeholder="Prompt"
-                    />
-                  </label>
-                  <label className="field-stack">
-                    <span>Model override</span>
-                    <input
-                      value={resumeModel}
-                      onChange={(event) => setResumeModel(event.target.value)}
-                      placeholder="Optional; uses session or directory default"
-                    />
-                  </label>
-                </div>
-                <div className="inline-actions compact-actions">
-                  <button
-                    className="primary"
-                    type="button"
-                    disabled={actionDisabled}
-                    onClick={() => {
-                      if (!resumePrompt.trim()) {
-                        setInlineValidation("Resume prompt is required.");
-                        return;
-                      }
-                      void runVmAction("resume-agent", {
-                        prompt: resumePrompt.trim(),
-                        model: resumeModel.trim() || null,
-                        resume_mode: "same_context",
-                      });
-                    }}
-                  >
-                    {busyAction === "resume-agent" ? "Resuming..." : "Resume agent"}
-                  </button>
-                </div>
-              </article>
-            ) : null}
-
             <div className="feature-grid">
               <article className="panel">
                 <div className="panel-header">
@@ -739,16 +515,16 @@ export function VmsPage() {
                     <dd>{selectedVm.directory_paths.length > 0 ? selectedVm.directory_paths.join(", ") : "None"}</dd>
                   </div>
                   <div>
+                    <dt>Provider</dt>
+                    <dd>{selectedVm.provider}</dd>
+                  </div>
+                  <div>
                     <dt>IP address</dt>
                     <dd>{selectedVm.ip_address ?? "Unknown"}</dd>
                   </div>
                   <div>
-                    <dt>Agent pid</dt>
-                    <dd>{selectedVm.agent.pid ?? "Not running"}</dd>
-                  </div>
-                  <div>
-                    <dt>Repositories</dt>
-                    <dd>{selectedVm.agent.repo_names.length > 0 ? selectedVm.agent.repo_names.join(", ") : "None"}</dd>
+                    <dt>Power state</dt>
+                    <dd>{selectedVm.libvirt_state}</dd>
                   </div>
                   <div>
                     <dt>Updated</dt>
@@ -788,17 +564,9 @@ export function VmsPage() {
                 </pre>
               </details>
             ) : null}
-
-            <article className="panel">
-              <div className="panel-header">
-                <h3>Agent output</h3>
-                <span className="panel-meta">{selectedVmLogName}</span>
-              </div>
-              <pre className="log-view vm-agent-log">{agentLog}</pre>
-            </article>
           </>
         ) : (
-          <div className="empty-state">Select a VM to inspect details and logs.</div>
+          <div className="empty-state">Select a VM to inspect host details.</div>
         )}
       </section>
     </div>

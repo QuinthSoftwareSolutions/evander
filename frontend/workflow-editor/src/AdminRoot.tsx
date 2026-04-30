@@ -6,6 +6,7 @@ import WorkflowEditorApp from "./App";
 import { fetchJson } from "./features/admin/api";
 import { AdminUiContext } from "./features/admin/AdminContext";
 import type { AdminResult, DirectoryTreeNode } from "./features/admin/AdminContext";
+import { AgentsPage } from "./features/agents/AgentsPage";
 import { ConfigurationScreen } from "./features/configuration/ConfigurationScreen";
 import { IssuesPage } from "./features/issues/IssuesPage";
 import { SessionsScreen } from "./features/sessions/SessionsScreen";
@@ -50,6 +51,7 @@ type DirectoryStateResponse = {
 type DirectoryMutationResult = AdminResult<unknown>;
 
 type AdminTab =
+  | "agents"
   | "vms"
   | "issues"
   | "sessions"
@@ -63,7 +65,8 @@ const DIRECTORY_STORAGE_KEY = "admin-web:selected-directory";
 const THEME_STORAGE_KEY = "admin-web:theme";
 
 const TABS: ReadonlyArray<{ key: AdminTab; label: string; shortLabel: string; description: string }> = [
-  { key: "vms", label: "VMs", shortLabel: "VMs", description: "Lifecycle, logs, and agent control." },
+  { key: "agents", label: "Agents", shortLabel: "Agents", description: "Active and historical execution targets." },
+  { key: "vms", label: "VMs", shortLabel: "VMs", description: "VM host lifecycle and machine details." },
   { key: "issues", label: "Issues", shortLabel: "Issues", description: "Local issue intake and VM creation." },
   { key: "sessions", label: "Sessions", shortLabel: "Sessions", description: "Session state, tools, and wake schedules." },
   { key: "configuration", label: "Configuration", shortLabel: "Config", description: "Directory-scoped config and policy." },
@@ -1426,6 +1429,8 @@ export default function AdminRoot() {
               </div>
             ) : selectedTab === "vms" ? (
               <VmsPage />
+            ) : selectedTab === "agents" ? (
+              <AgentsPage />
             ) : selectedTab === "issues" ? (
               <IssuesPage />
             ) : selectedTab === "configuration" ? (

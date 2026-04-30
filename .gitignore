@@ -10,7 +10,9 @@ git-remotes/
 config/nuget-relay.env
 config/host-heartbeat.env
 config/ado-worker/config.json
+config/communication-targets/config.json
 config/host-heartbeat/config.json
+config/teams-meeting-ingest/config.json
 config/trigger-orchestrator/config.json
 config/trigger-orchestrator/layout.json
 /config/workflow-packs/*.json

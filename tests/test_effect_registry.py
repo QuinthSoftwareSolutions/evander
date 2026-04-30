@@ -24,6 +24,7 @@ from agent_sandbox.events.provider_models import (
     AgentCopyFilesEffectDefinition,
     AgentCreateEffectDefinition,
     AgentEnqueuePromptEffectDefinition,
+    AgentExecEffectDefinition,
     AgentPromptEffectDefinition,
     VmBootstrapFrontendEffectDefinition,
     VmBootstrapPythonEffectDefinition,
@@ -66,6 +67,8 @@ class _FakeContainerBackend:
         self.prepared_specs: list[object] = []
         self.started_specs: list[object] = []
         self.destroyed: list[str] = []
+        self.status = SimpleNamespace(status=ExecutionStatusKind.STOPPED, message=None, metadata={})
+        self.logs = ""
 
     def prepare_session(self, **kwargs):
         self.prepared_sessions.append(kwargs)
@@ -99,10 +102,14 @@ class _FakeContainerBackend:
         return SimpleNamespace(execution_id=spec.target_name)
 
     def inspect(self, execution_id: str):
-        return SimpleNamespace(status=ExecutionStatusKind.STOPPED, message=None)
+        return self.status
 
     def destroy(self, execution_id: str):
         self.destroyed.append(execution_id)
+
+    def get_log_snapshot(self, execution_id: str, *, lines: int = 50):
+        del execution_id, lines
+        return self.logs
 
 
 @dataclass
@@ -219,6 +226,7 @@ def test_default_registry_includes_all_known_effect_types() -> None:
         "effect:agent:copy-files",
         "effect:agent:prompt",
         "effect:agent:enqueue-prompt",
+        "effect:agent:exec",
         "effect:bash:script",
         "effect:vm:exec",
         "effect:vm:copy-files",
@@ -697,6 +705,256 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
     assert backend.written_files[0]["files"][0]["content"] == "task"
     assert backend.started_specs[0].command is not None
     assert "continue" in str(backend.started_specs[0].command)
+
+
+def test_agent_exec_provider_delegates_libvirt_sessions_to_vm_exec(tmp_path) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-libvirt",
+            vm_id="vm-libvirt",
+            vm_provider="libvirt",
+            allowed_tools=[ToolName.GET_AGENT_STATUS],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+
+    class ExecAdminStub:
+        def __init__(self) -> None:
+            self.runtime = SimpleNamespace(
+                session_repository=session_repository,
+                provider_config=_ContainerResolverStub(config),
+            )
+            self.calls: list[dict[str, object]] = []
+
+        def vm_exec(self, **kwargs):
+            self.calls.append(kwargs)
+            return {
+                "success": True,
+                "vm_name": kwargs["target"],
+                "action": "vm_exec",
+                "message": "ok",
+                "exit_code": 0,
+                "stdout": "hello\n",
+                "stderr": "",
+            }
+
+    admin_service = ExecAdminStub()
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ContainerResolverStub(config),
+        admin_service=admin_service,
+    )
+
+    output = factory.build(
+        AgentExecEffectDefinition(
+            id="agent-exec",
+            display_name="Exec",
+            type="effect:agent:exec",
+            session_id="session-libvirt",
+            command="echo hello",
+            vm_user="builder",
+            working_directory="/work",
+            check=True,
+        )
+    ).execute()
+
+    assert admin_service.calls == [
+        {
+            "target": "vm-libvirt",
+            "vm_user": "builder",
+            "command": "echo hello",
+            "working_directory": "/work",
+            "environment": {},
+            "stdin": None,
+            "timeout_seconds": 3600.0,
+            "check": True,
+        }
+    ]
+    assert output["success"] is True
+    assert output["execution_backend"] == "libvirt_vm"
+    assert output["stdout"] == "hello\n"
+
+
+def test_agent_exec_provider_runs_container_command_and_cleans_up(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="libvirt_vm",
+        container_worker_base_url="http://worker.test",
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-container",
+            vm_id=None,
+            vm_provider="container_worker_vm",
+            directory_path="root/team-a",
+            allowed_tools=[ToolName.GET_AGENT_STATUS],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    admin_service = SimpleNamespace(
+        runtime=SimpleNamespace(
+            session_repository=session_repository,
+            provider_config=_ContainerResolverStub(config),
+        )
+    )
+    backend = _FakeContainerBackend()
+    backend.logs = "prepared\n"
+    monkeypatch.setattr(
+        "agent_sandbox.effects.providers.agent_exec.container_backend",
+        lambda context, config: backend,
+    )
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ContainerResolverStub(config),
+        admin_service=admin_service,
+    )
+
+    output = factory.build(
+        AgentExecEffectDefinition(
+            id="agent-exec",
+            display_name="Exec",
+            type="effect:agent:exec",
+            session_id="session-container",
+            command=["echo", "prepared"],
+            working_directory="/workspace",
+        )
+    ).execute()
+
+    assert output["success"] is True
+    assert output["execution_backend"] == "container_worker_vm"
+    assert output["session_id"] == "session-container"
+    assert output["stdout"] == "prepared\n"
+    assert output["stderr"] == ""
+    assert backend.started_specs[0].session_id == "session-container"
+    assert backend.started_specs[0].directory_path == "root/team-a"
+    assert "cd /workspace" in str(backend.started_specs[0].command)
+    assert "echo prepared" in str(backend.started_specs[0].command)
+    assert backend.destroyed == [output["execution_id"]]
+
+
+def test_agent_exec_provider_returns_container_failure_when_check_disabled(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-container",
+            vm_id=None,
+            vm_provider="container_worker_vm",
+            directory_path="root/team-a",
+            allowed_tools=[ToolName.GET_AGENT_STATUS],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    admin_service = SimpleNamespace(
+        runtime=SimpleNamespace(
+            session_repository=session_repository,
+            provider_config=_ContainerResolverStub(config),
+        )
+    )
+    backend = _FakeContainerBackend()
+    backend.status = SimpleNamespace(
+        status=ExecutionStatusKind.FAILED,
+        message="command failed",
+        metadata={"exit_code": 22},
+    )
+    backend.logs = "failure log\n"
+    monkeypatch.setattr(
+        "agent_sandbox.effects.providers.agent_exec.container_backend",
+        lambda context, config: backend,
+    )
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ContainerResolverStub(config),
+        admin_service=admin_service,
+    )
+
+    output = factory.build(
+        AgentExecEffectDefinition(
+            id="agent-exec",
+            display_name="Exec",
+            type="effect:agent:exec",
+            session_id="session-container",
+            command="false",
+            check=False,
+        )
+    ).execute()
+
+    assert output["success"] is False
+    assert output["status"] == "failed"
+    assert output["exit_code"] == 22
+    assert output["stdout"] == "failure log\n"
+    assert output["stderr"] == "command failed"
+    assert backend.destroyed == [output["execution_id"]]
+
+
+def test_agent_exec_provider_raises_for_checked_container_failure(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-container",
+            vm_id=None,
+            vm_provider="container_worker_vm",
+            directory_path="root/team-a",
+            allowed_tools=[ToolName.GET_AGENT_STATUS],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    admin_service = SimpleNamespace(
+        runtime=SimpleNamespace(
+            session_repository=session_repository,
+            provider_config=_ContainerResolverStub(config),
+        )
+    )
+    backend = _FakeContainerBackend()
+    backend.status = SimpleNamespace(
+        status=ExecutionStatusKind.FAILED,
+        message="command failed",
+        metadata={},
+    )
+    monkeypatch.setattr(
+        "agent_sandbox.effects.providers.agent_exec.container_backend",
+        lambda context, config: backend,
+    )
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ContainerResolverStub(config),
+        admin_service=admin_service,
+    )
+
+    with pytest.raises(RuntimeError, match="command failed"):
+        factory.build(
+            AgentExecEffectDefinition(
+                id="agent-exec",
+                display_name="Exec",
+                type="effect:agent:exec",
+                session_id="session-container",
+                command="false",
+                check=True,
+            )
+        ).execute()
+
+    assert backend.destroyed
 
 
 def test_agent_followup_routing_uses_libvirt_session_provider_over_container_default(

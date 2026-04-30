@@ -11,6 +11,7 @@ from agent_sandbox.effects.providers.agent_bootstrap_frontend import (
 from agent_sandbox.effects.providers.agent_clone_repo import AgentCloneRepoEffectProvider
 from agent_sandbox.effects.providers.agent_copy_files import AgentCopyFilesEffectProvider
 from agent_sandbox.effects.providers.agent_create import AgentCreateEffectProvider
+from agent_sandbox.effects.providers.agent_exec import AgentExecEffectProvider
 from agent_sandbox.effects.providers.agent_prompt import AgentPromptEffectProvider
 from agent_sandbox.effects.providers.bash_script import BashScriptEffectProvider
 from agent_sandbox.effects.providers.git_promote_agent_branch import (
@@ -95,6 +96,7 @@ def register_providers() -> dict[str, dict[str, type]]:
             "effect:agent:copy-files": AgentCopyFilesEffectProvider,
             "effect:agent:prompt": AgentPromptEffectProvider,
             "effect:agent:enqueue-prompt": AgentEnqueuePromptEffectProvider,
+            "effect:agent:exec": AgentExecEffectProvider,
             "effect:bash:script": BashScriptEffectProvider,
             "effect:vm:exec": VmExecEffectProvider,
             "effect:vm:copy-files": VmCopyFilesEffectProvider,

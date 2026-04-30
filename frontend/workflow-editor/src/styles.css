@@ -1849,6 +1849,28 @@ select {
   gap: 0.4rem;
 }
 
+.agent-list {
+  margin-top: 0.9rem;
+}
+
+.agent-list-section {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.agent-list-heading {
+  padding: 0.45rem 0.2rem 0.1rem;
+}
+
+.agent-list-item-meta {
+  margin-top: 0.35rem;
+  overflow-wrap: anywhere;
+}
+
+.agents-filter-grid {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .issue-list {
   gap: 0.4rem;
 }

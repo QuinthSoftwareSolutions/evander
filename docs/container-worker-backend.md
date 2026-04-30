@@ -71,9 +71,9 @@ The worker API also exposes a session-preparation surface used by portable
 - `POST /v1/sessions/{session_id}/repo` clones a repo into an empty `workspace/`.
 - `POST /v1/sessions/{session_id}/files` writes files under `/workspace` or `/home/agent`.
 
-Those endpoints do not accept raw environment variables or secrets. Prompt execution is still a
-typed container job: the host builds an `ExecutionSpec.command`, starts the job, waits through the
-existing completion-event path, then removes the container while preserving the session directory.
+Those endpoints do not accept raw environment variables or secrets. Prompt and exec effects still
+use typed container jobs: the host builds an `ExecutionSpec.command`, starts the job, waits through
+the relevant completion path, then removes the container while preserving the session directory.
 
 The host-side backend records the control-plane mapping in:
 

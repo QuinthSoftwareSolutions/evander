@@ -63,6 +63,7 @@ from agent_sandbox.models import (
     ApprovalQueueHealth,
     ApprovalRequest,
     ApprovalStatus,
+    AgentRecord,
     DirectoryPath,
     LocalIssueRecord,
     RemoteIssueReference,
@@ -923,6 +924,127 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
     ),
     WorkflowEditorNodeCatalogEntry(
         kind="effect",
+        type="effect:agent:create",
+        label="Agent create",
+        fields=[
+            _field("provider", "Provider", "string", bindable=True),
+            _field(
+                "execution_backend",
+                "Execution backend",
+                "enum",
+                options=[
+                    _field_option("libvirt_vm", "Libvirt VM"),
+                    _field_option("container_worker_vm", "Container worker VM"),
+                ],
+            ),
+            _field("vm_name", "VM name", "string", bindable=True),
+            _field("session_id", "Session ID", "string", bindable=True),
+            _field("labels", "Labels", "json", bindable=True),
+            _field("model", "Model", "string", bindable=True),
+            _field("vm_user", "VM user", "string", bindable=True),
+            _field("ttl_hours", "TTL hours", "number", bindable=True),
+            _field(
+                "allowed_tools",
+                "Allowed tools",
+                "string_list",
+                description="Additional MCP tools to allow for the created session.",
+            ),
+            _field(
+                "allowed_script_names",
+                "Allowed script names",
+                "string_list",
+                description="Additional script names the created session may invoke with run_script.",
+            ),
+            _field("discord_channels", "Discord channels", "string_list"),
+            _field("email_mailboxes", "Email mailboxes", "string_list"),
+            _field("email_folders", "Email folders", "string_list"),
+            _field("dotnet", "Dotnet", "boolean", bindable=True),
+            _field("nuget", "NuGet", "boolean", bindable=True),
+            _field("mssql", "MSSQL", "boolean", bindable=True),
+            _field("mssql_init_root", "MSSQL init root", "string", bindable=True),
+            _field("playwright", "Playwright", "boolean", bindable=True),
+            _field("codex_skills", "Codex skills", "string_list"),
+            _field("directory_path", "Directory path", "string", bindable=True),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="effect",
+        type="effect:agent:clone-repo",
+        label="Agent clone repo",
+        fields=[
+            _field("target", "Target", "string", bindable=True),
+            _field("session_id", "Session ID", "string", bindable=True),
+            _field("vm_name", "VM name", "string", bindable=True),
+            _field("repo_source", "Repo source", "string", required=True, bindable=True),
+            _field("clone_branch", "Clone branch", "string", bindable=True),
+            _field("vm_user", "VM user", "string", bindable=True),
+            _field("directory_path", "Directory path", "string", bindable=True),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="effect",
+        type="effect:agent:bootstrap-frontend",
+        label="Agent bootstrap frontend",
+        fields=[
+            _field("target", "Target", "string", bindable=True),
+            _field("session_id", "Session ID", "string", bindable=True),
+            _field("vm_name", "VM name", "string", bindable=True),
+            _field("host_checkout", "Host checkout", "string", required=True, bindable=True),
+            _field("install_roots", "Install roots", "string_list"),
+            _field("vm_user", "VM user", "string", bindable=True),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="effect",
+        type="effect:agent:copy-files",
+        label="Agent copy files",
+        fields=[
+            _field("target", "Target", "string", bindable=True),
+            _field("session_id", "Session ID", "string", bindable=True),
+            _field("vm_name", "VM name", "string", bindable=True),
+            _field("vm_user", "VM user", "string", bindable=True),
+            _field(
+                "files",
+                "Files",
+                "object_list",
+                required=True,
+                item_fields=[
+                    _field("source_path", "Source path", "string", bindable=True),
+                    _field(
+                        "source_format",
+                        "Source format",
+                        "enum",
+                        options=[
+                            _field_option("file", "File"),
+                            _field_option("template", "Template"),
+                        ],
+                    ),
+                    _field("content", "Content", "string", bindable=True),
+                    _field(
+                        "content_format",
+                        "Content format",
+                        "enum",
+                        options=[
+                            _field_option("text", "Text"),
+                            _field_option("json", "JSON"),
+                            _field_option("yaml", "YAML"),
+                        ],
+                    ),
+                    _field(
+                        "destination_path",
+                        "Destination path",
+                        "string",
+                        required=True,
+                        bindable=True,
+                    ),
+                    _field("mode", "Mode", "string", bindable=True),
+                    _field("overwrite", "Overwrite", "boolean", bindable=True),
+                ],
+            ),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="effect",
         type="effect:agent:prompt",
         label="Agent prompt",
         fields=[
@@ -957,6 +1079,23 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("model", "Model", "string", bindable=True),
             _field("vm_user", "VM user", "string", bindable=True),
             _field("resume_thread_id", "Resume thread ID", "string", bindable=True),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="effect",
+        type="effect:agent:exec",
+        label="Agent exec",
+        fields=[
+            _field("target", "Target", "string", bindable=True),
+            _field("session_id", "Session ID", "string", bindable=True),
+            _field("vm_name", "VM name", "string", bindable=True),
+            _field("vm_user", "VM user", "string", bindable=True),
+            _field("command", "Command", "string", required=True, bindable=True),
+            _field("working_directory", "Working directory", "string", bindable=True),
+            _field("environment", "Environment", "json", bindable=True),
+            _field("stdin", "Stdin", "string", bindable=True, multiline=True),
+            _field("timeout_seconds", "Timeout seconds", "number", bindable=True),
+            _field("check", "Check exit code", "boolean", bindable=True),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(
@@ -3605,6 +3744,305 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
             directory_path=directory_path,
             direct_only=direct_only,
         )
+
+    def _container_worker_execution_repository(self):
+        from agent_sandbox.execution.container_worker_repository import (
+            ContainerWorkerExecutionRepository,
+        )
+
+        return ContainerWorkerExecutionRepository(
+            self.config.runtime_dir / "container-worker-executions.json"
+        )
+
+    def _container_worker_backend(self):
+        from agent_sandbox.execution.container_worker_backend import (
+            ContainerWorkerVmExecutionBackend,
+        )
+
+        config = self.config.model_copy(
+            update={"execution_backend": "container_worker_vm"}
+        )
+        return ContainerWorkerVmExecutionBackend(config=config)
+
+    @staticmethod
+    def _agent_record_directory_path(directory_path: str | None) -> str:
+        try:
+            return DirectoryPath(segments=str(directory_path or "root")).as_posix()
+        except ValueError:
+            return "root"
+
+    @classmethod
+    def _agent_record_matches_directory(
+        cls,
+        record_directory_path: str | None,
+        selected_directory_path: str,
+        *,
+        direct_only: bool,
+    ) -> bool:
+        del direct_only
+        record_path = cls._agent_record_directory_path(record_directory_path)
+        return record_path == selected_directory_path
+
+    @staticmethod
+    def _container_agent_status(last_status: str | None) -> str:
+        normalized = str(last_status or "").strip().casefold()
+        if normalized in {"created", "starting"}:
+            return "starting"
+        if normalized == "running":
+            return "running"
+        if normalized in {"stopped", "exited"}:
+            return "stopped"
+        if normalized == "failed":
+            return "failed"
+        if normalized == "removed":
+            return "destroyed"
+        return "unknown"
+
+    @staticmethod
+    def _agent_status_is_active(status: str | None) -> bool:
+        return str(status or "").strip().casefold() in {
+            "preparing",
+            "starting",
+            "running",
+        }
+
+    def _agent_record_from_vm(self, summary: VmSummary) -> AgentRecord:
+        power_state = str(summary.power_state or summary.libvirt_state or "unknown").strip()
+        status = "running" if power_state == "running" else "stopped"
+        directory_path = summary.directory_paths[0] if len(summary.directory_paths) == 1 else "root"
+        return AgentRecord(
+            agent_id=summary.vm_name,
+            backend="libvirt_vm",
+            target_name=summary.vm_name,
+            session_id=summary.session_ids[0] if len(summary.session_ids) == 1 else None,
+            directory_path=directory_path,
+            status=status,
+            updated_at=summary.last_state_update_at,
+            host={
+                "kind": "vm",
+                "vm_name": summary.vm_name,
+                "provider": summary.provider,
+                "issue_number": summary.issue_number,
+                "session_ids": list(summary.session_ids),
+                "labels": dict(summary.labels),
+                "directory_paths": list(summary.directory_paths),
+                "power_state": summary.power_state,
+                "libvirt_state": summary.libvirt_state,
+                "provider_state": summary.provider_state,
+                "provider_details": dict(summary.provider_details),
+                "ip_address": summary.ip_address,
+                "agent": {
+                    "state": summary.agent_state,
+                    "pid": summary.agent_pid,
+                    "dispatch_id": summary.dispatch_id,
+                    "repo_names": list(summary.agent_repo_names),
+                    "preferred_repo_name": summary.agent_repo_names[0]
+                    if len(summary.agent_repo_names) == 1
+                    else None,
+                },
+            },
+            capabilities={
+                "start": True,
+                "shutdown": True,
+                "resume": True,
+                "enable_disable": True,
+                "kill": True,
+                "logs": True,
+                "stop": False,
+                "destroy": True,
+            },
+        )
+
+    def _agent_record_from_container_execution(
+        self,
+        record: Any,
+        *,
+        reconcile: bool,
+    ) -> AgentRecord:
+        status = self._container_agent_status(record.last_status)
+        message: str | None = None
+        if reconcile:
+            try:
+                inspected = self._container_worker_backend().inspect(record.execution_id)
+            except Exception as exc:
+                message = str(exc)
+            else:
+                status = str(inspected.status.value)
+                record = self._container_worker_execution_repository().resolve(
+                    record.execution_id
+                )
+        host = {
+            "kind": "container_worker",
+            "worker_job_id": record.worker_job_id,
+            "worker_url": record.worker_url,
+            "last_status": record.last_status,
+            "metadata": dict(record.metadata),
+        }
+        if message:
+            host["reconcile_error"] = message
+        image = record.metadata.get("image") if isinstance(record.metadata, dict) else None
+        if image:
+            host["image"] = image
+        return AgentRecord(
+            agent_id=record.execution_id,
+            backend="container_worker_vm",
+            target_name=record.target_name,
+            session_id=record.session_id,
+            directory_path=self._agent_record_directory_path(record.directory_path),
+            status=status,
+            started_at=record.started_at,
+            finished_at=record.finished_at,
+            updated_at=record.updated_at,
+            host=host,
+            capabilities={
+                "start": False,
+                "shutdown": False,
+                "resume": False,
+                "enable_disable": False,
+                "kill": False,
+                "logs": True,
+                "stop": True,
+                "destroy": True,
+            },
+        )
+
+    def list_agents(
+        self,
+        *,
+        directory_path: str | None = None,
+        direct_only: bool = False,
+        include_inactive: bool = True,
+        reconcile_containers: bool = True,
+    ) -> list[AgentRecord]:
+        normalized_directory = self._normalize_directory_path(directory_path)
+        records: list[AgentRecord] = []
+        for summary in self.list_vms(
+            include_inactive=include_inactive,
+            directory_path=normalized_directory,
+            direct_only=direct_only,
+        ):
+            record = self._agent_record_from_vm(summary)
+            if include_inactive or self._agent_status_is_active(record.status):
+                records.append(record)
+
+        container_records = sorted(
+            self._container_worker_execution_repository().read_all().values(),
+            key=lambda item: (item.updated_at, item.execution_id),
+            reverse=True,
+        )
+        for container_record in container_records:
+            if not self._agent_record_matches_directory(
+                container_record.directory_path,
+                normalized_directory,
+                direct_only=direct_only,
+            ):
+                continue
+            record = self._agent_record_from_container_execution(
+                container_record,
+                reconcile=reconcile_containers,
+            )
+            if include_inactive or self._agent_status_is_active(record.status):
+                records.append(record)
+        return records
+
+    def get_admin_agent_log_snapshot(
+        self,
+        agent_id: str,
+        *,
+        backend: str | None = None,
+        lines: int = 50,
+        repo_name: str | None = None,
+        vm_user: str = "agent",
+    ) -> str:
+        selected_backend = str(backend or "libvirt_vm").strip()
+        if selected_backend in {"libvirt", "libvirt_vm"}:
+            return self.get_agent_log_snapshot(
+                agent_id,
+                lines=lines,
+                repo_name=repo_name,
+                vm_user=vm_user,
+            )
+        if selected_backend == "container_worker_vm":
+            worker_backend = self._container_worker_backend()
+            try:
+                worker_backend.inspect(agent_id)
+            except Exception:
+                pass
+            return worker_backend.get_log_snapshot(agent_id, lines=lines)
+        raise ValueError(f"Unknown agent backend: {selected_backend}")
+
+    def run_admin_agent_action(
+        self,
+        agent_id: str,
+        action: str,
+        *,
+        backend: str | None = None,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        selected_backend = str(backend or "libvirt_vm").strip()
+        body = payload or {}
+        if selected_backend in {"libvirt", "libvirt_vm"}:
+            if action == "start":
+                result = self.start_vm(agent_id)
+            elif action == "shutdown":
+                result = self.shutdown_vm(agent_id)
+            elif action == "enable-agent":
+                result = self.enable_agent(agent_id)
+            elif action == "disable-agent":
+                result = self.disable_agent(agent_id)
+            elif action == "kill-agent":
+                pid = body.get("pid")
+                if pid in {None, ""}:
+                    raise ValueError("kill-agent requires a running agent pid")
+                result = self.kill_agent(agent_id, int(pid))
+            elif action == "resume-agent":
+                prompt = str(body.get("prompt") or "").strip()
+                if not prompt:
+                    raise ValueError("resume-agent requires a non-empty prompt")
+                result = self.resume_agent(
+                    agent_id,
+                    prompt,
+                    model=str(body.get("model") or "").strip() or None,
+                    resume_mode=str(body.get("resume_mode") or "same_context").strip()
+                    or "same_context",
+                )
+            elif action == "destroy":
+                result = self.destroy_vm(agent_id)
+            else:
+                raise LookupError(f"Unknown VM agent action: {action}")
+            return {
+                "success": result.success,
+                "agent_id": result.vm_name,
+                "backend": "libvirt_vm",
+                "target_name": result.vm_name,
+                "action": result.action,
+                "message": result.message,
+                "provider": result.provider,
+                "provider_operation_id": result.provider_operation_id,
+                "thread_id": result.thread_id,
+                "target_dir": result.target_dir,
+                "guest_repo_name": result.guest_repo_name,
+                "remote_url": result.remote_url,
+            }
+        if selected_backend == "container_worker_vm":
+            worker_backend = self._container_worker_backend()
+            if action == "stop":
+                status = worker_backend.stop(agent_id)
+            elif action == "destroy":
+                status = worker_backend.destroy(agent_id)
+            else:
+                raise LookupError(f"Unknown container worker agent action: {action}")
+            return {
+                "success": True,
+                "agent_id": status.execution_id,
+                "backend": "container_worker_vm",
+                "target_name": status.target_name,
+                "action": action,
+                "message": status.message or f"{action} completed",
+                "status": status.status.value,
+                "session_id": status.session_id,
+            }
+        raise ValueError(f"Unknown agent backend: {selected_backend}")
 
     def list_background_workers(self) -> list[WorkerSummary]:
         return self.operations_admin.list_background_workers()

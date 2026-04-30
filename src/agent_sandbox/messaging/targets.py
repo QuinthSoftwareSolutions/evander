@@ -174,7 +174,8 @@ def validate_communication_target_refs(
         raise ValueError(
             "unknown communication target reference(s): "
             + ", ".join(unknown)
-            + "; define them in config/communication-targets/config.json"
+            + "; define them in config/communication-targets/config.json "
+            + "(start from config/communication-targets/config-example.json)"
         )
 
 

@@ -57,7 +57,8 @@ The execution CLI never mutates the configured backend. `start-container-job` an
 Portable workflow nodes use `effect:agent:*` for session setup. On `libvirt_vm` they delegate to
 the existing VM services. On `container_worker_vm`, `effect:agent:create` prepares a durable
 session manifest and worker directories, `effect:agent:clone-repo` clones into `/workspace`,
-`effect:agent:copy-files` writes under `/workspace` or `/home/agent`, and `effect:agent:prompt`
+`effect:agent:copy-files` writes under `/workspace` or `/home/agent`, `effect:agent:exec`
+runs deterministic setup commands in a transient worker job, and `effect:agent:prompt`
 starts a disposable worker job for Codex and removes the job after completion.
 
 ## Migration Path

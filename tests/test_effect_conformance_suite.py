@@ -152,6 +152,15 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
             "prompt": "Continue ${{effect_1.session_id}}",
         }
     )
+    agent_exec = adapter.validate_python(
+        {
+            "id": "effect-agent-exec",
+            "display_name": "Agent exec",
+            "type": "effect:agent:exec",
+            "session_id": "session-1",
+            "command": ["pwd"],
+        }
+    )
     bash_script = adapter.validate_python(
         {
             "id": "effect-script",
@@ -222,6 +231,7 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
     assert agent_copy.type == "effect:agent:copy-files"
     assert prompt.type == "effect:agent:prompt"
     assert enqueue_prompt.type == "effect:agent:enqueue-prompt"
+    assert agent_exec.type == "effect:agent:exec"
     assert bash_script.type == "effect:bash:script"
     assert vm_exec.type == "effect:vm:exec"
     assert vm_copy.type == "effect:vm:copy-files"

@@ -22,16 +22,16 @@
         "target_id": "effect-agent-prompt-9"
       },
       {
-        "source_id": "effect-vm-clone-repo-2",
-        "target_id": "effect-vm-copy-files-5"
+        "source_id": "effect-agent-clone-repo-2",
+        "target_id": "effect-agent-copy-files-5"
       },
       {
-        "source_id": "effect-vm-copy-files-5",
-        "target_id": "effect-vm-exec-1"
+        "source_id": "effect-agent-copy-files-5",
+        "target_id": "effect-agent-exec-1"
       },
       {
-        "source_id": "effect-vm-exec-1",
-        "target_id": "effect-vm-bootstrap-frontend-2"
+        "source_id": "effect-agent-exec-1",
+        "target_id": "effect-agent-bootstrap-frontend-2"
       }
     ],
     "nodes": [
@@ -123,24 +123,24 @@
         "config": {
           "files": [
             {
-              "destination_path": "${{effect-vm-clone-repo-2.target_dir}}/.agent-sandbox/bin/setup_review_repo.sh",
+              "destination_path": "${{effect-agent-clone-repo-2.target_dir}}/.agent-sandbox/bin/setup_review_repo.sh",
               "mode": "0755",
               "source_path": "/opt/agent-sandbox/scripts/guest/setup_review_repo.sh"
             }
           ],
-          "target": "${{effect-vm-clone-repo-2.vm_name}}"
+          "target": "${{effect-agent-clone-repo-2.session_id}}"
         },
-        "id": "effect-vm-copy-files-5",
-        "type": "effect:vm:copy-files"
+        "id": "effect-agent-copy-files-5",
+        "type": "effect:agent:copy-files"
       },
       {
         "config": {
           "command": "bash .agent-sandbox/bin/setup_review_repo.sh --base-ref refs/heads/${{trigger-review-new-request-1.review_request.base_branch}} --head-ref refs/heads/${{trigger-review-new-request-1.review_request.head_branch}} --base-commit \"${{trigger-review-new-request-1.review_request.base_commit ?? \"\"}}\" --head-commit \"${{trigger-review-new-request-1.review_request.head_commit ?? \"\"}}\"",
-          "target": "${{effect-vm-clone-repo-2.session_id}}",
-          "working_directory": "${{effect-vm-clone-repo-2.target_dir}}"
+          "target": "${{effect-agent-clone-repo-2.session_id}}",
+          "working_directory": "${{effect-agent-clone-repo-2.target_dir}}"
         },
-        "id": "effect-vm-exec-1",
-        "type": "effect:vm:exec"
+        "id": "effect-agent-exec-1",
+        "type": "effect:agent:exec"
       }
     ]
   }
