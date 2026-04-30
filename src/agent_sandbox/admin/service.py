@@ -3818,6 +3818,13 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
             return selected_backend
         raise ValueError(f"Unknown agent backend: {selected_backend}")
 
+    @classmethod
+    def _normalize_agent_backend_filter(cls, backend: str | None) -> str:
+        selected_backend = str(backend or "all").strip()
+        if selected_backend in {"", "all"}:
+            return "all"
+        return cls._normalize_agent_backend(selected_backend)
+
     @staticmethod
     def _agent_optional_string(payload: Mapping[str, Any], key: str) -> str | None:
         value = payload.get(key)
@@ -4038,17 +4045,29 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
         direct_only: bool = False,
         include_inactive: bool = True,
         reconcile_containers: bool = True,
+        backend: str | None = None,
     ) -> list[AgentRecord]:
         normalized_directory = self._normalize_directory_path(directory_path)
+        selected_backend = self._normalize_agent_backend_filter(backend)
         records: list[AgentRecord] = []
-        for summary in self.list_vms(
-            include_inactive=include_inactive,
-            directory_path=normalized_directory,
-            direct_only=direct_only,
-        ):
-            record = self._agent_record_from_vm(summary)
-            if include_inactive or self._agent_status_is_active(record.status):
-                records.append(record)
+        if selected_backend in {"all", "libvirt_vm"}:
+            try:
+                vm_summaries = self.list_vms(
+                    include_inactive=include_inactive,
+                    directory_path=normalized_directory,
+                    direct_only=direct_only,
+                )
+            except Exception:
+                if selected_backend == "libvirt_vm":
+                    raise
+                vm_summaries = []
+            for summary in vm_summaries:
+                record = self._agent_record_from_vm(summary)
+                if include_inactive or self._agent_status_is_active(record.status):
+                    records.append(record)
+
+        if selected_backend == "libvirt_vm":
+            return records
 
         container_records = sorted(
             self._container_worker_execution_repository().read_all().values(),

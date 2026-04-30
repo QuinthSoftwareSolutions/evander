@@ -154,11 +154,13 @@ function optionalNumber(value: string): number | null {
 async function loadAgentList(
   directoryPath: string,
   directOnly: boolean,
+  backend: AgentBackend | "all",
 ): Promise<AgentListResponse> {
   const query = new URLSearchParams({
     directory_path: directoryPath,
     direct_only: String(directOnly),
     include_inactive: "true",
+    backend,
   });
   return fetchJson<AgentListResponse>(`/api/admin/agents?${query.toString()}`);
 }
@@ -507,13 +509,13 @@ export function AgentsPage() {
   );
 
   const refreshAgents = useCallback(async () => {
-    const payload = await loadAgentList(selectedDirectoryPath, true);
+    const payload = await loadAgentList(selectedDirectoryPath, true, backendFilter);
     setItems(payload.items);
     setSelectedKey((current) => {
       if (current && payload.items.some((item) => agentKey(item) === current)) return current;
       return payload.items[0] ? agentKey(payload.items[0]) : null;
     });
-  }, [selectedDirectoryPath]);
+  }, [backendFilter, selectedDirectoryPath]);
 
   useEffect(() => {
     let cancelled = false;

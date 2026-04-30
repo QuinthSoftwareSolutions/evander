@@ -56,17 +56,25 @@ def agent_routes(service: AdminService, _auth: AdminWebAuth) -> list[BaseRoute]:
         directory_path = _string_query(request, "directory_path")
         direct_only = _bool_query(request, "direct_only", default=True)
         include_inactive = _bool_query(request, "include_inactive", default=True)
-        records = await run_in_threadpool(
-            service.list_agents,
-            directory_path=directory_path,
-            direct_only=direct_only,
-            include_inactive=include_inactive,
-        )
+        backend = _string_query(request, "backend", default="all")
+        try:
+            records = await run_in_threadpool(
+                service.list_agents,
+                directory_path=directory_path,
+                direct_only=direct_only,
+                include_inactive=include_inactive,
+                backend=backend,
+            )
+        except ValueError as exc:
+            return json_error(str(exc), status_code=400)
+        except Exception as exc:
+            return json_error(str(exc), status_code=400)
         return JSONResponse(
             {
                 "items": [_jsonable(record) for record in records],
                 "directory_path": directory_path or "root",
                 "direct_only": direct_only,
+                "backend": backend,
             }
         )
 

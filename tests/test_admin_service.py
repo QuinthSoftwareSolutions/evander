@@ -113,6 +113,60 @@ def test_list_agents_includes_session_only_container_worker_targets(
     assert agents[0].host["labels"] == {"role": "demo"}
 
 
+def test_list_agents_still_returns_container_sessions_when_vm_inventory_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="container-session",
+            vm_provider="container_worker_vm",
+            vm_provider_id="container-target",
+            directory_path="root",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "container-target",
+            },
+        )
+    )
+
+    def fail_list_vms(self: AdminService, **_kwargs: object) -> list[object]:
+        raise RuntimeError("sudo: a password is required")
+
+    monkeypatch.setattr(service, "list_vms", MethodType(fail_list_vms, service))
+
+    agents = service.list_agents(
+        directory_path="root",
+        direct_only=True,
+        include_inactive=True,
+        reconcile_containers=False,
+    )
+
+    assert [(agent.agent_id, agent.backend, agent.status) for agent in agents] == [
+        ("container-session", "container_worker_vm", "prepared")
+    ]
+    container_agents = service.list_agents(
+        directory_path="root",
+        direct_only=True,
+        include_inactive=True,
+        reconcile_containers=False,
+        backend="container_worker_vm",
+    )
+    assert [(agent.agent_id, agent.backend, agent.status) for agent in container_agents] == [
+        ("container-session", "container_worker_vm", "prepared")
+    ]
+    with pytest.raises(RuntimeError, match="sudo: a password is required"):
+        service.list_agents(
+            directory_path="root",
+            direct_only=True,
+            include_inactive=True,
+            reconcile_containers=False,
+            backend="libvirt_vm",
+        )
+
+
 def test_create_container_agent_uses_directory_scoped_worker_provider_config(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

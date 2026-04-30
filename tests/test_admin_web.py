@@ -1685,6 +1685,46 @@ def test_admin_web_agents_list_includes_vms_and_container_executions(
     assert root_response.json()["items"] == []
 
 
+def test_admin_web_agents_backend_filter_controls_vm_inventory_failures(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="container-session",
+            vm_provider="container_worker_vm",
+            vm_provider_id="container-target",
+            directory_path="root",
+            allowed_tools=[],
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "container-target",
+            },
+        )
+    )
+
+    def fail_list_vms(self, **_kwargs):
+        raise RuntimeError("sudo: a password is required")
+
+    monkeypatch.setattr(service, "list_vms", MethodType(fail_list_vms, service))
+    client = TestClient(create_app(service))
+
+    container_response = client.get(
+        "/api/admin/agents?directory_path=root&backend=container_worker_vm"
+    )
+    vm_response = client.get("/api/admin/agents?directory_path=root&backend=libvirt_vm")
+
+    assert container_response.status_code == 200
+    assert [
+        (item["agent_id"], item["backend"], item["status"])
+        for item in container_response.json()["items"]
+    ] == [("container-session", "container_worker_vm", "prepared")]
+    assert vm_response.status_code == 400
+    assert vm_response.json()["error"] == "sudo: a password is required"
+
+
 def test_admin_web_container_agent_log_and_actions_do_not_require_vm_summary(
     tmp_path: Path,
     monkeypatch,
