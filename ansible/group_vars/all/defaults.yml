@@ -14,7 +14,7 @@ agent_sandbox_repo_managed_base_tracked_config_paths:
 agent_sandbox_repo_managed_workflow_config_paths:
   - config/trigger-orchestrator/config.json
   - config/trigger-orchestrator/layout.json
-  - config/workflow-packs/agent-default.v1.json
+  - config/workflow-packs/agent-container-worker.v1.json
 agent_sandbox_repo_managed_generated_tracked_paths:
   - frontend/workflow-editor/dist/index.html
 agent_sandbox_repo_managed_tracked_config_paths: >-
@@ -221,7 +221,7 @@ agent_sandbox_trigger_orchestrator_config:
   event_queue_store_path: null
   event_queue_cursor_store_path: null
   workflow_packs:
-    - "agent-default.v1.json"
+    - "agent-container-worker.v1.json"
   workflow_transforms: []
   provider_loader:
     provider_profile: "profiles/agent-default"
