@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import re
-import shlex
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any
@@ -21,6 +20,7 @@ from agent_sandbox.orchestration.effect_extensions import list_vm_summaries_for_
 
 from .agent_session import (
     container_backend,
+    container_prompt_command,
     effective_config_for_session,
     require_container_session_id,
     safe_effect_execution_id,
@@ -567,30 +567,10 @@ class AgentPromptEffectProvider(EffectProviderBase):
         model: str,
         resume_thread_id: str | None,
     ) -> str:
-        common_args = [
-            "--dangerously-bypass-approvals-and-sandbox",
-            "--skip-git-repo-check",
-            "--model",
-            model,
-        ]
-        if resume_thread_id:
-            args = ["codex", "exec", "resume", resume_thread_id, *common_args, prompt]
-        else:
-            args = [
-                "codex",
-                "exec",
-                "-s",
-                "danger-full-access",
-                *common_args,
-                "-C",
-                "/workspace",
-                prompt,
-            ]
-        return (
-            "set -euo pipefail; "
-            "export HOME=/home/agent; "
-            "cd /workspace; "
-            + " ".join(shlex.quote(arg) for arg in args)
+        return container_prompt_command(
+            prompt=prompt,
+            model=model,
+            resume_thread_id=resume_thread_id,
         )
 
     @classmethod

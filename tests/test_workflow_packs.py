@@ -120,6 +120,10 @@ def test_container_worker_pack_validates_ticket_created_agent_branch() -> None:
         container_effects["effect-agent-prompt-4"]["config"]["target"]
         == "${{effect-agent-clone-repo-1.session_id}}"
     )
+    assert (
+        container_effects["effect-agent-enqueue-prompt-1"]["type"]
+        == "effect:agent:enqueue-prompt"
+    )
     assert container_effects["effect-agent-enqueue-prompt-2"]["type"] == "effect:agent:prompt"
     assert (
         container_effects["effect-agent-enqueue-prompt-2"]["config"]["output_mode"]

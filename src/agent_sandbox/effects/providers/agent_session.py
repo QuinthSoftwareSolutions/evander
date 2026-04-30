@@ -422,6 +422,39 @@ def frontend_bootstrap_command(install_roots: Sequence[str]) -> str:
     )
 
 
+def container_prompt_command(
+    *,
+    prompt: str,
+    model: str,
+    resume_thread_id: str | None,
+) -> str:
+    common_args = [
+        "--dangerously-bypass-approvals-and-sandbox",
+        "--skip-git-repo-check",
+        "--model",
+        model,
+    ]
+    if resume_thread_id:
+        args = ["codex", "exec", "resume", resume_thread_id, *common_args, prompt]
+    else:
+        args = [
+            "codex",
+            "exec",
+            "-s",
+            "danger-full-access",
+            *common_args,
+            "-C",
+            "/workspace",
+            prompt,
+        ]
+    return (
+        "set -euo pipefail; "
+        "export HOME=/home/agent; "
+        "cd /workspace; "
+        + " ".join(shlex.quote(arg) for arg in args)
+    )
+
+
 def safe_effect_execution_id(prefix: str, session_id: str) -> str:
     safe_session = "".join(char if char.isalnum() or char in "._-" else "-" for char in session_id)
     return f"{prefix}-{safe_session}-{uuid.uuid4().hex[:12]}"

@@ -7,10 +7,12 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Event
+from types import SimpleNamespace
 
 import pytest
 
 from agent_sandbox.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
+from agent_sandbox.effects.providers.lifecycle_hooks import AgentEnqueuePromptQueueDispatchHook
 from agent_sandbox.effects.providers.base import EffectRuntimeContext
 from agent_sandbox.effects.providers.vm_copy_files import VmCopyFilesEffectProvider
 from agent_sandbox.daemons.effect_orchestrator import (
@@ -22,9 +24,13 @@ from agent_sandbox.daemons.effect_orchestrator import (
     build_effect_orchestrator_worker,
     main,
 )
-from agent_sandbox.messaging.agent_prompt_queue import QueuedAgentPromptRecord
+from agent_sandbox.messaging.agent_prompt_queue import (
+    AgentPromptQueueStore,
+    QueuedAgentPromptRecord,
+)
 from agent_sandbox.events.models import TriggerEvent
-from agent_sandbox.models import VmSummary
+from agent_sandbox.models import SessionManifest, ToolName, VmSummary
+from agent_sandbox.repositories.session_manifests import JsonSessionManifestRepository
 from agent_sandbox.triggers.queue import TriggerQueueRecord
 
 
@@ -111,6 +117,21 @@ class _AgentPromptDispatchPortStub:
             }
         )
         return self.result
+
+
+class _ContainerDispatchBackendStub:
+    def __init__(self) -> None:
+        self.repository = SimpleNamespace(read_all=lambda: {})
+        self.prepared_specs: list[object] = []
+        self.started_specs: list[object] = []
+
+    def prepare(self, spec):
+        self.prepared_specs.append(spec)
+        return spec
+
+    def start(self, spec):
+        self.started_specs.append(spec)
+        return SimpleNamespace(execution_id=spec.target_name)
 
 
 def _edge(source_id: str, target_id: str) -> dict[str, str]:
@@ -1918,6 +1939,66 @@ def test_agent_enqueue_prompt_dispatches_queued_prompt_when_target_agent_becomes
         else {}
     )
     assert queued_payload == {}
+
+
+def test_agent_enqueue_prompt_dispatch_hook_dispatches_container_queue_without_libvirt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            vm_id=None,
+            allowed_tools=[ToolName.LIST_PENDING_AGENT_PROMPTS],
+            expires_at=datetime.now(timezone.utc),
+            vm_provider="container_worker_vm",
+            vm_provider_id="truman",
+            model="gpt-5.4-mini",
+            metadata={"execution_backend": "container_worker_vm", "target_name": "truman"},
+        )
+    )
+    queue_store = AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json")
+    queue_store.put(
+        QueuedAgentPromptRecord(
+            queue_key="session-1",
+            target="session-1",
+            vm_name="truman",
+            session_id="session-1",
+            prompt="check teams",
+            model=None,
+            vm_user="agent",
+            resume_thread_id=None,
+            effect_id="effect-agent-enqueue-prompt-1",
+        )
+    )
+    backend = _ContainerDispatchBackendStub()
+    monkeypatch.setattr(
+        "agent_sandbox.effects.providers.lifecycle_hooks.build_execution_backend",
+        lambda config, admin_service: backend,
+    )
+    worker = SimpleNamespace(
+        config=config,
+        queued_agent_prompt_store=queue_store,
+        agent_prompt_dispatch_port=object(),
+        provider_config_resolver=SimpleNamespace(resolve_for_session_id=lambda session_id: config),
+        provider_factory=SimpleNamespace(
+            admin_service=SimpleNamespace(
+                runtime=SimpleNamespace(session_repository=session_repository)
+            )
+        ),
+    )
+
+    dispatched = AgentEnqueuePromptQueueDispatchHook().on_post_completion_dispatch(worker=worker)
+
+    assert dispatched == 1
+    assert queue_store.read_all() == {}
+    assert backend.started_specs[0].session_id == "session-1"
+    assert "check teams" in str(backend.started_specs[0].command)
 
 
 def test_agent_enqueue_prompt_queues_and_fails_when_immediate_resume_fails(

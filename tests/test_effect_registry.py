@@ -8,6 +8,7 @@ import pytest
 
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.execution import ExecutionStatusKind
+from agent_sandbox.execution.container_worker_repository import ContainerWorkerExecutionRecord
 from agent_sandbox.effects.providers.agent_session import selected_execution_backend_for_target
 from agent_sandbox.effects.providers.base import EffectProviderBase, EffectRuntimeContext
 from agent_sandbox.effects.registry import (
@@ -558,6 +559,142 @@ def test_agent_enqueue_prompt_provider_dispatches_immediately_when_idle() -> Non
     assert output["dispatch_id"].startswith("dispatch-effect-prompt-")
     assert output["queued"] is False
     assert admin_service.resume_calls[0]["target"] == "session-42"
+
+
+def test_agent_enqueue_prompt_provider_uses_container_backend_for_container_session(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            vm_id=None,
+            allowed_tools=[ToolName.LIST_PENDING_AGENT_PROMPTS],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            vm_provider="container_worker_vm",
+            vm_provider_id="truman",
+            model="gpt-5.4-mini",
+            metadata={"execution_backend": "container_worker_vm", "target_name": "truman"},
+        )
+    )
+    admin_service = SimpleNamespace(
+        runtime=SimpleNamespace(
+            session_repository=session_repository,
+            provider_config=_ContainerResolverStub(config),
+        ),
+        list_vms=lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("container enqueue must not list libvirt VMs")
+        ),
+    )
+    backend = _FakeContainerBackend()
+    monkeypatch.setattr(
+        "agent_sandbox.effects.providers.agent_enqueue_prompt.container_backend",
+        lambda context, config: backend,
+    )
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ContainerResolverStub(config),
+        admin_service=admin_service,
+    )
+
+    output = factory.build(
+        AgentEnqueuePromptEffectDefinition(
+            id="agent-enqueue",
+            display_name="Enqueue",
+            type="effect:agent:enqueue-prompt",
+            target="session-1",
+            prompt="check teams",
+        )
+    ).execute()
+
+    assert output["execution_backend"] == "container_worker_vm"
+    assert output["queued"] is False
+    assert output["output_mode"] == "on_completion"
+    assert output["session_id"] == "session-1"
+    assert output["vm_name"] == "truman"
+    assert backend.started_specs[0].session_id == "session-1"
+    assert "check teams" in str(backend.started_specs[0].command)
+
+
+def test_agent_enqueue_prompt_provider_queues_when_container_session_is_busy(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            vm_id=None,
+            allowed_tools=[ToolName.LIST_PENDING_AGENT_PROMPTS],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            vm_provider="container_worker_vm",
+            vm_provider_id="truman",
+            model="gpt-5.4-mini",
+            metadata={"execution_backend": "container_worker_vm", "target_name": "truman"},
+        )
+    )
+    admin_service = SimpleNamespace(
+        runtime=SimpleNamespace(
+            session_repository=session_repository,
+            provider_config=_ContainerResolverStub(config),
+        ),
+        list_vms=lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("container enqueue must not list libvirt VMs")
+        ),
+    )
+    backend = _FakeContainerBackend()
+    backend.status = SimpleNamespace(
+        status=ExecutionStatusKind.RUNNING,
+        message=None,
+        metadata={},
+    )
+    backend.repository = SimpleNamespace(
+        read_all=lambda: {
+            "agent-session-1-old": ContainerWorkerExecutionRecord(
+                execution_id="agent-session-1-old",
+                session_id="session-1",
+                worker_job_id="job-1",
+                worker_url="http://worker.test",
+                target_name="agent-session-1-old",
+                last_status="running",
+            )
+        }
+    )
+    monkeypatch.setattr(
+        "agent_sandbox.effects.providers.agent_enqueue_prompt.container_backend",
+        lambda context, config: backend,
+    )
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ContainerResolverStub(config),
+        admin_service=admin_service,
+    )
+
+    output = factory.build(
+        AgentEnqueuePromptEffectDefinition(
+            id="agent-enqueue",
+            display_name="Enqueue",
+            type="effect:agent:enqueue-prompt",
+            target="session-1",
+            prompt="check teams",
+        )
+    ).execute()
+
+    assert output["execution_backend"] == "container_worker_vm"
+    assert output["queued"] is True
+    assert output["queue_key"] == "session-1"
+    assert backend.started_specs == []
+    queued_payload = (tmp_path / "queued-agent-prompts.json").read_text(encoding="utf-8")
+    assert "check teams" in queued_payload
 
 
 def test_agent_prompt_provider_passes_model_override() -> None:

@@ -4,14 +4,33 @@ from collections.abc import Mapping
 from typing import Any
 from uuid import uuid4
 
+from agent_sandbox.execution import ExecutionBackendKind, ExecutionSpec, ExecutionStatusKind
 from agent_sandbox.messaging.agent_prompt_queue import (
     AgentPromptQueueStore,
     QueuedAgentPromptRecord,
 )
 from agent_sandbox.events.provider_models import AgentEnqueuePromptEffectDefinition
 
+from .agent_prompt import AgentPromptEffectProvider
+from .agent_session import (
+    container_backend,
+    container_prompt_command,
+    effective_config_for_session,
+    require_container_session_id,
+    safe_effect_execution_id,
+    selected_execution_backend_for_target,
+)
 from .base import EffectProviderBase
 from .lifecycle_hooks import AgentEnqueuePromptQueueDispatchHook
+
+_ACTIVE_CONTAINER_STATUSES = {
+    ExecutionStatusKind.PREPARING.value,
+    ExecutionStatusKind.STARTING.value,
+    ExecutionStatusKind.RUNNING.value,
+    "created",
+    "starting",
+    "running",
+}
 
 
 class AgentEnqueuePromptEffectProvider(EffectProviderBase):
@@ -22,12 +41,6 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
     def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
         effect = self._effect()
         context = self._context()
-        if (
-            context.agent_resumer is None
-            or context.vm_inventory is None
-            or context.session_lookup is None
-        ):
-            raise RuntimeError("effect:agent:enqueue-prompt runtime services are not available")
 
         payload = {
             "target": effect.target,
@@ -46,6 +59,31 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
         vm_user = self._normalize_optional_string(payload.get("vm_user")) or "agent"
         model = self._normalize_optional_string(payload.get("model"))
         resume_thread_id = self._normalize_optional_string(payload.get("resume_thread_id"))
+
+        execution_backend, config = selected_execution_backend_for_target(
+            context,
+            {**payload, "target": target},
+            directory_path=str(context.metadata.get("directory_path") or "root"),
+        )
+        if execution_backend == ExecutionBackendKind.CONTAINER_WORKER_VM.value:
+            return self._execute_container(
+                payload={**payload, "target": target},
+                prompt=prompt,
+                model=model,
+                vm_user=vm_user,
+                resume_thread_id=resume_thread_id,
+                config=config,
+                effect_id=effect.id,
+            )
+        if execution_backend != ExecutionBackendKind.LIBVIRT_VM.value:
+            raise ValueError(f"Unsupported execution_backend: {execution_backend}")
+        if (
+            context.agent_resumer is None
+            or context.vm_inventory is None
+            or context.session_lookup is None
+        ):
+            raise RuntimeError("effect:agent:enqueue-prompt runtime services are not available")
+
         vm_name = self._resolve_vm_name(target)
         session_id = self._resolve_session_id(target)
 
@@ -112,6 +150,189 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             "vm_name": vm_name,
             "session_id": session_id,
         }
+
+    def _execute_container(
+        self,
+        *,
+        payload: dict[str, Any],
+        prompt: str,
+        model: str | None,
+        vm_user: str,
+        resume_thread_id: str | None,
+        config: Any,
+        effect_id: str,
+    ) -> dict[str, Any]:
+        context = self._context()
+        session_id, session = require_container_session_id(
+            context,
+            payload,
+            effect_type="effect:agent:enqueue-prompt",
+            config=config,
+        )
+        effective_config = effective_config_for_session(
+            context,
+            session_id,
+            fallback_directory_path=getattr(session, "directory_path", None),
+        )
+        target_name = self._container_target_name(session=session, session_id=session_id)
+        target = self._normalize_optional_string(payload.get("target")) or session_id
+
+        if self._container_session_is_busy(
+            context=context,
+            config=effective_config,
+            session_id=session_id,
+        ):
+            record = self._queue_prompt(
+                target=target,
+                vm_name=target_name,
+                session_id=session_id,
+                prompt=prompt,
+                model=model,
+                vm_user=vm_user,
+                resume_thread_id=resume_thread_id,
+                effect_id=effect_id,
+                queue_key=session_id,
+            )
+            return {
+                "success": True,
+                "queued": True,
+                "queue_key": record.queue_key,
+                "vm_name": target_name,
+                "session_id": session_id,
+                "coalesced_count": record.coalesced_count,
+                "execution_backend": ExecutionBackendKind.CONTAINER_WORKER_VM.value,
+            }
+
+        dispatch_id = self._make_dispatch_id(effect_id=effect_id)
+        resolved_model = model or getattr(session, "model", None) or "gpt-5.4"
+        backend = container_backend(context, effective_config)
+        execution_id = safe_effect_execution_id("agent", session_id)
+        handle = backend.start(
+            backend.prepare(
+                ExecutionSpec(
+                    backend=ExecutionBackendKind.CONTAINER_WORKER_VM,
+                    target_name=execution_id,
+                    session_id=session_id,
+                    directory_path=getattr(session, "directory_path", None) or "root",
+                    command=container_prompt_command(
+                        prompt=prompt,
+                        model=resolved_model,
+                        resume_thread_id=resume_thread_id,
+                    ),
+                    metadata={
+                        "effect_type": self.node_type(),
+                        "dispatch_id": dispatch_id,
+                    },
+                )
+            )
+        )
+        return {
+            "dispatch_id": dispatch_id,
+            "thread_id": resume_thread_id or dispatch_id,
+            "success": True,
+            "queued": False,
+            "output_mode": "on_completion",
+            "vm_name": target_name,
+            "session_id": session_id,
+            "execution_backend": ExecutionBackendKind.CONTAINER_WORKER_VM.value,
+            "execution_id": handle.execution_id,
+        }
+
+    @classmethod
+    def on_execution_started(cls, **kwargs: Any) -> bool:
+        outputs = kwargs.get("outputs")
+        if not isinstance(outputs, Mapping):
+            return False
+        if outputs.get("queued") is True or outputs.get("success") is False:
+            return False
+        return (
+            str(outputs.get("execution_backend") or "").strip()
+            == ExecutionBackendKind.CONTAINER_WORKER_VM.value
+            and str(outputs.get("output_mode") or "").strip() == "on_completion"
+            and bool(str(outputs.get("dispatch_id") or "").strip())
+        )
+
+    @classmethod
+    def on_completion_event(cls, **kwargs: Any) -> int:
+        worker = kwargs.get("worker")
+        queue_record = kwargs.get("queue_record")
+        if worker is None or queue_record is None:
+            return 0
+        dispatch_id = str(getattr(queue_record, "payload", {}).get("dispatch_id") or "").strip()
+        if not dispatch_id:
+            return 0
+
+        finalized = 0
+        for record in worker.execution_store.read_all().values():
+            if record.effect_type != cls.node_type() or record.status != "waiting":
+                continue
+            if str(record.outputs.get("dispatch_id") or "").strip() != dispatch_id:
+                continue
+            AgentPromptEffectProvider._finalize_waiting_record(
+                worker=worker,
+                record=record,
+                queue_record=queue_record,
+            )
+            finalized += 1
+        return finalized
+
+    @classmethod
+    def reconcile_waiting(cls, **kwargs: Any) -> int:
+        worker = kwargs.get("worker")
+        if worker is None:
+            return 0
+        completed = 0
+        for record in worker.execution_store.read_all().values():
+            if record.effect_type != cls.node_type() or record.status != "waiting":
+                continue
+            if (
+                str(record.outputs.get("execution_backend") or "").strip()
+                != ExecutionBackendKind.CONTAINER_WORKER_VM.value
+            ):
+                continue
+            completed += AgentPromptEffectProvider._reconcile_container_waiting_record(
+                worker=worker,
+                record=record,
+            )
+        return completed
+
+    @classmethod
+    def node_type(cls) -> str:
+        return "effect:agent:enqueue-prompt"
+
+    @classmethod
+    def container_session_is_busy_for_backend(cls, *, backend: Any, session_id: str) -> bool:
+        repository = getattr(backend, "repository", None)
+        read_all = getattr(repository, "read_all", None)
+        if not callable(read_all):
+            return False
+        for record in read_all().values():
+            if str(getattr(record, "session_id", "") or "").strip() != session_id:
+                continue
+            status = str(getattr(record, "last_status", "") or "").strip().casefold()
+            if status not in _ACTIVE_CONTAINER_STATUSES:
+                continue
+            try:
+                inspected = backend.inspect(getattr(record, "execution_id"))
+                inspected_status = getattr(inspected, "status", None)
+                status = str(getattr(inspected_status, "value", inspected_status) or "").strip()
+            except Exception:
+                pass
+            if status.casefold() in _ACTIVE_CONTAINER_STATUSES:
+                return True
+        return False
+
+    def _container_session_is_busy(
+        self,
+        *,
+        context: Any,
+        config: Any,
+        session_id: str,
+    ) -> bool:
+        return self.container_session_is_busy_for_backend(
+            backend=container_backend(context, config),
+            session_id=session_id,
+        )
 
     def _find_vm_summary(self, *, vm_name: str, vm_user: str) -> Any | None:
         context = self._context()
@@ -186,6 +407,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
         vm_user: str,
         resume_thread_id: str | None,
         effect_id: str,
+        queue_key: str | None = None,
     ) -> QueuedAgentPromptRecord:
         context = self._context()
         queue_store = AgentPromptQueueStore(
@@ -193,7 +415,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
         )
         return queue_store.put(
             QueuedAgentPromptRecord(
-                queue_key=vm_name,
+                queue_key=queue_key or vm_name,
                 target=target,
                 vm_name=vm_name,
                 session_id=session_id,
@@ -204,6 +426,16 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 effect_id=effect_id,
             )
         )
+
+    @staticmethod
+    def _container_target_name(*, session: Any | None, session_id: str) -> str:
+        metadata = getattr(session, "metadata", {}) if session is not None else {}
+        if isinstance(metadata, Mapping):
+            target_name = str(metadata.get("target_name") or "").strip()
+            if target_name:
+                return target_name
+        provider_id = str(getattr(session, "vm_provider_id", "") or "").strip()
+        return provider_id or session_id
 
     @staticmethod
     def _normalize_optional_string(value: Any) -> str | None:
