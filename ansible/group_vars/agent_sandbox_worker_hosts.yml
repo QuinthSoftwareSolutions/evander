@@ -28,7 +28,10 @@ agent_sandbox_worker_port: 11888
 agent_sandbox_worker_root: "/var/lib/agent-worker"
 agent_sandbox_worker_runtime_dir: "{{ agent_sandbox_worker_root }}/runtime"
 agent_sandbox_worker_sandbox_profile: "default"
-agent_sandbox_worker_docker_network: ""
+# Agent prompt containers must reach the control-plane relay and MCP gateway.
+# Override this with a tighter custom Docker network when one is available; the
+# worker daemon still refuses Docker host networking.
+agent_sandbox_worker_docker_network: "bridge"
 agent_sandbox_worker_read_only_rootfs: false
 agent_sandbox_worker_tmpfs: []
 # Empty means the playbook runs containers as the worker service account uid:gid so
