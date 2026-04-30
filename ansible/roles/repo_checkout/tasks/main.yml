@@ -75,7 +75,7 @@
   ansible.builtin.command:
     argv: >-
       {{
-        ['git', '-C', agent_sandbox_deploy_path, 'clean', '-f', '--']
+        ['git', '-C', agent_sandbox_deploy_path, 'clean', '-f', '-x', '--']
         + agent_sandbox_repo_managed_untracked_config_paths
       }}
   become_user: "{{ agent_sandbox_run_user }}"

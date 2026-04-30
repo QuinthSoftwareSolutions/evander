@@ -108,6 +108,8 @@ config, with explicit edges describing routing between node ids. Domain workflow
 provided via `workflow_packs` + optional inline `workflow_ir`, which compose into executable
 `triggers`/`gates`/`effects`/`queries`/`edges` at load time.
 Provider plugin loading is configured separately under `provider_loader`.
+The live `config.json` is an operator-local file ignored by Git; use
+`config/trigger-orchestrator/config-example.json` as the checked-in starting point.
 
 ### Orchestration-core runtime profile template
 

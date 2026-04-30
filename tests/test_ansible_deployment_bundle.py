@@ -59,7 +59,7 @@ def test_ansible_repo_checkout_supports_private_deploy_key() -> None:
     assert "Reset tracked Ansible-managed config before repo update" in text
     assert "'ls-files', '--'" in text
     assert "Clean untracked Ansible-managed config before repo update" in text
-    assert "'clean', '-f', '--'" in text
+    assert "'clean', '-f', '-x', '--'" in text
     assert "key_file:" in text
     assert "agent_sandbox_repo_ssh_private_key_path" in text
     assert "accept_newhostkey:" in text
@@ -84,6 +84,8 @@ def test_ansible_workflow_config_render_can_be_disabled() -> None:
     assert 'path: "config/trigger-orchestrator/config.json"' in service_config
     assert 'enabled: "{{ agent_sandbox_manage_workflow_config }}"' in service_config
     assert "when: item.enabled | default(true) | bool" in service_config
+    assert "Copy managed workflow pack files" in service_config
+    assert "agent_sandbox_managed_workflow_pack_files" in service_config
     assert "Check whether a controller-side workflow editor layout exists" in service_config
     assert "Copy managed workflow editor layout" in service_config
     assert "agent_sandbox_workflow_layout_source_path" in service_config

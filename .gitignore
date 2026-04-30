@@ -11,7 +11,10 @@ config/nuget-relay.env
 config/host-heartbeat.env
 config/ado-worker/config.json
 config/host-heartbeat/config.json
+config/trigger-orchestrator/config.json
 config/trigger-orchestrator/layout.json
+/config/workflow-packs/*.json
+!/config/workflow-packs/*-example.json
 /.tmp-trigger-tests/
 /config/trigger-orchestrator/.tmp-trigger-tests/
 node_modules

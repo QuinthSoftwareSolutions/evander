@@ -276,7 +276,7 @@ run_preflight_checks() {
     "warning"
   check_file \
     "${ROOT_DIR}/config/trigger-orchestrator/config.json" \
-    "Copy config/trigger-orchestrator/config.json.example to config/trigger-orchestrator/config.json."
+    "Copy config/trigger-orchestrator/config-example.json to config/trigger-orchestrator/config.json and copy the workflow pack examples it references to operator-local pack files."
   check_file \
     "${ROOT_DIR}/config/teams-meeting-ingest/config.json" \
     "Copy config/teams-meeting-ingest/config.json.example to config/teams-meeting-ingest/config.json if you want to override Teams meeting ingest defaults." \

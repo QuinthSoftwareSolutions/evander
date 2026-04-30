@@ -99,11 +99,11 @@ def test_container_worker_pack_validates_ticket_created_agent_branch() -> None:
 
     default = compose_workflow_ir(
         project_dir=project_dir,
-        workflow_packs=["agent-default.v1"],
+        workflow_packs=["agent-default.v1-example"],
     )
     container = compose_workflow_ir(
         project_dir=project_dir,
-        workflow_packs=["agent-container-worker.v1"],
+        workflow_packs=["agent-container-worker.v1-example"],
     )
 
     default_effects = {effect["id"]: effect for effect in default.effects}

@@ -299,10 +299,14 @@ validation/compilation.
 The workflow editor stores layout separately from runtime IR. For a config backed by exactly one
 workflow pack, layout lives beside that pack as `config/workflow-packs/<pack>.layout.json`. Multi-pack
 or inline workflows use the composition-level fallback at `config/trigger-orchestrator/layout.json`.
+Runtime config, pack, and pack-layout files are operator-local and ignored by Git. Checked-in
+examples use `config/trigger-orchestrator/config-example.json` and
+`config/workflow-packs/*-example.json`.
 
 ### Adding a new domain pack (no core code changes)
 
-1. Create a new `config/workflow-packs/<name>.v1.json`.
+1. Create a new operator-local `config/workflow-packs/<name>.v1.json`, or a checked-in
+   `config/workflow-packs/<name>.v1-example.json` when you are publishing a starter pack.
 2. Define nodes/edges in `ir` using existing trigger/gate/effect/query types.
 3. Add the pack file name to `workflow_packs` in `config/trigger-orchestrator/config.json`.
 4. Optionally add a focused test that loads the worker config and validates expected wiring.

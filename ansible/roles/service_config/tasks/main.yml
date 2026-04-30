@@ -86,6 +86,19 @@
   when: item.enabled | default(true) | bool
   register: agent_sandbox_json_config_render
 
+- name: Copy managed workflow pack files
+  ansible.builtin.copy:
+    src: "{{ item.source_path }}"
+    dest: "{{ agent_sandbox_deploy_path }}/{{ item.path }}"
+    owner: "{{ agent_sandbox_run_user }}"
+    group: "{{ agent_sandbox_run_user }}"
+    mode: "0640"
+  loop: "{{ agent_sandbox_managed_workflow_pack_files }}"
+  loop_control:
+    label: "{{ item.path }}"
+  when: agent_sandbox_manage_workflow_config | bool
+  register: agent_sandbox_workflow_pack_copy
+
 - name: Check whether a controller-side workflow editor layout exists
   ansible.builtin.stat:
     path: "{{ agent_sandbox_workflow_layout_source_path }}"
@@ -114,5 +127,6 @@
         or (agent_sandbox_shared_secrets_render.changed | default(false))
         or (agent_sandbox_shared_secrets_remove.changed | default(false))
         or (agent_sandbox_json_config_render.changed | default(false))
+        or (agent_sandbox_workflow_pack_copy.changed | default(false))
         or (agent_sandbox_workflow_layout_copy.changed | default(false))
       }}
