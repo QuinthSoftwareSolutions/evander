@@ -13,6 +13,7 @@ from typing import Any
 
 from agent_sandbox.admin import service as _admin_service
 from agent_sandbox.models import VmActionResult, VmSummary
+from agent_sandbox.repositories.chat_assistant_sessions import JsonChatAssistantSessionRepository
 from agent_sandbox.repositories.session_manifests import as_session_manifest_repository
 from agent_sandbox.vm.provider import VmProviderRegistry
 
@@ -473,6 +474,9 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
 class VmAgentAdminService:
     def __init__(self, dependencies: VmAgentAdminDependencies) -> None:
         self._deps = dependencies
+        self._assistant_session_repo = JsonChatAssistantSessionRepository(
+            Path(self._deps.config.runtime_dir) / "chat-assistant-session-mappings.json"
+        )
 
     def _session_repository(self):
         runtime = self._deps.runtime
@@ -490,6 +494,44 @@ class VmAgentAdminService:
             return resolved
         sessions = repository.read_all()
         return _admin_service._resolve_vm_name_from_target(target, sessions)
+
+    def resolve_chat_assistant_session(
+        self,
+        *,
+        user_id: str,
+        backend: str,
+        assistant_scope: str = "chat_assistant",
+    ) -> dict[str, str]:
+        normalized_backend = str(backend or "libvirt_vm").strip() or "libvirt_vm"
+        normalized_user_id = str(user_id or "anonymous").strip() or "anonymous"
+        scope = str(assistant_scope or "chat_assistant").strip() or "chat_assistant"
+
+        mapping_user_id = "global" if normalized_backend == "libvirt_vm" else normalized_user_id
+        existing = self._assistant_session_repo.get_mapping(
+            user_id=mapping_user_id,
+            backend=normalized_backend,
+            assistant_scope=scope,
+        )
+        if existing is not None:
+            thread = existing.get("agent_thread_id")
+            return {
+                "session_id": existing["session_id"],
+                "agent_thread_id": thread or f"chat-thread-{normalized_user_id}",
+            }
+
+        if normalized_backend == "libvirt_vm":
+            session_id = "assistant-shared"
+        else:
+            session_id = f"assistant-{normalized_user_id}"
+        agent_thread_id = f"chat-thread-{normalized_user_id}"
+        persisted = self._assistant_session_repo.upsert_mapping(
+            user_id=mapping_user_id,
+            backend=normalized_backend,
+            assistant_scope=scope,
+            session_id=session_id,
+            agent_thread_id=agent_thread_id,
+        )
+        return persisted
 
     def _resolve_session_target(self, target: str):
         repository = self._session_repository()

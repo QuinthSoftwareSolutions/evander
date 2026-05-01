@@ -147,6 +147,15 @@ def selected_execution_backend(
     return backend, config
 
 
+def chat_assistant_scope_for_backend(execution_backend: str, *, user_id: str) -> tuple[str, str]:
+    """Return assistant mapping scope key and effective owner key for backend-specific resolution."""
+    normalized_backend = normalize_optional_string(execution_backend) or "libvirt_vm"
+    normalized_user = normalize_optional_string(user_id) or "anonymous"
+    if normalized_backend == "libvirt_vm":
+        return "chat_assistant", "global"
+    return "chat_assistant", normalized_user
+
+
 def selected_execution_backend_for_target(
     context: EffectRuntimeContext,
     payload: Mapping[str, Any],
