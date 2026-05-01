@@ -15,6 +15,8 @@ def test_runner_dockerfile_contains_minimal_runtime_contract() -> None:
     assert "COPY codex /usr/local/bin/codex" in dockerfile
     assert "ENV HOME=/home/agent" in dockerfile
     assert "WORKDIR /workspace" in dockerfile
+    assert "python3-pip" in dockerfile
+    assert "python3-venv" in dockerfile
     assert "ripgrep" in dockerfile
     assert "openssh-client" in dockerfile
     assert "libnss3" in dockerfile

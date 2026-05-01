@@ -1609,21 +1609,51 @@ def test_admin_web_rejects_start_when_vm_session_model_is_missing(
     assert "Cannot start/resume agent" in response.json()["error"]
 
 
-def test_admin_web_agents_list_includes_vms_and_container_executions(
+def test_admin_web_agents_list_includes_vms_and_container_sessions(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
     service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
     service.create_directory_child("root", "team-a")
     service.create_directory_child("root", "team-b")
+    for session_id, target_name, directory_path in (
+        ("container-session-a", "target-a", "root/team-a"),
+        ("container-session-b", "target-b", "root/team-b"),
+    ):
+        service.runtime.session_repository.upsert_session(
+            SessionManifest(
+                session_id=session_id,
+                vm_provider="container_worker_vm",
+                vm_provider_id=target_name,
+                directory_path=directory_path,
+                allowed_tools=[],
+                expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+                metadata={
+                    "execution_backend": "container_worker_vm",
+                    "target_name": target_name,
+                },
+            )
+        )
     repository = ContainerWorkerExecutionRepository(
         service.config.runtime_dir / "container-worker-executions.json"
     )
     repository.put(
         ContainerWorkerExecutionRecord(
-            execution_id="exec-a",
+            execution_id="exec-a-1",
             session_id="container-session-a",
-            worker_job_id="job-a",
+            worker_job_id="job-a-1",
+            worker_url="http://worker.test",
+            target_name="target-a",
+            last_status="removed",
+            directory_path="root/team-a",
+            metadata={"image": "runner:old"},
+        )
+    )
+    repository.put(
+        ContainerWorkerExecutionRecord(
+            execution_id="exec-a-2",
+            session_id="container-session-a",
+            worker_job_id="job-a-2",
             worker_url="http://worker.test",
             target_name="target-a",
             last_status="running",
@@ -1672,8 +1702,17 @@ def test_admin_web_agents_list_includes_vms_and_container_executions(
         "libvirt_vm",
         "container_worker_vm",
     }
-    assert {item["agent_id"] for item in payload["items"]} == {"vm-a", "exec-a"}
-    assert payload["items"][0]["capabilities"]["logs"] is True
+    assert {item["agent_id"] for item in payload["items"]} == {"vm-a", "container-session-a"}
+    container_item = next(
+        item for item in payload["items"] if item["backend"] == "container_worker_vm"
+    )
+    assert container_item["status"] == "running"
+    assert container_item["capabilities"]["logs"] is True
+    assert container_item["host"]["execution_count"] == 2
+    assert [item["execution_id"] for item in container_item["host"]["executions"]] == [
+        "exec-a-2",
+        "exec-a-1",
+    ]
     assert list_vms_calls[0]["directory_path"] == "root/team-a"
     assert list_vms_calls[0]["direct_only"] is True
 
@@ -1730,8 +1769,33 @@ def test_admin_web_container_agent_log_and_actions_do_not_require_vm_summary(
     monkeypatch,
 ) -> None:
     service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            vm_provider="container_worker_vm",
+            vm_provider_id="target-1",
+            directory_path="root",
+            allowed_tools=[],
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "target-1",
+            },
+        )
+    )
     repository = ContainerWorkerExecutionRepository(
         service.config.runtime_dir / "container-worker-executions.json"
+    )
+    repository.put(
+        ContainerWorkerExecutionRecord(
+            execution_id="exec-2",
+            session_id="session-1",
+            worker_job_id="job-2",
+            worker_url="http://worker.test",
+            target_name="target-1",
+            last_status="removed",
+            directory_path="root",
+        )
     )
     repository.put(
         ContainerWorkerExecutionRecord(
@@ -1803,23 +1867,24 @@ def test_admin_web_container_agent_log_and_actions_do_not_require_vm_summary(
     client = TestClient(create_app(service))
 
     log_response = client.get(
-        "/api/admin/agents/exec-1/log?backend=container_worker_vm&lines=2"
+        "/api/admin/agents/session-1/log?backend=container_worker_vm&lines=4"
     )
     stop_response = client.post(
-        "/api/admin/agents/exec-1/actions/stop?backend=container_worker_vm", json={}
+        "/api/admin/agents/session-1/actions/stop?backend=container_worker_vm", json={}
     )
     destroy_response = client.post(
         "/api/admin/agents/exec-1/actions/destroy?backend=container_worker_vm", json={}
     )
 
     assert log_response.status_code == 200
-    assert log_response.json()["text"] == "line 2\n"
+    assert "execution=exec-2" in log_response.json()["text"]
+    assert "execution=exec-1" in log_response.json()["text"]
     assert stop_response.status_code == 200
     assert stop_response.json()["status"] == "stopped"
     assert destroy_response.status_code == 200
     assert destroy_response.json()["status"] == "destroyed"
-    assert fake_backend.inspected == ["exec-1"]
-    assert fake_backend.logged == [("exec-1", 2)]
+    assert fake_backend.inspected == []
+    assert fake_backend.logged == [("exec-2", 2), ("exec-1", 2)]
     assert fake_backend.stopped == ["exec-1"]
     assert fake_backend.destroyed == ["exec-1"]
 

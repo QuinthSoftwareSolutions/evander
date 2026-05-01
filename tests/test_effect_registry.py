@@ -119,6 +119,28 @@ class _FakeContainerBackend:
         return self.logs
 
 
+class _FakeContainerGitMirrorResolver:
+    def __init__(
+        self,
+        *,
+        worker_repo_source: str = "ssh://agent-sandbox-git-host/git-remotes/repo.git",
+        canonical_repo_source: str = "https://example.test/org/repo.git",
+    ) -> None:
+        self.worker_repo_source = worker_repo_source
+        self.canonical_repo_source = canonical_repo_source
+        self.resolved: list[dict[str, object]] = []
+
+    def resolve(self, **kwargs):
+        self.resolved.append(kwargs)
+        return SimpleNamespace(
+            worker_repo_source=self.worker_repo_source,
+            canonical_repo_source=self.canonical_repo_source,
+            repo_name="repo",
+            mirror_name="repo-abcdef123456",
+            mirror_path="/git-remotes/repo-abcdef123456.git",
+        )
+
+
 @dataclass
 class _AdminServiceStub:
     create_vm_calls: list[dict[str, object]]
@@ -825,6 +847,8 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
         container_worker_guest_openai_base_url="http://relay.test:11434/v1",
         container_worker_guest_gateway_url="http://gateway.test:8000/mcp",
         container_worker_guest_nuget_relay_base_url="http://nuget.test:11666",
+        container_worker_guest_pypi_index_url="http://nexus.test:8081/repository/pypi-all/simple",
+        container_worker_guest_npm_registry_url="http://nexus.test:8081/repository/npm-all/",
     )
     session_repository = JsonSessionManifestRepository(config.session_store_path)
     admin_service = SimpleNamespace(
@@ -841,6 +865,11 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
     monkeypatch.setattr(
         "agent_sandbox.effects.providers.agent_clone_repo.container_backend",
         lambda context, config: backend,
+    )
+    mirror_resolver = _FakeContainerGitMirrorResolver()
+    monkeypatch.setattr(
+        "agent_sandbox.effects.providers.agent_clone_repo._container_git_mirror_resolver",
+        lambda context, directory_path: mirror_resolver,
     )
     monkeypatch.setattr(
         "agent_sandbox.effects.providers.agent_copy_files.container_backend",
@@ -905,31 +934,55 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
     assert ToolName.SET_ISSUE_PLAN in manifest.allowed_tools
     assert create["execution_backend"] == "container_worker_vm"
     assert clone["target_dir"] == "/workspace"
+    assert clone["remote_url"] == "ssh://agent-sandbox-git-host/git-remotes/repo.git"
+    assert clone["canonical_repo_source"] == "https://example.test/org/repo.git"
     assert copied["copied_paths"] == ["/workspace/AGENT_TASK.yaml"]
     assert prompted["execution_backend"] == "container_worker_vm"
     assert prompted["output_mode"] == "on_completion"
     assert backend.prepared_sessions[0]["session_id"] == "session-1"
-    assert backend.cloned_repos[0]["repo_source"] == "/tmp/repo"
+    assert mirror_resolver.resolved[0]["repo_source"] == "/tmp/repo"
+    assert backend.cloned_repos[0]["repo_source"] == "ssh://agent-sandbox-git-host/git-remotes/repo.git"
     bootstrap_files = backend.written_files[0]["files"]
     bootstrap_by_path = {entry["destination_path"]: entry for entry in bootstrap_files}
     assert "/home/agent/.agent-sandbox/session.env" in bootstrap_by_path
+    assert "/home/agent/.config/pip/pip.conf" in bootstrap_by_path
+    assert "/home/agent/.npmrc" in bootstrap_by_path
     assert (
         "AGENT_SANDBOX_SESSION_ID=session-1"
         in bootstrap_by_path["/home/agent/.agent-sandbox/session.env"]["content"]
+    )
+    assert (
+        "PIP_INDEX_URL=http://nexus.test:8081/repository/pypi-all/simple"
+        in bootstrap_by_path["/home/agent/.agent-sandbox/session.env"]["content"]
+    )
+    assert (
+        "NPM_CONFIG_REGISTRY=http://nexus.test:8081/repository/npm-all/"
+        in bootstrap_by_path["/home/agent/.agent-sandbox/session.env"]["content"]
+    )
+    assert (
+        "trusted-host = nexus.test"
+        in bootstrap_by_path["/home/agent/.config/pip/pip.conf"]["content"]
+    )
+    assert (
+        "registry=http://nexus.test:8081/repository/npm-all/"
+        in bootstrap_by_path["/home/agent/.npmrc"]["content"]
     )
     assert (
         'openai_base_url = "http://relay.test:11434/v1/session/session-1"'
         in bootstrap_by_path["/home/agent/.codex/config.toml"]["content"]
     )
     assert "DOTNET_ROOT" in bootstrap_by_path["/home/agent/.profile"]["content"]
+    assert "AGENT_SANDBOX_NODE_ROOT" in bootstrap_by_path["/home/agent/.profile"]["content"]
     assert "PLAYWRIGHT_BROWSERS_PATH" in bootstrap_by_path["/home/agent/.profile"]["content"]
     assert "/home/agent/.nuget/NuGet/NuGet.Config" in bootstrap_by_path
     assert backend.written_files[1]["files"][0]["destination_path"].endswith("agent-pr-note")
     assert backend.written_files[2]["files"][0]["content"] == "task"
     clone_config_command = str(backend.started_specs[0].command)
     assert "config alias.agent-pr-note" in clone_config_command
-    assert "config alias.push-agent" not in clone_config_command
-    assert 'git config agent-sandbox.pushAgentAvailable "false"' in clone_config_command
+    assert "config alias.push-agent" in clone_config_command
+    assert 'git config agent-sandbox.pushAgentAvailable "true"' in clone_config_command
+    assert "CANONICAL_REMOTE_URL=https://example.test/org/repo.git" in clone_config_command
+    assert "url.${PUSH_REMOTE_URL}.insteadOf" in clone_config_command
     assert backend.started_specs[-1].command is not None
     assert "continue" in str(backend.started_specs[-1].command)
 
@@ -948,6 +1001,83 @@ def test_agent_clone_container_skips_push_alias_for_unreachable_remotes() -> Non
     assert "config alias.push-agent" not in command
     assert "git remote remove agent >/dev/null 2>&1 || true" in command
     assert 'git config agent-sandbox.pushAgentAvailable "false"' in command
+
+
+def test_agent_clone_container_uses_private_ssh_mirror_for_push_and_instead_of() -> None:
+    command = AgentCloneRepoEffectProvider._container_git_config_command(
+        session_id="session-1",
+        repo_source="https://dev.azure.com/org/project/_git/repo",
+        remote_url="ssh://agent-sandbox-git-host/opt/agent-sandbox/git-remotes/repo-abc.git",
+        clone_branch="main",
+    )
+
+    assert (
+        "PUSH_REMOTE_URL=ssh://agent-sandbox-git-host/opt/agent-sandbox/git-remotes/repo-abc.git"
+        in command
+    )
+    assert 'git remote add agent "$PUSH_REMOTE_URL"' in command
+    assert 'git remote set-url origin "$CANONICAL_REMOTE_URL"' in command
+    assert 'git config "url.${PUSH_REMOTE_URL}.insteadOf" "$CANONICAL_REMOTE_URL"' in command
+    assert "config alias.push-agent" in command
+    assert 'git config agent-sandbox.pushAgentAvailable "true"' in command
+
+
+def test_agent_clone_container_fails_before_worker_when_mirror_resolution_fails(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            vm_provider="container_worker_vm",
+            allowed_tools=[ToolName.GET_AGENT_STATUS],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    admin_service = SimpleNamespace(
+        runtime=SimpleNamespace(
+            session_repository=session_repository,
+            provider_config=_ContainerResolverStub(config),
+        )
+    )
+    backend = _FakeContainerBackend()
+
+    class FailingResolver:
+        def resolve(self, **kwargs):
+            raise RuntimeError("upstream fetch failed")
+
+    monkeypatch.setattr(
+        "agent_sandbox.effects.providers.agent_clone_repo.container_backend",
+        lambda context, config: backend,
+    )
+    monkeypatch.setattr(
+        "agent_sandbox.effects.providers.agent_clone_repo._container_git_mirror_resolver",
+        lambda context, directory_path: FailingResolver(),
+    )
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ContainerResolverStub(config),
+        admin_service=admin_service,
+    )
+
+    with pytest.raises(RuntimeError, match="upstream fetch failed"):
+        factory.build(
+            AgentCloneRepoEffectDefinition(
+                id="agent-clone",
+                display_name="Clone",
+                type="effect:agent:clone-repo",
+                session_id="session-1",
+                repo_source="https://example.test/org/repo.git",
+            )
+        ).execute()
+
+    assert backend.prepared_sessions == []
+    assert backend.cloned_repos == []
 
 
 def test_agent_clone_container_allows_push_alias_for_mounted_remotes() -> None:
@@ -974,6 +1104,12 @@ def test_container_reachable_git_remote_url_is_limited_to_mounted_paths() -> Non
     assert _container_reachable_git_remote_url("/workspace/../tmp/repo.git") is None
     assert _container_reachable_git_remote_url("/tmp/repo.git") is None
     assert _container_reachable_git_remote_url("git@example.test/org/repo.git") is None
+    assert (
+        _container_reachable_git_remote_url(
+            "ssh://agent-sandbox-git-host/opt/agent-sandbox/git-remotes/repo.git"
+        )
+        == "ssh://agent-sandbox-git-host/opt/agent-sandbox/git-remotes/repo.git"
+    )
 
 
 def test_agent_create_container_rejects_mssql_until_supported(

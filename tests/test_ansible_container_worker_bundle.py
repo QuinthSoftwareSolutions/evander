@@ -60,6 +60,12 @@ def test_worker_group_vars_define_docker_and_durable_state_contract() -> None:
     assert 'agent_sandbox_worker_runtime_dir: "{{ agent_sandbox_worker_root }}/runtime"' in text
     assert 'agent_sandbox_worker_sandbox_profile: "default"' in text
     assert "AGENT_SANDBOX_WORKER_TOKEN" in text
+    assert 'agent_sandbox_git_root: "{{ agent_sandbox_control_plane_deploy_path }}/git-remotes"' in text
+    assert 'agent_sandbox_git_ssh_alias: "agent-sandbox-git-host"' in text
+    assert "agent_sandbox_worker_allowed_git_source_prefixes" in text
+    assert "ssh://{{ agent_sandbox_git_ssh_alias }}{{ agent_sandbox_git_root }}/" in text
+    assert "agent_sandbox_worker_git_ssh_source_dir" in text
+    assert "agent_sandbox_worker_install_control_plane_git_authorized_key" in text
     assert 'agent_sandbox_runner_image_name: "agent-sandbox-runner:latest"' in text
     assert "agent_sandbox_runner_image_archive_path" in text
     assert "agent_sandbox_worker_toolchain_cache_root" in text
@@ -95,6 +101,8 @@ def test_worker_service_role_renders_env_and_daemon_unit() -> None:
     assert "--runtime-dir {{ agent_sandbox_worker_runtime_dir }}" in unit
     assert "--sandbox-profile {{ agent_sandbox_worker_sandbox_profile }}" in unit
     assert "--docker-network {{ agent_sandbox_worker_docker_network }}" in unit
+    assert "--allowed-git-source-prefix {{ prefix }}" in unit
+    assert "--git-ssh-source-dir {{ agent_sandbox_worker_git_ssh_source_dir }}" in unit
     assert "--read-only-rootfs" in unit
     assert "--container-user {{ agent_sandbox_effective_worker_container_user }}" in unit
     assert "--readonly-mount {{ mount }}" in unit
@@ -116,6 +124,10 @@ def test_worker_runtime_and_verification_roles_cover_docker_health_and_no_contro
     assert "agent_sandbox_worker_runtime_dir" in runtime
     assert "Resolve worker service user uid" in runtime
     assert "agent_sandbox_effective_worker_container_user" in runtime
+    assert "Generate restricted worker Git SSH key" in runtime
+    assert "IdentityFile ~/.ssh/agent-sandbox-git" in runtime
+    assert "Authorize worker Git key on the control plane" in runtime
+    assert "git_ssh_command_wrapper.sh" in runtime
     assert "Check local runner image archive" in runtime
     assert "scripts/build_agent_sandbox_runner_image.sh" in runtime
     assert "docker\n      - load" in runtime
@@ -142,6 +154,11 @@ def test_worker_docs_and_inventory_reference_playbook() -> None:
     assert "ansible/worker.yml" in ansible_docs
     assert "agent_sandbox_worker_token" in ansible_docs
     assert "container_worker_base_url" in ansible_docs
+    assert "container_worker_guest_pypi_index_url" in ansible_docs
+    assert "container_worker_guest_npm_registry_url" in ansible_docs
+    assert "Worker outbound rules should still deny direct access" in ansible_docs
+    assert "allowed Git source prefix" in ansible_docs
+    assert "GitHub/Azure DevOps egress" in ansible_docs
     assert "smoke-container-worker" in ansible_docs
     assert "ansible/worker.yml" in worker_docs
     assert "dedicated container-worker VM playbook" in readme

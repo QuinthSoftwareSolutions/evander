@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import shutil
 import subprocess
 import uuid
@@ -44,11 +45,19 @@ class WorkerDaemon:
         docker_network: str | None = "none",
         sandbox_profile: WorkerSandboxProfile | None = None,
         read_only_mounts: Sequence[str] | None = None,
+        allowed_git_source_prefixes: Sequence[str] | None = None,
+        git_ssh_source_dir: Path | None = None,
         token: str | None = None,
     ) -> None:
         self.runtime_dir = runtime_dir
         self.worker_root = worker_root
         self.store = WorkerJobStore(runtime_dir / "worker-jobs.json")
+        self.allowed_git_source_prefixes = tuple(
+            prefix.strip()
+            for prefix in (allowed_git_source_prefixes or ())
+            if str(prefix).strip()
+        )
+        self.git_ssh_source_dir = Path(git_ssh_source_dir) if git_ssh_source_dir else None
         self.container_runtime = container_runtime or DockerContainerRuntime(
             docker_network=docker_network,
             sandbox_profile=sandbox_profile,
@@ -64,6 +73,11 @@ class WorkerDaemon:
 
     def start_job(self, request: WorkerJobRequest) -> WorkerJobRecord:
         paths = WorkerSessionPaths.resolve(self.worker_root, request.session_id)
+        if request.repo_source:
+            self._ensure_allowed_git_source(request.repo_source)
+        self._sync_git_ssh_into_agent_home(
+            paths, required=_repo_source_requires_git_ssh(request.repo_source)
+        )
         self._clone_repo_if_workspace_empty(request, paths)
         job_id = request.job_id or uuid.uuid4().hex
         container_name = f"agent-worker-{job_id}"
@@ -145,6 +159,7 @@ class WorkerDaemon:
 
     def prepare_session(self, request: WorkerSessionPrepareRequest) -> WorkerSessionRecord:
         paths = WorkerSessionPaths.resolve(self.worker_root, request.session_id)
+        self._sync_git_ssh_into_agent_home(paths, required=False)
         metadata = sanitize_metadata(request.metadata)
         if metadata:
             current = self._read_session_metadata(paths)
@@ -158,6 +173,10 @@ class WorkerDaemon:
         request: WorkerRepoCloneRequest,
     ) -> WorkerRepoCloneRecord:
         paths = WorkerSessionPaths.resolve(self.worker_root, session_id)
+        self._ensure_allowed_git_source(request.repo_source)
+        self._sync_git_ssh_into_agent_home(
+            paths, required=_repo_source_requires_git_ssh(request.repo_source)
+        )
         cloned = self._clone_repo_into_workspace(
             paths=paths,
             repo_source=request.repo_source,
@@ -263,6 +282,7 @@ class WorkerDaemon:
         repo_source: str,
         clone_branch: str | None,
     ) -> bool:
+        self._ensure_allowed_git_source(repo_source)
         if any(paths.workspace.iterdir()):
             return False
         args = ["git", "clone"]
@@ -271,6 +291,52 @@ class WorkerDaemon:
         args.extend([repo_source, "."])
         subprocess.run(args, cwd=paths.workspace, check=True, capture_output=True, text=True)
         return True
+
+    def _ensure_allowed_git_source(self, repo_source: str) -> None:
+        if not self.allowed_git_source_prefixes:
+            raise ValueError(
+                "worker Git source prefixes are not configured; refusing repo_source"
+            )
+        if not any(repo_source.startswith(prefix) for prefix in self.allowed_git_source_prefixes):
+            allowed = ", ".join(self.allowed_git_source_prefixes)
+            raise ValueError(
+                f"repo_source is not allowed for this worker: {repo_source!r}; "
+                f"allowed prefixes: {allowed}"
+            )
+
+    def _sync_git_ssh_into_agent_home(
+        self,
+        paths: WorkerSessionPaths,
+        *,
+        required: bool,
+    ) -> None:
+        if self.git_ssh_source_dir is None:
+            if required:
+                raise ValueError("worker Git SSH source directory is not configured")
+            return
+        source_dir = self.git_ssh_source_dir
+        required_files = ("agent-sandbox-git", "config")
+        missing = [name for name in required_files if not (source_dir / name).is_file()]
+        if missing:
+            if required:
+                raise ValueError(
+                    "worker Git SSH source directory is missing required files: "
+                    + ", ".join(missing)
+                )
+            return
+        target_dir = paths.agent_home / ".ssh"
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target_dir.chmod(0o700)
+        for name in ("agent-sandbox-git", "agent-sandbox-git.pub", "config", "known_hosts"):
+            source = source_dir / name
+            if not source.is_file():
+                continue
+            destination = target_dir / name
+            shutil.copy2(source, destination)
+            if name.endswith(".pub"):
+                destination.chmod(0o644)
+            else:
+                destination.chmod(0o600)
 
     def _session_record(
         self,
@@ -365,3 +431,12 @@ class WorkerDaemon:
         if candidate.endswith(".git"):
             candidate = candidate[:-4]
         return candidate or "workspace"
+
+
+def _repo_source_requires_git_ssh(repo_source: str | None) -> bool:
+    if not repo_source:
+        return False
+    normalized = repo_source.strip()
+    return normalized.startswith("ssh://") or bool(
+        re.match(r"^[^/@:\s]+@[^:\s]+:.+", normalized)
+    )

@@ -78,6 +78,8 @@ DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
             "container_worker_guest_openai_base_url",
             "container_worker_guest_gateway_url",
             "container_worker_guest_nuget_relay_base_url",
+            "container_worker_guest_pypi_index_url",
+            "container_worker_guest_npm_registry_url",
             "execution_backend",
             "discord_api_base_url",
             "discord_backend",

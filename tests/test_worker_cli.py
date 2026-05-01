@@ -76,6 +76,32 @@ def test_worker_cli_accepts_strict_profile_network_and_container_tuning(
     assert profile.user == "1000:1000"
 
 
+def test_worker_cli_accepts_git_mirror_restriction_flags(monkeypatch, tmp_path: Path) -> None:
+    ssh_dir = tmp_path / "ssh"
+    captured = _run_cli(
+        monkeypatch,
+        [
+            "agent-sandbox-worker-daemon",
+            "--runtime-dir",
+            str(tmp_path / "runtime"),
+            "--worker-root",
+            str(tmp_path / "worker-root"),
+            "--allowed-git-source-prefix",
+            "ssh://agent-sandbox-git-host/opt/agent-sandbox/git-remotes/",
+            "--allowed-git-source-prefix",
+            "file:///tmp/test-mirrors/",
+            "--git-ssh-source-dir",
+            str(ssh_dir),
+        ],
+    )
+
+    assert captured["create_app"]["allowed_git_source_prefixes"] == [
+        "ssh://agent-sandbox-git-host/opt/agent-sandbox/git-remotes/",
+        "file:///tmp/test-mirrors/",
+    ]
+    assert captured["create_app"]["git_ssh_source_dir"] == ssh_dir
+
+
 def test_worker_cli_reads_sandbox_profile_from_environment(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("AGENT_SANDBOX_WORKER_SANDBOX_PROFILE", "strict")
     captured = _run_cli(

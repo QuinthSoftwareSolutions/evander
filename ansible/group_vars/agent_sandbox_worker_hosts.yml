@@ -40,6 +40,21 @@ agent_sandbox_worker_container_user: ""
 agent_sandbox_worker_env:
   AGENT_SANDBOX_WORKER_TOKEN: "{{ agent_sandbox_worker_token }}"
 
+# Worker Git is restricted to the control-plane bare mirror root. The worker
+# daemon rejects repo_source values outside these prefixes.
+agent_sandbox_control_plane_group: "agent_sandbox_hosts"
+agent_sandbox_control_plane_deploy_path: "/opt/agent-sandbox"
+agent_sandbox_git_host: "<control-plane-private-ip>"
+agent_sandbox_git_user: "agent-sandbox"
+agent_sandbox_git_root: "{{ agent_sandbox_control_plane_deploy_path }}/git-remotes"
+agent_sandbox_git_ssh_alias: "agent-sandbox-git-host"
+agent_sandbox_worker_git_ssh_source_dir: "/home/{{ agent_sandbox_run_user }}/.ssh"
+agent_sandbox_worker_git_key_path: "{{ agent_sandbox_worker_git_ssh_source_dir }}/agent-sandbox-git"
+agent_sandbox_worker_git_allowed_from: "{{ ansible_default_ipv4.address | default(ansible_host) }}/32"
+agent_sandbox_worker_install_control_plane_git_authorized_key: "{{ (groups.get(agent_sandbox_control_plane_group, []) | length) > 0 }}"
+agent_sandbox_worker_allowed_git_source_prefixes:
+  - "ssh://{{ agent_sandbox_git_ssh_alias }}{{ agent_sandbox_git_root }}/"
+
 # The runner image is deployed as a local Docker archive produced by
 # scripts/build_agent_sandbox_runner_image.sh on the Ansible control machine.
 agent_sandbox_runner_image_name: "agent-sandbox-runner:latest"

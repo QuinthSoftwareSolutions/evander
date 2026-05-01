@@ -49,6 +49,8 @@ container_worker_job_timeout_seconds: 1800
 container_worker_guest_openai_base_url: "http://<control-plane-private-ip>:11434/v1"
 container_worker_guest_gateway_url: "http://<control-plane-private-ip>:8000/mcp"
 container_worker_guest_nuget_relay_base_url: "http://<control-plane-private-ip>:11666"
+container_worker_guest_pypi_index_url: "http://<control-plane-private-ip>:8081/repository/pypi-all/simple"
+container_worker_guest_npm_registry_url: "http://<control-plane-private-ip>:8081/repository/npm-all/"
 ```
 
 This does not replace `vm_provider`; provider-specific lifecycle details still live behind the existing VM services in this phase.

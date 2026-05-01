@@ -22,6 +22,10 @@ from agent_sandbox.config import (
     ScheduledWakeWorkerGlobalConfig,
     TeamsIngestWorkerGlobalConfig,
 )
+from agent_sandbox.execution.container_worker_repository import (
+    ContainerWorkerExecutionRecord,
+    ContainerWorkerExecutionRepository,
+)
 from agent_sandbox.execution.container_worker_client import ContainerWorkerClient
 from agent_sandbox.models import ApprovalRequest, ApprovalStatus, SessionManifest, ToolName
 from agent_sandbox.worker.models import (
@@ -116,6 +120,71 @@ def test_list_agents_includes_session_only_container_worker_targets(
     assert agents[0].backend == "container_worker_vm"
     assert agents[0].status == "prepared"
     assert agents[0].host["labels"] == {"role": "demo"}
+
+
+def test_list_agents_groups_container_executions_under_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="container-session",
+            vm_provider="container_worker_vm",
+            vm_provider_id="container-target",
+            directory_path="root",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "container-target",
+            },
+        )
+    )
+    repository = ContainerWorkerExecutionRepository(
+        service.config.runtime_dir / "container-worker-executions.json"
+    )
+    repository.put(
+        ContainerWorkerExecutionRecord(
+            execution_id="exec-old",
+            session_id="container-session",
+            worker_job_id="job-old",
+            worker_url="http://worker.test",
+            target_name="container-target",
+            last_status="removed",
+            metadata={"image": "runner:old"},
+        )
+    )
+    repository.put(
+        ContainerWorkerExecutionRecord(
+            execution_id="exec-current",
+            session_id="container-session",
+            worker_job_id="job-current",
+            worker_url="http://worker.test",
+            target_name="container-target",
+            last_status="running",
+            metadata={"image": "runner:latest"},
+        )
+    )
+    monkeypatch.setattr(service, "list_vms", MethodType(lambda self, **kwargs: [], service))
+
+    agents = service.list_agents(
+        directory_path="root",
+        direct_only=True,
+        include_inactive=True,
+        reconcile_containers=False,
+    )
+
+    assert [agent.agent_id for agent in agents] == ["container-session"]
+    assert agents[0].status == "running"
+    assert agents[0].capabilities["logs"] is True
+    assert agents[0].capabilities["stop"] is True
+    assert agents[0].host["execution_count"] == 2
+    assert agents[0].host["active_execution_count"] == 1
+    assert agents[0].host["latest_execution_id"] == "exec-current"
+    assert [item["execution_id"] for item in agents[0].host["executions"]] == [
+        "exec-current",
+        "exec-old",
+    ]
 
 
 def test_list_agents_still_returns_container_sessions_when_vm_inventory_fails(

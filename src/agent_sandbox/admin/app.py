@@ -189,6 +189,8 @@ _DIRECTORY_CONFIG_TAB_SECTIONS: dict[str, tuple[_ConfigTabSectionSpec, ...]] = {
                 ("providers", "container_worker_guest_openai_base_url"),
                 ("providers", "container_worker_guest_gateway_url"),
                 ("providers", "container_worker_guest_nuget_relay_base_url"),
+                ("providers", "container_worker_guest_pypi_index_url"),
+                ("providers", "container_worker_guest_npm_registry_url"),
             ),
             ("container_worker_",),
         ),
@@ -1013,6 +1015,12 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
     ),
     "container_worker_guest_nuget_relay_base_url": (
         "Container-visible NuGet relay base URL used inside runner sessions."
+    ),
+    "container_worker_guest_pypi_index_url": (
+        "Container-visible PyPI index URL used inside runner sessions."
+    ),
+    "container_worker_guest_npm_registry_url": (
+        "Container-visible npm registry URL used inside runner sessions."
     ),
     "nuget_azure_feed_base_url": (
         "Base URL for the Azure Artifacts NuGet feed proxied by the host relay."

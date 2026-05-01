@@ -25,6 +25,10 @@ from agent_sandbox.repositories.session_manifests import (
 
 from .base import EffectRuntimeContext
 
+NEXUS_PACKAGE_CACHE_PORT = 8081
+NEXUS_PYPI_GROUP_REPOSITORY = "pypi-all"
+NEXUS_NPM_GROUP_REPOSITORY = "npm-all"
+
 
 def normalize_optional_string(value: Any) -> str | None:
     if value is None:
@@ -402,6 +406,28 @@ def container_worker_guest_nuget_relay_base_url(config: GatewayConfig) -> str:
     return _service_url_from_gateway_url(config.gateway_url, port=config.nuget_relay_port, path="")
 
 
+def container_worker_guest_pypi_index_url(config: GatewayConfig) -> str:
+    configured = normalize_optional_string(config.container_worker_guest_pypi_index_url)
+    if configured:
+        return configured
+    return _service_url_from_gateway_url(
+        config.gateway_url,
+        port=NEXUS_PACKAGE_CACHE_PORT,
+        path=f"/repository/{NEXUS_PYPI_GROUP_REPOSITORY}/simple",
+    )
+
+
+def container_worker_guest_npm_registry_url(config: GatewayConfig) -> str:
+    configured = normalize_optional_string(config.container_worker_guest_npm_registry_url)
+    if configured:
+        return _ensure_trailing_slash(configured)
+    return _service_url_from_gateway_url(
+        config.gateway_url,
+        port=NEXUS_PACKAGE_CACHE_PORT,
+        path=f"/repository/{NEXUS_NPM_GROUP_REPOSITORY}/",
+    )
+
+
 def container_session_openai_base_url(config: GatewayConfig, session_id: str) -> str:
     return f"{container_worker_guest_openai_base_url(config).rstrip('/')}/session/{session_id}"
 
@@ -425,26 +451,43 @@ def build_container_session_files(
     openai_base_url = container_worker_guest_openai_base_url(config)
     gateway_url = container_worker_guest_gateway_url(config)
     nuget_relay_base_url = container_worker_guest_nuget_relay_base_url(config)
+    pypi_index_url = container_worker_guest_pypi_index_url(config)
+    npm_registry_url = container_worker_guest_npm_registry_url(config)
     session_openai_base_url = container_session_openai_base_url(config, session_id)
     session_gateway_url = container_session_gateway_url(config, session_id)
+    session_env_values = {
+        "AGENT_SANDBOX_SESSION_ID": session_id,
+        "AGENT_SANDBOX_GATEWAY_URL": gateway_url,
+        "AGENT_SANDBOX_LLM_BASE_URL": openai_base_url,
+        "OPENAI_BASE_URL": openai_base_url,
+        "NUGET_RELAY_BASE_URL": nuget_relay_base_url,
+        "AGENT_SANDBOX_NUGET_FALLBACK_PACKAGES": (
+            "/opt/agent-sandbox/nuget-cache-ro"
+        ),
+        "NUGET_PACKAGES": "/home/agent/.nuget/packages-local",
+        "NUGET_HTTP_CACHE_PATH": "/home/agent/.nuget/http-cache",
+        "PIP_INDEX_URL": pypi_index_url,
+        "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+        "NPM_CONFIG_REGISTRY": npm_registry_url,
+    }
+    pip_trusted_host = _pip_trusted_host(pypi_index_url)
+    if pip_trusted_host:
+        session_env_values["PIP_TRUSTED_HOST"] = pip_trusted_host
     files: list[dict[str, Any]] = [
         {
             "destination_path": "/home/agent/.agent-sandbox/session.env",
             "mode": "0600",
-            "content": _session_env_content(
-                {
-                    "AGENT_SANDBOX_SESSION_ID": session_id,
-                    "AGENT_SANDBOX_GATEWAY_URL": gateway_url,
-                    "AGENT_SANDBOX_LLM_BASE_URL": openai_base_url,
-                    "OPENAI_BASE_URL": openai_base_url,
-                    "NUGET_RELAY_BASE_URL": nuget_relay_base_url,
-                    "AGENT_SANDBOX_NUGET_FALLBACK_PACKAGES": (
-                        "/opt/agent-sandbox/nuget-cache-ro"
-                    ),
-                    "NUGET_PACKAGES": "/home/agent/.nuget/packages-local",
-                    "NUGET_HTTP_CACHE_PATH": "/home/agent/.nuget/http-cache",
-                }
-            ),
+            "content": _session_env_content(session_env_values),
+        },
+        {
+            "destination_path": "/home/agent/.config/pip/pip.conf",
+            "mode": "0644",
+            "content": _pip_config_content(pypi_index_url),
+        },
+        {
+            "destination_path": "/home/agent/.npmrc",
+            "mode": "0644",
+            "content": _npmrc_content(npm_registry_url),
         },
         {
             "destination_path": "/home/agent/.profile",
@@ -626,6 +669,8 @@ def _container_profile_content(*, dotnet: bool, playwright: bool) -> str:
         "  set +a",
         "fi",
         'export OPENAI_API_KEY="${OPENAI_API_KEY:-relay-placeholder}"',
+        'export AGENT_SANDBOX_NODE_ROOT="/opt/agent-sandbox/toolchains/node-v24.14.0"',
+        'export PATH="$AGENT_SANDBOX_NODE_ROOT/bin:$PATH"',
     ]
     if dotnet:
         lines.extend(
@@ -638,10 +683,8 @@ def _container_profile_content(*, dotnet: bool, playwright: bool) -> str:
     if playwright:
         lines.extend(
             [
-                'export AGENT_SANDBOX_NODE_ROOT="/opt/agent-sandbox/toolchains/node-v24.14.0"',
                 'export NODE_PATH="/opt/agent-sandbox/playwright-runtime/node_modules"',
                 'export PLAYWRIGHT_BROWSERS_PATH="/opt/agent-sandbox/ms-playwright"',
-                'export PATH="$AGENT_SANDBOX_NODE_ROOT/bin:$PATH"',
             ]
         )
     return "\n".join(lines) + "\n"
@@ -683,6 +726,33 @@ def _nuget_config_content(nuget_relay_base_url: str) -> str:
         "  </fallbackPackageFolders>\n"
         "</configuration>\n"
     )
+
+
+def _pip_config_content(pypi_index_url: str) -> str:
+    lines = [
+        "[global]",
+        f"index-url = {pypi_index_url}",
+        "disable-pip-version-check = true",
+    ]
+    trusted_host = _pip_trusted_host(pypi_index_url)
+    if trusted_host:
+        lines.append(f"trusted-host = {trusted_host}")
+    return "\n".join(lines) + "\n"
+
+
+def _npmrc_content(npm_registry_url: str) -> str:
+    return f"registry={_ensure_trailing_slash(npm_registry_url)}\n"
+
+
+def _pip_trusted_host(index_url: str) -> str | None:
+    parts = urlsplit(index_url)
+    if parts.scheme != "http":
+        return None
+    return parts.hostname or None
+
+
+def _ensure_trailing_slash(value: str) -> str:
+    return value if value.endswith("/") else f"{value}/"
 
 
 def _toml_string(value: str) -> str:

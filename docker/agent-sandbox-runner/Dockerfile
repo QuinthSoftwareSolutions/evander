@@ -20,6 +20,8 @@ RUN apt-get -o Acquire::ForceIPv4=true -o Acquire::Retries=3 -o Acquire::http::T
       openssh-client \
       procps \
       python3 \
+      python3-pip \
+      python3-venv \
       ripgrep \
       tar \
       unzip \

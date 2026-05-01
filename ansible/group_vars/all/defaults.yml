@@ -80,12 +80,51 @@ agent_sandbox_local_vm_host_packages:
   - virtinst
   - cloud-image-utils
   - ovmf
-agent_sandbox_allowed_tcp_ports:
+agent_sandbox_base_allowed_tcp_ports:
   - 22
   - 8000
   - 11434
   - 11666
   - 11777
+agent_sandbox_package_cache_allowed_tcp_ports: >-
+  {{
+    [agent_sandbox_nexus_port]
+    if (agent_sandbox_services.package_cache | default(false) | bool)
+    else []
+  }}
+agent_sandbox_allowed_tcp_ports: >-
+  {{
+    agent_sandbox_base_allowed_tcp_ports
+    + agent_sandbox_package_cache_allowed_tcp_ports
+  }}
+
+# Control-plane package cache. Nexus Repository Community Edition proxies only
+# public PyPI and npm in v1; publishing/internal hosted repositories are not
+# provisioned by this role.
+agent_sandbox_nexus_version: "3.91.1-04"
+agent_sandbox_nexus_archive_url: "https://download.sonatype.com/nexus/3/nexus-{{ agent_sandbox_nexus_version }}-linux-x86_64.tar.gz"
+agent_sandbox_nexus_archive_checksum: ""
+agent_sandbox_nexus_user: "nexus"
+agent_sandbox_nexus_group: "nexus"
+agent_sandbox_nexus_install_parent: "/opt/sonatype"
+agent_sandbox_nexus_install_dir: "{{ agent_sandbox_nexus_install_parent }}/nexus-{{ agent_sandbox_nexus_version }}"
+agent_sandbox_nexus_current_link: "{{ agent_sandbox_nexus_install_parent }}/nexus"
+agent_sandbox_nexus_data_dir: "/var/lib/agent-sandbox/nexus-data"
+agent_sandbox_nexus_cache_dir: "/var/cache/agent-sandbox/nexus"
+agent_sandbox_nexus_port: 8081
+agent_sandbox_nexus_bind_host: "0.0.0.0"
+agent_sandbox_nexus_admin_user: "admin"
+agent_sandbox_nexus_admin_password: ""
+agent_sandbox_nexus_blob_store: "default"
+agent_sandbox_nexus_pypi_proxy_repository: "pypi-proxy"
+agent_sandbox_nexus_pypi_group_repository: "pypi-all"
+agent_sandbox_nexus_pypi_remote_url: "https://pypi.org/"
+agent_sandbox_nexus_npm_proxy_repository: "npm-proxy"
+agent_sandbox_nexus_npm_group_repository: "npm-all"
+agent_sandbox_nexus_npm_remote_url: "https://registry.npmjs.org"
+agent_sandbox_control_plane_private_ip: "{{ ansible_default_ipv4.address | default('127.0.0.1') }}"
+agent_sandbox_worker_pypi_index_url: "http://{{ agent_sandbox_control_plane_private_ip }}:{{ agent_sandbox_nexus_port }}/repository/{{ agent_sandbox_nexus_pypi_group_repository }}/simple"
+agent_sandbox_worker_npm_registry_url: "http://{{ agent_sandbox_control_plane_private_ip }}:{{ agent_sandbox_nexus_port }}/repository/{{ agent_sandbox_nexus_npm_group_repository }}/"
 
 # Host prerequisites.
 agent_sandbox_host_packages: >-
@@ -255,6 +294,7 @@ agent_sandbox_services:
   firewall: "{{ agent_sandbox_service_profile == 'full' }}"
   openai_relay: true
   nuget_relay: true
+  package_cache: true
   http_target_relay: true
   ado_worker: true
   discord_ingest: true

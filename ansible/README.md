@@ -42,8 +42,9 @@ The playbook follows the repo-native bootstrap order:
 8. Run `scripts/create_libvirt_network.sh` in the `full` profile
 9. Run `scripts/apply_firewall.sh` when the `full` profile firewall service is enabled
 10. Run `scripts/create_base_vm.sh` in the `full` profile
-11. Enable and start only the selected services
-12. Verify unit state, enabled firewall, full-profile VM host state, and repo-aware status
+11. Enable and start only the selected repo-native services
+12. Install and configure the Nexus PyPI/npm package cache when enabled
+13. Verify unit state, enabled firewall, full-profile VM host state, package-cache health, and repo-aware status
 
 VM/session launch is intentionally not part of initial deployment. After the host is prepared, use
 the existing operator flow to create a session manifest and launch a VM.
@@ -63,7 +64,8 @@ Core defaults:
 - `agent_sandbox_service_profile`: `full`
 - `agent_sandbox_run_user_supplementary_groups`: `libvirt`, `kvm` for `full`; empty for
   `control_plane_only`
-- `agent_sandbox_allowed_tcp_ports`: `22`, `8000`, `11434`, `11666`, `11777`
+- `agent_sandbox_allowed_tcp_ports`: `22`, `8000`, `11434`, `11666`, `11777`, and `8081`
+  when `agent_sandbox_services.package_cache` is enabled
 
 Service profiles:
 
@@ -83,6 +85,7 @@ Service toggles:
 - `agent_sandbox_services.firewall`
 - `agent_sandbox_services.openai_relay`
 - `agent_sandbox_services.nuget_relay`
+- `agent_sandbox_services.package_cache`
 - `agent_sandbox_services.http_target_relay`
 - `agent_sandbox_services.ado_worker`
 - `agent_sandbox_services.discord_ingest`
@@ -124,6 +127,11 @@ renders these host-local managed artifacts with restricted permissions:
 - `config/host-heartbeat/config.json`
 - `config/trigger-orchestrator/config.json`
 - optional `secrets.env`
+
+The Nexus package cache also requires `agent_sandbox_nexus_admin_password` from Vault when
+`agent_sandbox_services.package_cache` is enabled. The role changes the initial Nexus admin
+password, enables anonymous read access, and creates only proxy/group repositories:
+`pypi-proxy`, `pypi-all`, `npm-proxy`, and `npm-all`.
 
 Worker/global JSON files are also editable from the Admin GUI. Set
 `agent_sandbox_force_render_worker_config: false` for hosts where operators own those settings
@@ -195,6 +203,8 @@ The verification role checks:
 - for `full`: the Ubuntu 24.04 base cloud image is present under libvirt-accessible storage
 - `.venv/bin/agent-sandbox-cli status --runtime-dir runtime` succeeds
 - local relay endpoints respond where applicable
+- when enabled, `agent-sandbox-nexus.service` is active and
+  `http://127.0.0.1:8081/service/rest/v1/status` responds
 
 After the playbook completes, common manual follow-ups are:
 
@@ -225,6 +235,9 @@ The worker inventory group is `agent_sandbox_worker_hosts`. Worker defaults live
 - `agent_sandbox_repo_version`
 - `agent_sandbox_repo_ssh_private_key` when the repo is private
 - `agent_sandbox_worker_token`
+- `agent_sandbox_git_host` with the control-plane private IP or DNS name
+- `agent_sandbox_git_user`, `agent_sandbox_git_root`, and `agent_sandbox_git_ssh_alias` when they
+  differ from the control-plane issue-setup Git settings
 
 Run the worker deployment with:
 
@@ -242,6 +255,22 @@ NSG or subnet rules so only the control-plane VM can reach that port. The daemon
 only to `config/worker-daemon.env`; set the same value on the control plane through the environment
 variable named by `container_worker_token_env`.
 
+The worker playbook also provisions restricted SSH for Git mirrors. It generates
+`~agent-worker/.ssh/agent-sandbox-git`, renders an SSH config entry for
+`agent_sandbox_git_ssh_alias`, and, when the `agent_sandbox_hosts` group is present, installs the
+worker public key into the control-plane Git user's `authorized_keys` with
+`git_ssh_command_wrapper.sh` as the forced command and `from=<worker-private-cidr-or-ip>` via
+`agent_sandbox_worker_git_allowed_from`. The worker daemon receives the same SSH directory through
+`--git-ssh-source-dir` and copies that restricted config/key into each session `agent_home`, so
+in-container `git fetch` and `git push agent` use only the control-plane mirror.
+
+The default allowed Git source prefix is
+`ssh://{{ agent_sandbox_git_ssh_alias }}{{ agent_sandbox_git_root }}/`. The worker rejects
+job-level and session repo clone requests outside `agent_sandbox_worker_allowed_git_source_prefixes`.
+Do not grant worker hosts or runner containers direct GitHub/Azure DevOps egress for this mode; the
+control plane owns upstream credentials and mirror refresh. npm and pip package access must use
+separate registry proxies or mirrors.
+
 Configure the control plane to point at the worker's private address:
 
 ```yaml
@@ -252,6 +281,8 @@ container_worker_default_image: "agent-sandbox-runner:latest"
 container_worker_guest_openai_base_url: "http://<control-plane-private-ip>:11434/v1"
 container_worker_guest_gateway_url: "http://<control-plane-private-ip>:8000/mcp"
 container_worker_guest_nuget_relay_base_url: "http://<control-plane-private-ip>:11666"
+container_worker_guest_pypi_index_url: "http://<control-plane-private-ip>:8081/repository/pypi-all/simple"
+container_worker_guest_npm_registry_url: "http://<control-plane-private-ip>:8081/repository/npm-all/"
 ```
 
 The runner image is deployed from `dist/agent-sandbox-runner.tar`; the worker playbook copies it to
@@ -259,8 +290,12 @@ the worker and runs `docker load`. The same playbook creates worker-level read-o
 directories for .NET, Node/Playwright, Playwright browsers, and NuGet fallback packages under
 `agent_sandbox_worker_toolchain_cache_root`, then wires them into the daemon with repeated
 `--readonly-mount` flags. Populate those caches before relying on `dotnet=true` or
-`playwright=true` sessions. Docker `host` networking remains refused; choose a private Docker
-network/routing setup that can reach only the required control-plane relay and gateway endpoints.
+`playwright=true` sessions; npm workflows also require the worker Node cache to be populated so the
+mounted Node/npm binary is present. Docker `host` networking remains refused; choose a private Docker
+network/routing setup that can reach only the required control-plane relay and gateway endpoints
+plus the Nexus package cache on `8081`. Worker outbound rules should still deny direct access to
+`pypi.org` and `registry.npmjs.org`; the control plane is the only host that needs upstream package
+internet access for these formats.
 If the host Docker bridge cannot reach apt mirrors while building the tarball, build it with
 `RUNNER_BUILD_NETWORK=host ./scripts/build_agent_sandbox_runner_image.sh`; this does not change the
 worker daemon's runtime networking policy.

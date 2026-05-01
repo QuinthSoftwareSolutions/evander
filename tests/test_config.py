@@ -9,6 +9,10 @@ from agent_sandbox.config import (
     TeamsIngestWorkerGlobalConfig,
     TriggerOrchestratorWorkerGlobalConfig,
 )
+from agent_sandbox.effects.providers.agent_session import (
+    container_worker_guest_npm_registry_url,
+    container_worker_guest_pypi_index_url,
+)
 
 
 def test_folder_allowlist_defaults_populate_only_when_mapping_is_empty() -> None:
@@ -133,6 +137,14 @@ def test_teams_delegated_scopes_default_includes_channel_and_chat_access() -> No
         ("container_worker_guest_openai_base_url", " http://worker-relay.test:11434/v1/ "),
         ("container_worker_guest_gateway_url", " http://worker-gateway.test:8000/mcp/ "),
         ("container_worker_guest_nuget_relay_base_url", " http://worker-nuget.test:11666/ "),
+        (
+            "container_worker_guest_pypi_index_url",
+            " http://nexus.test:8081/repository/pypi-all/simple/ ",
+        ),
+        (
+            "container_worker_guest_npm_registry_url",
+            " http://nexus.test:8081/repository/npm-all/ ",
+        ),
         ("openai_api_base_url", " https://api.openai.com/v1/ "),
         ("nuget_public_feed_base_url", " https://api.nuget.org/ "),
         (
@@ -157,6 +169,8 @@ def test_http_url_fields_are_trimmed_and_trailing_slash_is_removed(
         ("container_worker_guest_openai_base_url", "worker-relay.test:11434/v1"),
         ("container_worker_guest_gateway_url", "ftp://worker-gateway.test/mcp"),
         ("container_worker_guest_nuget_relay_base_url", ""),
+        ("container_worker_guest_pypi_index_url", "nexus.test:8081/repository/pypi-all/simple"),
+        ("container_worker_guest_npm_registry_url", "ftp://nexus.test/repository/npm-all/"),
         ("openai_api_base_url", "not-a-url"),
         ("nuget_public_feed_base_url", "://missing-scheme"),
         ("nuget_azure_feed_base_url", ""),
@@ -170,6 +184,39 @@ def test_http_url_fields_reject_invalid_values_with_field_name(field_name: str, 
 def test_bind_network_cidr_trims_whitespace_and_normalizes() -> None:
     config = GatewayConfig.model_validate({"bind_network_cidr": " 192.168.250.0/24 "})
     assert str(config.bind_network_cidr) == "192.168.250.0/24"
+
+
+def test_container_worker_package_cache_urls_derive_from_gateway_host() -> None:
+    config = GatewayConfig.model_validate(
+        {
+            "gateway_url": "http://10.20.30.40:8000/mcp",
+            "openai_relay_port": 12000,
+            "nuget_relay_port": 13000,
+        }
+    )
+
+    assert (
+        container_worker_guest_pypi_index_url(config)
+        == "http://10.20.30.40:8081/repository/pypi-all/simple"
+    )
+    assert (
+        container_worker_guest_npm_registry_url(config)
+        == "http://10.20.30.40:8081/repository/npm-all/"
+    )
+
+
+def test_container_worker_package_cache_url_derivation_does_not_change_relays() -> None:
+    from agent_sandbox.effects.providers.agent_session import (
+        container_worker_guest_gateway_url,
+        container_worker_guest_nuget_relay_base_url,
+        container_worker_guest_openai_base_url,
+    )
+
+    config = GatewayConfig.model_validate({"gateway_url": "http://10.20.30.40:8000/mcp"})
+
+    assert container_worker_guest_gateway_url(config) == "http://10.20.30.40:8000/mcp"
+    assert container_worker_guest_openai_base_url(config) == "http://10.20.30.40:11434/v1"
+    assert container_worker_guest_nuget_relay_base_url(config) == "http://10.20.30.40:11666"
 
 
 @pytest.mark.parametrize(

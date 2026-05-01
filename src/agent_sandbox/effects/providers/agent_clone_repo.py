@@ -9,6 +9,7 @@ from urllib.parse import unquote, urlparse
 
 from agent_sandbox.execution import ExecutionBackendKind, ExecutionSpec, ExecutionStatusKind
 from agent_sandbox.events.provider_models import AgentCloneRepoEffectDefinition
+from agent_sandbox.git_mirror import ContainerGitMirrorResolver
 
 from .agent_session import (
     container_shell_preamble,
@@ -67,6 +68,12 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
             payload.get("repo_source"), "effect:agent:clone-repo requires repo_source"
         )
         clone_branch = normalize_optional_string(payload.get("clone_branch"))
+        mirror = _container_git_mirror_resolver(context, directory_path).resolve(
+            repo_source=repo_source,
+            clone_branch=clone_branch,
+            directory_path=directory_path,
+            session_id=session_id,
+        )
         backend = container_backend(context, config)
         backend.prepare_session(
             session_id=session_id,
@@ -77,14 +84,14 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
         )
         result = backend.clone_repo(
             session_id=session_id,
-            repo_source=repo_source,
+            repo_source=mirror.worker_repo_source,
             clone_branch=clone_branch,
         )
         self._configure_container_git(
             backend=backend,
             session_id=session_id,
             directory_path=session.directory_path if session is not None else directory_path,
-            repo_source=repo_source,
+            repo_source=mirror.canonical_repo_source,
             remote_url=result.remote_url,
             clone_branch=clone_branch,
             timeout_seconds=float(config.container_worker_job_timeout_seconds),
@@ -100,6 +107,7 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
             "target_dir": result.target_dir,
             "guest_repo_name": result.guest_repo_name,
             "remote_url": result.remote_url,
+            "canonical_repo_source": mirror.canonical_repo_source,
             "execution_backend": "container_worker_vm",
             "vm_name": None,
         }
@@ -279,6 +287,9 @@ def _container_reachable_git_remote_url(value: str) -> str | None:
     normalized = value.strip()
     if not normalized:
         return None
+    parsed = urlparse(normalized)
+    if parsed.scheme == "ssh" and parsed.netloc and parsed.path:
+        return normalized
     path = _container_mounted_git_path(normalized)
     if path is None:
         return None
@@ -301,3 +312,35 @@ def _is_container_mounted_path(path: str) -> bool:
         if path == root or path.startswith(f"{root}/"):
             return True
     return False
+
+
+def _container_git_mirror_resolver(context: Any, directory_path: str) -> ContainerGitMirrorResolver:
+    admin_service = getattr(context, "admin_service", None)
+    project_dir = Path(getattr(admin_service, "project_dir", Path.cwd()))
+    issue_setup = None
+    resolve_issue_setup = getattr(admin_service, "_resolve_issue_setup", None)
+    if callable(resolve_issue_setup):
+        issue_setup = resolve_issue_setup(directory_path, root_dir=project_dir)
+    else:
+        runtime = getattr(admin_service, "runtime", None)
+        config = getattr(admin_service, "config", None)
+        if runtime is not None and config is not None:
+            from agent_sandbox.admin.service import resolve_effective_issue_setup_config
+
+            issue_setup = resolve_effective_issue_setup_config(
+                config=config,
+                runtime=runtime,
+                directory_path=directory_path,
+                root_dir=project_dir,
+            )
+    if issue_setup is None:
+        raise RuntimeError(
+            "effect:agent:clone-repo with container_worker_vm requires issue setup config"
+        )
+    return ContainerGitMirrorResolver(
+        project_dir=project_dir,
+        git_root=issue_setup.git_root,
+        git_host=issue_setup.git_host,
+        git_user=issue_setup.git_user,
+        git_ssh_alias=issue_setup.git_ssh_alias,
+    )

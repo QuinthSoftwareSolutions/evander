@@ -67,6 +67,89 @@
         )
       }}
 
+- name: Ensure worker Git SSH directory exists
+  ansible.builtin.file:
+    path: "{{ agent_sandbox_worker_git_ssh_source_dir }}"
+    state: directory
+    owner: "{{ agent_sandbox_run_user }}"
+    group: "{{ agent_sandbox_run_user }}"
+    mode: "0700"
+
+- name: Generate restricted worker Git SSH key
+  ansible.builtin.command:
+    argv:
+      - ssh-keygen
+      - -q
+      - -t
+      - ed25519
+      - -N
+      - ""
+      - -C
+      - "agent-sandbox-worker-git@{{ inventory_hostname }}"
+      - -f
+      - "{{ agent_sandbox_worker_git_key_path }}"
+    creates: "{{ agent_sandbox_worker_git_key_path }}"
+  become_user: "{{ agent_sandbox_run_user }}"
+
+- name: Render worker Git SSH config
+  ansible.builtin.blockinfile:
+    path: "{{ agent_sandbox_worker_git_ssh_source_dir }}/config"
+    create: true
+    owner: "{{ agent_sandbox_run_user }}"
+    group: "{{ agent_sandbox_run_user }}"
+    mode: "0600"
+    marker: "# {mark} agent-sandbox git host"
+    block: |
+      Host {{ agent_sandbox_git_ssh_alias }}
+        HostName {{ agent_sandbox_git_host }}
+        User {{ agent_sandbox_git_user }}
+        IdentityFile ~/.ssh/agent-sandbox-git
+        IdentitiesOnly yes
+        StrictHostKeyChecking accept-new
+
+- name: Read worker Git public key
+  ansible.builtin.slurp:
+    src: "{{ agent_sandbox_worker_git_key_path }}.pub"
+  register: agent_sandbox_worker_git_public_key_slurp
+
+- name: Record worker Git public key
+  ansible.builtin.set_fact:
+    agent_sandbox_worker_git_public_key: "{{ agent_sandbox_worker_git_public_key_slurp.content | b64decode | trim }}"
+
+- name: Resolve control-plane Git user home
+  ansible.builtin.command:
+    argv:
+      - getent
+      - passwd
+      - "{{ agent_sandbox_git_user }}"
+  delegate_to: "{{ groups[agent_sandbox_control_plane_group][0] }}"
+  register: agent_sandbox_control_plane_git_user_getent
+  changed_when: false
+  when: agent_sandbox_worker_install_control_plane_git_authorized_key | bool
+
+- name: Ensure control-plane Git SSH directory exists
+  ansible.builtin.file:
+    path: "{{ agent_sandbox_control_plane_git_user_getent.stdout.split(':')[5] }}/.ssh"
+    state: directory
+    owner: "{{ agent_sandbox_git_user }}"
+    group: "{{ agent_sandbox_git_user }}"
+    mode: "0700"
+  delegate_to: "{{ groups[agent_sandbox_control_plane_group][0] }}"
+  when: agent_sandbox_worker_install_control_plane_git_authorized_key | bool
+
+- name: Authorize worker Git key on the control plane
+  ansible.builtin.lineinfile:
+    path: "{{ agent_sandbox_control_plane_git_user_getent.stdout.split(':')[5] }}/.ssh/authorized_keys"
+    create: true
+    owner: "{{ agent_sandbox_git_user }}"
+    group: "{{ agent_sandbox_git_user }}"
+    mode: "0600"
+    regexp: "{{ agent_sandbox_worker_git_public_key.split()[1] | regex_escape }}"
+    line: >-
+      from="{{ agent_sandbox_worker_git_allowed_from }}",no-agent-forwarding,no-port-forwarding,no-pty,no-user-rc,no-X11-forwarding,command="{{ agent_sandbox_control_plane_deploy_path }}/scripts/git_ssh_command_wrapper.sh" {{ agent_sandbox_worker_git_public_key }}
+  delegate_to: "{{ groups[agent_sandbox_control_plane_group][0] }}"
+  when: agent_sandbox_worker_install_control_plane_git_authorized_key | bool
+
 - name: Check local runner image archive
   ansible.builtin.stat:
     path: "{{ agent_sandbox_runner_image_archive_path }}"

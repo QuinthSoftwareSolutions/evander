@@ -8,6 +8,7 @@ import type {
   AgentActionResponse,
   AgentBackend,
   AgentCreateRequest,
+  AgentExecutionRecord,
   AgentListResponse,
   AgentLogResponse,
   AgentRecord,
@@ -188,7 +189,7 @@ function agentKey(agent: AgentRecord): string {
 }
 
 function backendLabel(backend: AgentBackend): string {
-  return backend === "container_worker_vm" ? "Container workers" : "VM agents";
+  return backend === "container_worker_vm" ? "Container agents" : "VM agents";
 }
 
 function hostString(host: Record<string, unknown> | null | undefined, key: string): string | null {
@@ -205,6 +206,19 @@ function hostStringList(host: Record<string, unknown> | null | undefined, key: s
   const value = host?.[key];
   if (!Array.isArray(value)) return [];
   return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+}
+
+function hostExecutionList(
+  host: Record<string, unknown> | null | undefined,
+  key: string,
+): AgentExecutionRecord[] {
+  const value = host?.[key];
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is AgentExecutionRecord => {
+    if (typeof item !== "object" || item === null || Array.isArray(item)) return false;
+    const candidate = item as Record<string, unknown>;
+    return typeof candidate.execution_id === "string" && typeof candidate.worker_job_id === "string";
+  });
 }
 
 function hostRecord(
@@ -734,6 +748,7 @@ export function AgentsPage() {
   const powerState = hostString(selectedAgent?.host, "power_state") ?? selectedAgent?.status ?? "unknown";
   const selectedMetadata = metadataForAgent(selectedAgent);
   const selectedLabels = labelsForAgent(selectedAgent);
+  const selectedExecutions = hostExecutionList(selectedAgent?.host, "executions");
   const canMutate = busyAction === null && privilegedUnlocked;
   const showStart = selectedAgent?.backend === "libvirt_vm" && selectedAgent.capabilities.start && powerState !== "running";
   const showShutdown = selectedAgent?.backend === "libvirt_vm" && selectedAgent.capabilities.shutdown && powerState === "running";
@@ -745,7 +760,9 @@ export function AgentsPage() {
   const showDestroy = Boolean(selectedAgent?.capabilities.destroy);
   const canEditPolicy = Boolean(selectedAgent && sessionPolicyForAgent(selectedAgent));
   const logTitle = selectedAgent?.backend === "container_worker_vm"
-    ? hostString(selectedAgent.host, "worker_job_id") ?? "Worker job"
+    ? selectedExecutions.length > 0
+      ? `${selectedExecutions.length} execution${selectedExecutions.length === 1 ? "" : "s"}`
+      : "Container session"
     : hostString(guestAgent, "preferred_repo_name") ?? "Agent output";
 
   return (
@@ -753,7 +770,7 @@ export function AgentsPage() {
       <section className="feature-sidebar">
         <div className="feature-sidebar-header">
           <div>
-            <div className="eyebrow">Execution targets</div>
+            <div className="eyebrow">Agent sessions</div>
             <h1>Agents</h1>
           </div>
           <div className="inline-actions compact-actions">
@@ -784,7 +801,7 @@ export function AgentsPage() {
             <select value={backendFilter} onChange={(event) => setBackendFilter(event.target.value as BackendFilter)}>
               <option value="all">All backends</option>
               <option value="libvirt_vm">VM agents</option>
-              <option value="container_worker_vm">Container workers</option>
+              <option value="container_worker_vm">Container agents</option>
             </select>
           </label>
           <label className="field-stack">
@@ -839,7 +856,7 @@ export function AgentsPage() {
             <p className="muted-text">
               {selectedAgent
                 ? `${backendLabel(selectedAgent.backend)} / ${selectedAgent.directory_path}`
-                : "Choose an execution target from the left to inspect details and logs."}
+                : "Choose an agent from the left to inspect details and logs."}
             </p>
           </div>
           {selectedAgent ? (
@@ -1339,15 +1356,23 @@ export function AgentsPage() {
 
               <article className="panel">
                 <div className="panel-header">
-                  <h3>{selectedAgent.backend === "container_worker_vm" ? "Worker job" : "VM host"}</h3>
+                  <h3>{selectedAgent.backend === "container_worker_vm" ? "Worker session" : "VM host"}</h3>
                   <span className="panel-meta">{selectedAgent.status}</span>
                 </div>
                 <dl className="property-grid">
                   {selectedAgent.backend === "container_worker_vm" ? (
                     <>
                       <div>
-                        <dt>Job id</dt>
-                        <dd>{hostString(selectedAgent.host, "worker_job_id") ?? "Unknown"}</dd>
+                        <dt>Executions</dt>
+                        <dd>{hostNumber(selectedAgent.host, "execution_count") ?? selectedExecutions.length}</dd>
+                      </div>
+                      <div>
+                        <dt>Active runs</dt>
+                        <dd>{hostNumber(selectedAgent.host, "active_execution_count") ?? 0}</dd>
+                      </div>
+                      <div>
+                        <dt>Latest execution</dt>
+                        <dd>{hostString(selectedAgent.host, "latest_execution_id") ?? "None"}</dd>
                       </div>
                       <div>
                         <dt>Worker URL</dt>
@@ -1358,7 +1383,7 @@ export function AgentsPage() {
                         <dd>{hostString(selectedAgent.host, "image") ?? "Unknown"}</dd>
                       </div>
                       <div>
-                        <dt>Worker status</dt>
+                        <dt>Latest status</dt>
                         <dd>{hostString(selectedAgent.host, "last_status") ?? selectedAgent.status}</dd>
                       </div>
                     </>
@@ -1418,6 +1443,38 @@ export function AgentsPage() {
                   <span className="panel-meta">Worker-supplied context</span>
                 </summary>
                 <pre className="log-view compact-log-view">{JSON.stringify(selectedMetadata, null, 2)}</pre>
+              </details>
+            ) : null}
+
+            {selectedAgent.backend === "container_worker_vm" ? (
+              <details className="panel compact-disclosure">
+                <summary className="panel-header compact-disclosure-summary">
+                  <h3>Executions</h3>
+                  <span className="panel-meta">
+                    {selectedExecutions.length} run{selectedExecutions.length === 1 ? "" : "s"}
+                  </span>
+                </summary>
+                {selectedExecutions.length > 0 ? (
+                  <div className="agent-execution-list">
+                    {selectedExecutions.map((execution) => (
+                      <div className="agent-execution-row" key={execution.execution_id}>
+                        <div>
+                          <strong>{execution.execution_id}</strong>
+                          <span>{execution.worker_job_id}</span>
+                        </div>
+                        <span className={`status-pill state-${statusClass(execution.status)}`}>
+                          {execution.status}
+                        </span>
+                        <div className="agent-execution-meta">
+                          <span>{formatTimestamp(execution.started_at ?? execution.created_at)}</span>
+                          <span>{execution.image ?? "Image unknown"}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="empty-state compact-empty-state">No executions have run for this session.</div>
+                )}
               </details>
             ) : null}
 

@@ -48,6 +48,8 @@ class EffectProviderConfig(BaseModel):
     container_worker_guest_openai_base_url: str | None = None
     container_worker_guest_gateway_url: str | None = None
     container_worker_guest_nuget_relay_base_url: str | None = None
+    container_worker_guest_pypi_index_url: str | None = None
+    container_worker_guest_npm_registry_url: str | None = None
 
 
 class QueryProviderConfig(BaseModel):

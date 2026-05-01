@@ -1881,6 +1881,45 @@ select {
   margin-bottom: 0.85rem;
 }
 
+.agent-execution-list {
+  display: grid;
+  gap: 0;
+  border-top: 1px solid rgba(93, 75, 48, 0.12);
+}
+
+.agent-execution-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.4rem 0.9rem;
+  align-items: center;
+  padding: 0.75rem 0;
+  border-bottom: 1px solid rgba(93, 75, 48, 0.12);
+}
+
+.agent-execution-row strong,
+.agent-execution-row span {
+  display: block;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.agent-execution-row > div:first-child span,
+.agent-execution-meta {
+  color: #756553;
+  font-size: 0.82rem;
+}
+
+.agent-execution-meta {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem 1rem;
+}
+
+.compact-empty-state {
+  padding: 0.75rem 0;
+}
+
 .issue-list {
   gap: 0.4rem;
 }
@@ -3515,6 +3554,16 @@ select {
   background: #2f6684;
   color: #f4fbff;
   box-shadow: 0 0 0 2px rgba(107, 174, 204, 0.2);
+}
+
+:root[data-theme="dark"] .agent-execution-list,
+:root[data-theme="dark"] .agent-execution-row {
+  border-color: rgba(128, 106, 66, 0.18);
+}
+
+:root[data-theme="dark"] .agent-execution-row > div:first-child span,
+:root[data-theme="dark"] .agent-execution-meta {
+  color: #b8a386;
 }
 
 :root[data-theme="dark"] .vm-list-item:hover {

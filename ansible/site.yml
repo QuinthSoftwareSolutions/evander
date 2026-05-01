@@ -47,4 +47,5 @@
     - role: frontend_build
     - role: network_vm_bootstrap
     - role: service_runtime
+    - role: package_cache_nexus
     - role: verification

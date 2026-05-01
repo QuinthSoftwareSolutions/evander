@@ -27,6 +27,22 @@ export type AgentRecord = {
   capabilities: AgentCapabilities;
 };
 
+export type AgentExecutionRecord = {
+  execution_id: string;
+  session_id: string;
+  worker_job_id: string;
+  worker_url: string;
+  target_name: string;
+  status: string;
+  last_status: string;
+  created_at: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+  updated_at: string | null;
+  image: string | null;
+  metadata: Record<string, unknown>;
+};
+
 export type AgentCreateRequest = {
   backend: AgentBackend;
   session_id?: string | null;

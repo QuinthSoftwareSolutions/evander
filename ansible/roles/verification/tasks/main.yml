@@ -15,6 +15,8 @@
         unit: agent-sandbox-openai-relay.service
       - key: nuget_relay
         unit: agent-sandbox-nuget-relay.service
+      - key: package_cache
+        unit: agent-sandbox-nexus.service
       - key: http_target_relay
         unit: agent-sandbox-http-target-relay.service
       - key: ado_worker
@@ -35,8 +37,8 @@
 - name: Verify enabled services are active
   ansible.builtin.assert:
     that:
-      - "ansible_facts.services[item.unit].status == 'enabled'"
-      - "ansible_facts.services[item.unit].state == 'running'"
+      - "ansible_facts.services.get(item.unit, {}).get('status') == 'enabled'"
+      - "ansible_facts.services.get(item.unit, {}).get('state') == 'running'"
     fail_msg: "{{ item.unit }} should be enabled and running."
     success_msg: "{{ item.unit }} is enabled and running."
   loop: "{{ agent_sandbox_verification_units }}"
@@ -45,8 +47,8 @@
 - name: Verify disabled services are not enabled
   ansible.builtin.assert:
     that:
-      - "ansible_facts.services[item.unit].status != 'enabled'"
-      - "ansible_facts.services[item.unit].state != 'running'"
+      - "ansible_facts.services.get(item.unit, {}).get('status') != 'enabled'"
+      - "ansible_facts.services.get(item.unit, {}).get('state') != 'running'"
     fail_msg: "{{ item.unit }} should remain installed but not enabled/running."
     success_msg: "{{ item.unit }} remains installed without being enabled/running."
   loop: "{{ agent_sandbox_verification_units }}"
@@ -103,6 +105,8 @@
       port: 11434
     - key: nuget_relay
       port: 11666
+    - key: package_cache
+      port: "{{ agent_sandbox_nexus_port }}"
     - key: http_target_relay
       port: 11777
   when: agent_sandbox_services[item.key] | bool
@@ -120,6 +124,8 @@
       url: "http://127.0.0.1:11434/healthz"
     - key: nuget_relay
       url: "http://127.0.0.1:11666/healthz"
+    - key: package_cache
+      url: "http://127.0.0.1:{{ agent_sandbox_nexus_port }}/service/rest/v1/status"
     - key: http_target_relay
       url: "http://127.0.0.1:11777/healthz"
   when: agent_sandbox_services[item.key] | bool

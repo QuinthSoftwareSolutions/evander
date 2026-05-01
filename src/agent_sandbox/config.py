@@ -78,6 +78,8 @@ class GatewayConfig(BaseModel):
     container_worker_guest_openai_base_url: str | None = None
     container_worker_guest_gateway_url: str | None = None
     container_worker_guest_nuget_relay_base_url: str | None = None
+    container_worker_guest_pypi_index_url: str | None = None
+    container_worker_guest_npm_registry_url: str | None = None
     discord_backend: Literal["stub", "bot_api"] = "stub"
     discord_bot_token_env: str = Field(default="DISCORD_BOT_TOKEN", min_length=1)
     discord_api_base_url: str = "https://discord.com/api/v10"
@@ -240,6 +242,8 @@ class GatewayConfig(BaseModel):
         "container_worker_guest_openai_base_url",
         "container_worker_guest_gateway_url",
         "container_worker_guest_nuget_relay_base_url",
+        "container_worker_guest_pypi_index_url",
+        "container_worker_guest_npm_registry_url",
         "openai_api_base_url",
         "nuget_public_feed_base_url",
         "nuget_azure_feed_base_url",
@@ -262,6 +266,8 @@ class GatewayConfig(BaseModel):
         "container_worker_guest_openai_base_url",
         "container_worker_guest_gateway_url",
         "container_worker_guest_nuget_relay_base_url",
+        "container_worker_guest_pypi_index_url",
+        "container_worker_guest_npm_registry_url",
         "openai_api_base_url",
         "nuget_public_feed_base_url",
         "nuget_azure_feed_base_url",

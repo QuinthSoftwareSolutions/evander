@@ -162,6 +162,8 @@ def create_app(
     docker_network: str | None = "none",
     sandbox_profile: WorkerSandboxProfile | None = None,
     read_only_mounts: Sequence[str] | None = None,
+    allowed_git_source_prefixes: Sequence[str] | None = None,
+    git_ssh_source_dir: Path | None = None,
     token: str | None = None,
 ) -> Starlette:
     return WorkerDaemon(
@@ -171,5 +173,7 @@ def create_app(
         docker_network=docker_network,
         sandbox_profile=sandbox_profile,
         read_only_mounts=read_only_mounts,
+        allowed_git_source_prefixes=allowed_git_source_prefixes,
+        git_ssh_source_dir=git_ssh_source_dir,
         token=token,
     ).create_app()

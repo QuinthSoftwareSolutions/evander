@@ -20,6 +20,7 @@ def test_ansible_bundle_exists_with_expected_roles() -> None:
         "frontend_build",
         "network_vm_bootstrap",
         "service_runtime",
+        "package_cache_nexus",
         "verification",
     ]:
         assert (ansible_dir / "roles" / role_name / "tasks" / "main.yml").exists()
@@ -43,7 +44,66 @@ def test_ansible_site_uses_repo_native_bootstrap_order() -> None:
     assert "- role: frontend_build" in site
     assert "- role: network_vm_bootstrap" in site
     assert "- role: service_runtime" in site
+    assert "- role: package_cache_nexus" in site
     assert "- role: verification" in site
+
+
+def test_ansible_nexus_package_cache_role_is_control_plane_only() -> None:
+    repo = Path(__file__).resolve().parents[1]
+    site = (repo / "ansible" / "site.yml").read_text(encoding="utf-8")
+    worker = (repo / "ansible" / "worker.yml").read_text(encoding="utf-8")
+    role = repo / "ansible" / "roles" / "package_cache_nexus"
+
+    assert "- role: package_cache_nexus" in site
+    assert "package_cache_nexus" not in worker
+    assert (role / "tasks" / "main.yml").exists()
+    assert (role / "templates" / "agent-sandbox-nexus.service.j2").exists()
+
+
+def test_ansible_nexus_package_cache_defaults_and_role_contract() -> None:
+    repo = Path(__file__).resolve().parents[1]
+    defaults = (repo / "ansible" / "group_vars" / "all" / "defaults.yml").read_text(
+        encoding="utf-8"
+    )
+    tasks = (
+        repo / "ansible" / "roles" / "package_cache_nexus" / "tasks" / "main.yml"
+    ).read_text(encoding="utf-8")
+    unit = (
+        repo
+        / "ansible"
+        / "roles"
+        / "package_cache_nexus"
+        / "templates"
+        / "agent-sandbox-nexus.service.j2"
+    ).read_text(encoding="utf-8")
+
+    assert "package_cache: true" in defaults
+    assert 'agent_sandbox_nexus_version: "3.91.1-04"' in defaults
+    assert "agent_sandbox_nexus_port: 8081" in defaults
+    assert 'agent_sandbox_nexus_bind_host: "0.0.0.0"' in defaults
+    assert 'agent_sandbox_nexus_pypi_proxy_repository: "pypi-proxy"' in defaults
+    assert 'agent_sandbox_nexus_pypi_group_repository: "pypi-all"' in defaults
+    assert 'agent_sandbox_nexus_npm_proxy_repository: "npm-proxy"' in defaults
+    assert 'agent_sandbox_nexus_npm_group_repository: "npm-all"' in defaults
+    assert "agent_sandbox_package_cache_allowed_tcp_ports" in defaults
+    assert "[agent_sandbox_nexus_port]" in defaults
+    assert "agent_sandbox_worker_pypi_index_url" in defaults
+    assert "agent_sandbox_worker_npm_registry_url" in defaults
+
+    assert "agent_sandbox_nexus_admin_password must be set from Vault" in tasks
+    assert "Download pinned Nexus archive" in tasks
+    assert "agent-sandbox-nexus.service" in tasks
+    assert "/service/rest/v1/security/users\"" in tasks
+    assert "/service/rest/v1/security/user\"" not in tasks
+    assert "service/rest/v1/security/anonymous" in tasks
+    assert "repositories/pypi/proxy" in tasks
+    assert "repositories/pypi/group" in tasks
+    assert "repositories/npm/proxy" in tasks
+    assert "repositories/npm/group" in tasks
+    assert "https://pypi.org/" in defaults
+    assert "https://registry.npmjs.org" in defaults
+    assert "ExecStart={{ agent_sandbox_nexus_current_link }}/bin/nexus run" in unit
+    assert "User={{ agent_sandbox_nexus_user }}" in unit
 
 
 def test_ansible_repo_checkout_supports_private_deploy_key() -> None:
@@ -158,3 +218,14 @@ def test_ansible_systemd_install_passes_service_profile() -> None:
 
     assert "AGENT_SANDBOX_SERVICE_PROFILE" in text
     assert "{{ agent_sandbox_service_profile }}" in text
+
+
+def test_ansible_verification_checks_nexus_package_cache() -> None:
+    repo = Path(__file__).resolve().parents[1]
+    verification = (
+        repo / "ansible" / "roles" / "verification" / "tasks" / "main.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "agent-sandbox-nexus.service" in verification
+    assert "agent_sandbox_nexus_port" in verification
+    assert "http://127.0.0.1:{{ agent_sandbox_nexus_port }}/service/rest/v1/status" in verification

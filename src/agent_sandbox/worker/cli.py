@@ -41,6 +41,25 @@ def main() -> None:
             "Repeat for worker-level toolchain caches."
         ),
     )
+    parser.add_argument(
+        "--allowed-git-source-prefix",
+        action="append",
+        default=None,
+        help=(
+            "Allowed repo_source prefix for worker-side Git clones. "
+            "Repeat to allow multiple control-plane mirror prefixes."
+        ),
+    )
+    parser.add_argument(
+        "--git-ssh-source-dir",
+        type=Path,
+        default=(
+            Path(os.environ["AGENT_SANDBOX_WORKER_GIT_SSH_SOURCE_DIR"])
+            if os.environ.get("AGENT_SANDBOX_WORKER_GIT_SSH_SOURCE_DIR")
+            else None
+        ),
+        help="Directory containing restricted Git SSH config/key copied into session agent homes.",
+    )
     args = parser.parse_args()
     sandbox_profile = worker_sandbox_profile(args.sandbox_profile).with_overrides(
         network_mode=args.docker_network,
@@ -56,6 +75,8 @@ def main() -> None:
             sandbox_profile=sandbox_profile,
             docker_network=None,
             read_only_mounts=args.readonly_mount,
+            allowed_git_source_prefixes=args.allowed_git_source_prefix,
+            git_ssh_source_dir=args.git_ssh_source_dir,
         ),
         host=args.host,
         port=args.port,

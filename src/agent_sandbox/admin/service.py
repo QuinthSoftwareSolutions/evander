@@ -3810,6 +3810,31 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
         }
 
     @staticmethod
+    def _container_execution_sort_key(record: Any) -> tuple[datetime, str]:
+        timestamp = (
+            getattr(record, "started_at", None)
+            or getattr(record, "created_at", None)
+            or getattr(record, "updated_at", None)
+            or datetime.min.replace(tzinfo=UTC)
+        )
+        return timestamp, str(getattr(record, "execution_id", "") or "")
+
+    @classmethod
+    def _container_session_status(cls, records: list[Any]) -> str:
+        if not records:
+            return "prepared"
+        statuses = [cls._container_agent_status(record.last_status) for record in records]
+        if "running" in statuses:
+            return "running"
+        if "starting" in statuses:
+            return "starting"
+        latest = max(records, key=cls._container_execution_sort_key)
+        latest_status = cls._container_agent_status(latest.last_status)
+        if latest_status == "failed":
+            return "failed"
+        return "idle"
+
+    @staticmethod
     def _normalize_agent_backend(backend: str | None) -> str:
         selected_backend = str(backend or "libvirt_vm").strip()
         if selected_backend in {"libvirt", "libvirt_vm"}:
@@ -3946,6 +3971,46 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
             },
         )
 
+    def _reconcile_container_execution_records(self, records: list[Any]) -> list[Any]:
+        reconciled: list[Any] = []
+        for record in records:
+            status = self._container_agent_status(record.last_status)
+            if status not in {"starting", "running", "unknown"}:
+                reconciled.append(record)
+                continue
+            try:
+                self._container_worker_backend(directory_path=record.directory_path).inspect(
+                    record.execution_id
+                )
+                record = (
+                    self._container_worker_execution_repository().get(record.execution_id)
+                    or record
+                )
+            except Exception:
+                pass
+            reconciled.append(record)
+        return reconciled
+
+    def _container_execution_payload(self, record: Any) -> dict[str, Any]:
+        status = self._container_agent_status(record.last_status)
+        metadata = dict(record.metadata) if isinstance(record.metadata, dict) else {}
+        image = metadata.get("image")
+        return {
+            "execution_id": record.execution_id,
+            "session_id": record.session_id,
+            "worker_job_id": record.worker_job_id,
+            "worker_url": record.worker_url,
+            "target_name": record.target_name,
+            "status": status,
+            "last_status": record.last_status,
+            "created_at": record.created_at,
+            "started_at": record.started_at,
+            "finished_at": record.finished_at,
+            "updated_at": record.updated_at,
+            "image": image if isinstance(image, str) and image.strip() else None,
+            "metadata": metadata,
+        }
+
     def _agent_record_from_container_execution(
         self,
         record: Any,
@@ -3956,16 +4021,14 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
         message: str | None = None
         if reconcile:
             try:
-                inspected = self._container_worker_backend(
-                    directory_path=record.directory_path
-                ).inspect(record.execution_id)
+                self._container_worker_backend(directory_path=record.directory_path).inspect(
+                    record.execution_id
+                )
             except Exception as exc:
                 message = str(exc)
             else:
-                status = str(inspected.status.value)
-                record = self._container_worker_execution_repository().resolve(
-                    record.execution_id
-                )
+                record = self._container_worker_execution_repository().resolve(record.execution_id)
+                status = self._container_agent_status(record.last_status)
         host = {
             "kind": "container_worker",
             "worker_job_id": record.worker_job_id,
@@ -4004,15 +4067,64 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
             },
         )
 
-    def _agent_record_from_container_session(self, session: SessionManifest) -> AgentRecord:
+    def _agent_record_from_container_session(
+        self,
+        session: SessionManifest,
+        *,
+        executions: list[Any] | None = None,
+        reconcile: bool = False,
+    ) -> AgentRecord:
         metadata = dict(session.metadata) if isinstance(session.metadata, dict) else {}
         target_name = self._container_session_target_name(session)
         labels = _normalize_session_labels(metadata.get("labels"))
+        execution_records = sorted(
+            list(executions or []),
+            key=self._container_execution_sort_key,
+            reverse=True,
+        )
+        if reconcile and execution_records:
+            execution_records = sorted(
+                self._reconcile_container_execution_records(execution_records),
+                key=self._container_execution_sort_key,
+                reverse=True,
+            )
+        latest_execution = execution_records[0] if execution_records else None
+        execution_payloads = [
+            self._container_execution_payload(record) for record in execution_records
+        ]
+        status = self._container_session_status(execution_records)
+        active_count = sum(
+            1
+            for record in execution_records
+            if self._agent_status_is_active(
+                self._container_agent_status(record.last_status)
+            )
+        )
         host: dict[str, Any] = {
             "kind": "container_worker_session",
             "metadata": metadata,
             "session_policy": self._agent_session_policy_payload(session),
+            "executions": execution_payloads,
+            "execution_count": len(execution_records),
+            "active_execution_count": active_count,
         }
+        if latest_execution is not None:
+            latest_metadata = (
+                dict(latest_execution.metadata)
+                if isinstance(latest_execution.metadata, dict)
+                else {}
+            )
+            host.update(
+                {
+                    "latest_execution_id": latest_execution.execution_id,
+                    "worker_job_id": latest_execution.worker_job_id,
+                    "worker_url": latest_execution.worker_url,
+                    "last_status": latest_execution.last_status,
+                }
+            )
+            image = latest_metadata.get("image")
+            if isinstance(image, str) and image.strip():
+                host["image"] = image
         if labels:
             host["labels"] = labels
         return AgentRecord(
@@ -4021,10 +4133,14 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
             target_name=target_name,
             session_id=session.session_id,
             directory_path=self._agent_record_directory_path(session.directory_path),
-            status="prepared",
+            status=status,
             started_at=None,
             finished_at=None,
-            updated_at=session.created_at,
+            updated_at=(
+                latest_execution.updated_at
+                if latest_execution is not None
+                else session.created_at
+            ),
             host=host,
             capabilities={
                 "start": False,
@@ -4032,8 +4148,8 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
                 "resume": False,
                 "enable_disable": False,
                 "kill": False,
-                "logs": False,
-                "stop": False,
+                "logs": bool(execution_records),
+                "stop": active_count > 0,
                 "destroy": True,
             },
         )
@@ -4069,29 +4185,14 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
         if selected_backend == "libvirt_vm":
             return records
 
-        container_records = sorted(
-            self._container_worker_execution_repository().read_all().values(),
-            key=lambda item: (item.updated_at, item.execution_id),
-            reverse=True,
-        )
-        mapped_container_session_ids = {
-            str(record.session_id or "").strip()
-            for record in container_records
-            if str(record.session_id or "").strip()
-        }
-        for container_record in container_records:
-            if not self._agent_record_matches_directory(
-                container_record.directory_path,
-                normalized_directory,
-                direct_only=direct_only,
-            ):
+        container_records_by_session: dict[str, list[Any]] = {}
+        for container_record in (
+            self._container_worker_execution_repository().read_all().values()
+        ):
+            session_id = str(container_record.session_id or "").strip()
+            if not session_id:
                 continue
-            record = self._agent_record_from_container_execution(
-                container_record,
-                reconcile=reconcile_containers,
-            )
-            if include_inactive or self._agent_status_is_active(record.status):
-                records.append(record)
+            container_records_by_session.setdefault(session_id, []).append(container_record)
         for session in sorted(
             self.runtime.session_repository.list_sessions(),
             key=lambda item: (item.created_at, item.session_id),
@@ -4099,15 +4200,17 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
         ):
             if not self._is_container_session(session):
                 continue
-            if session.session_id in mapped_container_session_ids:
-                continue
             if not self._agent_record_matches_directory(
                 session.directory_path,
                 normalized_directory,
                 direct_only=direct_only,
             ):
                 continue
-            record = self._agent_record_from_container_session(session)
+            record = self._agent_record_from_container_session(
+                session,
+                executions=container_records_by_session.get(session.session_id, []),
+                reconcile=reconcile_containers,
+            )
             if include_inactive or self._agent_status_is_active(record.status):
                 records.append(record)
         return records
@@ -4248,6 +4351,10 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
         *,
         require_session: bool,
     ) -> tuple[SessionManifest | None, Any | None]:
+        direct_session = self.runtime.session_repository.get_session(agent_id)
+        if direct_session is not None and self._is_container_session(direct_session):
+            return direct_session, None
+
         repository = self._container_worker_execution_repository()
         try:
             record = repository.resolve(agent_id)
@@ -4260,10 +4367,6 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
             if session is None and require_session:
                 raise ValueError(f"Unknown session: {record.session_id}")
             return session, record
-
-        direct_session = self.runtime.session_repository.get_session(agent_id)
-        if direct_session is not None and self._is_container_session(direct_session):
-            return direct_session, None
 
         matches = [
             session
@@ -4281,6 +4384,16 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
         if require_session:
             raise ValueError(f"Unknown container worker agent target: {agent_id}")
         return None, None
+
+    def _container_execution_records_for_session(self, session_id: str) -> list[Any]:
+        return sorted(
+            [
+                record
+                for record in self._container_worker_execution_repository().read_all().values()
+                if record.session_id == session_id
+            ],
+            key=self._container_execution_sort_key,
+        )
 
     def _resolve_vm_agent_session(self, agent_id: str) -> SessionManifest:
         direct_session = self.runtime.session_repository.get_session(agent_id)
@@ -4493,6 +4606,11 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
             session, record = self._resolve_container_agent_session(
                 agent_id, require_session=False
             )
+            session_id = (
+                str(session.session_id).strip()
+                if session is not None
+                else str(getattr(record, "session_id", "") or "").strip()
+            )
             worker_backend = self._container_worker_backend(
                 directory_path=(
                     session.directory_path
@@ -4500,11 +4618,38 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
                     else getattr(record, "directory_path", None)
                 )
             )
-            try:
-                worker_backend.inspect(agent_id)
-            except Exception:
-                pass
-            return worker_backend.get_log_snapshot(agent_id, lines=lines)
+            if session is None or record is not None:
+                try:
+                    worker_backend.inspect(agent_id)
+                except Exception:
+                    pass
+                return worker_backend.get_log_snapshot(agent_id, lines=lines)
+            execution_records = self._container_execution_records_for_session(session_id)
+            if not execution_records:
+                return f"No container executions have run for session {session_id}.\n"
+            per_execution_lines = lines
+            if lines > 0:
+                per_execution_lines = max(1, lines // max(1, len(execution_records)))
+            chunks: list[str] = []
+            for execution in execution_records:
+                header_parts = [
+                    f"execution={execution.execution_id}",
+                    f"status={self._container_agent_status(execution.last_status)}",
+                    f"worker_job={execution.worker_job_id}",
+                ]
+                if execution.started_at is not None:
+                    header_parts.append(f"started={execution.started_at.isoformat()}")
+                if execution.finished_at is not None:
+                    header_parts.append(f"finished={execution.finished_at.isoformat()}")
+                try:
+                    text = worker_backend.get_log_snapshot(
+                        execution.execution_id,
+                        lines=per_execution_lines,
+                    ).rstrip()
+                except Exception as exc:
+                    text = f"[log unavailable: {exc}]"
+                chunks.append("=== " + " ".join(header_parts) + " ===\n" + text)
+            return "\n\n".join(chunks).rstrip() + "\n"
         raise ValueError(f"Unknown agent backend: {selected_backend}")
 
     def run_admin_agent_action(
@@ -4564,6 +4709,7 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
             session, record = self._resolve_container_agent_session(
                 agent_id, require_session=False
             )
+            is_session_target = session is not None and record is None
             worker_backend = self._container_worker_backend(
                 directory_path=(
                     session.directory_path
@@ -4572,20 +4718,69 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
                 )
             )
             if action == "stop":
-                status = worker_backend.stop(agent_id)
+                if session is not None and record is None:
+                    execution_records = self._container_execution_records_for_session(
+                        session.session_id
+                    )
+                    active_records = [
+                        candidate
+                        for candidate in execution_records
+                        if self._agent_status_is_active(
+                            self._container_agent_status(candidate.last_status)
+                        )
+                    ]
+                    if not active_records:
+                        raise ValueError(
+                            f"No active container executions for session {session.session_id}"
+                        )
+                    statuses = [
+                        worker_backend.stop(candidate.execution_id)
+                        for candidate in active_records
+                    ]
+                    status = statuses[-1]
+                    message = (
+                        f"Stopped {len(statuses)} active container execution"
+                        f"{'' if len(statuses) == 1 else 's'} for session {session.session_id}"
+                    )
+                else:
+                    status = worker_backend.stop(agent_id)
+                    message = status.message or "stop completed"
             elif action == "destroy":
-                status = worker_backend.destroy(agent_id)
+                if session is not None and record is None:
+                    execution_records = self._container_execution_records_for_session(
+                        session.session_id
+                    )
+                    if not execution_records:
+                        raise ValueError(
+                            f"No container executions for session {session.session_id}"
+                        )
+                    statuses = [
+                        worker_backend.destroy(candidate.execution_id)
+                        for candidate in execution_records
+                    ]
+                    status = statuses[-1]
+                    message = (
+                        f"Destroyed {len(statuses)} container execution"
+                        f"{'' if len(statuses) == 1 else 's'} for session {session.session_id}"
+                    )
+                else:
+                    status = worker_backend.destroy(agent_id)
+                    message = status.message or "destroy completed"
             else:
                 raise LookupError(f"Unknown container worker agent action: {action}")
             return {
                 "success": True,
-                "agent_id": status.execution_id,
+                "agent_id": session.session_id if is_session_target else status.execution_id,
                 "backend": "container_worker_vm",
-                "target_name": status.target_name,
+                "target_name": (
+                    self._container_session_target_name(session)
+                    if is_session_target
+                    else status.target_name
+                ),
                 "action": action,
-                "message": status.message or f"{action} completed",
+                "message": message,
                 "status": status.status.value,
-                "session_id": status.session_id,
+                "session_id": session.session_id if session is not None else status.session_id,
             }
         raise ValueError(f"Unknown agent backend: {selected_backend}")
 

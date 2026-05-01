@@ -17,6 +17,8 @@ container_worker_job_timeout_seconds: 1800
 container_worker_guest_openai_base_url: "http://<control-plane-private-ip>:11434/v1"
 container_worker_guest_gateway_url: "http://<control-plane-private-ip>:8000/mcp"
 container_worker_guest_nuget_relay_base_url: "http://<control-plane-private-ip>:11666"
+container_worker_guest_pypi_index_url: "http://<control-plane-private-ip>:8081/repository/pypi-all/simple"
+container_worker_guest_npm_registry_url: "http://<control-plane-private-ip>:8081/repository/npm-all/"
 ```
 
 For directory-scoped runtime config, put these values on the root `providers` domain. Start the worker daemon on the worker VM with a matching token:
@@ -56,6 +58,13 @@ fallback packages are worker-level caches mounted read-only into containers:
 The Ansible role creates the cache directories under `agent_sandbox_worker_toolchain_cache_root`
 and wires them into the daemon with repeated `--readonly-mount` flags. Populate those caches through
 an operator-controlled path; they are not baked into the image and secrets are not mounted.
+The Node cache must be populated before npm workflows are expected to pass; the session profile adds
+that mounted Node/npm path to `PATH`.
+
+Container sessions write `/home/agent/.config/pip/pip.conf` and `/home/agent/.npmrc` so `pip` and
+`npm` resolve through the control-plane Nexus package cache. The same URLs are exported as
+`PIP_INDEX_URL` and `NPM_CONFIG_REGISTRY` from `/home/agent/.agent-sandbox/session.env`, with
+`PIP_TRUSTED_HOST` added for plain HTTP Nexus endpoints.
 
 The daemon defaults to the `default` sandbox profile. To select the stricter profile:
 
@@ -87,7 +96,7 @@ Containers are disposable. Continuity comes from mounting the same `workspace/` 
 
 The daemon does not rewrite commands into `codex resume`. Callers must send the exact command they want to execute. The daemon preserves `/home/agent` and `/workspace` so those commands can resume naturally.
 
-If a request includes `repo_source`, the daemon clones it only when `workspace/` is empty. Existing workspace contents are left untouched.
+If a request includes `repo_source`, the daemon clones it only when `workspace/` is empty. Existing workspace contents are left untouched. Worker Git intake is prefix-gated: deployed workers should be started with one or more `--allowed-git-source-prefix` values, and a missing prefix list means all `repo_source` values are rejected.
 
 The worker API also exposes a session-preparation surface used by portable
 `effect:agent:*` workflow nodes:
@@ -99,6 +108,13 @@ The worker API also exposes a session-preparation surface used by portable
 Those endpoints do not accept raw environment variables or secrets. Prompt and exec effects still
 use typed container jobs: the host builds an `ExecutionSpec.command`, starts the job, waits through
 the relevant completion path, then removes the container while preserving the session directory.
+
+For `container_worker_vm`, `effect:agent:clone-repo` does not send upstream GitHub or Azure DevOps
+URLs to the clone API. The control plane resolves and refreshes a deterministic bare mirror under
+the configured `git_root`, rewrites the worker clone URL to `ssh://<git_ssh_alias><git_root>/<mirror>.git`,
+and fails before contacting the worker if the upstream refresh fails or the requested branch is not
+present. The in-container repo can still record the canonical upstream URL with Git `insteadOf`, but
+all fetch and push traffic goes through the private restricted-SSH mirror.
 
 `effect:agent:create` on `container_worker_vm` writes the session bootstrap files under
 `/home/agent`: `.agent-sandbox/session.env`, shell profiles, Codex config in both supported
@@ -178,7 +194,7 @@ Routes:
 - `GET /v1/jobs/{id}/artifacts`
 - `GET /healthz`
 
-`POST /v1/jobs` accepts `session_id`, optional `job_id`, `image`, `command`, optional `repo_source`, optional `clone_branch`, `resource_limits`, and sanitized `metadata`. Raw `env`, `environment`, and `environment_variables` request fields are rejected.
+`POST /v1/jobs` accepts `session_id`, optional `job_id`, `image`, `command`, optional `repo_source`, optional `clone_branch`, `resource_limits`, and sanitized `metadata`. Raw `env`, `environment`, and `environment_variables` request fields are rejected. If `repo_source` is present, it must start with a configured allowed Git source prefix.
 
 ## Docker Constraints
 
@@ -196,9 +212,10 @@ Docker is used as a local container runtime on the worker VM. The default sandbo
 - working directory `/workspace`
 
 The Docker network can be overridden with worker config or `--docker-network`, but `host` is refused.
-When Codex or package restores need the control-plane gateway, OpenAI relay, or NuGet relay, choose a
-non-host Docker network and worker VM routing/firewall rules that allow those specific private
-control-plane endpoints.
+When Codex or package restores need the control-plane gateway, OpenAI relay, NuGet relay, or Nexus
+package cache, choose a non-host Docker network and worker VM routing/firewall rules that allow only
+those specific private control-plane endpoints. Workers should not have direct outbound access to
+`pypi.org` or `registry.npmjs.org`; Nexus is the private PyPI/npm egress point.
 
 The `strict` sandbox profile keeps the default profile behavior and also adds:
 
@@ -218,11 +235,16 @@ The job store must not contain request headers, bearer tokens, host credentials,
 
 ## Security Boundaries
 
-The worker is treated as an untrusted execution surface. The host sends only explicit job fields: session id, stable job id, image, command, optional repo source, optional clone branch, resource limits, and sanitized caller metadata. It does not send raw environment variables, OpenAI keys, Azure DevOps PATs, GitHub tokens, host credentials, or request headers.
+The worker is treated as an untrusted execution surface. The host sends only explicit job fields: session id, stable job id, image, command, optional mirror repo source, optional clone branch, resource limits, and sanitized caller metadata. It does not send raw environment variables, OpenAI keys, Azure DevOps PATs, GitHub tokens, host credentials, or request headers.
 
 Secret-like metadata keys are redacted before the host sends the request and before the host mapping is stored. Raw `env`, `environment`, and `environment_variables` fields remain rejected by the worker request model.
 
 The container sandbox profile reduces accidental and straightforward container privilege exposure. It does not turn containers into a VM-equivalent trust boundary.
+
+The worker and its containers should not have direct GitHub/Azure DevOps egress in this mode.
+Required private egress is limited to the control-plane SSH endpoint for Git mirrors and the
+configured control-plane gateway, OpenAI relay, HTTP target relay, and package relay endpoints.
+npm and pip need their own registry proxy or mirror; they are not handled by the Git mirror path.
 
 ## Current Limitations
 

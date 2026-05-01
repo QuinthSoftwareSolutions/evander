@@ -44,11 +44,19 @@ class FakeContainerRuntime:
         return self.logs.get(record.job_id, f"log for {record.job_id}\n")
 
 
-def _client(tmp_path: Path, runtime: FakeContainerRuntime | None = None) -> TestClient:
+def _client(
+    tmp_path: Path,
+    runtime: FakeContainerRuntime | None = None,
+    *,
+    allowed_git_source_prefixes: list[str] | None = None,
+    git_ssh_source_dir: Path | None = None,
+) -> TestClient:
     app = create_app(
         runtime_dir=tmp_path / "runtime",
         worker_root=tmp_path / "worker-root",
         container_runtime=runtime or FakeContainerRuntime(),
+        allowed_git_source_prefixes=allowed_git_source_prefixes,
+        git_ssh_source_dir=git_ssh_source_dir,
         token="test-token",
     )
     return TestClient(app)
@@ -156,6 +164,29 @@ def test_session_prepare_and_file_write_surface_targets_durable_paths(tmp_path: 
     root = tmp_path / "worker-root" / "sessions" / "session-1"
     assert (root / "workspace" / "AGENT_TASK.yaml").read_text(encoding="utf-8") == "task: test\n"
     assert (root / "agent_home" / "AGENTS.md").read_text(encoding="utf-8") == "# Agent\n"
+
+
+def test_session_prepare_copies_restricted_git_ssh_into_agent_home(tmp_path: Path) -> None:
+    ssh_source = tmp_path / "worker-ssh"
+    ssh_source.mkdir()
+    (ssh_source / "agent-sandbox-git").write_text("private-key\n", encoding="utf-8")
+    (ssh_source / "agent-sandbox-git.pub").write_text("public-key\n", encoding="utf-8")
+    (ssh_source / "config").write_text("Host agent-sandbox-git-host\n", encoding="utf-8")
+    (ssh_source / "known_hosts").write_text("known-host\n", encoding="utf-8")
+    client = _client(tmp_path, git_ssh_source_dir=ssh_source)
+
+    response = client.post(
+        "/v1/sessions",
+        headers=_auth(),
+        json={"session_id": "session-1"},
+    )
+
+    assert response.status_code == 201
+    target = tmp_path / "worker-root" / "sessions" / "session-1" / "agent_home" / ".ssh"
+    assert (target / "agent-sandbox-git").read_text(encoding="utf-8") == "private-key\n"
+    assert (target / "config").read_text(encoding="utf-8") == "Host agent-sandbox-git-host\n"
+    assert oct((target / "agent-sandbox-git").stat().st_mode & 0o777) == "0o600"
+    assert oct((target / "agent-sandbox-git.pub").stat().st_mode & 0o777) == "0o644"
 
 
 def test_session_delete_removes_durable_paths_and_worker_jobs(tmp_path: Path) -> None:
@@ -267,7 +298,7 @@ def test_session_repo_clone_clones_only_when_workspace_is_empty(tmp_path: Path) 
         capture_output=True,
         text=True,
     )
-    client = _client(tmp_path)
+    client = _client(tmp_path, allowed_git_source_prefixes=[str(source)])
 
     first = client.post(
         "/v1/sessions/session-1/repo",
@@ -287,6 +318,60 @@ def test_session_repo_clone_clones_only_when_workspace_is_empty(tmp_path: Path) 
     assert second.json()["cloned"] is False
     workspace = tmp_path / "worker-root" / "sessions" / "session-1" / "workspace"
     assert (workspace / "README.md").read_text(encoding="utf-8") == "hello\n"
+
+
+def test_session_repo_clone_rejects_sources_without_allowed_prefix(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+
+    response = client.post(
+        "/v1/sessions/session-1/repo",
+        headers=_auth(),
+        json={"repo_source": "https://github.com/example/repo.git"},
+    )
+
+    assert response.status_code == 400
+    assert "prefixes are not configured" in response.json()["error"]
+
+
+def test_session_repo_clone_rejects_sources_outside_allowed_prefix(tmp_path: Path) -> None:
+    client = _client(
+        tmp_path,
+        allowed_git_source_prefixes=["ssh://agent-sandbox-git-host/opt/git/"],
+    )
+
+    response = client.post(
+        "/v1/sessions/session-1/repo",
+        headers=_auth(),
+        json={"repo_source": "https://github.com/example/repo.git"},
+    )
+
+    assert response.status_code == 400
+    assert "repo_source is not allowed" in response.json()["error"]
+
+
+def test_job_repo_clone_enforces_allowed_prefix(tmp_path: Path) -> None:
+    runtime = FakeContainerRuntime()
+    client = _client(
+        tmp_path,
+        runtime,
+        allowed_git_source_prefixes=["ssh://agent-sandbox-git-host/opt/git/"],
+    )
+
+    response = client.post(
+        "/v1/jobs",
+        headers=_auth(),
+        json={
+            "session_id": "session-1",
+            "job_id": "job-1",
+            "image": "codex:latest",
+            "command": ["true"],
+            "repo_source": "git@ssh.dev.azure.com:v3/org/project/repo",
+        },
+    )
+
+    assert response.status_code == 400
+    assert "repo_source is not allowed" in response.json()["error"]
+    assert runtime.started == []
 
 
 def test_container_mount_paths_are_persisted_for_workspace_and_agent_home(tmp_path: Path) -> None:
