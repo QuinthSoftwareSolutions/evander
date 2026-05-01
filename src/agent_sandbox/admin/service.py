@@ -437,6 +437,7 @@ _GATE_DEFINITION_ADAPTER = TypeAdapter(GateDefinitionDiscriminated)
 _EFFECT_DEFINITION_ADAPTER = TypeAdapter(EffectDefinitionDiscriminated)
 _QUERY_DEFINITION_ADAPTER = TypeAdapter(QueryDefinitionDiscriminated)
 _EDGE_DEFINITION_ADAPTER = TypeAdapter(EdgeDefinition)
+_SYSTEM_MANAGED_WORKFLOW_NODE_IDS = frozenset({"system.chat_assistant"})
 
 
 def _module_project_root() -> Path:
@@ -525,6 +526,10 @@ def _workflow_config_for_legacy_mutation_response(config: dict[str, object]) -> 
             for entry in entries
         ]
     return response
+
+
+def _is_system_managed_workflow_node_id(node_id: str) -> bool:
+    return str(node_id or "").strip() in _SYSTEM_MANAGED_WORKFLOW_NODE_IDS
 
 
 def _field_option(value: str, label: str | None = None) -> WorkflowEditorFieldOption:
@@ -5448,6 +5453,7 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
                 mode="json", exclude_none=True
             )
         composed_config = self._compose_workflow_editor_config(raw_config)
+        composed_config = self._strip_system_managed_workflows(composed_config)
         normalized_candidate = self._normalize_workflow_editor_config(composed_config)
         normalized_config = self._validate_worker_global_config_payload(
             "trigger-orchestrator", normalized_candidate
@@ -5490,8 +5496,13 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
         *,
         config: dict[str, object],
         layout: dict[str, object] | None = None,
+        base_config: dict[str, object] | None = None,
     ) -> WorkflowEditorValidationPayload:
-        normalized_candidate = self._normalize_workflow_editor_config(config)
+        merged_config = self._merge_system_managed_workflows(
+            editable_config=config,
+            base_config=base_config,
+        )
+        normalized_candidate = self._normalize_workflow_editor_config(merged_config)
         normalized_config = self._validate_worker_global_config_payload(
             "trigger-orchestrator", normalized_candidate
         )
@@ -5506,7 +5517,7 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
             node_ids=self._collect_workflow_node_ids(normalized_config),
         )
         return WorkflowEditorValidationPayload(
-            config=normalized_config,
+            config=self._strip_system_managed_workflows(normalized_config),
             layout=normalized_layout,
             validation_diagnostics=[
                 {"code": "domain_validation", "message": message} for message in diagnostics
@@ -5529,13 +5540,19 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
                 raise ValueError(f"worker config file {config_path} must contain a JSON object")
             raw_config = loaded_config
 
-        validation = self._validate_workflow_editor_document(config=config, layout=layout)
+        validation = self._validate_workflow_editor_document(
+            config=config, layout=layout, base_config=raw_config
+        )
+        merged_config = self._merge_system_managed_workflows(
+            editable_config=validation.config,
+            base_config=raw_config,
+        )
         layout_path = self._workflow_editor_layout_path(raw_config)
         config_path.parent.mkdir(parents=True, exist_ok=True)
         layout_path.parent.mkdir(parents=True, exist_ok=True)
         pack_save = self._workflow_editor_pack_backed_save_paths(raw_config)
         if pack_save is None:
-            self._write_json_file_atomic(config_path, validation.config)
+            self._write_json_file_atomic(config_path, merged_config)
         else:
             pack_path, workflow_packs = pack_save
             pack_path.parent.mkdir(parents=True, exist_ok=True)
@@ -5543,7 +5560,7 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
                 config_path=config_path,
                 pack_path=pack_path,
                 workflow_packs=workflow_packs,
-                validated_config=validation.config,
+                validated_config=merged_config,
             )
         self._write_json_file_atomic(layout_path, validation.layout)
         saved_at = datetime.fromtimestamp(config_path.stat().st_mtime, tz=UTC)
@@ -6223,12 +6240,104 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
             raise ValueError(f"Workflow layout references unknown node IDs: {unknown_list}")
         return {"nodes": normalized_nodes}
 
+    def _strip_system_managed_workflows(self, config: dict[str, object]) -> dict[str, object]:
+        candidate = json.loads(json.dumps(config))
+        if not isinstance(candidate, dict):
+            return config
+        system_ids: set[str] = set()
+        for collection_name in ("triggers", "gates", "effects", "queries"):
+            entries = candidate.get(collection_name)
+            if not isinstance(entries, list):
+                continue
+            candidate[collection_name] = [
+                entry
+                for entry in entries
+                if not (
+                    isinstance(entry, dict)
+                    and _is_system_managed_workflow_node_id(str(entry.get("id") or "").strip())
+                )
+            ]
+            system_ids.update(
+                str(entry.get("id") or "").strip()
+                for entry in entries
+                if isinstance(entry, dict)
+                and _is_system_managed_workflow_node_id(str(entry.get("id") or "").strip())
+            )
+        if isinstance(candidate.get("edges"), list) and system_ids:
+            candidate["edges"] = [
+                edge
+                for edge in candidate["edges"]
+                if not (
+                    isinstance(edge, dict)
+                    and (
+                        str(edge.get("source_id") or "").strip() in system_ids
+                        or str(edge.get("target_id") or "").strip() in system_ids
+                    )
+                )
+            ]
+        return candidate
+
+    def _merge_system_managed_workflows(
+        self, *, editable_config: dict[str, object], base_config: dict[str, object] | None
+    ) -> dict[str, object]:
+        merged = json.loads(json.dumps(editable_config))
+        if not isinstance(merged, dict) or not isinstance(base_config, dict):
+            return merged
+        system_nodes: dict[str, list[dict[str, object]]] = {}
+        system_ids: set[str] = set()
+        for collection_name in ("triggers", "gates", "effects", "queries"):
+            entries = base_config.get(collection_name)
+            if not isinstance(entries, list):
+                continue
+            nodes = [
+                dict(entry)
+                for entry in entries
+                if isinstance(entry, dict)
+                and _is_system_managed_workflow_node_id(str(entry.get("id") or "").strip())
+            ]
+            if nodes:
+                system_nodes[collection_name] = nodes
+                system_ids.update(str(entry.get("id") or "").strip() for entry in nodes)
+        for collection_name in ("triggers", "gates", "effects", "queries"):
+            current_entries = merged.get(collection_name)
+            editable_entries = (
+                [entry for entry in current_entries if isinstance(entry, dict)]
+                if isinstance(current_entries, list)
+                else []
+            )
+            editable_entries = [
+                entry
+                for entry in editable_entries
+                if not _is_system_managed_workflow_node_id(str(entry.get("id") or "").strip())
+            ]
+            editable_entries.extend(system_nodes.get(collection_name, []))
+            merged[collection_name] = editable_entries
+        if isinstance(base_config.get("edges"), list) and system_ids:
+            editable_edges = (
+                [edge for edge in merged.get("edges", []) if isinstance(edge, dict)]
+                if isinstance(merged.get("edges"), list)
+                else []
+            )
+            editable_edges.extend(
+                dict(edge)
+                for edge in base_config["edges"]
+                if isinstance(edge, dict)
+                and (
+                    str(edge.get("source_id") or "").strip() in system_ids
+                    or str(edge.get("target_id") or "").strip() in system_ids
+                )
+            )
+            merged["edges"] = editable_edges
+        return merged
+
     def _upsert_trigger_config(
         self, trigger_id: str, payload: dict[str, object]
     ) -> TriggerConfigMutationPayload:
         normalized_trigger_id = str(trigger_id).strip()
         if not normalized_trigger_id:
             raise ValueError("trigger_id is required")
+        if _is_system_managed_workflow_node_id(normalized_trigger_id):
+            raise ValueError(f"Trigger is system-managed and cannot be mutated: {normalized_trigger_id}")
         normalized_payload = dict(payload)
         payload_trigger_id = str(normalized_payload.get("id", "")).strip()
         if payload_trigger_id and payload_trigger_id != normalized_trigger_id:
@@ -6268,6 +6377,8 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
         normalized_trigger_id = str(trigger_id).strip()
         if not normalized_trigger_id:
             raise ValueError("trigger_id is required")
+        if _is_system_managed_workflow_node_id(normalized_trigger_id):
+            raise ValueError(f"Trigger is system-managed and cannot be mutated: {normalized_trigger_id}")
         current = self.trigger_repository.read_document()
         config = dict(current.config)
         triggers_raw = config.get("triggers", [])

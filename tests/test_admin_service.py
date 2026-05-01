@@ -1642,6 +1642,68 @@ def test_admin_service_rejects_duplicate_trigger_ids_with_safe_error_message(
     assert "VERY_SECRET_TOKEN" not in message
 
 
+def test_admin_service_rejects_system_managed_trigger_mutations(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+
+    with pytest.raises(ValueError, match="system-managed"):
+        service.upsert_trigger_config(
+            "system.chat_assistant",
+            {
+                "display_name": "System Chat Assistant",
+                "type": "trigger:manual",
+            },
+        )
+
+    with pytest.raises(ValueError, match="system-managed"):
+        service.delete_trigger_config("system.chat_assistant")
+
+
+def test_workflow_editor_hides_and_preserves_system_managed_workflow_nodes(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    config_path = tmp_path / "config" / "trigger-orchestrator" / "config.json"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(
+        json.dumps(
+            {
+                "runtime_dir": str(tmp_path / "runtime"),
+                "triggers": [
+                    {
+                        "id": "system.chat_assistant",
+                        "display_name": "System Chat Assistant",
+                        "type": "trigger:manual",
+                    },
+                    {
+                        "id": "cron-15m",
+                        "display_name": "Every 15 minutes",
+                        "type": "trigger:cron",
+                        "expression": "*/15 * * * *",
+                    },
+                ],
+                "effects": [
+                    {
+                        "id": "prompt-agent",
+                        "display_name": "Prompt agent",
+                        "type": "effect:agent:prompt",
+                        "prompt": "Summarize",
+                    }
+                ],
+                "edges": [{"source_id": "system.chat_assistant", "target_id": "prompt-agent"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    document = service.read_workflow_editor_document()
+    assert [trigger["id"] for trigger in document.config["triggers"]] == ["cron-15m"]
+    assert document.config["edges"] == []
+
+    save_result = service.save_workflow_editor_document(config=document.config, layout={"nodes": {}})
+    assert [trigger["id"] for trigger in save_result.config["triggers"]] == ["cron-15m"]
+
+    persisted = json.loads(config_path.read_text(encoding="utf-8"))
+    assert any(node.get("id") == "system.chat_assistant" for node in persisted["triggers"])
+
+
 def test_workflow_editor_document_round_trips_config_and_separate_layout(tmp_path: Path) -> None:
     service = AdminService(write_config(tmp_path))
 
