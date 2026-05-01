@@ -12,6 +12,7 @@ from typing import Any
 from urllib.parse import quote, urlsplit, urlunsplit
 
 from agent_sandbox.config import GatewayConfig
+from agent_sandbox.runtime import allowed_tools_for_capability_profile
 from agent_sandbox.execution import (
     ExecutionBackendKind,
     ExecutionStatusKind,
@@ -147,6 +148,15 @@ def selected_execution_backend(
     return backend, config
 
 
+def chat_assistant_scope_for_backend(execution_backend: str, *, user_id: str) -> tuple[str, str]:
+    """Return assistant mapping scope key and effective owner key for backend-specific resolution."""
+    normalized_backend = normalize_optional_string(execution_backend) or "libvirt_vm"
+    normalized_user = normalize_optional_string(user_id) or "anonymous"
+    if normalized_backend == "libvirt_vm":
+        return "chat_assistant", "global"
+    return "chat_assistant", normalized_user
+
+
 def selected_execution_backend_for_target(
     context: EffectRuntimeContext,
     payload: Mapping[str, Any],
@@ -264,7 +274,7 @@ def read_all_sessions(context: EffectRuntimeContext) -> Mapping[str, Any]:
 
 
 def normalize_allowed_tools(value: list[str] | None) -> list[ToolName]:
-    tools: list[ToolName] = [ToolName.APPROVAL_SUBMIT, ToolName.APPROVAL_CHECK]
+    tools: list[ToolName] = []
     seen = set(tools)
     for raw_tool in value or []:
         tool = ToolName(str(raw_tool).strip())
@@ -273,6 +283,10 @@ def normalize_allowed_tools(value: list[str] | None) -> list[ToolName]:
         seen.add(tool)
         tools.append(tool)
     return tools
+
+
+def allowed_tools_for_profile(capability_profile: str | None) -> list[str]:
+    return [tool.value for tool in allowed_tools_for_capability_profile(capability_profile)]
 
 
 def normalize_allowed_script_names(value: list[str] | None) -> list[str]:

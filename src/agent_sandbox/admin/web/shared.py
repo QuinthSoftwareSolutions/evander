@@ -533,6 +533,14 @@ class AdminWebAuth:
         return payload
 
 
+def request_has_privileged_operations(
+    *, auth: AdminWebAuth, service: Any, request: Request
+) -> bool:
+    if not auth.privileged_for_request(request):
+        return False
+    return not service.privileged_helper_required() or service.privileged_operations_unlocked()
+
+
 def json_error(
     message: str, *, status_code: int = 400, details: dict[str, Any] | None = None
 ) -> JSONResponse:

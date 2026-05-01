@@ -14,6 +14,7 @@ type ConfigurationField = {
   label: string;
   kind: "bool" | "int" | "float" | "literal" | "text" | "multiline_text" | "string_list" | "json";
   options: string[];
+  scope?: "directory" | "global";
   root_starts_editable: boolean;
 };
 
@@ -89,6 +90,10 @@ function normalizeFieldValue(field: ConfigurationField, value: unknown): string 
   return value == null ? "" : String(value);
 }
 
+function isGlobalField(field: ConfigurationField): boolean {
+  return field.scope === "global";
+}
+
 function buildTabDraft(tab: ConfigurationTab | undefined, snapshot: TabSnapshot | undefined, directoryPath: string): TabDraft {
   const draft: TabDraft = {};
   const isRoot = directoryPath === "root";
@@ -96,6 +101,14 @@ function buildTabDraft(tab: ConfigurationTab | undefined, snapshot: TabSnapshot 
     for (const field of section.fields) {
       const rawValue = snapshot?.raw.config[field.field_name];
       const hasExplicitValue = Object.prototype.hasOwnProperty.call(snapshot?.raw.config ?? {}, field.field_name);
+      if (isGlobalField(field)) {
+        draft[field.field_name] = {
+          include: true,
+          clear: false,
+          value: normalizeFieldValue(field, hasExplicitValue ? rawValue : snapshot?.effective.config[field.field_name]),
+        };
+        continue;
+      }
       if (isRoot) {
         const clear = !hasExplicitValue && !field.root_starts_editable;
         draft[field.field_name] = {
@@ -178,6 +191,7 @@ export function ConfigurationScreen() {
     privilegedUnlocked,
     selectedDirectoryPath: globalSelectedDirectoryPath,
     setSelectedDirectoryPath: setGlobalSelectedDirectoryPath,
+    refreshAdminState,
   } = useAdminUi();
   const [state, setState] = useState<ConfigurationState | null>(null);
   const [selectedDirectoryPath, setSelectedDirectoryPath] = useState(globalSelectedDirectoryPath);
@@ -263,6 +277,10 @@ export function ConfigurationScreen() {
   const isRoot = selectedDirectoryPath === "root";
   const mutationLocked = !privilegedUnlocked;
   const selectedTabKey = selectedTabDefinition?.key ?? selectedTab;
+  const selectedTabHasGlobalFields = Boolean(
+    selectedTabDefinition?.sections.some((section) => section.fields.some(isGlobalField)),
+  );
+  const saveBlockedByConfigMode = !state?.directory_scoped_config_enabled && !selectedTabHasGlobalFields;
 
   async function reloadCurrentDirectory(options?: { preserveDirty?: boolean }) {
     try {
@@ -285,6 +303,13 @@ export function ConfigurationScreen() {
         for (const field of section.fields) {
           const fieldState = currentDraft[field.field_name];
           if (!fieldState) continue;
+          if (isGlobalField(field)) {
+            payload[field.field_name] = parseFieldValue(field, fieldState.value);
+            continue;
+          }
+          if (!state?.directory_scoped_config_enabled) {
+            continue;
+          }
           if (isRoot) {
             if (fieldState.clear) {
               continue;
@@ -336,8 +361,15 @@ export function ConfigurationScreen() {
         [selectedTab]: buildTabDraft(selectedTabDefinition, payloadResponse.tab_snapshot ?? undefined, selectedDirectoryPath),
       }));
       setDirtyTabs((current) => ({ ...current, [selectedTab]: false }));
-      setStatusMessage(`Saved ${selectedTabDefinition.title} overrides for ${selectedDirectoryPath}.`);
+      setStatusMessage(
+        selectedTabHasGlobalFields
+          ? `Saved ${selectedTabDefinition.title} settings.`
+          : `Saved ${selectedTabDefinition.title} overrides for ${selectedDirectoryPath}.`,
+      );
       setError(null);
+      if (selectedTabHasGlobalFields) {
+        await refreshAdminState();
+      }
       await reloadCurrentDirectory();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
@@ -374,7 +406,7 @@ export function ConfigurationScreen() {
   }
 
   function renderFieldInput(field: ConfigurationField, fieldState: DraftFieldState) {
-    const disabled = loading || saving || !state?.directory_scoped_config_enabled;
+    const disabled = loading || saving || (!isGlobalField(field) && !state?.directory_scoped_config_enabled);
     if (field.kind === "bool") {
       return (
         <select
@@ -396,7 +428,7 @@ export function ConfigurationScreen() {
         >
           {field.options.map((option) => (
             <option key={option} value={option}>
-              {option}
+              {option || "default"}
             </option>
           ))}
         </select>
@@ -465,12 +497,12 @@ export function ConfigurationScreen() {
             </p>
           </div>
           <div className="feature-toolbar-actions icon-actions">
-            <Tooltip content="Save the current tab's explicit overrides for the selected directory.">
+            <Tooltip content={selectedTabHasGlobalFields ? "Save the current tab's settings." : "Save the current tab's explicit overrides for the selected directory."}>
               <button
                 type="button"
                 className="primary"
                 onClick={() => void handleSaveTab()}
-                disabled={saving || loading || !state?.directory_scoped_config_enabled || !selectedTabDefinition || !snapshot || !isDirty || mutationLocked}
+                disabled={saving || loading || saveBlockedByConfigMode || !selectedTabDefinition || !snapshot || !isDirty || mutationLocked}
                 aria-label={saving ? "Saving tab" : "Save tab"}
               >
                 {saving ? "…" : <SaveIcon />}
@@ -521,81 +553,95 @@ export function ConfigurationScreen() {
           </article>
         </div>
 
-        {(selectedTabDefinition?.sections ?? []).map((section) => (
-          <article key={section.title} className="panel section-panel">
-            <button
-              type="button"
-              className="panel-header panel-toggle"
-              onClick={() => toggleSection(section.title)}
-              aria-expanded={!isSectionCollapsed(section.title)}
-            >
-              <div>
-                <h3>{section.title}</h3>
-                <p className="muted-text">
-                  {isRoot
-                    ? "Edit root-level defaults for this section."
-                    : "Enable overrides field-by-field to write only the values that should diverge from the parent directory."}
-                </p>
-              </div>
-              <span className="panel-toggle-indicator">{isSectionCollapsed(section.title) ? "Show" : "Hide"}</span>
-            </button>
-            {!isSectionCollapsed(section.title) ? (
-              <div className="config-field-grid">
-                {section.fields.map((field) => {
-                  const fieldState = tabDraft[field.field_name] ?? {
-                    include: false,
-                    clear: false,
-                    value: normalizeFieldValue(field, undefined),
-                  };
-                  const inherited = snapshot?.parent_defaults.config?.[field.field_name];
-                  const inputDisabled = isRoot ? fieldState.clear : !fieldState.include || fieldState.clear;
-                  return (
-                    <div key={field.field_name} className="config-field-card">
-                      <div className="feature-list-title-row">
-                        <strong>{field.label}</strong>
-                        <Tooltip content={`Underlying config domain: ${field.source_domain}.`}>
-                          <span className="panel-meta">{field.source_domain}</span>
-                        </Tooltip>
-                      </div>
-                      <div className="config-toggle-row">
-                        {!isRoot ? (
-                          <label className="checkbox-row">
-                            <input
-                              type="checkbox"
-                              checked={fieldState.include}
-                              onChange={(event) => updateFieldState(field.field_name, { include: event.target.checked })}
-                              disabled={!state?.directory_scoped_config_enabled || loading || saving}
-                            />
-                            <span>Override</span>
-                          </label>
+        {(selectedTabDefinition?.sections ?? []).map((section) => {
+          const sectionIsGlobal = section.fields.every(isGlobalField);
+          return (
+            <article key={section.title} className="panel section-panel">
+              <button
+                type="button"
+                className="panel-header panel-toggle"
+                onClick={() => toggleSection(section.title)}
+                aria-expanded={!isSectionCollapsed(section.title)}
+              >
+                <div>
+                  <h3>{section.title}</h3>
+                  <p className="muted-text">
+                    {sectionIsGlobal
+                      ? "Edit runtime-global settings for this section."
+                      : isRoot
+                      ? "Edit root-level defaults for this section."
+                      : "Enable overrides field-by-field to write only the values that should diverge from the parent directory."}
+                  </p>
+                </div>
+                <span className="panel-toggle-indicator">{isSectionCollapsed(section.title) ? "Show" : "Hide"}</span>
+              </button>
+              {!isSectionCollapsed(section.title) ? (
+                <div className="config-field-grid">
+                  {section.fields.map((field) => {
+                    const fieldIsGlobal = isGlobalField(field);
+                    const fieldState = tabDraft[field.field_name] ?? {
+                      include: false,
+                      clear: false,
+                      value: normalizeFieldValue(field, undefined),
+                    };
+                    const inherited = snapshot?.parent_defaults.config?.[field.field_name];
+                    const inputDisabled = fieldIsGlobal
+                      ? false
+                      : isRoot
+                      ? fieldState.clear
+                      : !fieldState.include || fieldState.clear;
+                    return (
+                      <div key={field.field_name} className="config-field-card">
+                        <div className="feature-list-title-row">
+                          <strong>{field.label}</strong>
+                          <Tooltip content={fieldIsGlobal ? "Runtime-global admin setting." : `Underlying config domain: ${field.source_domain}.`}>
+                            <span className="panel-meta">{field.source_domain}</span>
+                          </Tooltip>
+                        </div>
+                        {!fieldIsGlobal ? (
+                          <div className="config-toggle-row">
+                            {!isRoot ? (
+                              <label className="checkbox-row">
+                                <input
+                                  type="checkbox"
+                                  checked={fieldState.include}
+                                  onChange={(event) => updateFieldState(field.field_name, { include: event.target.checked })}
+                                  disabled={!state?.directory_scoped_config_enabled || loading || saving}
+                                />
+                                <span>Override</span>
+                              </label>
+                            ) : null}
+                            <label className="checkbox-row">
+                              <input
+                                type="checkbox"
+                                checked={fieldState.clear}
+                                onChange={(event) =>
+                                  updateFieldState(field.field_name, isRoot ? { clear: event.target.checked, include: !event.target.checked } : { clear: event.target.checked })
+                                }
+                                disabled={!state?.directory_scoped_config_enabled || loading || saving || (!isRoot && !fieldState.include)}
+                              />
+                              <span>{isRoot ? "Unset" : "Clear"}</span>
+                            </label>
+                          </div>
                         ) : null}
-                        <label className="checkbox-row">
-                          <input
-                            type="checkbox"
-                            checked={fieldState.clear}
-                            onChange={(event) =>
-                              updateFieldState(field.field_name, isRoot ? { clear: event.target.checked, include: !event.target.checked } : { clear: event.target.checked })
-                            }
-                            disabled={!state?.directory_scoped_config_enabled || loading || saving || (!isRoot && !fieldState.include)}
-                          />
-                          <span>{isRoot ? "Unset" : "Clear"}</span>
-                        </label>
+                        <div className={inputDisabled ? "disabled-block" : ""}>
+                          {renderFieldInput(field, fieldState)}
+                        </div>
+                        {fieldIsGlobal ? (
+                          <div className="panel-meta">Runtime-global setting.</div>
+                        ) : !isRoot ? (
+                          <Tooltip content={inheritedPreview(inherited)} inline={false}>
+                            <div className="panel-meta">{inheritedPreview(inherited)}</div>
+                          </Tooltip>
+                        ) : null}
                       </div>
-                      <div className={inputDisabled ? "disabled-block" : ""}>
-                        {renderFieldInput(field, fieldState)}
-                      </div>
-                      {!isRoot ? (
-                        <Tooltip content={inheritedPreview(inherited)} inline={false}>
-                          <div className="panel-meta">{inheritedPreview(inherited)}</div>
-                        </Tooltip>
-                      ) : null}
-                    </div>
-                  );
-                })}
-              </div>
-            ) : null}
-          </article>
-        ))}
+                    );
+                  })}
+                </div>
+              ) : null}
+            </article>
+          );
+        })}
         {selectedTabDefinition && selectedTabDefinition.sections.length === 0 ? (
           <article className="panel">
             <div className="empty-state">This tab has no editable fields yet.</div>

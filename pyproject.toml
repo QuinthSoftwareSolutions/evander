@@ -56,6 +56,9 @@ package-dir = {"" = "src"}
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+agent_sandbox = ["templates/*.md"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py312"

@@ -5,10 +5,8 @@ from typing import Any
 from uuid import uuid4
 
 from agent_sandbox.execution import ExecutionBackendKind, ExecutionSpec, ExecutionStatusKind
-from agent_sandbox.messaging.agent_prompt_queue import (
-    AgentPromptQueueStore,
-    QueuedAgentPromptRecord,
-)
+from agent_sandbox.messaging.agent_prompt_enqueue import enqueue_agent_prompt
+from agent_sandbox.messaging.agent_prompt_queue import QueuedAgentPromptRecord
 from agent_sandbox.events.provider_models import AgentEnqueuePromptEffectDefinition
 
 from .agent_prompt import AgentPromptEffectProvider
@@ -50,6 +48,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             "model": effect.model,
             "vm_user": effect.vm_user,
             "resume_thread_id": effect.resume_thread_id,
+            "queue_key": effect.queue_key,
         }
         if resolved_config:
             payload.update(dict(resolved_config))
@@ -59,6 +58,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
         vm_user = self._normalize_optional_string(payload.get("vm_user")) or "agent"
         model = self._normalize_optional_string(payload.get("model"))
         resume_thread_id = self._normalize_optional_string(payload.get("resume_thread_id"))
+        queue_key = self._normalize_optional_string(payload.get("queue_key"))
 
         execution_backend, config = selected_execution_backend_for_target(
             context,
@@ -72,6 +72,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 model=model,
                 vm_user=vm_user,
                 resume_thread_id=resume_thread_id,
+                queue_key=queue_key,
                 config=config,
                 effect_id=effect.id,
             )
@@ -101,6 +102,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 vm_user=vm_user,
                 resume_thread_id=resume_thread_id,
                 effect_id=effect.id,
+                queue_key=queue_key,
             )
             return {
                 "success": True,
@@ -130,6 +132,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 vm_user=vm_user,
                 resume_thread_id=resume_thread_id,
                 effect_id=effect.id,
+                queue_key=queue_key,
             )
             message = self._normalize_optional_string(getattr(result, "message", None)) or "<empty>"
             raise RuntimeError(
@@ -159,6 +162,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
         model: str | None,
         vm_user: str,
         resume_thread_id: str | None,
+        queue_key: str | None,
         config: Any,
         effect_id: str,
     ) -> dict[str, Any]:
@@ -191,7 +195,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 vm_user=vm_user,
                 resume_thread_id=resume_thread_id,
                 effect_id=effect_id,
-                queue_key=session_id,
+                queue_key=queue_key or session_id,
             )
             return {
                 "success": True,
@@ -237,7 +241,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 vm_user=vm_user,
                 resume_thread_id=resume_thread_id,
                 effect_id=effect_id,
-                queue_key=session_id,
+                queue_key=queue_key or session_id,
             )
             message = self._normalize_optional_string(exc) or type(exc).__name__
             raise RuntimeError(
@@ -429,21 +433,17 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
         queue_key: str | None = None,
     ) -> QueuedAgentPromptRecord:
         context = self._context()
-        queue_store = AgentPromptQueueStore(
-            context.resolved_config.runtime_dir / "queued-agent-prompts.json"
-        )
-        return queue_store.put(
-            QueuedAgentPromptRecord(
-                queue_key=queue_key or vm_name,
-                target=target,
-                vm_name=vm_name,
-                session_id=session_id,
-                prompt=prompt,
-                model=model,
-                vm_user=vm_user,
-                resume_thread_id=resume_thread_id,
-                effect_id=effect_id,
-            )
+        return enqueue_agent_prompt(
+            runtime_dir=context.resolved_config.runtime_dir,
+            queue_key=queue_key,
+            target=target,
+            vm_name=vm_name,
+            session_id=session_id,
+            prompt=prompt,
+            model=model,
+            vm_user=vm_user,
+            resume_thread_id=resume_thread_id,
+            effect_id=effect_id,
         )
 
     @staticmethod

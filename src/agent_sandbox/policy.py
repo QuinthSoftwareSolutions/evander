@@ -67,6 +67,18 @@ class PolicyEngine:
 
     def require_tool(self, session_id: str, tool_name: ToolName) -> SessionManifest:
         session = self.get_session(session_id)
+        if tool_name.value.startswith("assistant_"):
+            profile = str(session.metadata.get("capability_profile") or "").strip().lower()
+            if not profile:
+                raise PolicyError(
+                    f"Session {session_id} has no capability profile; assistant tool access is denied by default"
+                )
+            if tool_name in {
+                ToolName.ASSISTANT_UPSERT_CONFIG,
+                ToolName.ASSISTANT_CREATE_WORKFLOW,
+                ToolName.ASSISTANT_RUN_SAFE_OPERATION,
+            }:
+                self._require_assistant_mutation_guardrails(session, tool_name)
         has_tool_permission = tool_name in session.allowed_tools
         if tool_name == ToolName.LIST_PENDING_AGENT_PROMPTS and not has_tool_permission:
             has_tool_permission = ToolName.RESPOND_TO_AGENT in session.allowed_tools
@@ -83,6 +95,32 @@ class PolicyEngine:
         }:
             self.require_pr_feedback_streams(session)
         return session
+
+    def _require_assistant_mutation_guardrails(
+        self, session: SessionManifest, tool_name: ToolName
+    ) -> None:
+        metadata = session.metadata if isinstance(session.metadata, dict) else {}
+        mutation_policy = metadata.get("assistant_mutation_policy")
+        if not isinstance(mutation_policy, dict):
+            raise PolicyError(
+                f"Session {session.session_id} is missing metadata.assistant_mutation_policy for "
+                f"{tool_name.value}"
+            )
+        writable_scopes = mutation_policy.get("writable_scopes")
+        if not isinstance(writable_scopes, list) or not any(
+            isinstance(item, str) and item.strip() for item in writable_scopes
+        ):
+            raise PolicyError(
+                f"Session {session.session_id} must define non-empty assistant mutation writable_scopes"
+            )
+        if tool_name == ToolName.ASSISTANT_RUN_SAFE_OPERATION and bool(
+            mutation_policy.get("require_destructive_approval_gate", False)
+        ):
+            approval_gate = str(mutation_policy.get("destructive_approval_gate") or "").strip()
+            if not approval_gate:
+                raise PolicyError(
+                    f"Session {session.session_id} requires destructive approval gate metadata"
+                )
 
     def require_script_name(self, session: SessionManifest, script_name: str) -> str:
         normalized = str(script_name or "").strip()

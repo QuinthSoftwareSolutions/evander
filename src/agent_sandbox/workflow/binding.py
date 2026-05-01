@@ -119,6 +119,7 @@ def resolve_workflow_bindings(
             return fallback
 
     def _consume_reference(reference: _BindingReference) -> Any:
+        reference = _resolve_available_reference(reference)
         output_ref = f"{reference.node_id}.{reference.output_path}"
         output_segments = tuple(segment for segment in reference.output_path.split(".") if segment)
         if not output_segments:
@@ -158,6 +159,16 @@ def resolve_workflow_bindings(
             return f"${{{{{output_ref}}}}}"
         consumed.add(output_ref)
         return resolved_value
+
+    def _resolve_available_reference(reference: _BindingReference) -> _BindingReference:
+        full_reference = f"{reference.node_id}.{reference.output_path}"
+        segments = tuple(segment for segment in full_reference.split(".") if segment)
+        for index in range(len(segments) - 1, 0, -1):
+            node_id = ".".join(segments[:index])
+            output_path = ".".join(segments[index:])
+            if node_id in declared_names or node_id in upstream_payload:
+                return _BindingReference(node_id=node_id, output_path=output_path)
+        return reference
 
     def _render_expression_placeholder(expression: _BindingExpression) -> str:
         rendered = f"{expression.primary.node_id}.{expression.primary.output_path}"

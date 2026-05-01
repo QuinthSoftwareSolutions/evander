@@ -23,7 +23,7 @@ from agent_sandbox.config import (
     TeamsIngestWorkerGlobalConfig,
 )
 from agent_sandbox.execution.container_worker_client import ContainerWorkerClient
-from agent_sandbox.models import ApprovalRequest, ApprovalStatus, SessionManifest, ToolName
+from agent_sandbox.models import ApprovalRequest, ApprovalStatus, SessionManifest, ToolName, VmSummary
 from agent_sandbox.worker.models import (
     WorkerFileWriteRecord,
     WorkerFileWriteRequest,
@@ -170,6 +170,82 @@ def test_list_agents_still_returns_container_sessions_when_vm_inventory_fails(
             reconcile_containers=False,
             backend="libvirt_vm",
         )
+
+
+def test_list_agents_all_directories_includes_vm_and_container_targets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    created = service.create_directory_child("root", "team")
+    assert created.ok is True and created.data is not None
+    team_path = created.data.details.directory.path
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="container-root",
+            vm_provider="container_worker_vm",
+            vm_provider_id="container-root-target",
+            directory_path="root",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "container-root-target",
+            },
+        )
+    )
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="container-team",
+            vm_provider="container_worker_vm",
+            vm_provider_id="container-team-target",
+            directory_path=team_path,
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "container-team-target",
+            },
+        )
+    )
+    list_vms_kwargs: dict[str, Any] = {}
+
+    def fake_list_vms(self: AdminService, **kwargs: Any) -> list[VmSummary]:
+        del self
+        list_vms_kwargs.update(kwargs)
+        return [
+            VmSummary(
+                vm_name="vm-root",
+                directory_paths=["root"],
+                power_state="running",
+                agent_state="running",
+            ),
+            VmSummary(
+                vm_name="vm-team",
+                directory_paths=[team_path],
+                power_state="running",
+                agent_state="running",
+            ),
+        ]
+
+    monkeypatch.setattr(service, "list_vms", MethodType(fake_list_vms, service))
+
+    agents = service.list_agents(
+        directory_path="root",
+        direct_only=False,
+        include_inactive=True,
+        reconcile_containers=False,
+        all_directories=True,
+    )
+
+    assert list_vms_kwargs["directory_path"] is None
+    assert list_vms_kwargs["direct_only"] is False
+    assert {agent.target_name for agent in agents} == {
+        "vm-root",
+        "vm-team",
+        "container-root-target",
+        "container-team-target",
+    }
+    assert {agent.directory_path for agent in agents} == {"root", team_path}
 
 
 def test_create_container_agent_uses_directory_scoped_worker_provider_config(
@@ -1640,6 +1716,157 @@ def test_admin_service_rejects_duplicate_trigger_ids_with_safe_error_message(
     assert "Invalid trigger config:" in message
     assert "Unsupported email provider" in message
     assert "VERY_SECRET_TOKEN" not in message
+
+
+def test_admin_service_rejects_system_managed_trigger_mutations(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+
+    with pytest.raises(ValueError, match="system-managed"):
+        service.upsert_trigger_config(
+            "system.chat_assistant",
+            {
+                "display_name": "System Chat Assistant",
+                "type": "trigger:manual",
+            },
+        )
+
+    with pytest.raises(ValueError, match="system-managed"):
+        service.delete_trigger_config("system.chat_assistant")
+
+    with pytest.raises(ValueError, match="system-managed"):
+        service.upsert_effect_config(
+            "system.chat_assistant.enqueue_prompt",
+            {
+                "display_name": "System enqueue",
+                "type": "effect:agent:enqueue-prompt",
+                "prompt": "hello",
+                "target": "assistant",
+            },
+        )
+
+    with pytest.raises(ValueError, match="system-managed"):
+        service.delete_effect_config("system.chat_assistant.enqueue_prompt")
+
+
+def test_admin_service_chat_post_publishes_hidden_trigger_event(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+
+    record = service.publish_chat_assistant_message(
+        user_id="alice",
+        thread_id="thread-1",
+        user_message_id="msg-1",
+        content="hello",
+        backend="container_worker_vm",
+    )
+
+    assert record["event_id"] == "chat:msg-1"
+    config_path = tmp_path / "config" / "trigger-orchestrator" / "config.json"
+    persisted = json.loads(config_path.read_text(encoding="utf-8"))
+    assert {node["id"] for node in persisted["triggers"]} >= {"system.chat_assistant"}
+    assert {node["id"] for node in persisted["effects"]} >= {
+        "system.chat_assistant.ensure_session",
+        "system.chat_assistant.enqueue_prompt",
+    }
+    enqueue_node = next(
+        node
+        for node in persisted["effects"]
+        if node["id"] == "system.chat_assistant.enqueue_prompt"
+    )
+    assert (
+        enqueue_node["config"]["execution_backend"]
+        == "${{system.chat_assistant.ensure_session.execution_backend}}"
+    )
+    assert (
+        enqueue_node["config"]["queue_key"]
+        == (
+            "chat:${{system.chat_assistant.ensure_session.thread_id}}:"
+            "${{system.chat_assistant.ensure_session.user_message_id}}"
+        )
+    )
+    _merged, changed = service._with_system_chat_assistant_workflow(persisted)
+    assert changed is False
+    queue_payload = json.loads(
+        (tmp_path / "runtime" / "trigger-orchestrator-events.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    queued = queue_payload["chat:msg-1"]
+    assert queued["trigger_id"] == "system.chat_assistant"
+    assert queued["payload"]["content"] == "hello"
+    assert queued["payload"]["backend"] == "container_worker_vm"
+    assert queued["payload"]["assistant_capability_mode"] == "read-only"
+    assert not (tmp_path / "runtime" / "queued-agent-prompts.json").exists()
+
+
+def test_workflow_editor_hides_and_preserves_system_managed_workflow_nodes(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    config_path = tmp_path / "config" / "trigger-orchestrator" / "config.json"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(
+        json.dumps(
+            {
+                "runtime_dir": str(tmp_path / "runtime"),
+                "triggers": [
+                    {
+                        "id": "system.chat_assistant",
+                        "display_name": "System Chat Assistant",
+                        "type": "trigger:manual",
+                    },
+                    {
+                        "id": "cron-15m",
+                        "display_name": "Every 15 minutes",
+                        "type": "trigger:cron",
+                        "expression": "*/15 * * * *",
+                    },
+                ],
+                "effects": [
+                    {
+                        "id": "system.chat_assistant.ensure_session",
+                        "display_name": "Resolve chat assistant session",
+                        "type": "effect:chat-assistant:ensure-session",
+                        "user_id": "${{system.chat_assistant.user_id}}",
+                        "thread_id": "${{system.chat_assistant.thread_id}}",
+                        "user_message_id": "${{system.chat_assistant.user_message_id}}",
+                        "content": "${{system.chat_assistant.content}}",
+                    },
+                    {
+                        "id": "system.chat_assistant.enqueue_prompt",
+                        "display_name": "Enqueue chat assistant prompt",
+                        "type": "effect:agent:enqueue-prompt",
+                        "target": "${{system.chat_assistant.ensure_session.session_id}}",
+                        "prompt": "${{system.chat_assistant.ensure_session.prompt}}",
+                    },
+                    {
+                        "id": "prompt-agent",
+                        "display_name": "Prompt agent",
+                        "type": "effect:agent:prompt",
+                        "prompt": "Summarize",
+                    }
+                ],
+                "edges": [{"source_id": "system.chat_assistant", "target_id": "prompt-agent"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    document = service.read_workflow_editor_document()
+    assert [trigger["id"] for trigger in document.config["triggers"]] == ["cron-15m"]
+    assert [effect["id"] for effect in document.config["effects"]] == ["prompt-agent"]
+    assert document.config["edges"] == []
+
+    save_result = service.save_workflow_editor_document(config=document.config, layout={"nodes": {}})
+    assert [trigger["id"] for trigger in save_result.config["triggers"]] == ["cron-15m"]
+
+    persisted = json.loads(config_path.read_text(encoding="utf-8"))
+    assert any(node.get("id") == "system.chat_assistant" for node in persisted["triggers"])
+    assert {
+        node.get("id")
+        for node in persisted["effects"]
+        if str(node.get("id") or "").startswith("system.chat_assistant")
+    } == {
+        "system.chat_assistant.ensure_session",
+        "system.chat_assistant.enqueue_prompt",
+    }
 
 
 def test_workflow_editor_document_round_trips_config_and_separate_layout(tmp_path: Path) -> None:

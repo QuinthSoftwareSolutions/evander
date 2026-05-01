@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from typing import Any
 
 from agent_sandbox.events.provider_models import AgentCreateEffectDefinition
 
 from .agent_session import (
+    allowed_tools_for_profile,
     as_int_or_none,
     as_string_list,
     as_string_mapping,
@@ -18,6 +20,8 @@ from .agent_session import (
     selected_execution_backend,
 )
 from .base import EffectProviderBase
+
+logger = logging.getLogger(__name__)
 
 
 class AgentCreateEffectProvider(EffectProviderBase):
@@ -33,6 +37,7 @@ class AgentCreateEffectProvider(EffectProviderBase):
             "model": effect.model,
             "vm_user": effect.vm_user,
             "ttl_hours": effect.ttl_hours,
+            "capability_profile": effect.capability_profile,
             "allowed_tools": effect.allowed_tools,
             "allowed_script_names": effect.allowed_script_names,
             "discord_channels": effect.discord_channels,
@@ -54,6 +59,13 @@ class AgentCreateEffectProvider(EffectProviderBase):
         )
         execution_backend, config = selected_execution_backend(
             context, payload, directory_path=directory_path
+        )
+        logger.info(
+            "metric_agent_create_backend_path backend=%s session_id=%s vm_name=%s directory_path=%s",
+            execution_backend,
+            normalize_optional_string(payload.get("session_id")) or "",
+            normalize_optional_string(payload.get("vm_name")) or "",
+            directory_path,
         )
         if execution_backend == "libvirt_vm":
             return self._execute_libvirt(payload, execution_backend=execution_backend)
@@ -122,15 +134,23 @@ class AgentCreateEffectProvider(EffectProviderBase):
             "execution_backend": "container_worker_vm",
             "labels": labels,
         }
+        capability_profile = normalize_optional_string(payload.get("capability_profile"))
+        if capability_profile:
+            metadata["capability_profile"] = capability_profile
         if model:
             metadata["model"] = model
+        requested_tools = as_string_list(payload.get("allowed_tools"))
+        if requested_tools:
+            resolved_allowed_tools = requested_tools
+        else:
+            resolved_allowed_tools = allowed_tools_for_profile(capability_profile)
         manifest = build_container_session_manifest(
             config=effective_config_for_directory(context, directory_path),
             session_id=session_id,
             directory_path=directory_path,
             model=model,
             ttl_hours=as_int_or_none(payload.get("ttl_hours")),
-            allowed_tools=as_string_list(payload.get("allowed_tools")),
+            allowed_tools=resolved_allowed_tools,
             allowed_script_names=as_string_list(payload.get("allowed_script_names")),
             discord_channels=as_string_list(payload.get("discord_channels")),
             email_mailboxes=as_string_list(payload.get("email_mailboxes")),

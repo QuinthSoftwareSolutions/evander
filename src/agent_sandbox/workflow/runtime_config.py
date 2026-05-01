@@ -21,6 +21,15 @@ from agent_sandbox.workflow.packs import _pack_path, compose_workflow_ir
 
 logger = logging.getLogger(__name__)
 
+_SYSTEM_MANAGED_WORKFLOW_NODE_IDS = frozenset(
+    {
+        "system.chat_assistant",
+        "system.chat_assistant.ensure_session",
+        "system.chat_assistant.enqueue_prompt",
+    }
+)
+_WORKFLOW_NODE_COLLECTIONS = ("triggers", "gates", "effects", "queries")
+
 
 def _worker_global_config_path(project_dir: Path) -> Path:
     return project_dir / "config" / "trigger-orchestrator" / "config.json"
@@ -187,12 +196,100 @@ def _compose_configured_workflow_ir(
         inline_ir=inline_ir if has_inline_ir else None,
     )
     merged = dict(payload)
-    merged["triggers"] = composition.triggers
-    merged["gates"] = composition.gates
-    merged["effects"] = composition.effects
-    merged["queries"] = composition.queries
-    merged["edges"] = composition.edges
+    for collection_name in _WORKFLOW_NODE_COLLECTIONS:
+        merged[collection_name] = _merge_system_managed_workflow_nodes(
+            composed_entries=getattr(composition, collection_name),
+            configured_entries=payload.get(collection_name),
+        )
+    merged["edges"] = _merge_system_managed_workflow_edges(
+        composed_edges=composition.edges,
+        configured_edges=payload.get("edges"),
+        node_ids=_collect_workflow_node_ids(merged),
+    )
     return merged
+
+
+def _merge_system_managed_workflow_nodes(
+    *, composed_entries: list[dict[str, Any]], configured_entries: object
+) -> list[dict[str, Any]]:
+    system_entries: list[dict[str, Any]] = []
+    if isinstance(configured_entries, list):
+        system_entries = [
+            dict(entry)
+            for entry in configured_entries
+            if isinstance(entry, dict)
+            and _is_system_managed_workflow_node_id(entry.get("id"))
+        ]
+    if not system_entries:
+        return composed_entries
+
+    system_ids = {_workflow_node_id(entry) for entry in system_entries}
+    merged = [entry for entry in composed_entries if _workflow_node_id(entry) not in system_ids]
+    merged.extend(system_entries)
+    return merged
+
+
+def _merge_system_managed_workflow_edges(
+    *, composed_edges: list[dict[str, Any]], configured_edges: object, node_ids: set[str]
+) -> list[dict[str, Any]]:
+    system_edges: list[dict[str, Any]] = []
+    if isinstance(configured_edges, list):
+        system_edges = [
+            dict(edge)
+            for edge in configured_edges
+            if isinstance(edge, dict)
+            and (
+                _is_system_managed_workflow_node_id(edge.get("source_id"))
+                or _is_system_managed_workflow_node_id(edge.get("target_id"))
+            )
+            and _workflow_edge_source_id(edge) in node_ids
+            and _workflow_edge_target_id(edge) in node_ids
+        ]
+    if not system_edges:
+        return composed_edges
+
+    merged = [
+        edge
+        for edge in composed_edges
+        if not (
+            _is_system_managed_workflow_node_id(edge.get("source_id"))
+            or _is_system_managed_workflow_node_id(edge.get("target_id"))
+        )
+    ]
+    merged.extend(system_edges)
+    return merged
+
+
+def _collect_workflow_node_ids(payload: dict[str, Any]) -> set[str]:
+    node_ids: set[str] = set()
+    for collection_name in _WORKFLOW_NODE_COLLECTIONS:
+        entries = payload.get(collection_name)
+        if not isinstance(entries, list):
+            continue
+        node_ids.update(
+            node_id
+            for entry in entries
+            if isinstance(entry, dict)
+            for node_id in [_workflow_node_id(entry)]
+            if node_id
+        )
+    return node_ids
+
+
+def _workflow_node_id(entry: dict[str, Any]) -> str:
+    return str(entry.get("id") or "").strip()
+
+
+def _workflow_edge_source_id(entry: dict[str, Any]) -> str:
+    return str(entry.get("source_id") or "").strip()
+
+
+def _workflow_edge_target_id(entry: dict[str, Any]) -> str:
+    return str(entry.get("target_id") or "").strip()
+
+
+def _is_system_managed_workflow_node_id(node_id: object) -> bool:
+    return str(node_id or "").strip() in _SYSTEM_MANAGED_WORKFLOW_NODE_IDS
 
 
 def _validate_communication_targets(*, project_dir: Path, payload: dict[str, Any]) -> None:

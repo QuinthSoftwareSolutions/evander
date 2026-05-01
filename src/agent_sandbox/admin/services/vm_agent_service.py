@@ -1,20 +1,94 @@
 from __future__ import annotations
 
-import base64
+from importlib import resources
+import logging
 import os
-import shlex
+import re
 import subprocess
 import sys
-import time
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
+from datetime import UTC, datetime, timedelta
+from hashlib import sha256
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 from agent_sandbox.admin import service as _admin_service
-from agent_sandbox.models import VmActionResult, VmSummary
+from agent_sandbox.models import SessionManifest, ToolName, VmActionResult, VmSummary
+from agent_sandbox.repositories.chat_assistant_sessions import JsonChatAssistantSessionRepository
 from agent_sandbox.repositories.session_manifests import as_session_manifest_repository
+from agent_sandbox.runtime import allowed_tools_for_capability_profile
+from agent_sandbox.execution import ExecutionBackendKind
 from agent_sandbox.vm.provider import VmProviderRegistry
+
+_ASSISTANT_AGENTS_DESTINATION_PATH = "/home/agent/AGENTS.md"
+_ASSISTANT_AGENTS_TEMPLATE_NAME = "chat-assistant-AGENTS.md"
+
+
+def _safe_chat_assistant_identifier(value: str) -> str:
+    raw_value = str(value or "").strip() or "anonymous"
+    normalized = re.sub(r"[^A-Za-z0-9._-]+", "-", raw_value).strip("-") or "anonymous"
+    digest = sha256(raw_value.encode("utf-8")).hexdigest()[:10]
+    return f"{normalized[:37]}-{digest}"
+
+
+def _assistant_capability_profile(settings: dict[str, Any] | None) -> str:
+    payload = settings or {}
+    if bool(payload.get("read_only", True)):
+        return "read-only"
+    configured = str(payload.get("default_profile") or "").strip()
+    return configured or "operator-limited"
+
+
+def _assistant_allowed_tools(profile: str) -> list[ToolName]:
+    tools = list(allowed_tools_for_capability_profile(profile))
+    if ToolName.ASSISTANT_POST_CHAT_REPLY not in tools:
+        tools.append(ToolName.ASSISTANT_POST_CHAT_REPLY)
+    return tools
+
+
+def _assistant_mutation_policy(*, profile: str) -> dict[str, Any]:
+    return {
+        "writable_scopes": [
+            "config/assistant",
+            "config/workflow",
+            "config/directory",
+            "runtime/agents",
+        ],
+        "require_destructive_approval_gate": profile == "full-admin",
+        "destructive_approval_gate": "approval_submit",
+    }
+
+
+def _assistant_agents_md_content(project_dir: Path) -> str:
+    root = Path(project_dir)
+    for candidate in (
+        root / "src" / "agent_sandbox" / "templates" / _ASSISTANT_AGENTS_TEMPLATE_NAME,
+        root / "templates" / _ASSISTANT_AGENTS_TEMPLATE_NAME,
+    ):
+        if candidate.exists():
+            return candidate.read_text(encoding="utf-8")
+    return (
+        resources.files("agent_sandbox")
+        .joinpath("templates", _ASSISTANT_AGENTS_TEMPLATE_NAME)
+        .read_text(encoding="utf-8")
+    )
+
+
+def _assistant_home_file_specs(project_dir: Path) -> list[dict[str, Any]]:
+    return [
+        {
+            "destination_path": _ASSISTANT_AGENTS_DESTINATION_PATH,
+            "mode": "0644",
+            "content": _assistant_agents_md_content(project_dir),
+        }
+    ]
+
+
+def _chat_assistant_vm_name(*, backend: str, session_id: str) -> str:
+    if backend == "libvirt_vm":
+        return "assistant-shared"
+    return session_id
 
 
 @dataclass(frozen=True)
@@ -440,6 +514,7 @@ python3 - "${{TARGET_DIR}}/.agent-sandbox/bin/agent-pr-note" "${{AGENT_PR_NOTE_H
 import base64
 import os
 import sys
+import logging
 from pathlib import Path
 
 target_path = Path(sys.argv[1])
@@ -473,6 +548,9 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
 class VmAgentAdminService:
     def __init__(self, dependencies: VmAgentAdminDependencies) -> None:
         self._deps = dependencies
+        self._assistant_session_repo = JsonChatAssistantSessionRepository(
+            Path(self._deps.config.runtime_dir) / "chat-assistant-session-mappings.json"
+        )
 
     def _session_repository(self):
         runtime = self._deps.runtime
@@ -490,6 +568,298 @@ class VmAgentAdminService:
             return resolved
         sessions = repository.read_all()
         return _admin_service._resolve_vm_name_from_target(target, sessions)
+
+    def resolve_chat_assistant_session(
+        self,
+        *,
+        user_id: str,
+        backend: str,
+        assistant_scope: str = "chat_assistant",
+        settings: dict[str, Any] | None = None,
+        thread_id: str | None = None,
+        user_message_id: str | None = None,
+    ) -> dict[str, str]:
+        normalized_backend = str(backend or "libvirt_vm").strip() or "libvirt_vm"
+        normalized_user_id = str(user_id or "anonymous").strip() or "anonymous"
+        scope = str(assistant_scope or "chat_assistant").strip() or "chat_assistant"
+        safe_user_id = _safe_chat_assistant_identifier(normalized_user_id)
+
+        mapping_user_id = "global" if normalized_backend == "libvirt_vm" else normalized_user_id
+        existing = self._assistant_session_repo.get_mapping(
+            user_id=mapping_user_id,
+            backend=normalized_backend,
+            assistant_scope=scope,
+        )
+        if existing is not None:
+            agent_thread_id = (
+                f"chat-thread-{safe_user_id}"
+                if normalized_backend == "libvirt_vm"
+                else existing.get("agent_thread_id") or f"chat-thread-{safe_user_id}"
+            )
+            self._ensure_chat_assistant_manifest(
+                session_id=existing["session_id"],
+                backend=normalized_backend,
+                user_id=normalized_user_id,
+                safe_user_id=safe_user_id,
+                agent_thread_id=agent_thread_id,
+                settings=settings,
+                thread_id=thread_id,
+                user_message_id=user_message_id,
+            )
+            self._ensure_chat_assistant_target(
+                session_id=existing["session_id"],
+                backend=normalized_backend,
+                safe_user_id=safe_user_id,
+                settings=settings,
+            )
+            logging.getLogger(__name__).info(
+                "metric_chat_session_mapping_reused backend=%s assistant_scope=%s mapping_user_id=%s session_id=%s",
+                normalized_backend,
+                scope,
+                mapping_user_id,
+                existing.get("session_id"),
+            )
+            return {
+                "session_id": existing["session_id"],
+                "agent_thread_id": agent_thread_id,
+                "vm_name": _chat_assistant_vm_name(
+                    backend=normalized_backend,
+                    session_id=existing["session_id"],
+                ),
+                "execution_backend": normalized_backend,
+                "capability_profile": _assistant_capability_profile(settings),
+            }
+
+        if normalized_backend == "libvirt_vm":
+            session_id = "assistant-shared"
+        else:
+            session_id = f"assistant-{safe_user_id}"
+        agent_thread_id = f"chat-thread-{safe_user_id}"
+        persisted = self._assistant_session_repo.upsert_mapping(
+            user_id=mapping_user_id,
+            backend=normalized_backend,
+            assistant_scope=scope,
+            session_id=session_id,
+            agent_thread_id="" if normalized_backend == "libvirt_vm" else agent_thread_id,
+        )
+        self._ensure_chat_assistant_manifest(
+            session_id=session_id,
+            backend=normalized_backend,
+            user_id=normalized_user_id,
+            safe_user_id=safe_user_id,
+            agent_thread_id=agent_thread_id,
+            settings=settings,
+            thread_id=thread_id,
+            user_message_id=user_message_id,
+        )
+        self._ensure_chat_assistant_target(
+            session_id=session_id,
+            backend=normalized_backend,
+            safe_user_id=safe_user_id,
+            settings=settings,
+        )
+        logging.getLogger(__name__).info(
+            "metric_chat_session_mapping_created backend=%s assistant_scope=%s mapping_user_id=%s session_id=%s",
+            normalized_backend,
+            scope,
+            mapping_user_id,
+            session_id,
+        )
+        return {
+            "session_id": persisted["session_id"],
+            "agent_thread_id": agent_thread_id,
+            "vm_name": _chat_assistant_vm_name(
+                backend=normalized_backend,
+                session_id=persisted["session_id"],
+            ),
+            "execution_backend": normalized_backend,
+            "capability_profile": _assistant_capability_profile(settings),
+        }
+
+    def _ensure_chat_assistant_manifest(
+        self,
+        *,
+        session_id: str,
+        backend: str,
+        user_id: str,
+        safe_user_id: str,
+        agent_thread_id: str,
+        settings: dict[str, Any] | None,
+        thread_id: str | None,
+        user_message_id: str | None,
+    ) -> None:
+        repository = self._session_repository()
+        existing = repository.get_session(session_id)
+        profile = _assistant_capability_profile(settings)
+        allowed_tools = _assistant_allowed_tools(profile)
+        metadata = dict(getattr(existing, "metadata", {}) or {})
+        metadata["capability_profile"] = profile
+        metadata["assistant_scope"] = "admin_chat"
+        metadata["execution_backend"] = backend
+        metadata["assistant_read_only"] = bool((settings or {}).get("read_only", True))
+        metadata["assistant_mutation_policy"] = _assistant_mutation_policy(
+            profile=profile,
+        )
+        chat_threads = metadata.get("admin_chat_threads")
+        if not isinstance(chat_threads, dict):
+            chat_threads = {}
+        if thread_id:
+            chat_threads[agent_thread_id] = {
+                "thread_id": thread_id,
+                "user_id": user_id,
+                "user_message_id": user_message_id or "",
+            }
+        metadata["admin_chat_threads"] = chat_threads
+        labels = metadata.get("labels")
+        if not isinstance(labels, dict):
+            labels = {}
+        labels.update({"system": "chat_assistant", "user": safe_user_id})
+        metadata["labels"] = labels
+
+        vm_name = _chat_assistant_vm_name(backend=backend, session_id=session_id)
+        vm_provider = "libvirt" if backend == "libvirt_vm" else backend
+        vm_provider_id = vm_name
+        expires_at = datetime.now(UTC) + timedelta(days=30)
+        if existing is not None:
+            expires_at = max(getattr(existing, "expires_at", expires_at), expires_at)
+            manifest = existing.model_copy(
+                update={
+                    "vm_id": vm_name if backend == "libvirt_vm" else None,
+                    "vm_provider": vm_provider,
+                    "vm_provider_id": vm_provider_id,
+                    "model": str((settings or {}).get("default_model") or "").strip() or None,
+                    "allowed_tools": allowed_tools,
+                    "metadata": metadata,
+                    "expires_at": expires_at,
+                }
+            )
+            repository.upsert_session(manifest)
+            return
+
+        manifest = SessionManifest(
+            session_id=session_id,
+            vm_id=vm_name if backend == "libvirt_vm" else None,
+            vm_provider=vm_provider,
+            vm_provider_id=vm_provider_id,
+            model=str((settings or {}).get("default_model") or "").strip() or None,
+            directory_path="root",
+            allowed_tools=allowed_tools,
+            expires_at=expires_at,
+            metadata=metadata,
+        )
+        repository.upsert_session(manifest)
+
+    def _ensure_chat_assistant_target(
+        self,
+        *,
+        session_id: str,
+        backend: str,
+        safe_user_id: str,
+        settings: dict[str, Any] | None,
+    ) -> None:
+        if backend == ExecutionBackendKind.LIBVIRT_VM.value:
+            self._ensure_libvirt_chat_assistant_target(
+                session_id=session_id,
+                safe_user_id=safe_user_id,
+                settings=settings,
+            )
+            return
+        if backend == ExecutionBackendKind.CONTAINER_WORKER_VM.value:
+            self._ensure_container_chat_assistant_target(
+                session_id=session_id,
+                safe_user_id=safe_user_id,
+                settings=settings,
+            )
+
+    def _ensure_libvirt_chat_assistant_target(
+        self,
+        *,
+        session_id: str,
+        safe_user_id: str,
+        settings: dict[str, Any] | None,
+    ) -> None:
+        vm_name = _chat_assistant_vm_name(
+            backend=ExecutionBackendKind.LIBVIRT_VM.value,
+            session_id=session_id,
+        )
+        if _admin_service._dominfo_field(vm_name, "State") is None:
+            result = self.create_vm(
+                provider="libvirt",
+                vm_name=vm_name,
+                session_id=session_id,
+                labels={"system": "chat_assistant", "user": safe_user_id},
+                model=str((settings or {}).get("default_model") or "").strip() or None,
+                vm_user="agent",
+                ttl_hours=24 * 30,
+                allowed_tools=[
+                    str(tool.value)
+                    for tool in _assistant_allowed_tools(_assistant_capability_profile(settings))
+                ],
+                directory_path="root",
+                allow_existing_session=True,
+            )
+            if not result.success and _admin_service._dominfo_field(vm_name, "State") is None:
+                raise RuntimeError(result.message or f"Failed to create assistant VM {vm_name}")
+        self.vm_copy_files(
+            session_id,
+            files=_assistant_home_file_specs(self._deps.project_dir),
+            vm_user="agent",
+        )
+
+    def _ensure_container_chat_assistant_target(
+        self,
+        *,
+        session_id: str,
+        safe_user_id: str,
+        settings: dict[str, Any] | None,
+    ) -> None:
+        backend = self._container_worker_backend(directory_path="root")
+        backend.prepare_session(
+            session_id=session_id,
+            metadata={
+                "execution_backend": ExecutionBackendKind.CONTAINER_WORKER_VM.value,
+                "directory_path": "root",
+                "target_name": _chat_assistant_vm_name(
+                    backend=ExecutionBackendKind.CONTAINER_WORKER_VM.value,
+                    session_id=session_id,
+                ),
+                "labels": {"system": "chat_assistant", "user": safe_user_id},
+            },
+        )
+        from agent_sandbox.effects.providers.agent_session import build_container_session_files
+
+        backend.write_files(
+            session_id=session_id,
+            files=[
+                *build_container_session_files(
+                    config=backend.config,
+                    session_id=session_id,
+                    model=str((settings or {}).get("default_model") or "").strip() or None,
+                    dotnet=False,
+                    nuget=False,
+                    playwright=False,
+                ),
+                *_assistant_home_file_specs(self._deps.project_dir),
+            ],
+        )
+
+    def _container_worker_backend(self, *, directory_path: str | None = None):
+        from agent_sandbox.execution.container_worker_backend import (
+            ContainerWorkerVmExecutionBackend,
+        )
+
+        resolver = getattr(self._deps.runtime, "provider_config", None)
+        resolve_for_directory = getattr(resolver, "resolve_for_directory", None)
+        if callable(resolve_for_directory):
+            resolved_config = resolve_for_directory(
+                self._deps.normalize_directory_path(directory_path)
+            )
+        else:
+            resolved_config = self._deps.config
+        config = resolved_config.model_copy(
+            update={"execution_backend": ExecutionBackendKind.CONTAINER_WORKER_VM.value}
+        )
+        return ContainerWorkerVmExecutionBackend(config=config)
 
     def _resolve_session_target(self, target: str):
         repository = self._session_repository()
@@ -1013,7 +1383,6 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
         resume_thread_id: str | None = None,
         resume_mode: str = "new_context",
     ) -> VmActionResult:
-        session_repository = self._session_repository()
         vm_name = self._resolve_vm_name_from_target(target)
         session_id: str | None = None
         directory_path: str | None = None

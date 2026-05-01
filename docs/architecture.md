@@ -342,3 +342,21 @@ remains generic.
   - Transport/API failures from Discord provider calls are returned to callers; no built-in retry
     backoff loop is currently implemented in the adapter.
 - Add a separate admin channel for approving requests without granting the guest broader power.
+
+
+## Observability Markers
+
+Runtime observability now includes explicit metrics/log markers for orchestration control points:
+
+- **Chat session lifecycle markers** from assistant session mapping resolution:
+  - `metric_chat_session_mapping_created`
+  - `metric_chat_session_mapping_reused`
+- **Backend path markers** from agent provisioning:
+  - `metric_agent_create_backend_path`
+- **Prompt enqueue latency and failure markers** from queued prompt persistence:
+  - `metric_prompt_enqueue_success` (includes `latency_ms`)
+  - `metric_prompt_enqueue_failed` (includes failure class `reason`)
+- **MCP authorization outcome markers** for tool execution decisions:
+  - `metric_mcp_tool_decision` with `outcome=allowed|denied|error`
+
+These markers complement audit JSONL events: audit entries remain the policy source of truth, while markers provide low-friction operational telemetry for filtering and alerting.

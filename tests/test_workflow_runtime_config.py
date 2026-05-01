@@ -275,6 +275,138 @@ def test_load_config_composes_workflow_pack_ir(tmp_path: Path) -> None:
     assert len(config.edges) == 1
 
 
+def test_load_config_merges_system_nodes_into_composed_workflow_pack_ir(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    project_dir = tmp_path
+    path = _config_path(project_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    packs_dir = project_dir / "config" / "workflow-packs"
+    packs_dir.mkdir(parents=True, exist_ok=True)
+    (packs_dir / "synthetic-trivial.v1.json").write_text(
+        json.dumps(
+            {
+                "pack_id": "synthetic-trivial",
+                "pack_version": "v1",
+                "ir": {
+                    "version": "v1",
+                    "nodes": [
+                        {
+                            "id": "trigger-cron-synthetic",
+                            "display_name": "Synthetic tick",
+                            "type": "trigger:cron",
+                            "expression": "* * * * *",
+                        },
+                        {
+                            "id": "effect-log-synthetic",
+                            "display_name": "Synthetic script",
+                            "type": "effect:bash:script",
+                            "script_path": "/bin/echo",
+                            "args": ["synthetic-workflow"],
+                        },
+                    ],
+                    "edges": [
+                        {"source_id": "trigger-cron-synthetic", "target_id": "effect-log-synthetic"}
+                    ],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    path.write_text(
+        json.dumps(
+            {
+                "workflow_packs": ["synthetic-trivial.v1.json"],
+                "triggers": [
+                    {
+                        "id": "legacy-top-level",
+                        "display_name": "Legacy top-level",
+                        "type": "trigger:cron",
+                        "expression": "*/10 * * * *",
+                    },
+                    {
+                        "id": "system.chat_assistant",
+                        "display_name": "System Chat Assistant",
+                        "type": "trigger:system:chat-assistant",
+                    },
+                ],
+                "effects": [
+                    {
+                        "id": "legacy-top-level-effect",
+                        "display_name": "Legacy top-level effect",
+                        "type": "effect:bash:script",
+                        "script_path": "/bin/echo",
+                        "args": ["legacy"],
+                    },
+                    {
+                        "id": "system.chat_assistant.ensure_session",
+                        "display_name": "Resolve chat assistant session",
+                        "type": "effect:chat-assistant:ensure-session",
+                        "user_id": "${{system.chat_assistant.user_id}}",
+                        "thread_id": "${{system.chat_assistant.thread_id}}",
+                        "user_message_id": "${{system.chat_assistant.user_message_id}}",
+                        "content": "${{system.chat_assistant.content}}",
+                        "backend": "${{system.chat_assistant.backend}}",
+                        "assistant_scope": "admin_chat",
+                    },
+                    {
+                        "id": "system.chat_assistant.enqueue_prompt",
+                        "display_name": "Enqueue chat assistant prompt",
+                        "type": "effect:agent:enqueue-prompt",
+                        "target": "${{system.chat_assistant.ensure_session.session_id}}",
+                        "session_id": "${{system.chat_assistant.ensure_session.session_id}}",
+                        "vm_name": "${{system.chat_assistant.ensure_session.vm_name}}",
+                        "prompt": "${{system.chat_assistant.ensure_session.prompt}}",
+                        "model": "${{system.chat_assistant.ensure_session.model}}",
+                        "vm_user": "agent",
+                        "resume_thread_id": (
+                            "${{system.chat_assistant.ensure_session.agent_thread_id}}"
+                        ),
+                    },
+                ],
+                "edges": [
+                    {
+                        "source_id": "legacy-top-level",
+                        "target_id": "legacy-top-level-effect",
+                    },
+                    {
+                        "source_id": "system.chat_assistant",
+                        "target_id": "system.chat_assistant.ensure_session",
+                    },
+                    {
+                        "source_id": "system.chat_assistant.ensure_session",
+                        "target_id": "system.chat_assistant.enqueue_prompt",
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_trigger_orchestrator_worker_global_config(
+        project_dir, base_config=GatewayConfig(runtime_dir=runtime_dir)
+    )
+
+    assert [trigger.id for trigger in config.triggers] == [
+        "trigger-cron-synthetic",
+        "system.chat_assistant",
+    ]
+    assert [effect.id for effect in config.effects] == [
+        "effect-log-synthetic",
+        "system.chat_assistant.ensure_session",
+        "system.chat_assistant.enqueue_prompt",
+    ]
+    assert [(edge.source_id, edge.target_id) for edge in config.edges] == [
+        ("trigger-cron-synthetic", "effect-log-synthetic"),
+        ("system.chat_assistant", "system.chat_assistant.ensure_session"),
+        (
+            "system.chat_assistant.ensure_session",
+            "system.chat_assistant.enqueue_prompt",
+        ),
+    ]
+
+
 def test_load_config_rejects_unknown_communication_target_ref(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     project_dir = tmp_path

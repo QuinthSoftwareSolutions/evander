@@ -93,6 +93,7 @@ class AgentCreateEffectDefinition(EffectDefinition):
     model: ConfigValue | None = None
     vm_user: ConfigValue | None = None
     ttl_hours: ConfigValue | None = None
+    capability_profile: ConfigValue | None = None
     allowed_tools: list[str] | None = None
     allowed_script_names: list[str] | None = None
     discord_channels: list[str] | None = None
@@ -165,6 +166,18 @@ class AgentEnqueuePromptEffectDefinition(EffectDefinition):
     model: ConfigValue | None = None
     vm_user: ConfigValue | None = None
     resume_thread_id: ConfigValue | None = None
+    queue_key: ConfigValue | None = None
+
+
+class ChatAssistantEnsureSessionEffectDefinition(EffectDefinition):
+    type: Literal["effect:chat-assistant:ensure-session"]
+    user_id: ConfigValue
+    thread_id: ConfigValue
+    user_message_id: ConfigValue
+    content: ConfigValue
+    backend: ConfigValue | None = None
+    assistant_capability_mode: ConfigValue | None = None
+    assistant_scope: ConfigValue | None = None
 
 
 class AgentExecEffectDefinition(EffectDefinition):
