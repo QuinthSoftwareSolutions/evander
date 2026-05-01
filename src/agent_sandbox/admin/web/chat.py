@@ -14,6 +14,7 @@ from starlette.routing import Route
 
 from agent_sandbox.admin.service import AdminService
 from agent_sandbox.admin.web.shared import AdminWebAuth, json_error
+from agent_sandbox.messaging.agent_prompt_enqueue import enqueue_agent_prompt
 
 
 def _utc_now() -> str:
@@ -105,12 +106,37 @@ def chat_routes(service: AdminService, auth: AdminWebAuth) -> list[Route]:
             return json_error("thread_id is required")
         if not content:
             return json_error("content is required")
+        user_id = user_id_for_request(request)
         user_message = store.append_message(thread_id, "user", content)
-        assistant_text = (
-            "Read-only mode is active. I can summarize data but cannot run privileged actions."
-            if capability_mode(request) == "read-only"
-            else "Full-access mode is active. Privileged actions may be requested."
+
+        assistant_session = service.vm_agent_admin.resolve_chat_assistant_session(
+            user_id=user_id,
+            backend="container_worker_vm",
+            assistant_scope="admin_chat",
         )
+        session_id = str(assistant_session.get("session_id") or "").strip()
+        assistant_session_id = str(assistant_session.get("agent_thread_id") or "").strip() or session_id
+        if session_id:
+            enqueue_agent_prompt(
+                runtime_dir=service.config.runtime_dir,
+                queue_key=session_id,
+                target=session_id,
+                vm_name=session_id,
+                session_id=session_id,
+                prompt=content,
+                model=None,
+                vm_user="agent",
+                resume_thread_id=None,
+                effect_id="admin-chat",
+                metadata={
+                    "source": "admin_chat",
+                    "user_id": user_id,
+                    "thread_id": thread_id,
+                    "assistant_session_id": assistant_session_id,
+                },
+            )
+
+        assistant_text = "Message queued for assistant processing."
         assistant_message = store.append_message(thread_id, "assistant", assistant_text)
         return JSONResponse({"thread_id": thread_id, "assistant_capability_mode": capability_mode(request), "messages": [user_message, assistant_message]})
 
