@@ -441,6 +441,7 @@ python3 - "${{TARGET_DIR}}/.agent-sandbox/bin/agent-pr-note" "${{AGENT_PR_NOTE_H
 import base64
 import os
 import sys
+import logging
 from pathlib import Path
 
 target_path = Path(sys.argv[1])
@@ -513,6 +514,13 @@ class VmAgentAdminService:
             assistant_scope=scope,
         )
         if existing is not None:
+            logging.getLogger(__name__).info(
+                "metric_chat_session_mapping_reused backend=%s assistant_scope=%s mapping_user_id=%s session_id=%s",
+                normalized_backend,
+                scope,
+                mapping_user_id,
+                existing.get("session_id"),
+            )
             thread = existing.get("agent_thread_id")
             return {
                 "session_id": existing["session_id"],
@@ -530,6 +538,13 @@ class VmAgentAdminService:
             assistant_scope=scope,
             session_id=session_id,
             agent_thread_id=agent_thread_id,
+        )
+        logging.getLogger(__name__).info(
+            "metric_chat_session_mapping_created backend=%s assistant_scope=%s mapping_user_id=%s session_id=%s",
+            normalized_backend,
+            scope,
+            mapping_user_id,
+            session_id,
         )
         return persisted
 
