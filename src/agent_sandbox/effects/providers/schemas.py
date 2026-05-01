@@ -93,6 +93,7 @@ class AgentCreateEffectDefinition(EffectDefinition):
     model: ConfigValue | None = None
     vm_user: ConfigValue | None = None
     ttl_hours: ConfigValue | None = None
+    capability_profile: ConfigValue | None = None
     allowed_tools: list[str] | None = None
     allowed_script_names: list[str] | None = None
     discord_channels: list[str] | None = None

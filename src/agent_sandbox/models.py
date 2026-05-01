@@ -25,6 +25,12 @@ def utc_now() -> datetime:
 
 
 class ToolName(str, Enum):
+    ASSISTANT_READ_STATUS = "assistant_read_status"
+    ASSISTANT_LIST_AGENTS = "assistant_list_agents"
+    ASSISTANT_INSPECT_WORKFLOWS = "assistant_inspect_workflows"
+    ASSISTANT_UPSERT_CONFIG = "assistant_upsert_config"
+    ASSISTANT_CREATE_WORKFLOW = "assistant_create_workflow"
+    ASSISTANT_RUN_SAFE_OPERATION = "assistant_run_safe_operation"
     CREATE_ADO_BACKLOG_ITEM = "create_ado_backlog_item"
     QUERY_ADO_BACKLOG_ITEMS = "query_ado_backlog_items"
     LIST_ADO_CURRENT_ITERATION_BACKLOG_ITEMS = "list_ado_current_iteration_backlog_items"

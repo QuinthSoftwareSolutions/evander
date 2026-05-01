@@ -80,6 +80,36 @@ from agent_sandbox.teams_meeting import (
     build_teams_meeting_bridge_client,
 )
 
+CAPABILITY_PROFILE_ALLOWED_TOOLS: dict[str, tuple[ToolName, ...]] = {
+    "read-only": (
+        ToolName.ASSISTANT_READ_STATUS,
+        ToolName.ASSISTANT_LIST_AGENTS,
+        ToolName.ASSISTANT_INSPECT_WORKFLOWS,
+    ),
+    "operator-limited": (
+        ToolName.ASSISTANT_READ_STATUS,
+        ToolName.ASSISTANT_LIST_AGENTS,
+        ToolName.ASSISTANT_INSPECT_WORKFLOWS,
+        ToolName.ASSISTANT_UPSERT_CONFIG,
+        ToolName.ASSISTANT_CREATE_WORKFLOW,
+    ),
+    "full-admin": (
+        ToolName.ASSISTANT_READ_STATUS,
+        ToolName.ASSISTANT_LIST_AGENTS,
+        ToolName.ASSISTANT_INSPECT_WORKFLOWS,
+        ToolName.ASSISTANT_UPSERT_CONFIG,
+        ToolName.ASSISTANT_CREATE_WORKFLOW,
+        ToolName.ASSISTANT_RUN_SAFE_OPERATION,
+    ),
+}
+
+
+def allowed_tools_for_capability_profile(profile: str | None) -> list[ToolName]:
+    normalized = str(profile or "").strip().lower()
+    if not normalized:
+        return []
+    return list(CAPABILITY_PROFILE_ALLOWED_TOOLS.get(normalized, ()))
+
 
 @dataclass(slots=True)
 class RuntimeContext:

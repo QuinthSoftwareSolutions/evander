@@ -67,6 +67,12 @@ class PolicyEngine:
 
     def require_tool(self, session_id: str, tool_name: ToolName) -> SessionManifest:
         session = self.get_session(session_id)
+        if tool_name.value.startswith("assistant_"):
+            profile = str(session.metadata.get("capability_profile") or "").strip().lower()
+            if not profile:
+                raise PolicyError(
+                    f"Session {session_id} has no capability profile; assistant tool access is denied by default"
+                )
         has_tool_permission = tool_name in session.allowed_tools
         if tool_name == ToolName.LIST_PENDING_AGENT_PROMPTS and not has_tool_permission:
             has_tool_permission = ToolName.RESPOND_TO_AGENT in session.allowed_tools

@@ -12,6 +12,7 @@ from typing import Any
 from urllib.parse import quote, urlsplit, urlunsplit
 
 from agent_sandbox.config import GatewayConfig
+from agent_sandbox.runtime import allowed_tools_for_capability_profile
 from agent_sandbox.execution import (
     ExecutionBackendKind,
     ExecutionStatusKind,
@@ -273,7 +274,7 @@ def read_all_sessions(context: EffectRuntimeContext) -> Mapping[str, Any]:
 
 
 def normalize_allowed_tools(value: list[str] | None) -> list[ToolName]:
-    tools: list[ToolName] = [ToolName.APPROVAL_SUBMIT, ToolName.APPROVAL_CHECK]
+    tools: list[ToolName] = []
     seen = set(tools)
     for raw_tool in value or []:
         tool = ToolName(str(raw_tool).strip())
@@ -282,6 +283,10 @@ def normalize_allowed_tools(value: list[str] | None) -> list[ToolName]:
         seen.add(tool)
         tools.append(tool)
     return tools
+
+
+def allowed_tools_for_profile(capability_profile: str | None) -> list[str]:
+    return [tool.value for tool in allowed_tools_for_capability_profile(capability_profile)]
 
 
 def normalize_allowed_script_names(value: list[str] | None) -> list[str]:
