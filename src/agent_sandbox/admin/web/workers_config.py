@@ -11,7 +11,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import BaseRoute, Route
 
 from agent_sandbox.admin.service import AdminService
-from agent_sandbox.admin.web.shared import AdminWebAuth
+from agent_sandbox.admin.web.shared import AdminWebAuth, request_has_privileged_operations
 from agent_sandbox.config import (
     AdoWorkerGlobalConfig,
     AssistantSettingsConfig,
@@ -59,9 +59,11 @@ _ASSISTANT_SETTINGS_FIELDS: tuple[tuple[str, str], ...] = (
     (_ASSISTANT_SETTINGS_DOMAIN, "read_only"),
     (_ASSISTANT_SETTINGS_DOMAIN, "default_model"),
     (_ASSISTANT_SETTINGS_DOMAIN, "default_profile"),
-    (_ASSISTANT_SETTINGS_DOMAIN, "allowed_mcp_tool_profile"),
     (_ASSISTANT_SETTINGS_DOMAIN, "custom_system_instructions"),
 )
+_ASSISTANT_SETTINGS_FIELD_LABELS: dict[str, str] = {
+    "default_profile": "assistant capability profile",
+}
 _DIRECTORY_CONFIG_UI_TAB_FIELD_SOURCES: dict[str, tuple[tuple[str, str], ...]] = {
     "communications": (
         *_DISCORD_CONFIG_FIELDS,
@@ -631,7 +633,12 @@ def _directory_config_field_metadata(
     return {
         "source_domain": source_domain,
         "field_name": field_name,
-        "label": _config_field_display_name(field_name, prefixes=prefixes),
+        "label": (
+            _ASSISTANT_SETTINGS_FIELD_LABELS.get(field_name)
+            if source_domain == _ASSISTANT_SETTINGS_DOMAIN
+            else None
+        )
+        or _config_field_display_name(field_name, prefixes=prefixes),
         "kind": kind,
         "options": list(options),
         "scope": "global" if source_domain == _ASSISTANT_SETTINGS_DOMAIN else "directory",
@@ -818,11 +825,15 @@ def _split_tab_payload(tab_key: str, config: dict[str, Any]) -> dict[str, dict[s
         field_name: source_domain
         for source_domain, field_name in _DIRECTORY_CONFIG_UI_TAB_FIELD_SOURCES[tab_key]
     }
-    payloads_by_source: dict[str, dict[str, Any]] = {
-        source_domain: {}
-        for source_domain in _directory_tab_underlying_domains(tab_key)
-        if source_domain != _ASSISTANT_SETTINGS_DOMAIN
-    }
+    payloads_by_source: dict[str, dict[str, Any]] = {}
+    if not config:
+        payloads_by_source.update(
+            {
+                source_domain: {}
+                for source_domain in _directory_tab_underlying_domains(tab_key)
+                if source_domain != _ASSISTANT_SETTINGS_DOMAIN
+            }
+        )
     for field_name, value in config.items():
         source_domain = field_sources.get(field_name)
         if source_domain is None:
@@ -838,7 +849,7 @@ def _tab_fields_by_source_domain(tab_key: str) -> dict[str, set[str]]:
     return fields_by_source
 
 
-def worker_config_routes(service: AdminService, _auth: AdminWebAuth) -> list[BaseRoute]:
+def worker_config_routes(service: AdminService, auth: AdminWebAuth) -> list[BaseRoute]:
     async def list_workers(_: Request) -> JSONResponse:
         workers = [
             _normalize_worker_summary(summary) for summary in service.list_background_workers()
@@ -990,6 +1001,12 @@ def worker_config_routes(service: AdminService, _auth: AdminWebAuth) -> list[Bas
             tab_fields_by_source = _tab_fields_by_source_domain(domain)
             for source_domain, source_payload in payloads_by_source.items():
                 if source_domain == _ASSISTANT_SETTINGS_DOMAIN:
+                    if not request_has_privileged_operations(
+                        auth=auth,
+                        service=service,
+                        request=request,
+                    ):
+                        return _error_response("Privileged operations are locked.", status_code=403)
                     existing_settings = service.read_assistant_settings()
                     merged_settings = dict(existing_settings)
                     merged_settings.update(source_payload)

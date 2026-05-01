@@ -16,6 +16,7 @@ from agent_sandbox.models import (
 )
 from agent_sandbox.policy import PolicyEngine, PolicyError
 from agent_sandbox.repositories.session_manifests import JsonSessionManifestRepository
+from agent_sandbox.runtime import allowed_tools_for_capability_profile
 from agent_sandbox.storage import JsonStore
 
 
@@ -89,6 +90,30 @@ def test_assistant_mutation_tools_require_explicit_mutation_policy(tmp_path: Pat
         engine.require_tool("s1", ToolName.ASSISTANT_UPSERT_CONFIG)
 
 
+def test_assistant_read_config_does_not_require_mutation_policy(tmp_path: Path) -> None:
+    engine = make_engine(tmp_path)
+    engine.session_store.upsert_session(
+        SessionManifest(
+            session_id="s1",
+            allowed_tools=[ToolName.ASSISTANT_READ_CONFIG],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={"capability_profile": "read-only"},
+        ),
+    )
+
+    session = engine.require_tool("s1", ToolName.ASSISTANT_READ_CONFIG)
+
+    assert session.session_id == "s1"
+
+
+def test_assistant_profiles_include_read_config_tool() -> None:
+    assert ToolName.ASSISTANT_READ_CONFIG in allowed_tools_for_capability_profile("read-only")
+    assert ToolName.ASSISTANT_READ_CONFIG in allowed_tools_for_capability_profile(
+        "operator-limited"
+    )
+    assert ToolName.ASSISTANT_READ_CONFIG in allowed_tools_for_capability_profile("full-admin")
+
+
 def test_assistant_destructive_operation_can_require_approval_gate(tmp_path: Path) -> None:
     engine = make_engine(tmp_path)
     engine.session_store.upsert_session(
@@ -99,7 +124,6 @@ def test_assistant_destructive_operation_can_require_approval_gate(tmp_path: Pat
             metadata={
                 "capability_profile": "full-admin",
                 "assistant_mutation_policy": {
-                    "write_tool_profile": "workflow-writer",
                     "writable_scopes": ["config/workflow", "config/root"],
                     "require_destructive_approval_gate": True,
                 },

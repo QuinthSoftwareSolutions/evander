@@ -106,11 +106,6 @@ class PolicyEngine:
                 f"Session {session.session_id} is missing metadata.assistant_mutation_policy for "
                 f"{tool_name.value}"
             )
-        profile = str(mutation_policy.get("write_tool_profile") or "").strip()
-        if not profile:
-            raise PolicyError(
-                f"Session {session.session_id} must define assistant mutation write_tool_profile"
-            )
         writable_scopes = mutation_policy.get("writable_scopes")
         if not isinstance(writable_scopes, list) or not any(
             isinstance(item, str) and item.strip() for item in writable_scopes

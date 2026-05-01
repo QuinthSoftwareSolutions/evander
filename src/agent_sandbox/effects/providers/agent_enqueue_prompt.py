@@ -48,6 +48,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             "model": effect.model,
             "vm_user": effect.vm_user,
             "resume_thread_id": effect.resume_thread_id,
+            "queue_key": effect.queue_key,
         }
         if resolved_config:
             payload.update(dict(resolved_config))
@@ -57,6 +58,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
         vm_user = self._normalize_optional_string(payload.get("vm_user")) or "agent"
         model = self._normalize_optional_string(payload.get("model"))
         resume_thread_id = self._normalize_optional_string(payload.get("resume_thread_id"))
+        queue_key = self._normalize_optional_string(payload.get("queue_key"))
 
         execution_backend, config = selected_execution_backend_for_target(
             context,
@@ -70,6 +72,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 model=model,
                 vm_user=vm_user,
                 resume_thread_id=resume_thread_id,
+                queue_key=queue_key,
                 config=config,
                 effect_id=effect.id,
             )
@@ -99,6 +102,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 vm_user=vm_user,
                 resume_thread_id=resume_thread_id,
                 effect_id=effect.id,
+                queue_key=queue_key,
             )
             return {
                 "success": True,
@@ -128,6 +132,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 vm_user=vm_user,
                 resume_thread_id=resume_thread_id,
                 effect_id=effect.id,
+                queue_key=queue_key,
             )
             message = self._normalize_optional_string(getattr(result, "message", None)) or "<empty>"
             raise RuntimeError(
@@ -157,6 +162,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
         model: str | None,
         vm_user: str,
         resume_thread_id: str | None,
+        queue_key: str | None,
         config: Any,
         effect_id: str,
     ) -> dict[str, Any]:
@@ -189,7 +195,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 vm_user=vm_user,
                 resume_thread_id=resume_thread_id,
                 effect_id=effect_id,
-                queue_key=session_id,
+                queue_key=queue_key or session_id,
             )
             return {
                 "success": True,
@@ -235,7 +241,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 vm_user=vm_user,
                 resume_thread_id=resume_thread_id,
                 effect_id=effect_id,
-                queue_key=session_id,
+                queue_key=queue_key or session_id,
             )
             message = self._normalize_optional_string(exc) or type(exc).__name__
             raise RuntimeError(

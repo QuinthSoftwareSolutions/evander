@@ -119,6 +119,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "model",
         "vm_user",
         "resume_thread_id",
+        "queue_key",
     ]
     bash_script = next(
         node for node in catalog_payload["nodes"] if node["type"] == "effect:bash:script"
@@ -1407,6 +1408,15 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
     assistant_fields = {field["field_name"]: field for field in assistant["fields"]}
     assert assistant_fields["enabled"]["scope"] == "global"
     assert assistant_fields["show_launcher_when_disabled"]["kind"] == "bool"
+    assert assistant_fields["default_profile"]["kind"] == "literal"
+    assert assistant_fields["default_profile"]["label"] == "assistant capability profile"
+    assert assistant_fields["default_profile"]["options"] == [
+        "",
+        "read-only",
+        "operator-limited",
+        "full-admin",
+    ]
+    assert "allowed_mcp_tool_profile" not in assistant_fields
     assert assistant_fields["custom_system_instructions"]["kind"] == "multiline_text"
     providers = next(tab for tab in payload["tabs"] if tab["key"] == "providers")
     container_worker = next(
@@ -1454,6 +1464,9 @@ def test_admin_web_communications_tab_saves_assistant_settings(tmp_path: Path) -
     service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
     client = TestClient(create_app(service))
 
+    unlock = client.post("/api/admin/privileged/unlock")
+    assert unlock.status_code == 200
+
     response = client.put(
         "/api/configuration/domains/communications?directory_path=root",
         json={
@@ -1463,7 +1476,6 @@ def test_admin_web_communications_tab_saves_assistant_settings(tmp_path: Path) -
                 "read_only": False,
                 "default_model": "gpt-test",
                 "default_profile": "full-admin",
-                "allowed_mcp_tool_profile": "operator",
                 "custom_system_instructions": "Use the admin context.",
             }
         },
@@ -1476,7 +1488,6 @@ def test_admin_web_communications_tab_saves_assistant_settings(tmp_path: Path) -
     assert snapshot["raw"]["config"]["read_only"] is False
     assert snapshot["raw"]["config"]["custom_system_instructions"] == "Use the admin context."
     assert service.read_assistant_settings() == {
-        "allowed_mcp_tool_profile": "operator",
         "custom_system_instructions": "Use the admin context.",
         "default_model": "gpt-test",
         "default_profile": "full-admin",
@@ -1485,6 +1496,77 @@ def test_admin_web_communications_tab_saves_assistant_settings(tmp_path: Path) -
         "show_launcher_when_disabled": True,
     }
     assert service.assistant_settings_path().exists()
+
+
+def test_admin_web_communications_tab_assistant_only_save_preserves_directory_domains(
+    tmp_path: Path,
+) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    client = TestClient(create_app(service))
+
+    create_response = client.post(
+        "/api/configuration/directories",
+        json={"parent_path": "root", "name": "ops"},
+    )
+    assert create_response.status_code == 200
+
+    communications_response = client.put(
+        "/api/configuration/domains/communications?directory_path=ops",
+        json={
+            "config": {
+                "discord_backend": "stub",
+                "discord_operator_channel_allowlist": ["chan-1"],
+                "discord_resume_prompt": "Resume this session.",
+            }
+        },
+    )
+    assert communications_response.status_code == 200
+
+    unlock = client.post("/api/admin/privileged/unlock")
+    assert unlock.status_code == 200
+
+    assistant_response = client.put(
+        "/api/configuration/domains/communications?directory_path=ops",
+        json={"config": {"enabled": True, "read_only": True, "default_model": "gpt-test"}},
+    )
+    assert assistant_response.status_code == 200
+
+    providers_result = service.read_directory_domain_config("ops", "providers")
+    policy_result = service.read_directory_domain_config("ops", "policy")
+    heartbeat_result = service.read_directory_domain_config("ops", "heartbeat")
+    assert providers_result.ok is True
+    assert policy_result.ok is True
+    assert heartbeat_result.ok is True
+    assert providers_result.data is not None
+    assert policy_result.data is not None
+    assert heartbeat_result.data is not None
+    assert providers_result.data.config["discord_backend"] == "stub"
+    assert policy_result.data.config["discord_operator_channel_allowlist"] == ["chan-1"]
+    assert heartbeat_result.data.config["discord_resume_prompt"] == "Resume this session."
+    assert service.read_assistant_settings()["default_model"] == "gpt-test"
+
+
+def test_admin_web_assistant_settings_migrates_legacy_write_tool_profile(
+    tmp_path: Path,
+) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    path = service.assistant_settings_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "enabled": True,
+                "read_only": False,
+                "allowed_mcp_tool_profile": "full-admin",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    settings = service.read_assistant_settings()
+
+    assert settings["default_profile"] == "full-admin"
+    assert "allowed_mcp_tool_profile" not in settings
 
 
 def test_admin_web_communications_tab_preserves_assistant_settings_when_absent(
@@ -1509,6 +1591,40 @@ def test_admin_web_communications_tab_preserves_assistant_settings_when_absent(
     assert response.status_code == 200
     assert service.read_assistant_settings()["default_model"] == "gpt-existing"
     assert service.read_assistant_settings()["enabled"] is True
+
+
+def test_admin_web_chat_settings_write_requires_privileged_unlock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE", "local_password")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_USERNAME", "operator")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_PASSWORD", "swordfish")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET", "test-secret")
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    client = TestClient(create_app(service))
+
+    login = client.post(
+        "/api/auth/login",
+        json={"username": "operator", "password": "swordfish"},
+    )
+    assert login.status_code == 200
+
+    locked = client.put(
+        "/api/chat/settings",
+        json={"enabled": True, "read_only": False, "default_profile": "full-admin"},
+    )
+    assert locked.status_code == 403
+    assert service.read_assistant_settings()["enabled"] is False
+
+    unlock = client.post("/api/admin/privileged/unlock")
+    assert unlock.status_code == 200
+    saved = client.put(
+        "/api/chat/settings",
+        json={"enabled": True, "read_only": False, "default_profile": "full-admin"},
+    )
+    assert saved.status_code == 200
+    assert service.read_assistant_settings()["default_profile"] == "full-admin"
 
 
 def test_admin_web_grouped_tab_save_preserves_unrelated_shared_domain_fields(

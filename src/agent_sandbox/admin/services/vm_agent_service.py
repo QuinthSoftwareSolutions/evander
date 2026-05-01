@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from importlib import resources
 import logging
 import os
 import re
@@ -20,6 +21,9 @@ from agent_sandbox.runtime import allowed_tools_for_capability_profile
 from agent_sandbox.execution import ExecutionBackendKind
 from agent_sandbox.vm.provider import VmProviderRegistry
 
+_ASSISTANT_AGENTS_DESTINATION_PATH = "/home/agent/AGENTS.md"
+_ASSISTANT_AGENTS_TEMPLATE_NAME = "chat-assistant-AGENTS.md"
+
 
 def _safe_chat_assistant_identifier(value: str) -> str:
     raw_value = str(value or "").strip() or "anonymous"
@@ -32,9 +36,7 @@ def _assistant_capability_profile(settings: dict[str, Any] | None) -> str:
     payload = settings or {}
     if bool(payload.get("read_only", True)):
         return "read-only"
-    configured = str(
-        payload.get("allowed_mcp_tool_profile") or payload.get("default_profile") or ""
-    ).strip()
+    configured = str(payload.get("default_profile") or "").strip()
     return configured or "operator-limited"
 
 
@@ -45,13 +47,8 @@ def _assistant_allowed_tools(profile: str) -> list[ToolName]:
     return tools
 
 
-def _assistant_mutation_policy(
-    *, settings: dict[str, Any] | None, profile: str
-) -> dict[str, Any]:
-    payload = settings or {}
-    write_profile = str(payload.get("allowed_mcp_tool_profile") or profile).strip()
+def _assistant_mutation_policy(*, profile: str) -> dict[str, Any]:
     return {
-        "write_tool_profile": write_profile or profile,
         "writable_scopes": [
             "config/assistant",
             "config/workflow",
@@ -61,6 +58,31 @@ def _assistant_mutation_policy(
         "require_destructive_approval_gate": profile == "full-admin",
         "destructive_approval_gate": "approval_submit",
     }
+
+
+def _assistant_agents_md_content(project_dir: Path) -> str:
+    root = Path(project_dir)
+    for candidate in (
+        root / "src" / "agent_sandbox" / "templates" / _ASSISTANT_AGENTS_TEMPLATE_NAME,
+        root / "templates" / _ASSISTANT_AGENTS_TEMPLATE_NAME,
+    ):
+        if candidate.exists():
+            return candidate.read_text(encoding="utf-8")
+    return (
+        resources.files("agent_sandbox")
+        .joinpath("templates", _ASSISTANT_AGENTS_TEMPLATE_NAME)
+        .read_text(encoding="utf-8")
+    )
+
+
+def _assistant_home_file_specs(project_dir: Path) -> list[dict[str, Any]]:
+    return [
+        {
+            "destination_path": _ASSISTANT_AGENTS_DESTINATION_PATH,
+            "mode": "0644",
+            "content": _assistant_agents_md_content(project_dir),
+        }
+    ]
 
 
 def _chat_assistant_vm_name(*, backend: str, session_id: str) -> str:
@@ -676,7 +698,6 @@ class VmAgentAdminService:
         metadata["execution_backend"] = backend
         metadata["assistant_read_only"] = bool((settings or {}).get("read_only", True))
         metadata["assistant_mutation_policy"] = _assistant_mutation_policy(
-            settings=settings,
             profile=profile,
         )
         chat_threads = metadata.get("admin_chat_threads")
@@ -761,24 +782,29 @@ class VmAgentAdminService:
             backend=ExecutionBackendKind.LIBVIRT_VM.value,
             session_id=session_id,
         )
-        if _admin_service._dominfo_field(vm_name, "State") is not None:
-            return
-        result = self.create_vm(
-            provider="libvirt",
-            vm_name=vm_name,
-            session_id=session_id,
-            labels={"system": "chat_assistant", "user": safe_user_id},
-            model=str((settings or {}).get("default_model") or "").strip() or None,
+        if _admin_service._dominfo_field(vm_name, "State") is None:
+            result = self.create_vm(
+                provider="libvirt",
+                vm_name=vm_name,
+                session_id=session_id,
+                labels={"system": "chat_assistant", "user": safe_user_id},
+                model=str((settings or {}).get("default_model") or "").strip() or None,
+                vm_user="agent",
+                ttl_hours=24 * 30,
+                allowed_tools=[
+                    str(tool.value)
+                    for tool in _assistant_allowed_tools(_assistant_capability_profile(settings))
+                ],
+                directory_path="root",
+                allow_existing_session=True,
+            )
+            if not result.success and _admin_service._dominfo_field(vm_name, "State") is None:
+                raise RuntimeError(result.message or f"Failed to create assistant VM {vm_name}")
+        self.vm_copy_files(
+            session_id,
+            files=_assistant_home_file_specs(self._deps.project_dir),
             vm_user="agent",
-            ttl_hours=24 * 30,
-            allowed_tools=[str(tool.value) for tool in _assistant_allowed_tools(
-                _assistant_capability_profile(settings)
-            )],
-            directory_path="root",
-            allow_existing_session=True,
         )
-        if not result.success and _admin_service._dominfo_field(vm_name, "State") is None:
-            raise RuntimeError(result.message or f"Failed to create assistant VM {vm_name}")
 
     def _ensure_container_chat_assistant_target(
         self,
@@ -804,14 +830,17 @@ class VmAgentAdminService:
 
         backend.write_files(
             session_id=session_id,
-            files=build_container_session_files(
-                config=backend.config,
-                session_id=session_id,
-                model=str((settings or {}).get("default_model") or "").strip() or None,
-                dotnet=False,
-                nuget=False,
-                playwright=False,
-            ),
+            files=[
+                *build_container_session_files(
+                    config=backend.config,
+                    session_id=session_id,
+                    model=str((settings or {}).get("default_model") or "").strip() or None,
+                    dotnet=False,
+                    nuget=False,
+                    playwright=False,
+                ),
+                *_assistant_home_file_specs(self._deps.project_dir),
+            ],
         )
 
     def _container_worker_backend(self, *, directory_path: str | None = None):

@@ -561,6 +561,9 @@ def _system_chat_assistant_workflow_fragment() -> dict[str, list[dict[str, objec
                     "user_message_id": "${{system.chat_assistant.user_message_id}}",
                     "content": "${{system.chat_assistant.content}}",
                     "backend": "${{system.chat_assistant.backend}}",
+                    "assistant_capability_mode": (
+                        "${{system.chat_assistant.assistant_capability_mode}}"
+                    ),
                     "assistant_scope": "admin_chat",
                 },
             },
@@ -577,6 +580,10 @@ def _system_chat_assistant_workflow_fragment() -> dict[str, list[dict[str, objec
                     "vm_user": "agent",
                     "resume_thread_id": (
                         "${{system.chat_assistant.ensure_session.agent_thread_id}}"
+                    ),
+                    "queue_key": (
+                        "chat:${{system.chat_assistant.ensure_session.thread_id}}:"
+                        "${{system.chat_assistant.ensure_session.user_message_id}}"
                     ),
                     "execution_backend": (
                         "${{system.chat_assistant.ensure_session.execution_backend}}"
@@ -1149,6 +1156,7 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("model", "Model", "string", bindable=True),
             _field("vm_user", "VM user", "string", bindable=True),
             _field("resume_thread_id", "Resume thread ID", "string", bindable=True),
+            _field("queue_key", "Queue key", "string", bindable=True),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(
@@ -4116,6 +4124,7 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
         include_inactive: bool = True,
         reconcile_containers: bool = True,
         backend: str | None = None,
+        all_directories: bool = False,
     ) -> list[AgentRecord]:
         normalized_directory = self._normalize_directory_path(directory_path)
         selected_backend = self._normalize_agent_backend_filter(backend)
@@ -4124,8 +4133,8 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
             try:
                 vm_summaries = self.list_vms(
                     include_inactive=include_inactive,
-                    directory_path=normalized_directory,
-                    direct_only=direct_only,
+                    directory_path=None if all_directories else normalized_directory,
+                    direct_only=False if all_directories else direct_only,
                 )
             except Exception:
                 if selected_backend == "libvirt_vm":
@@ -4150,10 +4159,8 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
             if str(record.session_id or "").strip()
         }
         for container_record in container_records:
-            if not self._agent_record_matches_directory(
-                container_record.directory_path,
-                normalized_directory,
-                direct_only=direct_only,
+            if not all_directories and not self._agent_record_matches_directory(
+                container_record.directory_path, normalized_directory, direct_only=direct_only
             ):
                 continue
             record = self._agent_record_from_container_execution(
@@ -4171,10 +4178,8 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
                 continue
             if session.session_id in mapped_container_session_ids:
                 continue
-            if not self._agent_record_matches_directory(
-                session.directory_path,
-                normalized_directory,
-                direct_only=direct_only,
+            if not all_directories and not self._agent_record_matches_directory(
+                session.directory_path, normalized_directory, direct_only=direct_only
             ):
                 continue
             record = self._agent_record_from_container_session(session)
@@ -5421,6 +5426,7 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
         user_message_id: str,
         content: str,
         backend: str | None = None,
+        assistant_capability_mode: str | None = None,
     ) -> dict[str, object]:
         document = self.ensure_chat_assistant_workflow()
         worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(document.config)
@@ -5429,6 +5435,11 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
             journal_path=worker_config.workflow_event_journal_path,
         )
         normalized_backend = str(backend or self.config.execution_backend).strip() or "libvirt_vm"
+        normalized_capability_mode = (
+            str(assistant_capability_mode or "").strip() or "read-only"
+        )
+        if normalized_capability_mode != "full-access":
+            normalized_capability_mode = "read-only"
         event_id = f"chat:{user_message_id}"
         event = TriggerEvent(
             event_id=event_id,
@@ -5441,6 +5452,7 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
                 "user_message_id": user_message_id,
                 "content": content,
                 "backend": normalized_backend,
+                "assistant_capability_mode": normalized_capability_mode,
             },
         )
         record = queue.publish(event, idempotency_key=event_id)

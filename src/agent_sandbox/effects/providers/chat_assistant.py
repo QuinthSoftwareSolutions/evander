@@ -19,6 +19,7 @@ class ChatAssistantEnsureSessionEffectProvider(EffectProviderBase):
             "user_message_id": effect.user_message_id,
             "content": effect.content,
             "backend": effect.backend,
+            "assistant_capability_mode": effect.assistant_capability_mode,
             "assistant_scope": effect.assistant_scope,
         }
         if resolved_config:
@@ -37,6 +38,14 @@ class ChatAssistantEnsureSessionEffectProvider(EffectProviderBase):
         settings = admin_service.read_assistant_settings()
         if not bool(settings.get("enabled")):
             raise RuntimeError("Assistant is disabled by admin settings.")
+        assistant_capability_mode = _effective_assistant_capability_mode(
+            normalize_optional_string(payload.get("assistant_capability_mode")),
+            settings=settings,
+        )
+        effective_settings = _settings_for_capability_mode(
+            settings=settings,
+            assistant_capability_mode=assistant_capability_mode,
+        )
 
         backend = normalize_optional_string(payload.get("backend")) or str(
             getattr(admin_service.config, "execution_backend", "libvirt_vm")
@@ -46,19 +55,19 @@ class ChatAssistantEnsureSessionEffectProvider(EffectProviderBase):
             user_id=user_id,
             backend=backend,
             assistant_scope=scope,
-            settings=settings,
+            settings=effective_settings,
             thread_id=thread_id,
             user_message_id=user_message_id,
         )
 
-        model = normalize_optional_string(settings.get("default_model"))
+        model = normalize_optional_string(effective_settings.get("default_model"))
         prompt = _compose_assistant_prompt(
             content=content,
             user_id=user_id,
             thread_id=thread_id,
             user_message_id=user_message_id,
             custom_system_instructions=normalize_optional_string(
-                settings.get("custom_system_instructions")
+                effective_settings.get("custom_system_instructions")
             ),
         )
         return {
@@ -73,6 +82,7 @@ class ChatAssistantEnsureSessionEffectProvider(EffectProviderBase):
             "model": model or "",
             "execution_backend": assistant_session.get("execution_backend") or backend,
             "capability_profile": assistant_session.get("capability_profile") or "",
+            "assistant_capability_mode": assistant_capability_mode,
         }
 
     def _effect(self) -> ChatAssistantEnsureSessionEffectDefinition:
@@ -120,3 +130,25 @@ def _compose_assistant_prompt(
     instructions.append("User message:")
     instructions.append(content)
     return "\n\n".join(instructions)
+
+
+def _effective_assistant_capability_mode(
+    requested_mode: str | None,
+    *,
+    settings: dict[str, Any],
+) -> str:
+    if bool(settings.get("read_only", True)):
+        return "read-only"
+    return "full-access" if requested_mode == "full-access" else "read-only"
+
+
+def _settings_for_capability_mode(
+    *,
+    settings: dict[str, Any],
+    assistant_capability_mode: str,
+) -> dict[str, Any]:
+    effective_settings = dict(settings)
+    if assistant_capability_mode != "full-access":
+        effective_settings["read_only"] = True
+        effective_settings["default_profile"] = "read-only"
+    return effective_settings

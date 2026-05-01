@@ -166,6 +166,7 @@ class AgentEnqueuePromptEffectDefinition(EffectDefinition):
     model: ConfigValue | None = None
     vm_user: ConfigValue | None = None
     resume_thread_id: ConfigValue | None = None
+    queue_key: ConfigValue | None = None
 
 
 class ChatAssistantEnsureSessionEffectDefinition(EffectDefinition):
@@ -175,6 +176,7 @@ class ChatAssistantEnsureSessionEffectDefinition(EffectDefinition):
     user_message_id: ConfigValue
     content: ConfigValue
     backend: ConfigValue | None = None
+    assistant_capability_mode: ConfigValue | None = None
     assistant_scope: ConfigValue | None = None
 
 

@@ -428,7 +428,7 @@ export function ConfigurationScreen() {
         >
           {field.options.map((option) => (
             <option key={option} value={option}>
-              {option}
+              {option || "default"}
             </option>
           ))}
         </select>

@@ -20,6 +20,7 @@ from agent_sandbox.admin.web.shared import (
     AdminWebAuth,
     AdminWebConfig,
     json_error,
+    request_has_privileged_operations,
 )
 from agent_sandbox.admin.web.vms_issues import vm_issue_routes
 from agent_sandbox.admin.web.workflow import workflow_routes, workflow_run_events
@@ -94,9 +95,7 @@ def create_app(service: AdminService) -> Starlette:
     auth = AdminWebAuth(AdminWebConfig.from_env())
 
     def privileged_operations_unlocked_for_request(request: Request) -> bool:
-        if not auth.privileged_for_request(request):
-            return False
-        return not service.privileged_helper_required() or service.privileged_operations_unlocked()
+        return request_has_privileged_operations(auth=auth, service=service, request=request)
 
     async def health(_: Request) -> JSONResponse:
         return JSONResponse({"ok": True})

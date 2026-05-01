@@ -30,6 +30,7 @@ from agent_sandbox.events.provider_models import (
     AgentEnqueuePromptEffectDefinition,
     AgentExecEffectDefinition,
     AgentPromptEffectDefinition,
+    ChatAssistantEnsureSessionEffectDefinition,
     VmBootstrapFrontendEffectDefinition,
     VmBootstrapPythonEffectDefinition,
     VmCloneRepoEffectDefinition,
@@ -693,15 +694,73 @@ def test_agent_enqueue_prompt_provider_queues_when_container_session_is_busy(
             type="effect:agent:enqueue-prompt",
             target="session-1",
             prompt="check teams",
+            queue_key="chat:thread-1:msg-1",
         )
     ).execute()
 
     assert output["execution_backend"] == "container_worker_vm"
     assert output["queued"] is True
-    assert output["queue_key"] == "session-1"
+    assert output["queue_key"] == "chat:thread-1:msg-1"
     assert backend.started_specs == []
     queued_payload = (tmp_path / "queued-agent-prompts.json").read_text(encoding="utf-8")
     assert "check teams" in queued_payload
+    assert "chat:thread-1:msg-1" in queued_payload
+
+
+def test_chat_assistant_ensure_session_uses_event_capability_mode(tmp_path) -> None:
+    config = GatewayConfig(runtime_dir=tmp_path, execution_backend="container_worker_vm")
+
+    class FakeVmAgentAdmin:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def resolve_chat_assistant_session(self, **kwargs):
+            self.calls.append(kwargs)
+            settings = kwargs["settings"]
+            return {
+                "session_id": "assistant-session",
+                "agent_thread_id": "assistant-thread",
+                "vm_name": "assistant-session",
+                "execution_backend": kwargs["backend"],
+                "capability_profile": "read-only"
+                if settings.get("read_only")
+                else "full-admin",
+            }
+
+    vm_agent_admin = FakeVmAgentAdmin()
+    admin_service = SimpleNamespace(
+        config=config,
+        vm_agent_admin=vm_agent_admin,
+        read_assistant_settings=lambda: {
+            "enabled": True,
+            "read_only": False,
+            "default_model": "gpt-test",
+            "default_profile": "full-admin",
+        },
+    )
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ContainerResolverStub(config),
+        admin_service=admin_service,
+    )
+
+    output = factory.build(
+        ChatAssistantEnsureSessionEffectDefinition(
+            id="chat-session",
+            display_name="Resolve chat assistant",
+            type="effect:chat-assistant:ensure-session",
+            user_id="alice",
+            thread_id="thread-1",
+            user_message_id="msg-1",
+            content="hello",
+            backend="container_worker_vm",
+            assistant_capability_mode="read-only",
+        )
+    ).execute()
+
+    assert vm_agent_admin.calls[0]["settings"]["read_only"] is True
+    assert vm_agent_admin.calls[0]["settings"]["default_profile"] == "read-only"
+    assert output["assistant_capability_mode"] == "read-only"
+    assert output["capability_profile"] == "read-only"
 
 
 def test_agent_enqueue_prompt_provider_queues_when_container_dispatch_fails(

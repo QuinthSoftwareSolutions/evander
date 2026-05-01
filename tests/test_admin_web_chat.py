@@ -46,6 +46,9 @@ class FakeAdminService:
     def privileged_operations_unlocked(self) -> bool:
         return False
 
+    def privileged_helper_required(self) -> bool:
+        return False
+
     def publish_chat_assistant_message(self, **kwargs: Any) -> dict[str, Any]:
         self.published_chat_events.append(kwargs)
         return {"event_id": f"chat:{kwargs['user_message_id']}"}
@@ -92,8 +95,10 @@ def test_chat_routes_normalize_user_ids_and_enforce_thread_ownership(tmp_path: P
             "thread_id": alice_session["thread_id"],
             "user_message_id": response.json()["messages"][0]["id"],
             "content": "hello",
+            "assistant_capability_mode": "read-only",
         }
     ]
+    assert response.json()["assistant_capability_mode"] == "read-only"
 
     denied_transcript = bob.get(f"/api/chat/transcript/{alice_session['thread_id']}")
     assert denied_transcript.status_code == 404

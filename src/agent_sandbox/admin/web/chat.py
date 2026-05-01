@@ -15,7 +15,11 @@ from starlette.responses import JSONResponse, StreamingResponse
 from starlette.routing import Route
 
 from agent_sandbox.admin.service import AdminService
-from agent_sandbox.admin.web.shared import AdminWebAuth, json_error
+from agent_sandbox.admin.web.shared import (
+    AdminWebAuth,
+    json_error,
+    request_has_privileged_operations,
+)
 
 
 def admin_chat_store_path(runtime_dir: Path) -> Path:
@@ -288,7 +292,7 @@ def chat_routes(service: AdminService, auth: AdminWebAuth) -> list[Route]:
         settings = service.read_assistant_settings()
         if bool(settings.get("read_only")):
             return "read-only"
-        if auth.privileged_for_request(request) and service.privileged_operations_unlocked():
+        if request_has_privileged_operations(auth=auth, service=service, request=request):
             return "full-access"
         return "read-only"
 
@@ -337,12 +341,14 @@ def chat_routes(service: AdminService, auth: AdminWebAuth) -> list[Route]:
             )
         except ValueError as exc:
             return json_error(str(exc), status_code=404)
+        effective_capability_mode = capability_mode(request)
         try:
             service.publish_chat_assistant_message(
                 user_id=user_id,
                 thread_id=thread_id,
                 user_message_id=user_message["id"],
                 content=content,
+                assistant_capability_mode=effective_capability_mode,
             )
         except Exception as exc:
             store.mark_message_status(
@@ -354,7 +360,7 @@ def chat_routes(service: AdminService, auth: AdminWebAuth) -> list[Route]:
         return JSONResponse(
             {
                 "thread_id": thread_id,
-                "assistant_capability_mode": capability_mode(request),
+                "assistant_capability_mode": effective_capability_mode,
                 "messages": [user_message],
             }
         )
@@ -417,6 +423,8 @@ def chat_routes(service: AdminService, auth: AdminWebAuth) -> list[Route]:
 
     async def put_settings(request: Request) -> JSONResponse:
         auth.require(request)
+        if not request_has_privileged_operations(auth=auth, service=service, request=request):
+            return json_error("Privileged operations are locked.", status_code=403)
         try:
             payload = await request.json()
         except Exception:

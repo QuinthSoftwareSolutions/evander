@@ -301,10 +301,11 @@ def test_chat_assistant_session_resolution_is_backend_aware(
         "enabled": True,
         "read_only": False,
         "default_model": "gpt-test",
-        "allowed_mcp_tool_profile": "operator-limited",
+        "default_profile": "operator-limited",
     }
     created_vm_names: set[str] = set()
     create_vm_calls: list[dict[str, Any]] = []
+    vm_copy_calls: list[tuple[str, str, list[dict[str, Any]]]] = []
 
     def fake_dominfo_field(vm_name: str, field_name: str) -> str | None:
         if field_name == "State" and vm_name in created_vm_names:
@@ -321,29 +322,39 @@ def test_chat_assistant_session_resolution_is_backend_aware(
             message="created",
         )
 
+    def fake_vm_copy_files(
+        self: VmAgentAdminService,
+        target: str,
+        *,
+        files: list[dict[str, Any]],
+        vm_user: str = "agent",
+    ) -> dict[str, Any]:
+        vm_copy_calls.append((target, vm_user, list(files)))
+        return {
+            "success": True,
+            "action": "vm_copy_files",
+            "copied_paths": [str(file.get("destination_path") or "") for file in files],
+        }
+
     class FakeContainerBackend:
         config = GatewayConfig(runtime_dir=tmp_path, container_worker_base_url="http://worker.test")
 
         def __init__(self) -> None:
             self.prepared: list[tuple[str, dict[str, Any]]] = []
-            self.written: list[tuple[str, list[str]]] = []
+            self.written: list[tuple[str, list[dict[str, Any]]]] = []
 
         def prepare_session(self, *, session_id: str, metadata: dict[str, Any]):
             self.prepared.append((session_id, dict(metadata)))
             return SimpleNamespace(session_id=session_id)
 
         def write_files(self, *, session_id: str, files: list[dict[str, Any]]):
-            self.written.append(
-                (
-                    session_id,
-                    [str(file.get("destination_path") or "") for file in files],
-                )
-            )
+            self.written.append((session_id, list(files)))
             return SimpleNamespace(session_id=session_id, copied_count=len(files))
 
     fake_container_backend = FakeContainerBackend()
     monkeypatch.setattr(admin_service_module, "_dominfo_field", fake_dominfo_field)
     monkeypatch.setattr(VmAgentAdminService, "create_vm", fake_create_vm)
+    monkeypatch.setattr(VmAgentAdminService, "vm_copy_files", fake_vm_copy_files)
     monkeypatch.setattr(
         VmAgentAdminService,
         "_container_worker_backend",
@@ -373,6 +384,13 @@ def test_chat_assistant_session_resolution_is_backend_aware(
     assert [call["vm_name"] for call in create_vm_calls] == ["assistant-shared"]
     assert create_vm_calls[0]["provider"] == "libvirt"
     assert create_vm_calls[0]["allow_existing_session"] is True
+    assert [call[0] for call in vm_copy_calls] == ["assistant-shared", "assistant-shared"]
+    assert all(call[1] == "agent" for call in vm_copy_calls)
+    assert all(
+        call[2][0]["destination_path"] == "/home/agent/AGENTS.md"
+        and "Truman Control Plane" in str(call[2][0]["content"])
+        for call in vm_copy_calls
+    )
     shared_session = admin.runtime.session_repository.get_session("assistant-shared")
     assert shared_session is not None
     assert shared_session.vm_provider == "libvirt"
@@ -397,6 +415,11 @@ def test_chat_assistant_session_resolution_is_backend_aware(
     assert reused_libvirt["session_id"] == "assistant-shared"
     assert [call["vm_name"] for call in create_vm_calls] == ["assistant-shared"]
     assert create_vm_calls[0]["allow_existing_session"] is True
+    assert [call[0] for call in vm_copy_calls] == [
+        "assistant-shared",
+        "assistant-shared",
+        "assistant-shared",
+    ]
 
     alice_container = service.resolve_chat_assistant_session(
         user_id="alice@example.com",
@@ -425,8 +448,17 @@ def test_chat_assistant_session_resolution_is_backend_aware(
         bob_container["session_id"],
     ]
     assert all(
-        "/home/agent/.codex/config.toml" in copied_paths
-        for _session_id, copied_paths in fake_container_backend.written
+        "/home/agent/.codex/config.toml"
+        in [str(file.get("destination_path") or "") for file in files]
+        for _session_id, files in fake_container_backend.written
+    )
+    assert all(
+        any(
+            file.get("destination_path") == "/home/agent/AGENTS.md"
+            and "Truman Control Plane" in str(file.get("content") or "")
+            for file in files
+        )
+        for _session_id, files in fake_container_backend.written
     )
 
 

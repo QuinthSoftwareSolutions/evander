@@ -342,6 +342,7 @@ _EFFECT_OUTPUT_SCHEMAS = {
         "model": {"type": "string"},
         "execution_backend": {"type": "string"},
         "capability_profile": {"type": "string"},
+        "assistant_capability_mode": {"type": "string"},
     },
     "effect:agent:exec": {
         "success": {"type": "boolean"},

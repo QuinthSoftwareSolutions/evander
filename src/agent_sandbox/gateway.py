@@ -20,9 +20,14 @@ from starlette.responses import JSONResponse, PlainTextResponse
 from starlette.routing import Mount, Route
 import uvicorn
 
-from agent_sandbox.bootstrap import load_runtime_gateway_config, resolve_runtime_dir
+from agent_sandbox.bootstrap import (
+    load_host_bootstrap_config,
+    load_runtime_gateway_config,
+    resolve_runtime_dir,
+)
 from agent_sandbox.admin.service import AdminService
 from agent_sandbox.admin.web.chat import ChatStore, admin_chat_store_path
+from agent_sandbox.directory_config import DIRECTORY_CONFIG_DOMAIN_FILENAMES
 from agent_sandbox.messaging.agent_prompt_store import AgentPromptRecord
 from agent_sandbox.messaging.agent_prompt_tokens import (
     AgentPromptTokenError,
@@ -226,6 +231,22 @@ def _payload_from_result(result: Any) -> dict[str, Any] | None:
     return {"value": result}
 
 
+def _admin_result_payload_or_raise(result: Any, action: str) -> dict[str, Any]:
+    payload = _payload_from_result(result) or {}
+    if payload.get("ok", True):
+        return payload
+    errors = payload.get("errors")
+    messages: list[str] = []
+    if isinstance(errors, list):
+        for error in errors:
+            if isinstance(error, dict):
+                message = str(error.get("message") or "").strip()
+                if message:
+                    messages.append(message)
+    detail = "; ".join(messages) or f"{action} failed"
+    raise ValueError(detail)
+
+
 def _redact_nested_value(redacted_keys: set[str], value: Any) -> Any:
     if isinstance(value, dict):
         redacted: dict[str, Any] = {}
@@ -263,10 +284,10 @@ def _assistant_mutation_audit_result(
     *,
     default_status: str,
 ) -> dict[str, Any]:
-    audit_result = dict(result)
     if tool_name not in _ASSISTANT_MUTATION_TOOLS:
-        return audit_result
+        return dict(result)
 
+    audit_result = _redact_nested_value(redacted_keys, dict(result))
     audit_result.setdefault("status", default_status)
     before_after_summary = audit_result.get("before_after_summary")
     if before_after_summary is None:
@@ -657,6 +678,8 @@ def create_server(context: RuntimeContext) -> FastMCP:
     def assistant_list_agents(
         backend: str | None = None,
         include_inactive: bool = True,
+        directory_path: str | None = None,
+        all_directories: bool = True,
         session_id: str | None = None,
         ctx: Context | None = None,
     ) -> dict[str, Any]:
@@ -667,27 +690,41 @@ def create_server(context: RuntimeContext) -> FastMCP:
             "session_id": resolved_session_id,
             "backend": backend,
             "include_inactive": include_inactive,
+            "directory_path": directory_path,
+            "all_directories": all_directories,
         }
         try:
             session = context.policy.require_tool(
                 resolved_session_id, ToolName.ASSISTANT_LIST_AGENTS
             )
+            list_all_directories = bool(all_directories and not directory_path)
+            target_directory = directory_path or session.directory_path
             records = _admin_service().list_agents(
-                directory_path=session.directory_path,
+                directory_path=target_directory,
                 direct_only=False,
                 include_inactive=include_inactive,
                 backend=backend,
+                all_directories=list_all_directories,
             )
             agents = [
                 record.model_dump(mode="json") if hasattr(record, "model_dump") else dict(record)
                 for record in records
             ]
-            result = {"agents": agents, "count": len(agents), "directory_path": session.directory_path}
+            result = {
+                "agents": agents,
+                "count": len(agents),
+                "directory_path": None if list_all_directories else target_directory,
+                "all_directories": list_all_directories,
+            }
             audit_success(
                 resolved_session_id,
                 ToolName.ASSISTANT_LIST_AGENTS,
                 args,
-                {"count": len(agents), "directory_path": session.directory_path},
+                {
+                    "count": len(agents),
+                    "directory_path": result["directory_path"],
+                    "all_directories": list_all_directories,
+                },
             )
             return result
         except PolicyError as exc:
@@ -744,6 +781,215 @@ def create_server(context: RuntimeContext) -> FastMCP:
             audit_failure(
                 resolved_session_id,
                 ToolName.ASSISTANT_INSPECT_WORKFLOWS,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
+    def assistant_read_config(
+        scope: Literal["directory", "global", "worker_global"] = "directory",
+        domain: str | None = None,
+        directory_path: str | None = None,
+        worker_id: str | None = None,
+        include_effective: bool = True,
+        session_id: str | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        """Read directory-scoped, assistant/global, or worker-global config."""
+        resolved_session_id = _resolve_session_id_from_context(
+            session_id, ctx, transport_session_map=transport_session_map
+        )
+        args = {
+            "session_id": resolved_session_id,
+            "scope": scope,
+            "domain": domain,
+            "directory_path": directory_path,
+            "worker_id": worker_id,
+            "include_effective": include_effective,
+        }
+
+        def directory_snapshot(
+            service: AdminService,
+            target_directory: str,
+            target_domain: str,
+        ) -> dict[str, Any]:
+            snapshot: dict[str, Any] = {
+                "scope": "directory",
+                "domain": target_domain,
+                "directory_path": target_directory,
+            }
+            if target_domain == "gateway":
+                snapshot["raw"] = None
+            else:
+                raw_result = service.read_directory_domain_config(
+                    target_directory, target_domain
+                )
+                raw_payload = _admin_result_payload_or_raise(
+                    raw_result, f"read directory config {target_domain!r}"
+                )
+                raw_data = raw_payload.get("data") if isinstance(raw_payload, dict) else None
+                snapshot["raw"] = {
+                    "exists": bool(raw_data.get("exists")) if isinstance(raw_data, dict) else False,
+                    "config": raw_data.get("config") if isinstance(raw_data, dict) else None,
+                    "result": raw_payload,
+                }
+
+            if include_effective or target_domain == "gateway":
+                effective_result = service.compute_directory_effective_config(
+                    target_directory, target_domain
+                )
+                effective_payload = _admin_result_payload_or_raise(
+                    effective_result,
+                    f"compute effective directory config {target_domain!r}",
+                )
+                effective_data = (
+                    effective_payload.get("data")
+                    if isinstance(effective_payload, dict)
+                    else None
+                )
+                resolution = (
+                    effective_data.get("resolution")
+                    if isinstance(effective_data, dict)
+                    else None
+                )
+                effective_config = (
+                    resolution.get("effective_config")
+                    if isinstance(resolution, dict)
+                    else None
+                )
+                snapshot["effective"] = {
+                    "config": effective_config,
+                    "resolution": resolution,
+                    "result": effective_payload,
+                }
+                snapshot["validation_diagnostics"] = effective_payload.get(
+                    "validation_diagnostics", []
+                )
+            return snapshot
+
+        try:
+            session = context.policy.require_tool(
+                resolved_session_id, ToolName.ASSISTANT_READ_CONFIG
+            )
+            service = _admin_service()
+            normalized_scope = str(scope or "directory").strip() or "directory"
+            normalized_domain = str(domain or "").strip()
+
+            if normalized_scope == "global":
+                target_domain = normalized_domain or "assistant_settings"
+                if target_domain == "assistant_settings":
+                    path = service.assistant_settings_path()
+                    result = {
+                        "scope": "global",
+                        "domain": target_domain,
+                        "path": str(path),
+                        "exists": path.exists(),
+                        "config": service.read_assistant_settings(),
+                    }
+                elif target_domain == "host":
+                    host_config = load_host_bootstrap_config(
+                        runtime_dir=service.config.runtime_dir
+                    )
+                    result = {
+                        "scope": "global",
+                        "domain": target_domain,
+                        "path": str(host_config.runtime_dir / "host-config.json"),
+                        "config": host_config.model_dump(mode="json"),
+                    }
+                elif target_domain == "gateway":
+                    result = {
+                        "scope": "global",
+                        "domain": target_domain,
+                        "config_kind": "effective_root_gateway",
+                        "config": service.config.model_dump(mode="json"),
+                    }
+                else:
+                    raise ValueError(
+                        "Unsupported global config domain. Use one of: "
+                        "assistant_settings, host, gateway."
+                    )
+                audit_success(
+                    resolved_session_id,
+                    ToolName.ASSISTANT_READ_CONFIG,
+                    args,
+                    {"scope": "global", "domain": target_domain},
+                )
+                return result
+
+            if normalized_scope == "worker_global":
+                target_worker_id = str(worker_id or normalized_domain or "").strip()
+                if not target_worker_id:
+                    raise ValueError(
+                        "worker_id is required for worker_global config reads"
+                    )
+                payload = service.read_worker_global_config(target_worker_id).model_dump(
+                    mode="json"
+                )
+                result = {"scope": "worker_global", **payload}
+                audit_success(
+                    resolved_session_id,
+                    ToolName.ASSISTANT_READ_CONFIG,
+                    args,
+                    {
+                        "scope": "worker_global",
+                        "worker_id": target_worker_id,
+                        "exists": payload.get("exists"),
+                    },
+                )
+                return result
+
+            if normalized_scope != "directory":
+                raise ValueError(
+                    "Unsupported config scope. Use one of: directory, global, worker_global."
+                )
+
+            target_directory = directory_path or session.directory_path
+            if normalized_domain:
+                result = directory_snapshot(service, target_directory, normalized_domain)
+                audit_result = {
+                    "scope": "directory",
+                    "directory_path": target_directory,
+                    "domain": normalized_domain,
+                    "include_effective": include_effective,
+                }
+            else:
+                snapshots = {
+                    target_domain: directory_snapshot(
+                        service,
+                        target_directory,
+                        target_domain,
+                    )
+                    for target_domain in sorted(DIRECTORY_CONFIG_DOMAIN_FILENAMES)
+                }
+                result = {
+                    "scope": "directory",
+                    "directory_path": target_directory,
+                    "domains": list(snapshots),
+                    "snapshots": snapshots,
+                }
+                audit_result = {
+                    "scope": "directory",
+                    "directory_path": target_directory,
+                    "domain_count": len(snapshots),
+                    "include_effective": include_effective,
+                }
+            audit_success(
+                resolved_session_id,
+                ToolName.ASSISTANT_READ_CONFIG,
+                args,
+                audit_result,
+            )
+            return result
+        except PolicyError as exc:
+            audit_failure(resolved_session_id, ToolName.ASSISTANT_READ_CONFIG, args, str(exc))
+            raise
+        except Exception as exc:
+            audit_failure(
+                resolved_session_id,
+                ToolName.ASSISTANT_READ_CONFIG,
                 args,
                 str(exc),
                 decision="error",
