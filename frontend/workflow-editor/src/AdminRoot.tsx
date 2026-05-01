@@ -35,6 +35,10 @@ type AdminState = {
   privileged_operations: {
     unlocked: boolean;
   };
+  assistant?: {
+    enabled: boolean;
+    show_launcher_when_disabled: boolean;
+  };
 };
 
 type DirectoryStateResponse = {
@@ -1446,7 +1450,11 @@ export default function AdminRoot() {
           </main>
         </div>
       </div>
-      <ChatLauncher enabled={Boolean(session.authenticated || !session.auth_required)} />
+      <ChatLauncher
+        enabled={Boolean(session.authenticated || !session.auth_required)}
+        assistantEnabled={Boolean(adminState?.assistant?.enabled)}
+        showWhenDisabled={Boolean(adminState?.assistant?.show_launcher_when_disabled)}
+      />
       <DirectoryChooserModal
         open={directoryPickerOpen}
         loading={directoryStateLoading}

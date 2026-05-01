@@ -33,6 +33,7 @@ from agent_sandbox.bootstrap import (
 )
 from agent_sandbox.config import (
     AdoWorkerGlobalConfig,
+    AssistantSettingsConfig,
     DiscordWakeWorkerGlobalConfig,
     DiscordIngestWorkerGlobalConfig,
     GatewayConfig,
@@ -5317,6 +5318,29 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
             return _strip_default_edge_fields(normalized)
         except ValidationError as exc:
             raise _safe_validation_error(exc, context=f"Invalid {worker_id} worker config") from exc
+
+    def assistant_settings_path(self) -> Path:
+        return self.config.runtime_dir / "assistant-settings.json"
+
+    def read_assistant_settings(self) -> dict[str, object]:
+        path = self.assistant_settings_path()
+        if not path.exists():
+            return self.config.assistant_settings.model_dump(mode="json", exclude_none=True)
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError(f"assistant settings file {path} must contain a JSON object")
+        return AssistantSettingsConfig.model_validate(payload).model_dump(
+            mode="json", exclude_none=True
+        )
+
+    def write_assistant_settings(self, payload: dict[str, object]) -> dict[str, object]:
+        config = AssistantSettingsConfig.model_validate(payload).model_dump(
+            mode="json", exclude_none=True
+        )
+        path = self.assistant_settings_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(config, indent=2, sort_keys=True), encoding="utf-8")
+        return config
 
     def _workflow_editor_default_layout_path(self) -> Path:
         return self.project_dir / "config" / "trigger-orchestrator" / "layout.json"
