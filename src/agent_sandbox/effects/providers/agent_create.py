@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from typing import Any
 
@@ -19,6 +20,8 @@ from .agent_session import (
     selected_execution_backend,
 )
 from .base import EffectProviderBase
+
+logger = logging.getLogger(__name__)
 
 
 class AgentCreateEffectProvider(EffectProviderBase):
@@ -56,6 +59,13 @@ class AgentCreateEffectProvider(EffectProviderBase):
         )
         execution_backend, config = selected_execution_backend(
             context, payload, directory_path=directory_path
+        )
+        logger.info(
+            "metric_agent_create_backend_path backend=%s session_id=%s vm_name=%s directory_path=%s",
+            execution_backend,
+            normalize_optional_string(payload.get("session_id")) or "",
+            normalize_optional_string(payload.get("vm_name")) or "",
+            directory_path,
         )
         if execution_backend == "libvirt_vm":
             return self._execute_libvirt(payload, execution_backend=execution_backend)

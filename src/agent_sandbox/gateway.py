@@ -482,6 +482,11 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 result=audit_result,
             )
         )
+        logger.info(
+            "metric_mcp_tool_decision outcome=allowed tool=%s session_id=%s",
+            tool_name.value,
+            session_id,
+        )
 
     def audit_failure(
         session_id: str | None,
@@ -525,6 +530,14 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 args=_redact_args(redacted_keys_for_session_id(session_id), args),
                 result=failure_result,
             )
+        )
+        logger.info(
+            "metric_mcp_tool_decision outcome=%s tool=%s session_id=%s reason=%s error_class=%s",
+            decision,
+            tool_name.value,
+            session_id or "",
+            error,
+            error_class,
         )
 
     @server.tool()

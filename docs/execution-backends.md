@@ -80,3 +80,23 @@ Next steps should move behavior only when the contract is stable:
 - move standalone VM creation behind `prepare` and `start`
 - have issue VM orchestration build an `ExecutionSpec`
 - migrate issue-worker and prompt-effect orchestration to build container worker jobs without changing business logic callers
+
+
+## Backend-specific Observability and Recovery
+
+### `libvirt_vm`
+
+- `effect:agent:create` emits `metric_agent_create_backend_path backend=libvirt_vm` before VM create delegation.
+- Chat assistant session mappings are global and should show one `metric_chat_session_mapping_created` and steady `..._reused` markers.
+- Recovery:
+  - If backend selection is wrong, inspect session metadata and directory-level provider config resolution.
+  - If chat session mapping churn appears, inspect and repair `runtime/chat-assistant-session-mappings.json`.
+
+### `container_worker_vm`
+
+- `effect:agent:create` emits `metric_agent_create_backend_path backend=container_worker_vm` before session/worker preparation.
+- Chat assistant mappings are per user; expect `metric_chat_session_mapping_created` once per user and backend, then reuse.
+- Prompt queue markers (`metric_prompt_enqueue_success|failed`) indicate queue persistence latency and failures before worker dispatch retries.
+- Recovery:
+  - On repeated enqueue failures, check runtime store writeability and worker-session state files.
+  - On misrouted tool calls, use `metric_mcp_tool_decision` deny/error reasons and compare to session allowlists.
