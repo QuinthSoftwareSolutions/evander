@@ -12,6 +12,7 @@ import { IssuesPage } from "./features/issues/IssuesPage";
 import { SessionsScreen } from "./features/sessions/SessionsScreen";
 import { VmsPage } from "./features/vms/VmsPage";
 import { WorkersScreen } from "./features/workers/WorkersScreen";
+import { ChatLauncher } from "./features/chat/ChatLauncher";
 import { Tooltip } from "./features/admin/Tooltip";
 
 type AdminSession = {
@@ -1445,6 +1446,7 @@ export default function AdminRoot() {
           </main>
         </div>
       </div>
+      <ChatLauncher enabled={Boolean(session.authenticated || !session.auth_required)} />
       <DirectoryChooserModal
         open={directoryPickerOpen}
         loading={directoryStateLoading}
