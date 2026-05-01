@@ -452,15 +452,34 @@ def create_server(context: RuntimeContext) -> FastMCP:
         result: dict[str, Any],
     ) -> None:
         session = context.policy.get_session(session_id)
+        actor_user_id = str(session.metadata.get("user_id") or session.metadata.get("actor_user_id") or "").strip()
+        if not actor_user_id:
+            actor_user_id = None
+        is_assistant_mutation = tool_name in {
+            ToolName.ASSISTANT_UPSERT_CONFIG,
+            ToolName.ASSISTANT_CREATE_WORKFLOW,
+            ToolName.ASSISTANT_RUN_SAFE_OPERATION,
+        }
+        audit_result = dict(result)
+        if is_assistant_mutation:
+            audit_result.setdefault("status", "success")
+            audit_result.setdefault(
+                "before_after_summary",
+                {
+                    "before": args.get("before"),
+                    "after": args.get("after"),
+                },
+            )
         context.audit.log(
             AuditEvent(
                 event_type="tool_call",
                 session_id=session_id,
                 vm_id=session.vm_id,
                 tool_name=tool_name.value,
+                actor_user_id=actor_user_id,
                 decision="allowed",
                 args=_redact_args(redacted_keys_for_session_id(session_id), args),
-                result=result,
+                result=audit_result,
             )
         )
 
@@ -474,18 +493,37 @@ def create_server(context: RuntimeContext) -> FastMCP:
         error_class: str = "policy_error",
     ) -> None:
         vm_id = None
+        actor_user_id = None
         if session_id:
             session = context.session_repository.get_session(session_id)
             vm_id = None if session is None else session.vm_id
+            if session is not None:
+                candidate = str(
+                    session.metadata.get("user_id") or session.metadata.get("actor_user_id") or ""
+                ).strip()
+                actor_user_id = candidate or None
+        is_assistant_mutation = tool_name in {
+            ToolName.ASSISTANT_UPSERT_CONFIG,
+            ToolName.ASSISTANT_CREATE_WORKFLOW,
+            ToolName.ASSISTANT_RUN_SAFE_OPERATION,
+        }
+        failure_result: dict[str, Any] = {"error": error, "error_class": error_class}
+        if is_assistant_mutation:
+            failure_result["status"] = "failed"
+            failure_result["before_after_summary"] = {
+                "before": args.get("before"),
+                "after": args.get("after"),
+            }
         context.audit.log(
             AuditEvent(
                 event_type="tool_call",
                 session_id=session_id,
                 vm_id=vm_id,
                 tool_name=tool_name.value,
+                actor_user_id=actor_user_id,
                 decision=decision,
                 args=_redact_args(redacted_keys_for_session_id(session_id), args),
-                result={"error": error, "error_class": error_class},
+                result=failure_result,
             )
         )
 

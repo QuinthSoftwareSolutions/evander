@@ -75,6 +75,41 @@ def test_require_tool_schedule_resume_requires_vm_binding(tmp_path: Path) -> Non
         engine.require_tool("s1", ToolName.SCHEDULE_RESUME)
 
 
+def test_assistant_mutation_tools_require_explicit_mutation_policy(tmp_path: Path) -> None:
+    engine = make_engine(tmp_path)
+    engine.session_store.upsert_session(
+        SessionManifest(
+            session_id="s1",
+            allowed_tools=[ToolName.ASSISTANT_UPSERT_CONFIG],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={"capability_profile": "operator-limited"},
+        ),
+    )
+    with pytest.raises(PolicyError, match="assistant_mutation_policy"):
+        engine.require_tool("s1", ToolName.ASSISTANT_UPSERT_CONFIG)
+
+
+def test_assistant_destructive_operation_can_require_approval_gate(tmp_path: Path) -> None:
+    engine = make_engine(tmp_path)
+    engine.session_store.upsert_session(
+        SessionManifest(
+            session_id="s1",
+            allowed_tools=[ToolName.ASSISTANT_RUN_SAFE_OPERATION],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={
+                "capability_profile": "full-admin",
+                "assistant_mutation_policy": {
+                    "write_tool_profile": "workflow-writer",
+                    "writable_scopes": ["config/workflow", "config/root"],
+                    "require_destructive_approval_gate": True,
+                },
+            },
+        ),
+    )
+    with pytest.raises(PolicyError, match="destructive approval gate"):
+        engine.require_tool("s1", ToolName.ASSISTANT_RUN_SAFE_OPERATION)
+
+
 def test_require_approved_rejects_payload_mismatch(tmp_path: Path) -> None:
     engine = make_engine(tmp_path)
     approval = ApprovalRequest(

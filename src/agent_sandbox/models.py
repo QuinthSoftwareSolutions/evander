@@ -738,6 +738,7 @@ class AuditEvent(BaseModel):
     repo: str | None = None
     pr_id: str | None = None
     tool_name: str | None = None
+    actor_user_id: str | None = None
     decision: str | None = None
     reason: str | None = None
     args: dict[str, Any] = Field(default_factory=dict)
