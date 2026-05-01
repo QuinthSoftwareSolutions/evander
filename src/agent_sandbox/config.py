@@ -52,6 +52,26 @@ class MailboxConfig(BaseModel):
     folder_allowlist_defaults: list[str] = Field(default_factory=lambda: ["inbox", "drafts"])
 
 
+class AssistantSettingsConfig(BaseModel):
+    enabled: bool = False
+    show_launcher_when_disabled: bool = False
+    default_model: str | None = None
+    default_profile: str | None = None
+    allowed_mcp_tool_profile: str | None = None
+    read_only: bool = True
+    custom_system_instructions: str | None = None
+
+    @field_validator(
+        "default_model", "default_profile", "allowed_mcp_tool_profile", "custom_system_instructions"
+    )
+    @classmethod
+    def normalize_optional_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = str(value).strip()
+        return normalized or None
+
+
 class GatewayConfig(BaseModel):
     host: str = "0.0.0.0"
     port: int = 8000
@@ -219,6 +239,7 @@ class GatewayConfig(BaseModel):
             )
         ]
     )
+    assistant_settings: AssistantSettingsConfig = Field(default_factory=AssistantSettingsConfig)
     redacted_keys: set[str] = Field(
         default_factory=lambda: {
             "body",

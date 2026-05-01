@@ -88,9 +88,12 @@ def chat_routes(service: AdminService, auth: AdminWebAuth) -> list[Route]:
 
     async def start_or_get_session(request: Request) -> JSONResponse:
         auth.require(request)
+        settings = service.read_assistant_settings()
+        if not bool(settings.get("enabled")):
+            return json_error("Assistant is disabled by admin settings.", status_code=403)
         user_id = user_id_for_request(request)
         thread_id = store.get_or_create_thread(user_id)
-        return JSONResponse({"user_id": user_id, "thread_id": thread_id, "assistant_capability_mode": capability_mode(request)})
+        return JSONResponse({"user_id": user_id, "thread_id": thread_id, "assistant_capability_mode": "read-only" if bool(settings.get("read_only")) else capability_mode(request)})
 
     async def post_message(request: Request) -> JSONResponse:
         auth.require(request)
@@ -106,6 +109,11 @@ def chat_routes(service: AdminService, auth: AdminWebAuth) -> list[Route]:
             return json_error("thread_id is required")
         if not content:
             return json_error("content is required")
+        settings = service.read_assistant_settings()
+        if not bool(settings.get("enabled")):
+            return json_error("Assistant is disabled by admin settings.", status_code=403)
+        if bool(settings.get("read_only")):
+            return json_error("Assistant is in read-only mode.", status_code=403)
         user_id = user_id_for_request(request)
         user_message = store.append_message(thread_id, "user", content)
 
@@ -124,7 +132,7 @@ def chat_routes(service: AdminService, auth: AdminWebAuth) -> list[Route]:
                 vm_name=session_id,
                 session_id=session_id,
                 prompt=content,
-                model=None,
+                model=settings.get("default_model"),
                 vm_user="agent",
                 resume_thread_id=None,
                 effect_id="admin-chat",
@@ -152,8 +160,28 @@ def chat_routes(service: AdminService, auth: AdminWebAuth) -> list[Route]:
         transcript["assistant_capability_mode"] = capability_mode(request)
         return JSONResponse(transcript)
 
+    async def get_settings(request: Request) -> JSONResponse:
+        auth.require(request)
+        return JSONResponse(service.read_assistant_settings())
+
+    async def put_settings(request: Request) -> JSONResponse:
+        auth.require(request)
+        try:
+            payload = await request.json()
+        except Exception:
+            return json_error("Request body must be valid JSON")
+        if not isinstance(payload, dict):
+            return json_error("Request body must be a JSON object")
+        try:
+            result = service.write_assistant_settings(payload)
+        except Exception as exc:
+            return json_error(str(exc), status_code=400)
+        return JSONResponse(result)
+
     return [
         Route("/api/chat/session", start_or_get_session, methods=["GET", "POST"]),
         Route("/api/chat/message", post_message, methods=["POST"]),
         Route("/api/chat/transcript/{thread_id}", get_transcript, methods=["GET"]),
+        Route("/api/chat/settings", get_settings, methods=["GET"]),
+        Route("/api/chat/settings", put_settings, methods=["PUT"]),
     ]

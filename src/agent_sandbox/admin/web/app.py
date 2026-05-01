@@ -212,10 +212,17 @@ def create_app(service: AdminService) -> Starlette:
 
     async def get_admin_state(request: Request) -> JSONResponse:
         auth.require(request)
+        assistant_settings = service.read_assistant_settings()
         return JSONResponse(
             {
                 "selected_directory_path": "root",
                 "directory_scoped_config_enabled": service.directory_scoped_config_enabled,
+                "assistant": {
+                    "enabled": bool(assistant_settings.get("enabled")),
+                    "show_launcher_when_disabled": bool(
+                        assistant_settings.get("show_launcher_when_disabled")
+                    ),
+                },
                 "privileged_operations": {
                     "unlocked": privileged_operations_unlocked_for_request(request)
                 },
