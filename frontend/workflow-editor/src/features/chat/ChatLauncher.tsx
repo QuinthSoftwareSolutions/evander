@@ -1,5 +1,11 @@
 import { useEffect, useState } from "react";
-import { fetchTranscript, postChatMessage, startOrGetChatSession, type ChatMessage, type CapabilityMode } from "./api";
+import {
+  fetchTranscript,
+  postChatMessage,
+  startOrGetChatSession,
+  type CapabilityMode,
+  type ChatMessage,
+} from "./api";
 
 type LauncherState = "minimized" | "expanded" | "disabled" | "loading" | "error";
 const UI_KEY = "admin-web:chat:ui";
@@ -20,9 +26,106 @@ export function ChatLauncher({
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [draft, setDraft] = useState("");
   const [error, setError] = useState("");
-  useEffect(() => { if (!launcherAllowed || !assistantEnabled) { setState("disabled"); return; } const pref = window.localStorage.getItem(UI_KEY) === "expanded" ? "expanded" : "minimized"; setState("loading"); startOrGetChatSession().then((s) => { setThreadId(s.thread_id); setMode(s.assistant_capability_mode); return fetchTranscript(s.thread_id); }).then((t) => { setMessages(t.messages); setMode(t.assistant_capability_mode); setState(pref); }).catch((e) => { setError(e instanceof Error ? e.message : "Failed"); setState("error"); }); }, [launcherAllowed, assistantEnabled]);
+
+  useEffect(() => {
+    if (!launcherAllowed || !assistantEnabled) {
+      setState("disabled");
+      return;
+    }
+
+    let cancelled = false;
+    const preferredState: LauncherState =
+      window.localStorage.getItem(UI_KEY) === "expanded" ? "expanded" : "minimized";
+
+    async function loadChatSession() {
+      setState("loading");
+      setError("");
+
+      try {
+        const session = await startOrGetChatSession();
+        if (cancelled) return;
+
+        setThreadId(session.thread_id);
+        setMode(session.assistant_capability_mode);
+
+        const transcript = await fetchTranscript(session.thread_id);
+        if (cancelled) return;
+
+        setMessages(transcript.messages);
+        setMode(transcript.assistant_capability_mode);
+        setState(preferredState);
+      } catch (e) {
+        if (cancelled) return;
+        setError(e instanceof Error ? e.message : "Failed");
+        setState("error");
+      }
+    }
+
+    void loadChatSession();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [launcherAllowed, assistantEnabled]);
+
   const expanded = state === "expanded";
-  async function send() { if (!draft.trim() || !threadId) return; const r = await postChatMessage(threadId, draft.trim()); setMessages((c) => [...c, ...r.messages]); setMode(r.assistant_capability_mode); setDraft(""); }
+
+  async function send() {
+    const content = draft.trim();
+    if (!content || !threadId) return;
+
+    const response = await postChatMessage(threadId, content);
+    setMessages((current) => [...current, ...response.messages]);
+    setMode(response.assistant_capability_mode);
+    setDraft("");
+  }
+
   if (!launcherAllowed) return null;
-  return <div className="chat-launcher"><button type="button" className="admin-shell-button" disabled={state === "disabled" || state === "loading"} onClick={() => { const n = expanded ? "minimized" : "expanded"; setState(n); window.localStorage.setItem(UI_KEY, n); }}>{assistantEnabled ? (mode === "full-access" ? "Assistant (full-access)" : "Assistant (read-only)") : "Assistant (disabled)"}</button>{expanded ? <div className="chat-panel"><div className="chat-messages">{messages.map((m) => <div key={m.id}><strong>{m.role}:</strong> {m.content}</div>)}</div><input value={draft} onChange={(e) => setDraft(e.target.value)} /><button type="button" className="admin-shell-button" onClick={() => void send()} disabled={!assistantEnabled}>Send</button></div> : null}{state === "loading" ? <div>Loading…</div> : null}{state === "error" ? <div>{error}</div> : null}</div>;
+
+  return (
+    <div className="chat-launcher">
+      <button
+        type="button"
+        className="admin-shell-button"
+        disabled={state === "disabled" || state === "loading"}
+        onClick={() => {
+          const nextState = expanded ? "minimized" : "expanded";
+          setState(nextState);
+          window.localStorage.setItem(UI_KEY, nextState);
+        }}
+      >
+        {assistantEnabled
+          ? mode === "full-access"
+            ? "Assistant (full-access)"
+            : "Assistant (read-only)"
+          : "Assistant (disabled)"}
+      </button>
+      {expanded ? (
+        <div className="chat-panel">
+          <div className="chat-messages">
+            {messages.map((message) => (
+              <div key={message.id}>
+                <strong>{message.role}:</strong> {message.content}
+              </div>
+            ))}
+          </div>
+          <input
+            aria-label="Chat message"
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+          />
+          <button
+            type="button"
+            className="admin-shell-button"
+            onClick={() => void send()}
+            disabled={!assistantEnabled}
+          >
+            Send
+          </button>
+        </div>
+      ) : null}
+      {state === "loading" ? <div>Loading...</div> : null}
+      {state === "error" ? <div>{error}</div> : null}
+    </div>
+  );
 }

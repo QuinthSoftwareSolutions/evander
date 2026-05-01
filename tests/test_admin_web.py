@@ -1403,6 +1403,11 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
     communications = next(tab for tab in payload["tabs"] if tab["key"] == "communications")
     assert communications["title"] == "Communications"
     assert any(section["title"] == "Discord" for section in communications["sections"])
+    assistant = next(section for section in communications["sections"] if section["title"] == "Assistant")
+    assistant_fields = {field["field_name"]: field for field in assistant["fields"]}
+    assert assistant_fields["enabled"]["scope"] == "global"
+    assert assistant_fields["show_launcher_when_disabled"]["kind"] == "bool"
+    assert assistant_fields["custom_system_instructions"]["kind"] == "multiline_text"
     providers = next(tab for tab in payload["tabs"] if tab["key"] == "providers")
     container_worker = next(
         section for section in providers["sections"] if section["title"] == "Container worker"
@@ -1443,6 +1448,67 @@ def test_admin_web_configuration_tab_save_splits_underlying_domains(tmp_path: Pa
     assert snapshot["raw"]["config"]["discord_backend"] == "stub"
     assert snapshot["raw"]["config"]["discord_operator_channel_allowlist"] == ["chan-1", "chan-2"]
     assert snapshot["raw"]["config"]["discord_resume_prompt"] == "Resume this session."
+
+
+def test_admin_web_communications_tab_saves_assistant_settings(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    client = TestClient(create_app(service))
+
+    response = client.put(
+        "/api/configuration/domains/communications?directory_path=root",
+        json={
+            "config": {
+                "enabled": True,
+                "show_launcher_when_disabled": True,
+                "read_only": False,
+                "default_model": "gpt-test",
+                "default_profile": "full-admin",
+                "allowed_mcp_tool_profile": "operator",
+                "custom_system_instructions": "Use the admin context.",
+            }
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    snapshot = payload["tab_snapshot"]
+    assert snapshot["raw"]["config"]["enabled"] is True
+    assert snapshot["raw"]["config"]["read_only"] is False
+    assert snapshot["raw"]["config"]["custom_system_instructions"] == "Use the admin context."
+    assert service.read_assistant_settings() == {
+        "allowed_mcp_tool_profile": "operator",
+        "custom_system_instructions": "Use the admin context.",
+        "default_model": "gpt-test",
+        "default_profile": "full-admin",
+        "enabled": True,
+        "read_only": False,
+        "show_launcher_when_disabled": True,
+    }
+    assert service.assistant_settings_path().exists()
+
+
+def test_admin_web_communications_tab_preserves_assistant_settings_when_absent(
+    tmp_path: Path,
+) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.write_assistant_settings(
+        {
+            "enabled": True,
+            "show_launcher_when_disabled": True,
+            "read_only": False,
+            "default_model": "gpt-existing",
+        }
+    )
+    client = TestClient(create_app(service))
+
+    response = client.put(
+        "/api/configuration/domains/communications?directory_path=root",
+        json={"config": {"discord_backend": "stub"}},
+    )
+
+    assert response.status_code == 200
+    assert service.read_assistant_settings()["default_model"] == "gpt-existing"
+    assert service.read_assistant_settings()["enabled"] is True
 
 
 def test_admin_web_grouped_tab_save_preserves_unrelated_shared_domain_fields(

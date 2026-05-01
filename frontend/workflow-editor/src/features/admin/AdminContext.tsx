@@ -36,6 +36,7 @@ export type AdminUiState = {
   closeDirectoryPicker: () => void;
   setSelectedDirectoryPath: (path: string) => void;
   refreshDirectoryState: () => Promise<void>;
+  refreshAdminState: () => Promise<void>;
 };
 
 const DEFAULT_ADMIN_UI_STATE: AdminUiState = {
@@ -52,6 +53,7 @@ const DEFAULT_ADMIN_UI_STATE: AdminUiState = {
   closeDirectoryPicker: () => {},
   setSelectedDirectoryPath: () => {},
   refreshDirectoryState: async () => {},
+  refreshAdminState: async () => {},
 };
 
 export const AdminUiContext = createContext<AdminUiState>(DEFAULT_ADMIN_UI_STATE);

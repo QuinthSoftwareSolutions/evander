@@ -245,6 +245,41 @@ def _redact_args(redacted_keys: set[str], args: dict[str, Any]) -> dict[str, Any
     return _redact_nested_value(redacted_keys, args)
 
 
+_ASSISTANT_MUTATION_TOOLS = frozenset(
+    {
+        ToolName.ASSISTANT_UPSERT_CONFIG,
+        ToolName.ASSISTANT_CREATE_WORKFLOW,
+        ToolName.ASSISTANT_RUN_SAFE_OPERATION,
+    }
+)
+
+
+def _assistant_mutation_audit_result(
+    tool_name: ToolName,
+    args: dict[str, Any],
+    result: dict[str, Any],
+    redacted_keys: set[str],
+    *,
+    default_status: str,
+) -> dict[str, Any]:
+    audit_result = dict(result)
+    if tool_name not in _ASSISTANT_MUTATION_TOOLS:
+        return audit_result
+
+    audit_result.setdefault("status", default_status)
+    before_after_summary = audit_result.get("before_after_summary")
+    if before_after_summary is None:
+        before_after_summary = {
+            "before": args.get("before"),
+            "after": args.get("after"),
+        }
+    audit_result["before_after_summary"] = _redact_nested_value(
+        redacted_keys,
+        before_after_summary,
+    )
+    return audit_result
+
+
 def _resolve_session_id_from_context(
     session_id: str | None,
     ctx: Context | None,
@@ -452,24 +487,20 @@ def create_server(context: RuntimeContext) -> FastMCP:
         result: dict[str, Any],
     ) -> None:
         session = context.policy.get_session(session_id)
-        actor_user_id = str(session.metadata.get("user_id") or session.metadata.get("actor_user_id") or "").strip()
+        actor_user_id = str(
+            session.metadata.get("user_id") or session.metadata.get("actor_user_id") or ""
+        ).strip()
         if not actor_user_id:
             actor_user_id = None
-        is_assistant_mutation = tool_name in {
-            ToolName.ASSISTANT_UPSERT_CONFIG,
-            ToolName.ASSISTANT_CREATE_WORKFLOW,
-            ToolName.ASSISTANT_RUN_SAFE_OPERATION,
-        }
-        audit_result = dict(result)
-        if is_assistant_mutation:
-            audit_result.setdefault("status", "success")
-            audit_result.setdefault(
-                "before_after_summary",
-                {
-                    "before": args.get("before"),
-                    "after": args.get("after"),
-                },
-            )
+        redacted_keys = redacted_keys_for_session_id(session_id)
+        redacted_args = _redact_args(redacted_keys, args)
+        audit_result = _assistant_mutation_audit_result(
+            tool_name,
+            args,
+            result,
+            redacted_keys,
+            default_status="success",
+        )
         context.audit.log(
             AuditEvent(
                 event_type="tool_call",
@@ -478,7 +509,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 tool_name=tool_name.value,
                 actor_user_id=actor_user_id,
                 decision="allowed",
-                args=_redact_args(redacted_keys_for_session_id(session_id), args),
+                args=redacted_args,
                 result=audit_result,
             )
         )
@@ -507,18 +538,15 @@ def create_server(context: RuntimeContext) -> FastMCP:
                     session.metadata.get("user_id") or session.metadata.get("actor_user_id") or ""
                 ).strip()
                 actor_user_id = candidate or None
-        is_assistant_mutation = tool_name in {
-            ToolName.ASSISTANT_UPSERT_CONFIG,
-            ToolName.ASSISTANT_CREATE_WORKFLOW,
-            ToolName.ASSISTANT_RUN_SAFE_OPERATION,
-        }
-        failure_result: dict[str, Any] = {"error": error, "error_class": error_class}
-        if is_assistant_mutation:
-            failure_result["status"] = "failed"
-            failure_result["before_after_summary"] = {
-                "before": args.get("before"),
-                "after": args.get("after"),
-            }
+        redacted_keys = redacted_keys_for_session_id(session_id)
+        redacted_args = _redact_args(redacted_keys, args)
+        failure_result = _assistant_mutation_audit_result(
+            tool_name,
+            args,
+            {"error": error, "error_class": error_class},
+            redacted_keys,
+            default_status="failed",
+        )
         context.audit.log(
             AuditEvent(
                 event_type="tool_call",
@@ -527,7 +555,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 tool_name=tool_name.value,
                 actor_user_id=actor_user_id,
                 decision=decision,
-                args=_redact_args(redacted_keys_for_session_id(session_id), args),
+                args=redacted_args,
                 result=failure_result,
             )
         )

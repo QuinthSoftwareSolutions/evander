@@ -14,6 +14,7 @@ from agent_sandbox.admin.service import AdminService
 from agent_sandbox.admin.web.shared import AdminWebAuth
 from agent_sandbox.config import (
     AdoWorkerGlobalConfig,
+    AssistantSettingsConfig,
     DiscordWakeWorkerGlobalConfig,
     GatewayConfig,
     ScheduledWakeWorkerGlobalConfig,
@@ -51,10 +52,21 @@ _TEAMS_PROVIDER_CONFIG_FIELDS: tuple[tuple[str, str], ...] = tuple(
         name for name in DIRECTORY_CONFIG_DOMAIN_FIELDS["providers"] if name.startswith("teams_")
     )
 )
+_ASSISTANT_SETTINGS_DOMAIN = "assistant_settings"
+_ASSISTANT_SETTINGS_FIELDS: tuple[tuple[str, str], ...] = (
+    (_ASSISTANT_SETTINGS_DOMAIN, "enabled"),
+    (_ASSISTANT_SETTINGS_DOMAIN, "show_launcher_when_disabled"),
+    (_ASSISTANT_SETTINGS_DOMAIN, "read_only"),
+    (_ASSISTANT_SETTINGS_DOMAIN, "default_model"),
+    (_ASSISTANT_SETTINGS_DOMAIN, "default_profile"),
+    (_ASSISTANT_SETTINGS_DOMAIN, "allowed_mcp_tool_profile"),
+    (_ASSISTANT_SETTINGS_DOMAIN, "custom_system_instructions"),
+)
 _DIRECTORY_CONFIG_UI_TAB_FIELD_SOURCES: dict[str, tuple[tuple[str, str], ...]] = {
     "communications": (
         *_DISCORD_CONFIG_FIELDS,
         *_TEAMS_PROVIDER_CONFIG_FIELDS,
+        *_ASSISTANT_SETTINGS_FIELDS,
     ),
     "access_policy": tuple(
         ("policy", field_name)
@@ -114,6 +126,7 @@ _DIRECTORY_CONFIG_TAB_SECTIONS: dict[
     "communications": (
         ("Discord", _DISCORD_CONFIG_FIELDS, ("discord_",)),
         ("Teams", _TEAMS_PROVIDER_CONFIG_FIELDS, ("teams_",)),
+        ("Assistant", _ASSISTANT_SETTINGS_FIELDS, ()),
     ),
     "access_policy": (
         (
@@ -513,7 +526,11 @@ def _field_kind(
         return ("literal", tuple(str(choice) for choice in get_args(annotation)))
     if _is_string_list_annotation(annotation):
         return ("string_list", ())
-    if annotation is str and (field_name.endswith("_prompt") or field_name.endswith("_markdown")):
+    if annotation is str and (
+        field_name.endswith("_prompt")
+        or field_name.endswith("_markdown")
+        or field_name.endswith("_instructions")
+    ):
         return ("multiline_text", ())
     if annotation in {str, Path}:
         return ("text", ())
@@ -608,6 +625,7 @@ def _directory_config_field_metadata(
             AdoWorkerDirectoryConfig.model_fields,
             IssueSetupDirectoryConfig.model_fields,
             PrTemplateDirectoryConfig.model_fields,
+            AssistantSettingsConfig.model_fields,
         ),
     )
     return {
@@ -616,6 +634,7 @@ def _directory_config_field_metadata(
         "label": _config_field_display_name(field_name, prefixes=prefixes),
         "kind": kind,
         "options": list(options),
+        "scope": "global" if source_domain == _ASSISTANT_SETTINGS_DOMAIN else "directory",
         "root_starts_editable": tab_key == "pr_template" and field_name == "pr_template_markdown",
     }
 
@@ -696,6 +715,39 @@ def _domain_snapshot(service: AdminService, directory_path: str, domain: str) ->
     }
 
 
+def _assistant_settings_snapshot(service: AdminService) -> dict[str, Any]:
+    path = service.assistant_settings_path()
+    config = service.read_assistant_settings()
+    result = {
+        "ok": True,
+        "data": {
+            "path": str(path),
+            "exists": path.exists(),
+            "config": config,
+            "scope": "global",
+        },
+        "errors": [],
+        "validation_diagnostics": [],
+    }
+    return {
+        "domain": _ASSISTANT_SETTINGS_DOMAIN,
+        "raw": {
+            "exists": path.exists(),
+            "config": config,
+            "result": result,
+        },
+        "effective": {
+            "config": config,
+            "result": result,
+        },
+        "parent_defaults": {
+            "directory_path": None,
+            "config": {},
+            "result": None,
+        },
+    }
+
+
 def _aggregate_tab_snapshot(
     service: AdminService,
     directory_path: str,
@@ -767,13 +819,15 @@ def _split_tab_payload(tab_key: str, config: dict[str, Any]) -> dict[str, dict[s
         for source_domain, field_name in _DIRECTORY_CONFIG_UI_TAB_FIELD_SOURCES[tab_key]
     }
     payloads_by_source: dict[str, dict[str, Any]] = {
-        source_domain: {} for source_domain in _directory_tab_underlying_domains(tab_key)
+        source_domain: {}
+        for source_domain in _directory_tab_underlying_domains(tab_key)
+        if source_domain != _ASSISTANT_SETTINGS_DOMAIN
     }
     for field_name, value in config.items():
         source_domain = field_sources.get(field_name)
         if source_domain is None:
             raise ValueError(f"Unknown field for {tab_key}: {field_name}")
-        payloads_by_source[source_domain][field_name] = value
+        payloads_by_source.setdefault(source_domain, {})[field_name] = value
     return payloads_by_source
 
 
@@ -871,6 +925,7 @@ def worker_config_routes(service: AdminService, _auth: AdminWebAuth) -> list[Bas
             domain: _domain_snapshot(service, selected_path, domain)
             for domain in DIRECTORY_CONFIG_DOMAIN_FILENAMES
         }
+        domain_snapshots[_ASSISTANT_SETTINGS_DOMAIN] = _assistant_settings_snapshot(service)
         tabs = [
             _directory_tab_metadata(tab_key) for tab_key in _DIRECTORY_CONFIG_UI_TAB_FIELD_SOURCES
         ]
@@ -934,6 +989,15 @@ def worker_config_routes(service: AdminService, _auth: AdminWebAuth) -> list[Bas
             payloads_by_source = _split_tab_payload(domain, config)
             tab_fields_by_source = _tab_fields_by_source_domain(domain)
             for source_domain, source_payload in payloads_by_source.items():
+                if source_domain == _ASSISTANT_SETTINGS_DOMAIN:
+                    existing_settings = service.read_assistant_settings()
+                    merged_settings = dict(existing_settings)
+                    merged_settings.update(source_payload)
+                    try:
+                        service.write_assistant_settings(merged_settings)
+                    except Exception as exc:
+                        return _error_response(str(exc), status_code=400)
+                    continue
                 existing_result = service.read_directory_domain_config(
                     directory_path, source_domain
                 )
@@ -967,6 +1031,7 @@ def worker_config_routes(service: AdminService, _auth: AdminWebAuth) -> list[Bas
                 source_domain: _domain_snapshot(service, directory_path, source_domain)
                 for source_domain in DIRECTORY_CONFIG_DOMAIN_FILENAMES
             }
+            domain_snapshots[_ASSISTANT_SETTINGS_DOMAIN] = _assistant_settings_snapshot(service)
             return JSONResponse(
                 {
                     "write_result": {

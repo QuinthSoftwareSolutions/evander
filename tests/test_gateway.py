@@ -11,6 +11,7 @@ from starlette.testclient import TestClient
 
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.gateway import (
+    _assistant_mutation_audit_result,
     _filter_discord_commands_for_session,
     _resolve_session_id_from_context,
     create_app,
@@ -179,6 +180,29 @@ def test_request_pr_review_schema_advertises_allowed_provider_values(tmp_path: P
 
     assert provider_schema["type"] == "string"
     assert provider_schema["enum"] == ["github", "azure_devops"]
+
+
+def test_assistant_mutation_audit_result_redacts_before_after_summary() -> None:
+    args = {
+        "before": {"api_key": "before-secret", "safe": "visible"},
+        "after": {"nested": {"token": "after-token", "safe": "still-visible"}},
+    }
+
+    result = _assistant_mutation_audit_result(
+        ToolName.ASSISTANT_UPSERT_CONFIG,
+        args,
+        {"before_after_summary": {"before": args["before"], "after": args["after"]}},
+        {"api_key", "token"},
+        default_status="success",
+    )
+
+    assert result["status"] == "success"
+    assert result["before_after_summary"]["before"]["api_key"] == "<redacted>"
+    assert result["before_after_summary"]["before"]["safe"] == "visible"
+    assert result["before_after_summary"]["after"]["nested"]["token"] == "<redacted>"
+    assert result["before_after_summary"]["after"]["nested"]["safe"] == "still-visible"
+    assert "before-secret" not in json.dumps(result)
+    assert "after-token" not in json.dumps(result)
 
 
 def test_run_script_enforces_tool_policy_and_script_allowlist(tmp_path: Path) -> None:

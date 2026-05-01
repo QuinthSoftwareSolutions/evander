@@ -1191,6 +1191,23 @@ export default function AdminRoot() {
     }
   }
 
+  async function refreshAdminState() {
+    try {
+      const response = await fetch(`${API_BASE}/api/admin/state`, { credentials: "same-origin" });
+      const payload = (await response.json()) as AdminState & { error?: string };
+      if (!response.ok) {
+        throw new Error(payload.error ?? "Unable to load admin state.");
+      }
+      setAdminState(payload);
+      if (!window.localStorage.getItem(DIRECTORY_STORAGE_KEY)) {
+        setSelectedDirectoryPath(payload.selected_directory_path || "root");
+      }
+      setSessionError(null);
+    } catch (error) {
+      setSessionError(error instanceof Error ? error.message : "Unable to load admin state.");
+    }
+  }
+
   useEffect(() => {
     if (session === null || (session.auth_required && !session.authenticated)) {
       return;
@@ -1326,6 +1343,7 @@ export default function AdminRoot() {
     closeDirectoryPicker: () => setDirectoryPickerOpen(false),
     setSelectedDirectoryPath: (path: string) => setSelectedDirectoryPath(path || "root"),
     refreshDirectoryState: async () => loadDirectoryState(selectedDirectoryPath),
+    refreshAdminState,
   };
 
   return (
