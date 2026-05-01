@@ -38,12 +38,17 @@ class FakeAdminService:
     def __init__(self, runtime_dir: Path) -> None:
         self.config = SimpleNamespace(runtime_dir=runtime_dir)
         self.vm_agent_admin = FakeVmAgentAdmin()
+        self.published_chat_events: list[dict[str, Any]] = []
 
     def read_assistant_settings(self) -> dict[str, Any]:
         return {"enabled": True, "read_only": False, "default_model": "gpt-test"}
 
     def privileged_operations_unlocked(self) -> bool:
         return False
+
+    def publish_chat_assistant_message(self, **kwargs: Any) -> dict[str, Any]:
+        self.published_chat_events.append(kwargs)
+        return {"event_id": f"chat:{kwargs['user_message_id']}"}
 
 
 def _client_for_user(service: FakeAdminService, payload: dict[str, Any]) -> TestClient:
@@ -81,6 +86,14 @@ def test_chat_routes_normalize_user_ids_and_enforce_thread_ownership(tmp_path: P
         json={"thread_id": alice_session["thread_id"], "content": "hello"},
     )
     assert response.status_code == 200
+    assert service.published_chat_events == [
+        {
+            "user_id": "Alice",
+            "thread_id": alice_session["thread_id"],
+            "user_message_id": response.json()["messages"][0]["id"],
+            "content": "hello",
+        }
+    ]
 
     denied_transcript = bob.get(f"/api/chat/transcript/{alice_session['thread_id']}")
     assert denied_transcript.status_code == 404
@@ -92,7 +105,5 @@ def test_chat_routes_normalize_user_ids_and_enforce_thread_ownership(tmp_path: P
     assert denied_post.status_code == 404
 
     alice_transcript = alice.get(f"/api/chat/transcript/{alice_session['thread_id']}").json()
-    assert [message["role"] for message in alice_transcript["messages"]] == [
-        "user",
-        "assistant",
-    ]
+    assert [message["role"] for message in alice_transcript["messages"]] == ["user"]
+    assert alice_transcript["messages"][0]["status"] == "queued"

@@ -120,6 +120,38 @@ def test_workflow_binding_resolution_supports_system_values() -> None:
     ]
 
 
+def test_workflow_binding_resolution_prefers_dotted_node_ids_over_system_namespace() -> None:
+    result = resolve_workflow_bindings(
+        {
+            "backend": "${{system.chat_assistant.backend}}",
+            "session_id": "${{system.chat_assistant.ensure_session.session_id}}",
+            "timestamp": "${{system.now.utc_timestamp_compact}}",
+        },
+        {
+            "system.chat_assistant": {"backend": "libvirt_vm"},
+            "system.chat_assistant.ensure_session": {"session_id": "assistant-session"},
+        },
+        {
+            "system.chat_assistant": {"backend"},
+            "system.chat_assistant.ensure_session": {"session_id"},
+        },
+        system_value_resolver=lambda path: {
+            "now.utc_timestamp_compact": "20260501T211900Z",
+        }[path],
+    )
+
+    assert result.resolved_config == {
+        "backend": "libvirt_vm",
+        "session_id": "assistant-session",
+        "timestamp": "20260501T211900Z",
+    }
+    assert result.trace.consumed_output_keys == (
+        "system.chat_assistant.backend",
+        "system.chat_assistant.ensure_session.session_id",
+        "system.now.utc_timestamp_compact",
+    )
+
+
 def test_workflow_binding_resolution_supports_null_fallback_for_missing_nested_path() -> None:
     result = resolve_workflow_bindings(
         {"resume_thread_id": "${{query_1.metadata.agent_thread_id ?? null}}"},

@@ -22,6 +22,7 @@ import uvicorn
 
 from agent_sandbox.bootstrap import load_runtime_gateway_config, resolve_runtime_dir
 from agent_sandbox.admin.service import AdminService
+from agent_sandbox.admin.web.chat import ChatStore, admin_chat_store_path
 from agent_sandbox.messaging.agent_prompt_store import AgentPromptRecord
 from agent_sandbox.messaging.agent_prompt_tokens import (
     AgentPromptTokenError,
@@ -278,6 +279,44 @@ def _assistant_mutation_audit_result(
         before_after_summary,
     )
     return audit_result
+
+
+def _assistant_allowed_chat_thread(session: Any, thread_id: str) -> bool:
+    metadata = getattr(session, "metadata", {}) if session is not None else {}
+    if not isinstance(metadata, dict):
+        return False
+    normalized_thread_id = str(thread_id or "").strip()
+    if not normalized_thread_id:
+        return False
+    chat_threads = metadata.get("admin_chat_threads")
+    if not isinstance(chat_threads, dict):
+        return False
+    for raw_mapping in chat_threads.values():
+        if not isinstance(raw_mapping, dict):
+            continue
+        if str(raw_mapping.get("thread_id") or "").strip() == normalized_thread_id:
+            return True
+    return False
+
+
+def _assistant_require_writable_scope(session: Any, requested_scope: str) -> None:
+    metadata = getattr(session, "metadata", {}) if session is not None else {}
+    mutation_policy = metadata.get("assistant_mutation_policy") if isinstance(metadata, dict) else None
+    if not isinstance(mutation_policy, dict):
+        raise PolicyError(
+            f"Session {getattr(session, 'session_id', '<unknown>')} is missing metadata.assistant_mutation_policy"
+        )
+    raw_scopes = mutation_policy.get("writable_scopes")
+    if not isinstance(raw_scopes, list):
+        raise PolicyError(
+            f"Session {getattr(session, 'session_id', '<unknown>')} has no assistant writable scopes"
+        )
+    normalized_scope = str(requested_scope or "").strip()
+    allowed_scopes = [str(scope or "").strip() for scope in raw_scopes if str(scope or "").strip()]
+    if normalized_scope not in allowed_scopes:
+        raise PolicyError(
+            f"Assistant mutation scope {normalized_scope!r} is not writable for session {getattr(session, 'session_id', '<unknown>')}"
+        )
 
 
 def _resolve_session_id_from_context(
@@ -567,6 +606,395 @@ def create_server(context: RuntimeContext) -> FastMCP:
             error,
             error_class,
         )
+
+    def _admin_service() -> AdminService:
+        return AdminService(context.config.runtime_dir)
+
+    @server.tool()
+    def assistant_read_status(
+        session_id: str | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        resolved_session_id = _resolve_session_id_from_context(
+            session_id, ctx, transport_session_map=transport_session_map
+        )
+        args = {"session_id": resolved_session_id}
+        try:
+            session = context.policy.require_tool(
+                resolved_session_id, ToolName.ASSISTANT_READ_STATUS
+            )
+            service = _admin_service()
+            settings = service.read_assistant_settings()
+            workflow_runs = service.read_workflow_run_snapshot()
+            result = {
+                "assistant": {
+                    "enabled": bool(settings.get("enabled")),
+                    "read_only": bool(settings.get("read_only", True)),
+                    "default_model": settings.get("default_model"),
+                    "capability_profile": session.metadata.get("capability_profile"),
+                },
+                "session_id": session.session_id,
+                "directory_path": session.directory_path,
+                "active_workflow_runs": len(workflow_runs.runs),
+            }
+            audit_success(resolved_session_id, ToolName.ASSISTANT_READ_STATUS, args, result)
+            return result
+        except PolicyError as exc:
+            audit_failure(resolved_session_id, ToolName.ASSISTANT_READ_STATUS, args, str(exc))
+            raise
+        except Exception as exc:
+            audit_failure(
+                resolved_session_id,
+                ToolName.ASSISTANT_READ_STATUS,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
+    def assistant_list_agents(
+        backend: str | None = None,
+        include_inactive: bool = True,
+        session_id: str | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        resolved_session_id = _resolve_session_id_from_context(
+            session_id, ctx, transport_session_map=transport_session_map
+        )
+        args = {
+            "session_id": resolved_session_id,
+            "backend": backend,
+            "include_inactive": include_inactive,
+        }
+        try:
+            session = context.policy.require_tool(
+                resolved_session_id, ToolName.ASSISTANT_LIST_AGENTS
+            )
+            records = _admin_service().list_agents(
+                directory_path=session.directory_path,
+                direct_only=False,
+                include_inactive=include_inactive,
+                backend=backend,
+            )
+            agents = [
+                record.model_dump(mode="json") if hasattr(record, "model_dump") else dict(record)
+                for record in records
+            ]
+            result = {"agents": agents, "count": len(agents), "directory_path": session.directory_path}
+            audit_success(
+                resolved_session_id,
+                ToolName.ASSISTANT_LIST_AGENTS,
+                args,
+                {"count": len(agents), "directory_path": session.directory_path},
+            )
+            return result
+        except PolicyError as exc:
+            audit_failure(resolved_session_id, ToolName.ASSISTANT_LIST_AGENTS, args, str(exc))
+            raise
+        except Exception as exc:
+            audit_failure(
+                resolved_session_id,
+                ToolName.ASSISTANT_LIST_AGENTS,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
+    def assistant_inspect_workflows(
+        include_runs: bool = True,
+        session_id: str | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        resolved_session_id = _resolve_session_id_from_context(
+            session_id, ctx, transport_session_map=transport_session_map
+        )
+        args = {"session_id": resolved_session_id, "include_runs": include_runs}
+        try:
+            context.policy.require_tool(
+                resolved_session_id, ToolName.ASSISTANT_INSPECT_WORKFLOWS
+            )
+            service = _admin_service()
+            document = service.read_workflow_editor_document()
+            result = {
+                "config_path": document.config_path,
+                "revision": document.revision,
+                "config": document.config,
+            }
+            if include_runs:
+                runs = service.read_workflow_run_snapshot()
+                result["runs"] = runs.model_dump(mode="json")
+            audit_success(
+                resolved_session_id,
+                ToolName.ASSISTANT_INSPECT_WORKFLOWS,
+                args,
+                {"revision": document.revision, "include_runs": include_runs},
+            )
+            return result
+        except PolicyError as exc:
+            audit_failure(
+                resolved_session_id, ToolName.ASSISTANT_INSPECT_WORKFLOWS, args, str(exc)
+            )
+            raise
+        except Exception as exc:
+            audit_failure(
+                resolved_session_id,
+                ToolName.ASSISTANT_INSPECT_WORKFLOWS,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
+    def assistant_upsert_config(
+        domain: str,
+        payload: dict[str, Any],
+        directory_path: str | None = None,
+        session_id: str | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        resolved_session_id = _resolve_session_id_from_context(
+            session_id, ctx, transport_session_map=transport_session_map
+        )
+        args = {
+            "session_id": resolved_session_id,
+            "domain": domain,
+            "directory_path": directory_path,
+            "after": payload,
+        }
+        try:
+            session = context.policy.require_tool(
+                resolved_session_id, ToolName.ASSISTANT_UPSERT_CONFIG
+            )
+            service = _admin_service()
+            normalized_domain = str(domain or "").strip()
+            if normalized_domain == "assistant_settings":
+                _assistant_require_writable_scope(session, "config/assistant")
+                before = service.read_assistant_settings()
+                after = service.write_assistant_settings(payload)
+                result = {
+                    "status": "success",
+                    "domain": normalized_domain,
+                    "config": after,
+                    "before_after_summary": {"before": before, "after": after},
+                }
+            else:
+                _assistant_require_writable_scope(session, "config/directory")
+                target_directory = directory_path or session.directory_path
+                before_payload = service.read_directory_domain_config(
+                    target_directory, normalized_domain
+                )
+                write_result = service.write_directory_domain_config(
+                    target_directory, normalized_domain, payload
+                )
+                after_payload = (
+                    write_result.model_dump(mode="json")
+                    if hasattr(write_result, "model_dump")
+                    else _payload_from_result(write_result)
+                )
+                result = {
+                    "status": "success",
+                    "domain": normalized_domain,
+                    "directory_path": target_directory,
+                    "config": after_payload,
+                    "before_after_summary": {
+                        "before": _payload_from_result(before_payload),
+                        "after": after_payload,
+                    },
+                }
+            args["before"] = result["before_after_summary"]["before"]
+            audit_success(
+                resolved_session_id,
+                ToolName.ASSISTANT_UPSERT_CONFIG,
+                args,
+                result,
+            )
+            return result
+        except PolicyError as exc:
+            audit_failure(resolved_session_id, ToolName.ASSISTANT_UPSERT_CONFIG, args, str(exc))
+            raise
+        except Exception as exc:
+            audit_failure(
+                resolved_session_id,
+                ToolName.ASSISTANT_UPSERT_CONFIG,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
+    def assistant_create_workflow(
+        config: dict[str, Any],
+        layout: dict[str, Any] | None = None,
+        session_id: str | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        resolved_session_id = _resolve_session_id_from_context(
+            session_id, ctx, transport_session_map=transport_session_map
+        )
+        args = {"session_id": resolved_session_id, "after": config}
+        try:
+            session = context.policy.require_tool(
+                resolved_session_id, ToolName.ASSISTANT_CREATE_WORKFLOW
+            )
+            _assistant_require_writable_scope(session, "config/workflow")
+            service = _admin_service()
+            before = service.read_workflow_editor_document().config
+            saved = service.save_workflow_editor_document(config=config, layout=layout)
+            result = {
+                "status": "success",
+                "config_path": saved.config_path,
+                "revision": saved.revision,
+                "config": saved.config,
+                "before_after_summary": {"before": before, "after": saved.config},
+            }
+            args["before"] = before
+            audit_success(
+                resolved_session_id,
+                ToolName.ASSISTANT_CREATE_WORKFLOW,
+                args,
+                result,
+            )
+            return result
+        except PolicyError as exc:
+            audit_failure(
+                resolved_session_id, ToolName.ASSISTANT_CREATE_WORKFLOW, args, str(exc)
+            )
+            raise
+        except Exception as exc:
+            audit_failure(
+                resolved_session_id,
+                ToolName.ASSISTANT_CREATE_WORKFLOW,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
+    def assistant_run_safe_operation(
+        operation: str,
+        parameters: dict[str, Any] | None = None,
+        session_id: str | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        resolved_session_id = _resolve_session_id_from_context(
+            session_id, ctx, transport_session_map=transport_session_map
+        )
+        args = {
+            "session_id": resolved_session_id,
+            "operation": operation,
+            "parameters": parameters or {},
+        }
+        try:
+            session = context.policy.require_tool(
+                resolved_session_id, ToolName.ASSISTANT_RUN_SAFE_OPERATION
+            )
+            _assistant_require_writable_scope(session, "runtime/agents")
+            service = _admin_service()
+            params = parameters or {}
+            normalized_operation = str(operation or "").strip()
+            if normalized_operation == "clear_workflow_run":
+                result_payload = service.clear_workflow_run(str(params.get("event_id") or ""))
+            elif normalized_operation == "resume_workflow_run":
+                result_payload = service.resume_workflow_run(str(params.get("event_id") or ""))
+            else:
+                raise ToolError(f"Unsupported safe operation: {normalized_operation}")
+            result = (
+                result_payload.model_dump(mode="json")
+                if hasattr(result_payload, "model_dump")
+                else _payload_from_result(result_payload) or {}
+            )
+            result.setdefault("status", "success")
+            audit_success(
+                resolved_session_id,
+                ToolName.ASSISTANT_RUN_SAFE_OPERATION,
+                args,
+                result,
+            )
+            return result
+        except PolicyError as exc:
+            audit_failure(
+                resolved_session_id, ToolName.ASSISTANT_RUN_SAFE_OPERATION, args, str(exc)
+            )
+            raise
+        except Exception as exc:
+            audit_failure(
+                resolved_session_id,
+                ToolName.ASSISTANT_RUN_SAFE_OPERATION,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
+    def assistant_post_chat_reply(
+        thread_id: str,
+        content: str,
+        user_message_id: str | None = None,
+        session_id: str | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        resolved_session_id = _resolve_session_id_from_context(
+            session_id, ctx, transport_session_map=transport_session_map
+        )
+        args = {
+            "session_id": resolved_session_id,
+            "thread_id": thread_id,
+            "user_message_id": user_message_id,
+            "content": content,
+        }
+        try:
+            session = context.policy.require_tool(
+                resolved_session_id, ToolName.ASSISTANT_POST_CHAT_REPLY
+            )
+            if not _assistant_allowed_chat_thread(session, thread_id):
+                raise PolicyError(
+                    f"Chat thread {thread_id!r} is not mapped to assistant session {resolved_session_id}"
+                )
+            normalized_content = str(content or "").strip()
+            if not normalized_content:
+                raise ToolError("content is required")
+            store = ChatStore(admin_chat_store_path(context.config.runtime_dir))
+            message = store.append_assistant_reply(
+                thread_id=thread_id,
+                content=normalized_content,
+                user_message_id=user_message_id,
+            )
+            result = {"thread_id": thread_id, "message": message}
+            audit_success(
+                resolved_session_id,
+                ToolName.ASSISTANT_POST_CHAT_REPLY,
+                args,
+                {"thread_id": thread_id, "message_id": message.get("id")},
+            )
+            return result
+        except PolicyError as exc:
+            audit_failure(
+                resolved_session_id, ToolName.ASSISTANT_POST_CHAT_REPLY, args, str(exc)
+            )
+            raise
+        except Exception as exc:
+            audit_failure(
+                resolved_session_id,
+                ToolName.ASSISTANT_POST_CHAT_REPLY,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
 
     @server.tool()
     def prompt_agent(

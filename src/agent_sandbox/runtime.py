@@ -85,6 +85,7 @@ CAPABILITY_PROFILE_ALLOWED_TOOLS: dict[str, tuple[ToolName, ...]] = {
         ToolName.ASSISTANT_READ_STATUS,
         ToolName.ASSISTANT_LIST_AGENTS,
         ToolName.ASSISTANT_INSPECT_WORKFLOWS,
+        ToolName.ASSISTANT_POST_CHAT_REPLY,
     ),
     "operator-limited": (
         ToolName.ASSISTANT_READ_STATUS,
@@ -92,6 +93,7 @@ CAPABILITY_PROFILE_ALLOWED_TOOLS: dict[str, tuple[ToolName, ...]] = {
         ToolName.ASSISTANT_INSPECT_WORKFLOWS,
         ToolName.ASSISTANT_UPSERT_CONFIG,
         ToolName.ASSISTANT_CREATE_WORKFLOW,
+        ToolName.ASSISTANT_POST_CHAT_REPLY,
     ),
     "full-admin": (
         ToolName.ASSISTANT_READ_STATUS,
@@ -100,6 +102,7 @@ CAPABILITY_PROFILE_ALLOWED_TOOLS: dict[str, tuple[ToolName, ...]] = {
         ToolName.ASSISTANT_UPSERT_CONFIG,
         ToolName.ASSISTANT_CREATE_WORKFLOW,
         ToolName.ASSISTANT_RUN_SAFE_OPERATION,
+        ToolName.ASSISTANT_POST_CHAT_REPLY,
     ),
 }
 

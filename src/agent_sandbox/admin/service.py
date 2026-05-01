@@ -16,7 +16,7 @@ import fcntl
 from collections.abc import Mapping
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 from uuid import uuid4
@@ -60,14 +60,12 @@ from agent_sandbox.repositories.session_manifests import as_session_manifest_rep
 from agent_sandbox.issues.service import IssueService
 from agent_sandbox.vm.defaults_config import EffectiveVmDefaultsConfig, VmDefaultsConfigResolver
 from agent_sandbox.models import (
-    ApprovalDecisionRecord,
     ApprovalQueueHealth,
     ApprovalRequest,
     ApprovalStatus,
     AgentRecord,
     DirectoryPath,
     LocalIssueRecord,
-    RemoteIssueReference,
     SessionActionResult,
     SessionManifest,
     SessionSummary,
@@ -438,7 +436,16 @@ _GATE_DEFINITION_ADAPTER = TypeAdapter(GateDefinitionDiscriminated)
 _EFFECT_DEFINITION_ADAPTER = TypeAdapter(EffectDefinitionDiscriminated)
 _QUERY_DEFINITION_ADAPTER = TypeAdapter(QueryDefinitionDiscriminated)
 _EDGE_DEFINITION_ADAPTER = TypeAdapter(EdgeDefinition)
-_SYSTEM_MANAGED_WORKFLOW_NODE_IDS = frozenset({"system.chat_assistant"})
+_SYSTEM_CHAT_ASSISTANT_TRIGGER_ID = "system.chat_assistant"
+_SYSTEM_CHAT_ASSISTANT_ENSURE_SESSION_ID = "system.chat_assistant.ensure_session"
+_SYSTEM_CHAT_ASSISTANT_ENQUEUE_PROMPT_ID = "system.chat_assistant.enqueue_prompt"
+_SYSTEM_MANAGED_WORKFLOW_NODE_IDS = frozenset(
+    {
+        _SYSTEM_CHAT_ASSISTANT_TRIGGER_ID,
+        _SYSTEM_CHAT_ASSISTANT_ENSURE_SESSION_ID,
+        _SYSTEM_CHAT_ASSISTANT_ENQUEUE_PROMPT_ID,
+    }
+)
 
 
 def _module_project_root() -> Path:
@@ -531,6 +538,63 @@ def _workflow_config_for_legacy_mutation_response(config: dict[str, object]) -> 
 
 def _is_system_managed_workflow_node_id(node_id: str) -> bool:
     return str(node_id or "").strip() in _SYSTEM_MANAGED_WORKFLOW_NODE_IDS
+
+
+def _system_chat_assistant_workflow_fragment() -> dict[str, list[dict[str, object]]]:
+    return {
+        "triggers": [
+            {
+                "id": _SYSTEM_CHAT_ASSISTANT_TRIGGER_ID,
+                "display_name": "System Chat Assistant",
+                "type": "trigger:system:chat-assistant",
+                "config": {},
+            }
+        ],
+        "effects": [
+            {
+                "id": _SYSTEM_CHAT_ASSISTANT_ENSURE_SESSION_ID,
+                "display_name": "Resolve chat assistant session",
+                "type": "effect:chat-assistant:ensure-session",
+                "config": {
+                    "user_id": "${{system.chat_assistant.user_id}}",
+                    "thread_id": "${{system.chat_assistant.thread_id}}",
+                    "user_message_id": "${{system.chat_assistant.user_message_id}}",
+                    "content": "${{system.chat_assistant.content}}",
+                    "backend": "${{system.chat_assistant.backend}}",
+                    "assistant_scope": "admin_chat",
+                },
+            },
+            {
+                "id": _SYSTEM_CHAT_ASSISTANT_ENQUEUE_PROMPT_ID,
+                "display_name": "Enqueue chat assistant prompt",
+                "type": "effect:agent:enqueue-prompt",
+                "config": {
+                    "target": "${{system.chat_assistant.ensure_session.session_id}}",
+                    "session_id": "${{system.chat_assistant.ensure_session.session_id}}",
+                    "vm_name": "${{system.chat_assistant.ensure_session.vm_name}}",
+                    "prompt": "${{system.chat_assistant.ensure_session.prompt}}",
+                    "model": "${{system.chat_assistant.ensure_session.model}}",
+                    "vm_user": "agent",
+                    "resume_thread_id": (
+                        "${{system.chat_assistant.ensure_session.agent_thread_id}}"
+                    ),
+                    "execution_backend": (
+                        "${{system.chat_assistant.ensure_session.execution_backend}}"
+                    ),
+                },
+            },
+        ],
+        "edges": [
+            {
+                "source_id": _SYSTEM_CHAT_ASSISTANT_TRIGGER_ID,
+                "target_id": _SYSTEM_CHAT_ASSISTANT_ENSURE_SESSION_ID,
+            },
+            {
+                "source_id": _SYSTEM_CHAT_ASSISTANT_ENSURE_SESSION_ID,
+                "target_id": _SYSTEM_CHAT_ASSISTANT_ENQUEUE_PROMPT_ID,
+            },
+        ],
+    }
 
 
 def _field_option(value: str, label: str | None = None) -> WorkflowEditorFieldOption:
@@ -5342,6 +5406,46 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
         path.write_text(json.dumps(config, indent=2, sort_keys=True), encoding="utf-8")
         return config
 
+    def ensure_chat_assistant_workflow(self) -> TriggerConfigDocument:
+        current = self.trigger_repository.read_document()
+        config, changed = self._with_system_chat_assistant_workflow(current.config)
+        if not changed:
+            return current
+        return self.trigger_repository.write_document(config)
+
+    def publish_chat_assistant_message(
+        self,
+        *,
+        user_id: str,
+        thread_id: str,
+        user_message_id: str,
+        content: str,
+        backend: str | None = None,
+    ) -> dict[str, object]:
+        document = self.ensure_chat_assistant_workflow()
+        worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(document.config)
+        queue = TriggerEventQueue(
+            worker_config.event_queue_store_path,
+            journal_path=worker_config.workflow_event_journal_path,
+        )
+        normalized_backend = str(backend or self.config.execution_backend).strip() or "libvirt_vm"
+        event_id = f"chat:{user_message_id}"
+        event = TriggerEvent(
+            event_id=event_id,
+            trigger_id=_SYSTEM_CHAT_ASSISTANT_TRIGGER_ID,
+            trigger_type="trigger:system:chat-assistant",
+            occurred_at=_utc_now(),
+            payload={
+                "user_id": user_id,
+                "thread_id": thread_id,
+                "user_message_id": user_message_id,
+                "content": content,
+                "backend": normalized_backend,
+            },
+        )
+        record = queue.publish(event, idempotency_key=event_id)
+        return record.model_dump(mode="json")
+
     def _workflow_editor_default_layout_path(self) -> Path:
         return self.project_dir / "config" / "trigger-orchestrator" / "layout.json"
 
@@ -5828,7 +5932,6 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
             raise ValueError("Workflow run event_id is required.")
 
         stores = self._workflow_run_store_paths()
-        runtime_dir = stores["runtime_dir"]
         event_queue_store_path = stores["event_queue_store_path"]
         effect_execution_store_path = stores["effect_execution_store_path"]
         gate_execution_store_path = stores["gate_execution_store_path"]
@@ -6301,6 +6404,54 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
             ]
         return candidate
 
+    def _with_system_chat_assistant_workflow(
+        self, config: dict[str, object]
+    ) -> tuple[dict[str, object], bool]:
+        merged = json.loads(json.dumps(config))
+        if not isinstance(merged, dict):
+            merged = {}
+        fragment = _system_chat_assistant_workflow_fragment()
+        changed = False
+        for collection_name in ("triggers", "effects"):
+            current_entries = merged.get(collection_name)
+            entries = (
+                [entry for entry in current_entries if isinstance(entry, dict)]
+                if isinstance(current_entries, list)
+                else []
+            )
+            by_id = {str(entry.get("id") or "").strip(): entry for entry in entries}
+            for system_entry in fragment[collection_name]:
+                system_id = str(system_entry.get("id") or "").strip()
+                if by_id.get(system_id) != system_entry:
+                    by_id[system_id] = dict(system_entry)
+                    changed = True
+            editable_entries = [
+                entry
+                for entry in entries
+                if not _is_system_managed_workflow_node_id(str(entry.get("id") or "").strip())
+            ]
+            editable_entries.extend(dict(entry) for entry in fragment[collection_name])
+            merged[collection_name] = editable_entries
+
+        edge_entries = (
+            [entry for entry in merged.get("edges", []) if isinstance(entry, dict)]
+            if isinstance(merged.get("edges"), list)
+            else []
+        )
+        non_system_edges = [
+            edge
+            for edge in edge_entries
+            if not (
+                _is_system_managed_workflow_node_id(str(edge.get("source_id") or "").strip())
+                or _is_system_managed_workflow_node_id(str(edge.get("target_id") or "").strip())
+            )
+        ]
+        desired_edges = non_system_edges + [dict(edge) for edge in fragment["edges"]]
+        if edge_entries != desired_edges:
+            changed = True
+        merged["edges"] = desired_edges
+        return merged, changed
+
     def _merge_system_managed_workflows(
         self, *, editable_config: dict[str, object], base_config: dict[str, object] | None
     ) -> dict[str, object]:
@@ -6435,6 +6586,8 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
         normalized_effect_id = str(effect_id).strip()
         if not normalized_effect_id:
             raise ValueError("effect_id is required")
+        if _is_system_managed_workflow_node_id(normalized_effect_id):
+            raise ValueError(f"Effect is system-managed and cannot be mutated: {normalized_effect_id}")
         normalized_payload = dict(payload)
         normalized_source_id = str(normalized_payload.pop("source_id", "")).strip()
         payload_effect_id = str(normalized_payload.get("id", "")).strip()
@@ -6469,7 +6622,6 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
 
         filtered_edges: list[dict[str, object]] = []
         for edge in existing_edges:
-            source_id = str(edge.get("source_id", "")).strip()
             target_id = str(edge.get("target_id", "")).strip()
             if target_id == normalized_effect_id:
                 continue
@@ -6492,6 +6644,8 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
         normalized_effect_id = str(effect_id).strip()
         if not normalized_effect_id:
             raise ValueError("effect_id is required")
+        if _is_system_managed_workflow_node_id(normalized_effect_id):
+            raise ValueError(f"Effect is system-managed and cannot be mutated: {normalized_effect_id}")
         current = self._read_worker_global_config("trigger-orchestrator")
         config = dict(current.config)
         effects_raw = config.get("effects", [])

@@ -168,6 +168,16 @@ class AgentEnqueuePromptEffectDefinition(EffectDefinition):
     resume_thread_id: ConfigValue | None = None
 
 
+class ChatAssistantEnsureSessionEffectDefinition(EffectDefinition):
+    type: Literal["effect:chat-assistant:ensure-session"]
+    user_id: ConfigValue
+    thread_id: ConfigValue
+    user_message_id: ConfigValue
+    content: ConfigValue
+    backend: ConfigValue | None = None
+    assistant_scope: ConfigValue | None = None
+
+
 class AgentExecEffectDefinition(EffectDefinition):
     type: Literal["effect:agent:exec"]
     target: ConfigValue | None = None

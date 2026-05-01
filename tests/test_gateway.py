@@ -17,6 +17,7 @@ from agent_sandbox.gateway import (
     create_app,
     create_server,
 )
+from agent_sandbox.admin.web.chat import ChatStore
 from agent_sandbox.models import DiscordCommandEnvelope, SessionManifest, ToolName
 from agent_sandbox.policy import PolicyError
 from agent_sandbox.runtime import build_runtime
@@ -203,6 +204,73 @@ def test_assistant_mutation_audit_result_redacts_before_after_summary() -> None:
     assert result["before_after_summary"]["after"]["nested"]["safe"] == "still-visible"
     assert "before-secret" not in json.dumps(result)
     assert "after-token" not in json.dumps(result)
+
+
+def test_assistant_post_chat_reply_enforces_thread_mapping(tmp_path: Path) -> None:
+    context = build_runtime(
+        GatewayConfig(
+            runtime_dir=tmp_path,
+            audit_log_path=tmp_path / "audit.jsonl",
+            session_store_path=tmp_path / "sessions.json",
+            approval_store_path=tmp_path / "approvals.json",
+            draft_store_path=tmp_path / "drafts.json",
+            email_store_path=tmp_path / "emails.json",
+            discord_command_store_path=tmp_path / "discord.json",
+        )
+    )
+    store = ChatStore(tmp_path / "admin-web-chat-store.json")
+    thread_id = store.get_or_create_thread("alice")
+    user_message = store.append_message(
+        user_id="alice",
+        thread_id=thread_id,
+        role="user",
+        content="hello",
+        status="queued",
+    )
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="assistant-session",
+            allowed_tools=[ToolName.ASSISTANT_POST_CHAT_REPLY],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={
+                "capability_profile": "read-only",
+                "admin_chat_threads": {
+                    "chat-thread-alice": {
+                        "thread_id": thread_id,
+                        "user_id": "alice",
+                    }
+                },
+            },
+        )
+    )
+    server = create_server(context)
+
+    result = _call_tool(
+        server,
+        "assistant_post_chat_reply",
+        {
+            "session_id": "assistant-session",
+            "thread_id": thread_id,
+            "user_message_id": user_message["id"],
+            "content": "answer",
+        },
+    )
+
+    assert result["message"]["role"] == "assistant"
+    transcript = store.get_transcript(user_id="alice", thread_id=thread_id)
+    assert [message["role"] for message in transcript["messages"]] == ["user", "assistant"]
+    assert transcript["messages"][0]["status"] == "answered"
+
+    with pytest.raises(ToolError):
+        _call_tool(
+            server,
+            "assistant_post_chat_reply",
+            {
+                "session_id": "assistant-session",
+                "thread_id": "thread-other",
+                "content": "nope",
+            },
+        )
 
 
 def test_run_script_enforces_tool_policy_and_script_allowlist(tmp_path: Path) -> None:

@@ -233,6 +233,7 @@ def test_default_registry_includes_all_known_effect_types() -> None:
         "effect:agent:copy-files",
         "effect:agent:prompt",
         "effect:agent:enqueue-prompt",
+        "effect:chat-assistant:ensure-session",
         "effect:agent:exec",
         "effect:bash:script",
         "effect:vm:exec",

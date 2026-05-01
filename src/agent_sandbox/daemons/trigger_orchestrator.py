@@ -8,7 +8,6 @@ import random
 import time
 from uuid import uuid4
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -207,7 +206,7 @@ class TriggerOrchestratorWorker:
     def _configured_triggers(
         self, worker_config: TriggerOrchestratorWorkerGlobalConfig
     ) -> list[TriggerDefinitionDiscriminated]:
-        return list(worker_config.triggers)
+        return [trigger for trigger in worker_config.triggers if not _is_system_trigger(trigger)]
 
     def _load_configured_providers(
         self,
@@ -247,6 +246,10 @@ def _normalize_trace_id(value: str | None) -> str:
         return str(uuid4())
     normalized = value.strip()
     return normalized or str(uuid4())
+
+
+def _is_system_trigger(trigger: TriggerDefinitionDiscriminated) -> bool:
+    return str(trigger.type or "").startswith("trigger:system:")
 
 
 def _config_revision_hash(worker_config: TriggerOrchestratorWorkerGlobalConfig) -> str:

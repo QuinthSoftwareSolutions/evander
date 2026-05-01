@@ -8,6 +8,7 @@ from agent_sandbox.effects.providers.schemas import (
     AgentEnqueuePromptEffectDefinition,
     AgentExecEffectDefinition,
     AgentPromptEffectDefinition,
+    ChatAssistantEnsureSessionEffectDefinition,
     BashScriptEffectDefinition,
     GitPromoteAgentBranchEffectDefinition,
     IssueUpdateStateEffectDefinition,

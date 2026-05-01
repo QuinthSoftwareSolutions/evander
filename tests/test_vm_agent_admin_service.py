@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -10,6 +11,8 @@ import pytest
 from agent_sandbox.admin.service import AdminService
 from agent_sandbox.admin import service as admin_service_module
 from agent_sandbox.admin.services import VmAgentAdminDependencies, VmAgentAdminService
+from agent_sandbox.config import GatewayConfig
+from agent_sandbox.models import SessionManifest, ToolName, VmActionResult
 
 
 @dataclass
@@ -286,6 +289,186 @@ def _vm_agent_dependencies(admin: FakeAdmin) -> VmAgentAdminDependencies:
         ),
         clone_repo_into_vm=lambda **kwargs: admin._clone_repo_into_vm(**kwargs),
     )
+
+
+def test_chat_assistant_session_resolution_is_backend_aware(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    admin = FakeAdmin()
+    admin.config.runtime_dir = tmp_path
+    service = VmAgentAdminService(_vm_agent_dependencies(admin))
+    settings = {
+        "enabled": True,
+        "read_only": False,
+        "default_model": "gpt-test",
+        "allowed_mcp_tool_profile": "operator-limited",
+    }
+    created_vm_names: set[str] = set()
+    create_vm_calls: list[dict[str, Any]] = []
+
+    def fake_dominfo_field(vm_name: str, field_name: str) -> str | None:
+        if field_name == "State" and vm_name in created_vm_names:
+            return "running"
+        return None
+
+    def fake_create_vm(self: VmAgentAdminService, **kwargs: Any) -> VmActionResult:
+        create_vm_calls.append(dict(kwargs))
+        created_vm_names.add(str(kwargs.get("vm_name") or ""))
+        return VmActionResult(
+            success=True,
+            vm_name=str(kwargs.get("vm_name") or ""),
+            action="create_vm",
+            message="created",
+        )
+
+    class FakeContainerBackend:
+        config = GatewayConfig(runtime_dir=tmp_path, container_worker_base_url="http://worker.test")
+
+        def __init__(self) -> None:
+            self.prepared: list[tuple[str, dict[str, Any]]] = []
+            self.written: list[tuple[str, list[str]]] = []
+
+        def prepare_session(self, *, session_id: str, metadata: dict[str, Any]):
+            self.prepared.append((session_id, dict(metadata)))
+            return SimpleNamespace(session_id=session_id)
+
+        def write_files(self, *, session_id: str, files: list[dict[str, Any]]):
+            self.written.append(
+                (
+                    session_id,
+                    [str(file.get("destination_path") or "") for file in files],
+                )
+            )
+            return SimpleNamespace(session_id=session_id, copied_count=len(files))
+
+    fake_container_backend = FakeContainerBackend()
+    monkeypatch.setattr(admin_service_module, "_dominfo_field", fake_dominfo_field)
+    monkeypatch.setattr(VmAgentAdminService, "create_vm", fake_create_vm)
+    monkeypatch.setattr(
+        VmAgentAdminService,
+        "_container_worker_backend",
+        lambda self, *, directory_path=None: fake_container_backend,
+    )
+
+    alice_libvirt = service.resolve_chat_assistant_session(
+        user_id="alice@example.com",
+        backend="libvirt_vm",
+        assistant_scope="admin_chat",
+        settings=settings,
+        thread_id="thread-a",
+        user_message_id="msg-a",
+    )
+    bob_libvirt = service.resolve_chat_assistant_session(
+        user_id="bob@example.com",
+        backend="libvirt_vm",
+        assistant_scope="admin_chat",
+        settings=settings,
+        thread_id="thread-b",
+        user_message_id="msg-b",
+    )
+
+    assert alice_libvirt["session_id"] == "assistant-shared"
+    assert bob_libvirt["session_id"] == "assistant-shared"
+    assert alice_libvirt["agent_thread_id"] != bob_libvirt["agent_thread_id"]
+    assert [call["vm_name"] for call in create_vm_calls] == ["assistant-shared"]
+    assert create_vm_calls[0]["provider"] == "libvirt"
+    assert create_vm_calls[0]["allow_existing_session"] is True
+    shared_session = admin.runtime.session_repository.get_session("assistant-shared")
+    assert shared_session is not None
+    assert shared_session.vm_provider == "libvirt"
+    assert shared_session.metadata["execution_backend"] == "libvirt_vm"
+    assert ToolName.ASSISTANT_POST_CHAT_REPLY in shared_session.allowed_tools
+    assert {
+        value["thread_id"]
+        for value in shared_session.metadata["admin_chat_threads"].values()
+    } == {"thread-a", "thread-b"}
+
+    created_vm_names.clear()
+    create_vm_calls.clear()
+    reused_libvirt = service.resolve_chat_assistant_session(
+        user_id="alice@example.com",
+        backend="libvirt_vm",
+        assistant_scope="admin_chat",
+        settings=settings,
+        thread_id="thread-a2",
+        user_message_id="msg-a2",
+    )
+
+    assert reused_libvirt["session_id"] == "assistant-shared"
+    assert [call["vm_name"] for call in create_vm_calls] == ["assistant-shared"]
+    assert create_vm_calls[0]["allow_existing_session"] is True
+
+    alice_container = service.resolve_chat_assistant_session(
+        user_id="alice@example.com",
+        backend="container_worker_vm",
+        assistant_scope="admin_chat",
+        settings={**settings, "read_only": True},
+        thread_id="thread-c",
+        user_message_id="msg-c",
+    )
+    bob_container = service.resolve_chat_assistant_session(
+        user_id="bob@example.com",
+        backend="container_worker_vm",
+        assistant_scope="admin_chat",
+        settings={**settings, "read_only": True},
+        thread_id="thread-d",
+        user_message_id="msg-d",
+    )
+
+    assert alice_container["session_id"] != bob_container["session_id"]
+    alice_session = admin.runtime.session_repository.get_session(alice_container["session_id"])
+    assert alice_session is not None
+    assert alice_session.vm_provider == "container_worker_vm"
+    assert alice_session.metadata["capability_profile"] == "read-only"
+    assert [item[0] for item in fake_container_backend.prepared] == [
+        alice_container["session_id"],
+        bob_container["session_id"],
+    ]
+    assert all(
+        "/home/agent/.codex/config.toml" in copied_paths
+        for _session_id, copied_paths in fake_container_backend.written
+    )
+
+
+def test_vm_agent_admin_service_create_vm_can_provision_existing_assistant_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    existing = SessionManifest(
+        session_id="assistant-shared",
+        allowed_tools=[ToolName.ASSISTANT_POST_CHAT_REPLY],
+        expires_at=datetime.now(timezone.utc) + timedelta(days=30),
+        metadata={"assistant_scope": "admin_chat"},
+    )
+    sessions = FakeSessionsStore({"assistant-shared": existing})
+    admin = FakeAdmin(sessions=sessions)
+    admin.config.runtime_dir = tmp_path
+    service = VmAgentAdminService(_vm_agent_dependencies(admin))
+
+    class Completed:
+        returncode = 0
+        stdout = "setup ok"
+        stderr = ""
+
+    monkeypatch.setattr(admin_service_module, "_dominfo_field", lambda vm_name, field_name: None)
+    monkeypatch.setattr(
+        admin_service_module, "_run_subprocess", lambda *args, **kwargs: Completed()
+    )
+
+    result = service.create_vm(
+        provider="libvirt",
+        vm_name="assistant-shared",
+        session_id="assistant-shared",
+        labels={"system": "chat_assistant"},
+        allow_existing_session=True,
+    )
+
+    assert result.success is True
+    assert result.vm_name == "assistant-shared"
+    updated = sessions.get_session("assistant-shared")
+    assert updated is not None
+    assert updated.vm_id == "assistant-shared"
+    assert updated.vm_provider == "libvirt"
+    assert updated.metadata["assistant_scope"] == "admin_chat"
 
 
 def test_admin_service_delegates_vm_methods_to_vm_agent_service() -> None:

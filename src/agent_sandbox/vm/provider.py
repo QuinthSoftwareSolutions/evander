@@ -804,6 +804,7 @@ def _libvirt_create_vm(
     codex_skills: list[str] | None = None,
     directory_path: str = "root",
     provider: str | None = None,
+    allow_existing_session: bool = False,
 ) -> VmActionResult:
     resolved_vm_name = vm_name.strip()
     if not resolved_vm_name:
@@ -826,7 +827,9 @@ def _libvirt_create_vm(
         else admin_service_module._default_vm_session_id(resolved_vm_name)
     )
     session_repository = _runtime_session_repository(deps.runtime)
-    if session_repository.get_session(resolved_session_id) is not None:
+    existing_session = session_repository.get_session(resolved_session_id)
+    had_existing_session = existing_session is not None
+    if existing_session is not None and not allow_existing_session:
         return VmActionResult(
             success=False,
             vm_name=resolved_vm_name,
@@ -844,19 +847,29 @@ def _libvirt_create_vm(
             message="MSSQL_SA_PASSWORD must be set when MSSQL bootstrap is enabled.",
         )
 
-    manifest = admin_service_module._build_issue_session_manifest(
-        policy=policy,
-        session_id=resolved_session_id,
-        vm_id=resolved_vm_name,
-        issue_number=None,
-        directory_path=normalized_directory_path,
-        ttl_hours=ttl_hours,
-        extra_allowed_tools=allowed_tools,
-        allowed_script_names=allowed_script_names,
-        discord_channels=discord_channels or [],
-        email_mailboxes=email_mailboxes or [],
-        email_folders=email_folders or [],
-    )
+    if existing_session is not None:
+        manifest = existing_session.model_copy(
+            update={
+                "vm_id": resolved_vm_name,
+                "vm_provider": provider or "libvirt",
+                "vm_provider_id": resolved_vm_name,
+                "directory_path": normalized_directory_path,
+            }
+        )
+    else:
+        manifest = admin_service_module._build_issue_session_manifest(
+            policy=policy,
+            session_id=resolved_session_id,
+            vm_id=resolved_vm_name,
+            issue_number=None,
+            directory_path=normalized_directory_path,
+            ttl_hours=ttl_hours,
+            extra_allowed_tools=allowed_tools,
+            allowed_script_names=allowed_script_names,
+            discord_channels=discord_channels or [],
+            email_mailboxes=email_mailboxes or [],
+            email_folders=email_folders or [],
+        )
     normalized_labels = admin_service_module._normalize_session_labels(labels or {})
     if normalized_labels:
         manifest.metadata = dict(manifest.metadata)
@@ -955,7 +968,7 @@ def _libvirt_create_vm(
                 )
     except Exception as exc:
         preserved_vm = admin_service_module._dominfo_field(resolved_vm_name, "State") is not None
-        if not preserved_vm:
+        if not preserved_vm and not had_existing_session:
             session_repository.delete_session(resolved_session_id)
         detail = f"Failed to create VM {resolved_vm_name}: {exc}"
         if preserved_vm:

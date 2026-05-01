@@ -1657,6 +1657,62 @@ def test_admin_service_rejects_system_managed_trigger_mutations(tmp_path: Path) 
     with pytest.raises(ValueError, match="system-managed"):
         service.delete_trigger_config("system.chat_assistant")
 
+    with pytest.raises(ValueError, match="system-managed"):
+        service.upsert_effect_config(
+            "system.chat_assistant.enqueue_prompt",
+            {
+                "display_name": "System enqueue",
+                "type": "effect:agent:enqueue-prompt",
+                "prompt": "hello",
+                "target": "assistant",
+            },
+        )
+
+    with pytest.raises(ValueError, match="system-managed"):
+        service.delete_effect_config("system.chat_assistant.enqueue_prompt")
+
+
+def test_admin_service_chat_post_publishes_hidden_trigger_event(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+
+    record = service.publish_chat_assistant_message(
+        user_id="alice",
+        thread_id="thread-1",
+        user_message_id="msg-1",
+        content="hello",
+        backend="container_worker_vm",
+    )
+
+    assert record["event_id"] == "chat:msg-1"
+    config_path = tmp_path / "config" / "trigger-orchestrator" / "config.json"
+    persisted = json.loads(config_path.read_text(encoding="utf-8"))
+    assert {node["id"] for node in persisted["triggers"]} >= {"system.chat_assistant"}
+    assert {node["id"] for node in persisted["effects"]} >= {
+        "system.chat_assistant.ensure_session",
+        "system.chat_assistant.enqueue_prompt",
+    }
+    enqueue_node = next(
+        node
+        for node in persisted["effects"]
+        if node["id"] == "system.chat_assistant.enqueue_prompt"
+    )
+    assert (
+        enqueue_node["config"]["execution_backend"]
+        == "${{system.chat_assistant.ensure_session.execution_backend}}"
+    )
+    _merged, changed = service._with_system_chat_assistant_workflow(persisted)
+    assert changed is False
+    queue_payload = json.loads(
+        (tmp_path / "runtime" / "trigger-orchestrator-events.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    queued = queue_payload["chat:msg-1"]
+    assert queued["trigger_id"] == "system.chat_assistant"
+    assert queued["payload"]["content"] == "hello"
+    assert queued["payload"]["backend"] == "container_worker_vm"
+    assert not (tmp_path / "runtime" / "queued-agent-prompts.json").exists()
+
 
 def test_workflow_editor_hides_and_preserves_system_managed_workflow_nodes(tmp_path: Path) -> None:
     service = AdminService(write_config(tmp_path))
@@ -1681,6 +1737,22 @@ def test_workflow_editor_hides_and_preserves_system_managed_workflow_nodes(tmp_p
                 ],
                 "effects": [
                     {
+                        "id": "system.chat_assistant.ensure_session",
+                        "display_name": "Resolve chat assistant session",
+                        "type": "effect:chat-assistant:ensure-session",
+                        "user_id": "${{system.chat_assistant.user_id}}",
+                        "thread_id": "${{system.chat_assistant.thread_id}}",
+                        "user_message_id": "${{system.chat_assistant.user_message_id}}",
+                        "content": "${{system.chat_assistant.content}}",
+                    },
+                    {
+                        "id": "system.chat_assistant.enqueue_prompt",
+                        "display_name": "Enqueue chat assistant prompt",
+                        "type": "effect:agent:enqueue-prompt",
+                        "target": "${{system.chat_assistant.ensure_session.session_id}}",
+                        "prompt": "${{system.chat_assistant.ensure_session.prompt}}",
+                    },
+                    {
                         "id": "prompt-agent",
                         "display_name": "Prompt agent",
                         "type": "effect:agent:prompt",
@@ -1695,6 +1767,7 @@ def test_workflow_editor_hides_and_preserves_system_managed_workflow_nodes(tmp_p
 
     document = service.read_workflow_editor_document()
     assert [trigger["id"] for trigger in document.config["triggers"]] == ["cron-15m"]
+    assert [effect["id"] for effect in document.config["effects"]] == ["prompt-agent"]
     assert document.config["edges"] == []
 
     save_result = service.save_workflow_editor_document(config=document.config, layout={"nodes": {}})
@@ -1702,6 +1775,14 @@ def test_workflow_editor_hides_and_preserves_system_managed_workflow_nodes(tmp_p
 
     persisted = json.loads(config_path.read_text(encoding="utf-8"))
     assert any(node.get("id") == "system.chat_assistant" for node in persisted["triggers"])
+    assert {
+        node.get("id")
+        for node in persisted["effects"]
+        if str(node.get("id") or "").startswith("system.chat_assistant")
+    } == {
+        "system.chat_assistant.ensure_session",
+        "system.chat_assistant.enqueue_prompt",
+    }
 
 
 def test_workflow_editor_document_round_trips_config_and_separate_layout(tmp_path: Path) -> None:
