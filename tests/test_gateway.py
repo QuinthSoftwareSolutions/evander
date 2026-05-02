@@ -2,6 +2,7 @@ from datetime import UTC, datetime, timedelta
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import asyncio
 import httpx
@@ -9,13 +10,16 @@ import pytest
 from mcp.server.fastmcp.exceptions import ToolError
 from starlette.testclient import TestClient
 
+from agent_sandbox.admin.service import AdminService
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.gateway import (
+    _assistant_mutation_audit_result,
     _filter_discord_commands_for_session,
     _resolve_session_id_from_context,
     create_app,
     create_server,
 )
+from agent_sandbox.admin.web.chat import ChatStore
 from agent_sandbox.models import DiscordCommandEnvelope, SessionManifest, ToolName
 from agent_sandbox.policy import PolicyError
 from agent_sandbox.runtime import build_runtime
@@ -156,6 +160,7 @@ def test_create_server_registers_schedule_resume_tool(tmp_path) -> None:
     assert any(tool.name == "run_script" for tool in server._tool_manager.list_tools())
     assert any(tool.name == "list_pull_requests" for tool in server._tool_manager.list_tools())
     assert any(tool.name == "get_pull_request" for tool in server._tool_manager.list_tools())
+    assert any(tool.name == "assistant_read_config" for tool in server._tool_manager.list_tools())
 
 
 def test_request_pr_review_schema_advertises_allowed_provider_values(tmp_path: Path) -> None:
@@ -179,6 +184,263 @@ def test_request_pr_review_schema_advertises_allowed_provider_values(tmp_path: P
 
     assert provider_schema["type"] == "string"
     assert provider_schema["enum"] == ["github", "azure_devops"]
+
+
+def test_assistant_mutation_audit_result_redacts_before_after_summary() -> None:
+    args = {
+        "before": {"api_key": "before-secret", "safe": "visible"},
+        "after": {"nested": {"token": "after-token", "safe": "still-visible"}},
+    }
+
+    result = _assistant_mutation_audit_result(
+        ToolName.ASSISTANT_UPSERT_CONFIG,
+        args,
+        {"before_after_summary": {"before": args["before"], "after": args["after"]}},
+        {"api_key", "token"},
+        default_status="success",
+    )
+
+    assert result["status"] == "success"
+    assert result["before_after_summary"]["before"]["api_key"] == "<redacted>"
+    assert result["before_after_summary"]["before"]["safe"] == "visible"
+    assert result["before_after_summary"]["after"]["nested"]["token"] == "<redacted>"
+    assert result["before_after_summary"]["after"]["nested"]["safe"] == "still-visible"
+    assert "before-secret" not in json.dumps(result)
+    assert "after-token" not in json.dumps(result)
+
+
+def test_assistant_mutation_audit_result_redacts_full_result() -> None:
+    result = _assistant_mutation_audit_result(
+        ToolName.ASSISTANT_UPSERT_CONFIG,
+        {},
+        {
+            "config": {
+                "token": "result-token",
+                "nested": {"api_key": "result-api-key", "safe": "visible"},
+            },
+            "safe": "still-visible",
+        },
+        {"api_key", "token"},
+        default_status="success",
+    )
+
+    assert result["status"] == "success"
+    assert result["config"]["token"] == "<redacted>"
+    assert result["config"]["nested"]["api_key"] == "<redacted>"
+    assert result["config"]["nested"]["safe"] == "visible"
+    assert result["safe"] == "still-visible"
+    assert "result-token" not in json.dumps(result)
+    assert "result-api-key" not in json.dumps(result)
+
+
+def test_assistant_list_agents_defaults_to_all_directories(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    context = build_runtime(
+        GatewayConfig(
+            runtime_dir=tmp_path,
+            audit_log_path=tmp_path / "audit.jsonl",
+            session_store_path=tmp_path / "sessions.json",
+            approval_store_path=tmp_path / "approvals.json",
+            draft_store_path=tmp_path / "drafts.json",
+            email_store_path=tmp_path / "emails.json",
+            discord_command_store_path=tmp_path / "discord.json",
+        )
+    )
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="assistant-session",
+            allowed_tools=[ToolName.ASSISTANT_LIST_AGENTS],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            directory_path="root",
+            metadata={"capability_profile": "read-only"},
+        )
+    )
+    list_agents_kwargs: dict[str, Any] = {}
+
+    def fake_list_agents(self: AdminService, **kwargs: Any) -> list[object]:
+        del self
+        list_agents_kwargs.update(kwargs)
+        return []
+
+    monkeypatch.setattr(AdminService, "list_agents", fake_list_agents)
+    server = create_server(context)
+
+    result = _call_tool(
+        server,
+        "assistant_list_agents",
+        {"session_id": "assistant-session"},
+    )
+
+    assert list_agents_kwargs["directory_path"] == "root"
+    assert list_agents_kwargs["all_directories"] is True
+    assert result["all_directories"] is True
+    assert result["directory_path"] is None
+
+
+def test_assistant_read_config_returns_directory_global_and_worker_config(
+    tmp_path: Path,
+) -> None:
+    service = AdminService(tmp_path)
+    created = service.create_directory_child("root", "team")
+    assert created.ok
+    root_write = service.write_directory_domain_config(
+        "root", "policy", {"default_session_ttl_seconds": 111}
+    )
+    assert root_write.ok
+    team_write = service.write_directory_domain_config(
+        "root/team", "policy", {"approval_ttl_seconds": 222}
+    )
+    assert team_write.ok
+    service.write_assistant_settings(
+        {"enabled": True, "default_profile": "read-only", "read_only": True}
+    )
+    context = build_runtime(
+        GatewayConfig(
+            runtime_dir=tmp_path,
+            audit_log_path=tmp_path / "audit.jsonl",
+            session_store_path=tmp_path / "sessions.json",
+            approval_store_path=tmp_path / "approvals.json",
+            draft_store_path=tmp_path / "drafts.json",
+            email_store_path=tmp_path / "emails.json",
+            discord_command_store_path=tmp_path / "discord.json",
+        )
+    )
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="assistant-session",
+            allowed_tools=[ToolName.ASSISTANT_READ_CONFIG],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            directory_path="root/team",
+            metadata={"capability_profile": "read-only"},
+        )
+    )
+    server = create_server(context)
+
+    directory_result = _call_tool(
+        server,
+        "assistant_read_config",
+        {"session_id": "assistant-session", "scope": "directory", "domain": "policy"},
+    )
+
+    assert directory_result["scope"] == "directory"
+    assert directory_result["directory_path"] == "root/team"
+    assert directory_result["raw"]["exists"] is True
+    assert directory_result["raw"]["config"] == {"approval_ttl_seconds": 222}
+    assert (
+        directory_result["effective"]["config"]["default_session_ttl_seconds"] == 111
+    )
+    assert directory_result["effective"]["config"]["approval_ttl_seconds"] == 222
+
+    global_result = _call_tool(
+        server,
+        "assistant_read_config",
+        {
+            "session_id": "assistant-session",
+            "scope": "global",
+            "domain": "assistant_settings",
+        },
+    )
+
+    assert global_result["scope"] == "global"
+    assert global_result["domain"] == "assistant_settings"
+    assert global_result["exists"] is True
+    assert global_result["config"]["enabled"] is True
+
+    host_result = _call_tool(
+        server,
+        "assistant_read_config",
+        {
+            "session_id": "assistant-session",
+            "scope": "global",
+            "domain": "host",
+        },
+    )
+
+    assert host_result["scope"] == "global"
+    assert host_result["domain"] == "host"
+    assert host_result["config"]["runtime_dir"] == str(tmp_path)
+
+    worker_result = _call_tool(
+        server,
+        "assistant_read_config",
+        {
+            "session_id": "assistant-session",
+            "scope": "worker_global",
+            "worker_id": "teams-ingest",
+        },
+    )
+
+    assert worker_result["scope"] == "worker_global"
+    assert worker_result["worker_id"] == "teams-ingest"
+    assert isinstance(worker_result["config"], dict)
+
+
+def test_assistant_post_chat_reply_enforces_thread_mapping(tmp_path: Path) -> None:
+    context = build_runtime(
+        GatewayConfig(
+            runtime_dir=tmp_path,
+            audit_log_path=tmp_path / "audit.jsonl",
+            session_store_path=tmp_path / "sessions.json",
+            approval_store_path=tmp_path / "approvals.json",
+            draft_store_path=tmp_path / "drafts.json",
+            email_store_path=tmp_path / "emails.json",
+            discord_command_store_path=tmp_path / "discord.json",
+        )
+    )
+    store = ChatStore(tmp_path / "admin-web-chat-store.json")
+    thread_id = store.get_or_create_thread("alice")
+    user_message = store.append_message(
+        user_id="alice",
+        thread_id=thread_id,
+        role="user",
+        content="hello",
+        status="queued",
+    )
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="assistant-session",
+            allowed_tools=[ToolName.ASSISTANT_POST_CHAT_REPLY],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={
+                "capability_profile": "read-only",
+                "admin_chat_threads": {
+                    "chat-thread-alice": {
+                        "thread_id": thread_id,
+                        "user_id": "alice",
+                    }
+                },
+            },
+        )
+    )
+    server = create_server(context)
+
+    result = _call_tool(
+        server,
+        "assistant_post_chat_reply",
+        {
+            "session_id": "assistant-session",
+            "thread_id": thread_id,
+            "user_message_id": user_message["id"],
+            "content": "answer",
+        },
+    )
+
+    assert result["message"]["role"] == "assistant"
+    transcript = store.get_transcript(user_id="alice", thread_id=thread_id)
+    assert [message["role"] for message in transcript["messages"]] == ["user", "assistant"]
+    assert transcript["messages"][0]["status"] == "answered"
+
+    with pytest.raises(ToolError):
+        _call_tool(
+            server,
+            "assistant_post_chat_reply",
+            {
+                "session_id": "assistant-session",
+                "thread_id": "thread-other",
+                "content": "nope",
+            },
+        )
 
 
 def test_run_script_enforces_tool_policy_and_script_allowlist(tmp_path: Path) -> None:

@@ -13,12 +13,14 @@ from starlette.staticfiles import StaticFiles
 
 from agent_sandbox.admin.service import AdminService
 from agent_sandbox.admin.web.agents import agent_routes
+from agent_sandbox.admin.web.chat import chat_routes
 from agent_sandbox.admin.web.sessions_approvals import session_approval_routes
 from agent_sandbox.admin.web.shared import (
     AZURE_SSO_START_PATH,
     AdminWebAuth,
     AdminWebConfig,
     json_error,
+    request_has_privileged_operations,
 )
 from agent_sandbox.admin.web.vms_issues import vm_issue_routes
 from agent_sandbox.admin.web.workflow import workflow_routes, workflow_run_events
@@ -93,9 +95,7 @@ def create_app(service: AdminService) -> Starlette:
     auth = AdminWebAuth(AdminWebConfig.from_env())
 
     def privileged_operations_unlocked_for_request(request: Request) -> bool:
-        if not auth.privileged_for_request(request):
-            return False
-        return not service.privileged_helper_required() or service.privileged_operations_unlocked()
+        return request_has_privileged_operations(auth=auth, service=service, request=request)
 
     async def health(_: Request) -> JSONResponse:
         return JSONResponse({"ok": True})
@@ -211,10 +211,17 @@ def create_app(service: AdminService) -> Starlette:
 
     async def get_admin_state(request: Request) -> JSONResponse:
         auth.require(request)
+        assistant_settings = service.read_assistant_settings()
         return JSONResponse(
             {
                 "selected_directory_path": "root",
                 "directory_scoped_config_enabled": service.directory_scoped_config_enabled,
+                "assistant": {
+                    "enabled": bool(assistant_settings.get("enabled")),
+                    "show_launcher_when_disabled": bool(
+                        assistant_settings.get("show_launcher_when_disabled")
+                    ),
+                },
                 "privileged_operations": {
                     "unlocked": privileged_operations_unlocked_for_request(request)
                 },
@@ -267,6 +274,7 @@ def create_app(service: AdminService) -> Starlette:
     routes.extend(vm_issue_routes(service, auth))
     routes.extend(session_approval_routes(service, auth))
     routes.extend(worker_config_routes(service, auth))
+    routes.extend(chat_routes(service, auth))
     if dist_dir.exists():
         routes.append(Mount("/", app=StaticFiles(directory=dist_dir, html=True)))
     else:

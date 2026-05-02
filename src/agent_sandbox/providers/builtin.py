@@ -14,6 +14,7 @@ from agent_sandbox.effects.providers.agent_create import AgentCreateEffectProvid
 from agent_sandbox.effects.providers.agent_exec import AgentExecEffectProvider
 from agent_sandbox.effects.providers.agent_prompt import AgentPromptEffectProvider
 from agent_sandbox.effects.providers.bash_script import BashScriptEffectProvider
+from agent_sandbox.effects.providers.chat_assistant import ChatAssistantEnsureSessionEffectProvider
 from agent_sandbox.effects.providers.git_promote_agent_branch import (
     GitPromoteAgentBranchEffectProvider,
 )
@@ -96,6 +97,7 @@ def register_providers() -> dict[str, dict[str, type]]:
             "effect:agent:copy-files": AgentCopyFilesEffectProvider,
             "effect:agent:prompt": AgentPromptEffectProvider,
             "effect:agent:enqueue-prompt": AgentEnqueuePromptEffectProvider,
+            "effect:chat-assistant:ensure-session": ChatAssistantEnsureSessionEffectProvider,
             "effect:agent:exec": AgentExecEffectProvider,
             "effect:bash:script": BashScriptEffectProvider,
             "effect:vm:exec": VmExecEffectProvider,

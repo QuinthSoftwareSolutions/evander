@@ -52,6 +52,42 @@ class MailboxConfig(BaseModel):
     folder_allowlist_defaults: list[str] = Field(default_factory=lambda: ["inbox", "drafts"])
 
 
+AssistantCapabilityProfileName = Literal[
+    "", "read-only", "operator-limited", "full-admin"
+]
+
+
+class AssistantSettingsConfig(BaseModel):
+    enabled: bool = False
+    show_launcher_when_disabled: bool = False
+    default_model: str | None = None
+    default_profile: AssistantCapabilityProfileName | None = None
+    read_only: bool = True
+    custom_system_instructions: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_write_tool_profile(cls, data: object) -> object:
+        if not isinstance(data, dict):
+            return data
+        payload = dict(data)
+        legacy_profile = str(payload.pop("allowed_mcp_tool_profile", "") or "").strip()
+        current_profile = str(payload.get("default_profile") or "").strip()
+        if legacy_profile and not current_profile:
+            payload["default_profile"] = legacy_profile
+        return payload
+
+    @field_validator(
+        "default_model", "default_profile", "custom_system_instructions"
+    )
+    @classmethod
+    def normalize_optional_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = str(value).strip()
+        return normalized or None
+
+
 class GatewayConfig(BaseModel):
     host: str = "0.0.0.0"
     port: int = 8000
@@ -221,6 +257,7 @@ class GatewayConfig(BaseModel):
             )
         ]
     )
+    assistant_settings: AssistantSettingsConfig = Field(default_factory=AssistantSettingsConfig)
     redacted_keys: set[str] = Field(
         default_factory=lambda: {
             "body",

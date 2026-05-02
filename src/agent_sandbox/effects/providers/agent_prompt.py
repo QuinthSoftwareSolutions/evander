@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any
@@ -21,6 +20,7 @@ from agent_sandbox.orchestration.effect_extensions import list_vm_summaries_for_
 from .agent_session import (
     container_backend,
     container_prompt_command,
+    container_thread_id_from_logs,
     effective_config_for_session,
     require_container_session_id,
     safe_effect_execution_id,
@@ -29,7 +29,6 @@ from .agent_session import (
 from .base import EffectProviderBase
 
 _AWAIT_AGENT_STALE_GRACE_SECONDS = 120
-_CONTAINER_THREAD_ID_LOG_PATTERN = re.compile(r"^session id:\s*(?P<thread_id>\S+)\s*$", re.M)
 _BRANCH_PORT_PAYLOAD_KEY = "__branch_port"
 _FOR_EXECUTION_IDS_PAYLOAD_KEY = "__for_execution_ids"
 
@@ -256,12 +255,27 @@ class AgentPromptEffectProvider(EffectProviderBase):
             ExecutionStatusKind.FAILED,
             ExecutionStatusKind.DESTROYED,
         }:
+            cls._capture_container_thread_id_from_running_logs(
+                worker=worker,
+                record=record,
+                backend=backend,
+                session_id=session_id,
+                execution_id=execution_id,
+            )
             return 0
         logs = ""
         try:
             logs = backend.get_log_snapshot(execution_id, lines=400)
         except Exception:
             logs = ""
+        thread_id = cls._thread_id_from_logs(logs)
+        if thread_id:
+            cls._store_container_thread_id(
+                worker=worker,
+                record=record,
+                session_id=session_id,
+                thread_id=thread_id,
+            )
         if status.status != ExecutionStatusKind.DESTROYED:
             try:
                 backend.destroy(execution_id)
@@ -278,6 +292,100 @@ class AgentPromptEffectProvider(EffectProviderBase):
         )
         cls._finalize_waiting_record(worker=worker, record=record, queue_record=queue_record)
         return 1
+
+    @classmethod
+    def _capture_container_thread_id_from_running_logs(
+        cls,
+        *,
+        worker: Any,
+        record: Any,
+        backend: Any,
+        session_id: str,
+        execution_id: str,
+    ) -> None:
+        current_thread_id = str(record.outputs.get("thread_id") or "").strip()
+        if current_thread_id and not current_thread_id.startswith("dispatch-"):
+            return
+        try:
+            logs = backend.get_log_snapshot(execution_id, lines=80)
+        except Exception:
+            return
+        thread_id = cls._thread_id_from_logs(logs)
+        if not thread_id:
+            return
+        cls._store_container_thread_id(
+            worker=worker,
+            record=record,
+            session_id=session_id,
+            thread_id=thread_id,
+        )
+
+    @classmethod
+    def _store_container_thread_id(
+        cls,
+        *,
+        worker: Any,
+        record: Any,
+        session_id: str,
+        thread_id: str,
+    ) -> None:
+        normalized_thread_id = str(thread_id or "").strip()
+        if not normalized_thread_id or normalized_thread_id.startswith("dispatch-"):
+            return
+        current_thread_id = str(record.outputs.get("thread_id") or "").strip()
+        if current_thread_id != normalized_thread_id:
+            record.outputs = {**record.outputs, "thread_id": normalized_thread_id}
+            store = getattr(worker, "execution_store", None)
+            put = getattr(store, "put", None)
+            record_execution = getattr(store, "record_execution", None)
+            try:
+                if callable(put):
+                    put(record)
+                elif callable(record_execution):
+                    record_execution(record)
+            except Exception:
+                pass
+        cls._persist_container_session_thread_id(
+            worker=worker,
+            session_id=session_id,
+            thread_id=normalized_thread_id,
+        )
+
+    @classmethod
+    def _persist_container_session_thread_id(
+        cls,
+        *,
+        worker: Any,
+        session_id: str,
+        thread_id: str,
+    ) -> None:
+        admin_service = getattr(getattr(worker, "provider_factory", None), "admin_service", None)
+        update_fn = getattr(admin_service, "session_update_metadata", None)
+        if callable(update_fn):
+            try:
+                update_fn(target=session_id, metadata={"agent_thread_id": thread_id})
+                return
+            except Exception:
+                pass
+
+        repository = getattr(getattr(admin_service, "runtime", None), "session_repository", None)
+        get_session = getattr(repository, "get_session", None)
+        upsert_session = getattr(repository, "upsert_session", None)
+        if not callable(get_session) or not callable(upsert_session):
+            return
+        try:
+            manifest = get_session(session_id)
+            if manifest is None:
+                return
+            metadata = getattr(manifest, "metadata", {})
+            if not isinstance(metadata, Mapping):
+                metadata = {}
+            updated = manifest.model_copy(
+                update={"metadata": {**dict(metadata), "agent_thread_id": thread_id}}
+            )
+            upsert_session(updated)
+        except Exception:
+            pass
 
     @classmethod
     def _container_backend_for_worker(cls, *, worker: Any, session_id: str) -> Any | None:
@@ -575,7 +683,4 @@ class AgentPromptEffectProvider(EffectProviderBase):
 
     @classmethod
     def _thread_id_from_logs(cls, logs: str) -> str | None:
-        match = _CONTAINER_THREAD_ID_LOG_PATTERN.search(logs)
-        if match is None:
-            return None
-        return match.group("thread_id").strip() or None
+        return container_thread_id_from_logs(logs)

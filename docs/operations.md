@@ -1354,3 +1354,36 @@ decision-complete runbook covering:
   guest images, cloud-init, or session manifests.
 - Review `runtime/audit.jsonl` as the source of truth for privileged activity.
 - Keep VM disks and seed ISOs out of home directories when using `qemu:///system`; the default scripts now place them under `/var/lib/libvirt/images/agent-sandbox`.
+
+
+## Observability Markers Runbook
+
+The gateway and effect providers emit structured log markers for agent orchestration troubleshooting:
+
+- `metric_chat_session_mapping_created` / `metric_chat_session_mapping_reused`
+  - Emitted during chat assistant session resolution.
+  - `libvirt_vm` uses a global mapping owner (`mapping_user_id=global`); `container_worker_vm` uses per-user mappings.
+- `metric_agent_create_backend_path`
+  - Emitted by `effect:agent:create` before backend dispatch.
+  - Confirms whether provisioning went through `libvirt_vm` or `container_worker_vm`.
+- `metric_prompt_enqueue_success` / `metric_prompt_enqueue_failed`
+  - Emitted during queue writes for deferred/resume prompt dispatch.
+  - Includes `latency_ms`, queue key, and failure class when enqueue fails.
+- `metric_mcp_tool_decision`
+  - Emitted for each MCP tool decision with `outcome=allowed|denied|error`.
+  - Includes tool name and policy/runtime reason for deny/error cases.
+
+### Recovery steps
+
+1. **Chat stuck on first message**
+   - Check for `metric_chat_session_mapping_created` followed by subsequent `..._reused` entries.
+   - If missing, verify runtime write permissions to `runtime/chat-assistant-session-mappings.json`.
+2. **Unexpected backend path**
+   - Filter logs for `metric_agent_create_backend_path` by `session_id`/`vm_name`.
+   - Confirm session metadata `execution_backend` and effective directory provider config.
+3. **Prompt not dispatched after enqueue**
+   - Verify `metric_prompt_enqueue_success` and inspect `latency_ms`.
+   - If only `metric_prompt_enqueue_failed` appears, inspect the failure `reason` class and runtime store health.
+4. **Tool calls denied unexpectedly**
+   - Filter by `metric_mcp_tool_decision` and inspect `reason`.
+   - Compare with session `allowed_tools` and any provider-specific allowlists in session policy metadata.

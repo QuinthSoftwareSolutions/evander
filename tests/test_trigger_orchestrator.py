@@ -233,6 +233,46 @@ def test_trigger_orchestrator_runs_only_explicitly_configured_triggers(tmp_path:
     assert result.events_published == 0
 
 
+def test_trigger_orchestrator_does_not_poll_system_triggers(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "cron-1",
+                    "display_name": "Every minute",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                },
+                {
+                    "id": "system.chat_assistant",
+                    "display_name": "System Chat Assistant",
+                    "type": "trigger:system:chat-assistant",
+                },
+            ],
+        }
+    )
+    worker = TriggerOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    built_trigger_ids: list[str] = []
+
+    def _build_provider(trigger):
+        built_trigger_ids.append(trigger.id)
+        return _StaticProvider([])
+
+    worker.provider_factory.build = _build_provider  # type: ignore[assignment]
+
+    result = worker.run_once()
+
+    assert result.configured_triggers == 1
+    assert result.events_discovered == 0
+    assert result.events_published == 0
+    assert built_trigger_ids == ["cron-1"]
+
+
 def test_trigger_orchestrator_run_once_uses_reloaded_worker_config(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)

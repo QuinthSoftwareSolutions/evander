@@ -66,6 +66,9 @@ session manifest and worker directories, `effect:agent:clone-repo` clones into `
 runs deterministic setup commands in a transient worker job, and `effect:agent:prompt`
 starts a disposable worker job for Codex and removes the job after completion.
 
+
+Chat Assistant session resolution is backend-aware and durable. For `libvirt_vm`, assistant initialization reuses one shared assistant VM/session globally while issuing distinct per-user `agent_thread_id` values. For `container_worker_vm`, assistant initialization reuses a distinct assistant session per user. The mapping is persisted in `runtime/chat-assistant-session-mappings.json` and initialized idempotently so concurrent first-message requests converge on the same mapping.
+
 Container sessions are bootstrapped through mounted `/home/agent`, not image rebuilds. The host writes
 Codex config, shell profile setup, and optional NuGet/.NET/Playwright environment into the durable
 agent home. Toolchains are expected to come from worker-level read-only cache mounts, while writable
@@ -79,3 +82,23 @@ Next steps should move behavior only when the contract is stable:
 - move standalone VM creation behind `prepare` and `start`
 - have issue VM orchestration build an `ExecutionSpec`
 - migrate issue-worker and prompt-effect orchestration to build container worker jobs without changing business logic callers
+
+
+## Backend-specific Observability and Recovery
+
+### `libvirt_vm`
+
+- `effect:agent:create` emits `metric_agent_create_backend_path backend=libvirt_vm` before VM create delegation.
+- Chat assistant session mappings are global and should show one `metric_chat_session_mapping_created` and steady `..._reused` markers.
+- Recovery:
+  - If backend selection is wrong, inspect session metadata and directory-level provider config resolution.
+  - If chat session mapping churn appears, inspect and repair `runtime/chat-assistant-session-mappings.json`.
+
+### `container_worker_vm`
+
+- `effect:agent:create` emits `metric_agent_create_backend_path backend=container_worker_vm` before session/worker preparation.
+- Chat assistant mappings are per user; expect `metric_chat_session_mapping_created` once per user and backend, then reuse.
+- Prompt queue markers (`metric_prompt_enqueue_success|failed`) indicate queue persistence latency and failures before worker dispatch retries.
+- Recovery:
+  - On repeated enqueue failures, check runtime store writeability and worker-session state files.
+  - On misrouted tool calls, use `metric_mcp_tool_decision` deny/error reasons and compare to session allowlists.

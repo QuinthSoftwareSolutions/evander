@@ -92,9 +92,11 @@ Each session contains:
 - `logs/`: platform-owned job logs
 - `metadata.json`: platform bookkeeping for paths and creation time
 
-Containers are disposable. Continuity comes from mounting the same `workspace/` and `agent_home/` into each run for a session. In particular, `/var/lib/agent-worker/sessions/<session_id>/agent_home/.codex` is preserved across container removal, so native Codex resume behavior can use its own state.
+Containers are disposable. Continuity comes from mounting the same `workspace/` and `agent_home/` into each run for a session. The runner image currently sets `CODEX_HOME=/home/agent/.config/agent-sandbox/codex`, so native Codex resume state is persisted under `/var/lib/agent-worker/sessions/<session_id>/agent_home/.config/agent-sandbox/codex/sessions`. The bootstrap also writes `/var/lib/agent-worker/sessions/<session_id>/agent_home/.codex/config.toml` for compatibility, but `.codex/sessions` is not the active session store unless `CODEX_HOME` is changed.
 
 The daemon does not rewrite commands into `codex resume`. Callers must send the exact command they want to execute. The daemon preserves `/home/agent` and `/workspace` so those commands can resume naturally.
+
+Prompt effects invoke Codex with `codex exec --json` and translate the JSONL event stream back into the legacy human-readable job log. The control plane emits `session id: <thread_id>` as soon as Codex reports `thread.started`, then prints completed assistant messages from `item.completed` events. This keeps existing log consumers on the old text shape while using Codex's supported non-interactive thread-id contract.
 
 If a request includes `repo_source`, the daemon clones it only when `workspace/` is empty. Existing workspace contents are left untouched. Worker Git intake is prefix-gated: deployed workers should be started with one or more `--allowed-git-source-prefix` values, and a missing prefix list means all `repo_source` values are rejected.
 

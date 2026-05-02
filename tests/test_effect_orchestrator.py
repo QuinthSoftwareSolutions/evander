@@ -1998,6 +1998,7 @@ def test_agent_enqueue_prompt_dispatch_hook_tracks_container_queue_until_complet
         )
     )
     backend = _ContainerDispatchBackendStub()
+    backend.logs = "prompt complete\nsession id: 019de31a-8393-71d2-8990-e5f4fb0a4df2\n"
     monkeypatch.setattr(
         "agent_sandbox.effects.providers.lifecycle_hooks.build_execution_backend",
         lambda config, admin_service: backend,
@@ -2038,6 +2039,29 @@ def test_agent_enqueue_prompt_dispatch_hook_tracks_container_queue_until_complet
     execution_id = str(waiting_records[0].outputs["execution_id"])
     assert execution_id == backend.started_specs[0].target_name
 
+    backend.status = SimpleNamespace(
+        status=ExecutionStatusKind.RUNNING,
+        message=None,
+        metadata={},
+    )
+    reconciled = AgentEnqueuePromptEffectProvider.reconcile_waiting(worker=worker)
+
+    assert reconciled == 0
+    running_record = list(execution_store.read_all().values())[0]
+    assert running_record.status == "waiting"
+    assert running_record.outputs["thread_id"] == "019de31a-8393-71d2-8990-e5f4fb0a4df2"
+    refreshed_session = session_repository.get_session("session-1")
+    assert refreshed_session is not None
+    assert (
+        refreshed_session.metadata["agent_thread_id"]
+        == "019de31a-8393-71d2-8990-e5f4fb0a4df2"
+    )
+
+    backend.status = SimpleNamespace(
+        status=ExecutionStatusKind.STOPPED,
+        message=None,
+        metadata={},
+    )
     reconciled = AgentEnqueuePromptEffectProvider.reconcile_waiting(worker=worker)
 
     assert reconciled == 1
@@ -2045,6 +2069,7 @@ def test_agent_enqueue_prompt_dispatch_hook_tracks_container_queue_until_complet
     final_records = list(execution_store.read_all().values())
     assert final_records[0].status == "succeeded"
     assert published_outputs[0]["worker_status"] == "stopped"
+    assert published_outputs[0]["thread_id"] == "019de31a-8393-71d2-8990-e5f4fb0a4df2"
 
 
 def test_agent_enqueue_prompt_queues_and_fails_when_immediate_resume_fails(

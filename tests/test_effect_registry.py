@@ -13,7 +13,11 @@ from agent_sandbox.effects.providers.agent_clone_repo import (
     AgentCloneRepoEffectProvider,
     _container_reachable_git_remote_url,
 )
-from agent_sandbox.effects.providers.agent_session import selected_execution_backend_for_target
+from agent_sandbox.effects.providers.agent_session import (
+    container_prompt_command,
+    container_thread_id_from_logs,
+    selected_execution_backend_for_target,
+)
 from agent_sandbox.effects.providers.base import EffectProviderBase, EffectRuntimeContext
 from agent_sandbox.effects.registry import (
     DEFAULT_EFFECT_PROVIDER_REGISTRY,
@@ -30,6 +34,7 @@ from agent_sandbox.events.provider_models import (
     AgentEnqueuePromptEffectDefinition,
     AgentExecEffectDefinition,
     AgentPromptEffectDefinition,
+    ChatAssistantEnsureSessionEffectDefinition,
     VmBootstrapFrontendEffectDefinition,
     VmBootstrapPythonEffectDefinition,
     VmCloneRepoEffectDefinition,
@@ -255,6 +260,7 @@ def test_default_registry_includes_all_known_effect_types() -> None:
         "effect:agent:copy-files",
         "effect:agent:prompt",
         "effect:agent:enqueue-prompt",
+        "effect:chat-assistant:ensure-session",
         "effect:agent:exec",
         "effect:bash:script",
         "effect:vm:exec",
@@ -646,7 +652,31 @@ def test_agent_enqueue_prompt_provider_uses_container_backend_for_container_sess
     assert output["session_id"] == "session-1"
     assert output["vm_name"] == "truman"
     assert backend.started_specs[0].session_id == "session-1"
-    assert "check teams" in str(backend.started_specs[0].command)
+    command = str(backend.started_specs[0].command)
+    assert "check teams" in command
+    assert "--json" in command
+    assert "agent_sandbox_codex_json_to_log" in command
+    assert "thread.started" in command
+    assert "item.completed" in command
+    assert "agent_sandbox_latest_codex_session_entry" not in command
+
+
+def test_container_prompt_command_does_not_resume_synthetic_dispatch_id() -> None:
+    command = container_prompt_command(
+        prompt="check teams",
+        model="gpt-5.4-mini",
+        resume_thread_id="dispatch-effect-agent-enqueue-prompt-1-deadbeef",
+    )
+
+    assert "exec resume dispatch-effect-agent-enqueue-prompt-1-deadbeef" not in command
+    assert "codex exec --json" in command
+    assert "-s danger-full-access" in command
+
+
+def test_container_thread_id_from_logs_parses_json_filter_output() -> None:
+    logs = "planning\nSession ID: 019de31a-8393-71d2-8990-e5f4fb0a4df2\n"
+
+    assert container_thread_id_from_logs(logs) == "019de31a-8393-71d2-8990-e5f4fb0a4df2"
 
 
 def test_agent_enqueue_prompt_provider_queues_when_container_session_is_busy(
@@ -714,15 +744,73 @@ def test_agent_enqueue_prompt_provider_queues_when_container_session_is_busy(
             type="effect:agent:enqueue-prompt",
             target="session-1",
             prompt="check teams",
+            queue_key="chat:thread-1:msg-1",
         )
     ).execute()
 
     assert output["execution_backend"] == "container_worker_vm"
     assert output["queued"] is True
-    assert output["queue_key"] == "session-1"
+    assert output["queue_key"] == "chat:thread-1:msg-1"
     assert backend.started_specs == []
     queued_payload = (tmp_path / "queued-agent-prompts.json").read_text(encoding="utf-8")
     assert "check teams" in queued_payload
+    assert "chat:thread-1:msg-1" in queued_payload
+
+
+def test_chat_assistant_ensure_session_uses_event_capability_mode(tmp_path) -> None:
+    config = GatewayConfig(runtime_dir=tmp_path, execution_backend="container_worker_vm")
+
+    class FakeVmAgentAdmin:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def resolve_chat_assistant_session(self, **kwargs):
+            self.calls.append(kwargs)
+            settings = kwargs["settings"]
+            return {
+                "session_id": "assistant-session",
+                "agent_thread_id": "assistant-thread",
+                "vm_name": "assistant-session",
+                "execution_backend": kwargs["backend"],
+                "capability_profile": "read-only"
+                if settings.get("read_only")
+                else "full-admin",
+            }
+
+    vm_agent_admin = FakeVmAgentAdmin()
+    admin_service = SimpleNamespace(
+        config=config,
+        vm_agent_admin=vm_agent_admin,
+        read_assistant_settings=lambda: {
+            "enabled": True,
+            "read_only": False,
+            "default_model": "gpt-test",
+            "default_profile": "full-admin",
+        },
+    )
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ContainerResolverStub(config),
+        admin_service=admin_service,
+    )
+
+    output = factory.build(
+        ChatAssistantEnsureSessionEffectDefinition(
+            id="chat-session",
+            display_name="Resolve chat assistant",
+            type="effect:chat-assistant:ensure-session",
+            user_id="alice",
+            thread_id="thread-1",
+            user_message_id="msg-1",
+            content="hello",
+            backend="container_worker_vm",
+            assistant_capability_mode="read-only",
+        )
+    ).execute()
+
+    assert vm_agent_admin.calls[0]["settings"]["read_only"] is True
+    assert vm_agent_admin.calls[0]["settings"]["default_profile"] == "read-only"
+    assert output["assistant_capability_mode"] == "read-only"
+    assert output["capability_profile"] == "read-only"
 
 
 def test_agent_enqueue_prompt_provider_queues_when_container_dispatch_fails(

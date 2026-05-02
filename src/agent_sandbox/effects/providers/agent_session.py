@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 import json
+import re
 import shlex
 import time
 import uuid
@@ -12,6 +13,7 @@ from typing import Any
 from urllib.parse import quote, urlsplit, urlunsplit
 
 from agent_sandbox.config import GatewayConfig
+from agent_sandbox.runtime import allowed_tools_for_capability_profile
 from agent_sandbox.execution import (
     ExecutionBackendKind,
     ExecutionStatusKind,
@@ -28,6 +30,9 @@ from .base import EffectRuntimeContext
 NEXUS_PACKAGE_CACHE_PORT = 8081
 NEXUS_PYPI_GROUP_REPOSITORY = "pypi-all"
 NEXUS_NPM_GROUP_REPOSITORY = "npm-all"
+_CONTAINER_THREAD_ID_LOG_PATTERN = re.compile(
+    r"^session id:\s*(?P<thread_id>\S+)\s*$", re.IGNORECASE | re.MULTILINE
+)
 
 
 def normalize_optional_string(value: Any) -> str | None:
@@ -151,6 +156,15 @@ def selected_execution_backend(
     return backend, config
 
 
+def chat_assistant_scope_for_backend(execution_backend: str, *, user_id: str) -> tuple[str, str]:
+    """Return assistant mapping scope key and effective owner key for backend-specific resolution."""
+    normalized_backend = normalize_optional_string(execution_backend) or "libvirt_vm"
+    normalized_user = normalize_optional_string(user_id) or "anonymous"
+    if normalized_backend == "libvirt_vm":
+        return "chat_assistant", "global"
+    return "chat_assistant", normalized_user
+
+
 def selected_execution_backend_for_target(
     context: EffectRuntimeContext,
     payload: Mapping[str, Any],
@@ -268,7 +282,7 @@ def read_all_sessions(context: EffectRuntimeContext) -> Mapping[str, Any]:
 
 
 def normalize_allowed_tools(value: list[str] | None) -> list[ToolName]:
-    tools: list[ToolName] = [ToolName.APPROVAL_SUBMIT, ToolName.APPROVAL_CHECK]
+    tools: list[ToolName] = []
     seen = set(tools)
     for raw_tool in value or []:
         tool = ToolName(str(raw_tool).strip())
@@ -277,6 +291,10 @@ def normalize_allowed_tools(value: list[str] | None) -> list[ToolName]:
         seen.add(tool)
         tools.append(tool)
     return tools
+
+
+def allowed_tools_for_profile(capability_profile: str | None) -> list[str]:
+    return [tool.value for tool in allowed_tools_for_capability_profile(capability_profile)]
 
 
 def normalize_allowed_script_names(value: list[str] | None) -> list[str]:
@@ -627,26 +645,167 @@ def container_prompt_command(
     model: str,
     resume_thread_id: str | None,
 ) -> str:
+    effective_resume_thread_id = _container_resume_thread_id(resume_thread_id)
     common_args = [
+        "--json",
         "--dangerously-bypass-approvals-and-sandbox",
         "--skip-git-repo-check",
         "--model",
         model,
     ]
-    if resume_thread_id:
-        args = ["codex", "exec", "resume", resume_thread_id, *common_args, prompt]
+    if effective_resume_thread_id:
+        args = ["codex", "exec", "resume", *common_args, effective_resume_thread_id, prompt]
     else:
         args = [
             "codex",
             "exec",
+            *common_args,
             "-s",
             "danger-full-access",
-            *common_args,
             "-C",
             "/workspace",
             prompt,
         ]
-    return container_shell_preamble() + "cd /workspace\n" + shlex.join(args) + "\n"
+    return (
+        container_shell_preamble()
+        + "cd /workspace\n"
+        + _codex_json_log_filter_shell()
+        + shlex.join(args)
+        + " | agent_sandbox_codex_json_to_log\n"
+    )
+
+
+def _container_resume_thread_id(resume_thread_id: str | None) -> str | None:
+    normalized = normalize_optional_string(resume_thread_id)
+    if normalized is None:
+        return None
+    if normalized.startswith("dispatch-"):
+        return None
+    return normalized
+
+
+def container_thread_id_from_logs(logs: str) -> str | None:
+    match = _CONTAINER_THREAD_ID_LOG_PATTERN.search(logs)
+    if match is None:
+        return None
+    return match.group("thread_id").strip() or None
+
+
+def _codex_json_log_filter_shell() -> str:
+    script = r'''
+import json
+import sys
+
+TEXT_PART_TYPES = {"text", "output_text", "assistant_message"}
+ASSISTANT_ITEM_TYPES = {"assistant_message", "message", "final_message"}
+thread_id_printed = False
+
+
+def first_string(*values):
+    for value in values:
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def first_text(*values):
+    for value in values:
+        if isinstance(value, str) and value:
+            return value
+    return ""
+
+
+def content_text(value):
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        parts = []
+        for part in value:
+            if isinstance(part, str):
+                if part:
+                    parts.append(part)
+                continue
+            if not isinstance(part, dict):
+                continue
+            part_type = str(part.get("type") or "")
+            if part_type and part_type not in TEXT_PART_TYPES:
+                continue
+            text = first_text(part.get("text"), part.get("content"), part.get("message"))
+            if text:
+                parts.append(text)
+        return "\n".join(parts)
+    if isinstance(value, dict):
+        return first_text(value.get("text"), value.get("content"), value.get("message"))
+    return ""
+
+
+def thread_id_from_event(event):
+    thread = event.get("thread")
+    payload = event.get("payload")
+    return first_string(
+        event.get("thread_id"),
+        thread.get("id") if isinstance(thread, dict) else None,
+        payload.get("id") if isinstance(payload, dict) else None,
+    )
+
+
+def text_from_item_completed(event):
+    item = event.get("item")
+    if not isinstance(item, dict):
+        return ""
+    item_type = str(item.get("type") or item.get("item_type") or "")
+    role = str(item.get("role") or "")
+    if item_type and item_type not in ASSISTANT_ITEM_TYPES and role != "assistant":
+        return ""
+    return first_text(
+        item.get("text"),
+        item.get("message"),
+        content_text(item.get("content")),
+        content_text(item.get("formatted")),
+    )
+
+
+for raw_line in sys.stdin:
+    raw_line = raw_line.rstrip("\n")
+    try:
+        event = json.loads(raw_line)
+    except Exception:
+        print(raw_line, flush=True)
+        continue
+    if not isinstance(event, dict):
+        continue
+
+    event_type = str(event.get("type") or "")
+    if event_type == "thread.started":
+        thread_id = thread_id_from_event(event)
+        if thread_id and not thread_id_printed:
+            print(f"session id: {thread_id}", flush=True)
+            thread_id_printed = True
+        continue
+
+    if event_type == "item.completed":
+        text = text_from_item_completed(event)
+        if text:
+            if text.endswith("\n"):
+                print(text, end="", flush=True)
+            else:
+                print(text, flush=True)
+        continue
+
+    if event_type in {"error", "turn.failed"}:
+        message = first_string(event.get("message"), event.get("error"))
+        if message:
+            print(f"codex {event_type}: {message}", flush=True)
+'''
+    return (
+        "agent_sandbox_codex_json_to_log() {\n"
+        "  if command -v python3 >/dev/null 2>&1; then\n"
+        f"    python3 -u -c {shlex.quote(script)}\n"
+        "  else\n"
+        "    cat\n"
+        "  fi\n"
+        "}\n\n"
+    )
 
 
 def safe_effect_execution_id(prefix: str, session_id: str) -> str:
