@@ -33,6 +33,28 @@ def _trigger_definition() -> TeamsNewMessageTriggerDefinition:
     )
 
 
+def _assert_payload(
+    payload: dict[str, object],
+    *,
+    channel_target: str,
+    cursor: str,
+    message_id: str,
+    target_type: str,
+) -> None:
+    assert payload["channel_target"] == channel_target
+    assert payload["target"] == channel_target
+    assert payload["target_type"] == target_type
+    assert payload["cursor"] == cursor
+    assert payload["message_id"] == message_id
+    assert isinstance(payload["created_at"], str)
+    message = payload["message"]
+    assert isinstance(message, dict)
+    assert message["channel_target"] == channel_target
+    assert message["cursor"] == cursor
+    assert message["message_id"] == message_id
+    assert message["target_type"] == target_type
+
+
 def test_teams_trigger_emits_once_per_poll_when_any_matching_messages_arrive_and_persists_cursor(
     tmp_path: Path,
 ) -> None:
@@ -101,8 +123,20 @@ def test_teams_trigger_emits_once_per_poll_when_any_matching_messages_arrive_and
     assert second == []
     assert [event.event_id for event in third] == ["teams-trigger:team-a/channel-1/msg-3"]
     assert fourth == []
-    assert first[0].payload == {}
-    assert third[0].payload == {}
+    _assert_payload(
+        first[0].payload,
+        channel_target="team-a/channel-1",
+        cursor="team-a/channel-1/msg-2",
+        message_id="msg-2",
+        target_type="channel",
+    )
+    _assert_payload(
+        third[0].payload,
+        channel_target="team-a/channel-1",
+        cursor="team-a/channel-1/msg-3",
+        message_id="msg-3",
+        target_type="channel",
+    )
 
     cursor_payload = json.loads(
         (context.resolved_config.runtime_dir / "trigger-cursors-teams.json").read_text(
@@ -167,7 +201,13 @@ def test_teams_trigger_filters_by_channel_target_and_user(tmp_path: Path) -> Non
 
     assert len(events) == 1
     assert events[0].event_id == "teams-trigger:team-a/channel-1/msg-1"
-    assert events[0].payload == {}
+    _assert_payload(
+        events[0].payload,
+        channel_target="team-a/channel-1",
+        cursor="team-a/channel-1/msg-1",
+        message_id="msg-1",
+        target_type="channel",
+    )
 
 
 def test_teams_trigger_message_filter_matches_content_case_insensitively(tmp_path: Path) -> None:
@@ -223,7 +263,13 @@ def test_teams_trigger_message_filter_matches_content_case_insensitively(tmp_pat
     events = provider.poll()
 
     assert [event.event_id for event in events] == ["teams-trigger:chat:19:abc@thread.v2/msg-1"]
-    assert events[0].payload == {}
+    _assert_payload(
+        events[0].payload,
+        channel_target="chat:19:abc@thread.v2",
+        cursor="chat:19:abc@thread.v2/msg-1",
+        message_id="msg-1",
+        target_type="chat",
+    )
 
 
 def test_teams_trigger_message_filter_matches_mentions_by_user_id(tmp_path: Path) -> None:
@@ -307,7 +353,13 @@ def test_teams_trigger_message_filter_matches_mentions_by_user_id(tmp_path: Path
     events = provider.poll()
 
     assert [event.event_id for event in events] == ["teams-trigger:chat:19:abc@thread.v2/msg-1"]
-    assert events[0].payload == {}
+    _assert_payload(
+        events[0].payload,
+        channel_target="chat:19:abc@thread.v2",
+        cursor="chat:19:abc@thread.v2/msg-1",
+        message_id="msg-1",
+        target_type="chat",
+    )
 
 
 def test_teams_trigger_message_filter_can_exclude_all_messages(tmp_path: Path) -> None:

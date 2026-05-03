@@ -8,7 +8,11 @@ from agent_sandbox.events.provider_models import (
     TeamsMessageFilterDefinition,
     TeamsNewMessageTriggerDefinition,
 )
-from agent_sandbox.services import normalize_teams_target, teams_target_from_message
+from agent_sandbox.services import (
+    normalize_teams_target,
+    parse_teams_target,
+    teams_target_from_message,
+)
 from agent_sandbox.messaging.teams_inbox_store import TeamsInboxMessage
 from agent_sandbox.triggers.providers._cursor_state import TriggerCursorStore
 from agent_sandbox.triggers.providers.base import TriggerProviderBase
@@ -62,11 +66,11 @@ class TeamsNewMessageTriggerProvider(TriggerProviderBase):
 
         max_created_at = cursor
         new_cursors = list(recent_cursors)
-        latest_cursor: str | None = None
+        latest_message: TeamsInboxMessage | None = None
         for message in candidates:
             occurred_at = message.created_at.astimezone(UTC)
             new_cursors.append(message.cursor)
-            latest_cursor = message.cursor
+            latest_message = message
             if max_created_at is None or occurred_at > max_created_at:
                 max_created_at = occurred_at
 
@@ -78,15 +82,15 @@ class TeamsNewMessageTriggerProvider(TriggerProviderBase):
                     "recent_cursors": new_cursors[-self._RECENT_CURSOR_LIMIT :],
                 },
             )
-        if not candidates or max_created_at is None or latest_cursor is None:
+        if not candidates or max_created_at is None or latest_message is None:
             return []
         return [
             TriggerEvent(
-                event_id=f"{trigger.id}:{latest_cursor}",
+                event_id=f"{trigger.id}:{latest_message.cursor}",
                 trigger_id=trigger.id,
                 trigger_type=trigger.type,
                 occurred_at=max_created_at,
-                payload={},
+                payload=_message_payload(latest_message),
             )
         ]
 
@@ -117,6 +121,38 @@ def _message_channel_target(message: TeamsInboxMessage) -> str:
             metadata=message.metadata,
         )
     )
+
+
+def _message_payload(message: TeamsInboxMessage) -> dict[str, object]:
+    channel_target = _message_channel_target(message)
+    parsed_target = parse_teams_target(channel_target)
+    created_at = message.created_at.astimezone(UTC).isoformat().replace("+00:00", "Z")
+    message_payload: dict[str, object] = {
+        "cursor": message.cursor,
+        "message_id": message.message_id,
+        "channel_target": channel_target,
+        "target": channel_target,
+        "target_type": parsed_target.kind,
+        "team_id": message.team_id,
+        "channel_id": message.channel_id,
+        "chat_id": message.chat_id,
+        "thread_id": message.thread_id,
+        "author_id": message.author_id,
+        "author_name": message.author_name,
+        "content": message.content,
+        "created_at": created_at,
+        "metadata": dict(message.metadata),
+    }
+    return {
+        "channel_target": channel_target,
+        "target": channel_target,
+        "target_type": parsed_target.kind,
+        "cursor": message.cursor,
+        "message_id": message.message_id,
+        "thread_id": message.thread_id,
+        "created_at": created_at,
+        "message": message_payload,
+    }
 
 
 def _normalize_channel_target(value: str) -> str:

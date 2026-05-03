@@ -3509,12 +3509,14 @@ def create_server(context: RuntimeContext) -> FastMCP:
         since_cursor: str | None = None,
         before_cursor: str | None = None,
         limit: int | None = None,
+        channel_target: str | None = None,
     ) -> dict[str, Any]:
         args = {
             "session_id": session_id,
             "since_cursor": since_cursor,
             "before_cursor": before_cursor,
             "limit": limit,
+            "channel_target": channel_target,
         }
         try:
             if limit is not None and limit < 1:
@@ -3522,6 +3524,12 @@ def create_server(context: RuntimeContext) -> FastMCP:
             if since_cursor is not None and before_cursor is not None:
                 raise ToolError("since_cursor and before_cursor are mutually exclusive")
             session = context.policy.require_tool(session_id, ToolName.TEAMS_GET_MESSAGES)
+            normalized_target = None
+            if channel_target is not None:
+                normalized_target = context.policy.require_teams_channel_target(
+                    session,
+                    str(channel_target or "").strip(),
+                )
             effective_limit = limit
             if since_cursor is None and before_cursor is None and effective_limit is None:
                 effective_limit = context.config.teams_poll_limit
@@ -3529,6 +3537,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 since_cursor=since_cursor,
                 before_cursor=before_cursor,
                 limit=None,
+                channel_target=normalized_target,
             )
             messages, denied_count, next_cursor = _filter_teams_messages_for_session(
                 context,

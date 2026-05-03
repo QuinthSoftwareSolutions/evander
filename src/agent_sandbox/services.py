@@ -178,6 +178,7 @@ class TeamsService(Protocol):
         since_cursor: str | None = None,
         before_cursor: str | None = None,
         limit: int | None = None,
+        channel_target: str | None = None,
     ) -> list["TeamsMessageEnvelope"]: ...
 
     def post_status(
@@ -682,9 +683,13 @@ class StubTeamsService:
         since_cursor: str | None = None,
         before_cursor: str | None = None,
         limit: int | None = None,
+        channel_target: str | None = None,
     ) -> list[TeamsMessageEnvelope]:
         if since_cursor and before_cursor:
             raise ValueError("since_cursor and before_cursor are mutually exclusive")
+        normalized_requested_target = (
+            normalize_teams_target(channel_target) if channel_target is not None else None
+        )
         messages = list(self.message_store.read_all().values())
         for message in messages:
             normalized_target = teams_target_from_message(
@@ -720,6 +725,18 @@ class StubTeamsService:
                 },
             }
         ordered = _sorted_teams_messages({message.cursor: message for message in messages})
+        if normalized_requested_target is not None:
+            ordered = [
+                message
+                for message in ordered
+                if teams_target_from_message(
+                    team_id=message.team_id,
+                    channel_id=message.channel_id,
+                    chat_id=message.chat_id,
+                    metadata=message.metadata,
+                )
+                == normalized_requested_target
+            ]
         if before_cursor is not None:
             if any(message.cursor == before_cursor for message in ordered):
                 ordered = [message for message in ordered if message.cursor < before_cursor]
@@ -1041,6 +1058,7 @@ class GraphTeamsService:
         since_cursor: str | None = None,
         before_cursor: str | None = None,
         limit: int | None = None,
+        channel_target: str | None = None,
     ) -> list[TeamsMessageEnvelope]:
         if since_cursor and before_cursor:
             raise ValueError("since_cursor and before_cursor are mutually exclusive")
@@ -1050,9 +1068,16 @@ class GraphTeamsService:
         messages: dict[str, TeamsMessageEnvelope] = dict(self.message_store.read_all())
         since_cursor_parts = _parse_teams_cursor(since_cursor)
         before_cursor_parts = _parse_teams_cursor(before_cursor)
+        requested_target = None
+        target_list = self._allowed_channel_targets()
+        if channel_target is not None:
+            requested_target = normalize_teams_target(channel_target)
+            if requested_target not in set(target_list):
+                return []
+            target_list = [requested_target]
         budget = self.new_pagination_budget()
         with httpx.Client(timeout=self.timeout_seconds) as client:
-            for target in self._allowed_channel_targets():
+            for target in target_list:
                 if not budget.can_request_page():
                     break
                 parsed_target = parse_teams_target(target)
@@ -1127,6 +1152,18 @@ class GraphTeamsService:
                         break
 
         ordered = _sorted_teams_messages(messages)
+        if requested_target is not None:
+            ordered = [
+                message
+                for message in ordered
+                if teams_target_from_message(
+                    team_id=message.team_id,
+                    channel_id=message.channel_id,
+                    chat_id=message.chat_id,
+                    metadata=message.metadata,
+                )
+                == requested_target
+            ]
         if before_cursor is not None:
             ordered = [message for message in ordered if message.cursor < before_cursor]
             if effective_limit is not None:

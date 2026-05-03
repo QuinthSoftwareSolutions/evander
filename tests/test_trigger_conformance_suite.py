@@ -539,7 +539,8 @@ def test_conformance_provider_payload_contracts_and_secret_redaction(
     assert list(ticket_changed_events[0].payload.keys()) == ["ticket"]
     assert list(discord_events[0].payload.keys()) == ["message"]
     assert list(email_events[0].payload.keys()) == ["message"]
-    assert teams_events[0].payload == {}
+    assert teams_events[0].payload["channel_target"] == "team-a/channel-1"
+    assert teams_events[0].payload["message"]["message_id"] == "msg-1"
     assert set(pr_events[0].payload.keys()) == {"pr", "feedback"}
 
     for line in caplog.messages:
@@ -730,7 +731,8 @@ def test_conformance_directory_and_filter_scoping(
     assert len(discord_events) == 1
     assert discord_events[0].payload["message"]["channel_id"] == "chan-a"
     assert len(teams_events) == 1
-    assert teams_events[0].payload == {}
+    assert teams_events[0].payload["channel_target"] == "team-a/channel-1"
+    assert teams_events[0].payload["message"]["message_id"] == "msg-1"
 
     _record_result(
         report_collector,

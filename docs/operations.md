@@ -318,9 +318,10 @@ Storage layout for directory config:
 - The host-side Teams adapter reads channel threads from
   `GET /teams/{team-id}/channels/{channel-id}/messages` and group chats from
   `GET /chats/{chat-id}/messages`.
-- Cursorless `teams_get_messages` calls stay on a bounded recent path. The gateway applies
-  `teams_poll_limit` as the default message limit, and the Graph adapter caps each history scan
-  with `teams_history_page_cap` plus `teams_history_deadline_seconds`.
+- `teams_get_messages` accepts an optional `channel_target` so agents can read the specific
+  channel or chat that woke them. Cursorless reads still stay on a bounded recent path: the gateway
+  applies `teams_poll_limit` as the default message limit, and the Graph adapter caps each history
+  scan with `teams_history_page_cap` plus `teams_history_deadline_seconds`.
 
 ## VM Python Bootstrap
 

@@ -20,6 +20,7 @@ class FakeTeamsService:
         self.last_since_cursor: str | None = None
         self.last_before_cursor: str | None = None
         self.last_limit: int | None = None
+        self.last_channel_target: str | None = None
         self.post_calls: list[tuple[str, str, str, str | None]] = []
         self.reaction_calls: list[tuple[str, str, str, str]] = []
         self.reaction_error_by_message_id: dict[str, Exception] = {}
@@ -30,27 +31,41 @@ class FakeTeamsService:
         since_cursor: str | None = None,
         before_cursor: str | None = None,
         limit: int | None = None,
+        channel_target: str | None = None,
     ) -> list[TeamsMessageEnvelope]:
         self.last_since_cursor = since_cursor
         self.last_before_cursor = before_cursor
         self.last_limit = limit
+        self.last_channel_target = channel_target
         if since_cursor is not None and before_cursor is not None:
             raise ValueError("since_cursor and before_cursor are mutually exclusive")
+        messages = list(self.messages)
+        if channel_target is not None:
+            messages = [
+                message
+                for message in messages
+                if message.metadata.get("target") == channel_target
+                or (
+                    message.chat_id is not None
+                    and f"chat:{message.chat_id}" == channel_target
+                )
+                or f"{message.team_id}/{message.channel_id}" == channel_target
+            ]
         if before_cursor is not None:
-            older = [message for message in self.messages if message.cursor < before_cursor]
+            older = [message for message in messages if message.cursor < before_cursor]
             return older[-limit:] if limit is not None else older
         if since_cursor is None:
-            return self.messages[-limit:] if limit is not None else self.messages
+            return messages[-limit:] if limit is not None else messages
         seen_cursor = False
         filtered: list[TeamsMessageEnvelope] = []
-        for message in self.messages:
+        for message in messages:
             if seen_cursor:
                 filtered.append(message)
                 continue
             if message.cursor == since_cursor:
                 seen_cursor = True
         if not seen_cursor:
-            return self.messages[-limit:] if limit is not None else self.messages
+            return messages[-limit:] if limit is not None else messages
         return filtered[:limit] if limit is not None else filtered
 
     def post_status(
@@ -179,6 +194,53 @@ def test_teams_get_messages_passes_since_cursor_and_filters_unallowlisted_source
     assert context.teams_service.last_before_cursor is None
     assert [entry["cursor"] for entry in result["messages"]] == ["team-a/channel-1/msg-1"]
     assert result["next_cursor"] == "team-b/channel-9/msg-9"
+
+
+def test_teams_get_messages_passes_channel_target_for_targeted_reads(
+    tmp_path: Path,
+) -> None:
+    context = make_context(tmp_path)
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[ToolName.TEAMS_GET_MESSAGES],
+            teams_channel_allowlist=["team-a/channel-1", "chat:chat-1"],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    context.teams_service = FakeTeamsService(
+        [
+            TeamsMessageEnvelope(
+                cursor="team-a/channel-1/msg-1",
+                message_id="msg-1",
+                author_id="user-1",
+                team_id="team-a",
+                channel_id="channel-1",
+                thread_id="msg-1",
+                content="channel",
+                metadata={"source": "teams_graph_api"},
+            ),
+            TeamsMessageEnvelope(
+                cursor="chat:chat-1/msg-2",
+                message_id="msg-2",
+                author_id="user-2",
+                chat_id="chat-1",
+                content="chat",
+                metadata={"source": "teams_graph_api"},
+            ),
+        ]
+    )
+    server = create_server(context)
+
+    result = call_tool(
+        server,
+        "teams_get_messages",
+        {"session_id": "session-1", "channel_target": "chat:chat-1", "limit": 5},
+    )
+
+    assert context.teams_service.last_channel_target == "chat:chat-1"
+    assert [entry["cursor"] for entry in result["messages"]] == ["chat:chat-1/msg-2"]
+    assert result["next_cursor"] == "chat:chat-1/msg-2"
 
 
 def test_teams_get_messages_supports_limit_and_includes_session_authored_messages(

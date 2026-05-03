@@ -332,6 +332,64 @@ def test_graph_teams_service_stops_pagination_when_history_deadline_expires(
     assert len(requests) == 1
 
 
+def test_graph_teams_service_targeted_read_only_fetches_requested_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path.endswith("/chats/chat-1/messages"):
+            return httpx.Response(
+                200,
+                json={
+                    "value": [
+                        {
+                            "id": "msg-chat",
+                            "createdDateTime": "2026-03-30T11:00:00Z",
+                            "body": {"content": "chat", "contentType": "text"},
+                            "from": {"user": {"id": "user-1"}},
+                        }
+                    ]
+                },
+                request=request,
+            )
+        raise AssertionError(f"Unexpected request: {request.method} {request.url}")
+
+    transport = httpx.MockTransport(handler)
+    patch_httpx_client(monkeypatch, transport)
+    store = JsonStore(tmp_path / "teams.json", TeamsMessageEnvelope)
+    store.put(
+        "team-a/channel-1/msg-cached",
+        TeamsMessageEnvelope(
+            cursor="team-a/channel-1/msg-cached",
+            message_id="msg-cached",
+            author_id="user-2",
+            team_id="team-a",
+            channel_id="channel-1",
+            thread_id="msg-cached",
+            content="cached channel",
+            created_at=datetime(2026, 3, 30, 10, 59, tzinfo=UTC),
+            metadata={"source": "teams_graph_api"},
+        ),
+    )
+    service = GraphTeamsService(
+        store,
+        token="graph-token",
+        api_base_url="https://graph.microsoft.com/v1.0",
+        poll_limit=25,
+        history_page_cap=5,
+        timeout_seconds=5.0,
+        allowed_channel_targets_provider=lambda: ["team-a/channel-1", "chat:chat-1"],
+    )
+
+    messages = service.get_messages(channel_target="chat:chat-1", limit=5)
+
+    assert [message.cursor for message in messages] == ["chat:chat-1/msg-chat"]
+    assert [request.url.path for request in requests] == ["/v1.0/chats/chat-1/messages"]
+
+
 def test_graph_teams_service_fails_clearly_when_token_provider_cannot_resolve_token(
     tmp_path: Path,
 ) -> None:

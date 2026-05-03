@@ -651,9 +651,11 @@ See [live-smoke-tests.md](docs/live-smoke-tests.md) for the live Discord and pro
 - `trigger:teams:new-message` message arrival is driven by host-side Teams ingest polling on the
   host, not by the wake workers. Discord inbox wakeups and scheduled resumes are handled by
   `agent-sandbox-discord-wake` and `agent-sandbox-scheduled-wake`.
-- `trigger:teams:new-message` is a wake signal only. It fires at most once per poll cycle when any
-  new allowlisted Teams messages have arrived, and it does not include message content in the
-  trigger payload. Agents that need message context should call `teams_get_messages`.
+- `trigger:teams:new-message` fires at most once per poll cycle when new allowlisted Teams
+  messages have arrived. Its payload includes the triggering Teams `channel_target`, cursor,
+  message id, target type, and a normalized `message` object for the latest matching message.
+  Agents that need surrounding context should call `teams_get_messages` with that
+  `channel_target`.
 - `trigger:teams:new-message` defines `targets`, where each target can optionally narrow wakes
   with its own `message_filter`.
 - The initial supported filter shape is content substring matching:
@@ -677,10 +679,10 @@ See [live-smoke-tests.md](docs/live-smoke-tests.md) for the live Discord and pro
   - `GET /teams/{team-id}/channels/{channel-id}/messages` for channel threads
   - `GET /chats/{chat-id}/messages` for group chats
   It stores both top-level messages and any expanded replies in `runtime/teams_messages.json`.
-- Cursorless `teams_get_messages` calls are bounded recent reads: the gateway defaults the call to
+- `teams_get_messages` accepts optional `channel_target`, `since_cursor`, `before_cursor`, and
+  `limit` arguments. Cursorless reads are bounded recent reads: the gateway defaults the call to
   `teams_poll_limit`, and the Graph adapter stops after `teams_history_page_cap` pages or
-  `teams_history_deadline_seconds`, whichever comes first. Use `since_cursor` or `before_cursor`
-  for explicit incremental reads.
+  `teams_history_deadline_seconds`, whichever comes first.
 - The `teams_get_messages` gateway tool returns normalized envelopes with:
   - `cursor`
   - `message_id`
