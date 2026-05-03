@@ -11,4 +11,10 @@ all:
         agent_sandbox_worker_hosts:
           hosts:
             truman-worker-1:
+              ansible_host: 10.2.1.4
               ansible_user: azureuser
+              ansible_ssh_private_key_file: ~/.ssh/truman-worker-1_key.pem
+              ansible_ssh_common_args: >-
+                -o ProxyCommand="ssh -i /home/jonathan/.ssh/truman-control-center_key.pem
+                -o StrictHostKeyChecking=accept-new -o BatchMode=yes -W %h:%p
+                azureuser@52.158.33.185"
