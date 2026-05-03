@@ -44,7 +44,9 @@ install the control-plane services.
 Worker host OS packages are provisioned through the control-plane apt-cacher-ng relay on `3142`.
 The worker playbook writes `/etc/apt/apt.conf.d/01agent-sandbox-proxy` before its first
 `host_prereqs` apt update. Container-session `pip` and `npm` traffic remains separate and resolves
-through Nexus on `8081`.
+through Nexus on `8081`. The worker host's own `uv pip install -e .` step also uses that Nexus
+PyPI group through `UV_DEFAULT_INDEX` and `PIP_INDEX_URL`, so the worker deploy does not need direct
+`pypi.org` egress.
 
 For Azure-style deployments that include `agent_sandbox_hosts`, the worker playbook also prepares
 restricted SSH before `repo_checkout` and checks out the deployment repo through a control-plane bare

@@ -12,5 +12,6 @@
     cmd: "uv pip install --python {{ agent_sandbox_deploy_path }}/.venv/bin/python -e .{{ agent_sandbox_python_install_extras }}"
   args:
     chdir: "{{ agent_sandbox_deploy_path }}"
+  environment: "{{ agent_sandbox_python_install_env | default({}) }}"
   become_user: "{{ agent_sandbox_run_user }}"
   changed_when: false

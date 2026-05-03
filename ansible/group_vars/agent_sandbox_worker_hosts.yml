@@ -21,6 +21,7 @@ agent_sandbox_worker_revision_guard_paths:
   - ansible/group_vars/agent_sandbox_worker_hosts.yml
   - ansible/roles/worker_apt_proxy
   - ansible/roles/worker_git_access
+  - ansible/roles/python_env
   - ansible/roles/container_worker_runtime
   - ansible/roles/container_worker_service
   - ansible/roles/container_worker_verification
@@ -39,6 +40,13 @@ agent_sandbox_host_packages:
   - docker.io
 
 agent_sandbox_python_install_extras: ""
+agent_sandbox_worker_pypi_trusted_host: "{{ agent_sandbox_worker_pypi_index_url | urlsplit('hostname') }}"
+agent_sandbox_python_install_env:
+  UV_DEFAULT_INDEX: "{{ agent_sandbox_worker_pypi_index_url }}"
+  UV_INDEX_URL: "{{ agent_sandbox_worker_pypi_index_url }}"
+  UV_INSECURE_HOST: "{{ agent_sandbox_worker_pypi_trusted_host }}"
+  PIP_INDEX_URL: "{{ agent_sandbox_worker_pypi_index_url }}"
+  PIP_TRUSTED_HOST: "{{ agent_sandbox_worker_pypi_trusted_host }}"
 
 agent_sandbox_worker_host: "0.0.0.0"
 agent_sandbox_worker_port: 11888

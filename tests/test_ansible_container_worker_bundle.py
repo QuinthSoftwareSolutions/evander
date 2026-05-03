@@ -63,10 +63,16 @@ def test_worker_group_vars_define_docker_and_durable_state_contract() -> None:
     assert "agent_sandbox_worker_enforce_revision_match: true" in text
     assert "agent_sandbox_worker_revision_guard_paths" in text
     assert "src/agent_sandbox/worker" in text
+    assert "ansible/roles/python_env" in text
     assert "ansible/roles/container_worker_service" in text
     assert "  - docker" in text
     assert "  - docker.io" in text
     assert 'agent_sandbox_python_install_extras: ""' in text
+    assert "agent_sandbox_python_install_env" in text
+    assert "UV_DEFAULT_INDEX" in text
+    assert "UV_INSECURE_HOST" in text
+    assert "PIP_INDEX_URL" in text
+    assert "PIP_TRUSTED_HOST" in text
     assert "agent_sandbox_worker_port: 11888" in text
     assert 'agent_sandbox_worker_root: "/var/lib/agent-worker"' in text
     assert 'agent_sandbox_worker_runtime_dir: "{{ agent_sandbox_worker_root }}/runtime"' in text
@@ -141,6 +147,19 @@ def test_worker_service_role_renders_env_and_daemon_unit() -> None:
     assert "--container-user {{ agent_sandbox_effective_worker_container_user }}" in unit
     assert "--readonly-mount {{ mount }}" in unit
     assert "{% endfor %}{{ \"\" }}\nRestart=on-failure" in unit
+
+
+def test_python_env_role_accepts_private_package_index_environment() -> None:
+    role = (ROOT / "ansible" / "roles" / "python_env" / "tasks" / "main.yml").read_text(
+        encoding="utf-8"
+    )
+    defaults = (ROOT / "ansible" / "group_vars" / "all" / "defaults.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "agent_sandbox_python_install_env: {}" in defaults
+    assert "uv pip install" in role
+    assert "environment: \"{{ agent_sandbox_python_install_env | default({}) }}\"" in role
 
 
 def test_worker_runtime_and_verification_roles_cover_docker_health_and_no_control_plane_units() -> (

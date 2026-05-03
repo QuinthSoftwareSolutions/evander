@@ -157,6 +157,7 @@ agent_sandbox_host_packages: >-
 
 # Install profile for the Python package.
 agent_sandbox_python_install_extras: "[dev]"
+agent_sandbox_python_install_env: {}
 
 # Admin Web frontend build.
 agent_sandbox_admin_web_frontend_dir: "{{ agent_sandbox_deploy_path }}/frontend/workflow-editor"
