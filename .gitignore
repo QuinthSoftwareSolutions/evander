@@ -34,6 +34,8 @@ tasks/
 !ansible/roles/container_worker_service/tasks/main.yml
 !ansible/roles/container_worker_verification/tasks/
 !ansible/roles/container_worker_verification/tasks/main.yml
+!ansible/roles/package_cache_nexus/tasks/
+!ansible/roles/package_cache_nexus/tasks/main.yml
 frontend/workflow-editor/node_modules/
 frontend/workflow-editor/tsconfig.tsbuildinfo
 **/dist/*

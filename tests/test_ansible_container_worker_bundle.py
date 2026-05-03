@@ -10,6 +10,10 @@ def test_worker_playbook_exists_with_expected_roles() -> None:
     worker = (ansible_dir / "worker.yml").read_text(encoding="utf-8")
 
     assert "hosts: agent_sandbox_worker_hosts" in worker
+    assert "Resolve local worker playbook revision" in worker
+    assert "Default worker repo checkout to the playbook revision" in worker
+    assert "Assert worker playbook and daemon checkout revisions match" in worker
+    assert "agent_sandbox_worker_enforce_revision_match=false" in worker
     assert "agent_sandbox_worker_token must be set from Vault or inventory" in worker
     assert "agent_sandbox_worker_sandbox_profile in ['default', 'strict']" in worker
     assert "container worker daemon refuses Docker host networking" in worker
@@ -52,6 +56,11 @@ def test_worker_group_vars_define_docker_and_durable_state_contract() -> None:
 
     assert 'agent_sandbox_deploy_path: "/opt/agent-sandbox-worker"' in text
     assert 'agent_sandbox_run_user: "agent-worker"' in text
+    assert 'agent_sandbox_worker_repo_version_mode: "playbook_revision"' in text
+    assert "agent_sandbox_worker_enforce_revision_match: true" in text
+    assert "agent_sandbox_worker_revision_guard_paths" in text
+    assert "src/agent_sandbox/worker" in text
+    assert "ansible/roles/container_worker_service" in text
     assert "  - docker" in text
     assert "  - docker.io" in text
     assert 'agent_sandbox_python_install_extras: ""' in text
@@ -172,6 +181,8 @@ def test_worker_docs_and_inventory_reference_playbook() -> None:
     assert "container_worker_base_url" in ansible_docs
     assert "container_worker_guest_pypi_index_url" in ansible_docs
     assert "container_worker_guest_npm_registry_url" in ansible_docs
+    assert "local playbook commit" in ansible_docs
+    assert "agent_sandbox_worker_enforce_revision_match: false" in ansible_docs
     assert "Worker outbound rules should still deny direct access" in ansible_docs
     assert "allowed Git source prefix" in ansible_docs
     assert "GitHub/Azure DevOps egress" in ansible_docs

@@ -5,6 +5,97 @@
   vars:
     agent_sandbox_repo_parent: "{{ agent_sandbox_deploy_path | dirname }}"
   pre_tasks:
+    - name: Resolve local worker playbook revision
+      ansible.builtin.command:
+        argv:
+          - git
+          - -C
+          - "{{ playbook_dir }}/.."
+          - rev-parse
+          - --verify
+          - HEAD
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      check_mode: false
+      register: agent_sandbox_worker_playbook_revision
+      when: agent_sandbox_worker_enforce_revision_match | bool
+
+    - name: Check worker deploy source tree for uncommitted contract changes
+      ansible.builtin.command:
+        argv: >-
+          {{
+            [
+              'git',
+              '-C',
+              playbook_dir ~ '/..',
+              'status',
+              '--porcelain',
+              '--untracked-files=all',
+              '--'
+            ]
+            + agent_sandbox_worker_revision_guard_paths
+          }}
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      check_mode: false
+      register: agent_sandbox_worker_dirty_contract_paths
+      when: agent_sandbox_worker_enforce_revision_match | bool
+
+    - name: Assert worker deploy contract changes are committed
+      ansible.builtin.assert:
+        that:
+          - (agent_sandbox_worker_dirty_contract_paths.stdout_lines | length) == 0
+        fail_msg: >-
+          Worker deployment renders systemd from the local playbook but installs
+          daemon code from Git. Commit and push worker playbook/daemon contract
+          changes before deploying, or set
+          agent_sandbox_worker_enforce_revision_match=false after confirming the
+          target revision is compatible. Dirty paths={{
+            agent_sandbox_worker_dirty_contract_paths.stdout_lines
+          }}
+        success_msg: Worker deploy contract files are committed.
+      when: agent_sandbox_worker_enforce_revision_match | bool
+
+    - name: Default worker repo checkout to the playbook revision
+      ansible.builtin.set_fact:
+        agent_sandbox_repo_version: "{{ agent_sandbox_worker_playbook_revision.stdout }}"
+      when:
+        - agent_sandbox_worker_enforce_revision_match | bool
+        - agent_sandbox_worker_repo_version_mode == 'playbook_revision'
+
+    - name: Resolve requested worker repo revision locally
+      ansible.builtin.command:
+        argv:
+          - git
+          - -C
+          - "{{ playbook_dir }}/.."
+          - rev-parse
+          - --verify
+          - "{{ agent_sandbox_repo_version }}^{commit}"
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      check_mode: false
+      register: agent_sandbox_worker_requested_revision
+      when: agent_sandbox_worker_enforce_revision_match | bool
+
+    - name: Assert worker playbook and daemon checkout revisions match
+      ansible.builtin.assert:
+        that:
+          - agent_sandbox_worker_requested_revision.stdout == agent_sandbox_worker_playbook_revision.stdout
+        fail_msg: >-
+          Worker deployment would render Ansible templates from local commit
+          {{ agent_sandbox_worker_playbook_revision.stdout }} but install daemon
+          code from agent_sandbox_repo_version={{ agent_sandbox_repo_version }}
+          ({{ agent_sandbox_worker_requested_revision.stdout }}). Run the
+          playbook from the target revision, use the default playbook_revision
+          mode, or set agent_sandbox_worker_enforce_revision_match=false only
+          after confirming the unit and daemon CLI are compatible.
+        success_msg: Worker playbook and daemon checkout revisions match.
+      when: agent_sandbox_worker_enforce_revision_match | bool
+
     - name: Assert the worker token is configured
       ansible.builtin.assert:
         that:

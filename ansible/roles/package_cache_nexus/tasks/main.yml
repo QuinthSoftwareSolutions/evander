@@ -1,0 +1,405 @@
+---
+- name: Stop Nexus package cache when disabled
+  ansible.builtin.systemd:
+    name: agent-sandbox-nexus.service
+    enabled: false
+    state: stopped
+  failed_when: false
+  when: not (agent_sandbox_services.package_cache | default(false) | bool)
+
+- name: Configure Nexus package cache
+  when: agent_sandbox_services.package_cache | default(false) | bool
+  block:
+    - name: Assert Nexus admin password is configured
+      ansible.builtin.assert:
+        that:
+          - (agent_sandbox_nexus_admin_password | default('') | string | length) > 0
+        fail_msg: >-
+          agent_sandbox_nexus_admin_password must be set from Vault when
+          agent_sandbox_services.package_cache is enabled.
+        success_msg: Nexus admin password is configured.
+        quiet: true
+
+    - name: Ensure Nexus service group exists
+      ansible.builtin.group:
+        name: "{{ agent_sandbox_nexus_group }}"
+        system: true
+        state: present
+
+    - name: Ensure Nexus service account exists
+      ansible.builtin.user:
+        name: "{{ agent_sandbox_nexus_user }}"
+        group: "{{ agent_sandbox_nexus_group }}"
+        shell: /usr/sbin/nologin
+        home: "{{ agent_sandbox_nexus_data_dir }}"
+        create_home: false
+        system: true
+        state: present
+
+    - name: Ensure Nexus directories exist
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: directory
+        owner: "{{ item.owner | default(agent_sandbox_nexus_user) }}"
+        group: "{{ item.group | default(agent_sandbox_nexus_group) }}"
+        mode: "{{ item.mode }}"
+      loop:
+        - path: "{{ agent_sandbox_nexus_install_parent }}"
+          owner: root
+          group: root
+          mode: "0755"
+        - path: "{{ agent_sandbox_nexus_cache_dir }}"
+          owner: root
+          group: root
+          mode: "0755"
+        - path: "{{ agent_sandbox_nexus_data_dir }}"
+          mode: "0750"
+        - path: "{{ agent_sandbox_nexus_data_dir }}/etc"
+          mode: "0750"
+        - path: "{{ agent_sandbox_nexus_data_dir }}/log"
+          mode: "0750"
+        - path: "{{ agent_sandbox_nexus_data_dir }}/tmp"
+          mode: "0750"
+
+    - name: Download pinned Nexus archive with checksum
+      ansible.builtin.get_url:
+        url: "{{ agent_sandbox_nexus_archive_url }}"
+        dest: "{{ agent_sandbox_nexus_cache_dir }}/nexus-{{ agent_sandbox_nexus_version }}-linux-x86_64.tar.gz"
+        checksum: "{{ agent_sandbox_nexus_archive_checksum }}"
+        owner: root
+        group: root
+        mode: "0644"
+      when: (agent_sandbox_nexus_archive_checksum | string | length) > 0
+
+    - name: Download pinned Nexus archive
+      ansible.builtin.get_url:
+        url: "{{ agent_sandbox_nexus_archive_url }}"
+        dest: "{{ agent_sandbox_nexus_cache_dir }}/nexus-{{ agent_sandbox_nexus_version }}-linux-x86_64.tar.gz"
+        owner: root
+        group: root
+        mode: "0644"
+      when: (agent_sandbox_nexus_archive_checksum | string | length) == 0
+
+    - name: Unpack Nexus archive
+      ansible.builtin.unarchive:
+        src: "{{ agent_sandbox_nexus_cache_dir }}/nexus-{{ agent_sandbox_nexus_version }}-linux-x86_64.tar.gz"
+        dest: "{{ agent_sandbox_nexus_install_parent }}"
+        remote_src: true
+        owner: "{{ agent_sandbox_nexus_user }}"
+        group: "{{ agent_sandbox_nexus_group }}"
+        creates: "{{ agent_sandbox_nexus_install_dir }}/bin/nexus"
+
+    - name: Point current Nexus symlink at pinned install
+      ansible.builtin.file:
+        src: "{{ agent_sandbox_nexus_install_dir }}"
+        dest: "{{ agent_sandbox_nexus_current_link }}"
+        state: link
+        owner: "{{ agent_sandbox_nexus_user }}"
+        group: "{{ agent_sandbox_nexus_group }}"
+
+    - name: Persist Nexus runtime properties in the data directory
+      ansible.builtin.copy:
+        dest: "{{ agent_sandbox_nexus_data_dir }}/etc/nexus.properties"
+        owner: "{{ agent_sandbox_nexus_user }}"
+        group: "{{ agent_sandbox_nexus_group }}"
+        mode: "0640"
+        content: |
+          application-host={{ agent_sandbox_nexus_bind_host }}
+          application-port={{ agent_sandbox_nexus_port }}
+          nexus-context-path=/
+      register: agent_sandbox_nexus_properties
+
+    - name: Point Nexus JVM paths at the persistent data directory
+      ansible.builtin.lineinfile:
+        path: "{{ agent_sandbox_nexus_install_dir }}/bin/nexus.vmoptions"
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+      loop:
+        - regexp: "^-Dkaraf.data=.*"
+          line: "-Dkaraf.data={{ agent_sandbox_nexus_data_dir }}"
+        - regexp: "^-Dkaraf.log=.*"
+          line: "-Dkaraf.log={{ agent_sandbox_nexus_data_dir }}/log"
+        - regexp: "^-Djava.io.tmpdir=.*"
+          line: "-Djava.io.tmpdir={{ agent_sandbox_nexus_data_dir }}/tmp"
+        - regexp: "^-XX:LogFile=.*"
+          line: "-XX:LogFile={{ agent_sandbox_nexus_data_dir }}/log/jvm.log"
+      register: agent_sandbox_nexus_vmoptions
+
+    - name: Install Nexus package cache systemd unit
+      ansible.builtin.template:
+        src: agent-sandbox-nexus.service.j2
+        dest: /etc/systemd/system/agent-sandbox-nexus.service
+        owner: root
+        group: root
+        mode: "0644"
+      register: agent_sandbox_nexus_unit
+
+    - name: Reconcile Nexus package cache service
+      ansible.builtin.systemd:
+        name: agent-sandbox-nexus.service
+        enabled: true
+        state: >-
+          {{
+            'restarted'
+            if (
+              agent_sandbox_nexus_properties.changed
+              or agent_sandbox_nexus_vmoptions.changed
+              or agent_sandbox_nexus_unit.changed
+            )
+            else 'started'
+          }}
+        daemon_reload: true
+
+    - name: Wait for Nexus package cache listener
+      ansible.builtin.wait_for:
+        host: "127.0.0.1"
+        port: "{{ agent_sandbox_nexus_port }}"
+        timeout: 300
+
+    - name: Wait for Nexus package cache status endpoint
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ agent_sandbox_nexus_port }}/service/rest/v1/status"
+        method: GET
+        return_content: true
+        status_code: 200
+      register: agent_sandbox_nexus_status
+      retries: 30
+      delay: 10
+      until: agent_sandbox_nexus_status.status == 200
+
+    - name: Check configured Nexus admin credentials
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ agent_sandbox_nexus_port }}/service/rest/v1/security/users"
+        method: GET
+        user: "{{ agent_sandbox_nexus_admin_user }}"
+        password: "{{ agent_sandbox_nexus_admin_password }}"
+        force_basic_auth: true
+        status_code:
+          - 200
+          - 401
+          - 403
+      register: agent_sandbox_nexus_configured_admin
+      no_log: true
+
+    - name: Read initial Nexus admin password
+      ansible.builtin.slurp:
+        src: "{{ agent_sandbox_nexus_data_dir }}/admin.password"
+      register: agent_sandbox_nexus_initial_admin_password
+      when: agent_sandbox_nexus_configured_admin.status != 200
+      no_log: true
+
+    - name: Change initial Nexus admin password
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ agent_sandbox_nexus_port }}/service/rest/v1/security/users/{{ agent_sandbox_nexus_admin_user }}/change-password"
+        method: PUT
+        user: "{{ agent_sandbox_nexus_admin_user }}"
+        password: "{{ agent_sandbox_nexus_initial_admin_password.content | b64decode | trim }}"
+        force_basic_auth: true
+        headers:
+          Content-Type: text/plain
+        body: "{{ agent_sandbox_nexus_admin_password }}"
+        body_format: raw
+        status_code:
+          - 200
+          - 204
+      when: agent_sandbox_nexus_configured_admin.status != 200
+      no_log: true
+
+    - name: Enable anonymous read access in Nexus
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ agent_sandbox_nexus_port }}/service/rest/v1/security/anonymous"
+        method: PUT
+        user: "{{ agent_sandbox_nexus_admin_user }}"
+        password: "{{ agent_sandbox_nexus_admin_password }}"
+        force_basic_auth: true
+        body_format: json
+        body:
+          enabled: true
+          userId: anonymous
+          realmName: NexusAuthorizingRealm
+        status_code:
+          - 200
+          - 204
+      no_log: true
+
+    - name: Check Nexus PyPI proxy repository
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ agent_sandbox_nexus_port }}/service/rest/v1/repositories/{{ agent_sandbox_nexus_pypi_proxy_repository }}"
+        method: GET
+        user: "{{ agent_sandbox_nexus_admin_user }}"
+        password: "{{ agent_sandbox_nexus_admin_password }}"
+        force_basic_auth: true
+        status_code:
+          - 200
+          - 404
+      register: agent_sandbox_nexus_pypi_proxy_check
+      no_log: true
+
+    - name: Reconcile Nexus PyPI proxy repository
+      ansible.builtin.uri:
+        url: >-
+          http://127.0.0.1:{{ agent_sandbox_nexus_port }}/service/rest/v1/repositories/pypi/proxy{{
+            '/' ~ agent_sandbox_nexus_pypi_proxy_repository
+            if agent_sandbox_nexus_pypi_proxy_check.status == 200
+            else ''
+          }}
+        method: "{{ 'PUT' if agent_sandbox_nexus_pypi_proxy_check.status == 200 else 'POST' }}"
+        user: "{{ agent_sandbox_nexus_admin_user }}"
+        password: "{{ agent_sandbox_nexus_admin_password }}"
+        force_basic_auth: true
+        body_format: json
+        body:
+          name: "{{ agent_sandbox_nexus_pypi_proxy_repository }}"
+          online: true
+          storage:
+            blobStoreName: "{{ agent_sandbox_nexus_blob_store }}"
+            strictContentTypeValidation: true
+          proxy:
+            remoteUrl: "{{ agent_sandbox_nexus_pypi_remote_url }}"
+            contentMaxAge: 1440
+            metadataMaxAge: 1440
+          negativeCache:
+            enabled: true
+            timeToLive: 1440
+          httpClient:
+            blocked: false
+            autoBlock: true
+        status_code:
+          - 200
+          - 201
+          - 204
+      changed_when: agent_sandbox_nexus_pypi_proxy_check.status == 404
+      no_log: true
+
+    - name: Check Nexus PyPI group repository
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ agent_sandbox_nexus_port }}/service/rest/v1/repositories/{{ agent_sandbox_nexus_pypi_group_repository }}"
+        method: GET
+        user: "{{ agent_sandbox_nexus_admin_user }}"
+        password: "{{ agent_sandbox_nexus_admin_password }}"
+        force_basic_auth: true
+        status_code:
+          - 200
+          - 404
+      register: agent_sandbox_nexus_pypi_group_check
+      no_log: true
+
+    - name: Reconcile Nexus PyPI group repository
+      ansible.builtin.uri:
+        url: >-
+          http://127.0.0.1:{{ agent_sandbox_nexus_port }}/service/rest/v1/repositories/pypi/group{{
+            '/' ~ agent_sandbox_nexus_pypi_group_repository
+            if agent_sandbox_nexus_pypi_group_check.status == 200
+            else ''
+          }}
+        method: "{{ 'PUT' if agent_sandbox_nexus_pypi_group_check.status == 200 else 'POST' }}"
+        user: "{{ agent_sandbox_nexus_admin_user }}"
+        password: "{{ agent_sandbox_nexus_admin_password }}"
+        force_basic_auth: true
+        body_format: json
+        body:
+          name: "{{ agent_sandbox_nexus_pypi_group_repository }}"
+          online: true
+          storage:
+            blobStoreName: "{{ agent_sandbox_nexus_blob_store }}"
+            strictContentTypeValidation: true
+          group:
+            memberNames:
+              - "{{ agent_sandbox_nexus_pypi_proxy_repository }}"
+        status_code:
+          - 200
+          - 201
+          - 204
+      changed_when: agent_sandbox_nexus_pypi_group_check.status == 404
+      no_log: true
+
+    - name: Check Nexus npm proxy repository
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ agent_sandbox_nexus_port }}/service/rest/v1/repositories/{{ agent_sandbox_nexus_npm_proxy_repository }}"
+        method: GET
+        user: "{{ agent_sandbox_nexus_admin_user }}"
+        password: "{{ agent_sandbox_nexus_admin_password }}"
+        force_basic_auth: true
+        status_code:
+          - 200
+          - 404
+      register: agent_sandbox_nexus_npm_proxy_check
+      no_log: true
+
+    - name: Reconcile Nexus npm proxy repository
+      ansible.builtin.uri:
+        url: >-
+          http://127.0.0.1:{{ agent_sandbox_nexus_port }}/service/rest/v1/repositories/npm/proxy{{
+            '/' ~ agent_sandbox_nexus_npm_proxy_repository
+            if agent_sandbox_nexus_npm_proxy_check.status == 200
+            else ''
+          }}
+        method: "{{ 'PUT' if agent_sandbox_nexus_npm_proxy_check.status == 200 else 'POST' }}"
+        user: "{{ agent_sandbox_nexus_admin_user }}"
+        password: "{{ agent_sandbox_nexus_admin_password }}"
+        force_basic_auth: true
+        body_format: json
+        body:
+          name: "{{ agent_sandbox_nexus_npm_proxy_repository }}"
+          online: true
+          storage:
+            blobStoreName: "{{ agent_sandbox_nexus_blob_store }}"
+            strictContentTypeValidation: true
+          proxy:
+            remoteUrl: "{{ agent_sandbox_nexus_npm_remote_url }}"
+            contentMaxAge: 1440
+            metadataMaxAge: 1440
+          negativeCache:
+            enabled: true
+            timeToLive: 1440
+          httpClient:
+            blocked: false
+            autoBlock: true
+        status_code:
+          - 200
+          - 201
+          - 204
+      changed_when: agent_sandbox_nexus_npm_proxy_check.status == 404
+      no_log: true
+
+    - name: Check Nexus npm group repository
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ agent_sandbox_nexus_port }}/service/rest/v1/repositories/{{ agent_sandbox_nexus_npm_group_repository }}"
+        method: GET
+        user: "{{ agent_sandbox_nexus_admin_user }}"
+        password: "{{ agent_sandbox_nexus_admin_password }}"
+        force_basic_auth: true
+        status_code:
+          - 200
+          - 404
+      register: agent_sandbox_nexus_npm_group_check
+      no_log: true
+
+    - name: Reconcile Nexus npm group repository
+      ansible.builtin.uri:
+        url: >-
+          http://127.0.0.1:{{ agent_sandbox_nexus_port }}/service/rest/v1/repositories/npm/group{{
+            '/' ~ agent_sandbox_nexus_npm_group_repository
+            if agent_sandbox_nexus_npm_group_check.status == 200
+            else ''
+          }}
+        method: "{{ 'PUT' if agent_sandbox_nexus_npm_group_check.status == 200 else 'POST' }}"
+        user: "{{ agent_sandbox_nexus_admin_user }}"
+        password: "{{ agent_sandbox_nexus_admin_password }}"
+        force_basic_auth: true
+        body_format: json
+        body:
+          name: "{{ agent_sandbox_nexus_npm_group_repository }}"
+          online: true
+          storage:
+            blobStoreName: "{{ agent_sandbox_nexus_blob_store }}"
+            strictContentTypeValidation: true
+          group:
+            memberNames:
+              - "{{ agent_sandbox_nexus_npm_proxy_repository }}"
+        status_code:
+          - 200
+          - 201
+          - 204
+      changed_when: agent_sandbox_nexus_npm_group_check.status == 404
+      no_log: true

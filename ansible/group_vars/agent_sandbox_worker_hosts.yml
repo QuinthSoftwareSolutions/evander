@@ -11,6 +11,21 @@ agent_sandbox_repo_managed_tracked_config_paths: []
 agent_sandbox_repo_managed_untracked_config_paths:
   - config/worker-daemon.env
 
+# The worker systemd unit is rendered from this local Ansible checkout, while the
+# daemon executable is installed from agent_sandbox_repo_version on the worker.
+# Keep those two artifacts on the same commit unless explicitly bypassed.
+agent_sandbox_worker_repo_version_mode: "playbook_revision"
+agent_sandbox_worker_enforce_revision_match: true
+agent_sandbox_worker_revision_guard_paths:
+  - ansible/worker.yml
+  - ansible/group_vars/agent_sandbox_worker_hosts.yml
+  - ansible/roles/container_worker_runtime
+  - ansible/roles/container_worker_service
+  - ansible/roles/container_worker_verification
+  - pyproject.toml
+  - src/agent_sandbox/worker
+  - src/agent_sandbox/worker_daemon.py
+
 agent_sandbox_host_packages:
   - acl
   - openssh-server

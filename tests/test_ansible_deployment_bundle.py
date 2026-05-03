@@ -60,6 +60,19 @@ def test_ansible_nexus_package_cache_role_is_control_plane_only() -> None:
     assert (role / "templates" / "agent-sandbox-nexus.service.j2").exists()
 
 
+def test_ansible_nexus_package_cache_tasks_are_not_ignored_by_git() -> None:
+    repo = Path(__file__).resolve().parents[1]
+    role_task_path = "ansible/roles/package_cache_nexus/tasks/main.yml"
+
+    result = subprocess.run(
+        ["git", "check-ignore", "--quiet", "--", role_task_path],
+        cwd=repo,
+        check=False,
+    )
+
+    assert result.returncode == 1
+
+
 def test_ansible_nexus_package_cache_defaults_and_role_contract() -> None:
     repo = Path(__file__).resolve().parents[1]
     defaults = (repo / "ansible" / "group_vars" / "all" / "defaults.yml").read_text(
@@ -91,6 +104,9 @@ def test_ansible_nexus_package_cache_defaults_and_role_contract() -> None:
     assert "agent_sandbox_worker_npm_registry_url" in defaults
 
     assert "agent_sandbox_nexus_admin_password must be set from Vault" in tasks
+    assert "quiet: true" in tasks
+    assert "Assert Nexus admin password is configured\n" in tasks
+    assert "no_log: true\n\n    - name: Ensure Nexus service group exists" not in tasks
     assert "Download pinned Nexus archive" in tasks
     assert "agent-sandbox-nexus.service" in tasks
     assert "/service/rest/v1/security/users\"" in tasks
@@ -104,6 +120,18 @@ def test_ansible_nexus_package_cache_defaults_and_role_contract() -> None:
     assert "https://registry.npmjs.org" in defaults
     assert "ExecStart={{ agent_sandbox_nexus_current_link }}/bin/nexus run" in unit
     assert "User={{ agent_sandbox_nexus_user }}" in unit
+
+
+def test_ansible_azure_inventory_maps_nexus_password_from_vault() -> None:
+    repo = Path(__file__).resolve().parents[1]
+    azure = (repo / "ansible" / "group_vars" / "azure.yml").read_text(encoding="utf-8")
+    docs = (repo / "ansible" / "README.md").read_text(encoding="utf-8")
+
+    assert (
+        'agent_sandbox_nexus_admin_password: "{{ vault_agent_sandbox_nexus_admin_password | default(\'\') }}"'
+        in azure
+    )
+    assert "vault_agent_sandbox_nexus_admin_password" in docs
 
 
 def test_ansible_repo_checkout_supports_private_deploy_key() -> None:

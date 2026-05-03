@@ -132,6 +132,9 @@ The Nexus package cache also requires `agent_sandbox_nexus_admin_password` from 
 `agent_sandbox_services.package_cache` is enabled. The role changes the initial Nexus admin
 password, enables anonymous read access, and creates only proxy/group repositories:
 `pypi-proxy`, `pypi-all`, `npm-proxy`, and `npm-all`.
+The Azure inventory maps this from `vault_agent_sandbox_nexus_admin_password`; add that value to
+the Vault file or set `agent_sandbox_services.package_cache: false` for deployments that should not
+run Nexus.
 
 Worker/global JSON files are also editable from the Admin GUI. Set
 `agent_sandbox_force_render_worker_config: false` for hosts where operators own those settings
@@ -253,6 +256,14 @@ ansible-playbook \
   --ask-vault-pass \
   ansible/worker.yml
 ```
+
+The worker playbook renders systemd units from the local Ansible checkout and installs the daemon
+package from Git on the worker VM. To keep those artifacts compatible, the worker defaults set
+`agent_sandbox_repo_version` to the local playbook commit before checkout and verify that
+worker-playbook/daemon contract files are committed. Commit and push local worker changes before
+deploying. If you intentionally deploy a different pinned revision, run the playbook from that
+revision or set `agent_sandbox_worker_enforce_revision_match: false` only after confirming the
+rendered unit and daemon CLI are compatible.
 
 The worker daemon listens on `agent_sandbox_worker_port` (`11888` by default) and stores durable
 session state under `agent_sandbox_worker_root` (`/var/lib/agent-worker` by default). Restrict Azure
