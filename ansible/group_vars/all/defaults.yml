@@ -141,6 +141,7 @@ agent_sandbox_nexus_pypi_remote_url: "https://pypi.org/"
 agent_sandbox_nexus_npm_proxy_repository: "npm-proxy"
 agent_sandbox_nexus_npm_group_repository: "npm-all"
 agent_sandbox_nexus_npm_remote_url: "https://registry.npmjs.org"
+agent_sandbox_nexus_anonymous_reader_role: "agent-sandbox-package-cache-reader"
 agent_sandbox_worker_pypi_index_url: "http://{{ agent_sandbox_control_plane_private_ip }}:{{ agent_sandbox_nexus_port }}/repository/{{ agent_sandbox_nexus_pypi_group_repository }}/simple"
 agent_sandbox_worker_npm_registry_url: "http://{{ agent_sandbox_control_plane_private_ip }}:{{ agent_sandbox_nexus_port }}/repository/{{ agent_sandbox_nexus_npm_group_repository }}/"
 

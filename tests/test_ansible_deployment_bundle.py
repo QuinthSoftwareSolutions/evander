@@ -154,6 +154,10 @@ def test_ansible_nexus_package_cache_defaults_and_role_contract() -> None:
     assert 'agent_sandbox_nexus_pypi_group_repository: "pypi-all"' in defaults
     assert 'agent_sandbox_nexus_npm_proxy_repository: "npm-proxy"' in defaults
     assert 'agent_sandbox_nexus_npm_group_repository: "npm-all"' in defaults
+    assert (
+        'agent_sandbox_nexus_anonymous_reader_role: "agent-sandbox-package-cache-reader"'
+        in defaults
+    )
     assert "agent_sandbox_package_cache_allowed_tcp_ports" in defaults
     assert "[agent_sandbox_nexus_port]" in defaults
     assert "agent_sandbox_worker_pypi_index_url" in defaults
@@ -168,6 +172,28 @@ def test_ansible_nexus_package_cache_defaults_and_role_contract() -> None:
     assert "/service/rest/v1/security/users\"" in tasks
     assert "/service/rest/v1/security/user\"" not in tasks
     assert "service/rest/v1/security/anonymous" in tasks
+    assert (
+        "service/rest/v1/security/roles/{{ agent_sandbox_nexus_anonymous_reader_role }}"
+        in tasks
+    )
+    assert "service/rest/v1/security/users/anonymous" in tasks
+    assert (
+        "nx-repository-view-pypi-{{ agent_sandbox_nexus_pypi_group_repository }}-read"
+        in tasks
+    )
+    assert (
+        "nx-repository-view-pypi-{{ agent_sandbox_nexus_pypi_proxy_repository }}-read"
+        in tasks
+    )
+    assert (
+        "nx-repository-view-npm-{{ agent_sandbox_nexus_npm_group_repository }}-read"
+        in tasks
+    )
+    assert (
+        "nx-repository-view-npm-{{ agent_sandbox_nexus_npm_proxy_repository }}-read"
+        in tasks
+    )
+    assert "source=default" in tasks
     assert "repositories/pypi/proxy" in tasks
     assert "repositories/pypi/group" in tasks
     assert "repositories/npm/proxy" in tasks

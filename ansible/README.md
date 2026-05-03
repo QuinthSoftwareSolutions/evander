@@ -134,7 +134,9 @@ renders these host-local managed artifacts with restricted permissions:
 The Nexus package cache also requires `agent_sandbox_nexus_admin_password` from Vault when
 `agent_sandbox_services.package_cache` is enabled. The role changes the initial Nexus admin
 password, enables anonymous read access, and creates only proxy/group repositories:
-`pypi-proxy`, `pypi-all`, `npm-proxy`, and `npm-all`.
+`pypi-proxy`, `pypi-all`, `npm-proxy`, and `npm-all`. It also assigns the anonymous user a
+least-privilege package-cache reader role so worker `uv` and npm installs can download package
+assets through Nexus without direct PyPI/npm egress or worker-side Nexus credentials.
 The Azure inventory maps this from `vault_agent_sandbox_nexus_admin_password`; add that value to
 the Vault file or set `agent_sandbox_services.package_cache: false` for deployments that should not
 run Nexus.
