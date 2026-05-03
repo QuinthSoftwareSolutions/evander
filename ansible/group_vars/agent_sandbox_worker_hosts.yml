@@ -43,9 +43,20 @@ agent_sandbox_worker_env:
 # Worker Git is restricted to the control-plane bare mirror root. The worker
 # daemon rejects repo_source values outside these prefixes.
 agent_sandbox_control_plane_group: "agent_sandbox_hosts"
-agent_sandbox_control_plane_deploy_path: "/opt/agent-sandbox"
+agent_sandbox_control_plane_host: "{{ groups.get(agent_sandbox_control_plane_group, []) | first | default('') }}"
+agent_sandbox_control_plane_deploy_path: >-
+  {{
+    hostvars[agent_sandbox_control_plane_host].agent_sandbox_deploy_path | default('/opt/agent-sandbox')
+    if (agent_sandbox_control_plane_host | string | length) > 0
+    else '/opt/agent-sandbox'
+  }}
 agent_sandbox_git_host: "<control-plane-private-ip>"
-agent_sandbox_git_user: "agent-sandbox"
+agent_sandbox_git_user: >-
+  {{
+    hostvars[agent_sandbox_control_plane_host].agent_sandbox_run_user | default('agent-sandbox')
+    if (agent_sandbox_control_plane_host | string | length) > 0
+    else 'agent-sandbox'
+  }}
 agent_sandbox_git_root: "{{ agent_sandbox_control_plane_deploy_path }}/git-remotes"
 agent_sandbox_git_ssh_alias: "agent-sandbox-git-host"
 agent_sandbox_worker_git_ssh_source_dir: "/home/{{ agent_sandbox_run_user }}/.ssh"

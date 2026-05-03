@@ -60,6 +60,9 @@ def test_worker_group_vars_define_docker_and_durable_state_contract() -> None:
     assert 'agent_sandbox_worker_runtime_dir: "{{ agent_sandbox_worker_root }}/runtime"' in text
     assert 'agent_sandbox_worker_sandbox_profile: "default"' in text
     assert "AGENT_SANDBOX_WORKER_TOKEN" in text
+    assert "agent_sandbox_control_plane_host" in text
+    assert "hostvars[agent_sandbox_control_plane_host].agent_sandbox_deploy_path" in text
+    assert "hostvars[agent_sandbox_control_plane_host].agent_sandbox_run_user" in text
     assert 'agent_sandbox_git_root: "{{ agent_sandbox_control_plane_deploy_path }}/git-remotes"' in text
     assert 'agent_sandbox_git_ssh_alias: "agent-sandbox-git-host"' in text
     assert "agent_sandbox_worker_allowed_git_source_prefixes" in text
@@ -76,6 +79,19 @@ def test_worker_group_vars_define_docker_and_durable_state_contract() -> None:
     assert "/opt/agent-sandbox/ms-playwright" in text
     assert "/opt/agent-sandbox/nuget-cache-ro" in text
     assert "agent_sandbox_worker_preload_images" in text
+
+
+def test_worker_azure_inventory_uses_truman_control_plane_identity() -> None:
+    azure = (ROOT / "ansible" / "group_vars" / "azure.yml").read_text(encoding="utf-8")
+    worker_defaults = (
+        ROOT / "ansible" / "group_vars" / "agent_sandbox_worker_hosts.yml"
+    ).read_text(encoding="utf-8")
+
+    assert 'agent_sandbox_deploy_path: "/opt/truman"' in azure
+    assert 'agent_sandbox_run_user: "truman"' in azure
+    assert "agent_sandbox_git_user" in worker_defaults
+    assert "hostvars[agent_sandbox_control_plane_host].agent_sandbox_run_user" in worker_defaults
+    assert "hostvars[agent_sandbox_control_plane_host].agent_sandbox_deploy_path" in worker_defaults
 
 
 def test_worker_service_role_renders_env_and_daemon_unit() -> None:

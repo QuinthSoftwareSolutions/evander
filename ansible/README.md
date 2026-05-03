@@ -239,6 +239,11 @@ The worker inventory group is `agent_sandbox_worker_hosts`. Worker defaults live
 - `agent_sandbox_git_user`, `agent_sandbox_git_root`, and `agent_sandbox_git_ssh_alias` when they
   differ from the control-plane issue-setup Git settings
 
+When the inventory includes `agent_sandbox_hosts`, the worker defaults derive
+`agent_sandbox_git_user` from that control-plane host's `agent_sandbox_run_user` and
+`agent_sandbox_git_root` from that host's `agent_sandbox_deploy_path`. Override those values only
+when the Git mirror is intentionally served by a different account or path.
+
 Run the worker deployment with:
 
 ```bash
