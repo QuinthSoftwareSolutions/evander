@@ -205,6 +205,46 @@
       when: agent_sandbox_nexus_configured_admin.status != 200
       no_log: true
 
+    - name: Read Nexus Community Edition EULA status
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ agent_sandbox_nexus_port }}/service/rest/v1/system/eula"
+        method: GET
+        user: "{{ agent_sandbox_nexus_admin_user }}"
+        password: "{{ agent_sandbox_nexus_admin_password }}"
+        force_basic_auth: true
+        status_code: 200
+      register: agent_sandbox_nexus_community_eula_status
+      no_log: true
+
+    - name: Assert Nexus Community Edition EULA can be accepted
+      ansible.builtin.assert:
+        that:
+          - >-
+            (agent_sandbox_nexus_community_eula_status.json.accepted | default(false) | bool)
+            or (agent_sandbox_nexus_accept_community_eula | bool)
+        fail_msg: >-
+          Nexus Community Edition requires EULA acceptance before repository package
+          assets can be downloaded. Set agent_sandbox_nexus_accept_community_eula=true
+          after reviewing https://links.sonatype.com/products/nxrm/ce-eula, or accept it
+          manually in Nexus before running this playbook.
+        success_msg: Nexus Community Edition EULA acceptance is allowed.
+        quiet: true
+
+    - name: Accept Nexus Community Edition EULA
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ agent_sandbox_nexus_port }}/service/rest/v1/system/eula"
+        method: POST
+        user: "{{ agent_sandbox_nexus_admin_user }}"
+        password: "{{ agent_sandbox_nexus_admin_password }}"
+        force_basic_auth: true
+        body_format: json
+        body:
+          accepted: true
+          disclaimer: "{{ agent_sandbox_nexus_community_eula_disclaimer }}"
+        status_code: 204
+      when: not (agent_sandbox_nexus_community_eula_status.json.accepted | default(false) | bool)
+      no_log: true
+
     - name: Enable anonymous read access in Nexus
       ansible.builtin.uri:
         url: "http://127.0.0.1:{{ agent_sandbox_nexus_port }}/service/rest/v1/security/anonymous"

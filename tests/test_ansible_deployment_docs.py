@@ -16,6 +16,7 @@ def test_ansible_readme_covers_ubuntu_azure_and_repo_native_entrypoints() -> Non
     assert "agent_sandbox_services.package_cache" in text
     assert "agent_sandbox_services.apt_cache" in text
     assert "agent_sandbox_nexus_admin_password" in text
+    assert "agent_sandbox_nexus_accept_community_eula" in text
     assert "agent-sandbox-nexus.service" in text
     assert "package-cache reader role" in text
     assert "agent_sandbox_nexus_pypi_probe_asset_path" in text
