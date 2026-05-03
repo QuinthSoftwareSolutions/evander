@@ -133,6 +133,7 @@
     - role: host_prereqs
     - role: worker_git_access
     - role: repo_checkout
+    - role: worker_package_cache_preflight
     - role: python_env
     - role: container_worker_runtime
     - role: container_worker_service

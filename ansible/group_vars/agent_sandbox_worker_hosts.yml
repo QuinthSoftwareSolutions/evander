@@ -21,6 +21,7 @@ agent_sandbox_worker_revision_guard_paths:
   - ansible/group_vars/agent_sandbox_worker_hosts.yml
   - ansible/roles/worker_apt_proxy
   - ansible/roles/worker_git_access
+  - ansible/roles/worker_package_cache_preflight
   - ansible/roles/python_env
   - ansible/roles/container_worker_runtime
   - ansible/roles/container_worker_service

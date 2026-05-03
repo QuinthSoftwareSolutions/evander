@@ -288,7 +288,10 @@ deploy `site.yml` first, then run `worker.yml`.
 The worker `python_env` install uses the control-plane Nexus PyPI group through
 `agent_sandbox_python_install_env`, setting `UV_DEFAULT_INDEX`, `UV_INDEX_URL`, `UV_INSECURE_HOST`,
 `PIP_INDEX_URL`, and `PIP_TRUSTED_HOST` from `agent_sandbox_worker_pypi_index_url`. This keeps
-`uv pip install -e .` on the same private package path as runtime pip sessions.
+`uv pip install -e .` on the same private package path as runtime pip sessions. The control-plane
+Nexus role and worker playbook both probe `agent_sandbox_nexus_pypi_probe_asset_path` anonymously,
+so a missing package-cache reader role or stale control-plane deployment fails before the worker
+reaches the repo install.
 
 The worker playbook renders systemd units from the local Ansible checkout and installs the daemon
 package from Git on the worker VM. To keep those artifacts compatible, the worker defaults set

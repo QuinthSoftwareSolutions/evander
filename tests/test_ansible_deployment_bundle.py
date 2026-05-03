@@ -158,6 +158,10 @@ def test_ansible_nexus_package_cache_defaults_and_role_contract() -> None:
         'agent_sandbox_nexus_anonymous_reader_role: "agent-sandbox-package-cache-reader"'
         in defaults
     )
+    assert (
+        'agent_sandbox_nexus_pypi_probe_asset_path: "packages/wheel/0.47.0/wheel-0.47.0-py3-none-any.whl"'
+        in defaults
+    )
     assert "agent_sandbox_package_cache_allowed_tcp_ports" in defaults
     assert "[agent_sandbox_nexus_port]" in defaults
     assert "agent_sandbox_worker_pypi_index_url" in defaults
@@ -177,6 +181,9 @@ def test_ansible_nexus_package_cache_defaults_and_role_contract() -> None:
         in tasks
     )
     assert "service/rest/v1/security/users/anonymous" in tasks
+    assert "Probe anonymous Nexus PyPI asset access" in tasks
+    assert "agent_sandbox_nexus_pypi_probe_asset_path" in tasks
+    assert "Nexus anonymous PyPI asset access is working" in tasks
     assert (
         "nx-repository-view-pypi-{{ agent_sandbox_nexus_pypi_group_repository }}-read"
         in tasks

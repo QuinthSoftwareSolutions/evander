@@ -532,3 +532,34 @@
           - 204
       changed_when: agent_sandbox_nexus_anonymous_reader_role not in (agent_sandbox_nexus_anonymous_user.roles | default([]))
       no_log: true
+
+    - name: Probe anonymous Nexus PyPI asset access
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ agent_sandbox_nexus_port }}/repository/{{ agent_sandbox_nexus_pypi_group_repository }}/{{ agent_sandbox_nexus_pypi_probe_asset_path }}"
+        method: GET
+        return_content: false
+        timeout: 30
+        status_code:
+          - 200
+          - 401
+          - 403
+          - 404
+          - 500
+          - 502
+          - 503
+      register: agent_sandbox_nexus_anonymous_pypi_asset_probe
+      changed_when: false
+      failed_when: false
+
+    - name: Assert anonymous Nexus PyPI asset access works
+      ansible.builtin.assert:
+        that:
+          - agent_sandbox_nexus_anonymous_pypi_asset_probe.status == 200
+        fail_msg: >-
+          Nexus package cache is reachable, but anonymous users cannot download
+          PyPI package assets from repository {{ agent_sandbox_nexus_pypi_group_repository }}.
+          Probe path={{ agent_sandbox_nexus_pypi_probe_asset_path }};
+          HTTP status={{ agent_sandbox_nexus_anonymous_pypi_asset_probe.status | default('unreachable') }}.
+          The worker playbook will fail during uv pip install until this control-plane
+          package-cache permission check passes.
+        success_msg: Nexus anonymous PyPI asset access is working.

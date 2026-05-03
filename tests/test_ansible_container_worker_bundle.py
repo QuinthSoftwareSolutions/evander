@@ -20,6 +20,7 @@ def test_worker_playbook_exists_with_expected_roles() -> None:
     assert "- role: host_prereqs" in worker
     assert "- role: worker_git_access" in worker
     assert "- role: repo_checkout" in worker
+    assert "- role: worker_package_cache_preflight" in worker
     assert "- role: python_env" in worker
     assert "- role: container_worker_runtime" in worker
     assert "- role: container_worker_service" in worker
@@ -28,6 +29,7 @@ def test_worker_playbook_exists_with_expected_roles() -> None:
     for role_name in [
         "container_worker_runtime",
         "worker_git_access",
+        "worker_package_cache_preflight",
         "container_worker_service",
         "container_worker_verification",
     ]:
@@ -38,6 +40,7 @@ def test_worker_role_task_files_are_not_ignored_by_git() -> None:
     role_task_paths = [
         "ansible/roles/container_worker_runtime/tasks/main.yml",
         "ansible/roles/worker_git_access/tasks/main.yml",
+        "ansible/roles/worker_package_cache_preflight/tasks/main.yml",
         "ansible/roles/container_worker_service/tasks/main.yml",
         "ansible/roles/container_worker_verification/tasks/main.yml",
     ]
@@ -64,6 +67,7 @@ def test_worker_group_vars_define_docker_and_durable_state_contract() -> None:
     assert "agent_sandbox_worker_revision_guard_paths" in text
     assert "src/agent_sandbox/worker" in text
     assert "ansible/roles/python_env" in text
+    assert "ansible/roles/worker_package_cache_preflight" in text
     assert "ansible/roles/container_worker_service" in text
     assert "  - docker" in text
     assert "  - docker.io" in text
@@ -73,6 +77,9 @@ def test_worker_group_vars_define_docker_and_durable_state_contract() -> None:
     assert "UV_INSECURE_HOST" in text
     assert "PIP_INDEX_URL" in text
     assert "PIP_TRUSTED_HOST" in text
+    assert "agent_sandbox_worker_validate_package_cache" in (
+        ROOT / "ansible" / "group_vars" / "all" / "defaults.yml"
+    ).read_text(encoding="utf-8")
     assert "agent_sandbox_worker_port: 11888" in text
     assert 'agent_sandbox_worker_root: "/var/lib/agent-worker"' in text
     assert 'agent_sandbox_worker_runtime_dir: "{{ agent_sandbox_worker_root }}/runtime"' in text
@@ -160,6 +167,30 @@ def test_python_env_role_accepts_private_package_index_environment() -> None:
     assert "agent_sandbox_python_install_env: {}" in defaults
     assert "uv pip install" in role
     assert "environment: \"{{ agent_sandbox_python_install_env | default({}) }}\"" in role
+
+
+def test_worker_package_cache_preflight_checks_private_pypi_asset_access() -> None:
+    role = (
+        ROOT
+        / "ansible"
+        / "roles"
+        / "worker_package_cache_preflight"
+        / "tasks"
+        / "main.yml"
+    ).read_text(encoding="utf-8")
+    defaults = (ROOT / "ansible" / "group_vars" / "all" / "defaults.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "agent_sandbox_worker_validate_package_cache: true" in defaults
+    assert "agent_sandbox_worker_package_cache_probe_url" in defaults
+    assert "agent_sandbox_nexus_pypi_probe_asset_path" in defaults
+    assert "Probe worker PyPI package-cache asset access" in role
+    assert "agent_sandbox_worker_package_cache_probe_url" in role
+    assert "status_code:" in role
+    assert "- 403" in role
+    assert "package_cache_nexus role creates the anonymous package-cache reader role" in role
+    assert "Worker can download PyPI package assets through Nexus" in role
 
 
 def test_worker_runtime_and_verification_roles_cover_docker_health_and_no_control_plane_units() -> (
